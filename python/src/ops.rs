@@ -46,6 +46,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(warp, m)?)?;
     m.add_function(wrap_pyfunction!(mosaic, m)?)?;
     m.add_class::<PyRegionWarp>()?;
+    m.add_function(wrap_pyfunction!(_check_sum_window, m)?)?;
     Ok(())
 }
 
@@ -1231,6 +1232,7 @@ fn translate(
 ///         `"average"`, `"rms"`, `"mode"`, `"min"`, `"max"`, `"med"`, `"q1"`, `"q3"` or `"sum"`.
 ///     overview: Source pyramid selection: `"AUTO"` (default), `"AUTO-n"`, `"NONE"` or
 ///         a zero-based stored level. The output grid still uses full-resolution metadata.
+///         With `resampling="sum"`, `"AUTO"` and `"AUTO-n"` read full resolution.
 ///     srcnodata: The sources' nodata: a number, one per band, or `"none"` to ignore theirs.
 ///     dstnodata: The output nodata, or `"none"`. By default, the sources'.
 ///     ot: The output data type.
@@ -1631,6 +1633,13 @@ fn mosaic(
         })
         .py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff).map(Some)
+}
+
+/// Refuses, before it is read, a `sum`'s source window of `pixels` pixels of `pixel_bytes` bytes
+/// (all its bands) whose estimated memory exceeds `TERRIO_WARP_SUM_MAX_BYTES`.
+#[pyfunction]
+fn _check_sum_window(pixels: u64, pixel_bytes: usize) -> PyResult<()> {
+    terrio::ops::warp::check_sum_budget(terrio::ops::warp::sum_estimate(pixels, pixel_bytes)).py()
 }
 
 /// A source level (a raster or one of its overviews) warped into a grid one region at a time, as

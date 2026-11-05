@@ -1389,10 +1389,20 @@ impl<'a> Plan<'a> {
         Ok(Self { srcs, dst_srs, grid, bands, out_type, dst_nodata, dst_nodata_all })
     }
 
-    /// Select the input resolution after computing the target grid at full resolution.
+    /// Select the input resolution after computing the target grid at full resolution. A `sum`
+    /// takes no overview by itself (`AUTO`, `AUTO-n`): an overview has one pixel per block of the
+    /// source's pixels, so its sum is a fraction of the source's total. It reads a level when
+    /// given one.
     fn select_overview(&mut self, k: usize, levels: &[(usize, usize)], o: &WarpOptions) -> Result<Option<usize>> {
         let full = self.srcs[k].grid;
-        if levels.is_empty() && !matches!(o.overview, OverviewSelection::Level(_)) {
+        let explicit = matches!(o.overview, OverviewSelection::Level(_));
+        // Without stored levels there is nothing to choose; an explicit level still goes to
+        // `select`, which warns that it is missing.
+        if levels.is_empty() && !explicit {
+            return Ok(None);
+        }
+        // A `sum` takes no overview by itself: it reads the full resolution unless given a level.
+        if o.resampling == Resampling::Sum && !explicit {
             return Ok(None);
         }
         let ratio = if matches!(o.overview, OverviewSelection::Auto | OverviewSelection::AutoOffset(_)) {
@@ -1542,6 +1552,49 @@ fn src_nodata(s: &Source, o: &WarpOptions, band: usize) -> Option<f64> {
         Nodata::None => None,
         v => v.value(band),
     }
+}
+
+/// The default of `TERRIO_WARP_SUM_MAX_BYTES`: 4 GiB.
+const SUM_MAX_BYTES: u64 = 4 << 30;
+
+/// The memory a `sum` holds for a source window of `pixels` pixels of `bytes` bytes (all its
+/// bands, and the copies a conversion to another working type holds at once): the window, and 8
+/// bytes per pixel for the shares of an output pixel's footprint, which can be the whole window.
+/// An estimate: one Float32 band gives 12 bytes per pixel, the peak measured in the same CRS; a
+/// reprojected `sum` held up to about 20, and a `WarpedVRT` read 16 in float32 and 24 in float64,
+/// as it copies the window to warp it.
+#[doc(hidden)]
+pub fn sum_estimate(pixels: u64, bytes: usize) -> u64 {
+    pixels.saturating_mul(bytes as u64 + 8)
+}
+
+/// Refuses a `sum` whose estimated memory `need` exceeds `TERRIO_WARP_SUM_MAX_BYTES` (a positive
+/// number of bytes, 4 GiB by default), before its source is read.
+#[doc(hidden)]
+pub fn check_sum_budget(need: u64) -> Result<()> {
+    let limit = match std::env::var("TERRIO_WARP_SUM_MAX_BYTES") {
+        Ok(v) => v.trim().parse::<u64>().ok().filter(|n| *n > 0),
+        Err(std::env::VarError::NotPresent) => Some(SUM_MAX_BYTES),
+        Err(_) => None,
+    }
+    .ok_or_else(|| Error::InvalidArgument("TERRIO_WARP_SUM_MAX_BYTES must be a positive integer".into()))?;
+    if need > limit {
+        return Err(Error::ResourceLimit(format!(
+            "a `sum` would hold about {need} bytes of source pixels and their shares, more than \
+             TERRIO_WARP_SUM_MAX_BYTES={limit}: sum an overview level instead, with `--overview n` \
+             (`overview=n` for `terrio.warp`, or a source opened with `overview_level=n` in `terrio.rio`), \
+             or raise TERRIO_WARP_SUM_MAX_BYTES"
+        )));
+    }
+    Ok(())
+}
+
+/// [`check_sum_budget`] for the largest source window of a `sum`'s chunks, `bytes` per pixel.
+fn check_sum_chunks(o: &WarpOptions, chunks: &[Chunk], bytes: usize) -> Result<()> {
+    if o.resampling != Resampling::Sum {
+        return Ok(());
+    }
+    check_sum_budget(sum_estimate(chunks.iter().map(|c| c.sw as u64 * c.sh as u64).max().unwrap_or(0), bytes))
 }
 
 /// Reprojects and resamples one or more rasters into one output, as `gdalwarp` does. Later
@@ -1776,6 +1829,11 @@ fn warp_reader_selected(
         header.raster.bands = bands.len();
         header.raster.data = RasterData::new_filled(header.raster.data_type, 0, 0.);
     }
+    // A window converted to another working type is held at once in its source type, as f64
+    // values and, unless that type is Float64 (whose values those are), in it.
+    let src_type = header.raster.data_type;
+    let converted = working.filter(|w| *w != src_type).map_or(0, |w| 8 + if w == DataType::F64 { 0 } else { w.size_bytes() });
+    let src_bytes = (src_type.size_bytes() + converted) * header.raster.bands;
     if let Some(dtype) = working {
         header.raster.data_type = dtype;
         header.raster.data = RasterData::new_filled(dtype, 0, 0.);
@@ -1789,6 +1847,7 @@ fn warp_reader_selected(
     let n = grid.width * grid.height;
     let t = p.transformer(0)?;
     let (mut ctx, chunks, mut storage) = p.context(0, &t, o);
+    check_sum_chunks(o, &chunks, src_bytes)?;
     let nodata = p.src_nodata(0, o);
     if working.is_some() && nodata.iter().any(Option::is_some) {
         storage.avoid_nodata = Some(bands == 1 || !unified_sink);
@@ -1893,11 +1952,23 @@ pub fn warp_sources(sources: &mut [&mut dyn WarpSource], o: &WarpOptions) -> Res
     let info = sources.iter_mut().map(|s| s.info()).collect::<Result<Vec<_>>>()?;
     let refs: Vec<_> = info.iter().map(|s| &s.raster).collect();
     let mut p = Plan::new(&refs, o)?;
+    let overviews = (0..sources.len()).map(|k| p.select_overview(k, &info[k].overviews, o)).collect::<Result<Vec<_>>>()?;
+    if o.resampling == Resampling::Sum {
+        // Every source is read whole, and an output pixel's shares can cover a chunk's window.
+        let (mut need, mut window) = (0u64, 0);
+        for (k, s) in info.iter().enumerate() {
+            let (grid, raster) = (p.srcs[k].grid, &s.raster.raster);
+            let pixels = grid.width as u64 * grid.height as u64;
+            need = need.saturating_add(pixels.saturating_mul((raster.data_type.size_bytes() * raster.bands) as u64));
+            let t = p.transformer(k)?;
+            window = window.max(p.context(k, &t, o).1.iter().map(|c| c.sw as u64 * c.sh as u64).max().unwrap_or(0));
+        }
+        check_sum_budget(need.saturating_add(sum_estimate(window, 0)))?;
+    }
     let mut data = Vec::with_capacity(sources.len());
     let mut masks = Vec::with_capacity(sources.len());
     for (k, source) in sources.iter_mut().enumerate() {
-        let overview = p.select_overview(k, &info[k].overviews, o)?;
-        let grid = p.srcs[k].grid;
+        let (overview, grid) = (overviews[k], p.srcs[k].grid);
         data.push(source.read_window(crate::Window::full(grid.width, grid.height), &crate::WindowOptions { overview, bands: Vec::new() })?);
         masks.push(source_mask(*source, crate::Window::full(grid.width, grid.height), overview)?);
     }
@@ -2010,6 +2081,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     let w = grid.width;
     let t = p.transformer(0)?;
     let (mut ctx, chunks, mut storage) = p.context(0, &t, o);
+    check_sum_chunks(o, &chunks, header.raster.data_type.size_bytes() * header.raster.bands)?;
     if src.has_mask() {
         ctx.global_validity = true;
         storage.src_masked = true;
@@ -3282,8 +3354,9 @@ impl WarpContext<'_> {
     /// output pixels tile the source and, where they cover it whole, keep its total up to
     /// rounding: floating-point rounding in a floating-point output, and in an integer one the
     /// rounding of each pixel to a whole number and its clamping to the type's range. The source
-    /// is the level the warp reads: from an overview it chose, the total is the overview's, not
-    /// the full resolution's. A pixel that overlaps no valid source pixel is left as it is.
+    /// is the full resolution unless the warp is given a level; the total is then the sum of that
+    /// level's pixels (a `sum` takes no overview by itself). A pixel that overlaps no valid source
+    /// pixel is left as it is.
     fn warp_sum_row<T: crate::pixel::Pixel>(
         &self,
         c: &Chunk,
@@ -4973,6 +5046,49 @@ mod tests {
                 assert_eq!(differ, 0, "error threshold {error_threshold}, {memory_limit} bytes");
             }
         }
+    }
+
+    /// A `sum` reads the full resolution of a source with overviews unless a level is given, in a
+    /// lazy warp, a warp of several sources, a streamed warp and a serialized warped VRT: an
+    /// overview has one pixel per block of the source's pixels, so its sum is a fraction of the
+    /// source's total. `average` still reads the overview the automatic choice gives.
+    #[test]
+    fn sum_reads_the_full_resolution_of_a_source_with_overviews_unless_a_level_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        // `n` x `n` pixels of `f`, with overviews at the factors `levels`.
+        let write = |name: &str, n: usize, levels: Vec<usize>, resampling: &str, f: fn(usize, usize) -> f64| {
+            let path = dir.path().join(name).to_str().unwrap().to_string();
+            let ds = raster(n, n, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, f);
+            let o = crate::RasterWriteOptions { overviews: levels, overview_resampling: Some(resampling.into()), ..Default::default() };
+            crate::write_raster_dataset(&ds, &path, &o).unwrap();
+            path
+        };
+        let ones = write("ones.tif", 4, vec![2], "average", |_, _| 1.0);
+        let deep = write("deep.tif", 8, vec![2, 4], "average", |_, _| 1.0);
+        let ramp = write("ramp.tif", 4, vec![2], "nearest", |c, r| (c + 4 * r) as f64);
+        // The 2 x 2 output, the same through every path that reads the source by window.
+        let warped = |path: &str, resampling: Resampling, overview: OverviewSelection| -> Vec<f64> {
+            let o = WarpOptions { size: Some((2, 2)), resampling, overview, output_type: Some(DataType::F64), ..Default::default() };
+            let lazy = warp_lazy(&mut crate::open_raster_lazy(path).unwrap(), &o).unwrap().raster.data.to_f64_vec();
+            let many = warp_paths(&[path.into(), path.into()], &o).unwrap().raster.data.to_f64_vec();
+            assert_eq!(many, lazy, "{path}, {resampling:?}, {overview:?}: several sources");
+            for name in ["streamed.tif", "serialized.vrt"] {
+                let out = dir.path().join(name).to_str().unwrap().to_string();
+                warp_to_path(&[path.into()], &o, &out, &Default::default()).unwrap();
+                let read = crate::open_raster_lazy(&out).unwrap().read().unwrap().raster.data.to_f64_vec();
+                assert_eq!(read, lazy, "{path}, {resampling:?}, {overview:?}: {name}");
+            }
+            lazy
+        };
+        let total = |path: &str, overview| warped(path, Resampling::Sum, overview).iter().sum::<f64>();
+        assert_eq!(total(&ones, OverviewSelection::Auto), 16.0);
+        assert_eq!(total(&ones, OverviewSelection::None), 16.0);
+        assert_eq!(total(&ones, OverviewSelection::Level(0)), 4.0);
+        assert_eq!(total(&deep, OverviewSelection::AutoOffset(1)), 64.0);
+        assert_eq!(total(&deep, OverviewSelection::Level(0)), 16.0);
+        let average = |overview| warped(&ramp, Resampling::Average, overview);
+        assert_eq!(average(OverviewSelection::Auto), average(OverviewSelection::Level(0)));
+        assert_ne!(average(OverviewSelection::Auto), average(OverviewSelection::None));
     }
 
     #[test]

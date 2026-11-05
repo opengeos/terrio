@@ -4,6 +4,12 @@ import numpy as np
 import pytest
 
 import terrio
+import terrio.rio
+from terrio.rio.control import GroundControlPoint
+from terrio.rio.enums import Resampling
+from terrio.rio.transform import from_origin
+from terrio.rio.vrt import WarpedVRT
+from terrio.rio.warp import reproject
 
 GT = (0.0, 1.0, 0.0, 32.0, 0.0, -1.0)
 
@@ -48,6 +54,183 @@ def test_finer_auto_and_explicit_bounds(pyramid):
     np.testing.assert_array_equal(cropped.read(1), expected)
     with pytest.raises(terrio.InvalidArgumentError):
         terrio.warp(lazy, overview="invalid")
+
+
+@pytest.mark.parametrize(
+    ("mode", "total"), [(None, 16.0), ("AUTO", 16.0), ("NONE", 16.0), (0, 4.0)]
+)
+def test_sum_reads_full_resolution_unless_a_level_is_given(tmp_path, mode, total):
+    # The overview has one pixel per 2-by-2 block: its sum is a quarter of the total.
+    path = tmp_path / "ones.tif"
+    terrio.Raster.from_array(
+        np.ones((4, 4), "float32"), (0.0, 1.0, 0.0, 4.0, 0.0, -1.0), crs="EPSG:3857"
+    ).write(str(path), overviews=[2], overview_resampling="average")
+    lazy = terrio.open_raster(str(path), lazy=True)
+    for src in [str(path), lazy]:
+        out = terrio.warp(src, ts=(2, 2), resampling="sum", ot="Float64", overview=mode)
+        assert out.read(1).sum() == total
+
+
+def test_reduced_reads_of_a_whole_sum_warped_vrt_read_full_resolution(tmp_path):
+    # An implicit overview of the VRT has one pixel per block: its sum would be a fraction.
+    gt = (0.0, 1.0, 0.0, 8.0, 0.0, -1.0)
+    ones, ramp = tmp_path / "ones.tif", tmp_path / "ramp.tif"
+    terrio.Raster.from_array(np.ones((8, 8), "float32"), gt, crs="EPSG:3857").write(
+        str(ones), overviews=[2, 4], overview_resampling="average"
+    )
+    values = np.add.outer(np.arange(8) * 8, np.arange(8)).astype("float32")
+    terrio.Raster.from_array(values, gt, crs="EPSG:3857").write(
+        str(ramp), overviews=[2, 4], overview_resampling="nearest"
+    )
+    with terrio.rio.open(str(ones)) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
+        np.testing.assert_array_equal(vrt.read(1), np.ones((8, 8)))
+        np.testing.assert_array_equal(vrt.read(1, out_shape=(4, 4)), np.full((4, 4), 4.0))
+        np.testing.assert_array_equal(vrt.read(1, out_shape=(2, 2)), np.full((2, 2), 16.0))
+        np.testing.assert_array_equal(vrt.read(out_shape=(1, 2, 2)), np.full((1, 2, 2), 16.0))
+    # `average` still reads the implicit overview, warped from the source's own overview.
+    with terrio.rio.open(str(ramp)) as src, WarpedVRT(src, resampling=Resampling.average) as vrt:
+        reduced = vrt.read(1, out_shape=(2, 2))
+    with terrio.rio.open(str(ramp), overview_level=1) as overview:
+        np.testing.assert_array_equal(reduced, overview.read(1))
+
+
+@pytest.mark.parametrize("overviews", [[2, 4], None])
+def test_a_reduced_read_of_any_bands_of_a_sum_warped_vrt_reads_full_resolution(tmp_path, overviews):
+    # A reduced read of the whole grid is warped from the full resolution whichever bands it
+    # reads: one band, a repeated band or every band, with or without overviews.
+    path = str(tmp_path / "ones.tif")
+    raster = terrio.Raster.from_array(
+        np.ones((2, 8, 8), "float32"), (0.0, 1.0, 0.0, 8.0, 0.0, -1.0), crs="EPSG:3857"
+    )
+    if overviews:
+        raster.write(path, overviews=overviews, overview_resampling="average")
+    else:
+        raster.write(path)
+    with terrio.rio.open(path) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
+        for bands in ([1], [1, 1], [2], [2, 1]):
+            read = vrt.read(bands, out_shape=(len(bands), 4, 4))
+            np.testing.assert_array_equal(read, np.full((len(bands), 4, 4), 4.0), str(bands))
+
+
+def test_a_reduced_read_of_a_gcp_sum_warped_vrt_keeps_the_total(tmp_path):
+    """A `sum` VRT georeferenced by GCPs keeps its total when its whole grid is read reduced.
+
+    The total of the read is that of the full-resolution read, up to the rounding of each output
+    pixel to 32 bits (a relative 1e-6).
+    """
+    width, height = 64, 48
+    path = str(tmp_path / "gcps.tif")
+    gcps = [
+        GroundControlPoint(row=r, col=c, x=500000 + c * 10, y=4100000 - r * 10)
+        for r in (0, height)
+        for c in (0, width)
+    ]
+    profile = dict(width=width, height=height, count=1, dtype="float32", gcps=gcps)
+    with terrio.rio.open(path, "w", driver="GTiff", crs="EPSG:32611", **profile) as dst:
+        dst.write(np.add.outer(np.arange(height) * width, np.arange(width)).astype("float32")[None])
+    with terrio.rio.open(path, "r+") as dst:
+        dst.build_overviews([2, 4], Resampling.average)
+    with terrio.rio.open(path) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
+        full = vrt.read(1).astype("float64").sum()
+        reduced = vrt.read(1, out_shape=(vrt.height // 4, vrt.width // 4)).astype("float64").sum()
+    assert reduced == pytest.approx(full, rel=1e-6)
+
+
+def test_a_sum_over_its_memory_budget_is_refused_before_its_source_is_read(tmp_path, monkeypatch):
+    # 32 x 32 Float32 ones with an overview at 4. A `sum` holds 4 bytes per source pixel and 8 of
+    # shares: 12,288 bytes at full resolution; two sources, both whole and the shares, 16,384.
+    path = str(tmp_path / "ones.tif")
+    terrio.Raster.from_array(np.ones((32, 32), "float32"), GT, crs="EPSG:3857").write(
+        path, overviews=[4], overview_resampling="average"
+    )
+    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "10000")
+    refused = (
+        r"TERRIO_WARP_SUM_MAX_BYTES=10000: sum an overview level instead, with `--overview n` "
+        r"\(`overview=n` for `terrio\.warp`, or a source opened with `overview_level=n` in "
+        r"`terrio\.rio`\)"
+    )
+    with pytest.raises(terrio.ResourceLimitError, match=refused):
+        terrio.warp(path, ts=(1, 1), resampling="sum")
+    with pytest.raises(terrio.ResourceLimitError, match=refused):
+        terrio.warp([path, path], ts=(1, 1), resampling="sum")
+    with terrio.rio.open(path) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
+        with pytest.raises(terrio.ResourceLimitError, match=refused):
+            vrt.read(1, out_shape=(1, 1))
+    one = {"dst_transform": from_origin(0, 32, 32, 32), "dst_crs": "EPSG:3857"}
+    with terrio.rio.open(path) as src:
+        with pytest.raises(terrio.ResourceLimitError, match=refused):
+            reproject(terrio.rio.band(src, 1), np.zeros((1, 1)), resampling=Resampling.sum, **one)
+    reprojected_level = np.zeros((1, 1))
+    with terrio.rio.open(path, overview_level=0) as src:
+        with WarpedVRT(src, resampling=Resampling.sum) as vrt:
+            assert vrt.read(1, out_shape=(1, 1)).sum() == 64.0
+        reproject(terrio.rio.band(src, 1), reprojected_level, resampling=Resampling.sum, **one)
+    assert reprojected_level.sum() == 64.0
+    level = terrio.warp(path, ts=(1, 1), resampling="sum", ot="Float64", overview=0)
+    assert level.read(1).sum() == 64.0
+    average = terrio.warp(path, ts=(1, 1), resampling="average", overview="NONE")
+    assert average.read(1).sum() == 1.0
+    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "20000")
+    full = terrio.warp(path, ts=(1, 1), resampling="sum", ot="Float64")
+    assert full.read(1).sum() == 1024.0
+    with terrio.rio.open(path) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
+        assert vrt.read(1, out_shape=(1, 1)).sum() == 1024.0
+    reprojected = np.zeros((1, 1))
+    with terrio.rio.open(path) as src:
+        reproject(terrio.rio.band(src, 1), reprojected, resampling=Resampling.sum, **one)
+    assert reprojected.sum() == 1024.0
+
+
+def test_a_sum_counts_the_bytes_of_every_band(tmp_path, monkeypatch):
+    # 32 x 32 Float32 ones summed into 1 x 1. Each band holds 4 bytes per pixel and the shares 8:
+    # under 14,000 bytes one band (12,288) fits and two (16,384) do not. Two sources are held
+    # whole with the shares of one window: under 20,000, one band each (16,384) fits and two
+    # (24,576) do not.
+    one, two = str(tmp_path / "one.tif"), str(tmp_path / "two.tif")
+    terrio.Raster.from_array(np.ones((32, 32), "float32"), GT, crs="EPSG:3857").write(one)
+    terrio.Raster.from_array(np.ones((2, 32, 32), "float32"), GT, crs="EPSG:3857").write(two)
+    pixel = {"dst_transform": from_origin(0, 32, 32, 32), "dst_crs": "EPSG:3857"}
+    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "14000")
+    refused = r"about 16384 bytes .*TERRIO_WARP_SUM_MAX_BYTES=14000"
+    with pytest.raises(terrio.ResourceLimitError, match=refused):
+        terrio.warp(two, ts=(1, 1), resampling="sum")
+    assert terrio.warp(one, ts=(1, 1), resampling="sum", ot="Float64").read(1).sum() == 1024.0
+    with terrio.rio.open(two) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
+        with pytest.raises(terrio.ResourceLimitError, match=refused):
+            vrt.read(out_shape=(2, 1, 1))
+    with terrio.rio.open(one) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
+        assert vrt.read(1, out_shape=(1, 1)).sum() == 1024.0
+    reprojected = np.zeros((1, 1))
+    with terrio.rio.open(two) as src:
+        with pytest.raises(terrio.ResourceLimitError, match=refused):
+            reproject(
+                terrio.rio.band(src, [1, 2]),
+                np.zeros((2, 1, 1)),
+                resampling=Resampling.sum,
+                **pixel,
+            )
+        reproject(terrio.rio.band(src, 1), reprojected, resampling=Resampling.sum, **pixel)
+    assert reprojected.sum() == 1024.0
+    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "20000")
+    with pytest.raises(terrio.ResourceLimitError, match=r"about 24576 bytes"):
+        terrio.warp([two, two], ts=(1, 1), resampling="sum")
+    mosaic = terrio.warp([one, one], ts=(1, 1), resampling="sum", ot="Float64")
+    assert mosaic.read(1).sum() == 1024.0
+
+
+def test_a_sum_counts_the_working_type_of_a_warped_vrt(tmp_path, monkeypatch):
+    # Two bands of 32 x 32 Float32 ones read through a `WarpedVRT` summed into 1 x 1, under 20,000
+    # bytes. Cast to a float64 working type, a window is held in both types at once: 4 + 8 bytes
+    # per band and pixel, 32,768 with the shares. In float32 it holds 4 per band (16,384) and fits.
+    path = str(tmp_path / "two.tif")
+    terrio.Raster.from_array(np.ones((2, 32, 32), "float32"), GT, crs="EPSG:3857").write(path)
+    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "20000")
+    with terrio.rio.open(path) as src:
+        with WarpedVRT(src, resampling=Resampling.sum, dtype="float64") as vrt:
+            with pytest.raises(terrio.ResourceLimitError, match=r"about 32768 bytes"):
+                vrt.read(out_shape=(2, 1, 1))
+        with WarpedVRT(src, resampling=Resampling.sum) as vrt:
+            assert vrt.read(out_shape=(2, 1, 1)).sum(axis=(1, 2)).tolist() == [1024.0, 1024.0]
 
 
 @pytest.mark.parametrize("mode", [True, False])

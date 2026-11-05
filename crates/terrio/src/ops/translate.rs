@@ -323,6 +323,179 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
 ///
 /// As [`translate`].
 pub fn translate_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelection) -> Result<RasterDataset> {
+    match plan_lazy(src, o, overview)? {
+        Planned::Translated(ds) => Ok(ds),
+        Planned::Read(read) => read.rows(src, 0, read.read.size.1),
+    }
+}
+
+/// [`translate_lazy`], written to `path` as [`crate::write_raster_dataset`] writes its output
+/// with `options`, the same file. An output read by window and written as a GeoTIFF or a COG is
+/// read, converted and written a strip of rows at a time, so that neither it nor the source is
+/// held whole (`gdal_translate` of GDAL 3.13.3 copies its output in chunks too), from a source
+/// whose windows read only what they cover ([`LazyRaster::reads_by_window`]), when it copies a window of the
+/// source or is resampled by nearest neighbour or a bilinear, cubic or cubic spline kernel from
+/// the overview `RasterIO` chooses (`OverviewSelection::Auto`). Other outputs (resampled by
+/// average, RMS, mode or Lanczos, from a level read alone, of complex bands or of another
+/// format), those that [`translate_lazy`] translates from the source read whole, and outputs
+/// that replace one of the source's files are written from the output translated whole.
+///
+/// # Errors
+///
+/// As [`translate_lazy`] and [`crate::write_raster_dataset`].
+pub fn translate_lazy_to_file(
+    src: &mut LazyRaster,
+    o: &TranslateOptions,
+    overview: OverviewSelection,
+    path: &str,
+    options: &crate::RasterWriteOptions,
+) -> Result<()> {
+    write_lazy(src, o, overview, path, options, None)
+}
+
+/// [`translate_lazy_to_file`], in strips of `rows_per_strip` rows (by default, about 64 MB).
+fn write_lazy(
+    src: &mut LazyRaster,
+    o: &TranslateOptions,
+    overview: OverviewSelection,
+    path: &str,
+    options: &crate::RasterWriteOptions,
+    rows_per_strip: Option<usize>,
+) -> Result<()> {
+    let read = match plan_lazy(src, o, overview)? {
+        Planned::Translated(ds) => return crate::write_raster_dataset(&ds, path, options),
+        Planned::Read(read) => read,
+    };
+    let (ow, oh) = read.read.size;
+    let driver = options.driver.or_else(|| crate::formats::RasterDriver::for_extension(path));
+    let streams = matches!(driver, Some(crate::formats::RasterDriver::GTiff | crate::formats::RasterDriver::Cog))
+        && !src.is_complex()
+        && src.input_paths().is_ok_and(|inputs| !super::strips::overwrites(path, &inputs));
+    if !streams || !read.by_strips {
+        return crate::write_raster_dataset(&read.rows(src, 0, oh)?, path, options);
+    }
+    // About 64 MB of values per strip, counted as the 8-byte values sources such as VRTs read in;
+    // a copy's strips are rows of the source's blocks (a VRT's sources'), so that each is read
+    // once, when the window starts on one and a row of blocks holds at most 2 GB of values (512 rows
+    // of a 98304-wide RGB mosaic are 1.2 GB); taller rows of blocks are split.
+    let start = read.read.window.map_or(0.0, |w| w.1);
+    let block = if read.copy { src.row_alignment().filter(|h| start % *h as f64 == 0.0) } else { None };
+    let block = super::strips::bounded_alignment(ow, read.read.bands.len(), 8, block);
+    let rows = rows_per_strip.unwrap_or_else(|| super::strips::strip_rows(ow, read.read.bands.len(), 8, block)).clamp(1, oh);
+    let mut first = read.rows(src, 0, rows)?;
+    let data = std::mem::replace(&mut first.raster.data, RasterData::new_filled(first.raster.data_type, 0, 0.0));
+    let header = read.header(src, first, oh);
+    let mut out = super::strips::StripWriter::create(&header, path, options)?;
+    out.write(data, rows)?;
+    let rest = (oh - rows).div_ceil(rows);
+    super::strips::pipelined(
+        rest,
+        |i| {
+            let y = (i + 1) * rows;
+            let h = rows.min(oh - y);
+            Ok((read.rows(src, y, h)?.raster.data, h))
+        },
+        |_, (data, h)| out.write(data, h),
+    )?;
+    out.finish()
+}
+
+/// How [`translate_lazy`] makes its output.
+enum Planned {
+    /// Translated from the source (or the level) read whole.
+    Translated(RasterDataset),
+    /// Read by window.
+    Read(LazyRead),
+}
+
+/// The output of [`translate_lazy`] read by window: resampled from the source, then converted.
+struct LazyRead {
+    /// The whole output's read.
+    read: ResampledReadOptions,
+    /// Whether the bands are read together (see [`translate_lazy`]).
+    together: bool,
+    /// The output's geotransform, before `-a_ullr`.
+    gt: [f64; 6],
+    /// The source's GCPs on the output's grid.
+    gcps: Vec<crate::Gcp>,
+    /// Whether the read is the whole image at full resolution, which keeps band statistics.
+    whole: bool,
+    /// Whether a strip of the output's rows read alone holds the values the whole read gives
+    /// them, from a source whose windows are its whole read's ([`LazyRaster::reads_by_window`]):
+    /// an output that copies a window of the source, or one resampled by nearest
+    /// neighbour or a bilinear, cubic or cubic spline kernel from the overview `RasterIO`
+    /// chooses. Other resamplings (average, RMS, mode, Lanczos) of a strip starting within a
+    /// source row differ from the whole read's, as may a level read alone.
+    by_strips: bool,
+    /// Whether the output copies a window of the source, pixel for pixel.
+    copy: bool,
+    /// The conversion of the values read: type, nodata and georeferencing.
+    values: TranslateOptions,
+}
+
+impl LazyRead {
+    /// Rows `y..y + h` of the output, as the whole output holds them: the window of the source
+    /// they cover read into them, as GDAL reads a chunk of a virtual dataset's rows. The rows of
+    /// the whole output are its whole read.
+    fn rows(&self, src: &mut LazyRaster, y: usize, h: usize) -> Result<RasterDataset> {
+        let (ow, oh) = self.read.size;
+        let read = if (y, h) == (0, oh) {
+            self.read.clone()
+        } else {
+            let window = self.read.window.map(|(wx, wy, wxs, wys)| {
+                let ry = wys / oh as f64;
+                (wx, wy + y as f64 * ry, wxs, h as f64 * ry)
+            });
+            ResampledReadOptions { window, size: (ow, h), ..self.read.clone() }
+        };
+        let mut resized = if self.together { src.read_resampled(&read)? } else { src.read_resampled_by_band(&read)? };
+        let mut gt = self.gt;
+        gt[0] += y as f64 * gt[2];
+        gt[3] += y as f64 * gt[5];
+        resized.set_geo_transform(gt);
+        resized.gcps = self
+            .gcps
+            .iter()
+            .cloned()
+            .map(|mut g| {
+                g.line -= y as f64;
+                g
+            })
+            .collect();
+        translate(&resized, &self.values)
+    }
+
+    /// The header of the whole output, of `oh` rows, from `first`, its first rows (their pixels
+    /// taken out): their description, with the whole output's georeferencing, GCPs and band
+    /// statistics.
+    fn header(&self, src: &LazyRaster, first: RasterDataset, oh: usize) -> RasterDataset {
+        let mut header = first;
+        header.raster.rows = oh;
+        let ow = self.read.size.0;
+        let gt = match self.values.assign_ullr {
+            Some((ulx, uly, lrx, lry)) => [ulx, (lrx - ulx) / ow as f64, 0.0, uly, 0.0, (lry - uly) / oh as f64],
+            None => self.gt,
+        };
+        header.set_geo_transform(gt);
+        // `-a_ullr` drops the GCPs, as `translate` does.
+        if self.values.assign_ullr.is_none() {
+            header.gcps = self.gcps.clone();
+        }
+        // A whole read keeps the source's band statistics, unless the values change.
+        if self.whole {
+            header.band_metadata = src.bands_metadata(&self.read.bands);
+            if self.values.output_type.is_some_and(|t| t != src.data_type()) || self.values.assign_nodata.is_some() {
+                for band in &mut header.band_metadata {
+                    band.items.retain(|(key, _)| !key.starts_with("STATISTICS_"));
+                }
+            }
+        }
+        header
+    }
+}
+
+/// Plans [`translate_lazy`]: the output translated from the source read whole, or its read.
+fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelection) -> Result<Planned> {
     let header = src.header();
     let full = geometry(&header, o)?;
     let count = header.raster.bands;
@@ -441,7 +614,8 @@ pub fn translate_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: Over
                 Some(ds) => translate(ds, o),
                 None => translate(&src.read()?, o),
             },
-        };
+        }
+        .map(Planned::Translated);
     }
     // The request in full-resolution pixels, which `read_resampled` scales to a level read
     // alone as `gdal_translate -ovr` does, rounding it there as the VRT source does.
@@ -458,9 +632,7 @@ pub fn translate_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: Over
     // gdal_translate's virtual dataset reads its bands together when they are the source's
     // first ones in order (`VRTDataset::CheckCompatibleForDatasetIO`).
     let together = bands.iter().enumerate().all(|(i, &b)| b == i + 1);
-    let mut resized = if together { src.read_resampled(&read)? } else { src.read_resampled_by_band(&read)? };
-    resized.set_geo_transform(geom.gt);
-    resized.gcps = level_header
+    let gcps = level_header
         .gcps
         .iter()
         .cloned()
@@ -470,6 +642,21 @@ pub fn translate_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: Over
             g
         })
         .collect();
+    // As `LazyRaster::resampled_dataset` tells a read of the whole image at full resolution.
+    let (w, h) = (src.width() as f64, src.height() as f64);
+    let whole = level.is_none() && read.window == Some((0.0, 0.0, w, h)) && (ow as f64, oh as f64) == (w, h);
+    let copy = level.is_none()
+        && read
+            .window
+            .is_some_and(|(wx, wy, wxs, wys)| [wx, wy, wxs, wys].iter().all(|v| v.fract() == 0.0) && (wxs, wys) == (ow as f64, oh as f64));
+    // A level read alone (`--overview NONE` or a level) rounds each request's window to whole
+    // pixels within 0.001 (`fixed_request`): a strip's own origin may round off the whole
+    // output's sampling grid.
+    // A source whose windows are not its whole read's (a VRT of resampled sources) is read whole.
+    let by_strips = src.reads_by_window()
+        && (copy
+            || (fixed.is_none()
+                && matches!(resampling, Resampling::Nearest | Resampling::Bilinear | Resampling::Cubic | Resampling::CubicSpline)));
     let values = TranslateOptions {
         output_type: o.output_type,
         assign_nodata: o.assign_nodata,
@@ -477,7 +664,7 @@ pub fn translate_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: Over
         assign_ullr: o.assign_ullr,
         ..Default::default()
     };
-    translate(&resized, &values)
+    Ok(Planned::Read(LazyRead { read, together, gt: geom.gt, gcps, whole, by_strips, copy, values }))
 }
 
 /// A value within 0.001 of a whole number, rounded to it, as `gdal_translate`'s VRT source rounds
@@ -560,6 +747,129 @@ mod tests {
         let n = cols * rows;
         let data = (0..2 * n).map(|i| (i % n) as f64 + (i / n) as f64 * 1000.0).collect();
         RasterDataset::new(Raster::from_data(cfg, data).unwrap(), false)
+    }
+
+    /// A translate written a few rows at a time writes the file the whole translate writes:
+    /// strips resampled from a window, of a level, retyped, with new nodata or bounds, of some
+    /// bands, from a GeoTIFF (with overviews and a mask, or with band statistics) and a VRT.
+    #[test]
+    fn translate_written_by_strips_is_the_whole_translate() {
+        use crate::formats::RasterDriver;
+        let dir = tempfile::tempdir().unwrap();
+        let at = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
+        let rgb = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/resampled_reads/rgb_mask.tif").to_string();
+        let mut stats = ds(37, 29);
+        for band in &mut stats.band_metadata {
+            band.items = vec![("STATISTICS_MAXIMUM".into(), "1072".into()), ("STATISTICS_MINIMUM".into(), "0".into())];
+        }
+        let stats_tif = at("stats.tif");
+        crate::write_raster_dataset(&stats, &stats_tif, &crate::RasterWriteOptions::default()).unwrap();
+        let vrt = at("rgb.vrt");
+        let band = |b: usize| {
+            format!(
+                "<VRTRasterBand dataType=\"Byte\" band=\"{b}\"><SimpleSource><SourceFilename relativeToVRT=\"0\">{rgb}</SourceFilename>\
+                 <SourceBand>{b}</SourceBand><SrcRect xOff=\"0\" yOff=\"0\" xSize=\"64\" ySize=\"48\"/>\
+                 <DstRect xOff=\"0\" yOff=\"0\" xSize=\"64\" ySize=\"48\"/></SimpleSource></VRTRasterBand>"
+            )
+        };
+        std::fs::write(
+            &vrt,
+            format!(
+                "<VRTDataset rasterXSize=\"64\" rasterYSize=\"48\"><GeoTransform>500000, 30, 0, 4100000, 0, -30</GeoTransform>{}</VRTDataset>",
+                (1..=3).map(band).collect::<String>()
+            ),
+        )
+        .unwrap();
+        // A VRT downsampling its source by Lanczos: its windows are not its whole read's.
+        let lanczos = at("lanczos.vrt");
+        std::fs::write(
+            &lanczos,
+            format!(
+                "<VRTDataset rasterXSize=\"20\" rasterYSize=\"15\"><VRTRasterBand dataType=\"Byte\" band=\"1\">\
+                 <ComplexSource resampling=\"lanczos\"><SourceFilename relativeToVRT=\"0\">{rgb}</SourceFilename>\
+                 <SourceBand>1</SourceBand><SrcRect xOff=\"0\" yOff=\"0\" xSize=\"64\" ySize=\"48\"/>\
+                 <DstRect xOff=\"0\" yOff=\"0\" xSize=\"20\" ySize=\"15\"/></ComplexSource></VRTRasterBand></VRTDataset>"
+            ),
+        )
+        .unwrap();
+        let resized =
+            |w, h, m| TranslateOptions { out_size: Some((Size::Pixels(w), Size::Pixels(h))), resampling: Some(m), ..Default::default() };
+        let cases: Vec<(&str, TranslateOptions, OverviewSelection)> = vec![
+            (&rgb, TranslateOptions::default(), OverviewSelection::Auto),
+            (&vrt, TranslateOptions::default(), OverviewSelection::Auto),
+            (&stats_tif, TranslateOptions::default(), OverviewSelection::Auto),
+            (&stats_tif, TranslateOptions { output_type: Some(DataType::I16), ..Default::default() }, OverviewSelection::Auto),
+            (
+                &stats_tif,
+                TranslateOptions { assign_nodata: Some(Some(5.0)), bands: vec![2], ..Default::default() },
+                OverviewSelection::Auto,
+            ),
+            (
+                &rgb,
+                TranslateOptions { src_win: Some((3.0, 5.0, 54.0, 38.0)), ..resized(13, 9, Resampling::Bilinear) },
+                OverviewSelection::Auto,
+            ),
+            (
+                &vrt,
+                TranslateOptions { src_win: Some((3.0, 5.0, 54.0, 38.0)), ..resized(25, 17, Resampling::Cubic) },
+                OverviewSelection::Auto,
+            ),
+            // Read whole: an average of strips starting within source rows is not the whole's.
+            (&rgb, resized(41, 31, Resampling::Average), OverviewSelection::None),
+            (&rgb, resized(13, 9, Resampling::Lanczos), OverviewSelection::Auto),
+            (&rgb, resized(13, 9, Resampling::Bilinear), OverviewSelection::Auto),
+            (&rgb, resized(20, 15, Resampling::CubicSpline), OverviewSelection::Auto),
+            (&rgb, resized(41, 31, Resampling::Nearest), OverviewSelection::None),
+            (&rgb, TranslateOptions { src_win: Some((8.0, 4.0, 40.0, 32.0)), ..Default::default() }, OverviewSelection::Level(1)),
+            (
+                &vrt,
+                TranslateOptions { bands: vec![3, 1], assign_ullr: Some((0.0, 48.0, 64.0, 0.0)), ..Default::default() },
+                OverviewSelection::Auto,
+            ),
+            (
+                &stats_tif,
+                TranslateOptions { resolution: Some((7.0, 7.0)), resampling: Some(Resampling::Bilinear), ..Default::default() },
+                OverviewSelection::Auto,
+            ),
+            // Read whole: the VRT's windows are not its whole read's.
+            (&lanczos, TranslateOptions::default(), OverviewSelection::Auto),
+        ];
+        // Every case is written by strips but the average and the Lanczos resampling, the levels
+        // read alone (`NONE` or a level) that are not copies, and the Lanczos VRT.
+        for (k, (input, o, overview)) in cases.iter().enumerate() {
+            let mut src = crate::open_raster_lazy(input).unwrap();
+            let by_strips = matches!(plan_lazy(&mut src, o, *overview).unwrap(), Planned::Read(r) if r.by_strips);
+            let resampling = o.resampling.unwrap_or_default();
+            let expected = !matches!(resampling, Resampling::Average | Resampling::Lanczos)
+                && *overview == OverviewSelection::Auto
+                && *input != lanczos.as_str();
+            assert_eq!(by_strips, expected, "case {k}: {o:?}");
+        }
+        for (k, (input, o, overview)) in cases.iter().enumerate() {
+            for (driver, ext) in [(RasterDriver::Cog, "cog.tif"), (RasterDriver::GTiff, "tif")] {
+                let options = crate::RasterWriteOptions { driver: Some(driver), compression: Some("DEFLATE".into()), ..Default::default() };
+                let (whole, strips) = (at(&format!("{k}_whole.{ext}")), at(&format!("{k}_strips.{ext}")));
+                let mut src = crate::open_raster_lazy(input).unwrap();
+                crate::write_raster_dataset(&translate_lazy(&mut src, o, *overview).unwrap(), &whole, &options).unwrap();
+                write_lazy(&mut src, o, *overview, &strips, &options, Some(3)).unwrap();
+                let case = format!("case {k} ({driver:?}): {o:?}");
+                if driver == RasterDriver::Cog {
+                    // The same file, byte for byte.
+                    assert!(std::fs::read(&whole).unwrap() == std::fs::read(&strips).unwrap(), "{case}");
+                    continue;
+                }
+                // A GeoTIFF written by strips has its directory at its end: the same raster.
+                let (a, b) = (crate::open_raster(&whole).unwrap(), crate::open_raster(&strips).unwrap());
+                assert_eq!(a.raster.data.data_type(), b.raster.data.data_type(), "{case}");
+                assert_eq!(a.raster.data.to_f64_vec(), b.raster.data.to_f64_vec(), "{case}");
+                assert_eq!((a.raster.cols, a.raster.rows, a.raster.bands), (b.raster.cols, b.raster.rows, b.raster.bands), "{case}");
+                assert_eq!(a.geo_transform(), b.geo_transform(), "{case}");
+                assert_eq!(a.band_nodata, b.band_nodata, "{case}");
+                assert_eq!(a.band_metadata, b.band_metadata, "{case}");
+                assert_eq!(a.raster.metadata, b.raster.metadata, "{case}");
+                assert_eq!(a.crs().to_wkt(), b.crs().to_wkt(), "{case}");
+            }
+        }
     }
 
     #[test]
