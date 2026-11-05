@@ -332,18 +332,21 @@ fn snapshots_reject_conflicting_dimension_declarations() {
     }
 }
 
+fn user_defined_fixture() -> String {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_user_defined/user_defined_attrs.nc");
+    path.to_str().unwrap().to_owned()
+}
+
 /// Compound, enum and vlen attributes (`tests/data/netcdf_user_defined`, from its CDL by
 /// `ncgen -4`) as GDAL 3.13.3 reports them: `gdalmdiminfo` prints a compound as an object of its
 /// fields, an enum as its integer and a vlen as `null`; `gdalinfo` keeps a compound or vlen key
-/// with an empty value. Known difference: netcdf-reader decodes an enum attribute as its base
-/// integers, so terrio's metadata reads `z#flag=1` where `gdalinfo` leaves it empty.
+/// with an empty value.
 #[cfg(feature = "netcdf-hdf5")]
 #[test]
 fn netcdf_user_defined_attributes_match_gdal() {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_user_defined/user_defined_attrs.nc");
-    let path = path.to_str().unwrap();
+    let path = user_defined_fixture();
 
-    let ds = terrio::multidim::open(path).unwrap();
+    let ds = terrio::multidim::open(&path).unwrap();
     assert_eq!(ds.root.attributes["title"], json!("user-defined attributes"));
     assert_eq!(ds.root.attributes["origin"], json!({"id": 1, "elevation": -3.25}));
     let z = ds.array("/z").unwrap();
@@ -352,12 +355,22 @@ fn netcdf_user_defined_attributes_match_gdal() {
     assert_eq!(z.info.attributes["counts"], serde_json::Value::Null);
     assert_eq!(z.info.attributes["units"], json!("m"));
 
-    let raster = terrio::open_raster(path).unwrap();
+    let raster = terrio::open_raster(&path).unwrap();
     let meta = |k: &str| raster.raster.metadata.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
     assert_eq!(meta("NC_GLOBAL#origin"), Some(""));
     assert_eq!(meta("NC_GLOBAL#title"), Some("user-defined attributes"));
     assert_eq!(meta("z#station"), Some(""));
-    assert_eq!(meta("z#flag"), Some("1"));
     assert_eq!(meta("z#counts"), Some(""));
     assert_eq!(meta("z#units"), Some("m"));
+}
+
+/// Known difference from GDAL 3.13.3: `gdalinfo` leaves an enum attribute empty (`z#flag=`), but
+/// netcdf-reader decodes it as its base integers, so terrio's metadata reads `z#flag=1`. When
+/// netcdf-reader reports enum attributes as user-defined, this test fails; expect `""` then.
+#[cfg(feature = "netcdf-hdf5")]
+#[test]
+fn netcdf_enum_attribute_metadata_differs_from_gdal() {
+    let raster = terrio::open_raster(&user_defined_fixture()).unwrap();
+    let flag = raster.raster.metadata.iter().find(|(k, _)| k == "z#flag").map(|(_, v)| v.as_str());
+    assert_eq!(flag, Some("1"));
 }
