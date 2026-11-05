@@ -332,15 +332,15 @@ fn snapshots_reject_conflicting_dimension_declarations() {
     }
 }
 
-// A NetCDF-4 file written by netCDF4-python, with user-defined attributes added by h5py: `pairs`
-// on the root ({x: f64, n: i32} x 2), and on `grid` an opaque `blob`, a variable-length `counts` and
-// an enum `state`, which the reader decodes as its stored number (2).
+// Written by scripts/make_netcdf_user_defined_attributes_fixture.py. An attribute that is an enum
+// (`state`) reads as its stored number; an enum field of a compound (`kind`) as its member name.
 #[cfg(feature = "netcdf-hdf5")]
 #[test]
 fn netcdf_user_defined_attributes_read_as_json_values() {
     let file = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/netcdf_user_defined_attributes.nc");
     let opened = terrio::multidim::open(file).unwrap();
     assert_eq!(opened.root.attributes["pairs"], serde_json::json!([{ "x": 1.5, "n": 7 }, { "x": 2.5, "n": -8 }]));
+    assert_eq!(opened.root.attributes["mixed"], serde_json::json!({ "kind": "dry", "xy": [[1, 2], [3, 4]] }));
     assert_eq!(opened.root.attributes["title"], serde_json::json!("user-defined attributes"));
     let grid = opened.array("grid").unwrap();
     assert_eq!(grid.info.attributes["state"], serde_json::json!(2));
@@ -354,4 +354,6 @@ fn netcdf_user_defined_attributes_read_as_json_values() {
     assert_eq!(metadata("NC_GLOBAL#pairs"), Some(r#"[{"x":1.5,"n":7},{"x":2.5,"n":-8}]"#));
     assert_eq!(metadata("NC_GLOBAL#title"), Some("user-defined attributes"));
     assert_eq!(metadata("grid#blob"), Some("[1,2,3]"));
+    assert_eq!(metadata("grid#counts"), Some("[[1,2],[3]]"));
+    assert_eq!(metadata("grid#state"), Some("2"));
 }

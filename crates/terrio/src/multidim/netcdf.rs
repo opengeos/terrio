@@ -34,17 +34,23 @@ fn floating(value: f64) -> Value {
     }
 }
 /// A value of a user-defined attribute as JSON: a compound as an object in field order, an enum
-/// field as its member name (its number if undeclared), opaque bytes and variable-length values as
-/// lists, and an array nested by its dimensions.
+/// field of a compound as its member name (its number if undeclared), opaque bytes and
+/// variable-length values as lists, and an array nested by its dimensions. An attribute that is
+/// itself an enum does not come here: the reader decodes it as its stored integer.
 fn user_defined_value(value: &NcValue) -> Value {
-    fn nested(dims: &[u64], values: &[NcValue]) -> Value {
+    fn nested(dims: &[usize], values: &[NcValue]) -> Value {
         match dims {
             [] | [_] => Value::Array(values.iter().map(user_defined_value).collect()),
             [_, rest @ ..] => {
-                let step = rest.iter().product::<u64>().max(1) as usize;
+                let step = rest.iter().product();
                 Value::Array(values.chunks(step).map(|part| nested(rest, part)).collect())
             }
         }
+    }
+    /// The dimensions, if they describe these values and none is zero; otherwise a flat list.
+    fn shape(dims: &[u64], values: &[NcValue]) -> Vec<usize> {
+        let sizes: Option<Vec<usize>> = dims.iter().map(|&d| usize::try_from(d).ok().filter(|&d| d > 0)).collect();
+        sizes.filter(|s| s.iter().try_fold(1usize, |total, &d| total.checked_mul(d)) == Some(values.len())).unwrap_or_default()
     }
     match value {
         NcValue::Byte(x) => serde_json::json!(x),
@@ -61,11 +67,11 @@ fn user_defined_value(value: &NcValue) -> Value {
         NcValue::String(x) => Value::String(x.clone()),
         NcValue::Enum(x) => match &x.member {
             Some(member) => Value::String(member.clone()),
-            None => x.value.as_i128().map_or(Value::Null, |n| n.to_string().parse().unwrap_or(Value::Null)),
+            None => x.value.as_i128().and_then(|n| serde_json::to_value(n).ok()).unwrap_or(Value::Null),
         },
         NcValue::Opaque(x) => serde_json::json!(x),
         NcValue::Compound(fields) => Value::Object(fields.iter().map(|f| (f.name.clone(), user_defined_value(&f.value))).collect()),
-        NcValue::Array(x) => nested(&x.dims, &x.values),
+        NcValue::Array(x) => nested(&shape(&x.dims, &x.values), &x.values),
         NcValue::VLen(x) => Value::Array(x.iter().map(user_defined_value).collect()),
     }
 }
