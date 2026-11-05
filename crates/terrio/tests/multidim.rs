@@ -331,3 +331,27 @@ fn snapshots_reject_conflicting_dimension_declarations() {
         assert!(source.to_zarr_store().unwrap_err().to_string().contains("conflicting declarations for dimension"));
     }
 }
+
+// A NetCDF-4 file written by netCDF4-python, with user-defined attributes added by h5py: `pairs`
+// on the root ({x: f64, n: i32} x 2), and on `grid` an opaque `blob`, a variable-length `counts` and
+// an enum `state`, which the reader decodes as its stored number (2).
+#[cfg(feature = "netcdf-hdf5")]
+#[test]
+fn netcdf_user_defined_attributes_read_as_json_values() {
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/netcdf_user_defined_attributes.nc");
+    let opened = terrio::multidim::open(file).unwrap();
+    assert_eq!(opened.root.attributes["pairs"], serde_json::json!([{ "x": 1.5, "n": 7 }, { "x": 2.5, "n": -8 }]));
+    assert_eq!(opened.root.attributes["title"], serde_json::json!("user-defined attributes"));
+    let grid = opened.array("grid").unwrap();
+    assert_eq!(grid.info.attributes["state"], serde_json::json!(2));
+    assert_eq!(grid.info.attributes["blob"], serde_json::json!([1, 2, 3]));
+    assert_eq!(grid.info.attributes["counts"], serde_json::json!([[1, 2], [3]]));
+    assert_eq!(grid.info.attributes["units"], serde_json::json!("m"));
+    assert_eq!(grid.read().unwrap().bytes.len(), 6 * 4);
+
+    let raster = terrio::open_raster(file).unwrap().raster;
+    let metadata = |key: &str| raster.metadata.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+    assert_eq!(metadata("NC_GLOBAL#pairs"), Some(r#"[{"x":1.5,"n":7},{"x":2.5,"n":-8}]"#));
+    assert_eq!(metadata("NC_GLOBAL#title"), Some("user-defined attributes"));
+    assert_eq!(metadata("grid#blob"), Some("[1,2,3]"));
+}

@@ -1,6 +1,8 @@
 //! Metadata and typed hyperslabs shared by netCDF classic, netCDF-4 and numeric HDF5.
 use super::*;
-use netcdf_reader::{NcAttrValue, NcAttribute, NcFile, NcGroup, NcMetadataMode, NcOpenOptions, NcSliceInfo, NcSliceInfoElem, NcType};
+use netcdf_reader::{
+    NcAttrValue, NcAttribute, NcFile, NcGroup, NcMetadataMode, NcOpenOptions, NcSliceInfo, NcSliceInfoElem, NcType, NcValue,
+};
 
 fn error(e: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("multidim: {e}"))
@@ -31,6 +33,46 @@ fn floating(value: f64) -> Value {
         serde_json::json!(value)
     }
 }
+/// A value of a user-defined attribute as JSON: a compound as an object in field order, an enum
+/// field as its member name (its number if undeclared), opaque bytes and variable-length values as
+/// lists, and an array nested by its dimensions.
+fn user_defined_value(value: &NcValue) -> Value {
+    fn nested(dims: &[u64], values: &[NcValue]) -> Value {
+        match dims {
+            [] | [_] => Value::Array(values.iter().map(user_defined_value).collect()),
+            [_, rest @ ..] => {
+                let step = rest.iter().product::<u64>().max(1) as usize;
+                Value::Array(values.chunks(step).map(|part| nested(rest, part)).collect())
+            }
+        }
+    }
+    match value {
+        NcValue::Byte(x) => serde_json::json!(x),
+        NcValue::Char(x) => Value::String(char::from(*x).to_string()),
+        NcValue::Short(x) => serde_json::json!(x),
+        NcValue::Int(x) => serde_json::json!(x),
+        NcValue::Float(x) => floating(f64::from(*x)),
+        NcValue::Double(x) => floating(*x),
+        NcValue::UByte(x) => serde_json::json!(x),
+        NcValue::UShort(x) => serde_json::json!(x),
+        NcValue::UInt(x) => serde_json::json!(x),
+        NcValue::Int64(x) => serde_json::json!(x),
+        NcValue::UInt64(x) => serde_json::json!(x),
+        NcValue::String(x) => Value::String(x.clone()),
+        NcValue::Enum(x) => match &x.member {
+            Some(member) => Value::String(member.clone()),
+            None => x.value.as_i128().map_or(Value::Null, |n| n.to_string().parse().unwrap_or(Value::Null)),
+        },
+        NcValue::Opaque(x) => serde_json::json!(x),
+        NcValue::Compound(fields) => Value::Object(fields.iter().map(|f| (f.name.clone(), user_defined_value(&f.value))).collect()),
+        NcValue::Array(x) => nested(&x.dims, &x.values),
+        NcValue::VLen(x) => Value::Array(x.iter().map(user_defined_value).collect()),
+    }
+}
+/// User-defined attribute values as JSON: one value as itself, several as a list.
+pub(crate) fn user_defined_attribute(values: &[NcValue]) -> Value {
+    if let [value] = values { user_defined_value(value) } else { Value::Array(values.iter().map(user_defined_value).collect()) }
+}
 fn attribute(a: &NcAttrValue) -> Value {
     fn one(v: Vec<Value>) -> Value {
         if v.len() == 1 { v.into_iter().next().unwrap() } else { Value::Array(v) }
@@ -53,6 +95,7 @@ fn attribute(a: &NcAttrValue) -> Value {
         NcAttrValue::Doubles(v) => one(v.iter().map(|&x| floating(x)).collect()),
         NcAttrValue::Chars(s) => Value::String(s.clone()),
         NcAttrValue::Strings(v) => one(v.iter().cloned().map(Value::String).collect()),
+        NcAttrValue::UserDefined { values, .. } => user_defined_attribute(values),
     }
 }
 fn attributes(attrs: &[NcAttribute]) -> Value {
@@ -73,7 +116,7 @@ fn attribute_types(attrs: &[NcAttribute]) -> AttributeTypes {
                 NcAttrValue::UInt64s(_) => DataType::U64,
                 NcAttrValue::Floats(_) => DataType::F32,
                 NcAttrValue::Doubles(_) => DataType::F64,
-                NcAttrValue::Chars(_) | NcAttrValue::Strings(_) => return None,
+                NcAttrValue::Chars(_) | NcAttrValue::Strings(_) | NcAttrValue::UserDefined { .. } => return None,
             };
             Some((a.name.clone(), dtype))
         })

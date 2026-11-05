@@ -304,7 +304,7 @@ tables column by column with their stored types, fixed-length strings decoded as
 (padding removed, nothing else trimmed), and root attributes (`File Type`, `File Version`,
 `Units System`, `Projection`) through `HecRasHdf::file_attributes`.
 
-terrio and the engine use the same `hdf5-reader` 0.10.1 from crates.io (roteiro-gis/netcdf-rust),
+terrio and the engine use the same `hdf5-reader` 0.12.1 from crates.io (roteiro-gis/netcdf-rust),
 so a build with `hecras` compiles one HDF5 reader (`cargo tree -d -e normal -p terrio` lists the
 same duplicate crates with and without `hecras`, none of them an HDF5 or NetCDF crate).
 

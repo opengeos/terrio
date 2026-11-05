@@ -11,7 +11,7 @@ use wbraster::raster::RasterData;
 
 mod mosaic;
 #[cfg(feature = "netcdf-hdf5")]
-mod netcdf;
+pub(crate) mod netcdf;
 pub(crate) mod write;
 pub use mosaic::{MosaicOptions, mosaic};
 

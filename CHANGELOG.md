@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `hdf5-reader` and `netcdf-reader` are the crates.io 0.12.1 releases and `ras-commander-fast-hdf`
+  is 0.4.0, so a build still compiles one HDF5 reader. NetCDF-4 attributes of compound, opaque,
+  variable-length and enum types are now reported: `multidim` left them out and `open_raster`
+  refused such a file. Compound, opaque and variable-length values are JSON (text in raster
+  metadata), and an enum is its stored number. The HEC-RAS engine's error changes are in its
+  changelog.
 - `terrio.xarray` (`engine="terrio"`, `open_rasterio`) skips applying a band's scale and offset
   when they are 1 and 0, and applies them in place otherwise: reads with `mask_and_scale` take
   19% less time (8000 x 8000 float32).
