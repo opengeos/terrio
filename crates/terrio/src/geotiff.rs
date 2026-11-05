@@ -1310,8 +1310,8 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     // Read once: the codec below keeps them rather than decoding the tags again.
     let tables = if compression != 1 {
         let tables = ChunkTables::read(&mut dec).map_err(tiff_err)?;
-        let chunks = tables.offsets.iter().copied().zip(tables.counts.iter().copied());
-        check_stored_chunks(compression, chunks, dec.inner().get_ref().get_ref().len()?)?;
+        let stored = tables.offsets.iter().copied().zip(tables.counts.iter().copied());
+        check_stored_chunks(compression, stored, dec.inner().get_ref().get_ref().len()?)?;
         Some(std::sync::Arc::new(tables))
     } else {
         None

@@ -894,16 +894,29 @@ pub(crate) fn over_cap(url: &str, cap: u64) -> Error {
 
 thread_local! {
     /// The agent shared by the requests of the operation in progress on this thread (see
-    /// [`AgentScope`]), with the settings it was built with.
-    static SHARED_AGENT: std::cell::RefCell<(u32, Option<(AgentSettings, ureq::Agent)>)> = const { std::cell::RefCell::new((0, None)) };
+    /// [`AgentScope`]), with the settings it was built with and the process it was built in.
+    static SHARED_AGENT: std::cell::RefCell<(u32, Option<ScopeAgent>)> = const { std::cell::RefCell::new((0, None)) };
 }
 
 /// The settings an agent is built with.
 type AgentSettings = (Option<Duration>, Duration, String);
 
+/// An [`AgentScope`]'s agent, its settings and the id of the process it was built in.
+type ScopeAgent = (AgentSettings, ureq::Agent, u32);
+
+/// Ends the life of a scope's agent: dropped in the process it was built in, leaked in a forked
+/// child, where its idle connections are the parent's sockets, which the child must neither use
+/// nor close.
+fn release(agent: Option<ScopeAgent>) {
+    if let Some(a) = agent.filter(|a| a.2 != std::process::id()) {
+        std::mem::forget(a);
+    }
+}
+
 /// While alive, the requests made on this thread share one agent, and so its connections (and
 /// TLS sessions): a recursive upload, deletion or listing opens one connection per host rather
-/// than one per request. Scopes nest; the agent is dropped when the outermost one ends.
+/// than one per request. Scopes nest; the agent is dropped when the outermost one ends (leaked in
+/// a forked child that inherited the scope: see [`release`]).
 pub(crate) struct AgentScope(());
 
 impl AgentScope {
@@ -919,7 +932,7 @@ impl Drop for AgentScope {
             let mut shared = shared.borrow_mut();
             shared.0 = shared.0.saturating_sub(1);
             if shared.0 == 0 {
-                shared.1 = None;
+                release(shared.1.take());
             }
         });
     }
@@ -979,15 +992,16 @@ fn agent_in(pid: u32, agent: &ureq::Agent, here: impl FnOnce() -> ureq::Agent) -
     if pid == std::process::id() { agent.clone() } else { here() }
 }
 
-/// The process's agent for `options`, whatever [`AgentScope`] the thread is in: a child forked
-/// inside one inherits the scope, whose agent holds the parent's sockets.
+/// The process's agent for `options`, whatever [`AgentScope`] the thread is in: the agent a client
+/// made before a fork sends its requests with in the child.
 fn own_agent(options: &HttpOptions) -> ureq::Agent {
     process_agent((options.timeout, options.connect_timeout, options.user_agent.clone()), options)
 }
 
 /// The agent requests are sent with: no automatic redirects (followed by [`Client`], which
 /// signs only the first request), no compression. Within an [`AgentScope`], the scope's agent
-/// when its settings are the same, otherwise a new one the scope keeps; outside any scope, the
+/// when its settings and process are the same, otherwise a new one the scope keeps (in a child
+/// forked inside a scope, the parent's agent is leaked: see [`release`]); outside any scope, the
 /// process's ([`process_agent`]).
 fn agent(options: &HttpOptions) -> ureq::Agent {
     let settings: AgentSettings = (options.timeout, options.connect_timeout, options.user_agent.clone());
@@ -996,11 +1010,13 @@ fn agent(options: &HttpOptions) -> ureq::Agent {
         if shared.0 == 0 {
             return process_agent(settings, options);
         }
+        let pid = std::process::id();
         match &shared.1 {
-            Some((s, agent)) if *s == settings => agent.clone(),
+            Some((s, agent, made_in)) if *s == settings && *made_in == pid => agent.clone(),
             _ => {
+                release(shared.1.take());
                 let agent = new_agent(options);
-                shared.1 = Some((settings, agent.clone()));
+                shared.1 = Some((settings, agent.clone(), pid));
                 agent
             }
         }
@@ -2552,11 +2568,12 @@ mod tests {
         });
     }
 
-    /// A child forked while another thread builds the process's agent builds its own: the agent's
-    /// lock is held by the forking thread across the fork, as the module's other locks are.
+    /// A child forked while another thread holds the process agent's lock gets an agent of its
+    /// own: the lock is held by the forking thread across the fork, as the module's other locks
+    /// are, never left held in the child by a thread it does not have.
     #[test]
     #[cfg(unix)]
-    fn a_child_forked_while_the_process_agent_is_built_gets_its_own() {
+    fn a_child_forked_while_the_process_agent_lock_is_held_gets_its_own() {
         use std::sync::atomic::AtomicBool;
         crate::par::alone(60, || {
             let (holding, released) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
@@ -2578,6 +2595,109 @@ mod tests {
                 released.load(Ordering::Acquire)
             });
             holder.join().is_ok() && exit == Some(0)
+        });
+    }
+
+    /// A server keeping its connections open (HTTP/1.1 keep-alive) answering any range of
+    /// `data` at any path, and the number of connections it has accepted.
+    fn serve_keep_alive(data: Vec<u8>) -> (String, Arc<AtomicU64>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let connections = Arc::new(AtomicU64::new(0));
+        let accepted = connections.clone();
+        let data = Arc::new(data);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                accepted.fetch_add(1, Ordering::SeqCst);
+                let data = data.clone();
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    loop {
+                        let head = read_head(&mut reader);
+                        if head.is_empty() {
+                            return;
+                        }
+                        let range = head.iter().find_map(|l| {
+                            let l = l.to_ascii_lowercase();
+                            let (a, b) = l.strip_prefix("range: bytes=")?.split_once('-')?;
+                            Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?.min(data.len() - 1)))
+                        });
+                        let (a, b) = range.unwrap_or((0, data.len() - 1));
+                        let status = if range.is_some() { "206 Partial Content" } else { "200 OK" };
+                        let head = format!(
+                            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Range: bytes {a}-{b}/{}\r\n\r\n",
+                            b - a + 1,
+                            data.len()
+                        );
+                        if stream.write_all(&[head.as_bytes(), &data[a..=b]].concat()).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (url, connections)
+    }
+
+    /// Remote files opened one after another, each with a client of its own, send their requests
+    /// over one connection, and files opened from 4 threads at once over at most 4: the clients
+    /// share the process's agent. In a process of its own (`par::alone`), where no other test
+    /// rebuilds that agent with other settings.
+    #[test]
+    #[cfg(unix)]
+    fn remote_files_opened_one_after_another_share_one_connection() {
+        crate::par::alone(60, || {
+            let (url, connections) = serve_keep_alive(test_data());
+            let open_and_read = |name: String| {
+                let mut r = RangeReader::open_with(&Remote::Url(name), options()).unwrap();
+                assert_eq!(read_range(&mut r, 100_000, 1000), test_data()[100_000..101_000]);
+            };
+            for i in 0..8 {
+                open_and_read(format!("{url}one-{i}.bin"));
+            }
+            let one = connections.load(Ordering::SeqCst);
+            std::thread::scope(|s| {
+                for t in 0..4 {
+                    let (open_and_read, url) = (&open_and_read, &url);
+                    s.spawn(move || (0..8).for_each(|i| open_and_read(format!("{url}many-{t}-{i}.bin"))));
+                }
+            });
+            let many = connections.load(Ordering::SeqCst);
+            assert!(one == 1 && many <= 4, "{one} connections for 8 files one after another, {many} after 32 more from 4 threads");
+            true
+        });
+    }
+
+    /// A child forked inside an [`AgentScope`] sends the requests it makes itself through an
+    /// agent of its own, over connections of its own: the scope's agent, built in the parent,
+    /// holds the parent's sockets, which the child must neither use nor close (ending the
+    /// inherited scope in the child leaks that agent). The parent's agent keeps its connection.
+    #[test]
+    #[cfg(unix)]
+    fn a_child_forked_inside_an_agent_scope_uses_connections_of_its_own() {
+        crate::par::alone(60, || {
+            let (url, connections) = serve_keep_alive(test_data());
+            let get = move |agent: &ureq::Agent| {
+                agent
+                    .get(url.as_str())
+                    .header("Range", "bytes=0-99")
+                    .call()
+                    .is_ok_and(|mut r| r.body_mut().read_to_vec().is_ok_and(|body| body == test_data()[..100]))
+            };
+            let scope = AgentScope::new();
+            let parent = agent(&options());
+            assert!(get(&parent));
+            assert_eq!(connections.load(Ordering::SeqCst), 1);
+            let in_child = get.clone();
+            let exit = crate::par::in_child(10, move || {
+                let own = in_child(&agent(&options()));
+                drop(scope);
+                own
+            });
+            assert_eq!(exit, Some(0), "the child hung (None) or failed (1)");
+            assert_eq!(connections.load(Ordering::SeqCst), 2, "the child's request opened a connection of its own");
+            get(&parent) && connections.load(Ordering::SeqCst) == 2
         });
     }
 
