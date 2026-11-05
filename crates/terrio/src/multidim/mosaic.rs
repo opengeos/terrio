@@ -342,7 +342,7 @@ fn fill(array: &Array) -> Result<Vec<u8>> {
         .attributes
         .get("_FillValue")
         // A `null` (zero-length) `_FillValue` is not skipped: it is rejected below as an invalid
-        // nodata value, as `[]` was before #567 (`write::validate` would reject the output too).
+        // nodata value.
         .or_else(|| array.info.attributes.get("missing_value").filter(|v| !v.is_array() && !v.is_null()))
         .cloned()
         .unwrap_or(serde_json::json!(0));
