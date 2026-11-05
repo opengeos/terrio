@@ -346,16 +346,19 @@ available in the core crate, including WebAssembly builds, without additional fe
 
 `ops::contour::contour` accepts a raster and `ContourOptions` (interval/fixed levels, band,
 nodata override and optional Z coordinates), returning a line layer with IDs and elevations.
-`ops::zonal::zonal_stats` accepts a polygon layer, `ZonalInput` raster bands and `ZonalOptions`
-(statistics, pixel inclusion, optional `dst_srs` and `decimal_places`); the result retains the
+`ops::zonal::zonal_stats` accepts a polygon layer, `ZonalSource`s (a `ZonalRaster` and its
+`ZonalBand`s) and `ZonalOptions`. A `ZonalRaster` is an open `LazyRaster` or a path
+(`ZonalRaster::Path`) opened only while it is read, so thousands of files stay within the
+open-file limit. `ZonalOptions` holds the statistics, pixel inclusion, and optional `dst_srs`
+and `decimal_places`. The result retains the
 source features and adds statistic fields. Output reprojection occurs after analysis, and
 rounding (0–15 decimal places, ties away from zero after binary64 scaling) leaves source
 attributes and integer counts intact. `ZonalOptions::fractional` enables coverage fractions;
-`ZonalOptions::weights` accepts a `ZonalWeight` with a shared `Arc<RasterDataset>` and band for weighted statistics.
+`ZonalOptions::weights` accepts a `ZonalWeight` (`ZonalWeight::new(lazy_raster, band)`) for weighted statistics.
 Weight grids must match every value raster. Fractional counts are Real and are rounded
 when requested. See [the formulas and scope](cli.md#fractional-coverage-and-weighting-rasters).
-Zonal statistics reuse a cropped membership mask across
-bands of the same raster.
+Zones are computed once per distinct grid and shared by every source on it; rasters are read
+lazily in strips of block rows, skipping strips without zones.
 `ops::sql::query` runs the [documented SQL subset](sql.md), including computed columns,
 DISTINCT, grouped summaries, attribute joins and the documented spatial functions,
 with strict input-layer lookup. These operations

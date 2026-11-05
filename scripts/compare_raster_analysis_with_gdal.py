@@ -141,6 +141,36 @@ def compare_contour(
     )
 
 
+# Zonal statistics compared with GDAL masks + NumPy, in output order.
+ZONAL_STATS = ["count", "min", "max", "mean", "sum", "stddev", "median", "quantile_25", "quantile_75",
+               "mode", "minority", "variety", "variance", "cv"]
+
+
+def numpy_zonal(selected):
+    """Reference statistics of a zone's valid pixel values: numpy's linear quantiles; mode and
+    minority by pixel count, ties to the larger (mode) or smaller (minority) value."""
+    if not selected.size:
+        return {s: (0 if s in ("count", "variety") else None) for s in ZONAL_STATS}
+    values, counts = np.unique(selected, return_counts=True)
+    mean, std = float(selected.mean()), float(selected.std())
+    return {
+        "count": int(selected.size),
+        "min": float(selected.min()),
+        "max": float(selected.max()),
+        "mean": mean,
+        "sum": float(selected.sum()),
+        "stddev": std,
+        "median": float(np.median(selected)),
+        "quantile_25": float(np.quantile(selected, 0.25, method="linear")),
+        "quantile_75": float(np.quantile(selected, 0.75, method="linear")),
+        "mode": float(values[np.flatnonzero(counts == counts.max())[-1]]),
+        "minority": float(values[np.flatnonzero(counts == counts.min())[0]]),
+        "variety": int(values.size),
+        "variance": float(selected.var()),
+        "cv": std / mean if mean != 0 else None,
+    }
+
+
 def expected_statistics(source, polygons, band_number, all_touched):
     raster = gdal.Open(str(source))
     band = raster.GetRasterBand(band_number)
@@ -174,31 +204,7 @@ def expected_statistics(source, polygons, band_number, all_touched):
                 burn_values=[1],
                 options=["ALL_TOUCHED=TRUE"] if all_touched else [],
             )
-        selected = values[(mask.ReadAsArray() != 0) & valid]
-        if selected.size:
-            result.append(
-                {
-                    "count": int(selected.size),
-                    "min": float(selected.min()),
-                    "max": float(selected.max()),
-                    "mean": float(selected.mean()),
-                    "sum": float(selected.sum()),
-                    "stddev": float(selected.std()),
-                    "median": float(np.median(selected)),
-                }
-            )
-        else:
-            result.append(
-                {
-                    "count": 0,
-                    "min": None,
-                    "max": None,
-                    "mean": None,
-                    "sum": None,
-                    "stddev": None,
-                    "median": None,
-                }
-            )
+        result.append(numpy_zonal(values[(mask.ReadAsArray() != 0) & valid]))
     return result
 
 
@@ -210,7 +216,7 @@ def compare_zonal(
         "--band",
         ",".join(map(str, bands)),
         "--stats",
-        "count,min,max,mean,sum,stddev,median",
+        ",".join(ZONAL_STATS),
     ]
     for i, raster in enumerate(rasters):
         args += ["--raster", raster, "--prefix", f"r{i}"]
@@ -231,7 +237,7 @@ def compare_zonal(
                     got = feature[f"r{i}_b{band}_{stat}"]
                     if value is None:
                         assert got is None, (label, j, stat, got, value)
-                    elif stat == "count":
+                    elif stat in ("count", "variety"):
                         assert got == value, (label, j, stat, got, value)
                     else:
                         assert math.isclose(got, value, rel_tol=1e-10, abs_tol=1e-9), (

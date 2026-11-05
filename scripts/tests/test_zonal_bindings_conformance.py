@@ -289,3 +289,13 @@ def test_node_runner_isolates_one_binding_exception(tmp_path):
     rows = json.loads(response.stdout)
     assert len(rows) == 2 and "injected" in rows[0]["error"]
     assert rows[1] == dict(name="good", geojson={}, crs="EPSG:4326")
+
+
+def test_zonal_comparison_requires_exact_mode():
+    result, expected, original = example()
+    expected[0]["r0_b1_mode"] = 7.0
+    result["geojson"]["features"][0]["properties"]["r0_b1_mode"] = 7.0 + 1e-12
+    with pytest.raises(AssertionError, match="mode"):
+        compare(result, expected, original, {})
+    result["geojson"]["features"][0]["properties"]["r0_b1_mode"] = 7.0
+    assert "variety, mode, minority" in compare(result, expected, original, {})

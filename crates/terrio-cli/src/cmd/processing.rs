@@ -48,6 +48,14 @@ impl VectorOutput {
         Self { output: output.to_string(), format, nln: None, append, overwrite }
     }
 
+    /// The output driver: `--format`, else the one of the output's extension.
+    pub(crate) fn driver(&self) -> Result<Option<VectorDriver>> {
+        match self.format.as_deref() {
+            Some(f) => VectorDriver::from_name(f).map(Some).ok_or_else(|| Error::InvalidArgument(format!("unknown vector format '{f}'"))),
+            None => Ok(VectorDriver::for_extension(&self.output)),
+        }
+    }
+
     pub(crate) fn write(&self, layers: Vec<Layer>) -> Result<()> {
         self.write_with_geometry_types(layers, false)
     }
@@ -273,8 +281,9 @@ pub struct SampleArgs {
     input: VectorInput,
     #[command(flatten)]
     output: VectorOutput,
-    /// An input raster (repeat for multiple rasters). Each raster is loaded into memory.
-    #[arg(long = "raster", required = true, value_name = "PATH")]
+    /// An input raster (repeat for multiple rasters). `sample` loads each raster into memory;
+    /// `zonal-stats` reads them lazily, by block, and also takes `@FILE` lists of paths.
+    #[arg(long = "raster", value_name = "PATH")]
     rasters: Vec<String>,
     /// Bands from every raster, from 1, comma-separated. By default, band 1.
     #[arg(short = 'b', long = "band", value_delimiter = ',', default_value = "1")]
@@ -292,6 +301,9 @@ pub struct SampleArgs {
 }
 
 pub fn sample(a: SampleArgs) -> Result<()> {
+    if a.rasters.is_empty() {
+        return Err(Error::InvalidArgument("give at least one --raster".into()));
+    }
     let options =
         SampleOptions { dst_srs: a.t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose()?, decimal_places: a.decimal_places };
     let (rasters, prefixes) = sample_sources(&a)?;
@@ -307,27 +319,38 @@ pub fn sample(a: SampleArgs) -> Result<()> {
 }
 
 fn sample_sources(a: &SampleArgs) -> Result<(Vec<terrio::RasterDataset>, Vec<String>)> {
-    if !a.prefixes.is_empty() && a.prefixes.len() != a.rasters.len() {
-        return Err(Error::InvalidArgument("give one --prefix per --raster, or omit all prefixes".into()));
+    let prefixes = sample_prefixes(&a.prefixes, &a.rasters)?;
+    let rasters = a.rasters.iter().map(|p| super::quiet(|| terrio::open_raster(p))).collect::<Result<Vec<_>>>()?;
+    Ok((rasters, prefixes))
+}
+
+/// Field prefixes for each `--raster`: its `--prefix`, else its file stem.
+fn sample_prefixes(given: &[String], rasters: &[String]) -> Result<Vec<String>> {
+    if !given.is_empty() && given.len() != rasters.len() {
+        return Err(Error::InvalidArgument(format!(
+            "give one --prefix per raster ({} prefixes for {} rasters, @FILE lists counted by their paths), or omit all prefixes",
+            given.len(),
+            rasters.len()
+        )));
     }
-    if a.prefixes.iter().any(|p| p.trim().is_empty()) {
+    if given.iter().any(|p| p.trim().is_empty()) {
         return Err(Error::InvalidArgument("raster field prefixes cannot be empty".into()));
     }
-    let rasters = a.rasters.iter().map(|p| super::quiet(|| terrio::open_raster(p))).collect::<Result<Vec<_>>>()?;
     let mut prefixes = Vec::new();
-    for (i, path) in a.rasters.iter().enumerate() {
+    for (i, path) in rasters.iter().enumerate() {
         let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("raster");
-        let prefix = a.prefixes.get(i).map_or(stem, String::as_str);
+        let prefix = given.get(i).map_or(stem, String::as_str);
         prefixes.push(prefix.to_string());
     }
-    Ok((rasters, prefixes))
+    Ok(prefixes)
 }
 
 #[derive(clap::Args)]
 pub struct ZonalArgs {
     #[command(flatten)]
     sources: SampleArgs,
-    /// Statistics, comma-separated: count,min,max,mean,sum,stddev,median,
+    /// Statistics, comma-separated: count,min,max,mean,sum,stddev,variance,cv,median,
+    /// quantile_P (P from 0 to 100, e.g. quantile_25),mode (alias majority),minority,variety,
     /// weighted_mean,weighted_sum,weighted_stddev. Uses population standard deviation.
     #[arg(long, value_delimiter = ',', default_value = "count,min,max,mean,sum,stddev")]
     stats: Vec<String>,
@@ -343,33 +366,194 @@ pub struct ZonalArgs {
     /// Weighting band, numbered from 1.
     #[arg(long, default_value_t = 1)]
     weight_band: usize,
+    /// A CSV table of labelled inputs, with a header: `path` (required), and optional `time`
+    /// (such as 2024-07-01), `label` (such as B04) and `band` (a band number; by default each
+    /// --band). Table rows naming the same path, or a --raster path, share its read. Labelled rows name
+    /// fields TIME_LABEL_STATISTIC (TIME_LABEL_bN_STATISTIC when a row without `band` takes
+    /// several --band); others FILE_STEM_bN_STATISTIC. Quote fields containing commas.
+    #[arg(long, value_name = "FILE")]
+    inputs: Option<String>,
+}
+
+/// The most statistic columns `zonal-stats` adds, in any format: FlatGeobuf's column limit.
+const MAX_COLUMNS: usize = u16::MAX as usize;
+
+/// SQLite's default column limit, which GeoPackage tables share (feature ID and geometry included).
+const GPKG_MAX_COLUMNS: usize = 2000;
+
+/// One row of `--inputs`.
+struct InputRow {
+    path: String,
+    time: Option<String>,
+    label: Option<String>,
+    band: Option<usize>,
+}
+
+/// The records of a CSV text, with RFC 4180 quoting: `"a,b"`, `""` for a quote, and line breaks
+/// inside quotes. Unquoted fields are trimmed, quoted ones kept as written; blank lines are
+/// skipped. An unterminated quote is an error.
+fn csv_records(text: &str) -> std::result::Result<Vec<Vec<String>>, String> {
+    let (mut records, mut record) = (Vec::new(), Vec::new());
+    let (mut field, mut quoted, mut was_quoted) = (String::new(), false, false);
+    let end_field = |field: &mut String, was_quoted: &mut bool| {
+        let f = std::mem::take(field);
+        if std::mem::take(was_quoted) { f } else { f.trim().to_string() }
+    };
+    let end_record = |record: &mut Vec<String>, records: &mut Vec<Vec<String>>| {
+        let r = std::mem::take(record);
+        if r.iter().any(|f| !f.is_empty()) {
+            records.push(r);
+        }
+    };
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                field.push('"');
+                chars.next();
+            }
+            '"' if quoted => quoted = false,
+            '"' if !was_quoted && field.trim().is_empty() => {
+                field.clear();
+                (quoted, was_quoted) = (true, true);
+            }
+            ',' if !quoted => record.push(end_field(&mut field, &mut was_quoted)),
+            '\n' | '\r' if !quoted => {
+                if c == '\r' && chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                record.push(end_field(&mut field, &mut was_quoted));
+                end_record(&mut record, &mut records);
+            }
+            // After a closing quote, only whitespace before the separator.
+            c if was_quoted && !quoted && c.is_whitespace() => {}
+            c if was_quoted && !quoted => return Err(format!("text '{c}' after a closing quote")),
+            c => field.push(c),
+        }
+    }
+    if quoted {
+        return Err("a quoted field is not closed".into());
+    }
+    record.push(end_field(&mut field, &mut was_quoted));
+    end_record(&mut record, &mut records);
+    Ok(records)
+}
+
+/// The rows of an `--inputs` CSV table.
+fn read_inputs(file: &str) -> Result<Vec<InputRow>> {
+    let text = super::read_list_text(file, "--inputs tables")?;
+    let bad = |why: String| Error::InvalidArgument(format!("--inputs {file}: {why}"));
+    let mut records = csv_records(&text).map_err(bad)?.into_iter();
+    let header: Vec<String> = records.next().ok_or_else(|| bad("empty table".into()))?.iter().map(|h| h.to_ascii_lowercase()).collect();
+    if let Some(unknown) = header.iter().find(|h| !matches!(h.as_str(), "path" | "time" | "label" | "band")) {
+        return Err(bad(format!("unknown column '{unknown}' (expected path, time, label, band)")));
+    }
+    let column = |name: &str| header.iter().position(|h| h == name);
+    let path = column("path").ok_or_else(|| bad("the header has no 'path' column".into()))?;
+    let (time, label, band) = (column("time"), column("label"), column("band"));
+    let mut rows = Vec::new();
+    for (n, fields) in records.enumerate() {
+        if fields.len() > header.len() {
+            return Err(bad(format!(
+                "row {} has {} fields, the header {} (quote fields containing commas)",
+                n + 1,
+                fields.len(),
+                header.len()
+            )));
+        }
+        let get = |i: Option<usize>| i.and_then(|i| fields.get(i)).filter(|v| !v.is_empty()).cloned();
+        let row_path = get(Some(path)).ok_or_else(|| bad(format!("row {} has no path", n + 1)))?;
+        let row_band = match get(band) {
+            Some(b) => Some(
+                b.parse::<usize>()
+                    .ok()
+                    .filter(|&b| b > 0)
+                    .ok_or_else(|| bad(format!("row {}: band '{b}' is not a band number from 1", n + 1)))?,
+            ),
+            None => None,
+        };
+        rows.push(InputRow { path: row_path, time: get(time), label: get(label), band: row_band });
+    }
+    if rows.is_empty() {
+        return Err(bad("the table lists no inputs".into()));
+    }
+    Ok(rows)
 }
 
 pub fn zonal(a: ZonalArgs) -> Result<()> {
-    use terrio::ops::zonal::{Statistic, ZonalInput, ZonalOptions, ZonalWeight, zonal_stats};
+    use terrio::ops::zonal::{Statistic, ZonalBand, ZonalOptions, ZonalRaster, ZonalSource, ZonalWeight, zonal_stats};
     let stats: Vec<_> = a.stats.iter().map(|s| Statistic::parse(s)).collect::<Result<_>>()?;
     let weights = a
         .weights
         .as_deref()
         .filter(|_| stats.iter().any(|s| s.uses_weights()))
-        .map(|p| super::quiet(|| terrio::open_raster(p)))
+        .map(|p| super::quiet(|| terrio::open_raster_lazy(p)))
         .transpose()?;
     let options = ZonalOptions {
         fractional: a.fractional,
-        weights: weights.map(|raster| ZonalWeight { raster: std::sync::Arc::new(raster), band: a.weight_band }),
+        weights: weights.map(|raster| ZonalWeight::new(raster, a.weight_band)),
         stats,
         all_touched: a.all_touched,
         dst_srs: a.sources.t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose()?,
         decimal_places: a.sources.decimal_places,
     };
-    let (rasters, prefixes) = sample_sources(&a.sources)?;
-    let mut inputs = Vec::new();
-    for (i, raster) in rasters.iter().enumerate() {
-        for &band in &a.sources.bands {
-            inputs.push(ZonalInput { prefix: format!("{}_b{band}", prefixes[i]), raster, band });
+    let rasters = super::expand_file_lists(&a.sources.rasters)?;
+    if rasters.is_empty() && !a.sources.prefixes.is_empty() {
+        return Err(Error::InvalidArgument(
+            "--prefix names --raster fields; give it with --raster (--inputs rows are named TIME_LABEL or FILE_STEM_bN)".into(),
+        ));
+    }
+    let prefixes = sample_prefixes(&a.sources.prefixes, &rasters)?;
+    let rows = a.inputs.as_deref().map(read_inputs).transpose()?.unwrap_or_default();
+    if rasters.is_empty() && rows.is_empty() {
+        return Err(Error::InvalidArgument("give at least one --raster or an --inputs table".into()));
+    }
+    // (path, bands) in first-appearance order: --raster paths, then table rows by path.
+    let mut plan: Vec<(String, Vec<ZonalBand>)> = rasters
+        .iter()
+        .zip(&prefixes)
+        .map(|(path, prefix)| {
+            (path.clone(), a.sources.bands.iter().map(|&band| ZonalBand::new(band, format!("{prefix}_b{band}"))).collect())
+        })
+        .collect();
+    let mut by_path: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, (path, _)) in plan.iter().enumerate() {
+        by_path.entry(path.clone()).or_insert(i);
+    }
+    for row in rows {
+        let bands = row.band.map_or_else(|| a.sources.bands.clone(), |b| vec![b]);
+        let stem = std::path::Path::new(&row.path).file_stem().and_then(|s| s.to_str()).unwrap_or("raster").to_string();
+        let labelled =
+            terrio::ops::zonal::labelled_bands(&bands, row.time.as_deref(), row.label.as_deref(), |band| format!("{stem}_b{band}"));
+        match by_path.get(&row.path) {
+            Some(&i) => plan[i].1.extend(labelled),
+            None => {
+                by_path.insert(row.path.clone(), plan.len());
+                plan.push((row.path, labelled));
+            }
         }
     }
-    let layers = a.sources.input.open()?.iter().map(|l| zonal_stats(l, &inputs, &options)).collect::<Result<Vec<_>>>()?;
+    let columns: usize = plan.iter().map(|(_, b)| b.len()).sum::<usize>() * options.stats.len();
+    // Every feature holds a value per column: a bound for every format (FlatGeobuf's own).
+    if columns > MAX_COLUMNS {
+        return Err(Error::InvalidArgument(format!(
+            "zonal statistics would add {columns} columns; at most {MAX_COLUMNS} are written: request fewer statistics or inputs"
+        )));
+    }
+    let layers = a.sources.input.open()?;
+    if a.sources.output.driver()? == Some(VectorDriver::GPKG)
+        && let Some(l) = layers.iter().find(|l| l.schema.len() + columns + 2 > GPKG_MAX_COLUMNS)
+    {
+        return Err(Error::InvalidArgument(format!(
+            "zonal statistics would add {columns} columns to {} (layer '{}'); GeoPackage allows {GPKG_MAX_COLUMNS}: request fewer statistics or inputs, or write FlatGeobuf or Parquet",
+            a.sources.output.output, l.name
+        )));
+    }
+    // Paths: each raster is open only while it is read, so lists of thousands of files stay
+    // within the open-file limit.
+    let mut sources: Vec<ZonalSource> =
+        plan.into_iter().map(|(path, bands)| ZonalSource { raster: ZonalRaster::Path(path), bands }).collect();
+    let layers = super::quiet(|| layers.iter().map(|l| zonal_stats(l, &mut sources, &options)).collect::<Result<Vec<_>>>())?;
     a.sources.output.write(layers)
 }
 
@@ -591,4 +775,17 @@ pub fn clean_coverage(a: CleanCoverageArgs) -> Result<()> {
     };
     let layers = terrio::ops::coverage_clean::clean_coverage_layers(&input, a.active_layer.as_deref(), &options)?;
     a.output.write(layers)
+}
+
+#[cfg(test)]
+mod inputs_tests {
+    use super::csv_records;
+
+    #[test]
+    fn csv_records_follow_rfc_4180_quoting() {
+        let text = "path,label\n\" a,b.tif \",\"two\nlines\"\r\n\nc.tif , \"say \"\"hi\"\"\"  \n";
+        assert_eq!(csv_records(text).unwrap(), [vec!["path", "label"], vec![" a,b.tif ", "two\nlines"], vec!["c.tif", "say \"hi\""]]);
+        assert!(csv_records("path\n\"open.tif\n").unwrap_err().contains("not closed"));
+        assert!(csv_records("path\n\"a\"b\n").unwrap_err().contains("after a closing quote"));
+    }
 }
