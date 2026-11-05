@@ -2570,10 +2570,11 @@ struct Sink {
     /// Whether a pixel whose every band holds its nodata value is moved off them (a serialized
     /// warped VRT with a unified output mask, see [`Sink::avoid_all`]).
     avoid_all_nodata: bool,
-    /// Whether the working type is the output type. It holds every source value (it is their
-    /// union, [`working_type`]), so [`Sink::value`] keeps a source value as it is unless it is
-    /// moved off a nodata value: rounding to the working type and converting it to the output
-    /// type change nothing.
+    /// Whether a source value can be stored as it is: the working type is the output type and
+    /// holds every source value (the union of their types, [`working_type`]; a [`RegionWarp`],
+    /// whose working type is its output type, also needs source data of that type). Then
+    /// [`Sink::value`] keeps a source value unless it is moved off a nodata value: rounding to the
+    /// working type and converting it to the output type change nothing.
     passes: bool,
     /// Whether a warped value was moved off a nodata value (see [`Sink::finish`]).
     nudged: AtomicBool,
