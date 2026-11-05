@@ -2543,7 +2543,7 @@ impl Storage {
             out_type: self.out_type,
             dst_nodata: self.dst_nodata.clone(),
             avoid_nodata: self.avoid_nodata.unwrap_or(dst_nodata.is_some() && !no_masks),
-            passes: self.work_type == self.out_type,
+            keeps_source_values: self.work_type == self.out_type,
             avoid_all_nodata: self.avoid_all_nodata,
             bands: self.bands,
             nudged: AtomicBool::new(false),
@@ -2575,7 +2575,7 @@ struct Sink {
     /// whose working type is its output type, also needs source data of that type). Then
     /// [`Sink::value`] keeps a source value unless it is moved off a nodata value: rounding to the
     /// working type and converting it to the output type change nothing.
-    passes: bool,
+    keeps_source_values: bool,
     /// Whether a warped value was moved off a nodata value (see [`Sink::finish`]).
     nudged: AtomicBool,
     /// The number of bands, whose values a multi-band warning names (see [`Sink::finish`]).
@@ -3144,7 +3144,8 @@ impl WarpContext<'_> {
     }
 
     /// [`Self::warp_row`] with `sample`, the value of band `b` at source pixel `(ix, iy)` and
-    /// point `(fx, fy)` of the window, a source value itself when `nearest`.
+    /// point `(fx, fy)` of the window, a source value itself when `nearest` (nearest resampling, or
+    /// a source window one pixel wide or high, where every method takes the source pixel).
     #[allow(clippy::too_many_arguments)]
     #[inline(always)]
     fn warp_row_with<T: crate::pixel::Pixel>(
@@ -3160,9 +3161,10 @@ impl WarpContext<'_> {
         // Include stored masks/cutlines as well as nodata, but skip the all-band
         // hot-loop check when this chunk has no validity planes.
         let global_validity = self.global_validity && k.src.valid.iter().any(Option::is_some);
-        // Nearest values are source values, which a working type equal to the output's holds
-        // exactly: `Sink::value` then only moves them off the output nodata (see `Sink::passes`).
-        let passes = nearest && sink.passes;
+        // Values sampled as nearest are source values, which a working type equal to the output's
+        // holds exactly: `Sink::value` then only moves them off the output nodata (see
+        // `Sink::keeps_source_values`).
+        let keep = nearest && sink.keeps_source_values;
         // With one band, the unified check below already tests the band's own validity.
         let all_bands = global_validity && !(self.unified_center && self.bands == 1);
         let nodata: Vec<Option<f64>> = (0..self.bands).map(|b| sink.avoid_nodata.then(|| sink.nodata(b)).flatten()).collect();
@@ -3246,7 +3248,7 @@ impl WarpContext<'_> {
                 for (b, o) in out.iter_mut().enumerate() {
                     let v = sample(k, b, ix, iy, fx, fy);
                     if let Some(v) = v {
-                        o[i] = if passes && nodata[b] != Some(v) { v } else { sink.value(v, b) };
+                        o[i] = if keep && nodata[b] != Some(v) { v } else { sink.value(v, b) };
                         found = true;
                     }
                 }
@@ -3807,6 +3809,9 @@ struct Kernel<'a, T> {
 }
 
 impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
+    /// The kernels of `method` on source window `win` of `src`, at output-to-source scales
+    /// `xscale` and `yscale` (below 1 when the output is coarser), with [`Kernel::general`]'s
+    /// reach and first-tap offset computed once for the chunk.
     fn new(src: &'a SrcData<'a, T>, win: Chunk, xscale: f64, yscale: f64, method: Resampling) -> Self {
         let radius = method.radius();
         let xr = if xscale < 1.0 { (radius as f64 / xscale).ceil() as i64 } else { radius as i64 };
@@ -4487,7 +4492,7 @@ impl RegionWarp {
             let mut sink = storage.sink(self.dst_nodata.is_some_and(|nd| is_nodata(warp_round(init, self.out_type), nd)));
             // The working type here is the output type, not the source's: nearest values of
             // another type are still rounded and clamped by `Sink::value`.
-            sink.passes &= data.data_type() == self.out_type;
+            sink.keeps_source_values &= data.data_type() == self.out_type;
             crate::pixel::with_data!(data, v => {
                 let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
                 let src = SrcData { bands: &typed, valid: &valid, width: sw, origin: (sx, sy) };

@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- Warps with nearest, bilinear, cubic, cubic spline, Lanczos or `average` resampling are faster; the
-  arithmetic and its order are unchanged. Nearest from EPSG:32615 to EPSG:32616 of an 1100 x 1100
-  uint16 Sentinel-2 window takes 12 ms of kernel time instead of 29 (single-threaded).
+- Warps with nearest or `average` resampling, or the separable kernel (cubic spline, Lanczos, and
+  bilinear or cubic when downsampling), are faster; the arithmetic and its order are unchanged.
+  Nearest from EPSG:32615 to EPSG:32616 of an 1100 x 1100 uint16 Sentinel-2 window takes 12 ms of
+  kernel time instead of 29 (single-threaded).
 - `terrio.xarray` (`engine="terrio"`, `open_rasterio`) skips applying a band's scale and offset
   when they are 1 and 0, and applies them in place otherwise: reads with `mask_and_scale` take
   19% less time (8000 x 8000 float32).
