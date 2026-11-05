@@ -340,7 +340,7 @@ fn netcdf_user_defined_attributes_read_as_json_values() {
     let file = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/netcdf_user_defined_attributes.nc");
     let opened = terrio::multidim::open(file).unwrap();
     assert_eq!(opened.root.attributes["pairs"], serde_json::json!([{ "x": 1.5, "n": 7 }, { "x": 2.5, "n": -8 }]));
-    assert_eq!(opened.root.attributes["mixed"], serde_json::json!({ "kind": "dry", "xy": [[1, 2], [3, 4]] }));
+    assert_eq!(opened.root.attributes["mixed"], serde_json::json!({ "kind": "dry", "xy": [[1, 2], [3, 4]], "tag": ["a", "b", "c"] }));
     assert_eq!(opened.root.attributes["title"], serde_json::json!("user-defined attributes"));
     let grid = opened.array("grid").unwrap();
     assert_eq!(grid.info.attributes["state"], serde_json::json!(2));

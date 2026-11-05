@@ -4,8 +4,9 @@ Usage:
     python scripts/make_netcdf_user_defined_attributes_fixture.py
 
 A NetCDF-4 file with a variable `grid`, and attributes of user-defined types added with h5py. On
-the root: `pairs` (compound), and `mixed` (compound with an enum field and a 2 x 2 array field). On
-`grid`: `state` (enum), `blob` (opaque) and `counts` (variable-length). Needs netCDF4 and h5py.
+the root: `pairs` (compound), and `mixed` (compound with an enum field, a 2 x 2 array field and a
+field of three chars). On `grid`: `state` (enum), `blob` (opaque) and `counts` (variable-length).
+Needs netCDF4 and h5py.
 """
 
 from __future__ import annotations
@@ -32,8 +33,8 @@ def main() -> None:
     state = h5py.enum_dtype({"wet": 1, "dry": 2}, basetype="i1")
     with h5py.File(PATH, "r+") as f:
         f.attrs.create("pairs", np.array([(1.5, 7), (2.5, -8)], dtype=[("x", "<f8"), ("n", "<i4")]))
-        mixed = np.dtype([("kind", state), ("xy", "<i4", (2, 2))])
-        f.attrs.create("mixed", np.array([(2, [[1, 2], [3, 4]])], dtype=mixed))
+        mixed = np.dtype([("kind", state), ("xy", "<i4", (2, 2)), ("tag", "S1", (3,))])
+        f.attrs.create("mixed", np.array([(2, [[1, 2], [3, 4]], [b"a", b"b", b"c"])], dtype=mixed))
         f["grid"].attrs.create("state", 2, dtype=state)
         f["grid"].attrs.create("blob", np.void(b"\x01\x02\x03"))
         counts = [np.array([1, 2], dtype="i4"), np.array([3], dtype="i4")]

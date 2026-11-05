@@ -54,7 +54,8 @@ fn user_defined_value(value: &NcValue) -> Value {
     }
     match value {
         NcValue::Byte(x) => serde_json::json!(x),
-        NcValue::Char(x) => Value::String(char::from(*x).to_string()),
+        // One byte: not UTF-8 text unless it is ASCII. The reader gives char arrays as strings.
+        NcValue::Char(x) => Value::String(String::from_utf8_lossy(&[*x]).into_owned()),
         NcValue::Short(x) => serde_json::json!(x),
         NcValue::Int(x) => serde_json::json!(x),
         NcValue::Float(x) => floating(f64::from(*x)),
@@ -67,6 +68,7 @@ fn user_defined_value(value: &NcValue) -> Value {
         NcValue::String(x) => Value::String(x.clone()),
         NcValue::Enum(x) => match &x.member {
             Some(member) => Value::String(member.clone()),
+            // `as_i128` is `Some` for every integer type, and each fits a JSON integer.
             None => x.value.as_i128().and_then(|n| serde_json::to_value(n).ok()).unwrap_or(Value::Null),
         },
         NcValue::Opaque(x) => serde_json::json!(x),
