@@ -1158,7 +1158,9 @@ mod tests {
         assert!(c.deflate(&zlib(&pixels[..12]), 4, 4, 4, 4).is_err());
         assert!(c.deflate(&zlib(&[pixels.as_slice(), &[9; 8]].concat()), 4, 4, 4, 4).is_ok());
         // Cut in its trailer (the Adler-32) after every sample: accepted, as libtiff's zlib path does.
-        assert!(c.deflate(&good[..good.len() - 4], 4, 4, 4, 4).is_ok());
+        for cut in 1..=4 {
+            assert!(c.deflate(&good[..good.len() - cut], 4, 4, 4, 4).is_ok(), "trailer cut by {cut}");
+        }
         // Predictor 2 on a chunk of no width: nothing to undo, no panic.
         let p = ChunkCodec { predictor: 2, ..c };
         assert!(p.deflate(&zlib(&[]), 0, 4, 0, 4).is_ok());
