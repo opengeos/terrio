@@ -7,7 +7,7 @@
 
 use super::rasterout::{OutputArgs, open, srs};
 use terrio::ops::overview::OverviewSelection;
-use terrio::ops::translate::{Scale, Size, TranslateOptions, translate, translate_lazy};
+use terrio::ops::translate::{Scale, Size, TranslateOptions, translate, translate_lazy_to_file};
 use terrio::ops::{Resampling, parse_data_type};
 
 #[derive(clap::Args)]
@@ -117,17 +117,15 @@ pub fn run(a: Args) -> terrio::Result<()> {
             Err(_) => None,
         }
     };
-    let out = match lazy {
-        Some(mut src) => translate_lazy(&mut src, &o, overview)?,
-        None => {
-            if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(_)) {
-                return Err(terrio::Error::Unsupported(format!(
-                    "--overview {} needs a raster read by window; {} is read whole",
-                    a.overview, a.input
-                )));
-            }
-            translate(&open(&a.input)?, &o)?
-        }
-    };
-    a.out.write(&out, &a.output)
+    // A raster read by window is written as it is translated: a GeoTIFF or COG a strip at a time.
+    if let Some(mut src) = lazy {
+        return translate_lazy_to_file(&mut src, &o, overview, &a.output, &a.out.options()?);
+    }
+    if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(_)) {
+        return Err(terrio::Error::Unsupported(format!(
+            "--overview {} needs a raster read by window; {} is read whole",
+            a.overview, a.input
+        )));
+    }
+    a.out.write(&translate(&open(&a.input)?, &o)?, &a.output)
 }

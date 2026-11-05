@@ -223,6 +223,11 @@ pub(crate) trait WindowSource: Send + Sync {
     }
     /// The sizes `(width, height)` of the overviews, largest first.
     fn overviews(&self) -> Vec<(usize, usize)>;
+    /// The rows strips of the full-resolution image are best made of (a multiple of), so that
+    /// each block of the files the source reads is read once: by default, its block height.
+    fn row_alignment(&mut self) -> Option<usize> {
+        self.block_size().map(|(_, h)| h)
+    }
     /// The block size `(width, height)` reads are best aligned to, when the format has one.
     fn block_size(&self) -> Option<(usize, usize)> {
         None
@@ -269,6 +274,12 @@ pub(crate) trait WindowSource: Send + Sync {
     /// once; `None` when it is read whole.
     fn streamed(&self) -> Option<&dyn StreamedSource> {
         None
+    }
+    /// Whether a window is read from the parts of the source it covers alone, so that
+    /// [`LazyRaster::write`] reads the source a strip of rows at a time (on one thread) rather
+    /// than whole. False for sources that decode the whole raster for any window.
+    fn reads_by_window(&self) -> bool {
+        false
     }
     /// Reads a window of some bands (numbered from 1) of a level (0 for full resolution, `i + 1`
     /// for overview `i`), band after band.
@@ -357,6 +368,12 @@ impl WindowSource for SharedRaster {
     }
     fn streamed(&self) -> Option<&dyn StreamedSource> {
         Some(self)
+    }
+    fn reads_by_window(&self) -> bool {
+        self.lock().is_ok_and(|reader| reader.reads_by_window())
+    }
+    fn row_alignment(&mut self) -> Option<usize> {
+        self.lock().ok().and_then(|mut reader| reader.row_alignment())
     }
     fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
         Ok(self.lock()?.read_window(window, &WindowOptions { bands: bands.into(), overview: level.checked_sub(1) })?.raster.data)
@@ -939,6 +956,16 @@ impl LazyRaster {
         }
     }
 
+    /// The rows strips of the full-resolution image are best made of (a multiple of), so that each
+    /// block of the files it reads is read once: a GeoTIFF's block height, or a VRT's sources'.
+    pub(crate) fn row_alignment(&mut self) -> Option<usize> {
+        match &mut self.inner {
+            Inner::Tiff(t) => Some(t.levels[0].block.1),
+            Inner::Memory(_) => None,
+            Inner::Source(_, s) => s.row_alignment(),
+        }
+    }
+
     /// The geotransform of an overview (or of the full-resolution image for `None`).
     pub fn level_geo_transform(&self, overview: Option<usize>) -> Result<[f64; 6]> {
         let (w, h) = self.level_size(overview)?;
@@ -1038,11 +1065,12 @@ impl LazyRaster {
     }
 
     /// Writes the full-resolution image to `path`, as [`crate::write_raster_dataset`] writes the
-    /// raster [`LazyRaster::read`] reads. A GeoTIFF or JPEG 2000 file read in place and written as
-    /// a GeoTIFF or a COG (in a compression terrio's own writer encodes) is read and written a
-    /// strip of rows at a time, so that it is never held whole; a PMTiles or MBTiles archive is
-    /// built a tile row at a time (and a raster already on its zoom level's Web Mercator pixel
-    /// grid read a strip at a time); other rasters are read whole, then written.
+    /// raster [`LazyRaster::read`] reads. A GeoTIFF or JPEG 2000 file read in place, or a VRT of
+    /// such files copied or picked by nearest neighbour, written as a GeoTIFF or a COG (in a
+    /// compression terrio's own writer encodes) is read and written a strip of rows at a time,
+    /// so that it is never held whole; a PMTiles or MBTiles archive is built a tile row at a
+    /// time (and a raster already on its zoom level's Web Mercator pixel grid read a strip at a
+    /// time); other rasters are read whole, then written.
     ///
     /// ```no_run
     /// use terrio::RasterWriteOptions;
@@ -1073,8 +1101,8 @@ impl LazyRaster {
             options
         };
         let (width, height, bands) = (self.width(), self.height(), self.band_count());
-        let block = self.block_size().map(|(_, h)| h);
         let value_size = self.data_type().size_bytes();
+        let block = crate::ops::strips::bounded_alignment(width, bands, value_size, self.row_alignment());
         if let Inner::Source(ds, s) = &self.inner
             && let Some(s) = s.streamed()
             && !source_mask
@@ -1107,7 +1135,7 @@ impl LazyRaster {
         let can_stream = can_stream
             && match &self.inner {
                 Inner::Tiff(t) => t.file.is_some() || t.zip.is_some(),
-                Inner::Source(_, _) => source_mask,
+                Inner::Source(_, s) => source_mask || s.reads_by_window(),
                 _ => false,
             };
         if !can_stream {
@@ -1123,6 +1151,15 @@ impl LazyRaster {
             header.band_metadata = t.tags.band_properties.clone();
             header.color_table = t.tags.color_table.clone();
             header.gcps = t.tags.gcps.clone();
+        }
+        // A source read by window keeps its dataset's metadata items as its whole read does
+        // (see `LazyRaster::read`): `AREA_OR_POINT` alone, unless its driver reads them whole.
+        // A masked source has long been written with all of them, and still is.
+        if let Inner::Source(_, source) = &self.inner
+            && !source_mask
+            && !source.whole_read_keeps_metadata()
+        {
+            header.raster.metadata.retain(|(k, _)| k == "AREA_OR_POINT");
         }
         let rows = crate::ops::strips::strip_rows(width, bands, value_size, block);
         let mut out = crate::ops::strips::StripWriter::create_masked(&header, path, options, source_mask)?;
@@ -1220,9 +1257,9 @@ impl LazyRaster {
         let raster = crate::pixel::raster_from_data(cfg, data)?;
         let mut ds = RasterDataset::with_driver(raster, self.driver(), first_nodata.is_some());
         ds.set_geo_transform(geo_transform);
-        let (gcps, band_metadata, color_table) = match &self.inner {
-            Inner::Tiff(t) => (&t.tags.gcps, &t.tags.band_properties, &t.tags.color_table),
-            Inner::Memory(source) | Inner::Source(source, _) => (&source.gcps, &source.band_metadata, &source.color_table),
+        let (gcps, color_table) = match &self.inner {
+            Inner::Tiff(t) => (&t.tags.gcps, &t.tags.color_table),
+            Inner::Memory(source) | Inner::Source(source, _) => (&source.gcps, &source.color_table),
         };
         ds.gcps = gcps
             .iter()
@@ -1232,16 +1269,9 @@ impl LazyRaster {
                 g
             })
             .collect();
-        ds.band_metadata = bands.iter().map(|&b| band_metadata.get(b - 1).cloned().unwrap_or_default()).collect();
+        ds.band_metadata = self.bands_metadata(bands);
         ds.band_nodata = band_nodata;
-        // Whole complex bands (a band's real then imaginary parts) are read as complex bands,
-        // described band by band.
-        if self.is_complex() && bands.len().is_multiple_of(2) && bands.as_chunks::<2>().0.iter().all(|p| p[0] % 2 == 1 && p[1] == p[0] + 1)
-        {
-            ds.complex = true;
-            ds.band_metadata =
-                bands.as_chunks::<2>().0.iter().map(|p| band_metadata.get((p[0] - 1) / 2).cloned().unwrap_or_default()).collect();
-        }
+        ds.complex = self.reads_complex(bands);
         if bands == [1] {
             ds.color_table = color_table.clone();
         }
@@ -1251,6 +1281,38 @@ impl LazyRaster {
             }
         }
         Ok(ds)
+    }
+
+    /// Whether a window of the raster reads only the parts of it the window covers and gives the
+    /// values a whole read gives them: a GeoTIFF (read in place or from memory), a JPEG 2000 file,
+    /// or a VRT of such files copied or picked by nearest neighbour. Decoded rasters in memory,
+    /// and sources that decode the whole raster for any window, are not. [`LazyRaster::write`]
+    /// writes those that are a strip of rows at a time (a GeoTIFF only when read from a file).
+    pub fn reads_by_window(&self) -> bool {
+        match &self.inner {
+            Inner::Tiff(_) => true,
+            Inner::Source(_, s) => s.reads_by_window(),
+            Inner::Memory(_) => false,
+        }
+    }
+
+    /// Whether a read of some bands (numbered from 1) gives complex bands: whole complex bands
+    /// (a band's real then imaginary parts), which are read as complex bands.
+    fn reads_complex(&self, bands: &[usize]) -> bool {
+        self.is_complex() && bands.len().is_multiple_of(2) && bands.as_chunks::<2>().0.iter().all(|p| p[0] % 2 == 1 && p[1] == p[0] + 1)
+    }
+
+    /// The description and metadata of some bands (numbered from 1) as a read of the whole image
+    /// gives them, band statistics included: per complex band for whole complex bands.
+    pub(crate) fn bands_metadata(&self, bands: &[usize]) -> Vec<crate::BandMetadata> {
+        let band_metadata = match &self.inner {
+            Inner::Tiff(t) => &t.tags.band_properties,
+            Inner::Memory(source) | Inner::Source(source, _) => &source.band_metadata,
+        };
+        if self.reads_complex(bands) {
+            return bands.as_chunks::<2>().0.iter().map(|p| band_metadata.get((p[0] - 1) / 2).cloned().unwrap_or_default()).collect();
+        }
+        bands.iter().map(|&b| band_metadata.get(b - 1).cloned().unwrap_or_default()).collect()
     }
 
     /// The tile (or strip) size `(width, height)` of the full-resolution image or of an overview,

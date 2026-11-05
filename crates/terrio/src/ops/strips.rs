@@ -28,6 +28,18 @@ pub(crate) fn small_strip_rows(width: usize, bands: usize, value_size: usize, bl
     rows_of(SMALL_STRIP_BYTES, width, bands, value_size, block)
 }
 
+/// At most this many bytes of values in a row of the input's blocks that strips are aligned to: a
+/// taller row of blocks (4096-row blocks of a wide raster) is read in strips of about the usual
+/// size, decoding again the blocks a strip edge splits, rather than a whole row of blocks at a time.
+const MAX_ALIGNED_STRIP_BYTES: usize = 2 << 30;
+
+/// The block height `block` strips of a raster of `width` pixels and `bands` bands of `value_size`
+/// bytes are aligned to, when a row of such blocks holds at most 2 GB of values; `None` otherwise.
+pub(crate) fn bounded_alignment(width: usize, bands: usize, value_size: usize, block: Option<usize>) -> Option<usize> {
+    let row = width.saturating_mul(bands.max(1)).saturating_mul(value_size);
+    block.filter(|&h| h.saturating_mul(row) <= MAX_ALIGNED_STRIP_BYTES)
+}
+
 fn rows_of(bytes: usize, width: usize, bands: usize, value_size: usize, block: Option<usize>) -> usize {
     let row = (width * bands.max(1) * value_size).max(1);
     let block = block.unwrap_or(1).max(1);
@@ -441,6 +453,17 @@ mod tests {
     use crate::crs::SpatialRef;
     use crate::ops::{Grid, raster_header};
     use wbraster::DataType;
+
+    #[test]
+    fn strips_align_to_rows_of_blocks_of_at_most_2_gb() {
+        // 512 rows of a 98304-wide RGB mosaic of 64-bit values are 1.2 GB: kept.
+        assert_eq!(bounded_alignment(98304, 3, 8, Some(512)), Some(512));
+        assert_eq!(strip_rows(98304, 3, 8, bounded_alignment(98304, 3, 8, Some(512))), 512);
+        // 4096 rows are 9.7 GB: split into strips of about 64 MB.
+        assert_eq!(bounded_alignment(98304, 3, 8, Some(4096)), None);
+        assert_eq!(strip_rows(98304, 3, 8, bounded_alignment(98304, 3, 8, Some(4096))), 28);
+        assert_eq!(bounded_alignment(1024, 1, 1, None), None);
+    }
 
     #[test]
     fn overwrite_guard_includes_directory_store_members() {

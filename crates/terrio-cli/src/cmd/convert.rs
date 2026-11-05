@@ -199,26 +199,22 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
         && (tiles_out || (a.minzoom.is_none() && a.maxzoom.is_none()))
         && a.layers.is_empty()
         && a.open_options.is_empty();
-    // GeoTIFF, JPEG 2000 and raw-layout inputs are read by window (other files of these
+    // GeoTIFF, JPEG 2000, VRT and raw-layout inputs are read by window (other files of these
     // extensions, such as Surfer's text grids, are read whole, then written by strip).
-    let streamed_in = matches!(
-        RasterDriver::for_extension(&a.input),
-        Some(
-            RasterDriver::GTiff
-                | RasterDriver::JP2
-                | RasterDriver::SRTMHGT
-                | RasterDriver::EHdr
-                | RasterDriver::ENVI
-                | RasterDriver::SAGA
-                | RasterDriver::ERS
-                | RasterDriver::RST
-                | RasterDriver::GSBG
-        )
-    );
+    let streamed_in = RasterDriver::for_extension(&a.input).is_some_and(RasterDriver::reads_by_window);
     if !(tiff_out || tiles_out) || !plain || !streamed_in {
         return Ok(None);
     }
-    let r = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
+    // A VRT is read whole when its lazy reader fails or cannot read it by window (its sources
+    // resampled, or read whole themselves). Any error opening it lazily is reported again by
+    // the whole read.
+    let vrt = RasterDriver::for_extension(&a.input) == Some(RasterDriver::VRT);
+    let r = match super::quiet(|| terrio::open_raster_lazy(&a.input)) {
+        Ok(r) if vrt && !r.reads_by_window() => return Ok(None),
+        Ok(r) => r,
+        Err(_) if vrt => return Ok(None),
+        Err(e) => return Err(e),
+    };
     let mut creation_options: Vec<(String, String)> =
         key_values(&a.raster_options)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     creation_options.extend(a.minzoom.map(|z| ("MINZOOM".to_string(), z.to_string())));

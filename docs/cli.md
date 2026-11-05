@@ -973,6 +973,22 @@ GDAL's `RasterIO` chooses for the output's size (`--overview AUTO`, the default)
 output type) and windows past the raster's edges read the window from the whole raster at full
 resolution (or the level read alone).
 
+A GeoTIFF or COG output of such a raster is read, converted and written a strip of rows at a time,
+as `gdal_translate` copies its output in chunks, so that neither the output nor the input is held
+whole: a mosaic larger than memory can be translated. This covers outputs that copy a window of the
+input (with `-b`, `--ot`, `--a-nodata`, `--a-srs` or `--a-ullr`) and those resized by nearest
+neighbour, `bilinear`, `cubic` or `cubicspline` from the overview `--overview AUTO` chooses.
+These are made whole before being written: outputs resized by `average`, `rms`, `mode` or `lanczos`
+(a strip of them read alone differs from the whole output where it starts inside a source row),
+resized from a level read alone (`--overview NONE` or a level number), of complex bands, or that
+replace one of the input's files. A VRT is read by strips when its sources are GeoTIFFs or other
+files read by window, copied or picked by nearest neighbour; other VRTs are read whole.
+A strip holds about 64 MB of values (counted as 64-bit values), and a few strips are in flight. A
+copy starting on a row of the source's tiles is read in strips of whole rows of tiles, so that each
+tile is decoded once, when a row of tiles holds at most 2 GB of values: such a strip is larger than
+64 MB on a wide tiled raster (1.2 GB for a 98304-pixel-wide RGB mosaic of 512-row tiles). Other
+copies, and sources with taller rows of tiles, decode again the tiles a strip edge splits.
+
 ## warp
 
 ```sh
