@@ -331,3 +331,87 @@ fn snapshots_reject_conflicting_dimension_declarations() {
         assert!(source.to_zarr_store().unwrap_err().to_string().contains("conflicting declarations for dimension"));
     }
 }
+
+fn user_defined_fixture() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_user_defined")
+}
+
+/// Compound, enum and vlen attributes (`tests/data/netcdf_user_defined`) as GDAL 3.13.3 reports
+/// them, from the `expected.json` that `scripts/make_netcdf_user_defined_fixture.py` writes:
+/// `gdalmdiminfo` prints a compound as an object of its fields (a nested enum and char as their
+/// integers), a top-level enum as its integer, and a vlen or a compound with an array field as
+/// `null`; `gdalinfo` keeps each key with an empty value. The enum's metadata differs (see
+/// `netcdf_enum_attribute_metadata_differs_from_gdal`).
+#[cfg(feature = "netcdf-hdf5")]
+#[test]
+fn netcdf_user_defined_attributes_match_gdal() {
+    let dir = user_defined_fixture();
+    let expected: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("expected.json")).unwrap()).unwrap();
+    let path = dir.join("user_defined_attrs.nc");
+    let path = path.to_str().unwrap();
+
+    let ds = terrio::multidim::open(path).unwrap();
+    for (group, attrs) in [("/", &ds.root.attributes), ("/z", &ds.array("/z").unwrap().info.attributes)] {
+        for (name, value) in expected["multidim"][group].as_object().unwrap() {
+            assert_eq!(attrs.get(name), Some(value), "{group} {name}");
+        }
+    }
+
+    let raster = terrio::open_raster(path).unwrap();
+    for (key, value) in expected["metadata"].as_object().unwrap() {
+        if key == "z#flag" {
+            continue;
+        }
+        let got = raster.raster.metadata.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        assert_eq!(got, Some(value.as_str().unwrap()), "{key}");
+    }
+}
+
+/// Known difference from GDAL 3.13.3: `gdalinfo` leaves an enum attribute empty (`z#flag=`), but
+/// netcdf-reader decodes it as its base integers, so terrio's metadata reads `z#flag=1`. When
+/// netcdf-reader reports enum attributes as user-defined, this test fails; expect `""` then.
+#[cfg(feature = "netcdf-hdf5")]
+#[test]
+fn netcdf_enum_attribute_metadata_differs_from_gdal() {
+    let path = user_defined_fixture().join("user_defined_attrs.nc");
+    let raster = terrio::open_raster(path.to_str().unwrap()).unwrap();
+    let flag = raster.raster.metadata.iter().find(|(k, _)| k == "z#flag").map(|(_, v)| v.as_str());
+    assert_eq!(flag, Some("1"));
+}
+
+/// A netCDF snapshot of a file with user-defined attributes: the attributes GDAL cannot read
+/// either (`null`, a vlen or a compound with an array field) are left out, as `gdalmdimtranslate`
+/// leaves them out, and a compound is kept as its JSON text, as an object attribute of any source
+/// is; the HDF5 writer has no compound type.
+#[cfg(feature = "netcdf-hdf5")]
+#[test]
+fn netcdf_snapshot_of_user_defined_attributes() {
+    let path = user_defined_fixture().join("user_defined_attrs.nc");
+    let original = terrio::multidim::open(path.to_str().unwrap()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("copy.nc");
+    original.write(file.to_str().unwrap()).unwrap();
+    let opened = terrio::multidim::open(file.to_str().unwrap()).unwrap();
+    let z = opened.array("/z").unwrap();
+    assert_eq!(z.info.attributes.get("counts"), None);
+    assert_eq!(z.info.attributes.get("grid"), None);
+    let station = z.info.attributes.get("station").and_then(|v| v.as_str()).expect("station is written as text");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(station).unwrap(), json!({"id": 7, "elevation": 12.5}));
+    assert_eq!(opened.root.attributes.get("title"), Some(&json!("user-defined attributes")));
+}
+
+/// netCDF has no null: a `null` attribute of a source other than netCDF, such as a Zarr attribute
+/// set to `null`, is left out of a netCDF snapshot rather than written as the text "null". Other
+/// attributes are written as usual.
+#[cfg(feature = "netcdf-hdf5")]
+#[test]
+fn netcdf_snapshot_leaves_out_null_attributes() {
+    let mut original = dataset();
+    original.root.attributes["comment"] = serde_json::Value::Null;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("nulls.nc");
+    original.write(file.to_str().unwrap()).unwrap();
+    let opened = terrio::multidim::open(file.to_str().unwrap()).unwrap();
+    assert_eq!(opened.root.attributes.get("comment"), None);
+    assert_eq!(opened.root.attributes.get("title"), Some(&json!("multidimensional test")));
+}

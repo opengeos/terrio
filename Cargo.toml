@@ -66,13 +66,14 @@ lz4_flex = { version = "0.14", default-features = false, features = ["alloc", "s
 ruzstd = "0.9"
 # 0.10 reads HDF5 files written in the earliest format with version 1/2 compound datatypes
 # (every HEC-RAS geometry and plan file, among others) and old fill value messages
-# (roteiro-gis/netcdf-rust#95). The HEC-RAS engine uses the same hdf5-reader 0.10.1, so a build
-# compiles one HDF5 reader.
-netcdf-reader = { version = "0.10.1", default-features = false, features = ["netcdf4"] }
-hdf5-reader = { version = "0.10.1", default-features = false }
+# (roteiro-gis/netcdf-rust#95). netcdf-reader, hdf5-reader and the HEC-RAS engine move together
+# (netcdf-reader 0.12 and ras-commander-fast-hdf 0.4 use hdf5-reader 0.12), so a build compiles
+# one HDF5 reader.
+netcdf-reader = { version = "0.12.1", default-features = false, features = ["netcdf4"] }
+hdf5-reader = { version = "0.12.1", default-features = false }
 # HEC-RAS geometry and plan HDF files (the `hecras` feature): the read-only engine behind
 # ras-commander. It owns every HEC-RAS rule; terrio's driver only translates its values.
-ras-commander-fast-hdf = { version = "0.3.0", default-features = false, features = ["hdf", "mesh", "results"] }
+ras-commander-fast-hdf = { version = "0.4.0", default-features = false, features = ["hdf", "mesh", "results"] }
 # The portable decoder: the same pixels on every platform, closer to libjpeg's than its SIMD paths.
 jpeg-decoder = { version = "0.3", default-features = false, features = ["platform_independent"] }
 # GeoPackage JPEG tiles; the version wbraster already uses.

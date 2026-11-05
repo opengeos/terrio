@@ -1,0 +1,36 @@
+{
+  "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
+  "multidim": {
+    "/": {
+      "title": "user-defined attributes",
+      "origin": {
+        "id": 1,
+        "elevation": -3.25
+      }
+    },
+    "/z": {
+      "station": {
+        "id": 7,
+        "elevation": 12.5
+      },
+      "flag": 1,
+      "counts": null,
+      "grid": null,
+      "sample": {
+        "state": 1,
+        "level": 200,
+        "code": 81
+      }
+    }
+  },
+  "metadata": {
+    "NC_GLOBAL#origin": "",
+    "NC_GLOBAL#title": "user-defined attributes",
+    "z#counts": "",
+    "z#flag": "",
+    "z#grid": "",
+    "z#sample": "",
+    "z#station": "",
+    "z#units": "m"
+  }
+}
