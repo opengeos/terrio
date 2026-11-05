@@ -154,7 +154,7 @@ class WarpedVRT(DatasetReader):
     pixels, so its sum is not the source's: for a full-resolution total, read the window at full
     size, or the whole VRT at the reduced size. A `sum` read whose source window would hold more
     than `TERRIO_WARP_SUM_MAX_BYTES` (4 GiB by default) raises `ResourceLimitError` before the
-    window is read.
+    window is read. When `dtype` differs from the source's, the window counts in both types.
     """
 
     def __init__(
@@ -721,8 +721,10 @@ class WarpedVRT(DatasetReader):
         written = np.zeros((h, w), bool)
         if win is not None and win[2] > 0 and win[3] > 0:
             if self.resampling == Resampling.sum:
-                # Refused before the window is read when its memory would exceed the budget.
-                itemsize = np.dtype(self.src_dataset.dtypes[0]).itemsize
+                # Refused before the window is read when its memory would exceed the budget. Cast
+                # to another working type, the window is held in both types at once.
+                src, work = np.dtype(self.src_dataset.dtypes[0]), np.dtype(self._dtype)
+                itemsize = src.itemsize + (work.itemsize if work != src else 0)
                 _terrio.check_sum_window(win[2] * win[3], itemsize * self._src_count)
             data, mask = self._source_window(grid.level, win)
             warped, written = rw.warp(region, win, data, mask, self._init_value, direct)

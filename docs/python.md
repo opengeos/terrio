@@ -342,7 +342,8 @@ per pixel for the pixels' shares, would hold more than 4 GiB raises `ResourceLim
 `terrio.rio.warp.reproject` of a band or dataset: `overview=n` sums a level (for the
 `terrio.rio` ones, a source opened with `overview_level=n`), and the
 `TERRIO_WARP_SUM_MAX_BYTES` environment variable, a positive integer byte count, changes
-the budget.
+the budget. A `WarpedVRT` whose `dtype` differs from its source's counts the window in
+both types, which its cast holds at once.
 Calls with loaded inputs reuse their existing pixels, including repeated references.
 File GCPs/RPCs of the first path are retained in mixed path/`Raster` calls.
 

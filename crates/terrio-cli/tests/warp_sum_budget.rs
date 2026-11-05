@@ -102,3 +102,32 @@ fn a_sum_counts_the_bytes_of_every_band() {
     assert!(fits.status.success(), "{}", String::from_utf8_lossy(&fits.stderr));
     assert_eq!(total(&d.join("out.tif")), 1024.0);
 }
+
+#[test]
+fn a_sum_counts_a_window_converted_to_another_working_type() {
+    // Warped VRTs of 32 x 32 ones summed into 1 x 1, read under 16,000 bytes. A window converted to
+    // another working type is held at once in its source type, as f64 values and, unless that type
+    // is Float64, in it: Float32 to Float64 holds 4 + 8 bytes a pixel (20,480 with the shares) and
+    // Byte to Float32 1 + 8 + 4 (21,504), while Float32 kept as Float32 holds 4 (12,288) and fits.
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    write_ones(d, "ones.tif", 1);
+    let writes: [&[&str]; 4] = [
+        &["translate", "ones.tif", "bytes.tif", "--ot", "Byte"],
+        &["warp", "ones.tif", "f64.vrt", "-r", "sum", "--ts", "1", "1", "--ot", "Float64"],
+        &["warp", "bytes.tif", "f32.vrt", "-r", "sum", "--ts", "1", "1", "--ot", "Float32"],
+        &["warp", "ones.tif", "same.vrt", "-r", "sum", "--ts", "1", "1"],
+    ];
+    for args in writes {
+        assert!(run(d, "16000", args).status.success(), "{args:?}");
+    }
+    for (vrt, estimate) in [("f64.vrt", "about 20480 bytes"), ("f32.vrt", "about 21504 bytes")] {
+        let refused = run(d, "16000", &["translate", vrt, "out.tif"]);
+        let message = String::from_utf8_lossy(&refused.stderr);
+        assert!(!refused.status.success(), "{vrt}: {message}");
+        assert!(message.contains(estimate), "{vrt}: {message}");
+    }
+    let fits = run(d, "16000", &["translate", "same.vrt", "out.tif"]);
+    assert!(fits.status.success(), "{}", String::from_utf8_lossy(&fits.stderr));
+    assert_eq!(total(&d.join("out.tif")), 1024.0);
+}

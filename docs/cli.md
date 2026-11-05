@@ -1188,7 +1188,9 @@ floating-point output; an integer output also rounds each pixel to a whole numbe
 and clamps it to its type's range (a Byte output stores 255 for a sum of 400).
 A `sum` reads the source's full resolution unless a level is given (`--overview n`),
 and then sums that level's pixels: `AUTO` and `AUTO-n` choose no overview for it.
-Its memory budget is that of `terrio warp -r sum` (`TERRIO_WARP_SUM_MAX_BYTES`).
+Its memory budget is that of `terrio warp -r sum` (`TERRIO_WARP_SUM_MAX_BYTES`), and a
+window converted to another working type counts what the conversion holds at once: the
+window in its source type, as f64 values and, unless that type is Float64, in the working type.
 GDAL 3.12's generic `sum` polygon path can lose overlap area on pixel boundaries,
 including when a redundant identity CRS transformer disables its affine fast path.
 Terrio preserves conservative affine overlap sums; its results match GDAL's affine

@@ -1558,9 +1558,11 @@ fn src_nodata(s: &Source, o: &WarpOptions, band: usize) -> Option<f64> {
 const SUM_MAX_BYTES: u64 = 4 << 30;
 
 /// The memory a `sum` holds for a source window of `pixels` pixels of `bytes` bytes (all its
-/// bands): the window, and 8 bytes per pixel for the shares of an output pixel's footprint, which
-/// can be the whole window. An estimate: one Float32 band gives 12 bytes per pixel, the peak
-/// measured in the same CRS; a reprojected `sum` held up to about 20, a `WarpedVRT` read 24.
+/// bands, and the copies a conversion to another working type holds at once): the window, and 8
+/// bytes per pixel for the shares of an output pixel's footprint, which can be the whole window.
+/// An estimate: one Float32 band gives 12 bytes per pixel, the peak measured in the same CRS; a
+/// reprojected `sum` held up to about 20, and a `WarpedVRT` read 16 in float32 and 24 in float64,
+/// as it copies the window to warp it.
 pub fn sum_estimate(pixels: u64, bytes: usize) -> u64 {
     pixels.saturating_mul(bytes as u64 + 8)
 }
@@ -1825,7 +1827,11 @@ fn warp_reader_selected(
         header.raster.bands = bands.len();
         header.raster.data = RasterData::new_filled(header.raster.data_type, 0, 0.);
     }
-    let src_bytes = header.raster.data_type.size_bytes() * header.raster.bands;
+    // A window converted to another working type is held at once in its source type, as f64
+    // values and, unless that type is Float64 (whose values those are), in it.
+    let src_type = header.raster.data_type;
+    let converted = working.filter(|w| *w != src_type).map_or(0, |w| 8 + if w == DataType::F64 { 0 } else { w.size_bytes() });
+    let src_bytes = (src_type.size_bytes() + converted) * header.raster.bands;
     if let Some(dtype) = working {
         header.raster.data_type = dtype;
         header.raster.data = RasterData::new_filled(dtype, 0, 0.);

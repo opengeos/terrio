@@ -218,6 +218,21 @@ def test_a_sum_counts_the_bytes_of_every_band(tmp_path, monkeypatch):
     assert mosaic.read(1).sum() == 1024.0
 
 
+def test_a_sum_counts_the_working_type_of_a_warped_vrt(tmp_path, monkeypatch):
+    # Two bands of 32 x 32 Float32 ones read through a `WarpedVRT` summed into 1 x 1, under 20,000
+    # bytes. Cast to a float64 working type, a window is held in both types at once: 4 + 8 bytes
+    # per band and pixel, 32,768 with the shares. In float32 it holds 4 per band (16,384) and fits.
+    path = str(tmp_path / "two.tif")
+    terrio.Raster.from_array(np.ones((2, 32, 32), "float32"), GT, crs="EPSG:3857").write(path)
+    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "20000")
+    with terrio.rio.open(path) as src:
+        with WarpedVRT(src, resampling=Resampling.sum, dtype="float64") as vrt:
+            with pytest.raises(terrio.ResourceLimitError, match=r"about 32768 bytes"):
+                vrt.read(out_shape=(2, 1, 1))
+        with WarpedVRT(src, resampling=Resampling.sum) as vrt:
+            assert vrt.read(out_shape=(2, 1, 1)).sum(axis=(1, 2)).tolist() == [1024.0, 1024.0]
+
+
 @pytest.mark.parametrize("mode", [True, False])
 def test_rejects_boolean_overview(pyramid, mode):
     with pytest.raises(terrio.InvalidArgumentError, match="boolean"):
