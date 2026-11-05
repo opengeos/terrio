@@ -50,7 +50,8 @@ pub struct Args {
     /// GDAL resampling behavior to reproduce: 3.12 or 3.13; TERRIO_GDAL_COMPAT, else 3.12, by default.
     #[arg(long)]
     kernel_version: Option<String>,
-    /// Source overview: AUTO, AUTO-n, NONE, or a level numbered from 0.
+    /// Source overview: AUTO, AUTO-n, NONE, or a level numbered from 0. With `-r sum`, AUTO and
+    /// AUTO-n read full resolution.
     #[arg(long, alias = "ovr", default_value = "AUTO")]
     overview: String,
 
