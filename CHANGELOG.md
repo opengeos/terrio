@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- `terrio.xarray` (`engine="terrio"`, `open_rasterio`) skips applying a band's scale and offset
+  when they are 1 and 0, and applies them in place otherwise: reads with `mask_and_scale` take
+  19% less time (8000 x 8000 float32).
+- `Raster.from_array` copies arrays 2.6 times faster, 6.9 times for views that are not C-ordered
+  (169 MB float32): C-ordered arrays as one slice, others made contiguous by numpy, and the
+  raster no longer filled with nodata before the data replaces it. `terrio::raster_from_data`
+  builds a `Raster` from its data that way, as JavaScript's `rasterFromArray` now does.
+- `terrio.rio.features.rasterize` looks burn values up in one array operation, not per pixel in
+  Python: 9 times faster for 2,000 shapes on an 8000 x 8000 grid (`crop`/`mask` in
+  `terrio.xarray`). Into an integer dtype, integer burn values stay exact (IDs above 2**53 and
+  2**63 included) and are clamped to its range, where values outside it wrapped; other values
+  are rounded half away from zero and clamped, NaN as 0, as rasterio 1.5.2 (GDAL 3.12.2) burns
+  them, where fractions were truncated. Edge cases match rasterio but for integers above 2**52,
+  which GDAL rounds through float64 and terrio keeps exact, and values of 2**64 and above into
+  uint64, which burn its maximum where GDAL burns 0.
 - `terrio translate` and `terrio convert` read a VRT of GeoTIFFs (or other files read by window,
   copied or picked by nearest neighbour) a strip of rows at a time when writing a GeoTIFF or COG,
   so a mosaic larger than memory can be copied or converted. Both read the whole

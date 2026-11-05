@@ -597,6 +597,92 @@ def test_features():
     assert features.bounds(geoms[0]) == (500000, 4099700, 500300, 4100000)
 
 
+@pytest.mark.parametrize(
+    "values, dtype",
+    [
+        ([3, -7, 300], "int16"),
+        ([2**40 + 3, -1, 2**33], "int64"),
+        ([2**63 + 5, 1, 2**63 + 9], "uint64"),
+        ([1.5, -2.25, float("nan")], "float32"),
+        ([1, 2.5, 3], None),
+    ],
+)
+def test_rasterize_overlapping_shapes_match_burning_one_by_one(values, dtype):
+    # Later shapes win where they overlap.
+    T = Affine(1, 0, 0, 0, -1, 40)
+
+    def square(x, y, size):
+        ring = [(x, y), (x + size, y), (x + size, y - size), (x, y - size), (x, y)]
+        return {"type": "Polygon", "coordinates": [ring]}
+
+    geoms = [square(2, 38, 20), square(10, 30, 20), square(15, 25, 3)]
+    shapes = list(zip(geoms, values, strict=True))
+    for all_touched in (False, True):
+        got = features.rasterize(
+            shapes, out_shape=(40, 40), transform=T, dtype=dtype, all_touched=all_touched
+        )
+        if dtype is not None:
+            assert got.dtype == np.dtype(dtype)
+        want = np.zeros((40, 40), dtype=got.dtype)
+        for g, v in shapes:
+            hit = features.geometry_mask([g], (40, 40), T, all_touched=all_touched, invert=True)
+            want[hit] = v
+        np.testing.assert_array_equal(got, want)
+
+
+def test_rasterize_burns_values_as_rasterio():
+    # rasterio 1.5.2 (GDAL) burns values through float64: NaN as 0, rounded half away from zero,
+    # clamped to an integer dtype's range, overflowing floats to infinity. Recorded with rasterio
+    # 1.5.2 on NumPy 2.5.4, except integers above 2**52, which stay exact here (below). Left out:
+    # values of 2**64 and above into uint64 (GDAL burns 0, terrio the maximum).
+    T = Affine(1, 0, 0, 0, -1, 4)
+    left = {"type": "Polygon", "coordinates": [[(0, 0), (2, 0), (2, 4), (0, 4), (0, 0)]]}
+    right = {"type": "Polygon", "coordinates": [[(2, 0), (4, 0), (4, 4), (2, 4), (2, 0)]]}
+    cases = [
+        ((9223372036854775813, 1), "uint64", [9223372036854775813, 1]),
+        ((9223372036854775813, -1), "int64", [9223372036854775807, -1]),
+        ((300, 1), "uint8", [255, 1]),
+        ((2.5, 1), "uint8", [3, 1]),
+        ((-2.5, 1), "int16", [-3, 1]),
+        ((-1.5, 1), "int16", [-2, 1]),
+        ((0.5, 1), "uint8", [1, 1]),
+        ((1.5, 1), "uint8", [2, 1]),
+        ((-0.4, 1), "uint8", [0, 1]),
+        ((math.nan, 1), "int32", [0, 1]),
+        ((math.inf, 1), "int32", [2147483647, 1]),
+        ((-math.inf, 1), "uint16", [0, 1]),
+        ((np.float64(2**63), 1), "int64", [9223372036854775807, 1]),
+        ((np.int64(300), 1), "uint8", [255, 1]),
+        ((-1, 1), "uint64", [0, 1]),
+        ((1e40, 1), "float32", [float("inf"), 1.0]),
+        ((-1e40, 1), "float32", [float("-inf"), 1.0]),
+        ((math.nan, 1), "float32", [float("nan"), 1.0]),
+        ((0.1, 1), "float32", [0.10000000149011612, 1.0]),
+        ((9007199254740993, 1), "float64", [9007199254740992.0, 1.0]),
+        ((-9223372036854775818, 1), "int64", [-9223372036854775808, 1]),
+        ((70000.7, -3), "int16", [32767, -3]),
+        ((True, 2), "uint8", [1, 2]),
+        # Integers stay exact where GDAL rounds them through float64 (2**52 + 3 as 2**52 + 4,
+        # 2**53 + 1 and 2**53 + 3 alike): the differences from rasterio.
+        ((2**52 + 3, 1), "int64", [4503599627370499, 1]),
+        ((2**53 - 1, 1), "int64", [9007199254740991, 1]),
+        ((2**53 + 1, 2**53 + 3), "int64", [9007199254740993, 9007199254740995]),
+        # Floats round by adding 0.5 in float64, as in GDAL.
+        ((4503599627370495.5, 1), "int64", [4503599627370496, 1]),
+    ]
+    for values, dtype, expected in cases:
+        got = features.rasterize(
+            list(zip((left, right), values, strict=True)),
+            out_shape=(4, 4),
+            transform=T,
+            dtype=dtype,
+        )
+        assert got.dtype == np.dtype(dtype)
+        np.testing.assert_array_equal(
+            got[0, ::2], np.array(expected, dtype=dtype), err_msg=f"{values} {dtype}"
+        )
+
+
 def test_warp_merge_mask(dem, tmp_path):
     path, data = dem
     with rio.open(path) as ds:

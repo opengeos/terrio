@@ -608,12 +608,18 @@ class TerrioArrayWrapper(BackendArray):
             if self._unsigned_dtype is not None:
                 out = out.astype(self._unsigned_dtype)
             if self.masked:
-                out = out.astype(self.dtype)
+                out = out.astype(self.dtype, copy=False)
                 if invalid is not None:
-                    out[invalid] = self.fill_value
+                    np.copyto(out, self.fill_value, where=invalid)
             if self.mask_and_scale:
                 for i, b in enumerate(bands):
-                    out[i] = out[i] * self.source.scales[b - 1] + self.source.offsets[b - 1]
+                    scale, offset = self.source.scales[b - 1], self.source.offsets[b - 1]
+                    # In place, and not at all when it changes nothing: a pass over a chunk
+                    # costs more than reading it.
+                    if scale != 1:
+                        np.multiply(out[i], scale, out=out[i])
+                    if offset != 0:
+                        np.add(out[i], offset, out=out[i])
         if not isinstance(band_key, list):
             out = out[0]
         if squeeze_axis:

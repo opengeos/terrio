@@ -84,6 +84,24 @@ def test_from_array_2d_and_bool():
     assert r.read(1).sum() == 12
 
 
+@pytest.mark.parametrize(
+    "view",
+    [
+        lambda a: a[:, ::-1, ::2],
+        lambda a: np.asfortranarray(a),
+        lambda a: a.transpose(0, 2, 1),
+    ],
+    ids=["reversed_strided", "fortran", "transposed"],
+)
+@pytest.mark.parametrize("dtype", ["float32", "int16", "uint64"])
+def test_from_array_non_contiguous(view, dtype):
+    a = np.arange(2 * 6 * 8, dtype=dtype).reshape(2, 6, 8)
+    v = view(a)
+    out = terrio.Raster.from_array(v, (0, 1, 0, 0, 0, -1)).read()
+    assert out.dtype == v.dtype
+    np.testing.assert_array_equal(out, np.ascontiguousarray(v))
+
+
 def test_from_array_rejects_bad_input():
     with pytest.raises(terrio.InvalidArgumentError):
         terrio.Raster.from_array(np.zeros(5), TRANSFORM)

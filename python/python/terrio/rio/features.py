@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from typing import Any
 
 import numpy as np
@@ -183,6 +183,35 @@ def _burn(
     return np.asarray(r.read(1))
 
 
+def _burn_values(values: Sequence[Any], dtype: np.dtype) -> np.ndarray:
+    """Burn values in `dtype`, as rasterio 1.5.2 (GDAL 3.12.2) burns them but integers exact.
+
+    Into a float dtype, values go through float64 (floats overflow to infinity). Into an integer
+    dtype, integers are kept exact and clamped to its range; other values are rounded half away
+    from zero by adding 0.5 in float64 and clamped, NaN as 0, as GDAL burns them. Differences
+    from rasterio: integers above 2**52, which GDAL rounds through float64, stay exact, and those
+    of 2**64 and above into uint64 burn its maximum where GDAL burns 0.
+    """
+    if dtype.kind not in "iu":
+        with np.errstate(over="ignore"):
+            return np.array([float(v) for v in values], dtype=np.float64).astype(dtype)
+    info = np.iinfo(dtype)
+    burnt = []
+    for v in values:
+        if isinstance(v, (int, np.integer)):
+            n = int(v)
+        else:
+            f = float(v)
+            if math.isnan(f):
+                n = 0
+            elif math.isinf(f):
+                n = info.max if f > 0 else info.min
+            else:
+                n = math.floor(f + 0.5) if f >= 0 else math.ceil(f - 0.5)
+        burnt.append(min(max(n, info.min), info.max))
+    return np.array(burnt, dtype=dtype)
+
+
 def rasterize(
     shapes: Iterable[Any],
     out_shape: Any = None,
@@ -203,7 +232,9 @@ def rasterize(
 
     Args:
         shapes: Geometries, or `(geometry, value)` pairs. Geometries are GeoJSON-like mappings
-            or objects with `__geo_interface__`.
+            or objects with `__geo_interface__`. Into an integer `dtype`, integer values are
+            burnt exactly (IDs of any size it holds) and clamped to its range; other values are
+            rounded half away from zero and clamped, NaN as 0, as rasterio (GDAL) burns them.
         out_shape: The output shape `(rows, cols)`, when `out` is not given.
         fill: The value of pixels no geometry covers.
         nodata: The nodata value of a written dataset, and the masked value with `masked`.
@@ -293,13 +324,7 @@ def rasterize(
         else:
             idx = _burn(geoms, list(range(1, len(geoms) + 1)), shape, transform, all_touched, False)
             hit = idx > 0
-            vals = np.array(values, dtype=object if out.dtype.kind in "iu" else np.float64)
-            burnt = (
-                np.array([vals[i - 1] for i in idx[hit]], dtype=np.float64)
-                if out.dtype.kind == "f"
-                else np.array([vals[i - 1] for i in idx[hit]])
-            )
-            out[hit] = burnt.astype(out.dtype) if burnt.size else burnt
+            out[hit] = _burn_values(values, out.dtype)[idx[hit] - 1]
     if writer is not None:
         writer.write(out, 1)
         if not isinstance(dst_path, type(writer)) or dst_path is not writer:

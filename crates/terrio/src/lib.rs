@@ -312,6 +312,8 @@ pub use ndarray_ext::{ArrayError, BandLayout, FloatElement, RasterArrayExt, Rast
 
 /// The raster type: pixels, georeferencing and CRS, in memory.
 pub use wbraster::{DataType, Raster, RasterConfig};
+// Building a `Raster` from its pixels without a nodata fill.
+pub use pixel::raster_from_data;
 /// The vector types: layers of features with geometries and attributes.
 pub use wbvector::{Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
 
