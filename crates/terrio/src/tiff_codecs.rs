@@ -471,7 +471,8 @@ impl ChunkCodec {
 
     /// Inflates a Deflate chunk of `h` rows of `w` pixels straight into the result,
     /// and undoes its horizontal predictor; a chunk with padding (an edge tile) is then cut to its
-    /// `dw` x `dh` image data. A stream ending short is an error, as in libtiff.
+    /// `dw` x `dh` image data. As in libtiff, a stream ending before the chunk's samples, or with a
+    /// wrong Adler-32, is an error; one cut in its trailer after the samples is accepted.
     fn deflate(&self, raw: &[u8], w: usize, h: usize, dw: usize, dh: usize) -> TiffResult<DecodingResult> {
         let what = "a TIFF chunk";
         let len = fallible::len(&[w, h, self.spp], what)?;
@@ -485,7 +486,8 @@ impl ChunkCodec {
         }
         let mut res = zeros!(U8: 0, I8: 0, U16: 0, I16: 0, U32: 0, I32: 0, U64: 0, I64: 0, F32: 0.0, F64: 0.0);
         // fdeflate: 15% faster than zlib-rs on Sentinel-2 tiles (1024 x 1024 uint16), pure Rust.
-        // Read on until the stream ends, so its Adler-32 is checked even when the output is full.
+        // Read on after the output is full, so a present Adler-32 is checked; a stream cut in its
+        // trailer then reads no more and is accepted, as libtiff accepts it.
         {
             let mut z = fdeflate::Decompressor::new();
             let mut buf = res.as_buffer(0);
@@ -502,7 +504,7 @@ impl ChunkCodec {
                 return Err(invalid(format!("Deflate: chunk of {written} bytes, {} expected", out.len())));
             }
         }
-        if self.predictor == 2 {
+        if self.predictor == 2 && w > 0 {
             let (row, spp) = (w * self.spp, self.spp);
             macro_rules! acc {
                 ($($s:ident),*) => {
@@ -1153,6 +1155,11 @@ mod tests {
         assert!(c.deflate(&bad_sum, 4, 4, 4, 4).is_err());
         assert!(c.deflate(&zlib(&pixels[..12]), 4, 4, 4, 4).is_err());
         assert!(c.deflate(&zlib(&[pixels.as_slice(), &[9; 8]].concat()), 4, 4, 4, 4).is_ok());
+        // Cut in its trailer (the Adler-32) after every sample: accepted, as libtiff accepts it.
+        assert!(c.deflate(&good[..good.len() - 4], 4, 4, 4, 4).is_ok());
+        // Predictor 2 on a chunk of no width: nothing to undo, no panic.
+        let p = ChunkCodec { predictor: 2, ..c };
+        assert!(p.deflate(&zlib(&[]), 0, 4, 0, 4).is_ok());
     }
 
     /// A little-endian BigTIFF of one 4 x 4 byte strip of `data`, LZW-coded, whose

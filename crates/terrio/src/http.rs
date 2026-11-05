@@ -924,7 +924,49 @@ impl Drop for AgentScope {
 
 /// Outside any [`AgentScope`], the agent of the whole process: opening and reading remote files
 /// from many threads reuses connections (and TLS sessions) rather than opening one per file.
-static PROCESS_AGENT: std::sync::Mutex<Option<(AgentSettings, ureq::Agent)>> = std::sync::Mutex::new(None);
+static PROCESS_AGENT: std::sync::Mutex<Option<ProcessAgent>> = std::sync::Mutex::new(None);
+
+/// [`PROCESS_AGENT`]: the agent, the settings and proxy variables it was built with (`ureq`
+/// reads `ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` when an agent is built), and
+/// the process it was built in.
+struct ProcessAgent {
+    pid: u32,
+    settings: AgentSettings,
+    proxy: Vec<Option<std::ffi::OsString>>,
+    agent: ureq::Agent,
+}
+
+/// The proxy variables `ureq` reads, in both cases.
+fn proxy_env() -> Vec<Option<std::ffi::OsString>> {
+    ["ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy"]
+        .iter()
+        .map(std::env::var_os)
+        .collect()
+}
+
+/// The process's agent for `settings`, rebuilt when they or the proxy variables change. In a
+/// forked child (another process id), the parent's agent is leaked, not dropped: its idle
+/// connections are the parent's sockets, which the child must neither use nor close.
+fn process_agent(settings: AgentSettings, options: &HttpOptions) -> ureq::Agent {
+    cached_agent(&PROCESS_AGENT, std::process::id(), proxy_env(), settings, || new_agent(options))
+}
+
+/// [`process_agent`] with its cache, process id, proxy variables and agent builder given.
+fn cached_agent(
+    slot: &std::sync::Mutex<Option<ProcessAgent>>,
+    pid: u32,
+    proxy: Vec<Option<std::ffi::OsString>>,
+    settings: AgentSettings,
+    build: impl FnOnce() -> ureq::Agent,
+) -> ureq::Agent {
+    let mut cached = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    match &*cached {
+        Some(p) if p.pid == pid && p.settings == settings && p.proxy == proxy => return p.agent.clone(),
+        Some(p) if p.pid != pid => std::mem::forget(cached.take()),
+        _ => {}
+    }
+    cached.insert(ProcessAgent { pid, settings, proxy, agent: build() }).agent.clone()
+}
 
 /// The agent requests are sent with: no automatic redirects (followed by [`Client`], which
 /// signs only the first request), no compression. Within an [`AgentScope`], the scope's agent
@@ -934,11 +976,7 @@ fn agent(options: &HttpOptions) -> ureq::Agent {
     SHARED_AGENT.with(|shared| {
         let mut shared = shared.borrow_mut();
         if shared.0 == 0 {
-            let mut process = PROCESS_AGENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            return match &*process {
-                Some((s, agent)) if *s == settings => agent.clone(),
-                _ => process.insert((settings, new_agent(options))).1.clone(),
-            };
+            return process_agent(settings, options);
         }
         match &shared.1 {
             Some((s, agent)) if *s == settings => agent.clone(),
@@ -2782,6 +2820,30 @@ mod tests {
             }
             lines.push(line.trim().to_string());
         }
+    }
+
+    /// The process's agent is reused while its settings, the proxy variables and the process
+    /// stay the same, and rebuilt when one of them changes (a forked child has another id).
+    #[test]
+    fn process_agent_is_rebuilt_when_settings_proxy_or_process_change() {
+        let slot = std::sync::Mutex::new(None);
+        let builds = std::cell::Cell::new(0);
+        let options = HttpOptions::default();
+        let settings = |timeout: Option<Duration>| -> AgentSettings { (timeout, options.connect_timeout, options.user_agent.clone()) };
+        let get = |pid: u32, proxy: Option<&str>, timeout: Option<Duration>| {
+            let proxy = vec![proxy.map(std::ffi::OsString::from)];
+            cached_agent(&slot, pid, proxy, settings(timeout), || {
+                builds.set(builds.get() + 1);
+                new_agent(&options)
+            });
+            builds.get()
+        };
+        assert_eq!(get(1, None, None), 1);
+        assert_eq!(get(1, None, None), 1);
+        assert_eq!(get(1, None, Some(Duration::from_secs(5))), 2);
+        assert_eq!(get(1, Some("http://proxy:3128"), Some(Duration::from_secs(5))), 3);
+        assert_eq!(get(2, Some("http://proxy:3128"), Some(Duration::from_secs(5))), 4);
+        assert_eq!(get(2, Some("http://proxy:3128"), Some(Duration::from_secs(5))), 4);
     }
 
     /// A loopback HTTP proxy standing in for every host: it records the target (`host:port`) of
