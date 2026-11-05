@@ -418,8 +418,8 @@ fn netcdf_snapshot_leaves_out_null_attributes() {
 
 /// Zero-length compound, enum, int, short, float and double attributes (`zero_length_attrs.h5`,
 /// written with h5py) are `null` and a zero-length string attribute `[]`, as GDAL 3.13.3's
-/// `gdalmdiminfo` prints them (`zero_length` in `expected.json`), and a netCDF snapshot leaves the
-/// `null` ones out.
+/// `gdalmdiminfo` prints them (`zero_length` in `expected.json`). A netCDF snapshot leaves all of them
+/// out, as `gdalmdimtranslate` does.
 #[cfg(feature = "netcdf-hdf5")]
 #[test]
 fn zero_length_attributes_are_null_and_left_out_of_snapshots() {
@@ -437,7 +437,7 @@ fn zero_length_attributes_are_null_and_left_out_of_snapshots() {
     ds.write(file.to_str().unwrap()).unwrap();
     let opened = terrio::multidim::open(file.to_str().unwrap()).unwrap();
     let z = opened.array("/z").unwrap();
-    for (name, _) in expected["zero_length"].as_object().unwrap().iter().filter(|(_, v)| v.is_null()) {
+    for name in expected["zero_length"].as_object().unwrap().keys() {
         assert_eq!(z.info.attributes.get(name), None, "{name}");
     }
     assert_eq!(z.info.attributes.get("units"), Some(&json!("m")));
