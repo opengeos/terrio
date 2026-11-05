@@ -1101,8 +1101,8 @@ impl LazyRaster {
             options
         };
         let (width, height, bands) = (self.width(), self.height(), self.band_count());
-        let block = self.row_alignment();
         let value_size = self.data_type().size_bytes();
+        let block = crate::ops::strips::bounded_alignment(width, bands, value_size, self.row_alignment());
         if let Inner::Source(ds, s) = &self.inner
             && let Some(s) = s.streamed()
             && !source_mask
@@ -1284,10 +1284,10 @@ impl LazyRaster {
     }
 
     /// Whether a window of the raster reads only the parts of it the window covers and gives the
-    /// values a whole read gives them: a GeoTIFF read in place, a JPEG 2000 file, or a VRT of such
-    /// files copied or picked by nearest neighbour. Rasters in memory, and sources that decode
-    /// the whole raster for any window, are not. [`LazyRaster::write`] writes those that are a
-    /// strip of rows at a time.
+    /// values a whole read gives them: a GeoTIFF (read in place or from memory), a JPEG 2000 file,
+    /// or a VRT of such files copied or picked by nearest neighbour. Decoded rasters in memory,
+    /// and sources that decode the whole raster for any window, are not. [`LazyRaster::write`]
+    /// writes those that are a strip of rows at a time (a GeoTIFF only when read from a file).
     pub fn reads_by_window(&self) -> bool {
         match &self.inner {
             Inner::Tiff(_) => true,

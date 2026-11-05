@@ -8,14 +8,15 @@
   VRT into memory as 64-bit values first: translating a 98304 x 114688 RGB mosaic to a COG asked
   for 270 GB and failed (#558). On a 16384 x 16384 RGB mosaic of 16 GeoTIFFs written as a JPEG
   COG, `translate` now peaks at 0.5 GB and `convert` at 0.8 GB, down from 10.3 GB, and the files
-  are the same, byte for byte. Strips are made of the source tiles' rows, so the input is read
-  about as much as before (within 5% on a mosaic of tiled GeoTIFFs), and a VRT source copied
+  are the same, byte for byte. Strips are made of the source tiles' rows. The input is read
+  within 5% as much as before on a tiled GeoTIFF and a 4-tile VRT mosaic, and 40% more on the
+  16-tile JPEG mosaic (168 to 235 MB), and a VRT source copied
   pixel for pixel is read without a margin around each window. `translate` streams any input read by window this way when the output
   copies a window of the input or is resized by nearest neighbour or a bilinear, cubic or cubic
   spline kernel from the overview `--overview AUTO` chooses; outputs resized by average, RMS,
   mode or Lanczos, or from a level read alone, are still made whole first.
-  A strip holds about 64 MB of values, or one row of the source's tiles when that is larger
-  (1.2 GB for the reporter's mosaic), and a few strips are in flight.
+  A strip holds about 64 MB of values, or one row of the source's tiles when that is larger and
+  at most 2 GB (1.2 GB for the reporter's mosaic), and a few strips are in flight.
   `translate_lazy_to_file` is the Rust entry point.
 
 - Warps with `sum` resampling give each output pixel the sum of the valid source pixels it

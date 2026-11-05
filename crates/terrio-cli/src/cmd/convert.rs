@@ -205,8 +205,9 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
     if !(tiff_out || tiles_out) || !plain || !streamed_in {
         return Ok(None);
     }
-    // A VRT is read whole, as before it was read by window, when its lazy reader fails or reads
-    // it whole anyway (its sources resampled, or read whole themselves).
+    // A VRT is read whole when its lazy reader fails or cannot read it by window (its sources
+    // resampled, or read whole themselves). Any error opening it lazily is reported again by
+    // the whole read.
     let vrt = RasterDriver::for_extension(&a.input) == Some(RasterDriver::VRT);
     let r = match super::quiet(|| terrio::open_raster_lazy(&a.input)) {
         Ok(r) if vrt && !r.reads_by_window() => return Ok(None),

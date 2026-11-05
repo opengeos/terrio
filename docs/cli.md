@@ -983,9 +983,11 @@ These are made whole before being written: outputs resized by `average`, `rms`, 
 resized from a level read alone (`--overview NONE` or a level number), of complex bands, or that
 replace one of the input's files. A VRT is read by strips when its sources are GeoTIFFs or other
 files read by window, copied or picked by nearest neighbour; other VRTs are read whole.
-A strip holds about 64 MB of values (counted as 64-bit values), and a copy's strip at least one
-row of the source's tiles, so that each tile is decoded once: on a very wide tiled raster a strip is
-larger (1.2 GB for a 98304-pixel-wide RGB mosaic of 512-row tiles), and a few strips are in flight.
+A strip holds about 64 MB of values (counted as 64-bit values), and a few strips are in flight. A
+copy starting on a row of the source's tiles is read in strips of whole rows of tiles, so that each
+tile is decoded once, when a row of tiles holds at most 2 GB of values: such a strip is larger than
+64 MB on a wide tiled raster (1.2 GB for a 98304-pixel-wide RGB mosaic of 512-row tiles). Other
+copies, and sources with taller rows of tiles, decode again the tiles a strip edge splits.
 
 ## warp
 
