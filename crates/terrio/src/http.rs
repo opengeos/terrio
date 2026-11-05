@@ -402,6 +402,8 @@ struct Fetched {
 /// Makes requests for one remote file: signing, redirects, region discovery and retries.
 struct Client {
     agent: ureq::Agent,
+    /// The process `agent` was made in (see [`agent_in`]).
+    pid: u32,
     options: HttpOptions,
     remote: Remote,
     /// The URL requests go to (after S3 region discovery or a redirect).
@@ -506,6 +508,7 @@ impl Client {
         };
         let mut client = Self {
             agent,
+            pid: std::process::id(),
             options,
             remote: remote.clone(),
             url,
@@ -637,7 +640,7 @@ impl Client {
         let mut redirects = 0;
         let mut attempt = 0;
         loop {
-            let mut req = self.agent.get(&url);
+            let mut req = agent_in(self.pid, &self.agent, || agent(&self.options)).get(&url);
             if let Some(r) = &range_header {
                 req = req.header("Range", r);
             }
@@ -948,6 +951,7 @@ fn proxy_env() -> Vec<Option<std::ffi::OsString>> {
 /// forked child (another process id), the parent's agent is leaked, not dropped: its idle
 /// connections are the parent's sockets, which the child must neither use nor close.
 fn process_agent(settings: AgentSettings, options: &HttpOptions) -> ureq::Agent {
+    crate::par::fork_safe();
     cached_agent(&PROCESS_AGENT, std::process::id(), proxy_env(), settings, || new_agent(options))
 }
 
@@ -966,6 +970,13 @@ fn cached_agent(
         _ => {}
     }
     cached.insert(ProcessAgent { pid, settings, proxy, agent: build() }).agent.clone()
+}
+
+/// `agent`, made in process `pid`, in this process: in a forked child, `here` (the child's own
+/// agent) instead, since `agent`'s idle connections are the parent's sockets, which the parent
+/// and every client sharing its pool may still use.
+fn agent_in(pid: u32, agent: &ureq::Agent, here: impl FnOnce() -> ureq::Agent) -> ureq::Agent {
+    if pid == std::process::id() { agent.clone() } else { here() }
 }
 
 /// The agent requests are sent with: no automatic redirects (followed by [`Client`], which
@@ -1036,6 +1047,8 @@ pub(crate) enum ByteRange {
 /// connections, from any number of threads. An S3 bucket's region, once learned, is reused.
 pub(crate) struct ObjectFetcher {
     agent: ureq::Agent,
+    /// The process `agent` was made in (see [`agent_in`]).
+    pid: u32,
     options: HttpOptions,
     region: Mutex<Option<String>>,
     /// S3 credentials and region from the environment, read once rather than for every object.
@@ -1049,7 +1062,14 @@ impl ObjectFetcher {
     pub(crate) fn new() -> Self {
         let options = HttpOptions::from_env();
         let auth = (Credentials::from_env(), s3::region_from_env());
-        Self { agent: agent(&options), options, region: Mutex::new(None), auth, config: crate::config::thread_options() }
+        Self {
+            agent: agent(&options),
+            pid: std::process::id(),
+            options,
+            region: Mutex::new(None),
+            auth,
+            config: crate::config::thread_options(),
+        }
     }
 
     /// Fetches an object, or part of it. `None` when the object does not exist (status 404, or
@@ -1058,7 +1078,8 @@ impl ObjectFetcher {
         // A region already learned is the client's from the start (its URL is the regional one).
         let known = self.region.lock().ok().and_then(|r| r.clone());
         let auth = (self.auth.0.clone(), known.clone().or_else(|| self.auth.1.clone()));
-        let mut client = Client::with_auth(remote, self.options.clone(), self.agent.clone(), Some(auth), self.config.clone());
+        let agent = agent_in(self.pid, &self.agent, || agent(&self.options));
+        let mut client = Client::with_auth(remote, self.options.clone(), agent, Some(auth), self.config.clone());
         client.missing_ok = true;
         if let (Remote::S3(_), Some(auth), Some(_)) = (remote, client.s3.as_mut(), known) {
             auth.discovered = true;
@@ -1593,7 +1614,7 @@ impl Drop for CacheTestGuard {
 }
 
 /// Holds this module's process-wide locks (the cache of remote files, the request statistics,
-/// the path-specific options and the retry warnings) across a fork, for [`crate::par`]: the
+/// the path-specific options, the retry warnings and the process's agent) across a fork, for [`crate::par`]: the
 /// forking thread takes them before the process is copied and lets them go after, so that the
 /// child never starts with one held by a thread it does not have.
 #[cfg(unix)]
@@ -1603,6 +1624,7 @@ pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
     held.push(Box::new(stats(&FILE_STATS)));
     held.push(Box::new(path_options_write()));
     held.push(Box::new(retry_warnings()));
+    held.push(Box::new(PROCESS_AGENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner)));
 }
 
 /// [`PATH_OPTIONS`] to change, also after a panic elsewhere poisoned its lock.
@@ -2524,6 +2546,35 @@ mod tests {
         });
     }
 
+    /// A child forked while another thread builds the process's agent builds its own: the agent's
+    /// lock is held by the forking thread across the fork, as the module's other locks are.
+    #[test]
+    #[cfg(unix)]
+    fn a_child_forked_while_the_process_agent_is_built_gets_its_own() {
+        use std::sync::atomic::AtomicBool;
+        crate::par::alone(60, || {
+            let (holding, released) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+            let (h, r) = (holding.clone(), released.clone());
+            let holder = std::thread::spawn(move || {
+                crate::par::fork_safe();
+                let agent = PROCESS_AGENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                h.store(true, Ordering::Release);
+                std::thread::sleep(Duration::from_millis(300));
+                r.store(true, Ordering::Release);
+                drop(agent);
+            });
+            while !holding.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let exit = crate::par::in_child(10, move || {
+                let options = HttpOptions::default();
+                process_agent((options.timeout, options.connect_timeout, options.user_agent.clone()), &options);
+                released.load(Ordering::Acquire)
+            });
+            holder.join().is_ok() && exit == Some(0)
+        });
+    }
+
     #[test]
     fn server_without_ranges_downloads_once() {
         // At most ten times the first range (4096 bytes), as GDAL accepts.
@@ -2845,6 +2896,21 @@ mod tests {
         assert_eq!(get(1, Some("http://proxy:3128"), Some(Duration::from_secs(5))), 3);
         assert_eq!(get(2, Some("http://proxy:3128"), Some(Duration::from_secs(5))), 4);
         assert_eq!(get(2, Some("http://proxy:3128"), Some(Duration::from_secs(5))), 4);
+    }
+
+    /// A client or fetcher made before a fork sends its requests through the child's agent.
+    #[test]
+    fn an_agent_from_another_process_is_replaced() {
+        let made = new_agent(&HttpOptions::default());
+        let here = std::cell::Cell::new(0);
+        let child = || {
+            here.set(here.get() + 1);
+            new_agent(&HttpOptions::default())
+        };
+        agent_in(std::process::id(), &made, child);
+        assert_eq!(here.get(), 0);
+        agent_in(std::process::id().wrapping_add(1), &made, child);
+        assert_eq!(here.get(), 1);
     }
 
     /// A loopback HTTP proxy standing in for every host: it records the target (`host:port`) of
