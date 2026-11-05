@@ -31,7 +31,7 @@
 //! | `TERRIO_HTTP_BLOCK_SIZE` (bytes) | `CPL_VSIL_CURL_CHUNK_SIZE` | 65536 |
 //! | `TERRIO_HTTP_CACHE_SIZE` (bytes): the block cache of each open file, and the process-wide cache | `CPL_VSIL_CURL_CACHE_SIZE` | 67108864 |
 //! | `TERRIO_HTTP_USERAGENT` | `GDAL_HTTP_USERAGENT` | `terrio/VERSION` |
-//! | `TERRIO_HTTP_LOG=YES`: print each request to standard error | `CPL_CURL_VERBOSE` | off |
+//! | `TERRIO_HTTP_LOG=YES`: print each request, and each new process-wide connection pool, to standard error | `CPL_CURL_VERBOSE` | off |
 //! | `TERRIO_JSON_MAX_SIZE` (bytes, `K`, `M` or `G` suffixes): the largest JSON document fetched whole | `CPL_JSON_MAX_SIZE` | 100 MB |
 //!
 //! Bodies fetched whole are capped: JSON documents (STAC, a search page) at `CPL_JSON_MAX_SIZE`,
@@ -965,7 +965,12 @@ fn proxy_env() -> Vec<Option<std::ffi::OsString>> {
 /// connections are the parent's sockets, which the child must neither use nor close.
 fn process_agent(settings: AgentSettings, options: &HttpOptions) -> ureq::Agent {
     crate::par::fork_safe();
-    cached_agent(&PROCESS_AGENT, std::process::id(), proxy_env(), settings, || new_agent(options))
+    cached_agent(&PROCESS_AGENT, std::process::id(), proxy_env(), settings, || {
+        if options.log {
+            eprintln!("terrio: new HTTP connection pool (settings, proxy variables or process changed)");
+        }
+        new_agent(options)
+    })
 }
 
 /// [`process_agent`] with its cache, process id, proxy variables and agent builder given.

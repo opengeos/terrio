@@ -75,8 +75,8 @@ enum Codec {
     /// sample per pixel) or refuses (the others): read as stored, as libtiff gives them to GDAL.
     WhiteIsZero(u16),
     /// Deflate of little-endian integer samples (or floating-point ones without a predictor),
-    /// inflated in one call into the result: faster than the `tiff` crate's streaming reader and
-    /// its predictor.
+    /// inflated straight into the result with `fdeflate` (pure Rust), then its predictor undone:
+    /// faster than the `tiff` crate's streaming reader and its predictor.
     Deflate,
 }
 
@@ -473,7 +473,8 @@ impl ChunkCodec {
     /// and undoes its horizontal predictor; a chunk with padding (an edge tile) is then cut to its
     /// `dw` x `dh` image data. A stream ending before the chunk's samples, or with a wrong Adler-32,
     /// is an error; one cut in its trailer after the samples is accepted, as libtiff 4.5's zlib
-    /// decoder accepts it (libtiff built with libdeflate refuses it).
+    /// decoder accepts it (libtiff built with libdeflate, as GDAL 3.8.4's reference build here,
+    /// refuses it).
     fn deflate(&self, raw: &[u8], w: usize, h: usize, dw: usize, dh: usize) -> TiffResult<DecodingResult> {
         let what = "a TIFF chunk";
         let len = fallible::len(&[w, h, self.spp], what)?;
