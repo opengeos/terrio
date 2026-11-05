@@ -967,7 +967,7 @@ fn process_agent(settings: AgentSettings, options: &HttpOptions) -> ureq::Agent 
     crate::par::fork_safe();
     cached_agent(&PROCESS_AGENT, std::process::id(), proxy_env(), settings, || {
         if options.log {
-            eprintln!("terrio: new HTTP connection pool (settings, proxy variables or process changed)");
+            eprintln!("terrio: new HTTP connection pool (first use, or settings, proxy variables or process changed)");
         }
         new_agent(options)
     })
