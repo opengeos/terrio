@@ -2543,7 +2543,7 @@ impl Storage {
             out_type: self.out_type,
             dst_nodata: self.dst_nodata.clone(),
             avoid_nodata: self.avoid_nodata.unwrap_or(dst_nodata.is_some() && !no_masks),
-            keeps_source_values: self.work_type == self.out_type,
+            keeps_source_values: self.work_type == self.out_type && !matches!(self.out_type, DataType::I64 | DataType::U64),
             avoid_all_nodata: self.avoid_all_nodata,
             bands: self.bands,
             nudged: AtomicBool::new(false),
@@ -2574,7 +2574,8 @@ struct Sink {
     /// holds every source value (the union of their types, [`working_type`]; a [`RegionWarp`],
     /// whose working type is its output type, also needs source data of that type). Then
     /// [`Sink::value`] keeps a source value unless it is moved off a nodata value: rounding to the
-    /// working type and converting it to the output type change nothing.
+    /// working type and converting it to the output type change nothing. Not for 64-bit integers,
+    /// whose odd values from 2^52 [`warp_round`] moves to the even value above, as gdalwarp does.
     keeps_source_values: bool,
     /// Whether a warped value was moved off a nodata value (see [`Sink::finish`]).
     nudged: AtomicBool,
@@ -5598,6 +5599,21 @@ mod tests {
         assert_eq!((win.2, win.3), (2, 2));
         let (out, _) = warp.warp(region, win, &RasterData::F32(vec![2.6, 300.0, -1.0, 7.0]), None, 0.0, false).unwrap();
         assert!(matches!(out, RasterData::U8(v) if v == [3, 255, 0, 7]));
+    }
+
+    /// A region of 64-bit integers keeps rounding nearest values through `warp_round`, which moves
+    /// odd values from 2^52 to the even value above (gdalwarp 3.8.4 warps 2^52 + 1 and 2^52 + 3 to
+    /// 2^52 + 2 and 2^52 + 4 too): such values are not stored as they are.
+    #[test]
+    fn region_warp_rounds_large_64_bit_nearest_values() {
+        let srs = SpatialRef::from_epsg(4326).unwrap();
+        let gt = [10.0, 0.25, 0.0, 50.0, 0.0, -0.25];
+        let warp = RegionWarp::new((2, 2), gt, &srs, &srs, gt, Resampling::Nearest, 0.125, DataType::I64, vec![None], None).unwrap();
+        let region = (0, 0, 2, 2);
+        let win = warp.source_window(region).unwrap();
+        let big = 1i64 << 52;
+        let (out, _) = warp.warp(region, win, &RasterData::I64(vec![big + 1, big + 3, -5, 7]), None, 0.0, false).unwrap();
+        assert!(matches!(out, RasterData::I64(v) if v == [big + 2, big + 4, -5, 7]));
     }
 
     /// `average`'s running mean taken while visiting the pixels equals, bit for bit,
