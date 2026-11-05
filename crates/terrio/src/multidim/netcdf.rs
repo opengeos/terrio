@@ -66,8 +66,13 @@ fn user_value(v: &NcValue, t: &NcType) -> Option<Value> {
                 NcType::Compound { fields, .. } => fields.as_slice(),
                 _ => &[],
             };
-            let field_type = |name: &str| types.iter().find(|f| f.name == name).map_or(&NcType::String, |f| &f.dtype);
-            Value::Object(fields.iter().map(|f| Some((f.name.clone(), user_value(&f.value, field_type(&f.name))?))).collect::<Option<_>>()?)
+            // A field missing from the declared type makes the attribute `null`, not mis-typed.
+            let mut object = serde_json::Map::new();
+            for f in fields {
+                let ty = types.iter().find(|t| t.name == f.name).map(|t| &t.dtype)?;
+                object.insert(f.name.clone(), user_value(&f.value, ty)?);
+            }
+            Value::Object(object)
         }
         NcValue::Array(_) | NcValue::Opaque(_) | NcValue::VLen(_) => return None,
     })

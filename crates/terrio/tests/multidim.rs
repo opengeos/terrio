@@ -395,7 +395,8 @@ fn netcdf_snapshot_of_user_defined_attributes() {
     let z = opened.array("/z").unwrap();
     assert_eq!(z.info.attributes.get("counts"), None);
     assert_eq!(z.info.attributes.get("grid"), None);
-    assert_eq!(z.info.attributes.get("station"), Some(&json!(r#"{"id":7,"elevation":12.5}"#)));
+    let station = z.info.attributes.get("station").and_then(|v| v.as_str()).expect("station is written as text");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(station).unwrap(), json!({"id": 7, "elevation": 12.5}));
     assert_eq!(opened.root.attributes.get("title"), Some(&json!("user-defined attributes")));
 }
 
