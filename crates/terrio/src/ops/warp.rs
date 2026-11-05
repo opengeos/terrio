@@ -3325,6 +3325,37 @@ impl WarpContext<'_> {
                     }
                 };
                 let mut found = false;
+                if self.resampling == Resampling::Average {
+                    // `area_value`'s running mean over the same pixels in the same order, without
+                    // collecting them first.
+                    for (b, o) in out.iter_mut().enumerate() {
+                        let (data, valid) = (k.src.bands[b], k.src.valid[b].as_deref());
+                        let (mut any, mut total, mut mean) = (false, 0.0, 0.0);
+                        for y in iy0..iy1 {
+                            let w = wy(y);
+                            let line = k.index(0, y);
+                            for x in ix0..ix1 {
+                                if valid.is_some_and(|m| !m[line + x]) {
+                                    continue;
+                                }
+                                any = true;
+                                let w = wx(x, w);
+                                if w > 0.0 {
+                                    total += w;
+                                    mean += (w / total) * (crate::pixel::Pixel::to_f64(data[line + x]) - mean);
+                                }
+                            }
+                        }
+                        if any && total > 0.0 {
+                            o[i] = sink.value(mean, b);
+                            found = true;
+                        }
+                    }
+                    if found {
+                        sink.avoid_all(out, i);
+                    }
+                    continue;
+                }
                 for (b, o) in out.iter_mut().enumerate() {
                     values.clear();
                     for y in iy0..iy1 {
