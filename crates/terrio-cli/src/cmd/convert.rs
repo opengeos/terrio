@@ -205,7 +205,15 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
     if !(tiff_out || tiles_out) || !plain || !streamed_in {
         return Ok(None);
     }
-    let r = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
+    // A VRT is read whole, as before it was read by window, when its lazy reader fails or reads
+    // it whole anyway (its sources resampled, or read whole themselves).
+    let vrt = RasterDriver::for_extension(&a.input) == Some(RasterDriver::VRT);
+    let r = match super::quiet(|| terrio::open_raster_lazy(&a.input)) {
+        Ok(r) if vrt && !r.reads_by_window() => return Ok(None),
+        Ok(r) => r,
+        Err(_) if vrt => return Ok(None),
+        Err(e) => return Err(e),
+    };
     let mut creation_options: Vec<(String, String)> =
         key_values(&a.raster_options)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     creation_options.extend(a.minzoom.map(|z| ("MINZOOM".to_string(), z.to_string())));

@@ -7,8 +7,10 @@
   so a mosaic larger than memory can be copied or converted. Both read the whole
   VRT into memory as 64-bit values first: translating a 98304 x 114688 RGB mosaic to a COG asked
   for 270 GB and failed (#558). On a 16384 x 16384 RGB mosaic of 16 GeoTIFFs written as a JPEG
-  COG, `translate` now peaks at 0.3 GB and `convert` at 1 GB, down from 10.3 GB, and the files are
-  the same, byte for byte. `translate` streams any input read by window this way when the output
+  COG, `translate` now peaks at 0.5 GB and `convert` at 0.8 GB, down from 10.3 GB, and the files
+  are the same, byte for byte. Strips are made of the source tiles' rows, so the input is read
+  about as much as before (within 5% on a mosaic of tiled GeoTIFFs), and a VRT source copied
+  pixel for pixel is read without a margin around each window. `translate` streams any input read by window this way when the output
   copies a window of the input or is resized by nearest neighbour or a bilinear, cubic or cubic
   spline kernel from the overview `--overview AUTO` chooses; outputs resized by average, RMS,
   mode or Lanczos, or from a level read alone, are still made whole first.

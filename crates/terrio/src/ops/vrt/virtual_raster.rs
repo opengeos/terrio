@@ -577,8 +577,13 @@ impl Reader {
         }
         let kernel = element.child("Kernel");
         let radius = kernel.map(kernel_size).transpose()?.unwrap_or(1) / 2;
+        // A copy picked by nearest neighbour (the same size, on whole pixels) needs no margin.
+        let copy = rect[2] == src.dst_rect[2]
+            && rect[3] == src.dst_rect[3]
+            && [rect[0], rect[1], src.dst_rect[0], src.dst_rect[1]].iter().all(|v| v.fract() == 0.0);
         let pad = radius
             + match src.resampling {
+                Resampling::Nearest if copy => 0,
                 Resampling::Nearest => 1,
                 Resampling::Bilinear => 2,
                 _ => 4,
@@ -983,25 +988,61 @@ impl WindowSource for Reader {
         self.description.root.child("MaskBand").is_some()
     }
     /// A window reads the parts of the sources that overlap it, the values a whole read gives
-    /// them, when each source is a file read by window copied or picked by nearest neighbour.
-    /// A resampled source's window is padded by a fixed margin, which a downsampling kernel can
-    /// reach past; a source read whole is decoded again for every window once more sources
-    /// are read than the reader keeps open; a VRT source and a warped or pansharpened VRT are
-    /// not described here.
+    /// them, when each source reads by window itself and is copied or picked by nearest
+    /// neighbour. A resampled source's window is padded by a fixed margin, which a downsampling
+    /// kernel can reach past; a source read whole is decoded again for every window once more
+    /// sources are read than the reader keeps open. A source supplied or already opened is
+    /// judged by how it reads ([`LazyRaster::reads_by_window`], recursively for a VRT), one not
+    /// yet opened by its format, and a VRT file not at all. A GeoTIFF that turns out to be read
+    /// whole (not in place) is then read correctly, only decoded again for each window once
+    /// evicted. Warped and pansharpened VRTs are not described here.
     fn reads_by_window(&self) -> bool {
         let description = &self.description;
         if description.warped || description.pansharpen.is_some() {
             return false;
         }
         description.layout.bands.iter().flat_map(|b| &b.sources).all(|s| {
-            let windowed = match self.sources.get(&s.filename) {
-                Some(source) => source.is_lazy(),
+            let opened =
+                self.sources.get(&s.filename).or_else(|| self.cached.get(&resolve_reference(&self.base, &s.filename, s.relative_to_vrt)));
+            let windowed = match opened {
+                Some(source) => source.reads_by_window(),
                 None => crate::formats::RasterDriver::for_extension(&s.filename)
                     .is_some_and(|d| d.reads_by_window() && d != crate::formats::RasterDriver::VRT),
             };
             let copied = !s.src_rect[0].is_nan() && s.src_rect[2] == s.dst_rect[2] && s.src_rect[3] == s.dst_rect[3];
             windowed && (copied || s.resampling == Resampling::Nearest)
         })
+    }
+    /// The least common multiple of the sources' block heights, when every source is copied
+    /// row for row with its blocks starting on the VRT's rows of that multiple (as a mosaic of
+    /// tiled GeoTIFFs placed on their tiles is): strips of such rows read each block once.
+    /// Otherwise the VRT's own block height.
+    fn row_alignment(&mut self) -> Option<usize> {
+        let own = self.block_size().map(|(_, h)| h);
+        if !self.reads_by_window() {
+            return own;
+        }
+        let sources: Vec<VrtSource> = self.description.layout.bands.iter().flat_map(|b| b.sources.iter().cloned()).collect();
+        let mut rows = 1usize;
+        let mut blocks = Vec::new();
+        for s in &sources {
+            let whole = |v: f64| v.fract() == 0.0;
+            if s.src_rect[3] != s.dst_rect[3] || !whole(s.src_rect[1]) || !whole(s.dst_rect[1]) {
+                return own;
+            }
+            let Some((_, h)) = self.source(&s.filename, s.relative_to_vrt).ok().and_then(|r| r.block_size()) else {
+                return own;
+            };
+            rows = rows / gcd(rows, h) * h;
+            if rows > 4096 {
+                return own;
+            }
+            blocks.push((s.dst_rect[1] - s.src_rect[1], h));
+        }
+        // Each source's blocks start on VRT rows of a multiple of their height, so strips of a
+        // multiple of every height start on blocks of every source.
+        let aligned = blocks.iter().all(|&(shift, h)| shift.rem_euclid(h as f64) == 0.0);
+        if aligned && rows > 1 { Some(rows) } else { own }
     }
     fn read_mask(&mut self, _level: usize, window: Window) -> Result<Option<Vec<u8>>> {
         let _depth = ReadDepth::enter()?;
@@ -1064,6 +1105,11 @@ impl Reader {
         let values = values.into_iter().map(|v| crate::ops::convert_value(v, data_type)).collect();
         Ok(RasterData::from_f64_vec(data_type, values))
     }
+}
+
+/// The greatest common divisor.
+fn gcd(a: usize, b: usize) -> usize {
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 thread_local! { static READ_DEPTH: std::cell::Cell<usize> = const {std::cell::Cell::new(0)}; }
@@ -1467,7 +1513,7 @@ mod tests {
         )
         .unwrap();
         let mut src = open_virtual_raster(&vrt).unwrap();
-        assert!(src.source_reads_by_window());
+        assert!(src.reads_by_window());
         let options = crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::Cog), ..Default::default() };
         let (whole, strips) = (at("whole.tif"), at("strips.tif"));
         crate::write_raster_dataset(&src.read().unwrap(), &whole, &options).unwrap();
@@ -1487,12 +1533,23 @@ mod tests {
         let reads_by_window = |xml: String| {
             let path = at("one.vrt");
             std::fs::write(&path, xml).unwrap();
-            open_virtual_raster(&path).unwrap().source_reads_by_window()
+            open_virtual_raster(&path).unwrap().reads_by_window()
         };
         assert!(reads_by_window(one(rgb, 20, "nearest")));
         assert!(!reads_by_window(one(rgb, 20, "lanczos")));
         assert!(!reads_by_window(one(&vrt, 20, "nearest")));
         assert!(!reads_by_window(one("/elsewhere/image.png", 20, "nearest")));
+        // Supplied sources are judged by how they read: a GeoTIFF read in place does, a VRT
+        // downsampling its own source by Lanczos does not.
+        let supplied = |name: &str, source: LazyRaster| {
+            let xml = one(name, 20, "nearest");
+            let sources = HashMap::from([(name.to_string(), source)]);
+            VirtualRaster::from_xml(&xml).unwrap().into_lazy(dir.path(), sources).unwrap().reads_by_window()
+        };
+        assert!(supplied("rgb", crate::open_raster_lazy(rgb).unwrap()));
+        let nested = at("nested.vrt");
+        std::fs::write(&nested, one(rgb, 20, "lanczos")).unwrap();
+        assert!(!supplied("nested", open_virtual_raster(&nested).unwrap()));
     }
 
     #[test]
@@ -2087,7 +2144,8 @@ mod tests {
         assert_eq!(reads.load(Ordering::Relaxed), 0);
         let result = virtual_raster.read_window(Window::new(500, 500, 10, 10), &Default::default()).unwrap();
         assert_eq!(result.raster.data.to_f64_vec()[0], 1000.);
-        assert_eq!(reads.load(Ordering::Relaxed), 144);
+        // A copy reads the window alone, without a margin.
+        assert_eq!(reads.load(Ordering::Relaxed), 100);
     }
 
     #[test]

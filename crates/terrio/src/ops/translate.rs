@@ -332,7 +332,8 @@ pub fn translate_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: Over
 /// [`translate_lazy`], written to `path` as [`crate::write_raster_dataset`] writes its output
 /// with `options`, the same file. An output read by window and written as a GeoTIFF or a COG is
 /// read, converted and written a strip of rows at a time, so that neither it nor the source is
-/// held whole (`gdal_translate` copies its output in chunks too), when it copies a window of the
+/// held whole (`gdal_translate` of GDAL 3.13.3 copies its output in chunks too), from a source
+/// whose windows read only what they cover ([`LazyRaster::reads_by_window`]), when it copies a window of the
 /// source or is resampled by nearest neighbour or a bilinear, cubic or cubic spline kernel from
 /// the overview `RasterIO` chooses (`OverviewSelection::Auto`). Other outputs (resampled by
 /// average, RMS, mode or Lanczos, from a level read alone, of complex bands or of another
@@ -374,13 +375,16 @@ fn write_lazy(
         return crate::write_raster_dataset(&read.rows(src, 0, oh)?, path, options);
     }
     // About 64 MB of values per strip, counted as the 8-byte values sources such as VRTs read in;
-    // a copy's strips are rows of the source's blocks, which a warped VRT computes whole.
-    let block = if read.copy { src.block_size().map(|(_, h)| h) } else { None };
+    // a copy's strips are rows of the source's blocks (a VRT's sources'), so that each is read
+    // once, when the window starts on one.
+    let start = read.read.window.map_or(0.0, |w| w.1);
+    let block = if read.copy { src.row_alignment().filter(|h| start % *h as f64 == 0.0) } else { None };
     let rows = rows_per_strip.unwrap_or_else(|| super::strips::strip_rows(ow, read.read.bands.len(), 8, block)).clamp(1, oh);
-    let first = read.rows(src, 0, rows)?;
-    let header = read.header(src, &first, oh);
+    let mut first = read.rows(src, 0, rows)?;
+    let data = std::mem::replace(&mut first.raster.data, RasterData::new_filled(first.raster.data_type, 0, 0.0));
+    let header = read.header(src, first, oh);
     let mut out = super::strips::StripWriter::create(&header, path, options)?;
-    out.write(first.raster.data, rows)?;
+    out.write(data, rows)?;
     let rest = (oh - rows).div_ceil(rows);
     super::strips::pipelined(
         rest,
@@ -415,7 +419,8 @@ struct LazyRead {
     /// Whether the read is the whole image at full resolution, which keeps band statistics.
     whole: bool,
     /// Whether a strip of the output's rows read alone holds the values the whole read gives
-    /// them: an output that copies a window of the source, or one resampled by nearest
+    /// them, from a source whose windows are its whole read's ([`LazyRaster::reads_by_window`]):
+    /// an output that copies a window of the source, or one resampled by nearest
     /// neighbour or a bilinear, cubic or cubic spline kernel from the overview `RasterIO`
     /// chooses. Other resamplings (average, RMS, mode, Lanczos) of a strip starting within a
     /// source row differ from the whole read's, as may a level read alone.
@@ -458,11 +463,11 @@ impl LazyRead {
         translate(&resized, &self.values)
     }
 
-    /// The header of the whole output, of `oh` rows, from `first`, its first rows: their
-    /// description, with the whole output's georeferencing, GCPs and band statistics.
-    fn header(&self, src: &LazyRaster, first: &RasterDataset, oh: usize) -> RasterDataset {
-        let mut header = first.clone();
-        header.raster.data = RasterData::new_filled(first.raster.data_type, 0, 0.0);
+    /// The header of the whole output, of `oh` rows, from `first`, its first rows (their pixels
+    /// taken out): their description, with the whole output's georeferencing, GCPs and band
+    /// statistics.
+    fn header(&self, src: &LazyRaster, first: RasterDataset, oh: usize) -> RasterDataset {
+        let mut header = first;
         header.raster.rows = oh;
         let ow = self.read.size.0;
         let gt = match self.values.assign_ullr {
@@ -645,9 +650,11 @@ fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelec
     // A level read alone (`--overview NONE` or a level) rounds each request's window to whole
     // pixels within 0.001 (`fixed_request`): a strip's own origin may round off the whole
     // output's sampling grid.
-    let by_strips = copy
-        || (fixed.is_none()
-            && matches!(resampling, Resampling::Nearest | Resampling::Bilinear | Resampling::Cubic | Resampling::CubicSpline));
+    // A source whose windows are not its whole read's (a VRT of resampled sources) is read whole.
+    let by_strips = src.reads_by_window()
+        && (copy
+            || (fixed.is_none()
+                && matches!(resampling, Resampling::Nearest | Resampling::Bilinear | Resampling::Cubic | Resampling::CubicSpline)));
     let values = TranslateOptions {
         output_type: o.output_type,
         assign_nodata: o.assign_nodata,
@@ -771,6 +778,18 @@ mod tests {
             ),
         )
         .unwrap();
+        // A VRT downsampling its source by Lanczos: its windows are not its whole read's.
+        let lanczos = at("lanczos.vrt");
+        std::fs::write(
+            &lanczos,
+            format!(
+                "<VRTDataset rasterXSize=\"20\" rasterYSize=\"15\"><VRTRasterBand dataType=\"Byte\" band=\"1\">\
+                 <ComplexSource resampling=\"lanczos\"><SourceFilename relativeToVRT=\"0\">{rgb}</SourceFilename>\
+                 <SourceBand>1</SourceBand><SrcRect xOff=\"0\" yOff=\"0\" xSize=\"64\" ySize=\"48\"/>\
+                 <DstRect xOff=\"0\" yOff=\"0\" xSize=\"20\" ySize=\"15\"/></ComplexSource></VRTRasterBand></VRTDataset>"
+            ),
+        )
+        .unwrap();
         let resized =
             |w, h, m| TranslateOptions { out_size: Some((Size::Pixels(w), Size::Pixels(h))), resampling: Some(m), ..Default::default() };
         let cases: Vec<(&str, TranslateOptions, OverviewSelection)> = vec![
@@ -810,14 +829,18 @@ mod tests {
                 TranslateOptions { resolution: Some((7.0, 7.0)), resampling: Some(Resampling::Bilinear), ..Default::default() },
                 OverviewSelection::Auto,
             ),
+            // Read whole: the VRT's windows are not its whole read's.
+            (&lanczos, TranslateOptions::default(), OverviewSelection::Auto),
         ];
-        // Every case is written by strips but the average and the Lanczos resampling, and the
-        // levels read alone (`NONE` or a level) that are not copies.
+        // Every case is written by strips but the average and the Lanczos resampling, the levels
+        // read alone (`NONE` or a level) that are not copies, and the Lanczos VRT.
         for (k, (input, o, overview)) in cases.iter().enumerate() {
             let mut src = crate::open_raster_lazy(input).unwrap();
             let by_strips = matches!(plan_lazy(&mut src, o, *overview).unwrap(), Planned::Read(r) if r.by_strips);
             let resampling = o.resampling.unwrap_or_default();
-            let expected = !matches!(resampling, Resampling::Average | Resampling::Lanczos) && *overview == OverviewSelection::Auto;
+            let expected = !matches!(resampling, Resampling::Average | Resampling::Lanczos)
+                && *overview == OverviewSelection::Auto
+                && *input != lanczos.as_str();
             assert_eq!(by_strips, expected, "case {k}: {o:?}");
         }
         for (k, (input, o, overview)) in cases.iter().enumerate() {

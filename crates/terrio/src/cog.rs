@@ -223,6 +223,11 @@ pub(crate) trait WindowSource: Send + Sync {
     }
     /// The sizes `(width, height)` of the overviews, largest first.
     fn overviews(&self) -> Vec<(usize, usize)>;
+    /// The rows strips of the full-resolution image are best made of (a multiple of), so that
+    /// each block of the files the source reads is read once: by default, its block height.
+    fn row_alignment(&mut self) -> Option<usize> {
+        self.block_size().map(|(_, h)| h)
+    }
     /// The block size `(width, height)` reads are best aligned to, when the format has one.
     fn block_size(&self) -> Option<(usize, usize)> {
         None
@@ -945,6 +950,16 @@ impl LazyRaster {
         }
     }
 
+    /// The rows strips of the full-resolution image are best made of (a multiple of), so that each
+    /// block of the files it reads is read once: a GeoTIFF's block height, or a VRT's sources'.
+    pub(crate) fn row_alignment(&mut self) -> Option<usize> {
+        match &mut self.inner {
+            Inner::Tiff(t) => Some(t.levels[0].block.1),
+            Inner::Memory(_) => None,
+            Inner::Source(_, s) => s.row_alignment(),
+        }
+    }
+
     /// The geotransform of an overview (or of the full-resolution image for `None`).
     pub fn level_geo_transform(&self, overview: Option<usize>) -> Result<[f64; 6]> {
         let (w, h) = self.level_size(overview)?;
@@ -1080,7 +1095,7 @@ impl LazyRaster {
             options
         };
         let (width, height, bands) = (self.width(), self.height(), self.band_count());
-        let block = self.block_size().map(|(_, h)| h);
+        let block = self.row_alignment();
         let value_size = self.data_type().size_bytes();
         if let Inner::Source(ds, s) = &self.inner
             && let Some(s) = s.streamed()
@@ -1131,9 +1146,11 @@ impl LazyRaster {
             header.color_table = t.tags.color_table.clone();
             header.gcps = t.tags.gcps.clone();
         }
-        // A source read whole keeps its dataset's metadata items only when its driver reads
-        // them so (see `LazyRaster::read`); a window keeps `AREA_OR_POINT` alone.
+        // A source read by window keeps its dataset's metadata items as its whole read does
+        // (see `LazyRaster::read`): `AREA_OR_POINT` alone, unless its driver reads them whole.
+        // A masked source has long been written with all of them, and still is.
         if let Inner::Source(_, source) = &self.inner
+            && !source_mask
             && !source.whole_read_keeps_metadata()
         {
             header.raster.metadata.retain(|(k, _)| k == "AREA_OR_POINT");
@@ -1260,10 +1277,17 @@ impl LazyRaster {
         Ok(ds)
     }
 
-    /// Whether the raster is a source that reads by window ([`WindowSource::reads_by_window`]).
-    #[cfg(test)]
-    pub(crate) fn source_reads_by_window(&self) -> bool {
-        matches!(&self.inner, Inner::Source(_, s) if s.reads_by_window())
+    /// Whether a window of the raster reads only the parts of it the window covers and gives the
+    /// values a whole read gives them: a GeoTIFF read in place, a JPEG 2000 file, or a VRT of such
+    /// files copied or picked by nearest neighbour. Rasters in memory, and sources that decode
+    /// the whole raster for any window, are not. [`LazyRaster::write`] writes those that are a
+    /// strip of rows at a time.
+    pub fn reads_by_window(&self) -> bool {
+        match &self.inner {
+            Inner::Tiff(_) => true,
+            Inner::Source(_, s) => s.reads_by_window() || s.streamed().is_some(),
+            Inner::Memory(_) => false,
+        }
     }
 
     /// Whether a read of some bands (numbered from 1) gives complex bands: whole complex bands
