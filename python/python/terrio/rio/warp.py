@@ -770,7 +770,7 @@ def reproject(
         if rs == Resampling.sum:
             # Refused before the bands are read when their memory would exceed the budget.
             count = len(bidx) if isinstance(bidx, (list, tuple)) else 1
-            _terrio.check_sum_window(ds.width * ds.height, np.dtype(source.dtype).itemsize * count)
+            _terrio._check_sum_window(ds.width * ds.height, np.dtype(source.dtype).itemsize * count)
         arr = ds.read(bidx)
         src_transform = ds.transform
         src_crs = src_crs or ds.crs

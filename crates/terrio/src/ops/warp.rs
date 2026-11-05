@@ -1563,12 +1563,14 @@ const SUM_MAX_BYTES: u64 = 4 << 30;
 /// An estimate: one Float32 band gives 12 bytes per pixel, the peak measured in the same CRS; a
 /// reprojected `sum` held up to about 20, and a `WarpedVRT` read 16 in float32 and 24 in float64,
 /// as it copies the window to warp it.
+#[doc(hidden)]
 pub fn sum_estimate(pixels: u64, bytes: usize) -> u64 {
     pixels.saturating_mul(bytes as u64 + 8)
 }
 
 /// Refuses a `sum` whose estimated memory `need` exceeds `TERRIO_WARP_SUM_MAX_BYTES` (a positive
 /// number of bytes, 4 GiB by default), before its source is read.
+#[doc(hidden)]
 pub fn check_sum_budget(need: u64) -> Result<()> {
     let limit = match std::env::var("TERRIO_WARP_SUM_MAX_BYTES") {
         Ok(v) => v.trim().parse::<u64>().ok().filter(|n| *n > 0),

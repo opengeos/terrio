@@ -725,7 +725,7 @@ class WarpedVRT(DatasetReader):
                 # to another working type, the window is held in both types at once.
                 src, work = np.dtype(self.src_dataset.dtypes[0]), np.dtype(self._dtype)
                 itemsize = src.itemsize + (work.itemsize if work != src else 0)
-                _terrio.check_sum_window(win[2] * win[3], itemsize * self._src_count)
+                _terrio._check_sum_window(win[2] * win[3], itemsize * self._src_count)
             data, mask = self._source_window(grid.level, win)
             warped, written = rw.warp(region, win, data, mask, self._init_value, direct)
             warped = np.asarray(warped)
