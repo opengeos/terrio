@@ -545,11 +545,9 @@ impl VectorDriver {
             Self::GML => F::Gml,
             Self::GPX => F::Gpx,
             Self::MapInfo => F::MapInfoMif,
-            #[cfg(feature = "osm")]
-            Self::OSM => F::OsmPbf,
-            #[cfg(not(feature = "osm"))]
-            Self::OSM => return None,
-            Self::Parquet
+            // `wbvector` is built without its OSM PBF reader: terrio reads OSM itself.
+            Self::OSM
+            | Self::Parquet
             | Self::CityJSON
             | Self::CityGML
             | Self::ESRIJSON
