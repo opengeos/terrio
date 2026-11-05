@@ -4471,7 +4471,10 @@ impl RegionWarp {
                 avoid_nodata: (bands > 1 && unified).then_some(false),
                 avoid_all_nodata: bands > 1 && unified,
             };
-            let sink = storage.sink(self.dst_nodata.is_some_and(|nd| is_nodata(warp_round(init, self.out_type), nd)));
+            let mut sink = storage.sink(self.dst_nodata.is_some_and(|nd| is_nodata(warp_round(init, self.out_type), nd)));
+            // The working type here is the output type, not the source's: nearest values of
+            // another type are still rounded and clamped by `Sink::value`.
+            sink.passes &= data.data_type() == self.out_type;
             crate::pixel::with_data!(data, v => {
                 let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
                 let src = SrcData { bands: &typed, valid: &valid, width: sw, origin: (sx, sy) };
@@ -5563,6 +5566,20 @@ mod tests {
         );
         warp(&[&ds], &o).unwrap();
         assert!(ours().is_empty());
+    }
+
+    /// A region warped to another type than its source's rounds and clamps nearest values: the
+    /// working type is the output type, so source values do not pass through unconverted.
+    #[test]
+    fn region_warp_to_another_type_rounds_nearest_values() {
+        let srs = SpatialRef::from_epsg(4326).unwrap();
+        let gt = [10.0, 0.25, 0.0, 50.0, 0.0, -0.25];
+        let warp = RegionWarp::new((2, 2), gt, &srs, &srs, gt, Resampling::Nearest, 0.125, DataType::U8, vec![None], None).unwrap();
+        let region = (0, 0, 2, 2);
+        let win = warp.source_window(region).unwrap();
+        assert_eq!((win.2, win.3), (2, 2));
+        let (out, _) = warp.warp(region, win, &RasterData::F32(vec![2.6, 300.0, -1.0, 7.0]), None, 0.0, false).unwrap();
+        assert!(matches!(out, RasterData::U8(v) if v == [3, 255, 0, 7]));
     }
 
     /// `printf("%g")`, as GDAL formats the values of its nodata warning (expected values from C).
