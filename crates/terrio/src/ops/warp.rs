@@ -2575,7 +2575,8 @@ struct Sink {
     /// whose working type is its output type, also needs source data of that type). Then
     /// [`Sink::value`] keeps a source value unless it is moved off a nodata value: rounding to the
     /// working type and converting it to the output type change nothing. Not for 64-bit integers,
-    /// whose odd values from 2^52 [`warp_round`] moves to the even value above, as gdalwarp does.
+    /// whose odd values from 2^52 [`warp_round`] moves to the even value above, as gdalwarp 3.8.4
+    /// does.
     keeps_source_values: bool,
     /// Whether a warped value was moved off a nodata value (see [`Sink::finish`]).
     nudged: AtomicBool,
