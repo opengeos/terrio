@@ -172,9 +172,18 @@ mod native {
     /// so the thread would run it again and again for the length of the fork, never helping with
     /// the work of the jobs the fork waits for, nor running other parallel work, nor reaching the
     /// work queued below it (when a running job queued it: that job's own parallel work).
+    ///
+    /// A job that panics stops there: rayon aborts the process on a panic in a spawned job, so
+    /// the panic is caught here, after the panic hook has reported it. A job's result reaches
+    /// its caller through a channel or a lazily initialized value, so the caller sees a closed
+    /// channel (an error) or an uninitialized value (computed again on its own thread). Under
+    /// memory pressure, a decoder that panics on a failed allocation (`ruzstd`'s ring buffer, in
+    /// the EPSG table `crs::prefetch` loads) thus no longer aborts a process that would answer.
     fn submit(f: Box<dyn FnOnce() + Send>) {
         pool().spawn(move || match Running::enter() {
-            Some(_running) => f(),
+            Some(_running) => {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+            }
             None => hold_back(f),
         });
     }
@@ -687,6 +696,22 @@ mod tests {
             assert_eq!(exit, Some(0), "the child hung (None) or failed (1)");
             true
         });
+    }
+
+    /// A background job that panics (as `ruzstd` does when an allocation fails) stops alone: the
+    /// process goes on, and the pool runs later jobs.
+    #[test]
+    fn a_background_job_that_panics_does_not_abort_the_process() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        spawn(move || {
+            let _keep = tx;
+            panic!("a background job panics");
+        });
+        // The job's sender is dropped as it unwinds: its caller sees the channel closed.
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(30)).is_err());
+        let (tx, rx) = std::sync::mpsc::channel();
+        spawn(move || tx.send(7).unwrap());
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(30)), Ok(7));
     }
 
     #[test]
