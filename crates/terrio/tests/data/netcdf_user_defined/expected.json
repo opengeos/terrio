@@ -41,5 +41,6 @@
     "doubles": null,
     "strings": [],
     "states": null
-  }
+  },
+  "zero_length_netcdf_copy": {}
 }

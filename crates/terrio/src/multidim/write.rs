@@ -226,11 +226,12 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
             // netCDF has no null, so a `null` attribute of any source is left out rather than
             // written as the text "null": a Zarr attribute set to `null`, or one the netCDF
             // reader could not represent (a vlen), which GDAL's netCDF writer leaves out too.
-            // An empty list of any source, such as a zero-length string attribute, has no element
-            // type and is left out as well: GDAL 3.13.3's `gdalmdimtranslate -of netCDF` left
-            // out every zero-length attribute of `zero_length_attrs.h5` when checked by hand, and
-            // netCDF-C reads a zero-length string attribute back as "".
-            .filter(|(_, value)| !value.is_null() && value.as_array().is_none_or(|v| !v.is_empty()))
+            // An empty list with no recorded native type, such as a zero-length string attribute,
+            // has no element type to write and is left out as well, as GDAL 3.13.3's
+            // `gdalmdimtranslate -of netCDF` leaves it out (`zero_length_netcdf_copy` in
+            // `tests/data/netcdf_user_defined/expected.json`); netCDF-C would read a zero-length
+            // string attribute back as "". A typed empty list is written with its type.
+            .filter(|(name, value)| !value.is_null() && (types.contains_key(*name) || value.as_array().is_none_or(|v| !v.is_empty())))
             .map(|(name, value)| {
                 let (values, shape) = match value {
                     Value::Array(v) => (v.clone(), Some(vec![v.len() as u64])),
