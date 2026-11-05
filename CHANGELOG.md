@@ -30,8 +30,9 @@
   source window an output chunk reads and 8 bytes per pixel of it for the pixels' shares (12 bytes
   per pixel for one Float32 band): a coarse output reads the whole source in one chunk, and a `sum`
   with several sources or a cutline holds every source whole. The error, `Error::ResourceLimit`
-  (Python `ResourceLimitError`), names `--overview n` (`overview=n`) to sum a level and
-  `TERRIO_WARP_SUM_MAX_BYTES`, a positive byte count, to change the budget; a `sum` read of a
+  (Python `ResourceLimitError`), names how to sum an overview level instead (`--overview n`,
+  `overview=n` for `terrio.warp`, or a source opened with `overview_level=n` in `terrio.rio`) and
+  `TERRIO_WARP_SUM_MAX_BYTES`, a positive byte count, which changes the budget; a `sum` read of a
   `WarpedVRT` and a `sum` `terrio.rio.warp.reproject` of a band or dataset are refused the same way.
   A 1 × 1 `sum` of a 16384 × 16384 Float32 band (3 GiB) passes, and one of a 32768 × 32768 band
   (12 GiB) now errors, where it summed an overview (with overviews) or held the whole window in

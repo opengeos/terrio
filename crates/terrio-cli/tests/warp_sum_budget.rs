@@ -44,6 +44,7 @@ fn a_sum_over_its_memory_budget_is_refused_before_its_source_is_read() {
     let message = String::from_utf8_lossy(&refused.stderr);
     assert!(!refused.status.success(), "{message}");
     assert!(message.contains("TERRIO_WARP_SUM_MAX_BYTES=10000") && message.contains("--overview n"), "{message}");
+    assert!(message.contains("`overview=n` for `terrio.warp`, or a source opened with `overview_level=n` in `terrio.rio`"), "{message}");
 
     let under = run(d, "20000", &sum);
     assert!(under.status.success(), "{}", String::from_utf8_lossy(&under.stderr));

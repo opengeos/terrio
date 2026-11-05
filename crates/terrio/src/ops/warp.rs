@@ -1577,7 +1577,8 @@ pub fn check_sum_budget(need: u64) -> Result<()> {
     if need > limit {
         return Err(Error::ResourceLimit(format!(
             "a `sum` would hold about {need} bytes of source pixels and their shares, more than \
-             TERRIO_WARP_SUM_MAX_BYTES={limit}: sum an overview level with `--overview n` (`overview=n` in Python), \
+             TERRIO_WARP_SUM_MAX_BYTES={limit}: sum an overview level instead, with `--overview n` \
+             (`overview=n` for `terrio.warp`, or a source opened with `overview_level=n` in `terrio.rio`), \
              or raise TERRIO_WARP_SUM_MAX_BYTES"
         )));
     }

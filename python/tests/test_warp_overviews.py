@@ -144,7 +144,11 @@ def test_a_sum_over_its_memory_budget_is_refused_before_its_source_is_read(tmp_p
         path, overviews=[4], overview_resampling="average"
     )
     monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "10000")
-    refused = r"TERRIO_WARP_SUM_MAX_BYTES=10000.*--overview n"
+    refused = (
+        r"TERRIO_WARP_SUM_MAX_BYTES=10000: sum an overview level instead, with `--overview n` "
+        r"\(`overview=n` for `terrio\.warp`, or a source opened with `overview_level=n` in "
+        r"`terrio\.rio`\)"
+    )
     with pytest.raises(terrio.ResourceLimitError, match=refused):
         terrio.warp(path, ts=(1, 1), resampling="sum")
     with pytest.raises(terrio.ResourceLimitError, match=refused):
@@ -156,6 +160,12 @@ def test_a_sum_over_its_memory_budget_is_refused_before_its_source_is_read(tmp_p
     with terrio.rio.open(path) as src:
         with pytest.raises(terrio.ResourceLimitError, match=refused):
             reproject(terrio.rio.band(src, 1), np.zeros((1, 1)), resampling=Resampling.sum, **one)
+    reprojected_level = np.zeros((1, 1))
+    with terrio.rio.open(path, overview_level=0) as src:
+        with WarpedVRT(src, resampling=Resampling.sum) as vrt:
+            assert vrt.read(1, out_shape=(1, 1)).sum() == 64.0
+        reproject(terrio.rio.band(src, 1), reprojected_level, resampling=Resampling.sum, **one)
+    assert reprojected_level.sum() == 64.0
     level = terrio.warp(path, ts=(1, 1), resampling="sum", ot="Float64", overview=0)
     assert level.read(1).sum() == 64.0
     average = terrio.warp(path, ts=(1, 1), resampling="average", overview="NONE")
