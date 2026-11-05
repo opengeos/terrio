@@ -5660,22 +5660,45 @@ mod tests {
         assert_eq!(weighted, [true, true, true, false, false, false, false]);
     }
 
-    /// The general kernel weights the columns it covers as a tent of the output's width, with its
-    /// column weights computed once (up to 64 columns) or per tap (more): over a ramp, the
-    /// weighted mean is the value at the sample point either way.
+    /// The general kernel, its column weights computed once (up to 64 columns) or per tap (more),
+    /// equals bit for bit `GWKResample()`'s per-tap sum as it was computed before, over valid
+    /// pixels only: 41 and 81 columns of a bilinear kernel stretched to the output's width.
     #[test]
     fn general_kernel_weights_wide_and_narrow_footprints_alike() {
-        let (width, height) = (200, 3);
-        let data: Vec<f32> = (0..width * height).map(|i| (i % width) as f32).collect();
+        let (width, height) = (200, 9);
+        let data: Vec<f32> = (0..width * height).map(|i| (i * 7919 % 1009) as f32 * 0.37).collect();
+        let valid: Vec<bool> = (0..width * height).map(|i| i % 7 != 3).collect();
         let bands = [data.as_slice()];
-        let masks = [None];
+        let masks = [Some(valid.clone())];
         let src = SrcData { bands: &bands, valid: &masks, width, origin: (0, 0) };
-        let win = Chunk { dx: 0, dy: 0, dw: 1, dh: 1, sx: 0, sy: 0, sw: width, sh: height, raw_w: 200.0, raw_h: 3.0 };
-        // 41 columns, then 81 (over the 64 computed once).
-        for xscale in [0.05, 0.025] {
-            let k = Kernel::new(&src, win, xscale, 1.0, Resampling::Bilinear);
-            let v = k.general(0, 100.0, 1.5).unwrap();
-            assert!((v - 99.5).abs() < 1e-9, "xscale {xscale}: {v}");
+        let win = Chunk { dx: 0, dy: 0, dw: 1, dh: 1, sx: 0, sy: 0, sw: width, sh: height, raw_w: 200.0, raw_h: 9.0 };
+        let (sx, sy, yscale): (f64, f64, f64) = (100.3, 4.7, 0.5);
+        let per_tap = |xscale: f64| {
+            let w = |d: f64, s: f64| Resampling::Bilinear.weight(d * s);
+            let (xr, yr) = ((1.0 / xscale).ceil() as i64, (1.0 / yscale).ceil() as i64);
+            let (ix, iy) = ((sx - 0.5).floor() as i64, (sy - 0.5).floor() as i64);
+            let (dx, dy) = (sx - 0.5 - ix as f64, sy - 0.5 - iy as f64);
+            let (mut acc, mut wsum) = (0.0, 0.0);
+            for j in -yr..=yr {
+                let wy = w(j as f64 - dy, yscale);
+                let (mut la, mut lw) = (0.0, 0.0);
+                for i in -xr..=xr {
+                    let at = (iy + j) as usize * width + (ix + i) as usize;
+                    if valid[at] {
+                        let wx = w(i as f64 - dx, xscale);
+                        la += f64::from(data[at]) * wx;
+                        lw += wx;
+                    }
+                }
+                acc += la * wy;
+                wsum += lw * wy;
+            }
+            if (0.99999..=1.00001).contains(&wsum) { acc } else { acc / wsum }
+        };
+        for (xscale, columns) in [(0.05, 41), (0.025, 81)] {
+            let k = Kernel::new(&src, win, xscale, yscale, Resampling::Bilinear);
+            assert_eq!(2 * k.reach.0 + 1, columns);
+            assert_eq!(k.general(0, sx, sy).map(f64::to_bits), Some(per_tap(xscale).to_bits()), "{columns} columns");
         }
     }
 
