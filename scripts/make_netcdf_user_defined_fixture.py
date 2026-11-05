@@ -8,8 +8,8 @@ types: compounds (one with a 2-D array field, one with enum, ubyte and char fiel
 int vlen. The attributes `gdalmdiminfo` prints and the metadata `gdalinfo -json` reports are
 written to `expected.json`, the expected values of the `netcdf_user_defined_attributes_match_gdal`
 test, with the GDAL version that produced them. `zero_length_attrs.h5`, written with h5py, holds
-zero-length compound and int attributes, which `ncgen` cannot write; `gdalmdiminfo` prints both
-as `null`. Needs `ncgen`, `gdalmdiminfo` and `gdalinfo` on `PATH`, and h5py and numpy.
+zero-length compound, enum, int, short, float, double and string attributes, which `ncgen` cannot
+write, and a `units` string; `gdalmdiminfo` prints each zero-length one as `null`. Needs `ncgen`, `gdalmdiminfo` and `gdalinfo` on `PATH`, and h5py and numpy.
 """
 
 from __future__ import annotations
@@ -45,6 +45,11 @@ def main() -> None:
         z = f.create_dataset("z", data=np.zeros((2, 3), "f4"))
         z.attrs.create("empty", np.zeros(0, np.dtype([("id", "<i4"), ("elevation", "<f8")])))
         z.attrs.create("ints", np.zeros(0, "<i4"))
+        z.attrs.create("shorts", np.zeros(0, "<i2"))
+        z.attrs.create("floats", np.zeros(0, "<f4"))
+        z.attrs.create("doubles", np.zeros(0, "<f8"))
+        z.attrs.create("strings", np.zeros(0, h5py.string_dtype()))
+        z.attrs.create("states", np.zeros(0, "i1"), dtype=h5py.enum_dtype({"off": 0, "on": 1}, basetype="i1"))
         z.attrs["units"] = "m"
     mdim = run_json("gdalmdiminfo", str(nc))
     zero = run_json("gdalmdiminfo", str(h5))

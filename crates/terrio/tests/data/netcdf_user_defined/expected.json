@@ -35,6 +35,11 @@
   },
   "zero_length": {
     "ints": null,
-    "empty": null
+    "empty": null,
+    "shorts": null,
+    "floats": null,
+    "doubles": null,
+    "strings": [],
+    "states": null
   }
 }

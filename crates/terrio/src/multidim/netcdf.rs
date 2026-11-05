@@ -78,7 +78,8 @@ fn user_value(v: &NcValue, t: &NcType) -> Option<Value> {
     })
 }
 fn attribute(a: &NcAttrValue) -> Value {
-    // A zero-length attribute of any type is `null`, as GDAL 3.13's `gdalmdiminfo` prints it.
+    // A zero-length numeric, enum or compound attribute is `null` and a zero-length string attribute
+    // `[]`, as GDAL 3.13.3's `gdalmdiminfo` prints them.
     fn one(v: Vec<Value>) -> Value {
         match v.len() {
             0 => Value::Null,
@@ -103,6 +104,7 @@ fn attribute(a: &NcAttrValue) -> Value {
         NcAttrValue::Floats(v) => one(v.iter().map(|&x| floating(x as f64)).collect()),
         NcAttrValue::Doubles(v) => one(v.iter().map(|&x| floating(x)).collect()),
         NcAttrValue::Chars(s) => Value::String(s.clone()),
+        NcAttrValue::Strings(v) if v.is_empty() => Value::Array(Vec::new()),
         NcAttrValue::Strings(v) => one(v.iter().cloned().map(Value::String).collect()),
         NcAttrValue::UserDefined { dtype, values } => {
             values.iter().map(|v| user_value(v, dtype)).collect::<Option<Vec<_>>>().map_or(Value::Null, one)
