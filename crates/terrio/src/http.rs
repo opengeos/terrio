@@ -970,7 +970,8 @@ fn cached_agent(
 
 /// The agent requests are sent with: no automatic redirects (followed by [`Client`], which
 /// signs only the first request), no compression. Within an [`AgentScope`], the scope's agent
-/// when its settings are the same; otherwise the process's.
+/// when its settings are the same, otherwise a new one the scope keeps; outside any scope, the
+/// process's ([`process_agent`]).
 fn agent(options: &HttpOptions) -> ureq::Agent {
     let settings: AgentSettings = (options.timeout, options.connect_timeout, options.user_agent.clone());
     SHARED_AGENT.with(|shared| {
