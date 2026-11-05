@@ -640,7 +640,7 @@ impl Client {
         let mut redirects = 0;
         let mut attempt = 0;
         loop {
-            let mut req = agent_in(self.pid, &self.agent, || agent(&self.options)).get(&url);
+            let mut req = agent_in(self.pid, &self.agent, || own_agent(&self.options)).get(&url);
             if let Some(r) = &range_header {
                 req = req.header("Range", r);
             }
@@ -973,10 +973,16 @@ fn cached_agent(
 }
 
 /// `agent`, made in process `pid`, in this process: in a forked child, `here` (the child's own
-/// agent) instead, since `agent`'s idle connections are the parent's sockets, which the parent
-/// and every client sharing its pool may still use.
+/// agent, [`own_agent`]) instead, since `agent`'s idle connections are the parent's sockets, which
+/// the parent and every client sharing its pool may still use.
 fn agent_in(pid: u32, agent: &ureq::Agent, here: impl FnOnce() -> ureq::Agent) -> ureq::Agent {
     if pid == std::process::id() { agent.clone() } else { here() }
+}
+
+/// The process's agent for `options`, whatever [`AgentScope`] the thread is in: a child forked
+/// inside one inherits the scope, whose agent holds the parent's sockets.
+fn own_agent(options: &HttpOptions) -> ureq::Agent {
+    process_agent((options.timeout, options.connect_timeout, options.user_agent.clone()), options)
 }
 
 /// The agent requests are sent with: no automatic redirects (followed by [`Client`], which
@@ -1078,7 +1084,7 @@ impl ObjectFetcher {
         // A region already learned is the client's from the start (its URL is the regional one).
         let known = self.region.lock().ok().and_then(|r| r.clone());
         let auth = (self.auth.0.clone(), known.clone().or_else(|| self.auth.1.clone()));
-        let agent = agent_in(self.pid, &self.agent, || agent(&self.options));
+        let agent = agent_in(self.pid, &self.agent, || own_agent(&self.options));
         let mut client = Client::with_auth(remote, self.options.clone(), agent, Some(auth), self.config.clone());
         client.missing_ok = true;
         if let (Remote::S3(_), Some(auth), Some(_)) = (remote, client.s3.as_mut(), known) {
