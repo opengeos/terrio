@@ -3329,27 +3329,8 @@ impl WarpContext<'_> {
                 };
                 let mut found = false;
                 if self.resampling == Resampling::Average {
-                    // `area_value`'s running mean over the same pixels in the same order, without
-                    // collecting them first.
                     for (b, o) in out.iter_mut().enumerate() {
-                        let (data, valid) = (k.src.bands[b], k.src.valid[b].as_deref());
-                        let (mut any, mut total, mut mean) = (false, 0.0, 0.0);
-                        for y in iy0..iy1 {
-                            let w = wy(y);
-                            let line = k.index(0, y);
-                            for x in ix0..ix1 {
-                                if valid.is_some_and(|m| !m[line + x]) {
-                                    continue;
-                                }
-                                any = true;
-                                let w = wx(x, w);
-                                if w > 0.0 {
-                                    total += w;
-                                    mean += (w / total) * (crate::pixel::Pixel::to_f64(data[line + x]) - mean);
-                                }
-                            }
-                        }
-                        if any && total > 0.0 {
+                        if let Some(mean) = k.average(b, ix0..ix1, iy0..iy1, wy, wx) {
                             o[i] = sink.value(mean, b);
                             found = true;
                         }
@@ -3847,6 +3828,37 @@ impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
     #[inline]
     fn valid(&self, b: usize, x: usize, y: usize) -> bool {
         self.src.valid[b].as_ref().is_none_or(|m| m[self.index(x, y)])
+    }
+
+    /// [`area_value`]'s `average` of band `b`'s valid pixels in columns `xs` and rows `ys`, each
+    /// weighted `wx(x, wy(y))`: the same running mean over the same pixels in the same order,
+    /// without collecting them first.
+    #[inline(always)]
+    fn average(
+        &self,
+        b: usize,
+        xs: std::ops::Range<usize>,
+        ys: std::ops::Range<usize>,
+        wy: impl Fn(usize) -> f64,
+        wx: impl Fn(usize, f64) -> f64,
+    ) -> Option<f64> {
+        let (data, valid) = (self.src.bands[b], self.src.valid[b].as_deref());
+        let (mut total, mut mean) = (0.0, 0.0);
+        for y in ys {
+            let w = wy(y);
+            let line = self.index(0, y);
+            for x in xs.clone() {
+                if valid.is_some_and(|m| !m[line + x]) {
+                    continue;
+                }
+                let w = wx(x, w);
+                if w > 0.0 {
+                    total += w;
+                    mean += (w / total) * (crate::pixel::Pixel::to_f64(data[line + x]) - mean);
+                }
+            }
+        }
+        (total > 0.0).then_some(mean)
     }
 
     /// `GWKBilinearResample4Sample()`: invalid or off-window neighbours are left out and the
@@ -5581,6 +5593,49 @@ mod tests {
         assert_eq!((win.2, win.3), (2, 2));
         let (out, _) = warp.warp(region, win, &RasterData::F32(vec![2.6, 300.0, -1.0, 7.0]), None, 0.0, false).unwrap();
         assert!(matches!(out, RasterData::U8(v) if v == [3, 255, 0, 7]));
+    }
+
+    /// `average`'s running mean taken while visiting the pixels equals, bit for bit,
+    /// `area_value`'s over the `(value, weight)` pairs collected from the same pixels, as the
+    /// other area methods collect them: invalid pixels left out, pixels of zero weight counted
+    /// but not weighted, and no value when no valid pixel has a weight.
+    #[test]
+    fn average_in_place_equals_area_value_over_the_collected_pairs() {
+        let (width, height) = (7, 6);
+        let data: Vec<u16> = (0..width * height).map(|i| (i * 7919 % 65_521) as u16).collect();
+        let mut valid: Vec<bool> = (0..width * height).map(|i| i % 5 != 2).collect();
+        // The window's column 3 (the source's 4), rows 0-2, all invalid: a cell of only invalid
+        // pixels.
+        for y in 0..3 {
+            valid[y * width + 4] = false;
+        }
+        let bands = [data.as_slice()];
+        let masks = [Some(valid)];
+        let src = SrcData { bands: &bands, valid: &masks, width, origin: (0, 0) };
+        let win = Chunk { dx: 0, dy: 0, dw: 1, dh: 1, sx: 1, sy: 0, sw: 6, sh: 6, raw_w: 6.0, raw_h: 6.0 };
+        let k = Kernel::new(&src, win, 0.3, 0.3, Resampling::Average);
+        // Fractional edge weights as `warp_area_row` gives them, a zero-weight last column and row
+        // (a pixel corner on a source edge), and a column of zero weight inside.
+        let wy = |y: usize| [0.25, 1.0, 1.0, 0.6, 1.0, 0.0][y];
+        let wx = |x: usize, w: f64| w * [0.7, 1.0, 0.0, 1.0, 0.35, 0.0][x];
+        let cells = [(0..6, 0..6), (1..4, 0..3), (4..5, 3..4), (3..4, 0..3), (2..3, 0..5), (5..6, 0..6), (0..6, 5..6)];
+        let mut weighted = Vec::new();
+        for (xs, ys) in cells {
+            let mut pairs = Vec::new();
+            for y in ys.clone() {
+                for x in xs.clone() {
+                    if k.valid(0, x, y) {
+                        pairs.push((k.value(0, x, y), wx(x, wy(y))));
+                    }
+                }
+            }
+            let collected = area_value(Resampling::Average, &mut pairs, true);
+            let in_place = k.average(0, xs.clone(), ys.clone(), wy, wx);
+            assert_eq!(in_place.map(f64::to_bits), collected.map(f64::to_bits), "columns {xs:?}, rows {ys:?}");
+            weighted.push(in_place.is_some());
+        }
+        // The last four: only invalid pixels, then only pixels of zero weight.
+        assert_eq!(weighted, [true, true, true, false, false, false, false]);
     }
 
     /// `printf("%g")`, as GDAL formats the values of its nodata warning (expected values from C).
