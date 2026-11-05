@@ -498,6 +498,11 @@ pub fn zonal(a: ZonalArgs) -> Result<()> {
         decimal_places: a.sources.decimal_places,
     };
     let rasters = super::expand_file_lists(&a.sources.rasters)?;
+    if rasters.is_empty() && !a.sources.prefixes.is_empty() {
+        return Err(Error::InvalidArgument(
+            "--prefix names --raster fields; give it with --raster (--inputs rows are named TIME_LABEL or FILE_STEM_bN)".into(),
+        ));
+    }
     let prefixes = sample_prefixes(&a.sources.prefixes, &rasters)?;
     let rows = a.inputs.as_deref().map(read_inputs).transpose()?.unwrap_or_default();
     if rasters.is_empty() && rows.is_empty() {

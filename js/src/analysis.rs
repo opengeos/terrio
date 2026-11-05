@@ -219,7 +219,9 @@ pub fn zonal_stats(zones: &JsValue, rasters: &JsValue, options: JsValue) -> Resu
     }
     let mut sources: Vec<ZonalSource> = Vec::new();
     // Labelled rows naming the same raster (`Object.is`) share one source, read once, as in the
-    // CLI and Python, as do plain items before them: raster -> source index.
+    // CLI and Python; a labelled row also reuses the source of an earlier plain item for that
+    // raster. Each plain item adds its own source, so a repeated plain item is read again, as in
+    // Python: raster -> source index.
     let row_sources = js_sys::Map::new();
     for (item, prefix) in items.iter().zip(&prefixes) {
         if !is_row(item) {

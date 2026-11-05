@@ -73,8 +73,8 @@ def items(data, tile, season, dates):
     return features[:dates]
 
 
-def download(data, features):
-    """Local copies of each item's bands: rows of (path, date, band, url)."""
+def download(data, tile, features):
+    """Local copies of each item's bands under s2/TILE/DATE/: rows of (path, date, band, url)."""
     rows = []
     for f in features:
         day = f["properties"]["datetime"][:10]
@@ -82,7 +82,9 @@ def download(data, features):
             raise ValueError(f"unexpected STAC datetime {f['properties']['datetime']!r}")
         for band in BANDS:
             url = f["assets"][band]["href"]
-            path = data / "s2" / day / f"{band}.tif"
+            if not url.startswith("https://"):
+                raise ValueError(f"refusing non-https asset URL {url!r}")
+            path = data / "s2" / tile / day / f"{band}.tif"
             if not path.exists():
                 path.parent.mkdir(parents=True, exist_ok=True)
                 log(f"downloading {day} {band}")
@@ -107,13 +109,16 @@ def fields(data, n, reference, aoi_km=None, seed=20261104):
     """`n` non-overlapping rotated rectangles (fields) over the raster `reference`, or over a
     centered `aoi_km` square of it, 5% with a hole, in its CRS: a jittered grid of cells, each
     field 20–80% of its cell."""
-    path = data / (f"fields-{n}.gpkg" if aoi_km is None else f"fields-{n}-aoi{aoi_km:g}km.gpkg")
-    if path.exists():
-        return path
     from osgeo import gdal, ogr
 
     ds = gdal.Open(str(reference))
     gt, w, h = ds.GetGeoTransform(), ds.RasterXSize, ds.RasterYSize
+    # Keyed on the reference grid (CRS, origin, size) so another tile never reuses these zones.
+    srs = ds.GetSpatialRef()
+    grid = f"{srs.GetAuthorityName(None)}{srs.GetAuthorityCode(None)}_{gt[0]:.0f}_{gt[3]:.0f}_{w}x{h}"
+    path = data / (f"fields-{n}-{grid}.gpkg" if aoi_km is None else f"fields-{n}-aoi{aoi_km:g}km-{grid}.gpkg")
+    if path.exists():
+        return path
     x0, y1 = gt[0], gt[3]
     x1, y0 = x0 + w * gt[1], y1 + h * gt[5]
     if aoi_km is not None:
@@ -267,7 +272,7 @@ def main():
     tools = args.tools.split(",")
     results = []
     for dates in map(int, args.dates.split(",")):
-        rows = download(args.data, items(args.data, args.tile, args.season, dates))
+        rows = download(args.data, args.tile, items(args.data, args.tile, args.season, dates))
         if args.bands:
             rows = [r for r in rows if r[2] in args.bands.split(",")]
         # Repeat r is labelled r years later and read through its own symlink: terrio shares one

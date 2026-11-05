@@ -255,6 +255,10 @@ fn zonal_inputs_csv_labels_dates_and_bands() {
         assert!(!r.status.success());
         assert!(String::from_utf8_lossy(&r.stderr).contains(why), "{}", String::from_utf8_lossy(&r.stderr));
     }
+    // --prefix names --raster fields, so a table-only run says it needs --raster.
+    let r = run(&["zonal-stats", "zones.geojson", "prefix.gpkg", "--inputs", "plain.csv", "--prefix", "a"], d);
+    assert!(!r.status.success());
+    assert!(String::from_utf8_lossy(&r.stderr).contains("give it with --raster"), "{}", String::from_utf8_lossy(&r.stderr));
 }
 
 #[test]
