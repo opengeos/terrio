@@ -226,9 +226,10 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
             // netCDF has no null, so a `null` attribute of any source is left out rather than
             // written as the text "null": a Zarr attribute set to `null`, or one the netCDF
             // reader could not represent (a vlen), which GDAL's netCDF writer leaves out too.
-            // An empty list, such as a zero-length string attribute, has no element type and is
-            // left out as well, as GDAL 3.13.3's `gdalmdimtranslate` leaves out every zero-length
-            // attribute (netCDF-C would read a zero-length string attribute back as "").
+            // An empty list of any source, such as a zero-length string attribute, has no element
+            // type and is left out as well: GDAL 3.13.3's `gdalmdimtranslate -of netCDF` left
+            // out every zero-length attribute of `zero_length_attrs.h5` when checked by hand, and
+            // netCDF-C reads a zero-length string attribute back as "".
             .filter(|(_, value)| !value.is_null() && value.as_array().is_none_or(|v| !v.is_empty()))
             .map(|(name, value)| {
                 let (values, shape) = match value {
