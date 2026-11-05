@@ -14,6 +14,8 @@
   copies a window of the input or is resized by nearest neighbour or a bilinear, cubic or cubic
   spline kernel from the overview `--overview AUTO` chooses; outputs resized by average, RMS,
   mode or Lanczos, or from a level read alone, are still made whole first.
+  A strip holds about 64 MB of values, or one row of the source's tiles when that is larger
+  (1.2 GB for the reporter's mosaic), and a few strips are in flight.
   `translate_lazy_to_file` is the Rust entry point.
 
 - Warps with `sum` resampling give each output pixel the sum of the valid source pixels it

@@ -376,7 +376,8 @@ fn write_lazy(
     }
     // About 64 MB of values per strip, counted as the 8-byte values sources such as VRTs read in;
     // a copy's strips are rows of the source's blocks (a VRT's sources'), so that each is read
-    // once, when the window starts on one.
+    // once, when the window starts on one. Such a strip is at least one row of blocks, so on a
+    // very wide tiled source it is larger: 512 rows of a 98304-wide RGB mosaic are 1.2 GB.
     let start = read.read.window.map_or(0.0, |w| w.1);
     let block = if read.copy { src.row_alignment().filter(|h| start % *h as f64 == 0.0) } else { None };
     let rows = rows_per_strip.unwrap_or_else(|| super::strips::strip_rows(ow, read.read.bands.len(), 8, block)).clamp(1, oh);

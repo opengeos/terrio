@@ -1550,6 +1550,11 @@ mod tests {
         let nested = at("nested.vrt");
         std::fs::write(&nested, one(rgb, 20, "lanczos")).unwrap();
         assert!(!supplied("nested", open_virtual_raster(&nested).unwrap()));
+        // A shared handle reads as the raster it shares does.
+        assert!(!open_virtual_raster(&nested).unwrap().shared().reads_by_window());
+        assert!(open_virtual_raster(&vrt).unwrap().shared().reads_by_window());
+        assert!(supplied("nested", open_virtual_raster(&vrt).unwrap().shared()));
+        assert!(!supplied("nested", open_virtual_raster(&nested).unwrap().shared()));
     }
 
     #[test]

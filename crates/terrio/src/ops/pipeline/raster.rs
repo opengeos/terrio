@@ -128,6 +128,9 @@ impl WindowSource for View {
     fn streamed(&self) -> Option<&dyn StreamedSource> {
         Some(self)
     }
+    fn reads_by_window(&self) -> bool {
+        self.lock().is_ok_and(|source| source.reads_by_window())
+    }
     fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
         self.read_data(level, window, bands)
     }

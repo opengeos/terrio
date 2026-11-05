@@ -369,6 +369,12 @@ impl WindowSource for SharedRaster {
     fn streamed(&self) -> Option<&dyn StreamedSource> {
         Some(self)
     }
+    fn reads_by_window(&self) -> bool {
+        self.lock().is_ok_and(|reader| reader.reads_by_window())
+    }
+    fn row_alignment(&mut self) -> Option<usize> {
+        self.lock().ok().and_then(|mut reader| reader.row_alignment())
+    }
     fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
         Ok(self.lock()?.read_window(window, &WindowOptions { bands: bands.into(), overview: level.checked_sub(1) })?.raster.data)
     }
@@ -1285,7 +1291,7 @@ impl LazyRaster {
     pub fn reads_by_window(&self) -> bool {
         match &self.inner {
             Inner::Tiff(_) => true,
-            Inner::Source(_, s) => s.reads_by_window() || s.streamed().is_some(),
+            Inner::Source(_, s) => s.reads_by_window(),
             Inner::Memory(_) => false,
         }
     }
