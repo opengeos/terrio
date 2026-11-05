@@ -32,5 +32,9 @@
     "z#sample": "",
     "z#station": "",
     "z#units": "m"
+  },
+  "zero_length": {
+    "ints": null,
+    "empty": null
   }
 }
