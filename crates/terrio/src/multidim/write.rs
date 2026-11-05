@@ -229,8 +229,9 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
             // An empty list with no recorded native type, such as a zero-length string attribute,
             // has no element type to write and is left out as well, as GDAL 3.13.3's
             // `gdalmdimtranslate -of netCDF` leaves it out (`zero_length_netcdf_copy` in
-            // `tests/data/netcdf_user_defined/expected.json`); netCDF-C would read a zero-length
-            // string attribute back as "". A typed empty list is written with its type.
+            // `tests/data/netcdf_user_defined/expected.json`). (Written as a zero-length string
+            // attribute, it read back as "" in netCDF-C's `ncdump` and as `null` in GDAL when
+            // checked by hand.) A typed empty list is written with its type.
             .filter(|(name, value)| {
                 let empty_untyped = value.as_array().is_some_and(|v| v.is_empty()) && !types.contains_key(*name);
                 !value.is_null() && !empty_untyped
