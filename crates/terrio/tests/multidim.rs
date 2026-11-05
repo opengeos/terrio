@@ -363,7 +363,7 @@ fn netcdf_user_defined_attributes_match_gdal() {
             continue;
         }
         let got = raster.raster.metadata.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
-        assert_eq!(got, value.as_str().map(Some).unwrap(), "{key}");
+        assert_eq!(got, Some(value.as_str().unwrap()), "{key}");
     }
 }
 
@@ -397,4 +397,20 @@ fn netcdf_snapshot_of_user_defined_attributes() {
     assert_eq!(z.info.attributes.get("grid"), None);
     assert_eq!(z.info.attributes.get("station"), Some(&json!(r#"{"id":7,"elevation":12.5}"#)));
     assert_eq!(opened.root.attributes.get("title"), Some(&json!("user-defined attributes")));
+}
+
+/// netCDF has no null: a `null` attribute of a source other than netCDF, such as a Zarr attribute
+/// set to `null`, is left out of a netCDF snapshot rather than written as the text "null". Other
+/// attributes are written as usual.
+#[cfg(feature = "netcdf-hdf5")]
+#[test]
+fn netcdf_snapshot_leaves_out_null_attributes() {
+    let mut original = dataset();
+    original.root.attributes["comment"] = serde_json::Value::Null;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("nulls.nc");
+    original.write(file.to_str().unwrap()).unwrap();
+    let opened = terrio::multidim::open(file.to_str().unwrap()).unwrap();
+    assert_eq!(opened.root.attributes.get("comment"), None);
+    assert_eq!(opened.root.attributes.get("title"), Some(&json!("multidimensional test")));
 }

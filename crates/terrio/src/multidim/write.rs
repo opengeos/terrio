@@ -223,8 +223,9 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
                         | "_terrio_attribute_types"
                 )
             })
-            // `null` holds no value: an attribute the reader could not represent, such as a
-            // netCDF vlen, which GDAL's netCDF writer leaves out too.
+            // netCDF has no null, so a `null` attribute of any source is left out rather than
+            // written as the text "null": a Zarr attribute set to `null`, or one the netCDF
+            // reader could not represent (a vlen), which GDAL's netCDF writer leaves out too.
             .filter(|(_, value)| !value.is_null())
             .map(|(name, value)| {
                 let (values, shape) = match value {
