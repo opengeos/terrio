@@ -331,3 +331,33 @@ fn snapshots_reject_conflicting_dimension_declarations() {
         assert!(source.to_zarr_store().unwrap_err().to_string().contains("conflicting declarations for dimension"));
     }
 }
+
+/// Compound, enum and vlen attributes (`tests/data/netcdf_user_defined`, from its CDL by
+/// `ncgen -4`) as GDAL 3.13.3 reports them: `gdalmdiminfo` prints a compound as an object of its
+/// fields, an enum as its integer and a vlen as `null`; `gdalinfo` keeps a compound or vlen key
+/// with an empty value. Known difference: netcdf-reader decodes an enum attribute as its base
+/// integers, so terrio's metadata reads `z#flag=1` where `gdalinfo` leaves it empty.
+#[cfg(feature = "netcdf-hdf5")]
+#[test]
+fn netcdf_user_defined_attributes_match_gdal() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_user_defined/user_defined_attrs.nc");
+    let path = path.to_str().unwrap();
+
+    let ds = terrio::multidim::open(path).unwrap();
+    assert_eq!(ds.root.attributes["title"], json!("user-defined attributes"));
+    assert_eq!(ds.root.attributes["origin"], json!({"id": 1, "elevation": -3.25}));
+    let z = ds.array("/z").unwrap();
+    assert_eq!(z.info.attributes["station"], json!({"id": 7, "elevation": 12.5}));
+    assert_eq!(z.info.attributes["flag"], json!(1));
+    assert_eq!(z.info.attributes["counts"], serde_json::Value::Null);
+    assert_eq!(z.info.attributes["units"], json!("m"));
+
+    let raster = terrio::open_raster(path).unwrap();
+    let meta = |k: &str| raster.raster.metadata.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+    assert_eq!(meta("NC_GLOBAL#origin"), Some(""));
+    assert_eq!(meta("NC_GLOBAL#title"), Some("user-defined attributes"));
+    assert_eq!(meta("z#station"), Some(""));
+    assert_eq!(meta("z#flag"), Some("1"));
+    assert_eq!(meta("z#counts"), Some(""));
+    assert_eq!(meta("z#units"), Some("m"));
+}

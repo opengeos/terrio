@@ -1,6 +1,8 @@
 //! Metadata and typed hyperslabs shared by netCDF classic, netCDF-4 and numeric HDF5.
 use super::*;
-use netcdf_reader::{NcAttrValue, NcAttribute, NcFile, NcGroup, NcMetadataMode, NcOpenOptions, NcSliceInfo, NcSliceInfoElem, NcType};
+use netcdf_reader::{
+    NcAttrValue, NcAttribute, NcFile, NcGroup, NcMetadataMode, NcOpenOptions, NcSliceInfo, NcSliceInfoElem, NcType, NcValue,
+};
 
 fn error(e: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("multidim: {e}"))
@@ -31,6 +33,28 @@ fn floating(value: f64) -> Value {
         serde_json::json!(value)
     }
 }
+/// A user-defined attribute value as JSON, as GDAL 3.13's `gdalmdiminfo` prints it: a compound
+/// as an object of its fields, an enum as its integer, a fixed-size array as a list, and `null`
+/// for the opaque and vlen values GDAL does not support.
+fn user_value(v: &NcValue) -> Value {
+    match v {
+        NcValue::Byte(x) => serde_json::json!(x),
+        NcValue::Char(x) | NcValue::UByte(x) => serde_json::json!(x),
+        NcValue::Short(x) => serde_json::json!(x),
+        NcValue::UShort(x) => serde_json::json!(x),
+        NcValue::Int(x) => serde_json::json!(x),
+        NcValue::UInt(x) => serde_json::json!(x),
+        NcValue::Int64(x) => serde_json::json!(x),
+        NcValue::UInt64(x) => serde_json::json!(x),
+        NcValue::Float(x) => floating(f64::from(*x)),
+        NcValue::Double(x) => floating(*x),
+        NcValue::String(x) => Value::String(x.clone()),
+        NcValue::Enum(e) => e.value.as_i128().and_then(|i| serde_json::to_value(i).ok()).unwrap_or(Value::Null),
+        NcValue::Compound(fields) => Value::Object(fields.iter().map(|f| (f.name.clone(), user_value(&f.value))).collect()),
+        NcValue::Array(a) => Value::Array(a.values.iter().map(user_value).collect()),
+        NcValue::Opaque(_) | NcValue::VLen(_) => Value::Null,
+    }
+}
 fn attribute(a: &NcAttrValue) -> Value {
     fn one(v: Vec<Value>) -> Value {
         if v.len() == 1 { v.into_iter().next().unwrap() } else { Value::Array(v) }
@@ -53,6 +77,9 @@ fn attribute(a: &NcAttrValue) -> Value {
         NcAttrValue::Doubles(v) => one(v.iter().map(|&x| floating(x)).collect()),
         NcAttrValue::Chars(s) => Value::String(s.clone()),
         NcAttrValue::Strings(v) => one(v.iter().cloned().map(Value::String).collect()),
+        // GDAL reads a vlen attribute as `null`, not a list of its values.
+        NcAttrValue::UserDefined { dtype: NcType::VLen { .. }, .. } => Value::Null,
+        NcAttrValue::UserDefined { values, .. } => one(values.iter().map(user_value).collect()),
     }
 }
 fn attributes(attrs: &[NcAttribute]) -> Value {
@@ -73,7 +100,7 @@ fn attribute_types(attrs: &[NcAttribute]) -> AttributeTypes {
                 NcAttrValue::UInt64s(_) => DataType::U64,
                 NcAttrValue::Floats(_) => DataType::F32,
                 NcAttrValue::Doubles(_) => DataType::F64,
-                NcAttrValue::Chars(_) | NcAttrValue::Strings(_) => return None,
+                NcAttrValue::Chars(_) | NcAttrValue::Strings(_) | NcAttrValue::UserDefined { .. } => return None,
             };
             Some((a.name.clone(), dtype))
         })

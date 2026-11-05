@@ -106,6 +106,7 @@ fn attr_f64(v: &NcVariable, name: &str) -> Option<f64> {
 
 /// An attribute's value as GDAL's netCDF driver writes it in metadata: text as it is, numbers
 /// as C formats them (`%.8g` for floats, `%.16g` for doubles), several in braces (`{0,255}`).
+/// A compound, opaque or non-string vlen attribute is empty, as GDAL 3.13 leaves it.
 fn attr_text(a: &NcAttribute) -> String {
     let list = |parts: Vec<String>| if parts.len() == 1 { parts[0].clone() } else { format!("{{{}}}", parts.join(",")) };
     match &a.value {
@@ -121,6 +122,7 @@ fn attr_text(a: &NcAttribute) -> String {
         NcAttrValue::UInt64s(v) => list(v.iter().map(u64::to_string).collect()),
         NcAttrValue::Floats(v) => list(v.iter().map(|x| format_g(f64::from(*x), 8)).collect()),
         NcAttrValue::Doubles(v) => list(v.iter().map(|x| format_g(*x, 16)).collect()),
+        NcAttrValue::UserDefined { .. } => String::new(),
     }
 }
 
