@@ -171,6 +171,43 @@ def test_a_sum_over_its_memory_budget_is_refused_before_its_source_is_read(tmp_p
     assert reprojected.sum() == 1024.0
 
 
+def test_a_sum_counts_the_bytes_of_every_band(tmp_path, monkeypatch):
+    # 32 x 32 Float32 ones summed into 1 x 1. Each band holds 4 bytes per pixel and the shares 8:
+    # under 14,000 bytes one band (12,288) fits and two (16,384) do not. Two sources are held
+    # whole with the shares of one window: under 20,000, one band each (16,384) fits and two
+    # (24,576) do not.
+    one, two = str(tmp_path / "one.tif"), str(tmp_path / "two.tif")
+    terrio.Raster.from_array(np.ones((32, 32), "float32"), GT, crs="EPSG:3857").write(one)
+    terrio.Raster.from_array(np.ones((2, 32, 32), "float32"), GT, crs="EPSG:3857").write(two)
+    pixel = {"dst_transform": from_origin(0, 32, 32, 32), "dst_crs": "EPSG:3857"}
+    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "14000")
+    refused = r"about 16384 bytes .*TERRIO_WARP_SUM_MAX_BYTES=14000"
+    with pytest.raises(terrio.ResourceLimitError, match=refused):
+        terrio.warp(two, ts=(1, 1), resampling="sum")
+    assert terrio.warp(one, ts=(1, 1), resampling="sum", ot="Float64").read(1).sum() == 1024.0
+    with terrio.rio.open(two) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
+        with pytest.raises(terrio.ResourceLimitError, match=refused):
+            vrt.read(out_shape=(2, 1, 1))
+    with terrio.rio.open(one) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
+        assert vrt.read(1, out_shape=(1, 1)).sum() == 1024.0
+    reprojected = np.zeros((1, 1))
+    with terrio.rio.open(two) as src:
+        with pytest.raises(terrio.ResourceLimitError, match=refused):
+            reproject(
+                terrio.rio.band(src, [1, 2]),
+                np.zeros((2, 1, 1)),
+                resampling=Resampling.sum,
+                **pixel,
+            )
+        reproject(terrio.rio.band(src, 1), reprojected, resampling=Resampling.sum, **pixel)
+    assert reprojected.sum() == 1024.0
+    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "20000")
+    with pytest.raises(terrio.ResourceLimitError, match=r"about 24576 bytes"):
+        terrio.warp([two, two], ts=(1, 1), resampling="sum")
+    mosaic = terrio.warp([one, one], ts=(1, 1), resampling="sum", ot="Float64")
+    assert mosaic.read(1).sum() == 1024.0
+
+
 @pytest.mark.parametrize("mode", [True, False])
 def test_rejects_boolean_overview(pyramid, mode):
     with pytest.raises(terrio.InvalidArgumentError, match="boolean"):
