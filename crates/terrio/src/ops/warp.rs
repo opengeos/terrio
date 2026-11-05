@@ -5660,6 +5660,25 @@ mod tests {
         assert_eq!(weighted, [true, true, true, false, false, false, false]);
     }
 
+    /// The general kernel weights the columns it covers as a tent of the output's width, with its
+    /// column weights computed once (up to 64 columns) or per tap (more): over a ramp, the
+    /// weighted mean is the value at the sample point either way.
+    #[test]
+    fn general_kernel_weights_wide_and_narrow_footprints_alike() {
+        let (width, height) = (200, 3);
+        let data: Vec<f32> = (0..width * height).map(|i| (i % width) as f32).collect();
+        let bands = [data.as_slice()];
+        let masks = [None];
+        let src = SrcData { bands: &bands, valid: &masks, width, origin: (0, 0) };
+        let win = Chunk { dx: 0, dy: 0, dw: 1, dh: 1, sx: 0, sy: 0, sw: width, sh: height, raw_w: 200.0, raw_h: 3.0 };
+        // 41 columns, then 81 (over the 64 computed once).
+        for xscale in [0.05, 0.025] {
+            let k = Kernel::new(&src, win, xscale, 1.0, Resampling::Bilinear);
+            let v = k.general(0, 100.0, 1.5).unwrap();
+            assert!((v - 99.5).abs() < 1e-9, "xscale {xscale}: {v}");
+        }
+    }
+
     /// `printf("%g")`, as GDAL formats the values of its nodata warning (expected values from C).
     #[test]
     fn printf_g_formats_as_c() {
