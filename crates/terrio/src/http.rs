@@ -1641,9 +1641,9 @@ impl Drop for CacheTestGuard {
 }
 
 /// Holds this module's process-wide locks (the cache of remote files, the request statistics,
-/// the path-specific options, the retry warnings and the process's agent) across a fork, for [`crate::par`]: the
-/// forking thread takes them before the process is copied and lets them go after, so that the
-/// child never starts with one held by a thread it does not have.
+/// the path-specific options, the retry warnings and the process's agent) across a fork, for
+/// [`crate::par`]: the forking thread takes them before the process is copied and lets them go
+/// after, so that the child never starts with one held by a thread it does not have.
 #[cfg(unix)]
 pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
     held.push(Box::new(file_cache()));

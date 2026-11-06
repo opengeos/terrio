@@ -209,6 +209,17 @@ fn decompress(compression: u16, raw: Vec<u8>, limit: usize) -> TiffResult<Vec<u8
     Ok(out)
 }
 
+/// Whether Deflate chunks of an image are inflated here ([`Codec::Deflate`]) rather than by the
+/// `tiff` crate: a little-endian file on a little-endian host, not YCbCr, samples of a type read
+/// here (8- to 64-bit integers, Float32, Float64; not Float16), and no predictor, or the
+/// horizontal one on integers. Images matched by an earlier codec arm never reach this choice.
+fn inflated_here(little_endian: bool, photometric: Option<u16>, format: u16, bits: u16, predictor: u16) -> bool {
+    cfg!(target_endian = "little")
+        && little_endian
+        && photometric != Some(6) // YCbCr may be subsampled: left to the crate
+        && Sample::new(format, bits).is_some_and(|s| s != Sample::F16 && (predictor == 1 || (predictor == 2 && !s.is_float())))
+}
+
 /// Whether the `tiff` crate reads the pixel-interleaved chunks of an image of `samples` samples
 /// with fewer (or more) samples per pixel than the file holds: RGB and CMYK images whose
 /// `ExtraSamples` leave samples beyond the color ones and an alpha, or that have more samples than
@@ -299,10 +310,8 @@ impl ChunkCodec {
         // Complex samples, which the crate does not read: in the lossless compressions only.
         let complex = Sample::complex_part(format, packed_bits);
         let predictor = dec.find_tag_unsigned::<u16>(Tag::Predictor)?.unwrap_or(1);
-        let inflated_here = cfg!(target_endian = "little")
-            && dec.byte_order() == tiff::tags::ByteOrder::LittleEndian
-            && photometric != Some(6) // YCbCr may be subsampled: left to the crate
-            && Sample::new(format, packed_bits).is_some_and(|s| s != Sample::F16 && (predictor == 1 || (predictor == 2 && !s.is_float())));
+        let little_endian = dec.byte_order() == tiff::tags::ByteOrder::LittleEndian;
+        let inflated_here = inflated_here(little_endian, photometric, format, packed_bits, predictor);
         let codec = match compression {
             1 | 5 | 8 | 32946 | 32773 | LZMA | ZSTD if complex.is_some() => Codec::Complex(compression),
             _ if complex.is_some() => {
@@ -1137,6 +1146,41 @@ mod tests {
         assert!(c.lossless(lzw_encode(&[1, 2, 3]), 4, 4).is_err());
         assert!(c.lossless(lzw_encode(&[1; 16]), 4, 4).is_ok());
         assert!(c.lossless(lzw_encode(&[1]), usize::MAX, 2).is_err());
+    }
+
+    /// Deflate is inflated here for little-endian, non-YCbCr images of integer samples (with or
+    /// without the horizontal predictor) or Float32/Float64 samples without a predictor; every
+    /// other image is left to the `tiff` crate.
+    #[test]
+    fn deflate_is_inflated_here_only_for_the_images_it_reads_as_the_crate() {
+        let gray = Some(1);
+        // (little-endian, photometric, SampleFormat, BitsPerSample, Predictor, inflated here)
+        let cases = [
+            (true, gray, 1, 8, 1, true),
+            (true, gray, 1, 16, 2, true),
+            (true, gray, 2, 32, 2, true),
+            (true, gray, 1, 64, 2, true),
+            (true, Some(2), 1, 8, 2, true),
+            (true, None, 2, 8, 1, true),
+            (true, gray, 3, 32, 1, true),
+            (true, gray, 3, 64, 1, true),
+            (true, Some(6), 1, 8, 1, false),
+            (true, gray, 3, 16, 1, false),
+            (false, gray, 1, 16, 1, false),
+            (true, gray, 3, 32, 2, false),
+            (true, gray, 3, 64, 2, false),
+            (true, gray, 1, 16, 3, false),
+            (true, gray, 3, 32, 3, false),
+            (true, gray, 5, 32, 1, false),
+            (true, gray, 1, 12, 1, false),
+        ];
+        for (le, photometric, format, bits, predictor, here) in cases {
+            assert_eq!(
+                inflated_here(le, photometric, format, bits, predictor),
+                here && cfg!(target_endian = "little"),
+                "little-endian {le}, photometric {photometric:?}, format {format}, {bits} bits, predictor {predictor}"
+            );
+        }
     }
 
     /// A Deflate chunk inflates to its pixels; one ending short, or whose Adler-32 is wrong, is an
