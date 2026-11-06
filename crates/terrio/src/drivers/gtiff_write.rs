@@ -19,6 +19,7 @@
 //! layout: the IFDs first, then the image data from the smallest overview to the full resolution,
 //! with GDAL's structural metadata, block leaders and trailers.
 
+use super::common::{Rewrite, create_replacing};
 use super::gdal_overview::{self, Method};
 use crate::pixel::{Pixel, map_data, with_data};
 use crate::{Error, Result};
@@ -157,10 +158,9 @@ fn lerc_encode(_data: &[u8], _c: &ChunkInfo, _max_z_error: f64) -> Result<Vec<u8
     Err(Error::disabled("lerc"))
 }
 
+/// A Deflate chunk as GDAL 3.12 built with libdeflate writes it: libdeflate's level 6, the same bytes.
 fn deflate(data: &[u8]) -> Result<Vec<u8>> {
-    let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
-    enc.write_all(data)?;
-    Ok(enc.finish()?)
+    Ok(crate::deflate_compress::zlib_compress(data))
 }
 
 /// Encodes a chunk (little-endian samples, interleaved) as a LERC blob of `spp` values per pixel,
@@ -821,9 +821,10 @@ pub(crate) struct Image {
 /// Writes a raster as a GeoTIFF or COG.
 pub(crate) fn write(raster: &Raster, path: &str, opts: &TiffOptions) -> Result<()> {
     let images = prepare(raster, opts)?;
-    let mut file = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+    let mut file = std::io::BufWriter::with_capacity(1 << 20, create_replacing(path)?);
     images.write_to(&mut file)?;
     file.flush()?;
+    file.get_mut().finish()?;
     Ok(())
 }
 
@@ -1902,7 +1903,7 @@ enum RowWriter {
 
 /// A GeoTIFF written block row by block row (see [`GeoTiffWriter`]).
 struct TiffRows {
-    file: std::io::BufWriter<std::fs::File>,
+    file: std::io::BufWriter<Rewrite>,
     pos: u64,
     big: bool,
     cols: usize,
@@ -2067,7 +2068,7 @@ impl TiffRows {
         if let Some(cm) = plan.color_map {
             tags.push((320, cm));
         }
-        let mut file = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+        let mut file = std::io::BufWriter::with_capacity(1 << 20, create_replacing(path)?);
         let head: Vec<u8> = if big {
             [b"II".as_slice(), &43u16.to_le_bytes(), &8u16.to_le_bytes(), &0u16.to_le_bytes(), &0u64.to_le_bytes()].concat()
         } else {
@@ -2303,9 +2304,11 @@ impl TiffRows {
             }
             self.file.write_all(&encode_ifd(&mt, second, 0, self.big))?;
         }
-        // The first directory's offset, in the header.
+        // The first directory's offset, in the header, which `finish` writes last: until then
+        // the file is no TIFF.
         let mut file = self.file.into_inner().map_err(|e| Error::Io(e.into_error()))?;
         use std::io::{Seek, SeekFrom};
+        let end = file.stream_position()?;
         if self.big {
             file.seek(SeekFrom::Start(8))?;
             file.write_all(&first.to_le_bytes())?;
@@ -2313,7 +2316,8 @@ impl TiffRows {
             file.seek(SeekFrom::Start(4))?;
             file.write_all(&(first as u32).to_le_bytes())?;
         }
-        file.flush()?;
+        file.seek(SeekFrom::Start(end))?;
+        file.finish()?;
         Ok(())
     }
 }
@@ -2413,7 +2417,7 @@ struct CogBuild {
 /// [`write`] lays it out: the IFDs, then the levels' tiles from the smallest overview, copied from
 /// the temporary files. The file is byte for byte the same.
 pub(crate) struct CogWriter {
-    file: std::io::BufWriter<std::fs::File>,
+    file: std::io::BufWriter<Rewrite>,
     bands: usize,
     data_type: DataType,
     encoding: std::sync::Arc<(Compression, CodecParams, Layout)>,
@@ -2482,7 +2486,7 @@ impl CogWriter {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let file = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+        let file = std::io::BufWriter::with_capacity(1 << 20, create_replacing(path)?);
         Ok(Self {
             file,
             bands: raster.bands,
@@ -2774,6 +2778,7 @@ impl CogWriter {
             self.levels[i].spools.clear();
         }
         self.file.flush()?;
+        self.file.get_mut().finish()?;
         Ok(())
     }
 }
@@ -2970,6 +2975,43 @@ fn directories(mut images: Vec<Directory>, big: bool, cog: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writing over a larger file gives the file a fresh write gives, through every writer, and
+    /// keeps the file itself (a hard link to it sees the new content).
+    #[test]
+    fn rewriting_a_larger_file_leaves_only_the_new_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let raster = |n: usize| {
+            let cfg = wbraster::RasterConfig { cols: n, rows: n, bands: 1, data_type: wbraster::DataType::F32, ..Default::default() };
+            let data = wbraster::raster::RasterData::F32((0..n * n).map(|v| v as f32).collect());
+            crate::RasterDataset::with_driver(Raster::from_data_native(cfg, data).unwrap(), crate::formats::RasterDriver::GTiff, false)
+        };
+        let small = dir.path().join("small.tif");
+        crate::write_raster_dataset(&raster(20), small.to_str().unwrap(), &Default::default()).unwrap();
+        for driver in [crate::formats::RasterDriver::GTiff, crate::formats::RasterDriver::Cog] {
+            let options = crate::RasterWriteOptions { driver: Some(driver), ..Default::default() };
+            for streamed in [false, true] {
+                let write = |path: &std::path::Path| {
+                    if streamed {
+                        crate::open_raster_lazy(small.to_str().unwrap()).unwrap().write(path.to_str().unwrap(), &options).unwrap();
+                    } else {
+                        crate::write_raster_dataset(&raster(20), path.to_str().unwrap(), &options).unwrap();
+                    }
+                };
+                let (path, link, fresh) = (dir.path().join("out.tif"), dir.path().join("link.tif"), dir.path().join("fresh.tif"));
+                for p in [&path, &link, &fresh] {
+                    let _ = std::fs::remove_file(p);
+                }
+                crate::write_raster_dataset(&raster(300), path.to_str().unwrap(), &options).unwrap();
+                std::fs::hard_link(&path, &link).unwrap();
+                write(&path);
+                write(&fresh);
+                let expected = std::fs::read(&fresh).unwrap();
+                assert_eq!(std::fs::read(&path).unwrap(), expected, "{driver:?}, streamed {streamed}");
+                assert_eq!(std::fs::read(&link).unwrap(), expected, "{driver:?}, streamed {streamed}");
+            }
+        }
+    }
 
     #[test]
     fn pixel_is_point_roundtrip_preserves_corners() {

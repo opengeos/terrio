@@ -94,7 +94,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
         offset: 0,
         bottom_up: true,
     };
-    std::fs::write(&data, common::encode(r, &layout))?;
+    common::write_headerless(&data, path.with_extension("sgrd"), common::encode(r, &layout))?;
     let name = data.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
     let nd = nodata.map(|v| common::format_value(v, r.data_type)).unwrap_or_else(|| "-99999".into());
     let h = format!(
@@ -105,6 +105,6 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
         r.rows,
         r.cell_size_x
     );
-    std::fs::write(path.with_extension("sgrd"), h)?;
+    common::write_replacing(path.with_extension("sgrd"), h)?;
     common::write_prj(&data, &r.crs)
 }

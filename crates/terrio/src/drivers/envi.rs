@@ -173,12 +173,13 @@ fn parse_map_info(v: &str) -> Option<([f64; 6], Option<CrsInfo>)> {
     Some((gt, crs))
 }
 
-/// Writes an ENVI raster: the data file at `path` and its header next to it (`.hdr`), as GDAL does.
+/// Writes an ENVI raster: the data file at `path` and its header next to it (`.hdr`), as GDAL does,
+/// or over the `name.ext.hdr` header already there, which [`header_path`] prefers.
 pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> {
     let (data_path, header) = if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("hdr")) {
         (path.with_extension("dat"), path.to_path_buf())
     } else {
-        (path.to_path_buf(), path.with_extension("hdr"))
+        (path.to_path_buf(), header_path(path).unwrap_or_else(|| path.with_extension("hdr")))
     };
     // ENVI has no signed 8-bit type: widen it.
     let widened;
@@ -210,7 +211,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
         offset: 0,
         bottom_up: false,
     };
-    std::fs::write(&data_path, common::encode(r, &layout))?;
+    common::write_headerless(&data_path, &header, common::encode(r, &layout))?;
 
     let name = data_path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     let mut h = format!(
@@ -239,7 +240,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
     if let Some(nd) = nodata {
         h.push_str(&format!("data ignore value = {}\n", common::format_value(nd, r.data_type)));
     }
-    std::fs::write(header, h)?;
+    common::write_replacing(header, h)?;
     Ok(())
 }
 
@@ -254,6 +255,31 @@ mod tests {
         assert_eq!(crs.unwrap().epsg, Some(32611));
         let (gt, _) = parse_map_info("Arbitrary, 2, 3, 100, 200, 10, 10, 0, North").unwrap();
         assert_eq!(gt, [90.0, 10.0, 0.0, 220.0, 0.0, -10.0]);
+    }
+
+    /// A data file with a `name.ext.hdr` beside it, which the reader prefers to `name.hdr`, gets its
+    /// new header there: the stale one neither describes the new data nor opens it mid-write.
+    #[test]
+    fn writes_over_the_appended_header_the_reader_uses() {
+        let dir = tempfile::tempdir().unwrap();
+        let (bin, appended) = (dir.path().join("x.bin"), dir.path().join("x.bin.hdr"));
+        std::fs::write(&bin, [9u8; 4]).unwrap();
+        std::fs::write(&appended, "ENVI\nsamples = 2\nlines = 2\nbands = 1\ndata type = 1\ninterleave = bsq\nbyte order = 0\n").unwrap();
+        let data: Vec<u16> = (0..12).collect();
+        let r = common::make_raster(
+            3,
+            2,
+            2,
+            wbraster::raster::RasterData::U16(data.clone()),
+            [500000.0, 30.0, 0.0, 4100000.0, 0.0, -30.0],
+            CrsInfo::from_epsg(32611),
+            None,
+        )
+        .unwrap();
+        write(&r, None, &bin).unwrap();
+        let ds = super::open(&bin).and_then(common::RawRaster::read).unwrap();
+        assert_eq!(ds.raster.data_u16().unwrap(), &data[..]);
+        assert!(!dir.path().join("x.hdr").exists());
     }
 
     #[test]

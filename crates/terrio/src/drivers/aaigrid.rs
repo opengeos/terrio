@@ -170,7 +170,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
         RasterData::F32(v) => rows!(v, |x: f32| float_text(x as f64, DataType::F32)),
         RasterData::F64(v) => rows!(v, |x: f64| float_text(x, DataType::F64)),
     }
-    std::fs::write(path, s)?;
+    common::write_replacing(path, s)?;
     common::write_prj(path, &r.crs)
 }
 

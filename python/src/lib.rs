@@ -11,6 +11,8 @@ mod dataset_files;
 mod focal;
 mod gpkg_maintenance;
 mod grid;
+#[cfg(target_os = "linux")]
+mod hugepage_alloc;
 mod inspection;
 mod manage;
 mod multidim;

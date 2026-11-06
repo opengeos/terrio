@@ -130,7 +130,7 @@ pub(crate) fn read_jpeg(path: &Path) -> Result<RasterDataset> {
 /// Writes a JPEG file (see [`encode_jpeg`]), its world file and its CRS sidecar.
 pub(crate) fn write_jpeg(r: &Raster, path: &Path, quality: Option<&str>) -> Result<()> {
     let bytes = encode_jpeg(r, quality)?;
-    std::fs::write(path, bytes)?;
+    common::write_replacing(path, bytes)?;
     write_world_file(r, path)?;
     common::write_pam(path, &r.crs)
 }
@@ -227,7 +227,7 @@ pub(crate) fn read_world_file(path: &Path) -> Option<[f64; 6]> {
 pub(crate) fn write_world_file(r: &Raster, path: &Path) -> Result<()> {
     let (dx, dy) = (r.cell_size_x, -r.cell_size_y);
     let text = format!("{dx}\n0\n0\n{dy}\n{}\n{}\n", r.x_min + dx / 2.0, r.y_max() + dy / 2.0);
-    std::fs::write(path.with_extension("wld"), text)?;
+    common::write_replacing(path.with_extension("wld"), text)?;
     Ok(())
 }
 
@@ -262,8 +262,8 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
             }
         }
     }
-    let file = std::io::BufWriter::new(std::fs::File::create(path)?);
-    let mut enc = png::Encoder::new(file, r.cols as u32, r.rows as u32);
+    let mut file = std::io::BufWriter::new(common::create_replacing(path)?);
+    let mut enc = png::Encoder::new(&mut file, r.cols as u32, r.rows as u32);
     enc.set_color(color);
     enc.set_depth(if sixteen { png::BitDepth::Sixteen } else { png::BitDepth::Eight });
     if let (Some(nd), png::ColorType::Grayscale) = (nodata, color)
@@ -276,6 +276,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
     let mut w = enc.write_header().map_err(|e| png_err(path, e))?;
     w.write_image_data(&bytes).map_err(|e| png_err(path, e))?;
     w.finish().map_err(|e| png_err(path, e))?;
+    file.into_inner().map_err(std::io::IntoInnerError::into_error)?.finish()?;
     write_world_file(r, path)?;
     common::write_pam(path, &r.crs)
 }
