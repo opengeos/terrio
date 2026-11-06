@@ -596,33 +596,52 @@ mod tests {
             .iter()
             .map(|c| crate::BandMetadata { color_interp: Some((*c).into()), ..Default::default() })
             .collect();
-        let options = RasterWriteOptions {
-            driver: Some(RasterDriver::Cog),
-            tile_size: Some(16),
-            overview_resampling: Some("average".into()),
-            ..Default::default()
-        };
-        let whole = dir.path().join("whole.tif");
-        let streamed = dir.path().join("streamed.tif");
-        crate::write_raster_dataset(&ds, whole.to_str().unwrap(), &options).unwrap();
-        let mut writer = StripWriter::create(&ds, streamed.to_str().unwrap(), &options).unwrap();
-        for y in (0..height).step_by(8) {
-            writer.write(crate::cog::cut(&ds.raster, crate::Window::new(0, y, width, 8), &[1, 2, 3, 4]), 8).unwrap();
-        }
-        writer.finish().unwrap();
-        let mut whole = crate::open_raster_lazy(whole.to_str().unwrap()).unwrap();
-        let mut streamed = crate::open_raster_lazy(streamed.to_str().unwrap()).unwrap();
-        let sizes = whole.overviews();
-        assert!(sizes.len() >= 2, "exercise successive overview levels");
-        assert_eq!(sizes, streamed.overviews());
-        for (level, (cols, rows)) in sizes.into_iter().enumerate() {
-            let opts = crate::WindowOptions { bands: vec![], overview: Some(level) };
-            let window = crate::Window::new(0, 0, cols, rows);
-            let expected = whole.read_window(window, &opts).unwrap();
-            let actual = streamed.read_window(window, &opts).unwrap();
-            let values = actual.raster.data.to_f64_vec();
-            assert_eq!(values, expected.raster.data.to_f64_vec(), "overview {level}");
-            assert!(values[..cols * rows * 3].iter().all(|v| *v == 20.0), "transparent colors leaked at overview {level}");
+        for use_alpha in [true, false] {
+            if !use_alpha {
+                ds.band_metadata[3].color_interp = None;
+            }
+            let mut options = RasterWriteOptions {
+                driver: Some(RasterDriver::Cog),
+                tile_size: Some(16),
+                overview_resampling: Some("average".into()),
+                ..Default::default()
+            };
+            if !use_alpha {
+                options.creation_options.push(("ALPHA".into(), "NO".into()));
+            }
+            let suffix = if use_alpha { "alpha" } else { "no-alpha" };
+            let whole = dir.path().join(format!("whole-{suffix}.tif"));
+            let streamed = dir.path().join(format!("streamed-{suffix}.tif"));
+            crate::write_raster_dataset(&ds, whole.to_str().unwrap(), &options).unwrap();
+            let mut writer = StripWriter::create(&ds, streamed.to_str().unwrap(), &options).unwrap();
+            for y in (0..height).step_by(8) {
+                writer.write(crate::cog::cut(&ds.raster, crate::Window::new(0, y, width, 8), &[1, 2, 3, 4]), 8).unwrap();
+            }
+            writer.finish().unwrap();
+            for path in [&whole, &streamed] {
+                let mut decoder = tiff::decoder::Decoder::new(std::fs::File::open(path).unwrap()).unwrap();
+                assert_eq!(
+                    decoder.find_tag_unsigned_vec::<u16>(tiff::tags::Tag::ExtraSamples).unwrap(),
+                    Some(vec![if use_alpha { 2 } else { 0 }])
+                );
+            }
+            let mut whole = crate::open_raster_lazy(whole.to_str().unwrap()).unwrap();
+            let mut streamed = crate::open_raster_lazy(streamed.to_str().unwrap()).unwrap();
+            let sizes = whole.overviews();
+            assert!(sizes.len() >= 2, "exercise successive overview levels");
+            assert_eq!(sizes, streamed.overviews());
+            for (level, (cols, rows)) in sizes.into_iter().enumerate() {
+                let opts = crate::WindowOptions { bands: vec![], overview: Some(level) };
+                let window = crate::Window::new(0, 0, cols, rows);
+                let expected = whole.read_window(window, &opts).unwrap();
+                let actual = streamed.read_window(window, &opts).unwrap();
+                let values = actual.raster.data.to_f64_vec();
+                assert_eq!(values, expected.raster.data.to_f64_vec(), "overview {level}");
+                assert!(
+                    values[..cols * rows * 3].iter().all(|v| *v == if use_alpha { 20.0 } else { 110.0 }),
+                    "visible RGB mismatch at overview {level} (alpha weighting: {use_alpha})"
+                );
+            }
         }
     }
 
