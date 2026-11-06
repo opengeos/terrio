@@ -635,7 +635,9 @@ fn render(source: &mut dyn WarpSource, info: &WarpSourceInfo, s: &Settings, cell
         }
         out
     };
-    if !s.color && s.needs_validity() {
+    // Written GeoTIFF masks (and plain tiles' validity) come from a separate coverage
+    // rendering, so that an interpolating kernel's alpha cannot ring into the mask.
+    if (!s.color && s.needs_validity()) || s.preserve_mask {
         // The output's zero padding is distinct from its source nodata tag.
         // Render validity independently so valid zero-valued tiles survive.
         let mut coverage = ColorSource { source, info: info.clone(), only_alpha: true, limits: s.limits };
@@ -1743,5 +1745,24 @@ mod tests {
         let mut sink = Collect::default();
         let report = generate(&mut crate::LazyRaster::from(dataset), &options, &mut sink).unwrap();
         assert_eq!(report.written, 5);
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn resume_rebuilds_a_gray_webp_parent_from_rgb_children() {
+        // Gray WebP tiles are stored as RGB, and opaque ones without alpha: decoding must
+        // recover the gray tile layout before the parent is resampled.
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("tiles");
+        let mut options = TileOptions { format: "WEBP".into(), ..options() };
+        options.grid.min_zoom = Some(0);
+        options.grid.max_zoom = Some(1);
+        assert_eq!(to_directory(&mut source(), &options, &output, false).unwrap().written, 5);
+        let parent = output.join("0/0/0.webp");
+        let expected = std::fs::read(&parent).unwrap();
+        std::fs::remove_file(&parent).unwrap();
+        let report = to_directory(&mut source(), &options, &output, true).unwrap();
+        assert_eq!((report.written, report.resumed), (1, 4));
+        assert_eq!(std::fs::read(parent).unwrap(), expected);
     }
 }
