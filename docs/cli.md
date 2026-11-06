@@ -1583,7 +1583,10 @@ the size of one maximum-zoom tile: a mosaic without overviews (such as a VRT of
 thousands of files) can be tiled from zoom 0. The exception is a resumed run that
 rebuilds a missing parent from the source (see `--resume` below), whose window
 is the parent's full footprint. A tile at a resampling-kernel's
-edge sees only its four children, not their neighbors. `--overview-source source`
+edge sees only its four children, not their neighbors. Children outside the plan
+count as invalid, including those that `--min-x/--max-x/--min-y/--max-y` exclude, so a
+parent straddling a coordinate limit is partly transparent, as in GDAL; select
+`--overview-source source` to render such parents from the full source. `--overview-source source`
 renders every zoom directly from the source (using its stored overviews when
 appropriate), whose source windows grow fourfold per zoom level without
 overviews and can exceed the 64 MiB window budget. Image/alpha

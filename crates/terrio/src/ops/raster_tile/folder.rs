@@ -657,7 +657,9 @@ fn render(source: &mut dyn WarpSource, info: &WarpSourceInfo, s: &Settings, cell
 /// Only tiles that record their validity are decoded, which in a pyramid means color tiles
 /// with alpha ([`Settings::needs_validity`] is false).
 fn decode_tile(bytes: Vec<u8>, name: &str, source: &RasterDataset, s: &Settings) -> Result<RasterDataset> {
-    debug_assert!(s.color && s.alpha, "only color tiles with alpha record their validity");
+    if !(s.color && s.alpha) {
+        return Err(Error::InvalidData("only color tiles with alpha can be decoded for a parent tile".into()));
+    }
     let mut tile = crate::memory::open_raster_bytes(bytes, name)?;
     let gray = color_bands(source)? == 1;
     let n = tile.raster.cols * tile.raster.rows;
