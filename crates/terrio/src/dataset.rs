@@ -2345,6 +2345,13 @@ mod content_allow_list_tests {
             assert_eq!(geometries(&v), points, "{path:?}");
             assert_eq!((v.layers.len(), v.layers[0].name.as_str(), v.driver), (1, "main", VectorDriver::GeoJSON), "{path:?}");
         }
+        // The fallback's own allow-list check (`open` checks the list first, on the name and content).
+        let listed = |drivers: &str| {
+            let options = [("TERRIO_WBVECTOR_FALLBACK", "YES"), ("TERRIO_ALLOWED_DRIVERS", drivers)];
+            with(&options, || open_local(payload.to_str().unwrap(), &VectorOpenOptions::default())).map(|_| ()).map_err(|e| e.to_string())
+        };
+        assert_refused(listed("GeoJSON"), "KMZ", "a zip archive found by the fallback");
+        assert_eq!(listed("KMZ"), Ok(()));
         // The shapefile beside a path without an extension is read instead.
         let Ok(Dataset::Vector(v)) = open_with(&bare, &fallback) else { panic!("the shapefile not read") };
         assert_eq!(geometries(&v), [Some(wbvector::Geometry::point(5.0, 6.0))]);
