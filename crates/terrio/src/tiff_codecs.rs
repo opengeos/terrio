@@ -74,6 +74,10 @@ enum Codec {
     /// compression `.0`, which the `tiff` crate inverts (unsigned and floating-point ones, one
     /// sample per pixel) or refuses (the others): read as stored, as libtiff gives them to GDAL.
     WhiteIsZero(u16),
+    /// Deflate of little-endian integer samples (or floating-point ones without a predictor),
+    /// inflated straight into the result with `fdeflate` (pure Rust), then its predictor undone:
+    /// faster than the `tiff` crate's streaming reader and its predictor.
+    Deflate,
 }
 
 /// A sample type of the TIFF image.
@@ -205,6 +209,17 @@ fn decompress(compression: u16, raw: Vec<u8>, limit: usize) -> TiffResult<Vec<u8
     Ok(out)
 }
 
+/// Whether Deflate chunks of an image are inflated here ([`Codec::Deflate`]) rather than by the
+/// `tiff` crate: a little-endian file on a little-endian host, not YCbCr, samples of a type read
+/// here (8- to 64-bit integers, Float32, Float64; not Float16), and no predictor, or the
+/// horizontal one on integers. Images matched by an earlier codec arm never reach this choice.
+fn inflated_here(little_endian: bool, photometric: Option<u16>, format: u16, bits: u16, predictor: u16) -> bool {
+    cfg!(target_endian = "little")
+        && little_endian
+        && photometric != Some(6) // YCbCr may be subsampled: left to the crate
+        && Sample::new(format, bits).is_some_and(|s| predictor == 1 || (predictor == 2 && !s.is_float()))
+}
+
 /// Whether the `tiff` crate reads the pixel-interleaved chunks of an image of `samples` samples
 /// with fewer (or more) samples per pixel than the file holds: RGB and CMYK images whose
 /// `ExtraSamples` leave samples beyond the color ones and an alpha, or that have more samples than
@@ -294,6 +309,8 @@ impl ChunkCodec {
         let format = first(dec.find_tag_unsigned_vec::<u16>(Tag::SampleFormat)?, 1);
         // Complex samples, which the crate does not read: in the lossless compressions only.
         let complex = Sample::complex_part(format, packed_bits);
+        let predictor = dec.find_tag_unsigned::<u16>(Tag::Predictor)?.unwrap_or(1);
+        let little_endian = dec.byte_order() == tiff::tags::ByteOrder::LittleEndian;
         let codec = match compression {
             1 | 5 | 8 | 32946 | 32773 | LZMA | ZSTD if complex.is_some() => Codec::Complex(compression),
             _ if complex.is_some() => {
@@ -312,6 +329,7 @@ impl ChunkCodec {
             7 => Codec::Jpeg,
             WEBP => Codec::WebP,
             1 | 8 | 32946 | 32773 if misread => Codec::Chunky(compression),
+            8 | 32946 if inflated_here(little_endian, photometric, format, packed_bits, predictor) => Codec::Deflate,
             _ => return Ok(None),
         };
         let tiled = dec.get_chunk_type() == ChunkType::Tile;
@@ -353,7 +371,6 @@ impl ChunkCodec {
                 invalid(format!("TIFF compression {compression} with {bits}-bit samples (format {format}) is not supported"))
             })?,
         };
-        let predictor = dec.find_tag_unsigned::<u16>(Tag::Predictor)?.unwrap_or(1);
         // libtiff's predictors are those of its codecs that take one: uncompressed and PackBits
         // complex and WhiteIsZero chunks are read as stored, whatever the tag says.
         let predictor = if matches!(codec, Codec::Complex(1 | 32773) | Codec::WhiteIsZero(1 | 32773)) { 1 } else { predictor };
@@ -406,8 +423,13 @@ impl ChunkCodec {
         let (dw, dh) = (dw as usize, dh as usize);
         // Tiles are coded whole, strips with their own rows.
         let (w, h) = if self.tiled { self.chunk } else { (dw, dh) };
-        // Over the limit, the chunk is refused before any of it is read.
+        // Over the limit, the chunk is refused before any of it is read. A Deflate edge tile over
+        // it only with its padding is left to the `tiff` crate, as before: the crate keeps the
+        // image data only, and skips the padding.
         if self.decoded_size(w, h)? > self.limit {
+            if self.codec == Codec::Deflate && self.decoded_size(dw, dh)? <= self.limit {
+                return dec.read_chunk(idx);
+            }
             return Err(TiffError::LimitsExceeded);
         }
         let r = dec.inner();
@@ -423,6 +445,7 @@ impl ChunkCodec {
                 self.lossless(raw, w, h)?
             }
             Codec::Lerc => self.lerc(raw, w, h)?,
+            Codec::Deflate => return self.deflate(&raw, w, h, dw, dh),
             Codec::Jxl => self.jxl(&raw, w, h)?,
             Codec::Jpeg => self.jpeg(&raw, w, h)?,
             Codec::WebP => self.webp(&raw, w, h)?,
@@ -457,6 +480,78 @@ impl ChunkCodec {
         }
         let bytes = self.unpack(&packed, dw, dh)?;
         self.result(&bytes, dw, dw, dh)
+    }
+
+    /// Inflates a Deflate chunk of `h` rows of `w` pixels straight into the result,
+    /// and undoes its horizontal predictor; a chunk with padding (an edge tile) is then cut to its
+    /// `dw` x `dh` image data. A stream ending before the chunk's samples is an error, and so is a
+    /// wrong Adler-32 right after them; one cut in its trailer after the samples is accepted, as
+    /// libtiff 4.5's zlib decoder accepts it (libtiff built with libdeflate, as GDAL 3.8.4's
+    /// reference build here, refuses it), and a stream going on past the samples is accepted, its
+    /// Adler-32 unchecked, as libtiff's zlib decoder stops once the samples are out.
+    fn deflate(&self, raw: &[u8], w: usize, h: usize, dw: usize, dh: usize) -> TiffResult<DecodingResult> {
+        let what = "a TIFF chunk";
+        let len = fallible::len(&[w, h, self.spp], what)?;
+        macro_rules! zeros {
+            ($($s:ident: $z:expr),*) => {
+                match self.sample {
+                    $(Sample::$s => DecodingResult::$s(fallible::filled_now(len, $z, what)?),)*
+                    Sample::F16 => unreachable!("Float16 is left to the `tiff` crate"),
+                }
+            };
+        }
+        let mut res = zeros!(U8: 0, I8: 0, U16: 0, I16: 0, U32: 0, I32: 0, U64: 0, I64: 0, F32: 0.0, F64: 0.0);
+        // fdeflate: 15% faster than zlib-rs on Sentinel-2 tiles (1024 x 1024 uint16), pure Rust.
+        // Read on after the output is full, so an Adler-32 right after the samples is checked; a
+        // stream cut in its trailer then reads no more and is accepted, as libtiff's zlib decoder
+        // accepts it.
+        {
+            let mut z = fdeflate::Decompressor::new();
+            let mut buf = res.as_buffer(0);
+            let out = buf.as_bytes_mut();
+            let (mut used, mut written) = (0, 0);
+            while !z.is_done() {
+                let (i, o) = z.read(&raw[used..], out, written, true).map_err(|e| invalid(format!("Deflate: {e:?}")))?;
+                (used, written) = (used + i, written + o);
+                if i == 0 && o == 0 {
+                    break; // the output is full and the stream goes on: the extra data is left
+                }
+            }
+            if written < out.len() {
+                return Err(invalid(format!("Deflate: chunk of {written} bytes, {} expected", out.len())));
+            }
+        }
+        if self.predictor == 2 && w > 0 {
+            let (row, spp) = (w * self.spp, self.spp);
+            macro_rules! acc {
+                ($($s:ident),*) => {
+                    match &mut res {
+                        $(DecodingResult::$s(v) => {
+                            for r in v.chunks_exact_mut(row) {
+                                if spp == 1 {
+                                    // a running sum: no index, so no bounds check per sample
+                                    let mut acc = r[0];
+                                    for x in &mut r[1..] {
+                                        acc = acc.wrapping_add(*x);
+                                        *x = acc;
+                                    }
+                                } else {
+                                    for i in spp..row {
+                                        r[i] = r[i].wrapping_add(r[i - spp]);
+                                    }
+                                }
+                            }
+                        })*
+                        _ => unreachable!("predictor 2 is read here for integer samples only"),
+                    }
+                };
+            }
+            acc!(U8, I8, U16, I16, U32, I32, U64, I64);
+        }
+        if (dw, dh) == (w, h) {
+            return Ok(res);
+        }
+        self.result(res.as_buffer(0).as_bytes(), w, dw, dh)
     }
 
     /// The bytes of `h` rows of `w` pixels of decoded samples.
@@ -1057,6 +1152,64 @@ mod tests {
         assert!(c.lossless(lzw_encode(&[1]), usize::MAX, 2).is_err());
     }
 
+    /// Deflate is inflated here for little-endian, non-YCbCr images of integer samples (with or
+    /// without the horizontal predictor) or Float32/Float64 samples without a predictor; every
+    /// other image is left to the `tiff` crate.
+    #[test]
+    fn deflate_is_inflated_here_only_for_the_images_it_reads_as_the_crate() {
+        let gray = Some(1);
+        // (little-endian, photometric, SampleFormat, BitsPerSample, Predictor, inflated here)
+        let cases = [
+            (true, gray, 1, 8, 1, true),
+            (true, gray, 1, 16, 2, true),
+            (true, gray, 2, 32, 2, true),
+            (true, gray, 1, 64, 2, true),
+            (true, Some(2), 1, 8, 2, true),
+            (true, None, 2, 8, 1, true),
+            (true, gray, 3, 32, 1, true),
+            (true, gray, 3, 64, 1, true),
+            (true, Some(6), 1, 8, 1, false),
+            (true, gray, 3, 16, 1, false),
+            (false, gray, 1, 16, 1, false),
+            (true, gray, 3, 32, 2, false),
+            (true, gray, 3, 64, 2, false),
+            (true, gray, 1, 16, 3, false),
+            (true, gray, 3, 32, 3, false),
+            (true, gray, 5, 32, 1, false),
+            (true, gray, 1, 12, 1, false),
+        ];
+        for (le, photometric, format, bits, predictor, here) in cases {
+            assert_eq!(
+                inflated_here(le, photometric, format, bits, predictor),
+                here && cfg!(target_endian = "little"),
+                "little-endian {le}, photometric {photometric:?}, format {format}, {bits} bits, predictor {predictor}"
+            );
+        }
+    }
+
+    /// A Deflate chunk inflates to its pixels; one ending short, or whose Adler-32 is wrong, is an
+    /// error even when its pixels are all there; data past the chunk's pixels is left.
+    #[test]
+    fn deflate_chunks_short_or_corrupt_are_errors_and_trailer_cuts_are_read() {
+        let c = ChunkCodec { codec: Codec::Deflate, sample: Sample::U8, spp: 1, predictor: 1, big_endian: false, ..packed(8, 1) };
+        let pixels: Vec<u8> = (0..16).collect();
+        let good = zlib(&pixels);
+        assert_eq!(format!("{:?}", c.deflate(&good, 4, 4, 4, 4).unwrap()), format!("{:?}", DecodingResult::U8(pixels.clone())));
+        assert!(c.deflate(&good[..good.len() - 6], 4, 4, 4, 4).is_err());
+        let mut bad_sum = good.clone();
+        *bad_sum.last_mut().unwrap() ^= 1;
+        assert!(c.deflate(&bad_sum, 4, 4, 4, 4).is_err());
+        assert!(c.deflate(&zlib(&pixels[..12]), 4, 4, 4, 4).is_err());
+        assert!(c.deflate(&zlib(&[pixels.as_slice(), &[9; 8]].concat()), 4, 4, 4, 4).is_ok());
+        // Cut in its trailer (the Adler-32) after every sample: accepted, as libtiff's zlib path does.
+        for cut in 1..=4 {
+            assert!(c.deflate(&good[..good.len() - cut], 4, 4, 4, 4).is_ok(), "trailer cut by {cut}");
+        }
+        // Predictor 2 on a chunk of no width: nothing to undo, no panic.
+        let p = ChunkCodec { predictor: 2, ..c };
+        assert!(p.deflate(&zlib(&[]), 0, 4, 0, 4).is_ok());
+    }
+
     /// A little-endian BigTIFF of one 4 x 4 byte strip of `data`, LZW-coded, whose
     /// StripByteCounts says `count`.
     fn bigtiff_strip(data: &[u8], count: u64) -> Vec<u8> {
@@ -1075,6 +1228,178 @@ mod tests {
         b.extend(0u64.to_le_bytes());
         b.extend(data);
         b
+    }
+
+    /// A zlib stream of `data`.
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    /// A little-endian BigTIFF of one gray image of `width` x `height` samples of `bits` bits and
+    /// `SampleFormat` `format`, in 16 x 16 Deflate tiles stored as `tiles` (row by row), with
+    /// `Predictor` `predictor`.
+    fn bigtiff_tiled(width: u64, height: u64, bits: u64, format: u64, predictor: u64, tiles: &[Vec<u8>]) -> Vec<u8> {
+        let n = tiles.len() as u64;
+        // The header, then the IFD of 12 tags of 20 bytes, then the tile offsets and byte counts
+        // (8 bytes each), then the tiles.
+        let arrays = 16 + 8 + 12 * 20 + 8;
+        let mut offset = arrays + 16 * n;
+        let mut offsets = Vec::new();
+        for t in tiles {
+            offsets.push(offset);
+            offset += t.len() as u64;
+        }
+        let tags: [(u16, u16, u64, u64); 12] = [
+            (256, 16, 1, width),
+            (257, 16, 1, height),
+            (258, 3, 1, bits),
+            (259, 3, 1, 8),
+            (262, 3, 1, 1),
+            (277, 3, 1, 1),
+            (317, 3, 1, predictor),
+            (322, 3, 1, 16),
+            (323, 3, 1, 16),
+            (324, 16, n, arrays),
+            (325, 16, n, arrays + 8 * n),
+            (339, 3, 1, format),
+        ];
+        let mut b = b"II\x2b\0\x08\0\0\0".to_vec();
+        b.extend(16u64.to_le_bytes());
+        b.extend((tags.len() as u64).to_le_bytes());
+        for (tag, typ, count, value) in tags {
+            b.extend(tag.to_le_bytes());
+            b.extend(typ.to_le_bytes());
+            b.extend(count.to_le_bytes());
+            b.extend(value.to_le_bytes());
+        }
+        b.extend(0u64.to_le_bytes());
+        offsets.iter().for_each(|o| b.extend(o.to_le_bytes()));
+        tiles.iter().for_each(|t| b.extend((t.len() as u64).to_le_bytes()));
+        tiles.iter().for_each(|t| b.extend(t));
+        b
+    }
+
+    /// A Deflate edge tile over the chunk limit only with its padding is read as the `tiff` crate
+    /// reads it, which limits the image data: 100 bytes hold the 4 x 16 pixels of the edge tile
+    /// of a 20 x 16 image in 16 x 16 tiles, not its 16 x 16 stored ones. A whole tile over the
+    /// limit is refused.
+    #[test]
+    fn a_deflate_edge_tile_over_the_limit_only_with_its_padding_is_read() {
+        let tile = |v: u8| zlib(&(0..=255u8).map(|i| i.wrapping_mul(v)).collect::<Vec<_>>());
+        let b = bigtiff_tiled(20, 16, 8, 1, 1, &[tile(3), tile(5)]);
+        let mut dec = Decoder::new(std::io::Cursor::new(&b)).unwrap();
+        let codec = ChunkCodec::new(&mut dec, 100, None).unwrap().expect("Deflate is inflated here");
+        assert!(matches!(codec.read(&mut dec, 0), Err(TiffError::LimitsExceeded)));
+        let edge = codec.read(&mut dec, 1).unwrap();
+        assert_eq!(format!("{edge:?}"), format!("{:?}", dec.read_chunk(1).unwrap()));
+        let expected: Vec<u8> = (0..16u8).flat_map(|r| (0..4u8).map(move |c| (r * 16 + c).wrapping_mul(5))).collect();
+        assert_eq!(format!("{edge:?}"), format!("{:?}", DecodingResult::U8(expected)));
+    }
+
+    /// Deflate tiles inflated here give what the `tiff` crate gives, the edge tiles of a 37 x 23
+    /// image in 16 x 16 tiles included: the horizontal predictor is undone over the stored tile
+    /// width, padding included, before the tile is cut to its image data.
+    #[test]
+    fn deflate_tiles_decode_as_the_tiff_crate_decodes_them() {
+        // Every byte of every sample set: a 64-bit multiplicative hash of the tile and position.
+        macro_rules! samples {
+            ($t:ty, $tile:expr) => {
+                (0..256u64).map(|i| (($tile as u64 * 1000 + i).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 1) as $t).collect::<Vec<$t>>()
+            };
+        }
+        macro_rules! case {
+            ($t:ty, $bits:expr, $format:expr, $predictor:expr, $encode:expr) => {
+                let tiles: Vec<Vec<u8>> = (0..6)
+                    .map(|t| {
+                        let mut v = samples!($t, t);
+                        $encode(&mut v);
+                        zlib(&v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())
+                    })
+                    .collect();
+                let b = bigtiff_tiled(37, 23, $bits, $format, $predictor, &tiles);
+                let mut dec = Decoder::new(std::io::Cursor::new(&b)).unwrap();
+                let codec = ChunkCodec::new(&mut dec, usize::MAX, None).unwrap().expect("Deflate is inflated here");
+                assert_eq!(codec.codec, Codec::Deflate);
+                assert_eq!(dec.tile_count().unwrap(), 6);
+                for idx in 0..6 {
+                    let ours = codec.read(&mut dec, idx).unwrap();
+                    let crate_ = dec.read_chunk(idx).unwrap();
+                    assert_eq!(format!("{ours:?}"), format!("{crate_:?}"), "tile {idx}, {}, predictor {}", stringify!($t), $predictor);
+                }
+            };
+        }
+        // Horizontal differencing, row by row: what the predictor undoes.
+        macro_rules! differenced {
+            ($t:ty) => {
+                |v: &mut Vec<$t>| {
+                    for row in v.chunks_mut(16) {
+                        for i in (1..16).rev() {
+                            row[i] = row[i].wrapping_sub(row[i - 1]);
+                        }
+                    }
+                }
+            };
+        }
+        let none = |_: &mut Vec<_>| {};
+        case!(u8, 8, 1, 1, none);
+        case!(u8, 8, 1, 2, differenced!(u8));
+        case!(u16, 16, 1, 2, differenced!(u16));
+        case!(i32, 32, 2, 2, differenced!(i32));
+        case!(u64, 64, 1, 2, differenced!(u64));
+        case!(f32, 32, 3, 1, |_: &mut Vec<f32>| {});
+    }
+
+    /// Deflate chunks inflated here give what the `tiff` crate gives, for every sample type
+    /// inflated here: integers of 8 to 64 bits, signed or not, with and without the horizontal
+    /// predictor, Float32 and Float64 without it, and RGB of 8, 16 and 64 bits (the predictor over
+    /// several samples a pixel); the last strip shorter than the others.
+    #[test]
+    fn deflate_chunks_decode_as_the_tiff_crate_decodes_them() {
+        use tiff::encoder::{Compression, DeflateLevel, TiffEncoder, colortype};
+        use tiff::tags::Predictor;
+        let (w, h) = (37u32, 23u32);
+        let both = [Predictor::None, Predictor::Horizontal];
+        macro_rules! case {
+            ($ct:ident, $t:ty, $channels:expr, $predictors:expr) => {
+                // Every byte of every sample set: a 64-bit multiplicative hash.
+                let data: Vec<$t> = (0..u64::from(w * h * $channels)).map(|i| (i.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 1) as $t).collect();
+                for predictor in $predictors {
+                    let mut b = std::io::Cursor::new(Vec::new());
+                    let mut enc = TiffEncoder::new(&mut b)
+                        .unwrap()
+                        .with_compression(Compression::Deflate(DeflateLevel::Fast))
+                        .with_predictor(predictor);
+                    let mut img = enc.new_image::<colortype::$ct>(w, h).unwrap();
+                    img.rows_per_strip(5).unwrap();
+                    img.write_data(&data).unwrap();
+                    let file = b.into_inner();
+                    let mut dec = Decoder::new(std::io::Cursor::new(&file)).unwrap();
+                    let codec = ChunkCodec::new(&mut dec, usize::MAX, None).unwrap().expect("Deflate is inflated here");
+                    assert_eq!(codec.codec, Codec::Deflate);
+                    for idx in 0..dec.strip_count().unwrap() {
+                        let ours = codec.read(&mut dec, idx).unwrap();
+                        let crate_ = dec.read_chunk(idx).unwrap();
+                        assert_eq!(format!("{ours:?}"), format!("{crate_:?}"), "strip {idx}, {}, {predictor:?}", stringify!($ct));
+                    }
+                }
+            };
+        }
+        case!(Gray8, u8, 1, both);
+        case!(GrayI8, i8, 1, both);
+        case!(Gray16, u16, 1, both);
+        case!(GrayI16, i16, 1, both);
+        case!(Gray32, u32, 1, both);
+        case!(GrayI32, i32, 1, both);
+        case!(Gray64, u64, 1, both);
+        case!(GrayI64, i64, 1, both);
+        case!(Gray32Float, f32, 1, [Predictor::None]);
+        case!(Gray64Float, f64, 1, [Predictor::None]);
+        case!(RGB8, u8, 3, both);
+        case!(RGB16, u16, 3, both);
+        case!(RGB64, u64, 3, both);
     }
 
     /// A chunk's byte count from the header is not allocated before the file backs it: a corrupt

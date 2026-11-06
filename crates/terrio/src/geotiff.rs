@@ -1307,22 +1307,22 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     chunks.extend((0..chunk_count).map(|i| i as u32));
     // Compressed chunks whose stored bytes run past the end of the file: refused, as GDAL does.
     let compression = dec.find_tag_unsigned::<u16>(Tag::Compression).map_err(tiff_err)?.unwrap_or(1);
-    if compression != 1 {
-        let (offsets_tag, counts_tag) = match dec.get_chunk_type() {
-            tiff::decoder::ChunkType::Tile => (Tag::TileOffsets, Tag::TileByteCounts),
-            tiff::decoder::ChunkType::Strip => (Tag::StripOffsets, Tag::StripByteCounts),
-        };
-        let offsets = dec.get_tag_u64_vec(offsets_tag).map_err(tiff_err)?;
-        let counts = dec.get_tag_u64_vec(counts_tag).map_err(tiff_err)?;
-        check_stored_chunks(compression, offsets.into_iter().zip(counts), dec.inner().get_ref().get_ref().len()?)?;
-    }
+    // Read once: the codec below keeps them rather than decoding the tags again.
+    let tables = if compression != 1 {
+        let tables = ChunkTables::read(&mut dec).map_err(tiff_err)?;
+        let stored = tables.offsets.iter().copied().zip(tables.counts.iter().copied());
+        check_stored_chunks(compression, stored, dec.inner().get_ref().get_ref().len()?)?;
+        Some(std::sync::Arc::new(tables))
+    } else {
+        None
+    };
 
     // Band-major output, typed after the first chunk decoded.
     let mut data: Option<RasterData> = None;
     let file = dec.inner().get_ref().get_ref().clone();
     let reopen = || file_decoder(file.clone(), &tags, limits, path);
     // The compressions the `tiff` crate does not decode (alone), with the same limit.
-    let codec = crate::tiff_codecs::ChunkCodec::new(&mut dec, limits.chunk_bytes, None).map_err(tiff_err)?;
+    let codec = crate::tiff_codecs::ChunkCodec::new(&mut dec, limits.chunk_bytes, tables).map_err(tiff_err)?;
     decode_chunks(&mut dec, Some(&reopen), 0, &chunks, codec.as_ref(), limits.chunk_bytes, &tiff_err, |(idx, chunk, (dw, dh))| {
         let idx = idx as usize;
         let (plane, rest) = (idx / per_plane, idx % per_plane);
