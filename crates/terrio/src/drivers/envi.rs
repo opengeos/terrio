@@ -210,7 +210,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
         offset: 0,
         bottom_up: false,
     };
-    std::fs::write(&data_path, common::encode(r, &layout))?;
+    common::write_headerless(&data_path, &header, common::encode(r, &layout))?;
 
     let name = data_path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     let mut h = format!(
@@ -239,7 +239,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
     if let Some(nd) = nodata {
         h.push_str(&format!("data ignore value = {}\n", common::format_value(nd, r.data_type)));
     }
-    std::fs::write(header, h)?;
+    common::write_replacing(header, h)?;
     Ok(())
 }
 
