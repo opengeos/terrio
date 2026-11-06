@@ -448,6 +448,9 @@ fn read_inputs(file: &str) -> Result<Vec<InputRow>> {
     if let Some(unknown) = header.iter().find(|h| !matches!(h.as_str(), "path" | "time" | "label" | "band")) {
         return Err(bad(format!("unknown column '{unknown}' (expected path, time, label, band)")));
     }
+    if let Some(twice) = header.iter().enumerate().find_map(|(i, h)| header[..i].contains(h).then_some(h)) {
+        return Err(bad(format!("column '{twice}' appears twice in the header")));
+    }
     let column = |name: &str| header.iter().position(|h| h == name);
     let path = column("path").ok_or_else(|| bad("the header has no 'path' column".into()))?;
     let (time, label, band) = (column("time"), column("label"), column("band"));

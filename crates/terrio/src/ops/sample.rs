@@ -193,13 +193,21 @@ pub(crate) fn check_raster(ds: &RasterDataset) -> Result<()> {
     if ds.complex || ds.geolocation.is_some() {
         return Err(Error::Unsupported("this operation needs real-valued raster bands with affine georeferencing".into()));
     }
-    let gt = ds.geo_transform();
+    check_grid(&ds.geo_transform(), ds.raster.cols, ds.raster.rows)?;
+    if ds.band_count() == 0 {
+        return Err(Error::InvalidArgument("the raster must have pixels and at least one band".into()));
+    }
+    Ok(())
+}
+
+/// A finite, invertible geotransform and a grid with pixels.
+pub(crate) fn check_grid(gt: &[f64; 6], cols: usize, rows: usize) -> Result<()> {
     let det = gt[1] * gt[5] - gt[2] * gt[4];
     if gt.iter().any(|v| !v.is_finite()) || det == 0.0 || !det.is_finite() {
-        return Err(Error::InvalidArgument("the raster geotransform must be finite and invertible".into()));
+        return Err(Error::InvalidArgument("the grid geotransform must be finite and invertible".into()));
     }
-    if ds.raster.cols == 0 || ds.raster.rows == 0 || ds.band_count() == 0 {
-        return Err(Error::InvalidArgument("the raster must have pixels and at least one band".into()));
+    if cols == 0 || rows == 0 {
+        return Err(Error::InvalidArgument("the grid must have pixels".into()));
     }
     Ok(())
 }
