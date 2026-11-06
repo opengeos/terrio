@@ -298,8 +298,10 @@ terrio filter hexbin bridge.copc.laz footprint.geojson --edge-size 1.4 --thresho
 ### CSF directory input
 
 `filter csf` also accepts a local directory of LAS/LAZ files, including COPC.
-It classifies each regular file separately, in filename order, and keeps its
-filename in the output directory. The output format follows its extension.
+It classifies each regular file separately, sorted by platform path ordering
+(not natural numeric ordering), and keeps its filename in the output directory.
+The output format follows its extension, except that detected COPC content remains
+COPC even with an ordinary `.laz` filename.
 Extension matching is case-insensitive.
 Subdirectories, symbolic links and other file types are skipped; the scan is not
 recursive. The output directory is created when needed and may be a child of the
@@ -312,8 +314,12 @@ terrio filter csf --cloth-resolution=2 'D:\Downloads' 'D:\Downloads\Nova pasta'
 
 An empty input directory, an output path that is a file, an output directory
 that resolves to the input directory, or any existing output filename is refused
-before processing. Input files are preserved. A failure while reading or classifying
-a later tile stops the batch; earlier completed outputs remain. CSF processes one
+before processing. Planned filenames that collide under the output filesystem's
+case or Unicode rules are also refused. The output directory may have been created
+before a refusal, including when resolving directory aliases. Input files are
+preserved. Each tile is staged in the output directory and published without
+replacing an existing file. A failed read, classification or write stops the batch
+and removes the incomplete tile; earlier completed outputs remain. CSF processes one
 whole tile at a time, so memory use depends on the largest tile. The directory
 batch input is a CLI convenience specific to CSF; other filters still take file
 paths or URLs. The library and Python CSF methods operate on individual point-cloud

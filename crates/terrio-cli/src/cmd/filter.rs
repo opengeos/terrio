@@ -890,9 +890,15 @@ fn parse_point(s: &str) -> terrio::Result<Vec<f64>> {
 }
 
 fn read(io: &Io) -> terrio::Result<PointCloud> {
-    let mut cloud = pointcloud::read_points(&io.input, &io.points.to_options()?)?;
+    Ok(read_path(&io.input, io)?.0)
+}
+
+fn read_path(path: &str, io: &Io) -> terrio::Result<(PointCloud, &'static str)> {
+    let mut reader = pointcloud::open_points(path)?;
+    let format = reader.format_name();
+    let mut cloud = reader.read(&io.points.to_options()?)?;
     assign_srs(&io.a_srs, &mut cloud)?;
-    Ok(cloud)
+    Ok((cloud, format))
 }
 
 fn write(io: &Io, cloud: &PointCloud) -> terrio::Result<()> {
@@ -906,7 +912,7 @@ fn run_csf(io: &Io, options: &CsfOptions) -> terrio::Result<()> {
     use terrio::Error;
 
     let input = Path::new(&io.input);
-    if !input.is_dir() {
+    if io.input.starts_with("ept://") || !input.is_dir() {
         return write(io, &filters::csf(&read(io)?, options)?);
     }
     let mut files = Vec::new();
@@ -925,7 +931,16 @@ fn run_csf(io: &Io, options: &CsfOptions) -> terrio::Result<()> {
     if files.is_empty() {
         return Err(Error::InvalidArgument(format!("input directory '{}' contains no regular LAS/LAZ files", io.input)));
     }
-    if !matches!(terrio::vfs::Location::parse(&io.output), terrio::vfs::Location::Local(_)) {
+    let location = terrio::vfs::Location::parse(&io.output);
+    let local = match &location {
+        terrio::vfs::Location::Local(_) => true,
+        // A directory name ending in .zip is not an archive output request.
+        terrio::vfs::Location::Zip { archive, inner: None } => {
+            matches!(archive.as_ref(), terrio::vfs::Location::Local(_)) && !io.output.starts_with("/vsizip/")
+        }
+        _ => false,
+    };
+    if !local {
         return Err(Error::InvalidArgument("CSF directory output must be a local directory".into()));
     }
     let output = Path::new(&io.output);
@@ -940,6 +955,7 @@ fn run_csf(io: &Io, options: &CsfOptions) -> terrio::Result<()> {
     }
     // Check every collision before processing the first tile, including dangling
     // symlinks: following them here could truncate a source or unrelated file.
+    let staging = reserve_csf_names(output, &files)?;
     let mut paths = Vec::new();
     for file in files {
         let destination = output.join(file.file_name().expect("directory entry has a filename"));
@@ -948,17 +964,58 @@ fn run_csf(io: &Io, options: &CsfOptions) -> terrio::Result<()> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        let input = file.to_str().ok_or_else(|| Error::InvalidArgument("CSF input filename is not UTF-8".into()))?.to_owned();
-        let output = destination.to_str().ok_or_else(|| Error::InvalidArgument("CSF output filename is not UTF-8".into()))?.to_owned();
-        paths.push((input, output));
+        let input_path = file.to_str().ok_or_else(|| Error::InvalidArgument("CSF input filename is not UTF-8".into()))?.to_owned();
+        let output_path = destination.to_str().ok_or_else(|| Error::InvalidArgument("CSF output filename is not UTF-8".into()))?.to_owned();
+        paths.push((input_path, output_path));
     }
-    let read_options = io.points.to_options()?;
     let write_options = io.write.to_options(None)?;
-    for (input, output) in paths {
-        let mut cloud = pointcloud::read_points(&input, &read_options)?;
-        assign_srs(&io.a_srs, &mut cloud)?;
-        pointcloud::write_points(&filters::csf(&cloud, options)?, &output, &write_options)?;
+    for (input_path, output_path) in paths {
+        let (cloud, format) = read_path(&input_path, io)?;
+        let mut tile_options = write_options.clone();
+        if tile_options.format.is_none() {
+            tile_options.format =
+                if format == "COPC" { Some(pointcloud::PointFormat::Copc) } else { pointcloud::PointFormat::for_path(&output_path) };
+        }
+        let classified = filters::csf(&cloud, options)?;
+        publish_csf_tile(&classified, &output_path, &tile_options, staging.path())?;
     }
+    Ok(())
+}
+
+/// Probe the output filesystem, including its case/Unicode filename rules,
+/// before processing tiles. The reservations live only in a private directory.
+fn reserve_csf_names(output: &std::path::Path, files: &[std::path::PathBuf]) -> terrio::Result<tempfile::TempDir> {
+    let staging = tempfile::Builder::new().prefix(".terrio-csf-").tempdir_in(output)?;
+    let names = staging.path().join("names");
+    std::fs::create_dir(&names)?;
+    for file in files {
+        let name = file.file_name().expect("directory entry has a filename");
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(names.join(name)) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(terrio::Error::InvalidArgument(format!(
+                    "CSF output filenames collide on the output filesystem: '{}'",
+                    file.display()
+                )));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(staging)
+}
+
+fn publish_csf_tile(
+    cloud: &PointCloud,
+    output: &str,
+    options: &pointcloud::PointWriteOptions,
+    staging: &std::path::Path,
+) -> terrio::Result<()> {
+    let temporary = tempfile::NamedTempFile::new_in(staging)?;
+    let path = temporary.path().to_str().ok_or_else(|| terrio::Error::InvalidArgument("CSF output filename is not UTF-8".into()))?;
+    pointcloud::write_points(cloud, path, options)?;
+    // Exclusive publication also catches destinations created after preflight.
+    // Dropping the temporary on any failure removes the incomplete tile.
+    temporary.persist_noclobber(output).map_err(|error| terrio::Error::from(error.error))?;
     Ok(())
 }
 
@@ -1349,6 +1406,7 @@ mod tests {
         let output = input.join("Nova pasta");
         std::fs::create_dir(&input).unwrap();
         std::fs::create_dir(input.join("nested")).unwrap();
+        std::fs::create_dir(input.join("ignored.las")).unwrap();
         std::fs::write(input.join("notes.txt"), "not a point cloud").unwrap();
         std::fs::write(input.join("nested/ignored.las"), "not scanned recursively").unwrap();
         let dims = vec![
@@ -1358,9 +1416,10 @@ mod tests {
         ];
         let cloud = PointCloud::new(dims, SpatialRef::from_epsg(32614).unwrap());
         let mut originals = Vec::new();
-        for name in ["a.las", "b.LAZ"] {
+        for (index, name) in ["a.las", "b.LAZ"].iter().enumerate() {
             let path = input.join(name);
-            pointcloud::write_points(&cloud, path.to_str().unwrap(), &Default::default()).unwrap();
+            let tile = if index == 0 { cloud.clone() } else { cloud.slice(0, 32) };
+            pointcloud::write_points(&tile, path.to_str().unwrap(), &Default::default()).unwrap();
             originals.push(std::fs::read(path).unwrap());
         }
         let argv = ["terrio", "csf", "--cloth-resolution=2", input.to_str().unwrap(), output.to_str().unwrap()];
@@ -1381,7 +1440,7 @@ mod tests {
             .unwrap();
             let batch = pointcloud::read_points(output.join(name).to_str().unwrap(), &Default::default()).unwrap();
             let reference = pointcloud::read_points(single.to_str().unwrap(), &Default::default()).unwrap();
-            assert_eq!(batch.len(), cloud.len());
+            assert_eq!(batch.len(), if index == 0 { 64 } else { 32 });
             assert_eq!(batch.crs.epsg, Some(32614));
             for dimension in ["x", "y", "z", "classification"] {
                 assert_eq!(batch.dim(dimension).unwrap().to_f64(), reference.dim(dimension).unwrap().to_f64(), "{dimension}");
@@ -1395,32 +1454,130 @@ mod tests {
         let input = dir.path().join("input");
         let output = dir.path().join("output");
         std::fs::create_dir(&input).unwrap();
-        let run_csf = |output: &std::path::Path| {
+        let run_batch = |output: &std::path::Path| {
             run(Cli::try_parse_from(["terrio", "csf", input.to_str().unwrap(), output.to_str().unwrap()]).unwrap().args)
         };
-        let error = run_csf(&output).unwrap_err().to_string();
+        let error = run_batch(&output).unwrap_err().to_string();
         assert!(error.contains("LAS/LAZ"), "{error}");
         assert!(!output.exists());
         // Preflight must reject collisions before reading or writing any dataset.
         std::fs::write(input.join("a.las"), "input a").unwrap();
         std::fs::write(input.join("b.las"), "input b").unwrap();
-        let error = run_csf(std::path::Path::new("s3://bucket/classified")).unwrap_err().to_string();
+        let error = run_batch(std::path::Path::new("s3://bucket/classified")).unwrap_err().to_string();
         assert!(error.contains("local directory"), "{error}");
-        let error = run_csf(&input).unwrap_err().to_string();
+        let error = run_batch(&input).unwrap_err().to_string();
         assert!(error.contains("input directory"), "{error}");
-        let error = run_csf(&input.join("new/..")).unwrap_err().to_string();
+        let error = run_batch(&input.join("new/..")).unwrap_err().to_string();
         assert!(error.contains("input directory"), "{error}");
         std::fs::write(&output, "an existing file").unwrap();
-        let error = run_csf(&output).unwrap_err().to_string();
+        let error = run_batch(&output).unwrap_err().to_string();
         assert!(error.contains("directory"), "{error}");
         std::fs::remove_file(&output).unwrap();
         std::fs::create_dir(&output).unwrap();
         std::fs::write(output.join("b.las"), "keep this result").unwrap();
-        let error = run_csf(&output).unwrap_err().to_string();
+        let error = run_batch(&output).unwrap_err().to_string();
         assert!(error.contains("already exists"), "{error}");
         assert!(!output.join("a.las").exists());
         assert_eq!(std::fs::read_to_string(output.join("b.las")).unwrap(), "keep this result");
         assert_eq!(std::fs::read_to_string(input.join("a.las")).unwrap(), "input a");
+    }
+
+    #[test]
+    fn csf_keeps_copc_content_in_an_ordinary_laz_filename_and_accepts_zip_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input");
+        std::fs::create_dir(&input).unwrap();
+        let output = dir.path().join("tiles.zip");
+        let cloud = PointCloud::new(
+            vec![
+                Dimension::new("x", Values::F64(vec![0., 1., 2., 3.])),
+                Dimension::new("y", Values::F64(vec![0., 1., 0., 1.])),
+                Dimension::new("z", Values::F64(vec![0.; 4])),
+            ],
+            SpatialRef::default(),
+        );
+        pointcloud::write_points(
+            &cloud,
+            input.join("tile.laz").to_str().unwrap(),
+            &pointcloud::PointWriteOptions { format: Some(pointcloud::PointFormat::Copc), ..Default::default() },
+        )
+        .unwrap();
+        run(Cli::try_parse_from(["terrio", "csf", input.to_str().unwrap(), output.to_str().unwrap()]).unwrap().args).unwrap();
+        let mut reader = pointcloud::open_points(output.join("tile.laz").to_str().unwrap()).unwrap();
+        assert_eq!(reader.format_name(), "COPC");
+        let result = reader.read(&Default::default()).unwrap();
+        assert_eq!(result.len(), 4);
+        assert!(result.dim("classification").is_some());
+    }
+
+    #[test]
+    fn csf_stages_failed_writes_and_never_replaces_a_late_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir_in(dir.path()).unwrap();
+        let output = dir.path().join("tile.las");
+        let cloud = PointCloud::new(
+            vec![
+                Dimension::new("x", Values::F64(vec![0.])),
+                Dimension::new("y", Values::F64(vec![0.])),
+                Dimension::new("z", Values::F64(vec![0.])),
+            ],
+            SpatialRef::default(),
+        );
+        let options = pointcloud::PointWriteOptions { format: Some(pointcloud::PointFormat::Las), ..Default::default() };
+        let invalid = pointcloud::PointWriteOptions { point_format: Some(255), ..options.clone() };
+        assert!(super::publish_csf_tile(&cloud, output.to_str().unwrap(), &invalid, staging.path()).is_err());
+        assert!(!output.exists());
+        assert_eq!(std::fs::read_dir(staging.path()).unwrap().count(), 0);
+        // Simulate a destination created after the batch's preflight.
+        std::fs::write(&output, "a concurrent result").unwrap();
+        assert!(super::publish_csf_tile(&cloud, output.to_str().unwrap(), &options, staging.path()).is_err());
+        assert_eq!(std::fs::read_to_string(&output).unwrap(), "a concurrent result");
+        assert_eq!(std::fs::read_dir(staging.path()).unwrap().count(), 0);
+        std::fs::remove_file(&output).unwrap();
+        super::publish_csf_tile(&cloud, output.to_str().unwrap(), &options, staging.path()).unwrap();
+        assert_eq!(pointcloud::read_points(output.to_str().unwrap(), &Default::default()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn csf_name_reservations_follow_the_output_filesystem_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let probe = dir.path().join("probe");
+        std::fs::write(&probe, "").unwrap();
+        let case_sensitive = !dir.path().join("PROBE").exists();
+        std::fs::remove_file(&probe).unwrap();
+        let files = [std::path::PathBuf::from("a.las"), std::path::PathBuf::from("A.las")];
+        let result = super::reserve_csf_names(dir.path(), &files);
+        assert_eq!(result.is_ok(), case_sensitive);
+        drop(result);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        // Always exercise the collision error, including on case-sensitive hosts.
+        let result = super::reserve_csf_names(dir.path(), &[files[0].clone(), files[0].clone()]);
+        assert!(result.unwrap_err().to_string().contains("collide"));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn csf_skips_source_symlinks_and_refuses_destination_symlinks_and_non_utf8_names() {
+        use std::os::unix::{ffi::OsStringExt, fs::symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input");
+        let output = dir.path().join("output");
+        std::fs::create_dir(&input).unwrap();
+        let run_batch = || run(Cli::try_parse_from(["terrio", "csf", input.to_str().unwrap(), output.to_str().unwrap()]).unwrap().args);
+        symlink("missing", input.join("ignored.las")).unwrap();
+        let error = run_batch().unwrap_err().to_string();
+        assert!(error.contains("no regular LAS/LAZ"), "{error}");
+        std::fs::write(input.join("a.las"), "not read before preflight").unwrap();
+        std::fs::create_dir(&output).unwrap();
+        symlink("missing", output.join("a.las")).unwrap();
+        assert!(run_batch().unwrap_err().to_string().contains("already exists"));
+        assert!(output.join("a.las").symlink_metadata().unwrap().file_type().is_symlink());
+        std::fs::remove_file(output.join("a.las")).unwrap();
+        let name = std::ffi::OsString::from_vec(b"invalid-\xff.las".to_vec());
+        std::fs::write(input.join(name), "invalid UTF-8 name").unwrap();
+        assert!(run_batch().unwrap_err().to_string().contains("not UTF-8"));
+        assert_eq!(std::fs::read_dir(&output).unwrap().count(), 0);
     }
 
     #[test]

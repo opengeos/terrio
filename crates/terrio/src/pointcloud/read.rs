@@ -276,6 +276,7 @@ pub fn open_points(path: &str) -> Result<PointCloudReader> {
     // Validate before format dispatch so every point-cloud reader reports the
     // same actionable error, while remote range reads stay unchanged.
     if let crate::vfs::Location::Local(file) = &location
+        && !path.starts_with("ept://")
         && file.is_dir()
     {
         return Err(Error::InvalidArgument(format!("'{path}' is a directory; select a point-cloud file (for EPT, select ept.json)")));
