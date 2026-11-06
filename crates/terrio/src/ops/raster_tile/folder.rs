@@ -13,8 +13,22 @@ use crate::ops::{
 use crate::{DataType, RasterDataset, RasterWriteOptions, Window, WindowOptions};
 use wbraster::raster::RasterData;
 
-/// Folder generation options. Lower zooms are resampled directly from the source,
-/// independently of previously encoded tiles, retaining bounded tile-sized output.
+/// Where lower-zoom tiles take their pixels from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OverviewSource {
+    /// Each lower-zoom tile resamples the four tiles below it, as GDAL 3.13.3's
+    /// `gdal raster tile` builds overview tiles (the conformance reference). Source windows
+    /// stay the size of one maximum-zoom tile at every zoom.
+    #[default]
+    Tiles,
+    /// Each lower-zoom tile resamples the source (or its overviews) directly. A source
+    /// without overviews then needs windows that grow fourfold per zoom level.
+    Source,
+}
+
+/// Folder generation options. Every tile is rendered into bounded tile-sized output;
+/// `overview_source` selects how lower zooms are built.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TileOptions {
@@ -25,13 +39,17 @@ pub struct TileOptions {
     pub grid: GridOptions,
     /// XYZ (north-origin) or TMS (south-origin) filename rows.
     pub convention: Convention,
-    /// PNG or GTiff output. GTiff retains arbitrary band counts and sample types.
+    /// PNG, WEBP (lossless) or GTiff output. GTiff retains arbitrary band counts and
+    /// sample types; PNG and WebP take Byte gray, RGB or palette input.
     pub format: String,
     /// Maximum-zoom resampling (nearest, bilinear, cubic, etc.).
     pub resampling: String,
     /// Lower-zoom resampling; defaults to maximum-zoom resampling.
     #[serde(alias = "overviewResampling")]
     pub overview_resampling: Option<String>,
+    /// Build lower zooms from the tiles below them (the default) or from the source.
+    #[serde(alias = "overviewSource")]
+    pub overview_source: OverviewSource,
     /// Add an alpha band. PNG defaults to alpha only on tiles with transparency.
     /// False removes existing alpha too.
     pub alpha: Option<bool>,
@@ -56,6 +74,7 @@ impl Default for TileOptions {
             format: "PNG".into(),
             resampling: "cubic".into(),
             overview_resampling: None,
+            overview_source: OverviewSource::Tiles,
             alpha: None,
             output_nodata: None,
             skip_blank: false,
@@ -98,8 +117,9 @@ fn format(options: &TileOptions) -> Result<(crate::formats::RasterDriver, &'stat
     use crate::formats::RasterDriver;
     match options.format.to_ascii_lowercase().as_str() {
         "png" => Ok((RasterDriver::PNG, "png")),
+        "webp" => Ok((RasterDriver::WEBP, "webp")),
         "gtiff" | "tiff" | "tif" => Ok((RasterDriver::GTiff, "tif")),
-        _ => Err(Error::Unsupported("folder tiles support PNG and GTiff".into())),
+        _ => Err(Error::Unsupported("folder tiles support PNG, WEBP and GTiff".into())),
     }
 }
 
@@ -156,8 +176,8 @@ pub fn plan(source: &RasterDataset, options: &TileOptions) -> Result<(TilePlan, 
 
 fn validate_rendering(source: &RasterDataset, options: &TileOptions, extension: &str) -> Result<(bool, bool, [Resampling; 2])> {
     let source_alpha = source.band_color_interp(source.raster.bands).eq_ignore_ascii_case("Alpha");
-    let alpha = options.alpha.unwrap_or(extension == "png" || source_alpha);
-    let color = extension == "png" || alpha || source_alpha;
+    let alpha = options.alpha.unwrap_or(image_format(extension) || source_alpha);
+    let color = image_format(extension) || alpha || source_alpha;
     let methods = [
         Resampling::parse(&options.resampling)?,
         Resampling::parse(options.overview_resampling.as_deref().unwrap_or(&options.resampling))?,
@@ -179,8 +199,8 @@ fn validate_rendering(source: &RasterDataset, options: &TileOptions, extension: 
             "alpha/image tiles support nearest, bilinear, cubic, cubicspline, lanczos and average resampling".into(),
         ));
     }
-    if extension == "png" && source.raster.data_type != DataType::U8 {
-        return Err(Error::Unsupported("PNG tiles require Byte input; scale/translate the raster first, or use GTiff".into()));
+    if image_format(extension) && source.raster.data_type != DataType::U8 {
+        return Err(Error::Unsupported("PNG and WebP tiles require Byte input; scale/translate the raster first, or use GTiff".into()));
     }
     if color {
         if matches!(source.raster.data_type, DataType::U64 | DataType::I64) {
@@ -202,8 +222,14 @@ fn validate_rendering(source: &RasterDataset, options: &TileOptions, extension: 
 }
 
 /// Generates encoded tiles incrementally; source windows and output buffers are bounded.
-/// Existing source overviews are selected automatically. Lower zooms resample the source
-/// directly (not the previously generated pyramid). Sink failures stop generation.
+/// Existing source overviews are selected automatically for tiles rendered from the source.
+///
+/// With [`OverviewSource::Tiles`] (the default), the maximum zoom is rendered from the
+/// source and each lower-zoom tile resamples the four tiles below it, as GDAL builds its
+/// overview tiles. Tiles are visited depth first, so at most four tiles per zoom level
+/// are held in memory, and a source without overviews (such as a large VRT mosaic) never
+/// needs a window larger than one maximum-zoom tile. With [`OverviewSource::Source`],
+/// every zoom resamples the source directly. Sink failures stop generation.
 pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut dyn FolderSink) -> Result<TileReport> {
     let info = source.info()?;
     let (plan, dst_srs) = plan(&info.raster, options)?;
@@ -223,110 +249,450 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
         options.skip_blank,
     )?;
     let preserve_mask = extension == "tif" && !alpha && source.has_mask()?;
-    let limits = RenderLimits::default();
-    let mut report = TileReport { planned, ..Default::default() };
-    for level in &plan.levels {
-        let method = methods[usize::from(level.matrix.zoom != plan.max_zoom)];
-        for cell in level.cells(options.convention) {
-            let name = format!("{}/{}/{}.{}", cell.zoom, cell.x, cell.y, extension);
-            if sink.exists(&name)? {
-                report.resumed += 1;
-                publication.cell(&cell, true, sink)?;
-                continue;
-            }
-            let mut warp = WarpOptions {
-                dst_srs: dst_srs.clone(),
-                resampling: method,
-                kernel_version: crate::ops::warp::KernelVersion::Gdal313,
-                error_threshold: 0.0,
-                ..Default::default()
-            };
-            let mut color_blank = false;
-            let mut output_mask = None;
-            let mut tile = if color {
-                warp.src_nodata = Nodata::None;
-                // Zero is a valid synthetic color/density sample. Declaring it
-                // nodata makes the warp kernel nudge it to the next float.
-                warp.dst_nodata = Nodata::None;
-                let mut prepared = ColorSource { source, info: info.clone(), only_alpha: false, limits };
-                let premult = render_cell(&mut prepared, &cell, &warp, limits)?;
-                let n = premult.raster.cols * premult.raster.rows;
-                color_blank = (0..n).all(|i| premult.raster.data.get_f64((premult.raster.bands - 1) * n + i) == 0.0);
-                finish_color(&premult, info.raster.raster.data_type, alpha, options.output_nodata)?
-            } else {
-                warp.dst_nodata = options.output_nodata.map_or(Nodata::None, |value| Nodata::Values(vec![value]));
-                let mut out = render_cell(source, &cell, &warp, limits)?;
-                if options.output_nodata.is_none() {
-                    out.has_nodata = info.raster.has_nodata;
-                    out.raster.nodata = info.raster.raster.nodata;
-                    out.band_nodata = info.raster.band_nodata.clone();
+    let settings = Settings {
+        options,
+        dst_srs,
+        driver,
+        extension,
+        alpha,
+        color,
+        methods,
+        preserve_mask,
+        max_zoom: plan.max_zoom,
+        pyramid: options.overview_source == OverviewSource::Tiles
+            && plan.levels.windows(2).any(|pair| pair[1].matrix.zoom == pair[0].matrix.zoom + 1),
+        limits: RenderLimits::default(),
+    };
+    let mut generator =
+        Generator { source, info, sink, plan: &plan, settings, publication, report: TileReport { planned, ..Default::default() } };
+    for (i, level) in plan.levels.iter().enumerate() {
+        // Cells whose parent is generated are visited from that parent.
+        let parent = i.checked_sub(1).filter(|&p| generator.children(p) == Some(i)).map(|p| &plan.levels[p]);
+        for row in level.range.min_y..=level.range.max_y {
+            for column in level.range.min_x..=level.range.max_x {
+                if parent.is_some_and(|p| p.contains(column >> 1, row >> 1)) {
+                    continue;
                 }
-                out
-            };
-            if (options.skip_blank && !color) || preserve_mask {
-                // The output's zero padding is distinct from its source nodata tag.
-                // Render validity independently so valid zero-valued tiles survive.
-                let mut coverage = ColorSource { source, info: info.clone(), only_alpha: true, limits };
-                let coverage_options = WarpOptions {
-                    src_nodata: Nodata::None,
-                    dst_nodata: Nodata::None,
-                    resampling: if method == Resampling::Nearest { Resampling::Nearest } else { Resampling::Max },
-                    ..warp.clone()
-                };
-                let density = render_cell(&mut coverage, &cell, &coverage_options, limits)?;
-                color_blank = (0..density.raster.data.len()).all(|i| density.raster.data.get_f64(i) == 0.0);
-                if preserve_mask {
-                    output_mask =
-                        Some((0..density.raster.data.len()).map(|i| if density.raster.data.get_f64(i) != 0.0 { 255 } else { 0 }).collect());
-                }
+                generator.visit(i, column, row, false)?;
             }
-            // GDAL omits an automatically generated alpha channel on fully opaque tiles.
-            if extension == "png" && options.alpha.is_none() && !publication.fixed_alpha() {
-                let n = tile.raster.cols * tile.raster.rows;
-                let bands = tile.raster.bands;
-                if (0..n).all(|i| tile.raster.data.get_f64((bands - 1) * n + i) == 255.0) {
-                    let data = RasterData::U8((0..n * (bands - 1)).map(|i| tile.raster.data.get_f64(i) as u8).collect());
-                    let metadata = tile.band_metadata[..bands - 1].to_vec();
-                    tile = crate::ops::derived(&tile, data, bands - 1)?;
-                    tile.band_metadata = metadata;
-                }
-            }
-            if options.skip_blank && color_blank {
-                report.blank += 1;
-                publication.cell(&cell, false, sink)?;
-                continue;
-            }
-            // Image metadata/georeferencing cannot be embedded in PNG; the compact tile
-            // plan is available separately through the planning API.
-            if extension == "png" {
-                tile.raster.metadata.clear();
-            }
-            let bytes = if extension == "png" {
-                encode_png(&tile)?
-            } else {
-                if crate::dataset::needs_nodata_pam(&tile) {
-                    return Err(Error::Unsupported("folder GeoTIFF tiles currently require a single shared nodata value".into()));
-                }
-                crate::memory::write_raster_bytes(
-                    &tile,
-                    &name,
-                    &RasterWriteOptions { driver: Some(driver), mask: output_mask, ..Default::default() },
-                )?
-            };
-            sink.put(&name, &bytes)?;
-            report.written += 1;
-            publication.cell(&cell, true, sink)?;
         }
     }
+    let Generator { info, sink, publication, report, .. } = generator;
     let mut published = info.raster.clone();
     if color {
         published.raster.bands = color_bands(&info.raster)? + usize::from(alpha);
     }
-    if extension == "png" {
+    if image_format(extension) {
         published.raster.data_type = DataType::U8;
     }
     publication.finish(&published, sink)?;
     Ok(report)
+}
+
+/// Whether tiles are images (8-bit gray/RGB with alpha), rather than GeoTIFF rasters.
+fn image_format(extension: &str) -> bool {
+    matches!(extension, "png" | "webp")
+}
+
+/// Copies `len` samples of the same type from `src[from..]` to `dst[to..]`.
+fn copy_samples(dst: &mut RasterData, to: usize, src: &RasterData, from: usize, len: usize) {
+    macro_rules! copy {
+        ($($variant:ident),*) => {
+            match (dst, src) {
+                $((RasterData::$variant(d), RasterData::$variant(s)) => d[to..to + len].copy_from_slice(&s[from..from + len]),)*
+                _ => unreachable!("sample types are checked before copying"),
+            }
+        };
+    }
+    copy!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
+}
+
+/// Whether an image tile's last (alpha) band is entirely opaque, so PNG can omit it.
+fn is_opaque(tile: &RasterDataset) -> bool {
+    let n = tile.raster.cols * tile.raster.rows;
+    let bands = tile.raster.bands;
+    (0..n).all(|i| tile.raster.data.get_f64((bands - 1) * n + i) == 255.0)
+}
+
+/// Rendering choices shared by every tile of one generation.
+struct Settings<'a> {
+    options: &'a TileOptions,
+    dst_srs: Option<SpatialRef>,
+    driver: crate::formats::RasterDriver,
+    extension: &'static str,
+    alpha: bool,
+    color: bool,
+    methods: [Resampling; 2],
+    preserve_mask: bool,
+    max_zoom: u8,
+    /// Whether some tiles are built from the tiles below them.
+    pyramid: bool,
+    limits: RenderLimits,
+}
+
+impl Settings<'_> {
+    /// Whether a tile's validity cannot be recovered from its own samples (no alpha band),
+    /// so that parents built from it need a separate mask. Plain GeoTIFF tiles pad the
+    /// source's edges with zeros (or nodata), which parents must not resample as data.
+    fn needs_validity(&self) -> bool {
+        if self.color { !self.alpha } else { self.options.skip_blank || self.preserve_mask || self.pyramid }
+    }
+}
+
+/// A rendered tile before encoding, with its validity when [`Settings::needs_validity`].
+struct Rendered {
+    tile: RasterDataset,
+    valid: Option<Vec<u8>>,
+    blank: bool,
+}
+
+/// The pixels a parent tile takes from one child.
+enum Child {
+    /// Outside the plan, or omitted as blank: entirely invalid.
+    Missing,
+    /// Generated in this run.
+    Rendered(Box<Rendered>),
+    /// Already present in a resumed output, under this name.
+    Existing(String),
+}
+
+struct Generator<'a, 'b> {
+    source: &'b mut dyn WarpSource,
+    info: WarpSourceInfo,
+    sink: &'b mut dyn FolderSink,
+    plan: &'a TilePlan,
+    settings: Settings<'a>,
+    publication: crate::ops::raster_publication::Publication<'a>,
+    report: TileReport,
+}
+
+impl Generator<'_, '_> {
+    /// The plan level holding the children of level `i`, when its tiles are built from them.
+    fn children(&self, i: usize) -> Option<usize> {
+        let levels = &self.plan.levels;
+        (self.settings.options.overview_source == OverviewSource::Tiles
+            && levels.get(i + 1).is_some_and(|next| next.matrix.zoom == levels[i].matrix.zoom + 1))
+        .then_some(i + 1)
+    }
+
+    /// Generates one tile and, depth first, the tiles it is built from. `consumed` keeps the
+    /// rendered pixels for the parent tile.
+    fn visit(&mut self, i: usize, column: u64, row: u64, consumed: bool) -> Result<Child> {
+        let plan = self.plan;
+        let cell = plan.levels[i].cell(column, row, self.settings.options.convention);
+        let name = format!("{}/{}/{}.{}", cell.zoom, cell.x, cell.y, self.settings.extension);
+        if self.sink.exists(&name)? {
+            self.report.resumed += 1;
+            self.publication.cell(&cell, true, self.sink)?;
+            // Tiles below an existing tile may still be missing (for example after
+            // raising the maximum zoom); fill them without rebuilding this one.
+            if let Some(c) = self.children(i) {
+                for (dx, dy) in QUADRANTS {
+                    let (x, y) = (2 * column + dx, 2 * row + dy);
+                    if plan.levels[c].contains(x, y) {
+                        self.visit(c, x, y, false)?;
+                    }
+                }
+            }
+            return Ok(Child::Existing(name));
+        }
+        let method = self.settings.methods[usize::from(cell.zoom != self.settings.max_zoom)];
+        let rendered = match self.children(i) {
+            Some(c) => {
+                let mut children = Vec::with_capacity(4);
+                for (dx, dy) in QUADRANTS {
+                    let (x, y) = (2 * column + dx, 2 * row + dy);
+                    children.push(if plan.levels[c].contains(x, y) { self.visit(c, x, y, true)? } else { Child::Missing });
+                }
+                match self.mosaic(c, column, row, children)? {
+                    Assembled::Mosaic(mut mosaic) => {
+                        let info = mosaic.info()?;
+                        render(&mut mosaic, &info, &self.settings, &cell, method)?
+                    }
+                    Assembled::Blank => {
+                        self.report.blank += 1;
+                        self.publication.cell(&cell, false, self.sink)?;
+                        return Ok(Child::Missing);
+                    }
+                    Assembled::Unavailable => render(&mut *self.source, &self.info, &self.settings, &cell, method)?,
+                }
+            }
+            None => render(&mut *self.source, &self.info, &self.settings, &cell, method)?,
+        };
+        self.emit(&cell, &name, rendered, consumed)
+    }
+
+    /// Joins the four children of a parent tile (in child level `c`) into one raster of
+    /// twice the tile size, in the tiles' own CRS.
+    fn mosaic(&mut self, c: usize, column: u64, row: u64, children: Vec<Child>) -> Result<Assembled> {
+        let s = &self.settings;
+        let mut tiles = Vec::with_capacity(4);
+        for child in children {
+            tiles.push(match child {
+                Child::Missing => None,
+                Child::Rendered(r) => Some(*r),
+                Child::Existing(name) => {
+                    // A write-only sink, or a tile whose validity was not encoded, cannot be
+                    // read back: render the parent from the source instead.
+                    if s.needs_validity() {
+                        return Ok(Assembled::Unavailable);
+                    }
+                    let Some(bytes) = self.sink.get(&name)? else {
+                        return Ok(Assembled::Unavailable);
+                    };
+                    Some(Rendered { tile: decode_tile(bytes, &name, &self.info.raster, s)?, valid: None, blank: false })
+                }
+            });
+        }
+        let Some(template) = tiles.iter().flatten().next() else {
+            return Ok(if s.options.skip_blank { Assembled::Blank } else { Assembled::Unavailable });
+        };
+        let size = self.plan.levels[c].matrix.tile_size;
+        let (width, n) = (2 * size, 4 * size * size);
+        let header = &template.tile;
+        let bands = header.raster.bands;
+        if tiles.iter().flatten().any(|t| t.tile.raster.bands != bands || t.tile.raster.cols != size || t.tile.raster.rows != size) {
+            return Err(Error::InvalidData("tiles below a parent tile differ in size or band count".into()));
+        }
+        // Missing children are transparent (zero alpha) or nodata, and masked out.
+        let fill: Vec<f64> = (1..=bands)
+            .map(|b| match (s.color, s.alpha) {
+                (true, true) => 0.0,
+                (true, false) => s.options.output_nodata.unwrap_or(0.0),
+                (false, _) => header.band_nodata(b).unwrap_or(0.0),
+            })
+            .collect();
+        // Each child was rendered within the output budget; the mosaic holds four of them
+        // in their own sample type.
+        let dtype = header.raster.data_type;
+        let budget = s.limits.max_output_bytes.saturating_mul(4);
+        if n.checked_mul(bands).and_then(|v| v.checked_mul(dtype.size_bytes())).is_none_or(|bytes| bytes > budget) {
+            return Err(Error::ResourceLimit("the four tiles below a parent tile exceed the pixel-buffer budget".into()));
+        }
+        if tiles.iter().flatten().any(|t| t.tile.raster.data.data_type() != dtype) {
+            return Err(Error::InvalidData("tiles below a parent tile differ in sample type".into()));
+        }
+        let mut values = RasterData::new_filled(dtype, n * bands, 0.0);
+        let mut mask = s.needs_validity().then(|| vec![0u8; n]);
+        for (k, tile) in tiles.iter().enumerate() {
+            let (x0, y0) = (QUADRANTS[k].0 as usize * size, QUADRANTS[k].1 as usize * size);
+            for (b, &fill) in fill.iter().enumerate() {
+                for y in 0..size {
+                    let (to, from) = (b * n + (y0 + y) * width + x0, b * size * size + y * size);
+                    match tile {
+                        Some(t) => copy_samples(&mut values, to, &t.tile.raster.data, from, size),
+                        None => (to..to + size).for_each(|i| values.set_f64(i, fill)),
+                    }
+                }
+            }
+            if let (Some(mask), Some(t)) = (mask.as_mut(), tile) {
+                let valid = t.valid.as_deref().ok_or_else(|| Error::InvalidData("a child tile has no validity mask".into()))?;
+                for y in 0..size {
+                    mask[(y0 + y) * width + x0..][..size].copy_from_slice(&valid[y * size..][..size]);
+                }
+            }
+        }
+        // The template keeps the children's nodata and band metadata (such as the alpha band).
+        let mut dataset = header.clone();
+        dataset.raster.data = values;
+        dataset.raster.cols = width;
+        dataset.raster.rows = width;
+        let first = self.plan.levels[c].cell(2 * column, 2 * row, Convention::Xyz);
+        dataset.set_geo_transform(first.geo_transform);
+        // Decoded PNG and WebP tiles record no CRS: the tiles are in the plan's CRS.
+        dataset.raster.crs = match &s.dst_srs {
+            Some(crs) => crs.to_crs_info(),
+            None => self.info.raster.raster.crs.clone(),
+        };
+        Ok(Assembled::Mosaic(MosaicSource { raster: crate::LazyRaster::from(dataset), mask }))
+    }
+
+    /// Encodes and stores a rendered tile, returning its pixels for a parent tile.
+    fn emit(&mut self, cell: &TileCell, name: &str, mut rendered: Rendered, consumed: bool) -> Result<Child> {
+        let s = &self.settings;
+        if s.options.skip_blank && rendered.blank {
+            self.report.blank += 1;
+            self.publication.cell(cell, false, self.sink)?;
+            return Ok(Child::Missing);
+        }
+        let tile = &rendered.tile;
+        // GDAL omits an automatically generated alpha channel on fully opaque tiles.
+        let opaque;
+        let encoded = if s.extension == "png" && s.options.alpha.is_none() && !self.publication.fixed_alpha() && is_opaque(tile) {
+            let n = tile.raster.cols * tile.raster.rows;
+            let bands = tile.raster.bands;
+            let data = RasterData::U8((0..n * (bands - 1)).map(|i| tile.raster.data.get_f64(i) as u8).collect());
+            opaque = crate::ops::derived(tile, data, bands - 1).map(|mut t| {
+                t.band_metadata = tile.band_metadata[..bands - 1].to_vec();
+                t
+            })?;
+            &opaque
+        } else {
+            tile
+        };
+        // Image metadata/georeferencing cannot be embedded in PNG or WebP; the compact tile
+        // plan is available separately through the planning API.
+        let bytes = match s.extension {
+            "png" => encode_png(encoded)?,
+            "webp" => encode_webp(encoded)?,
+            _ => {
+                if crate::dataset::needs_nodata_pam(encoded) {
+                    return Err(Error::Unsupported("folder GeoTIFF tiles currently require a single shared nodata value".into()));
+                }
+                // A parent needs the mask too when it consumes this tile.
+                let mask = match (s.preserve_mask, consumed) {
+                    (true, true) => rendered.valid.clone(),
+                    (true, false) => rendered.valid.take(),
+                    (false, _) => None,
+                };
+                crate::memory::write_raster_bytes(
+                    encoded,
+                    name,
+                    &RasterWriteOptions { driver: Some(s.driver), mask, ..Default::default() },
+                )?
+            }
+        };
+        self.sink.put(name, &bytes)?;
+        self.report.written += 1;
+        self.publication.cell(cell, true, self.sink)?;
+        Ok(if consumed { Child::Rendered(Box::new(rendered)) } else { Child::Missing })
+    }
+}
+
+/// Column and row offsets of a parent's four children, in the order [`Generator::mosaic`]
+/// places them (top left, top right, bottom left, bottom right).
+const QUADRANTS: [(u64, u64); 4] = [(0, 0), (1, 0), (0, 1), (1, 1)];
+
+/// The source of a parent tile.
+enum Assembled {
+    Mosaic(MosaicSource),
+    /// Every child is blank, so the parent is too.
+    Blank,
+    /// The children cannot be read back; render from the source.
+    Unavailable,
+}
+
+/// Four child tiles joined into one raster, with their validity when it is not encoded in
+/// the samples.
+struct MosaicSource {
+    raster: crate::LazyRaster,
+    mask: Option<Vec<u8>>,
+}
+
+impl WarpSource for MosaicSource {
+    fn info(&mut self) -> Result<WarpSourceInfo> {
+        WarpSource::info(&mut self.raster)
+    }
+    fn has_mask(&mut self) -> Result<bool> {
+        Ok(self.mask.is_some())
+    }
+    fn read_mask(&mut self, window: Window, _overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+        let Some(mask) = &self.mask else { return Ok(None) };
+        let header = self.raster.header();
+        if !window.fits(header.raster.cols, header.raster.rows) {
+            return Err(invalid("mask window outside the child-tile mosaic"));
+        }
+        let width = header.raster.cols;
+        Ok(Some((window.y..window.y + window.height).flat_map(|y| mask[y * width + window.x..][..window.width].iter().copied()).collect()))
+    }
+    fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {
+        self.raster.read_window(window, options)
+    }
+}
+
+/// Renders one tile from a source (the input raster, or the mosaic of its children).
+fn render(source: &mut dyn WarpSource, info: &WarpSourceInfo, s: &Settings, cell: &TileCell, method: Resampling) -> Result<Rendered> {
+    let mut warp = WarpOptions {
+        dst_srs: s.dst_srs.clone(),
+        resampling: method,
+        kernel_version: crate::ops::warp::KernelVersion::Gdal313,
+        error_threshold: 0.0,
+        ..Default::default()
+    };
+    let mut blank = false;
+    let mut valid = None;
+    let tile = if s.color {
+        warp.src_nodata = Nodata::None;
+        // Zero is a valid synthetic color/density sample. Declaring it
+        // nodata makes the warp kernel nudge it to the next float.
+        warp.dst_nodata = Nodata::None;
+        let mut prepared = ColorSource { source, info: info.clone(), only_alpha: false, limits: s.limits };
+        let premult = render_cell(&mut prepared, cell, &warp, s.limits)?;
+        let n = premult.raster.cols * premult.raster.rows;
+        let alpha = (premult.raster.bands - 1) * n;
+        blank = (0..n).all(|i| premult.raster.data.get_f64(alpha + i) == 0.0);
+        if s.needs_validity() {
+            valid = Some((0..n).map(|i| if premult.raster.data.get_f64(alpha + i) > 0.0 { 255 } else { 0 }).collect());
+        }
+        finish_color(&premult, info.raster.raster.data_type, s.alpha, s.options.output_nodata)?
+    } else {
+        warp.dst_nodata = s.options.output_nodata.map_or(Nodata::None, |value| Nodata::Values(vec![value]));
+        let mut out = render_cell(source, cell, &warp, s.limits)?;
+        if s.options.output_nodata.is_none() {
+            out.has_nodata = info.raster.has_nodata;
+            out.raster.nodata = info.raster.raster.nodata;
+            out.band_nodata = info.raster.band_nodata.clone();
+        }
+        out
+    };
+    // Written GeoTIFF masks (and plain tiles' validity) come from a separate coverage
+    // rendering, so that an interpolating kernel's alpha cannot ring into the mask.
+    if (!s.color && s.needs_validity()) || s.preserve_mask {
+        // The output's zero padding is distinct from its source nodata tag.
+        // Render validity independently so valid zero-valued tiles survive.
+        let mut coverage = ColorSource { source, info: info.clone(), only_alpha: true, limits: s.limits };
+        let coverage_options = WarpOptions {
+            src_nodata: Nodata::None,
+            dst_nodata: Nodata::None,
+            resampling: if method == Resampling::Nearest { Resampling::Nearest } else { Resampling::Max },
+            ..warp.clone()
+        };
+        let density = render_cell(&mut coverage, cell, &coverage_options, s.limits)?;
+        blank = (0..density.raster.data.len()).all(|i| density.raster.data.get_f64(i) == 0.0);
+        valid = Some((0..density.raster.data.len()).map(|i| if density.raster.data.get_f64(i) != 0.0 { 255 } else { 0 }).collect());
+    }
+    Ok(Rendered { tile, valid, blank })
+}
+
+/// Decodes a tile written by an earlier run, in the layout [`render`] produces: image tiles
+/// regain the alpha band an opaque tile omits, and gray tiles stored as WebP RGB become gray.
+/// Only tiles that record their validity are decoded, which in a pyramid means color tiles
+/// with alpha ([`Settings::needs_validity`] is false).
+fn decode_tile(bytes: Vec<u8>, name: &str, source: &RasterDataset, s: &Settings) -> Result<RasterDataset> {
+    if !(s.color && s.alpha) {
+        return Err(Error::InvalidData("only color tiles with alpha can be decoded for a parent tile".into()));
+    }
+    let mut tile = crate::memory::open_raster_bytes(bytes, name)?;
+    let gray = color_bands(source)? == 1;
+    let n = tile.raster.cols * tile.raster.rows;
+    let decoded_alpha = matches!(tile.raster.bands, 2 | 4);
+    let decoded_colors = tile.raster.bands - usize::from(decoded_alpha);
+    let colors = if gray { 1 } else { 3 };
+    // WebP stores gray tiles as RGB.
+    let gray_webp_as_rgb = gray && s.extension == "webp" && decoded_colors == 3;
+    if decoded_colors != colors && !gray_webp_as_rgb {
+        return Err(Error::InvalidData(format!("{name}: an existing tile does not have the bands of this tiling")));
+    }
+    let dtype = tile.raster.data_type;
+    let mut values = Vec::with_capacity(n * (colors + 1));
+    for b in 0..colors {
+        values.extend((0..n).map(|i| tile.raster.data.get_f64(b * n + i)));
+    }
+    if decoded_alpha {
+        values.extend((0..n).map(|i| tile.raster.data.get_f64(decoded_colors * n + i)));
+    } else {
+        values.extend(std::iter::repeat_n(alpha_max(dtype), n));
+    }
+    let bands = colors + 1;
+    let names: &[&str] = if gray { &["Gray", "Alpha"] } else { &["Red", "Green", "Blue", "Alpha"] };
+    tile = crate::ops::derived(&tile, RasterData::from_f64_vec(dtype, values), bands)?;
+    tile.band_metadata =
+        names[..bands].iter().map(|c| crate::BandMetadata { color_interp: Some((*c).into()), ..Default::default() }).collect();
+    tile.has_nodata = false;
+    if let Some(nd) = s.options.output_nodata {
+        tile.raster.nodata = nd;
+    }
+    Ok(tile)
 }
 
 /// Premultiplied Float64 data and alpha are resampled together. Zero-alpha pixels
@@ -363,7 +729,14 @@ impl WarpSource for ColorSource<'_> {
             .and_then(|n| n.checked_mul(header.bands))
             .and_then(|n| n.checked_mul(header.data_type.size_bytes()));
         if bytes.is_none_or(|n| n > self.limits.max_source_window_bytes) {
-            return Err(Error::Unsupported("source tile window exceeds the pixel-buffer budget".into()));
+            // The warp sizes validity windows for their single output band, fewer than the
+            // input bands read here: read such a window in strips.
+            let row = window.width.checked_mul(header.bands).and_then(|n| n.checked_mul(header.data_type.size_bytes()));
+            let rows = row.map_or(0, |row| self.limits.max_source_window_bytes / row.max(1));
+            if !self.only_alpha || rows == 0 || window.height <= rows {
+                return Err(Error::Unsupported("source tile window exceeds the pixel-buffer budget".into()));
+            }
+            return self.read_strips(window, rows, options);
         }
         let input = self.source.read_window(window, &WindowOptions { bands: vec![], ..options.clone() })?;
         let mask = self.source.read_mask(window, options.overview)?;
@@ -412,6 +785,32 @@ impl WarpSource for ColorSource<'_> {
         Ok(out)
     }
 }
+impl ColorSource<'_> {
+    /// Reads `window` as strips of at most `rows` rows and joins them.
+    fn read_strips(&mut self, window: Window, rows: usize, options: &WindowOptions) -> Result<RasterDataset> {
+        let mut strips = Vec::new();
+        for y in (window.y..window.y + window.height).step_by(rows) {
+            let height = rows.min(window.y + window.height - y);
+            strips.push(self.read_window(Window::new(window.x, y, window.width, height), options)?);
+        }
+        let first = &strips[0];
+        let bands = first.raster.bands;
+        let mut values = Vec::with_capacity(window.width * window.height * bands);
+        for b in 0..bands {
+            for strip in &strips {
+                let n = strip.raster.cols * strip.raster.rows;
+                values.extend((0..n).map(|i| strip.raster.data.get_f64(b * n + i)));
+            }
+        }
+        let gt = first.geo_transform();
+        let mut out = first.clone();
+        out.raster.rows = window.height;
+        out.raster.data = RasterData::F64(values);
+        out.set_geo_transform(gt);
+        Ok(out)
+    }
+}
+
 fn data_bands(ds: &RasterDataset) -> usize {
     if !ds.color_table.is_empty() {
         return 3;
@@ -486,6 +885,25 @@ fn encode_png(ds: &RasterDataset) -> Result<Vec<u8>> {
         writer.finish().map_err(err)?;
     }
     Ok(bytes)
+}
+
+/// Lossless WebP; gray (and gray-alpha) tiles are stored as RGB(A), which WebP requires.
+fn encode_webp(ds: &RasterDataset) -> Result<Vec<u8>> {
+    let r = &ds.raster;
+    if r.bands >= 3 {
+        return crate::drivers::webp::encode(r, &[]);
+    }
+    let n = r.cols * r.rows;
+    let gray: Vec<u8> = (0..n).map(|i| r.data.get_f64(i) as u8).collect();
+    let mut data = Vec::with_capacity(n * (r.bands + 2));
+    for _ in 0..3 {
+        data.extend_from_slice(&gray);
+    }
+    if r.bands == 2 {
+        data.extend((0..n).map(|i| r.data.get_f64(n + i) as u8));
+    }
+    let rgb = crate::ops::derived(ds, RasterData::U8(data), r.bands + 2)?;
+    crate::drivers::webp::encode(&rgb.raster, &[])
 }
 
 /// Generate to a new local directory, or fill missing tiles in an existing directory
@@ -1052,5 +1470,299 @@ mod tests {
         std::os::unix::fs::symlink(root.path(), output.join("0")).unwrap();
         assert!(to_directory(&mut source(), &options(), &output, true).is_err());
         assert!(!root.path().join("0.png").exists());
+    }
+
+    /// Records the largest source window read, to show lower zooms stay tile-sized.
+    struct Recording {
+        inner: crate::LazyRaster,
+        largest: usize,
+        reads: usize,
+    }
+    impl WarpSource for Recording {
+        fn info(&mut self) -> Result<WarpSourceInfo> {
+            WarpSource::info(&mut self.inner)
+        }
+        fn has_mask(&mut self) -> Result<bool> {
+            WarpSource::has_mask(&mut self.inner)
+        }
+        fn read_mask(&mut self, window: Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+            WarpSource::read_mask(&mut self.inner, window, overview)
+        }
+        fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {
+            self.largest = self.largest.max(window.width * window.height);
+            self.reads += 1;
+            self.inner.read_window(window, options)
+        }
+    }
+
+    /// A 64 x 64 Float32 ramp, linear so that averages of averages are exact.
+    fn ramp() -> RasterDataset {
+        let config = crate::RasterConfig { cols: 64, rows: 64, bands: 1, data_type: DataType::F32, cell_size: 1.0, ..Default::default() };
+        let values = (0..64 * 64).map(|i| f64::from((i % 64) as u32 + 2 * (i / 64) as u32)).collect();
+        RasterDataset::new(crate::Raster::from_data(config, values).unwrap(), false)
+    }
+
+    #[test]
+    fn lower_zooms_from_child_tiles_read_only_tile_sized_source_windows() {
+        let mut outputs = Vec::new();
+        for overview_source in [OverviewSource::Tiles, OverviewSource::Source] {
+            let options = TileOptions {
+                format: "GTiff".into(),
+                resampling: "average".into(),
+                overview_source,
+                grid: GridOptions { tile_size: 4, min_zoom: Some(0), ..Default::default() },
+                ..options()
+            };
+            let mut source = Recording { inner: crate::LazyRaster::from(ramp()), largest: 0, reads: 0 };
+            let mut sink = Collect::default();
+            let report = generate(&mut source, &options, &mut sink).unwrap();
+            assert_eq!((report.planned, report.written), (1 + 4 + 16 + 64 + 256, 341));
+            outputs.push((source.largest, sink.0));
+        }
+        let ((tiles_window, tiles), (source_window, direct)) = (&outputs[0], &outputs[1]);
+        // The maximum zoom reads 4 x 4 windows (with a kernel margin); zoom 0 from the
+        // source reads the whole 64 x 64 raster.
+        assert!(*tiles_window <= 8 * 8, "{tiles_window}");
+        assert_eq!(*source_window, 64 * 64);
+        assert_eq!(tiles.keys().collect::<Vec<_>>(), direct.keys().collect::<Vec<_>>());
+        for (name, bytes) in tiles {
+            let a = crate::memory::open_raster_bytes(bytes.clone(), name).unwrap();
+            let b = crate::memory::open_raster_bytes(direct[name].clone(), name).unwrap();
+            assert_eq!(a.geo_transform(), b.geo_transform(), "{name}");
+            for (x, y) in a.raster.data.to_f64_vec().into_iter().zip(b.raster.data.to_f64_vec()) {
+                assert!((x - y).abs() < 1e-4, "{name}: {x} != {y}");
+            }
+        }
+    }
+
+    #[test]
+    fn webp_tiles_are_lossless_and_gray_tiles_are_stored_as_rgb() {
+        let options = TileOptions { format: "webp".into(), ..options() };
+        let mut sink = Collect::default();
+        let report = generate(&mut source(), &options, &mut sink).unwrap();
+        assert_eq!((report.planned, report.written), (4, 4));
+        assert!(sink.0.keys().all(|name| name.ends_with(".webp")));
+        let a = crate::memory::open_raster_bytes(sink.0["0/0/0.webp"].clone(), "a.webp").unwrap();
+        assert_eq!(a.raster.bands, 4);
+        let values = a.raster.data.to_f64_vec();
+        for band in 0..3 {
+            assert_eq!(values[band * 4..][..4], [0., 1., 3., 4.]);
+        }
+        assert_eq!(values[12..], [0., 255., 255., 255.]);
+        let dataset = source().header();
+        let mut rgb = TileOptions { format: "WEBP".into(), ..options };
+        assert!(plan(&dataset, &rgb).is_ok());
+        rgb.publication.kml = true;
+        assert!(plan(&dataset, &rgb).unwrap_err().to_string().contains("KML"));
+        rgb.publication.kml = false;
+        // STACTA needs one band count, which WebP's opaque-alpha omission does not keep.
+        rgb.publication.viewers = vec!["stac".into()];
+        assert!(plan(&dataset, &rgb).is_err());
+        rgb.publication.viewers = vec!["all".into()];
+        let mut sink = Collect::default();
+        generate(&mut source(), &rgb, &mut sink).unwrap();
+        assert!(!sink.0.contains_key("stacta.json"));
+        let page = String::from_utf8(sink.0["openlayers.html"].clone()).unwrap();
+        assert!(page.contains(".webp"));
+        rgb.publication.viewers.clear();
+        rgb.format = "jpeg".into();
+        assert!(plan(&dataset, &rgb).is_err());
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn resume_builds_a_missing_parent_from_existing_child_tiles() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("tiles");
+        let mut options = options();
+        options.grid.min_zoom = Some(0);
+        options.grid.max_zoom = Some(1);
+        assert_eq!(to_directory(&mut source(), &options, &output, false).unwrap().written, 5);
+        // Replace one child with an opaque PNG of 200s and remove the parent.
+        let child = RasterDataset::new(
+            crate::Raster::from_data(crate::RasterConfig { cols: 2, rows: 2, bands: 2, data_type: DataType::U8, ..Default::default() }, {
+                vec![200., 200., 200., 200., 255., 255., 255., 255.]
+            })
+            .unwrap(),
+            false,
+        );
+        std::fs::write(output.join("1/0/0.png"), encode_png(&child).unwrap()).unwrap();
+        std::fs::remove_file(output.join("0/0/0.png")).unwrap();
+        let report = to_directory(&mut source(), &options, &output, true).unwrap();
+        assert_eq!((report.written, report.resumed), (1, 4));
+        let parent = crate::memory::open_raster_bytes(std::fs::read(output.join("0/0/0.png")).unwrap(), "p.png").unwrap();
+        assert_eq!(parent.raster.data.get_f64(0), 200.);
+    }
+
+    #[test]
+    fn blank_children_make_blank_parents_without_rendering_them() {
+        let mut blank = source().read().unwrap();
+        blank.raster.data = RasterData::U8(vec![0; 9]);
+        let mut reads = Vec::new();
+        for overview_source in [OverviewSource::Tiles, OverviewSource::Source] {
+            let mut options = options();
+            options.skip_blank = true;
+            options.overview_source = overview_source;
+            options.grid.min_zoom = Some(0);
+            options.grid.max_zoom = Some(1);
+            let mut sink = Collect::default();
+            let mut source = Recording { inner: crate::LazyRaster::from(blank.clone()), largest: 0, reads: 0 };
+            let report = generate(&mut source, &options, &mut sink).unwrap();
+            assert_eq!((report.planned, report.written, report.blank), (5, 0, 5));
+            assert!(sink.0.is_empty());
+            reads.push(source.reads);
+        }
+        // Only the four maximum-zoom tiles read the source when parents come from tiles.
+        assert!(reads[0] < reads[1], "{reads:?}");
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn resume_fills_missing_tiles_below_an_existing_parent() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("tiles");
+        let mut options = options();
+        options.grid.min_zoom = Some(0);
+        options.grid.max_zoom = Some(1);
+        to_directory(&mut source(), &options, &output, false).unwrap();
+        let child = output.join("1/1/1.png");
+        let expected = std::fs::read(&child).unwrap();
+        std::fs::remove_file(&child).unwrap();
+        let report = to_directory(&mut source(), &options, &output, true).unwrap();
+        assert_eq!((report.written, report.resumed), (1, 4));
+        assert_eq!(std::fs::read(child).unwrap(), expected);
+    }
+
+    #[test]
+    fn plain_tiff_parents_do_not_resample_the_padding_of_edge_tiles() {
+        // 6 x 6 pixels in 4-pixel tiles: the right and bottom child tiles are half padding.
+        let config = crate::RasterConfig { cols: 6, rows: 6, bands: 1, data_type: DataType::F32, cell_size: 1.0, ..Default::default() };
+        let dataset = RasterDataset::new(crate::Raster::from_data(config, vec![100.; 36]).unwrap(), false);
+        let mut tiles = BTreeMap::new();
+        for overview_source in [OverviewSource::Tiles, OverviewSource::Source] {
+            let options = TileOptions {
+                format: "GTiff".into(),
+                resampling: "bilinear".into(),
+                overview_source,
+                grid: GridOptions { tile_size: 4, min_zoom: Some(0), max_zoom: Some(1), ..Default::default() },
+                ..options()
+            };
+            let mut sink = Collect::default();
+            generate(&mut crate::LazyRaster::from(dataset.clone()), &options, &mut sink).unwrap();
+            let parent = crate::memory::open_raster_bytes(sink.0["0/0/0.tif"].clone(), "p.tif").unwrap();
+            tiles.insert(overview_source == OverviewSource::Tiles, parent.raster.data.to_f64_vec());
+        }
+        // The decimated level is 3 x 3 pixels of the constant source.
+        for (row, column) in (0..3).flat_map(|r| (0..3).map(move |c| (r, c))) {
+            let i = row * 4 + column;
+            assert_eq!((tiles[&true][i], tiles[&false][i]), (100., 100.), "pixel {row},{column}");
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn resumed_global_parents_take_the_tile_crs_from_the_plan() {
+        let config = crate::RasterConfig {
+            cols: 8,
+            rows: 8,
+            bands: 3,
+            data_type: DataType::U8,
+            cell_size: 100.0,
+            crs: wbraster::CrsInfo::from_epsg(3857),
+            ..Default::default()
+        };
+        let values = (0..3 * 64).map(|i| f64::from((i * 7 % 251) as u32)).collect();
+        let dataset = RasterDataset::new(crate::Raster::from_data(config, values).unwrap(), false);
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("tiles");
+        let options = TileOptions {
+            tiling_scheme: "WebMercatorQuad".into(),
+            resampling: "nearest".into(),
+            grid: GridOptions { tile_size: 4, min_zoom: Some(16), max_zoom: Some(17), ..Default::default() },
+            ..Default::default()
+        };
+        to_directory(&mut crate::LazyRaster::from(dataset.clone()), &options, &output, false).unwrap();
+        let parents: Vec<_> =
+            std::fs::read_dir(output.join("16")).unwrap().flat_map(|d| std::fs::read_dir(d.unwrap().path()).unwrap()).collect();
+        assert!(!parents.is_empty());
+        let mut expected = BTreeMap::new();
+        for parent in parents {
+            let path = parent.unwrap().path();
+            expected.insert(path.clone(), std::fs::read(&path).unwrap());
+            std::fs::remove_file(path).unwrap();
+        }
+        let report = to_directory(&mut crate::LazyRaster::from(dataset), &options, &output, true).unwrap();
+        assert_eq!(report.written, expected.len() as u64);
+        for (path, bytes) in expected {
+            assert_eq!(std::fs::read(&path).unwrap(), bytes, "{}", path.display());
+        }
+    }
+
+    #[test]
+    fn no_alpha_png_parents_from_tiles_match_the_source_where_children_are_valid() {
+        // 8 x 8 RGB, fully valid: lower zooms use the separate validity masks of tiles
+        // without alpha, and must agree with rendering from the source.
+        let config = crate::RasterConfig { cols: 8, rows: 8, bands: 3, data_type: DataType::U8, cell_size: 1.0, ..Default::default() };
+        let values = (0..3 * 64).map(|i| f64::from((i * 37 % 251) as u32 + 1)).collect();
+        let dataset = RasterDataset::new(crate::Raster::from_data(config, values).unwrap(), false);
+        let mut outputs = Vec::new();
+        for overview_source in [OverviewSource::Tiles, OverviewSource::Source] {
+            let options = TileOptions {
+                alpha: Some(false),
+                resampling: "average".into(),
+                overview_source,
+                grid: GridOptions { tile_size: 2, min_zoom: Some(0), ..Default::default() },
+                ..options()
+            };
+            let mut sink = Collect::default();
+            assert_eq!(generate(&mut crate::LazyRaster::from(dataset.clone()), &options, &mut sink).unwrap().written, 21);
+            outputs.push(sink.0);
+        }
+        for (name, bytes) in &outputs[0] {
+            let a = crate::memory::open_raster_bytes(bytes.clone(), name).unwrap();
+            let b = crate::memory::open_raster_bytes(outputs[1][name].clone(), name).unwrap();
+            assert_eq!(a.raster.bands, 3, "{name}");
+            for (x, y) in a.raster.data.to_f64_vec().into_iter().zip(b.raster.data.to_f64_vec()) {
+                assert!((x - y).abs() <= 1.0, "{name}: {x} != {y}");
+            }
+        }
+    }
+
+    #[test]
+    fn validity_of_many_band_mosaics_is_read_in_strips_within_the_window_budget() {
+        // 9 Float64 bands of 512-pixel tiles: a parent's 1024 x 1024 mosaic is 72 MiB, over the
+        // 64 MiB window budget, while its one-band validity rendering is not.
+        let (size, bands) = (1024, 9);
+        let config = crate::RasterConfig { cols: size, rows: size, bands, data_type: DataType::F64, cell_size: 1.0, ..Default::default() };
+        let values = (0..size * size * bands).map(|i| (i % 1000) as f64).collect();
+        let dataset = RasterDataset::new(crate::Raster::from_data(config, values).unwrap(), false);
+        let options = TileOptions {
+            format: "GTiff".into(),
+            resampling: "nearest".into(),
+            grid: GridOptions { tile_size: 512, min_zoom: Some(0), ..Default::default() },
+            ..options()
+        };
+        let mut sink = Collect::default();
+        let report = generate(&mut crate::LazyRaster::from(dataset), &options, &mut sink).unwrap();
+        assert_eq!(report.written, 5);
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn resume_rebuilds_a_gray_webp_parent_from_rgb_children() {
+        // Gray WebP tiles are stored as RGB, and opaque ones without alpha: decoding must
+        // recover the gray tile layout before the parent is resampled.
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("tiles");
+        let mut options = TileOptions { format: "WEBP".into(), ..options() };
+        options.grid.min_zoom = Some(0);
+        options.grid.max_zoom = Some(1);
+        assert_eq!(to_directory(&mut source(), &options, &output, false).unwrap().written, 5);
+        let parent = output.join("0/0/0.webp");
+        let expected = std::fs::read(&parent).unwrap();
+        std::fs::remove_file(&parent).unwrap();
+        let report = to_directory(&mut source(), &options, &output, true).unwrap();
+        assert_eq!((report.written, report.resumed), (1, 4));
+        assert_eq!(std::fs::read(parent).unwrap(), expected);
     }
 }
