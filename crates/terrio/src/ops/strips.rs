@@ -110,6 +110,8 @@ impl StripWriter {
 
     /// A source mask is supplied with each strip instead of held in `options.mask`.
     pub fn create_masked(header: &RasterDataset, path: &str, options: &RasterWriteOptions, source_mask: bool) -> Result<Self> {
+        let derived = crate::dataset::color_options(header, path, options);
+        let options = derived.as_ref().unwrap_or(options);
         let mut inherited = options.inherited_from(header, options.driver.or_else(|| RasterDriver::for_extension(path)));
         if source_mask {
             inherited.mask = Some(Vec::new());
@@ -517,6 +519,56 @@ mod tests {
     fn header(data_type: DataType) -> RasterDataset {
         let grid = Grid { width: 4, height: 6, geo_transform: [0.0, 1.0, 0.0, 6.0, 0.0, -1.0] };
         raster_header(grid, data_type, 1, None, &SpatialRef::parse("EPSG:4326").unwrap()).unwrap()
+    }
+
+    #[test]
+    fn streamed_color_tags_match_whole_writes_and_respect_options() {
+        let dir = tempfile::tempdir().unwrap();
+        for dtype in [DataType::U8, DataType::U16] {
+            for bands in [3, 4] {
+                let cfg = wbraster::RasterConfig { cols: 40, rows: 30, bands, data_type: dtype, ..Default::default() };
+                let raster = wbraster::Raster::from_data_native(cfg, RasterData::new_filled(dtype, 40 * 30 * bands, 17.0)).unwrap();
+                let mut ds = RasterDataset::with_driver(raster, RasterDriver::GTiff, false);
+                ds.set_geo_transform([10., 2., 0., 70., 0., -2.]);
+                ds.band_metadata = ["Red", "Green", "Blue", "Alpha"][..bands]
+                    .iter()
+                    .map(|c| crate::BandMetadata { color_interp: Some((*c).into()), ..Default::default() })
+                    .collect();
+                for driver in [RasterDriver::GTiff, RasterDriver::Cog] {
+                    for override_color in [false, true] {
+                        let mut options = RasterWriteOptions { driver: Some(driver), ..Default::default() };
+                        if override_color {
+                            options.creation_options = vec![("PHOTOMETRIC".into(), "MINISBLACK".into()), ("ALPHA".into(), "NO".into())];
+                        }
+                        let whole = dir.path().join("whole.tif");
+                        let streamed = dir.path().join("streamed.tif");
+                        crate::write_raster_dataset(&ds, whole.to_str().unwrap(), &options).unwrap();
+                        let mut writer = StripWriter::create(&ds, streamed.to_str().unwrap(), &options).unwrap();
+                        for y in (0..30).step_by(10) {
+                            writer
+                                .write(crate::cog::cut(&ds.raster, crate::Window::new(0, y, 40, 10), &(1..=bands).collect::<Vec<_>>()), 10)
+                                .unwrap();
+                        }
+                        writer.finish().unwrap();
+                        let tags = |path: &std::path::Path| {
+                            let mut dec = tiff::decoder::Decoder::new(std::fs::File::open(path).unwrap()).unwrap();
+                            (
+                                dec.find_tag_unsigned::<u16>(tiff::tags::Tag::PhotometricInterpretation).unwrap(),
+                                dec.find_tag_unsigned_vec::<u16>(tiff::tags::Tag::ExtraSamples).unwrap(),
+                            )
+                        };
+                        assert_eq!(tags(&streamed), tags(&whole));
+                        assert_eq!(tags(&streamed).0, Some(if override_color { 1 } else { 2 }));
+                        if bands == 4 && !override_color {
+                            assert_eq!(tags(&streamed).1, Some(vec![2]));
+                        }
+                        let read = crate::open_raster_lazy(streamed.to_str().unwrap()).unwrap().read().unwrap();
+                        assert_eq!(read.raster.data.to_f64_vec(), ds.raster.data.to_f64_vec());
+                        assert_eq!(read.geo_transform(), ds.geo_transform());
+                    }
+                }
+            }
+        }
     }
 
     /// A GeoTIFF dropped before it is finished (its operation failing) is removed; a finished one
