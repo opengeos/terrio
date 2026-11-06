@@ -609,8 +609,9 @@ mod tests {
             if !use_alpha {
                 options.creation_options.push(("ALPHA".into(), "NO".into()));
             }
-            let whole = dir.path().join("whole.tif");
-            let streamed = dir.path().join("streamed.tif");
+            let suffix = if use_alpha { "alpha" } else { "no-alpha" };
+            let whole = dir.path().join(format!("whole-{suffix}.tif"));
+            let streamed = dir.path().join(format!("streamed-{suffix}.tif"));
             crate::write_raster_dataset(&ds, whole.to_str().unwrap(), &options).unwrap();
             let mut writer = StripWriter::create(&ds, streamed.to_str().unwrap(), &options).unwrap();
             for y in (0..height).step_by(8) {
