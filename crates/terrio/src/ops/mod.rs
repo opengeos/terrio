@@ -98,6 +98,7 @@ pub mod vector_schema;
 pub mod viewshed;
 pub mod vrt;
 pub mod warp;
+pub(crate) mod window;
 pub mod xyz;
 pub mod zonal;
 

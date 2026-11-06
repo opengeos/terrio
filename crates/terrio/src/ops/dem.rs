@@ -1,11 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2006, 2009 Matthew Perry
 // SPDX-FileCopyrightText: Copyright (c) 2009-2013, Even Rouault <even dot rouault at spatialys.com>
+// SPDX-FileCopyrightText: Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2018 Jorge Aparicio
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT AND SunPro
 //
 // Derived from (translated to Rust and modified):
 //   GDAL v3.12.2 and v3.13.3:
 //     apps/gdaldem_lib.cpp
+//   fdlibm, as FreeBSD's msun and the Rust `libm` crate v0.2.16 have it (`fdlibm_atan_nonneg`,
+//   `atan2_approx`):
+//     src/s_atan.c (libm: src/math/atan.rs)
+//     src/e_atan2.c (libm: src/math/atan2.rs)
 
 //! Terrain analysis: an equivalent of `gdaldem`.
 //!
@@ -28,6 +34,7 @@
 //!   SSE code path on the rows where it uses it.
 
 use super::Grid;
+use super::window::avx2_rows;
 use crate::{Error, RasterDataset, Result};
 use std::f64::consts::PI;
 use wbraster::DataType;
@@ -430,77 +437,133 @@ impl HillshadeParams {
         (if cang <= 0.0 { 1.0 } else { 1.0 + cang }) as f32
     }
 
-    /// The same-resolution hillshade of GDAL's SSE code path, which uses an approximate
-    /// reciprocal square root refined by one Newton-Raphson step.
-    #[cfg(target_arch = "x86_64")]
-    fn same_res_simd<T: Px>(&self, w: &[T; 9]) -> f32 {
-        let (x, y) = Self::same_res_acc(w);
-        let xx_plus_yy = x * x + y * y;
-        let num = self.sin_alt_mul_254
-            + self.sin_az_mul_cos_alt_mul_z_mul_254_mul_inv_res * x
-            + self.cos_az_mul_cos_alt_mul_z_mul_254_mul_inv_res * y;
-        let denom = 1.0 + self.square_z_mul_square_inv_res * xx_plus_yy;
-        let r = approx_inv_sqrt(denom);
-        let res = (num * r) as f32 + 1.0;
-        if 1.0 > res { 1.0 } else { res }
+    fn combined<T: Px>(&self, w: &[T; 9]) -> f32 {
+        let cang = self.combined_cang(w, f64::acos, f64::atan);
+        if cang <= 0.0 { 1.0 } else { (1.0 + 254.0 * cang) as f32 }
     }
 
-    fn combined<T: Px>(&self, w: &[T; 9]) -> f32 {
+    /// [`Self::combined`] with arccosines and arctangents the compiler vectorizes, and whether the
+    /// window must be recomputed: `cang` is within about `1e-15` of libm's, so the value can only
+    /// differ near an `f32` midpoint (on either side of `cang <= 0` within that both give `1.0`).
+    #[inline(always)]
+    fn combined_fast<T: Px>(&self, w: &[T; 9]) -> (f32, bool) {
+        let acos = |q: f64| 2.0 * fdlibm_atan_nonneg(((1.0 - q) / (1.0 + q)).sqrt());
+        let cang = self.combined_cang(w, acos, fdlibm_atan_nonneg);
+        let (v, redo) = f32_within(1.0 + 254.0 * cang);
+        (if cang <= 0.0 { 1.0 } else { v }, redo)
+    }
+
+    #[inline(always)]
+    fn combined_cang<T: Px>(&self, w: &[T; 9], acos: impl Fn(f64) -> f64, atan: impl Fn(f64) -> f64) -> f64 {
         const INV_SQUARE_OF_HALF_PI: f64 = 1.0 / ((PI * PI) / 4.0);
         let (x, y) = gradient(w, self.alg, self.inv_ew, self.inv_ns);
         let xx_plus_yy = x * x + y * y;
         let slope = xx_plus_yy * self.square_z;
-        let mut cang =
-            ((self.sin_alt - (y * self.cos_az_mul_cos_alt_mul_z - x * self.sin_az_mul_cos_alt_mul_z)) / (1.0 + slope).sqrt()).acos();
-        cang = 1.0 - cang * slope.sqrt().atan() * INV_SQUARE_OF_HALF_PI;
-        if cang <= 0.0 { 1.0 } else { (1.0 + 254.0 * cang) as f32 }
+        let cang = acos((self.sin_alt - (y * self.cos_az_mul_cos_alt_mul_z - x * self.sin_az_mul_cos_alt_mul_z)) / (1.0 + slope).sqrt());
+        1.0 - cang * atan(slope.sqrt()) * INV_SQUARE_OF_HALF_PI
     }
 
     fn igor<T: Px>(&self, w: &[T; 9]) -> f32 {
+        (255.0 * self.igor_shadowness(w, f64::atan, f64::atan2)) as f32
+    }
+
+    /// [`Self::igor`] with arctangents the compiler vectorizes, and whether the window must be
+    /// recomputed. The shadowness is continuous in the angles (the aspect difference is a distance
+    /// on the circle), so it is within about `1e-14` of libm's and the value can only differ near
+    /// an `f32` midpoint.
+    #[inline(always)]
+    fn igor_fast<T: Px>(&self, w: &[T; 9]) -> (f32, bool) {
+        f32_within(255.0 * self.igor_shadowness(w, fdlibm_atan_nonneg, atan2_approx))
+    }
+
+    /// `z_factor > 0`, so `atan` gets `x >= 0` (or NaN).
+    #[inline(always)]
+    fn igor_shadowness<T: Px>(&self, w: &[T; 9], atan: impl Fn(f64) -> f64, atan2: impl Fn(f64, f64) -> f64) -> f64 {
         let (gx, gy) = gradient(w, self.alg, self.inv_ew, self.inv_ns);
-        let slope_degrees = ((gx * gx + gy * gy).sqrt() * self.z_factor).atan() * R2D;
-        let aspect = match self.alg {
-            GradientAlg::Horn => {
-                let dx = sum121(w, 2, 5, 8).sub(sum121(w, 0, 3, 6)).f64();
-                let dy = sum121(w, 6, 7, 8).sub(sum121(w, 0, 1, 2)).f64();
-                dy.atan2(-dx)
-            }
-            GradientAlg::ZevenbergenThorne => {
-                let dx = w[5].sub(w[3]).f64();
-                let dy = w[7].sub(w[1]).f64();
-                dy.atan2(-dx)
-            }
-        };
+        let slope_degrees = atan((gx * gx + gy * gy).sqrt() * self.z_factor) * R2D;
+        let (dx, dy) = aspect_gradient(w, self.alg);
+        let aspect = atan2(dy, -dx);
         let slope_strength = slope_degrees / 90.0;
-        let aspect_diff = difference_between_angles(aspect, PI * 3.0 / 2.0 - self.az, PI * 2.0);
+        // GDAL's DifferenceBetweenAngles(); `aspect % (PI * 2.0)` is `aspect`, which is in `-PI..=PI`.
+        let a1 = if aspect < 0.0 { PI * 2.0 + aspect } else { aspect };
+        let mut aspect_diff = (a1 - normalize_angle(PI * 3.0 / 2.0 - self.az, PI * 2.0)).abs();
+        if aspect_diff > PI {
+            aspect_diff = PI * 2.0 - aspect_diff;
+        }
         let aspect_strength = 1.0 - aspect_diff / PI;
-        let shadowness = 1.0 - slope_strength * aspect_strength;
-        (255.0 * shadowness) as f32
+        1.0 - slope_strength * aspect_strength
     }
 }
 
-/// GDAL's `ApproxADivByInvSqrtB()` reciprocal square root: `_mm_rsqrt_ps` on the value rounded
-/// to single precision, then one Newton-Raphson step in double precision.
+avx2_rows! {
+    /// Columns `1..width - 1` of a row (see [`Kernel::row`]): [`HillshadeParams::same_res`] on
+    /// rows checked for nodata; on the others, on x86-64, as GDAL's SSE code path, four pixels at a
+    /// time with an approximate reciprocal square root refined by one Newton-Raphson step, the last
+    /// columns with [`HillshadeParams::same_res`] (elsewhere every column, as GDAL without SSE).
+    fn same_res_row[T: Px](hs: &HillshadeParams, l1: &[T], l2: &[T], l3: &[T], o: &mut [f32], check: bool) {
+        let w = o.len();
+        let mut j = 1;
+        if check {
+            while j + LANES < w {
+                let (a, b, c) = window_rows::<T, LANES>(l1, l2, l3, j);
+                for (k, o) in o[j..j + LANES].iter_mut().enumerate() {
+                    *o = hs.same_res(&[a[k], a[k + 1], a[k + 2], b[k], b[k + 1], b[k + 2], c[k], c[k + 1], c[k + 2]]);
+                }
+                j += LANES;
+            }
+        } else {
+            #[cfg(target_arch = "x86_64")]
+            while j + 4 < w {
+                let (a, b, c) = window_rows::<T, 4>(l1, l2, l3, j);
+                let (mut num, mut denom) = ([0.0f64; 4], [0.0f64; 4]);
+                for k in 0..4 {
+                    let win = [a[k], a[k + 1], a[k + 2], b[k], b[k + 1], b[k + 2], c[k], c[k + 1], c[k + 2]];
+                    let (x, y) = HillshadeParams::same_res_acc(&win);
+                    num[k] = hs.sin_alt_mul_254
+                        + hs.sin_az_mul_cos_alt_mul_z_mul_254_mul_inv_res * x
+                        + hs.cos_az_mul_cos_alt_mul_z_mul_254_mul_inv_res * y;
+                    denom[k] = 1.0 + hs.square_z_mul_square_inv_res * (x * x + y * y);
+                }
+                let r = approx_inv_sqrt4(denom);
+                for k in 0..4 {
+                    let res = (num[k] * r[k]) as f32 + 1.0;
+                    o[j + k] = if 1.0 > res { 1.0 } else { res };
+                }
+                j += 4;
+            }
+        }
+        while j + 1 < w {
+            o[j] = hs.same_res(&[l1[j - 1], l1[j], l1[j + 1], l2[j - 1], l2[j], l2[j + 1], l3[j - 1], l3[j], l3[j + 1]]);
+            j += 1;
+        }
+    }
+}
+
+/// GDAL's `ApproxADivByInvSqrtB()` reciprocal square root of four values: `_mm_rsqrt_ps` on
+/// the values rounded to single precision, then one Newton-Raphson step in double precision.
 #[cfg(target_arch = "x86_64")]
-#[inline]
-fn approx_inv_sqrt(b: f64) -> f64 {
-    use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
-    // SAFETY: SSE is part of the x86-64 baseline, so these instructions are always available.
-    let r = unsafe { _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(b as f32))) } as f64;
-    r * (1.5 - (b * 0.5) * (r * r))
+#[inline(always)]
+fn approx_inv_sqrt4(b: [f64; 4]) -> [f64; 4] {
+    use std::arch::x86_64::{_mm_loadu_ps, _mm_rsqrt_ps, _mm_storeu_ps};
+    let mut r = b.map(|v| v as f32);
+    // SAFETY: SSE is part of the x86-64 baseline; the loads and stores are of the 4 floats of `r`.
+    unsafe { _mm_storeu_ps(r.as_mut_ptr(), _mm_rsqrt_ps(_mm_loadu_ps(r.as_ptr()))) };
+    std::array::from_fn(|k| {
+        let r = r[k] as f64;
+        r * (1.5 - (b[k] * 0.5) * (r * r))
+    })
+}
+
+/// The three rows of the windows of `N` pixels from column `j`: columns `j - 1..j + N + 1`.
+#[inline(always)]
+fn window_rows<'a, T: Px, const N: usize>(l1: &'a [T], l2: &'a [T], l3: &'a [T], j: usize) -> (&'a [T], &'a [T], &'a [T]) {
+    let r = j - 1..j + N + 1;
+    (&l1[r.clone()], &l2[r.clone()], &l3[r])
 }
 
 fn normalize_angle(angle: f64, normalizer: f64) -> f64 {
     let a = angle % normalizer;
     if a < 0.0 { normalizer + a } else { a }
-}
-
-fn difference_between_angles(a1: f64, a2: f64, normalizer: f64) -> f64 {
-    let mut diff = (normalize_angle(a1, normalizer) - normalize_angle(a2, normalizer)).abs();
-    if diff > normalizer / 2.0 {
-        diff = normalizer - diff;
-    }
-    diff
 }
 
 /// The parameters of the multidirectional hillshade.
@@ -654,8 +717,9 @@ fn slope_f32<T: Px>(w: &[T; 9], alg: GradientAlg, ew: f64, ns: f64, percent: boo
     if percent { (100.0 / div) * root } else { (root * (1.0 / div)).atan() * R2D as f32 }
 }
 
-/// Slope, in degrees or percent.
-fn slope<T: Px>(w: &[T; 9], alg: GradientAlg, ewres_xscale: f64, nsres_yscale: f64, percent: bool) -> f32 {
+/// The tangent of the slope: the gradient's norm over the window's span.
+#[inline(always)]
+fn slope_tangent<T: Px>(w: &[T; 9], alg: GradientAlg, ewres_xscale: f64, nsres_yscale: f64) -> f64 {
     let (dx, dy, div) = match alg {
         GradientAlg::Horn => {
             let (x, y) = horn(w);
@@ -663,17 +727,177 @@ fn slope<T: Px>(w: &[T; 9], alg: GradientAlg, ewres_xscale: f64, nsres_yscale: f
         }
         GradientAlg::ZevenbergenThorne => (w[3].sub(w[5]).f64() / ewres_xscale, w[7].sub(w[1]).f64() / nsres_yscale, 2.0),
     };
-    let key = dx * dx + dy * dy;
-    if percent { (100.0 * (key.sqrt() / div)) as f32 } else { ((key.sqrt() / div).atan() * R2D) as f32 }
+    (dx * dx + dy * dy).sqrt() / div
+}
+
+/// Slope, in degrees or percent.
+fn slope<T: Px>(w: &[T; 9], alg: GradientAlg, ewres_xscale: f64, nsres_yscale: f64, percent: bool) -> f32 {
+    let t = slope_tangent(w, alg, ewres_xscale, nsres_yscale);
+    if percent { (100.0 * t) as f32 } else { (t.atan() * R2D) as f32 }
+}
+
+avx2_rows! {
+    /// [`slope`] in degrees over columns `1..width - 1` of the row `l2` (see [`Kernel::row`]), in
+    /// groups of [`LANES`] the compiler vectorizes: the tangents, then their arctangents with
+    /// [`atan_degrees_f32`]. Bit-identical to [`slope`]. One loop per gradient, `alg` a constant in
+    /// each.
+    fn slope_degrees_row[T: Px](l1: &[T], l2: &[T], l3: &[T], o: &mut [f32], alg: GradientAlg, ew: f64, ns: f64) {
+        match alg {
+            GradientAlg::Horn => slope_degrees_lanes(l1, l2, l3, o, GradientAlg::Horn, ew, ns),
+            GradientAlg::ZevenbergenThorne => slope_degrees_lanes(l1, l2, l3, o, GradientAlg::ZevenbergenThorne, ew, ns),
+        }
+    }
+}
+
+#[inline(always)]
+fn slope_degrees_lanes<T: Px>(l1: &[T], l2: &[T], l3: &[T], o: &mut [f32], alg: GradientAlg, ew: f64, ns: f64) {
+    let w = o.len();
+    let mut j = 1;
+    while j + LANES < w {
+        let (a, b, c) = lane_rows(l1, l2, l3, j);
+        let mut u = [0.0f64; LANES];
+        for (k, u) in u.iter_mut().enumerate() {
+            *u = slope_tangent(&[a[k], a[k + 1], a[k + 2], b[k], b[k + 1], b[k + 2], c[k], c[k + 1], c[k + 2]], alg, ew, ns);
+        }
+        atan_degrees_f32(&u, &mut o[j..j + LANES]);
+        j += LANES;
+    }
+    while j + 1 < w {
+        o[j] = slope(&[l1[j - 1], l1[j], l1[j + 1], l2[j - 1], l2[j], l2[j + 1], l3[j - 1], l3[j], l3[j + 1]], alg, ew, ns, false);
+        j += 1;
+    }
+}
+
+/// `(u.atan() * R2D) as f32` for each `u >= 0` (or NaN): fdlibm's arctangent, and `f64::atan`
+/// for the values [`f32_near`] flags.
+#[inline(always)]
+fn atan_degrees_f32(u: &[f64; LANES], out: &mut [f32]) {
+    let mut deg = [0.0f64; LANES];
+    for (d, &x) in deg.iter_mut().zip(u) {
+        *d = fdlibm_atan_nonneg(x) * R2D;
+    }
+    let mut redo = false;
+    for (o, &d) in out.iter_mut().zip(&deg) {
+        let (v, r) = f32_near(d);
+        *o = v;
+        redo |= r;
+    }
+    if redo {
+        for ((o, &d), &x) in out.iter_mut().zip(&deg).zip(u) {
+            if f32_near(d).1 {
+                *o = (x.atan() * R2D) as f32;
+            }
+        }
+    }
+}
+
+/// The windows a row kernel computes together.
+const LANES: usize = 16;
+
+/// `d as f32`, and whether `d`, computed within a few ulps of libm's value, must be recomputed:
+/// when a value within 64 ulps of it could round to another `f32`, or it is NaN or tiny. (The 29
+/// low mantissa bits are what the cast rounds away; `1 << 28` is the midpoint.)
+#[inline(always)]
+fn f32_near(d: f64) -> (f32, bool) {
+    let low = d.to_bits() & ((1 << 29) - 1);
+    (d as f32, (low.wrapping_sub((1 << 28) - 64) <= 128) | !(d.abs() >= 1e-30 || d == 0.0))
+}
+
+/// `v as f32`, and whether `v`, computed within `1e-10` of libm's value, must be recomputed: when
+/// a value that close could round to another `f32`, or it is not finite.
+#[inline(always)]
+fn f32_within(v: f64) -> (f32, bool) {
+    const E: f64 = 1e-10;
+    (v as f32, ((v + E) as f32 != (v - E) as f32) | !v.is_finite())
+}
+
+/// fdlibm's `atan2` (`e_atan2.c`) without branches: `atan(|y / x|)` moved to `x`'s half-plane and
+/// given `y`'s sign. Within a few ulps of libm's. Where `y` is `±0` it gives libm's value exactly:
+/// `±0` when `x` is `+0` or positive, `±pi` when `x` is `-0` or negative (signed as `y`), and NaN
+/// when `x` is NaN.
+#[inline(always)]
+fn atan2_approx(y: f64, x: f64) -> f64 {
+    const PI_LO: f64 = f64::from_bits(0x3CA1_A626_3314_5C07);
+    let z = if y == 0.0 && !x.is_nan() { 0.0 } else { fdlibm_atan_nonneg((y / x).abs()) };
+    (if x.is_sign_negative() { PI - (z - PI_LO) } else { z }).copysign(y)
+}
+
+/// fdlibm's `atan` (FreeBSD `s_atan.c`, as the `libm` crate has it) for `x >= 0`, with the
+/// argument reduction chosen by selects rather than branches; the same operations, so the same
+/// result, for `0 <= x < 2^66`. Below `2^-27`, where fdlibm returns `x`, `x - x * (s1 + s2)` rounds
+/// to `x` too: `s1 + s2` is under `2^-55`, less than half an ulp of `x` relative to it.
+#[inline(always)]
+fn fdlibm_atan_nonneg(x: f64) -> f64 {
+    // fdlibm's constants, by their bits.
+    const ATANHI: [f64; 4] = [
+        f64::from_bits(0x3FDD_AC67_0561_BB4F), // atan(0.5)
+        f64::from_bits(0x3FE9_21FB_5444_2D18), // atan(1)
+        f64::from_bits(0x3FEF_730B_D281_F69B), // atan(1.5)
+        f64::from_bits(0x3FF9_21FB_5444_2D18), // atan(inf)
+    ];
+    const ATANLO: [f64; 4] = [
+        f64::from_bits(0x3C7A_2B7F_222F_65E2),
+        f64::from_bits(0x3C81_A626_3314_5C07),
+        f64::from_bits(0x3C70_0788_7AF0_CBBD),
+        f64::from_bits(0x3C91_A626_3314_5C07),
+    ];
+    const AT: [f64; 11] = [
+        f64::from_bits(0x3FD5_5555_5555_550D),
+        f64::from_bits(0xBFC9_9999_9998_EBC4),
+        f64::from_bits(0x3FC2_4924_9200_83FF),
+        f64::from_bits(0xBFBC_71C6_FE23_1671),
+        f64::from_bits(0x3FB7_45CD_C54C_206E),
+        f64::from_bits(0xBFB3_B0F2_AF74_9A6D),
+        f64::from_bits(0x3FB1_0D66_A0D0_3D51),
+        f64::from_bits(0xBFAD_DE2D_52DE_FD9A),
+        f64::from_bits(0x3FA9_7B4B_2476_0DEB),
+        f64::from_bits(0xBFA2_B444_2C6A_6C2F),
+        f64::from_bits(0x3F90_AD3A_E322_DA11),
+    ];
+    // |x| < 7/16: no reduction; then atan(1/2), atan(1), atan(3/2) and atan(inf) plus a reduced
+    // x. Every candidate is computed and one selected, which the compiler vectorizes.
+    let sel = |c: bool, a: f64, b: f64| if c { a } else { b };
+    let (b0, b1, b2, b3) = (x >= 0.4375, x >= 0.6875, x >= 1.1875, x >= 2.4375);
+    let num = sel(b3, -1.0, sel(b2, x - 1.5, sel(b1, x - 1.0, sel(b0, 2.0 * x - 1.0, x))));
+    let den = sel(b3, x, sel(b2, 1.0 + 1.5 * x, sel(b1, x + 1.0, sel(b0, 2.0 + x, 1.0))));
+    let hi = sel(b3, ATANHI[3], sel(b2, ATANHI[2], sel(b1, ATANHI[1], sel(b0, ATANHI[0], 0.0))));
+    let lo = sel(b3, ATANLO[3], sel(b2, ATANLO[2], sel(b1, ATANLO[1], sel(b0, ATANLO[0], 0.0))));
+    let x = num / den;
+    let z = x * x;
+    let w = z * z;
+    let s1 = z * (AT[0] + w * (AT[2] + w * (AT[4] + w * (AT[6] + w * (AT[8] + w * AT[10])))));
+    let s2 = w * (AT[1] + w * (AT[3] + w * (AT[5] + w * (AT[7] + w * AT[9]))));
+    // With hi = lo = 0 this is fdlibm's `x - x * (s1 + s2)`: negating a rounded difference is exact.
+    hi - ((x * (s1 + s2) - lo) - x)
 }
 
 /// Aspect, as an azimuth or a trigonometric angle; `flat` for flat areas.
 fn aspect<T: Px>(w: &[T; 9], alg: GradientAlg, azimuth: bool, flat: f32) -> f32 {
-    let (dx, dy) = match alg {
+    let (dx, dy) = aspect_gradient(w, alg);
+    aspect_of((dy.atan2(-dx) / D2R) as f32, dx, dy, azimuth, flat)
+}
+
+/// [`aspect`] with an arctangent the compiler vectorizes, and whether to recompute it (see
+/// [`f32_near`]).
+#[inline(always)]
+fn aspect_fast<T: Px>(w: &[T; 9], alg: GradientAlg, azimuth: bool, flat: f32) -> (f32, bool) {
+    let (dx, dy) = aspect_gradient(w, alg);
+    let (a, redo) = f32_near(atan2_approx(dy, -dx) / D2R);
+    (aspect_of(a, dx, dy, azimuth, flat), redo)
+}
+
+/// The aspect's `(dx, dy)`, the opposite of the gradient's x.
+#[inline(always)]
+fn aspect_gradient<T: Px>(w: &[T; 9], alg: GradientAlg) -> (f64, f64) {
+    match alg {
         GradientAlg::Horn => (sum121(w, 2, 5, 8).sub(sum121(w, 0, 3, 6)).f64(), sum121(w, 6, 7, 8).sub(sum121(w, 0, 1, 2)).f64()),
         GradientAlg::ZevenbergenThorne => (w[5].sub(w[3]).f64(), w[7].sub(w[1]).f64()),
-    };
-    let mut a = (dy.atan2(-dx) / D2R) as f32;
+    }
+}
+
+/// The aspect from the angle `a` of `(-dx, dy)` in degrees.
+#[inline(always)]
+fn aspect_of(mut a: f32, dx: f64, dy: f64, azimuth: bool, flat: f32) -> f32 {
     if dx == 0.0 && dy == 0.0 {
         a = flat;
     } else if azimuth {
@@ -717,15 +941,87 @@ fn roughness<T: Px>(w: &[T; 9]) -> f32 {
     hi.sub(lo).f32()
 }
 
-/// A 3×3 algorithm.
-type Alg<'a, T> = &'a (dyn Fn(&[T; 9]) -> f32 + Sync);
+/// A 3×3 algorithm `f`, with the optional vectorized version GDAL uses on rows free of nodata.
+/// Generic rather than `dyn Fn`, so the algorithm is inlined into `process`'s loop.
+struct Kernel<F, M, R> {
+    f: F,
+    /// The value of one window as GDAL's SSE path computes it, which `process` calls for columns
+    /// `1, 1 + 4, ...` in groups of four on rows free of nodata (only the GDAL 3.13 kernel's
+    /// Horn hillshade on x86-64 when `gt[1] == -gt[5]` and the x and y scales are equal).
+    multi: Option<M>,
+    /// Computes columns `1..width - 1` of a row from the rows above, at and below it, and whether
+    /// the row is checked for nodata, giving the values `f` (and `multi` on unchecked rows) give,
+    /// except the default Horn hillshade when `gt[1] == -gt[5]` and the x and y scales are equal,
+    /// whose unchecked rows give GDAL's SSE values on x86-64 ([`same_res_row`]);
+    /// `process` then recomputes the windows holding nodata.
+    row: Option<R>,
+}
 
-/// A 3×3 algorithm, with the optional vectorized version GDAL uses on rows free of nodata.
-struct Kernel<'a, T> {
-    f: Alg<'a, T>,
-    /// Computes columns `1, 1 + 4, ...` in groups of four while `j < width - 4`, returning the
-    /// first column it did not compute.
-    multi: Option<Alg<'a, T>>,
+/// A 3×3 algorithm, see [`Kernel::f`].
+type WindowFn<T> = fn(&[T; 9]) -> f32;
+
+/// A whole-row version of a kernel, see [`Kernel::row`].
+type RowFn<T> = fn(&[T], &[T], &[T], &mut [f32], bool);
+
+/// A kernel whose rows compute `f` over [`LANES`] windows at a time, which the compiler
+/// vectorizes as far as `f` allows; window by window, the values `f` gives.
+#[allow(clippy::type_complexity)]
+fn single<T: Px, F: Fn(&[T; 9]) -> f32 + Copy>(f: F) -> Kernel<F, WindowFn<T>, impl Fn(&[T], &[T], &[T], &mut [f32], bool)> {
+    guarded(
+        f,
+        #[inline(always)]
+        move |w: &[T; 9]| (f(w), false),
+    )
+}
+
+/// A kernel whose rows compute `fast` over [`LANES`] windows at a time, which gives `f`'s value
+/// or flags the window for `f` to compute.
+#[allow(clippy::type_complexity)]
+fn guarded<T: Px, F, G>(f: F, fast: G) -> Kernel<F, WindowFn<T>, impl Fn(&[T], &[T], &[T], &mut [f32], bool)>
+where
+    F: Fn(&[T; 9]) -> f32 + Copy,
+    G: Fn(&[T; 9]) -> (f32, bool) + Copy,
+{
+    Kernel { f, multi: None, row: Some(move |l1: &[T], l2: &[T], l3: &[T], o: &mut [f32], _: bool| row_of(&f, &fast, l1, l2, l3, o)) }
+}
+
+avx2_rows! {
+    /// [`guarded`]'s columns `1..width - 1` of the row `l2` (see [`Kernel::row`]).
+    fn row_of[T: Px, F: Fn(&[T; 9]) -> f32, G: Fn(&[T; 9]) -> (f32, bool)](
+        f: &F, fast: &G, l1: &[T], l2: &[T], l3: &[T], o: &mut [f32],
+    ) {
+        let w = o.len();
+        let mut j = 1;
+        while j + LANES < w {
+            let (a, b, c) = lane_rows(l1, l2, l3, j);
+            let win = |k: usize| [a[k], a[k + 1], a[k + 2], b[k], b[k + 1], b[k + 2], c[k], c[k + 1], c[k + 2]];
+            let (mut redo, mut any) = ([false; LANES], false);
+            for (k, (o, r)) in o[j..j + LANES].iter_mut().zip(&mut redo).enumerate() {
+                (*o, *r) = fast(&win(k));
+                any |= *r;
+            }
+            if any {
+                for (k, o) in o[j..j + LANES].iter_mut().enumerate().filter(|&(k, _)| redo[k]) {
+                    *o = f(&win(k));
+                }
+            }
+            j += LANES;
+        }
+        while j + 1 < w {
+            o[j] = f(&[l1[j - 1], l1[j], l1[j + 1], l2[j - 1], l2[j], l2[j + 1], l3[j - 1], l3[j], l3[j + 1]]);
+            j += 1;
+        }
+    }
+}
+
+/// The three rows of the windows of [`LANES`] pixels from column `j`, as arrays (no bounds checks
+/// in the lanes).
+#[inline(always)]
+fn lane_rows<'a, T: Px>(l1: &'a [T], l2: &'a [T], l3: &'a [T], j: usize) -> (&'a [T; LANES + 2], &'a [T; LANES + 2], &'a [T; LANES + 2]) {
+    match (l1[j - 1..j + LANES + 1].try_into(), l2[j - 1..j + LANES + 1].try_into(), l3[j - 1..j + LANES + 1].try_into()) {
+        (Ok(a), Ok(b), Ok(c)) => (a, b, c),
+        _ => unreachable!("the windows are LANES + 2 wide"),
+    }
 }
 
 /// The rows of a band a 3×3 algorithm runs over: `src` holds rows `src_rows` of a band of
@@ -741,7 +1037,12 @@ struct Rows<'a, T> {
 
 /// `GDALGeneric3x3Processing()`: runs a 3×3 algorithm over rows of a band, returning the rows
 /// computed. The values do not depend on how the band is split in rows.
-fn process<T: Px>(rows: Rows<T>, nodata: Option<T>, dst_nodata: f32, edges: bool, k: &Kernel<T>) -> Vec<f32> {
+fn process<T: Px, F, M, R>(rows: Rows<T>, nodata: Option<T>, dst_nodata: f32, edges: bool, k: &Kernel<F, M, R>) -> Vec<f32>
+where
+    F: Fn(&[T; 9]) -> f32 + Sync,
+    M: Fn(&[T; 9]) -> f32 + Sync,
+    R: Fn(&[T], &[T], &[T], &mut [f32], bool) + Sync,
+{
     let Rows { src, width: w, height: h, src_rows, out_rows } = rows;
     let (s0, o0, o1) = (src_rows.start, out_rows.start, out_rows.end);
     let mut out = vec![dst_nodata; w * (o1 - o0)];
@@ -803,7 +1104,26 @@ fn process<T: Px>(rows: Rows<T>, nodata: Option<T>, dst_nodata: f32, edges: bool
         }
         let win_at = |j: usize| [l1[j - 1], l1[j], l1[j + 1], l2[j - 1], l2[j], l2[j + 1], l3[j - 1], l3[j], l3[j + 1]];
         let mut j = 1;
-        if let Some(multi) = k.multi
+        // For a row kernel, the runs of nodata columns `start..end` of the three rows, found per
+        // output row rather than kept for every row of the strip. Rows of speckled nodata go one
+        // pixel at a time (`window::dirty_runs`).
+        let nd_runs: [Vec<(usize, usize)>; 3] = match &k.row {
+            Some(_) if check => [l1, l2, l3].map(|r| super::window::dirty_runs(r, |v: T| v.is_nodata(nd, nd_nan))),
+            _ => Default::default(),
+        };
+        let dense = nd_runs.iter().any(|runs| super::window::is_dense(runs, w));
+        if let Some(row) = k.row.as_ref().filter(|_| !dense) {
+            row(l1, l2, l3, o, check);
+            if check {
+                // The windows with nodata, from the nodata runs of the three rows.
+                for (from, to) in super::window::dirty_windows(nd_runs.iter().map(|r| &r[..]), 1, w) {
+                    for (j, v) in o.iter_mut().enumerate().take(to.min(w - 1)).skip(from.max(1)) {
+                        *v = compute(win_at(j), true);
+                    }
+                }
+            }
+            j = w.saturating_sub(1).max(1);
+        } else if let Some(multi) = &k.multi
             && !check
         {
             while j + 4 < w {
@@ -1073,38 +1393,84 @@ impl Terrain {
                 let same_res = gt[1] == -gt[5] && xscale == yscale;
                 let (ew, ns) = (gt[1] * xscale, gt[5] * yscale);
                 let azimuth = !o.trigonometric;
-                let f: Box<dyn Fn(&[$t; 9]) -> f32 + Sync> = match product {
-                    DemProduct::Hillshade if use_float32 => Box::new(move |w| float32_terrain.shade(w, false)),
+                // GDAL's vectorized standard hillshade applies (on x86_64).
+                let simd = cfg!(target_arch = "x86_64") && o.shading == Shading::Standard && o.gradient == GradientAlg::Horn && same_res;
+                let rows = Rows { src: $src, width: w, height: h, src_rows, out_rows };
+                let (nd, edges) = ($nd, o.compute_edges);
+                // One `process` per algorithm, each with its closure inlined.
+                match product {
+                    DemProduct::Hillshade if use_float32 && simd => {
+                        let f = move |w: &[$t; 9]| float32_terrain.shade(w, false);
+                        let multi = move |w: &[$t; 9]| float32_terrain.shade(w, true);
+                        process(rows, nd, dst_nd, edges, &Kernel { f, multi: Some(multi), row: None::<RowFn<$t>> })
+                    }
+                    DemProduct::Hillshade if use_float32 => {
+                        process(rows, nd, dst_nd, edges, &single(move |w: &[$t; 9]| float32_terrain.shade(w, false)))
+                    }
                     DemProduct::Hillshade => match o.shading {
-                        Shading::MultiDirectional => Box::new(move |w| md.shade(w)),
-                        Shading::Combined => Box::new(move |w| hs.combined(w)),
-                        Shading::Igor => Box::new(move |w| hs.igor(w)),
-                        Shading::Standard if o.gradient == GradientAlg::Horn && same_res => Box::new(move |w| hs.same_res(w)),
-                        Shading::Standard => Box::new(move |w| hs.standard(w)),
+                        Shading::MultiDirectional => process(rows, nd, dst_nd, edges, &single(move |w: &[$t; 9]| md.shade(w))),
+                        Shading::Combined => process(
+                            rows,
+                            nd,
+                            dst_nd,
+                            edges,
+                            &guarded(
+                                move |w: &[$t; 9]| hs.combined(w),
+                                #[inline(always)]
+                                move |w: &[$t; 9]| hs.combined_fast(w),
+                            ),
+                        ),
+                        Shading::Igor => process(
+                            rows,
+                            nd,
+                            dst_nd,
+                            edges,
+                            &guarded(
+                                move |w: &[$t; 9]| hs.igor(w),
+                                #[inline(always)]
+                                move |w: &[$t; 9]| hs.igor_fast(w),
+                            ),
+                        ),
+                        Shading::Standard if o.gradient == GradientAlg::Horn && same_res => {
+                            let f = move |w: &[$t; 9]| hs.same_res(w);
+                            let row = move |a: &[$t], b: &[$t], c: &[$t], o: &mut [f32], check: bool| same_res_row(&hs, a, b, c, o, check);
+                            process(rows, nd, dst_nd, edges, &Kernel { f, multi: None::<WindowFn<$t>>, row: Some(row) })
+                        }
+                        Shading::Standard => process(rows, nd, dst_nd, edges, &single(move |w: &[$t; 9]| hs.standard(w))),
                     },
                     DemProduct::Slope => {
                         let (alg, percent) = (o.gradient, o.slope_percent);
-                        Box::new(move |w| if use_float32 { slope_f32(w, alg, ew, ns, percent) } else { slope(w, alg, ew, ns, percent) })
+                        if use_float32 {
+                            process(rows, nd, dst_nd, edges, &single(move |w: &[$t; 9]| slope_f32(w, alg, ew, ns, percent)))
+                        } else if !percent {
+                            let f = move |w: &[$t; 9]| slope(w, alg, ew, ns, false);
+                            let row =
+                                move |a: &[$t], b: &[$t], c: &[$t], o: &mut [f32], _: bool| slope_degrees_row(a, b, c, o, alg, ew, ns);
+                            process(rows, nd, dst_nd, edges, &Kernel { f, multi: None::<WindowFn<$t>>, row: Some(row) })
+                        } else {
+                            process(rows, nd, dst_nd, edges, &single(move |w: &[$t; 9]| slope(w, alg, ew, ns, true)))
+                        }
                     }
                     DemProduct::Aspect => {
                         let alg = o.gradient;
-                        Box::new(move |w| aspect(w, alg, azimuth, dst_nd))
+                        let f = move |w: &[$t; 9]| aspect(w, alg, azimuth, dst_nd);
+                        process(
+                            rows,
+                            nd,
+                            dst_nd,
+                            edges,
+                            &guarded(
+                                f,
+                                #[inline(always)]
+                                move |w: &[$t; 9]| aspect_fast(w, alg, azimuth, dst_nd),
+                            ),
+                        )
                     }
-                    DemProduct::Tri if o.tri == TriAlg::Wilson => Box::new(tri_wilson::<$t>),
-                    DemProduct::Tri => Box::new(tri_riley::<$t>),
-                    DemProduct::Tpi => Box::new(tpi::<$t>),
-                    DemProduct::Roughness => Box::new(roughness::<$t>),
-                };
-                #[cfg(target_arch = "x86_64")]
-                let simd = move |w: &[$t; 9]| if use_float32 { float32_terrain.shade(w, true) } else { hs.same_res_simd(w) };
-                #[cfg(target_arch = "x86_64")]
-                let multi: Option<&(dyn Fn(&[$t; 9]) -> f32 + Sync)> =
-                    (product == DemProduct::Hillshade && o.shading == Shading::Standard && o.gradient == GradientAlg::Horn && same_res)
-                        .then_some(&simd);
-                #[cfg(not(target_arch = "x86_64"))]
-                let multi: Option<&(dyn Fn(&[$t; 9]) -> f32 + Sync)> = None;
-                let rows = Rows { src: $src, width: w, height: h, src_rows, out_rows };
-                process::<$t>(rows, $nd, dst_nd, o.compute_edges, &Kernel { f: &*f, multi })
+                    DemProduct::Tri if o.tri == TriAlg::Wilson => process(rows, nd, dst_nd, edges, &single(tri_wilson::<$t>)),
+                    DemProduct::Tri => process(rows, nd, dst_nd, edges, &single(tri_riley::<$t>)),
+                    DemProduct::Tpi => process(rows, nd, dst_nd, edges, &single(tpi::<$t>)),
+                    DemProduct::Roughness => process(rows, nd, dst_nd, edges, &single(roughness::<$t>)),
+                }
             }};
         }
         let values = match band {
@@ -2076,6 +2442,267 @@ nv 10 20 30 0
         assert!(bits.abs_diff(1115697630) <= 1, "slope differs from GDAL 3.13.3 by more than one ULP");
         let hillshade = hillshade(&ds, &options).unwrap();
         assert_eq!(hillshade.raster.get(0, 1, 1), 236.0);
+    }
+
+    /// Pseudo-random values in `0..1`, without a dependency.
+    fn lcg(seed: &mut u64) -> f64 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (*seed >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    #[test]
+    fn fast_angles_round_as_libm() {
+        let mut seed = 7;
+        let mut u: Vec<f64> = (0..200_000).map(|i| lcg(&mut seed) * [1e-3, 0.5, 3.0, 100.0][i % 4]).collect();
+        for b in [0.4375f64, 0.6875, 1.1875, 2.4375] {
+            u.extend([b, f64::from_bits(b.to_bits() - 1), f64::from_bits(b.to_bits() + 1)]);
+        }
+        let specials = [0.0, 1e-300, 1e-12, 2f64.powi(-27), 1e20, 2f64.powi(66), f64::INFINITY, f64::NAN];
+        u.extend(specials);
+        let same = |a: f32, b: f32| a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan());
+        let mut redone = 0;
+        for &x in &u {
+            let (v, redo) = f32_near(fdlibm_atan_nonneg(x) * R2D);
+            redone += redo as usize;
+            assert!(redo || same(v, (x.atan() * R2D) as f32), "atan({x})");
+        }
+        // Pairs of every sign, axis and ratio.
+        let mut pairs: Vec<(f64, f64)> =
+            (0..200_000).map(|i| ((lcg(&mut seed) - 0.5) * 500.0, (lcg(&mut seed) - 0.5) * [1e-6, 1.0, 500.0, 1e8][i % 4])).collect();
+        for a in specials.into_iter().chain([1.0, 3.5]) {
+            for b in specials.into_iter().chain([1.0, 3.5]) {
+                pairs.extend([(a, b), (-a, b), (a, -b), (-a, -b)]);
+            }
+        }
+        for &(y, x) in &pairs {
+            let (v, redo) = f32_near(atan2_approx(y, x) / D2R);
+            redone += redo as usize;
+            assert!(redo || same(v, (y.atan2(x) / D2R) as f32), "atan2({y}, {x})");
+        }
+        assert!(redone < (u.len() + pairs.len()) / 1000, "{redone} recomputed");
+    }
+
+    #[test]
+    fn fast_hillshades_round_as_libm() {
+        let mut seed = 11;
+        let gt = [0.0, 30.0, 0.0, 0.0, 0.0, -30.0];
+        let (mut redone, mut n) = (0, 0);
+        for alg in [GradientAlg::Horn, GradientAlg::ZevenbergenThorne] {
+            for (az, alt, z) in [(315.0, 45.0, 1.0), (100.0, 20.0, 3.0), (0.0, 89.0, 0.1), (270.0, 1.0, 10.0)] {
+                let o = DemOptions { gradient: alg, azimuth: az, altitude: alt, z, ..DemOptions::default() };
+                let hs = HillshadeParams::new(&gt, &o, 1.0, 1.0);
+                for i in 0..50_000 {
+                    let scale = [0.0, 1.0, 30.0, 1000.0][i % 4];
+                    let w: [f32; 9] = std::array::from_fn(|_| (lcg(&mut seed) * scale) as f32);
+                    for (fast, exact, what) in
+                        [(hs.combined_fast(&w), hs.combined(&w), "combined"), (hs.igor_fast(&w), hs.igor(&w), "igor")]
+                    {
+                        n += 1;
+                        redone += fast.1 as usize;
+                        assert!(
+                            fast.1 || fast.0.to_bits() == exact.to_bits(),
+                            "{what} {alg:?} {az} {alt} {z} {w:?}: {} vs {exact}",
+                            fast.0
+                        );
+                    }
+                }
+            }
+        }
+        assert!(redone < n / 100, "{redone} of {n} recomputed");
+    }
+
+    /// Runs `k` over a `w` × `h` band, as one chunk of rows.
+    fn run_kernel<T: Px, F, M, R>(src: &[T], w: usize, h: usize, nodata: Option<T>, edges: bool, k: &Kernel<F, M, R>) -> Vec<f32>
+    where
+        F: Fn(&[T; 9]) -> f32 + Sync,
+        M: Fn(&[T; 9]) -> f32 + Sync,
+        R: Fn(&[T], &[T], &[T], &mut [f32], bool) + Sync,
+    {
+        process(Rows { src, width: w, height: h, src_rows: 0..h, out_rows: 0..h }, nodata, -9999.0, edges, k)
+    }
+
+    /// `f` one window at a time, without a row version.
+    fn scalar<T, F: Fn(&[T; 9]) -> f32>(f: F) -> Kernel<F, WindowFn<T>, RowFn<T>> {
+        Kernel { f, multi: None, row: None }
+    }
+
+    /// Asserts [`single`]'s row path gives `f`'s values, with and without the edges.
+    fn rows_match_scalar<T: Px, F: Fn(&[T; 9]) -> f32 + Copy + Sync>(src: &[T], w: usize, h: usize, nodata: Option<T>, what: &str, f: F) {
+        rows_match_guarded(src, w, h, nodata, what, f, move |v: &[T; 9]| (f(v), false));
+    }
+
+    /// Asserts [`guarded`]'s row path gives `f`'s values, with and without the edges.
+    fn rows_match_guarded<T: Px, F, G>(src: &[T], w: usize, h: usize, nodata: Option<T>, what: &str, f: F, fast: G)
+    where
+        F: Fn(&[T; 9]) -> f32 + Copy + Sync,
+        G: Fn(&[T; 9]) -> (f32, bool) + Copy + Sync,
+    {
+        for edges in [false, true] {
+            let fast = run_kernel(src, w, h, nodata, edges, &guarded(f, fast));
+            let slow = run_kernel(src, w, h, nodata, edges, &scalar(f));
+            let bad = fast.iter().zip(&slow).position(|(a, b)| a.to_bits() != b.to_bits());
+            assert!(bad.is_none(), "{what}, edges {edges}: pixel {bad:?}: {} vs {}", fast[bad.unwrap()], slow[bad.unwrap()]);
+        }
+    }
+
+    /// Every algorithm [`single`] runs, row path against the scalar kernel.
+    fn every_single_kernel<T: Px>(src: &[T], w: usize, h: usize, nodata: Option<T>, what: &str) {
+        let gt = [0.0, 30.0, 0.0, 0.0, 0.0, -30.0];
+        for alg in [GradientAlg::Horn, GradientAlg::ZevenbergenThorne] {
+            let what = format!("{what} {alg:?}");
+            let o = DemOptions { gradient: alg, azimuth: 100.0, altitude: 30.0, z: 3.0, ..DemOptions::default() };
+            let (hs, md, f32t) = (
+                HillshadeParams::new(&gt, &o, 1.0, 1.0),
+                MultiDirectionalParams::new(&gt, &o, 1.0, 1.0),
+                Float32Terrain::new(&gt, &o, 1.0, 1.0),
+            );
+            rows_match_scalar(src, w, h, nodata, &format!("{what} standard"), move |v: &[T; 9]| hs.standard(v));
+            rows_match_scalar(src, w, h, nodata, &format!("{what} combined"), move |v: &[T; 9]| hs.combined(v));
+            rows_match_scalar(src, w, h, nodata, &format!("{what} igor"), move |v: &[T; 9]| hs.igor(v));
+            rows_match_guarded(
+                src,
+                w,
+                h,
+                nodata,
+                &format!("{what} fast combined"),
+                move |v: &[T; 9]| hs.combined(v),
+                move |v: &[T; 9]| hs.combined_fast(v),
+            );
+            rows_match_guarded(
+                src,
+                w,
+                h,
+                nodata,
+                &format!("{what} fast igor"),
+                move |v: &[T; 9]| hs.igor(v),
+                move |v: &[T; 9]| hs.igor_fast(v),
+            );
+            for edges in [false, true] {
+                let f = move |v: &[T; 9]| slope(v, alg, 30.0, -30.0, false);
+                let row = move |a: &[T], b: &[T], c: &[T], o: &mut [f32], _: bool| slope_degrees_row(a, b, c, o, alg, 30.0, -30.0);
+                let fast = run_kernel(src, w, h, nodata, edges, &Kernel { f, multi: None::<WindowFn<T>>, row: Some(row) });
+                let slow = run_kernel(src, w, h, nodata, edges, &scalar(f));
+                assert!(fast.iter().zip(&slow).all(|(a, b)| a.to_bits() == b.to_bits()), "{what} slope row, edges {edges}");
+            }
+            rows_match_scalar(src, w, h, nodata, &format!("{what} multidirectional"), move |v: &[T; 9]| md.shade(v));
+            rows_match_scalar(src, w, h, nodata, &format!("{what} 3.13 hillshade"), move |v: &[T; 9]| f32t.shade(v, false));
+            for percent in [false, true] {
+                rows_match_scalar(src, w, h, nodata, &format!("{what} slope {percent}"), move |v: &[T; 9]| {
+                    slope(v, alg, 30.0, -30.0, percent)
+                });
+                rows_match_scalar(src, w, h, nodata, &format!("{what} 3.13 slope {percent}"), move |v: &[T; 9]| {
+                    slope_f32(v, alg, 30.0, -30.0, percent)
+                });
+            }
+            for azimuth in [false, true] {
+                let f = move |v: &[T; 9]| aspect(v, alg, azimuth, -9999.0);
+                rows_match_scalar(src, w, h, nodata, &format!("{what} aspect {azimuth}"), f);
+                rows_match_guarded(src, w, h, nodata, &format!("{what} fast aspect {azimuth}"), f, move |v: &[T; 9]| {
+                    aspect_fast(v, alg, azimuth, -9999.0)
+                });
+            }
+        }
+        rows_match_scalar(src, w, h, nodata, &format!("{what} TRI Wilson"), tri_wilson::<T>);
+        rows_match_scalar(src, w, h, nodata, &format!("{what} TRI Riley"), tri_riley::<T>);
+        rows_match_scalar(src, w, h, nodata, &format!("{what} TPI"), tpi::<T>);
+        rows_match_scalar(src, w, h, nodata, &format!("{what} roughness"), roughness::<T>);
+    }
+
+    #[test]
+    fn single_kernel_rows_give_the_scalar_values() {
+        let (w, h) = (53, 40);
+        let mut seed = 5;
+        let mut src: Vec<f32> = (0..w * h).map(|_| (lcg(&mut seed) * 500.0) as f32).collect();
+        // Flat areas, and steps along one axis only (signed zero gradients).
+        src[20 * w..23 * w].fill(7.0);
+        for (i, v) in src[30 * w..33 * w].iter_mut().enumerate() {
+            *v = (i % w) as f32;
+        }
+        src[33 * w..36 * w].fill(3.0);
+        for r in 33..36 {
+            src[r * w + 5..r * w + 40].iter_mut().for_each(|v| *v = r as f32);
+        }
+        let ints: Vec<i32> = src.iter().map(|&v| v as i32).collect();
+        every_single_kernel(&src, w, h, None, "f32");
+        every_single_kernel(&ints, w, h, None, "i32");
+        for nodata in [f32::NAN, -9999.0] {
+            let mut src = src.clone();
+            for (i, v) in src.iter_mut().enumerate() {
+                if (i / w) % 7 == 0 && lcg(&mut seed) < 0.05 {
+                    *v = nodata;
+                }
+            }
+            src[5 * w + 10..5 * w + 30].fill(nodata);
+            if !nodata.is_nan() {
+                // NaN beside a finite nodata value is a value: its windows stay on the row path.
+                for i in [12 * w + 3, 25 * w + 40, 26 * w + 41, 38 * w + 52] {
+                    src[i] = f32::NAN;
+                }
+            }
+            every_single_kernel(&src, w, h, Some(nodata), &format!("f32 nodata {nodata}"));
+            let ints: Vec<i32> = src.iter().map(|&v| if v.is_nan() { -9999 } else { v as i32 }).collect();
+            every_single_kernel(&ints, w, h, Some(-9999), "i32 nodata");
+        }
+    }
+
+    /// Rows too narrow for a group of 16 windows, or just wide enough for one: the row kernels'
+    /// tails against the scalar kernel.
+    #[test]
+    fn narrow_rows_give_the_scalar_values() {
+        let mut seed = 11;
+        for w in [1, 2, 3, 17, 18, 19] {
+            let h = 6;
+            let mut src: Vec<f32> = (0..w * h).map(|_| (lcg(&mut seed) * 500.0) as f32).collect();
+            every_single_kernel(&src, w, h, None, &format!("width {w}"));
+            src[(h / 2) * w + w / 2] = f32::NAN;
+            every_single_kernel(&src, w, h, Some(f32::NAN), &format!("width {w} nodata"));
+        }
+    }
+
+    #[test]
+    fn row_kernels_give_the_scalar_values_around_nodata() {
+        let mut seed = 3;
+        // Also rows too narrow for a group of 4 or 16 windows, or just wide enough for one.
+        for ((w, h), nodata) in [(53, 40), (2, 9), (3, 9), (5, 9), (6, 9), (17, 9), (18, 9)]
+            .into_iter()
+            .flat_map(|size| [f32::NAN, -9999.0].map(|nd| (size, nd)))
+        {
+            let mut src: Vec<f32> = (0..w * h).map(|_| (lcg(&mut seed) * 500.0) as f32).collect();
+            // Scattered nodata, a run, and rows without any.
+            for (i, v) in src.iter_mut().enumerate() {
+                if (i / w) % 7 == 0 && lcg(&mut seed) < 0.05 {
+                    *v = nodata;
+                }
+            }
+            src[5 * w + w / 5..5 * w + w * 3 / 5].fill(nodata);
+            for edges in [false, true] {
+                let hs = HillshadeParams::new(&[0.0, 30.0, 0.0, 0.0, 0.0, -30.0], &DemOptions::default(), 1.0, 1.0);
+                let row = move |a: &[f32], b: &[f32], c: &[f32], o: &mut [f32], check: bool| same_res_row(&hs, a, b, c, o, check);
+                let f = move |v: &[f32; 9]| hs.same_res(v);
+                let fast = run_kernel(&src, w, h, Some(nodata), edges, &Kernel { f, multi: None::<WindowFn<f32>>, row: Some(row) });
+                // GDAL's SSE formula, one pixel at a time, on rows without nodata.
+                #[cfg(target_arch = "x86_64")]
+                let multi = Some(move |v: &[f32; 9]| {
+                    use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
+                    let (x, y) = HillshadeParams::same_res_acc(v);
+                    let num = hs.sin_alt_mul_254
+                        + hs.sin_az_mul_cos_alt_mul_z_mul_254_mul_inv_res * x
+                        + hs.cos_az_mul_cos_alt_mul_z_mul_254_mul_inv_res * y;
+                    let b = 1.0 + hs.square_z_mul_square_inv_res * (x * x + y * y);
+                    // SAFETY: SSE is part of the x86-64 baseline.
+                    let r = unsafe { _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(b as f32))) } as f64;
+                    let res = (num * (r * (1.5 - (b * 0.5) * (r * r)))) as f32 + 1.0;
+                    if 1.0 > res { 1.0 } else { res }
+                });
+                #[cfg(not(target_arch = "x86_64"))]
+                let multi = None::<WindowFn<f32>>;
+                let scalar = run_kernel(&src, w, h, Some(nodata), edges, &Kernel { f, multi, row: None::<RowFn<f32>> });
+                assert!(
+                    fast.iter().zip(&scalar).all(|(a, b)| a.to_bits() == b.to_bits()),
+                    "hillshade width {w}, nodata {nodata}, edges {edges}"
+                );
+            }
+        }
     }
 
     #[test]

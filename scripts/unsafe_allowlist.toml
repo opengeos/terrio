@@ -101,3 +101,8 @@ reason = "A worker's reference to the leaked thread channel, by its address"
 count = 2
 origin = "existing"
 reason = "The Arrow C stream and C data interfaces: arrays and streams moved out of PyCapsules"
+
+[files."crates/terrio/src/ops/window.rs"]
+count = 1
+origin = "added"
+reason = "avx2_rows!: a row loop's AVX2 copy called after is_x86_feature_detected!; the macro gives four row loops of ops/dem.rs and ops/neighbors.rs"
