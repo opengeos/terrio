@@ -2366,7 +2366,8 @@ mod content_allow_list_tests {
             let layers = v.layers.iter().map(|l| (l.name.clone(), l.features.len(), l.schema.fields().len())).collect::<Vec<_>>();
             (v.driver, layers)
         };
-        let expected = (VectorDriver::KMZ, vec![("points".to_string(), 2, 12), ("more".to_string(), 1, 12)]);
+        let fields = by_driver.layers[0].schema.fields().len();
+        let expected = (VectorDriver::KMZ, vec![("points".to_string(), 2, fields), ("more".to_string(), 1, fields)]);
         assert_eq!(summary(&by_fallback), expected);
         assert_eq!(summary(&by_fallback), summary(&by_driver));
         let features = |v: &VectorDataset| {
@@ -2377,6 +2378,24 @@ mod content_allow_list_tests {
         };
         assert_eq!(features(&by_fallback), features(&by_driver));
         assert_eq!(by_fallback.style_table, by_driver.style_table);
+        // The open options apply as for the `.kmz` read: a layer chosen, features skipped, a maximum.
+        let read_with = |path: &Path, options: &VectorOpenOptions| {
+            with(&[("TERRIO_WBVECTOR_FALLBACK", "YES")], || open_vector(path.to_str().unwrap(), options)).unwrap()
+        };
+        let chosen = |layers: &[&str], skip_features, max_features| VectorOpenOptions {
+            layers: layers.iter().map(|l| l.to_string()).collect(),
+            skip_features,
+            max_features,
+            ..Default::default()
+        };
+        for (options, layers) in [
+            (chosen(&["points"], 1, None), vec![("points".to_string(), 1, fields)]),
+            (chosen(&[], 0, Some(1)), vec![("points".to_string(), 1, fields), ("more".to_string(), 1, fields)]),
+        ] {
+            let (by_driver, by_fallback) = (read_with(&kmz, &options), read_with(&payload, &options));
+            assert_eq!(summary(&by_fallback), (VectorDriver::KMZ, layers), "{options:?}");
+            assert_eq!(features(&by_fallback), features(&by_driver), "{options:?}");
+        }
     }
 
     /// A member of [`raw_zip`]: its name, its bytes and its general purpose flags.
