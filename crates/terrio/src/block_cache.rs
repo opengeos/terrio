@@ -52,7 +52,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tiff::decoder::DecodingResult;
 
 /// The default size of the cache: 64 MiB.
@@ -111,24 +111,23 @@ fn default_max_bytes() -> u64 {
         .unwrap_or(DEFAULT_MAX_BYTES)
 }
 
-/// The size of the cache, read from the environment by the first use.
-fn max_cell() -> &'static AtomicU64 {
-    static MAX: OnceLock<AtomicU64> = OnceLock::new();
-    MAX.get_or_init(|| AtomicU64::new(default_max_bytes()))
-}
-
 /// The most bytes of decoded samples the cache holds (GDAL's `GDALGetCacheMax64`): from
 /// `TERRIO_CACHEMAX`, else `GDAL_CACHEMAX`, else 64 MiB, unless [`set_max_bytes`] changed it. 0
-/// means that nothing is cached.
+/// means that nothing is cached. The size lives in the cache, under its lock, which a fork holds;
+/// the environment is read outside the lock, and a size set meanwhile by [`set_max_bytes`] wins.
 pub fn max_bytes() -> u64 {
-    max_cell().load(Ordering::Relaxed)
+    if let Some(max) = cache().max {
+        return max;
+    }
+    let value = default_max_bytes();
+    *cache().max.get_or_insert(value)
 }
 
 /// Sets the most bytes of decoded samples the cache holds (GDAL's `GDALSetCacheMax64`). A smaller
-/// size evicts the least recently used chunks down to it; 0 drops them all and turns the cache off.
+/// size evicts the least recently used chunks down to it and gives back the memory of the readers'
+/// emptied tables; 0 drops them all and turns the cache off.
 pub fn set_max_bytes(bytes: u64) {
-    max_cell().store(bytes, Ordering::Relaxed);
-    cache().shrink(bytes);
+    cache().set_max(bytes);
 }
 
 /// Drops every cached chunk, giving their memory back. Readers decode the chunks they need again.
@@ -181,11 +180,22 @@ struct Cache {
     order: BTreeMap<u64, (u64, usize, u32)>,
     bytes: u64,
     tick: u64,
+    /// The most bytes held; `None` until it is read from the environment.
+    max: Option<u64>,
 }
 
 impl Cache {
     const fn new() -> Self {
-        Self { handles: BTreeMap::new(), order: BTreeMap::new(), bytes: 0, tick: 0 }
+        Self { handles: BTreeMap::new(), order: BTreeMap::new(), bytes: 0, tick: 0, max: None }
+    }
+
+    /// Sets the size, evicts down to it and gives back the spare memory of the tables that survive.
+    fn set_max(&mut self, bytes: u64) {
+        self.max = Some(bytes);
+        self.shrink(bytes);
+        for chunks in self.handles.values_mut() {
+            chunks.shrink_to_fit();
+        }
     }
 
     fn next_tick(&mut self) -> u64 {
@@ -233,7 +243,9 @@ impl Cache {
         }
     }
 
-    fn insert(&mut self, handle: u64, ifd: usize, chunk: u32, value: CachedChunk, max: u64) {
+    /// Stores a chunk within the size held by the cache; nothing when the size is not set yet.
+    fn insert(&mut self, handle: u64, ifd: usize, chunk: u32, value: CachedChunk) {
+        let Some(max) = self.max else { return };
         let cost = value.cost();
         if cost > max {
             return;
@@ -293,13 +305,14 @@ pub(crate) fn get(handle: u64, ifd: usize, chunk: u32) -> Option<Arc<CachedChunk
 }
 
 /// Caches a decoded chunk, evicting the least recently used ones to stay within [`max_bytes`]. A
-/// chunk larger than the cache is dropped.
+/// chunk larger than the cache is dropped. The size is read under the same lock that stores the
+/// chunk, so no insert follows a completed [`set_max_bytes`] with a stale size.
 pub(crate) fn insert(handle: u64, ifd: usize, chunk: u32, samples: DecodingResult, dims: (usize, usize)) {
-    let max = max_bytes();
-    if max == 0 {
+    // Reads the environment, if it was not yet, outside the lock.
+    if max_bytes() == 0 {
         return;
     }
-    cache().insert(handle, ifd, chunk, CachedChunk { samples, dims }, max);
+    cache().insert(handle, ifd, chunk, CachedChunk { samples, dims });
 }
 
 /// Drops the chunks of a reader that is closed.
@@ -362,59 +375,62 @@ pub(crate) mod tests {
         n + ENTRY_OVERHEAD
     }
 
-    /// The bytes the cache holds.
-    pub(crate) fn held_bytes() -> u64 {
-        cache().bytes
-    }
-
-    fn held() -> u64 {
-        held_bytes()
-    }
-
     fn first_byte(c: &CachedChunk) -> u8 {
         let DecodingResult::U8(v) = &c.samples else { panic!("not bytes") };
         v[0]
     }
 
+    /// A private cache of `max` bytes, apart from the process-wide one that other tests use.
+    fn private_cache(max: u64) -> Cache {
+        let mut c = Cache::new();
+        c.set_max(max);
+        c
+    }
+
+    /// Stores a chunk of `n` bytes, each `fill`, in a private cache.
+    fn put(c: &mut Cache, handle: u64, ifd: usize, index: u32, n: usize, fill: u8, dims: (usize, usize)) {
+        c.insert(handle, ifd, index, CachedChunk { samples: chunk(n, fill), dims });
+    }
+
     #[test]
     fn eviction_drops_the_least_recently_used_chunk_first() {
-        let _serial = cache_test_guard(3 * cost(100));
+        let mut c = private_cache(3 * cost(100));
         let h = new_handle();
         for i in 0..3u32 {
-            insert(h, 0, i, chunk(100, i as u8), (10, 10));
+            put(&mut c, h, 0, i, 100, i as u8, (10, 10));
         }
-        assert_eq!(held(), 3 * cost(100));
+        assert_eq!(c.bytes, 3 * cost(100));
         // Chunk 0 is the oldest, until it is used.
-        assert!(get(h, 0, 0).is_some());
-        insert(h, 0, 3, chunk(100, 3), (10, 10));
-        assert!(held() <= max_bytes());
-        assert!(get(h, 0, 1).is_none(), "chunk 1 was the least recently used");
-        assert!(get(h, 0, 0).is_some());
-        assert!(get(h, 0, 2).is_some());
-        assert!(get(h, 0, 3).is_some());
-        assert_eq!(first_byte(&get(h, 0, 2).unwrap()), 2);
-        assert_eq!(get(h, 0, 2).unwrap().dims, (10, 10));
+        assert!(c.get(h, 0, 0).is_some());
+        put(&mut c, h, 0, 3, 100, 3, (10, 10));
+        assert!(c.bytes <= 3 * cost(100));
+        assert!(c.get(h, 0, 1).is_none(), "chunk 1 was the least recently used");
+        assert!(c.get(h, 0, 0).is_some());
+        assert!(c.get(h, 0, 2).is_some());
+        assert!(c.get(h, 0, 3).is_some());
+        assert_eq!(first_byte(&c.get(h, 0, 2).unwrap()), 2);
+        assert_eq!(c.get(h, 0, 2).unwrap().dims, (10, 10));
     }
 
     #[test]
     fn the_total_never_passes_the_maximum() {
-        let _serial = cache_test_guard(1000);
+        let mut c = private_cache(1000);
         let h = new_handle();
         for i in 0..200u32 {
-            insert(h, 0, i, chunk(37 + (i as usize % 5) * 20, 0), (1, 1));
-            assert!(held() <= 1000);
+            put(&mut c, h, 0, i, 37 + (i as usize % 5) * 20, 0, (1, 1));
+            assert!(c.bytes <= 1000);
         }
-        assert!(held() > 0);
+        assert!(c.bytes > 0);
     }
 
     #[test]
     fn a_chunk_larger_than_the_maximum_is_not_stored() {
-        let _serial = cache_test_guard(cost(100));
+        let mut c = private_cache(cost(100));
         let h = new_handle();
-        insert(h, 0, 0, chunk(100, 1), (1, 1));
-        insert(h, 0, 1, chunk(101, 2), (1, 1));
-        assert!(get(h, 0, 1).is_none());
-        assert!(get(h, 0, 0).is_some(), "an oversized chunk evicts nothing");
+        put(&mut c, h, 0, 0, 100, 1, (1, 1));
+        put(&mut c, h, 0, 1, 101, 2, (1, 1));
+        assert!(c.get(h, 0, 1).is_none());
+        assert!(c.get(h, 0, 0).is_some(), "an oversized chunk evicts nothing");
     }
 
     #[test]
@@ -422,59 +438,61 @@ pub(crate) mod tests {
         let _serial = cache_test_guard(10_000);
         let h = new_handle();
         insert(h, 0, 0, chunk(100, 1), (1, 1));
-        assert!(held() > 0);
+        assert!(cache().bytes > 0);
         set_max_bytes(0);
-        assert_eq!(held(), 0);
+        assert_eq!(cache().bytes, 0);
         assert_eq!(max_bytes(), 0);
         insert(h, 0, 0, chunk(0, 1), (1, 1));
-        assert_eq!(held(), 0);
+        assert_eq!(cache().bytes, 0);
         assert!(get(h, 0, 0).is_none());
     }
 
     #[test]
     fn lowering_the_maximum_evicts_down_to_it() {
-        let _serial = cache_test_guard(10 * cost(100));
+        let mut c = private_cache(100 * cost(100));
         let h = new_handle();
-        for i in 0..10u32 {
-            insert(h, 0, i, chunk(100, 0), (1, 1));
+        for i in 0..100u32 {
+            put(&mut c, h, 0, i, 100, 0, (1, 1));
         }
-        set_max_bytes(2 * cost(100));
-        assert_eq!(held(), 2 * cost(100));
+        let before = c.handles[&h].capacity();
+        c.set_max(2 * cost(100));
+        assert_eq!(c.bytes, 2 * cost(100));
         // The most recent two are kept.
-        assert!(get(h, 0, 9).is_some() && get(h, 0, 8).is_some());
+        assert!(c.get(h, 0, 99).is_some() && c.get(h, 0, 98).is_some());
+        assert!(c.handles[&h].capacity() < before, "the reader's table gave memory back");
     }
 
     #[test]
     fn removing_a_handle_removes_only_its_chunks() {
-        let _serial = cache_test_guard(10_000);
+        let mut c = private_cache(10_000);
         let (a, b) = (new_handle(), new_handle());
-        insert(a, 0, 0, chunk(100, 1), (1, 1));
-        insert(a, 1, 0, chunk(100, 1), (1, 1));
-        insert(b, 0, 0, chunk(100, 2), (1, 1));
-        remove_handle(a);
-        assert!(get(a, 0, 0).is_none() && get(a, 1, 0).is_none());
-        assert_eq!(first_byte(&get(b, 0, 0).unwrap()), 2);
-        assert_eq!(held(), cost(100));
+        put(&mut c, a, 0, 0, 100, 1, (1, 1));
+        put(&mut c, a, 1, 0, 100, 1, (1, 1));
+        put(&mut c, b, 0, 0, 100, 2, (1, 1));
+        c.remove_handle(a);
+        assert!(c.get(a, 0, 0).is_none() && c.get(a, 1, 0).is_none());
+        assert_eq!(first_byte(&c.get(b, 0, 0).unwrap()), 2);
+        assert_eq!(c.bytes, cost(100));
     }
 
     #[test]
     fn clearing_drops_every_chunk() {
-        let _serial = cache_test_guard(10_000);
+        let mut c = private_cache(10_000);
         let h = new_handle();
-        insert(h, 0, 0, chunk(100, 1), (1, 1));
-        clear();
-        assert_eq!(held(), 0);
-        assert!(get(h, 0, 0).is_none());
+        put(&mut c, h, 0, 0, 100, 1, (1, 1));
+        c.clear();
+        assert_eq!(c.bytes, 0);
+        assert!(c.get(h, 0, 0).is_none());
     }
 
     #[test]
     fn inserting_a_chunk_again_replaces_it_without_double_counting() {
-        let _serial = cache_test_guard(10_000);
+        let mut c = private_cache(10_000);
         let h = new_handle();
-        insert(h, 0, 0, chunk(100, 1), (1, 1));
-        insert(h, 0, 0, chunk(50, 2), (1, 1));
-        assert_eq!(held(), cost(50));
-        assert_eq!(first_byte(&get(h, 0, 0).unwrap()), 2);
+        put(&mut c, h, 0, 0, 100, 1, (1, 1));
+        put(&mut c, h, 0, 0, 50, 2, (1, 1));
+        assert_eq!(c.bytes, cost(50));
+        assert_eq!(first_byte(&c.get(h, 0, 0).unwrap()), 2);
     }
 
     #[test]
