@@ -2777,6 +2777,7 @@ mod tests {
             .collect()
     }
 
+    /// A window of `bands` read as `f64`, band after band.
     fn read_f64(r: &mut LazyRaster, w: Window, bands: &[usize], overview: Option<usize>) -> Vec<f64> {
         r.read_window(w, &WindowOptions { bands: bands.to_vec(), overview }).unwrap().raster.data.to_f64_vec()
     }

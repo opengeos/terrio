@@ -194,6 +194,7 @@ struct Cache {
 }
 
 impl Cache {
+    /// An empty cache whose size is not read yet.
     const fn new() -> Self {
         Self { handles: BTreeMap::new(), order: BTreeMap::new(), bytes: 0, tick: 0, max: None }
     }
@@ -207,11 +208,13 @@ impl Cache {
         }
     }
 
+    /// The next tick of the order of use.
     fn next_tick(&mut self) -> u64 {
         self.tick += 1;
         self.tick
     }
 
+    /// A chunk, marked as the most recently used.
     fn get(&mut self, handle: u64, ifd: usize, chunk: u32) -> Option<Arc<CachedChunk>> {
         let tick = self.next_tick();
         let entry = self.handles.get_mut(&handle)?.get_mut(&(ifd, chunk))?;
@@ -222,6 +225,7 @@ impl Cache {
         Some(found)
     }
 
+    /// Drops a chunk, if it is cached, and its reader's table once it is empty.
     fn remove(&mut self, handle: u64, ifd: usize, chunk: u32) {
         let Some(chunks) = self.handles.get_mut(&handle) else { return };
         if let Some(entry) = chunks.remove(&(ifd, chunk)) {
@@ -260,6 +264,7 @@ impl Cache {
         self.handles.entry(handle).or_default().insert((ifd, chunk), Entry { chunk: Arc::new(value), cost, tick });
     }
 
+    /// Drops every chunk of a reader.
     fn remove_handle(&mut self, handle: u64) {
         if let Some(chunks) = self.handles.remove(&handle) {
             for entry in chunks.into_values() {
@@ -269,6 +274,7 @@ impl Cache {
         }
     }
 
+    /// Drops every chunk.
     fn clear(&mut self) {
         self.handles.clear();
         self.order.clear();
@@ -377,6 +383,7 @@ pub(crate) mod tests {
         n + ENTRY_OVERHEAD
     }
 
+    /// The first sample of a chunk of bytes.
     fn first_byte(c: &CachedChunk) -> u8 {
         let DecodingResult::U8(v) = &c.samples else { panic!("not bytes") };
         v[0]
