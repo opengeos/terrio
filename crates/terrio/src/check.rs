@@ -180,7 +180,7 @@ fn check_decoded(dataset: crate::Dataset, options: &CheckOptions) -> Result<Chec
 /// Reads all exposed content of a native dataset. Stream-capable vector readers
 /// use batches; other readers may materialize. Scientific groups include all
 /// numeric arrays rather than just the default raster variable.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub fn check_path(path: &str, options: &CheckOptions) -> Result<CheckSummary> {
     use crate::formats::Kind;
     if ["NETCDF:", "HDF5:", "ZARR:", "GPKG:", "GDAL:"]
@@ -254,7 +254,7 @@ pub fn check_path(path: &str, options: &CheckOptions) -> Result<CheckSummary> {
     })
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 fn check_vector_path(path: &str) -> Result<CheckSummary> {
     let mut summary = CheckSummary::default();
     for mut reader in crate::stream::open_layers(path, &Default::default(), 4096)? {

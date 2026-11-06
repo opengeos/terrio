@@ -4,7 +4,7 @@
 // No code is translated from these sources.
 
 //! Dataset identification from bounded headers, with explicit deeper inspection.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 use crate::Result;
 use crate::formats::{Kind, RasterDriver, VectorDriver};
 use serde::Serialize;
@@ -338,13 +338,13 @@ pub(crate) fn root_json_type(text: &str) -> Option<String> {
 /// Identifies a local/HTTP/S3 dataset from a bounded header. `deep` permits
 /// existing dataset readers as a fallback for formats requiring companion files.
 /// Those fallback readers may materialize formats without lazy metadata support.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub fn identify(path: &str, deep: bool) -> Result<Option<Identification>> {
     Ok(judged(identify_unjudged(path, deep)?))
 }
 /// [`identify`] whatever the allow-list says (for the content check, which then opens
 /// with the openers, each judging the list; the deeper fallback's opens judge it too).
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub(crate) fn identify_unjudged(path: &str, deep: bool) -> Result<Option<Identification>> {
     use std::io::Read;
     if let Some(target) = crate::drivers::vector::wfs::service_target(path) {
@@ -477,7 +477,7 @@ impl IdentifyRecord {
 /// Recognized directories are emitted once and skipped unless force-recursive
 /// scanning is requested. Directory symlinks are never followed during traversal.
 /// Remote inputs are individual objects; remote directory traversal is not supported.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub fn identify_many(paths: &[String], options: &IdentifyOptions) -> Vec<IdentifyRecord> {
     use std::collections::BTreeSet;
     let mut pending: Vec<_> = paths.iter().rev().map(|path| (path.clone(), false)).collect();

@@ -1242,7 +1242,7 @@ pub fn read(path: &str) -> Result<Vec<u8>> {
 /// Reads a file with a hard limit on retained bytes, stopping a streamed source
 /// as soon as the next write would exceed the limit. Archive members are bounded
 /// after decompression. Transport errors are preserved unless the limit fired.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub(crate) fn read_limited(path: &str, limit: usize) -> Result<Vec<u8>> {
     struct Bounded {
         bytes: Vec<u8>,
@@ -1333,7 +1333,8 @@ pub(crate) fn write_local_atomic_with_replace(
     replace: bool,
     fill: impl FnOnce(&mut std::fs::File) -> Result<()>,
 ) -> Result<()> {
-    if cfg!(target_family = "wasm") {
+    // WASI (the browser build of the command line) has files; WebAssembly in a browser does not.
+    if !cfg!(fs) {
         return Err(Error::Unsupported(format!("'{}': WebAssembly builds have no local files (use /vsimem/)", path.display())));
     }
     let resolved = match std::fs::symlink_metadata(path) {
@@ -1357,7 +1358,7 @@ pub(crate) fn write_local_atomic_with_replace(
     };
     let mut n = 0u32;
     let (tmp, mut file) = loop {
-        let tmp = dir.join(format!(".terrio-partial-{}-{n}", std::process::id()));
+        let tmp = dir.join(format!(".terrio-partial-{}-{n}", crate::process_id()));
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
             Ok(f) => break (tmp, f),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 1000 => n += 1,
@@ -1365,9 +1366,13 @@ pub(crate) fn write_local_atomic_with_replace(
         }
     };
     let result = fill(&mut file).and_then(|()| {
+        // WASI has no permissions to keep.
+        #[cfg(not(target_os = "wasi"))]
         if let Some(permissions) = permissions {
             file.set_permissions(permissions)?;
         }
+        #[cfg(target_os = "wasi")]
+        let _ = permissions;
         Ok(file.sync_all()?)
     });
     drop(file);

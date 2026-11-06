@@ -337,7 +337,7 @@ impl VrtDataset {
     }
 
     /// Writes the VRT file.
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(fs)]
     pub fn write(&self, path: &str) -> Result<()> {
         Ok(std::fs::write(path, self.to_xml())?)
     }
