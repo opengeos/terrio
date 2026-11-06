@@ -3809,7 +3809,9 @@ test("ZonalReducer gives zonalStats' results for arrays supplied window by windo
   let seed = 7;
   const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
   const values = Array.from({length: width * height}, () => (next() < 0.1 ? null : Math.floor(next() * 40)));
-  for (const [Type, nodata] of [[Uint16Array, 0], [Uint16Array, undefined], [Int16Array, 0], [Float32Array, NaN], [Float64Array, NaN]]) {
+  // 8-bit zones of 256 pixels or more are counted in histograms.
+  const types = [[Uint8Array, 0], [Int8Array, 0], [Uint16Array, 0], [Uint16Array, undefined], [Int16Array, 0], [Float32Array, NaN], [Float64Array, NaN]];
+  for (const [Type, nodata] of types) {
     const data = Type.from(values, (v) => (v === null ? (Number.isNaN(nodata) ? NaN : 0) : v));
     const raster = terrio.rasterFromArray(data, width, height, transform, "EPSG:4326", nodata);
     for (const mode of [{}, {allTouched: true}, {fractional: true}]) {
