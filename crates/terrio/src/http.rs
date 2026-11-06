@@ -2706,6 +2706,35 @@ mod tests {
         });
     }
 
+    /// A remote file's reader and an object fetcher made before a fork send the child's requests
+    /// over a connection of the child's own, not over the warm one they hold from the parent; the
+    /// parent's requests keep that one.
+    #[test]
+    #[cfg(unix)]
+    fn clients_made_before_a_fork_use_connections_of_the_childs_own() {
+        crate::par::alone(60, || {
+            let (url, connections) = serve_keep_alive(test_data());
+            let count = || connections.load(Ordering::SeqCst);
+            let mut reader = RangeReader::open_with(&Remote::Url(format!("{url}reader.bin")), options()).unwrap();
+            let fetcher = ObjectFetcher::new();
+            let object = Remote::Url(format!("{url}object.bin"));
+            let fetch = |at: usize| {
+                fetcher.get(&object, ByteRange::At(at as u64, 100)).ok().flatten().as_deref() == Some(&test_data()[at..at + 100])
+            };
+            assert!(fetch(0));
+            assert_eq!(read_range(&mut reader, 0, 100), test_data()[..100]);
+            let warm = count();
+            // Each child makes one request through one of the two; the parent then makes one more.
+            assert_eq!(crate::par::in_child(10, || read_range(&mut reader, 100_000, 100) == test_data()[100_000..100_100]), Some(0));
+            assert_eq!(count(), warm + 1, "the reader's request in the child opened a connection of its own");
+            assert_eq!(read_range(&mut reader, 200_000, 100), test_data()[200_000..200_100]);
+            assert_eq!(count(), warm + 1, "the parent's request kept its connection");
+            assert_eq!(crate::par::in_child(10, || fetch(1000)), Some(0));
+            assert_eq!(count(), warm + 2, "the fetcher's request in the child opened a connection of its own");
+            fetch(2000) && count() == warm + 2
+        });
+    }
+
     #[test]
     fn server_without_ranges_downloads_once() {
         // At most ten times the first range (4096 bytes), as GDAL accepts.
@@ -3029,7 +3058,7 @@ mod tests {
         assert_eq!(get(2, Some("http://proxy:3128"), Some(Duration::from_secs(5))), 4);
     }
 
-    /// A client or fetcher made before a fork sends its requests through the child's agent.
+    /// `agent_in` keeps an agent made in this process and replaces one from another (a fork).
     #[test]
     fn an_agent_from_another_process_is_replaced() {
         let made = new_agent(&HttpOptions::default());

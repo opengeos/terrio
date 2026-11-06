@@ -13,8 +13,9 @@
   without the horizontal predictor) or Float32 or Float64 without a predictor. YCbCr and WhiteIsZero
   images, Float16 and complex samples, and RGB or CMYK images whose extra samples the `tiff` crate
   misreads keep their previous decoders. A stream ending before the chunk's samples, or with a wrong
-  Adler-32, is an error; one cut in its trailer after the samples is read, as libtiff with zlib
-  reads it. All 121 tiles of a Sentinel-2 L2A band decode as the `tiff` crate decodes them.
+  Adler-32 right after them, is an error; one cut in its trailer after the samples is read, as
+  libtiff with zlib reads it. All 121 tiles of a Sentinel-2 L2A band decode as the `tiff` crate
+  decodes them.
 - A zero-length numeric, enum or compound attribute of a multidimensional dataset is `null`, as
   GDAL 3.13.3's `gdalmdiminfo` prints it, where it was an empty list `[]`, in Rust, Python,
   JavaScript and CLI results and in Zarr copies. A zero-length string attribute stays `[]`. A

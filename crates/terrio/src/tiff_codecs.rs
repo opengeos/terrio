@@ -471,10 +471,11 @@ impl ChunkCodec {
 
     /// Inflates a Deflate chunk of `h` rows of `w` pixels straight into the result,
     /// and undoes its horizontal predictor; a chunk with padding (an edge tile) is then cut to its
-    /// `dw` x `dh` image data. A stream ending before the chunk's samples, or with a wrong Adler-32,
-    /// is an error; one cut in its trailer after the samples is accepted, as libtiff 4.5's zlib
-    /// decoder accepts it (libtiff built with libdeflate, as GDAL 3.8.4's reference build here,
-    /// refuses it).
+    /// `dw` x `dh` image data. A stream ending before the chunk's samples is an error, and so is a
+    /// wrong Adler-32 right after them; one cut in its trailer after the samples is accepted, as
+    /// libtiff 4.5's zlib decoder accepts it (libtiff built with libdeflate, as GDAL 3.8.4's
+    /// reference build here, refuses it), and a stream going on past the samples is accepted, its
+    /// Adler-32 unchecked, as libtiff's zlib decoder stops once the samples are out.
     fn deflate(&self, raw: &[u8], w: usize, h: usize, dw: usize, dh: usize) -> TiffResult<DecodingResult> {
         let what = "a TIFF chunk";
         let len = fallible::len(&[w, h, self.spp], what)?;
@@ -488,8 +489,9 @@ impl ChunkCodec {
         }
         let mut res = zeros!(U8: 0, I8: 0, U16: 0, I16: 0, U32: 0, I32: 0, U64: 0, I64: 0, F32: 0.0, F64: 0.0);
         // fdeflate: 15% faster than zlib-rs on Sentinel-2 tiles (1024 x 1024 uint16), pure Rust.
-        // Read on after the output is full, so a present Adler-32 is checked; a stream cut in its
-        // trailer then reads no more and is accepted, as libtiff's zlib decoder accepts it.
+        // Read on after the output is full, so an Adler-32 right after the samples is checked; a
+        // stream cut in its trailer then reads no more and is accepted, as libtiff's zlib decoder
+        // accepts it.
         {
             let mut z = fdeflate::Decompressor::new();
             let mut buf = res.as_buffer(0);
@@ -1186,40 +1188,54 @@ mod tests {
         b
     }
 
-    /// Deflate chunks inflated here give what the `tiff` crate gives: 16-bit gray and 8-bit RGB,
-    /// with and without the horizontal predictor, the last strip shorter than the others.
+    /// Deflate chunks inflated here give what the `tiff` crate gives, for every sample type
+    /// inflated here: integers of 8 to 64 bits, signed or not, with and without the horizontal
+    /// predictor, Float32 and Float64 without it, and RGB of 8, 16 and 64 bits (the predictor over
+    /// several samples a pixel); the last strip shorter than the others.
     #[test]
     fn deflate_chunks_decode_as_the_tiff_crate_decodes_them() {
         use tiff::encoder::{Compression, DeflateLevel, TiffEncoder, colortype};
         use tiff::tags::Predictor;
         let (w, h) = (37u32, 23u32);
-        let gray: Vec<u16> = (0..w * h).map(|i| (i.wrapping_mul(2654435761) >> 17) as u16).collect();
-        let rgb: Vec<u8> = (0..w * h * 3).map(|i| (i.wrapping_mul(40503) >> 7) as u8).collect();
-        for predictor in [Predictor::None, Predictor::Horizontal] {
-            for gray_image in [true, false] {
-                let mut b = std::io::Cursor::new(Vec::new());
-                let mut enc =
-                    TiffEncoder::new(&mut b).unwrap().with_compression(Compression::Deflate(DeflateLevel::Fast)).with_predictor(predictor);
-                if gray_image {
-                    let mut img = enc.new_image::<colortype::Gray16>(w, h).unwrap();
+        let both = [Predictor::None, Predictor::Horizontal];
+        macro_rules! case {
+            ($ct:ident, $t:ty, $channels:expr, $predictors:expr) => {
+                // Every byte of every sample set: a 64-bit multiplicative hash.
+                let data: Vec<$t> = (0..u64::from(w * h * $channels)).map(|i| (i.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 1) as $t).collect();
+                for predictor in $predictors {
+                    let mut b = std::io::Cursor::new(Vec::new());
+                    let mut enc = TiffEncoder::new(&mut b)
+                        .unwrap()
+                        .with_compression(Compression::Deflate(DeflateLevel::Fast))
+                        .with_predictor(predictor);
+                    let mut img = enc.new_image::<colortype::$ct>(w, h).unwrap();
                     img.rows_per_strip(5).unwrap();
-                    img.write_data(&gray).unwrap();
-                } else {
-                    let mut img = enc.new_image::<colortype::RGB8>(w, h).unwrap();
-                    img.rows_per_strip(5).unwrap();
-                    img.write_data(&rgb).unwrap();
+                    img.write_data(&data).unwrap();
+                    let file = b.into_inner();
+                    let mut dec = Decoder::new(std::io::Cursor::new(&file)).unwrap();
+                    let codec = ChunkCodec::new(&mut dec, usize::MAX, None).unwrap().expect("Deflate is inflated here");
+                    assert_eq!(codec.codec, Codec::Deflate);
+                    for idx in 0..dec.strip_count().unwrap() {
+                        let ours = codec.read(&mut dec, idx).unwrap();
+                        let crate_ = dec.read_chunk(idx).unwrap();
+                        assert_eq!(format!("{ours:?}"), format!("{crate_:?}"), "strip {idx}, {}, {predictor:?}", stringify!($ct));
+                    }
                 }
-                let file = b.into_inner();
-                let mut dec = Decoder::new(std::io::Cursor::new(&file)).unwrap();
-                let codec = ChunkCodec::new(&mut dec, usize::MAX, None).unwrap().expect("Deflate is inflated here");
-                assert_eq!(codec.codec, Codec::Deflate);
-                for idx in 0..dec.strip_count().unwrap() {
-                    let ours = codec.read(&mut dec, idx).unwrap();
-                    let crate_ = dec.read_chunk(idx).unwrap();
-                    assert_eq!(format!("{ours:?}"), format!("{crate_:?}"), "strip {idx}, {predictor:?}, gray {gray_image}");
-                }
-            }
+            };
         }
+        case!(Gray8, u8, 1, both);
+        case!(GrayI8, i8, 1, both);
+        case!(Gray16, u16, 1, both);
+        case!(GrayI16, i16, 1, both);
+        case!(Gray32, u32, 1, both);
+        case!(GrayI32, i32, 1, both);
+        case!(Gray64, u64, 1, both);
+        case!(GrayI64, i64, 1, both);
+        case!(Gray32Float, f32, 1, [Predictor::None]);
+        case!(Gray64Float, f64, 1, [Predictor::None]);
+        case!(RGB8, u8, 3, both);
+        case!(RGB16, u16, 3, both);
+        case!(RGB64, u64, 3, both);
     }
 
     /// A chunk's byte count from the header is not allocated before the file backs it: a corrupt
