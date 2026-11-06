@@ -27,8 +27,9 @@ class RasterTileComparisonTests(unittest.TestCase):
         for root in [self.reference, self.actual]:
             gdal.Translate(str(root / 'a.png'), str(self.reference / 'a.tif'), format='PNG')
         with patch.object(comparison, 'compare_direct_pyramid', return_value='direct source verified') as direct:
-            self.assertEqual(comparison.compare_pyramid(None, self.reference, self.actual, None, None)[0], 'identical')
-            direct.assert_called_once_with(None, None, None)
+            source, direct_actual, plan = object(), object(), object()
+            self.assertEqual(comparison.compare_pyramid(source, self.reference, self.actual, direct_actual, plan)[0], 'identical')
+            direct.assert_called_once_with(source, direct_actual, plan)
             gdal.Translate(str(self.actual / 'a.png'), str(self.actual / 'a.tif'), format='PNG')
             with self.assertRaises(comparison.PixelDifference):
                 comparison.compare_pyramid(None, self.reference, self.actual, None, None)

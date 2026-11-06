@@ -11,8 +11,10 @@
   exceeds the pixel-buffer budget", now gives its 5390 WebMercatorQuad tiles of zooms 0 to 14.
   With nearest resampling the pyramid equals GDAL 3.13.3's (a raster grid and six reprojected
   WebMercatorQuad zooms); with bilinear, lower zooms differ from GDAL's by a few levels on some
-  pixels. `--overview-source source` (`overview_source`, `overviewSource`) keeps the previous
-  rendering from the source. `--resume` rebuilds a missing parent from the existing tiles below it.
+  pixels. This changes the default output of lower zooms with interpolating kernels (bilinear,
+  cubic, etc.), which are now resampled from the 8-bit or typed tiles below them;
+  `--overview-source source` (`overview_source`, `overviewSource`) keeps the previous rendering
+  from the source. `--resume` rebuilds a missing parent from the existing tiles below it.
 - `terrio tile --format WEBP` writes lossless WebP directory tiles (gray tiles as RGB), equal in
   pixels to the PNG tiles; Leaflet and OpenLayers viewers accept them.
 - GeoTIFF and COG writers compress Deflate chunks with a pure-Rust port of libdeflate 1.26's

@@ -64,6 +64,10 @@ def test_lower_zooms_from_tiles_or_source_and_webp_validity(tmp_path):
         # Zoom 2 is the source; the hole's pixels are transparent and the rest opaque.
         np.testing.assert_array_equal(tiles["2/0/0"][:3, 1, :], array[:, 1, :2])
         np.testing.assert_array_equal(tiles["2/0/0"][3], [[0, 0], [0, 0]])
+        np.testing.assert_array_equal(tiles["2/3/3"], array[:, 6:8, 6:8])  # opaque: no alpha band
+        # Zoom 1 averages 2 x 2 source blocks.
+        blocks = array[:, 4:8, 4:8].reshape(3, 2, 2, 2, 2).mean(axis=(2, 4))
+        np.testing.assert_allclose(tiles["1/1/1"], blocks, atol=1)
         # The zoom-0 tile is 2 x 2 pixels of 4 x 4 blocks: the top-left one is half hole.
         root = tiles["0/0/0"]
         assert root.shape == (4, 2, 2)

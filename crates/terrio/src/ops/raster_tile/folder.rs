@@ -293,6 +293,13 @@ fn image_format(extension: &str) -> bool {
     matches!(extension, "png" | "webp")
 }
 
+/// Whether an image tile's last (alpha) band is entirely opaque, so PNG can omit it.
+fn is_opaque(tile: &RasterDataset) -> bool {
+    let n = tile.raster.cols * tile.raster.rows;
+    let bands = tile.raster.bands;
+    (0..n).all(|i| tile.raster.data.get_f64((bands - 1) * n + i) == 255.0)
+}
+
 /// Rendering choices shared by every tile of one generation.
 struct Settings<'a> {
     options: &'a TileOptions,
@@ -496,11 +503,7 @@ impl Generator<'_, '_> {
         let tile = &rendered.tile;
         // GDAL omits an automatically generated alpha channel on fully opaque tiles.
         let opaque;
-        let encoded = if s.extension == "png" && s.options.alpha.is_none() && !self.publication.fixed_alpha() && {
-            let n = tile.raster.cols * tile.raster.rows;
-            let bands = tile.raster.bands;
-            (0..n).all(|i| tile.raster.data.get_f64((bands - 1) * n + i) == 255.0)
-        } {
+        let encoded = if s.extension == "png" && s.options.alpha.is_none() && !self.publication.fixed_alpha() && is_opaque(tile) {
             let n = tile.raster.cols * tile.raster.rows;
             let bands = tile.raster.bands;
             let data = RasterData::U8((0..n * (bands - 1)).map(|i| tile.raster.data.get_f64(i) as u8).collect());
@@ -565,7 +568,11 @@ impl WarpSource for MosaicSource {
     }
     fn read_mask(&mut self, window: Window, _overview: Option<usize>) -> Result<Option<Vec<u8>>> {
         let Some(mask) = &self.mask else { return Ok(None) };
-        let width = self.raster.header().raster.cols;
+        let header = self.raster.header();
+        if !window.fits(header.raster.cols, header.raster.rows) {
+            return Err(invalid("mask window outside the child-tile mosaic"));
+        }
+        let width = header.raster.cols;
         Ok(Some((window.y..window.y + window.height).flat_map(|y| mask[y * width + window.x..][..window.width].iter().copied()).collect()))
     }
     fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {
@@ -1491,6 +1498,16 @@ mod tests {
         rgb.publication.kml = true;
         assert!(plan(&dataset, &rgb).unwrap_err().to_string().contains("KML"));
         rgb.publication.kml = false;
+        // STACTA needs one band count, which WebP's opaque-alpha omission does not keep.
+        rgb.publication.viewers = vec!["stac".into()];
+        assert!(plan(&dataset, &rgb).is_err());
+        rgb.publication.viewers = vec!["all".into()];
+        let mut sink = Collect::default();
+        generate(&mut source(), &rgb, &mut sink).unwrap();
+        assert!(!sink.0.contains_key("stacta.json"));
+        let page = String::from_utf8(sink.0["openlayers.html"].clone()).unwrap();
+        assert!(page.contains(".webp"));
+        rgb.publication.viewers.clear();
         rgb.format = "jpeg".into();
         assert!(plan(&dataset, &rgb).is_err());
     }
