@@ -1094,9 +1094,10 @@ fn is_wbvector_kmz(path: &str) -> bool {
 }
 
 /// The layer of a KMZ archive the `wbvector` fallback found, from the member the KMZ driver reads:
-/// its first `doc.kml` in any case, else its first `.kml` member, decoded as the KMZ driver decodes
-/// it (UTF-8, else Latin-1) and read with `wbvector`'s KML reader. terrio opens the archive:
-/// `wbvector` is built without its own KMZ reader, whose `zip` 0.6 has known advisories.
+/// its first member named `doc.kml` (in any case) at the archive's root, else its first `.kml`
+/// member, decoded as the KMZ driver decodes it (UTF-8, else Latin-1) and read with `wbvector`'s
+/// KML reader. terrio opens the archive: `wbvector` is built without its own KMZ reader, whose
+/// `zip` 0.6 has known advisories.
 fn read_wbvector_kmz(path: &str) -> Result<Layer> {
     use std::io::Read;
     let kmz = |message: String| Error::from(wbvector::GeoError::Kmz(message));
@@ -2380,11 +2381,11 @@ mod content_allow_list_tests {
     }
 
     /// With `TERRIO_WBVECTOR_FALLBACK=YES`, a zip archive named for no driver is read from the
-    /// member the KMZ driver reads from the same archive named `.kmz`: its first `doc.kml` in any
-    /// case, else its first `.kml` member. An archive with two `doc.kml` members reads the last
-    /// one (zip keeps one entry per name, the last), and a member that cannot be opened (encrypted)
-    /// stops the read only if it is the one read. The document is decoded as the KMZ driver decodes
-    /// it: Latin-1 when it is not UTF-8.
+    /// member the KMZ driver reads from the same archive named `.kmz`: its first member named
+    /// `doc.kml` (in any case) at the archive's root, else its first `.kml` member. An archive with
+    /// two `doc.kml` members reads the last one (zip keeps one entry per name, the last), and a
+    /// member that cannot be opened (encrypted) stops the read only if it is the one read. The
+    /// document is decoded as the KMZ driver decodes it: Latin-1 when it is not UTF-8.
     #[cfg(not(feature = "gdal"))]
     #[test]
     fn the_wbvector_fallback_reads_the_kmz_member_the_kmz_driver_reads() {
@@ -2397,10 +2398,11 @@ mod content_allow_list_tests {
         // A document in Latin-1 (é is the byte 0xE9), not UTF-8.
         let latin1: Vec<u8> =
             format!(r#"<?xml version="1.0" encoding="ISO-8859-1"?>{}"#, kml("caf\u{e9}")).chars().map(|c| c as u8).collect();
-        let cases: [(&str, &[Member], &str); 6] = [
+        let cases: [(&str, &[Member], &str); 7] = [
             ("twice", &[("doc.kml", first, 0), ("doc.kml", last, 0)], "last"),
             ("cases", &[("DOC.KML", upper, 0), ("doc.kml", last, 0)], "upper"),
             ("no_doc", &[("notes.txt", b"-", 0), ("b.kml", b, 0), ("a.kml", a, 0)], "b"),
+            ("nested", &[("b.kml", b, 0), ("files/doc.kml", a, 0)], "b"),
             ("locked_before", &[("secret.txt", b"-", 1), ("doc.kml", last, 0)], "last"),
             ("locked_after", &[("doc.kml", last, 0), ("secret.txt", b"-", 1)], "last"),
             ("latin1", &[("doc.kml", &latin1, 0)], "caf\u{e9}"),
