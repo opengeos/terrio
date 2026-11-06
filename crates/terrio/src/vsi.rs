@@ -1242,7 +1242,7 @@ pub fn read(path: &str) -> Result<Vec<u8>> {
 /// Reads a file with a hard limit on retained bytes, stopping a streamed source
 /// as soon as the next write would exceed the limit. Archive members are bounded
 /// after decompression. Transport errors are preserved unless the limit fired.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub(crate) fn read_limited(path: &str, limit: usize) -> Result<Vec<u8>> {
     struct Bounded {
         bytes: Vec<u8>,

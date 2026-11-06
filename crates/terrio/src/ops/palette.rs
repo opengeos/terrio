@@ -284,7 +284,7 @@ pub fn color_table_from_bytes(bytes: Vec<u8>, filename: &str) -> Result<Vec<[u8;
     color_table(&source.header())
 }
 /// Loads a native/VSI raster palette or indexed text/QGIS color file.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub fn read_color_table(path: &str) -> Result<Vec<[u8; 4]>> {
     let ext = crate::formats::extension(path).unwrap_or_default();
     if ["txt", "qml", "qlr", "cpt", "pal", "csv", "xml"].contains(&ext.as_str()) {
@@ -301,7 +301,7 @@ pub fn read_color_table(path: &str) -> Result<Vec<[u8; 4]>> {
     color_table(&source.header())
 }
 /// Native files supplying a color table, including raster sidecars.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub fn color_table_files(path: &str) -> Result<Vec<String>> {
     let mut files = vec![path.to_string()];
     let ext = crate::formats::extension(path).unwrap_or_default();
@@ -466,7 +466,7 @@ pub fn attach_palette_lazy(source: &mut crate::LazyRaster, table: &[[u8; 4]]) ->
     convert_with_mask(source, |dataset| attach_palette(dataset, table))
 }
 /// Checks supported output locations, replacement and native aliases of known inputs.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub fn check_output(path: &str, sources: &[&str], overwrite: bool) -> Result<()> {
     crate::dataset::ensure_writable_location(path)?;
     let output = std::path::Path::new(path);

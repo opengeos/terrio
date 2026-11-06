@@ -1,0 +1,132 @@
+// SPDX-License-Identifier: MIT
+// The browser build of the command line on its WASI layer (web/wasi.js), run in Node.js:
+//   TERRIO_WASM=target/wasm32-wasip1/debug/terrio.wasm node --test web/tests/runtime.test.mjs
+// Remote files are served by a stand-in for the browser's synchronous XMLHttpRequest.
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import { MemDir, MemFile, RemoteDir, RemoteFile, Wasi, httpStats } from "../wasi.js";
+
+const wasmPath = process.env.TERRIO_WASM;
+const module = wasmPath ? new WebAssembly.Module(readFileSync(wasmPath)) : null;
+const fixture = new URL("../../crates/terrio/tests/data/user_crs/robin.tif", import.meta.url);
+
+/** Runs `terrio ...args` over `root`, returning the exit status and the output. */
+function terrio(root, ...args) {
+  const out = { stdout: "", stderr: "" };
+  const decoder = new TextDecoder();
+  const sink = { stdout: (b) => (out.stdout += decoder.decode(b)), stderr: (b) => (out.stderr += decoder.decode(b)) };
+  const wasi = new Wasi(root, ["terrio", ...args], sink);
+  const code = wasi.run(new WebAssembly.Instance(module, { wasi_snapshot_preview1: wasi.imports }));
+  return { code, ...out };
+}
+
+/** Serves `files` (URL -> bytes) as a server would: `mode` is "ranges", "no-ranges" or "gzip". */
+function serve(files, mode = "ranges") {
+  const log = [];
+  globalThis.XMLHttpRequest = class {
+    open(method, url) { this.method = method; this.url = url; this.headers = {}; }
+    setRequestHeader(name, value) { this.headers[name] = value; }
+    getResponseHeader(name) { return name === "Content-Length" ? this.length : null; }
+    send() {
+      const body = files[this.url];
+      log.push({ method: this.method, url: this.url, range: this.headers.Range });
+      if (!body) { this.status = 404; this.response = new ArrayBuffer(0); this.length = "0"; return; }
+      // A compressed response: its length and ranges count compressed bytes (here, two thirds).
+      const size = mode === "gzip" ? Math.floor((body.length * 2) / 3) : body.length;
+      this.length = String(size);
+      if (this.method === "HEAD") { this.status = 200; this.response = null; return; }
+      const m = /^bytes=(\d+)-(\d+)$/.exec(this.headers.Range || "");
+      if (!m || mode === "no-ranges") { this.status = 200; this.response = body.slice().buffer; return; }
+      const start = Number(m[1]), end = Math.min(size, Number(m[2]) + 1);
+      this.status = 206;
+      // Decoding a piece of a compressed stream does not give back as many bytes as were asked for.
+      this.response = body.slice(start, mode === "gzip" ? end - 1 : end).buffer;
+    }
+  };
+  return log;
+}
+
+const big = Uint8Array.from({ length: 3 * 1024 * 1024 + 17 }, (_, i) => (i * 7) & 255);
+
+test("a remote file is read by ranges, fetching each block once", () => {
+  const log = serve({ "https://example.com/big.bin": big });
+  const file = RemoteFile.probe("https://example.com/big.bin");
+  assert.equal(file.size, big.length);
+  assert.equal(file.whole, null);
+  const at = 2 * 1024 * 1024 + 5;
+  assert.deepEqual(file.read(at, 1000), big.subarray(at, at + 1000));
+  const requests = log.length;
+  assert.deepEqual(file.read(at + 10, 10), big.subarray(at + 10, at + 20));
+  assert.equal(log.length, requests, "a cached block is not fetched again");
+  // Across blocks, and past the end.
+  assert.deepEqual(file.read(500 * 1024, 700 * 1024), big.subarray(500 * 1024, 1200 * 1024));
+  assert.deepEqual(file.read(big.length - 5, 100), big.subarray(big.length - 5));
+});
+
+test("a server that ignores ranges, or compresses, gives the whole file", () => {
+  for (const mode of ["no-ranges", "gzip"]) {
+    serve({ "https://example.com/big.bin": big }, mode);
+    const file = RemoteFile.probe("https://example.com/big.bin");
+    assert.equal(file.size, big.length, mode);
+    assert.ok(file.whole, mode);
+    assert.deepEqual(file.read(10, 20), big.subarray(10, 30), mode);
+  }
+});
+
+test("a missing remote file is not found; names without an extension are folders", () => {
+  const log = serve({});
+  const errors = [];
+  const dir = new RemoteDir("https://", errors);
+  const host = dir.lookup("example.com", false);
+  assert.ok(host instanceof RemoteDir);
+  assert.equal(host.lookup("missing.tif", true), null);
+  assert.ok(host.lookup("folder", true) instanceof RemoteDir);
+  assert.equal(log.filter((r) => r.url.endsWith("folder")).length, 0, "a folder is not fetched");
+  // A host is a folder even as the last name of a path (a command looking at its input's parents).
+  assert.ok(dir.lookup("files.example.com", true) instanceof RemoteDir);
+  // A name probed as a file and not found is still a folder when a path goes through it.
+  assert.equal(host.lookup("v1.0", true), null);
+  assert.ok(host.lookup("v1.0", false) instanceof RemoteDir);
+  assert.equal(log.filter((r) => r.url === "https://files.example.com").length, 0, "a host is not fetched");
+  assert.deepEqual(errors, []);
+});
+
+test("commands read and write the in-memory workspace", { skip: !module && "set TERRIO_WASM" }, () => {
+  const root = new MemDir();
+  root.entries.set("robin.tif", new MemFile(new Uint8Array(readFileSync(fixture))));
+  const info = terrio(root, "info", "robin.tif", "--json");
+  assert.equal(info.code, 0, info.stderr);
+  assert.ok(JSON.parse(info.stdout).size);
+
+  const warp = terrio(root, "warp", "robin.tif", "out/robin-4326.tif", "--t-srs", "EPSG:4326");
+  assert.notEqual(warp.code, 0, "a missing folder is refused");
+  root.entries.set("out", new MemDir());
+  const warped = terrio(root, "warp", "robin.tif", "out/robin-4326.tif", "--t-srs", "EPSG:4326");
+  assert.equal(warped.code, 0, warped.stderr);
+  assert.ok(root.entries.get("out").entries.get("robin-4326.tif").size > 0);
+
+  const geojson = JSON.stringify({ type: "FeatureCollection", features: [{ type: "Feature", properties: { name: "a" }, geometry: { type: "Point", coordinates: [1, 2] } }] });
+  root.entries.set("points.geojson", new MemFile(new TextEncoder().encode(geojson)));
+  const convert = terrio(root, "convert", "points.geojson", "points.gpkg");
+  assert.equal(convert.code, 0, convert.stderr);
+  const check = terrio(root, "check", "points.gpkg");
+  assert.equal(check.code, 0, check.stderr);
+  assert.match(check.stdout, /1 features/);
+});
+
+test("commands read remote files lazily under /https/", { skip: !module && "set TERRIO_WASM" }, () => {
+  const tif = new Uint8Array(readFileSync(fixture));
+  const log = serve({ "https://example.com/data/robin.tif": tif });
+  const root = new MemDir();
+  root.entries.set("https", new RemoteDir("https://", []));
+  const before = httpStats.requests;
+  const info = terrio(root, "info", "/https/example.com/data/robin.tif");
+  assert.equal(info.code, 0, info.stderr);
+  assert.match(info.stdout, /Driver: GTiff/);
+  assert.ok(httpStats.requests > before);
+  // Sidecars are looked up on the server, once each.
+  const sidecars = log.filter((r) => r.url.endsWith(".aux.xml"));
+  assert.ok(sidecars.length <= 2, JSON.stringify(sidecars));
+});

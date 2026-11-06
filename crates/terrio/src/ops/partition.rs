@@ -400,7 +400,7 @@ pub enum PartitionWriteMode {
 /// numbered after the existing ones; GDAL also fills the last existing part while it has
 /// room). The input layers are materialized: callers must ensure source files are not
 /// inside an overwrite target; path-based callers can use [`check_input_directory`].
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub fn partition_to_dir(
     layers: &[Layer],
     dir: &str,
@@ -465,7 +465,7 @@ pub fn partition_to_dir(
 
 /// Where a part goes when appending: numbered after the highest-numbered existing part of its
 /// directory and name pattern.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 fn append_target(path: &std::path::Path, seen: &mut std::collections::HashMap<String, usize>) -> std::path::PathBuf {
     let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else { return path.to_path_buf() };
     let (stem, ext) = name.rsplit_once('.').unwrap_or((name, ""));
@@ -501,7 +501,7 @@ fn append_target(path: &std::path::Path, seen: &mut std::collections::HashMap<St
 /// Whether a directory looks like the output of a partitioning, as GDAL checks before
 /// replacing it: empty, or (Hive) holding a `layer/field=value` directory, or (flat) no
 /// directories.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 fn looks_partitioned(root: &std::path::Path, scheme: PartitionScheme, driver: VectorDriver) -> Result<bool> {
     fn directory(path: &std::path::Path, scheme: PartitionScheme, driver: VectorDriver, depth: usize) -> Result<bool> {
         if depth > 256 || std::fs::symlink_metadata(path)?.file_type().is_symlink() {
