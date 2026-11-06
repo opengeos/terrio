@@ -425,9 +425,28 @@ async function runForBytes(args) {
   // this must wait for.
   const result = await enqueue(async () => {
     await ready;
-    return call({ type: "run", args, binaryStdout: true }, (stream, text) => { if (stream === "stderr") stderr += text; });
+    mapRunInFlight = true;
+    try {
+      return await call({ type: "run", args, binaryStdout: true }, (stream, text) => { if (stream === "stderr") stderr += text; });
+    } finally {
+      mapRunInFlight = false;
+    }
   });
   return { code: result.code, stdout: new Uint8Array(result.stdout || new ArrayBuffer(0)), stderr };
+}
+
+/** Whether a map run (its info or a batch of tiles) is in the worker. */
+let mapRunInFlight = false;
+
+/**
+ * Ends a map run in the worker, as Cancel ends a command: closing the map must not leave a batch,
+ * perhaps stalled on a remote server, blocking every later run.
+ */
+function abortMapRun() {
+  if (!mapRunInFlight) return;
+  worker.terminate();
+  pending && pending({ type: "error", message: "the map was closed" });
+  startWorker().catch((error) => alert(`Could not restart terrio: ${error.message}`));
 }
 
 /**
@@ -524,7 +543,7 @@ function show(command) {
       const styleFields = fields.filter((f) => !NOT_MAP_OPTIONS.has(f.arg.name));
       const tokens = commandLine(command, workerFields(styleFields));
       const input = fields.find((f) => f.arg.position != null)?.read().trim() || "";
-      openMap({ title: input, args: ["view", ...tokens], run: runForBytes });
+      openMap({ title: input, args: ["view", ...tokens], run: runForBytes, abort: abortMapRun });
     });
   }
 

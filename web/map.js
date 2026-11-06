@@ -28,19 +28,21 @@ let view = null;
 
 /**
  * Opens the map of a dataset.
- * @param {{title: string, args: string[], run: (args: string[]) => Promise<{code: number, stdout: Uint8Array, stderr: string}>}} options
- *   `args` is `["view", ...options and input]`, as the worker reads them; `run` runs a command line.
+ * @param {{title: string, args: string[], run: (args: string[]) => Promise<{code: number, stdout: Uint8Array, stderr: string}>, abort?: () => void}} options
+ *   `args` is `["view", ...options and input]`, as the worker reads them; `run` runs a command line;
+ *   `abort` ends a run of the map's that is in the worker, when the map is closed.
  */
-export async function openMap({ title, args, run }) {
+export async function openMap({ title, args, run, abort }) {
   view?.close();
-  view = new MapView(title, args, run);
+  view = new MapView(title, args, run, abort);
   await view.start();
 }
 
 class MapView {
-  constructor(title, args, run) {
+  constructor(title, args, run, abort) {
     this.args = args;
     this.run = run;
+    this.abort = abort;
     this.tiles = new Map();
     this.wanted = new Map();
     this.info = null;
@@ -120,6 +122,8 @@ class MapView {
   close() {
     if (this.closed) return;
     this.closed = true;
+    // A batch still being drawn is ended, so that it cannot hold up later commands.
+    if (this.batching || !this.info) this.abort?.();
     for (const tile of this.tiles.values()) tile.image?.close();
     this.tiles.clear();
     removeEventListener("resize", this.onResize);

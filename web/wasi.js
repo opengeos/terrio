@@ -350,10 +350,11 @@ export class RemoteDir {
     }
     let node;
     const folder = () => new RemoteDir(`${this.prefix}${name}/`, this.errors);
-    // A sidecar's name made by adding to a known file's name with a query (`a.tif?X-Amz-…` plus
-    // `.aux.xml`): its URL cannot be right (a presigned URL is signed for one object), so it is taken
-    // as missing without asking the server.
-    if (last && name.includes("?") && [...this.entries].some(([k, v]) => v instanceof RemoteFile && k !== name && name.startsWith(k))) {
+    // A sidecar's name made by appending an extension to a known file's name that has a query
+    // (`a.tif?X-Amz-…` plus `.aux.xml`): its URL cannot be right (a presigned URL is signed for one
+    // object), so it is taken as missing without asking the server. Other names with a query
+    // (`a.tif?version=2`) are looked up as usual.
+    if (last && [...this.entries].some(([k, v]) => v instanceof RemoteFile && k.includes("?") && name.startsWith(k) && /^\.[A-Za-z0-9.]+$/.test(name.slice(k.length)))) {
       this.entries.set(name, null);
       this.missedAt.set(name, Date.now());
       return null;
@@ -761,7 +762,8 @@ export class Wasi {
         const to = self.resolve(newFd, self.string(newPtr, newLen), { create: true });
         if (typeof to === "number") return to;
         if (!from.parent || !to.parent) return E.BUSY;
-        if (from.parent.readonly || !to.parent || to.parent.readonly) return E.ROFS;
+        // The remote mount (and anything in it) is neither moved nor replaced.
+        if (from.parent.readonly || !to.parent || to.parent.readonly || from.node.readonly || (to.node && to.node.readonly)) return E.ROFS;
         if (to.node && isDir(to.node) && !isDir(from.node)) return E.ISDIR;
         if (to.node instanceof MemDir && to.node.entries.size) return E.NOTEMPTY;
         from.parent.entries.delete(from.name);

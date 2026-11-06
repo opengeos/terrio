@@ -317,3 +317,20 @@ test("sidecars of a URL with a query are not asked for", () => {
   assert.equal(log.length, requests, "no request for the sidecar");
   assert.deepEqual(errors, []);
 });
+
+test("a different URL with a query is still looked up", () => {
+  const log = serve({ "https://example.com/a.tif": big, "https://example.com/a.tif?version=2": big });
+  const host = new RemoteDir("https://", []).lookup("example.com", false);
+  assert.ok(host.lookup("a.tif", true) instanceof RemoteFile);
+  assert.ok(host.lookup("a.tif?version=2", true) instanceof RemoteFile);
+  assert.ok(log.some((r) => r.url.endsWith("?version=2")));
+});
+
+test("the remote mount cannot be renamed away or replaced", { skip: !module && "set TERRIO_WASM" }, () => {
+  const root = new MemDir();
+  root.entries.set("https", new RemoteDir("https://", []));
+  root.entries.set("dir", new MemDir());
+  assert.notEqual(terrio(root, "vsi", "move", "dir", "https").code, 0);
+  assert.notEqual(terrio(root, "vsi", "move", "https", "elsewhere").code, 0);
+  assert.ok(root.entries.get("https") instanceof RemoteDir);
+});

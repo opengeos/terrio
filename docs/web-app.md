@@ -85,16 +85,19 @@ After each run, the page shows how many requests the command made and how many b
 ## Limits
 
 - **Memory.** The workspace and every file a command reads whole are held in the tab's memory. A
-  WebAssembly module can address at most 4 GB.
+  WebAssembly module can address at most 4 GB. A file a command writes is held twice, by terrio
+  and by the page, which keeps a copy to download and to restore after a Cancel.
 - **One thread.** Commands run on one thread, so heavy processing such as `warp` and `viewshed`
   takes longer than with the native command line.
 - **No network commands.** STAC searches, WFS, `vsi` operations on object stores and other
   commands that talk to a server API are not available. Reading files from URLs works.
 - **No `ui`, `view` or `mcp`.** These commands run servers. The [map](#map) takes the place of
   `view`.
-- **Cancelling** a command ends it and restarts terrio, with the workspace's files as they were
-  before the command started (empty folders are not kept). Remote files are fetched again
-  afterwards. An uploaded file changed or moved on your disk since its upload is removed from the
+- **Cancelling** a running command ends it and restarts terrio, with the workspace's files as they
+  were before the command started (empty folders are not kept). Remote files are fetched again
+  afterwards. A command still waiting its turn (behind an upload or the map) is just taken out:
+  nothing restarts, and fetched parts of remote files are kept. Closing the map ends a batch of
+  tiles still being drawn in the same way as a running command. An uploaded file changed or moved on your disk since its upload is removed from the
   workspace then, with a message.
 
 The [Playground](playground.md) is a lighter page built on the [npm package](javascript.md). It
