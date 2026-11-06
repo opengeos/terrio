@@ -142,7 +142,7 @@ pub(super) fn read(relative_name: &str, reader: &mut (impl Read + Seek)) -> Resu
     read_impl(relative_name, reader, false)?.ok_or_else(|| invalid("expected an RPF image frame"))
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub(super) fn read_candidate(relative_name: &str, reader: &mut (impl Read + Seek)) -> Result<Option<RpfFrame>> {
     read_impl(relative_name, reader, true)
 }

@@ -11,6 +11,27 @@ import pytest
 import terrio
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Downloads",
+        "directory.las",
+        "directory.laz",
+        "directory.copc.laz",
+        "directory.ply",
+        "directory.e57",
+        "directory.zip",
+    ],
+)
+@pytest.mark.parametrize("reader", [terrio.open_points, terrio.read_points])
+def test_directory_input_requires_a_point_cloud_file(tmp_path, name, reader):
+    path = tmp_path / name
+    path.mkdir()
+    with pytest.raises(terrio.InvalidArgumentError, match="select a point-cloud file") as error:
+        reader(str(path))
+    assert str(path) in str(error.value)
+
+
 def make_points(n=4000, crs="EPSG:32617"):
     rng = np.random.default_rng(42)
     arrays = {

@@ -338,9 +338,11 @@ impl RasterDriver {
         }
     }
 
-    pub(crate) fn to_wb(self) -> wbraster::RasterFormat {
+    /// The driver's `wbraster` format, which reads the files the driver names when terrio's own
+    /// drivers do not (`None`: never `wbraster`).
+    pub(crate) fn to_wb(self) -> Option<wbraster::RasterFormat> {
         use wbraster::RasterFormat as F;
-        match self {
+        Some(match self {
             Self::GTiff | Self::Cog => F::GeoTiff,
             Self::AAIGrid => F::EsriAscii,
             Self::AIG => F::EsriBinary,
@@ -360,13 +362,13 @@ impl RasterDriver {
             Self::XYZ => F::Xyz,
             Self::Zarr => F::Zarr,
             Self::DTED => F::Dted,
-            // Never used: terrio reads and writes NetCDF, GRIB, WebP and SRTM tiles, and reads HDF5,
-            // itself.
-            Self::NetCDF | Self::HDF5 | Self::GRIB | Self::WEBP | Self::SRTMHGT => F::Zarr,
+            // terrio reads and writes NetCDF, GRIB, WebP and SRTM tiles, and reads HDF5, itself; the
+            // GDAL backend reads and writes GRIB in builds with `gdal` and without `grib`.
+            Self::NetCDF | Self::HDF5 | Self::GRIB | Self::WEBP | Self::SRTMHGT => return None,
             // Never used: terrio reads and writes VRTs and tile archives, and reads STAC mosaics
             // itself; GDAL reads its formats.
             Self::VRT | Self::GTI | Self::STACIT | Self::STACTA | Self::MBTiles | Self::PMTiles | Self::Gdal => F::GeoTiff,
-        }
+        })
     }
 
     pub(crate) fn from_wb(f: wbraster::RasterFormat) -> Self {
@@ -541,15 +543,13 @@ impl VectorDriver {
             Self::FlatGeobuf => F::FlatGeobuf,
             Self::Shapefile => F::Shapefile,
             Self::KML => F::Kml,
-            Self::KMZ => F::Kmz,
             Self::GML => F::Gml,
             Self::GPX => F::Gpx,
             Self::MapInfo => F::MapInfoMif,
-            #[cfg(feature = "osm")]
-            Self::OSM => F::OsmPbf,
-            #[cfg(not(feature = "osm"))]
-            Self::OSM => return None,
-            Self::Parquet
+            // `wbvector` is built without its KMZ and OSM PBF readers: terrio reads both itself.
+            Self::KMZ
+            | Self::OSM
+            | Self::Parquet
             | Self::CityJSON
             | Self::CityGML
             | Self::ESRIJSON
@@ -1558,7 +1558,20 @@ mod allow_list_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::sniff;
+    use super::{RasterDriver, sniff};
+
+    /// Only Zarr is read with `wbraster`'s Zarr reader, and GRIB, netCDF, HDF5, WebP and SRTM tiles
+    /// have no `wbraster` format: terrio reads them itself (the GDAL backend reads GRIB in builds
+    /// with `gdal` and without `grib`).
+    #[test]
+    fn only_zarr_maps_to_the_wbraster_zarr_reader() {
+        let zarr: Vec<RasterDriver> =
+            RasterDriver::ALL.iter().copied().filter(|d| d.to_wb() == Some(wbraster::RasterFormat::Zarr)).collect();
+        assert_eq!(zarr, vec![RasterDriver::Zarr]);
+        for driver in [RasterDriver::NetCDF, RasterDriver::HDF5, RasterDriver::GRIB, RasterDriver::WEBP, RasterDriver::SRTMHGT] {
+            assert_eq!(driver.to_wb(), None, "{driver:?}");
+        }
+    }
 
     #[test]
     fn a_query_page_naming_other_formats_is_sniffed_as_esrijson() {

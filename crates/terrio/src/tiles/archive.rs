@@ -584,7 +584,7 @@ pub fn update_vector_bytes(bytes: Vec<u8>, layers: &[wbvector::Layer], o: &TileW
 }
 
 /// Writes bytes over a file, through a temporary file renamed over it once complete.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 fn replace_file(path: &str, bytes: &[u8]) -> Result<()> {
     let tmp = format!("{path}.terrio-update");
     std::fs::write(&tmp, bytes)?;
@@ -596,7 +596,7 @@ fn replace_file(path: &str, bytes: &[u8]) -> Result<()> {
 
 /// Adds a raster to a local PMTiles or MBTiles archive of image tiles: see
 /// [`update_raster_bytes`]. The archive is rewritten, and replaced once complete.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub fn update_raster(path: &str, ds: &crate::RasterDataset, o: &TileWriteOptions) -> Result<()> {
     let bytes = update_raster_bytes(std::fs::read(path)?, ds, o)?;
     replace_file(path, &bytes)
@@ -604,7 +604,7 @@ pub fn update_raster(path: &str, ds: &crate::RasterDataset, o: &TileWriteOptions
 
 /// Adds vector layers to a local PMTiles or MBTiles archive of vector tiles: see
 /// [`update_vector_bytes`]. The archive is rewritten, and replaced once complete.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub fn update_vector(path: &str, layers: &[wbvector::Layer], o: &TileWriteOptions, overwrite: bool) -> Result<()> {
     let bytes = update_vector_bytes(std::fs::read(path)?, layers, o, overwrite)?;
     replace_file(path, &bytes)

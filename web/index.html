@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terrio Web</title>
+<meta name="description" content="The terrio command line in your browser: upload files or give https:// URLs, and run any terrio command. Nothing is uploaded to a server.">
+<!-- SPDX-License-Identifier: MIT -->
+<!-- The command forms are generated from `terrio --json-usage`, as `terrio ui` (crates/terrio-cli/src/ui.html) generates them; the shared
+     functions (el, leaves, layout, occurrences, commandLine, shellQuote, field, renderList, formatSize) are copied from that page:
+     keep them in step. -->
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f5; --panel: #ffffff; --text: #1d2521; --muted: #5d6a63; --line: #d9dfda;
+  --accent: #1b6e4f; --accent-text: #ffffff; --tint: #e4f0ea; --bad: #b3261e; --code: #eef1ee;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141916; --panel: #1c231f; --text: #e6ebe7; --muted: #9aa8a0; --line: #323c36;
+    --accent: #5cc29a; --accent-text: #0d1a14; --tint: #24352c; --bad: #f2877e; --code: #111512;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+.images img { display: block; max-width: 100%; height: auto; margin-top: 12px; border: 1px solid var(--line); border-radius: 6px; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+.app { display: grid; grid-template-columns: 270px minmax(0, 1fr); height: 100%; }
+aside { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line); }
+.brand { padding: 14px 16px 2px; font-size: 18px; font-weight: 650; }
+.brand small { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 4px; }
+.cwd { padding: 0 16px 10px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+#search { margin: 0 12px 10px; width: calc(100% - 24px); }
+#commands { flex: 1 1 0; min-height: 160px; overflow-y: auto; list-style: none; margin: 0; padding: 0 8px 12px; }
+#commands button { display: block; width: 100%; text-align: left; border: 0; background: none; color: inherit; padding: 6px 8px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 14px; }
+#commands button:hover { background: var(--tint); }
+#commands button[aria-current="true"] { background: var(--accent); color: var(--accent-text); }
+main { overflow-y: auto; padding: 24px clamp(16px, 4vw, 40px) 48px; }
+h1 { font-size: 24px; margin: 0 0 4px; }
+.about { color: var(--muted); white-space: pre-line; margin: 0 0 20px; max-width: 100ch; }
+.option-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); gap: 0 24px; align-items: start; }
+.field { margin-bottom: 14px; }
+.field > label, .field > .label { display: block; font-weight: 600; margin-bottom: 3px; }
+.field .flag { font-weight: 400; color: var(--muted); margin-left: 6px; }
+.required { color: var(--bad); }
+.help:empty { display: none; }
+.help { color: var(--muted); font-size: 13px; margin-top: 3px; white-space: pre-line; overflow-wrap: anywhere; }
+input[type=text], input[type=search], select, textarea { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: inherit; font: inherit; }
+textarea { min-height: 68px; resize: vertical; }
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.path { display: flex; gap: 6px; align-items: flex-start; }
+.path > :first-child { flex: 1; min-width: 0; }
+.check { display: flex; gap: 8px; align-items: flex-start; font-weight: 600; }
+.check input { margin-top: 4px; }
+details { border: 1px solid var(--line); border-radius: 8px; padding: 0 14px; margin: 18px 0; background: var(--panel); }
+summary { cursor: pointer; padding: 10px 0; font-weight: 600; }
+details[open] summary { margin-bottom: 6px; }
+button.action { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: inherit; font: inherit; cursor: pointer; white-space: nowrap; }
+button.action:hover { background: var(--tint); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+button.primary:hover { background: var(--accent); filter: brightness(1.08); }
+button:disabled { opacity: .55; cursor: default; }
+.bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 18px 0 8px; }
+.status { color: var(--muted); font-size: 13px; }
+.status.bad { color: var(--bad); }
+pre { margin: 0; padding: 10px 12px; background: var(--code); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+#output { max-height: 60vh; overflow-y: auto; margin-top: 8px; }
+#output.bad { border-color: var(--bad); }
+h2 { font-size: 13px; color: var(--muted); font-weight: 600; margin: 18px 0 4px; }
+dialog { width: min(640px, calc(100vw - 32px)); max-height: 80vh; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: inherit; padding: 16px; }
+dialog::backdrop { background: rgb(0 0 0 / .45); }
+#browse-path { font-size: 13px; overflow-wrap: anywhere; margin-bottom: 8px; color: var(--muted); }
+#browse-list { list-style: none; margin: 0 0 12px; padding: 0; height: 50vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
+#browse-list button { display: flex; justify-content: space-between; gap: 12px; width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left; padding: 5px 10px; cursor: pointer; overflow-wrap: anywhere; }
+#browse-list button:hover { background: var(--tint); }
+#browse-list .size { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.dialog-bar { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+@media (max-width: 720px) {
+  /* One scrolling page: the workspace panel above the command list would otherwise take all of a
+     fixed-height sidebar and leave the list no room. */
+  html, body { height: auto; }
+  .app { display: block; height: auto; }
+  aside { border-right: 0; border-bottom: 1px solid var(--line); }
+  #commands { flex: none; max-height: 45vh; }
+  #files { max-height: 22vh; }
+  main { overflow: visible; }
+}
+
+/* The browser build's workspace panel, drop zone and outputs. */
+body { background: var(--bg); }
+.note { padding: 0 16px 8px; color: var(--muted); font-size: 12px; }
+.workspace { padding: 0 12px 10px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
+.workspace .bar { margin: 0 0 8px; gap: 6px; }
+.workspace button.action { padding: 5px 10px; font-size: 13px; }
+label.action { display: inline-block; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+label.action:hover { background: var(--tint); }
+label.action:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+#browse-list .empty { padding: 8px 10px; }
+.url-row { display: flex; gap: 6px; margin-bottom: 8px; }
+.url-row input { flex: 1; min-width: 0; font-size: 13px; padding: 5px 8px; }
+#files { list-style: none; margin: 0; padding: 0; max-height: 28vh; overflow-y: auto; }
+#files li { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 6px; font-size: 13px; }
+#files li:hover { background: var(--tint); }
+#files .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+#files .size { color: var(--muted); font-size: 12px; white-space: nowrap; }
+#files button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 2px 4px; font: inherit; font-size: 12px; border-radius: 4px; }
+#files button:hover { color: var(--text); background: var(--line); }
+.tag { font-size: 11px; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 4px; }
+.empty { color: var(--muted); font-size: 13px; padding: 2px 4px; }
+.samples { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.samples button { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
+#drop { position: fixed; inset: 0; display: none; place-items: center; background: rgb(0 0 0 / .45); color: #fff; font-size: 22px; font-weight: 600; z-index: 10; pointer-events: none; }
+body.dragging #drop { display: grid; }
+.outputs { list-style: none; margin: 4px 0 0; padding: 0; }
+.outputs li { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.outputs .name { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
+.outputs .size { color: var(--muted); font-size: 12px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="drop">Drop files to add them to the workspace</div>
+<div class="app">
+  <aside>
+    <div class="brand">Terrio <small id="version"></small></div>
+    <p class="note">The command line, compiled to WebAssembly and run in this tab: files stay on your computer, and URLs are read with range requests from your browser.</p>
+    <div class="workspace">
+      <div class="bar">
+        <label class="action">Upload files<input type="file" id="upload" multiple class="visually-hidden"></label>
+      </div>
+      <form class="url-row" id="url-form">
+        <input type="text" id="url" placeholder="https:// URL to a dataset" aria-label="URL to a dataset" spellcheck="false">
+        <button type="submit" class="action">Add</button>
+      </form>
+      <ul id="files"></ul>
+      <p class="samples">Samples:
+        <button type="button" data-sample="https://raw.githubusercontent.com/opengeos/data/main/raster/landsat7.tif">Landsat 7 GeoTIFF</button>,
+        <button type="button" data-sample="https://raw.githubusercontent.com/opengeos/data/main/raster/srtm90.tif">SRTM DEM</button>,
+        <button type="button" data-sample="https://raw.githubusercontent.com/opengeos/data/main/world/countries.geojson">countries GeoJSON</button>
+      </p>
+    </div>
+    <input id="search" type="search" placeholder="Search commands" aria-label="Search commands">
+    <ul id="commands"></ul>
+  </aside>
+  <main><div class="content" id="content"><p class="status" id="startup">Loading terrio (about 11 MB the first time)…</p></div></main>
+</div>
+<dialog id="browse">
+  <div id="browse-path">Workspace</div>
+  <ul id="browse-list"></ul>
+  <div class="dialog-bar">
+    <label class="action">Upload…<input type="file" id="browse-upload" multiple class="visually-hidden"></label>
+    <button type="button" class="action" id="browse-close">Close</button>
+  </div>
+</dialog>
+<script type="module">
+// Everything from files and commands reaches the page through textContent or value, never as
+// markup: a file may be named anything.
+import { openMap } from "./map.js";
+import { toWorkerPath } from "./paths.js";
+const byId = (id) => document.getElementById(id);
+
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (key.startsWith("aria-")) node.setAttribute(key, value);
+    else node[key] = value;
+  }
+  node.append(...children);
+  return node;
+}
+
+// Commands are listed by their leaves: `vsi sync`, not `vsi`.
+function leaves(command) {
+  return command.subcommands.length ? command.subcommands.flatMap(leaves) : [command];
+}
+
+const isFlag = (arg) => arg.num_args.max === 0 && arg.action !== "count";
+const isShown = (arg) => !arg.hidden && !["help", "help_short", "help_long", "version"].includes(arg.action);
+const flagName = (arg) => (arg.long ? `--${arg.long}` : arg.short ? `-${arg.short}` : "");
+
+/** How a field's text becomes the command line: "one", or several values split per `line` or `word`. */
+function layout(arg) {
+  const max = arg.num_args.max;
+  // A path may hold spaces, so a list of paths or positionals has one value per line.
+  if (max === null && (arg.position != null || arg.type === "path")) return { multi: true, split: "line", each: false };
+  if (arg.action === "append") return max === 1 ? { multi: true, split: "line", each: true } : { multi: true, split: "word", each: true };
+  if (max === null) return { multi: true, split: "line", each: false };
+  if (max > 1) return { multi: false, split: "word", each: false };
+  return { multi: false, split: "none", each: false };
+}
+
+/** The values of a field, as occurrences of the option, each a list of command-line tokens. */
+function occurrences(arg, text) {
+  const { split, each } = layout(arg);
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) return [];
+  if (split === "none") return [[text.trim()]];
+  if (split === "line") return each ? lines.map((line) => [line]) : [lines];
+  const words = lines.map((line) => line.split(/\s+/));
+  return each ? words : [words.flat()];
+}
+
+function commandLine(command, fields) {
+  const options = [], positionals = [];
+  for (const { arg, read } of fields) {
+    const value = read();
+    if (arg.position != null) {
+      positionals.push({ arg, values: occurrences(arg, value).flat() });
+    } else if (isFlag(arg)) {
+      if (value) options.push(flagName(arg));
+    } else if (arg.action === "count") {
+      for (let i = 0; i < Number(value || 0); i++) options.push(flagName(arg));
+    } else {
+      for (const tokens of occurrences(arg, value)) {
+        // `--x=-1`: a value beginning with a hyphen is not taken for an option.
+        if (tokens.length === 1 && arg.long) options.push(`--${arg.long}=${tokens[0]}`);
+        else options.push(flagName(arg), ...tokens);
+      }
+    }
+  }
+  positionals.sort((a, b) => a.arg.position - b.arg.position);
+  const needsSeparator = positionals.some((p) => !p.arg.allow_hyphen_values && p.values.some((v) => v.startsWith("-")));
+  return [...command.path.slice(2), ...options, ...(needsSeparator ? ["--"] : []), ...positionals.flatMap((p) => p.values)];
+}
+
+function shellQuote(token) {
+  return /^[\w@%+=:,./-]+$/.test(token) ? token : `'${token.replaceAll("'", `'\\''`)}'`;
+}
+
+function field(arg, id) {
+  const flag = flagName(arg);
+  const name = arg.value_names.length ? arg.value_names.join(" ") : arg.name.toUpperCase();
+  const title = arg.position != null ? name : flag;
+  const help = el("div", { className: "help", textContent: arg.description });
+
+  if (isFlag(arg)) {
+    const input = el("input", { type: "checkbox", id });
+    const label = el("label", { className: "check", htmlFor: id }, input, el("span", { textContent: flag }));
+    return { arg, node: el("div", { className: "field" }, label, help), read: () => input.checked, input };
+  }
+
+  const { multi, split } = layout(arg);
+  let input;
+  if (arg.choices.length && !multi && arg.num_args.max === 1) {
+    const hint = arg.default.length ? `Default (${arg.default.join(" ")})` : "Not set";
+    input = el("select", { id }, el("option", { value: "", textContent: arg.required ? "Choose…" : hint }));
+    for (const choice of arg.choices) input.append(el("option", { value: choice, textContent: choice }));
+  } else if (multi) {
+    input = el("textarea", { id, spellcheck: false, placeholder: split === "word" ? `${name}, one group per line` : `${name}, one per line` });
+  } else {
+    const placeholder = arg.default.length ? `Default: ${arg.default.join(" ")}` : split === "word" ? name : "";
+    input = el("input", { type: "text", id, placeholder, spellcheck: false });
+    if (arg.type === "integer" || arg.type === "number") input.inputMode = "decimal";
+  }
+  input.required = arg.required;
+  input.className = arg.type === "path" ? "mono" : "";
+  const label = el("label", { htmlFor: id }, title);
+  if (arg.required) label.append(el("span", { className: "required", textContent: " *", "aria-hidden": "true" }));
+  if (arg.position == null && arg.value_names.length) label.append(el("span", { className: "flag mono", textContent: name }));
+  if (arg.choices.length && multi) help.append(`${arg.description ? "\n" : ""}One of: ${arg.choices.join(", ")}`);
+  const control = arg.type === "path" ? pathField(input) : input;
+  return { arg, node: el("div", { className: "field" }, label, control, help), read: () => input.value, input };
+}
+
+function renderList(all, query) {
+  const needle = query.trim().toLowerCase();
+  const items = all.filter((c) => !needle || c.path.join(" ").includes(needle) || c.aliases.some((a) => a.includes(needle)) || c.description.toLowerCase().includes(needle));
+  const current = byId("commands").querySelector('[aria-current="true"]')?.dataset.path;
+  byId("commands").replaceChildren(...items.map((command) => {
+    const path = command.path.join(" ");
+    const button = el("button", { type: "button", textContent: command.path.slice(1).join(" "), title: command.description.split("\n")[0], "aria-current": String(path === current) });
+    button.dataset.path = path;
+    button.addEventListener("click", () => show(command));
+    return el("li", {}, button);
+  }));
+}
+
+function formatSize(bytes) {
+  if (bytes == null) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const power = Math.min(Math.floor(Math.log(Math.max(bytes, 1)) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** power).toFixed(power ? 1 : 0)} ${units[power]}`;
+}
+
+
+// ---- The workspace: files held in the worker's memory, mirrored here as Blobs ----
+
+// The mirror outlives the worker: cancelling a command ends the worker, and the next one is given
+// the files again.
+const files = new Map();
+const remotes = [];
+let worker = null;
+let ready = null;
+let pending = null;
+
+/** Starts a worker and gives it the workspace; resolves with the command catalog. */
+function startWorker() {
+  worker = new Worker(new URL("worker.js", location.href), { type: "module" });
+  worker.onmessage = ({ data }) => pending && pending(data);
+  worker.onerror = (event) => pending && pending({ type: "error", message: event.message || "the worker failed to start" });
+  ready = (async () => {
+    const { catalog } = await call({ type: "init" });
+    // A file changed or moved on disk since it was uploaded cannot be read again: it is left out
+    // and reported, not allowed to stop the restart.
+    const lost = [];
+    for (const [path, blob] of files) {
+      try {
+        await call({ type: "put", path, buffer: await blob.arrayBuffer() });
+      } catch (error) {
+        files.delete(path);
+        lost.push(`${path}: ${error.message}`);
+      }
+    }
+    if (lost.length) {
+      renderFiles();
+      alert(`Removed from the workspace, as they can no longer be read:\n${lost.join("\n")}`);
+    }
+    return catalog;
+  })();
+  return ready;
+}
+
+/** Sends `message` and resolves with the worker's final reply; `onOut` receives output as it comes. */
+function call(message, onOut) {
+  return new Promise((resolve, reject) => {
+    pending = (data) => {
+      if (data.type === "out") return onOut && onOut(data.stream, data.text);
+      pending = null;
+      if (data.type === "error") reject(new Error(data.message));
+      else resolve(data);
+    };
+    const transfer = message.buffer ? [message.buffer] : [];
+    worker.postMessage(message, transfer);
+  });
+}
+
+// Messages to the worker go one at a time.
+let queue = Promise.resolve();
+function enqueue(task) {
+  const result = queue.then(task);
+  queue = result.catch(() => {});
+  return result;
+}
+
+/** Adds files to the workspace; never rejects, but reports the files that could not be added. */
+async function addFiles(list) {
+  const failed = [];
+  for (const file of list) {
+    const path = file.webkitRelativePath || file.name;
+    try {
+      await enqueue(async () => {
+        await ready;
+        await call({ type: "put", path, buffer: await file.arrayBuffer() });
+      });
+      files.set(path, file);
+    } catch (error) {
+      failed.push(`${path}: ${error.message}`);
+    }
+  }
+  renderFiles();
+  if (failed.length) alert(`Could not add:\n${failed.join("\n")}`);
+}
+
+function addRemote(url) {
+  url = url.trim();
+  if (!url) return false;
+  if (url.startsWith("http://")) {
+    alert("Only https:// URLs can be read from this page: browsers block plain http requests from an https page.");
+    return false;
+  }
+  if (!/^(https:\/\/|s3:\/\/|gs:\/\/|\/vsicurl\/https:\/\/|\/vsis3\/|\/vsigs\/)/.test(url)) {
+    alert("Enter an https://, s3:// or gs:// URL.");
+    return false;
+  }
+  if (!remotes.includes(url)) remotes.push(url);
+  renderFiles();
+  return true;
+}
+
+function download(path) {
+  const a = el("a", { href: URL.createObjectURL(files.get(path)), download: path.split("/").pop() });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+
+function renderFiles() {
+  const list = byId("files");
+  const items = [];
+  for (const [path, blob] of [...files].sort(([a], [b]) => a.localeCompare(b))) {
+    const save = el("button", { type: "button", textContent: "Save", title: `Download ${path}` });
+    save.addEventListener("click", () => download(path));
+    const remove = el("button", { type: "button", textContent: "✕", title: `Remove ${path}`, "aria-label": `Remove ${path}` });
+    remove.addEventListener("click", async () => {
+      files.delete(path);
+      renderFiles();
+      try {
+        await enqueue(async () => { await ready; await call({ type: "remove", path }); });
+      } catch {
+        // The worker restarted: the file is gone from it too.
+      }
+      // A command running when the file was removed may have written it back to this list.
+      files.delete(path);
+      renderFiles();
+    });
+    items.push(el("li", {}, el("span", { className: "name mono", textContent: path }), el("span", { className: "size", textContent: formatSize(blob.size) }), save, remove));
+  }
+  for (const url of remotes) {
+    const remove = el("button", { type: "button", textContent: "✕", title: `Forget ${url}`, "aria-label": `Forget ${url}` });
+    remove.addEventListener("click", () => {
+      remotes.splice(remotes.indexOf(url), 1);
+      renderFiles();
+    });
+    items.push(el("li", {}, el("span", { className: "tag", textContent: "URL" }), el("span", { className: "name mono", textContent: url }), remove));
+  }
+  if (!items.length) items.push(el("li", { className: "empty", textContent: "No files yet: upload or drop some, or add a URL." }));
+  list.replaceChildren(...items);
+}
+
+// ---- Commands run for their bytes (the map) ----
+
+/** `preview` options that are not about what to draw, and that `terrio view` does not take. */
+const NOT_MAP_OPTIONS = new Set(["output", "overwrite", "width", "height", "max_size", "display"]);
+
+/** Runs a command line, returning its exit status, standard output as bytes and standard error. */
+async function runForBytes(args) {
+  let stderr = "";
+  // `ready` is awaited in the queue: a Cancel while this waits starts a new worker, whose start
+  // this must wait for.
+  const result = await enqueue(async () => {
+    await ready;
+    mapRunInFlight = true;
+    try {
+      return await call({ type: "run", args, binaryStdout: true }, (stream, text) => { if (stream === "stderr") stderr += text; });
+    } finally {
+      mapRunInFlight = false;
+    }
+  });
+  return { code: result.code, stdout: new Uint8Array(result.stdout || new ArrayBuffer(0)), stderr };
+}
+
+/** Whether a map run (its info or a batch of tiles) is in the worker. */
+let mapRunInFlight = false;
+
+/**
+ * Ends a map run in the worker, as Cancel ends a command: closing the map must not leave a batch,
+ * perhaps stalled on a remote server, blocking every later run.
+ */
+function abortMapRun() {
+  if (!mapRunInFlight) return;
+  worker.terminate();
+  pending && pending({ type: "error", message: "the map was closed" });
+  startWorker().catch((error) => alert(`Could not restart terrio: ${error.message}`));
+}
+
+/**
+ * `fields` as the worker reads them: in path fields (and positionals, the inputs and outputs), each
+ * value that is a remote path is rewritten to where the worker reads it. Other fields, filters and
+ * free text among them, are passed as typed.
+ */
+function workerFields(fields) {
+  return fields.map((f) => (f.arg.type === "path" || f.arg.position != null)
+    ? { ...f, read: () => f.read().split("\n").map((line) => (layout(f.arg).split === "word" ? line.trim().split(/\s+/).map(toWorkerPath).join(" ") : toWorkerPath(line.trim()))).join("\n") }
+    : f);
+}
+
+// ---- The path picker ----
+
+let browseTarget = null;
+function pathField(input) {
+  const button = el("button", { type: "button", className: "action", textContent: "Browse…" });
+  button.addEventListener("click", () => openBrowser(input));
+  return el("div", { className: "path" }, input, button);
+}
+
+function choose(path) {
+  if (browseTarget.tagName === "TEXTAREA" && browseTarget.value.trim()) browseTarget.value = `${browseTarget.value.trimEnd()}\n${path}`;
+  else browseTarget.value = path;
+  browseTarget.dispatchEvent(new Event("input", { bubbles: true }));
+  byId("browse").close();
+}
+
+function openBrowser(input) {
+  browseTarget = input;
+  const entries = [
+    ...[...files].sort(([a], [b]) => a.localeCompare(b)).map(([path, blob]) => ({ path, size: blob.size })),
+    ...remotes.map((path) => ({ path, remote: true })),
+  ];
+  byId("browse-list").replaceChildren(...(entries.length ? entries.map((entry) => {
+    const button = el("button", { type: "button" }, el("span", { textContent: entry.path }), el("span", { className: "size", textContent: entry.remote ? "URL" : formatSize(entry.size) }));
+    button.addEventListener("click", () => choose(entry.path));
+    return el("li", {}, button);
+  }) : [el("li", { className: "empty", textContent: "The workspace is empty. Upload a file, or type a path or an https:// URL into the field." })]));
+  byId("browse").showModal();
+}
+
+byId("browse-close").addEventListener("click", () => byId("browse").close());
+byId("browse-upload").addEventListener("change", async (event) => {
+  await addFiles([...event.target.files]);
+  if (event.target.files.length) choose(event.target.files[0].name);
+  event.target.value = "";
+});
+
+// ---- A command's form ----
+
+let activeRun = null;
+
+function show(command) {
+  if (activeRun) {
+    activeRun.textContent = "Running… Cancel it, or wait for it, before changing command.";
+    return;
+  }
+  for (const button of byId("commands").querySelectorAll("button")) {
+    button.setAttribute("aria-current", String(button.dataset.path === command.path.join(" ")));
+  }
+  const fields = command.arguments.filter(isShown).map((arg, i) => field(arg, `f${i}`));
+  const main = fields.filter((f) => f.arg.position != null || f.arg.required);
+  main.sort((a, b) => (a.arg.position ?? 1e9) - (b.arg.position ?? 1e9));
+  const optional = fields.filter((f) => !main.includes(f));
+
+  const preview = el("pre", {});
+  const run = el("button", { type: "submit", className: "action primary", textContent: "Run" });
+  const cancel = el("button", { type: "button", className: "action", textContent: "Cancel", disabled: true });
+  const copy = el("button", { type: "button", className: "action", textContent: "Copy command" });
+  const status = el("span", { className: "status", role: "status" });
+  const output = el("pre", { id: "output", hidden: true });
+  const outputsTitle = el("h2", { textContent: "Files written", hidden: true });
+  const outputs = el("ul", { className: "outputs" });
+  const images = el("div", { className: "images" });
+  const form = el("form", { noValidate: false, autocomplete: "off" });
+  form.append(...main.map((f) => f.node));
+  if (optional.length) {
+    const details = el("details", {}, el("summary", { textContent: `Options (${optional.length})` }));
+    details.append(el("div", { className: "option-grid" }, ...optional.map((f) => f.node)));
+    form.append(details);
+  }
+  form.append(
+    el("div", { className: "bar" }, run, cancel, copy, status),
+    el("h2", { textContent: "Command (POSIX shell quoting)" }), preview, output, outputsTitle, outputs, images,
+  );
+  if (command.path[1] === "preview") {
+    // The map of `terrio view`, drawn from the same input and style options.
+    const openMapButton = el("button", { type: "button", className: "action", textContent: "Open map" });
+    form.querySelector(".bar").insertBefore(openMapButton, status);
+    openMapButton.addEventListener("click", () => {
+      if (!form.reportValidity()) return;
+      const styleFields = fields.filter((f) => !NOT_MAP_OPTIONS.has(f.arg.name));
+      const tokens = commandLine(command, workerFields(styleFields));
+      const input = fields.find((f) => f.arg.position != null)?.read().trim() || "";
+      openMap({ title: input, args: ["view", ...tokens], run: runForBytes, abort: abortMapRun });
+    });
+  }
+
+  const render = () => {
+    const tokens = commandLine(command, fields);
+    preview.textContent = ["terrio", command.path[1], ...tokens].map(shellQuote).join(" ");
+  };
+  form.addEventListener("input", render);
+  form.addEventListener("change", render);
+  render();
+
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(preview.textContent);
+      status.textContent = "Copied.";
+    } catch {
+      status.textContent = "Could not reach the clipboard.";
+    }
+  });
+
+  let cancelled = false;
+  // Whether the run has reached the worker: until then it waits in the queue, behind an upload or
+  // a map batch, and cancelling it only takes it out.
+  let inFlight = false;
+  cancel.addEventListener("click", () => {
+    cancelled = true;
+    if (!inFlight) {
+      status.textContent = "Cancelled before it started.";
+      return;
+    }
+    // A command cannot be interrupted inside the worker: the worker is ended and a new one started
+    // with the workspace as it was before the command.
+    worker.terminate();
+    pending && pending({ type: "error", message: "cancelled" });
+    status.textContent = "Cancelled. Restarting…";
+    startWorker().then(() => (status.textContent = "Cancelled: the command was stopped."), (error) => (status.textContent = `Could not restart: ${error.message}`));
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    cancelled = false;
+    inFlight = false;
+    activeRun = status;
+    run.disabled = true;
+    cancel.disabled = false;
+    status.className = "status";
+    status.textContent = "Running…";
+    output.textContent = "";
+    output.classList.remove("bad");
+    output.hidden = true;
+    outputsTitle.hidden = true;
+    outputs.replaceChildren();
+    for (const img of images.querySelectorAll("img")) URL.revokeObjectURL(img.src);
+    images.replaceChildren();
+    const tokens = commandLine(command, workerFields(fields));
+    // `preview` without an output: its PNG is shown here, as `terrio ui` shows it, from the bytes
+    // `-o -` writes to standard output (which is not a terminal here).
+    const showPng = command.path[1] === "preview" && !tokens.some((t) => t === "-o" || t === "--output" || t.startsWith("--output="));
+    const args = [command.path[1], ...(showPng ? ["-o", "-"] : []), ...tokens];
+    const started = performance.now();
+    try {
+      const result = await enqueue(async () => {
+        await ready;
+        if (cancelled) return null;
+        inFlight = true;
+        return call({ type: "run", args, binaryStdout: showPng }, (stream, text) => {
+          output.hidden = false;
+          output.append(text);
+        });
+      });
+      if (!result) return;
+      const seconds = ((performance.now() - started) / 1000).toFixed(1);
+      for (const path of result.removed) files.delete(path);
+      for (const { path, buffer } of result.changed) files.set(path, new Blob([buffer]));
+      renderFiles();
+      if (result.changed.length) {
+        outputsTitle.hidden = false;
+        outputs.replaceChildren(...result.changed.map(({ path }) => {
+          const save = el("button", { type: "button", className: "action", textContent: "Download" });
+          save.addEventListener("click", () => download(path));
+          return el("li", {}, el("span", { className: "name", textContent: path }), el("span", { className: "size", textContent: formatSize(files.get(path).size) }), save);
+        }));
+        images.replaceChildren(...result.changed.filter(({ path }) => /\.(png|jpe?g|webp|gif)$/i.test(path)).map(({ path }) =>
+          el("img", { src: URL.createObjectURL(files.get(path)), alt: `The image written to ${path}` })));
+      }
+      if (result.stdout && result.stdout.byteLength && result.code === 0) {
+        const png = new Blob([result.stdout], { type: "image/png" });
+        const save = el("button", { type: "button", className: "action", textContent: "Download PNG" });
+        save.addEventListener("click", () => {
+          const a = el("a", { href: URL.createObjectURL(png), download: "preview.png" });
+          document.body.append(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+        });
+        images.append(el("img", { src: URL.createObjectURL(png), alt: "The image the command drew" }), el("div", { className: "bar" }, save));
+      }
+      const failed = result.code !== 0;
+      output.classList.toggle("bad", failed);
+      status.className = failed ? "status bad" : "status";
+      const fetched = result.http.requests ? ` Fetched ${formatSize(result.http.bytes)} in ${result.http.requests} request(s).` : "";
+      status.textContent = `${failed ? `Failed (exit status ${result.code})` : "Finished"} in ${seconds} s.${fetched}`;
+    } catch (error) {
+      if (!cancelled) {
+        status.className = "status bad";
+        status.textContent = `Error: ${error.message}`;
+      }
+    } finally {
+      activeRun = null;
+      run.disabled = false;
+      cancel.disabled = true;
+    }
+  });
+
+  const content = byId("content");
+  content.replaceChildren(el("h1", { textContent: command.path.slice(1).join(" ") }), el("p", { className: "about", textContent: command.description }), form);
+  content.parentElement.scrollTop = 0;
+}
+
+// ---- Start ----
+
+// On a narrow screen the form is below the command list: bring it into view when a command is chosen.
+byId("commands").addEventListener("click", (event) => {
+  if (event.target.closest("button") && matchMedia("(max-width: 720px)").matches) byId("content").scrollIntoView({ block: "start" });
+});
+byId("upload").addEventListener("change", async (event) => {
+  await addFiles([...event.target.files]);
+  event.target.value = "";
+});
+byId("url-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (addRemote(byId("url").value)) byId("url").value = "";
+});
+for (const button of document.querySelectorAll("[data-sample]")) {
+  button.addEventListener("click", () => addRemote(button.dataset.sample));
+}
+let dragDepth = 0;
+addEventListener("dragenter", (event) => { if (event.dataTransfer.types.includes("Files")) { dragDepth++; document.body.classList.add("dragging"); } });
+addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dragging"); } });
+addEventListener("dragover", (event) => event.preventDefault());
+addEventListener("drop", (event) => {
+  event.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove("dragging");
+  addFiles([...event.dataTransfer.files]);
+});
+
+renderFiles();
+(async () => {
+  try {
+    const catalog = await startWorker();
+    byId("version").textContent = `v${catalog.version}`;
+    const all = leaves(catalog.command).sort((a, b) => a.path.join(" ").localeCompare(b.path.join(" ")));
+    byId("search").addEventListener("input", (event) => renderList(all, event.target.value));
+    renderList(all, "");
+    show(all.find((c) => c.name === "info") || all[0]);
+  } catch (error) {
+    byId("startup").textContent = `Could not start terrio: ${error.message}`;
+    byId("startup").classList.add("bad");
+  }
+})();
+</script>
+</body>
+</html>

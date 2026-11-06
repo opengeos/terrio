@@ -21,8 +21,9 @@ terrio-cli = { path = "crates/terrio-cli" }
 
 # Format drivers, coordinate reference systems
 wbraster = "0.2.1"
-# KMZ always; GeoParquet and OSM PBF with terrio's `parquet` and `osm` features.
-wbvector = { version = "0.1.6", features = ["kmz"] }
+# Without its optional readers (KMZ, with its zip 0.6; GeoParquet; OSM PBF): terrio's own drivers
+# read those formats.
+wbvector = "0.1.6"
 wbprojection = "0.3.3"
 # Karney's geodesics, for the ellipsoidal gnomonic projection (pure Rust).
 geographiclib-rs = { version = "0.2.7", default-features = false }
@@ -53,13 +54,14 @@ quick-xml = "0.42"
 # Multi-byte DBF code pages (CP932, CP936, CP949, CP950) of shapefiles, with the differences of
 # GDAL's iconv recoding applied on top (drivers/vector/shapefile_cjk.rs).
 encoding_rs = "0.8.35"
-# OpenStreetMap PBF decoding, the version wbvector uses.
+# OpenStreetMap PBF decoding (drivers/vector/osm.rs).
 osmpbfreader = "0.19"
 # Its Zstandard (zstd 0.13, a C library) is enabled by terrio-crs's `libzstd` feature only, for
 # terrio-crs built on its own: terrio decodes GeoTIFF Zstandard itself (zstd 0.14 or `ruzstd`).
 tiff = { version = "0.11", features = ["webp"] }
 half = "2"
 flate2 = "1"
+fdeflate = "0.3"
 weezl = "0.2"
 png = "0.18"
 lz4_flex = { version = "0.14", default-features = false, features = ["alloc", "safe-decode", "checked-decode"] }

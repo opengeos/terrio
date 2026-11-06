@@ -414,7 +414,7 @@ pub(crate) fn write(
                     let bytes = netcdf_groups_to_bytes(&all, options)?;
                     // Written beside the file, then renamed over it: an interrupted write leaves the
                     // original as it was.
-                    let tmp = p.with_extension(format!("nc.tmp-{}", std::process::id()));
+                    let tmp = p.with_extension(format!("nc.tmp-{}", crate::process_id()));
                     std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, p)).inspect_err(|_| {
                         let _ = std::fs::remove_file(&tmp);
                     })?;
@@ -433,7 +433,8 @@ pub(crate) fn write(
         }
         // Formats without a CRS of their own: GDAL's sidecar holds it.
         RasterDriver::PCRaster | RasterDriver::GRASSASCIIGrid => {
-            r.write(path, driver.to_wb()).map_err(Into::into).and_then(|()| common::write_pam(p, &r.crs))
+            let format = driver.to_wb().ok_or_else(|| crate::Error::Unsupported(format!("the {} driver cannot write", driver.name())));
+            format.and_then(|format| r.write(path, format).map_err(Into::into)).and_then(|()| common::write_pam(p, &r.crs))
         }
         _ => return None,
     })

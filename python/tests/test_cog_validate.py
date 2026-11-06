@@ -204,3 +204,51 @@ def test_remote_gdal_auto_keeps_header_reads(tmp_path):
         finally:
             server.shutdown()
             worker.join()
+
+
+def test_external_overviews_agree_with_rio_cogeo(tmp_path):
+    # GDAL takes every image of a .ovr sidecar as an overview: those GDAL builds (all flagged
+    # reduced) and hand-made ones whose first image is not flagged, full resolution included.
+    rasterio = pytest.importorskip("rasterio")
+    cogeo = pytest.importorskip("rio_cogeo.cogeo")
+    from rasterio.enums import Resampling
+    from rasterio.transform import from_origin
+
+    def gtiff(name, width, height, overviews=None):
+        path = tmp_path / name
+        profile = dict(
+            driver="GTiff",
+            width=width,
+            height=height,
+            count=1,
+            dtype="float32",
+            crs="EPSG:32610",
+            transform=from_origin(500000, 4000000, 10, 10),
+            tiled=True,
+            blockxsize=256,
+            blockysize=256,
+        )
+        with rasterio.open(path, "w", **profile) as dst:
+            dst.write(np.asarray(raster(width, height).read())[0], 1)
+            if overviews:
+                dst.build_overviews(overviews, Resampling.average)
+        return path
+
+    built = gtiff("gdal_sidecar.tif", 2100, 1500)
+    with rasterio.Env(TIFF_USE_OVR=True), rasterio.open(built, "r+") as dst:
+        dst.build_overviews([2, 4], Resampling.average)
+    paths = [built]
+    for name, (width, height, overviews) in {
+        "half_sidecar.tif": (1050, 750, None),
+        "half_with_overviews_sidecar.tif": (1050, 750, [2]),
+        "full_resolution_sidecar.tif": (2100, 1500, [2, 4]),
+    }.items():
+        path = gtiff(name, 2100, 1500)
+        gtiff(name + ".ovr", width, height, overviews)
+        paths.append(path)
+    for path in paths:
+        assert (tmp_path / (path.name + ".ovr")).exists()
+        for strict in (False, True):
+            expected = cogeo.cog_validate(str(path), strict=strict, quiet=True)
+            got = terrio.validate_cog(path, strict=strict)
+            assert got == (expected[0], list(expected[1]), list(expected[2])), path.name

@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    paths: ["docs/**", "ROADMAP.md", "zensical.toml", "requirements_docs.txt", "lite/**", "scripts/test_jupyterlite.py", ".github/workflows/docs.yml"]
+    paths: ["docs/**", "ROADMAP.md", "zensical.toml", "requirements_docs.txt", "lite/**", "web/**", "scripts/test_jupyterlite.py", ".github/workflows/docs.yml"]
   workflow_dispatch:
 
 permissions:
@@ -29,6 +29,14 @@ jobs:
           uv venv --python 3.12
           uv pip install -r requirements_docs.txt
           .venv/bin/zensical build
+      # terrio.dev/web, also built on pull requests that change the docs or the page, so a broken
+      # release build is caught before it is deployed.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the command line in the browser (terrio.dev/web)
+        run: web/build.sh site/web
       - name: Download the latest Pyodide wheel
         env:
           GH_TOKEN: ${{ github.token }}

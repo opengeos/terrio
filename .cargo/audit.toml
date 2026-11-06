@@ -1,0 +1,22 @@
+# cargo audit's settings for this workspace, read from the repository root: by the `audit` job of
+# .github/workflows/ci.yml and by `cargo audit` run locally. Vulnerabilities fail it; unmaintained,
+# unsound and notice advisories are listed as warnings and do not (nothing is denied in [output]).
+
+[advisories]
+# wbraster 0.2.1, its latest release, requires zip 8.6.0 and ruzstd 0.8.3, and no compatible release
+# fixes them. Remove these when a wbraster release depends on zip >= 9 and ruzstd >= 0.9.1. An ID is
+# ignored in every version of its crate: the audit job checks, without this file, that these five
+# are the only vulnerabilities, and only in zip 8.6.0 and ruzstd 0.8.3.
+ignore = [
+    # zip 8.6.0: `ZipArchive::extract` and `ZipStreamReader::extract`, which neither terrio nor
+    # wbraster calls. wbraster's one zip reader, for sensor bundles, copies entries out itself, and
+    # terrio never calls it.
+    "RUSTSEC-2026-0429",
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+    # ruzstd 0.8.3: wbraster's Zarr reader, which terrio reaches only with
+    # TERRIO_WBRASTER_FALLBACK=YES in builds without the `zarr` feature. terrio's own readers decode
+    # Zstandard with ruzstd 0.9 (or zstd 0.14, with `libzstd`).
+    "RUSTSEC-2026-0344",
+]
