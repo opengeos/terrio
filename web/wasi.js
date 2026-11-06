@@ -32,6 +32,8 @@ export class MemFile {
     this.size = data.length;
     this.ino = nextIno++;
     this.mtime = now();
+    /** Counts changes, which `mtime` may not tell apart within one clock tick. */
+    this.version = 0;
   }
   get readonly() { return false; }
   read(offset, length) {
@@ -61,12 +63,14 @@ export class MemFile {
     this.data.set(bytes, offset);
     this.size = Math.max(this.size, end);
     this.mtime = now();
+    this.version++;
   }
   truncate(size) {
     if (size > this.data.length) this.grow(size);
     if (size > this.size) this.data.fill(0, this.size, size);
     this.size = size;
     this.mtime = now();
+    this.version++;
   }
   /** The contents, as a copy. */
   bytes() { return this.data.slice(0, this.size); }
@@ -158,8 +162,17 @@ export class RemoteFile {
     if (first.status === 416) return new RemoteFile(url, 0, new Uint8Array(0));
     if (first.status !== 206) throw new Error(`${url}: HTTP ${first.status}`);
     const total = /\/(\d+)$/.exec(first.range || "");
-    const size = total ? Number(total[1]) : headSize;
-    if (!Number.isFinite(size)) return RemoteFile.whole(url);
+    let size = total ? Number(total[1]) : headSize;
+    if (!Number.isFinite(size)) {
+      // A short first range is the whole of a small file, read again plainly in case it was
+      // compressed; a full one is of a file whose end is found with one-byte ranges.
+      if (first.body.length < BLOCK) return RemoteFile.whole(url);
+      try {
+        size = RemoteFile.searchSize(url);
+      } catch {
+        return RemoteFile.whole(url);
+      }
+    }
     // A compressed response holds a different number of bytes than asked for: its ranges count
     // compressed bytes.
     if (first.body.length !== Math.min(BLOCK, size)) return RemoteFile.whole(url);
@@ -175,6 +188,33 @@ export class RemoteFile {
     const file = new RemoteFile(url, size, null);
     file.blocks.set(0, first.body);
     return file;
+  }
+
+  /**
+   * The size of `url`, whose first `BLOCK` bytes exist, from one-byte range requests: a byte past
+   * the end is refused with 416. One request per doubling of the size past `BLOCK`, then one per
+   * bit of the size (about 45 for 4 GB). Throws when the server answers otherwise.
+   */
+  static searchSize(url) {
+    const exists = (offset) => {
+      const r = get(url, offset, offset + 1);
+      if (r.status === 206 && r.body.length === 1) return true;
+      if (r.status === 416) return false;
+      throw new Error(`${url}: a one-byte range returned HTTP ${r.status}`);
+    };
+    // `low` is a byte that exists and `high` one that does not.
+    let low = BLOCK - 1, high = 2 * BLOCK - 1;
+    while (exists(high)) {
+      low = high;
+      high = 2 * high + 1;
+      if (high > Number.MAX_SAFE_INTEGER) throw new Error(`${url}: no end found`);
+    }
+    while (high - low > 1) {
+      const middle = Math.floor((low + high) / 2);
+      if (exists(middle)) low = middle;
+      else high = middle;
+    }
+    return low + 1;
   }
 
   /** `url` read whole, or `null` when there is nothing there. */
@@ -203,6 +243,9 @@ export class RemoteFile {
       const start = b * BLOCK, stop = Math.min(this.size, (e + 1) * BLOCK);
       const r = get(this.url, start, stop);
       if (r.status !== 206 || r.body.length !== stop - start) throw new Error(`${this.url}: a range request returned HTTP ${r.status}, ${r.body.length} bytes`);
+      // Where the server lets the page read `Content-Range`, the bytes must be the ones asked for.
+      const got = /^bytes (\d+)-(\d+)\//.exec(r.range || "");
+      if (got && (Number(got[1]) !== start || Number(got[2]) !== stop - 1)) throw new Error(`${this.url}: asked for bytes ${start}-${stop - 1}, got ${got[1]}-${got[2]}`);
       for (let k = b; k <= e; k++) this.blocks.set(k, r.body.subarray((k - b) * BLOCK, Math.min(r.body.length, (k - b + 1) * BLOCK)));
       b = e + 1;
     }
@@ -238,16 +281,21 @@ export class RemoteDir {
     // A name with more path after it is a folder, whatever an earlier lookup of it found.
     if (known !== undefined && (last || known instanceof RemoteDir)) return known;
     let node;
-    // Hosts, and names without an extension, are taken for folders: probing them would fetch
-    // whatever page the server returns for a folder.
-    if (!last || this.prefix === "https://" || !name.includes(".")) {
-      node = new RemoteDir(`${this.prefix}${name}/`, this.errors);
+    const folder = () => new RemoteDir(`${this.prefix}${name}/`, this.errors);
+    if (!last || this.prefix === "https://") {
+      // A host, or a name with more path after it, is a folder.
+      node = folder();
     } else {
+      // A file, or a folder when there is nothing there, which is how a command looking at its
+      // input's parent folders sees them. A name without an extension may be either (a dataset at
+      // `…/download`, a folder of datasets): one that cannot be read is taken for a folder, since
+      // object stores refuse a folder's URL rather than reporting it missing.
+      const extension = name.includes(".");
       try {
-        node = RemoteFile.probe(this.prefix + name);
+        node = RemoteFile.probe(this.prefix + name) ?? (extension ? null : folder());
       } catch (error) {
-        this.errors.push(error.message);
-        node = null;
+        if (extension) this.errors.push(error.message);
+        node = extension ? null : folder();
       }
     }
     this.entries.set(name, node);
@@ -575,6 +623,8 @@ export class Wasi {
         if (node && oflags & OFLAGS.CREAT && oflags & OFLAGS.EXCL) return E.EXIST;
         const writing = (rightsBase & 0x40n) !== 0n || (oflags & (OFLAGS.CREAT | OFLAGS.TRUNC)) !== 0;
         if (!node) {
+          // Directories are made with path_create_directory, not opened into being.
+          if (oflags & OFLAGS.DIRECTORY) return E.NOENT;
           if (!r.parent || r.parent.readonly) return r.parent ? E.ROFS : E.NOENT;
           node = new MemFile();
           r.parent.entries.set(r.name, node);
@@ -642,7 +692,18 @@ export class Wasi {
         return typeof r === "number" ? r : E.INVAL;
       }),
       path_symlink: () => E.NOTSUP,
-      path_link: () => E.NOTSUP,
+      // A second name for a file, as the command line's atomic writes publish their output.
+      path_link: guard((oldFd, oldFlags, oldPtr, oldLen, newFd, newPtr, newLen) => {
+        const from = self.resolve(oldFd, self.string(oldPtr, oldLen));
+        if (typeof from === "number") return from;
+        if (isDir(from.node)) return E.PERM;
+        const to = self.resolve(newFd, self.string(newPtr, newLen), { create: true });
+        if (typeof to === "number") return to;
+        if (to.node) return E.EXIST;
+        if (!to.parent || to.parent.readonly) return E.ROFS;
+        to.parent.entries.set(to.name, from.node);
+        return E.SUCCESS;
+      }),
     };
     return new Proxy(wasi, {
       get: (target, name) => target[name] ?? (() => E.NOSYS),

@@ -34,7 +34,7 @@ function serve(files, mode = "ranges") {
     setRequestHeader(name, value) { this.headers[name] = value; }
     getResponseHeader(name) {
       if (name === "Content-Length") return this.length;
-      return name === "Content-Range" && mode === "no-head-exposed" ? this.contentRange ?? null : null;
+      return name === "Content-Range" && (mode === "no-head-exposed" || mode === "wrong-range") ? this.contentRange ?? null : null;
     }
     send() {
       const body = files[this.url];
@@ -55,7 +55,10 @@ function serve(files, mode = "ranges") {
         log.at(-1).bytes = body.length;
         return;
       }
-      const start = Number(m[1]), end = Math.min(size, Number(m[2]) + 1);
+      // "wrong-range": a read in the middle of the file is answered one byte later than asked.
+      const shift = mode === "wrong-range" && Number(m[1]) > 0 && Number(m[2]) < size - 1 ? 1 : 0;
+      const start = Number(m[1]) + shift, end = Math.min(size, start + Number(m[2]) + 1 - Number(m[1]));
+      if (start >= size) { this.status = 416; this.response = new ArrayBuffer(0); return; }
       this.status = 206;
       // Decoding a piece of a compressed stream does not give back as many bytes as were asked for.
       this.response = body.slice(start, mode === "gzip" ? end - 1 : end).buffer;
@@ -72,7 +75,7 @@ test("a remote file is read by ranges, fetching each block once", () => {
   const log = serve({ "https://example.com/big.bin": big });
   const file = RemoteFile.probe("https://example.com/big.bin");
   assert.equal(file.size, big.length);
-  assert.equal(file.whole, null);
+  assert.ok(file.whole === null, "read by ranges");
   const at = 2 * 1024 * 1024 + 5;
   assert.deepEqual(file.read(at, 1000), big.subarray(at, at + 1000));
   const requests = log.length;
@@ -102,14 +105,42 @@ test("without HEAD, a file is still read by ranges when its size can be read", (
   let log = serve({ "https://example.com/big.bin": big }, "no-head-exposed");
   let file = RemoteFile.probe("https://example.com/big.bin");
   assert.equal(file.size, big.length);
-  assert.equal(file.whole, null);
+  assert.ok(file.whole === null, "read by ranges");
   assert.deepEqual(file.read(big.length - 3, 3), big.subarray(big.length - 3));
   assert.ok(log.every((r) => r.range || r.method === "HEAD"), "no request for the whole file");
-  // Without it, the size is unknown: the file is read whole.
+  // Without it, the end is found with one-byte ranges, and the file is still read by ranges.
   log = serve({ "https://example.com/big.bin": big }, "no-head");
   file = RemoteFile.probe("https://example.com/big.bin");
   assert.equal(file.size, big.length);
-  assert.ok(file.whole);
+  assert.ok(file.whole === null, "read by ranges");
+  assert.deepEqual(file.read(big.length - 3, 3), big.subarray(big.length - 3));
+  assert.ok(log.every((r) => r.range || r.method === "HEAD"), "no request for the whole file");
+  // About log2 of the size in one-byte requests.
+  assert.ok(log.length < 2 * Math.log2(big.length), `${log.length} requests`);
+});
+
+test("a range other than the one asked for is refused, not cached", () => {
+  serve({ "https://example.com/big.bin": big }, "wrong-range");
+  const file = RemoteFile.probe("https://example.com/big.bin");
+  assert.ok(file.whole === null, "read by ranges");
+  assert.throws(() => file.read(2 * 1024 * 1024, 10), /asked for bytes/);
+});
+
+test("a name without an extension is a file when there is one, else a folder", () => {
+  serve({ "https://example.com/api/download": big });
+  const dir = new RemoteDir("https://", []);
+  const api = dir.lookup("example.com", false).lookup("api", false);
+  assert.ok(api.lookup("download", true) instanceof RemoteFile);
+  assert.ok(api.lookup("folder", true) instanceof RemoteDir);
+});
+
+test("every change to a file is counted, also within one clock tick", () => {
+  const file = new MemFile();
+  const before = file.version;
+  file.write(0, Uint8Array.of(1));
+  file.write(0, Uint8Array.of(2));
+  file.truncate(1);
+  assert.equal(file.version, before + 3);
 });
 
 test("a write past the end of a truncated file leaves zeros, not the old bytes", () => {
@@ -133,7 +164,6 @@ test("a missing remote file is not found; names without an extension are folders
   assert.ok(host instanceof RemoteDir);
   assert.equal(host.lookup("missing.tif", true), null);
   assert.ok(host.lookup("folder", true) instanceof RemoteDir);
-  assert.equal(log.filter((r) => r.url.endsWith("folder")).length, 0, "a folder is not fetched");
   // A host is a folder even as the last name of a path (a command looking at its input's parents).
   assert.ok(dir.lookup("files.example.com", true) instanceof RemoteDir);
   // A name probed as a file and not found is still a folder when a path goes through it.

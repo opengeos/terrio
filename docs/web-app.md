@@ -53,10 +53,12 @@ After each run, the page shows how many requests the command made and how many b
   (`bucket.s3.amazonaws.com`), which serves buckets in every region. A bucket whose name contains
   dots is read path-style (`s3.amazonaws.com/bucket`), which works only for buckets in us-east-1.
 - Private buckets need a presigned `https://` URL. A presigned URL is signed for GET only, so the
-  page learns the file's size from the first range it reads: the bucket's CORS rules must expose
-  the `Content-Range` header for the file to be read by ranges. Otherwise it is read whole.
-- The server must allow cross-origin requests (CORS). The browser blocks reads from servers that
-  don't, and the page reports the URL it could not read.
+  page cannot ask for the file's size with HEAD. It reads the size from the first range's
+  `Content-Range` header when the bucket's CORS rules expose it, and otherwise finds the end of the
+  file with a few one-byte range requests. Either way the file is read by ranges.
+- The server must allow cross-origin requests (CORS) for GET and HEAD, including the `Range`
+  request header, which some browsers send a preflight request for. The browser blocks reads from
+  servers that don't, and the page reports the URL it could not read.
 - The page reads a file whole instead of by ranges when it is smaller than 1 MB, when the server
   ignores `Range` requests, or when the server compresses its responses (a compressed response's
   ranges count compressed bytes).
@@ -64,7 +66,9 @@ After each run, the page shows how many requests the command made and how many b
   requests from it.
 - Fetched parts of a remote file are kept while the page is open, so later commands on the same
   URL (and the map) do not fetch them again. A file that changes on its server during that time is
-  seen as it was; reload the page to read it afresh.
+  seen as it was; reload the page to read it afresh. Cancelling a command also discards them.
+- A URL whose last name has no extension (`…/download`) is read as a file when there is one, and
+  otherwise taken for a folder.
 - Sidecar files next to a remote dataset, such as `.aux.xml` or a shapefile's `.dbf`, are looked up
   on the server by name. A command that lists a remote folder sees only the names it has already
   looked up.
@@ -80,7 +84,7 @@ After each run, the page shows how many requests the command made and how many b
 - **No `ui`, `view` or `mcp`.** These commands run servers. The [map](#map) takes the place of
   `view`.
 - **Cancelling** a command ends it and restarts terrio, with the workspace as it was before the
-  command started.
+  command started. Remote files are fetched again afterwards.
 
 The [Playground](playground.md) is a lighter page built on the [npm package](javascript.md). It
 previews, converts and reprojects a file, and reads remote files the same way.

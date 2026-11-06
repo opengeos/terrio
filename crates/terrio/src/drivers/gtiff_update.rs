@@ -491,7 +491,7 @@ impl Temporary {
         let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         for _ in 0..1000 {
             let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let path = dir.join(format!(".{name}.terrio-{}-{n}.tmp", std::process::id()));
+            let path = dir.join(format!(".{name}.terrio-{}-{n}.tmp", crate::process_id()));
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(_) => return Ok(Self { path, keep: false }),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,

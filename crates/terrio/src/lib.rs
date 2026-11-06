@@ -198,6 +198,17 @@
 #[cfg_attr(docsrs, doc(cfg(feature = "parquet")))]
 pub mod arrow;
 #[cfg(feature = "avif")]
+/// This process's id, for naming temporary files. 0 on WASI, which has no process ids
+/// (`std::process::id` panics there): the browser build of the command line runs one program at a
+/// time, and the names carry a counter or are checked for being taken too.
+#[cfg_attr(not(fs), allow(dead_code))]
+pub(crate) fn process_id() -> u32 {
+    #[cfg(target_os = "wasi")]
+    return 0;
+    #[cfg(not(target_os = "wasi"))]
+    std::process::id()
+}
+
 mod avif;
 mod civil_time;
 mod cog;

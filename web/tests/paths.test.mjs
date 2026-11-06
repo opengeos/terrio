@@ -48,7 +48,10 @@ function definitions(html, names) {
     const start = lines.findIndex((l) => l.startsWith(`function ${name}(`) || l.startsWith(`const ${name} =`));
     assert.notEqual(start, -1, `${name} is defined`);
     let end = start;
-    if (lines[start].startsWith("function")) while (lines[end] !== "}") end++;
+    if (lines[start].startsWith("function")) {
+      while (end < lines.length && lines[end] !== "}") end++;
+      assert.ok(end < lines.length, `${name} ends with a closing brace on a line of its own`);
+    }
     found[name] = lines.slice(start, end + 1).join("\n");
   }
   return found;

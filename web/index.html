@@ -323,16 +323,23 @@ function enqueue(task) {
   return result;
 }
 
+/** Adds files to the workspace; never rejects, but reports the files that could not be added. */
 async function addFiles(list) {
+  const failed = [];
   for (const file of list) {
     const path = file.webkitRelativePath || file.name;
-    files.set(path, file);
-    await enqueue(async () => {
-      await ready;
-      await call({ type: "put", path, buffer: await file.arrayBuffer() });
-    });
+    try {
+      await enqueue(async () => {
+        await ready;
+        await call({ type: "put", path, buffer: await file.arrayBuffer() });
+      });
+      files.set(path, file);
+    } catch (error) {
+      failed.push(`${path}: ${error.message}`);
+    }
   }
   renderFiles();
+  if (failed.length) alert(`Could not add:\n${failed.join("\n")}`);
 }
 
 function addRemote(url) {
@@ -369,7 +376,14 @@ function renderFiles() {
     remove.addEventListener("click", async () => {
       files.delete(path);
       renderFiles();
-      await enqueue(async () => { await ready; await call({ type: "remove", path }); });
+      try {
+        await enqueue(async () => { await ready; await call({ type: "remove", path }); });
+      } catch {
+        // The worker restarted: the file is gone from it too.
+      }
+      // A command running when the file was removed may have written it back to this list.
+      files.delete(path);
+      renderFiles();
     });
     items.push(el("li", {}, el("span", { className: "name mono", textContent: path }), el("span", { className: "size", textContent: formatSize(blob.size) }), save, remove));
   }
@@ -396,6 +410,17 @@ async function runForBytes(args) {
   await ready;
   const result = await enqueue(() => call({ type: "run", args, binaryStdout: true }, (stream, text) => { if (stream === "stderr") stderr += text; }));
   return { code: result.code, stdout: new Uint8Array(result.stdout || new ArrayBuffer(0)), stderr };
+}
+
+/**
+ * `fields` as the worker reads them: in path fields (and positionals, the inputs and outputs), each
+ * value that is a remote path is rewritten to where the worker reads it. Other fields, filters and
+ * free text among them, are passed as typed.
+ */
+function workerFields(fields) {
+  return fields.map((f) => (f.arg.type === "path" || f.arg.position != null)
+    ? { ...f, read: () => f.read().split("\n").map((line) => toWorkerPath(line.trim())).join("\n") }
+    : f);
 }
 
 // ---- The path picker ----
@@ -479,9 +504,9 @@ function show(command) {
     openMapButton.addEventListener("click", () => {
       if (!form.reportValidity()) return;
       const styleFields = fields.filter((f) => !NOT_MAP_OPTIONS.has(f.arg.name));
-      const tokens = commandLine(command, styleFields);
+      const tokens = commandLine(command, workerFields(styleFields));
       const input = fields.find((f) => f.arg.position != null)?.read().trim() || "";
-      openMap({ title: input, args: ["view", ...tokens.map(toWorkerPath)], run: runForBytes });
+      openMap({ title: input, args: ["view", ...tokens], run: runForBytes });
     });
   }
 
@@ -528,11 +553,11 @@ function show(command) {
     outputs.replaceChildren();
     for (const img of images.querySelectorAll("img")) URL.revokeObjectURL(img.src);
     images.replaceChildren();
-    const tokens = commandLine(command, fields);
+    const tokens = commandLine(command, workerFields(fields));
     // `preview` without an output: its PNG is shown here, as `terrio ui` shows it, from the bytes
     // `-o -` writes to standard output (which is not a terminal here).
     const showPng = command.path[1] === "preview" && !tokens.some((t) => t === "-o" || t === "--output" || t.startsWith("--output="));
-    const args = [command.path[1], ...(showPng ? ["-o", "-"] : []), ...tokens].map(toWorkerPath);
+    const args = [command.path[1], ...(showPng ? ["-o", "-"] : []), ...tokens];
     const started = performance.now();
     try {
       await ready;

@@ -604,7 +604,7 @@ pub fn update_raster(path: &str, ds: &crate::RasterDataset, o: &TileWriteOptions
 
 /// Adds vector layers to a local PMTiles or MBTiles archive of vector tiles: see
 /// [`update_vector_bytes`]. The archive is rewritten, and replaced once complete.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub fn update_vector(path: &str, layers: &[wbvector::Layer], o: &TileWriteOptions, overwrite: bool) -> Result<()> {
     let bytes = update_vector_bytes(std::fs::read(path)?, layers, o, overwrite)?;
     replace_file(path, &bytes)

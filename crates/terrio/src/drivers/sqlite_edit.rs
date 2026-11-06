@@ -1082,7 +1082,7 @@ fn checksum(nonce: u32, data: &[u8]) -> u32 {
 
 fn nonce() -> u32 {
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    (t as u32) ^ ((t >> 32) as u32) ^ std::process::id()
+    (t as u32) ^ ((t >> 32) as u32) ^ crate::process_id()
 }
 
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {

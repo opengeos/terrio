@@ -29,7 +29,7 @@ let view = null;
 /**
  * Opens the map of a dataset.
  * @param {{title: string, args: string[], run: (args: string[]) => Promise<{code: number, stdout: Uint8Array, stderr: string}>}} options
- *   `args` is `[input, ...style options]`, as the worker reads them; `run` runs a command line.
+ *   `args` is `["view", ...options and input]`, as the worker reads them; `run` runs a command line.
  */
 export async function openMap({ title, args, run }) {
   view?.close();
@@ -91,11 +91,19 @@ class MapView {
     this.setStatus();
   }
 
+  /**
+   * The command line with `flags` right after the subcommand: after the options and positionals,
+   * they could land past a `--`, where they would be taken for positionals.
+   */
+  withFlags(...flags) {
+    return [this.args[0], ...flags, ...this.args.slice(1)];
+  }
+
   async start() {
     this.resize();
     this.canvas.focus();
     try {
-      const result = await this.run([...this.args, "--info-json"]);
+      const result = await this.run(this.withFlags("--info-json"));
       if (this.closed) return;
       if (result.code !== 0) throw new Error(result.stderr.trim().replace(/^terrio: /, "") || `exit status ${result.code}`);
       this.info = JSON.parse(new TextDecoder().decode(result.stdout));
@@ -177,7 +185,7 @@ class MapView {
     for (const [key] of batch) this.wanted.delete(key);
     const spec = batch.map(([, t]) => [t.x, t.y, t.w, t.h, t.tw, t.th].join(",")).join(";");
     try {
-      const result = await this.run([...this.args, "--tiles", spec]);
+      const result = await this.run(this.withFlags("--tiles", spec));
       if (this.closed) return;
       const bytes = result.stdout;
       const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

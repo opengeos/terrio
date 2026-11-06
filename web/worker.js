@@ -95,6 +95,8 @@ self.onmessage = async ({ data }) => {
       if (code !== 0) throw new Error("terrio --json-usage failed");
       self.postMessage({ type: "ready", catalog: JSON.parse(json) });
     } else if (data.type === "put") {
+      // `/https` is where remote files are read.
+      if (data.path.split("/").find(Boolean) === "https") throw new Error(`a workspace file or folder cannot be named "https": rename ${data.path}`);
       const { dir, name } = parentOf(data.path, true);
       dir.entries.set(name, new MemFile(new Uint8Array(data.buffer)));
       self.postMessage({ type: "put", path: data.path });
@@ -103,7 +105,7 @@ self.onmessage = async ({ data }) => {
       if (at) at.dir.entries.delete(at.name);
       self.postMessage({ type: "removed", path: data.path });
     } else if (data.type === "run") {
-      const before = new Map([...walk()].map(([path, node]) => [path, { node, mtime: node.mtime, size: node.size }]));
+      const before = new Map([...walk()].map(([path, node]) => [path, { node, version: node.version }]));
       const http = { requests: httpStats.requests, bytes: httpStats.bytes };
       const chunks = data.binaryStdout ? [] : null;
       const code = run(data.args, (stream, text) => text && self.postMessage({ type: "out", stream, text }), chunks);
@@ -111,7 +113,7 @@ self.onmessage = async ({ data }) => {
       const changed = [], transfer = [];
       for (const [path, node] of after) {
         const old = before.get(path);
-        if (!old || old.node !== node || old.mtime !== node.mtime || old.size !== node.size) {
+        if (!old || old.node !== node || old.version !== node.version) {
           const buffer = node.bytes().buffer;
           changed.push({ path, buffer });
           transfer.push(buffer);
