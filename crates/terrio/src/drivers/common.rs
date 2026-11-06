@@ -871,14 +871,24 @@ pub(crate) const WGS84_LAT_LONG_WKT: &str = "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\
 /// (the process killed, the disk full) leaves no such file that opens as a raster of old and new
 /// bytes. Headerless data files rely on their header sidecar instead ([`write_headerless`]).
 pub(crate) fn create_replacing(path: impl AsRef<std::path::Path>) -> std::io::Result<Rewrite> {
+    rewrite(open_replacing(path)?)
+}
+
+/// The file `path` opened as [`create_replacing`] opens it, not yet changed (except on Windows,
+/// where the open truncates it).
+fn open_replacing(path: impl AsRef<std::path::Path>) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new().write(true).create(true).truncate(cfg!(windows)).open(path)
+}
+
+/// [`create_replacing`] of a file [`open_replacing`] opened.
+fn rewrite(file: std::fs::File) -> std::io::Result<Rewrite> {
     use std::io::Write;
-    let file = std::fs::OpenOptions::new().write(true).create(true).truncate(cfg!(windows)).open(path)?;
     let meta = file.metadata()?;
     let regular = meta.is_file();
-    let mut rewrite = Rewrite { file, regular, finished: false, head: [0; HEAD], head_len: 0, pos: 0, synced: false };
+    let mut rewrite = Rewrite { file, regular, finished: false, head: [0; HEAD], head_len: 0, pos: 0, end: 0, synced: false };
     if regular && meta.len() > 0 {
         // Dropped on a failure here, the rewrite empties the file, as for any failed write.
-        rewrite.file.write_all(&[0; HEAD][..HEAD.min(meta.len() as usize)])?;
+        rewrite.file.write_all(&[0; HEAD][..meta.len().min(HEAD as u64) as usize])?;
     }
     Ok(rewrite)
 }
@@ -899,17 +909,20 @@ pub(crate) struct Rewrite {
     head_len: usize,
     /// The writer's position.
     pos: u64,
+    /// The end of the bytes written so far, where [`Self::finish`] ends the file if the writer
+    /// sought back from it.
+    end: u64,
     /// Whether the file's own position is `pos` (not after a write or a seek within the head).
     synced: bool,
 }
 
 impl Rewrite {
-    /// Ends the file at the current position, dropping what remains of the previous file, and
-    /// writes its first bytes.
+    /// Ends the file at the furthest byte written (or the current position, past it), dropping what
+    /// remains of the previous file, and writes its first bytes.
     pub(crate) fn finish(&mut self) -> std::io::Result<()> {
         use std::io::{Seek, SeekFrom, Write};
         if self.regular && !self.finished {
-            let end = self.pos;
+            let end = self.pos.max(self.end);
             self.file.seek(SeekFrom::Start(0))?;
             self.file.write_all(&self.head[..self.head_len])?;
             self.file.set_len(end)?;
@@ -943,6 +956,7 @@ impl std::io::Write for Rewrite {
             self.head[at..at + n].copy_from_slice(&buf[..n]);
             self.head_len = self.head_len.max(at + n);
             self.pos += n as u64;
+            self.end = self.end.max(self.pos);
             self.synced = false;
             return Ok(n);
         }
@@ -952,6 +966,7 @@ impl std::io::Write for Rewrite {
         }
         let n = self.file.write(buf)?;
         self.pos += n as u64;
+        self.end = self.end.max(self.pos);
         Ok(n)
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -1004,12 +1019,16 @@ pub(crate) fn write_headerless(
     header: impl AsRef<std::path::Path>,
     bytes: impl AsRef<[u8]>,
 ) -> std::io::Result<()> {
+    use std::io::Write;
     let header = open_header(header)?;
-    std::fs::OpenOptions::new().write(true).create(true).truncate(cfg!(windows)).open(path.as_ref())?;
+    // One open for the probe and the write: a second would wait on a FIFO whose reader left.
+    let data = open_replacing(path)?;
     if let Some(f) = header {
         f.set_len(0)?;
     }
-    write_replacing(path, bytes)
+    let mut file = rewrite(data)?;
+    file.write_all(bytes.as_ref())?;
+    file.finish()
 }
 
 /// [`std::fs::write`] through [`create_replacing`]: `bytes` written over the file at `path`.
@@ -1106,6 +1125,47 @@ mod tests {
         std::fs::write(&hdr, "NROWS 1\n").unwrap();
         write_headerless(&bin, &hdr, [2u8; 4]).unwrap();
         assert_eq!(std::fs::read(&bin).unwrap(), [2u8; 4]);
+    }
+
+    /// A writer that seeks back to patch earlier bytes and finishes there keeps what it wrote past
+    /// that point: the file ends at the furthest byte written.
+    #[test]
+    fn a_rewrite_finished_after_seeking_back_keeps_its_end() {
+        use std::io::{Seek, SeekFrom, Write};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.bin");
+        std::fs::write(&path, vec![7u8; 100]).unwrap();
+        let mut w = create_replacing(&path).unwrap();
+        w.write_all(&[1u8; 40]).unwrap();
+        w.seek(SeekFrom::Start(20)).unwrap();
+        w.write_all(&[2u8; 2]).unwrap();
+        w.finish().unwrap();
+        let mut want = vec![1u8; 40];
+        want[20..22].copy_from_slice(&[2, 2]);
+        assert_eq!(std::fs::read(&path).unwrap(), want);
+    }
+
+    /// A headerless raster written to a FIFO opens it once: a reader sees all of its bytes, not the
+    /// end of file a second open would leave it waiting after.
+    #[cfg(unix)]
+    #[test]
+    fn a_headerless_raster_streams_to_a_fifo_through_one_open() {
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        let (fifo, hdr) = (dir.path().join("a.bil"), dir.path().join("a.hdr"));
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        let reader = {
+            let fifo = fifo.clone();
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                std::fs::File::open(fifo).unwrap().read_to_end(&mut bytes).unwrap();
+                bytes
+            })
+        };
+        let (done, wrote) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done.send(write_headerless(&fifo, &hdr, [5u8; 8]).is_ok()));
+        assert_eq!(wrote.recv_timeout(std::time::Duration::from_secs(10)), Ok(true), "the write did not end");
+        assert_eq!(reader.join().unwrap(), [5u8; 8]);
     }
 
     /// A device is written over as before, with no truncation to fail on.
