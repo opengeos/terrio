@@ -15,7 +15,9 @@ files are not uploaded to a server.
   a multi-file dataset, such as a shapefile's `.shp`, `.shx`, `.dbf` and `.prj`, or upload it as a
   zip and read it with `/vsizip/`.
 - **Outputs** a command writes appear in the workspace and under the form, with a Download button.
-  Images, such as the PNG that `terrio preview` writes, are shown on the page.
+  Images a command writes are shown on the page.
+- **`preview`** without `--output` shows its PNG on the page with a Download PNG button, as
+  `terrio ui` does, and adds nothing to the workspace.
 - The workspace is held in memory. Reloading the page empties it.
 
 ## Remote files
@@ -47,8 +49,7 @@ After each run, the page shows how many requests the command made and how many b
   takes longer than with the native command line.
 - **No network commands.** STAC searches, WFS, `vsi` operations on object stores and other
   commands that talk to a server API are not available. Reading files from URLs works.
-- **No `ui`, `view` or `mcp`.** These commands run servers. `preview` writes a PNG, which the page
-  shows.
+- **No `ui`, `view` or `mcp`.** These commands run servers.
 - **Cancelling** a command ends it and restarts terrio, with the workspace as it was before the
   command started.
 

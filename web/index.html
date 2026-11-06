@@ -516,11 +516,15 @@ function show(command) {
     outputs.replaceChildren();
     for (const img of images.querySelectorAll("img")) URL.revokeObjectURL(img.src);
     images.replaceChildren();
-    const args = [command.path[1], ...commandLine(command, fields)].map(toWorkerPath);
+    const tokens = commandLine(command, fields);
+    // `preview` without an output: its PNG is shown here, as `terrio ui` shows it, from the bytes
+    // `-o -` writes to standard output (which is not a terminal here).
+    const showPng = command.path[1] === "preview" && !tokens.some((t) => t === "-o" || t === "--output" || t.startsWith("--output="));
+    const args = [command.path[1], ...(showPng ? ["-o", "-"] : []), ...tokens].map(toWorkerPath);
     const started = performance.now();
     try {
       await ready;
-      const result = await enqueue(() => call({ type: "run", args }, (stream, text) => {
+      const result = await enqueue(() => call({ type: "run", args, binaryStdout: showPng }, (stream, text) => {
         output.hidden = false;
         output.append(text);
       }));
@@ -537,6 +541,18 @@ function show(command) {
         }));
         images.replaceChildren(...result.changed.filter(({ path }) => /\.(png|jpe?g|webp|gif)$/i.test(path)).map(({ path }) =>
           el("img", { src: URL.createObjectURL(files.get(path)), alt: `The image written to ${path}` })));
+      }
+      if (result.stdout && result.stdout.byteLength && result.code === 0) {
+        const png = new Blob([result.stdout], { type: "image/png" });
+        const save = el("button", { type: "button", className: "action", textContent: "Download PNG" });
+        save.addEventListener("click", () => {
+          const a = el("a", { href: URL.createObjectURL(png), download: "preview.png" });
+          document.body.append(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+        });
+        images.append(el("img", { src: URL.createObjectURL(png), alt: "The image the command drew" }), el("div", { className: "bar" }, save));
       }
       const failed = result.code !== 0;
       output.classList.toggle("bad", failed);

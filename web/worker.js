@@ -4,8 +4,10 @@
 //   { type: "init" }                         -> { type: "ready", catalog }
 //   { type: "put", path, buffer }            -> { type: "put", path }
 //   { type: "remove", path }                 -> { type: "removed", path }
-//   { type: "run", args }                    -> { type: "out", stream, text }*, then
-//                                               { type: "done", code, changed: [{path, buffer}], removed: [path], http }
+//   { type: "run", args, binaryStdout }      -> { type: "out", stream, text }*, then
+//                                               { type: "done", code, changed: [{path, buffer}], removed: [path], http, stdout }
+// With `binaryStdout`, standard output is not streamed as text but returned whole as `stdout`
+// (an ArrayBuffer): `terrio preview -o -` writes PNG bytes there.
 // Errors come back as { type: "error", message }.
 
 import { Wasi, MemDir, MemFile, RemoteDir, httpStats } from "./wasi.js";
@@ -49,13 +51,14 @@ function parentOf(path, create) {
 }
 
 /** Runs the command line `args` (without the program name), streaming its output. */
-function run(args, onOutput) {
+function run(args, onOutput, stdoutBytes = null) {
   mountRemote();
   const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
   const out = {};
   for (const stream of ["stdout", "stderr"]) {
     out[stream] = (bytes) => onOutput(stream, decoders[stream].decode(bytes, { stream: true }));
   }
+  if (stdoutBytes) out.stdout = (bytes) => stdoutBytes.push(bytes);
   const wasi = new Wasi(root, ["terrio", ...args], out, { HOME: "/", PWD: "/", TERM: "dumb", NO_COLOR: "1" });
   const instance = new WebAssembly.Instance(module, { wasi_snapshot_preview1: wasi.imports });
   let code;
@@ -90,7 +93,8 @@ self.onmessage = async ({ data }) => {
     } else if (data.type === "run") {
       const before = new Map([...walk()].map(([path, node]) => [path, { node, mtime: node.mtime, size: node.size }]));
       const http = { requests: httpStats.requests, bytes: httpStats.bytes };
-      const code = run(data.args, (stream, text) => text && self.postMessage({ type: "out", stream, text }));
+      const chunks = data.binaryStdout ? [] : null;
+      const code = run(data.args, (stream, text) => text && self.postMessage({ type: "out", stream, text }), chunks);
       const after = walk();
       const changed = [], transfer = [];
       for (const [path, node] of after) {
@@ -102,8 +106,10 @@ self.onmessage = async ({ data }) => {
         }
       }
       const removed = [...before.keys()].filter((path) => !after.has(path));
+      const stdout = chunks ? await new Blob(chunks).arrayBuffer() : null;
+      if (stdout) transfer.push(stdout);
       self.postMessage({
-        type: "done", code, changed, removed,
+        type: "done", code, changed, removed, stdout,
         http: { requests: httpStats.requests - http.requests, bytes: httpStats.bytes - http.bytes },
       }, transfer);
     }
