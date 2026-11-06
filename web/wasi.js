@@ -6,7 +6,7 @@
 // are blocking calls, so each read that needs bytes not fetched yet fetches them before returning.
 
 const E = {
-  SUCCESS: 0, ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, IO: 29, ISDIR: 31, NOENT: 44, NOSYS: 52,
+  SUCCESS: 0, ACCES: 2, BADF: 8, BUSY: 10, EXIST: 20, INVAL: 28, IO: 29, ISDIR: 31, NOENT: 44, NOSYS: 52,
   NOTDIR: 54, NOTEMPTY: 55, NOTSUP: 58, PERM: 63, ROFS: 69, SPIPE: 70,
 };
 const FILETYPE = { CHAR: 2, DIRECTORY: 3, REGULAR: 4 };
@@ -38,25 +38,33 @@ export class MemFile {
     const end = Math.min(this.size, offset + length);
     return offset >= end ? new Uint8Array(0) : this.data.subarray(offset, end);
   }
+  /**
+   * Makes room for `end` bytes: twice the room it had, so that a file written in pieces is copied a
+   * few times, not once per piece; just `end` when twice is more than the tab can allocate.
+   */
+  grow(end) {
+    let grown;
+    try {
+      grown = new Uint8Array(Math.max(end, this.data.length * 2));
+    } catch {
+      grown = new Uint8Array(end);
+    }
+    grown.set(this.data.subarray(0, this.size));
+    this.data = grown;
+  }
   write(offset, bytes) {
     const end = offset + bytes.length;
-    if (end > this.data.length) {
-      const grown = new Uint8Array(Math.max(end, Math.min(this.data.length * 2, this.data.length + (256 << 20))));
-      grown.set(this.data.subarray(0, this.size));
-      this.data = grown;
-    }
+    if (end > this.data.length) this.grow(end);
+    // A write past the end leaves zeros in the gap, also where the file held bytes before it was
+    // truncated.
+    if (offset > this.size) this.data.fill(0, this.size, offset);
     this.data.set(bytes, offset);
     this.size = Math.max(this.size, end);
     this.mtime = now();
   }
   truncate(size) {
-    if (size > this.data.length) {
-      const grown = new Uint8Array(size);
-      grown.set(this.data.subarray(0, this.size));
-      this.data = grown;
-    } else if (size > this.size) {
-      this.data.fill(0, this.size, size);
-    }
+    if (size > this.data.length) this.grow(size);
+    if (size > this.size) this.data.fill(0, this.size, size);
     this.size = size;
     this.mtime = now();
   }
@@ -120,31 +128,57 @@ export class RemoteFile {
   }
   get readonly() { return true; }
 
-  /** Opens `url`, or returns `null` when there is nothing there. Throws when it cannot be read. */
+  /**
+   * Opens `url`, or returns `null` when there is nothing there. Throws when it cannot be read.
+   *
+   * The size comes from `Content-Range`, when the server lets the page read it, else from `HEAD`.
+   * A `HEAD` that fails is not the end: a presigned URL is signed for GET only, and some servers
+   * refuse `HEAD`. Without a size, the file is read whole.
+   */
   static probe(url) {
-    let h;
+    let h = null;
     try {
       h = head(url);
     } catch {
+      // Tried again with GET below.
+    }
+    if (h && (h.status === 404 || h.status === 410)) return null;
+    const headSize = h && h.status >= 200 && h.status < 300 && h.length !== null ? Number(h.length) : NaN;
+    if (Number.isFinite(headSize) && headSize < WHOLE_BELOW) return RemoteFile.whole(url);
+    let first;
+    try {
+      first = get(url, 0, BLOCK);
+    } catch {
       throw new Error(`could not reach ${url} (a network error, or the server does not allow cross-origin requests)`);
     }
-    if (h.status === 404 || h.status === 410) return null;
-    const size = h.status >= 200 && h.status < 300 && h.length !== null ? Number(h.length) : NaN;
-    if (Number.isFinite(size) && size >= WHOLE_BELOW) {
+    if (first.status === 404 || first.status === 410) return null;
+    // The server ignored `Range` and sent the whole file.
+    if (first.status === 200) return new RemoteFile(url, first.body.length, first.body);
+    // A range of an empty file.
+    if (first.status === 416) return new RemoteFile(url, 0, new Uint8Array(0));
+    if (first.status !== 206) throw new Error(`${url}: HTTP ${first.status}`);
+    const total = /\/(\d+)$/.exec(first.range || "");
+    const size = total ? Number(total[1]) : headSize;
+    if (!Number.isFinite(size)) return RemoteFile.whole(url);
+    // A compressed response holds a different number of bytes than asked for: its ranges count
+    // compressed bytes.
+    if (first.body.length !== Math.min(BLOCK, size)) return RemoteFile.whole(url);
+    if (size > BLOCK) {
+      let last = null;
       try {
-        const first = get(url, 0, BLOCK);
-        const last = get(url, size - 1, size);
-        // A compressed response holds a different number of bytes than asked for.
-        if (first.status === 206 && first.body.length === BLOCK && last.status === 206 && last.body.length === 1) {
-          const file = new RemoteFile(url, size, null);
-          file.blocks.set(0, first.body);
-          return file;
-        }
-        if (first.status === 200) return new RemoteFile(url, first.body.length, first.body);
+        last = get(url, size - 1, size);
       } catch {
-        // Fall back to the whole file.
+        // Read whole below.
       }
+      if (!last || last.status !== 206 || last.body.length !== 1) return RemoteFile.whole(url);
     }
+    const file = new RemoteFile(url, size, null);
+    file.blocks.set(0, first.body);
+    return file;
+  }
+
+  /** `url` read whole, or `null` when there is nothing there. */
+  static whole(url) {
     let r;
     try {
       r = get(url);
@@ -564,46 +598,49 @@ export class Wasi {
         return E.SUCCESS;
       }),
       path_filestat_set_times: () => E.SUCCESS,
-      path_create_directory: (fd, pathPtr, pathLen) => {
+      path_create_directory: guard((fd, pathPtr, pathLen) => {
         const r = self.resolve(fd, self.string(pathPtr, pathLen), { create: true });
         if (typeof r === "number") return r;
         if (r.node) return E.EXIST;
         if (!r.parent || r.parent.readonly) return E.ROFS;
         r.parent.entries.set(r.name, new MemDir());
         return E.SUCCESS;
-      },
-      path_remove_directory: (fd, pathPtr, pathLen) => {
+      }),
+      // The root has no parent: it cannot be removed, unlinked or renamed.
+      path_remove_directory: guard((fd, pathPtr, pathLen) => {
         const r = self.resolve(fd, self.string(pathPtr, pathLen));
         if (typeof r === "number") return r;
+        if (!r.parent) return E.BUSY;
         if (!(r.node instanceof MemDir)) return isDir(r.node) ? E.ROFS : E.NOTDIR;
         if (r.node.entries.size) return E.NOTEMPTY;
         r.parent.entries.delete(r.name);
         return E.SUCCESS;
-      },
-      path_unlink_file: (fd, pathPtr, pathLen) => {
+      }),
+      path_unlink_file: guard((fd, pathPtr, pathLen) => {
         const r = self.resolve(fd, self.string(pathPtr, pathLen));
         if (typeof r === "number") return r;
         if (isDir(r.node)) return E.ISDIR;
         if (r.parent.readonly) return E.ROFS;
         r.parent.entries.delete(r.name);
         return E.SUCCESS;
-      },
-      path_rename: (fd, oldPtr, oldLen, newFd, newPtr, newLen) => {
+      }),
+      path_rename: guard((fd, oldPtr, oldLen, newFd, newPtr, newLen) => {
         const from = self.resolve(fd, self.string(oldPtr, oldLen));
         if (typeof from === "number") return from;
         const to = self.resolve(newFd, self.string(newPtr, newLen), { create: true });
         if (typeof to === "number") return to;
+        if (!from.parent || !to.parent) return E.BUSY;
         if (from.parent.readonly || !to.parent || to.parent.readonly) return E.ROFS;
         if (to.node && isDir(to.node) && !isDir(from.node)) return E.ISDIR;
         if (to.node instanceof MemDir && to.node.entries.size) return E.NOTEMPTY;
         from.parent.entries.delete(from.name);
         to.parent.entries.set(to.name, from.node);
         return E.SUCCESS;
-      },
-      path_readlink: (fd, pathPtr, pathLen) => {
+      }),
+      path_readlink: guard((fd, pathPtr, pathLen) => {
         const r = self.resolve(fd, self.string(pathPtr, pathLen));
         return typeof r === "number" ? r : E.INVAL;
-      },
+      }),
       path_symlink: () => E.NOTSUP,
       path_link: () => E.NOTSUP,
     };

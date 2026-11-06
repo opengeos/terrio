@@ -16,10 +16,22 @@ let module = null;
 const root = new MemDir();
 const remoteErrors = [];
 
-/** The remote directories, made again before each run so that every run sees current files. */
+/**
+ * The remote directories. They are kept from one run to the next, with the blocks fetched, so that
+ * the map's batches of tiles, each a run, do not fetch a file again; what was not found, or could
+ * not be read, is looked up again.
+ */
 function mountRemote() {
   remoteErrors.length = 0;
-  root.entries.set("https", new RemoteDir("https://", remoteErrors));
+  if (!root.entries.has("https")) root.entries.set("https", new RemoteDir("https://", remoteErrors));
+  forgetMissing(root.entries.get("https"));
+}
+
+function forgetMissing(dir) {
+  for (const [name, node] of dir.entries) {
+    if (node === null) dir.entries.delete(name);
+    else if (node instanceof RemoteDir) forgetMissing(node);
+  }
 }
 
 /** The workspace's files, by path, with their nodes. */

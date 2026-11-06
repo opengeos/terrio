@@ -236,7 +236,7 @@ jobs:
           RUSTFLAGS: -C link-arg=-zstack-size=8388608
         run: |
           cargo build -p terrio-cli --bin terrio --target wasm32-wasip1
-          TERRIO_WASM=target/wasm32-wasip1/debug/terrio.wasm node --test web/tests/runtime.test.mjs
+          TERRIO_WASM=target/wasm32-wasip1/debug/terrio.wasm node --test web/tests/runtime.test.mjs web/tests/paths.test.mjs
       - name: Build and test the npm package (Node.js)
         run: |
           node --test js/tests/build.test.mjs

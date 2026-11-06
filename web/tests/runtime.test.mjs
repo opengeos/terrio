@@ -22,13 +22,20 @@ function terrio(root, ...args) {
   return { code, ...out };
 }
 
-/** Serves `files` (URL -> bytes) as a server would: `mode` is "ranges", "no-ranges" or "gzip". */
+/**
+ * Serves `files` (URL -> bytes) as a server would. `mode` is "ranges", "no-ranges", "gzip",
+ * "no-head" (HEAD refused with 403, as for a presigned GET URL) or "no-head-exposed" (also exposing
+ * `Content-Range` to the page). `log` records each request with the bytes it returned.
+ */
 function serve(files, mode = "ranges") {
   const log = [];
   globalThis.XMLHttpRequest = class {
     open(method, url) { this.method = method; this.url = url; this.headers = {}; }
     setRequestHeader(name, value) { this.headers[name] = value; }
-    getResponseHeader(name) { return name === "Content-Length" ? this.length : null; }
+    getResponseHeader(name) {
+      if (name === "Content-Length") return this.length;
+      return name === "Content-Range" && mode === "no-head-exposed" ? this.contentRange ?? null : null;
+    }
     send() {
       const body = files[this.url];
       log.push({ method: this.method, url: this.url, range: this.headers.Range });
@@ -36,13 +43,24 @@ function serve(files, mode = "ranges") {
       // A compressed response: its length and ranges count compressed bytes (here, two thirds).
       const size = mode === "gzip" ? Math.floor((body.length * 2) / 3) : body.length;
       this.length = String(size);
-      if (this.method === "HEAD") { this.status = 200; this.response = null; return; }
+      if (this.method === "HEAD") {
+        this.status = mode.startsWith("no-head") ? 403 : 200;
+        this.response = null;
+        return;
+      }
       const m = /^bytes=(\d+)-(\d+)$/.exec(this.headers.Range || "");
-      if (!m || mode === "no-ranges") { this.status = 200; this.response = body.slice().buffer; return; }
+      if (!m || mode === "no-ranges") {
+        this.status = 200;
+        this.response = body.slice().buffer;
+        log.at(-1).bytes = body.length;
+        return;
+      }
       const start = Number(m[1]), end = Math.min(size, Number(m[2]) + 1);
       this.status = 206;
       // Decoding a piece of a compressed stream does not give back as many bytes as were asked for.
       this.response = body.slice(start, mode === "gzip" ? end - 1 : end).buffer;
+      this.contentRange = `bytes ${start}-${end - 1}/${size}`;
+      log.at(-1).bytes = this.response.byteLength;
     }
   };
   return log;
@@ -67,12 +85,44 @@ test("a remote file is read by ranges, fetching each block once", () => {
 
 test("a server that ignores ranges, or compresses, gives the whole file", () => {
   for (const mode of ["no-ranges", "gzip"]) {
-    serve({ "https://example.com/big.bin": big }, mode);
+    const log = serve({ "https://example.com/big.bin": big }, mode);
     const file = RemoteFile.probe("https://example.com/big.bin");
     assert.equal(file.size, big.length, mode);
     assert.ok(file.whole, mode);
     assert.deepEqual(file.read(10, 20), big.subarray(10, 30), mode);
+    const fetched = log.reduce((n, r) => n + (r.bytes || 0), 0);
+    // Ignoring ranges, the first answer is the file: it is not fetched again.
+    if (mode === "no-ranges") assert.equal(fetched, big.length, "the file is fetched once");
+    else assert.ok(fetched < 2 * big.length, `${fetched} bytes fetched`);
   }
+});
+
+test("without HEAD, a file is still read by ranges when its size can be read", () => {
+  // A presigned GET URL: HEAD is refused. With `Content-Range` exposed, the size comes from it.
+  let log = serve({ "https://example.com/big.bin": big }, "no-head-exposed");
+  let file = RemoteFile.probe("https://example.com/big.bin");
+  assert.equal(file.size, big.length);
+  assert.equal(file.whole, null);
+  assert.deepEqual(file.read(big.length - 3, 3), big.subarray(big.length - 3));
+  assert.ok(log.every((r) => r.range || r.method === "HEAD"), "no request for the whole file");
+  // Without it, the size is unknown: the file is read whole.
+  log = serve({ "https://example.com/big.bin": big }, "no-head");
+  file = RemoteFile.probe("https://example.com/big.bin");
+  assert.equal(file.size, big.length);
+  assert.ok(file.whole);
+});
+
+test("a write past the end of a truncated file leaves zeros, not the old bytes", () => {
+  const file = new MemFile();
+  file.write(0, new Uint8Array(100).fill(7));
+  file.truncate(0);
+  file.write(50, Uint8Array.of(1, 2));
+  assert.equal(file.size, 52);
+  assert.deepEqual(file.read(0, 50), new Uint8Array(50));
+  assert.deepEqual(file.read(50, 2), Uint8Array.of(1, 2));
+  file.truncate(10);
+  file.truncate(60);
+  assert.deepEqual(file.read(10, 50), new Uint8Array(50));
 });
 
 test("a missing remote file is not found; names without an extension are folders", () => {

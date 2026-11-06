@@ -13,6 +13,6 @@ CARGO_PROFILE_WASM_RELEASE_STRIP=symbols \
 RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-zstack-size=8388608" \
   cargo build --profile wasm-release -p terrio-cli --bin terrio --target wasm32-wasip1
 mkdir -p "$out"
-cp web/index.html web/worker.js web/wasi.js "$out/"
+cp web/index.html web/worker.js web/wasi.js web/map.js web/paths.js "$out/"
 cp "$target_dir/wasm32-wasip1/wasm-release/terrio.wasm" "$out/terrio.wasm"
 ls -l "$out"

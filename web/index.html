@@ -121,7 +121,7 @@ body.dragging #drop { display: grid; }
     <p class="note">The command line, compiled to WebAssembly and run in this tab: files stay on your computer, and URLs are read with range requests from your browser.</p>
     <div class="workspace">
       <div class="bar">
-        <label class="action" role="button" tabindex="0">Upload files<input type="file" id="upload" multiple class="visually-hidden"></label>
+        <label class="action">Upload files<input type="file" id="upload" multiple class="visually-hidden"></label>
       </div>
       <form class="url-row" id="url-form">
         <input type="text" id="url" placeholder="https:// URL to a dataset" aria-label="URL to a dataset" spellcheck="false">
@@ -143,13 +143,15 @@ body.dragging #drop { display: grid; }
   <div id="browse-path">Workspace</div>
   <ul id="browse-list"></ul>
   <div class="dialog-bar">
-    <label class="action" role="button" tabindex="0">Upload…<input type="file" id="browse-upload" multiple class="visually-hidden"></label>
+    <label class="action">Upload…<input type="file" id="browse-upload" multiple class="visually-hidden"></label>
     <button type="button" class="action" id="browse-close">Close</button>
   </div>
 </dialog>
 <script type="module">
 // Everything from files and commands reaches the page through textContent or value, never as
 // markup: a file may be named anything.
+import { openMap } from "./map.js";
+import { toWorkerPath } from "./paths.js";
 const byId = (id) => document.getElementById(id);
 
 function el(tag, props = {}, ...children) {
@@ -383,19 +385,17 @@ function renderFiles() {
   list.replaceChildren(...items);
 }
 
-// ---- Remote paths ----
+// ---- Commands run for their bytes (the map) ----
 
-/**
- * The path the browser build reads a remote dataset at: `/https/host/path` for
- * `https://host/path`, fetched with range requests as it is read. Public S3 and Google Cloud
- * Storage objects are read over HTTPS, unsigned. URLs within a path (`/vsizip/https://…`) are
- * rewritten too.
- */
-function toWorkerPath(token) {
-  return token
-    .replace(/(?:\/vsicurl\/)?https:\/\//g, "/https/")
-    .replace(/(?:s3:\/\/|\/vsis3\/)([^/]+)\//g, "/https/$1.s3.amazonaws.com/")
-    .replace(/(?:gs:\/\/|\/vsigs\/)/g, "/https/storage.googleapis.com/");
+/** `preview` options that are not about what to draw, and that `terrio view` does not take. */
+const NOT_MAP_OPTIONS = new Set(["output", "overwrite", "width", "height", "max_size", "display"]);
+
+/** Runs a command line, returning its exit status, standard output as bytes and standard error. */
+async function runForBytes(args) {
+  let stderr = "";
+  await ready;
+  const result = await enqueue(() => call({ type: "run", args, binaryStdout: true }, (stream, text) => { if (stream === "stderr") stderr += text; }));
+  return { code: result.code, stdout: new Uint8Array(result.stdout || new ArrayBuffer(0)), stderr };
 }
 
 // ---- The path picker ----
@@ -472,6 +472,18 @@ function show(command) {
     el("div", { className: "bar" }, run, cancel, copy, status),
     el("h2", { textContent: "Command (POSIX shell quoting)" }), preview, output, outputsTitle, outputs, images,
   );
+  if (command.path[1] === "preview") {
+    // The map of `terrio view`, drawn from the same input and style options.
+    const openMapButton = el("button", { type: "button", className: "action", textContent: "Open map" });
+    form.querySelector(".bar").insertBefore(openMapButton, status);
+    openMapButton.addEventListener("click", () => {
+      if (!form.reportValidity()) return;
+      const styleFields = fields.filter((f) => !NOT_MAP_OPTIONS.has(f.arg.name));
+      const tokens = commandLine(command, styleFields);
+      const input = fields.find((f) => f.arg.position != null)?.read().trim() || "";
+      openMap({ title: input, args: ["view", ...tokens.map(toWorkerPath)], run: runForBytes });
+    });
+  }
 
   const render = () => {
     const tokens = commandLine(command, fields);
