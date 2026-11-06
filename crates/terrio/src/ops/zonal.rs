@@ -306,8 +306,8 @@ fn hold_values(budget: &(Mutex<usize>, std::sync::Condvar), bytes: usize) -> Res
 
 /// The most bytes of zone values that the passes of all sources hold together, for statistics
 /// that keep values (median, quantiles, mode, minority, variety); one pass may exceed it when it
-/// runs alone. While a zone finishes, a sorted copy of one band's values adds 16 bytes per pixel
-/// of that zone. Small in unit tests, so that they reduce bands in several passes.
+/// runs alone. While a zone finishes, binning one band's values by value adds up to 16 bytes per
+/// pixel of that zone, and 8 more for the ranks of a median or quantile. Small in unit tests, so that they reduce bands in several passes.
 const VALUES_PER_PASS: usize = if cfg!(test) { 64 } else { 1 << 30 };
 
 /// Errors on a repeated statistic, a quantile outside 0 to 100, or a zone that is not a polygon or
@@ -582,22 +582,47 @@ pub fn zonal_stats_with(
         // did. Each further pass reads the raster again. Passes of all sources share the budget
         // (`hold_values`).
         // Values per band at the strip height of a pass of `n` bands (strips of fewer bands are
-        // taller); the largest group that fits, or one band.
-        let per_band = |n: usize| match plan.value_bytes_per_pixel() {
+        // taller), with zones counting at most `per_zone` values; the largest group that fits, or
+        // one band.
+        let per_band = |n: usize, per_zone: usize| match plan.value_bytes_per_pixel() {
             0 => 0,
-            bytes => reduce::open_pixels_peak(zone_index, strip_rows(raster, n), reduce::values_per_zone(raster.data_type())) * bytes,
+            bytes => reduce::open_pixels_peak(zone_index, strip_rows(raster, n), per_zone) * bytes,
         };
-        let group = (1..=bands.len()).rev().find(|&n| n * per_band(n) <= VALUES_PER_PASS).unwrap_or(1);
-        let per_band = per_band(group);
-        let mut band = 0;
-        for group in bands.chunks(group.max(1)) {
-            let _held = hold_values(&values_held, per_band * group.len())?;
+        let counted = reduce::values_per_zone(raster.data_type());
+        let group = (1..=bands.len()).rev().find(|&n| n * per_band(n, counted) <= VALUES_PER_PASS).unwrap_or(1);
+        // A strip read in another type than the raster declares can hold values its histograms do
+        // not count, listed beyond the charge for them: `reduce_source` then gives `None`, and the
+        // raster's bands are reduced without histograms, one at a time at the charge per pixel.
+        let (per_band, listed) = (per_band(group, counted), per_band(1, usize::MAX));
+        let mut reduce = |raster: &mut LazyRaster, group: &[reduce::BandSpec], histograms: bool| {
             let weight = match (&mut weight_raster, weights, &weight_header) {
                 (Some(raster), Some(w), Some(h)) => Some(reduce::WeightSpec { raster, band: w.band, nodata: h.band_nodata(w.band) }),
                 _ => None,
             };
             let strip = strip_rows(raster, group.len());
-            for values in reduce::reduce_source(zone_index, raster, group, weight, &plan, strip, ahead)? {
+            reduce::reduce_source(zone_index, raster, group, weight, &plan, strip, ahead, histograms)
+        };
+        let mut histograms = true;
+        let mut band = 0;
+        for group in bands.chunks(group.max(1)) {
+            let mut values = None;
+            if histograms {
+                let _held = hold_values(&values_held, per_band * group.len())?;
+                values = reduce(raster, group, true)?;
+                histograms = values.is_some();
+            }
+            let values = match values {
+                Some(values) => values,
+                None => {
+                    let mut values = Vec::with_capacity(group.len());
+                    for one in group.chunks(1) {
+                        let _held = hold_values(&values_held, listed)?;
+                        values.extend(reduce(raster, one, false)?.into_iter().flatten());
+                    }
+                    values
+                }
+            };
+            for values in values {
                 sink(BandStats { source: s, band, values })?;
                 band += 1;
             }

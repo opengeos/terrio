@@ -2470,8 +2470,9 @@ row of 1024-row blocks of ten UInt16 bands 10,980 columns wide is 225 MB), and o
 reduced per thread. Median, quantiles, mode, minority and variety also keep each zone's values
 from the strip of its first row to that of its last: 8 bytes per pixel and band (16 with
 `--fractional`), and while a zone finishes, one band's values binned by value (16 bytes per
-distinct value, plus 8 for the ranks of a binary median or quantile). Of an 8- or 16-bit integer band, a zone of at least as many pixels as the type has values
-(256 or 65,536) counts them in a histogram (2 or 512 KiB) instead, so all the bands of such a raster
+distinct value, or per pixel with `--fractional`, plus 8 for the ranks of a binary median or
+quantile). Of an 8- or 16-bit integer band, a zone of at least as many pixels as the type has
+values (256 or 65,536) counts them in a histogram (2 or 512 KiB) instead, so all the bands of such a raster
 are usually reduced at once. Results are the same, but with `--fractional`: such a zone sums its
 coverages in another order, so their rounding can change its quantiles in the last digits, or which
 of two values whose coverage sums tie within rounding is its mode or minority.
