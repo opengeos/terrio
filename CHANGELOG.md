@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Lazy `translate` (`translate_lazy`, `translate_lazy_to_file` and the CLI's `translate`) and
+  reads by window (`LazyRaster::read_resampled`) copy pixels fewer times, as do GeoTIFFs other
+  than COGs written in rows (`GeoTiffWriter::write_rows`, which streamed GeoTIFF outputs use)
+  when the rows given end a block row or the raster, with byte-identical results. Translating a
+  14412 x 14412 float32 Deflate GeoTIFF to an uncompressed GeoTIFF on one CPU takes 67% fewer
+  page faults. `GeoTiffWriter::write_rows` refuses rows of another type, even none, before taking
+  their mask rows, which a refused call left queued. Once a block row of a GeoTIFF other than a
+  COG fails to be written, the writer refuses more rows and `finish`, which could write a file
+  missing it.
 - `terrio tile` (Python `terrio.raster_tiles`, JavaScript `rasterTiles`) builds each lower-zoom
   tile from the four tiles below it, as GDAL does, instead of rendering it from the source (#574).
   Tiles are generated depth first, with at most four tiles per zoom level in memory, and every
