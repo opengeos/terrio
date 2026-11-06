@@ -20,6 +20,9 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(network_stats, m)?)?;
     m.add_function(wrap_pyfunction!(reset_network_stats, m)?)?;
     m.add_function(wrap_pyfunction!(clear_http_cache, m)?)?;
+    m.add_function(wrap_pyfunction!(block_cache_max, m)?)?;
+    m.add_function(wrap_pyfunction!(set_block_cache_max, m)?)?;
+    m.add_function(wrap_pyfunction!(clear_block_cache, m)?)?;
     m.add_function(wrap_pyfunction!(config_options, m)?)?;
     Ok(())
 }
@@ -186,4 +189,28 @@ fn reset_network_stats() {
 fn clear_http_cache() {
     #[cfg(not(target_arch = "wasm32"))]
     terrio::http::clear_cache();
+}
+
+/// The most bytes of decoded GeoTIFF/COG chunks the process-wide block cache keeps (GDAL's
+/// `gdal.GetCacheMax`): `TERRIO_CACHEMAX`, else `GDAL_CACHEMAX`, else 64 MiB; 0 means the cache is
+/// off.
+#[pyfunction]
+fn block_cache_max() -> u64 {
+    terrio::block_cache::max_bytes()
+}
+
+/// Sets the most bytes the block cache keeps (GDAL's `gdal.SetCacheMax`); 0 turns it off. Chunks
+/// beyond the new size are dropped, least recently used first. Raises InvalidArgumentError (a
+/// ValueError) when `nbytes` is negative.
+#[pyfunction]
+fn set_block_cache_max(nbytes: i64) -> PyResult<()> {
+    let nbytes = u64::try_from(nbytes).map_err(|_| crate::invalid(format!("nbytes must not be negative, not {nbytes}")))?;
+    terrio::block_cache::set_max_bytes(nbytes);
+    Ok(())
+}
+
+/// Empties the block cache of decoded GeoTIFF/COG chunks, giving its memory back.
+#[pyfunction]
+fn clear_block_cache() {
+    terrio::block_cache::clear();
 }

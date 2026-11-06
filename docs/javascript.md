@@ -122,6 +122,13 @@ Work on vector features (parsing and writing GeoJSON, FlatGeobuf, GeoPackage...)
 calling thread in WebAssembly: its many small allocations contend on WebAssembly's allocator, one
 lock for all threads, and ran several times slower on more threads.
 
+## The block cache
+
+`blockCacheMax()` returns the most bytes of decoded GeoTIFF/COG chunks the cache keeps (64 MiB by
+default, as WebAssembly reads no environment variables; GDAL's `GDALGetCacheMax64`),
+`setBlockCacheMax(bytes)` sets it (0 turns the cache off; it throws for a negative or non-integer
+value) and `clearBlockCache()` empties it.
+
 ## Datasets larger than 4 GB: `terrio-js/memory64`
 
 WebAssembly modules have 32-bit memories, at most 4 GB. The `terrio-js/memory64` module (every

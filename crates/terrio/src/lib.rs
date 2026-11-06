@@ -199,6 +199,7 @@
 pub mod arrow;
 #[cfg(feature = "avif")]
 mod avif;
+pub mod block_cache;
 mod civil_time;
 mod cog;
 mod cog_validate;

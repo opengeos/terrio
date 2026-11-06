@@ -250,6 +250,33 @@ def test_clear_http_cache_requests_a_file_again(tmp_path, serve):
     assert len(server.log) == 2 * first, server.log
 
 
+def test_block_cache_size_and_repeated_window_reads(tmp_path):
+    """The block cache's size is set, read back and cleared, and a window read twice returns
+    the same pixels with the cache on and off."""
+    pixels = write_cog(tmp_path / "cog.tif", size=512)
+    original = terrio.block_cache_max()
+    try:
+        terrio.set_block_cache_max(8 << 20)
+        assert terrio.block_cache_max() == 8 << 20
+        with pytest.raises(ValueError):
+            terrio.set_block_cache_max(-1)
+        assert terrio.block_cache_max() == 8 << 20
+        raster = terrio.open_raster(str(tmp_path / "cog.tif"), lazy=True)
+        cached = [raster.read(1, window=(100, 100, 300, 200)) for _ in range(2)]
+        terrio.clear_block_cache()
+        terrio.set_block_cache_max(0)
+        assert terrio.block_cache_max() == 0
+        raster = terrio.open_raster(str(tmp_path / "cog.tif"), lazy=True)
+        uncached = [raster.read(1, window=(100, 100, 300, 200)) for _ in range(2)]
+    finally:
+        terrio.set_block_cache_max(original)
+        terrio.clear_block_cache()
+    expected = pixels[0, 100:300, 100:400]
+    for window in cached + uncached:
+        np.testing.assert_array_equal(window, expected)
+    assert terrio.block_cache_max() == original
+
+
 def test_an_azure_token_never_reaches_a_host_a_dataset_name_chooses(tmp_path, serve):
     """``az://<host>?x=/container/blob`` and ``azure+<url>`` never choose the host the Azure
     token goes to: they fail before any request."""
