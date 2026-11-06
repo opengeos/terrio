@@ -402,11 +402,11 @@ jobs:
     needs: python
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: wheel-ubuntu-latest
           path: dist
@@ -415,7 +415,7 @@ jobs:
       - name: Compare external overviews with the reference
         working-directory: python
         run: |
-          python -c "import rasterio, rio_cogeo.cogeo; print('Reference GDAL:', rasterio.__gdal_version__)"
+          python -c "import rasterio, rio_cogeo.cogeo; assert rasterio.__gdal_version__ == '3.12.2', rasterio.__gdal_version__"
           python -m pytest -v tests/test_cog_validate.py::test_external_overviews_agree_with_rio_cogeo
 
   # The Rust and Python tests on real data. The comparison scripts (point clouds, conformance) are
