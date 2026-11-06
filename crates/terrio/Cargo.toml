@@ -162,6 +162,11 @@ ureq = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 
+# WASI (the browser build of the command line) has a filesystem: index and table-of-contents
+# writes stage their output in a temporary file there too.
+[target.'cfg(target_os = "wasi")'.dependencies]
+tempfile.workspace = true
+
 # HTTPS without a C compiler, on the architectures `rustls-graviola` supports.
 [target.'cfg(all(not(target_family = "wasm"), any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
 rustls-graviola = { workspace = true, optional = true }

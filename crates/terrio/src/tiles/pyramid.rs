@@ -602,7 +602,7 @@ impl SpillSink {
     pub(crate) fn beside(output: &str) -> Result<Self> {
         let out = std::path::Path::new(output);
         let name = out.file_name().and_then(|s| s.to_str()).unwrap_or("tiles");
-        let path = out.with_file_name(format!(".{name}.terrio-tiles-{}.tmp", std::process::id()));
+        let path = out.with_file_name(format!(".{name}.terrio-tiles-{}.tmp", crate::process_id()));
         // A leftover of an earlier run is removed, not written through: a link planted at the name
         // is removed rather than followed, and `create_new` never truncates what exists.
         let _ = std::fs::remove_file(&path);

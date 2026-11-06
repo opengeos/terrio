@@ -135,7 +135,7 @@ impl ClipRegion {
 
     /// Opens a native/remote template, using metadata-only raster reads where the driver
     /// supports lazy access. Vector selection uses the same options as in-memory templates.
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(fs)]
     pub fn from_path(path: &str, options: &ClipTemplateOptions) -> Result<Self> {
         let kind = crate::inspection::identify(path, false)?;
         let may_raster = kind.as_ref().is_some_and(|i| i.kinds.contains(&crate::formats::Kind::Raster));
