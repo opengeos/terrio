@@ -1472,7 +1472,7 @@ pub(crate) fn needs_nodata_pam(ds: &RasterDataset) -> bool {
 /// each unless the caller gave it, and only when the caller gave no band colour interpretations.
 /// The color table is inherited as `RasterWriteOptions::inherited_from` decides. `None` when
 /// nothing is added, or for other formats.
-fn color_options(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Option<RasterWriteOptions> {
+pub(crate) fn color_options(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Option<RasterWriteOptions> {
     let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
     if !matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
         return None;
