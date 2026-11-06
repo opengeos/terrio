@@ -2366,9 +2366,8 @@ mod content_allow_list_tests {
             let layers = v.layers.iter().map(|l| (l.name.clone(), l.features.len(), l.schema.fields().len())).collect::<Vec<_>>();
             (v.driver, layers)
         };
-        let expected = (VectorDriver::KMZ, vec![("points".to_string(), 2), ("more".to_string(), 1)]);
-        let (driver, layers) = summary(&by_fallback);
-        assert_eq!((driver, layers.iter().map(|(n, c, _)| (n.clone(), *c)).collect::<Vec<_>>()), expected);
+        let expected = (VectorDriver::KMZ, vec![("points".to_string(), 2, 12), ("more".to_string(), 1, 12)]);
+        assert_eq!(summary(&by_fallback), expected);
         assert_eq!(summary(&by_fallback), summary(&by_driver));
         let features = |v: &VectorDataset| {
             v.layers
