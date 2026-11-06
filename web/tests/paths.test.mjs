@@ -20,6 +20,9 @@ test("remote paths are read under /https/", () => {
     ["gs://bucket/b.tif", "/https/storage.googleapis.com/bucket/b.tif"],
     ["/vsigs/bucket/b.tif", "/https/storage.googleapis.com/bucket/b.tif"],
     ["--like=https://example.com/c.gpkg", "--like=/https/example.com/c.gpkg"],
+    // Object keys name objects: `#` and `?` are part of the key, not a fragment or a query.
+    ["s3://bucket-a/dir/a#1?b.tif", "/https/bucket-a.s3.amazonaws.com/dir/a%231%3Fb.tif"],
+    ["gs://bucket/dir/a b#1.tif", "/https/storage.googleapis.com/bucket/dir/a%20b%231.tif"],
   ];
   for (const [token, path] of cases) assert.equal(toWorkerPath(token), path, token);
 });

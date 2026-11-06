@@ -29,11 +29,16 @@ jobs:
           uv venv --python 3.12
           uv pip install -r requirements_docs.txt
           .venv/bin/zensical build
+      # terrio.dev/web, built for deploys only: CI's wasm job builds and tests the same command line
+      # for WASI on every pull request, so docs pull requests stay quick.
       - uses: dtolnay/rust-toolchain@stable
+        if: github.event_name != 'pull_request'
         with:
           targets: wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
+        if: github.event_name != 'pull_request'
       - name: Build the command line in the browser (terrio.dev/web)
+        if: github.event_name != 'pull_request'
         run: web/build.sh site/web
       - name: Download the latest Pyodide wheel
         env:

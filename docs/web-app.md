@@ -96,7 +96,8 @@ After each run, the page shows how many requests the command made and how many b
 - **Cancelling** a running command ends it and restarts terrio, with the workspace's files as they
   were before the command started (empty folders are not kept). Remote files are fetched again
   afterwards. A command still waiting its turn (behind an upload or the map) is just taken out:
-  nothing restarts, and fetched parts of remote files are kept. Closing the map ends a batch of
+  nothing restarts, and fetched parts of remote files are kept. Restarting copies every uploaded
+  file into terrio again, which takes a moment for large files. Closing the map ends a batch of
   tiles still being drawn in the same way as a running command. An uploaded file changed or moved on your disk since its upload is removed from the
   workspace then, with a message.
 

@@ -20,6 +20,14 @@ export function toWorkerPath(token) {
   return option ? option[1] + remotePath(option[2]) : remotePath(token);
 }
 
+/**
+ * An object key as a URL path: each segment percent-encoded, so that `#`, `?` and the like name
+ * the object instead of starting a fragment or a query.
+ */
+function encodeKey(key) {
+  return key.split("/").map(encodeURIComponent).join("/");
+}
+
 /** The archive prefixes before a remote path: `/vsizip/`, `/vsitar/{`, …. */
 const WRAPPERS = /^((?:\/vsi(?!curl\/|s3\/|gs\/)[a-z0-9_]+\/\{?)*)/;
 
@@ -31,8 +39,8 @@ function remotePath(value) {
   // A bucket named as S3 names them, so that nothing else can end up in the host or query.
   if ((m = /^(?:s3:\/\/|\/vsis3\/)([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])\/([\s\S]*)$/.exec(rest))) {
     const [, bucket, key] = m;
-    return bucket.includes(".") ? `${prefix}/https/s3.amazonaws.com/${bucket}/${key}` : `${prefix}/https/${bucket}.s3.amazonaws.com/${key}`;
+    return bucket.includes(".") ? `${prefix}/https/s3.amazonaws.com/${bucket}/${encodeKey(key)}` : `${prefix}/https/${bucket}.s3.amazonaws.com/${encodeKey(key)}`;
   }
-  if ((m = /^(?:gs:\/\/|\/vsigs\/)([\s\S]*)$/.exec(rest))) return `${prefix}/https/storage.googleapis.com/${m[1]}`;
+  if ((m = /^(?:gs:\/\/|\/vsigs\/)([^/]+)\/([\s\S]*)$/.exec(rest))) return `${prefix}/https/storage.googleapis.com/${m[1]}/${encodeKey(m[2])}`;
   return value;
 }

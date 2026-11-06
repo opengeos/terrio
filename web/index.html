@@ -456,7 +456,7 @@ function abortMapRun() {
  */
 function workerFields(fields) {
   return fields.map((f) => (f.arg.type === "path" || f.arg.position != null)
-    ? { ...f, read: () => f.read().split("\n").map((line) => toWorkerPath(line.trim())).join("\n") }
+    ? { ...f, read: () => f.read().split("\n").map((line) => (layout(f.arg).split === "word" ? line.trim().split(/\s+/).map(toWorkerPath).join(" ") : toWorkerPath(line.trim()))).join("\n") }
     : f);
 }
 
