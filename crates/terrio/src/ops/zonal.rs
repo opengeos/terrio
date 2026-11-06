@@ -806,7 +806,8 @@ impl ZonalStream {
                 self.reducer.windows.len()
             )));
         };
-        if data.len() != w.width * w.height {
+        // Checked: on a 32-bit target, a window of 65,536 x 65,536 pixels wraps to 0.
+        if w.width.checked_mul(w.height) != Some(data.len()) {
             return Err(Error::InvalidArgument(format!(
                 "zonal stream: window {window} has {} pixels, expected {} x {}",
                 data.len(),
