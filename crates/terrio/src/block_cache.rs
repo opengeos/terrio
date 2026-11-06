@@ -16,8 +16,9 @@
 //!
 //! The cache holds at most [`max_bytes`] bytes of decoded samples (and a small fixed overhead per
 //! chunk), dropping the least recently used chunks first. A chunk larger than the cache is not
-//! kept. The size is read once, from the environment (the GDAL equivalent is read when the terrio
-//! variable is not set, or cannot be read):
+//! kept. The size is read once, at first use, from the process environment (the GDAL equivalent is
+//! read when the terrio variable is not set, or cannot be read). Options set for a thread
+//! ([`crate::config::push_scope`], Python's `terrio.Env`) do not change it; use [`set_max_bytes`]:
 //!
 //! | Variable | GDAL equivalent | Default |
 //! |---|---|---|
@@ -103,18 +104,26 @@ fn parse_gdal_cachemax(v: &str) -> Option<u64> {
     to_size(value * factor as f64)
 }
 
-/// The size from the environment, else the default.
+/// A variable of the process environment, unset when empty. The thread scopes of
+/// [`crate::config`] are not consulted: the size is process-wide.
+fn process_env(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+}
+
+/// The size from the process environment, else the default.
 fn default_max_bytes() -> u64 {
-    crate::config::get("TERRIO_CACHEMAX")
+    process_env("TERRIO_CACHEMAX")
         .and_then(|v| parse_terrio_cachemax(&v))
-        .or_else(|| crate::config::get("GDAL_CACHEMAX").and_then(|v| parse_gdal_cachemax(&v)))
+        .or_else(|| process_env("GDAL_CACHEMAX").and_then(|v| parse_gdal_cachemax(&v)))
         .unwrap_or(DEFAULT_MAX_BYTES)
 }
 
 /// The most bytes of decoded samples the cache holds (GDAL's `GDALGetCacheMax64`): from
 /// `TERRIO_CACHEMAX`, else `GDAL_CACHEMAX`, else 64 MiB, unless [`set_max_bytes`] changed it. 0
-/// means that nothing is cached. The size lives in the cache, under its lock, which a fork holds;
-/// the environment is read outside the lock, and a size set meanwhile by [`set_max_bytes`] wins.
+/// means that nothing is cached. The size is read from the process environment at first use;
+/// options set for a thread (`config::push_scope`, Python's `terrio.Env`) do not change it, use
+/// [`set_max_bytes`]. The size lives in the cache, under its lock, which a fork holds; the
+/// environment is read outside the lock, and a size set meanwhile by [`set_max_bytes`] wins.
 pub fn max_bytes() -> u64 {
     if let Some(max) = cache().max {
         return max;
@@ -147,17 +156,17 @@ impl CachedChunk {
     fn cost(&self) -> u64 {
         use std::mem::size_of;
         let samples = match &self.samples {
-            DecodingResult::U8(v) => v.len() * size_of::<u8>(),
-            DecodingResult::I8(v) => v.len() * size_of::<i8>(),
-            DecodingResult::U16(v) => v.len() * size_of::<u16>(),
-            DecodingResult::I16(v) => v.len() * size_of::<i16>(),
-            DecodingResult::F16(v) => v.len() * size_of::<half::f16>(),
-            DecodingResult::U32(v) => v.len() * size_of::<u32>(),
-            DecodingResult::I32(v) => v.len() * size_of::<i32>(),
-            DecodingResult::F32(v) => v.len() * size_of::<f32>(),
-            DecodingResult::U64(v) => v.len() * size_of::<u64>(),
-            DecodingResult::I64(v) => v.len() * size_of::<i64>(),
-            DecodingResult::F64(v) => v.len() * size_of::<f64>(),
+            DecodingResult::U8(v) => v.capacity() * size_of::<u8>(),
+            DecodingResult::I8(v) => v.capacity() * size_of::<i8>(),
+            DecodingResult::U16(v) => v.capacity() * size_of::<u16>(),
+            DecodingResult::I16(v) => v.capacity() * size_of::<i16>(),
+            DecodingResult::F16(v) => v.capacity() * size_of::<half::f16>(),
+            DecodingResult::U32(v) => v.capacity() * size_of::<u32>(),
+            DecodingResult::I32(v) => v.capacity() * size_of::<i32>(),
+            DecodingResult::F32(v) => v.capacity() * size_of::<f32>(),
+            DecodingResult::U64(v) => v.capacity() * size_of::<u64>(),
+            DecodingResult::I64(v) => v.capacity() * size_of::<i64>(),
+            DecodingResult::F64(v) => v.capacity() * size_of::<f64>(),
         };
         samples as u64 + ENTRY_OVERHEAD
     }
@@ -231,15 +240,8 @@ impl Cache {
                 self.bytes = 0;
                 break;
             };
-            // Out of the order already: take it out of its reader's chunks.
-            if let Some(chunks) = self.handles.get_mut(&handle)
-                && let Some(entry) = chunks.remove(&(ifd, chunk))
-            {
-                self.bytes -= entry.cost;
-                if chunks.is_empty() {
-                    self.handles.remove(&handle);
-                }
-            }
+            // Out of the order already; `remove` finds no tick to take out of it.
+            self.remove(handle, ifd, chunk);
         }
     }
 
@@ -493,6 +495,17 @@ pub(crate) mod tests {
         put(&mut c, h, 0, 0, 50, 2, (1, 1));
         assert_eq!(c.bytes, cost(50));
         assert_eq!(first_byte(&c.get(h, 0, 0).unwrap()), 2);
+    }
+
+    #[test]
+    fn a_thread_scope_does_not_set_the_cache_size() {
+        let without = default_max_bytes();
+        let scope = ["TERRIO_CACHEMAX", "GDAL_CACHEMAX"].into_iter().map(|k| (k.to_string(), Some("1".to_string()))).collect();
+        crate::config::push_scope(scope);
+        let with = default_max_bytes();
+        crate::config::pop_scope();
+        assert_eq!(with, without);
+        assert_eq!(default_max_bytes(), without);
     }
 
     #[test]

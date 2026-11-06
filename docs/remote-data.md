@@ -244,6 +244,9 @@ full, a chunk larger than the cache is never kept, and a size of 0 keeps none.
 |---|---|---|
 | `TERRIO_CACHEMAX` (bytes; `K`, `M`, `G` suffixes; 0 turns the cache off) | `GDAL_CACHEMAX` (a plain integer below 100000 is megabytes; a `%` value is ignored) | 64 MiB |
 
+The size is read from the process environment at first use. Options set for one thread (Python's
+`terrio.Env`) do not change it.
+
 `terrio::block_cache::set_max_bytes` and `clear` change the size and empty the cache at run time.
 The chunks belong to the open reader that decoded them, so a local file replaced under an open
 reader is still read as it was, and a reader opened afterwards reads the new file. A remote file
