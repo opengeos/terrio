@@ -318,7 +318,7 @@ pub(crate) fn open_subdataset(path: &str) -> Option<Result<RasterDataset>> {
 /// Writes rasters into one netCDF-4 file, each in its group (see `netcdf_write::groups_to_bytes`).
 #[cfg(feature = "netcdf-hdf5")]
 pub(crate) fn write_netcdf_groups(rasters: &[(&str, &RasterDataset)], path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
-    std::fs::write(path, netcdf_groups_to_bytes(rasters, options)?)?;
+    common::write_replacing(path, netcdf_groups_to_bytes(rasters, options)?)?;
     Ok(())
 }
 

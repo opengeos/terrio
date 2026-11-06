@@ -706,6 +706,11 @@ impl LazyRaster {
         }
     }
 
+    /// The raster in memory, shared rather than copied, when it is not read on demand.
+    pub fn shared_dataset(&self) -> Option<Arc<RasterDataset>> {
+        if let Inner::Memory(ds) = &self.inner { Some(Arc::clone(ds)) } else { None }
+    }
+
     /// The description and metadata of each band, for drivers that report them per band (GRIB);
     /// empty otherwise.
     pub fn band_metadata(&self) -> &[crate::BandMetadata] {

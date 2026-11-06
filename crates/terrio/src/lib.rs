@@ -206,6 +206,7 @@ pub mod config;
 pub mod crs;
 mod dataset;
 pub mod dataset_files;
+mod deflate_compress;
 mod drivers;
 #[cfg(test)]
 mod entry_allow_list_tests;

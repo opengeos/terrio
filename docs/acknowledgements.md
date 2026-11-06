@@ -140,6 +140,13 @@ published [`FeatureCollection.proto`](https://github.com/Esri/arcgis-pbf), copyr
 the Apache License 2.0. It follows the message and field numbers that file defines; no code is copied
 from it.
 
+## libdeflate
+
+terrio's GeoTIFF and COG writers compress Deflate chunks with a Rust port of
+[libdeflate](https://github.com/ebiggers/libdeflate)'s level 6 compressor
+(`crates/terrio/src/deflate_compress.rs`, copyright 2016 Eric Biggers, MIT): the chunks are
+libdeflate's, byte for byte, as GDAL writes them when built with libdeflate (GDAL 3.12).
+
 ## fdlibm
 
 terrio's vectorized aspect, and with the default (GDAL 3.12) kernel its slope in degrees and its
