@@ -245,8 +245,10 @@ is full; a size of 0 keeps none.
 | `TERRIO_CACHEMAX` (bytes; `K`, `M`, `G` suffixes; 0 turns the cache off) | `GDAL_CACHEMAX` (a plain integer below 100000 is megabytes; a `%` value is ignored) | 64 MiB |
 
 `terrio::block_cache::set_max_bytes` and `clear` change the size and empty the cache at run time.
-The chunks belong to the open reader that decoded them, so a file replaced under an open reader
-is still read as it was, and a reader opened afterwards reads the new file.
+The chunks belong to the open reader that decoded them, so a local file replaced under an open
+reader is still read as it was, and a reader opened afterwards reads the new file. A remote file
+opened again decodes its chunks anew, but from the bytes the HTTP cache above may still hold for its
+URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops them.
 
 ## Managing files
 
