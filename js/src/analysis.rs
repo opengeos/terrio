@@ -291,7 +291,8 @@ struct ReducerOptions {
 /// reduces one band, fed the `windows()` in order.
 /// Options: stats (default count, min, max, mean, sum, stddev; not the weighted ones), allTouched,
 /// fractional, layer (of a dataset with several), stripRows (rows per window; give a tiled source's
-/// block height to read each block once).
+/// block height to read each block once). Not tSrs or decimalPlaces: the results are unrounded
+/// arrays.
 #[wasm_bindgen(js_name = ZonalReducer)]
 pub struct JsZonalReducer {
     inner: terrio::ops::zonal::ZonalReducer,
@@ -392,7 +393,8 @@ pub struct JsZonalStream {
 #[wasm_bindgen(js_class = ZonalStream)]
 impl JsZonalStream {
     /// Adds window number `window` (of `ZonalReducer.windows()`): a typed array of its
-    /// `width * height` pixels, row after row. Windows must come in order.
+    /// `width * height` pixels, row after row. Windows must come in order; a wrong window or
+    /// length throws and leaves the stream unchanged.
     pub fn add(&mut self, window: f64, data: &JsValue) -> Result<(), JsError> {
         let window = whole("window", window)?;
         let stream = self.stream.as_mut().ok_or_else(|| JsError::new("the stream is finished"))?;
@@ -400,10 +402,13 @@ impl JsZonalStream {
     }
 
     /// The statistics, as `{name: Float64Array}` with one value per zone feature, in layer
-    /// order; NaN where a zone has no valid pixels (`count` and `variety` are then 0).
+    /// order; NaN where a zone has no valid pixels (`count` and `variety` are then 0). With
+    /// windows missing, throws and the stream takes them still.
     pub fn finish(&mut self) -> Result<js_sys::Object, JsError> {
         use terrio::FieldValue;
-        let stream = self.stream.take().ok_or_else(|| JsError::new("the stream is finished"))?;
+        // Taken only once it is complete: after a missing-windows error, the stream takes them.
+        self.stream.as_ref().ok_or_else(|| JsError::new("the stream is finished"))?.check_complete().map_err(js_err)?;
+        let stream = self.stream.take().expect("checked above");
         let out = js_sys::Object::new();
         for (name, column) in self.names.iter().zip(stream.finish().map_err(js_err)?) {
             let values: Vec<f64> = column

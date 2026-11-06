@@ -523,6 +523,23 @@ def test_zonal_reducer_rejects_bad_grids(width, height, transform, match):
         terrio.ZonalReducer(reducer_zones(), width, height, transform, "EPSG:4326")
 
 
+def test_zonal_reducer_stream_finishes_after_missing_windows_are_added():
+    reducer = terrio.ZonalReducer(
+        reducer_zones(), 300, 200, REDUCER_TRANSFORM, "EPSG:4326", stats=["count"], strip_rows=37
+    )
+    windows = reducer.windows()
+    assert len(windows) > 1
+    stream = reducer.stream()
+    _, _, w, h = windows[0]
+    stream.add(0, np.ones((h, w)))
+    with pytest.raises(terrio.InvalidArgumentError, match=f"missing windows, 1 of {len(windows)}"):
+        stream.finish()
+    for i, (_, _, w, h) in enumerate(windows[1:], 1):
+        stream.add(i, np.ones((h, w)))
+    want = reduce_windows(reducer, np.ones((200, 300)))
+    np.testing.assert_array_equal(stream.finish()["count"], want["count"])
+
+
 def test_zonal_reducer_stream_is_finished_once():
     reducer = terrio.ZonalReducer(
         reducer_zones(), 300, 200, REDUCER_TRANSFORM, "EPSG:4326", stats=["count"]

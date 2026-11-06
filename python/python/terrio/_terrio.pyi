@@ -2522,7 +2522,8 @@ class ZonalReducer:
 
     Results equal ``zonal_stats`` over a raster holding the same values. The zones are
     computed once for the grid; each ``stream()`` then reduces one band, fed the
-    ``windows()`` in order. ``stats`` are those of ``zonal_stats`` except the weighted ones.
+    ``windows()`` in order. ``stats`` are those of ``zonal_stats`` except the weighted ones;
+    ``t_srs`` and ``decimal_places`` are not supported (the results are unrounded arrays).
     """
 
     def __new__(
@@ -2565,14 +2566,16 @@ class ZonalStream:
         """Add window number ``window``, in order.
 
         A 2-D integer, float32, float64 or bool array of shape ``(height, width)``, of
-        any strides.
+        any strides. A wrong window, shape or dtype raises ``InvalidArgumentError`` and
+        leaves the stream unchanged; an ``InternalError`` ends the stream.
         """
         ...
     def finish(self) -> dict[str, NDArray[Any]]:
         """One array per statistic, a value per zone feature.
 
         int64 for ``count`` (unless fractional) and ``variety``, float64 (NaN for null) for the
-        others.
+        others. With windows missing, raises ``InvalidArgumentError`` and the stream takes them
+        still.
         """
         ...
 

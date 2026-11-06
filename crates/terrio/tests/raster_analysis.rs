@@ -897,6 +897,8 @@ fn zonal_reducer_rejects_out_of_order() {
     stream.add(0, &data(0)).unwrap();
     assert_eq!(stream.next_window(), 1);
     assert_eq!(format!("{stream:?}"), "ZonalStream { next_window: 1, windows: 3, .. }");
+    let e = stream.check_complete().unwrap_err();
+    assert!(e.to_string().contains("missing windows, 1 of 3 added"), "{e}");
     let e = stream.finish().err().unwrap();
     assert!(e.to_string().contains("missing windows"), "{e}");
     let mut stream = reducer.stream(Some(0.));

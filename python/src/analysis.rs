@@ -248,7 +248,8 @@ fn zonal_stats(
 
 /// Zonal statistics of arrays you produce strip by strip, equal to `zonal_stats` over a raster
 /// holding the same values: the zones are computed once for the grid, then each `stream()`
-/// reduces one band, fed the `windows()` in order.
+/// reduces one band, fed the `windows()` in order. `t_srs` and `decimal_places` are not supported
+/// (the results are unrounded arrays).
 ///
 /// Args:
 ///     zones: Anything `zonal_stats` accepts (a `Layer`, a path, GeoJSON...).
@@ -367,7 +368,9 @@ impl PyZonalStream {
 #[pymethods]
 impl PyZonalStream {
     /// Adds window number `window` (of `ZonalReducer.windows`): a 2-D integer, float32, float64 or
-    /// bool array of shape `(height, width)`, of any strides. Windows must come in order.
+    /// bool array of shape `(height, width)`, of any strides. Windows must come in order. A wrong
+    /// window, shape or dtype raises `InvalidArgumentError` and leaves the stream unchanged; an
+    /// internal error (`InternalError`) may leave the window half added, so it ends the stream.
     fn add(&self, py: Python<'_>, window: usize, array: &Bound<'_, numpy::PyUntypedArray>) -> PyResult<()> {
         let mut guard = self.lock()?;
         let stream = guard.as_mut().ok_or_else(|| crate::invalid("the stream is finished"))?;
@@ -394,12 +397,17 @@ impl PyZonalStream {
     }
 
     /// The statistics, as `{name: array}` with one value per zone feature, in layer order: int64
-    /// for `count` (unless fractional) and `variety`, float64 (NaN for null) for the others.
+    /// for `count` (unless fractional) and `variety`, float64 (NaN for null) for the others. With
+    /// windows missing, raises `InvalidArgumentError` and the stream takes them still.
     fn finish<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         use numpy::IntoPyArray;
         use terrio::FieldValue;
-        let stream = self.lock()?.take();
-        let stream = stream.ok_or_else(|| crate::invalid("the stream is finished"))?;
+        // Taken only once it is complete: after a missing-windows error, the stream takes them.
+        let stream = {
+            let mut guard = self.lock()?;
+            guard.as_ref().ok_or_else(|| crate::invalid("the stream is finished"))?.check_complete().py()?;
+            guard.take().expect("checked above")
+        };
         let columns = py.detach_result(|| stream.finish()).py()?;
         let out = pyo3::types::PyDict::new(py);
         for ((name, integer), column) in self.stats.iter().zip(columns) {
