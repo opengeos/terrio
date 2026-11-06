@@ -498,7 +498,9 @@ const ndvi = stream.finish(); // { mean: Float64Array, median: Float64Array }, o
 zone has no valid pixels (`count` and `variety` are then 0). Statistics that keep values (median,
 quantiles, mode, minority, variety) hold each open zone's values in each stream, 8 bytes per
 pixel (16 with `fractional`): feed streams one at a time to bound them. It also takes
-`allTouched`, `fractional`, `layer` and `stripRows`; weighted statistics need `zonalStats`.
+`allTouched`, `fractional`, `layer` and `stripRows`; weighted statistics need `zonalStats`, and
+`tSrs` and `decimalPlaces` are not supported: the results are unrounded arrays, without
+geometries.
 
 ## Native multidimensional arrays
 

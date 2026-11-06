@@ -617,7 +617,8 @@ ndvi = stream.finish()  # {"mean": array, "median": array}, one value per field
 
 `finish()` returns one array per statistic: `count` and `variety` are int64 (`count` is float64
 with `fractional=True`), the others float64 with NaN where a zone has no valid pixels. Weighted
-statistics need `zonal_stats`.
+statistics need `zonal_stats`, and `t_srs` and `decimal_places` are not supported: the results are
+unrounded arrays, without geometries.
 
 ## Native multidimensional arrays
 
