@@ -309,8 +309,7 @@ Extension matching is case-insensitive.
 Subdirectories, symbolic links, macOS AppleDouble sidecars (`._*`) and other file
 types are skipped; other dot-prefixed LAS/LAZ filenames are included. The scan is
 not recursive. The output directory is created when needed and may be a child of the
-input directory. This works with local paths on any drive, including Windows
-paths with spaces:
+input directory. For example, on Windows:
 
 ```powershell
 terrio filter csf --cloth-resolution=2 'D:\Downloads' 'D:\Downloads\Nova pasta'

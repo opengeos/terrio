@@ -935,7 +935,8 @@ fn run_csf(io: &Io, options: &CsfOptions) -> terrio::Result<()> {
     }
     let location = terrio::vfs::Location::parse(&io.output);
     let local = match &location {
-        terrio::vfs::Location::Local(_) => true,
+        // `ept://` parses as a local path but selects the EPT writer.
+        terrio::vfs::Location::Local(_) => !io.output.starts_with("ept://"),
         // A directory name ending in .zip is not an archive output request.
         terrio::vfs::Location::Zip { archive, inner: None } => {
             matches!(archive.as_ref(), terrio::vfs::Location::Local(_)) && !io.output.starts_with("/vsizip/")
@@ -1479,6 +1480,11 @@ mod tests {
         std::fs::write(input.join("b.las"), "input b").unwrap();
         let error = run_batch(std::path::Path::new("s3://bucket/classified")).unwrap_err().to_string();
         assert!(error.contains("local directory"), "{error}");
+        let ept_output = dir.path().join("ept-out");
+        let error = run_batch(std::path::Path::new(&format!("ept://{}", ept_output.display()))).unwrap_err().to_string();
+        assert!(error.contains("local directory"), "{error}");
+        assert!(!ept_output.exists());
+        assert!(!std::path::Path::new("ept:").exists());
         let error = run_batch(&input).unwrap_err().to_string();
         assert!(error.contains("input directory"), "{error}");
         let error = run_batch(&input.join("new/..")).unwrap_err().to_string();
