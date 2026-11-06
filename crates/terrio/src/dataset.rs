@@ -1096,26 +1096,21 @@ fn is_wbvector_kmz(path: &str) -> bool {
     }
 }
 
-/// The layer of a KMZ archive the `wbvector` fallback found: its `doc.kml` (in any case), else its
-/// first `.kml` member, read with `wbvector`'s KML reader. terrio opens the archive: `wbvector` is
-/// built without its own KMZ reader, whose `zip` 0.6 has known advisories.
+/// The layer of a KMZ archive the `wbvector` fallback found, from the member the KMZ driver reads:
+/// its first `doc.kml` in any case, else its first `.kml` member, read with `wbvector`'s KML
+/// reader. terrio opens the archive: `wbvector` is built without its own KMZ reader, whose `zip`
+/// 0.6 has known advisories.
 fn read_wbvector_kmz(path: &str) -> Result<Layer> {
     use std::io::Read;
     let kmz = |message: String| Error::from(wbvector::GeoError::Kmz(message));
     let bytes = std::fs::read(path).map_err(wbvector::GeoError::Io)?;
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| kmz(format!("invalid zip archive: {e}")))?;
-    let (mut doc, mut first) = (None, None);
-    for i in 0..archive.len() {
-        let name = archive.by_index(i).map_err(|e| kmz(format!("failed reading zip entry {i}: {e}")))?.name_raw().to_ascii_lowercase();
-        if name == b"doc.kml" {
-            doc = Some(i);
-            break;
-        }
-        if first.is_none() && name.ends_with(b".kml") {
-            first = Some(i);
-        }
-    }
-    let index = doc.or(first).ok_or_else(|| kmz("no .kml entry found in KMZ".into()))?;
+    // zip keeps one entry per name, the last: of two members named `doc.kml`, the last is read.
+    // Only names are compared, so no member is opened but the one read.
+    let names: Vec<Vec<u8>> = archive.file_names_raw().map(|name| name.to_ascii_lowercase()).collect();
+    let index = (names.iter().position(|name| name == b"doc.kml"))
+        .or_else(|| names.iter().position(|name| name.ends_with(b".kml")))
+        .ok_or_else(|| kmz("no .kml entry found in KMZ".into()))?;
     let mut text = String::new();
     archive
         .by_index(index)
@@ -2306,10 +2301,9 @@ mod content_allow_list_tests {
     }
 
     /// With `TERRIO_WBVECTOR_FALLBACK=YES`, a zip archive named for no driver is read as KMZ: its
-    /// `doc.kml` in any case, else its first `.kml` member. An archive with two `doc.kml` members
-    /// reads the last one, as the KMZ driver does. The names `wbvector`'s detection reads first
-    /// still win: an `.xml` file with `<kml` in its first 4 KiB is read as KML, and a path without
-    /// an extension beside a `.shp` file as a shapefile.
+    /// `doc.kml` in any case, else its first `.kml` member. The names `wbvector`'s detection reads
+    /// first still win: an `.xml` file with `<kml` in its first 4 KiB is read as KML, and a path
+    /// without an extension beside a `.shp` file as a shapefile.
     // Without the GDAL backend: with it, what terrio refuses goes on to GDAL (gdal_fallback).
     #[cfg(not(feature = "gdal"))]
     #[test]
@@ -2351,15 +2345,65 @@ mod content_allow_list_tests {
         assert!(as_kml.as_ref().is_err_and(|e| e.contains("valid UTF-8")), "{as_kml:?}");
         let Ok(Dataset::Vector(v)) = open_with(&bare, &fallback) else { panic!("the shapefile not read") };
         assert_eq!(geometries(&v), [Some(wbvector::Geometry::point(5.0, 6.0))]);
-        // Two members named doc.kml (renamed in place: the zip writer refuses the same name twice).
-        let mut twice = archive(&[("doc.kml", kml("first", &point("1,2"))), ("doc.kmz", kml("last", &point("3,4")))]);
-        let names: Vec<usize> = (0..twice.len() - 6).filter(|&i| &twice[i..i + 7] == b"doc.kmz").collect();
-        names.iter().for_each(|&i| twice[i + 6] = b'l');
-        let read = ["twice.payload", "twice.kmz"].map(|name| {
-            std::fs::write(dir.path().join(name), &twice).unwrap();
-            let Ok(Dataset::Vector(v)) = open_with(&dir.path().join(name), &fallback) else { panic!("{name} not read") };
-            v.layers[0].name.clone()
+    }
+
+    /// A member of [`raw_zip`]: its name, its bytes and its general purpose flags.
+    type Member<'a> = (&'a str, &'a [u8], u16);
+
+    /// A zip archive of stored members written byte by byte (APPNOTE 6.3.10, 4.3.7, 4.3.12 and
+    /// 4.3.16), for what the zip writer does not write: two members with one name, a member flagged
+    /// encrypted (4.4.4, bit 0) without being encrypted.
+    fn raw_zip(members: &[Member]) -> Vec<u8> {
+        let (mut zip, mut directory) = (Vec::new(), Vec::new());
+        for &(name, data, flags) in members {
+            let crc =
+                !data.iter().fold(!0u32, |c, &b| (0..8).fold(c ^ u32::from(b), |c, _| (c >> 1) ^ (0xEDB8_8320 & (c & 1).wrapping_neg())));
+            let (size, length) = ((data.len() as u32).to_le_bytes(), (name.len() as u16).to_le_bytes());
+            let fields =
+                [&20u16.to_le_bytes()[..], &flags.to_le_bytes(), &[0; 6], &crc.to_le_bytes(), &size, &size, &length, &[0; 2]].concat();
+            directory.extend([&b"PK\x01\x02\x14\x00"[..], &fields, &[0; 10], &(zip.len() as u32).to_le_bytes(), name.as_bytes()].concat());
+            zip.extend([&b"PK\x03\x04"[..], &fields, name.as_bytes(), data].concat());
+        }
+        let (count, size, start) =
+            ((members.len() as u16).to_le_bytes(), (directory.len() as u32).to_le_bytes(), (zip.len() as u32).to_le_bytes());
+        [zip, directory, [&b"PK\x05\x06"[..], &[0; 4], &count, &count, &size, &start, &[0; 2]].concat()].concat()
+    }
+
+    /// With `TERRIO_WBVECTOR_FALLBACK=YES`, a zip archive named for no driver is read from the
+    /// member the KMZ driver reads from the same archive named `.kmz`: its first `doc.kml` in any
+    /// case, else its first `.kml` member. An archive with two `doc.kml` members reads the last
+    /// one (zip keeps one entry per name, the last), and a member that cannot be opened (encrypted)
+    /// stops the read only if it is the one read.
+    #[cfg(not(feature = "gdal"))]
+    #[test]
+    fn the_wbvector_fallback_reads_the_kmz_member_the_kmz_driver_reads() {
+        let kml = |name: &str| {
+            let point = "<Placemark><Point><coordinates>1,2</coordinates></Point></Placemark>";
+            format!(r#"<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>{name}</name>{point}</Document></kml>"#)
+        };
+        let [first, last, upper, a, b] = ["first", "last", "upper", "a", "b"].map(kml);
+        let (first, last, upper, a, b) = (first.as_bytes(), last.as_bytes(), upper.as_bytes(), a.as_bytes(), b.as_bytes());
+        let cases: [(&str, &[Member], &str); 5] = [
+            ("twice", &[("doc.kml", first, 0), ("doc.kml", last, 0)], "last"),
+            ("cases", &[("DOC.KML", upper, 0), ("doc.kml", last, 0)], "upper"),
+            ("no_doc", &[("notes.txt", b"-", 0), ("b.kml", b, 0), ("a.kml", a, 0)], "b"),
+            ("locked_before", &[("secret.txt", b"-", 1), ("doc.kml", last, 0)], "last"),
+            ("locked_after", &[("doc.kml", last, 0), ("secret.txt", b"-", 1)], "last"),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let read = cases.map(|(name, members, _)| {
+            let bytes = raw_zip(members);
+            let read = ["payload", "kmz"].map(|extension| {
+                let path = dir.path().join(format!("{name}.{extension}"));
+                std::fs::write(&path, &bytes).unwrap();
+                match with(&[("TERRIO_WBVECTOR_FALLBACK", "YES")], || open(path.to_str().unwrap())) {
+                    Ok(Dataset::Vector(v)) => Ok(v.layers[0].name.clone()),
+                    other => Err(format!("{other:?}")),
+                }
+            });
+            (name, read)
         });
-        assert_eq!((names.len(), read), (2, ["last".to_string(), "last".to_string()]));
+        let expected = cases.map(|(name, _, layer)| (name, [Ok(layer.to_string()), Ok(layer.to_string())]));
+        assert_eq!(read, expected, "the layer read from each archive: [by the fallback, by the KMZ driver]");
     }
 }
