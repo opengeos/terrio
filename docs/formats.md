@@ -917,6 +917,14 @@ reads it.
   `--kmz-resource`, Python `kmz_resources`, JavaScript `kmzResources`), such as the icon images
   of `SYMBOL` styles, are packed beside those documents, so relative icon links resolve inside
   the archive.
+- **KMZ archives are read within limits**, whether opened from a file or from memory: the zip
+  archive limits of `/vsizip/` (`TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO`,
+  `TERRIO_ZIP_MAX_SIZE`), and 512 MiB of decompressed text for the main document and the layer
+  documents it links to together. Set `TERRIO_KMZ_MAX_SIZE` to a byte count to change that
+  budget; a KML document takes about twice its size in memory while it is read. An archive past
+  a limit is refused with a resource-limit error, which is not retried with GDAL. Zip archives
+  opened from memory (Python and JavaScript byte reads) read their members within the same
+  archive limits.
 - **KML styles** (`<Style>`, `<StyleMap>`) are read into an `OGR_STYLE` field holding GDAL's style
   strings (`PEN(c:#FF0000FF,w:2.000000px);BRUSH(fc:#00FF0040)`), and written back as KML styles;
   OGR's null brush (`BRUSH(id:"ogr-brush-1")`) and null pen (`PEN(id:"ogr-pen-1")`) are written as

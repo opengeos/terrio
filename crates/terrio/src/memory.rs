@@ -301,7 +301,7 @@ mod native {
 #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
 pub(crate) mod codec {
     use super::*;
-    use std::io::{Cursor, Read};
+    use std::io::Cursor;
 
     /// Whether the bytes start with a TIFF or BigTIFF signature.
     pub(crate) fn is_tiff(b: &[u8]) -> bool {
@@ -487,11 +487,14 @@ pub(crate) mod codec {
     }
 
     /// Opens the main dataset of a zip archive held in memory.
+    ///
+    /// Its members are read within the archive limits (`crate::vfs::ZipLimits`), as `/vsizip/`
+    /// reads the same archive on disk.
     fn open_zip(bytes: &[u8], name: &str, options: &VectorOpenOptions) -> Result<Dataset> {
-        let mut zip = zip::ZipArchive::new(Cursor::new(bytes))?;
+        let mut zip = crate::vfs::LimitedZip::open(Cursor::new(bytes))?;
         let mut names = Vec::new();
-        for i in 0..zip.len() {
-            let f = zip.by_index(i)?;
+        for i in 0..zip.archive().len() {
+            let f = zip.archive().by_index_raw(i)?;
             if f.is_file() {
                 names.push(f.name()?.to_string());
             }
@@ -501,9 +504,7 @@ pub(crate) mod codec {
         if let Some(root) = zarr_root(&names) {
             let mut files = Vec::with_capacity(names.len());
             for n in &names {
-                let mut b = Vec::new();
-                zip.by_name(n)?.read_to_end(&mut b)?;
-                files.push((n.clone(), b));
+                files.push((n.clone(), zip.read_name(n, u64::MAX)?));
             }
             return open_zarr_store(files, &root).map(Dataset::Raster);
         }
@@ -512,8 +513,7 @@ pub(crate) mod codec {
             .find_map(|ext| names.iter().find(|n| extension(n.as_str()).as_deref() == Some(*ext)))
             .cloned()
             .ok_or_else(|| Error::Unsupported(format!("no dataset found in '{name}'")))?;
-        let mut member = Vec::new();
-        zip.by_name(&main)?.read_to_end(&mut member)?;
+        let member = zip.read_name(&main, u64::MAX)?;
         let driver = VectorDriver::for_extension(&main);
         if let Some(driver @ (VectorDriver::Shapefile | VectorDriver::MapInfo)) = driver {
             // The sidecars: the members named as the main file, with another extension.
@@ -523,9 +523,7 @@ pub(crate) mod codec {
                 let member = names.iter().find(|n| {
                     n.len() == base.len() + ext.len() + 1 && n.starts_with(base) && extension(n.as_str()).as_deref() == Some(ext)
                 })?;
-                let mut out = Vec::new();
-                zip.borrow_mut().by_name(member).ok()?.read_to_end(&mut out).ok()?;
-                Some(out)
+                zip.borrow_mut().read_name(member, u64::MAX).ok()
             };
             let layers = crate::drivers::vector::read_parts(&member, &main, driver, &sidecar, options)?;
             let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, &main, driver)).collect();
@@ -537,8 +535,7 @@ pub(crate) mod codec {
         if let Dataset::Raster(r) = &mut ds
             && names.contains(&aux)
         {
-            let mut xml = String::new();
-            zip.by_name(&aux)?.read_to_string(&mut xml)?;
+            let xml = String::from_utf8(zip.read_name(&aux, u64::MAX)?).map_err(|_| Error::InvalidData(format!("'{aux}' is not UTF-8")))?;
             crate::drivers::nodata::apply(crate::drivers::common::parse_pam(&xml), r);
         }
         Ok(ds)
@@ -1332,6 +1329,34 @@ mod tests {
                 let i = l.schema.fields().iter().position(|f| f.name == "name").unwrap();
                 assert_eq!(l.features[0].attributes[i], wbvector::FieldValue::Text("Zürich".into()), "{name}");
             }
+        }
+    }
+
+    /// A zip archive opened from memory reads its members within the archive limits, as
+    /// `/vsizip/` reads the same archive on disk.
+    #[test]
+    fn zip_bytes_are_read_within_the_zip_limits() {
+        let gj = format!(
+            r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{}},"geometry":{{"type":"Point","coordinates":[1,2]}}}}]}}{}"#,
+            " ".repeat(1 << 20)
+        );
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(&mut buf);
+        writer.start_file("p.geojson", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut writer, gj.as_bytes()).unwrap();
+        writer.finish().unwrap();
+        let zip = buf.into_inner();
+        let scoped = |key: &str, value: &str| {
+            crate::config::push_scope([(key.to_string(), Some(value.to_string()))].into_iter().collect());
+            let out = codec::open(zip.clone(), "p.zip", &Default::default());
+            crate::config::pop_scope();
+            out
+        };
+        let Dataset::Vector(v) = codec::open(zip.clone(), "p.zip", &Default::default()).unwrap() else { panic!() };
+        assert_eq!(v.layers[0].features.len(), 1);
+        for (key, value) in [("TERRIO_ZIP_MAX_SIZE", "1000"), ("TERRIO_ZIP_MAX_RATIO", "10"), ("TERRIO_ZIP_MAX_ENTRIES", "0")] {
+            let refused = scoped(key, value);
+            assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains(key)), "{key}: {:?}", refused.err());
         }
     }
 }

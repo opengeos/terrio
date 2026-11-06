@@ -22,7 +22,6 @@
 //! read: see [`crate::LazyRaster`].
 
 use crate::{Error, Result};
-#[cfg(not(target_arch = "wasm32"))]
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -558,16 +557,13 @@ pub(crate) const MAX_DIRECTORY_BYTES: u64 = 64 << 20;
 
 /// The bytes at the end of an archive that hold its end of central directory record: the record
 /// and a comment of up to 65,535 bytes.
-#[cfg(not(target_arch = "wasm32"))]
 const TAIL_BYTES: u64 = 22 + 0xFFFF;
 
-#[cfg(not(target_arch = "wasm32"))]
 fn zip_error(message: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("zip: {message}"))
 }
 
 /// Where an archive's central directory is, from its end record.
-#[cfg(not(target_arch = "wasm32"))]
 struct Directory {
     /// The directory's position in the file.
     start: u64,
@@ -580,7 +576,6 @@ struct Directory {
 /// Checks what an archive's end of central directory record (zip64's, when there is one)
 /// declares, before the directory itself is read: its entry count against the limits, its size
 /// against the archive's.
-#[cfg(not(target_arch = "wasm32"))]
 fn check_directory<R: Read + Seek>(r: &mut R, limits: &ZipLimits) -> Result<Directory> {
     let len = r.seek(SeekFrom::End(0))?;
     let tail_len = len.min(TAIL_BYTES);
@@ -621,10 +616,90 @@ fn check_directory<R: Read + Seek>(r: &mut R, limits: &ZipLimits) -> Result<Dire
 }
 
 /// Opens an archive whose end record [`check_directory`] read.
-#[cfg(not(target_arch = "wasm32"))]
 fn open_archive<R: Read + Seek>(reader: R, directory: &Directory) -> Result<zip::ZipArchive<R>> {
     let config = zip::read::Config { archive_offset: zip::read::ArchiveOffset::Known(directory.archive_offset) };
     Ok(zip::ZipArchive::with_config(config, reader)?)
+}
+
+/// A zip archive whose members are read into memory within the [`ZipLimits`], as `/vsizip/`
+/// extracts them: the archive's entry count is checked before its directory is read, each
+/// member's ratio before it is read, and the bytes of the members read together against
+/// `TERRIO_ZIP_MAX_SIZE` while they are decompressed, since a member's declared size can be wrong.
+pub(crate) struct LimitedZip<R> {
+    zip: zip::ZipArchive<R>,
+    limits: ZipLimits,
+    /// The bytes read from the archive's members so far.
+    total: u64,
+}
+
+impl<R: Read + Seek> LimitedZip<R> {
+    /// Opens an archive within the limits the options set.
+    ///
+    /// Args:
+    ///     reader: The archive's bytes.
+    ///
+    /// Returns:
+    ///     The archive, or `Error::ResourceLimit` when it lists more entries than allowed.
+    pub(crate) fn open(reader: R) -> Result<Self> {
+        Self::with_limits(reader, ZipLimits::from_config())
+    }
+
+    /// Opens an archive within `limits`.
+    ///
+    /// Args:
+    ///     reader: The archive's bytes.
+    ///     limits: The limits its members are read within.
+    ///
+    /// Returns:
+    ///     The archive, or `Error::ResourceLimit` when it lists more entries than allowed.
+    pub(crate) fn with_limits(mut reader: R, limits: ZipLimits) -> Result<Self> {
+        let directory = check_directory(&mut reader, &limits)?;
+        let zip = open_archive(reader, &directory)?;
+        limits.check_entries("zip", zip.len() as u64)?;
+        Ok(Self { zip, limits, total: 0 })
+    }
+
+    /// The archive itself, for its entries' names and metadata.
+    pub(crate) fn archive(&mut self) -> &mut zip::ZipArchive<R> {
+        &mut self.zip
+    }
+
+    /// Reads the member at `index`, decompressing at most `cap + 1` bytes: a caller with its own
+    /// budget tells a member that does not fit it from one that just does by the length.
+    ///
+    /// Args:
+    ///     index: The member's index in the archive.
+    ///     cap: The most bytes the caller wants; `u64::MAX` for the whole member.
+    ///
+    /// Returns:
+    ///     The member's bytes, at most `cap + 1` of them. `Error::ResourceLimit` when the member's
+    ///     ratio is above the one allowed or the members read hold more than `TERRIO_ZIP_MAX_SIZE`,
+    ///     `Error::InvalidData` when it holds more than it declares.
+    pub(crate) fn read_index(&mut self, index: usize, cap: u64) -> Result<Vec<u8>> {
+        let member = self.zip.by_index(index)?;
+        let name = member.name().unwrap_or_default().to_string();
+        let (declared, packed) = (member.size(), member.compressed_size());
+        self.limits.check_ratio("zip", &name, declared, packed)?;
+        // A member declaring more than is left is refused before it is read.
+        self.limits.check_size("zip", &name, self.total.saturating_add(declared.min(cap.saturating_add(1))))?;
+        let remaining = self.limits.max_size - self.total;
+        // One byte past the smallest bound tells a member exceeding it from one that just fits.
+        let mut bytes = Vec::new();
+        member.take(cap.min(remaining).min(declared).saturating_add(1)).read_to_end(&mut bytes)?;
+        let read = bytes.len() as u64;
+        if read > declared {
+            return Err(zip_error(format!("'{name}' holds more than the {declared} bytes it declares")));
+        }
+        self.limits.check_size("zip", &name, self.total.saturating_add(read))?;
+        self.total += read;
+        Ok(bytes)
+    }
+
+    /// [`Self::read_index`] for the member named `name`.
+    pub(crate) fn read_name(&mut self, name: &str, cap: u64) -> Result<Vec<u8>> {
+        let index = self.zip.index_for_name(name).ok_or_else(|| zip_error(format!("'{name}' is not in the archive")))?;
+        self.read_index(index, cap)
+    }
 }
 
 /// The names of an archive's entries, with `/` separators.
@@ -1071,5 +1146,48 @@ mod tests {
         std::fs::write(&link, buf.into_inner()).unwrap();
         let err = resolve(&format!("/vsizip/{}/link.tif", link.display())).unwrap_err().to_string();
         assert!(err.contains("symbolic link"), "{err}");
+    }
+
+    /// An archive of deflated members, each of `len` bytes of `fill`.
+    fn deflated_members(members: &[(&str, usize)]) -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(&mut buf);
+        for (name, len) in members {
+            zip.start_file(*name, SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated)).unwrap();
+            zip.write_all(&vec![b'x'; *len]).unwrap();
+        }
+        zip.finish().unwrap();
+        buf.into_inner()
+    }
+
+    #[test]
+    fn limited_zip_reads_members_within_the_size_limit() {
+        let bytes = deflated_members(&[("a", 600), ("b", 600)]);
+        let limits = ZipLimits { max_size: 1000, ..ZipLimits::default() };
+        let mut zip = LimitedZip::with_limits(std::io::Cursor::new(bytes.clone()), limits).unwrap();
+        // A cap below the member's size: one byte past it, so the caller can tell.
+        assert_eq!(zip.read_name("a", 99).unwrap().len(), 100);
+        assert_eq!(zip.read_name("a", u64::MAX).unwrap().len(), 600);
+        // The members read count together: 100 + 600 + 600 is past the 1,000 allowed.
+        let error = zip.read_name("b", u64::MAX).unwrap_err();
+        assert!(matches!(&error, Error::ResourceLimit(m) if m.contains("TERRIO_ZIP_MAX_SIZE")), "{error:?}");
+        let error = LimitedZip::with_limits(std::io::Cursor::new(bytes), ZipLimits { max_entries: 1, ..limits }).err().unwrap();
+        assert!(matches!(&error, Error::ResourceLimit(m) if m.contains("TERRIO_ZIP_MAX_ENTRIES")), "{error:?}");
+    }
+
+    #[test]
+    fn limited_zip_cuts_a_member_at_the_size_it_declares() {
+        // A member that declares 10 bytes in both headers but inflates to 4,096.
+        let mut bytes = deflated_members(&[("a", 4096)]);
+        let patch = |bytes: &mut Vec<u8>, signature: &[u8], at: usize| {
+            let start = bytes.windows(4).position(|w| w == signature).unwrap();
+            bytes[start + at..start + at + 4].copy_from_slice(&10u32.to_le_bytes());
+        };
+        patch(&mut bytes, b"PK\x03\x04", 22);
+        patch(&mut bytes, b"PK\x01\x02", 24);
+        let mut zip = LimitedZip::with_limits(std::io::Cursor::new(bytes), ZipLimits::default()).unwrap();
+        // The zip crate stops at the declared size too; either refusal leaves the read bounded.
+        let error = zip.read_name("a", u64::MAX).unwrap_err().to_string();
+        assert!(error.contains("holds more than the 10 bytes it declares") || error.contains("larger than its declared"), "{error}");
     }
 }

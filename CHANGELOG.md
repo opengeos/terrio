@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- KMZ archives are read within limits (#579). Their main document and the layer documents it
+  links to may take 512 MiB of decompressed text together (`TERRIO_KMZ_MAX_SIZE` changes it),
+  and the archive is checked against `TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO` and
+  `TERRIO_ZIP_MAX_SIZE` as `/vsizip/` checks it, so a 1 MiB KMZ whose `doc.kml` inflates to 1 GiB
+  is refused at once instead of taking 2 GiB of memory. A KMZ file is read from its directory and
+  the members needed rather than loaded whole. The same archive limits apply to zip archives
+  opened from memory and to the `TERRIO_WBVECTOR_FALLBACK` KMZ read.
 - Lazy `translate` (`translate_lazy`, `translate_lazy_to_file` and the CLI's `translate`) and
   reads by window (`LazyRaster::read_resampled`) copy pixels fewer times, as do GeoTIFFs other
   than COGs written in rows (`GeoTiffWriter::write_rows`, which streamed GeoTIFF outputs use)

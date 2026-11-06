@@ -1099,23 +1099,26 @@ fn is_wbvector_kmz(path: &str) -> bool {
 /// KML reader. terrio opens the archive: `wbvector` is built without its own KMZ reader, whose
 /// `zip` 0.6 has known advisories.
 fn read_wbvector_kmz(path: &str) -> Result<Layer> {
-    use std::io::Read;
     let kmz = |message: String| Error::from(wbvector::GeoError::Kmz(message));
-    let bytes = std::fs::read(path).map_err(wbvector::GeoError::Io)?;
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| kmz(format!("invalid zip archive: {e}")))?;
+    let file = std::io::BufReader::new(std::fs::File::open(path).map_err(wbvector::GeoError::Io)?);
+    // The archive limits and the KMZ driver's document budget hold here too, and are not hidden
+    // behind a `wbvector` error.
+    let mut archive = crate::vfs::LimitedZip::open(file).map_err(|e| match e {
+        e @ Error::ResourceLimit(_) => e,
+        e => kmz(format!("invalid zip archive: {e}")),
+    })?;
     // zip keeps one entry per name, the last: of two members named `doc.kml`, the last is read.
     // Only names are compared, so no member is opened but the one read.
-    let names: Vec<Vec<u8>> = archive.file_names_raw().map(|name| name.to_ascii_lowercase()).collect();
+    let names: Vec<Vec<u8>> = archive.archive().file_names_raw().map(|name| name.to_ascii_lowercase()).collect();
     let index = (names.iter().position(|name| name == b"doc.kml"))
         .or_else(|| names.iter().position(|name| name.ends_with(b".kml")))
         .ok_or_else(|| kmz("no .kml entry found in KMZ".into()))?;
-    let mut document = Vec::new();
-    archive
-        .by_index(index)
-        .map_err(|e| kmz(format!("failed opening KML entry {index}: {e}")))?
-        .read_to_end(&mut document)
-        .map_err(|e| kmz(format!("failed reading KML entry {index}: {e}")))?;
-    Ok(wbvector::kml::parse_str(&crate::drivers::vector::xml::decode(&document))?)
+    let mut budget = crate::drivers::vector::kml::documents_budget();
+    let document = crate::drivers::vector::kml::read_document_at(&mut archive, index, &mut budget).map_err(|e| match e {
+        e @ Error::ResourceLimit(_) => e,
+        e => kmz(format!("failed reading KML entry {index}: {e}")),
+    })?;
+    Ok(wbvector::kml::parse_str(&document)?)
 }
 
 /// Whether a file starts with Parquet's magic number.
