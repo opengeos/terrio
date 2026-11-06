@@ -901,7 +901,7 @@ fn validate(tiff: Option<Tiff>, sidecar: Option<Tiff>, strict: bool, gdal: bool)
     if overviews.is_empty()
         && let Some(sc) = &sidecar
     {
-        // Every image of the sidecar, reduced or not: GDAL opens a full-resolution or unflagged
+        // Every image of the sidecar, reduced or not: GDAL 3.12.2 opens a full-resolution or unflagged
         // first image of a hand-made sidecar as an overview too (and rio-cogeo then reports a
         // decimation of 1 for a full-resolution one). GDAL's own sidecars flag all as reduced.
         overviews = sc.ifds.iter().filter(|i| !i.is_mask() && i.samples == main.samples).collect();
@@ -1123,6 +1123,7 @@ mod tests {
         assert!(!validate_cog(&p, true).unwrap().is_valid);
     }
 
+    /// Sidecar selection matches GDAL 3.12.2 / rio-cogeo 7.0.4, including unflagged images.
     #[test]
     fn external_overviews_are_reported_and_used() {
         use crate::formats::RasterDriver::{Cog, GTiff};
@@ -1136,7 +1137,7 @@ mod tests {
         crate::write_raster(&raster(1300, 700), &tiled, &crate::RasterWriteOptions { tile_size: Some(256), ..driver(GTiff, &[]) }).unwrap();
         std::fs::copy(&p, format!("{tiled}.ovr")).unwrap();
         let v = validate_cog(&tiled, false).unwrap();
-        // GDAL takes every image of the sidecar as an overview, its full-resolution one included,
+        // GDAL 3.12.2 takes every image of the sidecar as an overview, its full-resolution one included,
         // which rio-cogeo reports as a decimation of 1.
         assert_eq!(v.overview_factors, vec![1, 2, 4], "{v:?}");
         assert!(v.errors.contains(&"Invalid Decimation 1 for overview level 0".to_string()), "{v:?}");
@@ -1147,6 +1148,7 @@ mod tests {
         std::fs::copy(&half, format!("{tiled}.ovr")).unwrap();
         let v = validate_cog(&tiled, false).unwrap();
         assert_eq!(v.overview_factors, vec![2], "{v:?}");
+        assert!(!v.errors.iter().any(|e| e.contains("Invalid Decimation")), "{v:?}");
         assert!(v.warnings.is_empty(), "{v:?}");
     }
 

@@ -207,6 +207,7 @@ def test_remote_gdal_auto_keeps_header_reads(tmp_path):
 
 
 def test_external_overviews_agree_with_rio_cogeo(tmp_path):
+    """Match rio-cogeo 7.0.4 with rasterio 1.5.2 (GDAL 3.12.2) for external overviews."""
     # GDAL takes every image of a .ovr sidecar as an overview: those GDAL builds (all flagged
     # reduced) and hand-made ones whose first image is not flagged, full resolution included.
     rasterio = pytest.importorskip("rasterio")
@@ -215,6 +216,7 @@ def test_external_overviews_agree_with_rio_cogeo(tmp_path):
     from rasterio.transform import from_origin
 
     def gtiff(name, width, height, overviews=None):
+        """Write a tiled reference image, optionally with internal overviews."""
         path = tmp_path / name
         profile = dict(
             driver="GTiff",

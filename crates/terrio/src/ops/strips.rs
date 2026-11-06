@@ -521,6 +521,7 @@ mod tests {
         raster_header(grid, data_type, 1, None, &SpatialRef::parse("EPSG:4326").unwrap()).unwrap()
     }
 
+    /// Streamed writes retain source colors and honor explicit TIFF color overrides.
     #[test]
     fn streamed_color_tags_match_whole_writes_and_respect_options() {
         let dir = tempfile::tempdir().unwrap();
@@ -559,6 +560,9 @@ mod tests {
                         };
                         assert_eq!(tags(&streamed), tags(&whole));
                         assert_eq!(tags(&streamed).0, Some(if override_color { 1 } else { 2 }));
+                        if override_color {
+                            assert_eq!(tags(&streamed).1, Some(vec![0; bands - 1]));
+                        }
                         if bands == 4 && !override_color {
                             assert_eq!(tags(&streamed).1, Some(vec![2]));
                         }
@@ -568,6 +572,57 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Transparent bright pixels must not bleed into averaged RGB overviews.
+    /// Compare every stored level with whole writes, plus an independent expected color.
+    #[test]
+    fn streamed_cog_overviews_respect_source_alpha() {
+        let dir = tempfile::tempdir().unwrap();
+        let (width, height, bands) = (128, 64, 4);
+        let data = (0..width * height * bands)
+            .map(|i| match (i / (width * height), i % 2) {
+                (3, 0) => 0,
+                (3, _) => 255,
+                (_, 0) => 200,
+                _ => 20,
+            })
+            .collect();
+        let cfg = wbraster::RasterConfig { cols: width, rows: height, bands, data_type: DataType::U8, ..Default::default() };
+        let raster = wbraster::Raster::from_data_native(cfg, RasterData::U8(data)).unwrap();
+        let mut ds = RasterDataset::with_driver(raster, RasterDriver::GTiff, false);
+        ds.band_metadata = ["Red", "Green", "Blue", "Alpha"]
+            .iter()
+            .map(|c| crate::BandMetadata { color_interp: Some((*c).into()), ..Default::default() })
+            .collect();
+        let options = RasterWriteOptions {
+            driver: Some(RasterDriver::Cog),
+            tile_size: Some(16),
+            overview_resampling: Some("average".into()),
+            ..Default::default()
+        };
+        let whole = dir.path().join("whole.tif");
+        let streamed = dir.path().join("streamed.tif");
+        crate::write_raster_dataset(&ds, whole.to_str().unwrap(), &options).unwrap();
+        let mut writer = StripWriter::create(&ds, streamed.to_str().unwrap(), &options).unwrap();
+        for y in (0..height).step_by(8) {
+            writer.write(crate::cog::cut(&ds.raster, crate::Window::new(0, y, width, 8), &[1, 2, 3, 4]), 8).unwrap();
+        }
+        writer.finish().unwrap();
+        let mut whole = crate::open_raster_lazy(whole.to_str().unwrap()).unwrap();
+        let mut streamed = crate::open_raster_lazy(streamed.to_str().unwrap()).unwrap();
+        let sizes = whole.overviews();
+        assert!(sizes.len() >= 2, "exercise successive overview levels");
+        assert_eq!(sizes, streamed.overviews());
+        for (level, (cols, rows)) in sizes.into_iter().enumerate() {
+            let opts = crate::WindowOptions { bands: vec![], overview: Some(level) };
+            let window = crate::Window::new(0, 0, cols, rows);
+            let expected = whole.read_window(window, &opts).unwrap();
+            let actual = streamed.read_window(window, &opts).unwrap();
+            let values = actual.raster.data.to_f64_vec();
+            assert_eq!(values, expected.raster.data.to_f64_vec(), "overview {level}");
+            assert!(values[..cols * rows * 3].iter().all(|v| *v == 20.0), "transparent colors leaked at overview {level}");
         }
     }
 
