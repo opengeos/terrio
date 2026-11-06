@@ -17,8 +17,9 @@ use wbraster::raster::RasterData;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OverviewSource {
-    /// Each lower-zoom tile resamples the four tiles below it, as GDAL builds overview
-    /// tiles. Source windows stay the size of one maximum-zoom tile at every zoom.
+    /// Each lower-zoom tile resamples the four tiles below it, as GDAL 3.13.3's
+    /// `gdal raster tile` builds overview tiles (the conformance reference). Source windows
+    /// stay the size of one maximum-zoom tile at every zoom.
     #[default]
     Tiles,
     /// Each lower-zoom tile resamples the source (or its overviews) directly. A source
@@ -663,7 +664,9 @@ fn decode_tile(bytes: Vec<u8>, name: &str, source: &RasterDataset, s: &Settings)
     let decoded_alpha = matches!(tile.raster.bands, 2 | 4);
     let decoded_colors = tile.raster.bands - usize::from(decoded_alpha);
     let colors = if gray { 1 } else { 3 };
-    if !matches!(decoded_colors, 1 | 3) || (gray && decoded_colors != 1 && s.extension != "webp") || (!gray && decoded_colors != 3) {
+    // WebP stores gray tiles as RGB.
+    let gray_webp_as_rgb = gray && s.extension == "webp" && decoded_colors == 3;
+    if decoded_colors != colors && !gray_webp_as_rgb {
         return Err(Error::InvalidData(format!("{name}: an existing tile does not have the bands of this tiling")));
     }
     let dtype = tile.raster.data_type;
@@ -722,7 +725,14 @@ impl WarpSource for ColorSource<'_> {
             .and_then(|n| n.checked_mul(header.bands))
             .and_then(|n| n.checked_mul(header.data_type.size_bytes()));
         if bytes.is_none_or(|n| n > self.limits.max_source_window_bytes) {
-            return Err(Error::Unsupported("source tile window exceeds the pixel-buffer budget".into()));
+            // The warp sizes validity windows for their single output band, fewer than the
+            // input bands read here: read such a window in strips.
+            let row = window.width.checked_mul(header.bands).and_then(|n| n.checked_mul(header.data_type.size_bytes()));
+            let rows = row.map_or(0, |row| self.limits.max_source_window_bytes / row.max(1));
+            if !self.only_alpha || rows == 0 || window.height <= rows {
+                return Err(Error::Unsupported("source tile window exceeds the pixel-buffer budget".into()));
+            }
+            return self.read_strips(window, rows, options);
         }
         let input = self.source.read_window(window, &WindowOptions { bands: vec![], ..options.clone() })?;
         let mask = self.source.read_mask(window, options.overview)?;
@@ -771,6 +781,32 @@ impl WarpSource for ColorSource<'_> {
         Ok(out)
     }
 }
+impl ColorSource<'_> {
+    /// Reads `window` as strips of at most `rows` rows and joins them.
+    fn read_strips(&mut self, window: Window, rows: usize, options: &WindowOptions) -> Result<RasterDataset> {
+        let mut strips = Vec::new();
+        for y in (window.y..window.y + window.height).step_by(rows) {
+            let height = rows.min(window.y + window.height - y);
+            strips.push(self.read_window(Window::new(window.x, y, window.width, height), options)?);
+        }
+        let first = &strips[0];
+        let bands = first.raster.bands;
+        let mut values = Vec::with_capacity(window.width * window.height * bands);
+        for b in 0..bands {
+            for strip in &strips {
+                let n = strip.raster.cols * strip.raster.rows;
+                values.extend((0..n).map(|i| strip.raster.data.get_f64(b * n + i)));
+            }
+        }
+        let gt = first.geo_transform();
+        let mut out = first.clone();
+        out.raster.rows = window.height;
+        out.raster.data = RasterData::F64(values);
+        out.set_geo_transform(gt);
+        Ok(out)
+    }
+}
+
 fn data_bands(ds: &RasterDataset) -> usize {
     if !ds.color_table.is_empty() {
         return 3;
@@ -1686,5 +1722,24 @@ mod tests {
                 assert!((x - y).abs() <= 1.0, "{name}: {x} != {y}");
             }
         }
+    }
+
+    #[test]
+    fn validity_of_many_band_mosaics_is_read_in_strips_within_the_window_budget() {
+        // 9 Float64 bands of 512-pixel tiles: a parent's 1024 x 1024 mosaic is 72 MiB, over the
+        // 64 MiB window budget, while its one-band validity rendering is not.
+        let (size, bands) = (1024, 9);
+        let config = crate::RasterConfig { cols: size, rows: size, bands, data_type: DataType::F64, cell_size: 1.0, ..Default::default() };
+        let values = (0..size * size * bands).map(|i| (i % 1000) as f64).collect();
+        let dataset = RasterDataset::new(crate::Raster::from_data(config, values).unwrap(), false);
+        let options = TileOptions {
+            format: "GTiff".into(),
+            resampling: "nearest".into(),
+            grid: GridOptions { tile_size: 512, min_zoom: Some(0), ..Default::default() },
+            ..options()
+        };
+        let mut sink = Collect::default();
+        let report = generate(&mut crate::LazyRaster::from(dataset), &options, &mut sink).unwrap();
+        assert_eq!(report.written, 5);
     }
 }
