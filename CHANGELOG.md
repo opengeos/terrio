@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Lazy `translate` (`translate_lazy`, `translate_lazy_to_file` and the CLI's `translate`) and
+  reads by window (`LazyRaster::read_resampled`) copy pixels fewer times, as do GeoTIFFs other
+  than COGs written in rows (`GeoTiffWriter::write_rows`, which streamed GeoTIFF outputs use)
+  when the rows given end a block row or the raster, with byte-identical results. Translating a
+  14412 x 14412 float32 Deflate GeoTIFF to an uncompressed GeoTIFF on one CPU takes 67% fewer
+  page faults. `GeoTiffWriter::write_rows` refuses rows of another type, even none, before taking
+  their mask rows, which a refused call left queued. Once a block row of a GeoTIFF other than a
+  COG fails to be written, the writer refuses more rows and `finish`, which could write a file
+  missing it.
 - GeoTIFF and COG writers compress Deflate chunks with a pure-Rust port of libdeflate 1.26's
   level 6 compressor, in place of zlib-rs: the level GDAL uses for them, and the library it uses
   when built with libdeflate. The chunks are libdeflate's, byte for byte: every 512 x 512 tile of
