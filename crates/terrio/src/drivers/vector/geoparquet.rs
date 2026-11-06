@@ -70,37 +70,49 @@ pub(crate) fn open_file(path: &str) -> Result<LocalFile> {
     Ok(file)
 }
 
-/// A file whose readers share one handle, seeking before each read. The `parquet` crate reads a
-/// `std::fs::File` through `File::try_clone`, which WASI (no `dup`) does not support, so the
-/// browser build could not read a local Parquet file at all.
+/// A file whose readers share one handle, seeking where the handle is not. The `parquet` crate
+/// reads a `std::fs::File` through `File::try_clone`, which WASI (no `dup`) does not support, so
+/// the browser build could not read a local Parquet file at all.
 #[cfg_attr(not(target_os = "wasi"), allow(dead_code))]
 pub(crate) struct SharedFile {
-    file: Arc<std::sync::Mutex<std::fs::File>>,
+    /// The handle, and its position.
+    file: Arc<std::sync::Mutex<(std::fs::File, u64)>>,
     len: u64,
 }
 
 #[cfg_attr(not(target_os = "wasi"), allow(dead_code))]
 impl SharedFile {
     /// Shares `file`.
-    pub(crate) fn new(file: std::fs::File) -> Result<Self> {
+    pub(crate) fn new(mut file: std::fs::File) -> Result<Self> {
+        use std::io::Seek;
         let len = file.metadata()?.len();
-        Ok(Self { file: Arc::new(std::sync::Mutex::new(file)), len })
+        let pos = file.stream_position()?;
+        Ok(Self { file: Arc::new(std::sync::Mutex::new((file, pos))), len })
+    }
+
+    /// A reader from `start`.
+    fn reader(&self, start: u64) -> SharedFileRead {
+        SharedFileRead { file: self.file.clone(), pos: start }
     }
 }
 
 /// A reader of a [`SharedFile`] from a position.
 #[cfg_attr(not(target_os = "wasi"), allow(dead_code))]
 pub(crate) struct SharedFileRead {
-    file: Arc<std::sync::Mutex<std::fs::File>>,
+    file: Arc<std::sync::Mutex<(std::fs::File, u64)>>,
     pos: u64,
 }
 
 impl std::io::Read for SharedFileRead {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         use std::io::{Seek, SeekFrom};
-        let mut file = self.file.lock().map_err(|_| std::io::Error::other("Parquet: a poisoned file lock"))?;
-        file.seek(SeekFrom::Start(self.pos))?;
+        let mut guard = self.file.lock().map_err(|_| std::io::Error::other("Parquet: a poisoned file lock"))?;
+        let (file, at) = &mut *guard;
+        if *at != self.pos {
+            *at = file.seek(SeekFrom::Start(self.pos))?;
+        }
         let n = file.read(buf)?;
+        *at += n as u64;
         self.pos += n as u64;
         Ok(n)
     }
@@ -116,13 +128,20 @@ impl parquet::file::reader::ChunkReader for SharedFile {
     type T = std::io::BufReader<SharedFileRead>;
 
     fn get_read(&self, start: u64) -> parquet::errors::Result<Self::T> {
-        Ok(std::io::BufReader::new(SharedFileRead { file: self.file.clone(), pos: start }))
+        Ok(std::io::BufReader::new(self.reader(start)))
     }
 
     fn get_bytes(&self, start: u64, length: usize) -> parquet::errors::Result<bytes::Bytes> {
         use std::io::Read;
+        // A malformed file may declare more bytes than it has: refused before allocating them.
+        if start.checked_add(length as u64).is_none_or(|end| end > self.len) {
+            return Err(parquet::errors::ParquetError::EOF(format!(
+                "{length} bytes at {start} are past the end of a {}-byte file",
+                self.len
+            )));
+        }
         let mut buf = vec![0; length];
-        self.get_read(start)?.into_inner().read_exact(&mut buf).map_err(|e| parquet::errors::ParquetError::External(Box::new(e)))?;
+        self.reader(start).read_exact(&mut buf).map_err(|e| parquet::errors::ParquetError::External(Box::new(e)))?;
         Ok(bytes::Bytes::from(buf))
     }
 }
@@ -1219,5 +1238,12 @@ mod tests {
         let rows = |l: &Layer| l.features.iter().map(|f| (f.fid, f.geometry.clone(), f.attributes.clone())).collect::<Vec<_>>();
         assert_eq!(rows(&back), rows(&expected));
         assert_eq!(back.crs_epsg(), Some(4326));
+
+        use parquet::file::reader::ChunkReader;
+        let shared = open().unwrap();
+        let len = parquet::file::reader::Length::len(&shared);
+        assert_eq!(&shared.get_bytes(len - 4, 4).unwrap()[..], b"PAR1");
+        assert!(shared.get_bytes(len - 4, 5).is_err(), "a read past the end is refused");
+        assert!(shared.get_bytes(u64::MAX, 1).is_err());
     }
 }
