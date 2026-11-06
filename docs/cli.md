@@ -1535,7 +1535,8 @@ terrio tile mosaic.vrt tiles --format WEBP --min-zoom 0 --max-zoom 18 --conventi
 PNG and WebP (`--format WEBP`, lossless) require Byte gray/RGB/palette input,
 optionally with alpha; scale other inputs first, or select `--format GTiff` to
 retain their types and bands. WebP stores gray tiles as RGB, and omits the alpha
-band of a fully opaque tile, as PNG does.
+band of a fully opaque tile, even with `--add-alpha`. KML publication refuses
+WebP tiles, which Google Earth ground overlays do not display.
 PNG tiles get alpha for nodata, dataset masks and padded edges. Each color
 channel's nodata is excluded before interpolation; the pixel remains opaque when
 other channels are valid. GeoTIFF outputs without alpha retain dataset masks and
@@ -1579,7 +1580,9 @@ default (`--overview-source tiles`) each lower-zoom tile resamples the four tile
 below it, as GDAL builds its overview tiles. Tiles are generated depth first, so
 at most four tiles per zoom level are held in memory, and every source window is
 the size of one maximum-zoom tile: a mosaic without overviews (such as a VRT of
-thousands of files) can be tiled from zoom 0. A tile at a resampling-kernel's
+thousands of files) can be tiled from zoom 0. The exception is a resumed run that
+rebuilds a missing parent from the source (see `--resume` below), whose window
+is the parent's full footprint. A tile at a resampling-kernel's
 edge sees only its four children, not their neighbors. `--overview-source source`
 renders every zoom directly from the source (using its stored overviews when
 appropriate), whose source windows grow fourfold per zoom level without

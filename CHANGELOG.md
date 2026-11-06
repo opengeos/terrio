@@ -5,7 +5,8 @@
 - `terrio tile` (Python `terrio.raster_tiles`, JavaScript `rasterTiles`) builds each lower-zoom
   tile from the four tiles below it, as GDAL does, instead of rendering it from the source (#574).
   Tiles are generated depth first, with at most four tiles per zoom level in memory, and every
-  source window is the size of one maximum-zoom tile, so a VRT mosaic without overviews tiles from
+  source window is the size of one maximum-zoom tile (except when `--resume` rebuilds a missing
+  parent from the source, as it does for GeoTIFF tiles), so a VRT mosaic without overviews tiles from
   zoom 0: a 12000 x 12000 EPSG:4326 VRT of 36 GeoTIFFs, which failed with "the source tile window
   exceeds the pixel-buffer budget", now gives its 5390 WebMercatorQuad tiles of zooms 0 to 14.
   With nearest resampling the pyramid equals GDAL 3.13.3's (a raster grid and six reprojected

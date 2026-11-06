@@ -441,6 +441,10 @@ impl Generator<'_, '_> {
                 (false, _) => header.band_nodata(b).unwrap_or(0.0),
             })
             .collect();
+        // The mosaic is held as Float64 samples: bound it like a rendered tile.
+        if n.checked_mul(bands).and_then(|v| v.checked_mul(8)).is_none_or(|bytes| bytes > s.limits.max_output_bytes) {
+            return Err(Error::ResourceLimit("the four tiles below a parent tile exceed the pixel-buffer budget".into()));
+        }
         let mut values = vec![0.0; n * bands];
         let mut mask = s.needs_validity().then(|| vec![0u8; n]);
         for (k, tile) in tiles.iter().enumerate() {
@@ -1404,6 +1408,7 @@ mod tests {
     struct Recording {
         inner: crate::LazyRaster,
         largest: usize,
+        reads: usize,
     }
     impl WarpSource for Recording {
         fn info(&mut self) -> Result<WarpSourceInfo> {
@@ -1417,6 +1422,7 @@ mod tests {
         }
         fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {
             self.largest = self.largest.max(window.width * window.height);
+            self.reads += 1;
             self.inner.read_window(window, options)
         }
     }
@@ -1439,7 +1445,7 @@ mod tests {
                 grid: GridOptions { tile_size: 4, min_zoom: Some(0), ..Default::default() },
                 ..options()
             };
-            let mut source = Recording { inner: crate::LazyRaster::from(ramp()), largest: 0 };
+            let mut source = Recording { inner: crate::LazyRaster::from(ramp()), largest: 0, reads: 0 };
             let mut sink = Collect::default();
             let report = generate(&mut source, &options, &mut sink).unwrap();
             assert_eq!((report.planned, report.written), (1 + 4 + 16 + 64 + 256, 341));
@@ -1478,6 +1484,9 @@ mod tests {
         let dataset = source().header();
         let mut rgb = TileOptions { format: "WEBP".into(), ..options };
         assert!(plan(&dataset, &rgb).is_ok());
+        rgb.publication.kml = true;
+        assert!(plan(&dataset, &rgb).unwrap_err().to_string().contains("KML"));
+        rgb.publication.kml = false;
         rgb.format = "jpeg".into();
         assert!(plan(&dataset, &rgb).is_err());
     }
@@ -1511,14 +1520,22 @@ mod tests {
     fn blank_children_make_blank_parents_without_rendering_them() {
         let mut blank = source().read().unwrap();
         blank.raster.data = RasterData::U8(vec![0; 9]);
-        let mut options = options();
-        options.skip_blank = true;
-        options.grid.min_zoom = Some(0);
-        options.grid.max_zoom = Some(1);
-        let mut sink = Collect::default();
-        let report = generate(&mut crate::LazyRaster::from(blank), &options, &mut sink).unwrap();
-        assert_eq!((report.planned, report.written, report.blank), (5, 0, 5));
-        assert!(sink.0.is_empty());
+        let mut reads = Vec::new();
+        for overview_source in [OverviewSource::Tiles, OverviewSource::Source] {
+            let mut options = options();
+            options.skip_blank = true;
+            options.overview_source = overview_source;
+            options.grid.min_zoom = Some(0);
+            options.grid.max_zoom = Some(1);
+            let mut sink = Collect::default();
+            let mut source = Recording { inner: crate::LazyRaster::from(blank.clone()), largest: 0, reads: 0 };
+            let report = generate(&mut source, &options, &mut sink).unwrap();
+            assert_eq!((report.planned, report.written, report.blank), (5, 0, 5));
+            assert!(sink.0.is_empty());
+            reads.push(source.reads);
+        }
+        // Only the four maximum-zoom tiles read the source when parents come from tiles.
+        assert!(reads[0] < reads[1], "{reads:?}");
     }
 
     #[test]

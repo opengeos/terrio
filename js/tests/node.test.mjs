@@ -3128,8 +3128,10 @@ test("rasterTiles builds lower zooms from child tiles or the source, and writes 
         names.push(name);
       });
       assert.equal(report.written, 1 + 4 + 16);
-      // Tiles are generated depth first: a parent follows its four children.
-      assert.equal(names.at(-1), `0/0/0.${format.toLowerCase()}`);
+      // From tiles, generation is depth first and the root follows its children; from the
+      // source, levels are generated from zoom 0 up.
+      const root = `0/0/0.${format.toLowerCase()}`;
+      assert.equal(overviewSource === "tiles" ? names.at(-1) : names[0], root);
     }
   }
   assert.throws(() => terrio.planRasterTiles(raster, {...options, overviewSource: "parents"}), /variant/i);

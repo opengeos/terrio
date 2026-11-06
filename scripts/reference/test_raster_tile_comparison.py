@@ -23,13 +23,15 @@ class RasterTileComparisonTests(unittest.TestCase):
         self.write(self.reference / 'a.tif', value=1)
         self.write(self.actual / 'a.tif', value=2)
 
-    def test_pyramid_reports_exact_matches_and_only_waives_value_differences(self):
+    def test_pyramid_requires_exact_matches_and_direct_source_verification(self):
         for root in [self.reference, self.actual]:
             gdal.Translate(str(root / 'a.png'), str(self.reference / 'a.tif'), format='PNG')
-        with patch.object(comparison, 'compare_direct_pyramid', return_value='direct source verified'):
+        with patch.object(comparison, 'compare_direct_pyramid', return_value='direct source verified') as direct:
             self.assertEqual(comparison.compare_pyramid(None, self.reference, self.actual, None, None)[0], 'identical')
+            direct.assert_called_once_with(None, None, None)
             gdal.Translate(str(self.actual / 'a.png'), str(self.actual / 'a.tif'), format='PNG')
-            self.assertEqual(comparison.compare_pyramid(None, self.reference, self.actual, None, None)[0], 'tolerance')
+            with self.assertRaises(comparison.PixelDifference):
+                comparison.compare_pyramid(None, self.reference, self.actual, None, None)
             (self.actual / 'a.png').unlink()
             with self.assertRaisesRegex(AssertionError, 'tile names differ'):
                 comparison.compare_pyramid(None, self.reference, self.actual, None, None)

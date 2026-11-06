@@ -44,7 +44,8 @@ pub struct Args {
     #[arg(long)]
     overview_resampling: Option<String>,
     /// Build each lower-zoom tile from the four tiles below it (tiles), or from the source
-    /// (source). Source windows stay one tile in size with `tiles`, for mosaics without overviews.
+    /// (source). Source windows stay one tile in size with `tiles`, for mosaics without overviews
+    /// (except when --resume rebuilds a parent from the source).
     #[arg(long, default_value = "tiles", value_parser = ["tiles", "source"])]
     overview_source: String,
     #[arg(long, conflicts_with = "no_alpha")]
