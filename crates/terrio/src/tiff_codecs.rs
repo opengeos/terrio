@@ -217,7 +217,7 @@ fn inflated_here(little_endian: bool, photometric: Option<u16>, format: u16, bit
     cfg!(target_endian = "little")
         && little_endian
         && photometric != Some(6) // YCbCr may be subsampled: left to the crate
-        && Sample::new(format, bits).is_some_and(|s| s != Sample::F16 && (predictor == 1 || (predictor == 2 && !s.is_float())))
+        && Sample::new(format, bits).is_some_and(|s| predictor == 1 || (predictor == 2 && !s.is_float()))
 }
 
 /// Whether the `tiff` crate reads the pixel-interleaved chunks of an image of `samples` samples
