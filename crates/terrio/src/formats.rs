@@ -541,12 +541,12 @@ impl VectorDriver {
             Self::FlatGeobuf => F::FlatGeobuf,
             Self::Shapefile => F::Shapefile,
             Self::KML => F::Kml,
-            Self::KMZ => F::Kmz,
             Self::GML => F::Gml,
             Self::GPX => F::Gpx,
             Self::MapInfo => F::MapInfoMif,
-            // `wbvector` is built without its OSM PBF reader: terrio reads OSM itself.
-            Self::OSM
+            // `wbvector` is built without its KMZ and OSM PBF readers: terrio reads both itself.
+            Self::KMZ
+            | Self::OSM
             | Self::Parquet
             | Self::CityJSON
             | Self::CityGML
