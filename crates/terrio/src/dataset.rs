@@ -1168,7 +1168,11 @@ fn read_raster_local(path: &str) -> Result<RasterDataset> {
         return crate::geotiff::read_geotiff(Path::new(path));
     }
     let (raster, driver) = match RasterDriver::for_extension(path) {
-        Some(driver) => (Raster::read_with_format(path, driver.to_wb())?, driver),
+        // No `wbraster` format: GRIB in a build with `gdal` and without `grib`, which GDAL reads.
+        Some(driver) => match driver.to_wb() {
+            Some(format) => (Raster::read_with_format(path, format)?, driver),
+            None => return Err(Error::Unsupported(format!("'{path}': no {} reader in this build", driver.name()))),
+        },
         None if wbraster_fallback_allowed() => {
             let fmt = wbraster::RasterFormat::detect(path)?;
             // Found by its content or the files beside it: read only if its driver is allowed.
@@ -1598,7 +1602,7 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool,
         RasterDriver::VRT => {
             return Err(Error::Unsupported("a VRT references other files: build one with `terrio mosaic` (ops::mosaic::build_vrt)".into()));
         }
-        d => raster.write(path, d.to_wb())?,
+        d => raster.write(path, d.to_wb().ok_or_else(|| Error::Unsupported(format!("the {} driver cannot write", d.name())))?)?,
     }
     Ok(())
 }

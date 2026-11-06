@@ -433,7 +433,7 @@ pub(crate) fn write(
         }
         // Formats without a CRS of their own: GDAL's sidecar holds it.
         RasterDriver::PCRaster | RasterDriver::GRASSASCIIGrid => {
-            r.write(path, driver.to_wb()).map_err(Into::into).and_then(|()| common::write_pam(p, &r.crs))
+            r.write(path, driver.to_wb()?).map_err(Into::into).and_then(|()| common::write_pam(p, &r.crs))
         }
         _ => return None,
     })
