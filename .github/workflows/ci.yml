@@ -397,6 +397,27 @@ jobs:
           name: wheel-${{ matrix.os }}
           path: python/dist/*.whl
 
+  cog-sidecar-parity:
+    name: external COG overview parity
+    needs: python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v7
+        with:
+          name: wheel-ubuntu-latest
+          path: dist
+      - name: Install the wheel and reference implementations
+        run: python -m pip install pytest rasterio==1.5.2 rio-cogeo==7.0.4 dist/*.whl
+      - name: Compare external overviews with the reference
+        working-directory: python
+        run: |
+          python -c "import rasterio, rio_cogeo.cogeo; print('Reference GDAL:', rasterio.__gdal_version__)"
+          python -m pytest -v tests/test_cog_validate.py::test_external_overviews_agree_with_rio_cogeo
+
   # The Rust and Python tests on real data. The comparison scripts (point clouds, conformance) are
   # in ci-extended.yml, with the same GDAL environment and data; this job saves the data cache.
   real-data:

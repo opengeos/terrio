@@ -1466,7 +1466,7 @@ pub(crate) fn needs_nodata_pam(ds: &RasterDataset) -> bool {
     distinct || raw_float32_nodata
 }
 
-/// The options a GeoTIFF or COG is written with from its source dataset, as GDAL's `CreateCopy`
+/// The options a GeoTIFF or COG is written with from its source dataset, as GDAL 3.12.2's `CreateCopy`
 /// takes them from the source bands: `PHOTOMETRIC=RGB` for red, green and blue first bands,
 /// `ALPHA=YES` for an alpha last band besides the colour ones (it then weights the overviews);
 /// each unless the caller gave it, and only when the caller gave no band colour interpretations.
