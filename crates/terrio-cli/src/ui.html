@@ -426,12 +426,14 @@ function browseKeys(event) {
   const current = items.indexOf(document.activeElement);
   let match = -1;
   const moves = { ArrowDown: current + 1, ArrowUp: current < 0 ? items.length - 1 : current - 1, Home: 0, End: items.length - 1 };
-  if (event.key in moves) match = Math.max(0, Math.min(items.length - 1, moves[event.key]));
+  if (Object.hasOwn(moves, event.key)) match = Math.max(0, Math.min(items.length - 1, moves[event.key]));
   else if ([...event.key].length === 1) {
     if (event.timeStamp - typedAt > 1000) typed = "";
+    // Space presses the focused button unless it continues a name being typed on an entry.
+    const space = event.key === " ";
+    if (space && (!typed || current < 0)) return;
     typedAt = event.timeStamp;
-    // Space presses the focused entry unless it continues a name being typed.
-    if (event.key === " " && !typed) return;
+    const before = typed;
     typed += event.key.toLowerCase();
     const names = items.map((item) => item.dataset.name.toLowerCase());
     // Search on from the current entry, wrapping around: a new first character moves past it.
@@ -442,8 +444,13 @@ function browseKeys(event) {
       }
       return -1;
     };
-    match = find(typed, typed.length === 1 ? current + 1 : current);
-    if (match < 0 && [...typed].every((c) => c === typed[0])) match = find(typed[0], current + 1);
+    const chars = [...typed];
+    match = find(typed, chars.length === 1 ? current + 1 : current);
+    if (match < 0 && !space && chars.every((c) => c === chars[0])) match = find(chars[0], current + 1);
+    if (match < 0 && space) {
+      typed = before;
+      return;
+    }
   } else return;
   event.preventDefault();
   if (match < 0) return;
@@ -451,7 +458,9 @@ function browseKeys(event) {
   items[match].scrollIntoView({ block: "nearest" });
 }
 
-byId("browse").addEventListener("keydown", browseKeys);
+// Listen on the document: opening a folder with the mouse removes the focused entry, and the keys
+// then go to the body rather than the dialog.
+document.addEventListener("keydown", (event) => byId("browse").open && browseKeys(event));
 byId("browse-up").addEventListener("click", () => browsing.parent && browseTo(browsing.parent));
 byId("browse-folder").addEventListener("click", () => choose(browsing.path));
 byId("browse-close").addEventListener("click", () => byId("browse").close());
