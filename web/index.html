@@ -27,12 +27,12 @@ html, body { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
 .app { display: grid; grid-template-columns: 270px minmax(0, 1fr); height: 100%; }
-aside { display: flex; flex-direction: column; min-height: 0; background: var(--panel); border-right: 1px solid var(--line); }
+aside { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line); }
 .brand { padding: 14px 16px 2px; font-size: 18px; font-weight: 650; }
 .brand small { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 4px; }
 .cwd { padding: 0 16px 10px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 #search { margin: 0 12px 10px; width: calc(100% - 24px); }
-#commands { flex: 1; min-height: 0; overflow-y: auto; list-style: none; margin: 0; padding: 0 8px 12px; }
+#commands { flex: 1 1 0; min-height: 160px; overflow-y: auto; list-style: none; margin: 0; padding: 0 8px 12px; }
 #commands button { display: block; width: 100%; text-align: left; border: 0; background: none; color: inherit; padding: 6px 8px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 14px; }
 #commands button:hover { background: var(--tint); }
 #commands button[aria-current="true"] { background: var(--accent); color: var(--accent-text); }
@@ -77,8 +77,14 @@ dialog::backdrop { background: rgb(0 0 0 / .45); }
 #browse-list .size { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .dialog-bar { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 @media (max-width: 720px) {
-  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 38vh minmax(0, 1fr); }
+  /* One scrolling page: the workspace panel above the command list would otherwise take all of a
+     fixed-height sidebar and leave the list no room. */
+  html, body { height: auto; }
+  .app { display: block; height: auto; }
   aside { border-right: 0; border-bottom: 1px solid var(--line); }
+  #commands { flex: none; max-height: 45vh; }
+  #files { max-height: 22vh; }
+  main { overflow: visible; }
 }
 
 /* The browser build's workspace panel, drop zone and outputs. */
@@ -665,6 +671,10 @@ function show(command) {
 
 // ---- Start ----
 
+// On a narrow screen the form is below the command list: bring it into view when a command is chosen.
+byId("commands").addEventListener("click", (event) => {
+  if (event.target.closest("button") && matchMedia("(max-width: 720px)").matches) byId("content").scrollIntoView({ block: "start" });
+});
 byId("upload").addEventListener("change", async (event) => {
   await addFiles([...event.target.files]);
   event.target.value = "";
