@@ -62,14 +62,14 @@ fn user_value(v: &NcValue, t: &NcType) -> Option<Value> {
             NcIntegerValue::U64(x) => serde_json::json!(x),
         },
         NcValue::Compound(fields) => {
-            let types = match t {
-                NcType::Compound { fields, .. } => fields.as_slice(),
+            let declared = match t {
+                NcType::Compound { fields: declared, .. } => declared.as_slice(),
                 _ => &[],
             };
             // A field missing from the declared type makes the attribute `null`, not mis-typed.
             let mut object = serde_json::Map::new();
             for f in fields {
-                let ty = types.iter().find(|t| t.name == f.name).map(|t| &t.dtype)?;
+                let ty = declared.iter().find(|d| d.name == f.name).map(|d| &d.dtype)?;
                 object.insert(f.name.clone(), user_value(&f.value, ty)?);
             }
             Value::Object(object)
@@ -78,8 +78,14 @@ fn user_value(v: &NcValue, t: &NcType) -> Option<Value> {
     })
 }
 fn attribute(a: &NcAttrValue) -> Value {
+    // A zero-length numeric, enum or compound attribute is `null` and a zero-length string attribute
+    // `[]`, as GDAL 3.13.3's `gdalmdiminfo` prints them.
     fn one(v: Vec<Value>) -> Value {
-        if v.len() == 1 { v.into_iter().next().unwrap() } else { Value::Array(v) }
+        match v.len() {
+            0 => Value::Null,
+            1 => v.into_iter().next().unwrap(),
+            _ => Value::Array(v),
+        }
     }
     macro_rules! values {
         ($v:expr) => {
@@ -98,6 +104,7 @@ fn attribute(a: &NcAttrValue) -> Value {
         NcAttrValue::Floats(v) => one(v.iter().map(|&x| floating(x as f64)).collect()),
         NcAttrValue::Doubles(v) => one(v.iter().map(|&x| floating(x)).collect()),
         NcAttrValue::Chars(s) => Value::String(s.clone()),
+        NcAttrValue::Strings(v) if v.is_empty() => Value::Array(Vec::new()),
         NcAttrValue::Strings(v) => one(v.iter().cloned().map(Value::String).collect()),
         NcAttrValue::UserDefined { dtype, values } => {
             values.iter().map(|v| user_value(v, dtype)).collect::<Option<Vec<_>>>().map_or(Value::Null, one)
