@@ -1965,10 +1965,18 @@ impl Shared {
     }
 
     /// Fetches the next batch of the prefetch's blocks from its `from`th: those not cached, at
-    /// most half the cache, so that the batch being read stays while the next one is fetched.
+    /// most half the cache, so that the batch being read stays while the next one is fetched. They
+    /// leave the plan, so that a block read again once evicted is fetched alone.
     fn fetch_planned(&mut self, from: usize) -> io::Result<()> {
         let batch = (self.max_blocks / 2).max(1);
-        let next: Vec<u64> = self.plan[from..].iter().copied().filter(|b| !self.blocks.contains_key(b)).take(batch).collect();
+        let (mut next, mut to) = (Vec::new(), from);
+        while to < self.plan.len() && next.len() < batch {
+            if !self.blocks.contains_key(&self.plan[to]) {
+                next.push(self.plan[to]);
+            }
+            to += 1;
+        }
+        self.plan.drain(from..to);
         self.fetch_blocks(&next, 2)
     }
 
@@ -2049,7 +2057,7 @@ impl Shared {
             let bs = self.block_size;
             let mut missing: Vec<u64> = (pos / bs..=(end - 1) / bs).filter(|b| !self.blocks.contains_key(b)).collect();
             // A block the prefetch asked for: its next batch, from there.
-            if let Some(at) = missing.first().and_then(|b| self.plan.binary_search(b).ok()) {
+            if let Some(at) = missing.iter().find_map(|b| self.plan.binary_search(b).ok()) {
                 self.fetch_planned(at)?;
                 missing.retain(|b| !self.blocks.contains_key(b));
             }
@@ -2525,6 +2533,11 @@ mod tests {
         // The first read, then batches of half the cache (8 blocks), merged across the prefix.
         assert!(bytes <= data.len() as u64 + 2 * 4096, "{bytes} bytes in {ranges:?}");
         assert!(ranges.len() <= 2 + data.len().div_ceil(8 * 4096), "{ranges:?}");
+        // A block of the prefetch read again once evicted is fetched alone, not with a batch.
+        let before = seen.lock().unwrap().len();
+        assert_eq!(read_range(&mut r, 5 * 4096 + 100, 50), data[5 * 4096 + 100..5 * 4096 + 150]);
+        let again: Vec<Option<String>> = seen.lock().unwrap()[before..].to_vec();
+        assert!(again.len() <= 1 && again.iter().flatten().all(|r| r == "bytes=20480-24575"), "{again:?}");
     }
 
     /// A child forked while other threads read remote files reads remote files too: the locks of
