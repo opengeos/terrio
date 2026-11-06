@@ -905,8 +905,8 @@ fn write(io: &Io, cloud: &PointCloud) -> terrio::Result<()> {
     pointcloud::write_points(cloud, &io.output, &io.write.to_options(None)?)
 }
 
-/// A directory is a batch of tiles, not a point-cloud file. In particular, Windows
-/// reports access denied when a directory reaches the LAS reader's File::open.
+/// Classify a single point cloud or a non-recursive batch of local LAS/LAZ tiles.
+/// Batch outputs preserve tile names and detected COPC content without clobbering.
 fn run_csf(io: &Io, options: &CsfOptions) -> terrio::Result<()> {
     use std::path::Path;
     use terrio::Error;
@@ -923,7 +923,9 @@ fn run_csf(io: &Io, options: &CsfOptions) -> terrio::Result<()> {
             .extension()
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| ext.eq_ignore_ascii_case("las") || ext.eq_ignore_ascii_case("laz"));
-        if las && entry.file_type()?.is_file() {
+        // AppleDouble metadata on macOS removable/network volumes is not a tile.
+        let apple_double = entry.file_name().as_encoded_bytes().starts_with(b"._");
+        if las && !apple_double && entry.file_type()?.is_file() {
             files.push(path);
         }
     }
@@ -1408,6 +1410,7 @@ mod tests {
         std::fs::create_dir(input.join("nested")).unwrap();
         std::fs::create_dir(input.join("ignored.las")).unwrap();
         std::fs::write(input.join("notes.txt"), "not a point cloud").unwrap();
+        std::fs::write(input.join("._a.las"), "AppleDouble metadata, not a tile").unwrap();
         std::fs::write(input.join("nested/ignored.las"), "not scanned recursively").unwrap();
         let dims = vec![
             Dimension::new("x", Values::F64((0..64).map(|i| (i % 8) as f64).collect())),
@@ -1508,6 +1511,20 @@ mod tests {
         let result = reader.read(&Default::default()).unwrap();
         assert_eq!(result.len(), 4);
         assert!(result.dim("classification").is_some());
+        // Single-file mode is an explicit conversion: its output extension wins.
+        let single = dir.path().join("single.laz");
+        run(Cli::try_parse_from(["terrio", "csf", input.join("tile.laz").to_str().unwrap(), single.to_str().unwrap()]).unwrap().args)
+            .unwrap();
+        let mut reader = pointcloud::open_points(single.to_str().unwrap()).unwrap();
+        assert_eq!(reader.format_name(), "LAZ");
+        let reference = reader.read(&Default::default()).unwrap();
+        for dimension in ["x", "y", "z", "classification"] {
+            let mut batch = result.dim(dimension).unwrap().to_f64();
+            let mut single = reference.dim(dimension).unwrap().to_f64();
+            batch.sort_by(f64::total_cmp);
+            single.sort_by(f64::total_cmp);
+            assert_eq!(batch, single, "{dimension}");
+        }
     }
 
     #[test]

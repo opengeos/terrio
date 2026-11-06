@@ -275,10 +275,15 @@ pub fn open_points(path: &str) -> Result<PointCloudReader> {
     // A folder reaching File::open looks like a permission failure on Windows.
     // Validate before format dispatch so every point-cloud reader reports the
     // same actionable error, while remote range reads stay unchanged.
-    if let crate::vfs::Location::Local(file) = &location
-        && !path.starts_with("ept://")
-        && file.is_dir()
-    {
+    let local = match &location {
+        crate::vfs::Location::Local(file) => Some(file),
+        crate::vfs::Location::Zip { archive, inner: None } => match archive.as_ref() {
+            crate::vfs::Location::Local(file) => Some(file),
+            _ => None,
+        },
+        _ => None,
+    };
+    if !path.starts_with("ept://") && local.is_some_and(|file| file.is_dir()) {
         return Err(Error::InvalidArgument(format!("'{path}' is a directory; select a point-cloud file (for EPT, select ept.json)")));
     }
     let name = location.file_name();
@@ -843,7 +848,8 @@ mod tests {
     #[test]
     fn directory_inputs_report_that_a_point_cloud_file_is_required() {
         let temp = tempfile::tempdir().unwrap();
-        for name in ["Downloads", "directory.las", "directory.laz", "directory.copc.laz", "directory.ply", "directory.e57"] {
+        for name in ["Downloads", "directory.las", "directory.laz", "directory.copc.laz", "directory.ply", "directory.e57", "directory.zip"]
+        {
             let path = temp.path().join(name);
             std::fs::create_dir(&path).unwrap();
             let error = open_points(path.to_str().unwrap()).unwrap_err();

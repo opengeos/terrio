@@ -20,6 +20,7 @@ import terrio
         "directory.copc.laz",
         "directory.ply",
         "directory.e57",
+        "directory.zip",
     ],
 )
 @pytest.mark.parametrize("reader", [terrio.open_points, terrio.read_points])

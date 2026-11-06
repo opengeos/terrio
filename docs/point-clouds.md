@@ -301,10 +301,13 @@ terrio filter hexbin bridge.copc.laz footprint.geojson --edge-size 1.4 --thresho
 It classifies each regular file separately, sorted by platform path ordering
 (not natural numeric ordering), and keeps its filename in the output directory.
 The output format follows its extension, except that detected COPC content remains
-COPC even with an ordinary `.laz` filename.
+COPC even with an ordinary `.laz` filename. This preservation is specific to batch
+mode: single-file CSF chooses the format from the requested output extension, so
+a COPC input written to `output.laz` becomes ordinary LAZ.
 Extension matching is case-insensitive.
-Subdirectories, symbolic links and other file types are skipped; the scan is not
-recursive. The output directory is created when needed and may be a child of the
+Subdirectories, symbolic links, macOS AppleDouble sidecars (`._*`) and other file
+types are skipped; other dot-prefixed LAS/LAZ filenames are included. The scan is
+not recursive. The output directory is created when needed and may be a child of the
 input directory. This works with local paths on any drive, including Windows
 paths with spaces:
 
