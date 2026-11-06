@@ -1190,7 +1190,7 @@ mod tests {
     /// A Deflate chunk inflates to its pixels; one ending short, or whose Adler-32 is wrong, is an
     /// error even when its pixels are all there; data past the chunk's pixels is left.
     #[test]
-    fn short_and_corrupt_deflate_chunks_are_errors() {
+    fn deflate_chunks_short_or_corrupt_are_errors_and_trailer_cuts_are_read() {
         let c = ChunkCodec { codec: Codec::Deflate, sample: Sample::U8, spp: 1, predictor: 1, big_endian: false, ..packed(8, 1) };
         let pixels: Vec<u8> = (0..16).collect();
         let good = zlib(&pixels);
