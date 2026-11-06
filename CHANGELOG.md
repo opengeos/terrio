@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A remote read whose tiles exceed half the HTTP block cache (`TERRIO_HTTP_CACHE_SIZE`, 64 MiB by
+  default) fetches them in batches of half the cache as it decodes them, each byte once. Before, it
+  fetched them all in one request, evicted most of them before decoding, and fetched them again a
+  block per request. `terrio convert` of a remote 8192 x 8192 4-band COG (425.8 MB) with 50 ms of
+  latency per request: 210.7 s, 4,099 requests and 851.7 MB -> 3.0 s, 14 requests and 425.8 MB,
+  pixels identical. Reads smaller than half the cache make the same requests as before.
 - `terrio dem` (Python `terrio.dem`, JavaScript `dem`) computes most of its 3×3 products a row at a
   time, with AVX2 where the CPU has it, and most rows holding nodata no longer fall back to one
   pixel at a time. Some products take their arctangents from fdlibm (credited in `NOTICE`,

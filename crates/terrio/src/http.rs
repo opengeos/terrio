@@ -1778,6 +1778,9 @@ struct Shared {
     whole: Option<Arc<[u8]>>,
     /// The file's first bytes, when the first request was shorter than a block.
     prefix: Option<Arc<[u8]>>,
+    /// The blocks the last prefetch asked for, sorted: fetched a batch at a time
+    /// ([`Shared::fetch_planned`]), the next batch when a read reaches one not cached.
+    plan: Vec<u64>,
 }
 
 impl RangeReader {
@@ -1816,6 +1819,7 @@ impl RangeReader {
             order: VecDeque::new(),
             whole: None,
             prefix: None,
+            plan: Vec::new(),
         };
         if let Some(missing) = shared.load_cached(first_len) {
             // The blocks of the first bytes that the process-wide cache no longer holds, each run
@@ -1862,7 +1866,9 @@ impl RangeReader {
 
     /// Fetches the blocks covering the byte ranges `(offset, length)` that are not cached yet, in as
     /// few requests as it can: runs of missing blocks separated by at most two cached blocks are
-    /// fetched together.
+    /// fetched together. Ranges larger than half the cache are fetched a batch at a time, the
+    /// first now and the next ones as reads reach them, so that no block is evicted before it is
+    /// read and then fetched again.
     pub fn prefetch(&self, ranges: &[(u64, u64)]) -> io::Result<()> {
         let mut s = self.lock()?;
         if s.whole.is_some() {
@@ -1879,7 +1885,8 @@ impl RangeReader {
             .collect();
         wanted.sort_unstable();
         wanted.dedup();
-        s.fetch_blocks(&wanted, 2)
+        s.plan = wanted;
+        s.fetch_planned(0)
     }
 
     fn lock(&self) -> io::Result<std::sync::MutexGuard<'_, Shared>> {
@@ -1957,6 +1964,14 @@ impl Shared {
         }
     }
 
+    /// Fetches the next batch of the prefetch's blocks from its `from`th: those not cached, at
+    /// most half the cache, so that the batch being read stays while the next one is fetched.
+    fn fetch_planned(&mut self, from: usize) -> io::Result<()> {
+        let batch = (self.max_blocks / 2).max(1);
+        let next: Vec<u64> = self.plan[from..].iter().copied().filter(|b| !self.blocks.contains_key(b)).take(batch).collect();
+        self.fetch_blocks(&next, 2)
+    }
+
     fn store(&mut self, first_block: u64, data: Vec<u8>) {
         let bs = self.block_size as usize;
         let mut cache = file_cache();
@@ -2032,8 +2047,15 @@ impl Shared {
         if self.whole.is_none() {
             self.evict();
             let bs = self.block_size;
-            let missing: Vec<u64> = (pos / bs..=(end - 1) / bs).filter(|b| !self.blocks.contains_key(b)).collect();
-            self.fetch_blocks(&missing, 0)?;
+            let mut missing: Vec<u64> = (pos / bs..=(end - 1) / bs).filter(|b| !self.blocks.contains_key(b)).collect();
+            // A block the prefetch asked for: its next batch, from there.
+            if let Some(at) = missing.first().and_then(|b| self.plan.binary_search(b).ok()) {
+                self.fetch_planned(at)?;
+                missing.retain(|b| !self.blocks.contains_key(b));
+            }
+            if self.whole.is_none() {
+                self.fetch_blocks(&missing, 0)?;
+            }
         }
         if let Some(whole) = &self.whole {
             let n = (end - pos) as usize;
@@ -2478,6 +2500,31 @@ mod tests {
         assert_eq!(read_range(&mut r, 12 * 4096, 4096), data[12 * 4096..13 * 4096]);
         assert_eq!(read_range(&mut r, 40 * 4096, 100), data[40 * 4096..40 * 4096 + 100]);
         assert_eq!(count.load(Ordering::SeqCst), 3);
+    }
+
+    // A prefetch larger than the cache (a whole COG's tiles read as one window) is fetched in
+    // batches as it is read, each byte once: fetched whole, it was evicted before it was read and
+    // fetched again a block per request.
+    #[test]
+    fn a_prefetch_larger_than_the_cache_is_fetched_once_in_batches() {
+        let data = test_data();
+        let (url, seen) = test_server(data.clone());
+        let opts = HttpOptions { cache_size: 16 * 4096, ..options() };
+        let mut r = RangeReader::open_with(&Remote::Url(format!("{url}/big.bin")), opts).unwrap();
+        r.prefetch(&[(0, data.len() as u64)]).unwrap();
+        let mut read = Vec::new();
+        r.read_to_end(&mut read).unwrap();
+        assert!(read == data);
+        let ranges: Vec<(u64, u64)> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r.as_deref()?.strip_prefix("bytes=")?.split_once('-').map(|(a, b)| (a.parse().unwrap(), b.parse().unwrap())))
+            .collect();
+        let bytes: u64 = ranges.iter().map(|(a, b)| b - a + 1).sum();
+        // The first read, then batches of half the cache (8 blocks), merged across the prefix.
+        assert!(bytes <= data.len() as u64 + 2 * 4096, "{bytes} bytes in {ranges:?}");
+        assert!(ranges.len() <= 2 + data.len().div_ceil(8 * 4096), "{ranges:?}");
     }
 
     /// A child forked while other threads read remote files reads remote files too: the locks of
