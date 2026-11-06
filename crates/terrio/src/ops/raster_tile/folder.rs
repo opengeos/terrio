@@ -293,6 +293,19 @@ fn image_format(extension: &str) -> bool {
     matches!(extension, "png" | "webp")
 }
 
+/// Copies `len` samples of the same type from `src[from..]` to `dst[to..]`.
+fn copy_samples(dst: &mut RasterData, to: usize, src: &RasterData, from: usize, len: usize) {
+    macro_rules! copy {
+        ($($variant:ident),*) => {
+            match (dst, src) {
+                $((RasterData::$variant(d), RasterData::$variant(s)) => d[to..to + len].copy_from_slice(&s[from..from + len]),)*
+                _ => unreachable!("sample types are checked before copying"),
+            }
+        };
+    }
+    copy!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
+}
+
 /// Whether an image tile's last (alpha) band is entirely opaque, so PNG can omit it.
 fn is_opaque(tile: &RasterDataset) -> bool {
     let n = tile.raster.cols * tile.raster.rows;
@@ -448,25 +461,26 @@ impl Generator<'_, '_> {
                 (false, _) => header.band_nodata(b).unwrap_or(0.0),
             })
             .collect();
-        // The mosaic is held as Float64 samples: bound it like a rendered tile.
-        if n.checked_mul(bands).and_then(|v| v.checked_mul(8)).is_none_or(|bytes| bytes > s.limits.max_output_bytes) {
+        // Each child was rendered within the output budget; the mosaic holds four of them
+        // in their own sample type.
+        let dtype = header.raster.data_type;
+        let budget = s.limits.max_output_bytes.saturating_mul(4);
+        if n.checked_mul(bands).and_then(|v| v.checked_mul(dtype.size_bytes())).is_none_or(|bytes| bytes > budget) {
             return Err(Error::ResourceLimit("the four tiles below a parent tile exceed the pixel-buffer budget".into()));
         }
-        let mut values = vec![0.0; n * bands];
+        if tiles.iter().flatten().any(|t| t.tile.raster.data.data_type() != dtype) {
+            return Err(Error::InvalidData("tiles below a parent tile differ in sample type".into()));
+        }
+        let mut values = RasterData::new_filled(dtype, n * bands, 0.0);
         let mut mask = s.needs_validity().then(|| vec![0u8; n]);
         for (k, tile) in tiles.iter().enumerate() {
             let (x0, y0) = (QUADRANTS[k].0 as usize * size, QUADRANTS[k].1 as usize * size);
-            for b in 0..bands {
+            for (b, &fill) in fill.iter().enumerate() {
                 for y in 0..size {
-                    let out = &mut values[b * n + (y0 + y) * width + x0..][..size];
+                    let (to, from) = (b * n + (y0 + y) * width + x0, b * size * size + y * size);
                     match tile {
-                        Some(t) => {
-                            let data = &t.tile.raster.data;
-                            for (x, v) in out.iter_mut().enumerate() {
-                                *v = data.get_f64(b * size * size + y * size + x);
-                            }
-                        }
-                        None => out.fill(fill[b]),
+                        Some(t) => copy_samples(&mut values, to, &t.tile.raster.data, from, size),
+                        None => (to..to + size).for_each(|i| values.set_f64(i, fill)),
                     }
                 }
             }
@@ -479,7 +493,7 @@ impl Generator<'_, '_> {
         }
         // The template keeps the children's nodata and band metadata (such as the alpha band).
         let mut dataset = header.clone();
-        dataset.raster.data = RasterData::from_f64_vec(header.raster.data_type, values);
+        dataset.raster.data = values;
         dataset.raster.cols = width;
         dataset.raster.rows = width;
         let first = self.plan.levels[c].cell(2 * column, 2 * row, Convention::Xyz);
@@ -493,7 +507,7 @@ impl Generator<'_, '_> {
     }
 
     /// Encodes and stores a rendered tile, returning its pixels for a parent tile.
-    fn emit(&mut self, cell: &TileCell, name: &str, rendered: Rendered, consumed: bool) -> Result<Child> {
+    fn emit(&mut self, cell: &TileCell, name: &str, mut rendered: Rendered, consumed: bool) -> Result<Child> {
         let s = &self.settings;
         if s.options.skip_blank && rendered.blank {
             self.report.blank += 1;
@@ -524,7 +538,12 @@ impl Generator<'_, '_> {
                 if crate::dataset::needs_nodata_pam(encoded) {
                     return Err(Error::Unsupported("folder GeoTIFF tiles currently require a single shared nodata value".into()));
                 }
-                let mask = if s.preserve_mask { rendered.valid.clone() } else { None };
+                // A parent needs the mask too when it consumes this tile.
+                let mask = match (s.preserve_mask, consumed) {
+                    (true, true) => rendered.valid.clone(),
+                    (true, false) => rendered.valid.take(),
+                    (false, _) => None,
+                };
                 crate::memory::write_raster_bytes(
                     encoded,
                     name,
@@ -634,11 +653,11 @@ fn render(source: &mut dyn WarpSource, info: &WarpSourceInfo, s: &Settings, cell
 
 /// Decodes a tile written by an earlier run, in the layout [`render`] produces: image tiles
 /// regain the alpha band an opaque tile omits, and gray tiles stored as WebP RGB become gray.
+/// Only tiles that record their validity are decoded, which in a pyramid means color tiles
+/// with alpha ([`Settings::needs_validity`] is false).
 fn decode_tile(bytes: Vec<u8>, name: &str, source: &RasterDataset, s: &Settings) -> Result<RasterDataset> {
+    debug_assert!(s.color && s.alpha, "only color tiles with alpha record their validity");
     let mut tile = crate::memory::open_raster_bytes(bytes, name)?;
-    if !s.color {
-        return Ok(tile);
-    }
     let gray = color_bands(source)? == 1;
     let n = tile.raster.cols * tile.raster.rows;
     let decoded_alpha = matches!(tile.raster.bands, 2 | 4);
@@ -648,23 +667,21 @@ fn decode_tile(bytes: Vec<u8>, name: &str, source: &RasterDataset, s: &Settings)
         return Err(Error::InvalidData(format!("{name}: an existing tile does not have the bands of this tiling")));
     }
     let dtype = tile.raster.data_type;
-    let mut values = Vec::with_capacity(n * (colors + usize::from(s.alpha)));
+    let mut values = Vec::with_capacity(n * (colors + 1));
     for b in 0..colors {
         values.extend((0..n).map(|i| tile.raster.data.get_f64(b * n + i)));
     }
-    if s.alpha {
-        if decoded_alpha {
-            values.extend((0..n).map(|i| tile.raster.data.get_f64(decoded_colors * n + i)));
-        } else {
-            values.extend(std::iter::repeat_n(alpha_max(dtype), n));
-        }
+    if decoded_alpha {
+        values.extend((0..n).map(|i| tile.raster.data.get_f64(decoded_colors * n + i)));
+    } else {
+        values.extend(std::iter::repeat_n(alpha_max(dtype), n));
     }
-    let bands = colors + usize::from(s.alpha);
+    let bands = colors + 1;
     let names: &[&str] = if gray { &["Gray", "Alpha"] } else { &["Red", "Green", "Blue", "Alpha"] };
     tile = crate::ops::derived(&tile, RasterData::from_f64_vec(dtype, values), bands)?;
     tile.band_metadata =
         names[..bands].iter().map(|c| crate::BandMetadata { color_interp: Some((*c).into()), ..Default::default() }).collect();
-    tile.has_nodata = !s.alpha && s.options.output_nodata.is_some();
+    tile.has_nodata = false;
     if let Some(nd) = s.options.output_nodata {
         tile.raster.nodata = nd;
     }
@@ -1638,6 +1655,36 @@ mod tests {
         assert_eq!(report.written, expected.len() as u64);
         for (path, bytes) in expected {
             assert_eq!(std::fs::read(&path).unwrap(), bytes, "{}", path.display());
+        }
+    }
+
+    #[test]
+    fn no_alpha_png_parents_from_tiles_match_the_source_where_children_are_valid() {
+        // 8 x 8 RGB, fully valid: lower zooms use the separate validity masks of tiles
+        // without alpha, and must agree with rendering from the source.
+        let config = crate::RasterConfig { cols: 8, rows: 8, bands: 3, data_type: DataType::U8, cell_size: 1.0, ..Default::default() };
+        let values = (0..3 * 64).map(|i| f64::from((i * 37 % 251) as u32 + 1)).collect();
+        let dataset = RasterDataset::new(crate::Raster::from_data(config, values).unwrap(), false);
+        let mut outputs = Vec::new();
+        for overview_source in [OverviewSource::Tiles, OverviewSource::Source] {
+            let options = TileOptions {
+                alpha: Some(false),
+                resampling: "average".into(),
+                overview_source,
+                grid: GridOptions { tile_size: 2, min_zoom: Some(0), ..Default::default() },
+                ..options()
+            };
+            let mut sink = Collect::default();
+            assert_eq!(generate(&mut crate::LazyRaster::from(dataset.clone()), &options, &mut sink).unwrap().written, 21);
+            outputs.push(sink.0);
+        }
+        for (name, bytes) in &outputs[0] {
+            let a = crate::memory::open_raster_bytes(bytes.clone(), name).unwrap();
+            let b = crate::memory::open_raster_bytes(outputs[1][name].clone(), name).unwrap();
+            assert_eq!(a.raster.bands, 3, "{name}");
+            for (x, y) in a.raster.data.to_f64_vec().into_iter().zip(b.raster.data.to_f64_vec()) {
+                assert!((x - y).abs() <= 1.0, "{name}: {x} != {y}");
+            }
         }
     }
 }

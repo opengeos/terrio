@@ -14,7 +14,9 @@
   pixels. This changes the default output of lower zooms with interpolating kernels (bilinear,
   cubic, etc.), which are now resampled from the 8-bit or typed tiles below them;
   `--overview-source source` (`overview_source`, `overviewSource`) keeps the previous rendering
-  from the source. `--resume` rebuilds a missing parent from the existing tiles below it.
+  from the source. `--resume` can rebuild a missing parent from the existing PNG or WebP tiles
+  below it; with GeoTIFF tiles or `--no-alpha`, it renders the parent from the source instead,
+  which can exceed the source-window budget.
 - `terrio tile --format WEBP` writes lossless WebP directory tiles (gray tiles as RGB), equal in
   pixels to the PNG tiles; Leaflet and OpenLayers viewers accept them.
 - GeoTIFF and COG writers compress Deflate chunks with a pure-Rust port of libdeflate 1.26's
