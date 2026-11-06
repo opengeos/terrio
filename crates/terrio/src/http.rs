@@ -1964,15 +1964,19 @@ impl Shared {
         }
     }
 
-    /// Fetches the next batch of the prefetch's blocks from its `from`th: those not cached, at
-    /// most half the cache, so that the batch being read stays while the next one is fetched. They
-    /// leave the plan, so that a block read again once evicted is fetched alone.
+    /// Fetches the next batch of the prefetch's blocks from its `from`th: those not cached within
+    /// half the cache's blocks of the first (the gaps the batch's requests span included), so that
+    /// the batch being read stays while the next one is fetched. They leave the plan, so that a
+    /// block read again once evicted is fetched alone.
     fn fetch_planned(&mut self, from: usize) -> io::Result<()> {
-        let batch = (self.max_blocks / 2).max(1);
-        let (mut next, mut to) = (Vec::new(), from);
-        while to < self.plan.len() && next.len() < batch {
-            if !self.blocks.contains_key(&self.plan[to]) {
-                next.push(self.plan[to]);
+        let batch = (self.max_blocks / 2).max(1) as u64;
+        let (mut next, mut to) = (Vec::<u64>::new(), from);
+        while let Some(&b) = self.plan.get(to) {
+            if next.first().is_some_and(|&first| b >= first + batch) {
+                break;
+            }
+            if !self.blocks.contains_key(&b) {
+                next.push(b);
             }
             to += 1;
         }
@@ -2510,6 +2514,13 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 3);
     }
 
+    /// The inclusive byte ranges of the requests a [`test_server`] saw.
+    fn requested(seen: &[Option<String>]) -> Vec<(u64, u64)> {
+        seen.iter()
+            .filter_map(|r| r.as_deref()?.strip_prefix("bytes=")?.split_once('-').map(|(a, b)| (a.parse().unwrap(), b.parse().unwrap())))
+            .collect()
+    }
+
     // A prefetch larger than the cache (a whole COG's tiles read as one window) is fetched in
     // batches as it is read, each byte once: fetched whole, it was evicted before it was read and
     // fetched again a block per request.
@@ -2523,12 +2534,7 @@ mod tests {
         let mut read = Vec::new();
         r.read_to_end(&mut read).unwrap();
         assert!(read == data);
-        let ranges: Vec<(u64, u64)> = seen
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|r| r.as_deref()?.strip_prefix("bytes=")?.split_once('-').map(|(a, b)| (a.parse().unwrap(), b.parse().unwrap())))
-            .collect();
+        let ranges = requested(&seen.lock().unwrap());
         let bytes: u64 = ranges.iter().map(|(a, b)| b - a + 1).sum();
         // The first read, then batches of half the cache (8 blocks), merged across the prefix.
         assert!(bytes <= data.len() as u64 + 2 * 4096, "{bytes} bytes in {ranges:?}");
@@ -2538,6 +2544,37 @@ mod tests {
         assert_eq!(read_range(&mut r, 5 * 4096 + 100, 50), data[5 * 4096 + 100..5 * 4096 + 150]);
         let again: Vec<Option<String>> = seen.lock().unwrap()[before..].to_vec();
         assert!(again.len() <= 1 && again.iter().flatten().all(|r| r == "bytes=20480-24575"), "{again:?}");
+    }
+
+    // A sparse prefetch larger than the cache (every third block: batches merge across two-block
+    // gaps) read in file order and in reverse: each request spans at most half the cache, gaps
+    // included. In file order no block is fetched twice; in reverse, only the first batch, which
+    // the prefetch fetched before the reads began at the other end.
+    #[test]
+    fn a_sparse_prefetch_larger_than_the_cache_is_fetched_in_bounded_batches() {
+        let data = test_data();
+        let (url, seen) = test_server(data.clone());
+        let opts = HttpOptions { cache_size: 16 * 4096, ..options() };
+        let blocks: Vec<u64> = (1..70).step_by(3).collect();
+        for (name, reverse) in [("forward.bin", false), ("reverse.bin", true)] {
+            let before = seen.lock().unwrap().len();
+            let mut r = RangeReader::open_with(&Remote::Url(format!("{url}/{name}")), opts.clone()).unwrap();
+            r.prefetch(&blocks.iter().map(|b| (b * 4096, 4096)).collect::<Vec<_>>()).unwrap();
+            let mut order = blocks.clone();
+            if reverse {
+                order.reverse();
+            }
+            for b in order {
+                let at = (b * 4096) as usize;
+                assert_eq!(read_range(&mut r, b * 4096, 4096), data[at..at + 4096], "{name} block {b}");
+            }
+            let ranges = requested(&seen.lock().unwrap()[before..]);
+            assert!(ranges.iter().all(|(a, b)| b - a < 8 * 4096), "{name}: {ranges:?}");
+            let refetched: u64 =
+                blocks.iter().filter(|&&b| ranges.iter().filter(|(s, e)| *s <= b * 4096 && b * 4096 <= *e).count() > 1).count() as u64;
+            // The first batch: blocks 1, 4 and 7, within half the cache (8 blocks) of block 1.
+            assert!(refetched <= if reverse { 3 } else { 0 }, "{name}: {refetched} blocks fetched twice in {ranges:?}");
+        }
     }
 
     /// A child forked while other threads read remote files reads remote files too: the locks of
