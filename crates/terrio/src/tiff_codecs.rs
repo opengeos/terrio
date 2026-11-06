@@ -424,8 +424,13 @@ impl ChunkCodec {
         let (dw, dh) = (dw as usize, dh as usize);
         // Tiles are coded whole, strips with their own rows.
         let (w, h) = if self.tiled { self.chunk } else { (dw, dh) };
-        // Over the limit, the chunk is refused before any of it is read.
+        // Over the limit, the chunk is refused before any of it is read. A Deflate edge tile over
+        // it only with its padding is left to the `tiff` crate, as before: the crate keeps the
+        // image data only, and skips the padding.
         if self.decoded_size(w, h)? > self.limit {
+            if self.codec == Codec::Deflate && self.decoded_size(dw, dh)? <= self.limit {
+                return dec.read_chunk(idx);
+            }
             return Err(TiffError::LimitsExceeded);
         }
         let r = dec.inner();
@@ -1230,6 +1235,56 @@ mod tests {
         b.extend(0u64.to_le_bytes());
         b.extend(data);
         b
+    }
+
+    /// A Deflate edge tile over the chunk limit only with its padding is read as the `tiff` crate
+    /// reads it, which limits the image data: 100 bytes hold the 4 x 16 pixels of the edge tile
+    /// of a 20 x 16 image in 16 x 16 tiles, not its 16 x 16 stored ones. A whole tile over the
+    /// limit is refused.
+    #[test]
+    fn a_deflate_edge_tile_over_the_limit_only_with_its_padding_is_read() {
+        use std::io::Write;
+        let tile = |v: u8| {
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&(0..=255u8).map(|i| i.wrapping_mul(v)).collect::<Vec<_>>()).unwrap();
+            e.finish().unwrap()
+        };
+        let (t0, t1) = (tile(3), tile(5));
+        // A little-endian BigTIFF: 10 tags of 20 bytes, the tiles after the IFD.
+        let at = 16 + 8 + 10 * 20 + 8u64;
+        let offsets = at | (at + t0.len() as u64) << 32;
+        let counts = t0.len() as u64 | (t1.len() as u64) << 32;
+        let tags: [(u16, u16, u64, u64); 10] = [
+            (256, 3, 1, 20),
+            (257, 3, 1, 16),
+            (258, 3, 1, 8),
+            (259, 3, 1, 8),
+            (262, 3, 1, 1),
+            (277, 3, 1, 1),
+            (322, 3, 1, 16),
+            (323, 3, 1, 16),
+            (324, 4, 2, offsets),
+            (325, 4, 2, counts),
+        ];
+        let mut b = b"II\x2b\0\x08\0\0\0".to_vec();
+        b.extend(16u64.to_le_bytes());
+        b.extend((tags.len() as u64).to_le_bytes());
+        for (tag, typ, count, value) in tags {
+            b.extend(tag.to_le_bytes());
+            b.extend(typ.to_le_bytes());
+            b.extend(count.to_le_bytes());
+            b.extend(value.to_le_bytes());
+        }
+        b.extend(0u64.to_le_bytes());
+        b.extend(&t0);
+        b.extend(&t1);
+        let mut dec = Decoder::new(std::io::Cursor::new(&b)).unwrap();
+        let codec = ChunkCodec::new(&mut dec, 100, None).unwrap().expect("Deflate is inflated here");
+        assert!(matches!(codec.read(&mut dec, 0), Err(TiffError::LimitsExceeded)));
+        let edge = codec.read(&mut dec, 1).unwrap();
+        assert_eq!(format!("{edge:?}"), format!("{:?}", dec.read_chunk(1).unwrap()));
+        let expected: Vec<u8> = (0..16u8).flat_map(|r| (0..4u8).map(move |c| (r * 16 + c).wrapping_mul(5))).collect();
+        assert_eq!(format!("{edge:?}"), format!("{:?}", DecodingResult::U8(expected)));
     }
 
     /// Deflate chunks inflated here give what the `tiff` crate gives, for every sample type
