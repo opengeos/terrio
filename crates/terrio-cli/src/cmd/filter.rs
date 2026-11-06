@@ -1015,7 +1015,15 @@ fn publish_csf_tile(
     options: &pointcloud::PointWriteOptions,
     staging: &std::path::Path,
 ) -> terrio::Result<()> {
-    let temporary = tempfile::NamedTempFile::new_in(staging)?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("tile-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Match File::create permissions; the process umask still applies.
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let temporary = builder.tempfile_in(staging)?;
     let path = temporary.path().to_str().ok_or_else(|| terrio::Error::InvalidArgument("CSF output filename is not UTF-8".into()))?;
     pointcloud::write_points(cloud, path, options)?;
     // Exclusive publication also catches destinations created after preflight.
@@ -1560,6 +1568,13 @@ mod tests {
         std::fs::remove_file(&output).unwrap();
         super::publish_csf_tile(&cloud, output.to_str().unwrap(), &options, staging.path()).unwrap();
         assert_eq!(pointcloud::read_points(output.to_str().unwrap(), &Default::default()).unwrap().len(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let ordinary = dir.path().join("plain.las");
+            std::fs::write(&ordinary, "normal file-create permissions").unwrap();
+            assert_eq!(output.metadata().unwrap().permissions().mode() & 0o777, ordinary.metadata().unwrap().permissions().mode() & 0o777,);
+        }
     }
 
     #[test]
