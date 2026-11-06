@@ -47,6 +47,14 @@ pub(super) struct Zone {
     pub spans: Vec<Span>,
 }
 
+impl Zone {
+    /// The zone's pixel count, in 64 bits: a zone can cover more than 2^32 pixels of a 32-bit
+    /// target's grid.
+    pub fn pixels(&self) -> u64 {
+        self.spans.iter().map(|s| u64::from(s.len)).sum()
+    }
+}
+
 /// The zones of a layer on one grid, sorted by first row. Features with null or empty geometry,
 /// or no pixel in the grid, have no zone.
 #[derive(Debug)]
