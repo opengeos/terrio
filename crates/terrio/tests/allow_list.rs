@@ -84,6 +84,12 @@ fn allow_lists_are_per_kind_and_only_narrow() {
     assert_eq!((allowed_drivers(Some(Kind::Raster)), allowed_drivers(Some(Kind::Vector))), (names(&["PNG"]), names(&["ESRI SHAPEFILE"])));
     assert!(refused(&terrio::open_raster(&tif)) && refused(&terrio::LazyRaster::open(&tif)));
 
+    #[cfg(feature = "netcdf-hdf5")]
+    for bytes in [b"CDF\x01".as_slice(), b"\x89HDF\r\n\x1a\n".as_slice()] {
+        assert!(refused(&terrio::multidim::open_bytes(bytes)));
+        assert!(refused(&terrio::multidim::open_bytes_owned(bytes.to_vec())));
+    }
+
     // Datasets given as bytes are checked by name and content with their kind, as files are.
     let tif_bytes = b"II*\0\x08\0\0\0".to_vec();
     let png_bytes = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
