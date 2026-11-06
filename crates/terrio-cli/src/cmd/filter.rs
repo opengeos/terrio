@@ -23,10 +23,8 @@ pub struct Args {
 #[derive(clap::Args)]
 struct Io {
     /// The point cloud (LAS, LAZ, COPC, EPT, PLY or E57; a path, URL or `s3://` object).
-    /// CSF also accepts a local directory of LAS/LAZ files, processed individually.
     input: String,
     /// The output: LAS, LAZ, COPC, PLY, E57 or EPT (`ept.json`), by its extension.
-    /// With a CSF input directory, the output directory receives the same filenames.
     output: String,
     /// Assign this CRS to the points, without reprojecting (when the file has none or a wrong one).
     #[arg(long = "a-srs", value_name = "CRS", help_heading = "Point cloud options")]
@@ -1423,6 +1421,28 @@ mod tests {
         assert!(!output.join("a.las").exists());
         assert_eq!(std::fs::read_to_string(output.join("b.las")).unwrap(), "keep this result");
         assert_eq!(std::fs::read_to_string(input.join("a.las")).unwrap(), "input a");
+    }
+
+    #[test]
+    fn file_only_filters_report_directory_inputs_before_creating_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("Downloads");
+        std::fs::create_dir(&input).unwrap();
+        for (filter, extra) in [
+            ("smrf", vec![]),
+            ("range", vec!["--limits", "Classification[2:2]"]),
+            ("decimation", vec!["--step", "2"]),
+            ("merge", vec![]),
+            ("hexbin", vec![]),
+        ] {
+            let output = dir.path().join(format!("{filter}.las"));
+            let mut argv = vec!["terrio", filter, input.to_str().unwrap(), output.to_str().unwrap()];
+            argv.extend(extra);
+            let error = run(Cli::try_parse_from(argv).unwrap().args).unwrap_err();
+            assert!(matches!(error, terrio::Error::InvalidArgument(_)), "{filter}: {error:?}");
+            assert!(error.to_string().contains("select a point-cloud file"), "{filter}: {error}");
+            assert!(!output.exists(), "{filter} created an output");
+        }
     }
 
     #[test]
