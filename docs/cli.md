@@ -2469,11 +2469,17 @@ to five strips of about 8 MB of its bands, or of a whole row of blocks when that
 row of 1024-row blocks of ten UInt16 bands 10,980 columns wide is 225 MB), and one raster is
 reduced per thread. Median, quantiles, mode, minority and variety also keep each zone's values
 from the strip of its first row to that of its last: 8 bytes per pixel and band (16 with
-`--fractional`), and while a zone finishes, a sorted copy of one band's values (16 bytes per
-pixel). The rasters reduced at once keep at most 1 GiB of values together: a raster's bands
-are reduced in groups that fit, one band at a time when one band's take more (a zone covering a
-whole multi-band raster), each group reading the raster again, and a group waits while others
-hold the budget. The zones of each grid are held as
+`--fractional`), and while a zone finishes, one band's values binned by value (16 bytes per
+distinct value, or per pixel with `--fractional`, plus 8 for the ranks of a binary median or
+quantile). Of an 8- or 16-bit integer band, a zone of at least as many pixels as the type has
+values (256 or 65,536) counts them in a histogram (2 or 512 KiB) instead, so all the bands of such a raster
+are usually reduced at once. Results are the same, but with `--fractional`: such a zone sums its
+coverages in another order, so their rounding can change its quantiles in the last digits, or which
+of two values whose coverage sums tie within rounding is its mode or minority.
+The rasters reduced at once keep at most 1 GiB of values together: a
+raster's bands are reduced in groups that fit, one band at a time when one band's take more (a
+zone covering a whole multi-band float raster), each group reading the raster again, and a group
+waits while others hold the budget. The zones of each grid are held as
 spans of covered pixels until every raster is reduced: 24 bytes per covered run of a row,
 and per partially covered cell with `--fractional`. Building a zone takes a mask of its bounding
 box for a moment, a byte per pixel (8 with `--fractional`). Integers above 2⁵³ can lose precision.
@@ -2526,9 +2532,10 @@ with one byte for binary masks. On a complete 966×731 real NLCD window (706,146
 pixels), three local count-only runs used peak RSS 44.2–44.7 MiB for binary and
 49.6–50.6 MiB for fractional membership; median times were 0.068 and 0.080 s.
 These measurements include process overhead and are not portable thresholds.
-Requesting `median` additionally retains value/coverage pairs (16 bytes per
-contributing sample) in both membership modes. Binary coverage is always one;
-its median sample buffer previously used eight bytes per sample.
+Requesting `median` additionally keeps each zone's values (8 bytes per zone pixel
+and band, 16 with `--fractional`, as above), unless the zone is counted in a
+histogram (a zone of an 8- or 16-bit integer band with at least as many pixels as
+the type has values, see above).
 
 ## Vector datasets
 
