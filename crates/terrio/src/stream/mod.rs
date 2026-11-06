@@ -258,7 +258,7 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
         VectorDriver::FlatGeobuf => open_fgb(path, batch)?,
         #[cfg(feature = "parquet")]
         VectorDriver::Parquet => {
-            let s = geoparquet::ParquetStream::open(|| Ok(File::open(path)?), stem, None, options.spatial_filter, batch, None)?;
+            let s = geoparquet::ParquetStream::open(|| geoparquet::open_file(path), stem, None, options.spatial_filter, batch, None)?;
             (s.layer.clone(), Box::new(ParquetSource(s)))
         }
         d => return Err(Error::Unsupported(format!("the {} driver is not read as a stream", d.name()))),
