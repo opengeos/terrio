@@ -265,6 +265,27 @@ first point PDAL reads) to get PDAL's hexagons. The boundary is always a multipo
 smoothed boundary of one polygon is a polygon); holes run clockwise (hexer's run
 counter-clockwise, as its exteriors); H3 grids (`h3_grid`) are not implemented.
 
+### CSF directory input
+
+`filter csf` also accepts a local directory of LAS/LAZ files, including COPC.
+It classifies each regular file separately, in filename order, and keeps its
+filename and format in the output directory. Extension matching is case-insensitive.
+Subdirectories, symbolic links and other file types are skipped; the scan is not
+recursive. The output directory is created when needed and may be a child of the
+input directory. This works with local paths on any drive, including Windows
+paths with spaces:
+
+```powershell
+terrio filter csf --cloth-resolution=2 'D:\Downloads' 'D:\Downloads\Nova pasta'
+```
+
+An empty input directory, an output path that is a file, an output directory
+that resolves to the input directory, or any existing output filename is refused
+before processing. Input files are preserved. A failure while reading or classifying
+a later tile stops the batch; earlier completed outputs remain. CSF processes one
+whole tile at a time, so memory use depends on the largest tile. The directory
+batch option is specific to CSF; other filters still take file paths or URLs.
+
 ```sh
 terrio filter smrf tile.laz classified.laz
 terrio filter outlier tile.laz clean.laz --method statistical --mean-k 8 --multiplier 2 --remove
