@@ -1885,6 +1885,10 @@ impl RangeReader {
             .collect();
         wanted.sort_unstable();
         wanted.dedup();
+        // A prefetch of cached blocks keeps the plan of an earlier one that is still being read.
+        if wanted.is_empty() {
+            return Ok(());
+        }
         s.plan = wanted;
         s.fetch_planned(0)
     }
@@ -2065,8 +2069,12 @@ impl Shared {
                 self.fetch_planned(at)?;
                 missing.retain(|b| !self.blocks.contains_key(b));
             }
-            if self.whole.is_none() {
+            if self.whole.is_none() && !missing.is_empty() {
                 self.fetch_blocks(&missing, 0)?;
+                // Planned blocks past the batch, fetched with the read, leave the plan too.
+                if !self.plan.is_empty() {
+                    self.plan.retain(|b| missing.binary_search(b).is_err());
+                }
             }
         }
         if let Some(whole) = &self.whole {
@@ -2544,6 +2552,25 @@ mod tests {
         assert_eq!(read_range(&mut r, 5 * 4096 + 100, 50), data[5 * 4096 + 100..5 * 4096 + 150]);
         let again: Vec<Option<String>> = seen.lock().unwrap()[before..].to_vec();
         assert!(again.len() <= 1 && again.iter().flatten().all(|r| r == "bytes=20480-24575"), "{again:?}");
+    }
+
+    // A read longer than a batch of a prefetch: the blocks past its batch are fetched with the read,
+    // and leave the plan too, so that one of them read again once evicted is fetched alone.
+    #[test]
+    fn blocks_a_read_fetched_past_its_batch_leave_the_plan() {
+        let data = test_data();
+        let (url, seen) = test_server(data.clone());
+        let opts = HttpOptions { cache_size: 16 * 4096, ..options() };
+        let mut r = RangeReader::open_with(&Remote::Url(format!("{url}/long.bin")), opts).unwrap();
+        r.prefetch(&[(0, data.len() as u64)]).unwrap();
+        // Blocks 0-19: 1-8 fetched by the prefetch, 9-16 a batch, 17-19 with the read.
+        assert_eq!(read_range(&mut r, 0, 20 * 4096), data[..20 * 4096]);
+        let mut rest = Vec::new();
+        r.read_to_end(&mut rest).unwrap();
+        assert!(rest == data[20 * 4096..]);
+        let before = seen.lock().unwrap().len();
+        assert_eq!(read_range(&mut r, 18 * 4096, 100), data[18 * 4096..18 * 4096 + 100]);
+        assert_eq!(requested(&seen.lock().unwrap()[before..]), [(18 * 4096, 19 * 4096 - 1)]);
     }
 
     // A sparse prefetch larger than the cache (every third block: batches merge across two-block
