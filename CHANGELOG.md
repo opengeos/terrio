@@ -10,6 +10,12 @@
   4-band COG (425.8 MB) with 50 ms of latency per request: 210.7 s, 4,099 requests and 851.7 MB ->
   3.1 s, 14 requests and 425.8 MB, pixels identical. Reads whose tiles span at most half the
   cache's blocks make the same requests as before.
+- With `TERRIO_WBVECTOR_FALLBACK=YES`, a zip archive named for no driver is read by the KMZ
+  driver, as the same archive named `.kmz` is, so the layer documents its `doc.kml` links to with
+  `NetworkLink` are read (#580). A KMZ that terrio wrote, which keeps each layer in its own
+  document under `layers/`, opened as one empty layer; it now gives its layers with their
+  features. The fallback's KMZ dataset has the KMZ driver's layer names, fields and style table,
+  and `KMZ` as its driver instead of `GeoJSON`.
 - Lazy `translate` (`translate_lazy`, `translate_lazy_to_file` and the CLI's `translate`) and
   reads by window (`LazyRaster::read_resampled`) copy pixels fewer times, as do GeoTIFFs other
   than COGs written in rows (`GeoTiffWriter::write_rows`, which streamed GeoTIFF outputs use)

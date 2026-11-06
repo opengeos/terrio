@@ -1055,10 +1055,11 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
             crate::formats::check_driver_allowed(VectorDriver::Parquet.name(), path, crate::formats::Kind::Vector)?;
             read_vector_local(path, VectorDriver::Parquet, options).map(Dataset::Vector)
         }
-        // A zip archive, found as KMZ: read only if the KMZ driver is allowed.
+        // A zip archive, found as KMZ: read only if the KMZ driver is allowed, and by that driver,
+        // as if it were named `.kmz`, so the layer documents `doc.kml` links to are read too.
         Err(_) if is_wbvector_kmz(path) => {
             crate::formats::check_driver_allowed(VectorDriver::KMZ.name(), path, crate::formats::Kind::Vector)?;
-            wbvector_dataset(read_wbvector_kmz(path)?, path, options)
+            read_vector_local(path, VectorDriver::KMZ, options).map(Dataset::Vector)
         }
         Err(raster_err) => match wbvector::VectorFormat::detect(path) {
             Ok(format) => {
@@ -1093,31 +1094,6 @@ fn is_wbvector_kmz(path: &str) -> bool {
     zip && !(path.extension().is_none() && path.with_extension("shp").exists())
 }
 
-/// The layer of a KMZ archive the `wbvector` fallback found, from the member the KMZ driver reads:
-/// its first member named `doc.kml` (in any case) at the archive's root, else its first `.kml`
-/// member, decoded as the KMZ driver decodes it (UTF-8, else Latin-1) and read with `wbvector`'s
-/// KML reader. terrio opens the archive: `wbvector` is built without its own KMZ reader, whose
-/// `zip` 0.6 has known advisories.
-fn read_wbvector_kmz(path: &str) -> Result<Layer> {
-    use std::io::Read;
-    let kmz = |message: String| Error::from(wbvector::GeoError::Kmz(message));
-    let bytes = std::fs::read(path).map_err(wbvector::GeoError::Io)?;
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| kmz(format!("invalid zip archive: {e}")))?;
-    // zip keeps one entry per name, the last: of two members named `doc.kml`, the last is read.
-    // Only names are compared, so no member is opened but the one read.
-    let names: Vec<Vec<u8>> = archive.file_names_raw().map(|name| name.to_ascii_lowercase()).collect();
-    let index = (names.iter().position(|name| name == b"doc.kml"))
-        .or_else(|| names.iter().position(|name| name.ends_with(b".kml")))
-        .ok_or_else(|| kmz("no .kml entry found in KMZ".into()))?;
-    let mut document = Vec::new();
-    archive
-        .by_index(index)
-        .map_err(|e| kmz(format!("failed opening KML entry {index}: {e}")))?
-        .read_to_end(&mut document)
-        .map_err(|e| kmz(format!("failed reading KML entry {index}: {e}")))?;
-    Ok(wbvector::kml::parse_str(&crate::drivers::vector::xml::decode(&document))?)
-}
-
 /// Whether a file starts with Parquet's magic number.
 #[cfg(feature = "parquet")]
 fn has_parquet_magic(path: &str) -> bool {
@@ -1139,8 +1115,8 @@ fn wbraster_fallback_allowed() -> bool {
 /// Whether a file that neither its extension nor terrio's own drivers recognise, raster or
 /// vector, may be handed to `wbvector`'s format detection: only with the option
 /// `TERRIO_WBVECTOR_FALLBACK=YES`, as for `wbraster`'s ([`wbraster_fallback_allowed`]). The
-/// detection reads content no allow-list names: zip archives as KMZ (their KML document, with
-/// `wbvector`'s reader), SQLite databases as GeoPackages, FlatGeobuf, GeoParquet, GML, GPX, KML.
+/// detection reads content no allow-list names: zip archives as KMZ (with terrio's KMZ driver),
+/// SQLite databases as GeoPackages, FlatGeobuf, GeoParquet, GML, GPX, KML.
 fn wbvector_fallback_allowed() -> bool {
     option_enabled("TERRIO_WBVECTOR_FALLBACK")
 }
@@ -2344,7 +2320,7 @@ mod content_allow_list_tests {
             let Ok(Dataset::Vector(v)) = read else { panic!("{path:?} not read as KMZ: {read:?}") };
             let points = [Some(wbvector::Geometry::point(10.5, 47.25)), Some(wbvector::Geometry::point(11.5, 46.5))];
             assert_eq!(geometries(&v), points, "{path:?}");
-            assert_eq!((v.layers.len(), v.layers[0].name.as_str(), v.driver), (1, "main", VectorDriver::GeoJSON), "{path:?}");
+            assert_eq!((v.layers.len(), v.layers[0].name.as_str(), v.driver), (1, "main", VectorDriver::KMZ), "{path:?}");
         }
         // The fallback's own allow-list check (`open` checks the list first, on the name and content).
         let listed = |drivers: &str| {
@@ -2356,6 +2332,70 @@ mod content_allow_list_tests {
         // The shapefile beside a path without an extension is read instead.
         let Ok(Dataset::Vector(v)) = open_with(&bare, &fallback) else { panic!("the shapefile not read") };
         assert_eq!(geometries(&v), [Some(wbvector::Geometry::point(5.0, 6.0))]);
+    }
+
+    /// With `TERRIO_WBVECTOR_FALLBACK=YES`, a KMZ archive named for no driver is read by the KMZ
+    /// driver, as the same archive named `.kmz` is: the layer documents `doc.kml` links to with
+    /// `NetworkLink`, as terrio's KMZ writer writes them under `layers/`, are read, each as its
+    /// layer, with the KMZ driver's fields and style table (#580).
+    #[cfg(not(feature = "gdal"))]
+    #[test]
+    fn the_wbvector_fallback_reads_the_layer_documents_a_kmz_links_to() {
+        let layer = |name: &str, points: &[(f64, f64)]| {
+            let mut layer = Layer::new(name).with_geom_type(wbvector::GeometryType::Point).with_epsg(4326);
+            layer.add_field(wbvector::FieldDef::new("name", wbvector::FieldType::Text));
+            for (i, &(x, y)) in points.iter().enumerate() {
+                layer
+                    .add_feature(Some(wbvector::Geometry::point(x, y)), &[("name", wbvector::FieldValue::Text(format!("{name}{i}")))])
+                    .unwrap();
+            }
+            layer
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let kmz = dir.path().join("written.kmz");
+        let layers = [layer("points", &[(1.0, 2.0), (3.0, 4.0)]), layer("more", &[(5.0, 6.0)])];
+        write_vector(&layers, kmz.to_str().unwrap(), &VectorWriteOptions::default()).unwrap();
+        let payload = dir.path().join("written.payload");
+        std::fs::copy(&kmz, &payload).unwrap();
+        let read = |path: &Path| match with(&[("TERRIO_WBVECTOR_FALLBACK", "YES")], || open(path.to_str().unwrap())) {
+            Ok(Dataset::Vector(v)) => v,
+            other => panic!("{path:?} not read as a vector dataset: {other:?}"),
+        };
+        let (by_driver, by_fallback) = (read(&kmz), read(&payload));
+        let summary = |v: &VectorDataset| {
+            let layers = v.layers.iter().map(|l| (l.name.clone(), l.features.len(), l.schema.fields().len())).collect::<Vec<_>>();
+            (v.driver, layers)
+        };
+        let fields = by_driver.layers[0].schema.fields().len();
+        let expected = (VectorDriver::KMZ, vec![("points".to_string(), 2, fields), ("more".to_string(), 1, fields)]);
+        assert_eq!(summary(&by_fallback), expected);
+        assert_eq!(summary(&by_fallback), summary(&by_driver));
+        let features = |v: &VectorDataset| {
+            v.layers
+                .iter()
+                .map(|l| l.features.iter().map(|f| format!("{:?} {:?}", f.geometry, f.attributes)).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(features(&by_fallback), features(&by_driver));
+        assert_eq!(by_fallback.style_table, by_driver.style_table);
+        // The open options apply as for the `.kmz` read: a layer chosen, features skipped, a maximum.
+        let read_with = |path: &Path, options: &VectorOpenOptions| {
+            with(&[("TERRIO_WBVECTOR_FALLBACK", "YES")], || open_vector(path.to_str().unwrap(), options)).unwrap()
+        };
+        let chosen = |layers: &[&str], skip_features, max_features| VectorOpenOptions {
+            layers: layers.iter().map(|l| l.to_string()).collect(),
+            skip_features,
+            max_features,
+            ..Default::default()
+        };
+        for (options, layers) in [
+            (chosen(&["points"], 1, None), vec![("points".to_string(), 1, fields)]),
+            (chosen(&[], 0, Some(1)), vec![("points".to_string(), 1, fields), ("more".to_string(), 1, fields)]),
+        ] {
+            let (by_driver, by_fallback) = (read_with(&kmz, &options), read_with(&payload, &options));
+            assert_eq!(summary(&by_fallback), (VectorDriver::KMZ, layers), "{options:?}");
+            assert_eq!(features(&by_fallback), features(&by_driver), "{options:?}");
+        }
     }
 
     /// A member of [`raw_zip`]: its name, its bytes and its general purpose flags.
@@ -2382,12 +2422,12 @@ mod content_allow_list_tests {
         [zip, directory, [&b"PK\x05\x06"[..], &[0; 4], &count, &count, &size, &start, &[0; 2]].concat()].concat()
     }
 
-    /// With `TERRIO_WBVECTOR_FALLBACK=YES`, a zip archive named for no driver is read from the
-    /// member the KMZ driver reads from the same archive named `.kmz`: its first member named
-    /// `doc.kml` (in any case) at the archive's root, else its first `.kml` member. An archive with
-    /// two `doc.kml` members reads the last one (zip keeps one entry per name, the last), and a
-    /// member that cannot be opened (encrypted) stops the read only if it is the one read. The
-    /// document is decoded as the KMZ driver decodes it: Latin-1 when it is not UTF-8.
+    /// With `TERRIO_WBVECTOR_FALLBACK=YES`, a zip archive named for no driver is read as the same
+    /// archive named `.kmz` is: from its first member named `doc.kml` (in any case) at the
+    /// archive's root, else its first `.kml` member. An archive with two `doc.kml` members reads the
+    /// last one (zip keeps one entry per name, the last), and a member that cannot be opened
+    /// (encrypted) stops the read only if it is the one read. The document is decoded as Latin-1
+    /// when it is not UTF-8.
     #[cfg(not(feature = "gdal"))]
     #[test]
     fn the_wbvector_fallback_reads_the_kmz_member_the_kmz_driver_reads() {
