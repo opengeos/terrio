@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Warps with nearest or `average` resampling are faster, and so are bilinear warps past GDAL's
+  4-tap threshold (output pixels over 1/0.95 source pixels across in either direction, 2 or more
+  with `TERRIO_GDAL_COMPAT=3.13`); the arithmetic and its order are unchanged. Nearest from
+  EPSG:32615 to EPSG:32616 of an 1100 x 1100 uint16 Sentinel-2 window takes 12 ms of kernel time
+  instead of 29 (single-threaded).
 - A zero-length numeric, enum or compound attribute of a multidimensional dataset is `null`, as
   GDAL 3.13.3's `gdalmdiminfo` prints it, where it was an empty list `[]`, in Rust, Python,
   JavaScript and CLI results and in Zarr copies. A zero-length string attribute stays `[]`. A
