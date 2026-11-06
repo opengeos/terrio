@@ -122,10 +122,7 @@ pub(crate) fn read_document_at<R: std::io::Read + std::io::Seek>(
 ) -> Result<String> {
     // A document declaring more than is left is refused before it is read. One inflating past what
     // it declares is refused by `read_index`, so no read goes past the budget.
-    let (declared, name) = {
-        let member = zip.archive().by_index_raw(index)?;
-        (member.size(), member.name()?.to_string())
-    };
+    let (name, declared, _) = zip.entry(index)?;
     if declared > *budget {
         return Err(Error::ResourceLimit(format!(
             "KMZ: the archive's KML documents hold more than the {} bytes allowed (TERRIO_KMZ_MAX_SIZE), at '{name}'",
@@ -158,7 +155,8 @@ fn kmz_styled<R: std::io::Read + std::io::Seek>(reader: R, default_name: &str) -
         }
     }
     // The documents styles live in, as far as links from one to the next go. Each is read once here
-    // (a layer document a styleUrl names was also read above), and
+    // (a layer document a styleUrl names was also read above, and counts again toward
+    // `TERRIO_ZIP_MAX_SIZE`, though not toward the document budget), and
     // one that cannot be read, or past the style budget, leaves its links as raw URLs. An archive
     // past the archive limits is refused.
     let mut budget = MAX_STYLE_DOCUMENT_BYTES;
@@ -175,7 +173,7 @@ fn kmz_styled<R: std::io::Read + std::io::Seek>(reader: R, default_name: &str) -
         // One byte past the budget tells a document that does not fit from one that just does.
         let text = match zip.read_name(&name, budget) {
             Ok(bytes) => xml::decode(&bytes),
-            Err(e @ Error::ResourceLimit(_)) => return Err(e),
+            Err(e) if e.is_resource_refusal() => return Err(e),
             Err(_) => continue,
         };
         if text.len() as u64 > budget {

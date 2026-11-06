@@ -494,16 +494,18 @@ pub(crate) mod codec {
         let mut zip = crate::vfs::LimitedZip::open(Cursor::new(bytes))?;
         let mut names = Vec::new();
         for i in 0..zip.archive().len() {
-            let f = zip.archive().by_index_raw(i)?;
-            if f.is_file() {
-                names.push(f.name()?.to_string());
+            let (member, _, is_file) = zip.entry(i)?;
+            if is_file {
+                names.push(member);
             }
         }
         names.sort();
         // A Zarr store: its files, read under a directory in memory.
         if let Some(root) = zarr_root(&names) {
+            // Only the store's files: other members do not count toward the limits.
+            let prefix = format!("{root}/");
             let mut files = Vec::with_capacity(names.len());
-            for n in &names {
+            for n in names.iter().filter(|n| root.is_empty() || n.trim_start_matches("./").starts_with(&prefix)) {
                 files.push((n.clone(), zip.read_name(n, u64::MAX)?));
             }
             return open_zarr_store(files, &root).map(Dataset::Raster);
@@ -527,7 +529,7 @@ pub(crate) mod codec {
                 })?;
                 match zip.borrow_mut().read_name(member, u64::MAX) {
                     Ok(bytes) => Some(bytes),
-                    Err(e @ Error::ResourceLimit(_)) => {
+                    Err(e) if e.is_resource_refusal() => {
                         refused.borrow_mut().get_or_insert(e);
                         None
                     }
@@ -542,7 +544,8 @@ pub(crate) mod codec {
             let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, &main, driver)).collect();
             return finish_vector(layers, &main, driver, options);
         }
-        let mut ds = open(member, &main, options)?;
+        // An archive in the member shares what is left of this one's limits.
+        let mut ds = zip.nested(|| open(member, &main, options))?;
         // A raster's `.aux.xml` sidecar (a JPEG 2000's nodata value).
         let aux = format!("{main}.aux.xml");
         if let Dataset::Raster(r) = &mut ds
@@ -1392,6 +1395,34 @@ mod tests {
         // Room for the .shp, not for its sidecars too.
         crate::config::push_scope([("TERRIO_ZIP_MAX_SIZE".to_string(), Some(shp.to_string()))].into_iter().collect());
         let refused = codec::open(zip, "p.zip", &Default::default());
+        crate::config::pop_scope();
+        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("TERRIO_ZIP_MAX_SIZE")), "{:?}", refused.err());
+    }
+
+    /// A zip archive inside a zip archive shares the outer one's `TERRIO_ZIP_MAX_SIZE`, so nesting
+    /// cannot multiply it.
+    #[test]
+    fn nested_zip_bytes_share_the_zip_size_limit() {
+        let zip_of = |name: &str, bytes: &[u8]| {
+            let mut buf = std::io::Cursor::new(Vec::new());
+            let mut writer = zip::ZipWriter::new(&mut buf);
+            writer.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut writer, bytes).unwrap();
+            writer.finish().unwrap();
+            buf.into_inner()
+        };
+        let gj = format!(
+            r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{}},"geometry":{{"type":"Point","coordinates":[1,2]}}}}]}}{}"#,
+            " ".repeat(4000)
+        );
+        let inner = zip_of("p.geojson", gj.as_bytes());
+        let outer = zip_of("inner.geojson", &inner);
+        let Dataset::Vector(v) = codec::open(outer.clone(), "p.zip", &Default::default()).unwrap() else { panic!() };
+        assert_eq!(v.layers[0].features.len(), 1);
+        // Room for either member alone, not for both.
+        let limit = (gj.len().max(inner.len()) + 10).to_string();
+        crate::config::push_scope([("TERRIO_ZIP_MAX_SIZE".to_string(), Some(limit))].into_iter().collect());
+        let refused = codec::open(outer, "p.zip", &Default::default());
         crate::config::pop_scope();
         assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("TERRIO_ZIP_MAX_SIZE")), "{:?}", refused.err());
     }

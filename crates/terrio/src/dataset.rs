@@ -1103,10 +1103,8 @@ fn read_wbvector_kmz(path: &str) -> Result<Layer> {
     let file = std::io::BufReader::new(std::fs::File::open(path).map_err(wbvector::GeoError::Io)?);
     // The archive limits and the KMZ driver's document budget hold here too, and are not hidden
     // behind a `wbvector` error.
-    let mut archive = crate::vfs::LimitedZip::open(file).map_err(|e| match e {
-        e @ Error::ResourceLimit(_) => e,
-        e => kmz(format!("invalid zip archive: {e}")),
-    })?;
+    let mut archive = crate::vfs::LimitedZip::open(file)
+        .map_err(|e| if e.is_resource_refusal() { e } else { kmz(format!("invalid zip archive: {e}")) })?;
     // zip keeps one entry per name, the last: of two members named `doc.kml`, the last is read.
     // Only names are compared, so no member is opened but the one read.
     let names: Vec<Vec<u8>> = archive.archive().file_names_raw().map(|name| name.to_ascii_lowercase()).collect();
@@ -1114,10 +1112,8 @@ fn read_wbvector_kmz(path: &str) -> Result<Layer> {
         .or_else(|| names.iter().position(|name| name.ends_with(b".kml")))
         .ok_or_else(|| kmz("no .kml entry found in KMZ".into()))?;
     let mut budget = crate::drivers::vector::kml::max_kmz_document_bytes();
-    let document = crate::drivers::vector::kml::read_document_at(&mut archive, index, &mut budget).map_err(|e| match e {
-        e @ Error::ResourceLimit(_) => e,
-        e => kmz(format!("failed reading KML entry {index}: {e}")),
-    })?;
+    let document = crate::drivers::vector::kml::read_document_at(&mut archive, index, &mut budget)
+        .map_err(|e| if e.is_resource_refusal() { e } else { kmz(format!("failed reading KML entry {index}: {e}")) })?;
     Ok(wbvector::kml::parse_str(&document)?)
 }
 

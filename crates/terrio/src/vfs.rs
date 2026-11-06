@@ -625,11 +625,20 @@ fn open_archive<R: Read + Seek>(reader: R, directory: &Directory) -> Result<zip:
 /// extracts them: the archive's entry count is checked before its directory is read, each
 /// member's ratio before it is read, and the bytes of the members read together against
 /// `TERRIO_ZIP_MAX_SIZE` while they are decompressed, since a member's declared size can be wrong.
+///
+/// An archive opened while a member of another is being read (a zip inside a zip) shares what is
+/// left of the outer archive's `TERRIO_ZIP_MAX_SIZE` (see [`LimitedZip::nested`]).
 pub(crate) struct LimitedZip<R> {
     zip: zip::ZipArchive<R>,
     limits: ZipLimits,
     /// The bytes read from the archive's members so far.
     total: u64,
+}
+
+thread_local! {
+    /// What is left of an outer archive's `TERRIO_ZIP_MAX_SIZE` while an archive in one of its
+    /// members is read (see [`LimitedZip::nested`]).
+    static NESTED_ZIP_BUDGET: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 impl<R: Read + Seek> LimitedZip<R> {
@@ -641,7 +650,26 @@ impl<R: Read + Seek> LimitedZip<R> {
     /// Returns:
     ///     The archive, or `Error::ResourceLimit` when it lists more entries than allowed.
     pub(crate) fn open(reader: R) -> Result<Self> {
-        Self::with_limits(reader, ZipLimits::from_config())
+        let mut limits = ZipLimits::from_config();
+        if let Some(left) = NESTED_ZIP_BUDGET.with(std::cell::Cell::get) {
+            limits.max_size = limits.max_size.min(left);
+        }
+        Self::with_limits(reader, limits)
+    }
+
+    /// Runs `f`, which may open archives held in this one's members, with what is left of this
+    /// archive's `TERRIO_ZIP_MAX_SIZE` as their budget, so nesting cannot multiply it.
+    ///
+    /// Args:
+    ///     f: The work that opens the nested archives.
+    ///
+    /// Returns:
+    ///     What `f` returns.
+    pub(crate) fn nested<T>(&self, f: impl FnOnce() -> T) -> T {
+        let previous = NESTED_ZIP_BUDGET.with(|b| b.replace(Some(self.limits.max_size - self.total)));
+        let out = f();
+        NESTED_ZIP_BUDGET.with(|b| b.set(previous));
+        out
     }
 
     /// Opens an archive within `limits`.
@@ -659,9 +687,16 @@ impl<R: Read + Seek> LimitedZip<R> {
         Ok(Self { zip, limits, total: 0 })
     }
 
-    /// The archive itself, for its entries' names and metadata.
-    pub(crate) fn archive(&mut self) -> &mut zip::ZipArchive<R> {
-        &mut self.zip
+    /// The archive itself, for its entries' names. It is shared, so members can only be read
+    /// through [`Self::read_index`], within the limits.
+    pub(crate) fn archive(&self) -> &zip::ZipArchive<R> {
+        &self.zip
+    }
+
+    /// The member at `index`: its name, the size it declares, and whether it is a file.
+    pub(crate) fn entry(&mut self, index: usize) -> Result<(String, u64, bool)> {
+        let e = self.zip.by_index_raw(index)?;
+        Ok((e.name()?.to_string(), e.size(), e.is_file()))
     }
 
     /// Reads the member at `index`, decompressing at most `cap + 1` bytes: a caller with its own
@@ -688,8 +723,12 @@ impl<R: Read + Seek> LimitedZip<R> {
         // The zip crate fails a read past the declared size itself (`InvalidData`, "larger than its
         // declared uncompressed size"); either way it is the same refusal.
         let past_declared = || Error::ResourceLimit(format!("zip: '{name}' holds more than the {declared} bytes it declares"));
+        // zip 9 has no typed error for it; the regression test pins the message.
         let mut bytes = Vec::new();
         if let Err(e) = member.take(cap.min(remaining).min(declared).saturating_add(1)).read_to_end(&mut bytes) {
+            // What was decompressed before the error counts, so failing reads cannot add up past
+            // the limit.
+            self.total = self.total.saturating_add(bytes.len() as u64);
             return Err(if e.to_string().contains("declared uncompressed size") { past_declared() } else { e.into() });
         }
         let read = bytes.len() as u64;
@@ -823,7 +862,7 @@ fn extract_from<R: Read + Seek>(
         // A member is cut at the size it declares, which the limits were checked against.
         let copied = std::io::copy(&mut (&mut e).take(declared.saturating_add(1)), &mut out)?;
         if copied > declared {
-            return Err(zip_error(format!("'{}' holds more than the {declared} bytes it declares", names[i])));
+            return Err(Error::ResourceLimit(format!("zip: '{}' holds more than the {declared} bytes it declares", names[i])));
         }
     }
     Ok(LocalPath { path: temp.path().join(&member), _temp: Some(temp) })
@@ -1182,7 +1221,7 @@ mod tests {
     }
 
     #[test]
-    fn limited_zip_cuts_a_member_at_the_size_it_declares() {
+    fn limited_zip_refuses_a_member_past_the_size_it_declares() {
         // A member that declares 10 bytes in both headers but inflates to 4,096.
         let mut bytes = deflated_members(&[("a", 4096)]);
         let patch = |bytes: &mut Vec<u8>, signature: &[u8], at: usize| {
@@ -1192,13 +1231,14 @@ mod tests {
         patch(&mut bytes, b"PK\x03\x04", 22);
         patch(&mut bytes, b"PK\x01\x02", 24);
         let mut zip = LimitedZip::with_limits(std::io::Cursor::new(bytes), ZipLimits::default()).unwrap();
-        // A resource refusal, which is not retried with GDAL, whatever the cap.
-        for cap in [u64::MAX, 5, 10] {
-            let error = zip.read_name("a", cap).map(|b| b.len());
+        // A resource refusal, which is not retried with GDAL, unless the cap stops the read first.
+        for cap in [u64::MAX, 10] {
+            let error = zip.read_name("a", cap);
             assert!(
-                matches!(&error, Err(Error::ResourceLimit(m)) if m == "zip: 'a' holds more than the 10 bytes it declares") == (cap != 5),
+                matches!(&error, Err(Error::ResourceLimit(m)) if m == "zip: 'a' holds more than the 10 bytes it declares"),
                 "{cap}: {error:?}"
             );
         }
+        assert_eq!(zip.read_name("a", 5).unwrap(), b"xxxxxx");
     }
 }
