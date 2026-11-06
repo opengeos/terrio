@@ -248,8 +248,14 @@ fn zonal_inputs_csv_labels_dates_and_bands() {
     ok(&["zonal-stats", "zones.geojson", "plain.gpkg", "--inputs", "plain.csv", "--stats", "mean"], d);
     let out = layer(&d.join("plain.gpkg"));
     assert_eq!(out.features[0].get(&out.schema, "B04_b1_mean").unwrap(), &terrio::FieldValue::Float(8.5));
-    for (bad, why) in [("time,label\nx,y\n", "path"), ("path,colour\na.tif,red\n", "colour"), ("path,band\n2024-07-01/B04.tif,0\n", "band")]
-    {
+    for (bad, why) in [
+        ("time,label\nx,y\n", "path"),
+        ("path,colour\na.tif,red\n", "colour"),
+        ("path,band\n2024-07-01/B04.tif,0\n", "band"),
+        ("path,label,path\na.tif,B04,b.tif\n", "appears twice"),
+        ("path,label,label\na.tif,B04,B05\n", "appears twice"),
+        ("path,PATH\na.tif,b.tif\n", "appears twice"),
+    ] {
         std::fs::write(d.join("bad.csv"), bad).unwrap();
         let r = run(&["zonal-stats", "zones.geojson", "bad.gpkg", "--inputs", "bad.csv"], d);
         assert!(!r.status.success());

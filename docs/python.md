@@ -594,6 +594,32 @@ can be supplied as `weights=...`, with `weight_band=1`, then select `weighted_me
 `weighted_sum` or `weighted_stddev` in `stats`. See the
 [formulas and limits](cli.md#fractional-coverage-and-weighting-rasters).
 
+### Computing statistics from arrays you produce
+
+`ZonalReducer` gives the results of `zonal_stats` for arrays you compute yourself, a strip at a
+time, such as a band index over a scene, without writing them to a raster first. Zones are
+computed once for the grid; `windows()` lists the `(x, y, width, height)` strips that hold zone
+pixels (in strips of `strip_rows` rows, set when the reducer is created: by default terrio's
+strip size for one float64 band of this width; give a tiled source's block height to read each
+block once), and `stream()` reduces
+one band fed those strips in order. Statistics that keep values (median, quantiles, mode,
+minority, variety) hold each open zone's values in each stream, 8 bytes per pixel (16 with
+`fractional`): feed streams one at a time to bound them.
+
+```python
+reducer = terrio.ZonalReducer(fields, width, height, transform, "EPSG:32631", stats=["mean", "median"])
+stream = reducer.stream()
+for i, (x, y, w, h) in enumerate(reducer.windows()):
+    red, nir = (a.astype("float64") for a in read_strip(x, y, w, h))  # shape (h, w); no uint16 wrap
+    stream.add(i, (nir - red) / (nir + red))  # 0/0 is NaN, left out
+ndvi = stream.finish()  # {"mean": array, "median": array}, one value per field
+```
+
+`finish()` returns one array per statistic: `count` and `variety` are int64 (`count` is float64
+with `fractional=True`), the others float64 with NaN where a zone has no valid pixels. Weighted
+statistics need `zonal_stats`, and `t_srs` and `decimal_places` are not supported: the results are
+unrounded arrays, without geometries.
+
 ## Native multidimensional arrays
 
 See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,

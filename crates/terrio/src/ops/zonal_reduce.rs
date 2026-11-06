@@ -2,8 +2,9 @@
 //! row-major order whatever the strip height, so results do not depend on it.
 
 use super::Statistic;
-use super::index::ZoneIndex;
-use crate::{DataType, Error, FieldValue, LazyRaster, RasterDataset, Result, Window, WindowOptions};
+use super::index::{Zone, ZoneIndex};
+use crate::raster::RasterData;
+use crate::{DataType, Error, FieldValue, LazyRaster, Result, Window, WindowOptions};
 
 /// A band to reduce: its number (from 1) and nodata value.
 pub(super) struct BandSpec {
@@ -59,41 +60,104 @@ impl<'a> Plan<'a> {
     }
 }
 
+/// The strips `(first, last)` that the zones of `index` cross in strips of `strip_rows` rows;
+/// `None` without zones. A slot per strip of that range (as `zonal_stats`' strips of many rows
+/// usually take) needs no sort; zones far apart for their strip height (a caller's strips of one
+/// row, say) take less room as a list of (zone, strip) pairs.
+fn zone_strips(index: &ZoneIndex, strip_rows: usize) -> Option<(usize, usize)> {
+    let first = index.zones.first()?.row_start / strip_rows;
+    let last = index.zones.iter().map(|z| (z.row_end - 1) / strip_rows).max()?;
+    Some((first, last))
+}
+
 /// The windows read for `index` in strips of `strip_rows` rows from row 0: each strip holding
 /// zone pixels, over the rows and columns of the pixels in it. Strips without zone pixels, such
 /// as those between the parts of a multipolygon, are left out.
-pub(super) fn strip_windows(index: &ZoneIndex, rows: usize, strip_rows: usize) -> Vec<Window> {
-    // Per strip: (first row, end row, first column, end column) of its zone pixels.
-    let mut extents: Vec<Option<(usize, usize, usize, usize)>> = vec![None; rows.div_ceil(strip_rows)];
-    for span in index.zones.iter().flat_map(|z| &z.spans) {
-        let (row, col, end) = (span.row as usize, span.col as usize, (span.col + span.len) as usize);
-        let e = extents[row / strip_rows].get_or_insert((row, row + 1, col, end));
-        *e = (e.0.min(row), e.1.max(row + 1), e.2.min(col), e.3.max(end));
+pub(super) fn strip_windows(index: &ZoneIndex, strip_rows: usize) -> Vec<Window> {
+    let window = |(r0, r1, c0, c1): (usize, usize, usize, usize)| Window::new(c0, r0, c1 - c0, r1 - r0);
+    // A slot per strip, when there are no more strips than (zone, strip) pairs (40 bytes each):
+    // the first row, end row, first column and end column of its zone pixels.
+    // (zone, strip) pairs holding zone pixels: none between the far parts of a multipart zone.
+    let occupied = index
+        .zones
+        .iter()
+        .map(|z| 1 + z.spans.windows(2).filter(|p| p[0].row as usize / strip_rows != p[1].row as usize / strip_rows).count())
+        .fold(0, usize::saturating_add);
+    if let Some((first, last)) = zone_strips(index, strip_rows)
+        && last - first < occupied
+    {
+        let mut slots: Vec<Option<(usize, usize, usize, usize)>> = vec![None; last - first + 1];
+        for span in index.zones.iter().flat_map(|z| &z.spans) {
+            let (row, col, end) = (span.row as usize, span.col as usize, (span.col + span.len) as usize);
+            let e = slots[row / strip_rows - first].get_or_insert((row, row + 1, col, end));
+            *e = (e.0.min(row), e.1.max(row + 1), e.2.min(col), e.3.max(end));
+        }
+        return slots.into_iter().flatten().map(window).collect();
     }
-    extents.into_iter().flatten().map(|(r0, r1, c0, c1)| Window::new(c0, r0, c1 - c0, r1 - r0)).collect()
+    // Else (strip, first row, end row, first column, end column) per (zone, strip) pair, merged by
+    // strip.
+    let mut parts: Vec<(usize, usize, usize, usize, usize)> = Vec::with_capacity(occupied);
+    for zone in &index.zones {
+        let zone_parts = parts.len();
+        for span in &zone.spans {
+            let (row, col, end) = (span.row as usize, span.col as usize, (span.col + span.len) as usize);
+            match parts[zone_parts..].last_mut() {
+                // A zone's spans are in row-major order: its strips come one after another.
+                Some(p) if p.0 == row / strip_rows => *p = (p.0, p.1.min(row), p.2.max(row + 1), p.3.min(col), p.4.max(end)),
+                _ => parts.push((row / strip_rows, row, row + 1, col, end)),
+            }
+        }
+    }
+    parts.sort_unstable_by_key(|p| p.0);
+    parts
+        .chunk_by(|a, b| a.0 == b.0)
+        .map(|strip| {
+            window(strip.iter().fold((usize::MAX, 0, usize::MAX, 0), |e, p| (e.0.min(p.1), e.1.max(p.2), e.2.min(p.3), e.3.max(p.4))))
+        })
+        .collect()
 }
 
 /// The most pixels of the zones open at once while strips of `strip_rows` rows are reduced: what
 /// each band's value lists hold at their peak, as `reduce_source` opens a zone at the strip of its
 /// first row and finishes it after the strip of its last.
-pub(super) fn open_pixels_peak(index: &ZoneIndex, rows: usize, strip_rows: usize) -> usize {
+pub(super) fn open_pixels_peak(index: &ZoneIndex, strip_rows: usize) -> usize {
     let strip_rows = strip_rows.max(1);
-    let mut change = vec![0i64; rows.div_ceil(strip_rows) + 1];
-    for zone in &index.zones {
-        let pixels: i64 = zone.spans.iter().map(|s| i64::from(s.len)).sum();
-        change[zone.row_start / strip_rows] += pixels;
-        change[(zone.row_end - 1) / strip_rows + 1] -= pixels;
+    let pixels = |zone: &Zone| zone.spans.iter().map(|s| i64::from(s.len)).sum::<i64>();
+    // The most open pixels, from the change in open pixels at each strip where it changes.
+    let peak = |changes: &mut dyn Iterator<Item = i64>| {
+        let mut open = 0i64;
+        changes
+            .map(|c| {
+                open += c;
+                open
+            })
+            .max()
+            .unwrap_or(0)
+            .max(0) as usize
+    };
+    match zone_strips(index, strip_rows) {
+        // A slot per strip (8 bytes), when the slots take no more room than two (strip, change)
+        // pairs per zone (32 bytes a zone).
+        Some((first, last)) if last - first + 2 <= 4 * index.zones.len() => {
+            let mut change = vec![0i64; last - first + 2];
+            for zone in &index.zones {
+                let pixels = pixels(zone);
+                change[zone.row_start / strip_rows - first] += pixels;
+                change[(zone.row_end - 1) / strip_rows + 1 - first] -= pixels;
+            }
+            peak(&mut change.into_iter())
+        }
+        // Else the pairs, sorted and summed by strip.
+        _ => {
+            let mut pairs: Vec<(usize, i64)> = Vec::with_capacity(2 * index.zones.len());
+            for zone in &index.zones {
+                let pixels = pixels(zone);
+                pairs.extend([(zone.row_start / strip_rows, pixels), ((zone.row_end - 1) / strip_rows + 1, -pixels)]);
+            }
+            pairs.sort_unstable_by_key(|c| c.0);
+            peak(&mut pairs.chunk_by(|a, b| a.0 == b.0).map(|strip| strip.iter().map(|c| c.1).sum()))
+        }
     }
-    let mut open = 0i64;
-    change
-        .iter()
-        .map(|c| {
-            open += c;
-            open
-        })
-        .max()
-        .unwrap_or(0)
-        .max(0) as usize
 }
 
 /// Statistics of each band (in `bands` order) for each statistic (in plan order) and feature
@@ -109,20 +173,14 @@ pub(super) fn reduce_source(
     strip_rows: usize,
     ahead: usize,
 ) -> Result<Vec<Vec<Vec<FieldValue>>>> {
-    let features = plan.fids.len();
-    let empty = plan.empty();
-    let mut out: Vec<Vec<Vec<FieldValue>>> = bands.iter().map(|_| empty.iter().map(|v| vec![v.clone(); features]).collect()).collect();
-    let zones = &index.zones;
-    let windows = strip_windows(index, raster.height(), strip_rows.max(1));
+    let windows = strip_windows(index, strip_rows.max(1));
     let read_bands = WindowOptions { bands: bands.iter().map(|b| b.band).collect(), overview: None };
     // Reads share one handle each: reads of a raster take turns, but overlap the reduction.
     let raster = std::sync::Mutex::new(raster);
     let weight_band = weight.as_ref().map(|w| (w.band, w.nodata));
     let weight_raster = std::sync::Mutex::new(weight.map(|w| w.raster));
     let lock = |m| Error::InvalidArgument(format!("zonal {m} reader lock poisoned"));
-    // Open zones: (zone, next span, one accumulator per band).
-    let mut open: Vec<(usize, usize, Vec<Accumulator>)> = Vec::new();
-    let mut next = 0;
+    let mut state = StreamState::new(bands.iter().map(|b| b.nodata).collect(), plan);
     crate::ops::strips::read_ahead_by(
         ahead,
         windows.len(),
@@ -137,111 +195,161 @@ pub(super) fn reduce_source(
             };
             Ok((strip, weights))
         },
-        |i, (strip, weights)| {
-            let Window { x: c0, y: r0, height, .. } = windows[i];
-            let r1 = r0 + height;
-            while next < zones.len() && zones[next].row_start < r1 {
-                // Value lists hold at most the zone's pixels: reserved once.
-                let pixels = if plan.keep_values { zones[next].spans.iter().map(|s| s.len as usize).sum() } else { 0 };
-                let accumulator = || Accumulator {
-                    values: Vec::with_capacity(pixels),
-                    coverages: Vec::with_capacity(if plan.fractional { pixels } else { 0 }),
-                    ..Default::default()
-                };
-                open.push((next, 0, bands.iter().map(|_| accumulator()).collect()));
-                next += 1;
-            }
-            // Zones accumulate independently: in parallel, keeping the error of the first zone.
-            let failure = std::sync::Mutex::new(None::<(usize, Error)>);
-            let (strip_ref, weights_ref) = (&strip, &weights);
-            let chunk = crate::par::chunk_len(open.len(), 8);
-            crate::par::chunks_mut(&mut open, chunk, |_, chunk| {
-                for (zone, cursor, accumulators) in chunk {
-                    let spans = &zones[*zone].spans;
-                    let fid = plan.fids[zones[*zone].feature];
-                    let mut run = || -> Result<()> {
-                        while let Some(span) = spans.get(*cursor).filter(|s| (s.row as usize) < r1) {
-                            // Band by band, the span's pixels in a loop of their sample type: a
-                            // band's pixels are still added in row-major order.
-                            let start = (span.row as usize - r0) * strip_ref.cols + span.col as usize - c0;
-                            let (len, coverage, data_type) = (span.len as usize, span.coverage, strip_ref.data_type);
-                            for (b, (acc, spec)) in accumulators.iter_mut().zip(bands).enumerate() {
-                                match weights_ref {
-                                    // Nothing to fail on without weights.
-                                    None => strip_ref.each(b, start, len, |_, v| {
-                                        acc.add_value(v, spec.nodata, data_type, coverage, plan);
-                                        Ok(())
-                                    })?,
-                                    Some((w, nodata)) => strip_ref.each(b, start, len, |i, v| {
-                                        let w = (w.value(0, start + i), *nodata, w.data_type);
-                                        acc.add(v, spec.nodata, data_type, coverage, w, plan, fid)
-                                    })?,
-                                }
-                            }
-                            *cursor += 1;
-                        }
-                        Ok(())
-                    };
-                    if let Err(e) = run() {
-                        if let Ok(mut failure) = failure.lock()
-                            && failure.as_ref().is_none_or(|(first, _)| *zone < *first)
-                        {
-                            *failure = Some((*zone, e));
-                        }
-                        return;
-                    }
-                }
-            });
-            if let Ok(Some((_, e))) = failure.into_inner() {
-                return Err(e);
-            }
-            // Finished zones: sorted and summarized in parallel, then written.
-            let (finished, still_open): (Vec<_>, Vec<_>) = std::mem::take(&mut open).into_iter().partition(|o| zones[o.0].row_end <= r1);
-            open = still_open;
-            let mut jobs: Vec<_> = finished.into_iter().map(|o| (o, Vec::new())).collect();
-            let chunk = crate::par::chunk_len(jobs.len(), 4);
-            crate::par::chunks_mut(&mut jobs, chunk, |_, chunk| {
-                for ((_, _, accumulators), values) in chunk {
-                    *values = accumulators
-                        .iter_mut()
-                        .map(|acc| {
-                            let sorted = if plan.keep_values { acc.sorted(plan.fractional) } else { Vec::new() };
-                            plan.stats.iter().map(|&stat| acc.stat(stat, plan, &sorted)).collect::<Vec<_>>()
-                        })
-                        .collect();
-                }
-            });
-            for ((zone, _, _), values) in jobs {
-                let feature = zones[zone].feature;
-                for (b, band_values) in values.into_iter().enumerate() {
-                    for (s, value) in band_values.into_iter().enumerate() {
-                        out[b][s][feature] = value;
-                    }
-                }
-            }
-            Ok(())
-        },
+        |i, (strip, weights)| state.add_strip(index, plan, windows[i], &strip, weights.as_ref().map(|(w, nodata)| (w, *nodata))),
     )?;
-    Ok(out)
+    state.finish(index)
+}
+
+/// A reduction fed strip by strip in increasing rows: a zone opens at the strip holding its first
+/// row and is summarized at the strip holding its last, its pixels added in row-major order.
+pub(super) struct StreamState {
+    /// Per band.
+    nodata: Vec<Option<f64>>,
+    /// Open zones: (zone, next span, one accumulator per band).
+    open: Vec<(usize, usize, Vec<Accumulator>)>,
+    /// The next zone to open.
+    next: usize,
+    /// `[band][statistic][feature]`, empty values until a zone is summarized.
+    out: Vec<Vec<Vec<FieldValue>>>,
+}
+
+impl StreamState {
+    pub fn new(nodata: Vec<Option<f64>>, plan: &Plan<'_>) -> Self {
+        let features = plan.fids.len();
+        let empty = plan.empty();
+        let out = nodata.iter().map(|_| empty.iter().map(|v| vec![v.clone(); features]).collect()).collect();
+        Self { nodata, open: Vec::new(), next: 0, out }
+    }
+
+    /// Adds `strip`, the pixels of `window` (band after band), with the weights of the same window
+    /// and their nodata. Windows must come in increasing rows, as [`strip_windows`] gives them.
+    pub fn add_strip(
+        &mut self,
+        index: &ZoneIndex,
+        plan: &Plan<'_>,
+        window: Window,
+        strip: &Strip<'_>,
+        weights: Option<(&Strip<'_>, Option<f64>)>,
+    ) -> Result<()> {
+        let zones = &index.zones;
+        let Window { x: c0, y: r0, height, .. } = window;
+        let r1 = r0 + height;
+        let bands = self.nodata.len();
+        while self.next < zones.len() && zones[self.next].row_start < r1 {
+            // Value lists hold at most the zone's pixels: reserved once.
+            let pixels = if plan.keep_values { zones[self.next].spans.iter().map(|s| s.len as usize).sum() } else { 0 };
+            let accumulator = || Accumulator {
+                values: Vec::with_capacity(pixels),
+                coverages: Vec::with_capacity(if plan.fractional { pixels } else { 0 }),
+                ..Default::default()
+            };
+            self.open.push((self.next, 0, (0..bands).map(|_| accumulator()).collect()));
+            self.next += 1;
+        }
+        // Zones accumulate independently: in parallel, keeping the error of the first zone.
+        let failure = std::sync::Mutex::new(None::<(usize, Error)>);
+        let nodata = &self.nodata;
+        let chunk = crate::par::chunk_len(self.open.len(), 8);
+        crate::par::chunks_mut(&mut self.open, chunk, |_, chunk| {
+            for (zone, cursor, accumulators) in chunk {
+                let spans = &zones[*zone].spans;
+                let fid = plan.fids[zones[*zone].feature];
+                let mut run = || -> Result<()> {
+                    while let Some(span) = spans.get(*cursor).filter(|s| (s.row as usize) < r1) {
+                        // Band by band, the span's pixels in a loop of their sample type: a
+                        // band's pixels are still added in row-major order.
+                        let start = (span.row as usize - r0) * strip.cols + span.col as usize - c0;
+                        let (len, coverage, data_type) = (span.len as usize, span.coverage, strip.data_type);
+                        for (b, (acc, &nodata)) in accumulators.iter_mut().zip(nodata).enumerate() {
+                            match weights {
+                                // Nothing to fail on without weights.
+                                None => strip.each(b, start, len, |_, v| {
+                                    acc.add_value(v, nodata, data_type, coverage, plan);
+                                    Ok(())
+                                })?,
+                                Some((w, w_nodata)) => strip.each(b, start, len, |i, v| {
+                                    let w = (w.value(0, start + i), w_nodata, w.data_type);
+                                    acc.add(v, nodata, data_type, coverage, w, plan, fid)
+                                })?,
+                            }
+                        }
+                        *cursor += 1;
+                    }
+                    Ok(())
+                };
+                if let Err(e) = run() {
+                    if let Ok(mut failure) = failure.lock()
+                        && failure.as_ref().is_none_or(|(first, _)| *zone < *first)
+                    {
+                        *failure = Some((*zone, e));
+                    }
+                    return;
+                }
+            }
+        });
+        if let Ok(Some((_, e))) = failure.into_inner() {
+            return Err(e);
+        }
+        // Finished zones: sorted and summarized in parallel, then written.
+        let (finished, still_open): (Vec<_>, Vec<_>) = std::mem::take(&mut self.open).into_iter().partition(|o| zones[o.0].row_end <= r1);
+        self.open = still_open;
+        let mut jobs: Vec<_> = finished.into_iter().map(|o| (o, Vec::new())).collect();
+        let chunk = crate::par::chunk_len(jobs.len(), 4);
+        crate::par::chunks_mut(&mut jobs, chunk, |_, chunk| {
+            for ((_, _, accumulators), values) in chunk {
+                *values = accumulators
+                    .iter_mut()
+                    .map(|acc| {
+                        let sorted = if plan.keep_values { acc.sorted(plan.fractional) } else { Vec::new() };
+                        plan.stats.iter().map(|&stat| acc.stat(stat, plan, &sorted)).collect::<Vec<_>>()
+                    })
+                    .collect();
+            }
+        });
+        for ((zone, _, _), values) in jobs {
+            let feature = zones[zone].feature;
+            for (b, band_values) in values.into_iter().enumerate() {
+                for (s, value) in band_values.into_iter().enumerate() {
+                    self.out[b][s][feature] = value;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `[band][statistic][feature]`; an error unless every zone of `index` was summarized.
+    pub fn finish(self, index: &ZoneIndex) -> Result<Vec<Vec<Vec<FieldValue>>>> {
+        let unfinished = self.open.len() + index.zones.len() - self.next;
+        if unfinished > 0 {
+            return Err(Error::InvalidArgument(format!("zonal statistics: missing windows, {unfinished} zones not finished")));
+        }
+        Ok(self.out)
+    }
 }
 
 /// A window of some bands, band after band.
-struct Strip {
-    data: RasterDataset,
+pub(super) struct Strip<'a> {
+    data: std::borrow::Cow<'a, RasterData>,
     cols: usize,
     pixels: usize,
     data_type: DataType,
 }
 
-impl Strip {
+impl Strip<'static> {
     fn read(raster: &mut LazyRaster, window: Window, options: &WindowOptions) -> Result<Self> {
-        let data = raster.read_window(window, options)?;
-        let data_type = data.raster.data_type;
-        Ok(Self { data, cols: window.width, pixels: window.width * window.height, data_type })
+        Ok(Strip::of(std::borrow::Cow::Owned(raster.read_window(window, options)?.raster.data), window))
+    }
+}
+
+impl<'a> Strip<'a> {
+    /// `data`, the pixels of `window` band after band, row-major.
+    pub fn of(data: std::borrow::Cow<'a, RasterData>, window: Window) -> Self {
+        let data_type = data.data_type();
+        Self { data, cols: window.width, pixels: window.width * window.height, data_type }
     }
 
     fn value(&self, band: usize, at: usize) -> f64 {
-        self.data.raster.data.get_f64(band * self.pixels + at)
+        self.data.get_f64(band * self.pixels + at)
     }
 
     /// Calls `f` with the offset from `at` and the value of each of `len` pixels of `band` from
@@ -249,11 +357,11 @@ impl Strip {
     /// (`value`, a call and a type dispatch each) made the reduction about five times slower.
     #[inline]
     fn each(&self, band: usize, at: usize, len: usize, mut f: impl FnMut(usize, f64) -> Result<()>) -> Result<()> {
-        use crate::raster::RasterData as D;
+        use RasterData as D;
         let from = band * self.pixels + at;
         macro_rules! each {
             ($($variant:ident),*) => {
-                match &self.data.raster.data {
+                match &*self.data {
                     $(D::$variant(v) => {
                         for (i, &x) in v[from..from + len].iter().enumerate() {
                             f(i, x as f64)?;
@@ -476,9 +584,14 @@ mod tests {
         // Strips of 10 rows: the zones of rows 0-14 (30 pixels) and 12-29 (18) are open together
         // in strip 1; the zone of row 40 (100) is alone.
         let zones = vec![zone(0, 15, 2), zone(12, 30, 1), zone(40, 41, 100)];
-        assert_eq!(open_pixels_peak(&ZoneIndex { zones: zones.clone() }, 50, 10), 100);
-        assert_eq!(open_pixels_peak(&ZoneIndex { zones: zones[..2].to_vec() }, 50, 10), 48);
-        assert_eq!(open_pixels_peak(&ZoneIndex { zones: Vec::new() }, 50, 10), 0);
+        assert_eq!(open_pixels_peak(&ZoneIndex { zones: zones.clone() }, 10), 100);
+        assert_eq!(open_pixels_peak(&ZoneIndex { zones: zones[..2].to_vec() }, 10), 48);
+        assert_eq!(open_pixels_peak(&ZoneIndex { zones: Vec::new() }, 10), 0);
+        // Counted over the zones, not the rows between them: here rows 0 and 4e9.
+        assert_eq!(open_pixels_peak(&ZoneIndex { zones: vec![zone(0, 1, 5), zone(4_000_000_000, 4_000_000_002, 3)] }, 1), 6);
+        // Zones open in the same strip, and one far away: counted from pairs, not slots.
+        let far = vec![zone(0, 15, 2), zone(12, 30, 1), zone(4_000_000_000, 4_000_000_001, 7)];
+        assert_eq!(open_pixels_peak(&ZoneIndex { zones: far }, 10), 48);
     }
     use crate::ops::zonal::Statistic;
     use crate::vector::Coord;
@@ -495,15 +608,39 @@ mod tests {
         use crate::Window;
         // `rows` rows of `len` pixels from (`row`, `col`).
         let block = |row: u32, rows: u32, col, len| (row..row + rows).map(move |row| Span { row, col, len, coverage: 1.0 });
-        let zone = |spans: Vec<Span>| Zone { feature: 0, row_start: 0, row_end: 0, spans };
+        let zone = |spans: Vec<Span>| Zone {
+            feature: 0,
+            row_start: spans[0].row as usize,
+            row_end: spans[spans.len() - 1].row as usize + 1,
+            spans,
+        };
         // A multipart zone's parts, far apart: the strips between them are not read.
         let parts = block(300, 10, 1, 2).chain(block(1500, 10, 9, 31)).chain(block(1599, 1, 0, 1)).collect();
         let index = ZoneIndex { zones: vec![zone(block(0, 10, 5, 3).collect()), zone(parts)] };
         assert_eq!(
-            strip_windows(&index, 1600, 256),
+            strip_windows(&index, 256),
             [Window::new(5, 0, 3, 10), Window::new(1, 300, 2, 10), Window::new(9, 1500, 31, 10), Window::new(0, 1599, 1, 1)]
         );
-        assert!(strip_windows(&ZoneIndex { zones: vec![] }, 1600, 256).is_empty());
+        assert!(strip_windows(&ZoneIndex { zones: vec![] }, 256).is_empty());
+        // Nor between the parts of one zone: a multipart zone at rows 0 and 4e9.
+        let index = ZoneIndex { zones: vec![zone(block(0, 1, 1, 1).chain(block(4_000_000_007, 1, 2, 4)).collect())] };
+        assert_eq!(strip_windows(&index, 1), [Window::new(1, 0, 1, 1), Window::new(2, 4_000_000_007, 4, 1)]);
+        // Memory follows the zones, not the rows between them: zones at rows 0 and 4e9.
+        let index = ZoneIndex { zones: vec![zone(block(0, 1, 1, 1).collect()), zone(block(4_000_000_007, 2, 2, 4).collect())] };
+        assert_eq!(
+            strip_windows(&index, 1),
+            [Window::new(1, 0, 1, 1), Window::new(2, 4_000_000_007, 4, 1), Window::new(2, 4_000_000_008, 4, 1)]
+        );
+        // Zones sharing a strip give one window over both, from slots per strip and, with a zone
+        // far away, from (zone, strip) pairs.
+        let index = ZoneIndex { zones: vec![zone(block(0, 2, 1, 1).collect()), zone(block(1, 2, 5, 3).collect())] };
+        assert_eq!(strip_windows(&index, 256), [Window::new(1, 0, 7, 3)]);
+        let mut zones = index.zones;
+        zones.push(zone(block(4_000_000_000, 1, 0, 1).collect()));
+        assert_eq!(
+            strip_windows(&ZoneIndex { zones }, 2),
+            [Window::new(1, 0, 7, 2), Window::new(5, 2, 3, 1), Window::new(0, 4_000_000_000, 1, 1)]
+        );
     }
 
     #[test]

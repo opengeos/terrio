@@ -198,7 +198,7 @@ fn typed_array(data: RasterData) -> JsValue {
 }
 
 /// Pixels from a typed array.
-fn raster_data(array: &JsValue) -> Result<RasterData, JsError> {
+pub(crate) fn raster_data(array: &JsValue) -> Result<RasterData, JsError> {
     macro_rules! try_types {
         ($($t:ident => $v:ident),*) => {
             $(if let Some(a) = array.dyn_ref::<js_sys::$t>() {

@@ -1,6 +1,7 @@
 //! Contours, zonal statistics and standalone SQL, including affine grids and invalid inputs.
 
 use terrio::ops::contour::{ContourOptions, contour};
+use terrio::ops::rasterize::Grid;
 use terrio::ops::zonal::{Statistic as S, ZonalBand, ZonalOptions, ZonalSource, zonal_stats};
 use terrio::vector::Coord;
 use terrio::{
@@ -517,6 +518,21 @@ fn fractional_geometry_errors_identify_the_source_zone() {
 }
 
 #[test]
+fn statistic_errors_come_before_the_weights_raster_is_read() {
+    use terrio::ops::zonal::ZonalWeight;
+    let r = raster(2, 1, 1, &[1., 1.], None);
+    let l = zones(vec![Some(rectangle(0., 0., 2., 1.))]);
+    // Band 2 of a one-band weights raster is an error too, found only once its header is read.
+    let o = ZonalOptions {
+        stats: vec![S::WeightedSum, S::Quantile(150.)],
+        weights: Some(ZonalWeight::new(raster(2, 1, 1, &[1., 1.], None).into(), 2)),
+        ..Default::default()
+    };
+    let error = zonal_stats(&l, &mut [src("v", &r, 1)], &o).unwrap_err().to_string();
+    assert!(error.contains("quantile percentage 150"), "{error}");
+}
+
+#[test]
 fn only_requested_weighted_statistics_control_validation() {
     use terrio::ops::zonal::ZonalWeight;
     let r = raster(2, 1, 1, &[1e200, -1e200], None);
@@ -756,4 +772,176 @@ fn zonal_quantiles_outside_0_to_100_are_refused() {
     let l = zones(vec![Some(rectangle(0., 0., 2., 2.))]);
     let o = ZonalOptions { stats: vec![S::Quantile(150.0)], ..Default::default() };
     assert!(zonal_stats(&l, &mut [src("v", &r, 1)], &o).unwrap_err().to_string().contains("between 0 and 100"));
+}
+
+/// A 300 x 200 `U16` grid in EPSG:32631 (10 m pixels), nodata 0, its pixels, and zones on it:
+/// two overlapping polygons, a multipolygon with parts 120 rows apart, a polygon with a hole,
+/// one outside the grid and one smaller than a pixel.
+fn reducer_fixture() -> (RasterDataset, Vec<u16>, Layer) {
+    let (cols, rows) = (300, 200);
+    let mut state = 12345u64;
+    let pixels: Vec<u16> = (0..cols * rows)
+        .map(|_| {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((state >> 33) % 50) as u16
+        })
+        .collect();
+    assert!(pixels.contains(&0));
+    let cfg = RasterConfig { cols, rows, data_type: DataType::U16, nodata: 0., ..Default::default() };
+    let mut ds = RasterDataset::new(Raster::from_data(cfg, pixels.iter().map(|&v| f64::from(v)).collect()).unwrap(), true);
+    ds.raster.crs.epsg = Some(32631);
+    let (x0, y0) = (500_000., 5_000_000.);
+    ds.set_geo_transform([x0, 10., 0., y0, 0., -10.]);
+    // A ring over pixel columns c0..c1 and rows r0..r1.
+    let ring = |c0: f64, r0: f64, c1: f64, r1: f64| {
+        let (xa, xb, ya, yb) = (x0 + c0 * 10., x0 + c1 * 10., y0 - r1 * 10., y0 - r0 * 10.);
+        vec![Coord::xy(xa, ya), Coord::xy(xb, ya), Coord::xy(xb, yb), Coord::xy(xa, yb), Coord::xy(xa, ya)]
+    };
+    let mut l = zones(vec![
+        Some(G::polygon(ring(10.3, 5.2, 120.7, 90.1), vec![])),
+        Some(G::polygon(ring(80.5, 40.5, 200.2, 150.8), vec![])),
+        Some(G::multi_polygon(vec![(ring(5., 10., 40.4, 25.), vec![]), (ring(150.2, 145., 190., 170.6), vec![])])),
+        Some(G::polygon(ring(200., 20.3, 290.5, 180.), vec![ring(230., 60., 260.2, 120.)])),
+        Some(G::polygon(ring(400., 300., 450., 350.), vec![])),
+        Some(G::polygon(ring(150.3, 100.3, 150.6, 100.6), vec![])),
+    ]);
+    l.set_crs_epsg(Some(32631));
+    (ds, pixels, l)
+}
+
+fn reducer_stats() -> Vec<S> {
+    ["count", "min", "max", "mean", "sum", "stddev", "variance", "median", "quantile_25", "mode", "minority", "variety"]
+        .iter()
+        .map(|s| S::parse(s).unwrap())
+        .collect()
+}
+
+/// The pixels of `w`, row-major.
+fn window_data(pixels: &[u16], cols: usize, w: terrio::Window) -> terrio::raster::RasterData {
+    terrio::raster::RasterData::U16((w.y..w.y + w.height).flat_map(|row| pixels[row * cols + w.x..][..w.width].to_vec()).collect())
+}
+
+/// Statistics of `l` from a reducer fed the windows of `windows(Some(7))`.
+fn reduce_arrays(l: &Layer, ds: &RasterDataset, pixels: &[u16], o: &ZonalOptions) -> Vec<Vec<V>> {
+    let reducer = terrio::ops::zonal::ZonalReducer::new(l, Grid::like(ds), o, Some(7)).unwrap();
+    assert_eq!(reducer.feature_count(), l.len());
+    assert_eq!(reducer.stats(), &o.stats[..]);
+    let mut stream = reducer.stream(Some(0.));
+    for (i, &w) in reducer.windows().iter().enumerate() {
+        stream.add(i, &window_data(pixels, ds.raster.cols, w)).unwrap();
+    }
+    stream.finish().unwrap()
+}
+
+fn pixel_inclusion_modes() -> [ZonalOptions; 3] {
+    let o = ZonalOptions { stats: reducer_stats(), ..Default::default() };
+    [o.clone(), ZonalOptions { all_touched: true, ..o.clone() }, ZonalOptions { fractional: true, ..o }]
+}
+
+/// `zonal_stats` of `l` on `ds`, as `[statistic][feature]`.
+fn zonal_stats_table(l: &Layer, ds: &RasterDataset, o: &ZonalOptions) -> Vec<Vec<V>> {
+    let out = zonal_stats(l, &mut [src("v", ds, 1)], o).unwrap();
+    o.stats.iter().map(|s| (0..l.len()).map(|f| field(&out, f, &format!("v_{}", s.name())).clone()).collect()).collect()
+}
+
+#[test]
+fn zonal_reducer_matches_zonal_stats() {
+    let (ds, pixels, l) = reducer_fixture();
+    for o in pixel_inclusion_modes() {
+        let expected = zonal_stats_table(&l, &ds, &o);
+        assert!(expected[0][..4].iter().all(|c| c != &V::Integer(0) && c != &V::Float(0.)), "{:?}", expected[0]);
+        assert_eq!(reduce_arrays(&l, &ds, &pixels, &o), expected, "all_touched {} fractional {}", o.all_touched, o.fractional);
+    }
+}
+
+#[test]
+fn zonal_reducer_zones_in_other_crs() {
+    let (ds, pixels, l) = reducer_fixture();
+    let l = terrio::vector::reproject_layer(&l, &terrio::crs::SpatialRef::from_epsg(4326).unwrap()).unwrap();
+    for o in pixel_inclusion_modes() {
+        assert_eq!(reduce_arrays(&l, &ds, &pixels, &o), zonal_stats_table(&l, &ds, &o));
+    }
+}
+
+#[test]
+fn zonal_reducer_without_zones() {
+    use terrio::ops::zonal::ZonalReducer;
+    let (ds, _, mut l) = reducer_fixture();
+    let o = ZonalOptions { stats: vec![S::Count, S::Mean, S::Median, S::Variety], ..Default::default() };
+    let outside = l.features.remove(4);
+    l.features.clear();
+    let reducer = ZonalReducer::new(&l, Grid::like(&ds), &o, None).unwrap();
+    assert!(reducer.windows().is_empty());
+    assert_eq!(reducer.stream(None).finish().unwrap(), vec![Vec::<V>::new(); 4]);
+    l.features.push(outside);
+    let reducer = ZonalReducer::new(&l, Grid::like(&ds), &o, None).unwrap();
+    assert!(reducer.windows().is_empty());
+    assert_eq!(reducer.stream(None).finish().unwrap(), [[V::Integer(0)], [V::Null], [V::Null], [V::Integer(0)]]);
+}
+
+#[test]
+fn zonal_reducer_rejects_out_of_order() {
+    let (ds, pixels, mut l) = reducer_fixture();
+    // One zone over rows 0 to 20: three windows of 7 rows.
+    l.features.truncate(1);
+    l.features[0].geometry = Some(rectangle(500_000., 5_000_000. - 210., 500_100., 5_000_000.));
+    let reducer = terrio::ops::zonal::ZonalReducer::new(&l, Grid::like(&ds), &Default::default(), Some(7)).unwrap();
+    let windows = reducer.windows();
+    assert_eq!(windows.len(), 3);
+    let data = |i: usize| window_data(&pixels, ds.raster.cols, windows[i]);
+    let e = reducer.stream(Some(0.)).add(1, &data(1)).err().unwrap();
+    assert!(e.to_string().contains("expected window 0"), "{e}");
+    let e = reducer.stream(Some(0.)).add(0, &terrio::raster::RasterData::U16(vec![1; 3])).err().unwrap();
+    assert!(e.to_string().contains("pixels"), "{e}");
+    let mut stream = reducer.stream(Some(0.));
+    stream.add(0, &data(0)).unwrap();
+    assert_eq!(stream.next_window(), 1);
+    assert_eq!(format!("{stream:?}"), "ZonalStream { next_window: 1, windows: 3, .. }");
+    let e = stream.check_complete().unwrap_err();
+    assert!(e.to_string().contains("missing windows, 1 of 3 added"), "{e}");
+    let e = stream.finish().err().unwrap();
+    assert!(e.to_string().contains("missing windows"), "{e}");
+    let mut stream = reducer.stream(Some(0.));
+    for i in 0..3 {
+        stream.add(i, &data(i)).unwrap();
+    }
+    let e = stream.add(3, &data(2)).err().unwrap();
+    assert!(e.to_string().contains("past the last of 3"), "{e}");
+}
+
+#[test]
+fn zonal_reducer_rejects_weighted() {
+    let (ds, _, l) = reducer_fixture();
+    let o = ZonalOptions { stats: vec![S::WeightedMean], ..Default::default() };
+    let e = terrio::ops::zonal::ZonalReducer::new(&l, Grid::like(&ds), &o, None).err().unwrap();
+    assert!(e.to_string().contains("weighted statistics need a weighting raster"), "{e}");
+}
+
+#[test]
+fn zonal_reducer_rejects_bad_grids_and_empty_stats() {
+    use terrio::ops::zonal::ZonalReducer;
+    let (ds, _, l) = reducer_fixture();
+    let new =
+        |grid, stats: Vec<S>| ZonalReducer::new(&l, grid, &ZonalOptions { stats, ..Default::default() }, None).err().unwrap().to_string();
+    let grid = |f: &dyn Fn(&mut Grid)| {
+        let mut g = Grid::like(&ds);
+        f(&mut g);
+        g
+    };
+    for g in [grid(&|g| g.cols = 0), grid(&|g| g.rows = 0)] {
+        assert!(new(g, vec![S::Count]).contains("must have pixels"));
+    }
+    for g in [grid(&|g| g.geo_transform[0] = f64::NAN), grid(&|g| g.geo_transform[1] = f64::INFINITY), grid(&|g| g.geo_transform[1] = 0.)] {
+        assert!(new(g, vec![S::Count]).contains("finite and invertible"));
+    }
+    assert!(new(Grid::like(&ds), vec![]).contains("at least one statistic"));
+    let zero = ZonalReducer::new(&l, Grid::like(&ds), &ZonalOptions::default(), Some(0)).err().unwrap();
+    assert!(zero.to_string().contains("strip_rows must be at least 1"), "{zero}");
+    // The zones have a CRS and the grid has none, or the other way round.
+    let mut bare = l.clone();
+    bare.set_crs_epsg(None);
+    for (zones, grid) in [(&l, grid(&|g| g.crs = Default::default())), (&bare, Grid::like(&ds))] {
+        let e = ZonalReducer::new(zones, grid, &ZonalOptions::default(), None).err().unwrap();
+        assert!(matches!(e, terrio::Error::Crs(_)) && e.to_string().contains("both declare a CRS"), "{e}");
+    }
 }

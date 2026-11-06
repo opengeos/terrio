@@ -41,7 +41,7 @@ pub(crate) fn bounded_alignment(width: usize, bands: usize, value_size: usize, b
 }
 
 fn rows_of(bytes: usize, width: usize, bands: usize, value_size: usize, block: Option<usize>) -> usize {
-    let row = (width * bands.max(1) * value_size).max(1);
+    let row = width.saturating_mul(bands.max(1)).saturating_mul(value_size).max(1);
     let block = block.unwrap_or(1).max(1);
     (bytes / row / block).max(1) * block
 }

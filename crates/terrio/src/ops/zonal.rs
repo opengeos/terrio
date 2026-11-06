@@ -11,8 +11,10 @@ mod index;
 #[path = "zonal_reduce.rs"]
 mod reduce;
 
+use super::rasterize::Grid;
 use crate::crs::SpatialRef;
-use crate::{Error, FieldDef, FieldType, FieldValue, Geometry, Layer, LazyRaster, Result};
+use crate::raster::RasterData;
+use crate::{Error, FieldDef, FieldType, FieldValue, Geometry, Layer, LazyRaster, Result, Window};
 use std::sync::{Arc, Mutex};
 
 /// A statistic for [`zonal_stats`]. Standard deviation is the population standard deviation.
@@ -308,6 +310,32 @@ fn hold_values(budget: &(Mutex<usize>, std::sync::Condvar), bytes: usize) -> Res
 /// of that zone. Small in unit tests, so that they reduce bands in several passes.
 const VALUES_PER_PASS: usize = if cfg!(test) { 64 } else { 1 << 30 };
 
+/// Errors on a repeated statistic, a quantile outside 0 to 100, or a zone that is not a polygon or
+/// has non-finite coordinates.
+fn check_stats_and_zones(stats: &[Statistic], zones: &Layer) -> Result<()> {
+    for (i, stat) in stats.iter().enumerate() {
+        if stats[..i].contains(stat) {
+            return Err(Error::InvalidArgument(format!("duplicate statistic '{}'", stat.name())));
+        }
+        if let Statistic::Quantile(p) = stat
+            && !(0.0..=100.0).contains(p)
+        {
+            return Err(Error::InvalidArgument(format!("quantile percentage {p} is not between 0 and 100")));
+        }
+    }
+    for f in &zones.features {
+        if let Some(g) = &f.geometry {
+            if !matches!(g, Geometry::Polygon { .. } | Geometry::MultiPolygon(_)) {
+                return Err(Error::InvalidArgument(format!("zone {} is not a polygon or multipolygon", f.fid)));
+            }
+            if g.all_coords().iter().any(|c| !c.x.is_finite() || !c.y.is_finite()) {
+                return Err(Error::InvalidArgument(format!("zone {} has non-finite XY coordinates", f.fid)));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Rows read at a time: terrio's strip size for `bands` of this raster (about 8 MB of values, or
 /// a row of blocks when larger), as other operations that read by strips use.
 fn strip_rows(raster: &LazyRaster, bands: usize) -> usize {
@@ -418,12 +446,10 @@ pub fn zonal_stats_with(
     if options.stats.iter().any(|s| s.uses_weights()) && options.weights.is_none() {
         return Err(Error::InvalidArgument("weighted statistics require a weighting raster".into()));
     }
-    if let Some(p) = options.stats.iter().find_map(|s| match s {
-        Statistic::Quantile(p) if !(0.0..=100.0).contains(p) => Some(p),
-        _ => None,
-    }) {
-        return Err(Error::InvalidArgument(format!("quantile percentage {p} is not between 0 and 100")));
+    if sources.iter().all(|s| s.bands.is_empty()) || options.stats.is_empty() {
+        return Err(Error::InvalidArgument("zonal statistics needs at least one raster band and one statistic".into()));
     }
+    check_stats_and_zones(&options.stats, zones)?;
     let weights = options.weights.as_ref().filter(|_| options.stats.iter().any(|s| s.uses_weights()));
     let weight_header = match weights {
         Some(w) => {
@@ -434,24 +460,6 @@ pub fn zonal_stats_with(
         }
         None => None,
     };
-    if sources.iter().all(|s| s.bands.is_empty()) || options.stats.is_empty() {
-        return Err(Error::InvalidArgument("zonal statistics needs at least one raster band and one statistic".into()));
-    }
-    for (i, stat) in options.stats.iter().enumerate() {
-        if options.stats[..i].contains(stat) {
-            return Err(Error::InvalidArgument(format!("duplicate statistic '{}'", stat.name())));
-        }
-    }
-    for f in &zones.features {
-        if let Some(g) = &f.geometry {
-            if !matches!(g, Geometry::Polygon { .. } | Geometry::MultiPolygon(_)) {
-                return Err(Error::InvalidArgument(format!("zone {} is not a polygon or multipolygon", f.fid)));
-            }
-            if g.all_coords().iter().any(|c| !c.x.is_finite() || !c.y.is_finite()) {
-                return Err(Error::InvalidArgument(format!("zone {} has non-finite XY coordinates", f.fid)));
-            }
-        }
-    }
     let mut grids: Vec<(index::GridKey, Option<index::ZoneIndex>)> = Vec::new();
     // The grid of each source; none for a source without bands, which is not read.
     let mut source_grid: Vec<Option<usize>> = Vec::new();
@@ -570,7 +578,7 @@ pub fn zonal_stats_with(
         // taller); the largest group that fits, or one band.
         let per_band = |n: usize| match plan.value_bytes_per_pixel() {
             0 => 0,
-            bytes => reduce::open_pixels_peak(zone_index, raster.height(), strip_rows(raster, n)) * bytes,
+            bytes => reduce::open_pixels_peak(zone_index, strip_rows(raster, n)) * bytes,
         };
         let group = (1..=bands.len()).rev().find(|&n| n * per_band(n) <= VALUES_PER_PASS).unwrap_or(1);
         let per_band = per_band(group);
@@ -646,6 +654,195 @@ fn release_freed_memory() {
     // SAFETY: `malloc_trim` only returns free pages of glibc's heaps to the system.
     unsafe {
         libc::malloc_trim(0);
+    }
+}
+
+/// Zonal statistics of arrays the caller supplies strip by strip (after its own per-pixel
+/// transforms, say), equal to those [`zonal_stats`] gives for a raster holding the same values:
+/// zones are computed once for the grid, then each [`ZonalReducer::stream`] reduces one band.
+/// Cloning shares the zones. Statistics that keep values (median, quantiles, mode, minority,
+/// variety) hold each open zone's values in each stream, 8 bytes per pixel (16 with fractional
+/// coverage), outside `zonal_stats`' shared budget: feed streams one at a time to bound them.
+///
+/// ```no_run
+/// use terrio::ops::rasterize::Grid;
+/// use terrio::ops::zonal::{Statistic, ZonalOptions, ZonalReducer};
+/// use terrio::{crs::SpatialRef, raster::RasterData};
+///
+/// let zones = terrio::open_vector("fields.gpkg", &Default::default())?;
+/// let grid = Grid {
+///     cols: 10980,
+///     rows: 10980,
+///     geo_transform: [600000.0, 10.0, 0.0, 5000040.0, 0.0, -10.0],
+///     crs: SpatialRef::parse("EPSG:32631")?,
+/// };
+/// let options = ZonalOptions { stats: vec![Statistic::Mean, Statistic::Median], ..Default::default() };
+/// let reducer = ZonalReducer::new(&zones.layers[0], grid, &options, None)?;
+/// let mut stream = reducer.stream(None);
+/// for (i, w) in reducer.windows().iter().enumerate() {
+///     let ndvi = vec![0.5f64; w.width * w.height]; // your values for window `w`
+///     stream.add(i, &RasterData::F64(ndvi))?;
+/// }
+/// let columns = stream.finish()?; // [statistic][feature]
+/// # Ok::<(), terrio::Error>(())
+/// ```
+#[derive(Debug, Clone)]
+pub struct ZonalReducer {
+    inner: Arc<Reducer>,
+}
+
+#[derive(Debug)]
+struct Reducer {
+    index: index::ZoneIndex,
+    stats: Vec<Statistic>,
+    fractional: bool,
+    fids: Vec<u64>,
+    windows: Vec<Window>,
+}
+
+impl Reducer {
+    fn plan(&self) -> reduce::Plan<'_> {
+        reduce::Plan::new(&self.stats, self.fractional, &self.fids)
+    }
+}
+
+impl ZonalReducer {
+    /// The zones of `zones` on `grid`, with `options`' statistics and pixel inclusion, and the
+    /// [`windows`](Self::windows) to supply: strips of `strip_rows` rows from row 0 (by default
+    /// terrio's strip size for one f64 band of this width; give a tiled source's block height to
+    /// read each block once) that hold zone pixels, each over the rows and columns of those
+    /// pixels. Zones in another CRS than the grid's are reprojected, as `zonal_stats` does.
+    /// Weighted statistics are not supported, nor are `dst_srs` and `decimal_places` used.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidArgument`] for no statistics, a duplicate or weighted statistic, a
+    ///   quantile outside 0-100, `fractional` with `all_touched`, `strip_rows` of 0, a grid
+    ///   without pixels, over `u32::MAX` rows or columns, or with a non-finite or non-invertible
+    ///   geotransform, or a zone that is not a polygon, has non-finite coordinates, or cannot be
+    ///   reprojected or rasterized (such as an invalid geometry with `fractional`), naming it.
+    /// - [`Error::Crs`] when only one of the zones and the grid has a CRS, or the zones' CRS
+    ///   cannot be transformed into the grid's.
+    pub fn new(zones: &Layer, grid: Grid, options: &ZonalOptions, strip_rows: Option<usize>) -> Result<Self> {
+        if options.fractional && options.all_touched {
+            return Err(Error::InvalidArgument("fractional coverage and all_touched are mutually exclusive".into()));
+        }
+        if options.stats.iter().any(|s| s.uses_weights()) {
+            return Err(Error::InvalidArgument("weighted statistics need a weighting raster, which ZonalReducer does not take".into()));
+        }
+        if options.stats.is_empty() {
+            return Err(Error::InvalidArgument("zonal statistics needs at least one statistic".into()));
+        }
+        if strip_rows == Some(0) {
+            return Err(Error::InvalidArgument("strip_rows must be at least 1".into()));
+        }
+        check_stats_and_zones(&options.stats, zones)?;
+        let Grid { cols, rows, geo_transform, crs } = grid;
+        super::sample::check_grid(&geo_transform, cols, rows)?;
+        let index = index::build(zones, &index::GridKey { cols, rows, geo_transform, crs }, options.all_touched, options.fractional)?;
+        let fids = zones.features.iter().map(|f| f.fid).collect();
+        let strip_rows = strip_rows.unwrap_or_else(|| super::strips::small_strip_rows(cols, 1, std::mem::size_of::<f64>(), None));
+        let windows = reduce::strip_windows(&index, strip_rows);
+        Ok(Self { inner: Arc::new(Reducer { index, stats: options.stats.clone(), fractional: options.fractional, fids, windows }) })
+    }
+
+    /// The windows to supply, in order.
+    pub fn windows(&self) -> &[Window] {
+        &self.inner.windows
+    }
+
+    /// The number of features of the zone layer.
+    pub fn feature_count(&self) -> usize {
+        self.inner.fids.len()
+    }
+
+    /// The statistics computed, in output order.
+    pub fn stats(&self) -> &[Statistic] {
+        &self.inner.stats
+    }
+
+    /// A reduction of one band over [`ZonalReducer::windows`]; pixels equal to `nodata`, or not
+    /// finite, are left out.
+    pub fn stream(&self, nodata: Option<f64>) -> ZonalStream {
+        ZonalStream { next: 0, state: reduce::StreamState::new(vec![nodata], &self.inner.plan()), reducer: self.inner.clone() }
+    }
+}
+
+/// One band reduced by a [`ZonalReducer`], fed its windows in order.
+pub struct ZonalStream {
+    reducer: Arc<Reducer>,
+    next: usize,
+    state: reduce::StreamState,
+}
+
+/// Prints the stream's progress, not the values it holds.
+impl std::fmt::Debug for ZonalStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZonalStream").field("next_window", &self.next).field("windows", &self.reducer.windows.len()).finish_non_exhaustive()
+    }
+}
+
+impl ZonalStream {
+    /// The window [`add`](Self::add) takes next: the number of windows added.
+    pub fn next_window(&self) -> usize {
+        self.next
+    }
+
+    /// Adds the pixels of window `window` (row-major, `width * height` of them, of any sample
+    /// type). Windows must come in order: 0, 1, 2, ...
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] for a window out of order or past the last, or data of the
+    /// wrong length. These are checked before any pixel is added, so the stream is unchanged and
+    /// can take the right window. After a panic caught by the caller, drop the stream.
+    pub fn add(&mut self, window: usize, data: &RasterData) -> Result<()> {
+        if window != self.next {
+            return Err(Error::InvalidArgument(format!("zonal stream: got window {window}, expected window {}", self.next)));
+        }
+        let Some(&w) = self.reducer.windows.get(window) else {
+            return Err(Error::InvalidArgument(format!(
+                "zonal stream: window {window} is past the last of {}",
+                self.reducer.windows.len()
+            )));
+        };
+        // Checked: on a 32-bit target, a window of 65,536 x 65,536 pixels wraps to 0.
+        if w.width.checked_mul(w.height) != Some(data.len()) {
+            return Err(Error::InvalidArgument(format!(
+                "zonal stream: window {window} has {} pixels, expected {} x {}",
+                data.len(),
+                w.width,
+                w.height
+            )));
+        }
+        let r = &self.reducer;
+        self.state.add_strip(&r.index, &r.plan(), w, &reduce::Strip::of(std::borrow::Cow::Borrowed(data), w), None)?;
+        self.next += 1;
+        Ok(())
+    }
+
+    /// Whether every window was added: [`finish`](Self::finish) checks this first, so a caller
+    /// can check it without giving up the stream.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] if windows are missing.
+    pub fn check_complete(&self) -> Result<()> {
+        let windows = self.reducer.windows.len();
+        if self.next < windows {
+            return Err(Error::InvalidArgument(format!("zonal stream: missing windows, {} of {windows} added", self.next)));
+        }
+        Ok(())
+    }
+
+    /// `[statistic][feature]`, features in layer order.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] if windows are missing ([`check_complete`](Self::check_complete)).
+    pub fn finish(self) -> Result<Vec<Vec<FieldValue>>> {
+        self.check_complete()?;
+        Ok(self.state.finish(&self.reducer.index)?.swap_remove(0))
     }
 }
 

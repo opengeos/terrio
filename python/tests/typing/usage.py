@@ -456,6 +456,12 @@ def analysis_adapters(
         zones, [raster], stats=["count", "median"], all_touched=True, decimal_places=2
     )
     parts: terrio.Layer = terrio.singlepart(zones)
+    reducer = terrio.ZonalReducer(zones, 2, 2, (0, 1, 0, 2, 0, -1), "EPSG:4326", stats=["mean"])
+    stream = reducer.stream(nodata=0)
+    for i, (x, y, w, h) in enumerate(reducer.windows()):
+        stream.add(i, np.zeros((2, 2))[y : y + h, x : x + w])
+    means: NDArray[Any] = stream.finish()["mean"]
+    print(means, reducer.feature_count, reducer.stats)
     return zonal, parts
 
 

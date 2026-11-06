@@ -343,3 +343,210 @@ def test_zonal_labelled_inputs_missing_values_and_several_bands(tmp_path):
     frame["time"] = frame["time"].dt.tz_localize("UTC")
     got = props(frame)
     assert (got["2024_07_01_B04_mean"], got["2024_07_11T06_30_00Z_b1_mean"]) == (2.0, 2.0)
+
+
+REDUCER_STATS = ["count", "mean", "stddev", "median", "quantile_25", "variety"]
+REDUCER_TRANSFORM = (0, 0.01, 0, 2, 0, -0.01)
+
+
+def reducer_zones():
+    """The zone of `inputs()`, a triangle over it and another partly off the grid, an empty
+    geometry, and a zone outside the grid."""
+    square, _ = inputs()
+    features = square.to_geojson()["features"]
+    outside = [[[10, 0], [11, 0], [11, 1], [10, 1], [10, 0]]]
+    triangle = [[[0.2, 0.2], [2.8, 0.4], [1.1, 1.9], [0.2, 0.2]]]
+    partial = [[[2.5, 0.5], [3.5, 0.5], [3.5, 1.5], [2.5, 1.5], [2.5, 0.5]]]
+    for coords in (triangle, outside, partial):
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {"zone": "extra"},
+                "geometry": {"type": "Polygon", "coordinates": coords},
+            }
+        )
+    return terrio.Layer.from_geojson(
+        {"type": "FeatureCollection", "features": features}, crs="EPSG:4326"
+    )
+
+
+def reducer_array(dtype):
+    rng = np.random.default_rng(7)
+    arr = rng.integers(0, 40, (200, 300)).astype(dtype)
+    arr[rng.random(arr.shape) < 0.1] = np.nan if np.dtype(dtype).kind == "f" else 0
+    return arr
+
+
+def reduce_windows(reducer, arr, nodata=None, prepare=lambda a: a):
+    stream = reducer.stream(nodata)
+    for i, (x, y, w, h) in enumerate(reducer.windows()):
+        stream.add(i, prepare(arr[y : y + h, x : x + w]))
+    return stream.finish()
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [{}, {"all_touched": True}, {"fractional": True}],
+    ids=["centre", "all_touched", "fractional"],
+)
+@pytest.mark.parametrize(
+    "dtype, nodata",
+    [("uint16", 0), ("uint16", None), ("int16", 0), ("float32", np.nan), ("float64", np.nan)],
+)
+def test_zonal_reducer_matches_zonal_stats(dtype, nodata, mode):
+    arr = reducer_array(dtype)
+    raster = terrio.Raster.from_array(arr, REDUCER_TRANSFORM, crs="EPSG:4326", nodata=nodata)
+    zones = reducer_zones()
+    expected = terrio.zonal_stats(zones, raster, stats=REDUCER_STATS, **mode)
+    reducer = terrio.ZonalReducer(
+        zones, 300, 200, REDUCER_TRANSFORM, "EPSG:4326", stats=REDUCER_STATS, strip_rows=37, **mode
+    )
+    assert reducer.feature_count == 5
+    assert reducer.stats == REDUCER_STATS
+    # Several strips, so that the windows are fed one after another.
+    got = reduce_windows(reducer, arr, nodata=nodata)
+    assert list(got) == REDUCER_STATS
+    count_type = np.float64 if mode.get("fractional") else np.int64
+    assert got["count"].dtype == count_type and got["variety"].dtype == np.int64
+    assert got["mean"].dtype == np.float64
+    column = expected.to_geojson()["features"]
+    for stat in REDUCER_STATS:
+        want = [f["properties"][f"raster1_b1_{stat}"] for f in column]
+        want = np.array([np.nan if v is None else v for v in want], dtype=got[stat].dtype)
+        np.testing.assert_array_equal(got[stat], want, err_msg=stat)
+    assert got["count"].max() > 0
+    assert got["count"][3] == 0 and np.isnan(got["mean"][3])
+
+
+def test_zonal_reducer_defaults_and_fractional_count():
+    arr = reducer_array("float64")
+    zones = reducer_zones()
+    reducer = terrio.ZonalReducer(zones, 300, 200, REDUCER_TRANSFORM, "EPSG:4326")
+    assert reducer.stats == ["count", "min", "max", "mean", "sum", "stddev"]
+    # Aliases take their canonical names, as zonal_stats names its fields.
+    aliased = terrio.ZonalReducer(
+        zones, 300, 200, REDUCER_TRANSFORM, "EPSG:4326", stats=["STD", "majority"]
+    )
+    assert aliased.stats == ["stddev", "mode"]
+    fractional = terrio.ZonalReducer(
+        zones, 300, 200, REDUCER_TRANSFORM, "EPSG:4326", stats=["count"], fractional=True
+    )
+    assert reduce_windows(fractional, arr)["count"].dtype == np.float64
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        lambda a: np.flipud(np.flipud(a).copy()),
+        lambda a: np.asfortranarray(a),
+        lambda a: np.repeat(a, 2, axis=1)[:, ::2],
+    ],
+    ids=["negative_strides", "fortran", "strided_columns"],
+)
+def test_zonal_reducer_strided_arrays(prepare):
+    arr = reducer_array("float32")
+    reducer = terrio.ZonalReducer(
+        reducer_zones(), 300, 200, REDUCER_TRANSFORM, "EPSG:4326", stats=REDUCER_STATS
+    )
+    want = reduce_windows(reducer, arr, nodata=np.nan)
+    got = reduce_windows(reducer, arr, nodata=np.nan, prepare=prepare)
+    for stat in REDUCER_STATS:
+        np.testing.assert_array_equal(got[stat], want[stat])
+
+
+def test_zonal_reducer_errors():
+    zones = reducer_zones()
+    reducer = terrio.ZonalReducer(
+        zones, 300, 200, REDUCER_TRANSFORM, "EPSG:4326", stats=["count"], strip_rows=37
+    )
+    (x, y, w, h), (_, _, w1, h1), *_ = reducer.windows()
+    stream = reducer.stream()
+    with pytest.raises(terrio.InvalidArgumentError, match=r"expected \(h, w\)") as e:
+        stream.add(0, np.zeros((h, w + 1)))
+    assert f"({h}, {w})" in str(e.value) and f"({h}, {w + 1})" in str(e.value)
+    with pytest.raises(terrio.InvalidArgumentError, match=r"expected \(h, w\)"):
+        stream.add(0, np.zeros(h * w))
+    for dtype in (np.float16, np.complex64):
+        with pytest.raises(terrio.InvalidArgumentError, match="unsupported array dtype"):
+            stream.add(0, np.zeros((h, w), dtype))
+    # The window order is checked before the shape.
+    for shape in ((h1, w1), (1, 1)):
+        with pytest.raises(terrio.InvalidArgumentError, match="expected window 0"):
+            stream.add(1, np.zeros(shape))
+    stream.add(0, np.zeros((h, w)))
+    with pytest.raises(terrio.InvalidArgumentError, match="windows"):
+        reducer.stream().finish()
+    with pytest.raises(
+        terrio.InvalidArgumentError, match="weighted statistics need a weighting raster"
+    ):
+        terrio.ZonalReducer(
+            zones, 300, 200, REDUCER_TRANSFORM, "EPSG:4326", stats=["weighted_mean"]
+        )
+    with pytest.raises(terrio.InvalidArgumentError, match="unknown zonal statistic"):
+        terrio.ZonalReducer(zones, 300, 200, REDUCER_TRANSFORM, "EPSG:4326", stats=["nope"])
+    with pytest.raises(terrio.InvalidArgumentError, match="at least one"):
+        terrio.ZonalReducer(zones, 300, 200, REDUCER_TRANSFORM, "EPSG:4326", stats=[])
+
+
+def test_zonal_reducer_layer_and_crs():
+    zones = reducer_zones().to_geojson()
+    first = terrio.Layer.from_geojson(zones, name="first", crs="EPSG:4326")
+    zones["features"] = zones["features"][:2]
+    second = terrio.Layer.from_geojson(zones, name="second", crs="EPSG:4326")
+    args = (300, 200, REDUCER_TRANSFORM, "EPSG:4326")
+    with pytest.raises(terrio.InvalidArgumentError, match="choose one with layer="):
+        terrio.ZonalReducer([first, second], *args)
+    assert terrio.ZonalReducer([first, second], *args, layer="second").feature_count == 2
+    with pytest.raises(
+        terrio.InvalidArgumentError, match=r"no layer named third \(layers: first, second\)"
+    ):
+        terrio.ZonalReducer([first, second], *args, layer="third")
+    # The zones have a CRS and the grid has none.
+    with pytest.raises(terrio.CRSError, match="both declare a CRS"):
+        terrio.ZonalReducer(first, 300, 200, REDUCER_TRANSFORM)
+
+
+@pytest.mark.parametrize(
+    "width, height, transform, match",
+    [
+        (0, 200, REDUCER_TRANSFORM, "must have pixels"),
+        (300, 0, REDUCER_TRANSFORM, "must have pixels"),
+        (300, 200, (float("nan"), 0.01, 0, 2, 0, -0.01), "finite and invertible"),
+        (300, 200, (0, float("inf"), 0, 2, 0, -0.01), "finite and invertible"),
+        (300, 200, (0, 0, 0, 2, 0, 0), "finite and invertible"),
+    ],
+)
+def test_zonal_reducer_rejects_bad_grids(width, height, transform, match):
+    with pytest.raises(terrio.InvalidArgumentError, match=match):
+        terrio.ZonalReducer(reducer_zones(), width, height, transform, "EPSG:4326")
+
+
+def test_zonal_reducer_stream_finishes_after_missing_windows_are_added():
+    reducer = terrio.ZonalReducer(
+        reducer_zones(), 300, 200, REDUCER_TRANSFORM, "EPSG:4326", stats=["count"], strip_rows=37
+    )
+    windows = reducer.windows()
+    assert len(windows) > 1
+    stream = reducer.stream()
+    _, _, w, h = windows[0]
+    stream.add(0, np.ones((h, w)))
+    with pytest.raises(terrio.InvalidArgumentError, match=f"missing windows, 1 of {len(windows)}"):
+        stream.finish()
+    for i, (_, _, w, h) in enumerate(windows[1:], 1):
+        stream.add(i, np.ones((h, w)))
+    want = reduce_windows(reducer, np.ones((200, 300)))
+    np.testing.assert_array_equal(stream.finish()["count"], want["count"])
+
+
+def test_zonal_reducer_stream_is_finished_once():
+    reducer = terrio.ZonalReducer(
+        reducer_zones(), 300, 200, REDUCER_TRANSFORM, "EPSG:4326", stats=["count"]
+    )
+    stream = reducer.stream()
+    for i, (_, _, w, h) in enumerate(reducer.windows()):
+        stream.add(i, np.ones((h, w)))
+    stream.finish()
+    with pytest.raises(terrio.InvalidArgumentError, match="the stream is finished"):
+        stream.finish()
+    with pytest.raises(terrio.InvalidArgumentError, match="the stream is finished"):
+        stream.add(0, np.ones((1, 1)))

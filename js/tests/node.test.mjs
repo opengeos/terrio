@@ -3793,3 +3793,100 @@ test("ZIP layer selection uses the member name rather than the archive name", ()
   selected.free();
   source.free();
 });
+
+test("ZonalReducer gives zonalStats' results for arrays supplied window by window", () => {
+  const [width, height, transform] = [300, 200, [0, 0.01, 0, 2, 0, -0.01]];
+  const stats = ["count", "mean", "stddev", "median", "quantile_25", "variety"];
+  const polygon = (ring) => ({type: "Feature", properties: {}, geometry: {type: "Polygon", coordinates: [ring]}});
+  // Inside the grid, a triangle, outside it, partly off it, and no geometry.
+  const zones = {type: "FeatureCollection", features: [
+    polygon([[0.5, 0.5], [1.5, 0.5], [1.5, 1.5], [0.5, 1.5], [0.5, 0.5]]),
+    polygon([[0.2, 0.2], [2.8, 0.4], [1.1, 1.9], [0.2, 0.2]]),
+    polygon([[10, 0], [11, 0], [11, 1], [10, 1], [10, 0]]),
+    polygon([[2.5, 0.5], [3.5, 0.5], [3.5, 1.5], [2.5, 1.5], [2.5, 0.5]]),
+    {type: "Feature", properties: {}, geometry: null},
+  ]};
+  let seed = 7;
+  const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const values = Array.from({length: width * height}, () => (next() < 0.1 ? null : Math.floor(next() * 40)));
+  for (const [Type, nodata] of [[Uint16Array, 0], [Uint16Array, undefined], [Int16Array, 0], [Float32Array, NaN], [Float64Array, NaN]]) {
+    const data = Type.from(values, (v) => (v === null ? (Number.isNaN(nodata) ? NaN : 0) : v));
+    const raster = terrio.rasterFromArray(data, width, height, transform, "EPSG:4326", nodata);
+    for (const mode of [{}, {allTouched: true}, {fractional: true}]) {
+      const label = `${Type.name} nodata=${nodata} ${JSON.stringify(mode)}`;
+      const expected = terrio.zonalStats(zones, [raster], {stats, ...mode}).toGeoJSON().features;
+      const reducer = new terrio.ZonalReducer(zones, width, height, transform, "EPSG:4326", {stats, ...mode, stripRows: 37});
+      assert.equal(reducer.featureCount, 5);
+      assert.deepEqual(reducer.stats, stats);
+      const stream = reducer.stream(nodata);
+      const windows = reducer.windows();
+      assert.ok(windows.length > 1, label);
+      windows.forEach(([x, y, w, h], i) => {
+        const strip = new Type(w * h);
+        for (let r = 0; r < h; r++) strip.set(data.subarray((y + r) * width + x, (y + r) * width + x + w), r * w);
+        stream.add(i, strip);
+      });
+      const got = stream.finish();
+      assert.deepEqual(Object.keys(got), stats, label);
+      for (const stat of stats) {
+        const want = expected.map((f) => f.properties[`raster1_b1_${stat}`] ?? NaN);
+        assert.deepEqual(Array.from(got[stat]), want, `${label} ${stat}`);
+      }
+      assert.ok(got.count[0] > 0 && got.count[2] === 0 && Number.isNaN(got.mean[2]), label);
+      reducer.free();
+      stream.free();
+    }
+    raster.free();
+  }
+});
+
+test("ZonalReducer and ZonalStream reject bad input", () => {
+  const transform = [0, 0.01, 0, 2, 0, -0.01];
+  const zone = {type: "Polygon", coordinates: [[[0.5, 0.5], [1.5, 0.5], [1.5, 1.5], [0.5, 1.5], [0.5, 0.5]]]};
+  const reducer = new terrio.ZonalReducer(zone, 300, 200, transform, "EPSG:4326", {stats: ["count"], stripRows: 37});
+  assert.deepEqual(new terrio.ZonalReducer(zone, 300, 200, transform, "EPSG:4326", {stats: ["STD", "majority"]}).stats, ["stddev", "mode"]);
+  const [[, , w, h], [, , w1, h1]] = reducer.windows();
+  const stream = reducer.stream();
+  assert.throws(() => stream.add(0, new Float64Array(w * h + 1)), /pixels, expected/);
+  assert.throws(() => stream.add(1, new Float64Array(w1 * h1)), /expected window 0/);
+  stream.add(0, new Float64Array(w * h));
+  assert.throws(() => reducer.stream().finish(), /windows/);
+  // A finish with windows missing keeps the stream: add them, then finish.
+  const early = reducer.stream();
+  const all = reducer.windows();
+  early.add(0, new Float64Array(w * h).fill(1));
+  assert.throws(() => early.finish(), new RegExp(`missing windows, 1 of ${all.length} added`));
+  for (const [i, [, , ww, hh]] of all.entries()) if (i > 0) early.add(i, new Float64Array(ww * hh).fill(1));
+  assert.ok(early.finish().count[0] > 0);
+  for (const [options, message] of [[{stats: ["weighted_mean"]}, /weighted statistics need a weighting raster/], [{stats: ["nope"]}, /unknown zonal statistic/], [{stats: []}, /at least one/], [{nope: 1}, /unknown field/]]) {
+    assert.throws(() => new terrio.ZonalReducer(zone, 300, 200, transform, "EPSG:4326", options), message);
+  }
+  assert.throws(() => new terrio.ZonalReducer(zone, 0, 200, transform, "EPSG:4326"), /must have pixels/);
+  for (const [width, height] of [[-1, 200], [300.5, 200], [300, 2 ** 32]]) {
+    assert.throws(() => new terrio.ZonalReducer(zone, width, height, transform, "EPSG:4326"), /must be a whole number/);
+  }
+  for (const window of [-1, 0.5]) assert.throws(() => stream.add(window, new Float64Array(w * h)), /window must be a whole number/);
+  assert.throws(() => new terrio.ZonalReducer(zone, 300, 200, [0, 0.01, 0], "EPSG:4326"), /6 numbers/);
+  const done = reducer.stream();
+  for (const [i, [, , ww, hh]] of reducer.windows().entries()) done.add(i, new Uint8Array(ww * hh));
+  done.finish();
+  assert.throws(() => done.finish(), /the stream is finished/);
+  assert.throws(() => done.add(0, new Uint8Array(w * h)), /the stream is finished/);
+  reducer.free();
+  // A dataset of two layers needs the layer option.
+  const a = terrio.fromGeoJSON({type: "FeatureCollection", features: [{type: "Feature", properties: {}, geometry: zone}]}, "a", "EPSG:4326");
+  const b = terrio.fromGeoJSON({type: "FeatureCollection", features: [{type: "Feature", properties: {}, geometry: zone}, {type: "Feature", properties: {}, geometry: zone}]}, "b", "EPSG:4326");
+  const both = terrio.concat([a, b], {mode: "stack"});
+  const names = both.layerNames();
+  assert.equal(names.length, 2);
+  assert.throws(() => new terrio.ZonalReducer(both, 300, 200, transform, "EPSG:4326"), /must have one layer, or name one with the layer option \(they have 2\)/);
+  assert.equal(new terrio.ZonalReducer(both, 300, 200, transform, "EPSG:4326", {layer: names[1]}).featureCount, 2);
+  assert.throws(() => new terrio.ZonalReducer(both, 300, 200, transform, "EPSG:4326", {layer: "missing"}), /no layer named missing \(layers: /);
+  // A file of one layer also answers to its file name, as readers have it.
+  const named = new TextEncoder().encode(JSON.stringify({type: "FeatureCollection", name: "fields", features: [{type: "Feature", properties: {}, geometry: zone}]}));
+  for (const layer of ["fields", "map"]) {
+    assert.equal(new terrio.ZonalReducer({bytes: named, filename: "map.geojson"}, 300, 200, transform, "EPSG:4326", {layer}).featureCount, 1);
+  }
+  // The zones have a CRS and the grid has none.
+  assert.throws(() => new terrio.ZonalReducer(a, 300, 200, transform, undefined), /both declare a CRS/);
+});
