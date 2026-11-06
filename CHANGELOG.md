@@ -6,10 +6,13 @@
   releases that fix them (0.4.8, 0.13.4, 7.4.0). wbvector is built without its KMZ and OSM PBF
   readers, which terrio did not use for its drivers, so zip 0.6 and protobuf 2 (through
   osmpbfreader 0.16) are no longer compiled; terrio reads OSM PBF with osmpbfreader 0.19 as
-  before. With `TERRIO_WBVECTOR_FALLBACK=YES`, a zip archive named for no driver is still read as
-  KMZ (its `doc.kml`, else its first `.kml` member, with wbvector's KML reader), now opened with
-  terrio's zip 9: an archive with two `doc.kml` members reads the last one, as the KMZ driver
-  does, where it read the first.
+  before. With `TERRIO_WBVECTOR_FALLBACK=YES`, a zip archive named for no driver (`.xml`
+  included) is still read as KMZ, now opened with terrio's zip 9: from the member the KMZ driver
+  reads (its first `doc.kml` in any case, else its first `.kml` member), decoded as the KMZ
+  driver decodes it, with wbvector's KML reader. An archive with two `doc.kml` members reads the
+  last one, where it read the first. Three kinds of archive that failed are read: one named
+  `.xml` with its members stored, one with its document in Latin-1, and one with an encrypted or
+  bzip2-compressed member before its document.
 - GRIB, netCDF, HDF5, WebP and SRTM tiles have no wbraster format any more, so wbraster's Zarr
   reader never reads them. In a build with the `gdal` feature and without `grib`, a `.grib2` path
   that is a Zarr store was decoded by wbraster's Zarr reader (ruzstd 0.8, RUSTSEC-2026-0344) with
