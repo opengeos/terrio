@@ -52,8 +52,105 @@ pub(crate) struct Column {
 /// stay the row numbers in the file, as in GDAL.
 pub fn read_filtered(path: &str, bbox: Option<(f64, f64, f64, f64)>) -> Result<Layer> {
     let name = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
-    parse_source(|| Ok(std::fs::File::open(path)?), name, None, bbox, None)
+    parse_source(|| open_file(path), name, None, bbox, None)
 }
+
+/// A local file opened for the `parquet` crate's readers.
+#[cfg(not(target_os = "wasi"))]
+pub(crate) type LocalFile = std::fs::File;
+/// A local file opened for the `parquet` crate's readers: WASI has no `File::try_clone`.
+#[cfg(target_os = "wasi")]
+pub(crate) type LocalFile = SharedFile;
+
+/// Opens a local Parquet file.
+pub(crate) fn open_file(path: &str) -> Result<LocalFile> {
+    let file = std::fs::File::open(path)?;
+    #[cfg(target_os = "wasi")]
+    let file = SharedFile::new(file)?;
+    Ok(file)
+}
+
+/// The reader of local Parquet files on WASI (tested natively too).
+#[cfg(any(target_os = "wasi", test))]
+mod shared_file {
+    use crate::Result;
+    use std::sync::Arc;
+
+    /// A file whose readers share one handle, seeking where the handle is not. The `parquet` crate
+    /// reads a `std::fs::File` through `File::try_clone`, which WASI (no `dup`) does not support, so
+    /// the browser build could not read a local Parquet file at all.
+    pub(crate) struct SharedFile {
+        /// The handle, and its position.
+        file: Arc<std::sync::Mutex<(std::fs::File, u64)>>,
+        len: u64,
+    }
+
+    impl SharedFile {
+        /// Shares `file`.
+        pub(crate) fn new(mut file: std::fs::File) -> Result<Self> {
+            use std::io::Seek;
+            let len = file.metadata()?.len();
+            let pos = file.stream_position()?;
+            Ok(Self { file: Arc::new(std::sync::Mutex::new((file, pos))), len })
+        }
+
+        /// A reader from `start`.
+        fn reader(&self, start: u64) -> SharedFileRead {
+            SharedFileRead { file: self.file.clone(), pos: start }
+        }
+    }
+
+    /// A reader of a [`SharedFile`] from a position.
+    pub(crate) struct SharedFileRead {
+        file: Arc<std::sync::Mutex<(std::fs::File, u64)>>,
+        pos: u64,
+    }
+
+    impl std::io::Read for SharedFileRead {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            use std::io::{Seek, SeekFrom};
+            let mut guard = self.file.lock().map_err(|_| std::io::Error::other("Parquet: a poisoned file lock"))?;
+            let (file, at) = &mut *guard;
+            if *at != self.pos {
+                *at = file.seek(SeekFrom::Start(self.pos))?;
+            }
+            let n = file.read(buf)?;
+            *at += n as u64;
+            self.pos += n as u64;
+            Ok(n)
+        }
+    }
+
+    impl parquet::file::reader::Length for SharedFile {
+        fn len(&self) -> u64 {
+            self.len
+        }
+    }
+
+    impl parquet::file::reader::ChunkReader for SharedFile {
+        type T = std::io::BufReader<SharedFileRead>;
+
+        fn get_read(&self, start: u64) -> parquet::errors::Result<Self::T> {
+            Ok(std::io::BufReader::new(self.reader(start)))
+        }
+
+        fn get_bytes(&self, start: u64, length: usize) -> parquet::errors::Result<bytes::Bytes> {
+            use std::io::Read;
+            // A malformed file may declare more bytes than it has: refused before allocating them.
+            if start.checked_add(length as u64).is_none_or(|end| end > self.len) {
+                return Err(parquet::errors::ParquetError::EOF(format!(
+                    "{length} bytes at {start} are past the end of a {}-byte file",
+                    self.len
+                )));
+            }
+            let mut buf = vec![0; length];
+            self.reader(start).read_exact(&mut buf).map_err(|e| parquet::errors::ParquetError::External(Box::new(e)))?;
+            Ok(bytes::Bytes::from(buf))
+        }
+    }
+}
+#[cfg(any(target_os = "wasi", test))]
+pub(crate) use shared_file::SharedFile;
 
 /// Parses a GeoParquet (or plain Parquet) file held in memory. `name` names the layer.
 pub fn parse(bytes: Vec<u8>, name: &str) -> Result<Layer> {
@@ -1123,5 +1220,36 @@ mod tests {
         assert_eq!(back.features[0].attributes, [FieldValue::Integer(1), FieldValue::Date("2020-01-02".into())]);
         assert_eq!(back.features[0].geometry, Some(Geometry::point(500000.0, 0.0)));
         assert_eq!(back.features[1].geometry, None);
+    }
+
+    /// The reader WASI uses, as it has no `File::try_clone`, reads what a `File` does.
+    #[test]
+    fn shared_file_reads_like_a_file() {
+        let mut l = Layer::new("t").with_epsg(4326);
+        l.add_field(FieldDef::new("name", FieldType::Text));
+        for i in 0..50 {
+            l.push(Feature {
+                fid: i,
+                geometry: Some(Geometry::point(i as f64, -(i as f64))),
+                attributes: vec![FieldValue::Text(format!("feature {i}"))],
+            });
+        }
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+        write(&l, path).unwrap();
+        let open = || SharedFile::new(std::fs::File::open(path).unwrap());
+        let back = parse_source(open, "t", None, Some((10.0, -20.0, 20.0, -10.0)), None).unwrap();
+        let expected = read_filtered(path, Some((10.0, -20.0, 20.0, -10.0))).unwrap();
+        assert_eq!(back.len(), 11);
+        let rows = |l: &Layer| l.features.iter().map(|f| (f.fid, f.geometry.clone(), f.attributes.clone())).collect::<Vec<_>>();
+        assert_eq!(rows(&back), rows(&expected));
+        assert_eq!(back.crs_epsg(), Some(4326));
+
+        use parquet::file::reader::ChunkReader;
+        let shared = open().unwrap();
+        let len = parquet::file::reader::Length::len(&shared);
+        assert_eq!(&shared.get_bytes(len - 4, 4).unwrap()[..], b"PAR1");
+        assert!(shared.get_bytes(len - 4, 5).is_err(), "a read past the end is refused");
+        assert!(shared.get_bytes(u64::MAX, 1).is_err());
     }
 }
