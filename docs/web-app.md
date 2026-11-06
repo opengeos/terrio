@@ -1,8 +1,8 @@
 # Web App
 
-[**Open terrio Web →**](https://terrio.dev/web/){ .md-button .md-button--primary }
+[**Open terrio Web →**](web/){ .md-button .md-button--primary }
 
-[terrio Web](https://terrio.dev/web/) runs the `terrio` command line in your browser. Pick any
+[terrio Web](web/) runs the `terrio` command line in your browser. Pick any
 of its commands, fill in the form and run it. The forms come from the same command catalog as
 [`terrio ui`](cli.md) (`terrio --json-usage`), so every command and option the CLI has is there.
 
