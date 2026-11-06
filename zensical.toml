@@ -16,6 +16,7 @@ nav = [
     { "Installation" = "installation.md" },
     { "Getting Started" = "getting-started.md" },
     { "Playground" = "playground.md" },
+    { "Web App" = "web-app.md" },
     { "Notebooks" = "notebooks.md" },
     { "Coming from GDAL" = "gdal.md" },
     { "Coming from rasterio" = "rasterio.md" },

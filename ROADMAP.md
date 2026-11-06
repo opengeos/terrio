@@ -44,6 +44,9 @@ appearance require a separate future design.
       output), PNG image content in MCP results, `terrio.render`/`render`/`renderPng` bindings,
       notebook `_repr_png_`, and `terrio view` plus an Open map button in `terrio ui`: a
       pan-and-zoom map in the data's own grid, without a basemap.
+- [x] [terrio.dev/web](https://terrio.dev/web/): the `terrio ui` forms in the browser, running
+      the command line compiled to `wasm32-wasip1` over an in-memory workspace, with uploads,
+      downloads and remote files (`https://`, public `s3://` and `gs://`) read with range requests.
 
 ## Machine-readable CLI metadata (#386)
 

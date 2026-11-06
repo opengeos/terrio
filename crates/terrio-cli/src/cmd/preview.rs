@@ -155,7 +155,12 @@ fn create(path: &str, png: &[u8]) -> Result<()> {
 fn replace(path: &str, png: &[u8]) -> Result<()> {
     let target = std::path::Path::new(path);
     let name = target.file_name().ok_or_else(|| Error::InvalidArgument(format!("{path}: not a file name")))?;
-    let temporary = target.with_file_name(format!(".{}.{}.tmp", name.to_string_lossy(), std::process::id()));
+    // WASI has no process ids (`std::process::id` panics there); one program runs at a time.
+    #[cfg(target_os = "wasi")]
+    let pid = 0;
+    #[cfg(not(target_os = "wasi"))]
+    let pid = std::process::id();
+    let temporary = target.with_file_name(format!(".{}.{pid}.tmp", name.to_string_lossy()));
     create(&temporary.to_string_lossy(), png)?;
     std::fs::rename(&temporary, target).inspect_err(|_| {
         let _ = std::fs::remove_file(&temporary);

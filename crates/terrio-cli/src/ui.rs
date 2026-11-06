@@ -101,11 +101,28 @@ pub struct ViewArgs {
     /// Print the address without opening a browser.
     #[arg(long)]
     no_open: bool,
+    /// Print what the map needs to know of the dataset, as JSON, instead of serving it. For the
+    /// browser build (terrio.dev/web), which draws the map without a server.
+    #[arg(long, hide = true, conflicts_with = "tiles")]
+    info_json: bool,
+    /// Draw these tiles instead of serving the map: `x,y,w,h,tw,th` (the source window and the
+    /// tile's size in pixels), separated by `;`. Each is written to standard output as a PNG
+    /// preceded by its length (32 bits, little-endian), or a length of 0 for a tile that failed,
+    /// whose error goes to standard error. For the browser build, which runs one command per batch.
+    #[arg(long, hide = true, value_name = "TILES")]
+    tiles: Option<String>,
 }
 
 /// Serves a map of a dataset until the process is stopped.
 pub fn view(args: ViewArgs) -> terrio::Result<()> {
-    let renderer = crate::cmd::preview::renderer(&args.input, &args.style)?;
+    let mut renderer = crate::cmd::preview::renderer(&args.input, &args.style)?;
+    if args.info_json {
+        println!("{}", view_json(&args.input, 1, &renderer));
+        return Ok(());
+    }
+    if let Some(tiles) = &args.tiles {
+        return draw_tiles(&mut renderer, tiles, &mut std::io::stdout().lock());
+    }
     let listener = TcpListener::bind(("127.0.0.1", args.port))?;
     let mut session = session(Vec::new(), listener.local_addr()?.port())?;
     session.map_only = true;
@@ -388,20 +405,63 @@ fn view_info(session: &Session) -> Reply {
     let opened = lock(&session.view).as_ref().map(|v| (v.name.clone(), v.generation, v.renderer.clone()));
     match opened {
         None => failure(404, "no dataset is open: run preview from a form and choose Open map"),
-        Some((name, generation, renderer)) => {
-            let renderer = lock(&renderer);
-            let (width, height) = renderer.size();
-            let body = json!({
-                "name": name,
-                "generation": generation,
-                "width": width,
-                "height": height,
-                "kind": renderer.kind(),
-                "geoTransform": renderer.geo_transform(),
-            });
-            (200, "application/json", body.to_string())
+        Some((name, generation, renderer)) => (200, "application/json", view_json(&name, generation, &lock(&renderer)).to_string()),
+    }
+}
+
+/// What the map page needs to know of the dataset on the map.
+fn view_json(name: &str, generation: u64, renderer: &Renderer) -> Value {
+    let (width, height) = renderer.size();
+    json!({
+        "name": name,
+        "generation": generation,
+        "width": width,
+        "height": height,
+        "kind": renderer.kind(),
+        "geoTransform": renderer.geo_transform(),
+    })
+}
+
+/// `terrio view --tiles`: each tile of `spec` as a length-prefixed PNG (see [`ViewArgs::tiles`]).
+/// A malformed list is refused before anything is drawn; a tile that fails to draw is reported and
+/// the others are still drawn, so that one bad part does not blank the map.
+fn draw_tiles(renderer: &mut Renderer, spec: &str, out: &mut impl Write) -> terrio::Result<()> {
+    let bad = |message: String| terrio::Error::InvalidArgument(format!("--tiles: {message}"));
+    let mut tiles = Vec::new();
+    for item in spec.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+        let numbers = item
+            .split(',')
+            .map(|n| n.trim().parse::<usize>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| bad(format!("'{item}' is not six whole numbers")))?;
+        let [x, y, w, h, tw, th] = numbers[..] else {
+            return Err(bad(format!("'{item}' is not six whole numbers x,y,w,h,tw,th")));
+        };
+        if tw > MAX_TILE || th > MAX_TILE {
+            return Err(bad(format!("'{item}': a tile is at most {MAX_TILE} pixels on a side")));
+        }
+        tiles.push((Window::new(x, y, w, h), tw, th));
+    }
+    let mut failed = 0;
+    for (i, (window, tw, th)) in tiles.into_iter().enumerate() {
+        match renderer.region(window, tw, th).and_then(|image| image.to_png()) {
+            Ok(png) => {
+                let length = u32::try_from(png.len()).map_err(|_| bad("a tile's PNG is too large".into()))?;
+                out.write_all(&length.to_le_bytes())?;
+                out.write_all(&png)?;
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("terrio: tile {i}: {e}");
+                out.write_all(&0u32.to_le_bytes())?;
+            }
         }
     }
+    out.flush()?;
+    if failed > 0 {
+        crate::cmd::set_exit_code(1);
+    }
+    Ok(())
 }
 
 /// Opens the dataset named by a `preview` command line (`{"args": […]}`) for the map, replacing any.
@@ -681,6 +741,37 @@ mod tests {
         std::fs::write(dir.path().join("two\nlines.tif"), b"").unwrap();
         let body = json!({"path": dir.path().to_str().unwrap()}).to_string();
         assert_eq!(list_directory(body.as_bytes()).unwrap()["entries"], json!([]));
+    }
+
+    /// `terrio view --tiles`: each tile as a length-prefixed PNG of its size, a failed tile as a
+    /// zero length, and a malformed list refused before anything is drawn.
+    #[test]
+    fn view_tiles_are_length_prefixed_pngs() {
+        use clap::{Args as _, FromArgMatches as _};
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../terrio/tests/data/user_crs/robin.tif");
+        let matches = Style::augment_args(clap::Command::new("view")).no_binary_name(true).get_matches_from(Vec::<String>::new());
+        let style = Style::from_arg_matches(&matches).unwrap();
+        let mut renderer = crate::cmd::preview::renderer(path, &style).unwrap();
+        let (width, height) = renderer.size();
+        let info = view_json(path, 1, &renderer);
+        assert_eq!((info["width"].as_u64(), info["kind"].as_str()), (Some(width as u64), Some("raster")));
+
+        let mut out = Vec::new();
+        let spec = format!("0,0,{width},{height},64,32; {},0,10,10,8,8", width + 100);
+        draw_tiles(&mut renderer, &spec, &mut out).unwrap();
+        assert_eq!(crate::cmd::take_exit_code(), 1, "a tile off the raster fails");
+        let length = u32::from_le_bytes(out[..4].try_into().unwrap()) as usize;
+        let png = &out[4..4 + length];
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        // The IHDR chunk's width and height.
+        assert_eq!((u32::from_be_bytes(png[16..20].try_into().unwrap()), u32::from_be_bytes(png[20..24].try_into().unwrap())), (64, 32));
+        assert_eq!(&out[4 + length..], &0u32.to_le_bytes());
+
+        for spec in ["0,0,1,1", "0,0,1,1,2000,2000", "a,b,c,d,e,f"] {
+            let mut out = Vec::new();
+            assert!(draw_tiles(&mut renderer, spec, &mut out).is_err(), "{spec}");
+            assert!(out.is_empty(), "{spec}");
+        }
     }
 
     #[test]

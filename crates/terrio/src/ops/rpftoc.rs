@@ -16,7 +16,7 @@ use std::io::{Read, Seek};
 mod encode;
 mod frame;
 mod grid;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 mod native;
 mod series;
 
@@ -120,7 +120,7 @@ pub struct RpfTocReport {
 /// synchronize concurrent directory changes. This is not a filesystem confinement
 /// boundary. Atomic overwrite preserves Unix mode bits, not ownership, extended
 /// ACLs or extended attributes.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub fn create(input: &std::path::Path, output: Option<&std::path::Path>, options: &RpfTocOptions, overwrite: bool) -> Result<RpfTocReport> {
     native::create(input, output, options, overwrite)
 }

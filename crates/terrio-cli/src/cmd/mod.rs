@@ -79,8 +79,9 @@ pub fn take_exit_code() -> i32 {
 }
 
 /// Runs `f` with standard output discarded, so that drivers' diagnostic prints do not mix with the
-/// command's output.
+/// command's output. WASI (the browser build) has no descriptors to redirect, so there `f` prints.
 pub fn quiet<T>(f: impl FnOnce() -> T) -> T {
+    #[cfg(not(target_os = "wasi"))]
     let _gag = gag::Gag::stdout().ok();
     f()
 }

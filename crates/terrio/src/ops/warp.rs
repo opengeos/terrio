@@ -2543,6 +2543,7 @@ impl Storage {
             out_type: self.out_type,
             dst_nodata: self.dst_nodata.clone(),
             avoid_nodata: self.avoid_nodata.unwrap_or(dst_nodata.is_some() && !no_masks),
+            keeps_source_values: self.work_type == self.out_type && !matches!(self.out_type, DataType::I64 | DataType::U64),
             avoid_all_nodata: self.avoid_all_nodata,
             bands: self.bands,
             nudged: AtomicBool::new(false),
@@ -2569,6 +2570,14 @@ struct Sink {
     /// Whether a pixel whose every band holds its nodata value is moved off them (a serialized
     /// warped VRT with a unified output mask, see [`Sink::avoid_all`]).
     avoid_all_nodata: bool,
+    /// Whether a source value can be stored as it is: the working type is the output type and
+    /// holds every source value (the union of their types, [`working_type`]; a [`RegionWarp`],
+    /// whose working type is its output type, also needs source data of that type). Then
+    /// [`Sink::value`] keeps a source value unless it is moved off a nodata value: rounding to the
+    /// working type and converting it to the output type change nothing. Not for 64-bit integers,
+    /// whose odd values from 2^52 [`warp_round`] moves to the even value above, as gdalwarp 3.8.4
+    /// does.
+    keeps_source_values: bool,
     /// Whether a warped value was moved off a nodata value (see [`Sink::finish`]).
     nudged: AtomicBool,
     /// The number of bands, whose values a multi-band warning names (see [`Sink::finish`]).
@@ -3090,7 +3099,7 @@ impl WarpContext<'_> {
     /// Warps a chunk, its output rows in parallel.
     fn warp_chunk<T: crate::pixel::Pixel>(&self, c: &Chunk, src: &SrcData<T>, sink: &Sink, rows: Vec<RowOut>) {
         let (xscale, yscale) = self.scales(c);
-        let k = Kernel { src, win: *c, xscale, yscale, method: self.resampling };
+        let k = Kernel::new(src, *c, xscale, yscale, self.resampling);
         if self.resampling == Resampling::Sum {
             // The rows in groups, a few for each thread: a row of corners between two rows of a
             // group is transformed once, for both.
@@ -3118,14 +3127,49 @@ impl WarpContext<'_> {
     /// Warps one output row of a chunk.
     fn warp_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
         let (xscale, yscale) = (k.xscale, k.yscale);
-        // Include stored masks/cutlines as well as nodata, but skip the all-band
-        // hot-loop check when this chunk has no validity planes.
-        let global_validity = self.global_validity && k.src.valid.iter().any(Option::is_some);
         let four = matches!(self.resampling, Resampling::Bilinear | Resampling::Cubic)
             && match self.kernel_version {
                 KernelVersion::Gdal312 => xscale >= 0.95 && yscale >= 0.95,
                 KernelVersion::Gdal313 => xscale > 0.5 && yscale > 0.5,
             };
+        // One loop per kernel, each compiled on its own: with every kernel inlined into one loop,
+        // nearest ran 3x slower.
+        if self.resampling == Resampling::Nearest || c.sw == 1 || c.sh == 1 {
+            self.warp_row_with(c, k, sink, row, out, true, |k, b, ix, iy, _, _| k.valid(b, ix, iy).then(|| k.value(b, ix, iy)));
+        } else if four && self.resampling == Resampling::Bilinear {
+            self.warp_row_with(c, k, sink, row, out, false, |k, b, _, _, fx, fy| k.bilinear(b, fx, fy));
+        } else if four {
+            self.warp_row_with(c, k, sink, row, out, false, |k, b, _, _, fx, fy| k.cubic(b, fx, fy));
+        } else {
+            self.warp_row_with(c, k, sink, row, out, false, |k, b, _, _, fx, fy| k.general(b, fx, fy));
+        }
+    }
+
+    /// [`Self::warp_row`] with `sample`, the value of band `b` at source pixel `(ix, iy)` and
+    /// point `(fx, fy)` of the window, a source value itself when `nearest` (nearest resampling, or
+    /// a source window one pixel wide or high, where every method takes the source pixel).
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn warp_row_with<T: crate::pixel::Pixel>(
+        &self,
+        c: &Chunk,
+        k: &Kernel<T>,
+        sink: &Sink,
+        row: usize,
+        out: &mut [&mut [f64]],
+        nearest: bool,
+        sample: impl Fn(&Kernel<T>, usize, usize, usize, f64, f64) -> Option<f64>,
+    ) {
+        // Include stored masks/cutlines as well as nodata, but skip the all-band
+        // hot-loop check when this chunk has no validity planes.
+        let global_validity = self.global_validity && k.src.valid.iter().any(Option::is_some);
+        // Values sampled as nearest are source values, which a working type equal to the output's
+        // holds exactly: `Sink::value` then only moves them off the output nodata (see
+        // `Sink::keeps_source_values`).
+        let keep = nearest && sink.keeps_source_values;
+        // With one band, the unified check below already tests the band's own validity.
+        let all_bands = global_validity && !(self.unified_center && self.bands == 1);
+        let nodata: Vec<Option<f64>> = (0..self.bands).map(|b| sink.avoid_nodata.then(|| sink.nodata(b)).flatten()).collect();
         let mut xs = vec![0.0; c.dw];
         let mut ys = vec![0.0; c.dw];
         let mut ok = vec![false; c.dw];
@@ -3198,27 +3242,19 @@ impl WarpContext<'_> {
                 // GWKGeneralCaseThread() and the other kernels: with a unified source mask, a
                 // pixel whose source pixel is invalid is left alone; with per-band masks and the
                 // shared validity of `UNIFIED_SRC_NODATA=PARTIAL`, one whose every band is invalid.
-                if (self.unified_center && !k.valid(0, ix, iy)) || (global_validity && (0..self.bands).all(|b| !k.valid(b, ix, iy))) {
+                if (self.unified_center && !k.valid(0, ix, iy)) || (all_bands && (0..self.bands).all(|b| !k.valid(b, ix, iy))) {
                     continue;
                 }
                 let (fx, fy) = (xs[i] - sxo, ys[i] - syo);
                 let mut found = false;
                 for (b, o) in out.iter_mut().enumerate() {
-                    let v = if self.resampling == Resampling::Nearest || c.sw == 1 || c.sh == 1 {
-                        k.valid(b, ix, iy).then(|| k.value(b, ix, iy))
-                    } else if four && self.resampling == Resampling::Bilinear {
-                        k.bilinear(b, fx, fy)
-                    } else if four {
-                        k.cubic(b, fx, fy)
-                    } else {
-                        k.general(b, fx, fy)
-                    };
+                    let v = sample(k, b, ix, iy, fx, fy);
                     if let Some(v) = v {
-                        o[i] = sink.value(v, b);
+                        o[i] = if keep && nodata[b] != Some(v) { v } else { sink.value(v, b) };
                         found = true;
                     }
                 }
-                if found {
+                if found && sink.avoid_all_nodata {
                     sink.avoid_all(out, i);
                 }
             }
@@ -3296,6 +3332,18 @@ impl WarpContext<'_> {
                     }
                 };
                 let mut found = false;
+                if self.resampling == Resampling::Average {
+                    for (b, o) in out.iter_mut().enumerate() {
+                        if let Some(mean) = k.average(b, ix0..ix1, iy0..iy1, wy, wx) {
+                            o[i] = sink.value(mean, b);
+                            found = true;
+                        }
+                    }
+                    if found {
+                        sink.avoid_all(out, i);
+                    }
+                    continue;
+                }
                 for (b, o) in out.iter_mut().enumerate() {
                     values.clear();
                     for y in iy0..iy1 {
@@ -3756,9 +3804,24 @@ struct Kernel<'a, T> {
     xscale: f64,
     yscale: f64,
     method: Resampling,
+    /// [`Kernel::general`]'s reach in source pixels: `(xr, yr)`, widened when the output is
+    /// coarser, and the first tap's offset `(init_x, init_y)`. The same for every pixel.
+    reach: (i64, i64),
+    init: (i64, i64),
 }
 
-impl<T: crate::pixel::Pixel> Kernel<'_, T> {
+impl<'a, T: crate::pixel::Pixel> Kernel<'a, T> {
+    /// The kernels of `method` on source window `win` of `src`, at output-to-source scales
+    /// `xscale` and `yscale` (below 1 when the output is coarser), with [`Kernel::general`]'s
+    /// reach and first-tap offset computed once for the chunk.
+    fn new(src: &'a SrcData<'a, T>, win: Chunk, xscale: f64, yscale: f64, method: Resampling) -> Self {
+        let radius = method.radius();
+        let xr = if xscale < 1.0 { (radius as f64 / xscale).ceil() as i64 } else { radius as i64 };
+        let yr = if yscale < 1.0 { (radius as f64 / yscale).ceil() as i64 } else { radius as i64 };
+        let first = ((radius + 1) % 2) as i64;
+        Self { src, win, xscale, yscale, method, reach: (xr, yr), init: (first - xr, first - yr) }
+    }
+
     #[inline]
     fn index(&self, x: usize, y: usize) -> usize {
         (self.win.sy + y - self.src.origin.1) * self.src.width + self.win.sx + x - self.src.origin.0
@@ -3772,6 +3835,37 @@ impl<T: crate::pixel::Pixel> Kernel<'_, T> {
     #[inline]
     fn valid(&self, b: usize, x: usize, y: usize) -> bool {
         self.src.valid[b].as_ref().is_none_or(|m| m[self.index(x, y)])
+    }
+
+    /// [`area_value`]'s `average` of band `b`'s valid pixels in columns `xs` and rows `ys`, each
+    /// weighted `wx(x, wy(y))`: the same running mean over the same pixels in the same order,
+    /// without collecting them first.
+    #[inline(always)]
+    fn average(
+        &self,
+        b: usize,
+        xs: std::ops::Range<usize>,
+        ys: std::ops::Range<usize>,
+        wy: impl Fn(usize) -> f64,
+        wx: impl Fn(usize, f64) -> f64,
+    ) -> Option<f64> {
+        let (data, valid) = (self.src.bands[b], self.src.valid[b].as_deref());
+        let (mut total, mut mean) = (0.0, 0.0);
+        for y in ys {
+            let w = wy(y);
+            let line = self.index(0, y);
+            for x in xs.clone() {
+                if valid.is_some_and(|m| !m[line + x]) {
+                    continue;
+                }
+                let w = wx(x, w);
+                if w > 0.0 {
+                    total += w;
+                    mean += (w / total) * (crate::pixel::Pixel::to_f64(data[line + x]) - mean);
+                }
+            }
+        }
+        (total > 0.0).then_some(mean)
     }
 
     /// `GWKBilinearResample4Sample()`: invalid or off-window neighbours are left out and the
@@ -3842,11 +3936,7 @@ impl<T: crate::pixel::Pixel> Kernel<'_, T> {
     /// `GWKResample()`: a separable kernel, stretched when downsampling, renormalized over the
     /// valid pixels.
     fn general(&self, b: usize, sx: f64, sy: f64) -> Option<f64> {
-        let radius = self.method.radius();
-        let xr = if self.xscale < 1.0 { (radius as f64 / self.xscale).ceil() as i64 } else { radius as i64 };
-        let yr = if self.yscale < 1.0 { (radius as f64 / self.yscale).ceil() as i64 } else { radius as i64 };
-        let init_x = ((radius + 1) % 2) as i64 - xr;
-        let init_y = ((radius + 1) % 2) as i64 - yr;
+        let ((xr, yr), (init_x, init_y)) = (self.reach, self.init);
         let ix = (sx - 0.5).floor() as i64;
         let iy = (sy - 0.5).floor() as i64;
         let dx = sx - 0.5 - ix as f64;
@@ -3898,18 +3988,29 @@ impl<T: crate::pixel::Pixel> Kernel<'_, T> {
             }
         }
         let wfn = |d: f64, s: f64| if s < 1.0 { self.method.weight(d * s) } else { self.method.weight(d) };
+        // The column weights are the same on every row: computed once (the same values, summed
+        // in the same order, so the same result).
+        let mut wxs = [0.0f64; 64];
+        let nx = (i1 - i0 + 1).max(0) as usize;
+        let hoisted = nx <= wxs.len();
+        if hoisted {
+            for (n, i) in (i0..=i1).enumerate() {
+                wxs[n] = wfn(i as f64 - dx, self.xscale);
+            }
+        }
+        let (data, valid) = (self.src.bands[b], self.src.valid[b].as_deref());
         let (mut acc, mut wsum) = (0.0, 0.0);
         for j in j0..=j1 {
             let wy = wfn(j as f64 - dy, self.yscale);
-            let y = (iy + j) as usize;
+            let line = self.index(0, (iy + j) as usize);
             let (mut la, mut lw) = (0.0, 0.0);
-            for i in i0..=i1 {
-                let x = (ix + i) as usize;
-                if !self.valid(b, x, y) {
+            for (n, i) in (i0..=i1).enumerate() {
+                let at = line + (ix + i) as usize;
+                if valid.is_some_and(|m| !m[at]) {
                     continue;
                 }
-                let wx = wfn(i as f64 - dx, self.xscale);
-                la += self.value(b, x, y) * wx;
+                let wx = if hoisted { wxs[n] } else { wfn(i as f64 - dx, self.xscale) };
+                la += crate::pixel::Pixel::to_f64(data[at]) * wx;
                 lw += wx;
             }
             acc += la * wy;
@@ -4390,7 +4491,10 @@ impl RegionWarp {
                 avoid_nodata: (bands > 1 && unified).then_some(false),
                 avoid_all_nodata: bands > 1 && unified,
             };
-            let sink = storage.sink(self.dst_nodata.is_some_and(|nd| is_nodata(warp_round(init, self.out_type), nd)));
+            let mut sink = storage.sink(self.dst_nodata.is_some_and(|nd| is_nodata(warp_round(init, self.out_type), nd)));
+            // The working type here is the output type, not the source's: nearest values of
+            // another type are still rounded and clamped by `Sink::value`.
+            sink.keeps_source_values &= data.data_type() == self.out_type;
             crate::pixel::with_data!(data, v => {
                 let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
                 let src = SrcData { bands: &typed, valid: &valid, width: sw, origin: (sx, sy) };
@@ -5482,6 +5586,120 @@ mod tests {
         );
         warp(&[&ds], &o).unwrap();
         assert!(ours().is_empty());
+    }
+
+    /// A region warped to another type than its source's rounds and clamps nearest values: the
+    /// working type is the output type, so source values do not pass through unconverted.
+    #[test]
+    fn region_warp_to_another_type_rounds_nearest_values() {
+        let srs = SpatialRef::from_epsg(4326).unwrap();
+        let gt = [10.0, 0.25, 0.0, 50.0, 0.0, -0.25];
+        let warp = RegionWarp::new((2, 2), gt, &srs, &srs, gt, Resampling::Nearest, 0.125, DataType::U8, vec![None], None).unwrap();
+        let region = (0, 0, 2, 2);
+        let win = warp.source_window(region).unwrap();
+        assert_eq!((win.2, win.3), (2, 2));
+        let (out, _) = warp.warp(region, win, &RasterData::F32(vec![2.6, 300.0, -1.0, 7.0]), None, 0.0, false).unwrap();
+        assert!(matches!(out, RasterData::U8(v) if v == [3, 255, 0, 7]));
+    }
+
+    /// A region of 64-bit integers keeps rounding nearest values through `warp_round`, which moves
+    /// odd values from 2^52 to the even value above (gdalwarp 3.8.4 warps 2^52 + 1 and 2^52 + 3 to
+    /// 2^52 + 2 and 2^52 + 4 too): such values are not stored as they are.
+    #[test]
+    fn region_warp_rounds_large_64_bit_nearest_values() {
+        let srs = SpatialRef::from_epsg(4326).unwrap();
+        let gt = [10.0, 0.25, 0.0, 50.0, 0.0, -0.25];
+        let warp = RegionWarp::new((2, 2), gt, &srs, &srs, gt, Resampling::Nearest, 0.125, DataType::I64, vec![None], None).unwrap();
+        let region = (0, 0, 2, 2);
+        let win = warp.source_window(region).unwrap();
+        let big = 1i64 << 52;
+        let (out, _) = warp.warp(region, win, &RasterData::I64(vec![big + 1, big + 3, -5, 7]), None, 0.0, false).unwrap();
+        assert!(matches!(out, RasterData::I64(v) if v == [big + 2, big + 4, -5, 7]));
+    }
+
+    /// `average`'s running mean taken while visiting the pixels equals, bit for bit,
+    /// `area_value`'s over the `(value, weight)` pairs collected from the same pixels, as the
+    /// other area methods collect them: invalid pixels left out, pixels of zero weight counted
+    /// but not weighted, and no value when no valid pixel has a weight.
+    #[test]
+    fn average_in_place_equals_area_value_over_the_collected_pairs() {
+        let (width, height) = (7, 6);
+        let data: Vec<u16> = (0..width * height).map(|i| (i * 7919 % 65_521) as u16).collect();
+        let mut valid: Vec<bool> = (0..width * height).map(|i| i % 5 != 2).collect();
+        // The window's column 3 (the source's 4), rows 0-2, all invalid: a cell of only invalid
+        // pixels.
+        for y in 0..3 {
+            valid[y * width + 4] = false;
+        }
+        let bands = [data.as_slice()];
+        let masks = [Some(valid)];
+        let src = SrcData { bands: &bands, valid: &masks, width, origin: (0, 0) };
+        let win = Chunk { dx: 0, dy: 0, dw: 1, dh: 1, sx: 1, sy: 0, sw: 6, sh: 6, raw_w: 6.0, raw_h: 6.0 };
+        let k = Kernel::new(&src, win, 0.3, 0.3, Resampling::Average);
+        // Fractional edge weights as `warp_area_row` gives them, a zero-weight last column and row
+        // (a pixel corner on a source edge), and a column of zero weight inside.
+        let wy = |y: usize| [0.25, 1.0, 1.0, 0.6, 1.0, 0.0][y];
+        let wx = |x: usize, w: f64| w * [0.7, 1.0, 0.0, 1.0, 0.35, 0.0][x];
+        let cells = [(0..6, 0..6), (1..4, 0..3), (4..5, 3..4), (3..4, 0..3), (2..3, 0..5), (5..6, 0..6), (0..6, 5..6)];
+        let mut weighted = Vec::new();
+        for (xs, ys) in cells {
+            let mut pairs = Vec::new();
+            for y in ys.clone() {
+                for x in xs.clone() {
+                    if k.valid(0, x, y) {
+                        pairs.push((k.value(0, x, y), wx(x, wy(y))));
+                    }
+                }
+            }
+            let collected = area_value(Resampling::Average, &mut pairs, true);
+            let in_place = k.average(0, xs.clone(), ys.clone(), wy, wx);
+            assert_eq!(in_place.map(f64::to_bits), collected.map(f64::to_bits), "columns {xs:?}, rows {ys:?}");
+            weighted.push(in_place.is_some());
+        }
+        // The last four: only invalid pixels, then only pixels of zero weight.
+        assert_eq!(weighted, [true, true, true, false, false, false, false]);
+    }
+
+    /// The general kernel, its column weights computed once (up to 64 columns) or per tap (more),
+    /// equals bit for bit `GWKResample()`'s per-tap sum as it was computed before, over valid
+    /// pixels only: 41 and 81 columns of a bilinear kernel stretched to the output's width.
+    #[test]
+    fn general_kernel_weights_wide_and_narrow_footprints_alike() {
+        let (width, height) = (200, 9);
+        let data: Vec<f32> = (0..width * height).map(|i| (i * 7919 % 1009) as f32 * 0.37).collect();
+        let valid: Vec<bool> = (0..width * height).map(|i| i % 7 != 3).collect();
+        let bands = [data.as_slice()];
+        let masks = [Some(valid.clone())];
+        let src = SrcData { bands: &bands, valid: &masks, width, origin: (0, 0) };
+        let win = Chunk { dx: 0, dy: 0, dw: 1, dh: 1, sx: 0, sy: 0, sw: width, sh: height, raw_w: 200.0, raw_h: 9.0 };
+        let (sx, sy, yscale): (f64, f64, f64) = (100.3, 4.7, 0.5);
+        let per_tap = |xscale: f64| {
+            let w = |d: f64, s: f64| Resampling::Bilinear.weight(d * s);
+            let (xr, yr) = ((1.0 / xscale).ceil() as i64, (1.0 / yscale).ceil() as i64);
+            let (ix, iy) = ((sx - 0.5).floor() as i64, (sy - 0.5).floor() as i64);
+            let (dx, dy) = (sx - 0.5 - ix as f64, sy - 0.5 - iy as f64);
+            let (mut acc, mut wsum) = (0.0, 0.0);
+            for j in -yr..=yr {
+                let wy = w(j as f64 - dy, yscale);
+                let (mut la, mut lw) = (0.0, 0.0);
+                for i in -xr..=xr {
+                    let at = (iy + j) as usize * width + (ix + i) as usize;
+                    if valid[at] {
+                        let wx = w(i as f64 - dx, xscale);
+                        la += f64::from(data[at]) * wx;
+                        lw += wx;
+                    }
+                }
+                acc += la * wy;
+                wsum += lw * wy;
+            }
+            if (0.99999..=1.00001).contains(&wsum) { acc } else { acc / wsum }
+        };
+        for (xscale, columns) in [(0.05, 41), (0.025, 81)] {
+            let k = Kernel::new(&src, win, xscale, yscale, Resampling::Bilinear);
+            assert_eq!(2 * k.reach.0 + 1, columns);
+            assert_eq!(k.general(0, sx, sy).map(f64::to_bits), Some(per_tap(xscale).to_bits()), "{columns} columns");
+        }
     }
 
     /// `printf("%g")`, as GDAL formats the values of its nodata warning (expected values from C).

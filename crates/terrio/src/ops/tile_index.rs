@@ -98,7 +98,7 @@ pub struct RasterIndexSource {
 }
 impl RasterIndexSource {
     /// Opens a native/VSI source header, sanitizing diagnostics for locators with queries.
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(fs)]
     pub fn open_path(path: &str, location: impl Into<String>) -> Result<Self> {
         (|| Self::from_lazy(location, &crate::open_raster_lazy(path)?))().map_err(|e| index_source_error(path, e))
     }
@@ -334,7 +334,7 @@ fn warning_locator(location: &str) -> &str {
         location
     }
 }
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 fn index_source_error(path: &str, error: Error) -> Error {
     if warning_locator(path) == path {
         return error;
@@ -353,7 +353,7 @@ fn index_source_error(path: &str, error: Error) -> Error {
         e @ Error::DecodedLimitExceeded { .. } => e,
     }
 }
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 fn warn_skipped_source(path: &str, error: &Error) {
     if warning_locator(path) != path {
         // Driver/transport errors can repeat the complete signed URL. Keep those
@@ -656,7 +656,7 @@ impl DatasetIndex {
         }
         Ok(named)
     }
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(fs)]
     fn track_relative_location(&mut self, location: &str, suffix: &str) -> Result<()> {
         if location.contains("://") || location.starts_with("/vsi") || std::path::Path::new(location).is_absolute() {
             return Ok(());
@@ -670,7 +670,7 @@ impl DatasetIndex {
     }
     /// Adds an opened local file to overwrite protection independently of its stored label.
     /// Relative paths are anchored now, so changing the working directory cannot bypass it.
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(fs)]
     pub fn protect_source_path(&mut self, path: &str) -> Result<()> {
         if path.contains("://") || path.starts_with("/vsi") {
             return Ok(());
@@ -736,7 +736,7 @@ impl DatasetIndex {
     /// staged before publishing, and failed creation removes the newly written parts.
     /// Replacing indexed source paths and canonical aliases is refused (Unix
     /// hard-link aliases are detected too).
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(fs)]
     pub fn write(&self, path: &str, options: &crate::VectorWriteOptions, overwrite: bool) -> Result<()> {
         if self.needs_output_resolution() {
             return self.resolved_for_output(path)?.write(path, options, overwrite);
@@ -799,7 +799,7 @@ impl DatasetIndex {
         }
         Ok(())
     }
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(fs)]
     fn write_parts(&self, path: &str, options: &crate::VectorWriteOptions, overwrite: bool) -> Result<()> {
         use std::io::Write;
         if self.metadata.iter().any(|(k, _)| k != "LOCATION_FIELD" && k != "INTERLEAVE") {
@@ -1268,7 +1268,7 @@ pub struct IndexInputOptions {
     /// Skip unreadable/unsupported raster inputs with a warning.
     pub skip_errors: bool,
 }
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 fn wildcard(pattern: &str, value: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let v: Vec<char> = value.chars().collect();
@@ -1297,7 +1297,7 @@ fn wildcard(pattern: &str, value: &str) -> bool {
 /// Expands local directories without opening their raster/vector contents.
 /// Remote directories can be listed explicitly by a trailing slash. Filters
 /// apply to discovered entries; explicit filenames are always retained.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub fn index_input_paths(paths: &[String], o: &IndexInputOptions) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for path in paths {
@@ -1331,7 +1331,7 @@ pub fn index_input_paths(paths: &[String], o: &IndexInputOptions) -> Result<Vec<
     }
     Ok(out)
 }
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 fn stored_location(path: &str, absolute: bool) -> Result<String> {
     if !absolute || path.contains("://") || path.starts_with("/vsi") || std::path::Path::new(path).is_absolute() {
         return Ok(path.into());
@@ -1340,7 +1340,7 @@ fn stored_location(path: &str, absolute: bool) -> Result<String> {
 }
 /// Opens raster headers and builds their index. Lazy-capable drivers do not
 /// decode pixels; other formats use their existing whole-reader fallback.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub fn raster_index_paths(paths: &[String], inputs: &IndexInputOptions, o: &RasterIndexOptions) -> Result<DatasetIndex> {
     let paths = index_input_paths(paths, inputs)?;
     let mut sources = Vec::new();
@@ -1371,7 +1371,7 @@ pub struct VectorIndexSelection {
     /// Original zero-based layer numbers.
     pub indexes: Vec<usize>,
 }
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 fn read_vector_index_headers(path: &str) -> Result<Vec<Layer>> {
     // Retain cached extents without decoding feature geometries where available.
     #[cfg(feature = "sqlite")]
@@ -1415,13 +1415,13 @@ fn read_vector_index_headers(path: &str) -> Result<Vec<Layer>> {
     let mut readers = crate::stream::open_layers(path, &Default::default(), crate::stream::DEFAULT_CHUNK)?;
     readers.iter_mut().map(scan_vector_reader).collect()
 }
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 fn scan_vector_index_header(path: &str, layer: &str) -> Result<Layer> {
     let options = crate::VectorOpenOptions { layers: vec![layer.into()], ..Default::default() };
     let mut readers = crate::stream::open_layers(path, &options, crate::stream::DEFAULT_CHUNK)?;
     scan_vector_reader(readers.first_mut().ok_or_else(|| invalid("no requested vector layer"))?)
 }
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 fn scan_vector_reader(reader: &mut crate::stream::FeatureReader) -> Result<Layer> {
     let mut layer = reader.layer().clone();
     while let Some(chunk) = reader.read_chunk(crate::stream::DEFAULT_CHUNK)? {
@@ -1442,7 +1442,7 @@ fn scan_vector_reader(reader: &mut crate::stream::FeatureReader) -> Result<Layer
 /// Creates vector-layer indexes from paths. Cached GeoPackage/FlatGeobuf bounds
 /// are read as metadata; other formats scan features in bounded chunks where
 /// their reader supports streaming.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub fn vector_index_paths(
     paths: &[String],
     inputs: &IndexInputOptions,
@@ -1495,7 +1495,7 @@ impl VectorIndexSelection {
     }
 }
 /// Reads source layer schemas and bounds, retaining original layer numbers.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(fs)]
 pub fn vector_index_sources(path: &str) -> Result<Vec<VectorIndexSource>> {
     // Read by the driver its name points to (GeoPackage and FlatGeobuf headers directly, others as
     // streams), as `open_vector` reads it: judged as that open judges a dataset.
