@@ -2035,12 +2035,16 @@ parallel unit tests contaminating the measurement.
 ## Separate-file raster tiles (#289)
 
 `raster-tiles` in `scripts/conformance.py` compares XYZ/TMS folder output with
-GDAL 3.13.3 on real Landsat RGB derivatives and USGS elevation. The 48 cases
-include 46 exact comparisons of filenames, pixels, sample types, nodata/masks
-and GeoTIFF grids/CRS, plus two explicitly reported policy differences.
-The lower-zoom pyramid's 1,146,880 samples independently match GDAL direct-source per-tile
-warps exactly. Terrio resamples every level directly from the source; GDAL's
-previously generated image pyramid can give different lower-level values/masks.
+GDAL 3.13.3 on real Landsat RGB derivatives and USGS elevation. The 49 cases
+include 48 exact comparisons of filenames, pixels, sample types, nodata/masks
+and GeoTIFF grids/CRS, plus one explicitly reported policy difference.
+Lower zooms built from the tiles below them (the default) match GDAL's generated
+pyramid exactly with nearest resampling: 1,146,880 samples on a raster grid, and
+351 tiles (77,004,800 samples) of a six-zoom WebMercatorQuad TMS pyramid. With
+`--overview-source source`, the raster-grid pyramid's samples independently match
+GDAL direct-source per-tile warps exactly. Interpolating kernels are not compared:
+a separate bilinear probe of the WebMercatorQuad pyramid matched the maximum zoom
+exactly, while about 3% of the zoom-12 pixels differed by 1 or 2 levels (up to 13 at zoom 8).
 GDAL's `--no-alpha` output retains 15 zero-filled tiles even when all source
 pixels are nodata and `--skip-blank` is requested. Terrio omits those tiles;
 independent checks verify the source mask and both results. Valid zero-valued
@@ -2075,7 +2079,10 @@ changes or dataset-mask differences. All tile structures and metadata are checke
 before any value-only exception can be reported.
 
 Rust regressions additionally check source-window/output budgets on a ten-billion
-pixel procedural source, nodata/padded-edge alpha, grid arithmetic,
+pixel procedural source, tile-sized source windows at every zoom of a pyramid
+built from child tiles (and its agreement with direct-source averages), lossless
+WebP tiles, parents rebuilt from existing tiles on resume, blank parents of blank
+children, nodata/padded-edge alpha, grid arithmetic,
 atomic publication, unfinished temporary files, non-overwriting resume and refusal
 of preexisting symlinked output descendants. Additional regressions cover cubic
 premultiplied RGBA, partial-channel nodata, typed masks with valid NaNs, mask

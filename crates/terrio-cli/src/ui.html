@@ -68,7 +68,7 @@ dialog::backdrop { background: rgb(0 0 0 / .45); }
 #browse-path { font-size: 13px; overflow-wrap: anywhere; margin-bottom: 8px; color: var(--muted); }
 #browse-list { list-style: none; margin: 0 0 12px; padding: 0; height: 50vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
 #browse-list button { display: flex; justify-content: space-between; gap: 12px; width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left; padding: 5px 10px; cursor: pointer; overflow-wrap: anywhere; }
-#browse-list button:hover { background: var(--tint); }
+#browse-list button:hover, #browse-list button:focus { background: var(--tint); }
 #browse-list .size { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .dialog-bar { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 @media (max-width: 720px) {
@@ -107,7 +107,7 @@ const headers = { "X-Terrio-Token": token };
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(props)) {
-    if (key.startsWith("aria-")) node.setAttribute(key, value);
+    if (key.startsWith("aria-") || key.startsWith("data-")) node.setAttribute(key, value);
     else node[key] = value;
   }
   node.append(...children);
@@ -396,11 +396,12 @@ async function browseTo(path) {
   byId("browse-up").disabled = !browsing.parent;
   list.replaceChildren(...browsing.entries.map((entry) => {
     const full = browsing.path.endsWith(separator) ? browsing.path + entry.name : browsing.path + separator + entry.name;
-    const button = el("button", { type: "button" }, el("span", { textContent: entry.dir ? `${entry.name}${separator}` : entry.name }), el("span", { className: "size", textContent: formatSize(entry.size) }));
+    const button = el("button", { type: "button", "data-name": entry.name }, el("span", { textContent: entry.dir ? `${entry.name}${separator}` : entry.name }), el("span", { className: "size", textContent: formatSize(entry.size) }));
     button.addEventListener("click", () => (entry.dir ? browseTo(full) : choose(full)));
     return el("li", {}, button);
   }));
   list.scrollTop = 0;
+  typed = "";
 }
 
 function openBrowser(input) {
@@ -413,6 +414,53 @@ function openBrowser(input) {
   browseTo(parent.endsWith(":") ? parent + separator : parent || browsing.path);
 }
 
+// Typing in the file browser jumps to the next entry whose name starts with the typed text, and a
+// pause of a second starts a new search. Repeating one character steps through the entries that start
+// with it, and the arrow keys, Home and End move between entries.
+let typed = "";
+let typedAt = 0;
+function browseKeys(event) {
+  if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.target.closest("input, textarea, select")) return;
+  const items = [...byId("browse-list").querySelectorAll("button[data-name]")];
+  if (!items.length) return;
+  const current = items.indexOf(document.activeElement);
+  let match = -1;
+  const moves = { ArrowDown: current + 1, ArrowUp: current < 0 ? items.length - 1 : current - 1, Home: 0, End: items.length - 1 };
+  if (Object.hasOwn(moves, event.key)) match = Math.max(0, Math.min(items.length - 1, moves[event.key]));
+  else if ([...event.key].length === 1) {
+    if (event.timeStamp - typedAt > 1000) typed = "";
+    // Space presses the focused button unless it continues a name being typed on an entry.
+    const space = event.key === " ";
+    if (space && (!typed || current < 0)) return;
+    typedAt = event.timeStamp;
+    const before = typed;
+    typed += event.key.toLowerCase();
+    const names = items.map((item) => item.dataset.name.toLowerCase());
+    // Search on from the current entry, wrapping around: a new first character moves past it.
+    const find = (prefix, from) => {
+      for (let step = 0; step < items.length; step++) {
+        const i = (Math.max(from, 0) + step) % items.length;
+        if (names[i].startsWith(prefix)) return i;
+      }
+      return -1;
+    };
+    const chars = [...typed];
+    match = find(typed, chars.length === 1 ? current + 1 : current);
+    if (match < 0 && !space && chars.every((c) => c === chars[0])) match = find(chars[0], current + 1);
+    if (match < 0 && space) {
+      typed = before;
+      return;
+    }
+  } else return;
+  event.preventDefault();
+  if (match < 0) return;
+  items[match].focus({ preventScroll: true });
+  items[match].scrollIntoView({ block: "nearest" });
+}
+
+// Listen on the document: opening a folder with the mouse removes the focused entry, and the keys
+// then go to the body rather than the dialog.
+document.addEventListener("keydown", (event) => byId("browse").open && browseKeys(event));
 byId("browse-up").addEventListener("click", () => browsing.parent && browseTo(browsing.parent));
 byId("browse-folder").addEventListener("click", () => choose(browsing.path));
 byId("browse-close").addEventListener("click", () => byId("browse").close());

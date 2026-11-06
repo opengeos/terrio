@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+- Lazy `translate` (`translate_lazy`, `translate_lazy_to_file` and the CLI's `translate`) and
+  reads by window (`LazyRaster::read_resampled`) copy pixels fewer times, as do GeoTIFFs other
+  than COGs written in rows (`GeoTiffWriter::write_rows`, which streamed GeoTIFF outputs use)
+  when the rows given end a block row or the raster, with byte-identical results. Translating a
+  14412 x 14412 float32 Deflate GeoTIFF to an uncompressed GeoTIFF on one CPU takes 67% fewer
+  page faults. `GeoTiffWriter::write_rows` refuses rows of another type, even none, before taking
+  their mask rows, which a refused call left queued. Once a block row of a GeoTIFF other than a
+  COG fails to be written, the writer refuses more rows and `finish`, which could write a file
+  missing it.
+- `terrio tile` (Python `terrio.raster_tiles`, JavaScript `rasterTiles`) builds each lower-zoom
+  tile from the four tiles below it, as GDAL does, instead of rendering it from the source (#574).
+  Tiles are generated depth first, with at most four tiles per zoom level in memory, and every
+  source window is the size of one maximum-zoom tile (except when `--resume` rebuilds a missing
+  parent from the source, as it does for GeoTIFF tiles), so a VRT mosaic without overviews tiles from
+  zoom 0: a 12000 x 12000 EPSG:4326 VRT of 36 GeoTIFFs, which failed with "the source tile window
+  exceeds the pixel-buffer budget", now gives its 5390 WebMercatorQuad tiles of zooms 0 to 14.
+  With nearest resampling the pyramid equals GDAL 3.13.3's (a raster grid and six reprojected
+  WebMercatorQuad zooms); with bilinear, lower zooms differ from GDAL's by a few levels on some
+  pixels. This changes the default output of lower zooms with interpolating kernels (bilinear,
+  cubic, etc.), which are now resampled from the 8-bit or typed tiles below them;
+  `--overview-source source` (`overview_source`, `overviewSource`) keeps the previous rendering
+  from the source. `--resume` can rebuild a missing parent from the existing PNG or WebP tiles
+  below it; with GeoTIFF tiles or `--no-alpha`, it renders the parent from the source instead,
+  which can exceed the source-window budget.
+- `terrio tile --format WEBP` writes lossless WebP directory tiles (gray tiles as RGB), equal in
+  pixels to the PNG tiles; Leaflet and OpenLayers viewers accept them.
+- Zonal statistics that keep values (median, quantiles, mode, minority, variety) count the values of
+  a zone of an 8- or 16-bit integer band with at least as many pixels as the type has values (256 or
+  65,536) in a histogram (2 or 512 KiB) rather than holding and sorting them; values it does not
+  count (-0, fractions, values outside the type's range) are still listed. Without `fractional`, a
+  zone whose listed values, 256 or more, are all integers from -32,768 to 65,535 (other than -0),
+  whatever the band's type, is sorted by radix. The bands of 8- and 16-bit rasters are then usually
+  reduced together rather than one per pass. The median of each of 10 UInt16 bands (10980 x 10980,
+  DEFLATE, 32 threads) over one zone covering the tile takes 4.9 s, 10.7 s of CPU and 1.06 GB, down
+  from 24.1 s, 70 s and 2.88 GB (0.7.0: 47.8 s, 47 s and 5.34 GB); over 10,000 fields of about 5,000
+  pixels, 2.1 s, 20 s of CPU and 1.0 GB, down from 2.3 s, 25 s and 1.03 GB (0.7.0: 18.6 s, 41 s and
+  2.58 GB). Without `fractional`, results are unchanged. With it, a zone counted in a histogram sums
+  its coverages in another order, so their rounding can change its quantiles in the last digits, or
+  which of two values whose coverage sums tie within rounding is its mode or minority; on both
+  benchmarks, with mode, minority, quantiles and variety, it changed no value and outputs are byte
+  for byte the same.
 - GeoTIFF and COG writers compress Deflate chunks with a pure-Rust port of libdeflate 1.26's
   level 6 compressor, in place of zlib-rs: the level GDAL uses for them, and the library it uses
   when built with libdeflate. The chunks are libdeflate's, byte for byte: every 512 x 512 tile of

@@ -854,6 +854,38 @@ fn zonal_reducer_matches_zonal_stats() {
     }
 }
 
+/// A stream of 8-bit arrays counts its zones (256 pixels or more) in histograms: the statistics
+/// of `zonal_stats` on the same values in a Float64 raster, which lists them; with fractional
+/// coverage, within the rounding of coverage sums.
+#[test]
+fn zonal_reducer_counts_8_bit_streams_like_listed_float_rasters() {
+    let (ds, pixels, l) = reducer_fixture();
+    let mut listed = ds.clone();
+    listed.raster.data = terrio::raster::RasterData::F64(pixels.iter().map(|&v| f64::from(v)).collect());
+    listed.raster.data_type = DataType::F64;
+    for o in pixel_inclusion_modes() {
+        let reducer = terrio::ops::zonal::ZonalReducer::new(&l, Grid::like(&ds), &o, Some(7)).unwrap();
+        let mut stream = reducer.stream(Some(0.));
+        for (i, &w) in reducer.windows().iter().enumerate() {
+            let data = (w.y..w.y + w.height).flat_map(|row| pixels[row * ds.raster.cols + w.x..][..w.width].iter().map(|&v| v as u8));
+            stream.add(i, &terrio::raster::RasterData::U8(data.collect())).unwrap();
+        }
+        let (got, expected) = (stream.finish().unwrap(), zonal_stats_table(&l, &listed, &o));
+        // Zones 0-3 are large enough for histograms (counts exclude nodata, so pixels are more).
+        assert!(
+            got[0][..4].iter().all(|c| matches!(c, V::Integer(n) if *n >= 256) || matches!(c, V::Float(n) if *n >= 256.)),
+            "{:?}",
+            got[0]
+        );
+        for (g, e) in got.iter().flatten().zip(expected.iter().flatten()) {
+            match (g, e) {
+                (V::Float(g), V::Float(e)) if o.fractional => assert!((g - e).abs() <= 1e-12 * e.abs().max(1.0), "{g} {e}"),
+                _ => assert_eq!(g, e, "all_touched {} fractional {}", o.all_touched, o.fractional),
+            }
+        }
+    }
+}
+
 #[test]
 fn zonal_reducer_zones_in_other_crs() {
     let (ds, pixels, l) = reducer_fixture();
