@@ -2359,11 +2359,13 @@ mod content_allow_list_tests {
     }
 
     /// A member of [`raw_zip`]: its name, its bytes and its general purpose flags.
+    #[cfg(not(feature = "gdal"))]
     type Member<'a> = (&'a str, &'a [u8], u16);
 
     /// A zip archive of stored members written byte by byte (APPNOTE 6.3.10, 4.3.7, 4.3.12 and
     /// 4.3.16), for what the zip writer does not write: two members with one name, a member flagged
     /// encrypted (4.4.4, bit 0) without being encrypted.
+    #[cfg(not(feature = "gdal"))]
     fn raw_zip(members: &[Member]) -> Vec<u8> {
         let (mut zip, mut directory) = (Vec::new(), Vec::new());
         for &(name, data, flags) in members {
