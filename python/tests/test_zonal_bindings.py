@@ -384,32 +384,30 @@ def reduce_windows(reducer, arr, nodata=None, prepare=lambda a: a):
     return stream.finish()
 
 
-@pytest.mark.parametrize("all_touched", [False, True])
+@pytest.mark.parametrize(
+    "mode",
+    [{}, {"all_touched": True}, {"fractional": True}],
+    ids=["centre", "all_touched", "fractional"],
+)
 @pytest.mark.parametrize(
     "dtype, nodata",
     [("uint16", 0), ("uint16", None), ("int16", 0), ("float32", np.nan), ("float64", np.nan)],
 )
-def test_zonal_reducer_matches_zonal_stats(dtype, nodata, all_touched):
+def test_zonal_reducer_matches_zonal_stats(dtype, nodata, mode):
     arr = reducer_array(dtype)
     raster = terrio.Raster.from_array(arr, REDUCER_TRANSFORM, crs="EPSG:4326", nodata=nodata)
     zones = reducer_zones()
-    expected = terrio.zonal_stats(zones, raster, stats=REDUCER_STATS, all_touched=all_touched)
+    expected = terrio.zonal_stats(zones, raster, stats=REDUCER_STATS, **mode)
     reducer = terrio.ZonalReducer(
-        zones,
-        300,
-        200,
-        REDUCER_TRANSFORM,
-        "EPSG:4326",
-        stats=REDUCER_STATS,
-        all_touched=all_touched,
-        strip_rows=37,
+        zones, 300, 200, REDUCER_TRANSFORM, "EPSG:4326", stats=REDUCER_STATS, strip_rows=37, **mode
     )
     assert reducer.feature_count == 5
     assert reducer.stats == REDUCER_STATS
     # Several strips, so that the windows are fed one after another.
     got = reduce_windows(reducer, arr, nodata=nodata)
     assert list(got) == REDUCER_STATS
-    assert got["count"].dtype == got["variety"].dtype == np.int64
+    count_type = np.float64 if mode.get("fractional") else np.int64
+    assert got["count"].dtype == count_type and got["variety"].dtype == np.int64
     assert got["mean"].dtype == np.float64
     column = expected.to_geojson()["features"]
     for stat in REDUCER_STATS:
