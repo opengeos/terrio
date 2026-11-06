@@ -2605,6 +2605,7 @@ mod tests {
 
     /// A server keeping its connections open (HTTP/1.1 keep-alive) answering any range of
     /// `data` at any path, and the number of connections it has accepted.
+    #[cfg(unix)]
     fn serve_keep_alive(data: Vec<u8>) -> (String, Arc<AtomicU64>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/", listener.local_addr().unwrap());

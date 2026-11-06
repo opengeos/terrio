@@ -1648,7 +1648,11 @@ mod tests {
         assert!(output.join("a.las").symlink_metadata().unwrap().file_type().is_symlink());
         std::fs::remove_file(output.join("a.las")).unwrap();
         let name = std::ffi::OsString::from_vec(b"invalid-\xff.las".to_vec());
-        std::fs::write(input.join(name), "invalid UTF-8 name").unwrap();
+        // macOS file systems refuse names that are not UTF-8 (EILSEQ), so there is nothing to skip.
+        if let Err(error) = std::fs::write(input.join(name), "invalid UTF-8 name") {
+            assert!(cfg!(target_os = "macos") && error.raw_os_error() == Some(libc::EILSEQ), "{error}");
+            return;
+        }
         assert!(run_batch().unwrap_err().to_string().contains("not UTF-8"));
         assert_eq!(std::fs::read_dir(&output).unwrap().count(), 0);
     }
