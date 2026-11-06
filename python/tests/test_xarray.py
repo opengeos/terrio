@@ -229,6 +229,56 @@ def test_band_as_variable_and_engine(files):
     assert not TerrioBackendEntrypoint().guess_can_open("a/b.nc")
 
 
+def test_clip_takes_a_layer(files):
+    """A Layer clips as its GeoJSON does, from its own CRS, without contradicting `crs=`."""
+    from terrio.rio.features import geometry_mask
+
+    da = txr.open_rasterio(files["dem"], masked=True)
+    polys = [
+        {
+            "type": "Polygon",
+            "coordinates": [
+                [(503000, 4093000), (506000, 4093000), (503000, 4096000), (503000, 4093000)]
+            ],
+        },
+        {
+            "type": "Polygon",
+            "coordinates": [
+                [(507000, 4094000), (508000, 4094000), (508000, 4095000), (507000, 4094000)]
+            ],
+        },
+    ]
+    features = [{"type": "Feature", "properties": {}, "geometry": p} for p in polys]
+    layer = terrio.Layer.from_geojson(
+        {"type": "FeatureCollection", "features": features}, crs=da.terrio.crs.to_wkt()
+    )
+    for kw in ({}, {"all_touched": True}, {"drop": False, "invert": True}):
+        xr.testing.assert_identical(da.terrio.clip(layer, **kw), da.terrio.clip(polys, **kw))
+    lon_lat = layer.to_crs("EPSG:4326")
+    lon_lat_polys = [f["geometry"] for f in lon_lat.to_geojson()["features"]]
+    xr.testing.assert_identical(
+        da.terrio.clip(lon_lat), da.terrio.clip(lon_lat_polys, crs="EPSG:4326")
+    )
+    ds = xr.Dataset({"a": da, "b": da * 2})
+    xr.testing.assert_identical(ds.terrio.clip(layer), ds.terrio.clip(polys))
+    with pytest.raises(ValueError, match="Layer's own CRS"):
+        da.terrio.clip(layer, crs="EPSG:4326")
+    with pytest.raises(ValueError, match="must be 2D"):
+        geometry_mask(layer, (2, 400, 400), da.terrio.transform())
+    # A Layer without a CRS of its own takes `crs=`.
+    pa = pytest.importorskip("pyarrow")
+    bare = terrio.Layer.from_arrow(pa.table({"geometry": pa.array(lon_lat.to_wkb())}))
+    assert bare.crs is None
+    xr.testing.assert_identical(
+        da.terrio.clip(bare, crs="EPSG:4326"), da.terrio.clip(lon_lat_polys, crs="EPSG:4326")
+    )
+    # A grid terrio does not burn on directly (south-up) goes through GeoJSON.
+    south_up = Affine(30.0, 0.0, 500000.0, 0.0, 30.0, 4090000.0)
+    np.testing.assert_array_equal(
+        geometry_mask(layer, (400, 400), south_up), geometry_mask(polys, (400, 400), south_up)
+    )
+
+
 def test_clip_reproject_pad(files):
     da = txr.open_rasterio(files["dem"], masked=True)
     acc = da.terrio

@@ -160,7 +160,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
         bottom_up: false,
     };
     let header = path.with_extension("ers");
-    std::fs::write(data_path(&header), common::encode(r, &layout))?;
+    common::write_headerless(data_path(&header), &header, common::encode(r, &layout))?;
     let crs = super::common::spatial_ref(&r.crs);
     let (projection, datum) = match crs.epsg {
         Some(4326) => ("GEODETIC".to_string(), "WGS84".to_string()),
@@ -189,7 +189,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
         h.push_str(&format!("\t\tNullCellValue\t= {}\n", common::format_value(nd, r.data_type)));
     }
     h.push_str("\tRasterInfo End\nDatasetHeader End\n");
-    std::fs::write(&header, h)?;
+    common::write_replacing(&header, h)?;
     // A CRS that ER Mapper cannot name goes to a GDAL sidecar, as GDAL does.
     if projection == "RAW" {
         common::write_pam(&header, &r.crs)?;

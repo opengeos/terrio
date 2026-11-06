@@ -224,6 +224,8 @@ fn internal_masks_and_rows_written_in_order() {
             let band = 50 * 40;
             for y in (0..40).step_by(step) {
                 let n = step.min(40 - y);
+                // Rows of another type are refused, their mask rows with them.
+                assert!(w.write_rows(&RasterData::F32(vec![0.0; 50 * 3]), 1, Some(&mask[y * 50..(y + 1) * 50])).is_err());
                 let mut chunk = Vec::new();
                 for b in 0..3 {
                     chunk.extend_from_slice(&ds.raster.data_u8().unwrap()[b * band + y * 50..b * band + (y + n) * 50]);
@@ -246,10 +248,12 @@ fn internal_masks_and_rows_written_in_order() {
             assert_eq!(part, (8..13).flat_map(|r| (3..13).map(move |c| (r, c))).map(|(r, c)| mask[r * 50 + c]).collect::<Vec<_>>());
         }
     }
-    // Rows must not go past the raster.
+    // Rows must be of the raster's type, and not go past the raster.
     let mut header = ds.clone();
     header.raster.data = RasterData::U8(Vec::new());
     let mut w = GeoTiffWriter::create(dir.path().join("x.tif").to_str().unwrap(), &header, &Default::default()).unwrap();
+    assert!(w.write_rows(&RasterData::F32(vec![0.0; 50 * 3]), 1, None).is_err());
+    assert!(w.write_rows(&RasterData::F32(Vec::new()), 0, None).is_err());
     assert!(w.write_rows(&RasterData::U8(vec![0; 50 * 41 * 3]), 41, None).is_err());
     assert!(w.finish().is_err());
 }

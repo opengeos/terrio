@@ -73,6 +73,34 @@ test("the module's build and its formats", () => {
   }
 });
 
+test("the block cache's size is set, read back and cleared", () => {
+  const original = terrio.blockCacheMax();
+  try {
+    terrio.setBlockCacheMax(8 << 20);
+    assert.equal(terrio.blockCacheMax(), 8 << 20);
+    for (const bad of [-1, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 2]) {
+      assert.throws(() => terrio.setBlockCacheMax(bad), /setBlockCacheMax/, String(bad));
+    }
+    assert.equal(terrio.blockCacheMax(), 8 << 20);
+    const data = new Int16Array(64 * 64).map((_, i) => i % 1000);
+    const bytes = terrio.rasterFromArray(data, 64, 64, [0, 1, 0, 64, 0, -1], "EPSG:32610").toBytes("c.tif", { compress: "DEFLATE", tileSize: 16 });
+    const window = [10, 10, 30, 20];
+    const reads = [];
+    for (const size of [8 << 20, 0]) {
+      terrio.setBlockCacheMax(size);
+      terrio.clearBlockCache();
+      const ds = terrio.open(bytes, "c.tif");
+      reads.push([...ds.readBand(1, window)], [...ds.readBand(1, window)]);
+    }
+    assert.equal(terrio.blockCacheMax(), 0);
+    for (const r of reads) assert.deepEqual(r, reads[0]);
+    assert.equal(reads[0].length, 30 * 20);
+  } finally {
+    terrio.setBlockCacheMax(original);
+    terrio.clearBlockCache();
+  }
+});
+
 test("raster from array, to GeoTIFF bytes and back", () => {
   const data = new Int16Array(2 * 3 * 4).map((_, i) => i - 5);
   const ds = terrio.rasterFromArray(data, 4, 3, [500000, 30, 0, 4100000, 0, -30], "EPSG:32610", -9999);
@@ -3110,6 +3138,34 @@ test("rasterTiles streams encoded files and planRasterTiles reads metadata", () 
   raster.free();
 });
 
+test("rasterTiles builds lower zooms from child tiles or the source, and writes WebP", () => {
+  const raster = terrio.createRaster(null, {size: [8, 8], ot: "Byte", burn: [7], crs: "EPSG:4326", bbox: [0, 0, 8, 8]});
+  const options = {tilingScheme: "raster", grid: {tileSize: 2, minZoom: 0}, resampling: "nearest"};
+  for (const overviewSource of ["tiles", "source"]) {
+    for (const format of ["GTiff", "WEBP"]) {
+      const names = [];
+      const report = terrio.rasterTiles(raster, {...options, overviewSource, format}, (name, bytes) => {
+        if (format === "WEBP") {
+          // The WASM build writes WebP (and PNG) but does not read them back.
+          assert.equal(new TextDecoder().decode(bytes.slice(8, 12)), "WEBP");
+        } else {
+          const tile = terrio.open(bytes, name);
+          assert.equal(tile.readBand(1)[0], 7);
+          tile.free();
+        }
+        names.push(name);
+      });
+      assert.equal(report.written, 1 + 4 + 16);
+      // From tiles, generation is depth first and the root follows its children; from the
+      // source, levels are generated from zoom 0 up.
+      const root = `0/0/0.${format === "GTiff" ? "tif" : "webp"}`;
+      assert.equal(overviewSource === "tiles" ? names.at(-1) : names[0], root);
+    }
+  }
+  assert.throws(() => terrio.planRasterTiles(raster, {...options, overviewSource: "parents"}), /variant/i);
+  raster.free();
+});
+
 test("rasterTiles keeps valid floating zero tiles with nonzero nodata", () => {
   const raster = terrio.createRaster(null, {size: [3, 3], ot: "Float32", burn: [0], nodata: -999999, crs: "EPSG:4326", bbox: [0, 0, 3, 3]});
   const report = terrio.rasterTiles(raster, {tilingScheme: "raster", grid: {tileSize: 2}, format: "GTiff", resampling: "nearest", skipBlank: true}, (name, bytes) => {
@@ -3809,7 +3865,9 @@ test("ZonalReducer gives zonalStats' results for arrays supplied window by windo
   let seed = 7;
   const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
   const values = Array.from({length: width * height}, () => (next() < 0.1 ? null : Math.floor(next() * 40)));
-  for (const [Type, nodata] of [[Uint16Array, 0], [Uint16Array, undefined], [Int16Array, 0], [Float32Array, NaN], [Float64Array, NaN]]) {
+  // 8-bit zones of 256 pixels or more are counted in histograms.
+  const types = [[Uint8Array, 0], [Int8Array, 0], [Uint16Array, 0], [Uint16Array, undefined], [Int16Array, 0], [Float32Array, NaN], [Float64Array, NaN]];
+  for (const [Type, nodata] of types) {
     const data = Type.from(values, (v) => (v === null ? (Number.isNaN(nodata) ? NaN : 0) : v));
     const raster = terrio.rasterFromArray(data, width, height, transform, "EPSG:4326", nodata);
     for (const mode of [{}, {allTouched: true}, {fractional: true}]) {

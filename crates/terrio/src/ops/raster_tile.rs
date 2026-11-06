@@ -144,29 +144,36 @@ pub struct TileLevel {
 impl TileLevel {
     /// Iterate row by row without allocating tile descriptors for the whole level.
     pub fn cells(&self, convention: Convention) -> impl Iterator<Item = TileCell> + '_ {
-        (self.range.min_y..=self.range.max_y).flat_map(move |row| {
-            (self.range.min_x..=self.range.max_x).map(move |column| {
-                let m = self.matrix;
-                let y = match convention {
-                    Convention::Xyz => row,
-                    Convention::Tms => m.rows - 1 - row,
-                };
-                TileCell {
-                    zoom: m.zoom,
-                    x: column,
-                    y,
-                    size: [m.tile_size; 2],
-                    geo_transform: [
-                        m.origin[0] + column as f64 * m.tile_size as f64 * m.resolution[0],
-                        m.resolution[0],
-                        0.0,
-                        m.origin[1] - row as f64 * m.tile_size as f64 * m.resolution[1],
-                        0.0,
-                        -m.resolution[1],
-                    ],
-                }
-            })
-        })
+        (self.range.min_y..=self.range.max_y)
+            .flat_map(move |row| (self.range.min_x..=self.range.max_x).map(move |column| self.cell(column, row, convention)))
+    }
+
+    /// The cell at a column and top-left row of the full matrix.
+    pub fn cell(&self, column: u64, row: u64, convention: Convention) -> TileCell {
+        let m = self.matrix;
+        let y = match convention {
+            Convention::Xyz => row,
+            Convention::Tms => m.rows - 1 - row,
+        };
+        TileCell {
+            zoom: m.zoom,
+            x: column,
+            y,
+            size: [m.tile_size; 2],
+            geo_transform: [
+                m.origin[0] + column as f64 * m.tile_size as f64 * m.resolution[0],
+                m.resolution[0],
+                0.0,
+                m.origin[1] - row as f64 * m.tile_size as f64 * m.resolution[1],
+                0.0,
+                -m.resolution[1],
+            ],
+        }
+    }
+
+    /// Whether a column and top-left row are selected at this level.
+    pub fn contains(&self, column: u64, row: u64) -> bool {
+        (self.range.min_x..=self.range.max_x).contains(&column) && (self.range.min_y..=self.range.max_y).contains(&row)
     }
 }
 

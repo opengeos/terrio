@@ -1528,10 +1528,15 @@ terrio tile rgb.tif tiles --min-zoom 5 --max-zoom 8 --resampling nearest
 terrio tile dem.tif dem-tiles --tiling-scheme raster --format GTiff --tile-size 512
 terrio tile rgb.tif tiles --resume
 terrio tile rgb.tif ignored --dry-run
+terrio mosaic --nodata 0 @files.txt mosaic.vrt
+terrio tile mosaic.vrt tiles --format WEBP --min-zoom 0 --max-zoom 18 --convention tms
 ```
 
-PNG requires Byte gray/RGB/palette input, optionally with alpha; scale other
-inputs first, or select `--format GTiff` to retain their types and bands.
+PNG and WebP (`--format WEBP`, lossless) require Byte gray/RGB/palette input,
+optionally with alpha; scale other inputs first, or select `--format GTiff` to
+retain their types and bands. WebP stores gray tiles as RGB, and omits the alpha
+band of a fully opaque tile, so `--add-alpha` is refused with WebP. KML publication refuses
+WebP tiles, which Google Earth ground overlays do not display.
 PNG tiles get alpha for nodata, dataset masks and padded edges. Each color
 channel's nodata is excluded before interpolation; the pixel remains opaque when
 other channels are valid. GeoTIFF outputs without alpha retain dataset masks and
@@ -1570,13 +1575,27 @@ alpha fractions are retained in typed GeoTIFF tiles; GDAL 3.13.3's tile writer
 can quantize such alpha samples to integers.
 
 Maximum-zoom resampling defaults to cubic; `--overview-resampling` selects the
-method at lower zooms. Every zoom is rendered directly from the source (using
-its stored overviews when appropriate), rather than downsampling previously
-encoded tiles. This can differ from GDAL's generated-image pyramid. Image/alpha
+method at lower zooms. The maximum zoom is rendered from the source, and by
+default (`--overview-source tiles`) each lower-zoom tile resamples the four tiles
+below it, as GDAL builds its overview tiles. Tiles are generated depth first, so
+at most four tiles per zoom level are held in memory, and every source window is
+the size of one maximum-zoom tile: a mosaic without overviews (such as a VRT of
+thousands of files) can be tiled from zoom 0. The exception is a resumed run that
+rebuilds a missing parent from the source (see `--resume` below), whose window
+is the parent's full footprint. A tile at a resampling-kernel's
+edge sees only its four children, not their neighbors. Children outside the plan
+count as invalid, including those that `--min-x/--max-x/--min-y/--max-y` exclude, so a
+parent straddling a coordinate limit is partly transparent, as in GDAL; select
+`--overview-source source` to render such parents from the full source. `--overview-source source`
+renders every zoom directly from the source (using its stored overviews when
+appropriate), whose source windows grow fourfold per zoom level without
+overviews and can exceed the 64 MiB window budget. Image/alpha
 tiles support nearest, bilinear, cubic, cubicspline, lanczos and average;
 plain GeoTIFF tiles also support the warp engine's statistical methods.
 Interpolating kernels use premultiplied alpha; exact GDAL agreement is currently
-validated for nearest-neighbor tiling. Affine georeferencing is required;
+validated for nearest-neighbor tiling, including pyramids built from tiles. With
+bilinear resampling, lower zooms built from tiles differ from GDAL 3.13.3's by up
+to a few levels on some pixels. Affine georeferencing is required;
 global schemes also require a known source CRS;
 image/alpha tiles refuse Int64/UInt64 input to avoid float conversion losses;
 additional GDAL matrix sets are not currently implemented. Publication companions
@@ -1603,6 +1622,11 @@ filesystem confinement. Atomic publication requires hard-link support on the
 output filesystem; unsupported filesystems return an I/O error. File contents
 are synced before publication; power-loss durability of directory entries is
 not guaranteed.
+
+On resume, tiles missing below an existing tile are filled too. A missing
+lower-zoom tile is rebuilt from the existing tiles below it (decoded from their
+files), or from the source when their files do not record which pixels are valid:
+tiles without alpha, including plain GeoTIFF tiles, whose padding is not data.
 
 Directory writes require a native filesystem; WebAssembly callers use the
 incremental tile sink instead. The command is also the MCP `tile` tool. Rust callers use
@@ -1634,9 +1658,9 @@ terrio tile input.tif published --webviewer all --kml \
 
 `--webviewer` accepts `none` (default), `all`, `leaflet`, `openlayers`, `mapml`
 or `stac`. `all` selects the companions applicable to the chosen grid. Leaflet
-requires a global PNG grid; OpenLayers supports PNG grids, including raster
+requires a global PNG or WebP grid; OpenLayers supports PNG and WebP grids, including raster
 grids with unequal X/Y resolution. MapML requires global XYZ tiles. STACTA
-(`stacta.json`) requires XYZ, a known CRS, square pixels and blank tiles retained, and can be reopened
+(`stacta.json`) requires XYZ, a known CRS, square pixels, blank tiles retained and PNG or GTiff tiles, and can be reopened
 as a raster. Leaflet/OpenLayers pages fetch pinned public library distributions.
 Serve the generated directory over HTTP to view it in a browser.
 
@@ -2469,11 +2493,17 @@ to five strips of about 8 MB of its bands, or of a whole row of blocks when that
 row of 1024-row blocks of ten UInt16 bands 10,980 columns wide is 225 MB), and one raster is
 reduced per thread. Median, quantiles, mode, minority and variety also keep each zone's values
 from the strip of its first row to that of its last: 8 bytes per pixel and band (16 with
-`--fractional`), and while a zone finishes, a sorted copy of one band's values (16 bytes per
-pixel). The rasters reduced at once keep at most 1 GiB of values together: a raster's bands
-are reduced in groups that fit, one band at a time when one band's take more (a zone covering a
-whole multi-band raster), each group reading the raster again, and a group waits while others
-hold the budget. The zones of each grid are held as
+`--fractional`), and while a zone finishes, one band's values binned by value (16 bytes per
+distinct value, or per pixel with `--fractional`, plus 8 for the ranks of a binary median or
+quantile). Of an 8- or 16-bit integer band, a zone of at least as many pixels as the type has
+values (256 or 65,536) counts them in a histogram (2 or 512 KiB) instead, so all the bands of such a raster
+are usually reduced at once. Results are the same, but with `--fractional`: such a zone sums its
+coverages in another order, so their rounding can change its quantiles in the last digits, or which
+of two values whose coverage sums tie within rounding is its mode or minority.
+The rasters reduced at once keep at most 1 GiB of values together: a
+raster's bands are reduced in groups that fit, one band at a time when one band's take more (a
+zone covering a whole multi-band float raster), each group reading the raster again, and a group
+waits while others hold the budget. The zones of each grid are held as
 spans of covered pixels until every raster is reduced: 24 bytes per covered run of a row,
 and per partially covered cell with `--fractional`. Building a zone takes a mask of its bounding
 box for a moment, a byte per pixel (8 with `--fractional`). Integers above 2⁵³ can lose precision.
@@ -2526,9 +2556,10 @@ with one byte for binary masks. On a complete 966×731 real NLCD window (706,146
 pixels), three local count-only runs used peak RSS 44.2–44.7 MiB for binary and
 49.6–50.6 MiB for fractional membership; median times were 0.068 and 0.080 s.
 These measurements include process overhead and are not portable thresholds.
-Requesting `median` additionally retains value/coverage pairs (16 bytes per
-contributing sample) in both membership modes. Binary coverage is always one;
-its median sample buffer previously used eight bytes per sample.
+Requesting `median` additionally keeps each zone's values (8 bytes per zone pixel
+and band, 16 with `--fractional`, as above), unless the zone is counted in a
+histogram (a zone of an 8- or 16-bit integer band with at least as many pixels as
+the type has values, see above).
 
 ## Vector datasets
 
@@ -3721,7 +3752,8 @@ terrio ui --port 8080 --no-open
 
 Serves a page with a form for every command, generated from the
 [command catalog](#machine-readable-command-catalog), so it always matches this binary. Pick files
-with the built-in file browser, which lists the disk of the computer running terrio; the page shows
+with the built-in file browser, which lists the disk of the computer running terrio: type the start of
+a name to jump to it, and repeat a letter to step through the names that start with it. The page shows
 the equivalent command line, quoted for a POSIX shell, to copy into a script. Relative paths are
 taken from the directory `terrio ui` started in. **Cancel**, or closing the tab, stops a running command, which can leave a
 partial output file; Ctrl-C stops the server. This works through both the `terrio` binary and the

@@ -360,7 +360,7 @@ enum TileFormat {
 /// `table` names the tile table (by default, the file name without its extension, as in GDAL).
 pub(crate) fn write(r: &wbraster::Raster, nodata: Option<f64>, path: &Path, compression: Option<&str>, table: Option<&str>) -> Result<()> {
     let table = table.or_else(|| path.file_stem().and_then(|s| s.to_str())).filter(|s| !s.is_empty()).unwrap_or("raster");
-    std::fs::write(path, to_bytes(r, nodata, table, compression)?)?;
+    common::write_replacing(path, to_bytes(r, nodata, table, compression)?)?;
     Ok(())
 }
 

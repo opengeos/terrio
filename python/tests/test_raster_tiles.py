@@ -32,6 +32,52 @@ def test_folder_tiles(tmp_path, kind):
         terrio.raster_tiles(raster, output, **options)
 
 
+def test_lower_zooms_from_tiles_or_source_and_webp_validity(tmp_path):
+    rows, cols = np.mgrid[0:8, 0:8]
+    array = np.stack([cols * 30 + 1, rows * 30 + 1, (rows + cols) * 15 + 1]).astype("uint8")
+    array[:, :4, :2] = 0  # a nodata hole covering one zoom-1 pixel block
+    raster = terrio.Raster.from_array(array, (0, 1, 0, 8, 0, -1), crs="EPSG:4326", nodata=0)
+    pixels = {}
+    for overview_source in ["tiles", "source"]:
+        for fmt in ["PNG", "WEBP"]:
+            output = tmp_path / f"{overview_source}-{fmt}"
+            report = terrio.raster_tiles(
+                raster,
+                output,
+                tiling_scheme="raster",
+                grid={"tile_size": 2, "min_zoom": 0},
+                resampling="average",
+                format=fmt,
+                overview_source=overview_source,
+            )
+            assert report["written"] == 1 + 4 + 16
+            ext = fmt.lower()
+            pixels[overview_source, fmt] = {
+                p.relative_to(output).with_suffix("").as_posix(): terrio.open_raster(str(p)).read()
+                for p in output.rglob(f"*.{ext}")
+            }
+    for key, tiles in pixels.items():
+        # Lossless WebP keeps the PNG pixels and validity.
+        assert tiles.keys() == pixels[key[0], "PNG"].keys()
+        for name, tile in tiles.items():
+            np.testing.assert_array_equal(tile, pixels[key[0], "PNG"][name])
+        # Zoom 2 is the source; the hole's pixels are transparent and the rest opaque.
+        np.testing.assert_array_equal(tiles["2/0/0"][:3, 1, :], array[:, 1, :2])
+        np.testing.assert_array_equal(tiles["2/0/0"][3], [[0, 0], [0, 0]])
+        np.testing.assert_array_equal(tiles["2/3/3"], array[:, 6:8, 6:8])  # opaque: no alpha band
+        # Zoom 1 averages 2 x 2 source blocks.
+        blocks = array[:, 4:8, 4:8].reshape(3, 2, 2, 2, 2).mean(axis=(2, 4))
+        np.testing.assert_allclose(tiles["1/1/1"], blocks, atol=1)
+        # The zoom-0 tile is 2 x 2 pixels of 4 x 4 blocks: the top-left one is half hole.
+        root = tiles["0/0/0"]
+        assert root.shape == (4, 2, 2)
+        np.testing.assert_allclose(root[3], [[127.5, 255], [255, 255]], atol=0.5)
+        expected = array[:, 4:8, 4:8].reshape(3, -1).mean(axis=1)
+        np.testing.assert_allclose(root[:3, 1, 1], expected, atol=1)
+    for name, tile in pixels["tiles", "PNG"].items():
+        assert np.abs(tile.astype(int) - pixels["source", "PNG"][name]).max() <= 1, name
+
+
 def test_valid_zero_tiff_samples_are_preserved(tmp_path):
     raster = terrio.Raster.from_array(
         np.zeros((1, 3, 5), dtype="float32"),

@@ -272,6 +272,11 @@ impl LazyRaster {
         let mut data: Option<RasterData> = None;
         for (k, &b) in read.bands.iter().enumerate() {
             let band = self.resample_bands(&Read { bands: vec![b], ..read.clone() }, &kinds[k..k + 1])?;
+            // The band of a read of one band is the read: kept rather than copied.
+            if data.is_none() && band.len() == read.bands.len() * n {
+                data = Some(band);
+                continue;
+            }
             let data = data.get_or_insert_with(|| RasterData::new_filled(band.data_type(), read.bands.len() * n, 0.0));
             place(data, &band, k * n);
         }
@@ -372,6 +377,11 @@ impl LazyRaster {
         let mut out: Option<RasterData> = None;
         for part in &parts {
             let mut data = self.read_part(read, kinds, part)?;
+            // A part of every band is the read: kept rather than copied.
+            if out.is_none() && data.len() == read.bands.len() * n {
+                out = Some(data);
+                continue;
+            }
             let out = out.get_or_insert_with(|| RasterData::new_filled(data.data_type(), read.bands.len() * n, 0.0));
             if data.data_type() != out.data_type() {
                 // Bands of several types: in the type of the first read.

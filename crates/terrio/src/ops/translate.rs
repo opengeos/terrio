@@ -192,6 +192,32 @@ fn geometry(ds: &RasterDataset, o: &TranslateOptions) -> Result<Geometry> {
 /// Copies a window of a raster to a new one, optionally resized, rescaled, retyped and with new
 /// georeferencing, as `gdal_translate` does.
 pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDataset> {
+    translate_pixels(ds, o, None)
+}
+
+/// [`translate`] of a dataset it takes: an output that copies the whole of it, every band in
+/// order, in its type, by nearest neighbour and not rescaled, has its pixels converted where they
+/// are instead of copied.
+fn translate_owned(mut ds: RasterDataset, o: &TranslateOptions) -> Result<RasterDataset> {
+    let r = &ds.raster;
+    let whole = [0.0, 0.0, r.cols as f64, r.rows as f64];
+    let copies = o.scale.is_none()
+        && o.exponent.is_none()
+        && o.resampling.is_none_or(|m| m == Resampling::Nearest)
+        && o.output_type.is_none_or(|t| t == r.data_type)
+        && (o.bands.is_empty() || o.bands.iter().copied().eq(1..=r.bands))
+        && geometry(&ds, o).is_ok_and(|g| g.size == (r.cols, r.rows) && g.rects == Some((whole, whole)));
+    if !copies {
+        return translate(&ds, o);
+    }
+    let empty = RasterData::new_filled(r.data_type, 0, 0.0);
+    let pixels = std::mem::replace(&mut ds.raster.data, empty);
+    translate_pixels(&ds, o, Some(pixels))
+}
+
+/// [`translate`], with the pixels of `ds` taken out as `pixels` when the output copies them all
+/// ([`translate_owned`]).
+fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<RasterData>) -> Result<RasterDataset> {
     let r = &ds.raster;
     let (w, h) = (r.cols as f64, r.rows as f64);
     let nearest = o.resampling.is_none_or(|m| m == Resampling::Nearest);
@@ -209,14 +235,25 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
 
     let complex = o.scale.is_some() || o.exponent.is_some();
     let n = ow * oh;
-    let mut out = RasterData::new_filled(out_type, n * bands.len(), 0.0);
+    let in_place = pixels.is_some();
+    let mut out = pixels.unwrap_or_else(|| RasterData::new_filled(out_type, n * bands.len(), 0.0));
     for (k, &b) in bands.iter().enumerate() {
+        if in_place {
+            // Converted as the copy below converts them.
+            crate::pixel::with_data!(&mut out, v => {
+                crate::par::chunks_mut(&mut v[k * n..(k + 1) * n], crate::par::chunk_len(n, 1 << 16), |_, chunk| {
+                    chunk.iter_mut().for_each(|x| *x = convert_value(crate::pixel::Pixel::to_f64(*x), out_type) as _);
+                });
+            });
+            continue;
+        }
         let src_nodata = ds.band_nodata(b);
         let values = super::BandView::of(r, b - 1);
-        let valid: Option<Vec<bool>> = src_nodata.map(|nd| values.valid(nd));
+        // Rescaling and resampling skip invalid pixels; a nearest-neighbour read copies them.
+        let valid: Option<Vec<bool>> = if complex || !nearest { src_nodata.map(|nd| values.valid(nd)) } else { None };
         let read = SourceRead {
             values,
-            valid: if complex || !nearest { valid.as_deref() } else { None },
+            valid: valid.as_deref(),
             width: r.cols,
             height: r.rows,
             src_type: r.data_type,
@@ -462,7 +499,7 @@ impl LazyRead {
                 g
             })
             .collect();
-        translate(&resized, &self.values)
+        translate_owned(resized, &self.values)
     }
 
     /// The header of the whole output, of `oh` rows, from `first`, its first rows (their pixels
@@ -608,11 +645,11 @@ fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelec
             Some(i) => {
                 let (lw, lh) = overviews[i];
                 let ds = src.read_window(crate::Window::full(lw, lh), &crate::WindowOptions { bands: Vec::new(), overview: Some(i) })?;
-                translate(&ds, &level_options)
+                translate_owned(ds, &level_options)
             }
             None => match src.dataset() {
                 Some(ds) => translate(ds, o),
-                None => translate(&src.read()?, o),
+                None => translate_owned(src.read()?, o),
             },
         }
         .map(Planned::Translated);
@@ -917,6 +954,49 @@ mod tests {
         assert_eq!(out.geo_transform()[1], 20.0);
         // Nearest: output pixel (0, 0) reads source (1, 1).
         assert_eq!(out.raster.data.to_f64_vec()[0], 11.0);
+    }
+
+    /// A dataset translated where its pixels are holds what a copy of them holds: a float32
+    /// signaling NaN quieted and UInt64 values past `f64`'s whole numbers rounded alike, with new
+    /// nodata, bands or bounds; other windows, types and band orders are copied.
+    #[test]
+    fn translate_in_place_converts_as_a_copy() {
+        let mut f32s = ds(3, 2);
+        let RasterData::F32(v) = &mut f32s.raster.data else { panic!("not float32") };
+        (v[1], v[2], v[3]) = (f32::from_bits(0x7f80_0001), f32::from_bits(0xffc0_1234), -1.0);
+        let mut u64s = ds(3, 2);
+        u64s.raster.data_type = DataType::U64;
+        u64s.raster.data = RasterData::U64((1..12).map(|i| (1u64 << 53) + i).chain([u64::MAX]).collect());
+        let bits = |d: &RasterData| match d {
+            RasterData::F32(v) => v.iter().map(|x| u64::from(x.to_bits())).collect::<Vec<_>>(),
+            RasterData::F64(v) => v.iter().map(|x| x.to_bits()).collect(),
+            RasterData::U64(v) => v.clone(),
+            _ => unreachable!(),
+        };
+        let base = TranslateOptions::default();
+        let options = [
+            base.clone(),
+            TranslateOptions { assign_nodata: Some(Some(5.0)), assign_ullr: Some((0.0, 20.0, 30.0, 0.0)), ..base.clone() },
+            TranslateOptions { bands: vec![1, 2], output_type: Some(DataType::F32), ..base.clone() },
+            TranslateOptions { bands: vec![2, 1], ..base.clone() },
+            TranslateOptions { bands: vec![2], ..base.clone() },
+            TranslateOptions { output_type: Some(DataType::F64), ..base.clone() },
+            TranslateOptions { src_win: Some((1.0, 0.0, 2.0, 2.0)), ..base.clone() },
+        ];
+        let at = |d: &RasterData| crate::pixel::with_data!(d, v => v.as_ptr() as usize);
+        for d in [f32s, u64s] {
+            for (i, o) in options.iter().enumerate() {
+                let owned = d.clone();
+                let pixels = at(&owned.raster.data);
+                let (copy, in_place) = (translate(&d, o).unwrap(), translate_owned(owned, o).unwrap());
+                // The options copying every band in the source's type keep the pixels' buffer.
+                let kept = i < 2 || (i == 2 && d.raster.data_type == DataType::F32);
+                assert_eq!(at(&in_place.raster.data) == pixels, kept, "{o:?}");
+                assert_eq!(bits(&in_place.raster.data), bits(&copy.raster.data), "{:?} {o:?}", d.raster.data_type);
+                assert_eq!(in_place.band_nodata, copy.band_nodata);
+                assert_eq!(in_place.geo_transform(), copy.geo_transform());
+            }
+        }
     }
 
     /// A float32 raster of uneven values, with -inf nodata pixels at the left corners if `nodata`.

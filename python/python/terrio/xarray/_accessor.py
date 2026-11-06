@@ -32,6 +32,7 @@ import numpy as np
 import xarray
 from affine import Affine
 
+from terrio import _terrio
 from terrio.rio import mask as rio_mask
 from terrio.rio import open as rio_open
 from terrio.rio import warp, windows
@@ -1590,8 +1591,10 @@ class TerrioArray(XRasterBase):
         """Clips the array to geometries: pixels outside them become nodata.
 
         Args:
-            geometries: GeoJSON-like geometries (dicts, or objects with `__geo_interface__`).
-            crs: Their CRS (default: the array's).
+            geometries: GeoJSON-like geometries (dicts, or objects with `__geo_interface__`), or
+                a terrio `Layer`, burnt without a round trip through GeoJSON on north-up grids in
+                memory.
+            crs: Their CRS (default: the Layer's own, else the array's).
             all_touched: Keep every pixel a geometry touches (else those whose centre is inside).
             drop: Crop to the geometries' extent.
             invert: Keep the pixels outside the geometries instead.
@@ -1604,16 +1607,34 @@ class TerrioArray(XRasterBase):
         Raises:
             MissingCRS: If the array has no CRS.
             NoDataInBounds: If no pixel is left.
+            ValueError: If `crs` differs from the Layer's own CRS.
         """
         if self.crs is None:
             raise MissingCRS(
                 "CRS not found. Please set the CRS with 'rio.write_crs()'."
                 f"{get_data_var_message(self._obj)}"
             )
-        crs = crs_from_user_input(crs) if crs is not None else self.crs
-        geoms = [getattr(g, "__geo_interface__", g) for g in geometries]
-        if self.crs != crs:
-            geoms = list(warp.transform_geom(crs, self.crs, geoms))
+        crs = crs_from_user_input(crs) if crs is not None else None
+        geoms: Any
+        if isinstance(geometries, _terrio.Layer):
+            own = crs_from_user_input(geometries.crs) if geometries.crs else None
+            if own is not None and crs is not None and own != crs:
+                raise ValueError(f"crs={crs} differs from the Layer's own CRS")
+            src_crs = own or crs or self.crs
+            geoms = geometries
+            if src_crs != self.crs and own is None:
+                # A Layer without a CRS cannot reproject itself: as GeoJSON, from `crs`.
+                shapes = [f["geometry"] for f in geometries.to_geojson()["features"]]
+                geoms = list(warp.transform_geom(src_crs, self.crs, shapes))
+            elif src_crs != self.crs:
+                geoms = geometries.to_crs(self.crs.to_wkt())
+            if from_disk and isinstance(geoms, _terrio.Layer):
+                geoms = [f["geometry"] for f in geoms.to_geojson()["features"]]
+        else:
+            crs = crs or self.crs
+            geoms = [getattr(g, "__geo_interface__", g) for g in geometries]
+            if self.crs != crs:
+                geoms = list(warp.transform_geom(crs, self.crs, geoms))
         cropped: xarray.DataArray | None = None
         if from_disk:
             cropped = self._clip_from_disk(geoms, all_touched=all_touched, drop=drop, invert=invert)
@@ -2057,7 +2078,7 @@ class TerrioDataset(XRasterBase):
         """Clips every variable to geometries.
 
         Args:
-            geometries: GeoJSON-like geometries.
+            geometries: GeoJSON-like geometries, or a terrio `Layer`.
             crs: Their CRS.
             all_touched: Keep every pixel a geometry touches.
             drop: Crop to the geometries' extent.
@@ -2067,7 +2088,8 @@ class TerrioDataset(XRasterBase):
         Returns:
             xarray.Dataset: The clipped Dataset.
         """
-        geometries = list(geometries)
+        if not isinstance(geometries, _terrio.Layer):
+            geometries = list(geometries)
         out = self._per_var(
             lambda da: da.terrio.clip(
                 geometries,

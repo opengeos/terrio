@@ -120,13 +120,18 @@ impl<'a> Publication<'a> {
         {
             return Err(invalid("publication URLs must be HTTP(S) or relative"));
         }
+        if options.kml && extension == "webp" {
+            // KML ground overlays (Google Earth) take PNG, JPEG, GIF, BMP, TIFF or TGA images.
+            return Err(invalid("KML ground overlays do not support WebP tiles"));
+        }
         let global = !scheme.eq_ignore_ascii_case("raster");
         let square = plan.levels.iter().all(|l| (l.matrix.resolution[0] / l.matrix.resolution[1] - 1.).abs() < 1e-12);
         let applicable = |name: &str| match name {
-            "leaflet" => global && extension == "png",
-            "openlayers" => extension == "png",
+            "leaflet" => global && matches!(extension, "png" | "webp"),
+            "openlayers" => matches!(extension, "png" | "webp"),
             "mapml" => global && convention == Convention::Xyz,
-            "stac" => convention == Convention::Xyz && plan.crs.is_some() && square && !skip_blank,
+            // WebP tiles omit an opaque alpha band, so their band counts vary.
+            "stac" => convention == Convention::Xyz && plan.crs.is_some() && square && !skip_blank && extension != "webp",
             _ => false,
         };
         let mut viewers = BTreeSet::new();

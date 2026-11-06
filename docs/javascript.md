@@ -122,6 +122,13 @@ Work on vector features (parsing and writing GeoJSON, FlatGeobuf, GeoPackage...)
 calling thread in WebAssembly: its many small allocations contend on WebAssembly's allocator, one
 lock for all threads, and ran several times slower on more threads.
 
+## The block cache
+
+`blockCacheMax()` returns the most bytes of decoded GeoTIFF/COG chunks the cache keeps (64 MiB by
+default, as WebAssembly reads no environment variables; GDAL's `GDALGetCacheMax64`),
+`setBlockCacheMax(bytes)` sets it (0 turns the cache off; it throws for a negative or non-integer
+value) and `clearBlockCache()` empties it.
+
 ## Datasets larger than 4 GB: `terrio-js/memory64`
 
 WebAssembly modules have 32-bit memories, at most 4 GB. The `terrio-js/memory64` module (every
@@ -496,11 +503,12 @@ const ndvi = stream.finish(); // { mean: Float64Array, median: Float64Array }, o
 
 `finish()` returns an object of one `Float64Array` per statistic, keyed by its name, NaN where a
 zone has no valid pixels (`count` and `variety` are then 0). Statistics that keep values (median,
-quantiles, mode, minority, variety) hold each open zone's values in each stream, 8 bytes per
-pixel (16 with `fractional`): feed streams one at a time to bound them. It also takes
-`allTouched`, `fractional`, `layer` and `stripRows`; weighted statistics need `zonalStats`, and
-`tSrs` and `decimalPlaces` are not supported: the results are unrounded arrays, without
-geometries.
+quantiles, mode, minority, variety) hold each open zone's values in each stream, 8 bytes per pixel
+(16 with `fractional`): feed streams one at a time to bound them. In a stream fed arrays of one 8-
+or 16-bit integer type, a zone of at least 256 or 65,536 pixels counts them in a histogram of 2 or
+512 KiB instead. It also takes `allTouched`, `fractional`, `layer` and `stripRows`; weighted
+statistics need `zonalStats`, and `tSrs` and `decimalPlaces` are not supported: the results are
+unrounded arrays, without geometries.
 
 ## Native multidimensional arrays
 

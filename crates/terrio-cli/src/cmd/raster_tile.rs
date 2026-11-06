@@ -4,7 +4,7 @@
 // No code is translated from these sources.
 
 //! Directory tiles using the shared incremental renderer.
-use terrio::ops::raster_tile::{self as tile, Convention, GridOptions, TileLimits, TileOptions};
+use terrio::ops::raster_tile::{self as tile, Convention, GridOptions, OverviewSource, TileLimits, TileOptions};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -35,14 +35,19 @@ pub struct Args {
     no_intersection_ok: bool,
     #[arg(long, default_value = "xyz", value_parser = ["xyz", "tms"])]
     convention: String,
-    /// PNG (Byte gray/RGB/palette) or GTiff (retains sample types).
+    /// PNG or WEBP (lossless; Byte gray/RGB/palette), or GTiff (retains sample types).
     #[arg(short = 'f', long, default_value = "PNG")]
     format: String,
     #[arg(short = 'r', long, default_value = "cubic")]
     resampling: String,
-    /// Lower zooms resample directly from source, rather than previously encoded tiles.
+    /// Resampling of the lower zooms; defaults to --resampling.
     #[arg(long)]
     overview_resampling: Option<String>,
+    /// Build each lower-zoom tile from the four tiles below it (tiles), or from the source
+    /// (source). Source windows stay one tile in size with `tiles`, for mosaics without overviews
+    /// (except when --resume rebuilds a parent from the source).
+    #[arg(long, default_value = "tiles", value_parser = ["tiles", "source"])]
+    overview_source: String,
     #[arg(long, conflicts_with = "no_alpha")]
     add_alpha: bool,
     #[arg(long)]
@@ -89,6 +94,7 @@ pub fn run(args: &Args) -> terrio::Result<()> {
         format: args.format.clone(),
         resampling: args.resampling.clone(),
         overview_resampling: args.overview_resampling.clone(),
+        overview_source: if args.overview_source == "source" { OverviewSource::Source } else { OverviewSource::Tiles },
         alpha: if args.add_alpha {
             Some(true)
         } else if args.no_alpha {

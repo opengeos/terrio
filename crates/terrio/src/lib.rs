@@ -199,6 +199,7 @@
 pub mod arrow;
 #[cfg(feature = "avif")]
 mod avif;
+pub mod block_cache;
 mod civil_time;
 mod cog;
 mod cog_validate;
@@ -206,6 +207,7 @@ pub mod config;
 pub mod crs;
 mod dataset;
 pub mod dataset_files;
+mod deflate_compress;
 mod drivers;
 #[cfg(test)]
 mod entry_allow_list_tests;
