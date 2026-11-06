@@ -343,8 +343,9 @@ export class RemoteDir {
   get readonly() { return true; }
   lookup(name, last) {
     const known = this.entries.get(name);
-    // A name with more path after it is a folder, whatever an earlier lookup of it found.
-    if (known !== undefined && (last || known instanceof RemoteDir)) {
+    // A name with more path after it was looked up again when an earlier lookup found nothing
+    // (a host or folder is not a file); a known file is kept, and `resolve()` answers NOTDIR.
+    if (known !== undefined && (last || known !== null)) {
       if (known === null && this.missedWhy.has(name)) this.errors.push(this.missedWhy.get(name));
       return known;
     }
@@ -765,6 +766,9 @@ export class Wasi {
         // The remote mount (and anything in it) is neither moved nor replaced.
         if (from.parent.readonly || !to.parent || to.parent.readonly || from.node.readonly || (to.node && to.node.readonly)) return E.ROFS;
         if (to.node && isDir(to.node) && !isDir(from.node)) return E.ISDIR;
+        if (isDir(from.node) && to.node && !isDir(to.node)) return E.NOTDIR;
+        // A folder moved into itself would make a cycle.
+        if (isDir(from.node) && to.path.startsWith(`${from.path}/`)) return E.INVAL;
         if (to.node instanceof MemDir && to.node.entries.size) return E.NOTEMPTY;
         from.parent.entries.delete(from.name);
         to.parent.entries.set(to.name, from.node);

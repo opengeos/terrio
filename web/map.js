@@ -134,7 +134,6 @@ class MapView {
 
   setStatus() {
     this.statusBox.className = this.failure ? "panel bad" : "panel";
-    this.statusBox.id = "map-status";
     this.statusBox.textContent = this.failure || this.pointerText || (this.batching ? "Drawing…" : "");
     this.statusBox.hidden = !this.statusBox.textContent;
   }
@@ -193,7 +192,18 @@ class MapView {
       if (this.closed) return;
       const bytes = result.stdout;
       const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      // Each tile is a length and a PNG, or a zero length, filling the output exactly: anything else
+      // was written by something other than the tiles, and is not drawn.
       let at = 0;
+      for (let i = 0; i < batch.length; i++) {
+        const length = at + 4 <= bytes.length ? data.getUint32(at, true) : -1;
+        if (length < 0 || at + 4 + length > bytes.length || (length && (length < 8 || data.getUint32(at + 4) !== 0x89504e47))) {
+          throw new Error("the command line wrote unexpected output");
+        }
+        at += 4 + length;
+      }
+      if (at !== bytes.length) throw new Error("the command line wrote unexpected output");
+      at = 0;
       const images = [];
       for (const [key, t] of batch) {
         const length = at + 4 <= bytes.length ? data.getUint32(at, true) : 0;
@@ -215,6 +225,7 @@ class MapView {
       const message = result.stderr.trim().split("\n").filter(Boolean).pop();
       this.failure = result.code === 0 ? "" : `Could not draw this part: ${(message || `exit status ${result.code}`).replace(/^terrio: /, "")}`;
     } catch (error) {
+      if (this.closed) return;
       for (const [key] of batch) this.tiles.set(key, { image: null, failedAt: performance.now() });
       this.failure = `Could not draw this part: ${error.message}`;
     } finally {

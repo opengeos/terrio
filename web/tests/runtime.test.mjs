@@ -334,3 +334,35 @@ test("the remote mount cannot be renamed away or replaced", { skip: !module && "
   assert.notEqual(terrio(root, "vsi", "move", "https", "elsewhere").code, 0);
   assert.ok(root.entries.get("https") instanceof RemoteDir);
 });
+
+test("a path through a known remote file keeps the file", () => {
+  serve({ "https://example.com/a.tif": big });
+  const host = new RemoteDir("https://", []).lookup("example.com", false);
+  const file = host.lookup("a.tif", true);
+  assert.ok(file instanceof RemoteFile);
+  assert.ok(host.lookup("a.tif", false) === file, "not replaced by a folder");
+  assert.ok(host.lookup("a.tif", true) === file);
+});
+
+test("a folder is not renamed over a file or into itself", () => {
+  const root = new MemDir();
+  const dir = new MemDir();
+  dir.entries.set("b", new MemDir());
+  root.entries.set("A", dir);
+  root.entries.set("f.txt", new MemFile(new Uint8Array(1)));
+  const wasi = new Wasi(root, ["terrio"], { stdout: () => {}, stderr: () => {} });
+  wasi.memory = new WebAssembly.Memory({ initial: 1 });
+  const rename = (from, to) => {
+    const enc = new TextEncoder();
+    const a = enc.encode(from), b = enc.encode(to);
+    wasi.bytes().set(a, 0);
+    wasi.bytes().set(b, 512);
+    return wasi.imports.path_rename(3, 0, a.length, 3, 512, b.length);
+  };
+  assert.notEqual(rename("A", "f.txt"), 0, "a folder over a file");
+  assert.notEqual(rename("A", "A/b/c"), 0, "a folder into itself");
+  assert.ok(root.entries.get("A") === dir);
+  assert.ok(root.entries.get("f.txt") instanceof MemFile);
+  assert.equal(rename("A", "B"), 0);
+  assert.ok(root.entries.get("B") === dir);
+});
