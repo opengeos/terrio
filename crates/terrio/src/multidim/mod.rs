@@ -528,6 +528,21 @@ pub fn open_bytes(bytes: &[u8]) -> Result<Dataset> {
         Err(Error::disabled("netcdf-hdf5"))
     }
 }
+/// Opens owned netCDF/HDF5 bytes without an intermediate input-buffer clone.
+/// The storage backend retains the input Vec; decoding array values may allocate.
+/// Lazy arrays and views retain the storage, including any HDF5 userblock,
+/// until their last handle is dropped. Numeric reads preserve raw packed values.
+pub fn open_bytes_owned(bytes: Vec<u8>) -> Result<Dataset> {
+    #[cfg(feature = "netcdf-hdf5")]
+    {
+        netcdf::open_bytes_owned(bytes)
+    }
+    #[cfg(not(feature = "netcdf-hdf5"))]
+    {
+        let _ = bytes;
+        Err(Error::disabled("netcdf-hdf5"))
+    }
+}
 /// Opens Zarr key/value files in memory. Handles retain their mount until the last array drops.
 pub fn open_zarr_store(files: Vec<(String, Vec<u8>)>) -> Result<Dataset> {
     #[cfg(feature = "zarr")]

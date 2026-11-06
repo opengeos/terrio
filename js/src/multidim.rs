@@ -163,12 +163,12 @@ impl MdArray {
 #[wasm_bindgen(js_name=openMultidim)]
 pub fn open_multidim(input: JsValue) -> Result<MdDataset, JsError> {
     let inner = if let Some(bytes) = input.dyn_ref::<js_sys::Uint8Array>() {
-        multidim::open_bytes(&bytes.to_vec()).map_err(js_err)?
+        multidim::open_bytes_owned(bytes.to_vec()).map_err(js_err)?
     } else {
         let bytes = js_sys::Reflect::get(&input, &JsValue::from_str("bytes"))
             .map_err(|_| JsError::new("expected scientific file bytes or a Zarr key/value object"))?;
         if let Some(bytes) = bytes.dyn_ref::<js_sys::Uint8Array>() {
-            multidim::open_bytes(&bytes.to_vec()).map_err(js_err)?
+            multidim::open_bytes_owned(bytes.to_vec()).map_err(js_err)?
         } else {
             if !input.is_object() {
                 return Err(JsError::new("expected scientific file bytes or a Zarr key/value object"));

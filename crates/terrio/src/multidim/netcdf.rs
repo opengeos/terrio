@@ -291,16 +291,27 @@ pub(super) fn open_bytes(bytes: &[u8]) -> Result<Dataset> {
     let driver = if bytes.starts_with(b"CDF") { "netCDF" } else { "HDF5" };
     crate::formats::check_driver_allowed(driver, "a file in memory", crate::formats::Kind::Raster)?;
     let body = crate::drivers::hdf5::signature_offset_in(bytes).map(|offset| &bytes[offset..]).unwrap_or(bytes);
-    // Both metadata readers retain the same owned input buffer. Array payloads
-    // remain lazy, and HDF5 userblock bytes need not be retained.
-    let storage: hdf5_reader::storage::DynStorage = Arc::new(hdf5_reader::storage::BytesStorage::new(body.to_vec()));
+    open_bytes_owned(body.to_vec())
+}
+fn owned_storage(bytes: Vec<u8>) -> hdf5_reader::storage::DynStorage {
+    let offset = crate::drivers::hdf5::signature_offset_in(&bytes).unwrap_or(0);
+    let storage: hdf5_reader::storage::DynStorage = Arc::new(hdf5_reader::storage::BytesStorage::new(bytes));
+    if offset == 0 { storage } else { Arc::new(OffsetStorage { inner: storage, offset: offset as u64 }) }
+}
+pub(super) fn open_bytes_owned(bytes: Vec<u8>) -> Result<Dataset> {
+    let classic = bytes.starts_with(b"CDF");
+    let driver = if classic { "netCDF" } else { "HDF5" };
+    crate::formats::check_driver_allowed(driver, "a file in memory", crate::formats::Kind::Raster)?;
+    // Both metadata readers share retained storage, including any userblock.
+    // BytesStorage retains the Vec without copying it; avoid an extra input clone here.
+    let storage = owned_storage(bytes);
     let file = NcFile::from_storage_with_options(
         Arc::clone(&storage),
         NcOpenOptions { metadata_mode: NcMetadataMode::Lossy, ..Default::default() },
     )
     .map_err(error)?;
-    let hdf = (!bytes.starts_with(b"CDF")).then(|| hdf5_reader::Hdf5File::from_storage(storage).ok()).flatten();
-    dataset(file, hdf, if bytes.starts_with(b"CDF") { "netCDF" } else { "netCDF/HDF5" })
+    let hdf = (!classic).then(|| hdf5_reader::Hdf5File::from_storage(storage).ok()).flatten();
+    dataset(file, hdf, if classic { "netCDF" } else { "netCDF/HDF5" })
 }
 pub(super) fn read(file: &NcFile, name: &str, t: DataType, selections: &[Selection]) -> Result<Vec<u8>> {
     let variable = file.variable(name.trim_start_matches('/')).map_err(error)?;
@@ -342,6 +353,91 @@ mod tests {
     use super::*;
     use hdf5_reader::storage::{BytesStorage, Storage, StorageBuffer};
     use std::sync::atomic::{AtomicU64, Ordering};
+    fn classic_fixture() -> Vec<u8> {
+        let mut bytes = b"CDF\x01".to_vec();
+        // CDF-1: one dimension, no attributes, one packed Int16 variable.
+        for word in [0u32, 10, 1, 1, 0x78000000, 3, 0, 0, 11, 1, 1, 0x76000000, 1, 0, 0, 0, 3, 8, 80] {
+            bytes.extend_from_slice(&word.to_be_bytes());
+        }
+        assert_eq!(bytes.len(), 80);
+        for value in [-7i16, 0, 42, 0] {
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
+        bytes
+    }
+    #[test]
+    fn owned_classic_preserves_values_and_retained_views() {
+        let bytes = classic_fixture();
+        let borrowed = super::open_bytes(&bytes).unwrap();
+        let owned = crate::multidim::open_bytes_owned(bytes).unwrap();
+        let array = owned.array("v").unwrap();
+        assert_eq!(serde_json::to_value(&array.info).unwrap(), serde_json::to_value(&borrowed.array("v").unwrap().info).unwrap());
+        let view = array.view();
+        drop(array);
+        drop(owned);
+        assert_eq!(view.read().unwrap().values().unwrap(), serde_json::json!([-7, 0, 42]));
+    }
+    #[test]
+    fn owned_hdf_userblocks_share_retained_storage_and_retain_views() {
+        use crate::drivers::hdf5_write::{self, H5Type};
+        let raw = hdf5_write::encode(&hdf5_write::File {
+            datasets: vec![hdf5_write::Dataset {
+                name: "sample".into(),
+                dtype: H5Type::Int { size: 2, signed: true },
+                shape: Some(vec![3]),
+                max_shape: None,
+                data: [-7i16, 0, 42].into_iter().flat_map(i16::to_le_bytes).collect(),
+                fill: vec![0; 2],
+                storage: Default::default(),
+                attrs: vec![],
+            }],
+            ..Default::default()
+        });
+        for offset in [0, 512, 1024, 4096] {
+            let mut bytes = vec![0; offset];
+            bytes.extend_from_slice(&raw);
+            let storage = owned_storage(bytes.clone());
+            assert_eq!(storage.len() as usize, raw.len());
+            assert!(storage.read_range(u64::MAX, 8).is_err());
+            assert!(storage.read_range(raw.len() as u64, 1).is_err());
+            let storage = owned_storage(bytes);
+            let header = storage.read_range(0, 8).unwrap();
+            let again = storage.read_range(0, 8).unwrap();
+            assert_eq!(header.as_ptr(), again.as_ptr());
+            assert_eq!(header.as_ref(), &raw[..8]);
+            let mut bytes = vec![0; offset];
+            bytes.extend_from_slice(&raw);
+            let borrowed = super::open_bytes(&bytes).unwrap();
+            let owned = crate::multidim::open_bytes_owned(bytes).unwrap();
+            let array = owned.array("sample").unwrap();
+            assert_eq!(serde_json::to_value(&array.info).unwrap(), serde_json::to_value(&borrowed.array("sample").unwrap().info).unwrap());
+            let view = array.view();
+            drop(array);
+            drop(owned);
+            assert_eq!(view.read().unwrap().values().unwrap(), serde_json::json!([-7, 0, 42]));
+        }
+    }
+    #[test]
+    fn owned_producer_written_hdf_userblock() {
+        // h5py.File(path, 'w', userblock_size=512), create_dataset('sample',
+        // data=[-7, 0, 42], dtype='<i2'): the producer writes real base addresses.
+        let bytes = include_bytes!("../../tests/data/multidim-userblock.h5");
+        assert_eq!(crate::drivers::hdf5::signature_offset_in(bytes), Some(512));
+        for ds in [super::open_bytes(bytes).unwrap(), crate::multidim::open_bytes_owned(bytes.to_vec()).unwrap()] {
+            let view = ds.array("sample").unwrap().view();
+            drop(ds);
+            assert_eq!(view.read().unwrap().values().unwrap(), serde_json::json!([-7, 0, 42]));
+        }
+    }
+    #[test]
+    fn owned_malformed_inputs_return_errors() {
+        for bytes in [vec![], b"CDF".to_vec(), b"not scientific data".to_vec(), b"\x89HDF\r\n\x1a\n".to_vec(), vec![0; 1024]] {
+            assert!(crate::multidim::open_bytes_owned(bytes).is_err());
+        }
+        let mut bytes = classic_fixture();
+        bytes.truncate(24);
+        assert!(crate::multidim::open_bytes_owned(bytes).is_err());
+    }
     struct CountingStorage {
         inner: BytesStorage,
         bytes: Arc<AtomicU64>,
