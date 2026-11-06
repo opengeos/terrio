@@ -673,8 +673,9 @@ impl<R: Read + Seek> LimitedZip<R> {
     ///
     /// Returns:
     ///     The member's bytes, at most `cap + 1` of them. `Error::ResourceLimit` when the member's
-    ///     ratio is above the one allowed or the members read hold more than `TERRIO_ZIP_MAX_SIZE`,
-    ///     `Error::InvalidData` when it holds more than it declares.
+    ///     ratio is above the one allowed, when the members read hold more than
+    ///     `TERRIO_ZIP_MAX_SIZE`, or when the member inflates past the size it declares, which the
+    ///     limits were checked against.
     pub(crate) fn read_index(&mut self, index: usize, cap: u64) -> Result<Vec<u8>> {
         let member = self.zip.by_index(index)?;
         let name = member.name().unwrap_or_default().to_string();
@@ -684,11 +685,16 @@ impl<R: Read + Seek> LimitedZip<R> {
         self.limits.check_size("zip", &name, self.total.saturating_add(declared.min(cap.saturating_add(1))))?;
         let remaining = self.limits.max_size - self.total;
         // One byte past the smallest bound tells a member exceeding it from one that just fits.
+        // The zip crate fails a read past the declared size itself (`InvalidData`, "larger than its
+        // declared uncompressed size"); either way it is the same refusal.
+        let past_declared = || Error::ResourceLimit(format!("zip: '{name}' holds more than the {declared} bytes it declares"));
         let mut bytes = Vec::new();
-        member.take(cap.min(remaining).min(declared).saturating_add(1)).read_to_end(&mut bytes)?;
+        if let Err(e) = member.take(cap.min(remaining).min(declared).saturating_add(1)).read_to_end(&mut bytes) {
+            return Err(if e.to_string().contains("declared uncompressed size") { past_declared() } else { e.into() });
+        }
         let read = bytes.len() as u64;
         if read > declared {
-            return Err(zip_error(format!("'{name}' holds more than the {declared} bytes it declares")));
+            return Err(past_declared());
         }
         self.limits.check_size("zip", &name, self.total.saturating_add(read))?;
         self.total += read;
@@ -1186,8 +1192,13 @@ mod tests {
         patch(&mut bytes, b"PK\x03\x04", 22);
         patch(&mut bytes, b"PK\x01\x02", 24);
         let mut zip = LimitedZip::with_limits(std::io::Cursor::new(bytes), ZipLimits::default()).unwrap();
-        // The zip crate stops at the declared size too; either refusal leaves the read bounded.
-        let error = zip.read_name("a", u64::MAX).unwrap_err().to_string();
-        assert!(error.contains("holds more than the 10 bytes it declares") || error.contains("larger than its declared"), "{error}");
+        // A resource refusal, which is not retried with GDAL, whatever the cap.
+        for cap in [u64::MAX, 5, 10] {
+            let error = zip.read_name("a", cap).map(|b| b.len());
+            assert!(
+                matches!(&error, Err(Error::ResourceLimit(m)) if m == "zip: 'a' holds more than the 10 bytes it declares") == (cap != 5),
+                "{cap}: {error:?}"
+            );
+        }
     }
 }

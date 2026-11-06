@@ -1113,7 +1113,7 @@ fn read_wbvector_kmz(path: &str) -> Result<Layer> {
     let index = (names.iter().position(|name| name == b"doc.kml"))
         .or_else(|| names.iter().position(|name| name.ends_with(b".kml")))
         .ok_or_else(|| kmz("no .kml entry found in KMZ".into()))?;
-    let mut budget = crate::drivers::vector::kml::documents_budget();
+    let mut budget = crate::drivers::vector::kml::max_kmz_document_bytes();
     let document = crate::drivers::vector::kml::read_document_at(&mut archive, index, &mut budget).map_err(|e| match e {
         e @ Error::ResourceLimit(_) => e,
         e => kmz(format!("failed reading KML entry {index}: {e}")),

@@ -921,7 +921,7 @@ reads it.
   archive limits of `/vsizip/` (`TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO`,
   `TERRIO_ZIP_MAX_SIZE`), and 512 MiB of decompressed text for the main document and the layer
   documents it links to together. Set `TERRIO_KMZ_MAX_SIZE` to a byte count to change that
-  budget; a KML document takes about twice its size in memory while it is read. An archive past
+  budget; reading a KML document takes at least twice its size in memory. An archive past
   a limit is refused with a resource-limit error, which is not retried with GDAL. Zip archives
   opened from memory (Python and JavaScript byte reads) read their members within the same
   archive limits.

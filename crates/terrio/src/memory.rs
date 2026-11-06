@@ -519,13 +519,26 @@ pub(crate) mod codec {
             // The sidecars: the members named as the main file, with another extension.
             let base = &main[..main.len() - extension(&main).map_or(0, |e| e.len() + 1)];
             let zip = std::cell::RefCell::new(zip);
+            // A sidecar past the archive limits refuses the dataset, rather than opening it without.
+            let refused = std::cell::RefCell::new(None);
             let sidecar = |ext: &str| -> Option<Vec<u8>> {
                 let member = names.iter().find(|n| {
                     n.len() == base.len() + ext.len() + 1 && n.starts_with(base) && extension(n.as_str()).as_deref() == Some(ext)
                 })?;
-                zip.borrow_mut().read_name(member, u64::MAX).ok()
+                match zip.borrow_mut().read_name(member, u64::MAX) {
+                    Ok(bytes) => Some(bytes),
+                    Err(e @ Error::ResourceLimit(_)) => {
+                        refused.borrow_mut().get_or_insert(e);
+                        None
+                    }
+                    Err(_) => None,
+                }
             };
-            let layers = crate::drivers::vector::read_parts(&member, &main, driver, &sidecar, options)?;
+            let layers = crate::drivers::vector::read_parts(&member, &main, driver, &sidecar, options);
+            if let Some(e) = refused.into_inner() {
+                return Err(e);
+            }
+            let layers = layers?;
             let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, &main, driver)).collect();
             return finish_vector(layers, &main, driver, options);
         }
@@ -1358,5 +1371,28 @@ mod tests {
             let refused = scoped(key, value);
             assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains(key)), "{key}: {:?}", refused.err());
         }
+    }
+
+    /// A shapefile sidecar past the archive limits refuses the dataset, rather than it opening
+    /// without the sidecar's attributes.
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn zip_bytes_refuse_a_sidecar_past_the_zip_limits() {
+        let gj = r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"id":7},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
+        let v = open_vector_bytes(gj.as_bytes().to_vec(), "p.geojson", &Default::default()).unwrap();
+        let zip = write_vector_bytes(&v.layers, "p.shp.zip", &Default::default()).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip.clone())).unwrap();
+        let shp = (0..archive.len())
+            .map(|i| archive.by_index_raw(i).map(|f| (f.name().unwrap().to_string(), f.size())).unwrap())
+            .find(|(name, _)| name.ends_with(".shp"))
+            .unwrap()
+            .1;
+        let Dataset::Vector(back) = codec::open(zip.clone(), "p.zip", &Default::default()).unwrap() else { panic!() };
+        assert_eq!(back.layers[0].features.len(), 1);
+        // Room for the .shp, not for its sidecars too.
+        crate::config::push_scope([("TERRIO_ZIP_MAX_SIZE".to_string(), Some(shp.to_string()))].into_iter().collect());
+        let refused = codec::open(zip, "p.zip", &Default::default());
+        crate::config::pop_scope();
+        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("TERRIO_ZIP_MAX_SIZE")), "{:?}", refused.err());
     }
 }
