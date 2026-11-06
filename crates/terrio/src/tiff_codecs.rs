@@ -311,7 +311,6 @@ impl ChunkCodec {
         let complex = Sample::complex_part(format, packed_bits);
         let predictor = dec.find_tag_unsigned::<u16>(Tag::Predictor)?.unwrap_or(1);
         let little_endian = dec.byte_order() == tiff::tags::ByteOrder::LittleEndian;
-        let inflated_here = inflated_here(little_endian, photometric, format, packed_bits, predictor);
         let codec = match compression {
             1 | 5 | 8 | 32946 | 32773 | LZMA | ZSTD if complex.is_some() => Codec::Complex(compression),
             _ if complex.is_some() => {
@@ -330,7 +329,7 @@ impl ChunkCodec {
             7 => Codec::Jpeg,
             WEBP => Codec::WebP,
             1 | 8 | 32946 | 32773 if misread => Codec::Chunky(compression),
-            8 | 32946 if inflated_here => Codec::Deflate,
+            8 | 32946 if inflated_here(little_endian, photometric, format, packed_bits, predictor) => Codec::Deflate,
             _ => return Ok(None),
         };
         let tiled = dec.get_chunk_type() == ChunkType::Tile;
@@ -1192,13 +1191,7 @@ mod tests {
     /// error even when its pixels are all there; data past the chunk's pixels is left.
     #[test]
     fn short_and_corrupt_deflate_chunks_are_errors() {
-        use std::io::Write;
         let c = ChunkCodec { codec: Codec::Deflate, sample: Sample::U8, spp: 1, predictor: 1, big_endian: false, ..packed(8, 1) };
-        let zlib = |data: &[u8]| {
-            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-            e.write_all(data).unwrap();
-            e.finish().unwrap()
-        };
         let pixels: Vec<u8> = (0..16).collect();
         let good = zlib(&pixels);
         assert_eq!(format!("{:?}", c.deflate(&good, 4, 4, 4, 4).unwrap()), format!("{:?}", DecodingResult::U8(pixels.clone())));
