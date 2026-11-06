@@ -1608,8 +1608,8 @@ Output directories must be new unless `--resume` is given. Existing files are
 never overwritten; resume trusts existing tiles without validating their
 contents or options. A missing lower-zoom tile is rebuilt from the existing
 tiles below it (decoded from their files), or from the source when their files do
-not record which pixels are valid: tiles without alpha, unless they are plain
-GeoTIFF tiles generated without `--skip-blank` or a source mask. Symlinked descendant paths are refused. A failure can leave
+not record which pixels are valid (tiles without alpha, including plain GeoTIFF
+tiles, whose padding is not data). Tiles missing below an existing tile are filled too. Symlinked descendant paths are refused. A failure can leave
 completed tiles and unfinished hidden temporary files. Each final filename is
 published atomically only after its contents are synced; resume ignores unfinished
 temporary files and fills the missing tiles. Use a fresh directory when

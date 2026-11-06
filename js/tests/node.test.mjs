@@ -3114,17 +3114,23 @@ test("rasterTiles builds lower zooms from child tiles or the source, and writes 
   const raster = terrio.createRaster(null, {size: [8, 8], ot: "Byte", burn: [7], crs: "EPSG:4326", bbox: [0, 0, 8, 8]});
   const options = {tilingScheme: "raster", grid: {tileSize: 2, minZoom: 0}, resampling: "nearest"};
   for (const overviewSource of ["tiles", "source"]) {
-    const names = [];
-    const report = terrio.rasterTiles(raster, {...options, overviewSource, format: "WEBP"}, (name, bytes) => {
-      assert.equal(new TextDecoder().decode(bytes.slice(8, 12)), "WEBP");
-      const tile = terrio.open(bytes, name);
-      assert.equal(tile.readBand(1)[0], 7);
-      tile.free();
-      names.push(name);
-    });
-    assert.equal(report.written, 1 + 4 + 16);
-    // Tiles are generated depth first: a parent follows its four children.
-    assert.equal(names.at(-1), "0/0/0.webp");
+    for (const format of ["PNG", "WEBP"]) {
+      const names = [];
+      const report = terrio.rasterTiles(raster, {...options, overviewSource, format}, (name, bytes) => {
+        if (format === "WEBP") {
+          // The WASM build writes WebP but does not read it back.
+          assert.equal(new TextDecoder().decode(bytes.slice(8, 12)), "WEBP");
+        } else {
+          const tile = terrio.open(bytes, name);
+          assert.equal(tile.readBand(1)[0], 7);
+          tile.free();
+        }
+        names.push(name);
+      });
+      assert.equal(report.written, 1 + 4 + 16);
+      // Tiles are generated depth first: a parent follows its four children.
+      assert.equal(names.at(-1), `0/0/0.${format.toLowerCase()}`);
+    }
   }
   assert.throws(() => terrio.planRasterTiles(raster, {...options, overviewSource: "parents"}), /variant/i);
   raster.free();

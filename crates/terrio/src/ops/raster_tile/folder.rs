@@ -258,6 +258,8 @@ pub fn generate(source: &mut dyn WarpSource, options: &TileOptions, sink: &mut d
         methods,
         preserve_mask,
         max_zoom: plan.max_zoom,
+        pyramid: options.overview_source == OverviewSource::Tiles
+            && plan.levels.windows(2).any(|pair| pair[1].matrix.zoom == pair[0].matrix.zoom + 1),
         limits: RenderLimits::default(),
     };
     let mut generator =
@@ -302,14 +304,17 @@ struct Settings<'a> {
     methods: [Resampling; 2],
     preserve_mask: bool,
     max_zoom: u8,
+    /// Whether some tiles are built from the tiles below them.
+    pyramid: bool,
     limits: RenderLimits,
 }
 
 impl Settings<'_> {
     /// Whether a tile's validity cannot be recovered from its own samples (no alpha band),
-    /// so that parents built from it need a separate mask.
+    /// so that parents built from it need a separate mask. Plain GeoTIFF tiles pad the
+    /// source's edges with zeros (or nodata), which parents must not resample as data.
     fn needs_validity(&self) -> bool {
-        if self.color { !self.alpha } else { self.options.skip_blank || self.preserve_mask }
+        if self.color { !self.alpha } else { self.options.skip_blank || self.preserve_mask || self.pyramid }
     }
 }
 
@@ -358,6 +363,16 @@ impl Generator<'_, '_> {
         if self.sink.exists(&name)? {
             self.report.resumed += 1;
             self.publication.cell(&cell, true, self.sink)?;
+            // Tiles below an existing tile may still be missing (for example after
+            // raising the maximum zoom); fill them without rebuilding this one.
+            if let Some(c) = self.children(i) {
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let (x, y) = (2 * column + dx, 2 * row + dy);
+                    if plan.levels[c].contains(x, y) {
+                        self.visit(c, x, y, false)?;
+                    }
+                }
+            }
             return Ok(Child::Existing(name));
         }
         let method = self.settings.methods[usize::from(cell.zoom != self.settings.max_zoom)];
@@ -458,6 +473,11 @@ impl Generator<'_, '_> {
         dataset.raster.rows = width;
         let first = self.plan.levels[c].cell(2 * column, 2 * row, Convention::Xyz);
         dataset.set_geo_transform(first.geo_transform);
+        // Decoded PNG and WebP tiles record no CRS: the tiles are in the plan's CRS.
+        dataset.raster.crs = match &s.dst_srs {
+            Some(crs) => crs.to_crs_info(),
+            None => self.info.raster.raster.crs.clone(),
+        };
         Ok(Assembled::Mosaic(MosaicSource { raster: crate::LazyRaster::from(dataset), mask }))
     }
 
@@ -1499,5 +1519,87 @@ mod tests {
         let report = generate(&mut crate::LazyRaster::from(blank), &options, &mut sink).unwrap();
         assert_eq!((report.planned, report.written, report.blank), (5, 0, 5));
         assert!(sink.0.is_empty());
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn resume_fills_missing_tiles_below_an_existing_parent() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("tiles");
+        let mut options = options();
+        options.grid.min_zoom = Some(0);
+        options.grid.max_zoom = Some(1);
+        to_directory(&mut source(), &options, &output, false).unwrap();
+        let child = output.join("1/1/1.png");
+        let expected = std::fs::read(&child).unwrap();
+        std::fs::remove_file(&child).unwrap();
+        let report = to_directory(&mut source(), &options, &output, true).unwrap();
+        assert_eq!((report.written, report.resumed), (1, 4));
+        assert_eq!(std::fs::read(child).unwrap(), expected);
+    }
+
+    #[test]
+    fn plain_tiff_parents_do_not_resample_the_padding_of_edge_tiles() {
+        // 6 x 6 pixels in 4-pixel tiles: the right and bottom child tiles are half padding.
+        let config = crate::RasterConfig { cols: 6, rows: 6, bands: 1, data_type: DataType::F32, cell_size: 1.0, ..Default::default() };
+        let dataset = RasterDataset::new(crate::Raster::from_data(config, vec![100.; 36]).unwrap(), false);
+        let mut tiles = BTreeMap::new();
+        for overview_source in [OverviewSource::Tiles, OverviewSource::Source] {
+            let options = TileOptions {
+                format: "GTiff".into(),
+                resampling: "bilinear".into(),
+                overview_source,
+                grid: GridOptions { tile_size: 4, min_zoom: Some(0), max_zoom: Some(1), ..Default::default() },
+                ..options()
+            };
+            let mut sink = Collect::default();
+            generate(&mut crate::LazyRaster::from(dataset.clone()), &options, &mut sink).unwrap();
+            let parent = crate::memory::open_raster_bytes(sink.0["0/0/0.tif"].clone(), "p.tif").unwrap();
+            tiles.insert(overview_source == OverviewSource::Tiles, parent.raster.data.to_f64_vec());
+        }
+        // The decimated level is 3 x 3 pixels of the constant source.
+        for (row, column) in (0..3).flat_map(|r| (0..3).map(move |c| (r, c))) {
+            let i = row * 4 + column;
+            assert_eq!((tiles[&true][i], tiles[&false][i]), (100., 100.), "pixel {row},{column}");
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn resumed_global_parents_take_the_tile_crs_from_the_plan() {
+        let config = crate::RasterConfig {
+            cols: 8,
+            rows: 8,
+            bands: 3,
+            data_type: DataType::U8,
+            cell_size: 100.0,
+            crs: wbraster::CrsInfo::from_epsg(3857),
+            ..Default::default()
+        };
+        let values = (0..3 * 64).map(|i| f64::from((i * 7 % 251) as u32)).collect();
+        let dataset = RasterDataset::new(crate::Raster::from_data(config, values).unwrap(), false);
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("tiles");
+        let options = TileOptions {
+            tiling_scheme: "WebMercatorQuad".into(),
+            resampling: "nearest".into(),
+            grid: GridOptions { tile_size: 4, min_zoom: Some(16), max_zoom: Some(17), ..Default::default() },
+            ..Default::default()
+        };
+        to_directory(&mut crate::LazyRaster::from(dataset.clone()), &options, &output, false).unwrap();
+        let parents: Vec<_> =
+            std::fs::read_dir(output.join("16")).unwrap().flat_map(|d| std::fs::read_dir(d.unwrap().path()).unwrap()).collect();
+        assert!(!parents.is_empty());
+        let mut expected = BTreeMap::new();
+        for parent in parents {
+            let path = parent.unwrap().path();
+            expected.insert(path.clone(), std::fs::read(&path).unwrap());
+            std::fs::remove_file(path).unwrap();
+        }
+        let report = to_directory(&mut crate::LazyRaster::from(dataset), &options, &output, true).unwrap();
+        assert_eq!(report.written, expected.len() as u64);
+        for (path, bytes) in expected {
+            assert_eq!(std::fs::read(&path).unwrap(), bytes, "{}", path.display());
+        }
     }
 }
