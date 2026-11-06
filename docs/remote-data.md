@@ -248,8 +248,11 @@ The size is read from the process environment at first use. Options set for one 
 `terrio.Env`) do not change it.
 
 `terrio::block_cache::set_max_bytes` and `clear` change the size and empty the cache at run time.
-The chunks belong to the open reader that decoded them, so a local file replaced under an open
-reader is still read as it was, and a reader opened afterwards reads the new file. A remote file
+The chunks belong to the open reader that decoded them. When another file is renamed over a local
+file's path, an open reader goes on reading the original and a reader opened afterwards reads the
+replacement. A file changed in place is not snapshotted: a read may combine cached chunks of the
+old pixels with chunks decoded from the new ones, so close its readers before changing it in place
+and open them again afterwards. A remote file
 opened again decodes its chunks anew, but from the bytes the HTTP cache above may still hold for its
 URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops them.
 
