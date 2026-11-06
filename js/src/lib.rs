@@ -1097,6 +1097,30 @@ pub fn features() -> Result<JsValue, JsError> {
     to_js(&serde_json::json!({ "build": BUILD, "features": built, "threads": threads, "memory": memory }))
 }
 
+/// The most bytes of decoded GeoTIFF/COG chunks the block cache keeps (GDAL's `GDALGetCacheMax64`):
+/// 64 MiB, since a module reads no environment variables; 0 means the cache is off.
+#[wasm_bindgen(js_name = blockCacheMax)]
+pub fn block_cache_max() -> f64 {
+    terrio::block_cache::max_bytes() as f64
+}
+
+/// Sets the most bytes the block cache keeps (GDAL's `GDALSetCacheMax64`); 0 turns it off. `bytes`
+/// must be an integer from 0 to `Number.MAX_SAFE_INTEGER`.
+#[wasm_bindgen(js_name = setBlockCacheMax)]
+pub fn set_block_cache_max(bytes: f64) -> Result<(), JsError> {
+    if !bytes.is_finite() || bytes < 0.0 || bytes.fract() != 0.0 || bytes > 9_007_199_254_740_991.0 {
+        return Err(JsError::new(&format!("setBlockCacheMax: bytes must be an integer from 0 to Number.MAX_SAFE_INTEGER, not {bytes}")));
+    }
+    terrio::block_cache::set_max_bytes(bytes as u64);
+    Ok(())
+}
+
+/// Empties the block cache of decoded GeoTIFF/COG chunks, giving its memory back.
+#[wasm_bindgen(js_name = clearBlockCache)]
+pub fn clear_block_cache() {
+    terrio::block_cache::clear();
+}
+
 /// Point clouds, which this build leaves out: the functions say so.
 #[cfg(not(feature = "pointcloud"))]
 mod no_pointcloud {

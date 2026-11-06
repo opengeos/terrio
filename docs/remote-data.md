@@ -233,6 +233,29 @@ option changed while a file is open applies to the next open, not to the open fi
 Bodies fetched whole are capped: a JSON document at `CPL_JSON_MAX_SIZE` (GDAL's 100 MB), a page of
 an object store's listing (remote Zarr groups) at 64 MiB, a STAC signing token response at 64 KiB.
 
+## Decoded block cache
+
+The decoded tiles and strips of lazy GeoTIFF and COG reads, remote or local, are kept in memory
+process-wide, as GDAL's block cache keeps the blocks it decodes. A window read again decodes only
+the chunks no longer in the cache: the least recently used are dropped first when the cache is
+full, a chunk larger than the cache is never kept, and a size of 0 keeps none.
+
+| Variable | GDAL equivalent | Default |
+|---|---|---|
+| `TERRIO_CACHEMAX` (bytes; `K`, `M`, `G` suffixes; 0 turns the cache off) | `GDAL_CACHEMAX` (a plain integer below 100000 is megabytes; a `%` value is ignored) | 64 MiB |
+
+The size is read from the process environment at first use. Options set for one thread (Python's
+`terrio.Env`) do not change it.
+
+`terrio::block_cache::set_max_bytes` and `clear` change the size and empty the cache at run time.
+The chunks belong to the open reader that decoded them. When another file is renamed over a local
+file's path, an open reader goes on reading the original and a reader opened afterwards reads the
+replacement. A file changed in place is not snapshotted: a read may combine cached chunks of the
+old pixels with chunks decoded from the new ones, so close its readers before changing it in place
+and open them again afterwards. A remote file
+opened again decodes its chunks anew, but from the bytes the HTTP cache above may still hold for its
+URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops them.
+
 ## Managing files
 
 `terrio vsi` lists, copies, synchronizes, moves and deletes files on these locations and in
