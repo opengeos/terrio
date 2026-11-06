@@ -362,8 +362,8 @@ impl RasterDriver {
             Self::XYZ => F::Xyz,
             Self::Zarr => F::Zarr,
             Self::DTED => F::Dted,
-            // terrio reads and writes NetCDF, GRIB, WebP and SRTM tiles, and reads HDF5, itself; GDAL
-            // reads and writes GRIB in builds with `gdal` and without `grib`.
+            // terrio reads and writes NetCDF, GRIB, WebP and SRTM tiles, and reads HDF5, itself; the
+            // GDAL backend reads and writes GRIB in builds with `gdal` and without `grib`.
             Self::NetCDF | Self::HDF5 | Self::GRIB | Self::WEBP | Self::SRTMHGT => return None,
             // Never used: terrio reads and writes VRTs and tile archives, and reads STAC mosaics
             // itself; GDAL reads its formats.
@@ -1561,7 +1561,7 @@ mod tests {
     use super::{RasterDriver, sniff};
 
     /// Only Zarr is read with `wbraster`'s Zarr reader: terrio reads GRIB, netCDF, HDF5, WebP and
-    /// SRTM tiles itself (GDAL reads GRIB in builds with `gdal` and without `grib`).
+    /// SRTM tiles itself (the GDAL backend reads GRIB in builds with `gdal` and without `grib`).
     #[test]
     fn only_zarr_maps_to_the_wbraster_zarr_reader() {
         let zarr: Vec<RasterDriver> =

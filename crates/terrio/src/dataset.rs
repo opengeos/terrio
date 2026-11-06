@@ -1168,7 +1168,7 @@ fn read_raster_local(path: &str) -> Result<RasterDataset> {
         return crate::geotiff::read_geotiff(Path::new(path));
     }
     let (raster, driver) = match RasterDriver::for_extension(path) {
-        // No `wbraster` format: GRIB in a build with `gdal` and without `grib`, which GDAL reads.
+        // No `wbraster` format: GRIB in a build with `gdal` and without `grib`, read by the GDAL backend.
         Some(driver) => match driver.to_wb() {
             Some(format) => (Raster::read_with_format(path, format)?, driver),
             None => return Err(Error::Unsupported(format!("'{path}': no {} reader in this build", driver.name()))),
