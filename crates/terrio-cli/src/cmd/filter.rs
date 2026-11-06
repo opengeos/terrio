@@ -1648,7 +1648,12 @@ mod tests {
         assert!(output.join("a.las").symlink_metadata().unwrap().file_type().is_symlink());
         std::fs::remove_file(output.join("a.las")).unwrap();
         let name = std::ffi::OsString::from_vec(b"invalid-\xff.las".to_vec());
-        std::fs::write(input.join(name), "invalid UTF-8 name").unwrap();
+        if let Err(error) = std::fs::write(input.join(name), "invalid UTF-8 name") {
+            // APFS refuses names that are not valid UTF-8 (EILSEQ, "Illegal byte sequence"), so the
+            // host cannot hold such a file; any other failure is a real one.
+            assert!(cfg!(target_os = "macos") && error.raw_os_error() == Some(92), "{error}");
+            return;
+        }
         assert!(run_batch().unwrap_err().to_string().contains("not UTF-8"));
         assert_eq!(std::fs::read_dir(&output).unwrap().count(), 0);
     }
