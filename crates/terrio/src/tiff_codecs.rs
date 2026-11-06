@@ -1237,34 +1237,41 @@ mod tests {
         b
     }
 
-    /// A Deflate edge tile over the chunk limit only with its padding is read as the `tiff` crate
-    /// reads it, which limits the image data: 100 bytes hold the 4 x 16 pixels of the edge tile
-    /// of a 20 x 16 image in 16 x 16 tiles, not its 16 x 16 stored ones. A whole tile over the
-    /// limit is refused.
-    #[test]
-    fn a_deflate_edge_tile_over_the_limit_only_with_its_padding_is_read() {
+    /// A zlib stream of `data`.
+    fn zlib(data: &[u8]) -> Vec<u8> {
         use std::io::Write;
-        let tile = |v: u8| {
-            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-            e.write_all(&(0..=255u8).map(|i| i.wrapping_mul(v)).collect::<Vec<_>>()).unwrap();
-            e.finish().unwrap()
-        };
-        let (t0, t1) = (tile(3), tile(5));
-        // A little-endian BigTIFF: 10 tags of 20 bytes, the tiles after the IFD.
-        let at = 16 + 8 + 10 * 20 + 8u64;
-        let offsets = at | (at + t0.len() as u64) << 32;
-        let counts = t0.len() as u64 | (t1.len() as u64) << 32;
-        let tags: [(u16, u16, u64, u64); 10] = [
-            (256, 3, 1, 20),
-            (257, 3, 1, 16),
-            (258, 3, 1, 8),
+        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    /// A little-endian BigTIFF of one gray image of `width` x `height` samples of `bits` bits and
+    /// `SampleFormat` `format`, in 16 x 16 Deflate tiles stored as `tiles` (row by row), with
+    /// `Predictor` `predictor`.
+    fn bigtiff_tiled(width: u64, height: u64, bits: u64, format: u64, predictor: u64, tiles: &[Vec<u8>]) -> Vec<u8> {
+        let n = tiles.len() as u64;
+        // The header, then the IFD of 12 tags of 20 bytes, then the tile offsets and byte counts
+        // (8 bytes each), then the tiles.
+        let arrays = 16 + 8 + 12 * 20 + 8;
+        let mut offset = arrays + 16 * n;
+        let mut offsets = Vec::new();
+        for t in tiles {
+            offsets.push(offset);
+            offset += t.len() as u64;
+        }
+        let tags: [(u16, u16, u64, u64); 12] = [
+            (256, 16, 1, width),
+            (257, 16, 1, height),
+            (258, 3, 1, bits),
             (259, 3, 1, 8),
             (262, 3, 1, 1),
             (277, 3, 1, 1),
+            (317, 3, 1, predictor),
             (322, 3, 1, 16),
             (323, 3, 1, 16),
-            (324, 4, 2, offsets),
-            (325, 4, 2, counts),
+            (324, 16, n, arrays),
+            (325, 16, n, arrays + 8 * n),
+            (339, 3, 1, format),
         ];
         let mut b = b"II\x2b\0\x08\0\0\0".to_vec();
         b.extend(16u64.to_le_bytes());
@@ -1276,8 +1283,20 @@ mod tests {
             b.extend(value.to_le_bytes());
         }
         b.extend(0u64.to_le_bytes());
-        b.extend(&t0);
-        b.extend(&t1);
+        offsets.iter().for_each(|o| b.extend(o.to_le_bytes()));
+        tiles.iter().for_each(|t| b.extend((t.len() as u64).to_le_bytes()));
+        tiles.iter().for_each(|t| b.extend(t));
+        b
+    }
+
+    /// A Deflate edge tile over the chunk limit only with its padding is read as the `tiff` crate
+    /// reads it, which limits the image data: 100 bytes hold the 4 x 16 pixels of the edge tile
+    /// of a 20 x 16 image in 16 x 16 tiles, not its 16 x 16 stored ones. A whole tile over the
+    /// limit is refused.
+    #[test]
+    fn a_deflate_edge_tile_over_the_limit_only_with_its_padding_is_read() {
+        let tile = |v: u8| zlib(&(0..=255u8).map(|i| i.wrapping_mul(v)).collect::<Vec<_>>());
+        let b = bigtiff_tiled(20, 16, 8, 1, 1, &[tile(3), tile(5)]);
         let mut dec = Decoder::new(std::io::Cursor::new(&b)).unwrap();
         let codec = ChunkCodec::new(&mut dec, 100, None).unwrap().expect("Deflate is inflated here");
         assert!(matches!(codec.read(&mut dec, 0), Err(TiffError::LimitsExceeded)));
@@ -1285,6 +1304,59 @@ mod tests {
         assert_eq!(format!("{edge:?}"), format!("{:?}", dec.read_chunk(1).unwrap()));
         let expected: Vec<u8> = (0..16u8).flat_map(|r| (0..4u8).map(move |c| (r * 16 + c).wrapping_mul(5))).collect();
         assert_eq!(format!("{edge:?}"), format!("{:?}", DecodingResult::U8(expected)));
+    }
+
+    /// Deflate tiles inflated here give what the `tiff` crate gives, the edge tiles of a 37 x 23
+    /// image in 16 x 16 tiles included: the horizontal predictor is undone over the stored tile
+    /// width, padding included, before the tile is cut to its image data.
+    #[test]
+    fn deflate_tiles_decode_as_the_tiff_crate_decodes_them() {
+        // Every byte of every sample set: a 64-bit multiplicative hash of the tile and position.
+        macro_rules! samples {
+            ($t:ty, $tile:expr) => {
+                (0..256u64).map(|i| (($tile as u64 * 1000 + i).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 1) as $t).collect::<Vec<$t>>()
+            };
+        }
+        macro_rules! case {
+            ($t:ty, $bits:expr, $format:expr, $predictor:expr, $encode:expr) => {
+                let tiles: Vec<Vec<u8>> = (0..6)
+                    .map(|t| {
+                        let mut v = samples!($t, t);
+                        $encode(&mut v);
+                        zlib(&v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())
+                    })
+                    .collect();
+                let b = bigtiff_tiled(37, 23, $bits, $format, $predictor, &tiles);
+                let mut dec = Decoder::new(std::io::Cursor::new(&b)).unwrap();
+                let codec = ChunkCodec::new(&mut dec, usize::MAX, None).unwrap().expect("Deflate is inflated here");
+                assert_eq!(codec.codec, Codec::Deflate);
+                assert_eq!(dec.tile_count().unwrap(), 6);
+                for idx in 0..6 {
+                    let ours = codec.read(&mut dec, idx).unwrap();
+                    let crate_ = dec.read_chunk(idx).unwrap();
+                    assert_eq!(format!("{ours:?}"), format!("{crate_:?}"), "tile {idx}, {}, predictor {}", stringify!($t), $predictor);
+                }
+            };
+        }
+        // Horizontal differencing, row by row: what the predictor undoes.
+        macro_rules! differenced {
+            ($t:ty) => {
+                |v: &mut Vec<$t>| {
+                    for row in v.chunks_mut(16) {
+                        for i in (1..16).rev() {
+                            row[i] = row[i].wrapping_sub(row[i - 1]);
+                        }
+                    }
+                }
+            };
+        }
+        let none = |_: &mut Vec<_>| {};
+        case!(u8, 8, 1, 1, none);
+        case!(u8, 8, 1, 2, differenced!(u8));
+        case!(u16, 16, 1, 2, differenced!(u16));
+        case!(i32, 32, 2, 2, differenced!(i32));
+        case!(u64, 64, 1, 2, differenced!(u64));
+        case!(f32, 32, 3, 1, |_: &mut Vec<f32>| {});
     }
 
     /// Deflate chunks inflated here give what the `tiff` crate gives, for every sample type
