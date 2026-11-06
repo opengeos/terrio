@@ -34,6 +34,9 @@ test("other tokens, URLs in free text among them, are left as they are", () => {
     "--t-srs=EPSG:4326",
     "http://example.com/a.tif",
     "/vsizip/local.zip/a.shp",
+    // Not a bucket name: left alone, not made into a host.
+    "s3://a?b/key",
+    "s3://Upper/key",
   ]) {
     assert.equal(toWorkerPath(token), token, token);
   }

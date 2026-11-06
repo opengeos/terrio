@@ -64,8 +64,9 @@ After each run, the page shows how many requests the command made and how many b
   ranges count compressed bytes).
 - Plain `http://` URLs can't be read: the page is served over HTTPS, and browsers block insecure
   requests from it.
-- Fetched parts of a remote file are kept while the page is open, so later commands on the same
-  URL (and the map) do not fetch them again. A file that changes on its server during that time is
+- Fetched parts of remote files are kept while the page is open, up to 512 MB in all, so later
+  commands on the same URL (and the map) do not fetch them again. Past that, the parts read least
+  recently are dropped and fetched again when needed. A file that changes on its server during that time is
   seen as it was; reload the page to read it afresh. Cancelling a command also discards them.
 - A URL whose last name has no extension (`…/download`) is read as a file when there is one, and
   otherwise taken for a folder.

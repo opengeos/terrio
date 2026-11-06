@@ -28,7 +28,8 @@ function remotePath(value) {
   const rest = value.slice(prefix.length);
   let m;
   if ((m = /^(?:\/vsicurl\/)?https:\/\/([\s\S]*)$/.exec(rest))) return `${prefix}/https/${m[1]}`;
-  if ((m = /^(?:s3:\/\/|\/vsis3\/)([^/]+)\/([\s\S]*)$/.exec(rest))) {
+  // A bucket named as S3 names them, so that nothing else can end up in the host or query.
+  if ((m = /^(?:s3:\/\/|\/vsis3\/)([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])\/([\s\S]*)$/.exec(rest))) {
     const [, bucket, key] = m;
     return bucket.includes(".") ? `${prefix}/https/s3.amazonaws.com/${bucket}/${key}` : `${prefix}/https/${bucket}.s3.amazonaws.com/${key}`;
   }

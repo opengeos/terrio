@@ -16,21 +16,26 @@ let module = null;
 const root = new MemDir();
 const remoteErrors = [];
 
+/** How long a remote name found missing (a sidecar file, mostly) is not looked up again. */
+const MISS_TTL = 60 * 1000;
+
 /**
  * The remote directories. They are kept from one run to the next, with the blocks fetched, so that
- * the map's batches of tiles, each a run, do not fetch a file again; what was not found, or could
- * not be read, is looked up again.
+ * the map's batches of tiles, each a run, do not fetch a file again; a name not found, or that could
+ * not be read, is looked up again after `MISS_TTL`.
  */
 function mountRemote() {
   remoteErrors.length = 0;
   if (!root.entries.has("https")) root.entries.set("https", new RemoteDir("https://", remoteErrors));
-  forgetMissing(root.entries.get("https"));
+  forgetMissing(root.entries.get("https"), Date.now());
 }
 
-function forgetMissing(dir) {
+function forgetMissing(dir, now) {
   for (const [name, node] of dir.entries) {
-    if (node === null) dir.entries.delete(name);
-    else if (node instanceof RemoteDir) forgetMissing(node);
+    if (node === null && now - (dir.missedAt.get(name) ?? 0) > MISS_TTL) {
+      dir.entries.delete(name);
+      dir.missedAt.delete(name);
+    } else if (node instanceof RemoteDir) forgetMissing(node, now);
   }
 }
 
@@ -98,6 +103,7 @@ self.onmessage = async ({ data }) => {
       // `/https` is where remote files are read.
       if (data.path.split("/").find(Boolean) === "https") throw new Error(`a workspace file or folder cannot be named "https": rename ${data.path}`);
       const { dir, name } = parentOf(data.path, true);
+      if (dir.entries.get(name) instanceof MemDir) throw new Error(`${data.path} is a folder in the workspace: remove it first, or rename the file`);
       dir.entries.set(name, new MemFile(new Uint8Array(data.buffer)));
       self.postMessage({ type: "put", path: data.path });
     } else if (data.type === "remove") {

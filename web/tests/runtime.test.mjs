@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { MemDir, MemFile, RemoteDir, RemoteFile, Wasi, httpStats } from "../wasi.js";
+import { MemDir, MemFile, RemoteDir, RemoteFile, Wasi, cacheLimit, httpStats } from "../wasi.js";
 
 const wasmPath = process.env.TERRIO_WASM;
 const module = wasmPath ? new WebAssembly.Module(readFileSync(wasmPath)) : null;
@@ -84,6 +84,24 @@ test("a remote file is read by ranges, fetching each block once", () => {
   // Across blocks, and past the end.
   assert.deepEqual(file.read(500 * 1024, 700 * 1024), big.subarray(500 * 1024, 1200 * 1024));
   assert.deepEqual(file.read(big.length - 5, 100), big.subarray(big.length - 5));
+});
+
+test("the block cache keeps the blocks read most recently, within its limit", () => {
+  const log = serve({ "https://example.com/big.bin": big });
+  const saved = cacheLimit.bytes;
+  cacheLimit.bytes = 2 * 512 * 1024;
+  try {
+    const file = RemoteFile.probe("https://example.com/big.bin");
+    const at = (k) => k * 512 * 1024 + 7;
+    for (const k of [1, 2, 3]) assert.deepEqual(file.read(at(k), 5), big.subarray(at(k), at(k) + 5));
+    assert.ok(file.blocks.size <= 2, `${file.blocks.size} blocks kept`);
+    assert.ok(file.blocks.has(3) && !file.blocks.has(1), "the least recently read go first");
+    const requests = log.length;
+    assert.deepEqual(file.read(at(1), 5), big.subarray(at(1), at(1) + 5));
+    assert.equal(log.length, requests + 1, "a dropped block is fetched again");
+  } finally {
+    cacheLimit.bytes = saved;
+  }
 });
 
 test("a server that ignores ranges, or compresses, gives the whole file", () => {

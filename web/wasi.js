@@ -113,6 +113,47 @@ function head(url) {
 }
 
 const BLOCK = 512 * 1024;
+/**
+ * The most bytes of remote files' blocks kept in memory, all files together: past it, the blocks
+ * read least recently are dropped, and fetched again if needed. (A file read whole is kept whole.)
+ */
+export const cacheLimit = { bytes: 512 * 1024 * 1024 };
+/** Every cached block, least recently read first. */
+const cachedBlocks = new Map();
+let cachedBytes = 0;
+
+/** Keeps block `b` of `file`, as the most recently read. */
+function remember(file, b, bytes) {
+  const key = `${file.ino}:${b}`;
+  const known = cachedBlocks.get(key);
+  if (known) {
+    cachedBlocks.delete(key);
+    cachedBytes -= known.length;
+  }
+  file.blocks.set(b, bytes);
+  cachedBlocks.set(key, { file, b, length: bytes.length });
+  cachedBytes += bytes.length;
+}
+
+/** Marks block `b` of `file` as just read. */
+function touch(file, b) {
+  const key = `${file.ino}:${b}`;
+  const entry = cachedBlocks.get(key);
+  if (entry) {
+    cachedBlocks.delete(key);
+    cachedBlocks.set(key, entry);
+  }
+}
+
+/** Drops the least recently read blocks while the cache holds more than `cacheLimit.bytes`. */
+function evict() {
+  for (const [key, entry] of cachedBlocks) {
+    if (cachedBytes <= cacheLimit.bytes) break;
+    cachedBlocks.delete(key);
+    entry.file.blocks.delete(entry.b);
+    cachedBytes -= entry.length;
+  }
+}
 /** Remote files smaller than this are fetched whole. */
 const WHOLE_BELOW = 2 * BLOCK;
 
@@ -186,7 +227,7 @@ export class RemoteFile {
       if (!last || last.status !== 206 || last.body.length !== 1) return RemoteFile.whole(url);
     }
     const file = new RemoteFile(url, size, null);
-    file.blocks.set(0, first.body);
+    remember(file, 0, first.body);
     return file;
   }
 
@@ -237,7 +278,11 @@ export class RemoteFile {
     const first = Math.floor(offset / BLOCK), last = Math.floor((end - 1) / BLOCK);
     // Fetch the missing blocks, contiguous runs of them in one request each.
     for (let b = first; b <= last;) {
-      if (this.blocks.has(b)) { b++; continue; }
+      if (this.blocks.has(b)) {
+        touch(this, b);
+        b++;
+        continue;
+      }
       let e = b;
       while (e + 1 <= last && !this.blocks.has(e + 1)) e++;
       const start = b * BLOCK, stop = Math.min(this.size, (e + 1) * BLOCK);
@@ -246,19 +291,27 @@ export class RemoteFile {
       // Where the server lets the page read `Content-Range`, the bytes must be the ones asked for.
       const got = /^bytes (\d+)-(\d+)\//.exec(r.range || "");
       if (got && (Number(got[1]) !== start || Number(got[2]) !== stop - 1)) throw new Error(`${this.url}: asked for bytes ${start}-${stop - 1}, got ${got[1]}-${got[2]}`);
-      for (let k = b; k <= e; k++) this.blocks.set(k, r.body.subarray((k - b) * BLOCK, Math.min(r.body.length, (k - b + 1) * BLOCK)));
+      // Copies when several blocks came in one response, so that each can be dropped on its own.
+      for (let k = b; k <= e; k++) {
+        const piece = r.body.subarray((k - b) * BLOCK, Math.min(r.body.length, (k - b + 1) * BLOCK));
+        remember(this, k, e > b ? piece.slice() : piece);
+      }
       b = e + 1;
     }
+    let out;
     if (first === last) {
       const s = offset - first * BLOCK;
-      return this.blocks.get(first).subarray(s, s + (end - offset));
+      out = this.blocks.get(first).subarray(s, s + (end - offset));
+    } else {
+      out = new Uint8Array(end - offset);
+      for (let b = first; b <= last; b++) {
+        const block = this.blocks.get(b), base = b * BLOCK;
+        const s = Math.max(offset, base) - base, t = Math.min(end, base + block.length) - base;
+        out.set(block.subarray(s, t), base + s - offset);
+      }
     }
-    const out = new Uint8Array(end - offset);
-    for (let b = first; b <= last; b++) {
-      const block = this.blocks.get(b), base = b * BLOCK;
-      const s = Math.max(offset, base) - base, t = Math.min(end, base + block.length) - base;
-      out.set(block.subarray(s, t), base + s - offset);
-    }
+    // After the read, so that none of its own blocks is dropped before it is copied.
+    evict();
     return out;
   }
 }
@@ -272,6 +325,8 @@ export class RemoteDir {
     this.prefix = prefix;
     this.errors = errors;
     this.entries = new Map();
+    /** When each name was found missing, so that the miss can expire. */
+    this.missedAt = new Map();
     this.ino = nextIno++;
     this.mtime = now();
   }
@@ -299,6 +354,7 @@ export class RemoteDir {
       }
     }
     this.entries.set(name, node);
+    if (node === null) this.missedAt.set(name, Date.now());
     return node;
   }
 }
