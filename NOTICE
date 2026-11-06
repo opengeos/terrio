@@ -1595,6 +1595,36 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 -------------------------------------------------------------------------------
+fdlibm (https://www.netlib.org/fdlibm/), as FreeBSD's msun and the Rust libm crate have it
+-------------------------------------------------------------------------------
+
+Terrio files derived from fdlibm source files (each file's header names them):
+  crates/terrio/src/ops/dem.rs
+
+s_atan.c:
+
+Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+
+Developed at SunPro, a Sun Microsystems, Inc. business.
+Permission to use, copy, modify, and distribute this
+software is freely granted, provided that this notice
+is preserved.
+
+e_atan2.c:
+
+Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+
+Developed at SunSoft, a Sun Microsystems, Inc. business.
+Permission to use, copy, modify, and distribute this
+software is freely granted, provided that this notice
+is preserved.
+
+The Rust libm crate (https://github.com/rust-lang/compiler-builtins, libm/, v0.2.16), whose src/math/atan.rs and
+src/math/atan2.rs carry these notices, is available under the MIT license (LICENSES/MIT.txt):
+
+Copyright (c) 2018 Jorge Aparicio
+
+-------------------------------------------------------------------------------
 matplotlib colormaps (https://matplotlib.org) and ColorBrewer (https://colorbrewer2.org)
 -------------------------------------------------------------------------------
 

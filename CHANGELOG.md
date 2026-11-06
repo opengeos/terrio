@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- `terrio dem` (Python `terrio.dem`, JavaScript `dem`) computes most of its 3×3 products a row at a
+  time, with AVX2 where the CPU has it, and most rows holding nodata no longer fall back to one
+  pixel at a time. Some products take their arctangents from fdlibm (credited in `NOTICE`,
+  `LICENSES/SunPro.txt` and the acknowledgements) and recompute with the platform's functions any
+  pixel whose result could round differently. Outputs are bit-identical to the previous build (144
+  products and options on four DEMs: Float32 and Int16, with and without nodata), and slope (with
+  and without `compute_edges`) and hillshade equal gdaldem 3.8.4's on all 42,260,130 pixels. Slope
+  on a 5610 x 7533 Float32 DEM, one thread: 1.45 -> 0.27 s.
+- `terrio neighbors` (`focal`; Python `terrio.neighbors`, JavaScript `neighbors`) and VRT
+  `KernelFilteredSource` reads compute focal statistics and convolutions a row at a time (medians up
+  to 24 taps, modes up to 121), with AVX2 where the CPU has it, and the per-pixel median selects
+  instead of sorting. Values are unchanged: `terrio neighbors` outputs equal GDAL's VRT for mean,
+  gaussian, u, max and median, with and without nodata, and the previous build's for 20 kernels and
+  methods (40 outputs). Mean 3x3 on a 5610 x 7533 DEM, one thread: 1.31 -> 0.15 s.
 - Warps with nearest or `average` resampling are faster, and so are bilinear warps past GDAL's
   4-tap threshold (output pixels over 1/0.95 source pixels across in either direction, 2 or more
   with `TERRIO_GDAL_COMPAT=3.13`); the arithmetic and its order are unchanged. Nearest from

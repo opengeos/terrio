@@ -180,6 +180,35 @@ from speed comparisons.
 | Hillshade of the mosaic | 498 ms [495 ms–511 ms] | 3.96 s [3.91 s–4.03 s] | 40 / 4 | — | pixels differ (exact check) |
 | Slope of the mosaic | 788 ms [718 ms–1.61 s] | 4.67 s [4.61 s–4.84 s] | 40 / 4 | — | pixels differ (exact check); wide timing range |
 
+## Terrain rows, 5 November 2026
+
+The hillshade and slope cases of the large mosaic, rerun when `terrio dem` began computing its
+products a row at a time: the previous build (main at `696709c`) and the new one, each measured
+against GDAL by the harness above on the same machine, at the best CPU budgets (1 to 32) and at
+one CPU (`--thread-counts 1`). The `--kernel-version 3.13` arithmetic that matches GDAL 3.13.3
+supports only these two products; the others are not compared with GDAL here.
+
+Hardware: Intel Core i9-14900K, 32 available logical CPUs, Linux. GDAL 3.13.3; Terrio 0.7.0,
+optimized release builds. Large-file measurements use five samples; times are median [min–max].
+All rows pass output validation and the background-load gate. A first run of the previous build
+failed that gate and is excluded; it is kept with the others in the
+[raw samples](benchmark-results-2026-11-05.json), where each run's `terrio_commit` names the build
+it measured: `696709c` for the previous build, `885b5a2` for this one. These timings come from a
+different machine than the 24 October rerun, so the two tables are not comparable with each other.
+
+| Task | CPUs | previous build | this build | GDAL | terrio vs GDAL |
+|---|---|---|---|---|---|
+| Hillshade of the mosaic | best (32 / 16) | 684 ms [672 ms–708 ms] | 566 ms [554 ms–637 ms] | 2.70 s [2.69 s–2.74 s] | 4.77× faster |
+| Slope of the mosaic | best (32 / 16) | 1.08 s [1.07 s–1.09 s] | 1.06 s [1.06 s–1.08 s] | 3.51 s [3.49 s–3.53 s] | 3.31× faster |
+| Hillshade of the mosaic | 1 | 5.77 s [5.73 s–5.79 s] | 4.97 s [4.93 s–5.02 s] | 3.19 s [3.17 s–3.20 s] | 1.56× slower |
+| Slope of the mosaic | 1 | 7.22 s [7.16 s–7.24 s] | 6.73 s [6.72 s–6.75 s] | 4.01 s [4.00 s–4.02 s] | 1.68× slower |
+
+The GDAL column and ratio are from the runs of this build; GDAL's medians in the previous build's
+runs are within 0.5% of these. On one CPU most of Terrio's time is reading the 14412 × 14412
+Deflate mosaic: `terrio info --stats` of it alone takes about 4.1 s there, against 4.0 s for the
+whole of `gdaldem slope`. With all CPUs, slope is bound by that reading and the writing, so its
+faster rows barely show.
+
 ## Running the benchmarks
 
 Use the latest GDAL release and matching Python bindings. The commands below pin the version
