@@ -1075,12 +1075,7 @@ mod tests {
         text
     }
 
-    fn with_options<T>(options: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
-        crate::config::push_scope(options.iter().map(|(k, v)| (k.to_string(), Some(v.to_string()))).collect());
-        let out = f();
-        crate::config::pop_scope();
-        out
-    }
+    use crate::config::with_options;
 
     #[test]
     fn kmz_documents_are_read_within_the_document_budget() {

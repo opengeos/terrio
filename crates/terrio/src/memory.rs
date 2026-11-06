@@ -1363,10 +1363,7 @@ mod tests {
         writer.finish().unwrap();
         let zip = buf.into_inner();
         let scoped = |key: &str, value: &str| {
-            crate::config::push_scope([(key.to_string(), Some(value.to_string()))].into_iter().collect());
-            let out = codec::open(zip.clone(), "p.zip", &Default::default());
-            crate::config::pop_scope();
-            out
+            crate::config::with_options(&[(key, value)], || codec::open(zip.clone(), "p.zip", &Default::default()))
         };
         let Dataset::Vector(v) = codec::open(zip.clone(), "p.zip", &Default::default()).unwrap() else { panic!() };
         assert_eq!(v.layers[0].features.len(), 1);
@@ -1393,9 +1390,8 @@ mod tests {
         let Dataset::Vector(back) = codec::open(zip.clone(), "p.zip", &Default::default()).unwrap() else { panic!() };
         assert_eq!(back.layers[0].features.len(), 1);
         // Room for the .shp, not for its sidecars too.
-        crate::config::push_scope([("TERRIO_ZIP_MAX_SIZE".to_string(), Some(shp.to_string()))].into_iter().collect());
-        let refused = codec::open(zip, "p.zip", &Default::default());
-        crate::config::pop_scope();
+        let refused =
+            crate::config::with_options(&[("TERRIO_ZIP_MAX_SIZE", &shp.to_string())], || codec::open(zip, "p.zip", &Default::default()));
         assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("TERRIO_ZIP_MAX_SIZE")), "{:?}", refused.err());
     }
 
@@ -1421,10 +1417,17 @@ mod tests {
         assert_eq!(v.layers[0].features.len(), 1);
         // Room for either member alone, not for both.
         let limit = (gj.len().max(inner.len()) + 10).to_string();
-        crate::config::push_scope([("TERRIO_ZIP_MAX_SIZE".to_string(), Some(limit))].into_iter().collect());
-        let refused = codec::open(outer, "p.zip", &Default::default());
-        crate::config::pop_scope();
-        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("TERRIO_ZIP_MAX_SIZE")), "{:?}", refused.err());
+        let refused = crate::config::with_options(&[("TERRIO_ZIP_MAX_SIZE", &limit)], || codec::open(outer, "p.zip", &Default::default()));
+        // The message names the configured limit, not what was left of it.
+        let expected = format!("more than the {limit} bytes allowed (TERRIO_ZIP_MAX_SIZE), shared with the archives it is in");
+        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.ends_with(&expected)), "{:?}", refused.err());
+        // Archives nest at most 8 deep.
+        let mut nested = zip_of("p.geojson", gj.as_bytes());
+        for _ in 0..8 {
+            nested = zip_of("inner.geojson", &nested);
+        }
+        let refused = codec::open(nested, "p.zip", &Default::default());
+        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("nest more than 8 deep")), "{:?}", refused.err());
     }
 
     /// What an archive nested in a member reads counts toward the outer archive's later reads, and
@@ -1444,15 +1447,17 @@ mod tests {
         };
         let inner = zip_of(&[("a", &[b'x'; 600])]);
         let outer = zip_of(&[("inner.zip", &inner), ("b", &[b'y'; 300])]);
-        crate::config::push_scope([("TERRIO_ZIP_MAX_SIZE".to_string(), Some("1000".to_string()))].into_iter().collect());
-        let mut zip = LimitedZip::open(std::io::Cursor::new(outer)).unwrap();
-        let member = zip.read_name("inner.zip", u64::MAX).unwrap();
-        let read = zip.nested(|| LimitedZip::open(std::io::Cursor::new(member.clone())).unwrap().read_name("a", u64::MAX).map(|b| b.len()));
-        assert_eq!(read.unwrap(), 600);
-        // inner.zip, then its 600 bytes, then 300 more: past the 1,000 allowed.
-        let refused = zip.read_name("b", u64::MAX);
-        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| zip.nested(|| panic!("nested open"))));
-        crate::config::pop_scope();
+        let (refused, panicked) = crate::config::with_options(&[("TERRIO_ZIP_MAX_SIZE", "1000")], || {
+            let mut zip = LimitedZip::open(std::io::Cursor::new(outer)).unwrap();
+            let member = zip.read_name("inner.zip", u64::MAX).unwrap();
+            let read =
+                zip.nested(|| LimitedZip::open(std::io::Cursor::new(member.clone())).unwrap().read_name("a", u64::MAX).map(|b| b.len()));
+            assert_eq!(read.unwrap(), 600);
+            // inner.zip, then its 600 bytes, then 300 more: past the 1,000 allowed.
+            let refused = zip.read_name("b", u64::MAX);
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| zip.nested(|| panic!("nested open"))));
+            (refused, panicked)
+        });
         assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("TERRIO_ZIP_MAX_SIZE")), "{refused:?}");
         assert!(panicked.is_err());
         // No budget is left behind for later, unrelated archives.
