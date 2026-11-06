@@ -617,6 +617,13 @@ mod tests {
                 writer.write(crate::cog::cut(&ds.raster, crate::Window::new(0, y, width, 8), &[1, 2, 3, 4]), 8).unwrap();
             }
             writer.finish().unwrap();
+            for path in [&whole, &streamed] {
+                let mut decoder = tiff::decoder::Decoder::new(std::fs::File::open(path).unwrap()).unwrap();
+                assert_eq!(
+                    decoder.find_tag_unsigned_vec::<u16>(tiff::tags::Tag::ExtraSamples).unwrap(),
+                    Some(vec![if use_alpha { 2 } else { 0 }])
+                );
+            }
             let mut whole = crate::open_raster_lazy(whole.to_str().unwrap()).unwrap();
             let mut streamed = crate::open_raster_lazy(streamed.to_str().unwrap()).unwrap();
             let sizes = whole.overviews();
@@ -631,7 +638,7 @@ mod tests {
                 assert_eq!(values, expected.raster.data.to_f64_vec(), "overview {level}");
                 assert!(
                     values[..cols * rows * 3].iter().all(|v| *v == if use_alpha { 20.0 } else { 110.0 }),
-                    "transparent colors leaked at overview {level}"
+                    "visible RGB mismatch at overview {level} (alpha weighting: {use_alpha})"
                 );
             }
         }

@@ -415,7 +415,7 @@ jobs:
       - name: Compare external overviews with the reference
         working-directory: python
         run: |
-          python -c "import rasterio, rio_cogeo.cogeo; assert rasterio.__gdal_version__ == '3.12.2', rasterio.__gdal_version__"
+          python -c "import rasterio, rio_cogeo.cogeo; print('Reference GDAL:', rasterio.__gdal_version__); assert rasterio.__gdal_version__ == '3.12.2', rasterio.__gdal_version__"
           python -m pytest -v tests/test_cog_validate.py::test_external_overviews_agree_with_rio_cogeo
 
   # The Rust and Python tests on real data. The comparison scripts (point clouds, conformance) are
