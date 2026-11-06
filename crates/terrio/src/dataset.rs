@@ -1082,18 +1082,15 @@ fn wbvector_dataset(layer: Layer, path: &str, options: &VectorOpenOptions) -> Re
     )))
 }
 
-/// Whether the `wbvector` fallback reads a file as KMZ: a zip archive, unless a name `wbvector`'s
-/// detection reads before the zip header claims it (a shapefile beside a path without an
-/// extension, an `.xml` file with an XML element in its first 4 KiB).
+/// Whether the `wbvector` fallback reads a file as KMZ: a zip archive, whatever its name (a zip
+/// archive is never XML, even named `.xml`), unless it is a path without an extension beside a
+/// `.shp` file, which `wbvector` reads as that shapefile.
 fn is_wbvector_kmz(path: &str) -> bool {
     use std::io::Read;
     let mut magic = [0u8; 4];
     let zip = std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut magic)).is_ok() && &magic == b"PK\x03\x04";
-    zip && match wbvector::VectorFormat::detect(path) {
-        Ok(wbvector::VectorFormat::Shapefile) => false,
-        Ok(_) => extension(path).as_deref() != Some("xml"),
-        Err(_) => true,
-    }
+    let path = Path::new(path);
+    zip && !(path.extension().is_none() && path.with_extension("shp").exists())
 }
 
 /// The layer of a KMZ archive the `wbvector` fallback found, from the member the KMZ driver reads:
@@ -2301,9 +2298,9 @@ mod content_allow_list_tests {
     }
 
     /// With `TERRIO_WBVECTOR_FALLBACK=YES`, a zip archive named for no driver is read as KMZ: its
-    /// `doc.kml` in any case, else its first `.kml` member. The names `wbvector`'s detection reads
-    /// first still win: an `.xml` file with `<kml` in its first 4 KiB is read as KML, and a path
-    /// without an extension beside a `.shp` file as a shapefile.
+    /// `doc.kml` in any case, else its first `.kml` member, its members stored or deflated. A zip
+    /// archive is never XML, so one named `.xml` is read as KMZ too, even with `<kml` in its first
+    /// 4 KiB: only a path without an extension beside a `.shp` file is read as the shapefile.
     // Without the GDAL backend: with it, what terrio refuses goes on to GDAL (gdal_fallback).
     #[cfg(not(feature = "gdal"))]
     #[test]
@@ -2313,21 +2310,25 @@ mod content_allow_list_tests {
             format!(r#"<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>{name}</name>{points}</Document></kml>"#)
         };
         let point = |xy: &str| format!("<Placemark><Point><coordinates>{xy}</coordinates></Point></Placemark>");
-        let archive = |members: &[(&str, String)]| {
+        let archive = |method: zip::CompressionMethod, members: &[(&str, String)]| {
             let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-            let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            let options = zip::write::SimpleFileOptions::default().compression_method(method);
             for (member, text) in members {
-                zip.start_file(*member, stored).unwrap();
+                zip.start_file(*member, options).unwrap();
                 zip.write_all(text.as_bytes()).unwrap();
             }
             zip.finish().unwrap().into_inner()
         };
         let main = kml("main", &[point("10.5,47.25"), point("11.5,46.5")].concat());
-        let bytes = archive(&[("notes.txt", "-".to_string()), ("a.kml", kml("first", &point("1,2"))), ("DOC.KML", main)]);
+        let members = [("notes.txt", "-".to_string()), ("a.kml", kml("first", &point("1,2"))), ("DOC.KML", main)];
+        let (stored, deflated) = (archive(zip::CompressionMethod::Stored, &members), archive(zip::CompressionMethod::Deflated, &members));
+        let shows_kml = |bytes: &[u8]| bytes[..bytes.len().min(4096)].windows(4).any(|w| w == b"<kml");
+        assert_eq!((shows_kml(&stored), shows_kml(&deflated)), (true, false), "<kml in the first 4 KiB: (stored, deflated)");
         let dir = tempfile::tempdir().unwrap();
-        let [payload, xml, bare] = ["places.payload", "places.xml", "places"].map(|name| dir.path().join(name));
-        for path in [&payload, &xml, &bare] {
-            std::fs::write(path, &bytes).unwrap();
+        let [payload, xml, deflated_xml, bare] =
+            ["places.payload", "places.xml", "deflated.xml", "places"].map(|name| dir.path().join(name));
+        for (path, bytes) in [(&payload, &stored), (&xml, &stored), (&deflated_xml, &deflated), (&bare, &stored)] {
+            std::fs::write(path, bytes).unwrap();
         }
         let mut beside = Layer::new("places").with_geom_type(wbvector::GeometryType::Point).with_epsg(4326);
         beside.add_feature(Some(wbvector::Geometry::point(5.0, 6.0)), &[]).unwrap();
@@ -2337,12 +2338,14 @@ mod content_allow_list_tests {
         let refused = open_with(&payload, &[]).map(|_| ());
         assert!(refused.as_ref().is_err_and(|e| e.contains("TERRIO_WBVECTOR_FALLBACK")), "{refused:?}");
         let fallback = [("TERRIO_WBVECTOR_FALLBACK", "YES")];
-        let Ok(Dataset::Vector(v)) = open_with(&payload, &fallback) else { panic!("not read as KMZ") };
-        assert_eq!(geometries(&v), [Some(wbvector::Geometry::point(10.5, 47.25)), Some(wbvector::Geometry::point(11.5, 46.5))]);
-        assert_eq!((v.layers.len(), v.layers[0].name.as_str(), v.driver), (1, "main", VectorDriver::GeoJSON));
-        // Read as the KML text it is not, and the shapefile beside it read instead.
-        let as_kml = open_with(&xml, &fallback).map(|_| ());
-        assert!(as_kml.as_ref().is_err_and(|e| e.contains("valid UTF-8")), "{as_kml:?}");
+        for path in [&payload, &xml, &deflated_xml] {
+            let read = open_with(path, &fallback);
+            let Ok(Dataset::Vector(v)) = read else { panic!("{path:?} not read as KMZ: {read:?}") };
+            let points = [Some(wbvector::Geometry::point(10.5, 47.25)), Some(wbvector::Geometry::point(11.5, 46.5))];
+            assert_eq!(geometries(&v), points, "{path:?}");
+            assert_eq!((v.layers.len(), v.layers[0].name.as_str(), v.driver), (1, "main", VectorDriver::GeoJSON), "{path:?}");
+        }
+        // The shapefile beside a path without an extension is read instead.
         let Ok(Dataset::Vector(v)) = open_with(&bare, &fallback) else { panic!("the shapefile not read") };
         assert_eq!(geometries(&v), [Some(wbvector::Geometry::point(5.0, 6.0))]);
     }
