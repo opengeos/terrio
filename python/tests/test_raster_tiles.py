@@ -32,6 +32,28 @@ def test_folder_tiles(tmp_path, kind):
         terrio.raster_tiles(raster, output, **options)
 
 
+@pytest.mark.parametrize("overview_source", ["tiles", "source"])
+def test_lower_zooms_and_webp_tiles(tmp_path, overview_source):
+    array = np.full((3, 8, 8), 7, dtype="uint8")
+    array[1] = 9
+    raster = terrio.Raster.from_array(array, (0, 1, 0, 8, 0, -1), crs="EPSG:4326")
+    output = tmp_path / "tiles"
+    report = terrio.raster_tiles(
+        raster,
+        output,
+        tiling_scheme="raster",
+        grid={"tile_size": 2, "min_zoom": 0},
+        resampling="nearest",
+        format="WEBP",
+        overview_source=overview_source,
+    )
+    assert report["written"] == 1 + 4 + 16
+    for path in output.rglob("*.webp"):
+        tile = terrio.open_raster(str(path))
+        assert tile.count == 3
+        np.testing.assert_array_equal(tile.read(), array[:, :2, :2])
+
+
 def test_valid_zero_tiff_samples_are_preserved(tmp_path):
     raster = terrio.Raster.from_array(
         np.zeros((1, 3, 5), dtype="float32"),

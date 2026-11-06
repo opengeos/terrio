@@ -168,8 +168,9 @@ Command-group progress:
 - [x] Separate-file raster tiles: XYZ/TMS PNG and typed GeoTIFF output through
       Rust, CLI/MCP, Python and JavaScript, with bounded source windows and
       non-overwriting resume. Real Landsat/USGS comparisons are registered as
-      `raster-tiles`; direct-source lower zooms differ from GDAL's generated-image
-      pyramid. Retile layouts, recursive pyramids, CSV/vector indexes and
+      `raster-tiles`; lower zooms are built from the tiles below them and match
+      GDAL's generated pyramid with nearest resampling (WebP directory tiles and
+      direct-source lower zooms with `--overview-source source` in #574). Retile layouts, recursive pyramids, CSV/vector indexes and
       Leaflet/OpenLayers, MapML, STACTA and KML publication helpers are implemented
       in [#440](https://github.com/opengeos/terrio/pull/440), with registered
       `retile` and `tile-publication` comparisons against GDAL 3.13.3.

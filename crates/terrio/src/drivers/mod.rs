@@ -49,7 +49,7 @@ pub(crate) mod sqlite_edit;
 #[cfg(feature = "sqlite")]
 pub(crate) mod sqlite_repack;
 pub(crate) mod vector;
-mod webp;
+pub(crate) mod webp;
 pub(crate) mod wkt;
 mod xyz;
 #[cfg(feature = "zarr")]

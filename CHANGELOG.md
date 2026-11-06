@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- `terrio tile` (Python `terrio.raster_tiles`, JavaScript `rasterTiles`) builds each lower-zoom
+  tile from the four tiles below it, as GDAL does, instead of rendering it from the source (#574).
+  Tiles are generated depth first, with at most four tiles per zoom level in memory, and every
+  source window is the size of one maximum-zoom tile, so a VRT mosaic without overviews tiles from
+  zoom 0: a 12000 x 12000 EPSG:4326 VRT of 36 GeoTIFFs, which failed with "the source tile window
+  exceeds the pixel-buffer budget", now gives its 5390 WebMercatorQuad tiles of zooms 0 to 14.
+  With nearest resampling the pyramid equals GDAL 3.13.3's (a raster grid and six reprojected
+  WebMercatorQuad zooms); with bilinear, lower zooms differ from GDAL's by a few levels on some
+  pixels. `--overview-source source` (`overview_source`, `overviewSource`) keeps the previous
+  rendering from the source. `--resume` rebuilds a missing parent from the existing tiles below it.
+- `terrio tile --format WEBP` writes lossless WebP directory tiles (gray tiles as RGB), equal in
+  pixels to the PNG tiles; Leaflet and OpenLayers viewers accept them.
 - `terrio dem` (Python `terrio.dem`, JavaScript `dem`) computes most of its 3×3 products a row at a
   time, with AVX2 where the CPU has it, and most rows holding nodata no longer fall back to one
   pixel at a time. Some products take their arctangents from fdlibm (credited in `NOTICE`,

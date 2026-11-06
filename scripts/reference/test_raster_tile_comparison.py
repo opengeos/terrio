@@ -27,12 +27,12 @@ class RasterTileComparisonTests(unittest.TestCase):
         for root in [self.reference, self.actual]:
             gdal.Translate(str(root / 'a.png'), str(self.reference / 'a.tif'), format='PNG')
         with patch.object(comparison, 'compare_direct_pyramid', return_value='direct source verified'):
-            self.assertEqual(comparison.compare_pyramid(None, self.reference, self.actual, None)[0], 'identical')
+            self.assertEqual(comparison.compare_pyramid(None, self.reference, self.actual, None, None)[0], 'identical')
             gdal.Translate(str(self.actual / 'a.png'), str(self.actual / 'a.tif'), format='PNG')
-            self.assertEqual(comparison.compare_pyramid(None, self.reference, self.actual, None)[0], 'tolerance')
+            self.assertEqual(comparison.compare_pyramid(None, self.reference, self.actual, None, None)[0], 'tolerance')
             (self.actual / 'a.png').unlink()
             with self.assertRaisesRegex(AssertionError, 'tile names differ'):
-                comparison.compare_pyramid(None, self.reference, self.actual, None)
+                comparison.compare_pyramid(None, self.reference, self.actual, None, None)
 
     def write(self, path, value=1, width=2, dtype=gdal.GDT_Byte, nodata=None):
         ds = gdal.GetDriverByName('GTiff').Create(str(path), width, 2, 1, dtype)
