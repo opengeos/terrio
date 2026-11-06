@@ -199,6 +199,10 @@ fn validate_rendering(source: &RasterDataset, options: &TileOptions, extension: 
             "alpha/image tiles support nearest, bilinear, cubic, cubicspline, lanczos and average resampling".into(),
         ));
     }
+    if extension == "webp" && options.alpha == Some(true) {
+        // The WebP encoder omits an opaque alpha band, so alpha cannot be kept on every tile.
+        return Err(Error::Unsupported("WebP tiles omit an opaque alpha band; use PNG to add alpha to every tile".into()));
+    }
     if image_format(extension) && source.raster.data_type != DataType::U8 {
         return Err(Error::Unsupported("PNG and WebP tiles require Byte input; scale/translate the raster first, or use GTiff".into()));
     }
@@ -1565,6 +1569,9 @@ mod tests {
         let page = String::from_utf8(sink.0["openlayers.html"].clone()).unwrap();
         assert!(page.contains(".webp"));
         rgb.publication.viewers.clear();
+        rgb.alpha = Some(true);
+        assert!(plan(&dataset, &rgb).unwrap_err().to_string().contains("opaque alpha"));
+        rgb.alpha = None;
         rgb.format = "jpeg".into();
         assert!(plan(&dataset, &rgb).is_err());
     }

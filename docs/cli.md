@@ -1535,7 +1535,7 @@ terrio tile mosaic.vrt tiles --format WEBP --min-zoom 0 --max-zoom 18 --conventi
 PNG and WebP (`--format WEBP`, lossless) require Byte gray/RGB/palette input,
 optionally with alpha; scale other inputs first, or select `--format GTiff` to
 retain their types and bands. WebP stores gray tiles as RGB, and omits the alpha
-band of a fully opaque tile, even with `--add-alpha`. KML publication refuses
+band of a fully opaque tile, so `--add-alpha` is refused with WebP. KML publication refuses
 WebP tiles, which Google Earth ground overlays do not display.
 PNG tiles get alpha for nodata, dataset masks and padded edges. Each color
 channel's nodata is excluded before interpolation; the pixel remains opaque when
