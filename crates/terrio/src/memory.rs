@@ -1426,4 +1426,37 @@ mod tests {
         crate::config::pop_scope();
         assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("TERRIO_ZIP_MAX_SIZE")), "{:?}", refused.err());
     }
+
+    /// What an archive nested in a member reads counts toward the outer archive's later reads, and
+    /// the outer budget is restored when the nested open panics.
+    #[test]
+    fn nested_zip_reads_are_charged_to_the_outer_archive() {
+        use crate::vfs::LimitedZip;
+        let zip_of = |members: &[(&str, &[u8])]| {
+            let mut buf = std::io::Cursor::new(Vec::new());
+            let mut writer = zip::ZipWriter::new(&mut buf);
+            for (name, bytes) in members {
+                writer.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+                std::io::Write::write_all(&mut writer, bytes).unwrap();
+            }
+            writer.finish().unwrap();
+            buf.into_inner()
+        };
+        let inner = zip_of(&[("a", &[b'x'; 600])]);
+        let outer = zip_of(&[("inner.zip", &inner), ("b", &[b'y'; 300])]);
+        crate::config::push_scope([("TERRIO_ZIP_MAX_SIZE".to_string(), Some("1000".to_string()))].into_iter().collect());
+        let mut zip = LimitedZip::open(std::io::Cursor::new(outer)).unwrap();
+        let member = zip.read_name("inner.zip", u64::MAX).unwrap();
+        let read = zip.nested(|| LimitedZip::open(std::io::Cursor::new(member.clone())).unwrap().read_name("a", u64::MAX).map(|b| b.len()));
+        assert_eq!(read.unwrap(), 600);
+        // inner.zip, then its 600 bytes, then 300 more: past the 1,000 allowed.
+        let refused = zip.read_name("b", u64::MAX);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| zip.nested(|| panic!("nested open"))));
+        crate::config::pop_scope();
+        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("TERRIO_ZIP_MAX_SIZE")), "{refused:?}");
+        assert!(panicked.is_err());
+        // No budget is left behind for later, unrelated archives.
+        let fresh = zip_of(&[("c", &[b'z'; 2000])]);
+        assert_eq!(LimitedZip::open(std::io::Cursor::new(fresh)).unwrap().read_name("c", u64::MAX).unwrap().len(), 2000);
+    }
 }
