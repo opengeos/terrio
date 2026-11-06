@@ -73,6 +73,34 @@ test("the module's build and its formats", () => {
   }
 });
 
+test("the block cache's size is set, read back and cleared", () => {
+  const original = terrio.blockCacheMax();
+  try {
+    terrio.setBlockCacheMax(8 << 20);
+    assert.equal(terrio.blockCacheMax(), 8 << 20);
+    for (const bad of [-1, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 2]) {
+      assert.throws(() => terrio.setBlockCacheMax(bad), /setBlockCacheMax/, String(bad));
+    }
+    assert.equal(terrio.blockCacheMax(), 8 << 20);
+    const data = new Int16Array(64 * 64).map((_, i) => i % 1000);
+    const bytes = terrio.rasterFromArray(data, 64, 64, [0, 1, 0, 64, 0, -1], "EPSG:32610").toBytes("c.tif", { compress: "DEFLATE", tileSize: 16 });
+    const window = [10, 10, 30, 20];
+    const reads = [];
+    for (const size of [8 << 20, 0]) {
+      terrio.setBlockCacheMax(size);
+      terrio.clearBlockCache();
+      const ds = terrio.open(bytes, "c.tif");
+      reads.push([...ds.readBand(1, window)], [...ds.readBand(1, window)]);
+    }
+    assert.equal(terrio.blockCacheMax(), 0);
+    for (const r of reads) assert.deepEqual(r, reads[0]);
+    assert.equal(reads[0].length, 30 * 20);
+  } finally {
+    terrio.setBlockCacheMax(original);
+    terrio.clearBlockCache();
+  }
+});
+
 test("raster from array, to GeoTIFF bytes and back", () => {
   const data = new Int16Array(2 * 3 * 4).map((_, i) => i - 5);
   const ds = terrio.rasterFromArray(data, 4, 3, [500000, 30, 0, 4100000, 0, -30], "EPSG:32610", -9999);

@@ -233,6 +233,20 @@ option changed while a file is open applies to the next open, not to the open fi
 Bodies fetched whole are capped: a JSON document at `CPL_JSON_MAX_SIZE` (GDAL's 100 MB), a page of
 an object store's listing (remote Zarr groups) at 64 MiB, a STAC signing token response at 64 KiB.
 
+## Decoded block cache
+
+The decoded tiles and strips of lazy GeoTIFF and COG reads, remote or local, are kept in memory
+process-wide, as GDAL's block cache keeps the blocks it decodes, so that a window read again
+decodes nothing. The least recently used are dropped first.
+
+| Variable | GDAL equivalent | Default |
+|---|---|---|
+| `TERRIO_CACHEMAX` (bytes; `K`, `M`, `G` suffixes; 0 turns the cache off) | `GDAL_CACHEMAX` (a plain integer below 100000 is megabytes; a `%` value is ignored) | 64 MiB |
+
+`terrio::block_cache::set_max_bytes` and `clear` change the size and empty the cache at run time.
+The chunks belong to the open reader that decoded them, so a file replaced under an open reader
+is still read as it was, and a reader opened afterwards reads the new file.
+
 ## Managing files
 
 `terrio vsi` lists, copies, synchronizes, moves and deletes files on these locations and in

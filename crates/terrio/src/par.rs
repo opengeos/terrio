@@ -333,13 +333,14 @@ mod native {
     }
 }
 
-/// Takes the process-wide locks of terrio's modules, for a fork (`native::prepare`): the remote
-/// files' cache, the request statistics, path options and retry warnings, the process's HTTP
-/// agent, the STAC tokens, the allow-list, the files in memory, the grids' caches and the warper's
-/// nodata warnings. Each is held for map operations (the agent while one is built) only, never
+/// Takes the process-wide locks of terrio's modules, for a fork (`native::prepare`): the decoded
+/// chunks' cache, the remote files' cache, the request statistics, path options and retry
+/// warnings, the process's HTTP agent, the STAC tokens, the allow-list, the files in memory, the
+/// grids' caches and the warper's nodata warnings. Each is held for map operations (the agent while one is built) only, never
 /// while another is taken, so any order is free of deadlocks.
 #[cfg(all(unix, not(target_family = "wasm")))]
 fn hold_locks(held: &mut Vec<Box<dyn std::any::Any>>) {
+    crate::block_cache::hold_for_fork(held);
     crate::formats::hold_for_fork(held);
     crate::memfs::hold_for_fork(held);
     crate::crs::hold_for_fork(held);
