@@ -373,7 +373,9 @@ pub use drivers::vector::oapif::OapifOpenOptions;
 
 /// This process's id, for naming temporary files. 0 on WASI, which has no process ids
 /// (`std::process::id` panics there): the browser build of the command line runs one program at a
-/// time, and the names carry a counter or are checked for being taken too.
+/// time, so no other terrio process writes the same names. Most callers also add a counter or
+/// create the file only if new; a name that does neither (netCDF's `.nc.tmp-0`) replaces a file
+/// already called that.
 #[cfg_attr(not(fs), allow(dead_code))]
 pub(crate) fn process_id() -> u32 {
     #[cfg(target_os = "wasi")]

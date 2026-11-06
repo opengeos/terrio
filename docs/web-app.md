@@ -92,8 +92,10 @@ After each run, the page shows how many requests the command made and how many b
   commands that talk to a server API are not available. Reading files from URLs works.
 - **No `ui`, `view` or `mcp`.** These commands run servers. The [map](#map) takes the place of
   `view`.
-- **Cancelling** a command ends it and restarts terrio, with the workspace as it was before the
-  command started. Remote files are fetched again afterwards.
+- **Cancelling** a command ends it and restarts terrio, with the workspace's files as they were
+  before the command started (empty folders are not kept). Remote files are fetched again
+  afterwards. An uploaded file changed or moved on your disk since its upload is removed from the
+  workspace then, with a message.
 
 The [Playground](playground.md) is a lighter page built on the [npm package](javascript.md). It
 previews, converts and reprojects a file, and reads remote files the same way.

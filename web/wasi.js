@@ -614,6 +614,7 @@ export class Wasi {
       fd_allocate: (fd, offset, len) => {
         const entry = file(fd);
         if (!entry) return E.BADF;
+        if (entry.node.readonly) return E.ROFS;
         const end = Number(offset) + Number(len);
         if (end > entry.node.size) entry.node.truncate(end);
         return E.SUCCESS;

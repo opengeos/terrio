@@ -295,7 +295,21 @@ function startWorker() {
   worker.onerror = (event) => pending && pending({ type: "error", message: event.message || "the worker failed to start" });
   ready = (async () => {
     const { catalog } = await call({ type: "init" });
-    for (const [path, blob] of files) await call({ type: "put", path, buffer: await blob.arrayBuffer() });
+    // A file changed or moved on disk since it was uploaded cannot be read again: it is left out
+    // and reported, not allowed to stop the restart.
+    const lost = [];
+    for (const [path, blob] of files) {
+      try {
+        await call({ type: "put", path, buffer: await blob.arrayBuffer() });
+      } catch (error) {
+        files.delete(path);
+        lost.push(`${path}: ${error.message}`);
+      }
+    }
+    if (lost.length) {
+      renderFiles();
+      alert(`Removed from the workspace, as they can no longer be read:\n${lost.join("\n")}`);
+    }
     return catalog;
   })();
   return ready;
