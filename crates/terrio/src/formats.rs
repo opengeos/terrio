@@ -1560,13 +1560,17 @@ mod allow_list_tests {
 mod tests {
     use super::{RasterDriver, sniff};
 
-    /// Only Zarr is read with `wbraster`'s Zarr reader: terrio reads GRIB, netCDF, HDF5, WebP and
-    /// SRTM tiles itself (the GDAL backend reads GRIB in builds with `gdal` and without `grib`).
+    /// Only Zarr is read with `wbraster`'s Zarr reader, and GRIB, netCDF, HDF5, WebP and SRTM tiles
+    /// have no `wbraster` format: terrio reads them itself (the GDAL backend reads GRIB in builds
+    /// with `gdal` and without `grib`).
     #[test]
     fn only_zarr_maps_to_the_wbraster_zarr_reader() {
         let zarr: Vec<RasterDriver> =
             RasterDriver::ALL.iter().copied().filter(|d| d.to_wb() == Some(wbraster::RasterFormat::Zarr)).collect();
-        assert_eq!((zarr, RasterDriver::GRIB.to_wb()), (vec![RasterDriver::Zarr], None));
+        assert_eq!(zarr, vec![RasterDriver::Zarr]);
+        for driver in [RasterDriver::NetCDF, RasterDriver::HDF5, RasterDriver::GRIB, RasterDriver::WEBP, RasterDriver::SRTMHGT] {
+            assert_eq!(driver.to_wb(), None, "{driver:?}");
+        }
     }
 
     #[test]
