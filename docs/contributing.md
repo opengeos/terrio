@@ -196,6 +196,7 @@ Then run what applies to your change:
 TERRIO_TEST_DATA=../terrio-data cargo test --workspace    # drivers and operations, on real data
 cargo build -p terrio --target wasm32-unknown-unknown     # library changes: it must build for the web
 RUSTDOCFLAGS="-D warnings" cargo doc -p terrio --no-deps  # new or changed public items
+cargo audit                                               # dependency changes (cargo install cargo-audit)
 cargo +1.90 check --workspace --all-targets               # new language features or dependencies
 ```
 

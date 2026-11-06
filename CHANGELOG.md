@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Dependencies with RustSec vulnerabilities leave the build. ctutils, zstd and zstd-safe move to
+  releases that fix them (0.4.8, 0.13.4, 7.4.0). wbvector is built without its KMZ and OSM PBF
+  readers, which terrio did not use for its drivers, so zip 0.6 and protobuf 2 (through
+  osmpbfreader 0.16) are no longer compiled; terrio reads OSM PBF with osmpbfreader 0.19 as
+  before. With `TERRIO_WBVECTOR_FALLBACK=YES`, a zip archive named for no driver is still read as
+  KMZ (its `doc.kml`, else its first `.kml` member, with wbvector's KML reader), now opened with
+  terrio's zip 9: an archive with two `doc.kml` members reads the last one, as the KMZ driver
+  does, where it read the first.
+- GRIB, netCDF, HDF5, WebP and SRTM tiles have no wbraster format any more, so wbraster's Zarr
+  reader never reads them. In a build with the `gdal` feature and without `grib`, a `.grib2` path
+  that is a Zarr store was decoded by wbraster's Zarr reader (ruzstd 0.8, RUSTSEC-2026-0344) with
+  no option set; the GDAL backend reads it now, as it reads GRIB files in such a build.
+- CI checks `Cargo.lock` against the RustSec advisory database (`cargo audit`, the `audit` job)
+  on every pull request and push to main. `.cargo/audit.toml` ignores the five advisories of zip
+  8.6.0 and ruzstd 0.8.3, which wbraster 0.2.1 requires, until a wbraster release depends on zip
+  9 and ruzstd 0.9.1; since an ignore covers every version of a crate, a second step fails when
+  the lockfile has any other vulnerability. Unmaintained and unsound crates are listed without
+  failing the check.
 - A zero-length numeric, enum or compound attribute of a multidimensional dataset is `null`, as
   GDAL 3.13.3's `gdalmdiminfo` prints it, where it was an empty list `[]`, in Rust, Python,
   JavaScript and CLI results and in Zarr copies. A zero-length string attribute stays `[]`. A
