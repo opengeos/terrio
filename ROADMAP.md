@@ -777,3 +777,9 @@ Windows read as `f32` or `f64` values, NaN where GDAL's mask band marks pixels i
   `las` crate (whose header reader keeps only the first EVLR) or `wblidar` (which reads COPC points
   in hierarchy order and cannot read LASzip's unchunked compressor). Point clouds are not
   `Dataset`s: they have their own reader (`pointcloud::open_points`) and columnar `PointCloud`.
+
+- CSF directory batching is deliberately a CLI/MCP filesystem convenience: it scans local
+  LAS/LAZ tiles, checks destination names and publishes each result without clobbering.
+  The CSF algorithm and point-cloud input validation stay in `crates/terrio`; Python and
+  Rust callers compose those single-cloud operations themselves. JavaScript/WASM uses
+  byte inputs rather than local filesystem paths. No new cross-surface batch API is planned.

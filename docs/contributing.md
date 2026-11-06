@@ -196,10 +196,15 @@ Then run what applies to your change:
 TERRIO_TEST_DATA=../terrio-data cargo test --workspace    # drivers and operations, on real data
 cargo build -p terrio --target wasm32-unknown-unknown     # library changes: it must build for the web
 RUSTDOCFLAGS="-D warnings" cargo doc -p terrio --no-deps  # new or changed public items
+cargo audit                                               # dependency changes (cargo install cargo-audit)
 cargo +1.90 check --workspace --all-targets               # new language features or dependencies
 ```
 
 The last one needs a one-time install: `rustup toolchain install 1.90`.
+
+`cargo audit` reads `.cargo/audit.toml`, whose ignores cover their advisories in every version of
+a crate. The `audit` job in CI also audits without that file and fails on any vulnerability but
+the five it ignores in zip 8.6.0 and ruzstd 0.8.3, so a local pass can still fail there.
 
 Continuous integration runs the cargo commands on Linux for pull requests, skipping the real-data
 tests when only documentation changed. If you cannot run one locally, say so in the description; a

@@ -118,7 +118,7 @@ hecras = ["netcdf-hdf5", "dep:ras-commander-fast-hdf"]
 ## XLSX and XLSM workbooks as vector layers (pure Rust).
 xlsx = []
 ## OpenStreetMap PBF and XML.
-osm = ["dep:osmpbfreader", "wbvector/osmpbf"]
+osm = ["dep:osmpbfreader"]
 ## LZMA-compressed GeoTIFFs.
 lzma = ["dep:lzma-rust2"]
 ## FlatGeobuf.

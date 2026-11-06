@@ -16,6 +16,27 @@
   Adler-32 right after them, is an error; one cut in its trailer after the samples is read, as
   libtiff with zlib reads it. All 121 tiles of a Sentinel-2 L2A band decode as the `tiff` crate
   decodes them.
+- Dependencies with RustSec vulnerabilities leave the build. ctutils, zstd and zstd-safe move to
+  releases that fix them (0.4.8, 0.13.4, 7.4.0). wbvector is built without its KMZ and OSM PBF
+  readers, which terrio did not use for its drivers, so zip 0.6 and protobuf 2 (through
+  osmpbfreader 0.16) are no longer compiled; terrio reads OSM PBF with osmpbfreader 0.19 as
+  before. With `TERRIO_WBVECTOR_FALLBACK=YES`, a zip archive named for no driver (`.xml`
+  included) is still read as KMZ, now opened with terrio's zip 9: from the member the KMZ driver
+  reads (its first `doc.kml` in any case, else its first `.kml` member), decoded as the KMZ
+  driver decodes it, with wbvector's KML reader. An archive with two `doc.kml` members reads the
+  last one, where it read the first. Three kinds of archive that failed are read: one named
+  `.xml` with its members stored, one with its document in Latin-1, and one with an encrypted or
+  bzip2-compressed member before its document.
+- GRIB, netCDF, HDF5, WebP and SRTM tiles have no wbraster format any more, so wbraster's Zarr
+  reader never reads them. In a build with the `gdal` feature and without `grib`, a `.grib2` path
+  that is a Zarr store was decoded by wbraster's Zarr reader (ruzstd 0.8, RUSTSEC-2026-0344) with
+  no option set; the GDAL backend reads it now, as it reads GRIB files in such a build.
+- CI checks `Cargo.lock` against the RustSec advisory database (`cargo audit`, the `audit` job)
+  on every pull request and push to main. `.cargo/audit.toml` ignores the five advisories of zip
+  8.6.0 and ruzstd 0.8.3, which wbraster 0.2.1 requires, until a wbraster release depends on zip
+  9 and ruzstd 0.9.1; since an ignore covers every version of a crate, a second step fails when
+  the lockfile has any other vulnerability. Unmaintained and unsound crates are listed without
+  failing the check.
 - Warps with nearest or `average` resampling are faster, and so are bilinear warps past GDAL's
   4-tap threshold (output pixels over 1/0.95 source pixels across in either direction, 2 or more
   with `TERRIO_GDAL_COMPAT=3.13`); the arithmetic and its order are unchanged. Nearest from
