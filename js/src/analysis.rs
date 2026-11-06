@@ -324,19 +324,19 @@ impl JsZonalReducer {
         };
         // Canonical names (`stddev` for `std`), as `zonalStats` names its fields.
         let names: Vec<String> = stats.iter().map(|s| s.name()).collect();
-        let mut layers = input_layers(zones)?;
-        let zones = match &a.layer {
-            Some(name) => {
-                layers.drain(..).find(|l| &l.name == name).ok_or_else(|| JsError::new(&format!("no zone layer named '{name}'")))?
-            }
-            None if layers.len() == 1 => layers.remove(0),
-            None => {
-                return Err(JsError::new(&format!(
-                    "the zones must have one layer, or name one with the layer option (they have {})",
-                    layers.len()
-                )));
-            }
+        // A named layer is selected as readers select it (a single-layer file also answers to its
+        // file name).
+        let mut layers = match &a.layer {
+            Some(name) => crate::ops::selected_input_layers(zones, std::slice::from_ref(name))?,
+            None => input_layers(zones)?,
         };
+        if layers.len() != 1 {
+            return Err(JsError::new(&format!(
+                "the zones must have one layer, or name one with the layer option (they have {})",
+                layers.len()
+            )));
+        }
+        let zones = layers.remove(0);
         let options = ZonalOptions { fractional: a.fractional, stats, all_touched: a.all_touched, ..Default::default() };
         let crs = crs.as_deref().map(terrio::crs::SpatialRef::parse).transpose().map_err(js_err)?.unwrap_or_default();
         let grid = Grid { cols: width, rows: height, geo_transform, crs };
