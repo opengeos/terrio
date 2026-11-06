@@ -1779,8 +1779,9 @@ struct Shared {
     /// The file's first bytes, when the first request was shorter than a block.
     prefix: Option<Arc<[u8]>>,
     /// The blocks the last prefetch asked for, sorted: fetched a batch at a time
-    /// ([`Shared::fetch_planned`]), the next batch when a read reaches one not cached.
-    plan: Vec<u64>,
+    /// ([`Shared::fetch_planned`]), the next batch when a read reaches one not cached. A deque, so
+    /// that taking batches from its front does not shift the rest.
+    plan: VecDeque<u64>,
 }
 
 impl RangeReader {
@@ -1819,7 +1820,7 @@ impl RangeReader {
             order: VecDeque::new(),
             whole: None,
             prefix: None,
-            plan: Vec::new(),
+            plan: VecDeque::new(),
         };
         if let Some(missing) = shared.load_cached(first_len) {
             // The blocks of the first bytes that the process-wide cache no longer holds, each run
@@ -1889,7 +1890,7 @@ impl RangeReader {
         if wanted.is_empty() {
             return Ok(());
         }
-        s.plan = wanted;
+        s.plan = wanted.into();
         s.fetch_planned(0)
     }
 
