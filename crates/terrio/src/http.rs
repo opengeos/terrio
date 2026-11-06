@@ -2071,9 +2071,16 @@ impl Shared {
                 missing.retain(|b| !self.blocks.contains_key(b));
             }
             if self.whole.is_none() && !missing.is_empty() {
-                self.fetch_blocks(&missing, 0)?;
+                // Requests of at most half the cache's blocks, as a prefetch's batches are.
+                let batch = (self.max_blocks / 2).max(1);
+                for chunk in missing.chunks(batch) {
+                    self.fetch_blocks(chunk, 0)?;
+                    if self.whole.is_some() {
+                        break;
+                    }
+                }
                 // Planned blocks past the batch, fetched with the read, leave the plan too.
-                if !self.plan.is_empty() {
+                if !self.plan.is_empty() && missing.iter().any(|b| self.plan.binary_search(b).is_ok()) {
                     self.plan.retain(|b| missing.binary_search(b).is_err());
                 }
             }
@@ -2572,6 +2579,20 @@ mod tests {
         let before = seen.lock().unwrap().len();
         assert_eq!(read_range(&mut r, 18 * 4096, 100), data[18 * 4096..18 * 4096 + 100]);
         assert_eq!(requested(&seen.lock().unwrap()[before..]), [(18 * 4096, 19 * 4096 - 1)]);
+    }
+
+    // A read longer than half the cache, with nothing prefetched, is fetched in requests of at
+    // most half the cache's blocks, not in one request for the whole read.
+    #[test]
+    fn a_read_longer_than_half_the_cache_is_fetched_in_bounded_requests() {
+        let data = test_data();
+        let (url, seen) = test_server(data.clone());
+        let opts = HttpOptions { cache_size: 16 * 4096, ..options() };
+        let mut r = RangeReader::open_with(&Remote::Url(format!("{url}/read.bin")), opts).unwrap();
+        let before = seen.lock().unwrap().len();
+        assert_eq!(read_range(&mut r, 0, 20 * 4096), data[..20 * 4096]);
+        let ranges = requested(&seen.lock().unwrap()[before..]);
+        assert!(!ranges.is_empty() && ranges.iter().all(|(a, b)| b - a < 8 * 4096), "{ranges:?}");
     }
 
     // A sparse prefetch larger than the cache (every third block: batches merge across two-block
