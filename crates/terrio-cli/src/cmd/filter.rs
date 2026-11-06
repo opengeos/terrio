@@ -893,9 +893,9 @@ fn read(io: &Io) -> terrio::Result<PointCloud> {
     Ok(read_path(&io.input, io)?.0)
 }
 
-fn read_path(path: &str, io: &Io) -> terrio::Result<(PointCloud, &'static str)> {
+fn read_path(path: &str, io: &Io) -> terrio::Result<(PointCloud, Option<pointcloud::PointFormat>)> {
     let mut reader = pointcloud::open_points(path)?;
-    let format = reader.format_name();
+    let format = pointcloud::PointFormat::from_name(reader.format_name());
     let mut cloud = reader.read(&io.points.to_options()?)?;
     assign_srs(&io.a_srs, &mut cloud)?;
     Ok((cloud, format))
@@ -975,8 +975,11 @@ fn run_csf(io: &Io, options: &CsfOptions) -> terrio::Result<()> {
         let (cloud, format) = read_path(&input_path, io)?;
         let mut tile_options = write_options.clone();
         if tile_options.format.is_none() {
-            tile_options.format =
-                if format == "COPC" { Some(pointcloud::PointFormat::Copc) } else { pointcloud::PointFormat::for_path(&output_path) };
+            tile_options.format = if format == Some(pointcloud::PointFormat::Copc) && output_path.to_ascii_lowercase().ends_with(".laz") {
+                Some(pointcloud::PointFormat::Copc)
+            } else {
+                pointcloud::PointFormat::for_path(&output_path)
+            };
         }
         let classified = filters::csf(&cloud, options)?;
         publish_csf_tile(&classified, &output_path, &tile_options, staging.path())?;
@@ -1505,7 +1508,11 @@ mod tests {
             &pointcloud::PointWriteOptions { format: Some(pointcloud::PointFormat::Copc), ..Default::default() },
         )
         .unwrap();
+        std::fs::copy(input.join("tile.laz"), input.join("tile.las")).unwrap();
         run(Cli::try_parse_from(["terrio", "csf", input.to_str().unwrap(), output.to_str().unwrap()]).unwrap().args).unwrap();
+        let mut las_reader = pointcloud::open_points(output.join("tile.las").to_str().unwrap()).unwrap();
+        assert_eq!(las_reader.format_name(), "LAS");
+        assert_eq!(las_reader.read(&Default::default()).unwrap().len(), 4);
         let mut reader = pointcloud::open_points(output.join("tile.laz").to_str().unwrap()).unwrap();
         assert_eq!(reader.format_name(), "COPC");
         let result = reader.read(&Default::default()).unwrap();
@@ -1553,6 +1560,34 @@ mod tests {
         std::fs::remove_file(&output).unwrap();
         super::publish_csf_tile(&cloud, output.to_str().unwrap(), &options, staging.path()).unwrap();
         assert_eq!(pointcloud::read_points(output.to_str().unwrap(), &Default::default()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn csf_mid_batch_error_keeps_completed_tiles_and_removes_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input");
+        let output = dir.path().join("output");
+        std::fs::create_dir(&input).unwrap();
+        let cloud = PointCloud::new(
+            vec![
+                Dimension::new("x", Values::F64(vec![0., 1., 2., 3.])),
+                Dimension::new("y", Values::F64(vec![0., 1., 0., 1.])),
+                Dimension::new("z", Values::F64(vec![0.; 4])),
+            ],
+            SpatialRef::default(),
+        );
+        pointcloud::write_points(&cloud, input.join("a.las").to_str().unwrap(), &Default::default()).unwrap();
+        std::fs::write(input.join("b.las"), "invalid second tile").unwrap();
+        let original = std::fs::read(input.join("a.las")).unwrap();
+        let result = run(Cli::try_parse_from(["terrio", "csf", input.to_str().unwrap(), output.to_str().unwrap()]).unwrap().args);
+        assert!(result.is_err());
+        let completed = pointcloud::read_points(output.join("a.las").to_str().unwrap(), &Default::default()).unwrap();
+        assert_eq!(completed.len(), 4);
+        assert!(completed.dim("classification").is_some());
+        assert!(!output.join("b.las").exists());
+        assert_eq!(std::fs::read_dir(&output).unwrap().count(), 1);
+        assert_eq!(std::fs::read(input.join("a.las")).unwrap(), original);
+        assert_eq!(std::fs::read_to_string(input.join("b.las")).unwrap(), "invalid second tile");
     }
 
     #[test]

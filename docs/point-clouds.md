@@ -301,7 +301,8 @@ terrio filter hexbin bridge.copc.laz footprint.geojson --edge-size 1.4 --thresho
 It classifies each regular file separately, sorted by platform path ordering
 (not natural numeric ordering), and keeps its filename in the output directory.
 The output format follows its extension, except that detected COPC content remains
-COPC even with an ordinary `.laz` filename. This preservation is specific to batch
+COPC even with an ordinary `.laz` filename; a `.las` tile is written as LAS.
+This preservation is specific to batch
 mode: single-file CSF chooses the format from the requested output extension, so
 a COPC input written to `output.laz` becomes ordinary LAZ.
 Extension matching is case-insensitive.
