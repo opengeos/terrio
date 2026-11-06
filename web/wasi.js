@@ -350,6 +350,14 @@ export class RemoteDir {
     }
     let node;
     const folder = () => new RemoteDir(`${this.prefix}${name}/`, this.errors);
+    // A sidecar's name made by adding to a known file's name with a query (`a.tif?X-Amz-…` plus
+    // `.aux.xml`): its URL cannot be right (a presigned URL is signed for one object), so it is taken
+    // as missing without asking the server.
+    if (last && name.includes("?") && [...this.entries].some(([k, v]) => v instanceof RemoteFile && k !== name && name.startsWith(k))) {
+      this.entries.set(name, null);
+      this.missedAt.set(name, Date.now());
+      return null;
+    }
     if (!last || this.prefix === "https://") {
       // A host, or a name with more path after it, is a folder.
       node = folder();

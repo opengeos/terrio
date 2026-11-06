@@ -305,3 +305,15 @@ test("appending to a vector tile archive keeps its other layers", { skip: !modul
   assert.match(info.stdout, /Layer: roads/);
   assert.match(info.stdout, /Layer: parks/);
 });
+
+test("sidecars of a URL with a query are not asked for", () => {
+  const url = "https://example.com/a.tif?X-Amz-Signature=abc";
+  const log = serve({ [url]: big });
+  const errors = [];
+  const host = new RemoteDir("https://", errors).lookup("example.com", false);
+  assert.ok(host.lookup("a.tif?X-Amz-Signature=abc", true) instanceof RemoteFile);
+  const requests = log.length;
+  assert.equal(host.lookup("a.tif?X-Amz-Signature=abc.aux.xml", true), null);
+  assert.equal(log.length, requests, "no request for the sidecar");
+  assert.deepEqual(errors, []);
+});

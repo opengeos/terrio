@@ -532,10 +532,17 @@ function show(command) {
   });
 
   let cancelled = false;
+  // Whether the run has reached the worker: until then it waits in the queue, behind an upload or
+  // a map batch, and cancelling it only takes it out.
+  let inFlight = false;
   cancel.addEventListener("click", () => {
+    cancelled = true;
+    if (!inFlight) {
+      status.textContent = "Cancelled before it started.";
+      return;
+    }
     // A command cannot be interrupted inside the worker: the worker is ended and a new one started
     // with the workspace as it was before the command.
-    cancelled = true;
     worker.terminate();
     pending && pending({ type: "error", message: "cancelled" });
     status.textContent = "Cancelled. Restarting…";
@@ -545,6 +552,7 @@ function show(command) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     cancelled = false;
+    inFlight = false;
     activeRun = status;
     run.disabled = true;
     cancel.disabled = false;
@@ -566,11 +574,14 @@ function show(command) {
     try {
       const result = await enqueue(async () => {
         await ready;
+        if (cancelled) return null;
+        inFlight = true;
         return call({ type: "run", args, binaryStdout: showPng }, (stream, text) => {
           output.hidden = false;
           output.append(text);
         });
       });
+      if (!result) return;
       const seconds = ((performance.now() - started) / 1000).toFixed(1);
       for (const path of result.removed) files.delete(path);
       for (const { path, buffer } of result.changed) files.set(path, new Blob([buffer]));
