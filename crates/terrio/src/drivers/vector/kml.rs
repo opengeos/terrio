@@ -174,6 +174,9 @@ fn kmz_styled<R: std::io::Read + std::io::Seek>(reader: R, default_name: &str) -
         let text = match zip.read_name(&name, budget) {
             Ok(bytes) => xml::decode(&bytes),
             Err(e) if e.is_resource_refusal() => return Err(e),
+            // A member inflating past its declared size is refused only by the message
+            // `is_past_declared` matches. If zip rewords it, that member is skipped here like an
+            // unreadable one, not refused; the vfs tests pin the message.
             Err(_) => continue,
         };
         if text.len() as u64 > budget {
