@@ -25,8 +25,8 @@
   first 16 bytes, where formats with a signature put it, are zeroed at once and written last, and
   the header of a headerless data file (EHdr, ENVI, ERS, SAGA, RST) is emptied before the data is
   written, so a write interrupted partway (the process killed, the disk full) leaves no such file
-  that opens as a raster of old and new bytes (except through a stale ENVI `name.ext.hdr`, which
-  the reader prefers to the `name.hdr` written and which is left as it is), and one
+  that opens as a raster of old and new bytes (the ENVI writer writes its header over a
+  `name.ext.hdr` already there, which the reader prefers to `name.hdr`), and one
   that fails with an error leaves it empty; one that fails before the file is opened (a
   whole-raster encoding error, a data file or header sidecar it cannot open)
   leaves it as it was, and a sidecar failing after its data file is finished leaves the new data.
@@ -58,7 +58,8 @@
 - `clip` in `terrio.xarray` (DataArrays and Datasets) and `terrio.rio.features.geometry_mask`
   take a `terrio.Layer`, burnt without a round trip through GeoJSON on north-up grids in memory
   (other grids, `from_disk=True` and a CRS-less Layer reprojected from `crs=` still go through
-  GeoJSON), with the pixels of the GeoJSON path. `clip` reprojects the
+  GeoJSON), with the pixels of the GeoJSON path for valid geometries (a polygon ring of fewer
+  than four positions, which the GeoJSON path skips, is burnt closed). `clip` reprojects the
   Layer from its own CRS, or from `crs=` when it has none; a `crs=` differing from the Layer's
   own CRS raises `ValueError`. Masking the 5610 x 7533 DEM with 2,000 polygons from a
   GeoDataFrame, one thread: 0.32 -> 0.14 s.
