@@ -172,8 +172,9 @@ pub(super) fn open_pixels_peak(index: &ZoneIndex, strip_rows: usize, per_zone: u
 ///
 /// With `histograms`, zones of an 8- or 16-bit raster count their values in histograms of the
 /// type the raster declares, as [`values_per_zone`] charges them. A strip read in another type
-/// could hold values those histograms do not count, listed beyond that charge: the reduction then
-/// stops and gives `None`, for the caller to reduce the bands again without histograms.
+/// (unless its every value has a bin, as UInt8 in UInt16) could hold values those histograms do
+/// not count, listed beyond that charge: the reduction then stops and gives `None`, for the caller
+/// to reduce the bands again without histograms.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reduce_source(
     index: &ZoneIndex,
@@ -190,6 +191,12 @@ pub(super) fn reduce_source(
     // Float64 has no histogram range: zones list every value.
     let data_type = if histograms { declared } else { DataType::F64 };
     let check_type = histograms && histogram_range(declared).is_some();
+    // A strip type whose every value has a bin in the declared type's histogram (UInt8 in UInt16,
+    // as a VRT of mixed band types gives) is counted the same.
+    let counted = |t: DataType| match (histogram_range(t), histogram_range(declared)) {
+        (Some((first, bins)), Some((from, to))) => first >= from && first + bins as f64 <= from + to as f64,
+        _ => false,
+    };
     let mut other_type = false;
     let read_bands = WindowOptions { bands: bands.iter().map(|b| b.band).collect(), overview: None };
     // Reads share one handle each: reads of a raster take turns, but overlap the reduction.
@@ -213,7 +220,7 @@ pub(super) fn reduce_source(
             Ok((strip, weights))
         },
         |i, (strip, weights)| {
-            if check_type && strip.data_type != declared {
+            if check_type && !counted(strip.data_type) {
                 other_type = true;
                 return Err(Error::InvalidData(format!("a strip came back as {:?}, not {declared:?}", strip.data_type)));
             }
@@ -1012,6 +1019,36 @@ mod tests {
             crate::ops::zonal::zonal_stats(&layer, &mut [source], &options).unwrap().features[0].attributes.clone()
         };
         assert_eq!(zonal(raster(DataType::U8)), zonal(raster(DataType::F64)));
+    }
+
+    /// A raster declared UInt16 whose strips come back as UInt8 (the first band of a VRT of UInt8
+    /// and UInt16 bands) keeps its histograms: every UInt8 value has a bin in a UInt16 histogram.
+    #[test]
+    fn strips_of_a_narrower_integer_type_keep_histograms() {
+        let (cols, rows) = (40, 30);
+        let mut layer = Layer::new("zones");
+        layer.features.push(Feature { fid: 0, geometry: Some(Geometry::polygon(ring(0., 0., 40., 30.), vec![])), attributes: vec![] });
+        // Values that every type here holds.
+        let pixels: Vec<f64> = (0..cols * rows).map(|i| ((i * 7) % 121) as f64).collect();
+        let raster = |stored, declared| {
+            let cfg = RasterConfig { cols, rows, data_type: stored, ..Default::default() };
+            let mut ds = RasterDataset::new(Raster::from_data(cfg, pixels.clone()).unwrap(), false);
+            ds.set_geo_transform([0.0, 1.0, 0.0, rows as f64, 0.0, -1.0]);
+            ds.raster.data_type = declared;
+            LazyRaster::from(ds)
+        };
+        let stats = [Statistic::Count, Statistic::Median, Statistic::Mode, Statistic::Variety];
+        let plan = Plan::new(&stats, false, &[0]);
+        let mut float = raster(DataType::F64, DataType::F64);
+        let index = build(&layer, &GridKey::of(&float), false, false).unwrap();
+        let bands = [BandSpec { band: 1, nodata: None }];
+        let expected = reduce_source(&index, &mut float, &bands, None, &plan, 7, 1, true).unwrap().unwrap();
+        for (stored, declared) in [(DataType::U8, DataType::U16), (DataType::U8, DataType::I16), (DataType::I8, DataType::I16)] {
+            let got = reduce_source(&index, &mut raster(stored, declared), &bands, None, &plan, 7, 1, true).unwrap();
+            assert_eq!(got.as_ref(), Some(&expected), "{stored:?} in {declared:?}");
+        }
+        // Int8 values below 0 have no bin in a UInt16 histogram.
+        assert!(reduce_source(&index, &mut raster(DataType::I8, DataType::U16), &bands, None, &plan, 7, 1, true).unwrap().is_none());
     }
 
     /// Zones of at least as many pixels as an 8- or 16-bit band has values are counted in a
