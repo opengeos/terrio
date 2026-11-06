@@ -335,6 +335,8 @@ export class RemoteDir {
     this.entries = new Map();
     /** When each name was found missing, so that the miss can expire. */
     this.missedAt = new Map();
+    /** Why a name could not be read, told again while its miss is remembered. */
+    this.missedWhy = new Map();
     this.ino = nextIno++;
     this.mtime = now();
   }
@@ -342,7 +344,10 @@ export class RemoteDir {
   lookup(name, last) {
     const known = this.entries.get(name);
     // A name with more path after it is a folder, whatever an earlier lookup of it found.
-    if (known !== undefined && (last || known instanceof RemoteDir)) return known;
+    if (known !== undefined && (last || known instanceof RemoteDir)) {
+      if (known === null && this.missedWhy.has(name)) this.errors.push(this.missedWhy.get(name));
+      return known;
+    }
     let node;
     const folder = () => new RemoteDir(`${this.prefix}${name}/`, this.errors);
     if (!last || this.prefix === "https://") {
@@ -357,7 +362,10 @@ export class RemoteDir {
       try {
         node = RemoteFile.probe(this.prefix + name) ?? (extension ? null : folder());
       } catch (error) {
-        if (extension) this.errors.push(error.message);
+        if (extension) {
+          this.errors.push(error.message);
+          this.missedWhy.set(name, error.message);
+        }
         node = extension ? null : folder();
       }
     }

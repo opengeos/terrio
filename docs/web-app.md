@@ -50,7 +50,9 @@ After each run, the page shows how many requests the command made and how many b
 - `/vsicurl/https://…`, and URLs inside a path (`/vsizip/https://…/data.zip/a.shp`), work too.
 - Public S3 and Google Cloud Storage objects (`s3://bucket/key`, `gs://bucket/key`, `/vsis3/`,
   `/vsigs/`) are read over HTTPS without signing. S3 objects are read from the global endpoint
-  (`bucket.s3.amazonaws.com`), which serves buckets in every region. A bucket whose name contains
+  (`bucket.s3.amazonaws.com`), which serves buckets in the regions launched before March 20, 2019,
+  such as us-east-1 and us-west-2. A bucket in a later region answers there with an error: give its
+  regional `https://bucket.s3.REGION.amazonaws.com/key` URL instead. A bucket whose name contains
   dots is read path-style (`s3.amazonaws.com/bucket`), which works only for buckets in us-east-1.
 - Private buckets need a presigned `https://` URL. A presigned URL is signed for GET only, so the
   page cannot ask for the file's size with HEAD. It reads the size from the first range's
@@ -62,15 +64,18 @@ After each run, the page shows how many requests the command made and how many b
 - The page reads a file whole instead of by ranges when it is smaller than 1 MB, when the server
   ignores `Range` requests, or when the server compresses its responses (a compressed response's
   ranges count compressed bytes).
-  A file larger than 512 MB that cannot be read by ranges is refused: download it and upload it
-  instead.
+  When the file's size is known before it is read whole and is over 512 MB, it is refused:
+  download it and upload it instead. A server that ignores `Range` sends the whole file in answer
+  to the first request, before its size can be checked.
 - Plain `http://` URLs can't be read: the page is served over HTTPS, and browsers block insecure
   requests from it.
 - Fetched parts of remote files are kept while the page is open, up to 512 MB in all, so later
   commands on the same URL (and the map) do not fetch them again. Past that, the parts read least
   recently are dropped and fetched again when needed. A file read whole (see below) is kept whole,
-  outside that limit. A file that changes on its server during that time is
-  seen as it was; reload the page to read it afresh. Cancelling a command also discards them.
+  outside that limit. A file that changes on its server during that time can
+  be read as a mix of its old and new bytes, since parts fetched later come from the new file: use
+  URLs of files that do not change (a release, a version, a commit), or reload the page after a
+  change. Cancelling a command also discards them.
 - A URL whose last name has no extension (`…/download`) is read as a file when there is one, and
   otherwise taken for a folder.
 - Sidecar files next to a remote dataset, such as `.aux.xml` or a shapefile's `.dbf`, are looked up

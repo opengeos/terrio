@@ -199,7 +199,13 @@ class MapView {
         const tile = { image: null, x: t.x, y: t.y, w: t.w, h: t.h };
         this.tiles.set(key, tile);
         if (!png) tile.failedAt = performance.now();
-        else images.push(createImageBitmap(new Blob([png], { type: "image/png" })).then((image) => { tile.image = image; }, () => { tile.failedAt = performance.now(); }));
+        else {
+          images.push(createImageBitmap(new Blob([png], { type: "image/png" })).then((image) => {
+            // A map closed meanwhile no longer holds the tile: the image is let go at once.
+            if (this.closed) image.close();
+            else tile.image = image;
+          }, () => { tile.failedAt = performance.now(); }));
+        }
       }
       await Promise.all(images);
       const message = result.stderr.trim().split("\n").filter(Boolean).pop();

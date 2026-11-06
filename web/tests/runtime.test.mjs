@@ -270,3 +270,38 @@ test("binary output on standard output is nothing but the PNGs", { skip: !module
   assert.equal(at, tiles.out.length, "the tiles fill the output exactly");
   assert.equal(count, 2);
 });
+
+test("local vsi operations work in the workspace", { skip: !module && "set TERRIO_WASM" }, () => {
+  // WASI has files: copies into folders, syncs, moves and recursive deletes all reach them.
+  const root = new MemDir();
+  root.entries.set("a.txt", new MemFile(new TextEncoder().encode("a")));
+  const dir = new MemDir();
+  dir.entries.set("x.txt", new MemFile(new TextEncoder().encode("x")));
+  root.entries.set("dir", dir);
+  root.entries.set("dest", new MemDir());
+  const names = (d) => [...d.entries.keys()].sort();
+  for (const args of [["vsi", "copy", "a.txt", "dest"], ["vsi", "copy", "-r", "dir", "dest"], ["vsi", "sync", "dir", "synced"], ["vsi", "move", "dir", "moved"]]) {
+    const r = terrio(root, ...args);
+    assert.equal(r.code, 0, `${args.join(" ")}: ${r.stderr}`);
+  }
+  assert.deepEqual(names(root.entries.get("dest")), ["a.txt", "dir"]);
+  assert.deepEqual(names(root.entries.get("synced").entries.get("dir")), ["x.txt"]);
+  assert.deepEqual(names(root.entries.get("moved")), ["x.txt"]);
+  assert.ok(!root.entries.has("dir"), "moved away");
+  const deleted = terrio(root, "vsi", "delete", "-r", "dest");
+  assert.equal(deleted.code, 0, deleted.stderr);
+  assert.ok(!root.entries.has("dest"));
+});
+
+test("appending to a vector tile archive keeps its other layers", { skip: !module && "set TERRIO_WASM" }, () => {
+  const root = new MemDir();
+  const points = (name, x) => new TextEncoder().encode(JSON.stringify({ type: "FeatureCollection", features: [{ type: "Feature", properties: { name }, geometry: { type: "Point", coordinates: [x, 10] } }] }));
+  root.entries.set("roads.geojson", new MemFile(points("r", 1)));
+  root.entries.set("parks.geojson", new MemFile(points("p", 2)));
+  assert.equal(terrio(root, "convert", "roads.geojson", "t.pmtiles").code, 0);
+  const appended = terrio(root, "convert", "parks.geojson", "t.pmtiles", "--append");
+  assert.equal(appended.code, 0, appended.stderr);
+  const info = terrio(root, "info", "t.pmtiles");
+  assert.match(info.stdout, /Layer: roads/);
+  assert.match(info.stdout, /Layer: parks/);
+});

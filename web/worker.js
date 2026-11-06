@@ -35,6 +35,7 @@ function forgetMissing(dir, now) {
     if (node === null && now - (dir.missedAt.get(name) ?? 0) > MISS_TTL) {
       dir.entries.delete(name);
       dir.missedAt.delete(name);
+      dir.missedWhy.delete(name);
     } else if (node instanceof RemoteDir) forgetMissing(node, now);
   }
 }
