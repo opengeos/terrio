@@ -35,7 +35,7 @@ arrow-array = { workspace = true, features = ["ffi"] }
 
 # `madvise` for the allocator that backs large buffers with huge pages (`hugepage_alloc`).
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
+libc.workspace = true
 
 # The `terrio` command (`terrio.__main__`); not in the Pyodide wheel, where there is no shell.
 [target.'cfg(not(target_os = "emscripten"))'.dependencies]
