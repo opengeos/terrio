@@ -93,6 +93,6 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
             out.extend(v.to_le_bytes());
         }
     }
-    std::fs::write(path, out)?;
+    common::write_replacing(path, out)?;
     common::write_pam(path, &r.crs)
 }

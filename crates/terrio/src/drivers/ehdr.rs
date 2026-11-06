@@ -158,7 +158,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
         offset: 0,
         bottom_up: false,
     };
-    std::fs::write(path, common::encode(r, &layout))?;
+    common::write_headerless(path, path.with_extension("hdr"), common::encode(r, &layout))?;
     let pixel_type = match r.data_type {
         DataType::F32 => "FLOAT",
         DataType::I8 | DataType::I16 | DataType::I32 => "SIGNEDINT",
@@ -182,6 +182,6 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
     if let Some(nd) = nodata {
         h.push_str(&format!("NODATA         {}\n", common::format_value(nd, r.data_type)));
     }
-    std::fs::write(path.with_extension("hdr"), h)?;
+    common::write_replacing(path.with_extension("hdr"), h)?;
     common::write_prj(path, &r.crs)
 }

@@ -325,8 +325,12 @@ def get_data_window(arr: Any, nodata: float | None = None) -> Window:
     if arr.ndim == 3:
         valid = np.any(valid, axis=0)
     ranges: list[tuple[int, int]] = []
-    for nz in valid.nonzero():
-        ranges.append((int(nz.min()), int(nz.max()) + 1) if nz.size else (0, 0))
+    for axis in range(valid.ndim):
+        # Whether each row (or column) holds valid data: a reduction, where `nonzero()` would
+        # list every valid pixel.
+        others = tuple(a for a in range(valid.ndim) if a != axis)
+        nz = np.flatnonzero(valid.any(axis=others) if others else valid)
+        ranges.append((int(nz[0]), int(nz[-1]) + 1) if nz.size else (0, 0))
     if valid.ndim == 1:
         ranges.append((0, 0))
     return Window.from_slices(ranges[0], ranges[1])

@@ -407,7 +407,7 @@ fn grid_mapping(s: &crate::crs::SpatialRef) -> (String, Vec<(String, Attr)>) {
 /// Outside CDF-5 and netCDF-4, UInt32 and 64-bit integers are written as doubles, as GDAL writes
 /// them. With `GROUP`, the variables go in that netCDF-4 group.
 pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, options: &Options) -> Result<()> {
-    std::fs::write(path, to_bytes(r, nodata, options)?)?;
+    common::write_replacing(path, to_bytes(r, nodata, options)?)?;
     Ok(())
 }
 

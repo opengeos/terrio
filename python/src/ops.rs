@@ -9,6 +9,7 @@ use crate::{PyResultExt, invalid};
 use numpy::{PyArray1, PyArrayMethods, PyUntypedArray};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyString, PyTuple};
+use std::sync::Arc;
 use terrio::crs::{SpatialRef, TransformOptions, Transformer};
 use terrio::formats::VectorDriver;
 use terrio::ops::Resampling;
@@ -733,13 +734,17 @@ pub(crate) fn raster_path(src: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
     path.into_os_string().into_string().map(Some).map_err(|_| invalid("raster paths must be UTF-8"))
 }
 
-/// Opens the raster given to an operation: a path, or a `Raster`.
-pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<RasterDataset> {
+/// Opens the raster given to an operation: a path, or a `Raster`. A raster in memory is shared,
+/// not copied.
+pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<Arc<RasterDataset>> {
     match raster_path(src)? {
-        Some(path) => crate::with_warnings(py, || terrio::open_raster(&path)),
+        Some(path) => crate::with_warnings(py, || terrio::open_raster(&path)).map(Arc::new),
         None => {
             let mut r = src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow_mut();
-            r.with_dataset(|ds| Ok(ds.clone())).py()
+            match r.inner.shared_dataset() {
+                Some(ds) => Ok(ds),
+                None => r.inner.read().map(Arc::new).py(),
+            }
         }
     }
 }
@@ -904,7 +909,7 @@ fn polygonize(
         return Err(invalid("connectedness is 4 or 8"));
     }
     let ds = input_raster(py, src)?;
-    let mask = mask.map(|m| input_raster(py, m)).transpose()?;
+    let mask = mask.map(|m| input_raster(py, m).map(Arc::unwrap_or_clone)).transpose()?;
     let stem = dst.and_then(|d| std::path::Path::new(d).file_stem()).and_then(|s| s.to_str()).unwrap_or("polygonized").to_string();
     let options = PolygonizeOptions {
         band: band - 1,
@@ -1062,7 +1067,7 @@ fn nodata_arg(v: Option<&Bound<'_, PyAny>>) -> PyResult<Nodata> {
 
 /// The rasters given to an operation: one path or `Raster`, or a sequence of them, with the
 /// paths (or made-up names for rasters in memory).
-pub(crate) fn input_rasters(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<Vec<(String, RasterDataset)>> {
+pub(crate) fn input_rasters(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<Vec<(String, Arc<RasterDataset>)>> {
     let items = raster_items(src)?;
     // Sources are told apart by name: rasters in memory get one of their own.
     items
@@ -1071,7 +1076,7 @@ pub(crate) fn input_rasters(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<
         .map(|(k, i)| match raster_path(i)? {
             Some(path) => {
                 let raster = crate::with_warnings(py, || terrio::open_raster(&path))?;
-                Ok((path, raster))
+                Ok((path, Arc::new(raster)))
             }
             None => Ok((format!("{MEMORY_PREFIX}{k}>"), input_raster(py, i)?)),
         })
@@ -1392,7 +1397,7 @@ fn warp(
         let sources = input_rasters(py, src)?;
         let out = py
             .detach_result(|| {
-                let refs: Vec<&RasterDataset> = sources.iter().map(|(_, ds)| ds).collect();
+                let refs: Vec<&RasterDataset> = sources.iter().map(|(_, ds)| &**ds).collect();
                 terrio::ops::warp::warp_onto(&refs, &o, &initial.raster.data)
             })
             .py()?;

@@ -289,7 +289,7 @@ fn calc(
         Ok(s) => vec![s],
         Err(_) => calc.extract().map_err(|_| invalid("calc is an expression or a list of expressions"))?,
     };
-    let mut named: Vec<(String, RasterDataset)> = Vec::new();
+    let mut named: Vec<(String, std::sync::Arc<RasterDataset>)> = Vec::new();
     let mut bands: Vec<(String, usize)> = Vec::new();
     if let Some(inputs) = inputs {
         for (k, v) in inputs.iter() {
@@ -583,7 +583,7 @@ fn fill_nodata(
         }
     };
     let bytes = match mask {
-        Some(m) => Some(raster_mask(&input_raster(py, m)?, ds.raster.cols, ds.raster.rows).py()?),
+        Some(m) => Some(raster_mask(&*input_raster(py, m)?, ds.raster.cols, ds.raster.rows).py()?),
         None => default_mask,
     };
     let options = FillNodataOptions { band, mask: bytes.as_deref(), max_distance, interpolation: method, smoothing_iterations };

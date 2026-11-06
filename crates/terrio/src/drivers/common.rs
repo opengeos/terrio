@@ -858,9 +858,340 @@ pub(crate) const NO_GEOTRANSFORM: [f64; 6] = [0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 /// the geolocation arrays of swaths.
 pub(crate) const WGS84_LAT_LONG_WKT: &str = "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST],AUTHORITY[\"EPSG\",\"4326\"]]";
 
+/// Opens the file `path` for writing, creating it, without truncating a file already there: the
+/// writer overwrites it and ends it with [`Rewrite::finish`]. Truncating first would wait for the
+/// kernel to finish writing back the old pages, which stalls a write replacing a file written
+/// moments before; the file (its permissions, links and open handles) stays the same. A path that
+/// is not a regular file (`/dev/null`, a FIFO) is written as it was before, with no truncation.
+/// On Windows the file is still truncated when opened: a file another process maps cannot be
+/// shortened, so it is refused there, unchanged, rather than after its bytes are overwritten.
+///
+/// The file's first [`HEAD`] bytes, where formats with a signature put it (TIFF, BigTIFF, PNG,
+/// SQLite), are zeroed at once and written last, by [`Rewrite::finish`]: a write interrupted before
+/// (the process killed, the disk full) leaves no such file that opens as a raster of old and new
+/// bytes. Headerless data files rely on their header sidecar instead ([`write_headerless`]).
+pub(crate) fn create_replacing(path: impl AsRef<std::path::Path>) -> std::io::Result<Rewrite> {
+    rewrite(open_replacing(path)?)
+}
+
+/// The file `path` opened as [`create_replacing`] opens it, not yet changed (except on Windows,
+/// where the open truncates it).
+fn open_replacing(path: impl AsRef<std::path::Path>) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new().write(true).create(true).truncate(cfg!(windows)).open(path)
+}
+
+/// [`create_replacing`] of a file [`open_replacing`] opened.
+fn rewrite(file: std::fs::File) -> std::io::Result<Rewrite> {
+    use std::io::Write;
+    let meta = file.metadata()?;
+    let regular = meta.is_file();
+    let mut rewrite = Rewrite { file, regular, finished: false, head: [0; HEAD], head_len: 0, pos: 0, end: 0, synced: false };
+    if regular && meta.len() > 0 {
+        // Dropped on a failure here, the rewrite empties the file, as for any failed write.
+        rewrite.file.write_all(&[0; HEAD][..meta.len().min(HEAD as u64) as usize])?;
+    }
+    Ok(rewrite)
+}
+
+/// The leading bytes [`Rewrite`] holds back until [`Rewrite::finish`].
+const HEAD: usize = 16;
+
+/// A file being written over ([`create_replacing`]). Dropped before [`Self::finish`] (a failed
+/// write), a regular file is emptied, so no mix of new and old bytes is left that could read as a
+/// raster.
+pub(crate) struct Rewrite {
+    file: std::fs::File,
+    /// A regular file, which can be cut to length; a device or a FIFO cannot.
+    regular: bool,
+    finished: bool,
+    /// The bytes written at offsets below [`HEAD`], written to the file by [`Self::finish`].
+    head: [u8; HEAD],
+    head_len: usize,
+    /// The writer's position.
+    pos: u64,
+    /// The end of the bytes written so far, where [`Self::finish`] ends the file if the writer
+    /// sought back from it.
+    end: u64,
+    /// Whether the file's own position is `pos` (not after a write or a seek within the head).
+    synced: bool,
+}
+
+impl Rewrite {
+    /// Ends the file at the furthest byte written (or the current position, past it), dropping what
+    /// remains of the previous file, and writes its first bytes.
+    pub(crate) fn finish(&mut self) -> std::io::Result<()> {
+        use std::io::{Seek, SeekFrom, Write};
+        if self.regular && !self.finished {
+            let end = self.pos.max(self.end);
+            self.file.seek(SeekFrom::Start(0))?;
+            self.file.write_all(&self.head[..self.head_len])?;
+            self.file.set_len(end)?;
+            self.file.seek(SeekFrom::Start(end))?;
+            self.synced = true;
+        }
+        self.finished = true;
+        Ok(())
+    }
+
+    /// Whether writes go to the file as they come: a device or FIFO, or a finished file.
+    fn direct(&self) -> bool {
+        !self.regular || self.finished
+    }
+}
+
+impl Drop for Rewrite {
+    fn drop(&mut self) {
+        if self.regular && !self.finished {
+            let _ = self.file.set_len(0);
+        }
+    }
+}
+
+impl std::io::Write for Rewrite {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        use std::io::{Seek, SeekFrom};
+        if !self.direct() && self.pos < HEAD as u64 {
+            let at = self.pos as usize;
+            let n = buf.len().min(HEAD - at);
+            self.head[at..at + n].copy_from_slice(&buf[..n]);
+            self.head_len = self.head_len.max(at + n);
+            self.pos += n as u64;
+            self.end = self.end.max(self.pos);
+            self.synced = false;
+            return Ok(n);
+        }
+        if !self.direct() && !self.synced {
+            self.file.seek(SeekFrom::Start(self.pos))?;
+            self.synced = true;
+        }
+        let n = self.file.write(buf)?;
+        self.pos += n as u64;
+        self.end = self.end.max(self.pos);
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
+impl std::io::Seek for Rewrite {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        use std::io::SeekFrom;
+        let to = match pos {
+            _ if self.direct() => self.file.seek(pos)?,
+            SeekFrom::Start(n) => n,
+            SeekFrom::Current(d) => self
+                .pos
+                .checked_add_signed(d)
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek before the start"))?,
+            SeekFrom::End(_) => {
+                return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "seek from the end of a file being written over"));
+            }
+        };
+        self.pos = to;
+        self.synced = self.direct();
+        Ok(to)
+    }
+}
+
+/// The header sidecar at `path` opened for writing, unchanged, to be emptied before the new data of
+/// its headerless data file is written: a write interrupted in the data then leaves no header that
+/// would open the file as a raster of old and new bytes. `None` when there is none to empty
+/// (missing, or not a regular file).
+fn open_header(path: impl AsRef<std::path::Path>) -> std::io::Result<Option<std::fs::File>> {
+    match std::fs::OpenOptions::new().write(true).open(path) {
+        Ok(f) if f.metadata()?.is_file() => Ok(Some(f)),
+        Ok(_) => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// [`write_replacing`] for a headerless data file at `path` whose header sidecar `header` the
+/// caller writes after it. The header, then the data file, are first opened, so a write refused
+/// there (a read-only file) leaves both as they were; the header is then emptied and the data goes
+/// over the old. Elsewhere than on Windows the data file opens unchanged, so the
+/// header is emptied before any of its bytes change; on Windows that open truncates it, as
+/// [`create_replacing`] does, so a data file another process maps is refused before the header
+/// is emptied.
+pub(crate) fn write_headerless(
+    path: impl AsRef<std::path::Path>,
+    header: impl AsRef<std::path::Path>,
+    bytes: impl AsRef<[u8]>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let header = open_header(header)?;
+    // One open for the probe and the write: a second would wait on a FIFO whose reader left.
+    let data = open_replacing(path)?;
+    if let Some(f) = header {
+        f.set_len(0)?;
+    }
+    let mut file = rewrite(data)?;
+    file.write_all(bytes.as_ref())?;
+    file.finish()
+}
+
+/// [`std::fs::write`] through [`create_replacing`]: `bytes` written over the file at `path`.
+pub(crate) fn write_replacing(path: impl AsRef<std::path::Path>, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = create_replacing(path)?;
+    file.write_all(bytes.as_ref())?;
+    file.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Until finished, a file written over holds zeros where its signature goes, so an interrupted
+    /// write leaves nothing that opens as a raster; a patch of the header lands in the held bytes.
+    #[test]
+    fn a_rewrite_writes_its_signature_last() {
+        use std::io::{Seek, SeekFrom, Write};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.tif");
+        std::fs::write(&path, [b"II*\0".as_slice(), &[7u8; 60]].concat()).unwrap();
+        let mut w = create_replacing(&path).unwrap();
+        w.write_all(b"II*\0\0\0\0\0").unwrap();
+        w.write_all(&[1u8; 24]).unwrap();
+        let on_disk = std::fs::read(&path).unwrap();
+        assert_eq!(&on_disk[..HEAD], &[0u8; HEAD]);
+        assert_eq!(&on_disk[HEAD..32], &[1u8; 16]);
+        w.seek(SeekFrom::Start(4)).unwrap();
+        w.write_all(&[9, 0, 0, 0]).unwrap();
+        w.seek(SeekFrom::Start(32)).unwrap();
+        w.finish().unwrap();
+        let mut want = b"II*\0\x09\0\0\0".to_vec();
+        want.extend([1u8; 24]);
+        assert_eq!(std::fs::read(&path).unwrap(), want);
+    }
+
+    /// A header sidecar is emptied before its data file is written over; a missing one is fine.
+    #[test]
+    fn clearing_a_header_empties_it_and_skips_a_missing_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (bin, hdr) = (dir.path().join("a.bin"), dir.path().join("a.hdr"));
+        std::fs::write(&hdr, "NROWS 2\nNCOLS 2\n").unwrap();
+        write_headerless(&bin, &hdr, [2u8; 4]).unwrap();
+        assert_eq!(std::fs::metadata(&hdr).unwrap().len(), 0);
+        let missing = dir.path().join("missing.hdr");
+        write_headerless(&bin, &missing, [3u8; 4]).unwrap();
+        assert_eq!(std::fs::read(&bin).unwrap(), [3u8; 4]);
+        assert!(!missing.exists());
+    }
+
+    /// A data file that cannot be opened for writing, or a header that cannot be emptied, leaves
+    /// both as they were, so the old raster still opens; writable ones get the new data and an
+    /// emptied header (written again after).
+    #[test]
+    fn a_refused_data_file_or_header_keeps_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let (bin, hdr) = (dir.path().join("a.bin"), dir.path().join("a.hdr"));
+        std::fs::write(&bin, [1u8; 4]).unwrap();
+        std::fs::write(&hdr, "NROWS 2\nNCOLS 2\n").unwrap();
+        let read_only = |path: &std::path::Path, on: bool| {
+            let mut perms = std::fs::metadata(path).unwrap().permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(on);
+            std::fs::set_permissions(path, perms).unwrap();
+        };
+        for refused in [&bin, &hdr] {
+            read_only(refused, true);
+            if std::fs::OpenOptions::new().write(true).open(refused).is_ok() {
+                return; // root, or a file system ignoring permissions: nothing is refused
+            }
+            assert!(write_headerless(&bin, &hdr, [2u8; 4]).is_err());
+            assert_eq!(std::fs::read_to_string(&hdr).unwrap(), "NROWS 2\nNCOLS 2\n");
+            assert_eq!(std::fs::read(&bin).unwrap(), [1u8; 4]);
+            read_only(refused, false);
+        }
+        write_headerless(&bin, &hdr, [2u8; 4]).unwrap();
+        assert_eq!(std::fs::read(&bin).unwrap(), [2u8; 4]);
+        assert_eq!(std::fs::metadata(&hdr).unwrap().len(), 0);
+    }
+
+    /// On Windows a file written over is truncated when it is opened, as `File::create` did: a file
+    /// another process maps cannot be shortened, so it is refused there before any byte changes.
+    #[cfg(windows)]
+    #[test]
+    fn a_rewrite_on_windows_truncates_at_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let (bin, hdr) = (dir.path().join("a.bil"), dir.path().join("a.hdr"));
+        std::fs::write(&bin, vec![7u8; 1000]).unwrap();
+        let rewrite = create_replacing(&bin).unwrap();
+        assert_eq!(std::fs::metadata(&bin).unwrap().len(), 0);
+        drop(rewrite);
+        std::fs::write(&bin, vec![7u8; 1000]).unwrap();
+        std::fs::write(&hdr, "NROWS 1\n").unwrap();
+        write_headerless(&bin, &hdr, [2u8; 4]).unwrap();
+        assert_eq!(std::fs::read(&bin).unwrap(), [2u8; 4]);
+    }
+
+    /// A writer that seeks back to patch earlier bytes and finishes there keeps what it wrote past
+    /// that point: the file ends at the furthest byte written.
+    #[test]
+    fn a_rewrite_finished_after_seeking_back_keeps_its_end() {
+        use std::io::{Seek, SeekFrom, Write};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.bin");
+        std::fs::write(&path, vec![7u8; 100]).unwrap();
+        let mut w = create_replacing(&path).unwrap();
+        w.write_all(&[1u8; 40]).unwrap();
+        w.seek(SeekFrom::Start(20)).unwrap();
+        w.write_all(&[2u8; 2]).unwrap();
+        w.finish().unwrap();
+        let mut want = vec![1u8; 40];
+        want[20..22].copy_from_slice(&[2, 2]);
+        assert_eq!(std::fs::read(&path).unwrap(), want);
+    }
+
+    /// A headerless raster written to a FIFO opens it once: a reader sees all of its bytes, not the
+    /// end of file a second open would leave it waiting after.
+    #[cfg(unix)]
+    #[test]
+    fn a_headerless_raster_streams_to_a_fifo_through_one_open() {
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        let (fifo, hdr) = (dir.path().join("a.bil"), dir.path().join("a.hdr"));
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        let reader = {
+            let fifo = fifo.clone();
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                std::fs::File::open(fifo).unwrap().read_to_end(&mut bytes).unwrap();
+                bytes
+            })
+        };
+        let (done, wrote) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done.send(write_headerless(&fifo, &hdr, [5u8; 8]).is_ok()));
+        assert_eq!(wrote.recv_timeout(std::time::Duration::from_secs(10)), Ok(true), "the write did not end");
+        assert_eq!(reader.join().unwrap(), [5u8; 8]);
+    }
+
+    /// A device is written over as before, with no truncation to fail on.
+    #[cfg(unix)]
+    #[test]
+    fn writes_replacing_a_device_need_no_truncation() {
+        write_replacing("/dev/null", b"terrio").unwrap();
+    }
+
+    #[test]
+    fn a_rewrite_dropped_unfinished_is_emptied() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.tif");
+        std::fs::write(&path, vec![7u8; 1000]).unwrap();
+        let mut rewrite = create_replacing(&path).unwrap();
+        rewrite.write_all(b"new").unwrap();
+        drop(rewrite);
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
+        std::fs::write(&path, vec![7u8; 1000]).unwrap();
+        let mut rewrite = create_replacing(&path).unwrap();
+        rewrite.write_all(b"new").unwrap();
+        rewrite.finish().unwrap();
+        drop(rewrite);
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    }
 
     #[test]
     fn pam_nodata_preserves_dataset_fallback_and_other_xml() {
