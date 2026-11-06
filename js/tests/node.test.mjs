@@ -3110,6 +3110,34 @@ test("rasterTiles streams encoded files and planRasterTiles reads metadata", () 
   raster.free();
 });
 
+test("rasterTiles builds lower zooms from child tiles or the source, and writes WebP", () => {
+  const raster = terrio.createRaster(null, {size: [8, 8], ot: "Byte", burn: [7], crs: "EPSG:4326", bbox: [0, 0, 8, 8]});
+  const options = {tilingScheme: "raster", grid: {tileSize: 2, minZoom: 0}, resampling: "nearest"};
+  for (const overviewSource of ["tiles", "source"]) {
+    for (const format of ["GTiff", "WEBP"]) {
+      const names = [];
+      const report = terrio.rasterTiles(raster, {...options, overviewSource, format}, (name, bytes) => {
+        if (format === "WEBP") {
+          // The WASM build writes WebP (and PNG) but does not read them back.
+          assert.equal(new TextDecoder().decode(bytes.slice(8, 12)), "WEBP");
+        } else {
+          const tile = terrio.open(bytes, name);
+          assert.equal(tile.readBand(1)[0], 7);
+          tile.free();
+        }
+        names.push(name);
+      });
+      assert.equal(report.written, 1 + 4 + 16);
+      // From tiles, generation is depth first and the root follows its children; from the
+      // source, levels are generated from zoom 0 up.
+      const root = `0/0/0.${format === "GTiff" ? "tif" : "webp"}`;
+      assert.equal(overviewSource === "tiles" ? names.at(-1) : names[0], root);
+    }
+  }
+  assert.throws(() => terrio.planRasterTiles(raster, {...options, overviewSource: "parents"}), /variant/i);
+  raster.free();
+});
+
 test("rasterTiles keeps valid floating zero tiles with nonzero nodata", () => {
   const raster = terrio.createRaster(null, {size: [3, 3], ot: "Float32", burn: [0], nodata: -999999, crs: "EPSG:4326", bbox: [0, 0, 3, 3]});
   const report = terrio.rasterTiles(raster, {tilingScheme: "raster", grid: {tileSize: 2}, format: "GTiff", resampling: "nearest", skipBlank: true}, (name, bytes) => {

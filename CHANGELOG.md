@@ -11,6 +11,23 @@
   their mask rows, which a refused call left queued. Once a block row of a GeoTIFF other than a
   COG fails to be written, the writer refuses more rows and `finish`, which could write a file
   missing it.
+- `terrio tile` (Python `terrio.raster_tiles`, JavaScript `rasterTiles`) builds each lower-zoom
+  tile from the four tiles below it, as GDAL does, instead of rendering it from the source (#574).
+  Tiles are generated depth first, with at most four tiles per zoom level in memory, and every
+  source window is the size of one maximum-zoom tile (except when `--resume` rebuilds a missing
+  parent from the source, as it does for GeoTIFF tiles), so a VRT mosaic without overviews tiles from
+  zoom 0: a 12000 x 12000 EPSG:4326 VRT of 36 GeoTIFFs, which failed with "the source tile window
+  exceeds the pixel-buffer budget", now gives its 5390 WebMercatorQuad tiles of zooms 0 to 14.
+  With nearest resampling the pyramid equals GDAL 3.13.3's (a raster grid and six reprojected
+  WebMercatorQuad zooms); with bilinear, lower zooms differ from GDAL's by a few levels on some
+  pixels. This changes the default output of lower zooms with interpolating kernels (bilinear,
+  cubic, etc.), which are now resampled from the 8-bit or typed tiles below them;
+  `--overview-source source` (`overview_source`, `overviewSource`) keeps the previous rendering
+  from the source. `--resume` can rebuild a missing parent from the existing PNG or WebP tiles
+  below it; with GeoTIFF tiles or `--no-alpha`, it renders the parent from the source instead,
+  which can exceed the source-window budget.
+- `terrio tile --format WEBP` writes lossless WebP directory tiles (gray tiles as RGB), equal in
+  pixels to the PNG tiles; Leaflet and OpenLayers viewers accept them.
 - Zonal statistics that keep values (median, quantiles, mode, minority, variety) count the values of
   a zone of an 8- or 16-bit integer band with at least as many pixels as the type has values (256 or
   65,536) in a histogram (2 or 512 KiB) rather than holding and sorting them; values it does not

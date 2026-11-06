@@ -76,8 +76,15 @@ def compare_folders(reference, actual, extension, reference_origin_offset=(0., 0
 
 
 def compare_direct_pyramid(source, actual, plan):
-    """Independent GDAL warps verify our documented direct-source lower zooms."""
+    """Independent GDAL warps verify `--overview-source source` lower zooms."""
     original = gdal.Open(str(source))
+    planned = {Path(str(level['matrix']['zoom'])) / str(col) / f'{row}.png'
+               for level in plan['levels']
+               for row in range(level['range']['min_y'], level['range']['max_y'] + 1)
+               for col in range(level['range']['min_x'], level['range']['max_x'] + 1)}
+    written = {p.relative_to(actual) for p in actual.rglob('*') if p.is_file()}
+    if written != planned:
+        raise AssertionError(f'direct-source tile names differ: missing={planned-written}, extra={written-planned}')
     total = 0
     for level in plan['levels']:
         matrix, limits = level['matrix'], level['range']
@@ -93,6 +100,9 @@ def compare_direct_pyramid(source, actual, plan):
                 if np.all(expected[-1] == 255):
                     expected = expected[:-1]
                 tile = gdal.Open(str(actual / str(matrix['zoom']) / str(col) / f'{row}.png'))
+                band = tile.GetRasterBand(1)
+                if band.DataType != gdal.GDT_Byte or band.GetNoDataValue() is not None:
+                    raise AssertionError(f'direct-source tile type/nodata differs at {matrix["zoom"]}/{col}/{row}')
                 if not np.array_equal(expected, tile.ReadAsArray(), equal_nan=True):
                     raise AssertionError(f'direct-source GDAL warp mismatch at {matrix["zoom"]}/{col}/{row}')
                 total += expected.size
@@ -205,14 +215,13 @@ def remote_probe(data, root, terrio, masked=False):
     return f"{detail}; {counts['bytes']} served bytes in {counts['requests']} GETs from {size}-byte COG"
 
 
-def compare_pyramid(source, reference, actual, plan):
-    """Separate exact generated-pyramid agreement from verified policy differences."""
-    direct = compare_direct_pyramid(source, actual, plan)
-    try:
-        compare_folders(reference, actual, 'png')
-    except PixelDifference as difference:
-        return 'tolerance', direct + '; documented generated-pyramid difference: ' + str(difference)
-    return 'identical', direct + '; GDAL generated pyramid also matches'
+def compare_pyramid(source, reference, actual, direct_actual, plan):
+    """Compare the default pyramid built from child tiles with GDAL's generated pyramid
+    (exactly; any pixel difference fails), and the `--overview-source source` pyramid
+    with independent direct-source warps."""
+    direct = compare_direct_pyramid(source, direct_actual, plan)
+    generated = compare_folders(reference, actual, 'png')
+    return 'identical', 'pyramid from child tiles matches GDAL: ' + generated + '; --overview-source source: ' + direct
 
 
 def main():
@@ -311,14 +320,18 @@ def main():
         cases.append(('rgb', 'xyz', 128, 'PNG', 'raster', 2, ['--add-alpha']))
         cases.append(('blank', 'xyz', 128, 'PNG', 'raster', 2, ['--skip-blank']))
         cases.append(('rgb', 'xyz', 128, 'PNG', 'raster', 2, ['pyramid']))
+        # A reprojected pyramid of six zooms, each lower zoom built from the tiles below it.
+        cases.append(('rgb', 'tms', 256, 'PNG', 'WebMercatorQuad', 13, ['global-pyramid']))
         # No-alpha output and coordinate restriction policies.
         cases.append(('rgb', 'xyz', 128, 'PNG', 'raster', 2, ['--no-alpha']))
         cases.append(('rgb', 'xyz', 128, 'PNG', 'raster', 2, ['--min-x', '1', '--max-x', '1', '--min-y', '1', '--max-y', '1']))
         for index, (source, convention, size, fmt, scheme, zoom, extra) in enumerate(cases):
             name = f'{source} {scheme} {convention} size={size} zoom={zoom} {" ".join(extra)}'.strip()
             reference, actual = root / f'ref{index}', root / f'out{index}'
-            opts = ['--tiling-scheme', scheme, '--max-zoom', str(zoom), '--min-zoom', str(0 if 'pyramid' in extra else zoom), '--tile-size', str(size),
-                    '--convention', convention, '--format', fmt, '--resampling', 'nearest', *[v for v in extra if v != 'pyramid']]
+            min_zoom = 0 if 'pyramid' in extra else zoom - 5 if 'global-pyramid' in extra else zoom
+            opts = ['--tiling-scheme', scheme, '--max-zoom', str(zoom), '--min-zoom', str(min_zoom), '--tile-size', str(size),
+                    '--convention', convention, '--format', fmt, '--resampling', 'nearest',
+                    *[v for v in extra if v not in ('pyramid', 'global-pyramid')]]
             if fmt == 'GTiff' and '--add-alpha' not in opts:
                 opts += ['--no-alpha']
             try:
@@ -335,9 +348,15 @@ def main():
                     if len(refs) != 15 or any(np.any(gdal.Open(str(p)).ReadAsArray()) for p in refs):
                         raise AssertionError('GDAL no-alpha skip-blank behavior changed; re-audit this correction')
                     results.append(dict(name=name, status='tolerance', detail='Terrio omits all 15 fully invalid tiles; GDAL 3.13.3 --no-alpha retains 15 zero-filled tiles. Source validity and both outcomes independently checked.'))
+                elif 'global-pyramid' in extra:
+                    # Direct-source warps are not repeated here: the raster-grid case covers them.
+                    detail = compare_folders(reference, actual, 'png')
+                    results.append(dict(name=name, status='identical', detail='pyramid from child tiles matches GDAL: ' + detail))
                 elif 'pyramid' in extra:
                     plan = json.loads(run([args.terrio, 'tile', sources[source], actual, '--dry-run', *opts]))
-                    status, detail = compare_pyramid(sources[source], reference, actual, plan)
+                    direct_actual = root / f'direct{index}'
+                    run([args.terrio, 'tile', sources[source], direct_actual, '--overview-source', 'source', *opts])
+                    status, detail = compare_pyramid(sources[source], reference, actual, direct_actual, plan)
                     results.append(dict(name=name, status=status, detail=detail))
                 else:
                     detail = compare_folders(reference, actual, 'tif' if fmt == 'GTiff' else 'png')
