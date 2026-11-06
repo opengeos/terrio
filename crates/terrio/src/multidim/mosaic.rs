@@ -341,7 +341,9 @@ fn fill(array: &Array) -> Result<Vec<u8>> {
         .info
         .attributes
         .get("_FillValue")
-        .or_else(|| array.info.attributes.get("missing_value").filter(|v| !v.is_array()))
+        // A `null` (zero-length) `_FillValue` is not skipped: it is rejected below as an invalid
+        // nodata value.
+        .or_else(|| array.info.attributes.get("missing_value").filter(|v| !v.is_array() && !v.is_null()))
         .cloned()
         .unwrap_or(serde_json::json!(0));
     let float = || {
@@ -855,6 +857,18 @@ mod tests {
         }
         let out = mosaic(&sources, &Default::default()).unwrap();
         assert_eq!(out.array("v").unwrap().read().unwrap().values().unwrap(), json!([1, 2, 3, -99, -99, 4, 5, 6]));
+        // A zero-length `missing_value` reads as `null` and, like an array-valued one, is not a fill.
+        for source in &mut sources {
+            source.root.arrays.last_mut().unwrap().info.attributes = json!({"missing_value": null});
+        }
+        let out = mosaic(&sources, &Default::default()).unwrap();
+        assert_eq!(out.array("v").unwrap().read().unwrap().values().unwrap(), json!([1, 2, 3, 0, 0, 4, 5, 6]));
+        // A zero-length `_FillValue` is rejected as an invalid nodata value.
+        for source in &mut sources {
+            source.root.arrays.last_mut().unwrap().info.attributes = json!({"_FillValue": null, "missing_value": -999});
+        }
+        let err = mosaic(&sources, &Default::default()).unwrap_err().to_string();
+        assert!(err.contains("invalid integer nodata value"), "{err}");
     }
     #[test]
     fn identical_array_valued_packing_metadata_is_preserved() {
