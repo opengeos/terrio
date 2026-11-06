@@ -366,7 +366,7 @@ impl Generator<'_, '_> {
             // Tiles below an existing tile may still be missing (for example after
             // raising the maximum zoom); fill them without rebuilding this one.
             if let Some(c) = self.children(i) {
-                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                for (dx, dy) in QUADRANTS {
                     let (x, y) = (2 * column + dx, 2 * row + dy);
                     if plan.levels[c].contains(x, y) {
                         self.visit(c, x, y, false)?;
@@ -379,7 +379,7 @@ impl Generator<'_, '_> {
         let rendered = match self.children(i) {
             Some(c) => {
                 let mut children = Vec::with_capacity(4);
-                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                for (dx, dy) in QUADRANTS {
                     let (x, y) = (2 * column + dx, 2 * row + dy);
                     children.push(if plan.levels[c].contains(x, y) { self.visit(c, x, y, true)? } else { Child::Missing });
                 }
@@ -448,7 +448,7 @@ impl Generator<'_, '_> {
         let mut values = vec![0.0; n * bands];
         let mut mask = s.needs_validity().then(|| vec![0u8; n]);
         for (k, tile) in tiles.iter().enumerate() {
-            let (x0, y0) = ((k % 2) * size, (k / 2) * size);
+            let (x0, y0) = (QUADRANTS[k].0 as usize * size, QUADRANTS[k].1 as usize * size);
             for b in 0..bands {
                 for y in 0..size {
                     let out = &mut values[b * n + (y0 + y) * width + x0..][..size];
@@ -535,6 +535,10 @@ impl Generator<'_, '_> {
         Ok(if consumed { Child::Rendered(Box::new(rendered)) } else { Child::Missing })
     }
 }
+
+/// Column and row offsets of a parent's four children, in the order [`Generator::mosaic`]
+/// places them (top left, top right, bottom left, bottom right).
+const QUADRANTS: [(u64, u64); 4] = [(0, 0), (1, 0), (0, 1), (1, 1)];
 
 /// The source of a parent tile.
 enum Assembled {
