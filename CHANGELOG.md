@@ -15,6 +15,12 @@
   misreads keep their previous decoders. A stream ending before the chunk's samples, or with a wrong
   Adler-32, is an error; one cut in its trailer after the samples is read, as libtiff with zlib
   reads it. All 121 tiles of a Sentinel-2 L2A band decode as the `tiff` crate decodes them.
+- A zero-length numeric, enum or compound attribute of a multidimensional dataset is `null`, as
+  GDAL 3.13.3's `gdalmdiminfo` prints it, where it was an empty list `[]`, in Rust, Python,
+  JavaScript and CLI results and in Zarr copies. A zero-length string attribute stays `[]`. A
+  netCDF snapshot leaves out these attributes and any empty list with no recorded native type,
+  as `gdalmdimtranslate -of netCDF` does, where it wrote an empty int64 attribute that read back
+  as `null`; a typed empty list is still written with its type.
 - `terrio.xarray` (`engine="terrio"`, `open_rasterio`) skips applying a band's scale and offset
   when they are 1 and 0, and applies them in place otherwise: reads with `mask_and_scale` take
   19% less time (8000 x 8000 float32).

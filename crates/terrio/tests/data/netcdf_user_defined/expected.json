@@ -32,5 +32,15 @@
     "z#sample": "",
     "z#station": "",
     "z#units": "m"
-  }
+  },
+  "zero_length": {
+    "ints": null,
+    "empty": null,
+    "shorts": null,
+    "floats": null,
+    "doubles": null,
+    "strings": [],
+    "states": null
+  },
+  "zero_length_netcdf_copy": {}
 }

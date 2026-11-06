@@ -415,3 +415,48 @@ fn netcdf_snapshot_leaves_out_null_attributes() {
     assert_eq!(opened.root.attributes.get("comment"), None);
     assert_eq!(opened.root.attributes.get("title"), Some(&json!("multidimensional test")));
 }
+
+/// Zero-length compound, enum, int, short, float and double attributes (`zero_length_attrs.h5`,
+/// written with h5py) are `null` and a zero-length string attribute `[]`, as GDAL 3.13.3's
+/// `gdalmdiminfo` prints them (`zero_length` in `expected.json`). A netCDF snapshot keeps the ones
+/// GDAL's `gdalmdimtranslate -of netCDF` copy keeps (`zero_length_netcdf_copy`, none of them), a
+/// Zarr copy keeps them as read, and a netCDF snapshot of that Zarr copy keeps the same ones.
+#[cfg(feature = "netcdf-hdf5")]
+#[test]
+fn zero_length_attributes_are_null_and_left_out_of_snapshots() {
+    let dir = user_defined_fixture();
+    let expected: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("expected.json")).unwrap()).unwrap();
+    let zero_length = expected["zero_length"].as_object().unwrap();
+    let gdal_copy = expected["zero_length_netcdf_copy"].as_object().unwrap();
+    let ds = terrio::multidim::open(dir.join("zero_length_attrs.h5").to_str().unwrap()).unwrap();
+    let attrs = &ds.array("/z").unwrap().info.attributes;
+    for (name, value) in zero_length {
+        assert_eq!(attrs.get(name), Some(value), "{name}");
+    }
+    assert_eq!(attrs.get("units"), Some(&json!("m")));
+
+    let out = tempfile::tempdir().unwrap();
+    let snapshot_matches_gdal = |source: &terrio::multidim::Dataset, file: &str| {
+        let file = out.path().join(file);
+        source.write(file.to_str().unwrap()).unwrap();
+        let opened = terrio::multidim::open(file.to_str().unwrap()).unwrap();
+        let z = opened.array("/z").unwrap();
+        for name in zero_length.keys() {
+            assert_eq!(z.info.attributes.get(name), gdal_copy.get(name), "{name}");
+        }
+        assert_eq!(z.info.attributes.get("units"), Some(&json!("m")));
+    };
+    snapshot_matches_gdal(&ds, "copy.nc");
+
+    #[cfg(feature = "zarr")]
+    {
+        let store = out.path().join("copy.zarr");
+        ds.write(store.to_str().unwrap()).unwrap();
+        let zarr = terrio::multidim::open(store.to_str().unwrap()).unwrap();
+        let z = zarr.array("/z").unwrap();
+        for (name, value) in zero_length {
+            assert_eq!(z.info.attributes.get(name), Some(value), "{name}");
+        }
+        snapshot_matches_gdal(&zarr, "zarr_copy.nc");
+    }
+}
