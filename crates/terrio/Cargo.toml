@@ -50,6 +50,8 @@ encoding_rs.workspace = true
 osmpbfreader = { workspace = true, optional = true }
 half.workspace = true
 flate2.workspace = true
+# Adler-32 for the zlib streams of `deflate_compress`.
+zlib-rs = "0.6"
 fdeflate.workspace = true
 weezl.workspace = true
 png.workspace = true

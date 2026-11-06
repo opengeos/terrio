@@ -78,6 +78,8 @@ pub(crate) fn write(r: &Raster, path: &Path) -> Result<()> {
             s.push_str(&format!("{x} {y} {z}\n"));
         }
     }
+    // Truncated first: a reader skips the lines it cannot parse, so an interrupted write over the old
+    // file would open as a grid of old and new points.
     std::fs::write(path, s)?;
     common::write_pam(path, &r.crs)
 }

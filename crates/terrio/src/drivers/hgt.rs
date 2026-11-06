@@ -240,6 +240,8 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
         let s = if void { NODATA as i16 } else { v.round() as i16 };
         out.extend(s.to_be_bytes());
     }
+    // Truncated first: a tile is recognised by its size alone, so an interrupted write over an old
+    // tile of the same size would open as a grid of new and old samples.
     std::fs::write(path, out)?;
     Ok(())
 }

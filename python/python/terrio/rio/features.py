@@ -132,6 +132,11 @@ def _pixel_geometry(geom: dict[str, Any], inv: Affine) -> dict[str, Any]:
     return out
 
 
+def _north_up(transform: Affine) -> bool:
+    """Whether terrio can burn on `transform` itself (else, in pixel space)."""
+    return transform.b == 0 and transform.d == 0 and transform.a > 0 and transform.e < 0
+
+
 def _burn(
     geoms: list[dict[str, Any]],
     values: list[Any],
@@ -139,6 +144,7 @@ def _burn(
     transform: Affine,
     all_touched: bool,
     add: bool,
+    ot: str = "Int64",
 ) -> np.ndarray:
     """Burns geometries with terrio, in pixel space.
 
@@ -149,13 +155,13 @@ def _burn(
         transform: The grid's transform.
         all_touched: Burn every pixel a geometry touches.
         add: Add values instead of replacing them.
+        ot: The burnt type without `add`: `"Int64"` for feature numbers, `"Byte"` for coverage.
 
     Returns:
-        numpy.ndarray: The burnt values, float64 (for `add`) or int64.
+        numpy.ndarray: The burnt values, float64 (for `add`) or of type `ot`.
     """
     h, w = shape
-    north_up = transform.b == 0 and transform.d == 0 and transform.a > 0 and transform.e < 0
-    if north_up:
+    if _north_up(transform):
         # Map coordinates on the exact grid of the transform.
         grid = transform.to_gdal()
         feats = [
@@ -175,7 +181,7 @@ def _burn(
         {"type": "FeatureCollection", "features": feats},
         attribute="v",
         like=like,
-        ot="Float64" if add else "Int64",
+        ot="Float64" if add else ot,
         init=0,
         all_touched=all_touched,
         add=add,
@@ -316,15 +322,26 @@ def rasterize(
         shape = (out.shape[-2], out.shape[-1])
         if merge_alg == MergeAlg.add:
             sums = _burn(geoms, [float(v) for v in values], shape, transform, all_touched, True)
-            touched = (
-                _burn(geoms, list(range(1, len(geoms) + 1)), shape, transform, all_touched, False)
-                > 0
-            )
+            ones = [1] * len(geoms)
+            touched = _burn(geoms, ones, shape, transform, all_touched, False, ot="Byte") > 0
             out[touched] = (out[touched].astype(np.float64) + sums[touched]).astype(out.dtype)
         else:
-            idx = _burn(geoms, list(range(1, len(geoms) + 1)), shape, transform, all_touched, False)
-            hit = idx > 0
-            out[hit] = _burn_values(values, out.dtype)[idx[hit] - 1]
+            burnt = _burn_values(values, out.dtype)
+            # Compared as bytes, so -0.0 and 0.0 differ and one NaN equals itself (object values
+            # are the floats _burn_values made).
+            exact = burnt.astype(np.float64) if burnt.dtype.kind == "O" else burnt
+            bits = exact.view(np.uint8).reshape(len(exact), -1)
+            if (bits == bits[0]).all():
+                # One value (masks, `default_value`): burn the coverage as bytes, not as feature
+                # numbers (a raster 8 times smaller) gathered back into values.
+                ones = [1] * len(geoms)
+                hit = _burn(geoms, ones, shape, transform, all_touched, False, ot="Byte") > 0
+                out[hit] = burnt[0]
+            else:
+                numbers = list(range(1, len(geoms) + 1))
+                idx = _burn(geoms, numbers, shape, transform, all_touched, False)
+                hit = idx > 0
+                out[hit] = burnt[idx[hit] - 1]
     if writer is not None:
         writer.write(out, 1)
         if not isinstance(dst_path, type(writer)) or dst_path is not writer:
@@ -345,7 +362,8 @@ def geometry_mask(
     """A mask of geometries.
 
     Args:
-        geometries: GeoJSON-like geometries.
+        geometries: GeoJSON-like geometries, or a terrio `Layer` in the grid's CRS, which burns
+            without a round trip through GeoJSON on north-up grids.
         out_shape: The mask's shape `(rows, cols)`.
         transform: The grid's transform.
         all_touched: Include every pixel a geometry touches.
@@ -353,7 +371,25 @@ def geometry_mask(
 
     Returns:
         numpy.ndarray: The boolean mask.
+
+    Raises:
+        ValueError: If the shape is empty.
     """
+    if isinstance(geometries, _terrio.Layer):
+        if len(out_shape) != 2:
+            raise ValueError("Invalid out_shape, must be 2D")
+        transform = guard_transform(transform)
+        if not _north_up(transform):
+            geometries = [f["geometry"] for f in geometries.to_geojson()["features"]]
+        elif min(out_shape) == 0:
+            raise ValueError("width and height must be > 0")
+        else:
+            like = _terrio.Raster.from_array(np.zeros(out_shape, np.uint8), transform.to_gdal())
+            burnt = _terrio.rasterize(
+                geometries, like=like, burn=1, init=0, ot="Byte", all_touched=all_touched
+            )
+            inside: np.ndarray = np.asarray(burnt.read(1)) > 0
+            return inside if invert else ~inside
     fill, value = (0, 1) if invert else (1, 0)
     arr = rasterize(
         geometries,

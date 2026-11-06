@@ -102,6 +102,16 @@ count = 2
 origin = "existing"
 reason = "The Arrow C stream and C data interfaces: arrays and streams moved out of PyCapsules"
 
+[files."crates/terrio/src/deflate_compress.rs"]
+count = 18
+origin = "added"
+reason = "The libdeflate level-6 port's match finder: unaligned 4- and 8-byte loads, match extension and prefetches by raw pointer, as libdeflate does, each bounded by its caller"
+
+[files."python/src/hugepage_alloc.rs"]
+count = 11
+origin = "added"
+reason = "The extension's global allocator: forwards every call to System, and madvise(MADV_HUGEPAGE) on whole pages (sysconf's page size) of large allocations, as NumPy does"
+
 [files."crates/terrio/src/ops/window.rs"]
 count = 1
 origin = "added"

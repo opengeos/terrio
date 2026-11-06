@@ -1236,7 +1236,7 @@ fn read_source(source: StreamSource) -> Result<RasterDataset> {
 
 /// Writes a lossless JP2 with a GeoJP2 box; nodata goes to a `.aux.xml` sidecar.
 pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> {
-    std::fs::write(path, to_bytes(r)?)?;
+    common::write_replacing(path, to_bytes(r)?)?;
     common::write_pam_with(path, None, nodata, r.bands)
 }
 

@@ -72,7 +72,7 @@ fn footprint(
     let options = area::FootprintOptions {
         bands: bands.unwrap_or_default(),
         intersection,
-        mask: mask.map(|value| input_raster(py, value)).transpose()?,
+        mask: mask.map(|value| input_raster(py, value).map(std::sync::Arc::unwrap_or_clone)).transpose()?,
         singlepart,
         attributes: attributes.unwrap_or_default().into_iter().collect(),
     };
