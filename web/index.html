@@ -349,7 +349,7 @@ function addRemote(url) {
     alert("Only https:// URLs can be read from this page: browsers block plain http requests from an https page.");
     return false;
   }
-  if (!/^(https:\/\/|s3:\/\/|gs:\/\/|\/vsi)/.test(url)) {
+  if (!/^(https:\/\/|s3:\/\/|gs:\/\/|\/vsicurl\/https:\/\/|\/vsis3\/|\/vsigs\/)/.test(url)) {
     alert("Enter an https://, s3:// or gs:// URL.");
     return false;
   }
@@ -407,8 +407,12 @@ const NOT_MAP_OPTIONS = new Set(["output", "overwrite", "width", "height", "max_
 /** Runs a command line, returning its exit status, standard output as bytes and standard error. */
 async function runForBytes(args) {
   let stderr = "";
-  await ready;
-  const result = await enqueue(() => call({ type: "run", args, binaryStdout: true }, (stream, text) => { if (stream === "stderr") stderr += text; }));
+  // `ready` is awaited in the queue: a Cancel while this waits starts a new worker, whose start
+  // this must wait for.
+  const result = await enqueue(async () => {
+    await ready;
+    return call({ type: "run", args, binaryStdout: true }, (stream, text) => { if (stream === "stderr") stderr += text; });
+  });
   return { code: result.code, stdout: new Uint8Array(result.stdout || new ArrayBuffer(0)), stderr };
 }
 
@@ -560,11 +564,13 @@ function show(command) {
     const args = [command.path[1], ...(showPng ? ["-o", "-"] : []), ...tokens];
     const started = performance.now();
     try {
-      await ready;
-      const result = await enqueue(() => call({ type: "run", args, binaryStdout: showPng }, (stream, text) => {
-        output.hidden = false;
-        output.append(text);
-      }));
+      const result = await enqueue(async () => {
+        await ready;
+        return call({ type: "run", args, binaryStdout: showPng }, (stream, text) => {
+          output.hidden = false;
+          output.append(text);
+        });
+      });
       const seconds = ((performance.now() - started) / 1000).toFixed(1);
       for (const path of result.removed) files.delete(path);
       for (const { path, buffer } of result.changed) files.set(path, new Blob([buffer]));

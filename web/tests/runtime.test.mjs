@@ -22,6 +22,20 @@ function terrio(root, ...args) {
   return { code, ...out };
 }
 
+/** Runs `terrio ...args` over `root`, returning the exit status and standard output as bytes. */
+function terrioBytes(root, ...args) {
+  const chunks = [];
+  const wasi = new Wasi(root, ["terrio", ...args], { stdout: (b) => chunks.push(b), stderr: () => {} });
+  const code = wasi.run(new WebAssembly.Instance(module, { wasi_snapshot_preview1: wasi.imports }));
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return { code, out };
+}
+
 /**
  * Serves `files` (URL -> bytes) as a server would. `mode` is "ranges", "no-ranges", "gzip",
  * "no-head" (HEAD refused with 403, as for a presigned GET URL) or "no-head-exposed" (also exposing
@@ -227,4 +241,32 @@ test("commands read remote files lazily under /https/", { skip: !module && "set 
   // Sidecars are looked up on the server, once each.
   const sidecars = log.filter((r) => r.url.endsWith(".aux.xml"));
   assert.ok(sidecars.length <= 2, JSON.stringify(sidecars));
+});
+
+test("binary output on standard output is nothing but the PNGs", { skip: !module && "set TERRIO_WASM" }, () => {
+  // `quiet` cannot silence standard output on WASI: nothing else may be written there.
+  const root = new MemDir();
+  root.entries.set("robin.tif", new MemFile(new Uint8Array(readFileSync(fixture))));
+  const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  const iend = (bytes) => new TextDecoder("latin1").decode(bytes.subarray(bytes.length - 8, bytes.length - 4)) === "IEND";
+
+  const preview = terrioBytes(root, "preview", "robin.tif", "-o", "-");
+  assert.equal(preview.code, 0);
+  assert.deepEqual([...preview.out.subarray(0, 8)], png);
+  assert.ok(iend(preview.out), "one PNG, ending the output");
+
+  const tiles = terrioBytes(root, "view", "--tiles", "0,0,2,2,8,8;0,0,1,1,4,4", "robin.tif");
+  assert.equal(tiles.code, 0);
+  const view = new DataView(tiles.out.buffer);
+  let at = 0, count = 0;
+  while (at < tiles.out.length) {
+    const length = view.getUint32(at, true);
+    const tile = tiles.out.subarray(at + 4, at + 4 + length);
+    assert.deepEqual([...tile.subarray(0, 8)], png);
+    assert.ok(iend(tile));
+    at += 4 + length;
+    count++;
+  }
+  assert.equal(at, tiles.out.length, "the tiles fill the output exactly");
+  assert.equal(count, 2);
 });

@@ -154,6 +154,8 @@ function evict() {
     cachedBytes -= entry.length;
   }
 }
+/** The largest remote file read whole, when its server cannot serve ranges, if its size is known. */
+const WHOLE_MAX = 512 * 1024 * 1024;
 /** Remote files smaller than this are fetched whole. */
 const WHOLE_BELOW = 2 * BLOCK;
 
@@ -216,7 +218,7 @@ export class RemoteFile {
     }
     // A compressed response holds a different number of bytes than asked for: its ranges count
     // compressed bytes.
-    if (first.body.length !== Math.min(BLOCK, size)) return RemoteFile.whole(url);
+    if (first.body.length !== Math.min(BLOCK, size)) return RemoteFile.whole(url, size);
     if (size > BLOCK) {
       let last = null;
       try {
@@ -224,7 +226,7 @@ export class RemoteFile {
       } catch {
         // Read whole below.
       }
-      if (!last || last.status !== 206 || last.body.length !== 1) return RemoteFile.whole(url);
+      if (!last || last.status !== 206 || last.body.length !== 1) return RemoteFile.whole(url, size);
     }
     const file = new RemoteFile(url, size, null);
     remember(file, 0, first.body);
@@ -258,8 +260,14 @@ export class RemoteFile {
     return low + 1;
   }
 
-  /** `url` read whole, or `null` when there is nothing there. */
-  static whole(url) {
+  /**
+   * `url` read whole, or `null` when there is nothing there. A file whose size is known to be more
+   * than `WHOLE_MAX` is refused: read whole, it would stay in the tab's memory for the session.
+   */
+  static whole(url, knownSize = NaN) {
+    if (knownSize > WHOLE_MAX) {
+      throw new Error(`${url} cannot be read by ranges (its server ignores them, or compresses its responses), and at ${Math.round(knownSize / 2 ** 20)} MB it is too large to read whole: download it and upload it`);
+    }
     let r;
     try {
       r = get(url);

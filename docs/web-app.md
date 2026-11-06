@@ -1,8 +1,8 @@
 # Web App
 
-[**Open terrio Web →**](web/){ .md-button .md-button--primary }
+[**Open terrio Web →**](/web/){ .md-button .md-button--primary }
 
-[terrio Web](web/) runs the `terrio` command line in your browser. Pick any
+[terrio Web](/web/) runs the `terrio` command line in your browser. Pick any
 of its commands, fill in the form and run it. The forms come from the same command catalog as
 [`terrio ui`](cli.md) (`terrio --json-usage`), so every command and option the CLI has is there.
 
@@ -62,11 +62,14 @@ After each run, the page shows how many requests the command made and how many b
 - The page reads a file whole instead of by ranges when it is smaller than 1 MB, when the server
   ignores `Range` requests, or when the server compresses its responses (a compressed response's
   ranges count compressed bytes).
+  A file larger than 512 MB that cannot be read by ranges is refused: download it and upload it
+  instead.
 - Plain `http://` URLs can't be read: the page is served over HTTPS, and browsers block insecure
   requests from it.
 - Fetched parts of remote files are kept while the page is open, up to 512 MB in all, so later
   commands on the same URL (and the map) do not fetch them again. Past that, the parts read least
-  recently are dropped and fetched again when needed. A file that changes on its server during that time is
+  recently are dropped and fetched again when needed. A file read whole (see below) is kept whole,
+  outside that limit. A file that changes on its server during that time is
   seen as it was; reload the page to read it afresh. Cancelling a command also discards them.
 - A URL whose last name has no extension (`…/download`) is read as a file when there is one, and
   otherwise taken for a folder.
