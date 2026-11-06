@@ -236,9 +236,9 @@ an object store's listing (remote Zarr groups) at 64 MiB, a STAC signing token r
 ## Decoded block cache
 
 The decoded tiles and strips of lazy GeoTIFF and COG reads, remote or local, are kept in memory
-process-wide, as GDAL's block cache keeps the blocks it decodes, so that a window read again
-decodes only the chunks dropped since. The least recently used are dropped first when the cache
-is full; a size of 0 keeps none.
+process-wide, as GDAL's block cache keeps the blocks it decodes. A window read again decodes only
+the chunks no longer in the cache: the least recently used are dropped first when the cache is
+full, a chunk larger than the cache is never kept, and a size of 0 keeps none.
 
 | Variable | GDAL equivalent | Default |
 |---|---|---|

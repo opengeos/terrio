@@ -31,7 +31,7 @@ println!("{}", terrio::info::info(&ds, &Default::default()).to_text());
 - `terrio::open_raster_lazy(path)` opens a GeoTIFF or COG by its header; `read_window` decodes only
   the tiles a window touches, from full resolution or an overview. The decoded tiles are cached
   process-wide (64 MiB by default; `TERRIO_CACHEMAX` or `terrio::block_cache::set_max_bytes`), so
-  a window read again decodes only the tiles evicted since, or every tile when the size is 0.
+  a window read again decodes only the tiles no longer in the cache.
 - `terrio::memory` opens datasets from bytes and writes them to bytes.
 
 `RasterDataset::band_nodata`, when nonempty, overrides the shared
