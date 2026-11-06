@@ -228,6 +228,21 @@ test("commands read and write the in-memory workspace", { skip: !module && "set 
   assert.match(check.stdout, /1 features/);
 });
 
+test("a Parquet file in the workspace is read", { skip: !module && "set TERRIO_WASM" }, () => {
+  // The `parquet` crate reads a file through `File::try_clone`, which WASI does not have.
+  const parquet = new URL("../../crates/terrio/tests/data/parquet_zstd/snappy.parquet", import.meta.url);
+  const root = new MemDir();
+  root.entries.set("snappy.parquet", new MemFile(new Uint8Array(readFileSync(parquet))));
+  const info = terrio(root, "info", "snappy.parquet");
+  assert.equal(info.code, 0, info.stderr);
+  assert.match(info.stdout, /Features: 500/);
+  const convert = terrio(root, "convert", "snappy.parquet", "snappy.geojson");
+  assert.equal(convert.code, 0, convert.stderr);
+  const file = root.entries.get("snappy.geojson");
+  const out = JSON.parse(new TextDecoder().decode(file.data.subarray(0, file.size)));
+  assert.equal(out.features.length, 500);
+});
+
 test("commands read remote files lazily under /https/", { skip: !module && "set TERRIO_WASM" }, () => {
   const tif = new Uint8Array(readFileSync(fixture));
   const log = serve({ "https://example.com/data/robin.tif": tif });
