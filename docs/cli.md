@@ -3966,8 +3966,8 @@ pipeline's trailing expression, put the metadata flag before expression tokens.
   and unreleased catalog changes share the next patch version until merged to `main`.
 - The `usage_golden` test fails on any catalog change without an updated digest in
   the same commit. Required CI also compares the version and recorded digest with
-  the pull request's protected base commit, rejecting a digest-only update. Because the digest is computed from sorted canonical JSON, the
-  repository holds no generated catalog file.
+  the pull request's protected base commit, rejecting a digest-only update. Because the
+  digest is computed from sorted canonical JSON, the repository holds no generated catalog file.
 
 ## OGC API Features
 

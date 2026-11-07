@@ -375,6 +375,18 @@ mod tests {
             .unwrap()
             .unwrap_err();
         assert_eq!(parse_err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let appended = std::thread::Builder::new()
+            .stack_size(crate::STACK_SIZE)
+            .spawn(|| {
+                let parsed = root()
+                    .try_get_matches_from(["terrio", "warp", "a.tif", "b.tif", "--tr", "0.02", "0.02", "--tr", "0.05", "0.05"])
+                    .unwrap();
+                parsed.subcommand_matches("warp").unwrap().get_many::<f64>("tr").unwrap().copied().collect::<Vec<_>>()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(appended, [0.02, 0.02, 0.05, 0.05]);
     }
 
     /// Verifies that both sides of declared argument conflicts and exclusive group members are listed.
