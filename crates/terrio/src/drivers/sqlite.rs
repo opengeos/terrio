@@ -980,21 +980,33 @@ mod tests {
     /// An overflow chain cannot be longer than the file: a payload size implying more overflow
     /// pages than it has is an error before anything is allocated for it (a 64 GiB payload over
     /// a self-referencing page would allocate until out of memory), and a chain that ends short
-    /// of its payload is an error.
+    /// of its payload is an error. A chain within the file's length that loops ends after the
+    /// payload's page count, so it is bounded without a page set.
     #[test]
     fn overflow_chains_longer_than_the_file_are_errors() {
-        // Ten pages of overflow over a page that names itself as the next one.
+        // Ten pages of overflow over a page that names itself as the next one, rejected by the
+        // size check before the chain is walked.
         let mut b = database(2);
         let start = leaf_cell(&mut b, 10 * 508);
-        // The local part is 92 bytes for this size, then the first overflow page number.
-        b[start + 92..start + 96].copy_from_slice(&2u32.to_be_bytes());
+        // The local part is 39 bytes for this size (`k` exceeds the 477-byte maximum, so it is
+        // the minimum `m`), then the first overflow page number.
+        b[start + 39..start + 43].copy_from_slice(&2u32.to_be_bytes());
         b[512..516].copy_from_slice(&2u32.to_be_bytes());
         assert!(Db::new(b).unwrap().leaf_rows(1).is_err());
 
-        // Two pages of overflow within the file's length, but the chain ends after one.
+        // Two pages of overflow within the file's length, passing the size check, but the chain
+        // ends after one: the walk stops short of the payload. The local part is 92 bytes here
+        // (`k` is 39 + 1069 % 508).
         let mut b = database(3);
         let start = leaf_cell(&mut b, 92 + 2 * 508);
         b[start + 92..start + 96].copy_from_slice(&2u32.to_be_bytes());
+        assert!(Db::new(b).unwrap().leaf_rows(1).is_err());
+
+        // The same, with the chain pointing past the file's last page.
+        let mut b = database(3);
+        let start = leaf_cell(&mut b, 92 + 2 * 508);
+        b[start + 92..start + 96].copy_from_slice(&2u32.to_be_bytes());
+        b[512..516].copy_from_slice(&9u32.to_be_bytes());
         assert!(Db::new(b).unwrap().leaf_rows(1).is_err());
 
         // A chain that holds the payload reads it.
