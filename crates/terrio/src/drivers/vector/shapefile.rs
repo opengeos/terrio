@@ -184,7 +184,7 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
     let end = max.map_or(n, |m| start.saturating_add(m).min(n));
 
     // The DBF records of the range, read at their position.
-    let mut records: Vec<Vec<FieldValue>> = Vec::new();
+    let mut records: Vec<DbfRecord> = Vec::new();
     if let Some((f, l)) = dbf.as_mut() {
         let last = end.min(dbf_total);
         if start < last {
@@ -195,7 +195,7 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
             f.seek(SeekFrom::Start((l.header_len + start * l.record_len) as u64))?;
             f.read_exact(&mut buf)?;
             records.try_reserve_exact(last - start).map_err(|_| Error::ResourceLimit("cannot allocate .dbf records".into()))?;
-            records.extend(buf.chunks_exact(l.record_len).map(|r| l.record(r)));
+            records.extend(buf.chunks_exact(l.record_len).map(|r| (r.first() != Some(&b'*')).then(|| l.record(r))));
         }
     }
 
@@ -204,6 +204,9 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
     let mut content = Vec::new();
     let mut records = records.into_iter();
     for fid in start..end {
+        let Some(attributes) = records.next().unwrap_or_else(|| Some(vec![FieldValue::Null; width])) else {
+            continue;
+        };
         let geometry = match offsets.get(fid) {
             Some(&at) if at + 8 <= shp_len => {
                 shp.seek(SeekFrom::Start(at + 4))?;
@@ -217,7 +220,6 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
             }
             _ => None,
         };
-        let attributes = records.next().unwrap_or_else(|| vec![FieldValue::Null; width]);
         layer.push(Feature { fid: fid as u64, geometry, attributes });
     }
     apply_prj(&mut layer, prj.as_deref());
@@ -258,7 +260,9 @@ pub fn parse(
     let mut geometries = geometries.into_iter();
     for fid in 0..n {
         let geometry = geometries.next().flatten();
-        let attributes = records.next().unwrap_or_else(|| vec![FieldValue::Null; layer.schema.len()]);
+        let Some(attributes) = records.next().unwrap_or_else(|| Some(vec![FieldValue::Null; layer.schema.len()])) else {
+            continue;
+        };
         layer.push(Feature { fid: fid as u64, geometry, attributes });
     }
     apply_prj(&mut layer, prj);
@@ -892,14 +896,17 @@ impl DbfLayout {
     }
 }
 
+/// A physical DBF slot; None marks a deleted record.
+type DbfRecord = Option<Vec<FieldValue>>;
+
 /// Parses a `.dbf` file into field definitions and records.
-fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<Vec<FieldValue>>)> {
+fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<DbfRecord>)> {
     let l = dbf_layout(d, cpg)?;
     // The header's record count is not trusted: only the records the file holds are read, and
     // their list is allocated fallibly.
     let held = d.len().saturating_sub(l.header_len) / l.record_len.max(1);
     let count = if l.record_len == 0 { 0 } else { l.count.min(held) };
-    let mut records: Vec<Vec<FieldValue>> = Vec::new();
+    let mut records: Vec<DbfRecord> = Vec::new();
     records
         .try_reserve_exact(count)
         .map_err(|_| Error::ResourceLimit(format!("the .dbf file declares {count} records, more than memory holds")))?;
@@ -907,7 +914,7 @@ fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<Vec<Fiel
     // list reserved above.
     let record = |i: usize| {
         let start = l.header_len + i * l.record_len;
-        l.record(&d[start..start + l.record_len])
+        (d[start] != b'*').then(|| l.record(&d[start..start + l.record_len]))
     };
     #[cfg(not(target_arch = "wasm32"))]
     crate::par::install(|| {
@@ -1794,7 +1801,7 @@ mod tests {
 
     fn text(d: &[u8], cpg: Option<&str>) -> String {
         let (_, records) = parse_dbf(d, cpg).unwrap();
-        match &records[0][0] {
+        match &records[0].as_ref().unwrap()[0] {
             FieldValue::Text(s) => s.clone(),
             v => panic!("{v:?}"),
         }
@@ -1867,6 +1874,49 @@ mod tests {
         rec.extend_from_slice(&(-1i32).to_le_bytes());
         rec.extend_from_slice(&i32::MAX.to_le_bytes());
         assert_eq!(parse_shape(&rec, OrganizePolygons::default()), None);
+    }
+
+    /// Reference: GDAL 3.13.3 skips deleted DBF slots and keeps their physical FIDs.
+    #[test]
+    fn deleted_dbf_slots_keep_geometry_and_physical_fid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deleted.shp");
+        let mut layer = Layer::new("deleted");
+        layer.add_field(FieldDef::new("id", FieldType::Integer));
+        for i in 0..6 {
+            layer.push(Feature {
+                fid: i,
+                geometry: Some(Geometry::point(i as f64, 0.0)),
+                attributes: vec![FieldValue::Integer(9007199254740993 + i as i64)],
+            });
+        }
+        let path = path.to_str().unwrap();
+        write(&layer, path).unwrap();
+        let dbf_path = std::path::Path::new(path).with_extension("dbf");
+        let original = std::fs::read(&dbf_path).unwrap();
+        let header = u16::from_le_bytes([original[8], original[9]]) as usize;
+        let width = u16::from_le_bytes([original[10], original[11]]) as usize;
+        for deleted in [vec![0, 2, 3, 5], vec![0, 1, 2, 3, 4, 5], vec![]] {
+            let mut dbf = original.clone();
+            for &i in &deleted {
+                dbf[header + i * width] = b'*';
+            }
+            std::fs::write(&dbf_path, dbf).unwrap();
+            let whole = read(path, &ShapefileOptions::default()).unwrap();
+            let expected: Vec<_> = layer.features.iter().filter(|f| !deleted.contains(&(f.fid as usize))).collect();
+            assert_eq!(whole.features.len(), expected.len());
+            for (got, want) in whole.features.iter().zip(expected) {
+                assert_eq!(got.fid, want.fid);
+                assert_eq!(got.geometry, want.geometry);
+                assert_eq!(got.attributes, want.attributes);
+            }
+            for (start, count) in [(0, 6), (1, 4), (2, 2), (5, 1)] {
+                let range = read_range(path, start, Some(count), &ShapefileOptions::default()).unwrap();
+                let ids: Vec<_> = range.features.iter().map(|f| f.fid).collect();
+                let expected: Vec<_> = (start..start + count).filter(|i| !deleted.contains(i)).map(|i| i as u64).collect();
+                assert_eq!(ids, expected);
+            }
+        }
     }
 
     #[test]
