@@ -878,3 +878,20 @@ fn preview_returns_the_image_it_draws() {
     assert!(named.exists());
     assert_eq!(replies[&3]["result"]["isError"], true);
 }
+
+/// A failed redirected write must fail the command, rather than report truncated output as success.
+#[cfg(target_os = "linux")]
+#[test]
+fn crs_listing_propagates_output_errors() {
+    for json in [false, true] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_terrio"));
+        command.args(["list-crs", "3577"]);
+        if json {
+            command.arg("--json");
+        }
+        let full = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
+        let output = command.stdout(full).output().unwrap();
+        assert!(!output.status.success(), "json={json}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("space"), "{output:?}");
+    }
+}

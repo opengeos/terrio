@@ -421,8 +421,9 @@ mod tests {
                 .filter(|e| e.authority == auth && kind.is_none_or(|k| e.kind == k) && deprecated.is_none_or(|d| e.deprecated == d))
                 .count()
         };
-        // PROJ 9.8.1's database has 7741 EPSG CRSs; terrio's table resolves all but the
-        // engineering CRSs and other compound CRSs.
+        // PROJ 9.8.1 lists 7741 EPSG usage rows, including 17 duplicate codes. Its
+        // 7724 distinct codes include 43 codes our table does not resolve (15 other,
+        // 28 projected). The catalog stores one row per distinct code.
         assert_eq!(count("EPSG", None, None), 7681);
         assert_eq!(count("EPSG", Some(CrsKind::Geographic2D), None), 689);
         assert_eq!(count("EPSG", Some(CrsKind::Geographic3D), None), 273);

@@ -157,15 +157,22 @@ pub fn list(a: ListArgs) -> terrio::Result<()> {
     if a.json {
         let json = serde_json::to_string_pretty(&entries).map_err(|e| terrio::Error::InvalidData(e.to_string()))?;
         // As the listing below, a closed pipe (`| head`) ends the output.
-        let _ = writeln!(std::io::stdout().lock(), "{json}");
+        if let Err(error) = writeln!(std::io::stdout().lock(), "{json}")
+            && error.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            return Err(error.into());
+        }
         return Ok(());
     }
     let mut out = std::io::stdout().lock();
     for e in entries {
         let deprecated = if e.deprecated { " [deprecated]" } else { "" };
         // A closed pipe (`| head`) ends the listing.
-        if writeln!(out, "{}:{} \"{}\"{deprecated}", e.authority, e.code, e.name).is_err() {
-            break;
+        if let Err(error) = writeln!(out, "{}:{} \"{}\"{deprecated}", e.authority, e.code, e.name) {
+            if error.kind() == std::io::ErrorKind::BrokenPipe {
+                break;
+            }
+            return Err(error.into());
         }
     }
     Ok(())
