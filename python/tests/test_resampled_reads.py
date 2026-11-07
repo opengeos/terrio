@@ -33,28 +33,48 @@ READS = {
 
 @pytest.fixture(scope="module")
 def sources(tmp_path_factory):
-    """uint8 RGB with a per-dataset mask, uint16 and float32 with nodata, all valid."""
+    """uint8 RGB with a per-dataset mask (with and without overviews), uint16 and float32 with
+    nodata, all valid."""
     d = tmp_path_factory.mktemp("resampled")
     rng = np.random.default_rng(0)
     y, x = np.mgrid[0:700, 0:900]
     paths = {}
     for name, count, dtype, nodata, mask, overviews in (
         ("rgb-mask", 3, "uint8", None, True, False),
+        ("rgb-mask-ovr", 3, "uint8", None, True, True),
         ("u16-nodata", 1, "uint16", 0, False, True),
         ("f32-nodata", 1, "float32", -9999.0, False, False),
         ("valid", 2, "uint8", None, False, False),
     ):
-        data = np.stack(
-            [np.sin(x / (9 + b)) * 60 + np.cos(y / 13) * 50 + 120 + rng.normal(0, 8, x.shape) for b in range(count)]
-        ).clip(1, 250).astype(dtype)
+        data = (
+            np.stack(
+                [
+                    np.sin(x / (9 + b)) * 60 + np.cos(y / 13) * 50 + 120 + rng.normal(0, 8, x.shape)
+                    for b in range(count)
+                ]
+            )
+            .clip(1, 250)
+            .astype(dtype)
+        )
         if nodata is not None:
             data[:, rng.random(x.shape) < 0.03] = nodata
             data[:, 200:260, 300:380] = nodata
         path = str(d / f"{name}.tif")
         with rasterio.Env(GDAL_TIFF_INTERNAL_MASK=True):
             with rasterio.open(
-                path, "w", driver="GTiff", width=900, height=700, count=count, dtype=dtype, nodata=nodata,
-                crs="EPSG:3857", transform=from_origin(0, 0, 1, 1), tiled=True, blockxsize=256, blockysize=256,
+                path,
+                "w",
+                driver="GTiff",
+                width=900,
+                height=700,
+                count=count,
+                dtype=dtype,
+                nodata=nodata,
+                crs="EPSG:3857",
+                transform=from_origin(0, 0, 1, 1),
+                tiled=True,
+                blockxsize=256,
+                blockysize=256,
             ) as dst:
                 dst.write(data)
                 if mask:
@@ -65,23 +85,56 @@ def sources(tmp_path_factory):
                 if overviews:
                     dst.build_overviews([2, 4], RR.nearest)
         paths[name] = path
+    # RGBA: the alpha band is the mask of bands 1 to 3, and band 4's mask is all valid.
+    rgba = np.stack([np.sin(x / (9 + b)) * 60 + 120 for b in range(3)]).astype("uint8")
+    alpha = np.full(x.shape, 255, "uint8")
+    alpha[:, :150] = 0
+    alpha[300:400, 400:500] = 0
+    path = str(d / "rgba.tif")
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=900,
+        height=700,
+        count=4,
+        dtype="uint8",
+        photometric="RGB",
+        alpha="YES",
+        crs="EPSG:3857",
+        transform=from_origin(0, 0, 1, 1),
+    ) as dst:
+        dst.write(np.concatenate([rgba, alpha[None]]))
+    paths["rgba"] = path
     return paths
 
 
 @pytest.mark.parametrize("read", list(READS))
 @pytest.mark.parametrize("method", METHODS)
-@pytest.mark.parametrize("kind", ["rgb-mask", "u16-nodata", "f32-nodata", "valid"])
+@pytest.mark.parametrize("kind", ["rgb-mask", "rgb-mask-ovr", "u16-nodata", "f32-nodata", "valid"])
 def test_resampled_reads_match_rasterio(sources, kind, method, read):
     win, shape = READS[read]
     with rasterio.open(sources[kind]) as s:
         out_shape = None if shape is None else (s.count, *shape)
-        a = s.read(window=RW(*win) if win else None, out_shape=out_shape, resampling=RR[method], masked=True)
+        a = s.read(
+            window=RW(*win) if win else None,
+            out_shape=out_shape,
+            resampling=RR[method],
+            masked=True,
+        )
     with trio.open(sources[kind]) as s:
-        b = s.read(window=TW(*win) if win else None, out_shape=out_shape, resampling=TR[method], masked=True)
+        b = s.read(
+            window=TW(*win) if win else None,
+            out_shape=out_shape,
+            resampling=TR[method],
+            masked=True,
+        )
     assert a.shape == b.shape
     x, y = a.data, b.data
     same = (x == y) | (np.isnan(x) & np.isnan(y)) if x.dtype.kind == "f" else x == y
-    assert same.all(), f"{np.mean(~same):.4%} of pixels differ, max |d| {np.abs(x.astype(float) - y)[~same].max()}"
+    assert same.all(), (
+        f"{np.mean(~same):.4%} of pixels differ, max |d| {np.abs(x.astype(float) - y)[~same].max()}"
+    )
     am, bm = np.ma.getmaskarray(a), np.ma.getmaskarray(b)
     assert np.array_equal(am, bm), f"{np.mean(am != bm):.4%} of the mask differs"
 
@@ -93,10 +146,136 @@ def test_gauss_boundless_reads_match_rasterio(sources, kind, shape, window):
     """Gauss through a boundless read (a VRT GDAL resamples with `RasterIOResampled`)."""
     with rasterio.open(sources[kind]) as s:
         out_shape = (s.count, *shape)
-        a = s.read(window=RW(*window), out_shape=out_shape, resampling=RR.gauss, boundless=True, masked=True)
+        a = s.read(
+            window=RW(*window),
+            out_shape=out_shape,
+            resampling=RR.gauss,
+            boundless=True,
+            masked=True,
+        )
     with trio.open(sources[kind]) as s:
-        b = s.read(window=TW(*window), out_shape=out_shape, resampling=TR.gauss, boundless=True, masked=True)
+        b = s.read(
+            window=TW(*window),
+            out_shape=out_shape,
+            resampling=TR.gauss,
+            boundless=True,
+            masked=True,
+        )
     am, bm = np.ma.getmaskarray(a), np.ma.getmaskarray(b)
     assert np.array_equal(am, bm), f"{np.mean(am != bm):.4%} of the mask differs"
     valid = ~am
-    assert np.array_equal(a.data[valid], b.data[valid]), f"{np.mean(a.data[valid] != b.data[valid]):.4%} differ"
+    assert np.array_equal(a.data[valid], b.data[valid]), (
+        f"{np.mean(a.data[valid] != b.data[valid]):.4%} differ"
+    )
+
+
+CORE_METHODS = ["nearest", "bilinear", "cubic", "cubic_spline", "lanczos", "average", "mode", "rms"]
+# (window, (rows, cols)) of the core's reads: fractions exact in binary, which rasterio's windows
+# keep as given.
+CORE_READS = {
+    "fractional": ((100.25, 50.75, 300.5, 250.5), (250, 300)),
+    "integer-down": ((100, 50, 300, 250), (130, 160)),
+    "fractional-up": ((10.5, 20.25, 400.5, 300.75), (520, 610)),
+    "whole-down": (None, (233, 301)),
+    "whole-up": (None, (1100, 1500)),
+}
+
+
+@pytest.mark.parametrize("read", list(CORE_READS))
+@pytest.mark.parametrize("method", CORE_METHODS)
+@pytest.mark.parametrize("kind", ["rgb-mask-ovr", "u16-nodata", "f32-nodata"])
+def test_raster_read_resampled_matches_rasterio(sources, kind, method, read):
+    """`Raster.read_resampled` and `read_resampled_masks`, the core's read, against rasterio's
+    pixels and GDAL mask bands (`read_masks`)."""
+    import terrio
+
+    win, shape = CORE_READS[read]
+    with rasterio.open(sources[kind]) as s:
+        out_shape = (s.count, *shape)
+        a = s.read(window=RW(*win) if win else None, out_shape=out_shape, resampling=RR[method])
+        am = s.read_masks(
+            window=RW(*win) if win else None, out_shape=out_shape, resampling=RR[method]
+        )
+    r = terrio.open_raster(sources[kind], lazy=True)
+    size = (shape[1], shape[0])
+    name = method.replace("_", "")
+    b = r.read_resampled(size, window=win, resampling=name)
+    bm = r.read_resampled_masks(size, window=win, resampling=name)
+    both = r.read_resampled_with_masks(size, window=win, resampling=name)
+    assert np.array_equal(both[0], b, equal_nan=b.dtype.kind == "f")
+    assert np.array_equal(both[1], bm)
+    assert b.dtype == a.dtype and b.shape == a.shape
+    same = (a == b) | (np.isnan(a) & np.isnan(b)) if a.dtype.kind == "f" else a == b
+    assert same.all(), f"{np.mean(~same):.4%} of pixels differ"
+    assert bm.dtype == np.uint8 and np.array_equal(am, bm), (
+        f"{np.mean(am != bm):.4%} of the masks differ"
+    )
+
+
+@pytest.mark.parametrize("overview", ["AUTO", "AUTO-1", "NONE", 0, 1, "1"])
+@pytest.mark.parametrize("method", ["nearest", "average"])
+def test_raster_read_resampled_overview_selection(sources, tmp_path, method, overview):
+    """The level `overview` names against `gdal_translate -outsize -ovr`, run as a program so
+    that its GDAL is not loaded beside rasterio's. Skipped without it."""
+    import shutil
+    import subprocess
+
+    import terrio
+
+    gdal_translate = shutil.which("gdal_translate")
+    if gdal_translate is None:
+        pytest.skip("gdal_translate is not installed")
+    path = sources["u16-nodata"]
+    out = str(tmp_path / "out.tif")
+    subprocess.run(
+        [gdal_translate, "-q", "-outsize", "200", "150", "-r", method, "-ovr", str(overview)]
+        + [path, out],
+        check=True,
+    )
+    with rasterio.open(out) as s:
+        a = s.read(1)
+    r = terrio.open_raster(path, lazy=True)
+    b = r.read_resampled((200, 150), band=1, resampling=method, overview=overview)
+    assert b.shape == (150, 200)
+    assert np.array_equal(a, b), f"{np.mean(a != b):.4%} of pixels differ"
+
+
+def test_raster_read_resampled_arguments(sources):
+    """Single and several bands, and the errors of invalid arguments."""
+    import terrio
+
+    r = terrio.open_raster(sources["rgb-mask"], lazy=True)
+    assert r.read_resampled((90, 70)).shape == (3, 70, 90)
+    assert r.read_resampled((90, 70), band=2).shape == (70, 90)
+    assert r.read_resampled_masks((90, 70), band=2).shape == (70, 90)
+    # Bands in the order asked for, against rasterio's.
+    with rasterio.open(sources["rgb-mask"]) as s:
+        a = s.read([3, 1], out_shape=(2, 70, 90), resampling=RR.bilinear)
+        am = s.read_masks([3, 1], out_shape=(2, 70, 90), resampling=RR.bilinear)
+    b = r.read_resampled((90, 70), band=[3, 1], resampling="bilinear")
+    assert not np.array_equal(a[0], a[1])
+    assert np.array_equal(a, b)
+    pixels, masks = r.read_resampled_with_masks((90, 70), band=[3, 1], resampling="bilinear")
+    assert np.array_equal(pixels, a) and np.array_equal(masks, am)
+    # Band-distinct masks (an alpha band): each band's own, in the order asked for.
+    rgba = terrio.open_raster(sources["rgba"], lazy=True)
+    with rasterio.open(sources["rgba"]) as s:
+        am = s.read_masks([4, 1], out_shape=(2, 70, 90), resampling=RR.average)
+    bm = rgba.read_resampled_masks((90, 70), band=[4, 1], resampling="average")
+    assert not np.array_equal(am[0], am[1])
+    assert np.array_equal(am, bm)
+    assert np.array_equal(
+        rgba.read_resampled_with_masks((90, 70), band=[4, 1], resampling="average")[1], am
+    )
+    for kwargs in (
+        {"band": 4},
+        {"resampling": "gauss"},
+        {"overview": "SOME"},
+        {"window": (800.0, 0.0, 200.0, 100.0)},
+    ):
+        with pytest.raises(terrio.InvalidArgumentError):
+            r.read_resampled((90, 70), **kwargs)
+    with pytest.raises(terrio.InvalidArgumentError):
+        r.read_resampled((0, 70))
+    with pytest.raises(terrio.UnsupportedError):
+        r.read_resampled((90, 70), resampling="max")

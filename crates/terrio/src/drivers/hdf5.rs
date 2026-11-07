@@ -924,6 +924,7 @@ mod tests {
         let (cols, rows) = (440usize, 480usize);
         let f = File {
             attrs: vec![],
+            datatypes: Vec::new(),
             group_attrs: vec![(
                 "where".into(),
                 vec![
@@ -976,6 +977,7 @@ mod tests {
         let f = File {
             attrs: vec![Attr::text("mission_name", "NISAR")],
             group_attrs: Vec::new(),
+            datatypes: Vec::new(),
             datasets: vec![
                 ds(
                     "test",
