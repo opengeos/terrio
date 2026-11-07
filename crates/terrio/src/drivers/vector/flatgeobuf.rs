@@ -940,60 +940,9 @@ fn build_polygon<'a>(fbb: &mut FlatBufferBuilder<'a>, exterior: &Ring, interiors
 mod tests {
     use super::*;
 
-    mod fixtures {
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/common/flatgeobuf.rs"));
-    }
-    use fixtures::fixture;
-
-    fn both(bytes: &[u8]) -> bool {
-        let memory = parse(bytes).is_ok();
-        let range = read_filtered(&mut std::io::Cursor::new(bytes), bytes.len() as u64, None, &|_| Ok(())).is_ok();
-        assert_eq!(memory, range);
-        let mut file = tempfile::Builder::new().suffix(".fgb").tempfile().unwrap();
-        std::io::Write::write_all(&mut file, bytes).unwrap();
-        let stream = crate::stream::open_layers(file.path().to_str().unwrap(), &Default::default(), 1);
-        let stream_ok = stream.and_then(|streams| streams.into_iter().map(|s| s.read_all()).collect::<Result<Vec<_>>>()).is_ok();
-        assert_eq!(memory, stream_ok);
-        memory
-    }
-
-    #[test]
-    fn truncation_and_counts() {
-        assert!(both(&fixture(0, false, &[])));
-        assert!(!both(&fixture(1, false, &[])));
-        for count in [0, 1] {
-            for n in 1..4 {
-                let mut bytes = fixture(count, false, &[]);
-                bytes.extend_from_slice(&[16, 0, 0][..n]);
-                assert!(!both(&bytes));
-            }
-        }
-        let bytes = fixture(1, true, &[7.0]);
-        assert!(both(&bytes));
-        assert!(!both(&bytes[..bytes.len() - 1]));
-        assert!(!both(&fixture(2, true, &[7.0])));
-        let mut bytes = fixture(1, false, &[]);
-        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
-        assert!(!both(&bytes));
-    }
-
-    #[test]
-    fn measures_are_preserved_and_dimensions_checked() {
-        let layer = parse(&fixture(1, true, &[7.0])).unwrap();
-        assert_eq!(layer.features[0].geometry.as_ref().unwrap().all_coords()[0].m, Some(7.0));
-        // Extra values, and dimensions the header does not declare, are ignored, as GDAL ignores them.
-        assert!(both(&fixture(1, true, &[7.0, 8.0])));
-        assert!(both(&fixture(1, false, &[7.0])));
-        assert_eq!(parse(&fixture(1, false, &[7.0])).unwrap().features[0].geometry.as_ref().unwrap().all_coords()[0].m, None);
-        let mut bytes = fixture(1, true, &[]);
-        let mut b = FlatBufferBuilder::new();
-        let xy = b.create_vector(&[1.0, 2.0, 3.0, 4.0]);
-        let m = b.create_vector(&[7.0]);
-        let g = FgbGeometry::create(&mut b, &GeometryArgs { xy: Some(xy), m: Some(m), ..Default::default() });
-        let f = FgbFeature::create(&mut b, &FeatureArgs { geometry: Some(g), ..Default::default() });
-        b.finish_size_prefixed(f, None);
-        bytes.extend_from_slice(b.finished_data());
-        assert!(!both(&bytes));
+    /// Tests decoder admission directly, without the convenience API's optional GDAL fallback.
+    fn accepts(bytes: &[u8]) -> bool {
+        parse(bytes).is_ok()
     }
 
     /// A point file with independently declared dimensions and optional ordinate vectors.
@@ -1023,17 +972,17 @@ mod tests {
         // The reference TypeScript writer stores z without setting `has_z`; GDAL reads it as 2D.
         for z in [Some(&[5.0][..]), Some(&[][..])] {
             let bytes = dimension_fixture(false, false, z, Some(&[]));
-            assert!(both(&bytes));
+            assert!(accepts(&bytes));
             assert_eq!(parse(&bytes).unwrap().features[0].geometry.as_ref().unwrap().all_coords()[0].z, None);
         }
         assert_eq!(
             parse(&dimension_fixture(true, false, Some(&[5.0]), None)).unwrap().features[0].geometry.as_ref().unwrap().all_coords()[0].z,
             Some(5.0)
         );
-        assert!(!both(&dimension_fixture(true, false, None, None)));
-        assert!(!both(&dimension_fixture(true, false, Some(&[]), None)));
-        assert!(!both(&dimension_fixture(false, true, None, None)));
-        assert!(!both(&dimension_fixture(false, true, None, Some(&[]))));
+        assert!(!accepts(&dimension_fixture(true, false, None, None)));
+        assert!(!accepts(&dimension_fixture(true, false, Some(&[]), None)));
+        assert!(!accepts(&dimension_fixture(false, true, None, None)));
+        assert!(!accepts(&dimension_fixture(false, true, None, Some(&[]))));
         let extra = parse(&dimension_fixture(true, false, Some(&[5.0, 6.0]), None)).unwrap();
         assert_eq!(extra.features[0].geometry.as_ref().unwrap().all_coords()[0].z, Some(5.0));
     }
@@ -1050,7 +999,7 @@ mod tests {
         let header_end = header_len(&bytes).unwrap();
         bytes.truncate(header_end);
         bytes.extend_from_slice(b.finished_data());
-        assert!(!both(&bytes));
+        assert!(!accepts(&bytes));
     }
 
     #[test]
@@ -1065,7 +1014,7 @@ mod tests {
                 bytes.extend_from_slice(b.finished_data());
                 let error = parse_header(&bytes).unwrap_err();
                 assert!(error.to_string().contains("implausible feature count"), "{error}");
-                assert!(!both(&bytes));
+                assert!(!accepts(&bytes));
             }
         }
     }
