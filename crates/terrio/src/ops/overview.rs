@@ -22,7 +22,12 @@
 //! pixel tiles for a striped image), and a raster with an internal mask gets mask overviews. The
 //! full-resolution image is read once, by strips of rows, rather than whole, for whole levels
 //! (partial refreshes read the rows over their region). The file is changed through a copy
-//! renamed over it, so a failure leaves it as it was.
+//! renamed over it, so a failure leaves it as it was. External overviews leave the GeoTIFF itself
+//! untouched, so it may be read-only, as with `gdaladdo -ro`. [`add_overviews_with_progress`]
+//! reports progress and can be cancelled.
+//!
+//! Overviews are managed for GeoTIFFs only: terrio reads an `.ovr` sidecar as the overviews of a
+//! GeoTIFF, not of other formats.
 //!
 //! ```no_run
 //! use terrio::ops::Resampling;
@@ -124,7 +129,9 @@ pub struct OverviewOptions {
     pub min_size: usize,
     /// The resampling: nearest (the default), average, min, max or mode.
     pub resampling: Resampling,
-    /// Write the overviews to the `.ovr` sidecar instead of into the file.
+    /// Write the overviews to the `.ovr` sidecar instead of into the file, which may then be
+    /// read-only (`gdaladdo -ro`). A new sidecar is a BigTIFF when its images take more than
+    /// about 4 GiB; an existing classic TIFF sidecar that would grow past 4 GiB is refused.
     pub external: bool,
     /// The overviews' compression (GDAL's `COMPRESS_OVERVIEW`): by default the full-resolution
     /// image's for internal overviews, `NONE` for external ones, as in GDAL.
@@ -218,11 +225,50 @@ fn matches_factor(overview: (usize, usize), full: (usize, usize), factor: usize)
 /// Adds (or rebuilds) overviews of a local GeoTIFF, in place or in its `.ovr` sidecar, as
 /// `gdaladdo` does. Existing overviews of the sizes asked for are recomputed; the others are
 /// kept. Returns the sizes of the raster's overviews afterwards, largest first.
+///
+/// Internal overviews need a writable file. External ones leave the file as it is, so it may be
+/// read-only (`gdaladdo -ro`): they need a writable directory, and a writable `.ovr` when one
+/// exists.
 pub fn add_overviews(path: &str, options: &OverviewOptions) -> Result<Vec<(usize, usize)>> {
-    let file = gtiff_update::writable_local_file(path)?;
+    add_overviews_with_progress(path, options, &mut |_| true)
+}
+
+/// [`add_overviews`], reporting its progress to `progress`, which can cancel it.
+///
+/// `progress` gets the fraction done, which never decreases: 0 before the overviews are computed,
+/// then the share of the work done (the pixels read and the overview pixels computed and
+/// encoded), and 1 once every overview is computed, before they are written. Returning `false`
+/// cancels: [`Error::Cancelled`] is returned and no file is changed (an existing `.ovr` stays as
+/// it was). A call that has nothing to compute gets 0 and 1.
+pub fn add_overviews_with_progress(
+    path: &str,
+    options: &OverviewOptions,
+    progress: &mut dyn FnMut(f64) -> bool,
+) -> Result<Vec<(usize, usize)>> {
+    let mut last = 0.0f64;
+    let mut report = |fraction: f64| -> Result<()> {
+        // Never decreasing, and within [0, 1].
+        last = last.max(fraction.min(1.0));
+        if progress(last) { Ok(()) } else { Err(Error::Cancelled) }
+    };
+    let out = add_overviews_reporting(path, options, &mut report)?;
+    if last < 1.0 {
+        // Nothing was computed: the work is done.
+        progress(1.0);
+    }
+    Ok(out)
+}
+
+/// Takes the fraction of the work done, from 0 to 1; an error (cancellation) stops the work.
+type Report<'a> = dyn FnMut(f64) -> Result<()> + 'a;
+
+fn add_overviews_reporting(path: &str, options: &OverviewOptions, report: &mut Report<'_>) -> Result<Vec<(usize, usize)>> {
+    // External overviews leave the file itself as it is (`gdaladdo -ro`).
+    let file = if options.external { gtiff_update::local_file(path)? } else { gtiff_update::writable_local_file(path)? };
     let mut src = open_source(path)?;
     let method = overview_method(options.resampling)?;
     let factors = factors(&src, &options.levels, options.min_size)?;
+    report(0.0)?;
     if options.external {
         let ovr = ovr_path(std::path::Path::new(path));
         let main = parse_file(&file)?;
@@ -244,6 +290,7 @@ pub fn add_overviews(path: &str, options: &OverviewOptions) -> Result<Vec<(usize
             compression,
             options.compression.is_some(),
             existing.as_ref().map(|t| t.dirs.as_slice()),
+            report,
         )?;
         drop(src);
         let mut all_sizes = sizes;
@@ -272,7 +319,7 @@ pub fn add_overviews(path: &str, options: &OverviewOptions) -> Result<Vec<(usize
     let cog = options.ignore_cog_layout_break;
     gtiff_update::update_file(&file, move |f| {
         // The source is closed before the copy replaces the file.
-        let out = add_internal(f, &mut src, &factors, method, compression.as_deref(), cog);
+        let out = add_internal(f, &mut src, &factors, method, compression.as_deref(), cog, report);
         drop(src);
         out
     })
@@ -288,15 +335,15 @@ pub fn add_overviews_to_bytes(tiff: &[u8], options: &OverviewOptions) -> Result<
     let method = overview_method(options.resampling)?;
     let factors = factors(&src, &options.levels, options.min_size)?;
     let mut out = std::io::Cursor::new(tiff.to_vec());
-    add_internal(&mut out, &mut src, &factors, method, options.compression.as_deref(), options.ignore_cog_layout_break)?;
+    add_internal(&mut out, &mut src, &factors, method, options.compression.as_deref(), options.ignore_cog_layout_break, &mut |_| Ok(()))?;
     Ok(out.into_inner())
 }
 
 /// Deletes the overviews of a local GeoTIFF (`gdaladdo -clean`): its internal ones (and their
 /// masks), or its `.ovr` sidecar with `external`. As in GDAL, the space internal overviews took
-/// is not reclaimed.
+/// is not reclaimed. Deleting the sidecar leaves the GeoTIFF itself as it is: it may be read-only.
 pub fn delete_overviews(path: &str, options: &DeleteOptions) -> Result<()> {
-    let file = gtiff_update::writable_local_file(path)?;
+    let file = if options.external { gtiff_update::local_file(path)? } else { gtiff_update::writable_local_file(path)? };
     if options.external {
         let ovr = ovr_path(std::path::Path::new(path));
         if ovr.is_file() {
@@ -329,9 +376,10 @@ pub fn delete_overviews_from_bytes(tiff: &[u8], options: &DeleteOptions) -> Resu
 
 /// Recomputes the existing overviews of a local GeoTIFF from its full-resolution image, whole or
 /// over some extents only (`gdal raster overview refresh`, `gdaladdo
-/// -partial_refresh_from_projwin`). Returns the sizes of the overviews refreshed.
+/// -partial_refresh_from_projwin`). Returns the sizes of the overviews refreshed. Refreshing the
+/// `.ovr` sidecar leaves the GeoTIFF itself as it is: it may be read-only.
 pub fn refresh_overviews(path: &str, options: &RefreshOptions) -> Result<Vec<(usize, usize)>> {
-    let file = gtiff_update::writable_local_file(path)?;
+    let file = if options.external { gtiff_update::local_file(path)? } else { gtiff_update::writable_local_file(path)? };
     let mut src = open_source(path)?;
     let target = if options.external { ovr_path(std::path::Path::new(path)) } else { file };
     if options.external && !target.is_file() {
@@ -931,9 +979,14 @@ type Parts = Vec<(Option<RasterData>, Option<Vec<u8>>)>;
 /// computed. The full-resolution image is read once, forward, by chunks of rows: every level
 /// computed from full resolution is computed in that pass, chunk by chunk, so that the image is
 /// never held whole. The other levels are computed from the previous level, held in memory.
+///
+/// `report` gets the fraction done, by pixels: those of each source a pass of [`run_jobs`] reads
+/// (the full-resolution image, or a previous level), and those of each level `each` takes. It
+/// gets 1 once `each` has taken the last level.
 fn whole_levels(
     srcs: &mut Sources,
     levels: &[WholeLevel],
+    report: &mut Report<'_>,
     mut each: impl FnMut(&mut Sources, usize, &Computed) -> Result<()>,
 ) -> Result<()> {
     let full = (srcs.src.width(), srcs.src.height());
@@ -946,18 +999,31 @@ fn whole_levels(
     };
     let parts_of = |k: usize| [Some(false), levels[k].mask.map(|_| true)].into_iter().flatten().map(move |mask| Job { level: k, mask });
     let first: Vec<Job> = (0..levels.len()).flat_map(parts_of).filter(|j| !from_prev(j.level, j.mask)).collect();
+    // The work of each step, in pixels: the first pass, then each level's pass from the previous
+    // one and the level itself.
+    let pixels = |s: (usize, usize)| (s.0 as f64) * (s.1 as f64);
+    let first_work = if first.is_empty() { 0.0 } else { pixels(full) };
+    let pass_work = |k: usize| if parts_of(k).any(|j| from_prev(j.level, j.mask)) { pixels(levels[k - 1].size) } else { 0.0 };
+    let total = first_work + (0..levels.len()).map(|k| pass_work(k) + pixels(levels[k].size)).sum::<f64>();
+    // The fraction `f` of a step of `work` done, after `done`.
+    let at = |done: f64, work: f64, f: f64| if total > 0.0 { (done + f * work) / total } else { 1.0 };
+    let mut done = 0.0;
     let mut parts: Parts = (0..levels.len()).map(|_| (None, None)).collect();
-    run_jobs(srcs, None, full, levels, &first, &mut parts)?;
+    run_jobs(srcs, None, full, levels, &first, &mut parts, &mut |f| report(at(done, first_work, f)))?;
+    done += first_work;
     let mut prev: Option<Computed> = None;
     for (k, level) in levels.iter().enumerate() {
         let jobs: Vec<Job> = parts_of(k).filter(|j| from_prev(j.level, j.mask)).collect();
         if let Some(p) = prev.as_ref().filter(|_| !jobs.is_empty()) {
-            run_jobs(srcs, Some(p), p.size, levels, &jobs, &mut parts)?;
+            run_jobs(srcs, Some(p), p.size, levels, &jobs, &mut parts, &mut |f| report(at(done, pass_work(k), f)))?;
         }
+        done += pass_work(k);
         let (data, mask) = std::mem::take(&mut parts[k]);
         let data = data.ok_or_else(|| Error::InvalidData("an overview level was not computed".into()))?;
         let c = Computed { size: level.size, rows: 0..level.size.1, data, mask };
         each(srcs, k, &c)?;
+        done += pixels(level.size);
+        report(at(done, 0.0, 0.0))?;
         prev = Some(c);
     }
     Ok(())
@@ -1101,7 +1167,9 @@ fn steps(
 
 /// Computes `jobs` from `prev` (the previous level, of `src_size`), or from the full-resolution
 /// image when `prev` is `None`: their steps run in the order of their last source rows, so the
-/// image is read forward once and only the rows the current steps need are held.
+/// image is read forward once and only the rows the current steps need are held. After each
+/// step, `report` gets the fraction of the jobs' rows computed.
+#[allow(clippy::too_many_arguments)]
 fn run_jobs(
     srcs: &mut Sources,
     prev: Option<&Computed>,
@@ -1109,6 +1177,7 @@ fn run_jobs(
     levels: &[WholeLevel],
     jobs: &[Job],
     parts: &mut Parts,
+    report: &mut Report<'_>,
 ) -> Result<()> {
     if jobs.is_empty() {
         return Ok(());
@@ -1157,7 +1226,13 @@ fn run_jobs(
     let w = src_size.0;
     let mut at = vec![0usize; jobs.len()];
     let pending = |at: &[usize], j: usize| job_steps[j].get(at[j]);
+    // The share of the jobs' overview rows the steps done so far computed.
+    let fraction_done = |at: &[usize]| {
+        let rows = |j: usize| at[j].checked_sub(1).map_or(0, |i| job_steps[j][i].1.end) as f64 / levels[jobs[j].level].size.1.max(1) as f64;
+        (0..jobs.len()).map(rows).sum::<f64>() / jobs.len() as f64
+    };
     while let Some(j) = (0..jobs.len()).filter(|&j| pending(&at, j).is_some()).min_by_key(|&j| pending(&at, j).map(|s| s.0.end)) {
+        report(fraction_done(&at))?;
         let keep = (0..jobs.len()).filter_map(|j| pending(&at, j)).map(|s| s.0.start).min().unwrap_or(0);
         let (rows, out_rows) = job_steps[j][at[j]].clone();
         at[j] += 1;
@@ -1200,7 +1275,7 @@ fn run_jobs(
             put_values(dst, (b * l.size.1 + out_rows.start) * l.size.0, &out);
         }
     }
-    Ok(())
+    report(1.0)
 }
 
 /// The `GDAL_METADATA` of an overview: the method it was computed with, as GDAL records it.
@@ -1268,7 +1343,8 @@ fn warn_integer_precision(data_type: DataType) {
 }
 
 /// Computes whole new levels of `sizes` (in cascade, largest first) as images like `like`
-/// (without mask images: for an `.ovr` sidecar).
+/// (without mask images: for an `.ovr` sidecar), reporting the progress to `report`.
+#[allow(clippy::too_many_arguments)]
 fn build_new_levels(
     src: &mut LazyRaster,
     like: &Directory,
@@ -1277,6 +1353,7 @@ fn build_new_levels(
     compression: &str,
     override_compression: bool,
     existing: Option<&[Directory]>,
+    report: &mut Report<'_>,
 ) -> Result<Vec<gw::Image>> {
     warn_integer_precision(src.data_type());
     let sizes = sorted_sizes(sizes.to_vec());
@@ -1295,7 +1372,7 @@ fn build_new_levels(
     let levels: Vec<WholeLevel> = sizes.iter().zip(data).map(|(&size, data)| WholeLevel { size, method, data, mask: None }).collect();
     let mut srcs = Sources { src, base: None, alpha, read_bytes: READ_BYTES, strip_values: STRIP_VALUES };
     let mut out = Vec::new();
-    whole_levels(&mut srcs, &levels, |srcs, _, c| {
+    whole_levels(&mut srcs, &levels, report, |srcs, _, c| {
         let old = existing.and_then(|dirs| dirs.iter().find(|d| !d.is_mask() && d.size() == c.size));
         let compression = if old.is_some() && !override_compression { None } else { Some(compression) };
         out.push(new_level_image(c, old.unwrap_or(like), compression, method, srcs.src.data_type(), srcs.src.band_count())?.0);
@@ -1325,7 +1402,8 @@ fn write_ovr(f: &mut std::fs::File, images: Vec<gw::Image>, main: &Directory) ->
     a.finish(&dirs)
 }
 
-/// Adds overviews of these factors to a TIFF (the file, or a copy of it).
+/// Adds overviews of these factors to a TIFF (the file, or a copy of it), reporting the progress
+/// to `report`.
 fn add_internal<F: Read + Write + Seek>(
     file: &mut F,
     src: &mut LazyRaster,
@@ -1333,6 +1411,7 @@ fn add_internal<F: Read + Write + Seek>(
     method: OverviewResampling,
     compression: Option<&str>,
     ignore_cog_layout_break: bool,
+    report: &mut Report<'_>,
 ) -> Result<Vec<(usize, usize)>> {
     let tiff = gtiff_update::parse(file)?;
     if factors.is_empty() {
@@ -1384,7 +1463,7 @@ fn add_internal<F: Read + Write + Seek>(
     let mut a = Appender::new(file, tiff.big)?;
     // Every overview of the result: (size, directory, mask directory).
     let mut levels: Vec<((usize, usize), Directory, Option<Directory>)> = Vec::new();
-    whole_levels(&mut srcs, &plan, |srcs, _, c| {
+    whole_levels(&mut srcs, &plan, report, |srcs, _, c| {
         let size = c.size;
         let existing = im.overviews.iter().find(|o| o.0 == size);
         let src = &mut *srcs.src;
@@ -1648,7 +1727,7 @@ pub(crate) fn refresh<F: Read + Write + Seek>(file: &mut F, src: &mut LazyRaster
         Ok(())
     };
     if whole {
-        whole_levels(&mut srcs, &plan, |srcs, k, c| write(srcs, k, c, 0..c.size.0))?;
+        whole_levels(&mut srcs, &plan, &mut |_| Ok(()), |srcs, k, c| write(srcs, k, c, 0..c.size.0))?;
     } else {
         let mut prev: Option<Computed> = None;
         for (k, l) in plan.iter().enumerate() {
@@ -1812,7 +1891,7 @@ mod tests {
                         sizes.iter().enumerate().map(|(k, &size)| WholeLevel { size, method, data: data[k], mask: masks[k] }).collect();
                     // Reads of 64 rows, and strips of 64 source rows (with their margins).
                     let mut srcs = Sources { src: &mut src, base: None, alpha: None, read_bytes: 1, strip_values: 20 * w };
-                    whole_levels(&mut srcs, &plan, |_, k, c| {
+                    whole_levels(&mut srcs, &plan, &mut |_| Ok(()), |_, k, c| {
                         assert_eq!(c.data.data_type(), data_type);
                         assert_eq!(c.data.to_f64_vec(), expected[k].data.to_f64_vec(), "{data_type:?} {method:?} {multiband} level {k}");
                         Ok(())
@@ -1902,9 +1981,14 @@ mod tests {
                     let plan: Vec<WholeLevel> =
                         sizes.iter().enumerate().map(|(k, &size)| WholeLevel { size, method, data: data[k], mask: masks[k] }).collect();
                     let mut seen = 0;
+                    let mut reported = Vec::new();
                     whole_levels(
                         &mut Sources { src: &mut src, base: None, alpha, read_bytes: 1 << 20, strip_values: STRIP_VALUES },
                         &plan,
+                        &mut |f| {
+                            reported.push(f);
+                            Ok(())
+                        },
                         |_, k, c| {
                             let e = &expected[k];
                             assert_eq!(c.data.to_f64_vec(), e.data.to_f64_vec(), "{method:?} {multiband} {bands} {has_mask} level {k}");
@@ -1915,6 +1999,11 @@ mod tests {
                     )
                     .unwrap();
                     assert_eq!(seen, sizes.len());
+                    // The progress never decreases, moves step by step, and ends at 1.
+                    let case = format!("{method:?} {multiband} {bands} {has_mask}");
+                    assert!(reported.windows(2).all(|p| p[0] <= p[1]), "{case}: {reported:?}");
+                    assert!(reported.len() > 2 * sizes.len() && reported[0] >= 0.0, "{case}: {reported:?}");
+                    assert_eq!(reported.last(), Some(&1.0), "{case}");
                     // Every full-resolution row is read once, forward, in windows of whole blocks.
                     let reads = reads.lock().unwrap();
                     for mask in [false, true] {

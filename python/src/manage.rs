@@ -128,8 +128,13 @@ fn create_raster(
 }
 
 /// Adds internal or external GeoTIFF overview levels. Returns their pixel sizes.
+///
+/// `progress`, when given, is called with the fraction done, a float from 0 to 1 that never
+/// decreases (1 once the overviews are computed, before they are written). A falsy return value
+/// other than `None` cancels, as in GDAL: `terrio.errors.CancelledError` is raised and no file is
+/// changed. An exception it raises cancels too, and is raised again.
 #[pyfunction]
-#[pyo3(signature = (path, levels=None, *, min_size=256, resampling="nearest", external=false, compression=None, ignore_cog_layout_break=false))]
+#[pyo3(signature = (path, levels=None, *, min_size=256, resampling="nearest", external=false, compression=None, ignore_cog_layout_break=false, progress=None))]
 #[allow(clippy::too_many_arguments)]
 fn add_overviews(
     py: Python<'_>,
@@ -140,6 +145,7 @@ fn add_overviews(
     external: bool,
     compression: Option<String>,
     ignore_cog_layout_break: bool,
+    progress: Option<Py<PyAny>>,
 ) -> PyResult<Vec<(usize, usize)>> {
     let o = overview::OverviewOptions {
         levels: levels.unwrap_or_default(),
@@ -149,7 +155,29 @@ fn add_overviews(
         compression,
         ignore_cog_layout_break,
     };
-    with_warnings(py, || overview::add_overviews(path, &o))
+    let Some(progress) = progress else {
+        return with_warnings(py, || overview::add_overviews(path, &o));
+    };
+    // The exception the callback raised, raised again in place of the cancellation.
+    let mut raised: Option<PyErr> = None;
+    let out = with_warnings(py, || {
+        overview::add_overviews_with_progress(path, &o, &mut |fraction| {
+            Python::attach(|py| {
+                let go_on = progress.call1(py, (fraction,)).and_then(|v| {
+                    let v = v.into_bound(py);
+                    Ok(v.is_none() || v.is_truthy()?)
+                });
+                go_on.unwrap_or_else(|e| {
+                    raised = Some(e);
+                    false
+                })
+            })
+        })
+    });
+    match raised {
+        Some(e) => Err(e),
+        None => out,
+    }
 }
 
 /// Deletes internal overview links or a validated external overview sidecar.

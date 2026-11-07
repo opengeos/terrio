@@ -272,6 +272,99 @@ fn read_only_files_are_refused() {
     assert!(err.to_string().contains("read-only"), "{err}");
 }
 
+/// External overviews leave the GeoTIFF itself untouched, so it may be read-only, as with
+/// `gdaladdo -ro`.
+#[cfg(unix)]
+#[test]
+fn external_overviews_of_read_only_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let ds = sample(256, 192);
+    let writable = write(dir.path(), "w.tif", &ds, &tiled());
+    let path = write(dir.path(), "a.tif", &ds, &tiled());
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&path, perms).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let o = OverviewOptions { levels: vec![2, 4], resampling: Resampling::Average, external: true, ..Default::default() };
+    assert_eq!(add_overviews(&path, &o).unwrap(), vec![(128, 96), (64, 48)]);
+    add_overviews(&writable, &o).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(std::fs::metadata(&path).unwrap().permissions().readonly());
+    for i in 0..2 {
+        assert_eq!(level(&path, Some(i)), level(&writable, Some(i)), "overview {i}");
+    }
+    // The sidecar is refreshed and deleted with the file read-only too; internal overviews are
+    // still refused.
+    let refresh = RefreshOptions { external: true, ..Default::default() };
+    assert_eq!(refresh_overviews(&path, &refresh).unwrap(), vec![(128, 96), (64, 48)]);
+    assert!(add_overviews(&path, &OverviewOptions { external: false, ..o.clone() }).is_err());
+    delete_overviews(&path, &DeleteOptions { external: true, ..Default::default() }).unwrap();
+    assert!(!std::path::Path::new(&format!("{path}.ovr")).exists());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+}
+
+/// `add_overviews_with_progress` reports a fraction that never decreases, from 0 to 1, and a
+/// cancellation leaves the files as they were.
+#[test]
+fn overview_progress_and_cancellation() {
+    use terrio::ops::overview::add_overviews_with_progress;
+    let dir = tempfile::tempdir().unwrap();
+    let ds = sample(256, 192);
+    let o = OverviewOptions { levels: vec![2, 4, 8], resampling: Resampling::Average, ..Default::default() };
+    for external in [false, true] {
+        let o = OverviewOptions { external, ..o.clone() };
+        let path = write(dir.path(), &format!("p{external}.tif"), &ds, &tiled());
+        let ovr = format!("{path}.ovr");
+        let mut seen = Vec::new();
+        let sizes = add_overviews_with_progress(&path, &o, &mut |f| {
+            seen.push(f);
+            true
+        })
+        .unwrap();
+        assert_eq!(sizes, vec![(128, 96), (64, 48), (32, 24)]);
+        assert_eq!((seen.first(), seen.last()), (Some(&0.0), Some(&1.0)), "{seen:?}");
+        assert!(seen.windows(2).all(|p| p[0] <= p[1]) && seen.len() > 4, "{seen:?}");
+        let built = level(&path, Some(2));
+
+        // Cancelled partway: the file, and the sidecar of the overviews built before, are kept.
+        let other = write(dir.path(), &format!("c{external}.tif"), &ds, &tiled());
+        let other_ovr = format!("{other}.ovr");
+        add_overviews(&other, &OverviewOptions { levels: vec![2], ..o.clone() }).unwrap();
+        let before = (std::fs::read(&other).unwrap(), std::fs::read(&other_ovr).ok());
+        assert_eq!(before.1.is_some(), external);
+        let mut calls = Vec::new();
+        let err = add_overviews_with_progress(&other, &o, &mut |f| {
+            calls.push(f);
+            f < 0.3
+        })
+        .unwrap_err();
+        assert!(matches!(err, terrio::Error::Cancelled), "{err}");
+        assert!(calls.last().is_some_and(|f| *f >= 0.3 && *f < 1.0), "{calls:?}");
+        assert_eq!((std::fs::read(&other).unwrap(), std::fs::read(&other_ovr).ok()), before);
+        // A cancellation before any work leaves no sidecar.
+        let fresh = write(dir.path(), &format!("f{external}.tif"), &ds, &tiled());
+        assert!(matches!(add_overviews_with_progress(&fresh, &o, &mut |_| false), Err(terrio::Error::Cancelled)));
+        assert!(!std::path::Path::new(&format!("{fresh}.ovr")).exists());
+        assert!(terrio::open_raster_lazy(&fresh).unwrap().overviews().is_empty());
+
+        // Nothing to compute: 0, then 1.
+        let mut seen = Vec::new();
+        let none = OverviewOptions { levels: Vec::new(), min_size: 512, ..o.clone() };
+        add_overviews_with_progress(&path, &none, &mut |f| {
+            seen.push(f);
+            true
+        })
+        .unwrap();
+        assert_eq!(seen, vec![0.0, 1.0]);
+        assert_eq!(level(&path, Some(2)), built);
+        assert_eq!(std::path::Path::new(&ovr).exists(), external);
+    }
+    // Nothing is left behind next to the files.
+    let names: Vec<String> =
+        std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert!(names.iter().all(|n| !n.contains(".terrio-")), "{names:?}");
+}
+
 #[test]
 fn overviews_of_tiffs_in_memory() {
     let dir = tempfile::tempdir().unwrap();
