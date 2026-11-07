@@ -57,6 +57,32 @@ def cases(data, tmp):
                        ["-outsize", str(width), str(height), "-r", resampling, "-ovr", choice])
         yield (f"translate markers {choice} window", levels, ["-srcwin", "7", "5", "150", "120", "-outsize", "40", "30", "-ovr", choice])
         yield (f"translate markers {choice} level", levels, ["-ovr", choice])
+    # The same levels in an external `.ovr`: GDAL's band of its image has the file's other images
+    # as overviews, and AUTO chooses again among them. 60 x 50 by nearest neighbour and 50 x 42
+    # otherwise read the second level (200) where one choice reads the first (100).
+    external = str(tmp / "external_levels.tif")
+    ds = gdal.GetDriverByName("GTiff").Create(
+        external, 192, 160, 1, gdal.GDT_Float32, ["TILED=YES", "BLOCKXSIZE=32", "BLOCKYSIZE=32", "COMPRESS=DEFLATE"])
+    ds.SetGeoTransform([0, 1, 0, 160, 0, -1])
+    ds.SetProjection(crs.ExportToWkt())
+    ds.GetRasterBand(1).Fill(0)
+    ds = None
+    ds = gdal.Open(external)
+    ds.BuildOverviews("NEAREST", [2, 4, 8])
+    ds = None
+    ovr = gdal.Open(external + ".ovr", gdal.GA_Update)
+    band = ovr.GetRasterBand(1)
+    band.Fill(100)
+    for i in range(band.GetOverviewCount()):
+        band.GetOverview(i).Fill((i + 2) * 100)
+    ovr = None
+    for choice in ["AUTO", "AUTO-1", "NONE", "0", "1"]:
+        for width, height in [(60, 50), (50, 42), (48, 40), (97, 81)]:
+            for resampling in ["near", "bilinear", "average"]:
+                yield (f"translate external markers {choice} {width}x{height} {resampling}", external,
+                       ["-outsize", str(width), str(height), "-r", resampling, "-ovr", choice])
+        yield (f"translate external markers {choice} window", external,
+               ["-srcwin", "7", "5", "150", "120", "-outsize", "40", "30", "-ovr", choice])
 
     # Real USGS terrain: Float32 with a nodata value, average overviews.
     terrain = Path(data) / "usgs_dem.tif"
