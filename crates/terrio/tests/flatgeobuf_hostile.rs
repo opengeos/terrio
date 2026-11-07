@@ -67,8 +67,10 @@ fn truncation_and_counts() {
 fn measures_are_preserved_and_dimensions_checked() {
     let layer = parse(&fixture(1, true, &[7.0])).unwrap();
     assert_eq!(layer.features[0].geometry.as_ref().unwrap().all_coords()[0].m, Some(7.0));
-    assert!(!both(&fixture(1, true, &[7.0, 8.0])));
-    assert!(!both(&fixture(1, false, &[7.0])));
+    // Extra values, and dimensions the header does not declare, are ignored, as GDAL ignores them.
+    assert!(both(&fixture(1, true, &[7.0, 8.0])));
+    assert!(both(&fixture(1, false, &[7.0])));
+    assert_eq!(parse(&fixture(1, false, &[7.0])).unwrap().features[0].geometry.as_ref().unwrap().all_coords()[0].m, None);
     let mut bytes = fixture(1, true, &[]);
     let mut b = FlatBufferBuilder::new();
     let xy = b.create_vector(&[1.0, 2.0, 3.0, 4.0]);

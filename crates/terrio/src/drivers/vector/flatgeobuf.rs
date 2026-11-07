@@ -147,13 +147,14 @@ fn validate_dimensions(g: &FgbGeometry, h: &FgbHeader) -> Result<()> {
     if !n.is_multiple_of(2) {
         return Err(bad("odd XY coordinate count"));
     }
+    // Only the dimensions the header declares are read. Undeclared vectors and extra values
+    // are ignored, as in GDAL; declared dimensions still need enough values for every XY pair.
     for (declared, values) in [(h.has_z, g.z()), (h.has_m, g.m())] {
-        if let Some(values) = values {
-            if !declared || values.len() != n / 2 {
-                return Err(bad("inconsistent coordinate dimensions"));
-            }
-        } else if declared && n != 0 {
-            return Err(bad("missing coordinate dimension"));
+        match values {
+            _ if !declared => {}
+            Some(values) if values.len() < n / 2 => return Err(bad("short coordinate dimension")),
+            None if n != 0 => return Err(bad("missing coordinate dimension")),
+            _ => {}
         }
     }
     if let Some(parts) = g.parts() {
@@ -996,8 +997,10 @@ mod tests {
     fn measures_are_preserved_and_dimensions_checked() {
         let layer = parse(&fixture(1, true, &[7.0])).unwrap();
         assert_eq!(layer.features[0].geometry.as_ref().unwrap().all_coords()[0].m, Some(7.0));
-        assert!(!both(&fixture(1, true, &[7.0, 8.0])));
-        assert!(!both(&fixture(1, false, &[7.0])));
+        // Extra values, and dimensions the header does not declare, are ignored, as GDAL ignores them.
+        assert!(both(&fixture(1, true, &[7.0, 8.0])));
+        assert!(both(&fixture(1, false, &[7.0])));
+        assert_eq!(parse(&fixture(1, false, &[7.0])).unwrap().features[0].geometry.as_ref().unwrap().all_coords()[0].m, None);
         let mut bytes = fixture(1, true, &[]);
         let mut b = FlatBufferBuilder::new();
         let xy = b.create_vector(&[1.0, 2.0, 3.0, 4.0]);
@@ -1005,6 +1008,63 @@ mod tests {
         let g = FgbGeometry::create(&mut b, &GeometryArgs { xy: Some(xy), m: Some(m), ..Default::default() });
         let f = FgbFeature::create(&mut b, &FeatureArgs { geometry: Some(g), ..Default::default() });
         b.finish_size_prefixed(f, None);
+        bytes.extend_from_slice(b.finished_data());
+        assert!(!both(&bytes));
+    }
+
+    /// A point file with independently declared dimensions and optional ordinate vectors.
+    fn dimension_fixture(has_z: bool, has_m: bool, z: Option<&[f64]>, m: Option<&[f64]>) -> Vec<u8> {
+        let mut b = FlatBufferBuilder::new();
+        let h = Header::create(
+            &mut b,
+            &HeaderArgs { features_count: 1, index_node_size: 0, has_z, has_m, geometry_type: FgbType::Point, ..Default::default() },
+        );
+        b.finish_size_prefixed(h, None);
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(b.finished_data());
+        let mut b = FlatBufferBuilder::new();
+        let xy = b.create_vector(&[1.0, 2.0]);
+        let z = z.map(|z| b.create_vector(z));
+        let m = m.map(|m| b.create_vector(m));
+        let g = FgbGeometry::create(&mut b, &GeometryArgs { xy: Some(xy), z, m, ..Default::default() });
+        let f = FgbFeature::create(&mut b, &FeatureArgs { geometry: Some(g), ..Default::default() });
+        b.finish_size_prefixed(f, None);
+        bytes.extend_from_slice(b.finished_data());
+        bytes
+    }
+
+    /// GDAL 3.13.3 ignores undeclared/extra ordinates and refuses missing/short declared ones.
+    #[test]
+    fn undeclared_z_is_ignored_and_declared_z_required() {
+        // The reference TypeScript writer stores z without setting `has_z`; GDAL reads it as 2D.
+        for z in [Some(&[5.0][..]), Some(&[][..])] {
+            let bytes = dimension_fixture(false, false, z, Some(&[]));
+            assert!(both(&bytes));
+            assert_eq!(parse(&bytes).unwrap().features[0].geometry.as_ref().unwrap().all_coords()[0].z, None);
+        }
+        assert_eq!(
+            parse(&dimension_fixture(true, false, Some(&[5.0]), None)).unwrap().features[0].geometry.as_ref().unwrap().all_coords()[0].z,
+            Some(5.0)
+        );
+        assert!(!both(&dimension_fixture(true, false, None, None)));
+        assert!(!both(&dimension_fixture(true, false, Some(&[]), None)));
+        assert!(!both(&dimension_fixture(false, true, None, None)));
+        assert!(!both(&dimension_fixture(false, true, None, Some(&[]))));
+        let extra = parse(&dimension_fixture(true, false, Some(&[5.0, 6.0]), None)).unwrap();
+        assert_eq!(extra.features[0].geometry.as_ref().unwrap().all_coords()[0].z, Some(5.0));
+    }
+
+    #[test]
+    fn short_z_vectors_are_rejected_before_coordinate_reads() {
+        let mut b = FlatBufferBuilder::new();
+        let xy = b.create_vector(&[1.0, 2.0, 3.0, 4.0]);
+        let z = b.create_vector(&[5.0]);
+        let g = FgbGeometry::create(&mut b, &GeometryArgs { xy: Some(xy), z: Some(z), ..Default::default() });
+        let f = FgbFeature::create(&mut b, &FeatureArgs { geometry: Some(g), ..Default::default() });
+        b.finish_size_prefixed(f, None);
+        let mut bytes = dimension_fixture(true, false, None, None);
+        let header_end = header_len(&bytes).unwrap();
+        bytes.truncate(header_end);
         bytes.extend_from_slice(b.finished_data());
         assert!(!both(&bytes));
     }
