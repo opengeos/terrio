@@ -19,6 +19,7 @@ use super::in_wgs84;
 use super::kml_style;
 use super::xml::{self, Element};
 use crate::{Error, Result};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer, Ring};
 
@@ -195,9 +196,10 @@ fn kmz_styled<R: std::io::Read + std::io::Seek>(reader: R, default_name: &str) -
     }
     let index = kml_style::index_members(&members);
     let mut table = Vec::new();
-    let mut layers = layers_of(&root, &main, &index, default_name, false, &mut table);
+    let mut known = HashMap::new();
+    let mut layers = layers_of(&root, &main, &index, default_name, false, &mut table, &mut known);
     for (member, document, name) in &documents {
-        layers.extend(layers_of(document, member, &index, name, true, &mut table));
+        layers.extend(layers_of(document, member, &index, name, true, &mut table, &mut known));
     }
     Ok((layers, table))
 }
@@ -223,7 +225,8 @@ pub fn parse(text: &str, default_name: &str) -> Result<Vec<Layer>> {
 pub fn parse_styled(text: &str, default_name: &str) -> Result<Styled> {
     let root = xml::parse(text)?;
     let mut table = Vec::new();
-    let layers = layers_of(&root, "", &kml_style::MemberIndex::new(), default_name, false, &mut table);
+    let mut known = HashMap::new();
+    let layers = layers_of(&root, "", &kml_style::MemberIndex::new(), default_name, false, &mut table, &mut known);
     Ok((layers, table))
 }
 
@@ -237,6 +240,7 @@ fn layers_of(
     default_name: &str,
     root_layer: bool,
     table: &mut Vec<(String, String)>,
+    known: &mut HashMap<String, String>,
 ) -> Vec<Layer> {
     // The schemas, anywhere in the document, by id and by name.
     let mut schemas = Vec::new();
@@ -258,7 +262,7 @@ fn layers_of(
         }
     }
     let mut styles = kml_style::Styles::new(root, member, members);
-    styles.add_to(table);
+    styles.add_to(table, known);
     let mut layers: Vec<Layer> = containers
         .into_iter()
         .map(|(name, features, container)| {
@@ -1049,6 +1053,37 @@ mod tests {
         let mut shared = String::new();
         zip.by_name("style/style.kml").unwrap().read_to_string(&mut shared).unwrap();
         assert!(shared.contains(r#"<Style id="base">"#), "{shared}");
+    }
+
+    #[test]
+    fn many_layer_documents_with_their_own_styles_keep_first_definitions() {
+        // Regression for #631: each layer document brings a distinct style id. The table grows
+        // once per id, and the first definition wins when a later document reuses an id.
+        let main = concat!(
+            r#"<kml><Document><name>links</name>"#,
+            r#"<NetworkLink><Link><href>layers/m0.kml</href></Link></NetworkLink>"#,
+            r#"<NetworkLink><Link><href>layers/m1.kml</href></Link></NetworkLink>"#,
+            r#"<NetworkLink><Link><href>layers/m2.kml</href></Link></NetworkLink>"#,
+            r#"<NetworkLink><Link><href>layers/m3.kml</href></Link></NetworkLink>"#,
+            r#"</Document></kml>"#,
+        );
+        let m0 = r#"<kml><Document><Style id="s0"><LineStyle><color>ff0000ff</color><width>1</width></LineStyle></Style><Placemark><name>p</name><styleUrl>#s0</styleUrl><Point><coordinates>1,2</coordinates></Point></Placemark></Document></kml>"#;
+        let m1 = r#"<kml><Document><Style id="s1"><LineStyle><color>ff0000ff</color><width>2</width></LineStyle></Style><Placemark><name>p</name><styleUrl>#s1</styleUrl><Point><coordinates>1,2</coordinates></Point></Placemark></Document></kml>"#;
+        let m2 = r#"<kml><Document><Style id="s2"><LineStyle><color>ff0000ff</color><width>3</width></LineStyle></Style><Placemark><name>p</name><styleUrl>#s2</styleUrl><Point><coordinates>1,2</coordinates></Point></Placemark></Document></kml>"#;
+        // Redefines s0 with a different width; the table keeps width 1.
+        let m3 = r#"<kml><Document><Style id="s0"><LineStyle><color>ff0000ff</color><width>9</width></LineStyle></Style><Placemark><name>p</name><styleUrl>#s0</styleUrl><Point><coordinates>1,2</coordinates></Point></Placemark></Document></kml>"#;
+        let (layers, table) = parse_kmz_styled(
+            archive(&[("doc.kml", main), ("layers/m0.kml", m0), ("layers/m1.kml", m1), ("layers/m2.kml", m2), ("layers/m3.kml", m3)]),
+            "a",
+        )
+        .unwrap();
+        assert_eq!(layers.len(), 4);
+        assert_eq!(table.len(), 3);
+        assert!(table.iter().any(|(id, s)| id == "s0" && s.contains("w:1.000000px")), "{table:?}");
+        assert!(table.iter().any(|(id, _)| id == "s1"));
+        assert!(table.iter().any(|(id, _)| id == "s2"));
+        assert_eq!(style(&layers[0], 0), "@s0");
+        assert!(style(&layers[3], 0).contains("w:9.000000px"));
     }
 
     /// A KMZ archive of the members given.
