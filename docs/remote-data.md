@@ -149,7 +149,11 @@ A STAC document chooses where its links lead, so links are followed with limits:
   followed, for ranged reads, requests with headers and `POST` requests alike), and a redirect to
   another origin is an error unless `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`;
 - a search made with `GET` is not continued with a `POST` its page asks for
-  (`TERRIO_STAC_ALLOW_POST=YES` allows it); one made with `method=POST` is.
+  (`TERRIO_STAC_ALLOW_POST=YES` allows it); one made with `method=POST` is;
+- a STAC document that is not on the local file system does not name local files: an asset href
+  of a remote item that is a local path, a `file://` URL or a `/vsizip/` path into a local archive
+  is an error for `STAC:` and is left out of a `STACIT:` mosaic (STACTA items are held to the same
+  rule).
 
 A STAC item of tiled assets (GDAL's STACTA, see [Formats](formats.md#stac)) opens from its URL
 or as `STACTA:"item-url":asset`: the item is fetched, then the headers of the first tile when the

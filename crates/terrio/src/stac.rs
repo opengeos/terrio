@@ -287,6 +287,24 @@ fn post_request(source: &str) -> Request {
     Request { url: url.to_string(), body: Some(Value::Object(body)), headers: Vec::new() }
 }
 
+/// Whether a location is on the local file system: a local path, or a zip archive held in one.
+fn local_backed(loc: &crate::vfs::Location) -> bool {
+    match loc {
+        crate::vfs::Location::Local(_) => true,
+        crate::vfs::Location::Zip { archive, .. } => local_backed(archive),
+        _ => false,
+    }
+}
+
+/// Whether `href`, resolved from a document at `doc_loc`, names local files although the document
+/// itself is not on the local file system. A remote document is not trusted to read local files
+/// (`file://`, local paths, `/vsizip/` of a local archive), whose pixels and metadata would go
+/// back to whoever opened it.
+pub(crate) fn names_local_files(doc_loc: &str, href: &str) -> bool {
+    let parse = crate::vfs::Location::parse;
+    !local_backed(&parse(doc_loc)) && local_backed(&parse(href))
+}
+
 /// An href resolved against the location of the document holding it.
 pub(crate) fn resolve_href(base: &str, href: &str) -> String {
     if href.contains("://") || href.starts_with("/vsi") {
@@ -778,7 +796,11 @@ fn asset_href(item_loc: &str, asset: &str) -> Result<String> {
         let names: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
         bad(format!("'{item_loc}' has no asset '{asset}' (assets: {})", names.join(", ")))
     })?;
-    sign_href(resolve_href(item_loc, href), &item, item_loc, SignMode::from_env())
+    let href = resolve_href(item_loc, href);
+    if names_local_files(item_loc, &href) {
+        return Err(bad(format!("the remote item '{item_loc}' names local files (asset '{asset}')")));
+    }
+    sign_href(href, &item, item_loc, SignMode::from_env())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -923,6 +945,10 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
                 by_crs: BTreeMap::new(),
             });
             let href = resolve_href(base, href);
+            // A remote item does not name local files; such an asset is left out of the mosaic.
+            if names_local_files(base, &href) {
+                continue;
+            }
             entry.by_crs.entry(crs).or_default().push(AssetItem {
                 sign: needs_signing(&href, item, base, sign),
                 href,
@@ -1399,6 +1425,57 @@ mod tests {
     /// The private document the review's second origin served: its features must never be read.
     #[cfg(remote)]
     const SENTINEL: &[u8] = br#"{"type":"FeatureCollection","features":[{"type":"Feature","stac_version":"1.0.0","id":"private","properties":{"datetime":"2026-01-01T00:00:00Z","name":"private-sentinel"},"geometry":{"type":"Point","coordinates":[3,4]},"links":[],"assets":{}}],"links":[]}"#;
+
+    /// An item served from `https://…` whose asset names a local file is refused: a remote document
+    /// must not read the files of whoever opens it. Remote and relative hrefs still resolve.
+    #[cfg(remote)]
+    #[test]
+    fn a_remote_items_asset_cannot_name_local_files() {
+        let item = serde_json::to_vec(&json!({
+            "type": "Feature", "stac_version": "1.0.0", "id": "x", "properties": {"datetime": "2026-01-01T00:00:00Z"},
+            "geometry": null, "links": [],
+            "assets": {
+                "zip": {"href": "/vsizip//home/user/private.zip/secret.tif"},
+                "file": {"href": "file:///etc/hosts"},
+                "remote": {"href": "https://example.com/data.tif"},
+                "relative": {"href": "data.tif"},
+            },
+        }))
+        .unwrap();
+        let (base, _) = crate::http::test_server(item);
+        let item_loc = format!("{base}/item.json");
+        for asset in ["zip", "file"] {
+            let err = asset_href(&item_loc, asset).unwrap_err().to_string();
+            assert!(err.contains("names local files"), "{asset}: {err}");
+        }
+        assert_eq!(asset_href(&item_loc, "remote").unwrap(), "https://example.com/data.tif");
+        assert_eq!(asset_href(&item_loc, "relative").unwrap(), format!("{base}/data.tif"));
+    }
+
+    /// A mosaic of remote items leaves out the assets that name local files.
+    #[test]
+    fn a_mosaic_of_remote_items_leaves_out_local_assets() {
+        let item = |href: &str| {
+            json!({
+                "type": "Feature", "stac_version": "1.0.0", "id": "x", "collection": "c",
+                "stac_extensions": ["proj"],
+                "properties": {"datetime": "2026-01-01T00:00:00Z", "proj:epsg": 32615, "proj:bbox": [0, 0, 10, 10], "proj:shape": [10, 10]},
+                "assets": {"data": {"href": href}},
+            })
+        };
+        let base = "https://example.com/items/item.json".to_string();
+        let count = |href: &str| -> usize {
+            let groups = group_assets(&[(item(href), base.clone())], &Filters::default());
+            groups.values().flat_map(|g| g.values()).flat_map(|g| g.by_crs.values()).map(Vec::len).sum()
+        };
+        assert_eq!(count("/vsizip//home/user/private.zip/secret.tif"), 0);
+        assert_eq!(count("file:///etc/hosts"), 0);
+        assert_eq!(count("data.tif"), 1);
+        // A local item may name local files.
+        let local = std::env::temp_dir().join("item.json").to_string_lossy().into_owned();
+        let groups = group_assets(&[(item("/vsizip//home/user/archive.zip/a.tif"), local)], &Filters::default());
+        assert_eq!(groups.values().flat_map(|g| g.values()).flat_map(|g| g.by_crs.values()).map(Vec::len).sum::<usize>(), 1);
+    }
 
     #[cfg(remote)]
     fn open(url: &str) -> crate::VectorDataset {

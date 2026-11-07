@@ -1710,10 +1710,21 @@ static EVICTION_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// tests rely on.
 #[cfg(test)]
 pub(crate) fn cache_test_guard() -> CacheTestGuard {
-    static SERIAL: Mutex<()> = Mutex::new(());
-    let serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let serial = CACHE_TEST_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     EVICTION_HELD.store(true, Ordering::SeqCst);
     CacheTestGuard { _serial: serial }
+}
+
+/// Serializes the holders of [`cache_test_guard`] and of [`cache_eviction_test_guard`].
+#[cfg(test)]
+static CACHE_TEST_SERIAL: Mutex<()> = Mutex::new(());
+
+/// The guard of the tests that rely on the process-wide cache dropping blocks (a block read
+/// again once evicted is fetched again): it keeps them from running while a
+/// [`cache_test_guard`] holds the cache's eviction, without holding it itself.
+#[cfg(test)]
+pub(crate) fn cache_eviction_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    CACHE_TEST_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// See [`cache_test_guard`].
@@ -1970,8 +1981,9 @@ impl RangeReader {
         let mut wanted: Vec<u64> = ranges
             .iter()
             .filter(|(off, len)| *len > 0 && *off < s.len)
-            .filter(|(off, len)| s.prefix.as_ref().is_none_or(|p| off + len > p.len() as u64))
-            .flat_map(|(off, len)| *off / bs..=((off + len).min(s.len) - 1) / bs)
+            // Lengths come from file metadata (a TIFF's byte counts), so the end saturates.
+            .filter(|(off, len)| s.prefix.as_ref().is_none_or(|p| off.saturating_add(*len) > p.len() as u64))
+            .flat_map(|(off, len)| *off / bs..=(off.saturating_add(*len).min(s.len) - 1) / bs)
             .filter(|b| !s.blocks.contains_key(b))
             .collect();
         wanted.sort_unstable();
@@ -2620,6 +2632,18 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 3);
     }
 
+    // A TIFF's byte counts reach `prefetch` unchecked: a count near `u64::MAX` must not wrap the
+    // range's end (which planned about 2^48 blocks and aborted on the allocation).
+    #[test]
+    fn a_prefetch_whose_end_overflows_is_clamped_to_the_file() {
+        let data = test_data();
+        let (url, _) = serve(data.clone(), Mode::Ranges);
+        let r = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+        r.prefetch(&[(16, u64::MAX - 15), (5, u64::MAX)]).unwrap();
+        let mut r = r;
+        assert_eq!(read_range(&mut r, 16, 100), data[16..116]);
+    }
+
     /// The inclusive byte ranges of the requests a [`test_server`] saw.
     fn requested(seen: &[Option<String>]) -> Vec<(u64, u64)> {
         seen.iter()
@@ -2656,6 +2680,7 @@ mod tests {
     // and leave the plan too, so that one of them read again once evicted is fetched alone.
     #[test]
     fn blocks_a_read_fetched_past_its_batch_leave_the_plan() {
+        let _guard = cache_eviction_test_guard();
         let data = test_data();
         let (url, seen) = test_server(data.clone());
         let opts = HttpOptions { cache_size: 16 * 4096, ..options() };

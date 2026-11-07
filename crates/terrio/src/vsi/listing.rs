@@ -17,15 +17,25 @@ use std::collections::HashMap;
 
 type EntryIndex = HashMap<(String, bool), usize>;
 
-/// Removes credential-bearing query strings from diagnostics and public names.
+/// Removes credentials from diagnostics and public names: the user information of a URL's
+/// authority (`https://user:password@host/`) and credential-bearing query strings.
 pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
-    if let Some((base, query)) = url.split_once('?') {
+    let mut out = std::borrow::Cow::Borrowed(url);
+    if let Some(scheme) = url.find("://") {
+        let authority = scheme + 3;
+        let end = url[authority..].find(['/', '?', '#']).map_or(url.len(), |end| authority + end);
+        if let Some(at) = url[authority..end].rfind('@') {
+            out = format!("{}{}", &url[..authority], &url[authority + at + 1..]).into();
+        }
+    }
+    if let Some((base, query)) = out.split_once('?') {
         let lower = query.to_ascii_lowercase();
-        if ["sig", "token=", "credential=", "api_key=", "apikey=", "access_key="].iter().any(|key| lower.contains(key)) {
+        const KEYS: [&str; 9] = ["sig", "token=", "credential=", "api_key=", "apikey=", "access_key=", "key=", "password=", "passwd="];
+        if KEYS.iter().any(|key| lower.contains(key)) {
             return format!("{base}?<redacted>").into();
         }
     }
-    url.into()
+    out
 }
 
 /// An entry of a remote listing.
@@ -746,6 +756,17 @@ impl RemoteLister {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn url_passwords_and_key_parameters_are_redacted() {
+        let redacted = super::redact_url("https://user:secret@example.com/f.tif?key=AIza123");
+        assert_eq!(redacted, "https://example.com/f.tif?<redacted>");
+        assert_eq!(super::redact_url("https://u:p@example.com"), "https://example.com");
+        // An `@` after the authority is part of the path, not user information.
+        assert_eq!(super::redact_url("https://example.com/a@b.tif"), "https://example.com/a@b.tif");
+        assert_eq!(super::redact_url("/vsizip/local@archive.zip/x.tif"), "/vsizip/local@archive.zip/x.tif");
+        assert!(super::redact_url("https://example.com/f.tif?password=hunter2").ends_with("?<redacted>"));
+    }
+
     #[test]
     fn url_prefixes_are_decoded_once_before_query_encoding() {
         for base in [

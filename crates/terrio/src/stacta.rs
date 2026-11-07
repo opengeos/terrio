@@ -431,14 +431,6 @@ fn stac_data_type(name: &str) -> Option<Result<DataType>> {
 }
 
 /// Whether a location is on the local file system (a local zip archive's members included).
-fn local_backed(loc: &crate::vfs::Location) -> bool {
-    match loc {
-        crate::vfs::Location::Local(_) => true,
-        crate::vfs::Location::Zip { archive, .. } => local_backed(archive),
-        _ => false,
-    }
-}
-
 /// The resolved href template of an asset template, with `{TileMatrixSet}` replaced. An item
 /// that is not on the local file system does not name local files (`file://`, local paths,
 /// `/vsizip/` of local archives): an error.
@@ -454,8 +446,7 @@ fn href_template(item_loc: &str, href: &str, tms: &str) -> Result<String> {
             crate::stac::resolve_href(item_loc, href.strip_prefix("./").unwrap_or(&href))
         }
     };
-    let parse = crate::vfs::Location::parse;
-    if !local_backed(&parse(item_loc)) && local_backed(&parse(&resolved)) {
+    if crate::stac::names_local_files(item_loc, &resolved) {
         return Err(bad(format!("the remote item '{item_loc}' names local files ({href})")));
     }
     Ok(resolved)
