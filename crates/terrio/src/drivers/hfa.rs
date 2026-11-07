@@ -143,7 +143,8 @@ impl Visible {
 
 /// Decodes a run-length compressed block of `n` values (integer types only), calling
 /// `put(row, col, value)` for its pixels that `visible` keeps. Runs adding up to more than
-/// `n` values are refused, as GDAL refuses them.
+/// `n` values are cut at the block's end, as GDAL 3.13.3 cuts them (it reads such a block,
+/// logging "Repeat count too big" as a debug message only).
 fn uncompress(src: &[u8], n: usize, visible: &Visible, mut put: impl FnMut(usize, usize, f64)) -> Result<()> {
     let i32_at = |k: usize| src.get(k..k + 4).map(|s| i32::from_le_bytes([s[0], s[1], s[2], s[3]])).ok_or_else(|| bad("truncated block"));
     let min = i32_at(0)? as f64;
@@ -166,7 +167,7 @@ fn uncompress(src: &[u8], n: usize, visible: &Visible, mut put: impl FnMut(usize
             count = (count << 8) | *src.get(c + k).ok_or_else(|| bad("truncated runs"))? as usize;
         }
         c += 1 + extra;
-        let end = done.checked_add(count).filter(|e| *e <= n).ok_or_else(|| bad("a block's runs hold more values than the block"))?;
+        let end = done.saturating_add(count).min(n);
         let v = packed(values, r, bits) as f64 + min;
         visible.each(done, end, |row, col| put(row, col, v));
         done = end;
@@ -252,12 +253,14 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
         let s = dms.data as usize;
         let nblocks = f.u32(s)? as usize;
         let count = f.u32(s + 14)? as usize;
-        // GDAL's bounds: blocks of 1 to INT_MAX pixels.
+        // GDAL 3.13.3's bounds: blocks of 1 to INT_MAX pixels (it reads a block of 46340 x 46340
+        // pixels and refuses one of 46341 x 46341).
         let block_len = bw.checked_mul(bh).filter(|n| (1..=i32::MAX as usize).contains(n));
         let block_len = block_len.ok_or_else(|| bad(format!("a block of {bw} x {bh} pixels")))?;
         let (across, down) = (cols.div_ceil(bw), rows.div_ceil(bh));
-        // GDAL reads an entry for each of the raster's blocks: an index with fewer (each entry 14
-        // bytes of the file) is refused, as are entries past the end of the file.
+        // GDAL 3.13.3 reads an entry for each of the raster's blocks and refuses an index with
+        // fewer ("Cannot read blockinfo[1].offset" for a two-block raster indexing one): refused
+        // here too, as are entries (14 bytes each) past the end of the file.
         let needed = across.checked_mul(down).filter(|b| *b <= nblocks.min(count));
         let needed = needed.ok_or_else(|| bad(format!("{} block entries for a raster of {across} x {down} blocks", nblocks.min(count))))?;
         if s.checked_add(22).and_then(|e| e.checked_add(needed.checked_mul(14)?)).is_none_or(|e| e > f.b.len()) {
@@ -335,8 +338,10 @@ mod tests {
         let mut out = vec![0.0; 5];
         uncompress(&b, 5, &Visible { bw: 5, cols: 5, rows: 1 }, |_, c, v| out[c] = v).unwrap();
         assert_eq!(out, vec![11.0, 11.0, 11.0, 15.0, 15.0]);
-        // Runs past the block's 5 values are refused, not cut short.
-        assert!(uncompress(&b, 4, &Visible { bw: 4, cols: 4, rows: 1 }, |_, _, _| ()).is_err());
+        // Runs past the block's 4 values are cut at its end, as GDAL cuts them.
+        let mut out = vec![0.0; 4];
+        uncompress(&b, 4, &Visible { bw: 4, cols: 4, rows: 1 }, |_, c, v| out[c] = v).unwrap();
+        assert_eq!(out, vec![11.0, 11.0, 11.0, 15.0]);
     }
 
     /// A 2 KB Imagine file of one Byte layer of `cols` x `rows` pixels in blocks of `bw` x `bh`,
@@ -398,14 +403,16 @@ mod tests {
         // buffer of Float64 values.
         let e = read_bytes(&imagine(u32::MAX, u32::MAX, 1, 1, 1, &packed_block(0, &[7]))).unwrap_err();
         assert!(e.to_string().contains("allocate") || e.to_string().contains("address space"), "{e}");
-        // 65536 x 65536 pixels in single-pixel blocks need 4294967296 block entries, not 1.
-        let e = read_bytes(&imagine(1 << 16, 1 << 16, 1, 1, 1, &packed_block(0, &[7]))).unwrap_err();
+        // 4096 x 4096 pixels in single-pixel blocks need 16777216 block entries, not 1: refused,
+        // as GDAL 3.13.3 refuses a block index shorter than the raster's blocks.
+        let e = read_bytes(&imagine(1 << 12, 1 << 12, 1, 1, 1, &packed_block(0, &[7]))).unwrap_err();
         assert!(e.to_string().contains("block entries"), "{e}");
     }
 
     #[test]
     fn oversized_blocks_are_refused_and_decoded_only_inside_the_raster() {
-        // Blocks of 4294967295 x 4294967295 and 65536 x 65536 pixels: more than GDAL's INT_MAX.
+        // Blocks of 4294967295 x 4294967295 and 65536 x 65536 pixels: more than the INT_MAX pixels
+        // GDAL 3.13.3 allows.
         for size in [u32::MAX, 1 << 16] {
             let e = read_bytes(&imagine(1, 1, size, size, 1, &packed_block(10, &[7]))).unwrap_err();
             assert!(e.to_string().contains("a block of"), "{e}");
@@ -419,8 +426,8 @@ mod tests {
     }
 
     #[test]
-    fn a_block_whose_runs_overflow_it_is_refused() {
-        // A 2 x 1 block holding one run of 3 values.
+    fn runs_past_the_block_are_cut_at_its_end() {
+        // A 2 x 1 block holding one run of 3 values: read as 2, as GDAL 3.13.3 reads them.
         let mut block = Vec::new();
         block.extend(0i32.to_le_bytes());
         block.extend(1i32.to_le_bytes());
@@ -428,7 +435,7 @@ mod tests {
         block.push(8);
         block.push(3);
         block.push(9);
-        let e = read_bytes(&imagine(2, 1, 2, 1, 1, &block)).unwrap_err();
-        assert!(e.to_string().contains("runs hold more values"), "{e}");
+        let ds = read_bytes(&imagine(2, 1, 2, 1, 1, &block)).unwrap();
+        assert_eq!(ds.raster.data.to_f64_vec(), vec![9.0, 9.0]);
     }
 }

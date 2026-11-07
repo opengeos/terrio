@@ -668,7 +668,9 @@ fn read_dataset(
         (x, y, other) = (1, Some(0), Some(2));
     }
     // A field whose dimension list leaves its columns, rows or bands on the same dimension (no
-    // `XDim`, say) is read in GDAL's layout instead.
+    // `XDim`, say) is read in GDAL's default layout instead. Not GDAL's handling of such a field:
+    // GDAL 3.13.3 reports a `(Band, Foo, YDim)` field of 1 x 1 x 10 values as 10 x 10 and reads
+    // zeros.
     if !valid_layout(&shape, x, y, other) {
         (x, y, other) = (nd - 1, (nd >= 2).then(|| nd - 2), (nd == 3).then_some(0));
     }
@@ -984,7 +986,7 @@ mod tests {
 
     /// An HDF-EOS5 grid field whose dimension list has no `XDim` (`Band`, `Foo`, `YDim`): its
     /// columns and rows would both be its last dimension, gathering 10 x 10 values from a field
-    /// of 10. It is read in GDAL's layout instead.
+    /// of 10. It is read in GDAL's default layout instead (GDAL 3.13.3 reports 10 x 10 zeros).
     #[test]
     fn a_grid_field_without_an_x_dimension_is_read_in_the_default_layout() {
         use super::super::hdf5_write::{Dataset, File, H5Type, Storage};
