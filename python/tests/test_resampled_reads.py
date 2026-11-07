@@ -6,6 +6,9 @@ windows, at the window's size, down- and upsampled, and whole. Pixels and the ma
 `masked=True` reads must be identical: no tolerance. Skipped without rasterio.
 """
 
+import platform
+import sys
+
 import numpy as np
 import pytest
 
@@ -181,6 +184,17 @@ CORE_READS = {
 }
 
 
+MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
+# rasterio's macOS arm64 wheel builds GDAL with fused multiply-adds (see FMA_SENSITIVE in
+# test_rio_vs_rasterio.py), which rounds the source coordinates and kernel weights of a 1100 x
+# 1500 upsample of a nodata-weighted source differently in the last bits: on macOS arm64 at most
+# 0.0029% of the pixels (48 of 1.65 million) differed, in six whole-up reads of the uint16 and
+# float32 sources with nodata. Linux and Windows agree with terrio exactly, and so does every other
+# read there. The share of pixels, and of mask values, each of these may differ by on macOS arm64.
+FMA_ROUNDING_MAX_FRAC = 1e-4
+FMA_ROUNDING_KINDS = {"u16-nodata", "f32-nodata"}
+
+
 @pytest.mark.parametrize("read", list(CORE_READS))
 @pytest.mark.parametrize("method", CORE_METHODS)
 @pytest.mark.parametrize("kind", ["rgb-mask-ovr", "u16-nodata", "f32-nodata"])
@@ -206,10 +220,18 @@ def test_raster_read_resampled_matches_rasterio(sources, kind, method, read):
     assert np.array_equal(both[1], bm)
     assert b.dtype == a.dtype and b.shape == a.shape
     same = (a == b) | (np.isnan(a) & np.isnan(b)) if a.dtype.kind == "f" else a == b
-    assert same.all(), f"{np.mean(~same):.4%} of pixels differ"
-    assert bm.dtype == np.uint8 and np.array_equal(am, bm), (
-        f"{np.mean(am != bm):.4%} of the masks differ"
+    fma = (
+        MACOS_ARM
+        and read == "whole-up"
+        and kind in FMA_ROUNDING_KINDS
+        and method != "nearest"
+        and method != "mode"
+        and method != "rms"
     )
+    max_frac = FMA_ROUNDING_MAX_FRAC if fma else 0.0
+    assert np.mean(~same) <= max_frac, f"{np.mean(~same):.4%} of pixels differ"
+    assert bm.dtype == np.uint8
+    assert np.mean(am != bm) <= max_frac, f"{np.mean(am != bm):.4%} of the masks differ"
 
 
 @pytest.mark.parametrize("overview", ["AUTO", "AUTO-1", "NONE", 0, 1, "1"])
