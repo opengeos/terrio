@@ -1254,6 +1254,34 @@ test("remote files read with range requests", async () => {
   }
 });
 
+test("translate reads the overview -ovr selects", () => {
+  // A Float32 COG with overviews, as bytes and opened: an output of an overview's size reads that
+  // overview by default (AUTO), as gdal_translate does, and full resolution with NONE.
+  const [w, h] = [1024, 1024];
+  const data = new Float32Array(w * h).map((_, i) => (i * 7919) % 1000);
+  const mem = terrio.rasterFromArray(data, w, h, [0, 1, 0, 1024, 0, -1], "EPSG:3857");
+  const bytes = mem.toBytes("pyramid.tif", { format: "COG", compress: "DEFLATE" });
+  const opened = terrio.open(bytes, "pyramid.tif");
+  const ovr = opened.overviews;
+  assert.ok(ovr.length >= 1, JSON.stringify(ovr));
+  const [ow, oh] = ovr[0];
+  const level = [...opened.readBand(1, undefined, 0)];
+  for (const src of [opened, bytes, { bytes, filename: "pyramid.tif" }]) {
+    for (const overview of [undefined, "AUTO", 0, "0"]) {
+      const out = terrio.translate(src, { outsize: [ow, oh], resampling: "average", overview });
+      assert.deepEqual([out.width, out.height], [ow, oh]);
+      assert.deepEqual([...out.readBand(1)], level, `overview ${overview}`);
+    }
+    const full = terrio.translate(src, { outsize: [ow, oh], resampling: "average", overview: "NONE" });
+    assert.notDeepEqual([...full.readBand(1)], level);
+    assert.deepEqual([...full.readBand(1)], [...terrio.translate(mem, { outsize: [ow, oh], resampling: "average" }).readBand(1)]);
+    // A window, from a level named, at that level's resolution.
+    const win = terrio.translate(src, { srcwin: [100, 60, 400, 300], overview: 0 });
+    assert.deepEqual([win.width, win.height], [200, 150]);
+  }
+  assert.throws(() => terrio.translate(opened, { overview: "invalid" }), /overview/i);
+});
+
 test("resampled reads from overviews, local and remote", async () => {
   const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");

@@ -293,6 +293,7 @@ terrio.info("dem.tif", stats=True)  # the same dict as `terrio info --json`
 terrio.convert("countries.shp", "europe.gpkg", where="CONTINENT = 'Europe'", select=["NAME"])
 terrio.convert("https://example.com/cog.tif", "window.tif", srcwin=(0, 0, 512, 512))
 terrio.translate("dem.tif", "small.tif", outsize=("25%", "25%"), resampling="average")
+terrio.translate("cog.tif", "full.tif", outsize=(512, 512), resampling="average", overview="NONE")
 terrio.warp("dem.tif", "dem_4326.tif", t_srs="EPSG:4326", resampling="bilinear")
 terrio.mosaic(["n40w106.tif", "n40w107.tif"], "mosaic.tif")
 terrio.rasterize("counties.gpkg", "pop.tif", attribute="POPULATION", tr=(0.01, 0.01), ot="Int32")
@@ -318,6 +319,12 @@ albers = terrio.list_crs("albers", authority="EPSG", kind="projected")  # regist
 data = open("dem.tif", "rb").read()
 raster = terrio.open_bytes(data, "dem.tif")  # from bytes; to bytes with raster.to_bytes("x.tif")
 ```
+
+`translate` reads rasters by window as `terrio translate` does: a path or a lazy `Raster` is read
+for the output alone (the tiles its window touches), from the stored resolution `overview` selects,
+as `gdal_translate -ovr`: `"AUTO"` (the default, the overview GDAL's RasterIO chooses for the output
+size), `"AUTO-n"`, `"NONE"` (full resolution) or a level from 0. A `Raster` in memory is
+translated at full resolution.
 
 `clean_collar` and `nearblack` return a Byte `Raster`; a mask (`add_mask`, or an input's mask
 kept by `clean_collar`) needs `dst`, which holds it, and the returned `Raster` is then read from

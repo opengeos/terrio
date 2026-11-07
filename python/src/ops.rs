@@ -14,6 +14,7 @@ use terrio::crs::{SpatialRef, TransformOptions, Transformer};
 use terrio::formats::VectorDriver;
 use terrio::ops::Resampling;
 use terrio::ops::mosaic::{MosaicOptions, MosaicSource, ResolutionStrategy};
+use terrio::ops::overview::OverviewSelection;
 use terrio::ops::polygonize::PolygonizeOptions;
 use terrio::ops::rasterize::{Grid, MergeAlg, RasterizeOptions};
 use terrio::ops::translate::{Scale, Size, TranslateOptions};
@@ -736,6 +737,22 @@ pub(crate) fn raster_path(src: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
     path.into_os_string().into_string().map(Some).map_err(|_| invalid("raster paths must be UTF-8"))
 }
 
+/// The stored resolution an operation reads from (`gdal_translate -ovr`, `gdalwarp -ovr`):
+/// `"AUTO"` (the default), `"AUTO-n"`, `"NONE"` or a level from 0, as an int or a string.
+pub(crate) fn overview_arg(v: Option<&Bound<'_, PyAny>>) -> PyResult<OverviewSelection> {
+    match v {
+        None => Ok(OverviewSelection::Auto),
+        Some(v) if v.is_instance_of::<PyBool>() => Err(invalid("overview must not be a boolean")),
+        Some(v) => match v.extract::<usize>() {
+            Ok(level) => Ok(OverviewSelection::Level(level)),
+            Err(_) => {
+                OverviewSelection::parse(&v.extract::<String>().map_err(|_| invalid("overview is AUTO, AUTO-n, NONE or a level from 0"))?)
+                    .py()
+            }
+        },
+    }
+}
+
 /// Opens the raster given to an operation: a path, or a `Raster`. A raster in memory is shared,
 /// not copied.
 pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<Arc<RasterDataset>> {
@@ -776,6 +793,8 @@ pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<A
 ///     a_srs: The output CRS. Geometries are taken to be in it, without reprojecting.
 ///     format: The output format's short name, for `dst`.
 ///     compress: GeoTIFF/COG compression, for `dst`.
+///     tile_size: GeoTIFF/COG tile size, for `dst`.
+///     bigtiff: Write a BigTIFF, for `dst`.
 ///
 /// Returns:
 ///     Raster: The raster, in memory.
@@ -783,7 +802,7 @@ pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<A
 #[pyo3(signature = (
     src, dst=None, *, layers=None, sql=None, burn=None, attribute=None, r#where=None, tr=None, ts=None, te=None,
     tap=false, like=None, ot=None, init=None, nodata=None, all_touched=false, add=false, a_srs=None, format=None,
-    compress=None
+    compress=None, tile_size=None, bigtiff=false
 ))]
 #[allow(clippy::too_many_arguments)]
 fn rasterize(
@@ -808,6 +827,8 @@ fn rasterize(
     a_srs: Option<&str>,
     format: Option<&str>,
     compress: Option<String>,
+    tile_size: Option<u32>,
+    bigtiff: bool,
 ) -> PyResult<PyRaster> {
     let numbers = |v: Option<&Bound<'_, PyAny>>| -> PyResult<Vec<f64>> {
         match v {
@@ -852,7 +873,7 @@ fn rasterize(
         merge: if add { MergeAlg::Add } else { MergeAlg::Replace },
         assign_srs: srs(a_srs)?,
     };
-    let write = dst.map(|_| write_options(format, compress, None, false)).transpose()?;
+    let write = dst.map(|_| write_options(format, compress, tile_size, bigtiff)).transpose()?;
     let out = py
         .detach_result(|| -> terrio::Result<RasterDataset> {
             let out = terrio::ops::rasterize::rasterize(&to_burn, &options)?;
@@ -1213,6 +1234,11 @@ pub(crate) fn finish_raster(
 ///     a_nodata: Assign a nodata value, or `"none"` to remove it.
 ///     a_srs: Assign a CRS.
 ///     a_ullr: Assign the bounds `(ulx, uly, lrx, lry)`.
+///     overview: The stored resolution to read, as `gdal_translate -ovr`: `"AUTO"` (the
+///         default: the overview GDAL's RasterIO chooses for the output size), `"AUTO-n"`,
+///         `"NONE"` (full resolution) or a level from 0. Rasters read by window (GeoTIFFs, COGs,
+///         Zarr...) are read for the output alone; rasters in memory, and those read whole, at
+///         full resolution (a level or `"AUTO-n"` is refused for a path read whole).
 ///     format: The output format's short name, for `dst`.
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
@@ -1223,8 +1249,8 @@ pub(crate) fn finish_raster(
 #[pyfunction]
 #[pyo3(signature = (
     src, dst=None, *, bands=None, ot=None, srcwin=None, projwin=None, projwin_srs=None, outsize=None, tr=None,
-    resampling=None, scale=None, exponent=None, a_nodata=None, a_srs=None, a_ullr=None, format=None, compress=None,
-    tile_size=None, bigtiff=false
+    resampling=None, scale=None, exponent=None, a_nodata=None, a_srs=None, a_ullr=None, overview=None, format=None,
+    compress=None, tile_size=None, bigtiff=false
 ))]
 #[allow(clippy::too_many_arguments)]
 fn translate(
@@ -1244,11 +1270,13 @@ fn translate(
     a_nodata: Option<&Bound<'_, PyAny>>,
     a_srs: Option<&str>,
     a_ullr: Option<(f64, f64, f64, f64)>,
+    overview: Option<&Bound<'_, PyAny>>,
     format: Option<&str>,
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
 ) -> PyResult<PyRaster> {
+    let overview = overview_arg(overview)?;
     let size = |v: &Bound<'_, PyAny>| -> PyResult<Size> {
         match v.extract::<usize>() {
             Ok(n) => Ok(Size::Pixels(n)),
@@ -1288,9 +1316,44 @@ fn translate(
         assign_srs: srs(a_srs)?,
         assign_ullr: a_ullr,
     };
-    let ds = input_raster(py, src)?;
-    let out = py.detach_result(|| terrio::ops::translate::translate(&ds, &o)).py()?;
+    // As `terrio translate`: a raster read by window is read for the output alone (the tiles its
+    // window touches, of its bands, from the overview `overview` selects), and one in memory, or
+    // that the lazy reader cannot read (GDAL may), whole at full resolution.
+    let out = match raster_path(src)? {
+        Some(path) => match open_translate_source(py, &path)? {
+            Some(mut lazy) => crate::with_warnings(py, || terrio::ops::translate::translate_lazy(&mut lazy, &o, overview))?,
+            None => {
+                if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(_)) {
+                    return Err(terrio::Error::Unsupported(format!("overview needs a raster read by window; {path} is read whole"))).py();
+                }
+                let ds = crate::with_warnings(py, || terrio::open_raster(&path))?;
+                py.detach_result(|| terrio::ops::translate::translate(&ds, &o)).py()?
+            }
+        },
+        None => {
+            let mut r = src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow_mut();
+            let inner = &mut r.inner;
+            crate::with_warnings(py, || terrio::ops::translate::translate_lazy(inner, &o, overview))?
+        }
+    };
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+}
+
+/// The raster at `path` opened for reading by window, as `terrio translate` opens it, or None
+/// when it is read whole: named `gdal:`, or not readable by the lazy reader (GDAL may read it).
+/// Errors GDAL's fallback does not retry either (invalid arguments, network failures, missing
+/// local files, resource refusals) are kept.
+fn open_translate_source(py: Python<'_>, path: &str) -> PyResult<Option<terrio::LazyRaster>> {
+    if path.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("gdal:")) {
+        return Ok(None);
+    }
+    match py.detach_result(|| terrio::open_raster_lazy(path)) {
+        Ok(src) => Ok(Some(src)),
+        Err(e @ (terrio::Error::InvalidArgument(_) | terrio::Error::Http(_))) => Err(e).py(),
+        Err(e) if e.is_resource_refusal() => Err(e).py(),
+        Err(terrio::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound && !path.contains(':') => Err(terrio::Error::Io(e)).py(),
+        Err(_) => Ok(None),
+    }
 }
 
 /// Reprojects, resamples, crops or mosaics rasters, like `terrio warp` (GDAL's `gdalwarp`).
@@ -1417,17 +1480,7 @@ fn warp(
         dst_transform,
         target_aligned_pixels: tap,
         resampling: Resampling::parse(resampling).py()?,
-        overview: match overview {
-            None => terrio::ops::overview::OverviewSelection::Auto,
-            Some(v) if v.is_instance_of::<PyBool>() => return Err(invalid("overview must not be a boolean")),
-            Some(v) => match v.extract::<usize>() {
-                Ok(level) => terrio::ops::overview::OverviewSelection::Level(level),
-                Err(_) => terrio::ops::overview::OverviewSelection::parse(
-                    &v.extract::<String>().map_err(|_| invalid("overview is AUTO, AUTO-n, NONE or a level from 0"))?,
-                )
-                .py()?,
-            },
-        },
+        overview: overview_arg(overview)?,
         src_nodata: nodata_arg(srcnodata)?,
         dst_nodata: nodata_arg(dstnodata)?,
         output_type: ot.map(terrio::ops::parse_data_type).transpose().py()?,

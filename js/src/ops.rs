@@ -308,11 +308,7 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         size: a.ts.map(|[w, h]| (w, h)),
         target_aligned_pixels: a.tap,
         resampling: Resampling::parse(a.resampling.as_deref().unwrap_or("near")).map_err(js_err)?,
-        overview: match a.overview {
-            None => terrio::ops::overview::OverviewSelection::Auto,
-            Some(SizeArg::Pixels(n)) => terrio::ops::overview::OverviewSelection::Level(n),
-            Some(SizeArg::Text(s)) => terrio::ops::overview::OverviewSelection::parse(&s).map_err(js_err)?,
-        },
+        overview: overview_arg(a.overview)?,
         src_nodata: nodata_arg(a.src_nodata)?,
         dst_nodata: nodata_arg(a.dst_nodata)?,
         output_type: a.ot.as_deref().map(parse_data_type).transpose().map_err(js_err)?,
@@ -414,6 +410,17 @@ impl SizeArg {
     }
 }
 
+/// The stored resolution an operation reads from (`-ovr`): `"AUTO"` (the default), `"AUTO-n"`,
+/// `"NONE"` or a level from 0.
+fn overview_arg(v: Option<SizeArg>) -> Result<terrio::ops::overview::OverviewSelection, JsError> {
+    use terrio::ops::overview::OverviewSelection;
+    match v {
+        None => Ok(OverviewSelection::Auto),
+        Some(SizeArg::Pixels(n)) => Ok(OverviewSelection::Level(n)),
+        Some(SizeArg::Text(s)) => OverviewSelection::parse(&s).map_err(js_err),
+    }
+}
+
 /// `true`, or a list of 2 or 4 numbers.
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -439,6 +446,7 @@ struct TranslateArgs {
     a_nodata: Option<NumberOrList>,
     a_srs: Option<String>,
     a_ullr: Option<[f64; 4]>,
+    overview: Option<SizeArg>,
 }
 
 /// Subsets, resizes, rescales or converts a raster, as `terrio translate` (GDAL's
@@ -448,7 +456,9 @@ struct TranslateArgs {
 /// `projwin` (`[ulx, uly, lrx, lry]`), `projwinSrs`, `outsize` (`[width, height]`, pixels or
 /// percentages such as `"50%"`; 0 keeps the aspect ratio), `tr`, `resampling`, `scale` (`true`,
 /// `[srcMin, srcMax]` or `[srcMin, srcMax, dstMin, dstMax]`), `exponent`, `aNodata` (a number or
-/// `"none"`), `aSrs`, `aUllr`.
+/// `"none"`), `aSrs`, `aUllr`, `overview` (the stored resolution to read, as `gdal_translate
+/// -ovr`: `"AUTO"`, the default, `"AUTO-n"`, `"NONE"` or a level from 0). GeoTIFFs are read by
+/// window, for the output alone, from that level; other rasters are read whole.
 #[wasm_bindgen]
 pub fn translate(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     let a: TranslateArgs = parse_options(&options)?;
@@ -483,8 +493,9 @@ pub fn translate(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         assign_srs: srs(a.a_srs.as_deref())?,
         assign_ullr: tuple4(a.a_ullr),
     };
-    let ds = input_raster(&src)?;
-    Ok(Dataset::from_raster(terrio::ops::translate::translate(&ds, &o).map_err(js_err)?))
+    let overview = overview_arg(a.overview)?;
+    let mut src = input_lazy_raster(&src)?;
+    Ok(Dataset::from_raster(terrio::ops::translate::translate_lazy(&mut src, &o, overview).map_err(js_err)?))
 }
 
 /// Options of [`rasterize`].
