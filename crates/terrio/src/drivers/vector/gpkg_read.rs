@@ -997,30 +997,16 @@ mod tests {
 
     #[test]
     fn indexed_layer_reads_utf16_text_through_the_rtree() {
-        // SQLite (Python's sqlite3) writes the files: terrio writes UTF-8 only.
-        let script = r#"
-import sqlite3,struct,sys,pathlib
-for encoding in ['UTF-16le','UTF-16be']:
-    c=sqlite3.connect(pathlib.Path(sys.argv[1])/(encoding+'.gpkg'))
-    c.execute("PRAGMA encoding='"+encoding+"'")
-    c.executescript('CREATE TABLE gpkg_contents(table_name TEXT,data_type TEXT,description TEXT);CREATE TABLE gpkg_geometry_columns(table_name TEXT,column_name TEXT,geometry_type_name TEXT,srs_id INTEGER,z INTEGER,m INTEGER);CREATE TABLE "pts_é"(fid INTEGER PRIMARY KEY,geom POINT,name TEXT);CREATE VIRTUAL TABLE "rtree_pts_é_geom" USING rtree(id,minx,maxx,miny,maxy);')
-    c.execute("INSERT INTO gpkg_contents VALUES('pts_é','features','')")
-    c.execute("INSERT INTO gpkg_geometry_columns VALUES('pts_é','geom','POINT',0,0,0)")
-    for fid in [1,2,3]:
-        x=10.0*(fid-1)
-        c.execute('INSERT INTO "pts_é" VALUES(?,?,?)',(fid,b'GP\x00\x01'+struct.pack('<i',0)+struct.pack('<BIdd',1,1,x,x),'水'*fid))
-        c.execute('INSERT INTO "rtree_pts_é_geom" VALUES(?,?,?,?,?)',(fid,x,x,x,x))
-    c.commit();c.close()
-"#;
-        let dir = tempfile::tempdir().unwrap();
-        assert!(std::process::Command::new("python3").args(["-c", script, dir.path().to_str().unwrap()]).status().unwrap().success());
-        for encoding in ["UTF-16le", "UTF-16be"] {
-            let db = Db::new(std::fs::read(dir.path().join(format!("{encoding}.gpkg"))).unwrap()).unwrap();
+        mod fixtures {
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/sqlite_encodings/fixtures.rs"));
+        }
+        for (encoding, bytes) in fixtures::DATABASES.iter().filter(|(name, _)| ["UTF-8", "UTF-16le", "UTF-16be"].contains(name)) {
+            let db = Db::new(bytes.to_vec()).unwrap();
             let content = contents(&db).unwrap().0.remove(0);
-            assert_eq!(content.name, "pts_é");
+            assert_eq!(content.name, "couches_é水", "{encoding}");
             let indexed = IndexedLayer::new(db, &content).unwrap();
             let text = |layer: &Layer| layer.features.iter().map(|f| (f.fid, f.attributes.clone())).collect::<Vec<_>>();
-            let name = |fid: usize| vec![FieldValue::Text("水".repeat(fid))];
+            let name = |fid| vec![FieldValue::Text(if fid == 2 { "TRUNCATE_ME" } else { "é水😀" }.into())];
             assert_eq!(text(&indexed.first().unwrap()), [(1, name(1))]);
             assert_eq!(text(&indexed.query(Some((5.0, 5.0, 15.0, 15.0))).unwrap()), [(2, name(2))]);
             assert_eq!(text(&indexed.query(None).unwrap()), [(1, name(1)), (2, name(2)), (3, name(3))]);
