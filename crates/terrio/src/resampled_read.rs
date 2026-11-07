@@ -815,7 +815,9 @@ fn resampled_read(read: &Read, request: Request, dataset: bool, block_width: usi
         block_width,
         dataset,
         max,
-        nan_aware: true,
+        // GDAL 3.13 skips NaN values in masked chunks; GDAL 3.12, the default, sums them as NaN.
+        // `TERRIO_GDAL_COMPAT=3.13` selects 3.13, as for the other `RasterIO` kernels.
+        nan_aware: crate::ops::warp::KernelVersion::configured() == crate::ops::warp::KernelVersion::Gdal313,
     }
 }
 

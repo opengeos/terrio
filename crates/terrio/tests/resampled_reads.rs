@@ -134,9 +134,11 @@ fn difference(read: &[f64], expected: &[f64], float: bool, case: &Case) -> Optio
     (rounded > (read.len() / 100).max(1)).then(|| format!("{rounded} of {} values rounded otherwise (first {first:?})", read.len()))
 }
 
-/// Every case against its recorded reference: original cases 3.13.2, added cases 3.13.3.
+/// Every case against its recorded reference: original cases 3.13.2, added cases 3.13.3,
+/// with GDAL 3.13 behavior selected (masked convolution chunks skip NaN values).
 #[test]
 fn resampled_reads_are_gdal_reads() {
+    terrio::config::push_scope([("TERRIO_GDAL_COMPAT".to_string(), Some("3.13".to_string()))].into());
     let cases = cases();
     assert_eq!(cases.len(), 255);
     let mut failures = Vec::new();
@@ -164,6 +166,7 @@ fn resampled_reads_are_gdal_reads() {
             }
         }
     }
+    terrio::config::pop_scope();
     assert!(failures.is_empty(), "{} of {} cases differ from GDAL:\n{}", failures.len(), cases.len(), failures.join("\n"));
 }
 
@@ -342,4 +345,29 @@ fn overview_reads_drop_full_resolution_statistics() {
     assert!(stats(&raster.read_resampled(&full).unwrap()));
     let level = ResampledReadOptions { overview: OverviewSelection::Level(0), ..full };
     assert!(!stats(&raster.read_resampled(&level).unwrap()));
+}
+
+/// GDAL 3.12 (the default) sums the NaN values of a masked floating-point chunk, so an output
+/// pixel whose footprint holds one is NaN; GDAL 3.13 (`TERRIO_GDAL_COMPAT=3.13`) skips them.
+#[test]
+fn masked_nan_follows_the_gdal_compat_version() {
+    let path = format!("{}/tests/data/resampled_reads/f32_nan.tif", env!("CARGO_MANIFEST_DIR"));
+    let options = ResampledReadOptions { size: (23, 17), resampling: Resampling::Bilinear, ..Default::default() };
+    let read = || read_values(&terrio::open_raster_lazy(&path).unwrap().read_resampled(&options).unwrap().raster.data);
+    let nans = |v: &[f64]| v.iter().filter(|x| x.is_nan()).count();
+    // The default, whatever `TERRIO_GDAL_COMPAT` the process has: a scoped `None` unsets it.
+    terrio::config::push_scope([("TERRIO_GDAL_COMPAT".to_string(), None)].into());
+    let default = read();
+    terrio::config::pop_scope();
+    terrio::config::push_scope([("TERRIO_GDAL_COMPAT".to_string(), Some("3.12".to_string()))].into());
+    let gdal312 = read();
+    terrio::config::pop_scope();
+    terrio::config::push_scope([("TERRIO_GDAL_COMPAT".to_string(), Some("3.13".to_string()))].into());
+    let gdal313 = read();
+    terrio::config::pop_scope();
+    let bits = |v: &[f64]| v.iter().map(|x| if x.is_nan() { u64::MAX } else { x.to_bits() }).collect::<Vec<_>>();
+    assert_eq!(bits(&default), bits(&gdal312));
+    assert!(nans(&gdal312) > nans(&gdal313), "{} NaN with 3.12, {} with 3.13", nans(&gdal312), nans(&gdal313));
+    // Where 3.13 skips the NaN values, 3.12's pixel is NaN.
+    assert!(gdal313.iter().zip(&gdal312).any(|(a, b)| a.is_finite() && b.is_nan()));
 }

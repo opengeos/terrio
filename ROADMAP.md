@@ -69,11 +69,16 @@ and drivers below.
 - [x] Overview-aware warping: explicit source overview selection, automatic selection for
       downsampling and a full-resolution override, reducing remote COG reads. Implemented in
       [#242](https://github.com/opengeos/terrio/pull/242), through Rust, CLI/MCP, Python and JavaScript.
-- [ ] Overview-aware resampled window reads with GDAL `RasterIO` semantics
+- [x] Overview-aware resampled window reads with GDAL `RasterIO` semantics
       ([#429](https://github.com/opengeos/terrio/issues/429)): the Rust read
       (`LazyRaster::read_resampled` and its masks) and `terrio translate --outsize/--tr/--overview`
-      (CLI/MCP) are done; Python (`Raster.read` with a size, `terrio.rio` delegating to it) and
-      JavaScript (`readBand`) remain.
+      (CLI/MCP) in [#523](https://github.com/opengeos/terrio/pull/523); Python
+      (`Raster.read_resampled` and its masks, as methods of their own rather than a `size` on
+      `Raster.read`) and JavaScript (`readResampled`, rather than options on `readBand`) in
+      [#615](https://github.com/opengeos/terrio/pull/615). `terrio.rio` reads through the core
+      read but for what it does not cover: Gaussian resampling (not a core kernel), paletted and
+      complex bands, datasets opened with `overview_level` and written datasets. Boundless reads
+      are out of #429's scope.
 - [x] Geolocation-array warping: reproject swaths using the longitude/latitude arrays already
       exposed by the scientific-format drivers, including subsampled arrays and pixel-center
       conventions. Done in [#241](https://github.com/opengeos/terrio/pull/241);

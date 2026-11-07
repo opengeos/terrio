@@ -191,11 +191,7 @@ impl Snapshot {
         Self::read_with_case(bytes, true)
     }
     fn read_with_case(bytes: &[u8], unicode_case: bool) -> Result<Self> {
-        let encoding = bytes
-            .get(56..60)
-            .and_then(|b| b.try_into().ok())
-            .map(u32::from_be_bytes)
-            .ok_or_else(|| Error::InvalidData("truncated SQLite header".into()))?;
+        let encoding = crate::drivers::sqlite::header_text_encoding(bytes)?;
         let mut tables: BTreeMap<String, Table> = BTreeMap::new();
         let objects = sqlite_repack::inspect(bytes, |entry, rowid, record| {
             if entry.0 != "table" {
@@ -355,11 +351,7 @@ impl Checker {
     /// A second streaming inspection examines only requested user tables. Retain
     /// at most one warning per column, never the table's records or geometry blobs.
     fn user_content(&mut self, bytes: &[u8], names: &[&str]) -> Result<()> {
-        let encoding = bytes
-            .get(56..60)
-            .and_then(|b| b.try_into().ok())
-            .map(u32::from_be_bytes)
-            .ok_or_else(|| Error::InvalidData("truncated SQLite header".into()))?;
+        let encoding = crate::drivers::sqlite::header_text_encoding(bytes)?;
         let mut warned: BTreeMap<&str, Vec<bool>> = names
             .iter()
             .filter_map(|&name| self.db.tables.get(name).map(|table| (name, vec![false; table.schema.columns.len()])))
@@ -626,6 +618,66 @@ pub(super) fn check_core_with_options(bytes: &[u8], options: &GpkgValidationOpti
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn effective_header_encoding_reaches_validation_views_and_compaction() {
+        use crate::drivers::vector::sqlite as writer;
+        let tables = [
+            writer::Table {
+                name: "sample".into(),
+                sql: "CREATE TABLE sample(id INTEGER PRIMARY KEY,x TEXT CHECK(length(x)>0),computed TEXT AS(x||'!'))".into(),
+                rows: vec![
+                    (1, vec![writer::Value::Null, writer::Value::Text("\u{e000}".into())]),
+                    (2, vec![writer::Value::Null, writer::Value::Text("\u{10000}".into())]),
+                ],
+                autoindexes: vec![],
+            },
+            writer::Table {
+                name: "gpkg_contents".into(),
+                sql: "CREATE TABLE gpkg_contents(table_name TEXT,data_type TEXT)".into(),
+                rows: vec![],
+                autoindexes: vec![],
+            },
+            writer::Table {
+                name: "gpkg_spatial_ref_sys".into(),
+                sql: "CREATE TABLE gpkg_spatial_ref_sys(srs_id INTEGER,definition TEXT)".into(),
+                rows: vec![],
+                autoindexes: vec![],
+            },
+        ];
+        let objects = [writer::SchemaObject {
+            kind: "view",
+            name: "v".into(),
+            table: "v".into(),
+            sql: "CREATE VIEW v AS SELECT x,hex(CAST(x AS BLOB)) AS b FROM sample UNION SELECT 'z','7A' ORDER BY x".into(),
+        }];
+        let source = writer::write_database(&tables, &objects, 10400, 0x47504b47).unwrap();
+        let options = GpkgValidationOptions { full_check: true, ..Default::default() };
+        let baseline = format!("{:?}", check_core_with_options(&source, &options));
+        let expected = vec![
+            vec![Value::Text("z".into()), Value::Text("7A".into())],
+            vec![Value::Text("\u{e000}".into()), Value::Text("EE8080".into())],
+            vec![Value::Text("\u{10000}".into()), Value::Text("F0908080".into())],
+        ];
+        for raw in [0u32, 1, 4, 5, 8, 257] {
+            let mut bytes = source.clone();
+            bytes[56..60].copy_from_slice(&raw.to_be_bytes());
+            assert_eq!(format!("{:?}", check_core_with_options(&bytes, &options)), baseline, "header {raw}");
+            let packed = sqlite_repack::compact(&bytes).unwrap();
+            assert_eq!(&packed[56..60], &bytes[56..60]);
+            for image in [&bytes, &packed] {
+                let db = Snapshot::read(image).unwrap();
+                let view = sqlite_expr::View::compile(&db, "v").unwrap();
+                let mut rows = vec![];
+                view.visit(&db, image, &mut |row| {
+                    rows.push(row.to_vec());
+                    Ok(())
+                })
+                .unwrap();
+                assert_eq!(rows, expected, "header {raw}");
+            }
+        }
+    }
+
     #[test]
     fn unsupported_schema_syntax_is_not_a_complete_integrity_violation() {
         let error = super::Table::from_sql_with_case("v", "CREATE VIRTUAL TABLE v USING fts4", false)

@@ -1291,9 +1291,10 @@ The fixtures pin GDAL's behaviour where it is not obvious:
 - Cubic, cubic spline and Lanczos results are clamped to the band's `NBITS`: a GeoTIFF's internal
   mask (1 bit) reads as 0 and 1 with those kernels.
 - An overview of a paletted GeoTIFF reports no color table, so its bands are interpolated.
-- GDAL 3.13 skips NaN values of a masked floating-point chunk (GDAL 3.12, whose overviews
-  terrio's follow, sums them as NaN); resampled reads follow 3.13, overviews 3.12. Mode fills a
-  footprint without a valid pixel with 0 for a NaN nodata value (`GDALIsValueInRange`).
+- GDAL 3.13 skips NaN values of a masked floating-point chunk (GDAL 3.12 sums them as NaN).
+  Resampled reads follow the release `TERRIO_GDAL_COMPAT` selects (3.12 by default, as
+  `terrio.rio`'s rasterio parity tests expect), and the test selects 3.13; overviews follow 3.12.
+  Mode fills a footprint without a valid pixel with 0 for a NaN nodata value (`GDALIsValueInRange`).
 
 Values are compared bit for bit, but GDAL 3.13.2 built by clang for arm64 (Homebrew) contracts the
 multiply-adds of its average and RMS kernels into fused ones, rounding a mean exactly between two
@@ -2447,3 +2448,37 @@ cargo test -p terrio --features gdal --test gdal_backend
 pytest python/tests/test_layer_selection.py
 node --test --test-name-pattern='single named layer' js/tests/node.test.mjs
 ```
+
+### GeoPackage text encodings
+
+`cargo test -p terrio --test sqlite_encodings` reads the small SQLite-generated
+snapshots in `crates/terrio/tests/data/sqlite_encodings`; it needs no Python
+executable. The directory contains the generator and SHA-256 manifest for
+regeneration. Tests cover non-ASCII schema names, UTF-8/UTF-16LE/UTF-16BE,
+whole and R-tree-filtered eager/streamed reads, and malformed records. Unit tests
+also exercise `IndexedLayer` and malformed R-tree child records.
+
+The Rust vector/raster display readers return Unicode strings and replace invalid
+text with U+FFFD, retaining the previous UTF-8 replacement policy and applying it
+to UTF-16. This is not raw-byte text preservation or a guarantee about SQLite's
+conversion of invalid text. Malformed CRS, geometry-column, layer-count and extent records propagate
+errors instead of being treated as absent metadata. Genuinely absent optional
+tables retain their fallback. This includes the optional raster metadata,
+metadata-reference and per-tile ancillary tables. Metadata tables are decoded
+whole: one malformed record can therefore fail an open even when it belongs to
+an unrelated layer.
+
+Validation decoding stays strict. Stored-row rewrite decoding is **now strict**:
+rewriting a UTF-8 database with invalid text or malformed records fails rather
+than silently re-encoding replacement text. Display reads remain lossy for
+invalid Unicode. Record payload bytes not described by the header are rejected;
+host sqlite3 3.54.0 rejects the tested surplus-byte records too.
+
+Header encodings use SQLite's low two bits, with zero meaning UTF-8, consistently
+across reads, inspection, validation expression evaluation and compaction.
+Regression tests cover high-bit aliases and preserve UTF-16 rewrite refusal.
+
+These error assertions cover the Rust decoders. With the `gdal` feature, public
+eager opens may fall back to GDAL after a Rust error; the fallback keeps GDAL's
+admission behavior. Native eager rejection is checked directly in unit tests,
+and streamed GPKG reads continue to use the Rust reader in that build.

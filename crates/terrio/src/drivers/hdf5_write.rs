@@ -11,9 +11,10 @@
 //!   datasets and subgroups, with link and attribute creation order tracked;
 //! - datasets of fixed-point, floating-point and fixed-length string types, contiguous or
 //!   chunked, optionally with the shuffle and deflate filters;
-//! - attributes of those types, plus object references for dimension scales: variable-length
-//!   lists of references (`DIMENSION_LIST`, in a global heap) and compound lists of references and
-//!   indices (`REFERENCE_LIST`).
+//! - attributes of those types and of compounds of them, plus object references for dimension
+//!   scales: variable-length lists of references (`DIMENSION_LIST`, in a global heap) and compound
+//!   lists of references and indices (`REFERENCE_LIST`);
+//! - named (committed) datatypes in the root group, as netCDF-4 user-defined types.
 //!
 //! The format is described at <https://docs.hdfgroup.org/hdf5/develop/_f_m_t3.html>.
 
@@ -41,6 +42,8 @@ pub(crate) enum H5Type {
     RefVlen,
     /// The dimension scales' `{dataset reference, dimension index}` compound.
     RefList,
+    /// A compound of `size` bytes: its fields' names, byte offsets and types.
+    Compound { size: u32, fields: Vec<(String, u32, H5Type)> },
 }
 
 impl H5Type {
@@ -51,6 +54,7 @@ impl H5Type {
             Self::Ref => 8,
             Self::RefVlen => 16,
             Self::RefList => 12,
+            Self::Compound { size, .. } => *size,
         }
     }
 
@@ -89,6 +93,17 @@ impl H5Type {
                 out.extend_from_slice(b"dimension\0");
                 out.push(8);
                 Self::Int { size: 4, signed: false }.encode(out);
+            }
+            Self::Compound { size, fields } => {
+                // Version 3: unpadded names, and offsets in as few bytes as the size needs.
+                header(out, 6, 3, fields.len() as u32, *size);
+                let offset_bytes = (1..4).find(|&n| u64::from(*size) < 1 << (8 * n)).unwrap_or(4);
+                for (name, offset, dtype) in fields {
+                    out.extend_from_slice(name.as_bytes());
+                    out.push(0);
+                    out.extend_from_slice(&offset.to_le_bytes()[..offset_bytes]);
+                    dtype.encode(out);
+                }
             }
         }
     }
@@ -162,6 +177,9 @@ pub(crate) struct File {
     pub datasets: Vec<Dataset>,
     /// Attributes of subgroups, by path (`group/sub`).
     pub group_attrs: Vec<(String, Vec<Attr>)>,
+    /// Named datatypes of the root group, linked before its other members in this order; a type
+    /// another one uses comes first, as netCDF-C reads them in creation order.
+    pub datatypes: Vec<(String, H5Type)>,
 }
 
 /// The groups of a file below the root, by path, parents before children, in the order their
@@ -194,9 +212,12 @@ fn split_path(path: &str) -> (&str, &str) {
 }
 
 /// Addresses known once the file is laid out.
+#[derive(Default)]
 struct Addresses {
     /// Each subgroup's object header, in `group_paths` order.
     groups: Vec<u64>,
+    /// Each named datatype's object header.
+    datatypes: Vec<u64>,
     /// Each dataset's object header.
     datasets: Vec<u64>,
     /// The global heap collection.
@@ -289,6 +310,26 @@ fn attribute_info(n: usize) -> Vec<u8> {
     v.extend_from_slice(&UNDEF.to_le_bytes());
     v.extend_from_slice(&UNDEF.to_le_bytes());
     v
+}
+
+/// Whether an attribute's message fits in its object header, whose message size field is 16
+/// bits. Larger attributes need dense attribute storage, which this writer does not write.
+pub(crate) fn attribute_fits(a: &Attr) -> bool {
+    // As `attribute` writes the values: padded bytes, one 16-byte heap reference per dimension, or
+    // a dataset address and dimension index per reference.
+    let data = match &a.values {
+        Values::Bytes(b) => b.len().max(a.dtype.size() as usize * a.shape.as_ref().map_or(1, |s| s.iter().product::<u64>() as usize)),
+        Values::DimensionList(d) => 16 * d.len(),
+        Values::ReferenceList(r) => 12 * r.len(),
+    };
+    // A version 3 attribute message: a 9-byte header, then the NUL-terminated name, the datatype,
+    // the dataspace and the values.
+    9 + a.name.len() + 1 + datatype(&a.dtype).len() + dataspace(a.shape.as_deref()).len() + data <= usize::from(u16::MAX)
+}
+
+/// Whether a datatype message, such as a named compound type's, fits in an object header.
+pub(crate) fn datatype_fits(t: &H5Type) -> bool {
+    datatype(t).len() <= usize::from(u16::MAX)
 }
 
 /// An attribute message (version 3), its references resolved with `addr`.
@@ -503,6 +544,9 @@ pub(crate) fn encode(f: &File) -> Vec<u8> {
     // in the order they appear, then its attributes.
     let group_header = |path: &str, attrs: &[Attr], addr: &Addresses| -> Vec<u8> {
         let mut links: Vec<(&str, u64)> = Vec::new();
+        if path.is_empty() {
+            links.extend(f.datatypes.iter().zip(&addr.datatypes).map(|((name, _), &at)| (name.as_str(), at)));
+        }
         for (gi, g) in groups.iter().enumerate() {
             let (parent, name) = split_path(g);
             if parent == path {
@@ -523,9 +567,15 @@ pub(crate) fn encode(f: &File) -> Vec<u8> {
         h.messages.push((MSG_LINK_INFO, li));
         h.messages.push((MSG_GROUP_INFO, vec![0, 0]));
         for (order, (name, target)) in links.iter().enumerate() {
-            let mut l = vec![1, 0x04];
+            // Flags: creation order present, and a one-byte name length or, past 255 bytes, two.
+            let wide = name.len() > usize::from(u8::MAX);
+            let mut l = vec![1, if wide { 0x05 } else { 0x04 }];
             l.extend_from_slice(&(order as u64).to_le_bytes());
-            l.push(name.len() as u8);
+            if wide {
+                l.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            } else {
+                l.push(name.len() as u8);
+            }
             l.extend_from_slice(name.as_bytes());
             l.extend_from_slice(&target.to_le_bytes());
             h.messages.push((MSG_LINK, l));
@@ -539,7 +589,11 @@ pub(crate) fn encode(f: &File) -> Vec<u8> {
     let group_attrs = |path: &str| f.group_attrs.iter().find(|(p, _)| p.trim_matches('/') == path).map_or(&[][..], |(_, a)| a.as_slice());
     let build = |addr: &Addresses| -> (Vec<u8>, Vec<Vec<u8>>, Vec<Vec<u8>>) {
         let root = group_header("", &f.attrs, addr);
-        let group_headers: Vec<Vec<u8>> = groups.iter().map(|g| group_header(g, group_attrs(g), addr)).collect();
+        let mut group_headers: Vec<Vec<u8>> = groups.iter().map(|g| group_header(g, group_attrs(g), addr)).collect();
+        // A named datatype's header holds only its datatype, as the HDF5 library writes one:
+        // readers such as hdf5-reader take a header with attribute messages but no dataspace for
+        // a group's. It follows the groups' headers.
+        group_headers.extend(f.datatypes.iter().map(|(_, dtype)| Header { messages: vec![(MSG_DATATYPE, datatype(dtype))] }.encode()));
         let mut headers = Vec::new();
         for (i, d) in f.datasets.iter().enumerate() {
             let mut h = Header { messages: Vec::new() };
@@ -592,14 +646,16 @@ pub(crate) fn encode(f: &File) -> Vec<u8> {
     };
 
     let n = f.datasets.len();
-    let placeholder = Addresses { groups: vec![0; groups.len()], datasets: vec![0; n], heap: 0, data: vec![0; n] };
+    let placeholder =
+        Addresses { groups: vec![0; groups.len()], datatypes: vec![0; f.datatypes.len()], datasets: vec![0; n], heap: 0, data: vec![0; n] };
     let (root, group_headers, headers) = build(&placeholder);
     let mut at = 48 + root.len() as u64;
-    let mut group_addrs = Vec::with_capacity(groups.len());
+    let mut group_addrs = Vec::with_capacity(group_headers.len());
     for h in &group_headers {
         group_addrs.push(at);
         at += h.len() as u64;
     }
+    let datatype_addrs = group_addrs.split_off(groups.len());
     let mut dataset_addrs = Vec::with_capacity(n);
     for h in &headers {
         dataset_addrs.push(at);
@@ -637,7 +693,7 @@ pub(crate) fn encode(f: &File) -> Vec<u8> {
             None => {}
         }
     }
-    let addr = Addresses { groups: group_addrs, datasets: dataset_addrs, heap: heap_addr, data: data_addrs };
+    let addr = Addresses { groups: group_addrs, datatypes: datatype_addrs, datasets: dataset_addrs, heap: heap_addr, data: data_addrs };
     let (root, group_headers, headers) = build(&addr);
     let eof = at;
 
@@ -700,6 +756,7 @@ mod tests {
         File {
             attrs: vec![Attr::text("Conventions", "CF-1.5")],
             group_attrs: Vec::new(),
+            datatypes: Vec::new(),
             datasets: vec![
                 Dataset {
                     name: "x".into(),
@@ -745,5 +802,44 @@ mod tests {
             let root = f.root_group().unwrap();
             assert_eq!(root.attribute("Conventions").unwrap().read_string().unwrap(), "CF-1.5");
         }
+    }
+
+    /// A link name longer than 255 bytes is stored with a two-byte length, so its bytes are not
+    /// read as the link's target.
+    #[test]
+    fn long_link_names_read_back() {
+        let mut f = sample(Storage::default());
+        let name = "v".repeat(300);
+        f.datasets[1].name = name.clone();
+        let f = hdf5_reader::Hdf5File::from_vec(encode(&f)).unwrap();
+        assert_eq!(f.dataset(&format!("/{name}")).unwrap().shape(), &[130, 7]);
+        assert!(f.dataset("/x").is_ok());
+    }
+
+    /// An attribute whose message would overflow the header's 16-bit message size does not fit.
+    #[test]
+    fn attribute_fits_its_header_message() {
+        assert!(attribute_fits(&Attr::text("history", &"x".repeat(60_000))));
+        assert!(!attribute_fits(&Attr::text("history", &"x".repeat(70_000))));
+        // At the boundary: the largest text whose message size is exactly 65,535 bytes.
+        let text = |n: usize| Attr::text("history", &"x".repeat(n));
+        let overhead = attribute(&text(1), &Addresses::default(), &[]).len() - 1;
+        let largest = usize::from(u16::MAX) - overhead;
+        assert_eq!(attribute(&text(largest), &Addresses::default(), &[]).len(), usize::from(u16::MAX));
+        assert!(attribute_fits(&text(largest)));
+        assert!(!attribute_fits(&text(largest + 1)));
+        let references = Attr {
+            name: "REFERENCE_LIST".into(),
+            dtype: H5Type::RefList,
+            shape: Some(vec![6000]),
+            values: Values::ReferenceList(vec![(0, 0); 6000]),
+        };
+        assert!(!attribute_fits(&references));
+        let fields = |n: usize| H5Type::Compound {
+            size: 4 * n as u32,
+            fields: (0..n).map(|i| (format!("field_{i:05}"), 4 * i as u32, H5Type::Int { size: 4, signed: true })).collect(),
+        };
+        assert!(datatype_fits(&fields(10)));
+        assert!(!datatype_fits(&fields(5000)));
     }
 }

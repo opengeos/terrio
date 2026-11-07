@@ -97,7 +97,7 @@ impl Relation {
         self.schema.columns.len() + usize::from(self.hidden.is_some())
     }
     fn visit(&self, db: &Snapshot, bytes: &[u8], budget: &ViewBudget, visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
-        let encoding = u32::from_be_bytes(bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header"))?);
+        let encoding = crate::drivers::sqlite::header_text_encoding(bytes)?;
         match &self.source {
             Source::Table(name) => db.visit_table(bytes, name, |rowid, record| {
                 let mut row = db.tables[name].decode(name, record, rowid, encoding)?;
@@ -444,7 +444,7 @@ impl Join {
         Ok(fields.into_iter().map(|f| (f.name, Expression(f.expr))).collect())
     }
     pub fn visit(&self, db: &Snapshot, bytes: &[u8], budget: &ViewBudget, visitor: &mut dyn FnMut(&[Value]) -> Result<bool>) -> Result<()> {
-        let encoding = u32::from_be_bytes(bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header"))?);
+        let encoding = crate::drivers::sqlite::header_text_encoding(bytes)?;
         let mut inputs = JoinInputs { rows: Vec::with_capacity(self.relations.len().saturating_sub(1)), budget, retained: 0 };
         for relation in self.relations.iter().skip(1) {
             let mut rows = Vec::new();
