@@ -59,6 +59,9 @@ const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 
+/// A tool call to run: its request id, tool name and command-line arguments.
+type ToolCall = (Value, String, Vec<OsString>);
+
 /// The server.
 pub struct Server {
     /// The command line that runs terrio: the binary, or a Python interpreter with `-m terrio`.
@@ -97,22 +100,29 @@ impl Server {
         let reply = match &msg {
             // A batch (protocol 2025-03-26): one reply per request, none when all are notifications.
             Value::Array(batch) if batch.is_empty() => error(&Value::Null, INVALID_REQUEST, "empty batch"),
-            // Its tool calls run here, since the batch's replies go back together.
+            // Its tool calls run on threads of their own, as single calls do, so that the server
+            // keeps reading (a cancel, a ping, the client's exit); the batch's replies go back
+            // together once they are done.
             Value::Array(batch) => {
-                let replies: Vec<Value> = batch.iter().filter_map(|m| self.handle_value(m, true)).collect();
+                let mut calls = Vec::new();
+                let replies: Vec<Value> = batch.iter().filter_map(|m| self.handle_value(m, Some(&mut calls))).collect();
+                if !calls.is_empty() {
+                    self.spawn_batch(replies, calls);
+                    return None;
+                }
                 if replies.is_empty() {
                     return None;
                 }
                 Value::Array(replies)
             }
-            _ => self.handle_value(&msg, false)?,
+            _ => self.handle_value(&msg, None)?,
         };
         Some(reply.to_string())
     }
 
-    /// The reply to `msg`; a tool call's runs on a thread of its own and is sent from there,
-    /// unless `inline`.
-    fn handle_value(&mut self, msg: &Value, inline: bool) -> Option<Value> {
+    /// The reply to `msg`; a tool call's runs on a thread of its own and is sent from there, or,
+    /// in a batch, joins the batch's `calls`.
+    fn handle_value(&mut self, msg: &Value, batch: Option<&mut Vec<ToolCall>>) -> Option<Value> {
         let Some(obj) = msg.as_object() else {
             return Some(error(&Value::Null, INVALID_REQUEST, "expected a JSON-RPC object"));
         };
@@ -139,9 +149,11 @@ impl Server {
         if method == "tools/call" {
             return Some(match tool_call(&params) {
                 Err((code, message)) => error(&id, code, &message),
-                Ok((name, args)) if inline => result(call_tool(&self.terrio, &name, args, &AtomicBool::new(false))?),
                 Ok((name, args)) => {
-                    self.spawn(id, name, args);
+                    match batch {
+                        Some(calls) => calls.push((id, name, args)),
+                        None => self.spawn(id, name, args),
+                    }
                     return None;
                 }
             });
@@ -154,12 +166,40 @@ impl Server {
 
     /// Runs a tool call on a thread of its own, which sends its reply unless it was cancelled.
     fn spawn(&mut self, id: Value, name: String, args: Vec<OsString>) {
+        let run = self.start((id, name, args));
+        let send = self.send.clone();
+        self.workers.retain(|w| !w.is_finished());
+        self.workers.push(std::thread::spawn(move || {
+            if let Some(reply) = run() {
+                let _ = send.send(reply.to_string());
+            }
+        }));
+    }
+
+    /// Runs a batch's tool calls, each on a thread of its own and cancellable as a single call
+    /// is, then sends their replies with the batch's other `replies`, in one array. A cancelled
+    /// call gets no reply; a batch left without any gets none.
+    fn spawn_batch(&mut self, mut replies: Vec<Value>, calls: Vec<ToolCall>) {
+        let runs: Vec<_> = calls.into_iter().map(|call| self.start(call)).collect();
+        let send = self.send.clone();
+        self.workers.retain(|w| !w.is_finished());
+        self.workers.push(std::thread::spawn(move || {
+            let calls: Vec<_> = runs.into_iter().map(std::thread::spawn).collect();
+            replies.extend(calls.into_iter().filter_map(|c| c.join().ok().flatten()));
+            if !replies.is_empty() {
+                let _ = send.send(Value::Array(replies).to_string());
+            }
+        }));
+    }
+
+    /// Registers a tool call as running, so that a cancel finds it, and returns what runs it: its
+    /// reply, or `None` once it was cancelled.
+    fn start(&mut self, (id, name, args): ToolCall) -> impl FnOnce() -> Option<Value> + Send + 'static + use<> {
         let key = id.to_string();
         let cancel = Arc::new(AtomicBool::new(false));
         self.running.lock().unwrap().insert(key.clone(), cancel.clone());
-        let (terrio, running, send) = (self.terrio.clone(), self.running.clone(), self.send.clone());
-        self.workers.retain(|w| !w.is_finished());
-        self.workers.push(std::thread::spawn(move || {
+        let (terrio, running) = (self.terrio.clone(), self.running.clone());
+        move || {
             let reply = call_tool(&terrio, &name, args, &cancel);
             // Unless a request reusing the id took the entry meanwhile.
             let mut running = running.lock().unwrap();
@@ -167,11 +207,8 @@ impl Server {
                 running.remove(&key);
             }
             drop(running);
-            // A cancelled request gets no reply.
-            if let Some(r) = reply {
-                let _ = send.send(json!({"jsonrpc": "2.0", "id": id, "result": r}).to_string());
-            }
-        }));
+            reply.map(|r| json!({"jsonrpc": "2.0", "id": id, "result": r}))
+        }
     }
 
     fn call(&self, method: &str, params: &Value) -> Result<Value, RpcError> {
@@ -574,6 +611,51 @@ mod tests {
         s.shutdown();
         assert!(started.elapsed() < Duration::from_secs(10));
         assert!(replies.try_recv().is_err());
+    }
+
+    /// A batch's tool call runs as a single call does: the server answers while it runs, a cancel
+    /// kills it, and its batch then gets no reply.
+    #[cfg(unix)]
+    #[test]
+    fn answers_while_a_batched_call_runs_and_cancels_it() {
+        let (send, replies) = std::sync::mpsc::channel();
+        let mut s = Server::new(vec!["sh".into(), "-c".into(), "sleep 30".into()], send);
+        let call = json!([{"jsonrpc": "2.0", "id": "slow", "method": "tools/call", "params": {"name": "info", "arguments": {"args": []}}}]);
+        let started = std::time::Instant::now();
+        assert!(handle_on_big_stack(&mut s, &call.to_string()).is_none());
+        assert!(started.elapsed() < Duration::from_secs(10), "the batch ran on the reading thread");
+        assert!(request(&mut s, "ping", json!({}))["result"].is_object());
+        handle_on_big_stack(
+            &mut s,
+            &json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "slow"}}).to_string(),
+        );
+        s.shutdown();
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(replies.try_recv().is_err());
+    }
+
+    /// A batch's replies go back together, its tool calls' with its other requests'.
+    #[cfg(unix)]
+    #[test]
+    fn a_batch_replies_once_with_its_calls_and_requests() {
+        let (send, replies) = std::sync::mpsc::channel();
+        let mut s = Server::new(vec!["sh".into(), "-c".into(), "echo done".into()], send);
+        let batch = json!([
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "info", "arguments": {"args": []}}},
+            {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        ]);
+        assert!(handle_on_big_stack(&mut s, &batch.to_string()).is_none());
+        let reply: Value = serde_json::from_str(&replies.recv_timeout(Duration::from_secs(30)).unwrap()).unwrap();
+        let reply = reply.as_array().unwrap();
+        assert_eq!(reply.len(), 2);
+        assert!(reply.iter().any(|r| r["id"] == 2 && r["result"].is_object()));
+        let call = reply.iter().find(|r| r["id"] == 1).unwrap();
+        assert!(call["result"]["content"][0]["text"].as_str().unwrap().contains("done"), "{call}");
+        // A batch of requests that run no tool is answered at once.
+        let r = handle_on_big_stack(&mut s, &json!([{"jsonrpc": "2.0", "id": 3, "method": "ping"}]).to_string()).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&r).unwrap()[0]["id"], 3);
+        s.shutdown();
     }
 
     #[test]
