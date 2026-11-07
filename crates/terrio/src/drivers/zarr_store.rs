@@ -11,15 +11,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// A part of an object: the whole object, `length` bytes from `offset`, or the last `n` bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Range {
-    Whole,
-    At(u64, u64),
-    Suffix(u64),
-}
+pub(crate) use crate::sparse::ObjectRange as Range;
 
 enum Backend {
     Local(PathBuf),
+    /// Objects fetched by the caller (terrio-js, with `fetch`): see [`crate::sparse::SparseObjects`].
+    Sparse(Arc<crate::sparse::SparseObjects>),
     #[cfg(remote)]
     Remote {
         base: RemoteBase,
@@ -154,6 +151,7 @@ impl Store {
                 }
                 Ok(Some(out))
             }
+            Backend::Sparse(objects) => Ok(objects.get(key, range)?),
             #[cfg(remote)]
             Backend::Remote { base, fetcher } => {
                 use crate::http::{ByteRange, Remote};
@@ -359,6 +357,26 @@ impl Node {
         Ok(node)
     }
 
+    /// Opens a store whose objects the caller fetches (see [`crate::sparse::SparseObjects`]),
+    /// named `name` in messages: its root, or the node at `key`. Fails until the metadata it
+    /// reads is fetched.
+    pub(crate) fn sparse(objects: Arc<crate::sparse::SparseObjects>, name: &str, key: &str) -> Result<Node> {
+        let mut store = Store::new(Backend::Sparse(objects), name.to_string());
+        store.load_consolidated()?;
+        let node = Node { store: Arc::new(store), key: key.trim_matches('/').to_string() };
+        let mut found = node.store.consolidated.is_some();
+        for f in METADATA_FILES {
+            if found {
+                break;
+            }
+            found = node.store.probe(&join_key(&node.key, f))?.is_some();
+        }
+        if !found {
+            return Err(crate::Error::InvalidData(format!("Zarr: no Zarr metadata at {}", node.display())));
+        }
+        Ok(node)
+    }
+
     /// The node at a path relative to this one (`..` going up; a leading `/` from the root).
     pub(crate) fn join(&self, rel: &str) -> Node {
         Node { store: self.store.clone(), key: join_key(&self.key, rel) }
@@ -421,8 +439,6 @@ impl Node {
         {
             out.extend(self.store.list(base, &self.key));
         }
-        // Irrefutable in WebAssembly builds, which read local stores only.
-        #[allow(irrefutable_let_patterns)]
         if let Backend::Local(root) = &self.store.backend {
             let dir = if self.key.is_empty() { root.clone() } else { root.join(&self.key) };
             for (n, _) in crate::memfs::subdirs(&dir) {

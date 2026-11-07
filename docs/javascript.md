@@ -41,7 +41,7 @@ In WebAssembly, these formats are read from and written to memory:
 
 | | Read | Write |
 |---|---|---|
-| Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), GRIB 1 and 2 (read band by band), netCDF, HDF5, Zarr and GeoZarr (zipped, or with `openZarr`), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
+| Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), GRIB 1 and 2 (read band by band), netCDF, HDF5, Zarr and GeoZarr (zipped, with `openZarr`, or remote by window with `openUrl`), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
 | Vector | GeoJSON, TopoJSON, ESRIJSON, ESRIPBF, FlatGeobuf\*, GeoPackage, CSV, XLSX, GeoParquet, CityJSON, CityGML, KML, KMZ, GML, GPX, OSM (PBF and XML), PMTiles, MBTiles, MVT tiles, zip archives of these, and Shapefile and MapInfo (MIF and TAB) in zip archives, DWG and DXF (full module), HEC-RAS (full module) | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, CSV, XLSX, GeoParquet, CityJSON (`cityjsonVersion`: `"1.1"` or `"2.0"`), CityGML (`citygmlVersion`: `"2.0"` or `"3.0"`, `citygmlLod0Surface`: `"footprint"` or `"roof-edge"`), DWG and DXF (full module), Shapefile (`.shp.zip`), KML, KMZ (`kmzResources` packs icon images), GML, GPX, PMTiles, MBTiles (`minzoom`, `maxzoom` options) |
 
 \* FlatGeobuf files are read by terrio's own driver, with 64-bit offsets. `open` decodes a layer
@@ -51,6 +51,20 @@ file's size for lines and five for polygons (3.2 GB and 5.4 GB in native builds)
 polygons runs out of memory, but in the memory64 module (see below). `openUrl` reads files with a
 spatial index by bounding box, decoding only the features found; a file without one is still read
 whole. `openOapif(url, options)` reads OGC API Features services over `fetch`.
+
+A remote Zarr store (v2 or v3, sharded or not) opens with `openUrl` too: the store or group at
+the URL (`.zarr`, or `format: "Zarr"`) and the array `array` within it, read as a raster by
+window. Opening fetches its metadata documents, and a window the shard indexes and chunks it
+needs, nearby inner chunks of a shard in requests of up to 1 MiB, the indexes kept for later
+windows. A year of the TESSERA embeddings (128 bands of a 192 x 192 window, 5 MB) reads in about
+4 seconds in Chrome from Europe, where the TESSERA Zarr Explorer, which reads it with zarrita,
+takes about 9:
+
+```js
+const store = "https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/tessera/tessera/zarr/v1.1-dclimate/utm30";
+const emb = await openUrl(store, { format: "Zarr", array: "embeddings" }); // (time, band, y, x): 1152 bands
+const year2025 = await emb.read({ window: [45184, 360000, 192, 192], bands: Array.from({ length: 128 }, (_, i) => 1025 + i) });
+```
 
 HEC-RAS geometry and plan HDF files (the full module) open as vector layers with `open`, and with
 `openVector(bytes, filename, { layers, openOptions })` to join the results HEC-RAS stored

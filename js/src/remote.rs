@@ -1,6 +1,7 @@
 //! Remote files read lazily with HTTP range requests through `fetch`: COGs by window and
 //! overview, PMTiles tiles, COPC point clouds by bounds and level, FlatGeobuf by bounding box (with
-//! its spatial index) and GeoParquet by row group.
+//! its spatial index) and GeoParquet by row group; Zarr stores by window, their metadata documents,
+//! shard indexes and chunks fetched as objects ([`terrio::sparse::SparseObjects`]).
 //!
 //! A read runs terrio's synchronous reader over the blocks fetched so far
 //! ([`terrio::sparse::SparseFile`]); when it needs blocks not fetched yet, they are fetched (in
@@ -14,7 +15,7 @@ use std::rc::Rc;
 use terrio::formats::VectorDriver;
 #[cfg(feature = "pointcloud")]
 use terrio::pointcloud::PointCloudReader;
-use terrio::sparse::SparseFile;
+use terrio::sparse::{ObjectRange, SparseFile, SparseObjects};
 #[cfg(feature = "tiles")]
 use terrio::tiles::TileArchive;
 #[cfg(feature = "flatgeobuf")]
@@ -40,13 +41,15 @@ struct OpenUrlOptions {
     /// The bytes kept in the block cache between reads.
     cache_size: u64,
     /// The format, when the URL's extension does not tell it: `GTiff`, `PMTiles`, `COPC`,
-    /// `FlatGeobuf` or `Parquet`.
+    /// `FlatGeobuf`, `Parquet` or `Zarr`.
     format: Option<String>,
+    /// Zarr: the array to read, its path within the store (or group) at the URL.
+    array: Option<String>,
 }
 
 impl Default for OpenUrlOptions {
     fn default() -> Self {
-        Self { block_size: terrio::sparse::DEFAULT_BLOCK_SIZE, cache_size: 256 << 20, format: None }
+        Self { block_size: terrio::sparse::DEFAULT_BLOCK_SIZE, cache_size: 256 << 20, format: None, array: None }
     }
 }
 
@@ -84,6 +87,11 @@ fn call(obj: &JsValue, method: &str, args: &[JsValue]) -> Result<JsValue, JsErro
 impl Fetcher {
     /// Starts a request for bytes `first..=last` (all of them with `None`), or a `HEAD` request.
     fn request(&self, range: Option<(u64, u64)>, head: bool) -> Result<js_sys::Promise, JsError> {
+        self.request_to(&self.url, range.map(|(a, b)| format!("bytes={a}-{b}")), head)
+    }
+
+    /// Starts a request to `url` with a `Range` header (`bytes=...`), or a `HEAD` request.
+    fn request_to(&self, url: &str, range: Option<String>, head: bool) -> Result<js_sys::Promise, JsError> {
         let headers = js_sys::Object::new();
         if self.headers.is_object() {
             // `Headers` instances and arrays of pairs are iterable: their entries, not their own
@@ -96,20 +104,29 @@ impl Fetcher {
             };
             js_sys::Object::assign(&headers, &given);
         }
-        if let Some((a, b)) = range {
-            js_sys::Reflect::set(&headers, &"Range".into(), &format!("bytes={a}-{b}").into()).map_err(js_error)?;
+        if let Some(range) = range {
+            js_sys::Reflect::set(&headers, &"Range".into(), &range.into()).map_err(js_error)?;
         }
         let init = js_sys::Object::new();
         js_sys::Reflect::set(&init, &"headers".into(), &headers).map_err(js_error)?;
         if head {
             js_sys::Reflect::set(&init, &"method".into(), &"HEAD".into()).map_err(js_error)?;
         }
-        let p = self.fetch.call2(&JsValue::UNDEFINED, &JsValue::from_str(&self.url), &init).map_err(js_error)?;
+        let p = self.fetch.call2(&JsValue::UNDEFINED, &JsValue::from_str(url), &init).map_err(js_error)?;
         p.dyn_into::<js_sys::Promise>().map_err(|_| JsError::new("fetch did not return a promise"))
     }
 
-    /// Waits for a response and reads it.
+    /// Waits for a response and reads it: an error unless its status is 2xx.
     async fn response(&self, promise: js_sys::Promise) -> Result<Fetched, JsError> {
+        let f = self.any_response(promise).await?;
+        if !(200..300).contains(&f.status) {
+            return Err(JsError::new(&format!("{}: HTTP status {}", self.url, f.status)));
+        }
+        Ok(f)
+    }
+
+    /// Waits for a response and reads it, whatever its status.
+    async fn any_response(&self, promise: js_sys::Promise) -> Result<Fetched, JsError> {
         let resp = JsFuture::from(promise).await.map_err(js_error)?;
         let status = get(&resp, "status").as_f64().unwrap_or(0.0) as u16;
         let header = |name: &str| -> Option<String> { call(&get(&resp, "headers"), "get", &[name.into()]).ok()?.as_string() };
@@ -120,9 +137,6 @@ impl Fetcher {
         let data = js_sys::Uint8Array::new(&buf).to_vec();
         self.requests.set(self.requests.get() + 1);
         self.bytes.set(self.bytes.get() + data.len() as u64);
-        if !(200..300).contains(&status) {
-            return Err(JsError::new(&format!("{}: HTTP status {status}", self.url)));
-        }
         Ok(Fetched { status, total, data })
     }
 
@@ -141,6 +155,49 @@ impl Fetcher {
     async fn fetch_into(&self, file: &SparseFile, ranges: &[(u64, u64)]) -> Result<(), JsError> {
         for batch in ranges.chunks(MAX_PARALLEL) {
             self.fetch_batch(file, batch).await?;
+        }
+        Ok(())
+    }
+
+    /// Fetches parts of objects of a store at the URL into `objects`, [`MAX_PARALLEL`] requests at
+    /// a time: `key` at `url/key`. A missing object (status 404, or 403 as S3 answers anonymous
+    /// requests for missing keys) is handed over as missing.
+    async fn fetch_objects(&self, objects: &SparseObjects, parts: &[(String, ObjectRange)]) -> Result<(), JsError> {
+        let (base, query) = self.url.split_once('?').map_or((self.url.as_str(), String::new()), |(b, q)| (b, format!("?{q}")));
+        let base = base.trim_end_matches('/');
+        for batch in parts.chunks(MAX_PARALLEL) {
+            let promises = js_sys::Array::new();
+            for (key, range) in batch {
+                let header = match *range {
+                    ObjectRange::Whole => None,
+                    ObjectRange::At(o, n) => Some(format!("bytes={o}-{}", o + n.max(1) - 1)),
+                    ObjectRange::Suffix(n) => Some(format!("bytes=-{}", n.max(1))),
+                };
+                promises.push(self.request_to(&format!("{base}/{key}{query}"), header, false)?.as_ref());
+            }
+            // Every request settled before any is looked at (see `fetch_batch`).
+            let settled = js_sys::Array::from(&JsFuture::from(js_sys::Promise::all_settled(&promises)).await.map_err(js_error)?);
+            for ((key, range), s) in batch.iter().zip(settled.iter()) {
+                if get(&s, "status").as_string().as_deref() != Some("fulfilled") {
+                    return Err(js_error(get(&s, "reason")));
+                }
+                let f = self.any_response(js_sys::Promise::resolve(&get(&s, "value"))).await?;
+                let data = match (f.status, *range) {
+                    (403 | 404, _) => None,
+                    (_, ObjectRange::At(_, 0) | ObjectRange::Suffix(0)) => Some(Vec::new()),
+                    (200 | 206, ObjectRange::Whole) | (206, _) => Some(f.data),
+                    // A server that ignores `Range` sends the whole object: the part asked.
+                    (200, ObjectRange::At(o, n)) => Some(
+                        f.data
+                            .get(o as usize..(o + n) as usize)
+                            .map(<[u8]>::to_vec)
+                            .ok_or_else(|| JsError::new(&format!("{base}/{key}: bytes {o}+{n} past the end of the object")))?,
+                    ),
+                    (200, ObjectRange::Suffix(n)) => Some(f.data[f.data.len().saturating_sub(n as usize)..].to_vec()),
+                    (status, _) => return Err(JsError::new(&format!("{base}/{key}: HTTP status {status}"))),
+                };
+                objects.insert(key, *range, data);
+            }
         }
         Ok(())
     }
@@ -210,6 +267,8 @@ impl Reader {
 
 struct State {
     file: SparseFile,
+    /// Zarr: the store's objects fetched (the file is then empty).
+    objects: Option<std::sync::Arc<SparseObjects>>,
     fetcher: Fetcher,
     name: String,
     format: &'static str,
@@ -246,9 +305,16 @@ impl State {
         for _ in 0..MAX_ROUNDS {
             let result = read(&mut self.reader.borrow_mut());
             let missing = self.file.missing();
-            if missing.is_empty() {
+            let parts = self.objects.as_ref().map(|o| o.missing()).unwrap_or_default();
+            if missing.is_empty() && parts.is_empty() {
                 self.file.trim(self.cache_size);
+                if let Some(o) = &self.objects {
+                    o.trim(self.cache_size);
+                }
                 return result.map_err(js_err);
+            }
+            if let Some(o) = &self.objects {
+                self.fetcher.fetch_objects(o, &parts).await?;
             }
             self.fetcher.fetch_into(&self.file, &missing).await?;
         }
@@ -272,7 +338,8 @@ fn detect(name: &str, head: &[u8], forced: Option<&str>) -> Result<&'static str,
             "copc" | "las" | "laz" => Ok("COPC"),
             "flatgeobuf" | "fgb" => Ok("FlatGeobuf"),
             "parquet" | "geoparquet" => Ok("Parquet"),
-            _ => Err(JsError::new(&format!("format '{f}' is not read remotely (GTiff, PMTiles, COPC, FlatGeobuf, Parquet)"))),
+            "zarr" => Ok("Zarr"),
+            _ => Err(JsError::new(&format!("format '{f}' is not read remotely (GTiff, PMTiles, COPC, FlatGeobuf, Parquet, Zarr)"))),
         };
     }
     if matches!(head.get(..4), Some(b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+")) {
@@ -301,6 +368,7 @@ fn feature_of(format: &str) -> Option<&'static str> {
         "COPC" => Some("pointcloud"),
         "FlatGeobuf" => Some("flatgeobuf"),
         "Parquet" => Some("parquet"),
+        "Zarr" => Some("zarr"),
         _ => None,
     }
 }
@@ -317,10 +385,15 @@ fn check_built(format: &str) -> Result<(), JsError> {
 /// GeoTIFF, a PMTiles archive, a COPC point cloud, a FlatGeobuf file or a GeoParquet file. Only
 /// its header is read now, in a request or two; reads fetch only the bytes they need.
 ///
+/// A Zarr store (v2 or v3, sharded or not: a URL ending in `.zarr`, or `format: "Zarr"`) is read
+/// as a raster as well, the array `array` of the store or group at the URL (its path within it),
+/// by window: opening fetches its metadata documents, and a window the shard indexes and chunks
+/// it needs, nearby inner chunks of a shard in one request.
+///
 /// Options: `headers` (sent with every request, for authorization), `fetch` (the function to
 /// call instead of `globalThis.fetch`), `blockSize` (64 KiB: reads fetch whole blocks),
 /// `cacheSize` (256 MB kept between reads, not during one: a read holds all the bytes it needs),
-/// `format` (when the URL does not tell it).
+/// `format` (when the URL does not tell it), `array` (Zarr).
 ///
 /// Servers must answer range requests; in browsers, cross-origin servers must allow the `Range`
 /// header and expose `Content-Range` (CORS).
@@ -351,6 +424,13 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
     if let Ok(format) = detect(path, &[], o.format.as_deref()) {
         check_built(format)?;
     }
+    if o.format.as_deref().is_some_and(|f| f.eq_ignore_ascii_case("zarr"))
+        || path.trim_end_matches('/').to_ascii_lowercase().ends_with(".zarr")
+    {
+        check_built("Zarr")?;
+        #[cfg(feature = "zarr")]
+        return open_zarr(url, fetcher, o).await;
+    }
     // Blocks of 512 bytes to 16 MiB: the first request is one block.
     let block = o.block_size.clamp(512, 16 << 20);
     // The first block: the file's length, and its first bytes.
@@ -377,6 +457,7 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
     check_built(format)?;
     let state = Rc::new(State {
         file,
+        objects: None,
         fetcher,
         name,
         format,
@@ -413,6 +494,32 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
                 // Checked before: see `check_built`.
                 other => return Err(crate::not_built(feature_of(other).unwrap_or(other))),
             });
+            Ok(())
+        })
+        .await?;
+    Ok(RemoteDataset { state })
+}
+
+/// Opens the array `o.array` of the Zarr store (or group) at `url`, its objects fetched as reads
+/// need them: the metadata now, in a few rounds of requests (the root's documents, the array's,
+/// the coordinates of its band dimensions).
+#[cfg(feature = "zarr")]
+async fn open_zarr(url: String, fetcher: Fetcher, o: OpenUrlOptions) -> Result<RemoteDataset, JsError> {
+    let objects = std::sync::Arc::new(SparseObjects::new());
+    let state = Rc::new(State {
+        file: SparseFile::new(0),
+        objects: Some(objects.clone()),
+        fetcher,
+        name: url.clone(),
+        format: "Zarr",
+        cache_size: o.cache_size,
+        reader: RefCell::new(None),
+        queue: RefCell::new(js_sys::Promise::resolve(&JsValue::UNDEFINED)),
+    });
+    let key = o.array.unwrap_or_default();
+    state
+        .run(|r| {
+            *r = Some(Reader::Raster(LazyRaster::from_zarr_objects(objects.clone(), &url, &key)?));
             Ok(())
         })
         .await?;

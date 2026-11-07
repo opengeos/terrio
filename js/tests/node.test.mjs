@@ -1075,15 +1075,16 @@ async function serve(dir) {
       return res.end();
     }
     stats.requests++;
-    const m = /bytes=(\d+)-(\d+)?/.exec(req.headers.range ?? "");
-    if (req.method === "HEAD" || !m) {
+    const m = /bytes=(\d*)-(\d+)?/.exec(req.headers.range ?? "");
+    if (req.method === "HEAD" || !m || (m[1] === "" && !m[2])) {
       res.writeHead(200, { "Content-Length": size });
       if (req.method === "HEAD") return res.end();
       stats.bytes += size;
       return res.end(readFileSync(path));
     }
-    const a = +m[1];
-    const b = Math.min(m[2] ? +m[2] : size - 1, size - 1);
+    // `bytes=-n`: the last n bytes.
+    const a = m[1] === "" ? Math.max(0, size - +m[2]) : +m[1];
+    const b = m[1] === "" ? size - 1 : Math.min(m[2] ? +m[2] : size - 1, size - 1);
     const buf = Buffer.alloc(b - a + 1);
     const fd = openSync(path, "r");
     readSync(fd, buf, 0, buf.length, a);
@@ -1343,6 +1344,70 @@ test("remote real files read with range requests, as GDAL reads them", { skip: n
     assert.ok(pm.stats().bytes < pm.size / 10);
   } finally {
     server.close();
+  }
+});
+
+test("remote Zarr stores are read by window", { skip: needs("zarr") }, async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "terrio-zarr-"));
+  // A v3 array of 64 x 64 UInt16 values row * 100 + col, in shards of 32 x 32 holding inner chunks
+  // of 8 x 8 (each shard's index of offsets and lengths at its end, then its CRC32C).
+  const value = (r, c) => r * 100 + c;
+  const crc32c = (bytes) => {
+    let crc = ~0;
+    for (const b of bytes) {
+      crc ^= b;
+      for (let k = 0; k < 8; k++) crc = crc & 1 ? (crc >>> 1) ^ 0x82f63b78 : crc >>> 1;
+    }
+    return ~crc >>> 0;
+  };
+  mkdirSync(join(dir, "s.zarr/a"), { recursive: true });
+  writeFileSync(join(dir, "s.zarr/zarr.json"), JSON.stringify({ zarr_format: 3, node_type: "group", attributes: {} }));
+  writeFileSync(
+    join(dir, "s.zarr/a/zarr.json"),
+    JSON.stringify({
+      zarr_format: 3, node_type: "array", shape: [64, 64], data_type: "uint16", fill_value: 0, dimension_names: ["y", "x"],
+      chunk_grid: { name: "regular", configuration: { chunk_shape: [32, 32] } },
+      chunk_key_encoding: { name: "default", configuration: { separator: "/" } },
+      attributes: { "spatial:transform": [10, 0, 500000, 0, -10, 4600000], "proj:code": "EPSG:32630" },
+      codecs: [{ name: "sharding_indexed", configuration: {
+        chunk_shape: [8, 8], codecs: [{ name: "bytes", configuration: { endian: "little" } }],
+        index_codecs: [{ name: "bytes", configuration: { endian: "little" } }, { name: "crc32c" }], index_location: "end" } }],
+    }),
+  );
+  for (const [sy, sx] of [[0, 0], [0, 1], [1, 0], [1, 1]]) {
+    const body = new Uint16Array(32 * 32);
+    const index = new DataView(new ArrayBuffer(16 * 16));
+    for (let k = 0; k < 16; k++) {
+      const [iy, ix] = [Math.floor(k / 4), k % 4];
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) body[k * 64 + r * 8 + c] = value(sy * 32 + iy * 8 + r, sx * 32 + ix * 8 + c);
+      index.setBigUint64(k * 16, BigInt(k * 128), true);
+      index.setBigUint64(k * 16 + 8, 128n, true);
+    }
+    const idx = new Uint8Array(index.buffer);
+    const crc = new DataView(new ArrayBuffer(4));
+    crc.setUint32(0, crc32c(idx), true);
+    mkdirSync(join(dir, `s.zarr/a/c/${sy}`), { recursive: true });
+    writeFileSync(join(dir, `s.zarr/a/c/${sy}/${sx}`), Buffer.concat([new Uint8Array(body.buffer), idx, new Uint8Array(crc.buffer)]));
+  }
+  const server = await serve(dir);
+  try {
+    const z = await terrio.openUrl(server.url + "s.zarr", { array: "a" });
+    assert.deepEqual([z.kind, z.format, z.width, z.height, z.crs], ["raster", "Zarr", 64, 64, "EPSG:32630"]);
+    const opened = z.stats().requests;
+    // A window across two shards: their indexes, then the inner chunks it needs.
+    const w = await z.readBand(1, [28, 10, 8, 4]);
+    assert.deepEqual([w[0], w[31]], [value(10, 28), value(13, 35)]);
+    assert.equal(z.stats().requests - opened, 4);
+    // Another window of those shards: their indexes are kept.
+    const v = await z.readBand(1, [40, 12, 2, 2]);
+    assert.equal(v[3], value(13, 41));
+    assert.equal(z.stats().requests - opened, 5);
+    await assert.rejects(terrio.openUrl(server.url + "missing.zarr"), /no Zarr metadata/);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

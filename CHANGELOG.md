@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- JavaScript's `openUrl` reads remote Zarr stores (v2 and v3, sharded or not) by window, as
+  `terrio` reads them natively: `openUrl(store, { format: "Zarr", array: "embeddings" })` (or a
+  URL ending in `.zarr`) opens the array as a raster, fetching its metadata documents, and a
+  window fetches the shard indexes and chunks it needs. `LazyRaster::from_zarr_objects` and
+  `terrio::sparse::SparseObjects` read a store whose objects the caller fetches, as
+  `LazyRaster::from_sparse` and `SparseFile` read one file. 128 bands of a 192 x 192 window of the
+  TESSERA embeddings read in a median 3.9 s in Chrome from Europe (3 runs, 19 requests, 5 MB),
+  where the TESSERA Zarr Explorer (zarrita) took 9.0 s.
 - `terrio translate` reads the bands of a window it copies pixel for pixel together, whichever
   bands they are. It used to read bands that are not the source's first ones in order one by one,
   as `gdal_translate`'s virtual dataset does, and without GDAL's block cache a Zarr chunk holding
