@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Native FlatGeobuf readers reject incomplete records, mismatched nonzero feature counts and
+  invalid coordinate dimensions/part bounds. GDAL-enabled eager reads retain GDAL fallback
+  admission behavior; native range and stream checks apply in either build.
+
 - Python's `Raster.read_resampled`, `read_resampled_masks` and `read_resampled_with_masks`, and
   JavaScript's `readResampled`, `readResampledMasks` and `readResampledWithMasks` (on `Dataset`
   and, as promises, on `openUrl`'s `RemoteDataset`), read a window of some bands into an output

@@ -43,7 +43,7 @@ pub(crate) struct FgbHeader {
     has_m: bool,
     columns: Vec<ColumnType>,
     /// The number of features (0 when the writer did not know it).
-    features_count: u64,
+    pub(crate) features_count: u64,
     /// The node size of the packed R-tree spatial index, 0 without one.
     index_node_size: u16,
     /// The extent `[min_x, min_y, max_x, max_y]`, when the header has it.
@@ -58,7 +58,10 @@ pub(crate) fn header_len(start: &[u8]) -> Result<usize> {
     if start.len() < 12 || start[..3] != MAGIC[..3] || start[4..7] != MAGIC[4..7] {
         return Err(bad("not a FlatGeobuf file"));
     }
-    Ok(12 + u32::from_le_bytes([start[8], start[9], start[10], start[11]]) as usize)
+    usize::try_from(u32::from_le_bytes([start[8], start[9], start[10], start[11]]))
+        .ok()
+        .and_then(|n| n.checked_add(12))
+        .ok_or_else(|| bad("header too large for this platform"))
 }
 
 /// Reads a file's header (`buf` holds at least its first [`header_len`] bytes): the layer
@@ -128,12 +131,50 @@ pub(crate) fn decode_feature_exact(fbuf: &[u8], h: &FgbHeader, fid: u64) -> Resu
 
 fn decode(fbuf: &[u8], h: &FgbHeader, fid: u64, exact: bool) -> Result<Feature> {
     let f = flatgeobuf::size_prefixed_root_as_feature_with_opts(&verifier(), fbuf).map_err(|e| bad(&format!("feature {fid}: {e}")))?;
+    if let Some(g) = f.geometry() {
+        validate_geometry(&g, h)?;
+    }
     let geometry = f.geometry().and_then(|g| to_geometry(&g, h.geometry_type, h.has_z, h.has_m, exact));
     let mut attributes = vec![FieldValue::Null; h.columns.len()];
     if let Some(props) = f.properties() {
         read_properties(props.bytes(), &h.columns, &mut attributes).map_err(|e| bad(&format!("feature {fid}: {e}")))?;
     }
     Ok(Feature { fid, geometry, attributes })
+}
+
+/// Checks coordinate pairs, declared dimensions and part ends before any coordinate slicing.
+/// Nested parts obey the same bounds; undeclared and extra ordinate values are ignored.
+fn validate_geometry(g: &FgbGeometry, h: &FgbHeader) -> Result<()> {
+    let n = g.xy().map_or(0, |xy| xy.len());
+    if !n.is_multiple_of(2) {
+        return Err(bad("odd XY coordinate count"));
+    }
+    // Only the dimensions the header declares are read. Undeclared vectors and extra values
+    // are ignored, as in GDAL; declared dimensions still need enough values for every XY pair.
+    for (declared, values) in [(h.has_z, g.z()), (h.has_m, g.m())] {
+        match values {
+            _ if !declared => {}
+            Some(values) if values.len() < n / 2 => return Err(bad("short coordinate dimension")),
+            None if n != 0 => return Err(bad("missing coordinate dimension")),
+            _ => {}
+        }
+    }
+    if let Some(ends) = g.ends() {
+        let mut previous = 0;
+        for end in ends {
+            let end = end as usize;
+            if end < previous || end > n / 2 {
+                return Err(bad("geometry part ends decrease or exceed the coordinate count"));
+            }
+            previous = end;
+        }
+    }
+    if let Some(parts) = g.parts() {
+        for p in parts {
+            validate_geometry(&p, h)?;
+        }
+    }
+    Ok(())
 }
 
 /// The size in bytes of the packed R-tree of `count` features, 0 without one. Computed in 64
@@ -173,20 +214,38 @@ fn level_bounds(count: u64, node_size: u16) -> Vec<(u64, u64)> {
     out
 }
 
+/// A complete size-prefixed feature and its next offset, or EOF at a record boundary.
+fn next_feature(data: &[u8], pos: usize) -> Result<Option<(&[u8], usize)>> {
+    if pos == data.len() {
+        return Ok(None);
+    }
+    let prefix = data.get(pos..).and_then(|tail| tail.get(..4)).ok_or_else(|| bad("truncated feature size"))?;
+    let len = u32::from_le_bytes(prefix.try_into().unwrap()) as usize;
+    let end = pos.checked_add(4).and_then(|p| p.checked_add(len)).ok_or_else(|| bad("feature size overflow"))?;
+    let feature = data.get(pos..end).ok_or_else(|| bad("truncated feature"))?;
+    Ok(Some((feature, end)))
+}
+
 /// Parses a FlatGeobuf file held in memory.
 pub fn parse(buf: &[u8]) -> Result<Layer> {
     let (mut layer, h) = parse_header(buf)?;
     let index_size = usize::try_from(h.index_size).map_err(|_| bad("an index too large for this platform"))?;
-    let mut pos = header_len(buf)? + index_size;
+    let mut pos = header_len(buf)?.checked_add(index_size).filter(|&p| p <= buf.len()).ok_or_else(|| bad("truncated index"))?;
     let mut fid = 0u64;
-    while pos + 4 <= buf.len() {
-        let len = u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]) as usize;
-        let fbuf = buf.get(pos..pos + 4 + len).ok_or_else(|| bad("truncated feature"))?;
-        pos += 4 + len;
+    while let Some((fbuf, next)) = next_feature(buf, pos)? {
+        pos = next;
         layer.push(decode_feature(fbuf, &h, fid)?);
         fid += 1;
     }
+    check_count(fid, h.features_count)?;
     Ok(layer)
+}
+
+pub(crate) fn check_count(actual: u64, declared: u64) -> Result<()> {
+    if declared != 0 && actual != declared {
+        return Err(bad("feature count differs from header"));
+    }
+    Ok(())
 }
 
 /// What a FlatGeobuf header says about the file.
@@ -402,13 +461,12 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
             let data = read_at(data_start, file_len.saturating_sub(data_start))?;
             let mut pos = 0usize;
             let mut fid = 0u64;
-            while pos + 4 <= data.len() {
-                let len = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
-                let fbuf = data.get(pos..pos + 4 + len).ok_or_else(|| bad("truncated feature"))?;
-                pos += 4 + len;
+            while let Some((fbuf, next)) = next_feature(&data, pos)? {
+                pos = next;
                 layer.push(decode_feature(fbuf, header, fid)?);
                 fid += 1;
             }
+            check_count(fid, count)?;
             return Ok((info, layer));
         }
     }
@@ -891,6 +949,119 @@ fn build_polygon<'a>(fbb: &mut FlatBufferBuilder<'a>, exterior: &Ring, interiors
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tests decoder admission directly, without the convenience API's optional GDAL fallback.
+    fn accepts(bytes: &[u8]) -> bool {
+        parse(bytes).is_ok()
+    }
+
+    /// A point file with independently declared dimensions and optional ordinate vectors.
+    fn dimension_fixture(has_z: bool, has_m: bool, z: Option<&[f64]>, m: Option<&[f64]>) -> Vec<u8> {
+        let mut b = FlatBufferBuilder::new();
+        let h = Header::create(
+            &mut b,
+            &HeaderArgs { features_count: 1, index_node_size: 0, has_z, has_m, geometry_type: FgbType::Point, ..Default::default() },
+        );
+        b.finish_size_prefixed(h, None);
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(b.finished_data());
+        let mut b = FlatBufferBuilder::new();
+        let xy = b.create_vector(&[1.0, 2.0]);
+        let z = z.map(|z| b.create_vector(z));
+        let m = m.map(|m| b.create_vector(m));
+        let g = FgbGeometry::create(&mut b, &GeometryArgs { xy: Some(xy), z, m, ..Default::default() });
+        let f = FgbFeature::create(&mut b, &FeatureArgs { geometry: Some(g), ..Default::default() });
+        b.finish_size_prefixed(f, None);
+        bytes.extend_from_slice(b.finished_data());
+        bytes
+    }
+
+    /// GDAL 3.13.3 ignores undeclared/extra ordinates and refuses missing/short declared ones.
+    #[test]
+    fn undeclared_z_is_ignored_and_declared_z_required() {
+        // The reference TypeScript writer stores z without setting `has_z`; GDAL reads it as 2D.
+        for z in [Some(&[5.0][..]), Some(&[][..])] {
+            let bytes = dimension_fixture(false, false, z, Some(&[]));
+            assert!(accepts(&bytes));
+            assert_eq!(parse(&bytes).unwrap().features[0].geometry.as_ref().unwrap().all_coords()[0].z, None);
+        }
+        assert_eq!(
+            parse(&dimension_fixture(true, false, Some(&[5.0]), None)).unwrap().features[0].geometry.as_ref().unwrap().all_coords()[0].z,
+            Some(5.0)
+        );
+        assert!(!accepts(&dimension_fixture(true, false, None, None)));
+        assert!(!accepts(&dimension_fixture(true, false, Some(&[]), None)));
+        assert!(!accepts(&dimension_fixture(false, true, None, None)));
+        assert!(!accepts(&dimension_fixture(false, true, None, Some(&[]))));
+        let extra = parse(&dimension_fixture(true, false, Some(&[5.0, 6.0]), None)).unwrap();
+        assert_eq!(extra.features[0].geometry.as_ref().unwrap().all_coords()[0].z, Some(5.0));
+    }
+
+    #[test]
+    fn short_z_vectors_are_rejected_before_coordinate_reads() {
+        let mut b = FlatBufferBuilder::new();
+        let xy = b.create_vector(&[1.0, 2.0, 3.0, 4.0]);
+        let z = b.create_vector(&[5.0]);
+        let g = FgbGeometry::create(&mut b, &GeometryArgs { xy: Some(xy), z: Some(z), ..Default::default() });
+        let f = FgbFeature::create(&mut b, &FeatureArgs { geometry: Some(g), ..Default::default() });
+        b.finish_size_prefixed(f, None);
+        let mut bytes = dimension_fixture(true, false, None, None);
+        let header_end = header_len(&bytes).unwrap();
+        bytes.truncate(header_end);
+        bytes.extend_from_slice(b.finished_data());
+        assert!(!accepts(&bytes));
+    }
+
+    #[test]
+    fn geometry_validation_rejects_invalid_part_ends() {
+        let (_, header) = parse_header(&dimension_fixture(false, false, None, None)).unwrap();
+        for (ends, valid) in [(&[4_u32, 2][..], false), (&[2, 5][..], false), (&[2, 4][..], true)] {
+            let mut b = FlatBufferBuilder::new();
+            let xy = b.create_vector(&[0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0]);
+            let ends = b.create_vector(ends);
+            let g = FgbGeometry::create(&mut b, &GeometryArgs { xy: Some(xy), ends: Some(ends), ..Default::default() });
+            let f = FgbFeature::create(&mut b, &FeatureArgs { geometry: Some(g), ..Default::default() });
+            b.finish_size_prefixed(f, None);
+            let feature = flatgeobuf::size_prefixed_root_as_feature(b.finished_data()).unwrap();
+            assert_eq!(validate_geometry(&feature.geometry().unwrap(), &header).is_ok(), valid);
+        }
+    }
+
+    #[test]
+    fn indexed_headers_reject_counts_above_the_arithmetic_bound() {
+        // parse_header checks this limit before index_size/level_bounds, including in release.
+        for count in [u64::MAX, 1 << 58, (u64::MAX >> 8) + 1] {
+            for index_node_size in [2, 16, u16::MAX] {
+                let mut b = FlatBufferBuilder::new();
+                let h = Header::create(&mut b, &HeaderArgs { features_count: count, index_node_size, ..Default::default() });
+                b.finish_size_prefixed(h, None);
+                let mut bytes = MAGIC.to_vec();
+                bytes.extend_from_slice(b.finished_data());
+                let error = parse_header(&bytes).unwrap_err();
+                assert!(error.to_string().contains("implausible feature count"), "{error}");
+                assert!(!accepts(&bytes));
+            }
+        }
+    }
+
+    #[test]
+    fn largest_admitted_index_count_fits_u64() {
+        let count = u64::MAX >> 8;
+        for node_size in [2, 16, u16::MAX] {
+            // Independent wider-arithmetic oracle for the level sum and byte count.
+            let mut n = u128::from(count);
+            let mut total = n;
+            loop {
+                n = n.div_ceil(u128::from(node_size));
+                total += n;
+                if n == 1 {
+                    break;
+                }
+            }
+            let expected = u64::try_from(total * 40).unwrap();
+            assert_eq!(index_size(count, node_size), expected);
+        }
+    }
 
     fn sample() -> Layer {
         let mut l = Layer::new("sample").with_epsg(4326);

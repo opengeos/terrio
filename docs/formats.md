@@ -873,6 +873,11 @@ reads it.
   1,000 points to a 2-million-point file takes about as long as `ogr2ogr -append`. Files in
   write-ahead-log mode with a pending log, with auto-vacuum, or with triggers on the layer other
   than GDAL's are rewritten whole instead.
+- **Native FlatGeobuf validation** rejects incomplete record framing, truncated indexes and
+  payloads, mismatches with nonzero declared feature counts, and invalid declared coordinate
+  dimensions or out-of-bounds/decreasing part ends. In builds with the optional GDAL backend,
+  eager opens can retry a native refusal through GDAL and retain GDAL's admission behavior.
+  Range-backed and streaming FlatGeobuf reads use the native checks in either build.
 - **Streaming**: GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq and CSV
   layers are read a chunk of features at a time (GeoPackages a leaf page of the table at a time,
   through the R-tree with `--spat`; GeoParquet a record batch at a time), and FlatGeobuf,
