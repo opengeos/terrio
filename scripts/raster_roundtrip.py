@@ -6,7 +6,9 @@ For every format (GDAL short names, such as ``GTiff``, ``AAIGrid`` or ``JP2OpenJ
 every test raster the format can hold:
 
 - read: GDAL writes the raster in the format, terrio reads it (``terrio convert`` to a GeoTIFF),
-  and the pixels, data type, geotransform, CRS and nodata must match what GDAL reads;
+  and the pixels, data type, geotransform, CRS and nodata must match what GDAL reads; the WKT
+  terrio reports for the file (``terrio info --json``, the WKT its APIs export) must describe the
+  CRS GDAL reads;
 - write: terrio writes the raster in the format (``terrio convert`` from a GeoTIFF written by
   GDAL), GDAL reads it back, and the same properties must match the source.
 
@@ -17,6 +19,7 @@ non-zero when any check fails.
 """
 
 import argparse
+import json
 import math
 import os
 import shutil
@@ -115,6 +118,12 @@ READ_VARIANTS = {
     "Zarr": [["FORMAT=ZARR_V3"], ["FORMAT=ZARR_V3", "CHUNK_MEMORY_LAYOUT=F", "BLOCKSIZE=1,16,16"], ["CHUNK_MEMORY_LAYOUT=F"], ["COMPRESS=BLOSC", "BLOSC_SHUFFLE=BIT"]],
 }
 
+# Test rasters whose CRS a format's GDAL round trip does not keep, so that GDAL's reading is no
+# reference: GDAL reads an ENVI header's US survey feet (`units=Feet`) as international feet, an
+# RST State Plane system (`SPC83NY4`, in feet) back in metres (EPSG:32118), and an ERS MGA zone
+# (`MGA55`) as a UTM CRS without its datum. terrio reads no CRS from these RST and ERS systems.
+CRS_NOT_KEPT = {("ENVI", "int16_ftus"), ("RST", "int16_ftus"), ("ERS", "float32_mga55")}
+
 # GDAL driver name -> terrio format name for writing.
 TERRIO_NAMES = {"JP2OpenJPEG": "JP2", "netCDF": "netCDF"}
 
@@ -142,6 +151,9 @@ def make_sources(tmp):
         ("uint64", gdal.GDT_UInt64, 1, None, "EPSG:4326", (20, 10)),
         ("int64", gdal.GDT_Int64, 1, None, "EPSG:4326", (20, 10)),
         ("float32_nd", gdal.GDT_Float32, 1, -9999.0, "EPSG:26915", (71, 53)),
+        # A false northing and US survey feet, which WKT generated from the EPSG code lost.
+        ("float32_mga55", gdal.GDT_Float32, 1, -9999.0, "EPSG:28355", (23, 17)),
+        ("int16_ftus", gdal.GDT_Int16, 1, None, "EPSG:2263", (19, 13)),
         ("float32_nan", gdal.GDT_Float32, 2, float("nan"), "EPSG:4326", (45, 35)),
         ("float64_custom", gdal.GDT_Float64, 1, -3.4e38, CUSTOM_WKT, (40, 30)),
         ("float32_big", gdal.GDT_Float32, 1, -9999.0, "EPSG:32610", (1100, 700)),
@@ -275,6 +287,35 @@ def compare(expected, actual, lossy=0, check_crs=True, check_nodata=True, check_
     return diffs
 
 
+def exported_crs_differs(path):
+    """Whether the WKT terrio reports for a file differs from the CRS GDAL reads from it.
+
+    The WKT is ``terrio info --json``'s, which the Rust, Python and JavaScript APIs export
+    (``SpatialRef::to_wkt``); GDAL must read it as the same CRS (``IsSame``).
+
+    Args:
+        path: The file GDAL wrote.
+
+    Returns:
+        The difference, or None when they match (or GDAL reads no CRS).
+    """
+    expected = gdal_open(path).GetProjection()
+    if not expected:
+        return None
+    p = subprocess.run([TERRIO, "info", "--json", path], capture_output=True, text=True)
+    if p.returncode != 0:
+        return f"terrio info: {(p.stderr.strip() or 'failed')[-300:]}"
+    wkt = (json.loads(p.stdout).get("crs") or {}).get("wkt")
+    if not wkt:
+        return "exported WKT missing"
+    reported = osr.SpatialReference()
+    if reported.ImportFromWkt(wkt) != 0:
+        return "exported WKT unreadable"
+    if not reported.IsSame(osr.SpatialReference(wkt=expected), ["CRITERION=EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS"]):
+        return f"exported WKT differs: {reported.ExportToProj4()}"
+    return None
+
+
 def terrio(*args):
     """Run terrio.
 
@@ -320,7 +361,7 @@ def check_format(fmt, sources, tmp):
     ext, co, _, _, lossy, writable = FORMATS[fmt]
     results = {"read": [], "write": []}
     for name, src, dtype, bands in sources:
-        if not fits(fmt, dtype, bands) or (fmt not in ("GTiff", "COG") and name == "float32_big"):
+        if not fits(fmt, dtype, bands) or (fmt not in ("GTiff", "COG") and name == "float32_big") or (fmt, name) in CRS_NOT_KEPT:
             continue
         src_ds = gdal.Open(src)
         # GDAL writes, terrio reads.
@@ -336,7 +377,9 @@ def check_format(fmt, sources, tmp):
                 if err:
                     results["read"].append((label, [f"terrio: {err}"]))
                 else:
-                    results["read"].append((label, compare(gdal_open(g_path), gdal.Open(t_tif), lossy=3 if lossy else 0)))
+                    diffs = compare(gdal_open(g_path), gdal.Open(t_tif), lossy=3 if lossy else 0)
+                    exported = exported_crs_differs(g_path)
+                    results["read"].append((label, diffs + [exported] if exported else diffs))
             except RuntimeError as e:
                 results["read"].append((label, [f"GDAL cannot write it: {e}"]))
         # terrio writes, GDAL reads.

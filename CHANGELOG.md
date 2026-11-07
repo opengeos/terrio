@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- A raster whose CRS is known by an EPSG code alone (a GeoTIFF's `ProjectedCSTypeGeoKey`, the
+  code GeoPackage, JPEG 2000, Zarr, ENVI, ERS, Idrisi, HDF5, HDF-EOS, GRIB, netCDF or SRTM HGT
+  rasters declare or imply, a warp to `EPSG:<code>`, a raster built with wbraster's
+  `CrsInfo::from_epsg`) exports the WKT of terrio's EPSG registry, the WKT GDAL writes for the
+  code (#610). Its WKT (`SpatialRef::to_wkt`,
+  `terrio info`, the Python and JavaScript `crs`) was wbraster's, which described some codes
+  otherwise: GDA94 MGA zones without their false northing (a point of Melbourne at 52°N), State
+  Plane CRSs in US survey feet in metres with other projection parameters (NAD83 / New York Long
+  Island 700 km off), Web Mercator on the ellipsoid (21 km off at 45°N). For the other codes it
+  had no EPSG authority or EPSG datum names, so GDAL did not read it as the code's CRS and PROJ
+  dropped its datum. Transformations from the raster's CRS were right; the WKT text, read back
+  by terrio, GDAL or PROJ, was not. Other WKT a file stores with a code, such as an ESRI
+  `.prj`'s, is kept.
 - KMZ archives are read within limits (#579). Their main document and the layer documents it
   links to may take 512 MiB of decompressed text together (`TERRIO_KMZ_MAX_SIZE` changes it),
   and the archive is checked against `TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO` and

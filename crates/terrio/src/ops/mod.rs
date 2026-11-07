@@ -423,7 +423,7 @@ pub(crate) fn apply_gt(gt: &[f64; 6], x: f64, y: f64) -> (f64, f64) {
 pub(crate) fn crs_info(srs: &SpatialRef) -> CrsInfo {
     match srs.epsg {
         Some(code) => {
-            let mut c = CrsInfo::from_epsg(code);
+            let mut c = crate::crs::epsg_crs_info(code);
             if c.wkt.is_none() {
                 c.wkt = srs.to_wkt();
             }
