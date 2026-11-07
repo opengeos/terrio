@@ -100,6 +100,18 @@ pub(crate) fn text_encoding(field: u32) -> u32 {
     }
 }
 
+/// Decode bounded batches in input order, stopping before the next batch after an error.
+/// The page scan has already collected raw records; this bounds speculative value decoding,
+/// not the memory used by the whole-table API.
+fn decode_table_records(rows: &[(i64, Vec<u8>)], decode: impl Fn(&[u8]) -> Result<Vec<Value>> + Sync) -> Result<Vec<(i64, Vec<Value>)>> {
+    let mut decoded = Vec::new();
+    for batch in rows.chunks(256) {
+        let values = crate::par::map_range(batch.len(), |i| decode(&batch[i].1).map(|v| (batch[i].0, v)));
+        decoded.extend(values.into_iter().collect::<Result<Vec<_>>>()?);
+    }
+    Ok(decoded)
+}
+
 /// Reads a varint at `i`: `(value, length)`.
 pub(crate) fn varint(b: &[u8], i: usize) -> Option<(i64, usize)> {
     let mut v: u64 = 0;
@@ -471,7 +483,7 @@ impl Db {
     }
 
     /// Decodes a record for reading, its text in the database's encoding. Invalid text becomes
-    /// U+FFFD, as SQLite and GDAL still read it; a malformed record is an error.
+    /// U+FFFD, preserving the display reader's replacement policy; a malformed record is an error.
     pub(crate) fn decode_record(&self, payload: &[u8]) -> Result<Vec<Value>> {
         super::sqlite_repack::decode_record_lossy(payload, self.text_encoding())
     }
@@ -505,8 +517,7 @@ impl Db {
             }
             let mut rows = Vec::new();
             self.scan(root, &mut rows, 0)?;
-            let rows = crate::par::map_range(rows.len(), |i| self.decode_record(&rows[i].1).map(|v| (rows[i].0, v)));
-            let rows = rows.into_iter().collect::<Result<Vec<_>>>()?;
+            let rows = decode_table_records(&rows, |payload| self.decode_record(payload))?;
             let rows = rows
                 .into_iter()
                 .map(|(rowid, mut v)| {
@@ -865,6 +876,42 @@ pub(crate) fn column_defaults(sql: &str) -> Vec<Option<Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_reads_replace_invalid_text_but_rewrites_remain_strict() {
+        mod fixtures {
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/sqlite_encodings/fixtures.rs"));
+        }
+        for (name, bytes) in fixtures::DATABASES.iter().filter(|(name, _)| name.ends_with("-invalid")) {
+            let db = Db::new(bytes.to_vec()).unwrap();
+            let root = db.schema().unwrap().iter().find(|e| e.1 == "couches_é水").unwrap().3;
+            assert_eq!(db.rows(root).unwrap()[1].1[2], Value::Text("\u{fffd}".into()), "{name}");
+            assert!(db.stored_rows(root).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn table_record_errors_stop_before_later_batches_in_row_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let rows: Vec<_> = (0i64..600).map(|i| (i, i.to_be_bytes().to_vec())).collect();
+        let calls = AtomicUsize::new(0);
+        let error = decode_table_records(&rows, |bytes| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            let row = i64::from_be_bytes(bytes.try_into().unwrap());
+            if row == 2 || row == 100 {
+                return Err(bad(&format!("row {row}")));
+            }
+            Ok(vec![Value::Int(row)])
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("row 2"));
+        assert_eq!(calls.load(Ordering::Relaxed), 256);
+        let decoded = decode_table_records(&rows, |bytes| Ok(vec![Value::Int(i64::from_be_bytes(bytes.try_into().unwrap()))])).unwrap();
+        assert_eq!(decoded.len(), rows.len());
+        for (id, values) in decoded {
+            assert_eq!(values, [Value::Int(id)]);
+        }
+    }
 
     #[test]
     fn parses_quoted_columns_and_types() {
