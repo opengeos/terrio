@@ -753,7 +753,7 @@ impl IndexedLayer {
         if let Some(ids) = candidates {
             for rowid in ids {
                 if let Some(payload) = self.db.lookup(self.root, rowid)?
-                    && let Some(feature) = self.feature(rowid, Db::record_values(&payload), bbox)
+                    && let Some(feature) = self.feature(rowid, self.db.decode_record(&payload)?, bbox)
                 {
                     layer.push(feature);
                 }

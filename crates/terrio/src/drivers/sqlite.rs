@@ -190,7 +190,9 @@ impl Db {
             let page = self.page(n)?;
             let h = if n == 1 { 100 } else { 0 };
             match page.get(h).copied() {
-                Some(0x0d) => return Ok(self.leaf_rows(n)?.into_iter().next().map(|(id, payload)| (id, Self::record_values(&payload)))),
+                Some(0x0d) => {
+                    return self.leaf_rows(n)?.into_iter().next().map(|(id, payload)| Ok((id, self.decode_record(&payload)?))).transpose();
+                }
                 Some(0x05) => {
                     let count = u16::from_be_bytes(page.get(h + 3..h + 5).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("page"))?);
                     let offset = if count == 0 {
@@ -333,14 +335,14 @@ impl Db {
     pub(crate) fn schema(&self) -> Result<Vec<SchemaEntry>> {
         let mut master = Vec::new();
         self.scan(1, &mut master, 0)?;
-        Ok(master
+        master
             .into_iter()
             .map(|(_, payload)| {
-                let r = Self::record(&payload);
+                let r = self.decode_record(&payload)?;
                 let text = |i: usize| r.get(i).and_then(Value::as_str).unwrap_or_default().to_string();
-                (text(0), text(1), text(2), r.get(3).and_then(Value::as_i64).unwrap_or(0) as u32, text(4))
+                Ok((text(0), text(1), text(2), r.get(3).and_then(Value::as_i64).unwrap_or(0) as u32, text(4)))
             })
-            .collect())
+            .collect()
     }
 
     /// The `CREATE TABLE` statement of a table.
@@ -431,7 +433,7 @@ impl Db {
         let mut rows = Vec::with_capacity(rowids.len());
         for &rowid in rowids {
             let Some(payload) = self.lookup(root, rowid)? else { continue };
-            let mut v = Self::record(&payload);
+            let mut v = self.decode_record(&payload)?;
             v.resize(columns.len().max(v.len()), Value::Null);
             if let Some(c) = rowid_col
                 && v[c] == Value::Null
@@ -448,7 +450,12 @@ impl Db {
     pub(crate) fn stored_rows(&self, root: u32) -> Result<Vec<(i64, Vec<Value>)>> {
         let mut rows = Vec::new();
         self.scan(root, &mut rows, 0)?;
-        Ok(rows.into_iter().map(|(rowid, payload)| (rowid, Self::record(&payload))).collect())
+        rows.into_iter().map(|(rowid, payload)| Ok((rowid, self.decode_record(&payload)?))).collect()
+    }
+
+    /// Decode text using the encoding declared by this database.
+    pub(crate) fn decode_record(&self, payload: &[u8]) -> Result<Vec<Value>> {
+        super::sqlite_repack::decode_record(payload, self.text_encoding())
     }
 
     /// The text encoding of the database: 1 for UTF-8, 2 and 3 for UTF-16.
@@ -480,7 +487,8 @@ impl Db {
             }
             let mut rows = Vec::new();
             self.scan(root, &mut rows, 0)?;
-            let rows = crate::par::map_range(rows.len(), |i| (rows[i].0, Self::record(&rows[i].1)));
+            let rows = crate::par::map_range(rows.len(), |i| self.decode_record(&rows[i].1).map(|v| (rows[i].0, v)));
+            let rows = rows.into_iter().collect::<Result<Vec<_>>>()?;
             let rows = rows
                 .into_iter()
                 .map(|(rowid, mut v)| {
