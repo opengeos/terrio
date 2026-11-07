@@ -318,10 +318,10 @@ fn decompress_with_limit(data: &[u8], codec: u8, limit: Option<usize>, resource:
     }
 }
 
-/// The number of tiles in the zoom levels below `z` (`z <= 31`): the first tile id of zoom `z`.
+/// The number of tiles in the zoom levels below `z` (`z <= 31`): the first tile id of zoom `z`,
+/// or `u64::MAX` when `z > 31`.
 pub(crate) fn zoom_base(z: u8) -> u64 {
     // (4^z - 1) / 3
-    debug_assert!(z <= 31, "PMTiles zoom level {z} exceeds 31");
     if z > 31 {
         return u64::MAX;
     }
@@ -329,9 +329,8 @@ pub(crate) fn zoom_base(z: u8) -> u64 {
 }
 
 /// The PMTiles tile id of tile `(z, x, y)` for `z <= 30`: the zoom's base plus the tile's
-/// Hilbert curve index.
+/// Hilbert curve index, or `u64::MAX` when `z > 30`.
 pub(crate) fn zxy_to_tile_id(z: u8, x: u32, y: u32) -> u64 {
-    debug_assert!(z <= 30, "PMTiles zoom level {z} exceeds 30");
     if z > 30 {
         return u64::MAX;
     }
@@ -913,6 +912,8 @@ mod tests {
         let bad_zoom = Header { min_zoom: 64, max_zoom: 64, ..h.clone() };
         assert!(Header::parse(&bad_zoom.to_bytes()).is_err());
         assert_eq!(zoom_base(31), (((1u128 << 62) - 1) / 3) as u64);
+        assert_eq!(zoom_base(32), u64::MAX);
+        assert_eq!(zxy_to_tile_id(31, 0, 0), u64::MAX);
         assert!(
             write_archive(
                 vec![OutTile { z: 32, x: 0, y: 0, data: vec![1] }],

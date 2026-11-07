@@ -310,6 +310,10 @@ class _Source:
                 if ds_mask is None:
                     (r0, r1), (c0, c1) = window
                     with self.pool.acquire() as raster:
+                        # As in GDAL's `GDALCreateOverviewDataset` (`rasterio.open(...,
+                        # overview_level=...)`), an internal overview without its own mask IFD
+                        # samples the full-resolution mask via `read_mask`, while an external
+                        # `.ovr` without a mask returns `None` (all valid).
                         m = raster.read_mask(
                             window=(c0, r0, c1 - c0, r1 - r0), overview=self.overview
                         )
@@ -429,9 +433,12 @@ def _open_source(
         mask_flags = tuple(int(sum(f.value for f in fl)) for fl in riods.mask_flag_enums)
         if overview_level is not None:
             band_meta = _overview_band_metadata(riods, first, overview_level)
-            if width > 0 and height > 0:
+            if not first.has_mask and width > 0 and height > 0:
                 if first.read_mask(window=(0, 0, 1, 1), overview=overview_level) is not None:
-                    mask_flags = tuple(MaskFlags.per_dataset.value for _ in range(riods.count))
+                    mask_flags = tuple(
+                        MaskFlags.per_dataset.value if f == MaskFlags.all_valid.value else f
+                        for f in mask_flags
+                    )
         src = _Source(
             name=riods.name,
             path=_terrio_path(riods.name),

@@ -588,7 +588,7 @@ fn read_tiff(reader: GridReader) -> Option<GridFile> {
             west = tie[3] - tie[0] * h_res;
             north = tie[4] + tie[1] * v_res;
         }
-        // As in PROJ 9.7's GTiffGrid::open (src/grids.cpp), horizontal resolution must be positive
+        // As in PROJ 9.8.1's GTiffGrid::open (src/grids.cpp), horizontal resolution must be positive
         // (west-to-east) while vertical resolution may be either sign (south-up is swapped below).
         if !(h_res > 0.0 && h_res.is_finite() && v_res != 0.0 && v_res.is_finite()) {
             return None;
@@ -1171,7 +1171,7 @@ fn hierarchy(file: &GridFile, keep: impl Fn(&Source, usize) -> Option<Use>) -> V
             }
             continue;
         }
-        // As in PROJ 9.7's GTiffDataset::open / insertIntoHierarchy (src/grids.cpp), explicit
+        // As in PROJ 9.8.1's GTiffDataset::open / insertIntoHierarchy (src/grids.cpp), explicit
         // parent_grid_name links to the first matching earlier grid containing `ext`, and
         // unparented GeoTIFF subgrids nest by extent containment.
         if !parent.is_empty()
