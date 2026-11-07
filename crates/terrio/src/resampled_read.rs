@@ -1247,6 +1247,16 @@ mod tests {
         assert_eq!(best_overview((997, 613), &ovr, window, (403, 235), 2.0), Some(1));
     }
 
+    #[test]
+    fn nonreducing_overviews_are_not_selected() {
+        let full = (0, 0, 1000, 800);
+        // Custom WindowSource graphs may point at the same or a larger level. They cannot
+        // advance selection, so neither a self-edge nor an edge back to a parent can loop.
+        for sizes in [&[(1000, 800)][..], &[(2000, 1600)][..], &[(1000, 400)][..]] {
+            assert_eq!(best_overview((1000, 800), sizes, full, (100, 80), 1.2), None);
+        }
+    }
+
     /// The levels `gdal_translate -ovr` reads alone.
     #[test]
     fn fixed_levels_are_gdal_translates() {

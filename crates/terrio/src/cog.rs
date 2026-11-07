@@ -1602,26 +1602,34 @@ impl LazyRaster {
             return source.level_resampling(overview);
         }
         let Inner::Tiff(t) = &mut self.inner else { return None };
-        let (external, ifd) = t.levels.get(overview + 1).map(|l| (l.external, l.ifd))?;
-        // The first overview of an external `.ovr` is that file's image, with its own metadata.
-        let t = match (external, t.ovr.as_mut()) {
-            (Some(i), Some(ovr)) => {
-                let ifd = ovr.levels.get(i)?.ifd;
-                ovr.decoder.seek_to_image(ifd).ok()?;
-                ovr.current_ifd = ifd;
-                ovr
-            }
-            _ => {
-                t.decoder.seek_to_image(ifd).ok()?;
-                t.current_ifd = ifd;
-                t
-            }
-        };
-        let xml = t.decoder.get_tag_ascii_string(Tag::Unknown(42112)).ok()?;
-        crate::drivers::gtiff_write::parse_gdal_band_metadata(&xml)
-            .into_iter()
-            .find(|(b, k, _)| *b == 0 && k == "RESAMPLING")
-            .map(|(_, _, v)| v)
+        let level = t.levels.get(overview + 1)?;
+        if let Some(value) = &level.resampling {
+            return value.clone();
+        }
+        let (external, ifd) = (level.external, level.ifd);
+        let value = (|| {
+            // An external overview uses its own TIFF dataset's metadata.
+            let t = match (external, t.ovr.as_mut()) {
+                (Some(i), Some(ovr)) => {
+                    let ifd = ovr.levels.get(i)?.ifd;
+                    ovr.decoder.seek_to_image(ifd).ok()?;
+                    ovr.current_ifd = ifd;
+                    ovr
+                }
+                _ => {
+                    t.decoder.seek_to_image(ifd).ok()?;
+                    t.current_ifd = ifd;
+                    &mut *t
+                }
+            };
+            let xml = t.decoder.get_tag_ascii_string(Tag::Unknown(42112)).ok()?;
+            crate::drivers::gtiff_write::parse_gdal_band_metadata(&xml)
+                .into_iter()
+                .find(|(b, k, _)| *b == 0 && k == "RESAMPLING")
+                .map(|(_, _, v)| v)
+        })();
+        t.levels[overview + 1].resampling = Some(value.clone());
+        value
     }
 
     /// A raster read by window by `source`, described by `header` (a dataset without pixels).
@@ -1865,6 +1873,8 @@ struct Level {
     /// How the image's chunks are decoded, settled by the level's first window read that gets to
     /// decoding: `Some(None)` when the `tiff` crate decodes them itself.
     codec: Option<Option<crate::tiff_codecs::ChunkCodec>>,
+    /// Cached GDAL RESAMPLING metadata, including absence, for repeated selection.
+    resampling: Option<Option<String>>,
 }
 
 struct TiffRaster {
@@ -1964,6 +1974,7 @@ impl TiffRaster {
             external: None,
             tables: None,
             codec: None,
+            resampling: None,
         }];
         let mut ifd = 1;
         while dec.more_images() && ifd < MAX_IMAGES {
@@ -1977,7 +1988,16 @@ impl TiffRaster {
                     let (ow, oh) = dec.dimensions().map_err(tiff_err)?;
                     let (cw, ch) = dec.chunk_dimensions();
                     let block = (cw as usize, ch as usize);
-                    levels.push(Level { ifd, width: ow as usize, height: oh as usize, block, external: None, tables: None, codec: None });
+                    levels.push(Level {
+                        ifd,
+                        width: ow as usize,
+                        height: oh as usize,
+                        block,
+                        external: None,
+                        tables: None,
+                        codec: None,
+                        resampling: None,
+                    });
                 }
             }
             ifd += 1;
@@ -2040,6 +2060,7 @@ impl TiffRaster {
                 external: Some(i),
                 tables: None,
                 codec: None,
+                resampling: None,
             });
         }
         self.levels[1..].sort_by_key(|l| std::cmp::Reverse((l.width, l.height)));
