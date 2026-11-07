@@ -65,9 +65,52 @@ pub struct Args {
 /// Rewrites gdal_calc.py's input options (`-A path`, `--A_band n`) into terrio's (`--input
 /// A=path`, `--input-band A=n`) when the subcommand is `calc`.
 pub fn rewrite_args(args: Vec<OsString>) -> Vec<OsString> {
-    if args.get(1).and_then(|a| a.to_str()) != Some("calc") {
+    if args.iter().skip(1).find_map(|a| a.to_str().filter(|&s| s != "--json-usage")) != Some("calc") {
         return args;
     }
+    let strs: Vec<&str> = args.iter().filter_map(|a| a.to_str()).collect();
+    let mut calc_exprs = Vec::new();
+    let mut has_f_band_or_all = false;
+    let mut has_explicit_f_input = false;
+    let is_f_pair = |v: &str| v.split_once('=').is_some_and(|(k, _)| k.trim() == "f");
+    let mut i = 0;
+    while i < strs.len() {
+        let s = strs[i];
+        if s == "--" {
+            break;
+        }
+        if s == "--calc" {
+            if let Some(&expr) = strs.get(i + 1) {
+                calc_exprs.push(expr);
+            }
+            i += 2;
+            continue;
+        }
+        if s == "--input" {
+            if strs.get(i + 1).is_some_and(|v| is_f_pair(v)) {
+                has_explicit_f_input = true;
+            }
+            i += 2;
+            continue;
+        }
+        if let Some(expr) = s.strip_prefix("--calc=") {
+            calc_exprs.push(expr);
+        } else if let Some(inp) = s.strip_prefix("--input=") {
+            if is_f_pair(inp) {
+                has_explicit_f_input = true;
+            }
+        } else if s.starts_with("--f_band")
+            || s.starts_with("--f-band")
+            || s == "--allBands=f"
+            || s == "--all-bands=f"
+            || ((s == "--allBands" || s == "--all-bands") && strs.get(i + 1) == Some(&"f"))
+        {
+            has_f_band_or_all = true;
+        }
+        i += 1;
+    }
+    let f_is_input = !has_explicit_f_input
+        && (has_f_band_or_all || calc_exprs.iter().any(|e| e.split(|c: char| !c.is_alphanumeric() && c != '_').any(|tok| tok == "f")));
     let mut out = Vec::with_capacity(args.len());
     let mut it = args.into_iter().peekable();
     while let Some(arg) = it.next() {
@@ -75,7 +118,51 @@ pub fn rewrite_args(args: Vec<OsString>) -> Vec<OsString> {
             out.push(arg);
             continue;
         };
-        let letter = s.len() == 2 && s.starts_with('-') && s.as_bytes()[1].is_ascii_alphabetic();
+        if s == "--" {
+            out.push(arg);
+            out.extend(it);
+            break;
+        }
+        if matches!(
+            s,
+            "--outfile"
+                | "--calc"
+                | "--input"
+                | "--input-band"
+                | "--type"
+                | "--ot"
+                | "--NoDataValue"
+                | "--nodata"
+                | "--extent"
+                | "--allBands"
+                | "--all-bands"
+                | "--format"
+                | "--of"
+                | "--compress"
+                | "--tile-size"
+                | "--overview-resampling"
+                | "--co"
+        ) {
+            out.push(arg);
+            if let Some(val) = it.next() {
+                out.push(val);
+            }
+            continue;
+        }
+        if s == "--projwin" {
+            out.push(arg);
+            for _ in 0..4 {
+                if let Some(val) = it.next() {
+                    out.push(val);
+                }
+            }
+            continue;
+        }
+        let letter = s.len() == 2
+            && s.starts_with('-')
+            && s.as_bytes()[1].is_ascii_alphabetic()
+            && !matches!(s, "-h" | "-V")
+            && (s != "-f" || f_is_input);
         let next_is_value = it.peek().and_then(|n| n.to_str()).is_some_and(|n| !n.starts_with('-'));
         if letter && next_is_value {
             let path = it.next().expect("peeked");
@@ -163,6 +250,35 @@ pub fn run(a: Args) -> terrio::Result<()> {
 mod tests {
     use super::rewrite_args;
 
+    /// Value spans come from clap independently of the rewriter's hand-written dispatch.
+    #[test]
+    fn rewrite_preserves_value_spans_from_parser_arities() {
+        let command = <super::Args as clap::Args>::augment_args(clap::Command::new("calc"));
+        for argument in command.get_arguments() {
+            let arity = if argument.get_action().takes_values() {
+                argument.get_num_args().map_or(1, |range| {
+                    assert_eq!(range.min_values(), range.max_values(), "{} has variable arity", argument.get_id());
+                    range.max_values()
+                })
+            } else {
+                0
+            };
+            for name in argument.get_long().into_iter().chain(argument.get_all_aliases().unwrap_or_default()) {
+                let mut args = vec!["terrio".to_string(), "calc".into(), format!("--{name}")];
+                args.extend(std::iter::repeat_n("-A".to_string(), arity));
+                if arity > 0 {
+                    args.push("literal.tif".into());
+                }
+                let mut expected = args.clone();
+                args.extend(["-B", "b.tif", "--calc", "B", "out.tif"].map(String::from));
+                expected.extend(["--input", "B=b.tif", "--calc", "B", "out.tif"].map(String::from));
+                let actual: Vec<_> =
+                    rewrite_args(args.into_iter().map(Into::into).collect()).into_iter().map(|s| s.into_string().unwrap()).collect();
+                assert_eq!(actual, expected, "--{name}");
+            }
+        }
+    }
+
     #[test]
     fn rewrites_gdal_calc_inputs() {
         let args: Vec<_> =
@@ -189,5 +305,30 @@ mod tests {
                 "out.tif"
             ]
         );
+
+        // `-f` is kept as `--format` unless `f` is referenced in `--calc` / `--f_band` / `--allBands`.
+        let fmt_args: Vec<_> = ["terrio", "calc", "-A", "a.tif", "-f", "COG", "--calc", "-A", "out.tif"].iter().map(Into::into).collect();
+        let fmt_out: Vec<String> = rewrite_args(fmt_args).into_iter().map(|s| s.into_string().unwrap()).collect();
+        assert_eq!(fmt_out, ["terrio", "calc", "--input", "A=a.tif", "-f", "COG", "--calc", "-A", "out.tif"]);
+
+        let var_f_args: Vec<_> = ["terrio", "calc", "-f", "a.tif", "--calc", "f + 1", "out.tif"].iter().map(Into::into).collect();
+        let var_f_out: Vec<String> = rewrite_args(var_f_args).into_iter().map(|s| s.into_string().unwrap()).collect();
+        assert_eq!(var_f_out, ["terrio", "calc", "--input", "f=a.tif", "--calc", "f + 1", "out.tif"]);
+
+        let f_band_args: Vec<_> =
+            ["terrio", "calc", "-f", "a.tif", "--f_band", "2", "--calc", "1", "out.tif"].iter().map(Into::into).collect();
+        let f_band_out: Vec<String> = rewrite_args(f_band_args).into_iter().map(|s| s.into_string().unwrap()).collect();
+        assert_eq!(f_band_out, ["terrio", "calc", "--input", "f=a.tif", "--input-band", "f=2", "--calc", "1", "out.tif"]);
+
+        let explicit_f_args: Vec<_> = ["terrio", "calc", "-A", "a.tif", "--input", "f=b.tif", "-f", "COG", "--calc", "A*f", "out.tif"]
+            .iter()
+            .map(Into::into)
+            .collect();
+        let explicit_f_out: Vec<String> = rewrite_args(explicit_f_args).into_iter().map(|s| s.into_string().unwrap()).collect();
+        assert_eq!(explicit_f_out, ["terrio", "calc", "--input", "A=a.tif", "--input", "f=b.tif", "-f", "COG", "--calc", "A*f", "out.tif"]);
+
+        let dash_args: Vec<_> = ["terrio", "calc", "-A", "a.tif", "--calc", "A", "--", "-B", "out.tif"].iter().map(Into::into).collect();
+        let dash_out: Vec<String> = rewrite_args(dash_args).into_iter().map(|s| s.into_string().unwrap()).collect();
+        assert_eq!(dash_out, ["terrio", "calc", "--input", "A=a.tif", "--calc", "A", "--", "-B", "out.tif"]);
     }
 }

@@ -71,10 +71,15 @@ macro_rules! typed {
 /// Decodes raw samples into band-major raster data.
 pub(crate) fn decode(bytes: &[u8], l: &Layout) -> Result<RasterData> {
     let size = l.data_type.size_bytes();
-    let n = l.cols * l.rows * l.bands;
+    let n = l
+        .cols
+        .checked_mul(l.rows)
+        .and_then(|v| v.checked_mul(l.bands))
+        .ok_or_else(|| Error::InvalidData("raster dimensions overflow".into()))?;
+    let need = n.checked_mul(size).ok_or_else(|| Error::InvalidData("raster byte length overflow".into()))?;
     let body = bytes.get(l.offset..).unwrap_or_default();
-    if body.len() < n * size {
-        return Err(Error::InvalidData(format!("expected {} bytes of pixels, found {}", n * size, body.len())));
+    if body.len() < need {
+        return Err(Error::InvalidData(format!("expected {need} bytes of pixels, found {}", body.len())));
     }
     macro_rules! go {
         ($t:ty, $v:ident) => {{

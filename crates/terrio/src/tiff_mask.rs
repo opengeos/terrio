@@ -31,7 +31,7 @@ pub(crate) struct MaskImage {
 /// The integer values of the tags of one IFD, and the offset of the next.
 type Ifd = (Vec<(u16, Vec<u64>)>, u64);
 
-fn read_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: bool) -> Option<Ifd> {
+fn read_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: bool) -> std::io::Result<Option<Ifd>> {
     let u16_at = |b: &[u8]| if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) };
     let u32_at = |b: &[u8]| {
         let a = [b[0], b[1], b[2], b[3]];
@@ -41,25 +41,34 @@ fn read_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: bool) -> Opti
         let a: [u8; 8] = b[..8].try_into().unwrap_or_default();
         if le { u64::from_le_bytes(a) } else { u64::from_be_bytes(a) }
     };
-    f.seek(SeekFrom::Start(offset)).ok()?;
+    f.seek(SeekFrom::Start(offset))?;
     let count = if big {
         let mut b = [0u8; 8];
-        f.read_exact(&mut b).ok()?;
+        f.read_exact(&mut b)?;
         u64_at(&b)
     } else {
         let mut b = [0u8; 2];
-        f.read_exact(&mut b).ok()?;
+        f.read_exact(&mut b)?;
         u16_at(&b) as u64
     };
     let entry_len = if big { 20 } else { 12 };
-    let mut entries = vec![0u8; (count as usize).min(4096) * entry_len];
-    f.read_exact(&mut entries).ok()?;
+    let kept = count.min(4096) as usize;
+    let mut entries = vec![0u8; kept * entry_len];
+    f.read_exact(&mut entries)?;
+    // Decode a bounded prefix, but the chain pointer follows the entire IFD table.
+    let remaining = (count - kept as u64)
+        .checked_mul(entry_len as u64)
+        .and_then(|bytes| i64::try_from(bytes).ok())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "TIFF IFD table is too large"))?;
+    if remaining != 0 {
+        f.seek(SeekFrom::Current(remaining))?;
+    }
     let mut next = [0u8; 8];
     let next = if big {
-        f.read_exact(&mut next).ok()?;
+        f.read_exact(&mut next)?;
         u64_at(&next)
     } else {
-        f.read_exact(&mut next[..4]).ok()?;
+        f.read_exact(&mut next[..4])?;
         u32_at(&next) as u64
     };
     let mut tags = Vec::new();
@@ -76,19 +85,20 @@ fn read_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: bool) -> Opti
             _ => continue,
         };
         let (n, inline, inline_len) = if big { (u64_at(&e[4..12]), &e[12..20], 8) } else { (u32_at(&e[4..8]) as u64, &e[8..12], 4) };
-        let len = (n as usize).checked_mul(size)?;
-        if len > 1 << 28 {
-            continue;
-        }
+        let len = usize::try_from(n)
+            .ok()
+            .and_then(|n| n.checked_mul(size))
+            .filter(|len| *len <= 1 << 28)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "TIFF tag length is too large"))?;
         let data = if len <= inline_len {
             inline[..len].to_vec()
         } else {
             let off = if big { u64_at(inline) } else { u32_at(inline) as u64 };
-            let pos = f.stream_position().ok()?;
-            f.seek(SeekFrom::Start(off)).ok()?;
+            let pos = f.stream_position()?;
+            f.seek(SeekFrom::Start(off))?;
             let mut d = vec![0u8; len];
-            f.read_exact(&mut d).ok()?;
-            f.seek(SeekFrom::Start(pos)).ok()?;
+            f.read_exact(&mut d)?;
+            f.seek(SeekFrom::Start(pos))?;
             d
         };
         let values = data
@@ -101,23 +111,20 @@ fn read_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: bool) -> Opti
             .collect();
         tags.push((tag, values));
     }
-    Some((tags, next))
+    Ok(Some((tags, next)))
 }
 
 /// The mask images of a TIFF stream, in file order. Rewinds nothing: the caller seeks as needed.
-pub(crate) fn find_masks<R: Read + Seek>(f: &mut R) -> Vec<MaskImage> {
+pub(crate) fn find_masks<R: Read + Seek>(f: &mut R) -> Result<Vec<MaskImage>> {
     let mut out = Vec::new();
     let mut h = [0u8; 16];
-    if f.seek(SeekFrom::Start(0)).is_err() || f.read_exact(&mut h[..8]).is_err() {
-        return out;
-    }
+    f.seek(SeekFrom::Start(0))?;
+    f.read_exact(&mut h[..8])?;
     let le = &h[..2] == b"II";
     let version = if le { u16::from_le_bytes([h[2], h[3]]) } else { u16::from_be_bytes([h[2], h[3]]) };
     let big = version == 43;
     let first = if big {
-        if f.read_exact(&mut h[8..16]).is_err() {
-            return out;
-        }
+        f.read_exact(&mut h[8..16])?;
         let a: [u8; 8] = h[8..16].try_into().unwrap_or_default();
         if le { u64::from_le_bytes(a) } else { u64::from_be_bytes(a) }
     } else {
@@ -128,7 +135,7 @@ pub(crate) fn find_masks<R: Read + Seek>(f: &mut R) -> Vec<MaskImage> {
     let mut offset = first;
     while offset != 0 && seen.len() < 1024 && !seen.contains(&offset) {
         seen.push(offset);
-        let Some((tags, next)) = read_ifd(f, offset, big, le) else { break };
+        let Some((tags, next)) = read_ifd(f, offset, big, le)? else { break };
         offset = next;
         let get = |t: u16| tags.iter().find(|(k, _)| *k == t).map(|(_, v)| v.as_slice());
         let first = |t: u16| get(t).and_then(|v| v.first().copied());
@@ -161,7 +168,7 @@ pub(crate) fn find_masks<R: Read + Seek>(f: &mut R) -> Vec<MaskImage> {
             counts: counts.to_vec(),
         });
     }
-    out
+    Ok(out)
 }
 
 /// Decompresses a chunk into at most `size` bytes, the chunk's decoded size: a stream that would
@@ -262,6 +269,110 @@ pub(crate) fn read_mask<R: Read + Seek>(f: &mut R, m: &MaskImage, window: (usize
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Missing mask metadata and failed reads are distinct: an unreadable table cannot
+    /// turn the mask into an all-valid band (GDAL 3.13.3 reference behavior).
+    #[test]
+    fn mask_discovery_propagates_table_read_errors() {
+        let tags = [(254u16, 4u32), (256, 16), (257, 32), (258, 1), (262, 4), (273, 122), (277, 1), (278, 16), (279, 130)];
+        let mut bytes = b"II\x2a\0\x08\0\0\0".to_vec();
+        bytes.extend_from_slice(&(tags.len() as u16).to_le_bytes());
+        for (tag, value) in tags {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&4u16.to_le_bytes());
+            bytes.extend_from_slice(&(if matches!(tag, 273 | 279) { 2u32 } else { 1 }).to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(bytes.len(), 122);
+        for value in [138u32, 170, 32, 32] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.resize(202, 255);
+        struct Reader {
+            bytes: std::io::Cursor<Vec<u8>>,
+            fail_at: Option<u64>,
+        }
+        impl Read for Reader {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                if self.fail_at == Some(self.bytes.position()) {
+                    return Err(std::io::Error::other("mask table unavailable"));
+                }
+                self.bytes.read(output)
+            }
+        }
+        impl Seek for Reader {
+            fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+                self.bytes.seek(position)
+            }
+        }
+        let mut reader = Reader { bytes: std::io::Cursor::new(bytes), fail_at: Some(122) };
+        let error = find_masks(&mut reader).unwrap_err();
+        assert!(error.to_string().contains("mask table unavailable"), "{error}");
+        reader.fail_at = None;
+        let masks = find_masks(&mut reader).unwrap();
+        assert_eq!(masks.len(), 1);
+        assert_eq!(masks[0].offsets, [138, 170]);
+    }
+
+    /// A dangling IFD chain is malformed input, not evidence that no dataset mask exists.
+    #[test]
+    fn mask_discovery_rejects_dangling_ifd_chain() {
+        let mut bytes = b"II\x2a\0\x08\0\0\0".to_vec();
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&1000u32.to_le_bytes());
+        let error = find_masks(&mut std::io::Cursor::new(bytes)).unwrap_err();
+        assert!(matches!(error, Error::Io(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof), "{error}");
+    }
+
+    /// A valid large IFD keeps its actual chain pointer after the bounded decoded prefix.
+    #[test]
+    fn mask_discovery_skips_unparsed_ifd_entries() {
+        let count = 5009usize;
+        let mask_ifd = 8 + 2 + 12 * count + 4;
+        let pixels = mask_ifd + 2 + 12 * 9 + 4;
+        let mut tags = vec![(256u16, 1u32), (257, 1), (258, 8), (259, 1), (262, 1), (273, pixels as u32), (277, 1), (278, 1), (279, 1)];
+        tags.extend((50000..55000).map(|tag| (tag, 0)));
+        let mut bytes = b"II\x2a\0\x08\0\0\0".to_vec();
+        let mut ifd = |tags: &[(u16, u32)], next: u32| {
+            bytes.extend_from_slice(&(tags.len() as u16).to_le_bytes());
+            for (tag, value) in tags {
+                bytes.extend_from_slice(&tag.to_le_bytes());
+                bytes.extend_from_slice(&4u16.to_le_bytes());
+                bytes.extend_from_slice(&1u32.to_le_bytes());
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            bytes.extend_from_slice(&next.to_le_bytes());
+        };
+        ifd(&tags, mask_ifd as u32);
+        ifd(&[(254, 4), (256, 1), (257, 1), (258, 1), (262, 4), (273, pixels as u32 + 1), (277, 1), (278, 1), (279, 1)], 0);
+        bytes.extend_from_slice(&[99, 128]);
+        let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(bytes.clone())).unwrap();
+        assert!(matches!(decoder.read_image().unwrap(), tiff::decoder::DecodingResult::U8(values) if values == [99]));
+        let masks = find_masks(&mut std::io::Cursor::new(bytes.clone())).unwrap();
+        assert_eq!(masks.len(), 1);
+        assert_eq!(masks[0].offsets, [pixels as u64 + 1]);
+        let mut raster = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap();
+        assert!(raster.has_mask());
+        assert_eq!(raster.read_mask(crate::Window::new(0, 0, 1, 1), None).unwrap(), Some(vec![255]));
+    }
+
+    /// Unrepresentable and oversized tag lengths cannot silently hide later mask directories.
+    #[test]
+    fn mask_discovery_rejects_oversized_tag_lengths() {
+        for count in [u64::MAX, (1 << 28) + 1] {
+            let mut bytes = b"II\x2b\0\x08\0\0\0".to_vec();
+            bytes.extend_from_slice(&16u64.to_le_bytes());
+            bytes.extend_from_slice(&1u64.to_le_bytes());
+            bytes.extend_from_slice(&324u16.to_le_bytes());
+            bytes.extend_from_slice(&16u16.to_le_bytes());
+            bytes.extend_from_slice(&count.to_le_bytes());
+            bytes.extend_from_slice(&0u64.to_le_bytes());
+            bytes.extend_from_slice(&0u64.to_le_bytes());
+            let error = find_masks(&mut std::io::Cursor::new(bytes)).unwrap_err();
+            assert!(matches!(error, Error::Io(ref e) if e.kind() == std::io::ErrorKind::InvalidData), "{error}");
+        }
+    }
 
     fn mask(block: (usize, usize), compression: u16, count: u64) -> MaskImage {
         let (width, height) = block;

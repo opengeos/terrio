@@ -4053,3 +4053,15 @@ test("ZonalReducer and ZonalStream reject bad input", () => {
   // The zones have a CRS and the grid has none.
   assert.throws(() => new terrio.ZonalReducer(a, 300, 200, transform, undefined), /both declare a CRS/);
 });
+
+
+test("vsi: listUrl refuses invalid depth before fetching", async () => {
+  for (const depth of ["2", Infinity, NaN, -1, 0.5]) {
+    let fetched = false;
+    await assert.rejects(terrio.listUrl("s3://bucket/dir", {
+      depth,
+      fetch: async () => { fetched = true; throw new Error("unexpected fetch"); },
+    }), /depth must be a non-negative integer/);
+    assert.equal(fetched, false);
+  }
+});

@@ -333,6 +333,15 @@ def test_lazy_write_rejects_explicit_mask_for_tile_archives(tmp_path, extension)
     with pytest.raises(ValueError, match="dataset masks"):
         lazy.write(str(output), mask=np.full((2, 2), 255, dtype="uint8"))
     assert not output.exists()
+    # The module-level writer follows the same mask/refusal path as Raster.write.
+    terrio.Raster.from_array(
+        np.ones((2, 2), dtype="uint8"), (0, 1, 0, 2, 0, -1), "EPSG:4326"
+    ).write(str(source), mask=np.array([[255, 0], [0, 255]], dtype="uint8"))
+    masked = terrio.open_raster(str(source), lazy=True)
+    assert masked.has_mask
+    with pytest.raises(ValueError, match="dataset masks"):
+        terrio.write_raster(masked, str(output))
+    assert not output.exists()
 
 
 def test_bounded_palette_xml_keeps_legacy_truncation_and_end_tag_handling():

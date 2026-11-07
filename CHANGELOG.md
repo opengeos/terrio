@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- Calc disambiguates `-f` between the output format and a referenced `f` input, and preserves
+  literal arguments and fixed-arity option values. Translate handles zero- or two-value
+  `--scale` options before input/output paths without consuming the paths as scale values.
+
+- `rio stack --co KEY=VALUE` now applies creation options to the output instead of silently
+  discarding them.
+
+- Public `build_vrt` and same-CRS mosaic entry points reject unselected mixed band counts and
+  target extents intersecting no source. These strict checks deliberately differ from GDAL
+  `gdalbuildvrt`; calc retains zero/nodata-filled alignment outside its input extents.
+
+- Datum-grid hierarchy uses the first duplicate parent name and nests unparented subgrids under
+  the first containing extent. Existing ambiguous grid files can select a different datum-shift
+  grid. Lazy TIFF reads require malformed IFD chains to be repaired or rewritten before opening.
+
+- `terrio.rio.coords.disjoint_bounds` rejects opposite nondegenerate orientations in either
+  argument order; zero-height bounds remain boundary lines. Calc window alignment retains
+  blank nodata/zero-filled inputs outside the window rather than rejecting the calculation.
+
+- JavaScript `listUrl` rejects invalid `depth` values, including strings and `Infinity`;
+  omit `depth` or pass `null` for unlimited traversal. Native lazy TIFF opens now reject unreadable or
+  malformed directory/tag tables discovered during mask scanning, including files without masks,
+  instead of silently treating them as maskless.
+  Only tags relevant to image layout and masks are decoded; unrelated private tags are skipped.
+
 - Whole-file Shapefile reads, streaming reads and conversions omit deleted DBF records,
   preserving the physical feature IDs of live records.
 
@@ -244,6 +269,12 @@
   reader never reads them. In a build with the `gdal` feature and without `grib`, a `.grib2` path
   that is a Zarr store was decoded by wbraster's Zarr reader (ruzstd 0.8, RUSTSEC-2026-0344) with
   no option set; the GDAL backend reads it now, as it reads GRIB files in such a build.
+- Raster operations use each selected band's nodata, and overview mask discovery reports I/O
+  failures instead of silently losing validity (#627). Mosaics reject inconsistent band counts
+  and target extents intersecting no source, including separate-band mosaics. Reclassification
+  mapping-file inputs are restricted to regular files.
+- Python's `write_raster` forwards dataset masks and streams eligible PMTiles/MBTiles writes.
+  Tile archives that cannot represent a dataset mask are refused before creating output (#627).
 - CI checks `Cargo.lock` against the RustSec advisory database (`cargo audit`, the `audit` job)
   on every pull request and push to main. `.cargo/audit.toml` ignores the five advisories of zip
   8.6.0 and ruzstd 0.8.3, which wbraster 0.2.1 requires, until a wbraster release depends on zip
