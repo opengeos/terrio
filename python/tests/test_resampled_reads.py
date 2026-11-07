@@ -85,6 +85,27 @@ def sources(tmp_path_factory):
                 if overviews:
                     dst.build_overviews([2, 4], RR.nearest)
         paths[name] = path
+    # RGBA: the alpha band is the mask of bands 1 to 3, and band 4's mask is all valid.
+    rgba = np.stack([np.sin(x / (9 + b)) * 60 + 120 for b in range(3)]).astype("uint8")
+    alpha = np.full(x.shape, 255, "uint8")
+    alpha[:, :150] = 0
+    alpha[300:400, 400:500] = 0
+    path = str(d / "rgba.tif")
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=900,
+        height=700,
+        count=4,
+        dtype="uint8",
+        photometric="RGB",
+        alpha="YES",
+        crs="EPSG:3857",
+        transform=from_origin(0, 0, 1, 1),
+    ) as dst:
+        dst.write(np.concatenate([rgba, alpha[None]]))
+    paths["rgba"] = path
     return paths
 
 
@@ -226,8 +247,26 @@ def test_raster_read_resampled_arguments(sources):
     r = terrio.open_raster(sources["rgb-mask"], lazy=True)
     assert r.read_resampled((90, 70)).shape == (3, 70, 90)
     assert r.read_resampled((90, 70), band=2).shape == (70, 90)
-    assert r.read_resampled((90, 70), band=[3, 1]).shape == (2, 70, 90)
     assert r.read_resampled_masks((90, 70), band=2).shape == (70, 90)
+    # Bands in the order asked for, against rasterio's.
+    with rasterio.open(sources["rgb-mask"]) as s:
+        a = s.read([3, 1], out_shape=(2, 70, 90), resampling=RR.bilinear)
+        am = s.read_masks([3, 1], out_shape=(2, 70, 90), resampling=RR.bilinear)
+    b = r.read_resampled((90, 70), band=[3, 1], resampling="bilinear")
+    assert not np.array_equal(a[0], a[1])
+    assert np.array_equal(a, b)
+    pixels, masks = r.read_resampled_with_masks((90, 70), band=[3, 1], resampling="bilinear")
+    assert np.array_equal(pixels, a) and np.array_equal(masks, am)
+    # Band-distinct masks (an alpha band): each band's own, in the order asked for.
+    rgba = terrio.open_raster(sources["rgba"], lazy=True)
+    with rasterio.open(sources["rgba"]) as s:
+        am = s.read_masks([4, 1], out_shape=(2, 70, 90), resampling=RR.average)
+    bm = rgba.read_resampled_masks((90, 70), band=[4, 1], resampling="average")
+    assert not np.array_equal(am[0], am[1])
+    assert np.array_equal(am, bm)
+    assert np.array_equal(
+        rgba.read_resampled_with_masks((90, 70), band=[4, 1], resampling="average")[1], am
+    )
     for kwargs in (
         {"band": 4},
         {"resampling": "gauss"},

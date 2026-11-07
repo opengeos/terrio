@@ -480,7 +480,9 @@ impl PyRaster {
     ///
     /// Raises:
     ///     InvalidArgumentError: If a band does not exist, the output or the window is empty,
-    ///         the window is not within the raster, or the method is not one of those above.
+    ///         the window is not within the raster, or the method is not a known name.
+    ///     UnsupportedError: If the method applies to warps only (`min`, `max`, `med`, `q1`,
+    ///         `q3`, `sum`).
     #[pyo3(signature = (size, band=None, window=None, resampling="nearest", overview=None))]
     fn read_resampled<'py>(
         &mut self,

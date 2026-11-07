@@ -1279,6 +1279,15 @@ test("resampled reads from overviews, local and remote", async () => {
       // A fractional window.
       const frac = await read({ bands: [1], window: [10.5, 20.25, 400.5, 300.75], size: [61, 52], resampling: "bilinear" });
       assert.equal(frac.length, 61 * 52);
+      // Nearest neighbour samples the fractional window's pixel centres, not the truncated one's.
+      const [fw, fh, fx, fy, fxs, fys] = [27, 23, 10.5, 20.25, 40.5, 30.75];
+      const near = await read({ bands: [1], window: [fx, fy, fxs, fys], size: [fw, fh], overview: "NONE" });
+      const pick = (o, n, size) => Array.from({ length: size }, (_, i) => Math.floor((i + 0.5) * (n / size) + o + 1e-10));
+      const [cols, rows] = [pick(fx, fxs, fw), pick(fy, fys, fh)];
+      const [tcols, trows] = [pick(10, 40, fw), pick(20, 30, fh)];
+      assert.ok(cols.some((c, i) => c !== tcols[i]) && rows.some((r, j) => r !== trows[j]));
+      const expect = rows.flatMap((r) => cols.map((c) => data[r * w + c]));
+      assert.deepEqual([...near], expect);
       // Errors.
       await assert.rejects(async () => read({ bands: [1] }), /size/);
       await assert.rejects(async () => read({ size: [10, 10], resampling: "gauss" }), /resampling/);

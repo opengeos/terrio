@@ -1581,8 +1581,8 @@ class DatasetReader(DatasetBase):
         The core reads a window into a buffer of another size as GDAL's `RasterIO` does, from
         the overview it would choose, with GDAL's mask bands. Plain reads (a window of the
         buffer's size), datasets read otherwise (opened at an overview level, written in memory,
-        or through subclasses), paletted and complex bands, and Gaussian resampling, which the
-        core does not read, are read by `raster_io` instead.
+        or through subclasses), nodata values a PAM sidecar sets, paletted and complex bands, and
+        Gaussian resampling, which the core does not read, are read by `raster_io` instead.
 
         Args:
             window: `(x_off, y_off, x_size, y_size)` in full-resolution pixels.
@@ -1600,10 +1600,16 @@ class DatasetReader(DatasetBase):
             or ((w, h) == (buf[1], buf[0]) and all(float(v).is_integer() for v in window))
             # A dataset opened at an overview level (`_OverviewRaster`) is read by `raster_io`.
             or not isinstance(getattr(self, "_raster", None), _terrio.Raster)
+            # Subclasses overriding how levels, samples or masks are read keep their hooks.
             or type(self)._read_level is not DatasetReader._read_level
+            or type(self)._sample_level is not DatasetReader._sample_level
+            or type(self)._mask_reader is not DatasetReader._mask_reader
             or type(self)._mask_flags is not DatasetReader._mask_flags
             or self.structure.colormap is not None
             or np.dtype(self._dtype).kind == "c"
+            # The core masks the raster's own nodata value: a PAM sidecar's is not its.
+            or self._nodatavals is not None
+            or repr(self._nodata) != repr(self._raster.nodata)
         ):
             return None
         return {
