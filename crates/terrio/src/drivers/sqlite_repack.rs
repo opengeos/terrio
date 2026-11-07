@@ -590,37 +590,40 @@ impl MapSource<'_> {
 /// permissive display reader, validation reports truncated fields and invalid text.
 pub(crate) fn decode_record(record: &[u8], encoding: u32) -> Result<Vec<super::sqlite::Value>> {
     use super::sqlite::Value;
-    let layout = fields(record)?;
-    let mut values = super::sqlite::Db::record_values(record);
-    // SQLite exposes a stored NaN REAL as SQL NULL, including in view expressions.
-    for value in &mut values {
-        if matches!(value, Value::Real(number) if number.is_nan()) {
-            *value = Value::Null;
-        }
-    }
-    for (value, (serial, range)) in values.iter_mut().zip(layout) {
-        if serial >= 13 && serial % 2 == 1 {
-            let text = &record[range];
-            let decoded = match encoding {
-                1 => String::from_utf8(text.to_vec()).map_err(|_| bad("invalid UTF-8 record text"))?,
-                2 | 3 => {
-                    if !text.len().is_multiple_of(2) {
-                        return Err(bad("odd UTF-16 record length"));
+    fields(record)?
+        .into_iter()
+        .map(|(serial, range)| {
+            let bytes = &record[range];
+            Ok(match serial {
+                0 => Value::Null,
+                // Big-endian two's complement, 1 to 8 bytes.
+                1..=6 => Value::Int(bytes.iter().fold(if bytes[0] & 0x80 != 0 { -1 } else { 0 }, |v, b| (v << 8) | i64::from(*b))),
+                // SQLite exposes a stored NaN REAL as SQL NULL, including in view expressions.
+                7 => match f64::from_bits(u64::from_be_bytes(bytes.try_into().map_err(|_| bad("record real"))?)) {
+                    x if x.is_nan() => Value::Null,
+                    x => Value::Real(x),
+                },
+                8 => Value::Int(0),
+                9 => Value::Int(1),
+                serial if serial % 2 == 0 => Value::Blob(bytes.to_vec()),
+                _ => Value::Text(match encoding {
+                    1 => std::str::from_utf8(bytes).map_err(|_| bad("invalid UTF-8 record text"))?.to_owned(),
+                    2 | 3 => {
+                        let (words, rest) = bytes.as_chunks::<2>();
+                        if !rest.is_empty() {
+                            return Err(bad("odd UTF-16 record length"));
+                        }
+                        let units =
+                            words.iter().map(|pair| if encoding == 2 { u16::from_le_bytes(*pair) } else { u16::from_be_bytes(*pair) });
+                        char::decode_utf16(units)
+                            .collect::<std::result::Result<String, _>>()
+                            .map_err(|_| bad("invalid UTF-16 record text"))?
                     }
-                    let words: Vec<_> = text
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|pair| if encoding == 2 { u16::from_le_bytes(*pair) } else { u16::from_be_bytes(*pair) })
-                        .collect();
-                    String::from_utf16(&words).map_err(|_| bad("invalid UTF-16 record text"))?
-                }
-                _ => return Err(bad("unknown text encoding")),
-            };
-            *value = Value::Text(decoded);
-        }
-    }
-    Ok(values)
+                    _ => return Err(bad("unknown text encoding")),
+                }),
+            })
+        })
+        .collect()
 }
 
 /// Inspect every encoded table/index and page owner without allocating a replacement image.
@@ -831,6 +834,19 @@ mod validation_tests {
         assert!(matches!(decode_record(&record, 1).unwrap().as_slice(), [super::super::sqlite::Value::Null]));
         record[2..].copy_from_slice(&f64::INFINITY.to_be_bytes());
         assert!(matches!(decode_record(&record,1).unwrap().as_slice(),[super::super::sqlite::Value::Real(number)] if number.is_infinite()));
+    }
+    #[test]
+    fn record_numbers_and_blobs_match_the_display_reader() {
+        use writer::Value;
+        let mut values = vec![Value::Null, Value::Real(-2.5), Value::Blob(vec![0, 255, 7]), Value::Text("é水".into())];
+        // Every integer width, at both ends of its range (serial types 1 to 6, 8 and 9).
+        for bits in [8, 16, 24, 32, 48, 64] {
+            let max = if bits == 64 { i64::MAX } else { (1i64 << (bits - 1)) - 1 };
+            values.extend([Value::Int(max), Value::Int(-max - 1)]);
+        }
+        values.extend([Value::Int(0), Value::Int(1)]);
+        let record = writer::record(&values);
+        assert_eq!(decode_record(&record, 1).unwrap(), super::super::sqlite::Db::record_values(&record));
     }
     #[test]
     fn adjacent_fragments_require_an_exact_bounded_total() {
