@@ -5217,6 +5217,23 @@ mod tests {
         path
     }
 
+    /// The 2 x 2 output of the raster at `path`, as Float64, the same through every path that reads
+    /// the source by window: a lazy warp, a warp of several sources, a streamed warp, and a
+    /// serialized warped VRT (written to `dir`), which reads its source at the level it records.
+    fn warped_every_way(dir: &std::path::Path, path: &str, resampling: Resampling, overview: OverviewSelection) -> Vec<f64> {
+        let o = WarpOptions { size: Some((2, 2)), resampling, overview, output_type: Some(DataType::F64), ..Default::default() };
+        let lazy = warp_lazy(&mut crate::open_raster_lazy(path).unwrap(), &o).unwrap().raster.data.to_f64_vec();
+        let many = warp_paths(&[path.into(), path.into()], &o).unwrap().raster.data.to_f64_vec();
+        assert_eq!(many, lazy, "{path}, {resampling:?}, {overview:?}: several sources");
+        for name in ["streamed.tif", "serialized.vrt"] {
+            let out = dir.join(name).to_str().unwrap().to_string();
+            warp_to_path(&[path.into()], &o, &out, &Default::default()).unwrap();
+            let read = crate::open_raster_lazy(&out).unwrap().read().unwrap().raster.data.to_f64_vec();
+            assert_eq!(read, lazy, "{path}, {resampling:?}, {overview:?}: {name}");
+        }
+        lazy
+    }
+
     /// A `sum` that reads an overview counts each of its pixels for the source pixels it stands
     /// for, `(W / w) * (H / h)` for a `w` x `h` overview of a `W` x `H` source, so that it
     /// estimates the source's total: whether the automatic choice gives the overview or a level is
@@ -5231,20 +5248,7 @@ mod tests {
         // 10 x 10 pixels and an overview of 3 x 3: each overview pixel stands for 10/3 x 10/3.
         let odd = write_with_overviews(d, "odd.tif", (10, 10), vec![4], "average", |_, _| 1.0);
         let ramp = write_with_overviews(d, "ramp.tif", (4, 4), vec![2], "nearest", |c, r| (c + 4 * r) as f64);
-        // The 2 x 2 output, the same through every path that reads the source by window.
-        let warped = |path: &str, resampling: Resampling, overview: OverviewSelection| -> Vec<f64> {
-            let o = WarpOptions { size: Some((2, 2)), resampling, overview, output_type: Some(DataType::F64), ..Default::default() };
-            let lazy = warp_lazy(&mut crate::open_raster_lazy(path).unwrap(), &o).unwrap().raster.data.to_f64_vec();
-            let many = warp_paths(&[path.into(), path.into()], &o).unwrap().raster.data.to_f64_vec();
-            assert_eq!(many, lazy, "{path}, {resampling:?}, {overview:?}: several sources");
-            for name in ["streamed.tif", "serialized.vrt"] {
-                let out = d.join(name).to_str().unwrap().to_string();
-                warp_to_path(&[path.into()], &o, &out, &Default::default()).unwrap();
-                let read = crate::open_raster_lazy(&out).unwrap().read().unwrap().raster.data.to_f64_vec();
-                assert_eq!(read, lazy, "{path}, {resampling:?}, {overview:?}: {name}");
-            }
-            lazy
-        };
+        let warped = |path: &str, resampling: Resampling, overview: OverviewSelection| warped_every_way(d, path, resampling, overview);
         let total = |path: &str, overview| warped(path, Resampling::Sum, overview).iter().sum::<f64>();
         assert_eq!(total(&ones, OverviewSelection::Auto), 16.0);
         assert_eq!(total(&ones, OverviewSelection::None), 16.0);
@@ -5269,6 +5273,25 @@ mod tests {
         let average = |overview| warped(&ramp, Resampling::Average, overview);
         assert_eq!(average(OverviewSelection::Auto), average(OverviewSelection::Level(0)));
         assert_ne!(average(OverviewSelection::Auto), average(OverviewSelection::None));
+    }
+
+    /// Each axis of an overview has its own ratio, and a `sum` counts each overview pixel for their
+    /// product: a 9 x 5 source has an overview of 5 x 3 at 2, whose pixels stand for 9/5 by 5/3
+    /// source pixels, 3 in all, where the ratio of one axis squared would give 3.24 or 2.78. The
+    /// total is the source's, up to the rounding of the overview's Float32 means, through every
+    /// path that reads the source by window, whether a level is given or the automatic choice
+    /// gives it.
+    #[test]
+    fn a_sum_counts_each_axis_of_an_overview_by_its_own_ratio() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = |c: usize, r: usize| ((c * 3 + r * 7) % 11) as f64 + 0.5;
+        let path = write_with_overviews(dir.path(), "oblong.tif", (9, 5), vec![2], "average", f);
+        assert_eq!(crate::open_raster_lazy(&path).unwrap().overviews(), [(5, 3)]);
+        let exact: f64 = (0..5).flat_map(|r| (0..9).map(move |c| f(c, r))).sum();
+        let level = warped_every_way(dir.path(), &path, Resampling::Sum, OverviewSelection::Level(0));
+        assert_eq!(warped_every_way(dir.path(), &path, Resampling::Sum, OverviewSelection::Auto), level);
+        let total: f64 = level.iter().sum();
+        assert!(((total - exact) / exact).abs() < 1e-6, "{total}, not {exact}");
     }
 
     /// A source that records the level and the number of pixels of each window read from it.

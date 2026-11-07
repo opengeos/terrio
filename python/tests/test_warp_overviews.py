@@ -190,6 +190,30 @@ def test_a_sum_counts_an_overview_whose_factor_does_not_divide_the_size(tmp_path
     assert reduced.sum() == pytest.approx(100.0, rel=1e-6)
 
 
+def test_a_sum_counts_each_axis_of_an_overview_by_its_own_ratio(tmp_path):
+    # A 9 x 5 raster has an overview of 5 x 3 at 2, whose pixels stand for 9/5 by 5/3 pixels, 3 in
+    # all, where the ratio of one axis squared would give 3.24 or 2.78. Every `terrio.rio` path
+    # that counts an overview's pixels: a reduced read of a whole `WarpedVRT`, and a dataset opened
+    # at the overview level, read through a `WarpedVRT` and reprojected.
+    path = str(tmp_path / "oblong.tif")
+    values = (np.add.outer(np.arange(5) * 7, np.arange(9) * 3) % 11 + 0.5).astype("float32")
+    terrio.Raster.from_array(values, (0.0, 1.0, 0.0, 5.0, 0.0, -1.0), crs="EPSG:3857").write(
+        path, overviews=[2], overview_resampling="average"
+    )
+    assert terrio.open_raster(path, lazy=True).overviews == [(5, 3)]
+    exact = values.astype("float64").sum()
+    with terrio.rio.open(path) as src, WarpedVRT(src, resampling=Resampling.sum) as vrt:
+        reduced = vrt.read(1, out_shape=(3, 5)).astype("float64").sum()
+    one = {"dst_transform": from_origin(0, 5, 9, 5), "dst_crs": "EPSG:3857"}
+    reprojected = np.zeros((1, 1))
+    with terrio.rio.open(path, overview_level=0) as src:
+        with WarpedVRT(src, resampling=Resampling.sum) as vrt:
+            level = vrt.read(1).astype("float64").sum()
+        reproject(terrio.rio.band(src, 1), reprojected, resampling=Resampling.sum, **one)
+    for name, total in [("reduced", reduced), ("level", level), ("reproject", reprojected.sum())]:
+        assert total == pytest.approx(exact, rel=1e-6), name
+
+
 @pytest.mark.parametrize("overviews", [[2, 4], None])
 def test_a_reduced_read_of_any_bands_of_a_sum_warped_vrt_is_warped_into_its_buffer(
     tmp_path, overviews
