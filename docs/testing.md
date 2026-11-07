@@ -21,10 +21,15 @@ bundles its own GDAL: changing the environment variable does not replace that li
 When upgrading, select and validate a compatible wheel; the assertion intentionally
 fails if its bundled GDAL differs, including a development-version suffix.
 
-Coordinate upgrades with the independent pins and matching cache key in
-`.github/workflows/ci-extended.yml`, the PROJ reference, and any regenerated reference
-data. Keep historical GDAL version annotations attached to the results they describe;
-update current-reference documentation and tests only after validating the new oracle.
+The dataset cache keys in `ci.yml` and `ci-extended.yml` currently resolve to the same
+value: both use GDAL 3.12.2, PROJ 9.8.1, and the same three hashed input files. This lets
+the workflows share cached datasets within GitHub Actions cache access rules. Update
+both workflows' reference pins and cache keys together when moving the reference;
+a `ci.yml`-only version bump would make their keys diverge.
+
+Coordinate upgrades with the PROJ reference and any regenerated reference data. Keep
+historical GDAL version annotations attached to the results they describe; update
+current-reference documentation and tests only after validating the new oracle.
 
 ## Test data
 
