@@ -575,10 +575,10 @@ mod tests {
         }
     }
 
-    /// Transparent bright pixels must not bleed into averaged RGB overviews.
-    /// Compare every stored level with whole writes, plus an independent expected color.
+    /// RGB overviews exclude transparent pixels when alpha is enabled and average all pixels
+    /// when it is disabled. Compare every level with whole writes and independent expected values.
     #[test]
-    fn streamed_cog_overviews_respect_source_alpha() {
+    fn streamed_cog_overviews_respect_alpha_interpretation() {
         let dir = tempfile::tempdir().unwrap();
         let (width, height, bands) = (128, 64, 4);
         let data = (0..width * height * bands)
@@ -596,10 +596,8 @@ mod tests {
             .iter()
             .map(|c| crate::BandMetadata { color_interp: Some((*c).into()), ..Default::default() })
             .collect();
-        for use_alpha in [true, false] {
-            if !use_alpha {
-                ds.band_metadata[3].color_interp = None;
-            }
+        for use_alpha in [false, true] {
+            ds.band_metadata[3].color_interp = use_alpha.then(|| "Alpha".into());
             let mut options = RasterWriteOptions {
                 driver: Some(RasterDriver::Cog),
                 tile_size: Some(16),
