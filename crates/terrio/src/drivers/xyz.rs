@@ -6,11 +6,23 @@
 //! XYZ ASCII grids: one `x y z` line per cell centre, rows in order. Typed as GDAL types them.
 
 use super::common;
+use crate::dataset::fallible;
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
 use std::path::Path;
 use wbraster::raster::RasterData;
 use wbraster::{DataType, Raster};
+
+/// The most cells a grid may have for each of its points, and the most any grid may have
+/// whatever its points: terrio's bounds, as GDAL's driver has none of its own.
+const MAX_CELLS_PER_POINT: usize = 256;
+const MIN_MAX_CELLS: usize = 1 << 24;
+
+/// The number of cells `extent / step + 1` along an axis, `None` when it is out of range.
+fn cells(extent: f64, step: f64) -> Option<usize> {
+    let n = (extent / step).round() + 1.0;
+    (n >= 1.0 && n < usize::MAX as f64).then_some(n as usize)
+}
 
 /// Reads an XYZ grid. Missing cells are 0, as in GDAL.
 pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
@@ -25,6 +37,9 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
         let (Ok(x), Ok(y), Some(z)) = (f[0].parse::<f64>(), f[1].parse::<f64>(), common::parse_f64(f[2])) else {
             continue; // a header line
         };
+        if !x.is_finite() || !y.is_finite() {
+            return Err(Error::InvalidData(format!("{}: a point at ({x}, {y}) off any grid", path.display())));
+        }
         if !(z >= i32::MIN as f64 && z <= i32::MAX as f64) || z.fract() != 0.0 {
             data_type = DataType::F32;
         } else if matches!(data_type, DataType::U8 | DataType::I16) && !(0.0..=255.0).contains(&z) {
@@ -44,9 +59,24 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     };
     let (x0, x1, dx) = axis(|p| p.0);
     let (y0, y1, dy) = axis(|p| p.1);
-    let cols = ((x1 - x0) / dx).round() as usize + 1;
-    let rows = ((y1 - y0) / dy).round() as usize + 1;
-    let mut grid = vec![0.0f64; cols * rows];
+    let (cols, rows) = (cells(x1 - x0, dx), cells(y1 - y0, dy));
+    // The grid is the points' extent at their smallest spacing: a few points far apart at a tiny
+    // spacing would declare more cells than any file of points could fill. Missing cells are
+    // allowed, up to MAX_CELLS_PER_POINT for each point given (and any grid of up to
+    // MIN_MAX_CELLS cells), and no more than the memory can hold.
+    let n = cols.zip(rows).and_then(|(c, r)| c.checked_mul(r));
+    let most = pts.len().saturating_mul(MAX_CELLS_PER_POINT).max(MIN_MAX_CELLS);
+    let n = n.filter(|n| *n <= most).ok_or_else(|| {
+        Error::InvalidData(format!(
+            "{}: {} points spread over a grid of more than {most} cells: not a regular grid",
+            path.display(),
+            pts.len()
+        ))
+    })?;
+    let (cols, rows) = (cols.unwrap_or(1), rows.unwrap_or(1));
+    fallible::check_usable(n.checked_mul(size_of::<f64>()), || format!("XYZ: a grid of {cols} x {rows} cells"))
+        .map_err(|e| Error::InvalidData(format!("{}: {e}", path.display())))?;
+    let mut grid = fallible::filled(n, 0.0f64, "an XYZ grid")?;
     for (x, y, z) in &pts {
         let c = ((x - x0) / dx).round() as usize;
         let r = ((y1 - y) / dy).round() as usize;
@@ -82,4 +112,39 @@ pub(crate) fn write(r: &Raster, path: &Path) -> Result<()> {
     // file would open as a grid of old and new points.
     std::fs::write(path, s)?;
     common::write_pam(path, &r.crs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_text(text: &str) -> Result<RasterDataset> {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("g.xyz");
+        std::fs::write(&p, text).unwrap();
+        read(&p)
+    }
+
+    #[test]
+    fn reads_a_grid_with_a_missing_cell() {
+        let ds = read_text("0 1 5\n1 1 6\n0 0 7\n").unwrap();
+        assert_eq!((ds.raster.cols, ds.raster.rows), (2, 2));
+        assert_eq!(ds.raster.data.to_f64_vec(), vec![5.0, 6.0, 7.0, 0.0]);
+    }
+
+    #[test]
+    fn points_spread_over_a_huge_grid_are_refused() {
+        // Three points 10^9 apart at a spacing of 10^-6: 10^15 cells.
+        let e = read_text("0 0 1\n0.000001 0 1\n1000000000 0 1\n").unwrap_err();
+        assert!(e.to_string().contains("not a regular grid"), "{e}");
+        // Points at 10^300: a cell count past any integer.
+        let e = read_text("0 0 1\n1 1 2\n1e300 1e300 3\n").unwrap_err();
+        assert!(e.to_string().contains("not a regular grid"), "{e}");
+    }
+
+    #[test]
+    fn a_point_at_an_infinite_coordinate_is_refused() {
+        let e = read_text("0 0 1\n1 0 2\ninf 0 3\n").unwrap_err();
+        assert!(e.to_string().contains("off any grid"), "{e}");
+    }
 }
