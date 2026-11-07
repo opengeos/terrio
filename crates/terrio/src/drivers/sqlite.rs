@@ -100,6 +100,12 @@ pub(crate) fn text_encoding(field: u32) -> u32 {
     }
 }
 
+/// Read the effective SQLite encoding once at the header boundary, including its UTF-8 default.
+pub(crate) fn header_text_encoding(bytes: &[u8]) -> Result<u32> {
+    let raw = bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header encoding"))?;
+    Ok(text_encoding(u32::from_be_bytes(raw)))
+}
+
 /// Decode bounded batches in input order, stopping before the next batch after an error.
 /// The page scan has already collected raw records; this bounds speculative value decoding,
 /// not the memory used by the whole-table API.

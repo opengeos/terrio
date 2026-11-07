@@ -55,3 +55,47 @@ fn reads_text_in_each_database_encoding() {
     }
     check("UTF-8-encoding0", "TRUNCATE_ME");
 }
+
+#[test]
+fn reads_header_aliases_and_rejects_surplus_record_bytes() {
+    // Host sqlite3 3.54.0 accepts the header aliases but rejects these surplus bytes.
+    let dir = tempfile::tempdir().unwrap();
+    for (name, source) in fixtures::DATABASES.iter().filter(|(name, _)| ["UTF-8", "UTF-16le", "UTF-16be"].contains(name)) {
+        let native = match *name {
+            "UTF-8" => 1u32,
+            "UTF-16le" => 2,
+            _ => 3,
+        };
+        for raw in if native == 1 { vec![0, 1, 4, 5, 8, 256, 257] } else { vec![native, native + 4, native + 256] } {
+            let mut bytes = source.to_vec();
+            bytes[56..60].copy_from_slice(&raw.to_be_bytes());
+            let path = dir.path().join("header.gpkg");
+            std::fs::write(&path, bytes).unwrap();
+            let (a, b) = features(path.to_str().unwrap(), Some((5., 5., 15., 15.))).unwrap();
+            for layer in [a, b] {
+                assert_eq!(layer.features[0].attributes, [FieldValue::Text("TRUNCATE_ME".into())], "{name} {raw}");
+            }
+        }
+        let marker: Vec<u8> = if native == 1 {
+            b"TRUNCATE_ME".to_vec()
+        } else {
+            "TRUNCATE_ME".encode_utf16().flat_map(|u| if native == 2 { u.to_le_bytes() } else { u.to_be_bytes() }).collect()
+        };
+        let mut bytes = source.to_vec();
+        let at = bytes.windows(marker.len()).position(|b| b == marker).unwrap();
+        let serial = at - 29 - 1;
+        assert_eq!(bytes[serial] as usize, 13 + 2 * marker.len());
+        bytes[serial] -= if native == 1 { 2 } else { 4 };
+        let path = dir.path().join("surplus.gpkg");
+        std::fs::write(&path, bytes).unwrap();
+        for bbox in [None, Some((5., 5., 15., 15.))] {
+            let options = VectorOpenOptions { spatial_filter: bbox, ..Default::default() };
+            #[cfg(not(feature = "gdal"))]
+            assert!(terrio::open_vector(path.to_str().unwrap(), &options).is_err(), "{name}");
+            assert!(
+                terrio::stream::open_layers(path.to_str().unwrap(), &options, 1).and_then(|mut r| r.remove(0).read_all()).is_err(),
+                "{name}"
+            );
+        }
+    }
+}

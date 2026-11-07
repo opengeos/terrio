@@ -416,7 +416,8 @@ pub(crate) fn compact(bytes: &[u8]) -> Result<Vec<u8>> {
     let mut schema = Vec::new();
     source.tree(1, false, &mut schema, 0)?;
     if matches!(be(bytes, 68)?, 0x4750_4b47 | 0x4750_3130 | 0x4750_3131) {
-        let names = schema.iter().map(|(_, record)| schema_name(record, be(bytes, 56)?)).collect::<Result<Vec<_>>>()?;
+        let encoding = super::sqlite::header_text_encoding(bytes)?;
+        let names = schema.iter().map(|(_, record)| schema_name(record, encoding)).collect::<Result<Vec<_>>>()?;
         if ["gpkg_contents", "gpkg_spatial_ref_sys"].iter().any(|required| !names.iter().any(|name| name.eq_ignore_ascii_case(required))) {
             return Err(bad("GeoPackage base tables are missing"));
         }
@@ -661,7 +662,7 @@ pub(crate) fn inspect(
     });
     let mut source = Source::validated(bytes)?;
     let (size, count) = (source.size, source.count);
-    let encoding = be(bytes, 56)?;
+    let encoding = super::sqlite::header_text_encoding(bytes)?;
     let mut encoded = Vec::new();
     source.tree(1, false, &mut encoded, 0)?;
     check_rowids(&encoded)?;
