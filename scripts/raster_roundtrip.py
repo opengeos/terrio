@@ -216,6 +216,19 @@ def gdal_open(path):
     return ds
 
 
+def same_srs(a, b):
+    """Whether two GDAL spatial references are the same CRS, ignoring axis order of geographic CRSs.
+
+    Args:
+        a: An osr.SpatialReference.
+        b: Another osr.SpatialReference.
+
+    Returns:
+        True when the CRSs match.
+    """
+    return bool(a.IsSame(b, ["CRITERION=EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS"]))
+
+
 def same_crs(a, b):
     """Whether two GDAL datasets have the same CRS (both empty counts as the same).
 
@@ -229,8 +242,7 @@ def same_crs(a, b):
     wa, wb = a.GetProjection(), b.GetProjection()
     if not wa or not wb:
         return not wa and not wb
-    sa, sb = osr.SpatialReference(wkt=wa), osr.SpatialReference(wkt=wb)
-    return bool(sa.IsSame(sb, ["CRITERION=EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS"]))
+    return same_srs(osr.SpatialReference(wkt=wa), osr.SpatialReference(wkt=wb))
 
 
 def compare(expected, actual, lossy=0, check_crs=True, check_nodata=True, check_type=True, type_changes=None, default_fill=None):
@@ -312,7 +324,7 @@ def exported_crs_differs(path):
     reported = osr.SpatialReference()
     if reported.ImportFromWkt(wkt) != 0:
         return "exported WKT unreadable"
-    if not reported.IsSame(osr.SpatialReference(wkt=expected), ["CRITERION=EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS"]):
+    if not same_srs(reported, osr.SpatialReference(wkt=expected)):
         return f"exported WKT differs: {reported.ExportToProj4()}"
     return None
 

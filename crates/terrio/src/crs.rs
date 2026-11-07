@@ -322,12 +322,10 @@ pub(crate) fn epsg_crs_info(code: u32) -> wbraster::CrsInfo {
 /// `wbraster::CrsInfo::from_epsg` generates for its EPSG code, as wbraster's readers and callers
 /// building rasters store it, otherwise the stored WKT (which a file holds) unchanged.
 pub(crate) fn raster_crs_wkt(c: &wbraster::CrsInfo) -> Option<String> {
-    match (c.epsg, c.wkt.as_deref()) {
-        (Some(code), Some(wkt)) if wbprojection::to_ogc_wkt(code).is_ok_and(|generated| generated == wkt) => {
-            epsg_crs_info(code).wkt.or_else(|| c.wkt.clone())
-        }
-        _ => c.wkt.clone(),
-    }
+    let (Some(code), Some(wkt)) = (c.epsg, c.wkt.as_deref()) else { return c.wkt.clone() };
+    let Some(registry) = epsg_crs_info(code).wkt else { return c.wkt.clone() };
+    let same = registry == wkt || wbprojection::to_ogc_wkt(code).is_ok_and(|generated| generated == wkt);
+    if same { Some(registry) } else { c.wkt.clone() }
 }
 
 /// Options of a [`Transformer`].
