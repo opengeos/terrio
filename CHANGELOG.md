@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- Code-only raster CRSs now export terrio's registry WKT, preserving the EPSG authority and
-  datum identity (#610). This corrects false northing in GDA94 MGA zones, US survey-foot State
-  Plane definitions and Web Mercator's spherical model. Explicit WKT stored in a file is kept.
+- Native FlatGeobuf readers reject incomplete records, mismatched nonzero feature counts and
+  invalid coordinate dimensions/part bounds. GDAL-enabled eager reads retain GDAL fallback
+  admission behavior; native range and stream checks apply in either build.
 
 - Python's `Raster.read_resampled`, `read_resampled_masks` and `read_resampled_with_masks`, and
   JavaScript's `readResampled`, `readResampledMasks` and `readResampledWithMasks` (on `Dataset`
@@ -131,6 +131,9 @@
   the same path takes 0.10 to 0.11 s per write as EHdr (was 0.15 to 0.16 s), 0.11 to 0.12 s as ENVI
   (0.15 to 0.76 s), 0.10 to 0.11 s as SAGA (0.15 to 0.39 s) and 0.25 s as RST (0.30 to 0.67 s). A
   slope file-to-file benchmark takes 0.53 s, where it took 1.01 s (`gdaldem`: 0.90 s).
+- Code-only raster CRSs now export terrio's registry WKT, preserving the EPSG authority and
+  datum identity (#610). This corrects false northing in GDA94 MGA zones, US survey-foot State
+  Plane definitions and Web Mercator's spherical model. Explicit WKT stored in a file is kept.
 - Python operations given a `terrio.Raster` held in memory share it instead of copying it; the
   `mask=` raster of `footprint` and `polygonize`, the rasters of the point-cloud functions and
   the rasters written as netCDF groups are still copied. An operation does not change
