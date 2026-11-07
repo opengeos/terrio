@@ -360,7 +360,7 @@ impl TransformOptions {
 }
 
 pub use terrio_crs::CoordinateOperation;
-pub use terrio_crs::{CrsEntry, CrsKind, CrsQuery, EPSG_VERSION};
+pub use terrio_crs::{AUTHORITIES, CrsEntry, CrsKind, CrsQuery, EPSG_VERSION, check_authorities};
 
 /// The CRSs of the registries terrio carries (EPSG [`EPSG_VERSION`], ESRI and IAU_2015) that a
 /// query selects, for searchable CRS pickers, as GDAL's `OSRGetCRSInfoListFromDatabase` describes

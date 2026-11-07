@@ -9,7 +9,7 @@
 
 use clap::builder::TypedValueParser;
 use std::io::Write;
-use terrio::crs::{CrsKind, CrsQuery, SpatialRef, TransformOptions, Transformer, list_crs};
+use terrio::crs::{AUTHORITIES, CrsKind, CrsQuery, SpatialRef, TransformOptions, Transformer, list_crs};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -123,10 +123,10 @@ pub struct ListArgs {
     /// `AUTHORITY:CODE` (`Albers`, `3577`, `EPSG:3577`, `gda94 albers`). Every CRS when none.
     text: Vec<String>,
     /// List only the CRSs of this authority (repeatable).
-    #[arg(long, value_name = "AUTHORITY", value_parser = clap::builder::PossibleValuesParser::new(["EPSG", "ESRI", "IAU_2015"]).map(|a| a.to_string()), ignore_case = true)]
+    #[arg(long, value_name = "AUTHORITY", value_parser = authority_parser(), ignore_case = true)]
     authority: Vec<String>,
     /// List only the CRSs of this kind (repeatable).
-    #[arg(long, value_name = "KIND", value_parser = clap::builder::PossibleValuesParser::new(CrsKind::ALL.map(CrsKind::as_str)).map(|k| k.parse::<CrsKind>().expect("a listed kind")), ignore_case = true)]
+    #[arg(long, value_name = "KIND", value_parser = kind_parser(), ignore_case = true)]
     kind: Vec<CrsKind>,
     /// List deprecated CRSs too, marked `[deprecated]`.
     #[arg(long, visible_alias = "allow-deprecated")]
@@ -137,6 +137,17 @@ pub struct ListArgs {
     json: bool,
 }
 
+/// The authorities `--authority` accepts, whatever their case.
+fn authority_parser() -> impl TypedValueParser<Value = String> {
+    clap::builder::PossibleValuesParser::new(AUTHORITIES).map(|a| a.to_string())
+}
+
+/// The kinds `--kind` accepts, whatever their case.
+fn kind_parser() -> impl TypedValueParser<Value = CrsKind> {
+    clap::builder::PossibleValuesParser::new(CrsKind::ALL.map(CrsKind::as_str))
+        .try_map(|k: String| k.parse::<CrsKind>().map_err(|e| e.to_string()))
+}
+
 /// Lists registry CRSs, one per line as `projinfo --list-crs` prints them: `EPSG:3577 "GDA94 /
 /// Australian Albers"`, then ` [deprecated]` for a deprecated CRS.
 pub fn list(a: ListArgs) -> terrio::Result<()> {
@@ -144,7 +155,9 @@ pub fn list(a: ListArgs) -> terrio::Result<()> {
         CrsQuery { authorities: a.authority, kinds: a.kind, include_deprecated: a.include_deprecated, text: Some(a.text.join(" ")) };
     let entries = list_crs(&query);
     if a.json {
-        println!("{}", serde_json::to_string_pretty(&entries).map_err(|e| terrio::Error::InvalidData(e.to_string()))?);
+        let json = serde_json::to_string_pretty(&entries).map_err(|e| terrio::Error::InvalidData(e.to_string()))?;
+        // As the listing below, a closed pipe (`| head`) ends the output.
+        let _ = writeln!(std::io::stdout().lock(), "{json}");
         return Ok(());
     }
     let mut out = std::io::stdout().lock();

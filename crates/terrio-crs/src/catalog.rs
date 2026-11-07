@@ -22,7 +22,17 @@ static DATA: &[u8] = include_bytes!("../data/crs_catalog.tsv.zst");
 pub const EPSG_VERSION: &str = "v12.029";
 
 /// The authorities [`list_crs`] lists, in the order it lists them.
-const AUTHORITIES: [&str; 3] = ["EPSG", "ESRI", "IAU_2015"];
+pub const AUTHORITIES: [&str; 3] = ["EPSG", "ESRI", "IAU_2015"];
+
+/// Checks the authorities a query names, whatever their case: each must be one of
+/// [`AUTHORITIES`]. The bindings and `terrio list-crs` refuse another, where [`list_crs`] lists
+/// nothing for it.
+pub fn check_authorities(authorities: &[String]) -> crate::Result<()> {
+    match authorities.iter().find(|a| !AUTHORITIES.iter().any(|x| x.eq_ignore_ascii_case(a.trim()))) {
+        Some(a) => Err(crate::Error::InvalidArgument(format!("unknown CRS authority {a:?}: expected one of {}", AUTHORITIES.join(", ")))),
+        None => Ok(()),
+    }
+}
 
 /// The kind of a CRS, as GDAL's `OSRCRSType` gives it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -362,6 +372,9 @@ mod tests {
             assert!(e.area_name.as_deref().is_some_and(|a| a.starts_with("Australia - Australian Capital Territory")));
             assert_eq!(e.authority_code(), "EPSG:3577");
         }
+        // Every word must match the same CRS: "gda94" is in EPSG:3577's name, "EPSG:3857" is not.
+        let partial = list_crs(&CrsQuery { text: Some("gda94 EPSG:3857".into()), ..Default::default() });
+        assert!(!partial.iter().any(|e| e.authority == "EPSG" && e.code == 3577));
         // A word must begin the code: 13577 is not EPSG:3577, nor is ESRI:3577 (no such CRS).
         let found = list_crs(&CrsQuery { text: Some("ESRI:3577".into()), ..Default::default() });
         assert!(found.is_empty());
@@ -454,6 +467,14 @@ mod tests {
         let mars = list_crs(&CrsQuery { authorities: vec!["IAU_2015".into()], text: Some("49902".into()), ..Default::default() });
         assert_eq!(mars.len(), 1);
         assert_eq!((mars[0].kind, mars[0].celestial_body.as_deref()), (CrsKind::Other, Some("Mars")));
+    }
+
+    #[test]
+    fn checks_authorities_whatever_their_case() {
+        assert!(check_authorities(&[]).is_ok());
+        assert!(check_authorities(&["epsg".into(), " ESRI ".into(), "IAU_2015".into()]).is_ok());
+        let err = check_authorities(&["EPSG".into(), "OGC".into()]).unwrap_err();
+        assert!(err.to_string().contains("unknown CRS authority \"OGC\""), "{err}");
     }
 
     #[test]

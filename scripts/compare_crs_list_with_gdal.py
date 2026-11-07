@@ -70,7 +70,10 @@ def gdal_entries(authority):
 
 def terrio_list(executable, *args):
     """Run ``terrio list-crs --include-deprecated --json`` with more arguments."""
-    out = subprocess.run([executable, "list-crs", "--include-deprecated", "--json", *args], capture_output=True, text=True, check=True)
+    try:
+        out = subprocess.run([executable, "list-crs", "--include-deprecated", "--json", *args], capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"terrio list-crs failed: {error.stderr.strip()}") from error
     return json.loads(out.stdout)
 
 
@@ -108,8 +111,13 @@ def main():
     # The issue's acceptance: EPSG:3577 by a word of its name and by its code.
     for text in ("Albers", "3577"):
         found = [e for e in terrio_list(args.terrio, text) if (e["authority"], e["code"]) == ("EPSG", 3577)]
-        status = "identical" if found and found[0] == gdal_entries("EPSG")[3577] else "differs"
-        cases.append({"name": f"EPSG:3577 found by {text!r}", "status": status, "detail": "" if found else "not found"})
+        expected = gdal_entries("EPSG")[3577]
+        fields = [k for k in expected if found[0].get(k) != expected[k]] if found else []
+        status = "identical" if found and not fields else "differs"
+        detail = "" if found else "not found"
+        if fields:
+            detail = f"differs in {', '.join(fields)}"
+        cases.append({"name": f"EPSG:3577 found by {text!r}", "status": status, "detail": detail})
     if args.json:
         print(json.dumps(cases, indent=1))
     else:

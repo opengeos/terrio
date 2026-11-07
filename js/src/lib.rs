@@ -1193,12 +1193,9 @@ pub fn list_crs(text: Option<String>, options: JsValue) -> Result<JsValue, JsErr
     let kinds = o.kind.map(OneOrMany::into_vec).unwrap_or_default();
     let kinds =
         kinds.iter().map(|k| k.parse::<terrio::crs::CrsKind>()).collect::<Result<Vec<_>, _>>().map_err(|e| JsError::new(&e.to_string()))?;
-    let query = terrio::crs::CrsQuery {
-        authorities: o.authority.map(OneOrMany::into_vec).unwrap_or_default(),
-        kinds,
-        include_deprecated: o.include_deprecated,
-        text,
-    };
+    let authorities = o.authority.map(OneOrMany::into_vec).unwrap_or_default();
+    terrio::crs::check_authorities(&authorities).map_err(|e| JsError::new(&e.to_string()))?;
+    let query = terrio::crs::CrsQuery { authorities, kinds, include_deprecated: o.include_deprecated, text };
     to_js(&terrio::crs::list_crs(&query))
 }
 

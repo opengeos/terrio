@@ -374,7 +374,13 @@ test("listCrs lists the registry CRSs", () => {
   assert.ok(geographic.length > 600 && geographic.every((e) => e.kind === "geographic_2d" && !e.deprecated));
   assert.deepEqual(terrio.listCrs("EPSG:3785"), []);
   assert.equal(terrio.listCrs("EPSG:3785", { includeDeprecated: true })[0].deprecated, true);
+  const both = terrio.listCrs("albers", { authority: ["epsg", "ESRI"] });
+  assert.deepEqual([...new Set(both.map((e) => e.authority))].sort(), ["EPSG", "ESRI"]);
+  assert.ok(terrio.listCrs(undefined, { authority: "IAU_2015" }).every((e) => e.authority === "IAU_2015"));
+  assert.throws(() => terrio.listCrs(undefined, { authority: "OGC" }), /unknown CRS authority/);
   assert.throws(() => terrio.listCrs(undefined, { kind: "geographic" }), /unknown CRS kind/);
+  assert.throws(() => terrio.listCrs(undefined, { authorty: "EPSG" }), /unknown field/);
+  assert.throws(() => terrio.listCrs(undefined, { includeDeprecated: "yes" }), /invalid type/);
   assert.equal(terrio.describeCrs(`${albers.authority}:${albers.code}`).epsg, 3577);
 });
 

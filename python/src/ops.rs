@@ -1078,7 +1078,7 @@ fn set_network_enabled(enabled: Option<bool>) {
 ///     and ``celestial_body`` (str or None).
 ///
 /// Raises:
-///     InvalidArgumentError: If a kind is unknown.
+///     InvalidArgumentError: If an authority or a kind is unknown.
 #[pyfunction]
 #[pyo3(signature = (text=None, *, authority=None, kind=None, include_deprecated=false))]
 fn list_crs<'py>(
@@ -1104,7 +1104,9 @@ fn list_crs<'py>(
         .collect::<Result<Vec<_>, _>>()
         .map_err(terrio::Error::from)
         .py()?;
-    let query = terrio::crs::CrsQuery { authorities: strings(authority)?, kinds, include_deprecated, text };
+    let authorities = strings(authority)?;
+    terrio::crs::check_authorities(&authorities).map_err(terrio::Error::from).py()?;
+    let query = terrio::crs::CrsQuery { authorities, kinds, include_deprecated, text };
     let entries = py.detach_value(|| terrio::crs::list_crs(&query))?;
     let text = serde_json::to_string(&entries).map_err(|e| invalid(e.to_string()))?;
     py.import("json")?.call_method1("loads", (text,))

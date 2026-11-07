@@ -14,9 +14,11 @@
   paletted and complex bands, datasets opened with `overview_level` and written datasets keep
   their own path), and resamples a per-dataset mask from the mask's own overviews (#429).
 - Changed default: resampled reads (`LazyRaster::read_resampled`, `terrio translate --outsize`
-  and `--tr`) sum the NaN values of masked floating-point chunks, as GDAL 3.12 does, so an output
-  pixel whose footprint holds one is NaN. In 0.7.0 they always skipped them, as GDAL 3.13 does.
-  `TERRIO_GDAL_COMPAT=3.13` restores that, as for the other `RasterIO` kernels.
+  and `--tr`) with the convolution kernels (bilinear, cubic, cubic spline and Lanczos) sum the NaN
+  values of masked floating-point chunks, as GDAL 3.12 does, so an output pixel whose footprint
+  holds one is NaN. Average, RMS, Gaussian, mode and nearest reads are unaffected. In 0.7.0 the convolution
+  kernels always skipped them, as GDAL 3.13 does. `TERRIO_GDAL_COMPAT=3.13` restores that, as for
+  the other `RasterIO` kernels.
 - The registry CRSs terrio resolves can be listed, for searchable CRS pickers, without GDAL,
   network access or a PROJ installation (#613): `terrio::crs::list_crs` (`terrio_crs::list_crs`),
   `terrio.list_crs` in Python, `listCrs` in JavaScript and `terrio list-crs` (also an MCP tool),

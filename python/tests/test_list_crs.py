@@ -42,7 +42,10 @@ def test_filters_by_authority_kind_and_deprecation():
     assert 102003 in {e["code"] for e in esri}
     mars = terrio.list_crs("49902", authority="IAU_2015")
     assert [(e["kind"], e["celestial_body"]) for e in mars] == [("other", "Mars")]
-    assert terrio.list_crs(authority="OGC") == []
+    both = terrio.list_crs("albers", authority=["epsg", "ESRI"])
+    assert {e["authority"] for e in both} == {"EPSG", "ESRI"}
+    with pytest.raises(InvalidArgumentError, match="unknown CRS authority"):
+        terrio.list_crs(authority="OGC")
     with pytest.raises(InvalidArgumentError, match="unknown CRS kind"):
         terrio.list_crs(kind="geographic")
 

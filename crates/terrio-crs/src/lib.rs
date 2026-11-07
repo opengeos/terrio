@@ -89,7 +89,7 @@ pub(crate) mod wkt1;
 mod wkt1_write;
 mod wkt2;
 
-pub use catalog::{CrsEntry, CrsKind, CrsQuery, EPSG_VERSION, list_crs};
+pub use catalog::{AUTHORITIES, CrsEntry, CrsKind, CrsQuery, EPSG_VERSION, check_authorities, list_crs};
 pub(crate) use def::Def;
 pub use grid::{register_grid, reset_grid_cache, set_grid_search_paths, set_network_enabled};
 #[doc(hidden)]
