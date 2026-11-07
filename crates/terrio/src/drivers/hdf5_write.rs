@@ -212,6 +212,7 @@ fn split_path(path: &str) -> (&str, &str) {
 }
 
 /// Addresses known once the file is laid out.
+#[derive(Default)]
 struct Addresses {
     /// Each subgroup's object header, in `group_paths` order.
     groups: Vec<u64>,
@@ -314,10 +315,16 @@ fn attribute_info(n: usize) -> Vec<u8> {
 /// Whether an attribute's message fits in its object header, whose message size field is 16
 /// bits. Larger attributes need dense attribute storage, which this writer does not write.
 pub(crate) fn attribute_fits(a: &Attr) -> bool {
-    let Values::Bytes(b) = &a.values else { return true };
-    let elements = a.shape.as_ref().map_or(1, |s| s.iter().product::<u64>() as usize);
-    let data = b.len().max(a.dtype.size() as usize * elements);
-    8 + a.name.len() + 1 + datatype(&a.dtype).len() + dataspace(a.shape.as_deref()).len() + data <= usize::from(u16::MAX)
+    // As `attribute` writes the values: padded bytes, one 16-byte heap reference per dimension, or
+    // a dataset address and dimension index per reference.
+    let data = match &a.values {
+        Values::Bytes(b) => b.len().max(a.dtype.size() as usize * a.shape.as_ref().map_or(1, |s| s.iter().product::<u64>() as usize)),
+        Values::DimensionList(d) => 16 * d.len(),
+        Values::ReferenceList(r) => 12 * r.len(),
+    };
+    // A version 3 attribute message: a 9-byte header, then the NUL-terminated name, the datatype,
+    // the dataspace and the values.
+    9 + a.name.len() + 1 + datatype(&a.dtype).len() + dataspace(a.shape.as_deref()).len() + data <= usize::from(u16::MAX)
 }
 
 /// An attribute message (version 3), its references resolved with `addr`.
@@ -809,5 +816,19 @@ mod tests {
     fn attribute_fits_its_header_message() {
         assert!(attribute_fits(&Attr::text("history", &"x".repeat(60_000))));
         assert!(!attribute_fits(&Attr::text("history", &"x".repeat(70_000))));
+        // At the boundary: the largest text whose message size is exactly 65,535 bytes.
+        let text = |n: usize| Attr::text("history", &"x".repeat(n));
+        let overhead = attribute(&text(1), &Addresses::default(), &[]).len() - 1;
+        let largest = usize::from(u16::MAX) - overhead;
+        assert_eq!(attribute(&text(largest), &Addresses::default(), &[]).len(), usize::from(u16::MAX));
+        assert!(attribute_fits(&text(largest)));
+        assert!(!attribute_fits(&text(largest + 1)));
+        let references = Attr {
+            name: "REFERENCE_LIST".into(),
+            dtype: H5Type::RefList,
+            shape: Some(vec![6000]),
+            values: Values::ReferenceList(vec![(0, 0); 6000]),
+        };
+        assert!(!attribute_fits(&references));
     }
 }

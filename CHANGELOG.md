@@ -10,6 +10,10 @@
   enum attribute is written as its base type (`z:flag = 1b`, where it was a 64-bit integer).
   `ncdump -h` prints the same types and attributes as for GDAL's copy. Zarr object attributes are
   still written as JSON text.
+- A netCDF snapshot now refuses an attribute whose message exceeds the 64 KiB an HDF5 object
+  header message can hold, such as a long `history` text, with an error naming it. The writer
+  used to truncate the message's 16-bit size and write a file that readers reject. A link name
+  over 255 bytes is now written with a two-byte length instead of a truncated one.
 - KMZ archives are read within limits (#579). Their main document and the layer documents it
   links to may take 512 MiB of decompressed text together (`TERRIO_KMZ_MAX_SIZE` changes it),
   and the archive is checked against `TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO` and

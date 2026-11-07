@@ -288,7 +288,7 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
                 // one-dimensional attribute whose type a named datatype of the same name defines.
                 if let Some(t) = types.compound.get(name) {
                     let mut bytes = vec![0; values.len() * t.size];
-                    if !values.is_empty() && values.iter().zip(bytes.chunks_mut(t.size.max(1))).all(|(v, out)| pack(v, t, out)) {
+                    if values.iter().zip(bytes.chunks_mut(t.size.max(1))).all(|(v, out)| pack(v, t, out)) {
                         commit(t, committed);
                         return Attr {
                             name: name.clone(),
@@ -499,7 +499,7 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
         file.datasets.iter().map(|d| d.name.split('/').next().unwrap_or_default().to_owned()).collect();
     taken.extend(file.group_attrs.iter().map(|(p, _)| p.split('/').next().unwrap_or_default().to_owned()));
     for t in &committed {
-        let name = (1..).map(|i| if i == 1 { t.name.clone() } else { format!("{}_{i}", t.name) }).find(|n| !taken.contains(n)).unwrap();
+        let name = std::iter::once(t.name.clone()).chain((2..).map(|i| format!("{}_{i}", t.name))).find(|n| !taken.contains(n)).unwrap();
         taken.insert(name.clone());
         file.datatypes.push((name, compound(t)));
     }
