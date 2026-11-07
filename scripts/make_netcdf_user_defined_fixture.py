@@ -64,7 +64,7 @@ def copy_types(path: Path) -> dict:
         def describe(dtype):
             if dtype.fields is None:
                 return dtype.name
-            return next(name for name, other in named.items() if other == dtype)
+            return next((name for name, other in named.items() if other == dtype), "anonymous")
 
         types = {
             name: {

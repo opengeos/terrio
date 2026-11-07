@@ -311,6 +311,15 @@ fn attribute_info(n: usize) -> Vec<u8> {
     v
 }
 
+/// Whether an attribute's message fits in its object header, whose message size field is 16
+/// bits. Larger attributes need dense attribute storage, which this writer does not write.
+pub(crate) fn attribute_fits(a: &Attr) -> bool {
+    let Values::Bytes(b) = &a.values else { return true };
+    let elements = a.shape.as_ref().map_or(1, |s| s.iter().product::<u64>() as usize);
+    let data = b.len().max(a.dtype.size() as usize * elements);
+    8 + a.name.len() + 1 + datatype(&a.dtype).len() + dataspace(a.shape.as_deref()).len() + data <= usize::from(u16::MAX)
+}
+
 /// An attribute message (version 3), its references resolved with `addr`.
 fn attribute(a: &Attr, addr: &Addresses, heap_ids: &[(usize, u32)]) -> Vec<u8> {
     let dt = datatype(&a.dtype);
@@ -546,9 +555,15 @@ pub(crate) fn encode(f: &File) -> Vec<u8> {
         h.messages.push((MSG_LINK_INFO, li));
         h.messages.push((MSG_GROUP_INFO, vec![0, 0]));
         for (order, (name, target)) in links.iter().enumerate() {
-            let mut l = vec![1, 0x04];
+            // Flags: creation order present, and a one-byte name length or, past 255 bytes, two.
+            let wide = name.len() > usize::from(u8::MAX);
+            let mut l = vec![1, if wide { 0x05 } else { 0x04 }];
             l.extend_from_slice(&(order as u64).to_le_bytes());
-            l.push(name.len() as u8);
+            if wide {
+                l.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            } else {
+                l.push(name.len() as u8);
+            }
             l.extend_from_slice(name.as_bytes());
             l.extend_from_slice(&target.to_le_bytes());
             h.messages.push((MSG_LINK, l));
@@ -775,5 +790,24 @@ mod tests {
             let root = f.root_group().unwrap();
             assert_eq!(root.attribute("Conventions").unwrap().read_string().unwrap(), "CF-1.5");
         }
+    }
+
+    /// A link name longer than 255 bytes is stored with a two-byte length, so its bytes are not
+    /// read as the link's target.
+    #[test]
+    fn long_link_names_read_back() {
+        let mut f = sample(Storage::default());
+        let name = "v".repeat(300);
+        f.datasets[1].name = name.clone();
+        let f = hdf5_reader::Hdf5File::from_vec(encode(&f)).unwrap();
+        assert_eq!(f.dataset(&format!("/{name}")).unwrap().shape(), &[130, 7]);
+        assert!(f.dataset("/x").is_ok());
+    }
+
+    /// An attribute whose message would overflow the header's 16-bit message size does not fit.
+    #[test]
+    fn attribute_fits_its_header_message() {
+        assert!(attribute_fits(&Attr::text("history", &"x".repeat(60_000))));
+        assert!(!attribute_fits(&Attr::text("history", &"x".repeat(70_000))));
     }
 }

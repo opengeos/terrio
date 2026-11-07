@@ -47,8 +47,11 @@ netCDF-4 compound attributes read as objects of their fields and enum attributes
 integers, as GDAL 3.13.3's `gdalmdiminfo` prints them. A netCDF snapshot writes them as
 `gdalmdimtranslate -of netCDF` does: a compound as a compound of a named type of the same name
 (nested compounds too) and an enum as its base integer type, with enum fields as their base type
-and char fields as unsigned bytes. An object attribute of another source, such as Zarr, has no
-type to write and is written as its JSON text.
+and char fields as unsigned bytes. Compounds with array or vlen fields read as `null` and are
+left out of snapshots, as GDAL leaves them out; compounds with string fields, and values that do
+not fit their compound type, are written as JSON text. An object attribute of another source,
+such as Zarr, has no type to write and is written as its JSON text. A snapshot stores
+attributes in object headers, so an attribute larger than 64 KiB is an error.
 
 Native reads support local netCDF classic/CDF-2/CDF-5, netCDF-4 and numeric HDF5, including JPSS
 user blocks, plus local/remote Zarr v2/v3 using the existing codecs and store backends. netCDF/HDF5

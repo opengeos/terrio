@@ -503,6 +503,10 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
         taken.insert(name.clone());
         file.datatypes.push((name, compound(t)));
     }
+    let all = file.attrs.iter().chain(file.group_attrs.iter().flat_map(|(_, a)| a)).chain(file.datasets.iter().flat_map(|d| &d.attrs));
+    if let Some(a) = all.into_iter().find(|a| !hdf5_write::attribute_fits(a)) {
+        return Err(bad(format!("attribute {} is too large for a netCDF-4 object header (64 KiB)", a.name)));
+    }
     Ok(hdf5_write::encode(&file))
 }
 

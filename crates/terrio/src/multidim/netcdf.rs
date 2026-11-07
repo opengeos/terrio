@@ -165,7 +165,8 @@ fn group_named_types(hdf: &hdf5_reader::Hdf5File, group: &hdf5_reader::group::Gr
     let mut out = Vec::new();
     for link in links {
         let LinkTarget::Hard { address } = link.target else { continue };
-        let header = hdf.get_or_parse_header(address)?;
+        // A link whose target cannot be parsed is skipped, keeping the scope's other types.
+        let Ok(header) = hdf.get_or_parse_header(address) else { continue };
         // A named datatype's object header holds a datatype but, unlike a dataset, no dataspace.
         if header.messages.iter().any(|m| matches!(m, HdfMessage::Dataspace(_))) {
             continue;
@@ -191,15 +192,39 @@ fn same_type(t: &NcType, h: &hdf5_reader::Datatype) -> bool {
                     .zip(hfields)
                     .all(|(f, h)| f.name == h.name && f.offset == u64::from(h.byte_offset) && same_type(&f.dtype, &h.datatype))
         }
-        (NcType::Enum { base, .. }, H::Enum { base: hbase, .. }) => same_type(base, hbase),
+        (NcType::Enum { base, members }, H::Enum { base: hbase, members: hmembers }) => {
+            same_type(base, hbase)
+                && members.len() == hmembers.len()
+                && members.iter().zip(hmembers).all(|(m, h)| m.name == h.name && m.value.as_i128() == enum_value(&h.value, hbase))
+        }
         (NcType::Array { base, dims }, H::Array { base: hbase, dims: hdims }) => dims == hdims && same_type(base, hbase),
         (NcType::Char, H::String { .. }) => true,
         (NcType::Float, H::FloatingPoint { size: 4, .. }) | (NcType::Double, H::FloatingPoint { size: 8, .. }) => true,
         (t, H::FixedPoint { size, signed, .. }) => numeric_type(t).is_some_and(|d| {
-            d.size_bytes() == usize::from(*size) && matches!(d, DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64) == *signed
+            let (int, is_signed) = match d {
+                DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64 => (true, true),
+                DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64 => (true, false),
+                _ => (false, false),
+            };
+            int && d.size_bytes() == usize::from(*size) && is_signed == *signed
         }),
         _ => false,
     }
+}
+/// The value of an HDF5 enum member, stored in its integer `base` type.
+fn enum_value(bytes: &[u8], base: &hdf5_reader::Datatype) -> Option<i128> {
+    let hdf5_reader::Datatype::FixedPoint { signed, byte_order, .. } = base else { return None };
+    if bytes.len() > 16 {
+        return None;
+    }
+    let mut le = bytes.to_vec();
+    if matches!(byte_order, hdf5_reader::error::ByteOrder::BigEndian) {
+        le.reverse();
+    }
+    let negative = *signed && le.last().is_some_and(|b| b & 0x80 != 0);
+    let mut out = [if negative { 0xff } else { 0 }; 16];
+    out[..le.len()].copy_from_slice(&le);
+    Some(i128::from_le_bytes(out))
 }
 /// A netCDF-4 compound type as a snapshot writes it, as GDAL 3.13.3 does: enum fields as their
 /// base type and char fields as unsigned bytes. `None` when a field, at any depth, is of a type
@@ -224,9 +249,8 @@ fn compound_type(t: &NcType, named: &NamedTypes, fallback: &str) -> Option<Compo
 }
 /// The source types of attributes; `named` gives the named types in scope, read only when a
 /// compound attribute needs one.
-fn attribute_types(attrs: &[NcAttribute], named: &dyn Fn() -> NamedTypes) -> AttributeTypes {
+fn attribute_types<'a>(attrs: &[NcAttribute], named: &dyn Fn() -> &'a NamedTypes) -> AttributeTypes {
     let mut types = AttributeTypes::new();
-    let mut scope: Option<NamedTypes> = None;
     for a in attrs {
         let dtype = match &a.value {
             NcAttrValue::Bytes(_) => DataType::I8,
@@ -246,11 +270,10 @@ fn attribute_types(attrs: &[NcAttribute], named: &dyn Fn() -> NamedTypes) -> Att
             },
             // A compound that reads as a value (not `null`) keeps its type.
             NcAttrValue::UserDefined { dtype: dtype @ NcType::Compound { .. }, .. } => {
-                if !attribute(&a.value).is_null() {
-                    let scope = scope.get_or_insert_with(named);
-                    if let Some(compound) = compound_type(dtype, scope, &format!("{}_t", a.name)) {
-                        types.compound.insert(a.name.clone(), compound);
-                    }
+                if !attribute(&a.value).is_null()
+                    && let Some(compound) = compound_type(dtype, named(), &format!("{}_t", a.name))
+                {
+                    types.compound.insert(a.name.clone(), compound);
                 }
                 continue;
             }
@@ -263,7 +286,9 @@ fn attribute_types(attrs: &[NcAttribute], named: &dyn Fn() -> NamedTypes) -> Att
 fn group(g: &NcGroup, p: &str, file: &Arc<NcFile>, hdf: Option<&hdf5_reader::Hdf5File>, inherited: &[Dimension]) -> Result<Group> {
     let mut out = Group::new(p);
     out.attributes = attributes(&g.attributes);
-    let named = || hdf.map(|h| named_types(h, p)).unwrap_or_default();
+    // The named types in scope, read once per group and only when a compound attribute needs them.
+    let scope = std::cell::OnceCell::new();
+    let named = || scope.get_or_init(|| hdf.map(|h| named_types(h, p)).unwrap_or_default());
     out.attribute_types = attribute_types(&g.attributes, &named);
     let mut visible = inherited.to_vec();
     for d in &g.dimensions {
@@ -704,9 +729,14 @@ mod attribute_tests {
             })
         }
         let bookkeeping = ["CLASS", "NAME", "REFERENCE_LIST", "DIMENSION_LIST", "_Netcdf4Coordinates", "_Netcdf4Dimid", "_NCProperties"];
-        for (fixture, gdal) in expected["netcdf_copy_types"].as_object().unwrap() {
-            let source = open(dir.join(fixture).to_str().unwrap()).unwrap();
-            let hdf = hdf5_reader::Hdf5File::from_vec(super::write::netcdf_bytes(&source).unwrap()).unwrap();
+        // The copy of a copy commits the same types as the first copy.
+        let copies = expected["netcdf_copy_types"].as_object().unwrap().iter().flat_map(|(fixture, gdal)| {
+            let first = super::write::netcdf_bytes(&open(dir.join(fixture).to_str().unwrap()).unwrap()).unwrap();
+            let second = super::write::netcdf_bytes(&crate::multidim::open_bytes(&first).unwrap()).unwrap();
+            [(fixture.to_string(), first, gdal), (format!("{fixture} (copy of the copy)"), second, gdal)]
+        });
+        for (fixture, bytes, gdal) in copies {
+            let hdf = hdf5_reader::Hdf5File::from_vec(bytes).unwrap();
             let root = hdf.root_group().unwrap();
             let named = group_named_types(&hdf, &root).unwrap();
             let types: serde_json::Map<_, _> = named
@@ -734,5 +764,31 @@ mod attribute_tests {
             }
             assert_eq!(Value::Object(attributes), gdal["attributes"], "{fixture}");
         }
+    }
+
+    /// A compound declaration matches an attribute's type only when its fields' numeric classes
+    /// agree: a `float` field is not a 32-bit unsigned integer, nor is an enum one with other members.
+    #[test]
+    fn named_compound_matches_numeric_class_and_enum_members() {
+        use hdf5_reader::Datatype as H;
+        use netcdf_reader::{NcCompoundField, NcEnumMember, NcIntegerValue};
+        let le = hdf5_reader::error::ByteOrder::LittleEndian;
+        let compound = |dtype: NcType| NcType::Compound { size: 4, fields: vec![NcCompoundField { name: "a".into(), offset: 0, dtype }] };
+        let declared =
+            |datatype: H| H::Compound { size: 4, fields: vec![hdf5_reader::CompoundField { name: "a".into(), byte_offset: 0, datatype }] };
+        let uint32 = H::FixedPoint { size: 4, signed: false, byte_order: le };
+        assert!(same_type(&compound(NcType::UInt), &declared(uint32.clone())));
+        assert!(!same_type(&compound(NcType::Float), &declared(uint32.clone())));
+        assert!(!same_type(&compound(NcType::Int), &declared(uint32.clone())));
+        let member = |name: &str, value: i32| NcEnumMember { name: name.into(), value: NcIntegerValue::I32(value) };
+        let enumeration = |members| NcType::Enum { base: Box::new(NcType::Int), members };
+        let int32 = H::FixedPoint { size: 4, signed: true, byte_order: le };
+        let declared_enum = declared(H::Enum {
+            base: Box::new(int32),
+            members: vec![hdf5_reader::EnumMember { name: "low".into(), value: (-1i32).to_le_bytes().to_vec() }],
+        });
+        assert!(same_type(&compound(enumeration(vec![member("low", -1)])), &declared_enum));
+        assert!(!same_type(&compound(enumeration(vec![member("low", 1)])), &declared_enum));
+        assert!(!same_type(&compound(enumeration(vec![member("high", -1)])), &declared_enum));
     }
 }
