@@ -3,8 +3,9 @@
 ## Unreleased
 
 - Python's `Raster.read_resampled`, `read_resampled_masks` and `read_resampled_with_masks`, and
-  JavaScript's `readResampled`, `readResampledMasks` and `readResampledWithMasks` (on `Dataset` and, as promises, on `openUrl`'s `RemoteDataset`), read a
-  window of some bands into an output of another size as GDAL's `RasterIO` reads it, through
+  JavaScript's `readResampled`, `readResampledMasks` and `readResampledWithMasks` (on `Dataset`
+  and, as promises, on `openUrl`'s `RemoteDataset`), read a window of some bands into an output
+  of another size as GDAL's `RasterIO` reads it, through
   `LazyRaster::read_resampled`: from the overview it chooses or the level `overview` names
   (`AUTO`, `AUTO-n`, `NONE` or a number, as `gdal_translate -ovr`), with fractional windows, so a
   remote COG read into a small output fetches only an overview's tiles (#429).
@@ -12,9 +13,22 @@
   core read (nearest, bilinear, cubic, cubic spline, Lanczos, average, RMS and mode; Gaussian,
   paletted and complex bands, datasets opened with `overview_level` and written datasets keep
   their own path), and resamples a per-dataset mask from the mask's own overviews (#429).
-- Resampled reads (`LazyRaster::read_resampled`, `terrio translate --outsize`) skip NaN values of
-  masked floating-point chunks only when `TERRIO_GDAL_COMPAT=3.13` selects GDAL 3.13's behavior,
-  as the other `RasterIO` kernels do; by default they sum them as NaN, as GDAL 3.12 does.
+- Changed default: resampled reads (`LazyRaster::read_resampled`, `terrio translate --outsize`
+  and `--tr`) sum the NaN values of masked floating-point chunks, as GDAL 3.12 does, so an output
+  pixel whose footprint holds one is NaN. In 0.7.0 they always skipped them, as GDAL 3.13 does.
+  `TERRIO_GDAL_COMPAT=3.13` restores that, as for the other `RasterIO` kernels.
+- A netCDF snapshot (`terrio mdconvert`, `Dataset.write`) writes a netCDF-4 compound attribute
+  as a compound, as GDAL 3.13.3's `gdalmdimtranslate -of netCDF` does (#565): `station_t
+  z:station = {7, 12.5}` stays `station_t z:station = {7, 12.5}` where it became the text
+  `{"id":7,"elevation":12.5}`. The type is committed under its source name, nested compound
+  types too, with enum fields as their base integer type and char fields as unsigned bytes; an
+  enum attribute is written as its base type (`z:flag = 1b`, where it was a 64-bit integer).
+  `ncdump -h` prints the same types and attributes as for GDAL's copy. Zarr object attributes are
+  still written as JSON text.
+- A netCDF snapshot now refuses an attribute whose message exceeds the 64 KiB an HDF5 object
+  header message can hold, such as a long `history` text, with an error naming it. The writer
+  used to truncate the message's 16-bit size and write a file that readers reject. A link name
+  over 255 bytes is now written with a two-byte length instead of a truncated one.
 - KMZ archives are read within limits (#579). Their main document and the layer documents it
   links to may take 512 MiB of decompressed text together (`TERRIO_KMZ_MAX_SIZE` changes it),
   and the archive is checked against `TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO` and

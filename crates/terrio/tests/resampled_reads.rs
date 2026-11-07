@@ -334,7 +334,10 @@ fn masked_nan_follows_the_gdal_compat_version() {
     let options = ResampledReadOptions { size: (23, 17), resampling: Resampling::Bilinear, ..Default::default() };
     let read = || read_values(&terrio::open_raster_lazy(&path).unwrap().read_resampled(&options).unwrap().raster.data);
     let nans = |v: &[f64]| v.iter().filter(|x| x.is_nan()).count();
+    // The default, whatever `TERRIO_GDAL_COMPAT` the process has: a scoped `None` unsets it.
+    terrio::config::push_scope([("TERRIO_GDAL_COMPAT".to_string(), None)].into());
     let default = read();
+    terrio::config::pop_scope();
     terrio::config::push_scope([("TERRIO_GDAL_COMPAT".to_string(), Some("3.12".to_string()))].into());
     let gdal312 = read();
     terrio::config::pop_scope();
