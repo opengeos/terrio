@@ -109,7 +109,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master; toolchain set by input
         with:
           toolchain: stable
       # Trusted publishing cannot create a crate before it has an owner/configuration.
@@ -153,12 +153,12 @@ jobs:
       # The threaded and memory64 modules (js/build.mjs): the nightly it pins, with the standard
       # library's sources.
       # Installed first: the last toolchain installed is the default (stable).
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master; toolchain set by input
         with:
           toolchain: nightly-2026-10-15
           targets: wasm32-unknown-unknown
           components: rust-src
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master; toolchain set by input
         with:
           toolchain: stable
           targets: wasm32-unknown-unknown
