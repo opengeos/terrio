@@ -19,7 +19,7 @@ hexadecimal of their little-endian bytes. Pixels of several bands are read throu
 `GetMaskBand()` with the same window, size and resampling. A selection other than `AUTO` is read
 as `gdal_translate -ovr` reads it, from the overview dataset of that level alone, the masks not
 compared. Fractional window sizes have fractions under 0.5, for which GDAL's Python bindings and
-rasterio give GDAL the same integer window. Needs GDAL's Python bindings (3.13).
+rasterio give GDAL the same integer window. Needs GDAL's Python bindings (exactly 3.13.3).
 
 With `--check-rasterio`, the files and `expected.json.gz` are only read: each `AUTO` case is compared
 with rasterio's `read(window=..., out_shape=..., resampling=...)` and `read_masks`, which needs
@@ -410,8 +410,8 @@ def main() -> int:
     from osgeo import gdal
 
     gdal.UseExceptions()
-    if not gdal.__version__.startswith("3.13"):
-        print(f"GDAL 3.13 is the reference, not {gdal.__version__}", file=sys.stderr)
+    if gdal.__version__ != "3.13.3":
+        print(f"GDAL 3.13.3 is the pinned generator reference, not {gdal.__version__}", file=sys.stderr)
         return 1
     cases = write_files(gdal)
     rasterio_like = RasterIO(gdal)

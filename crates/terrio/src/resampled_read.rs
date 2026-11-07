@@ -580,16 +580,13 @@ impl LazyRaster {
         if levels.is_empty() || !base.reduces(read.buf) {
             return None;
         }
-        // GDAL 3.13.3 checks each candidate's metadata, including nested external levels.
-        let levels: Vec<usize> = levels
-            .iter()
-            .copied()
-            .filter(|&i| !self.level_resampling(i).is_some_and(|r| r.to_ascii_uppercase().starts_with("AVERAGE_BIT2")))
-            .collect();
         let overviews = self.overviews();
         let sizes: Vec<(usize, usize)> = levels.iter().map(|&i| overviews[i]).collect();
         let threshold = oversampling_threshold(read.resampling);
-        let k = best_overview(base.size, &sizes, base.window, read.buf, threshold)?;
+        // As GDAL 3.13.3 does, inspect metadata only when a candidate could improve the choice.
+        let k = best_overview_filtered(base.size, &sizes, base.window, read.buf, threshold, |k| {
+            !self.level_resampling(levels[k]).is_some_and(|r| r.to_ascii_uppercase().starts_with("AVERAGE_BIT2"))
+        })?;
         Some(overview_request(base, levels[k], sizes[k]))
     }
 
@@ -864,6 +861,17 @@ pub(crate) fn best_overview(
     (bw, bh): (usize, usize),
     threshold: f64,
 ) -> Option<usize> {
+    best_overview_filtered((w, h), overviews, window, (bw, bh), threshold, |_| true)
+}
+
+fn best_overview_filtered(
+    (w, h): (usize, usize),
+    overviews: &[(usize, usize)],
+    window: (usize, usize, usize, usize),
+    (bw, bh): (usize, usize),
+    threshold: f64,
+    mut eligible: impl FnMut(usize) -> bool,
+) -> Option<usize> {
     const EPSILON: f64 = 0.1;
     let (xr, yr) = (window.2 as f64 / bw as f64, window.3 as f64 / bh as f64);
     let desired = if xr < yr || bh == 1 { xr } else { yr };
@@ -878,6 +886,11 @@ pub(crate) fn best_overview(
     );
     for (level, ratio) in candidates {
         if ratio >= desired * threshold + EPSILON || ratio <= best_ratio {
+            continue;
+        }
+        if let Some(index) = level
+            && !eligible(index)
+        {
             continue;
         }
         best = level;
@@ -1245,6 +1258,18 @@ mod tests {
         assert_eq!(best_overview((997, 613), &ovr, window, (694, 235), 2.0), None);
         assert_eq!(best_overview((997, 613), &ovr, window, (364, 235), 2.0), Some(0));
         assert_eq!(best_overview((997, 613), &ovr, window, (403, 235), 2.0), Some(1));
+    }
+
+    #[test]
+    fn overview_metadata_only_reads_improving_candidates() {
+        let sizes = [(500, 400), (250, 200), (125, 100)];
+        let mut looked_up = Vec::new();
+        let selected = best_overview_filtered((1000, 800), &sizes, (0, 0, 1000, 800), (500, 400), 1.2, |index| {
+            looked_up.push(index);
+            false
+        });
+        assert_eq!(selected, None);
+        assert_eq!(looked_up, [0]); // Larger reductions cannot win, so their tags are not read.
     }
 
     #[test]

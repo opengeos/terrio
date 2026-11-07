@@ -134,7 +134,7 @@ fn difference(read: &[f64], expected: &[f64], float: bool, case: &Case) -> Optio
     (rounded > (read.len() / 100).max(1)).then(|| format!("{rounded} of {} values rounded otherwise (first {first:?})", read.len()))
 }
 
-/// Every case, against GDAL 3.13.2's reads.
+/// Every case against its recorded reference: original cases 3.13.2, added cases 3.13.3.
 #[test]
 fn resampled_reads_are_gdal_reads() {
     let cases = cases();

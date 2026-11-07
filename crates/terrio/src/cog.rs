@@ -1622,12 +1622,8 @@ impl LazyRaster {
                     &mut *t
                 }
             };
-            let xml = t.decoder.get_tag_ascii_string(Tag::Unknown(42112)).ok()?;
-            crate::drivers::gtiff_write::parse_gdal_band_metadata(&xml)
-                .into_iter()
-                .find(|(b, k, _)| *b == 0 && k == "RESAMPLING")
-                .map(|(_, _, v)| v)
-        })();
+            overview_resampling_metadata(&mut t.decoder).ok()
+        })()?;
         t.levels[overview + 1].resampling = Some(value.clone());
         value
     }
@@ -1855,6 +1851,17 @@ impl Seek for Source {
             Source::Zip(z) => z.seek(pos),
         }
     }
+}
+
+/// A definitive metadata answer, distinguishing an absent tag from an I/O/decoding error.
+fn overview_resampling_metadata<R: Read + Seek>(decoder: &mut Decoder<R>) -> tiff::TiffResult<Option<String>> {
+    let xml = decoder.find_tag(Tag::Unknown(42112))?.map(|value| value.into_string()).transpose()?;
+    Ok(xml.and_then(|xml| {
+        crate::drivers::gtiff_write::parse_gdal_band_metadata(&xml)
+            .into_iter()
+            .find(|(band, key, _)| *band == 0 && key == "RESAMPLING")
+            .map(|(_, _, value)| value)
+    }))
 }
 
 /// One image of a TIFF: the full-resolution image or an overview.
@@ -2427,6 +2434,51 @@ pub(crate) fn sample_type<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<(DataT
 
 #[cfg(test)]
 mod tests {
+    /// A transient metadata read must remain retryable, rather than become cached absence.
+    #[test]
+    fn overview_metadata_read_error_can_be_retried() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        struct Reader {
+            inner: std::io::Cursor<Vec<u8>>,
+            fail: Arc<AtomicBool>,
+        }
+        impl std::io::Read for Reader {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                if self.fail.swap(false, Ordering::Relaxed) {
+                    return Err(std::io::Error::other("temporary read failure"));
+                }
+                self.inner.read(bytes)
+            }
+        }
+        impl std::io::Seek for Reader {
+            fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+                self.inner.seek(position)
+            }
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        {
+            let mut encoder = tiff::encoder::TiffEncoder::new(&mut bytes).unwrap();
+            let mut image = encoder.new_image::<tiff::encoder::colortype::Gray8>(1, 1).unwrap();
+            image
+                .encoder()
+                .write_tag(
+                    tiff::tags::Tag::Unknown(42112),
+                    "<GDALMetadata><Item name=\"RESAMPLING\" sample=\"0\">AVERAGE_BIT2GRAYSCALE</Item></GDALMetadata>",
+                )
+                .unwrap();
+            image.write_data(&[0u8]).unwrap();
+        }
+        let fail = Arc::new(AtomicBool::new(false));
+        let mut decoder =
+            tiff::decoder::Decoder::new(Reader { inner: std::io::Cursor::new(bytes.into_inner()), fail: fail.clone() }).unwrap();
+        fail.store(true, Ordering::Relaxed);
+        assert!(super::overview_resampling_metadata(&mut decoder).is_err());
+        assert_eq!(super::overview_resampling_metadata(&mut decoder).unwrap().as_deref(), Some("AVERAGE_BIT2GRAYSCALE"));
+    }
+
     #[test]
     fn window_allocation_capacity_overflow_returns_an_error() {
         let error = super::try_new_filled(crate::DataType::F64, usize::MAX, 0.0).unwrap_err();
