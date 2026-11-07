@@ -42,6 +42,13 @@
   opened from memory and to the `TERRIO_WBVECTOR_FALLBACK` KMZ read. A style document that breaks
   these limits now refuses the whole archive; a style document that cannot be read, or that takes
   the style budget past its size, still leaves its links as URLs.
+- A KMZ document that `doc.kml` links to several times is read, counted toward
+  `TERRIO_KMZ_MAX_SIZE` and parsed once, and emits its existing layers once. Document and
+  folder names are kept; the first link supplies the default name for an unnamed root. A
+  link to `doc.kml` itself adds no layer. Each link used to read the document again and add a
+  layer with the same name: 100,000 links to one document, in a 25 KB archive, gave 100,000
+  identical layers and took 702 MiB. Linked documents are also found without scanning the
+  archive's names for each link, a scan that made 99,999 links to distinct documents take 25 s.
 - A remote read whose tiles span more than half the HTTP block cache's blocks
   (`TERRIO_HTTP_CACHE_SIZE`, 64 MiB by default) fetches them in batches of at most half the cache
   as it decodes them: each byte once when the tiles are decoded in file order, and at most one
