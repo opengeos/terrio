@@ -411,6 +411,26 @@ class _OverviewRaster:
         return getattr(self._base, name)
 
 
+def _sum_scale(ds: Any, width: int, height: int) -> float:
+    """The full-resolution pixels a pixel of a `width` x `height` level of a dataset stands for.
+
+    A `sum` counts each pixel of an overview for them, `(W / width) * (H / height)` for a `W` x `H`
+    raster, so that it estimates the raster's total. The full resolution is the raster's: a dataset
+    opened at an overview level (`overview_level`) is one of its overviews.
+
+    Args:
+        ds: The dataset.
+        width: The level's width.
+        height: The level's height.
+
+    Returns:
+        float: The ratio of the areas of a pixel of the level and of the full resolution.
+    """
+    raster = getattr(ds, "_raster", None)
+    full = raster._base if isinstance(raster, _OverviewRaster) else ds
+    return (full.width / width) * (full.height / height)
+
+
 class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
     """What every dataset has: its shape, georeferencing and metadata."""
 

@@ -59,7 +59,7 @@ from terrio.rio.crs import CRS
 from terrio.rio.dtypes import dtype_fwd, typename_rev
 from terrio.rio.enums import ColorInterp, MaskFlags, Resampling
 from terrio.rio.errors import WarpedVRTError, WarpOptionsError
-from terrio.rio.io import DatasetReader
+from terrio.rio.io import DatasetReader, _sum_scale
 from terrio.rio.warp import (
     _WARP_NAMES,
     _crs_text,
@@ -96,9 +96,10 @@ class _Grid:
         height: The height.
         ovr: The implicit overview it is (an index), None for the VRT itself or a rescaled grid.
         full: Whether it is the VRT itself (the only grid with overviews).
+        scale: With `sum`, the full-resolution pixels each source pixel warped counts for.
     """
 
-    __slots__ = ("level", "gt", "width", "height", "ovr", "full", "bx", "by")
+    __slots__ = ("level", "gt", "width", "height", "ovr", "full", "scale", "bx", "by")
 
     def __init__(
         self,
@@ -108,9 +109,10 @@ class _Grid:
         height: int,
         ovr: int | None = None,
         full: bool = False,
+        scale: float = 1.0,
     ) -> None:
         self.level, self.gt, self.width, self.height = level, tuple(gt), width, height
-        self.ovr, self.full = ovr, full
+        self.ovr, self.full, self.scale = ovr, full, scale
         # The VRTWarpedDataset constructor's default block size.
         self.bx, self.by = min(width, 512), min(height, 128)
 
@@ -118,9 +120,9 @@ class _Grid:
         """What identifies the grid's warped pixels.
 
         Returns:
-            tuple: The source level, geotransform and size.
+            tuple: The source level, geotransform, size and scale.
         """
-        return (self.level, self.gt, self.width, self.height)
+        return (self.level, self.gt, self.width, self.height, self.scale)
 
     def rescaled(self, width: int, height: int) -> _Grid:
         """The same warp at another size (`RescaleDstGeoTransform()`).
@@ -139,7 +141,7 @@ class _Grid:
         g[2] *= fx
         g[4] *= fy
         g[5] *= fy
-        return _Grid(self.level, tuple(g), width, height)
+        return _Grid(self.level, tuple(g), width, height, scale=self.scale)
 
 
 class WarpedVRT(DatasetReader):
@@ -149,12 +151,16 @@ class WarpedVRT(DatasetReader):
     Reduced reads with `sum` resampling are an exception, described below.
     Pixels are warped when they are read, region by region, from the windows of the source (or
     of its overviews) each region needs. With `sum` resampling, a reduced read of the whole VRT,
-    of any of its bands, is warped from the source's full resolution rather than from an implicit
-    overview. A reduced read of a window can take an implicit overview or resample the VRT's
-    pixels, so its sum is not the source's: for a full-resolution total, read the window at full
-    size, or the whole VRT at the reduced size. A `sum` read whose source window would hold more
-    than `TERRIO_WARP_SUM_MAX_BYTES` (4 GiB by default) raises `ResourceLimitError` before the
-    window is read. When `dtype` differs from the source's, the window counts in both types.
+    of any of its bands, is warped straight into a grid of the buffer's size from the source's
+    overview that the read's implicit overview is warped from (or from the full resolution when it
+    takes none), each of whose pixels counts for the source pixels it stands for, so that the sum
+    estimates the source's total. A source opened at an overview level (`overview_level`) counts
+    its pixels the same way. A reduced read of a window can take an implicit overview, whose
+    pixels are comparable with the VRT's, or resample the VRT's pixels, so its sum is not the
+    source's: read the window at full size for its total. A `sum` read whose source window would
+    hold more than `TERRIO_WARP_SUM_MAX_BYTES` (4 GiB by default) raises `ResourceLimitError`
+    before the window is read. When `dtype` differs from the source's, the window counts in both
+    types.
     """
 
     def __init__(
@@ -230,7 +236,11 @@ class WarpedVRT(DatasetReader):
         # A source georeferenced by GCPs alone: rasterio takes their CRS when none is given.
         src_gcps, gcp_crs = src_dataset.gcps
         gcp_only = bool(src_gcps) and src_dataset.transform.almost_equals(Affine.identity())
-        if self.src_crs is None and gcp_only and self.src_transform.almost_equals(Affine.identity()):
+        if (
+            self.src_crs is None
+            and gcp_only
+            and self.src_transform.almost_equals(Affine.identity())
+        ):
             self.src_crs = gcp_crs
         self.src_nodata = src_dataset.nodata if src_nodata is _DEFAULT else src_nodata
         self.dst_nodata = self.src_nodata if nodata is _DEFAULT else nodata
@@ -302,11 +312,18 @@ class WarpedVRT(DatasetReader):
             # GDALAutoCreateWarpedVRTEx() on a dataset with GCPs and no geotransform: its
             # transformer, and so the grid, uses the GCPs (src_transform plays no part).
             options = {
-                k: v for k, v in self.warp_extras.items() if k.upper() in ("MAX_GCP_ORDER", "SRC_METHOD")
+                k: v
+                for k, v in self.warp_extras.items()
+                if k.upper() in ("MAX_GCP_ORDER", "SRC_METHOD")
             }
             self._warp_gcps = _gcp_args(src_gcps, options)
             t, w, h = calculate_default_transform(
-                self.src_crs, self.dst_crs, src_dataset.width, src_dataset.height, gcps=src_gcps, **options
+                self.src_crs,
+                self.dst_crs,
+                src_dataset.width,
+                src_dataset.height,
+                gcps=src_gcps,
+                **options,
             )
         elif transform is None and (not width or not height):
             # GDALAutoCreateWarpedVRTEx(): GDALSuggestedWarpOutput() around the source, whose
@@ -459,7 +476,12 @@ class WarpedVRT(DatasetReader):
         self._overview_sizes = sizes
         self._src_ratios = ratios
         self._src_levels = src_ovr
-        self._grid = _Grid(None, tuple(t.to_gdal()), self.width, self.height, full=True)
+        # A source opened at an overview level: with `sum`, each of its pixels counts for the
+        # pixels of the full resolution it stands for.
+        scale = _sum_scale(src_dataset, src_dataset.width, src_dataset.height)
+        self._grid = _Grid(
+            None, tuple(t.to_gdal()), self.width, self.height, full=True, scale=scale
+        )
         self._ovr_grids: dict[int, _Grid] = {}
         self._warpers: dict[tuple[Any, ...], Any] = {}
         self._blocks: OrderedDict[tuple[Any, ...], np.ndarray] = OrderedDict()
@@ -508,7 +530,9 @@ class WarpedVRT(DatasetReader):
         if g is None:
             ow, oh = self._overview_sizes[i]
             r = self._grid.rescaled(ow, oh)
-            g = _Grid(i, r.gt, ow, oh, ovr=i)
+            # An overview of the VRT: its pixels are comparable with the VRT's, unscaled by the
+            # level's ratios.
+            g = _Grid(i, r.gt, ow, oh, ovr=i, scale=r.scale)
             self._ovr_grids[i] = g
         return g
 
@@ -577,10 +601,15 @@ class WarpedVRT(DatasetReader):
                 _gdal(self._dtype),
                 list(self._warp_src_nodata),
                 self._warp_dst_nodata,
+                sum_scale=grid.scale,
                 **(
                     {}
                     if gcps is None
-                    else {"gcps": gcps["gcps"], "gcp_order": gcps["order"], "gcp_method": gcps["gcp_method"]}
+                    else {
+                        "gcps": gcps["gcps"],
+                        "gcp_order": gcps["order"],
+                        "gcp_method": gcps["gcp_method"],
+                    }
                 ),
             )
             if len(self._warpers) > 32:
@@ -631,6 +660,7 @@ class WarpedVRT(DatasetReader):
             self._warp_dst_nodata,
             rpc=rpc,
             rpc_options=options,
+            sum_scale=grid.scale,
         )
         if len(self._warpers) > 32:
             self._warpers.clear()
@@ -908,11 +938,21 @@ class WarpedVRT(DatasetReader):
         bh, bw = buf
         whole = iw == (0, 0, grid.width, grid.height)
         if self.resampling == Resampling.sum and whole and grid.full and (bw < nxs or bh < nys):
-            # A reduced read of the whole `sum` VRT, of any of its bands, is warped from the full
-            # resolution into a grid of the buffer's size, as below: an implicit overview has one
-            # pixel per block of the VRT's pixels, so its sum would be a fraction of the total.
+            # A reduced read of the whole `sum` VRT, of any of its bands, is warped into a grid of
+            # the buffer's size, as below, from the source level of the implicit overview the read
+            # takes (`_terrio._SUM_AUTO_OVERVIEW` says whether a `sum` takes one), each of whose
+            # pixels counts for the source pixels it stands for: an overview has one pixel per
+            # block of the source's pixels.
+            level = None
+            if _terrio._SUM_AUTO_OVERVIEW and self._overview_sizes:
+                moved = self._to_overview(grid, iw, fw, buf, rs, True)
+                level = None if moved is None else moved[0]
+            ds = self.src_dataset
+            size = (ds.width, ds.height) if level is None else self._src_levels[level]
+            gt = grid.rescaled(bw, bh).gt
+            target = _Grid(level, gt, bw, bh, scale=_sum_scale(ds, size[0], size[1]))
             full = (0, 0, bw, bh)
-            return self._dataset_io(grid.rescaled(bw, bh), idx, full, full, buf, rs, False)
+            return self._dataset_io(target, idx, full, full, buf, rs, False)
         if (not whole and (bw <= grid.bx or bh <= grid.by)) or len(idx) < self._count:
             # Small requests and band subsets go through the cached blocks.
             return self._fallback_io(grid, idx, iw, fw, buf, rs, routed)

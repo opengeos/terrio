@@ -1061,17 +1061,34 @@ based on the full-resolution source. Use `NONE` when the source pyramids were bu
 with a filter unsuitable for the analysis. Mosaics select a level independently for
 each source. GCP/RPC transformations retain their full-resolution coordinate meaning.
 
-`-r sum` takes no overview under `AUTO` or `AUTO-n`, as an overview has one pixel per
-block of the source's pixels and its sum is a fraction of the total: it reads the full
-resolution, so a coarse `sum` of a remote raster with overviews reads much more of it.
-`--overview n` reads level `n` for a `sum` too.
+With `-r sum`, an overview has one pixel per block of the source's pixels, which counts for
+the source pixels it stands for, `(W / w) × (H / h)` for a `w × h` overview of a `W × H`
+source (exact ratios), so that the sum estimates the source's total at the overview's cost:
+`AUTO`, `AUTO-n` and `--overview n` read an overview so, and `--overview NONE` sums the full
+resolution exactly. The estimate is the exact total, up to floating-point rounding, where the
+overview holds the means of the pixels it covers (an `average` overview of a floating-point
+source without nodata), when the requested footprint covers complete overview cells. A crop
+through overview cells makes even the total approximate: a 2 × 2 block [100, 0; 0, 0] has mean
+25, so a crop containing only the 100-valued source pixel estimates 25 instead of 100 from that
+overview. It is also approximate where those means were rounded to an integer type,
+where a block is partly nodata (its mean counts for the whole block, so the estimate exceeds
+the sum of the valid pixels there; a block wholly nodata stays nodata), and where the overview
+was resampled otherwise than by average (a `nearest` overview gives an estimate from a sample of
+the pixels). Per output pixel, it is approximate where an output pixel cuts overview pixels,
+whose values it shares by area. Over 256 × 256 outputs of a 16384 × 16384 raster with average
+overviews, at 16, 32 and 64 times its pixel size, the totals were within 2 × 10⁻⁷ of the source's
+for Float32 and Float64 data, 0.4% to 0.6% above them for UInt16 data, whose averages are
+rounded at each level, and 1.4% to 2.6% above them for Float32 data 7% nodata, in two corners
+and in holes 40 pixels wide. A sum outgrows small integer types: a `UInt16` output stores 65535
+for any larger sum, so give a coarse `sum` `--ot Float32` or `--ot Float64`.
 
 A `sum` holds the source window an output chunk reads and 8 bytes per pixel of it for the
 pixels' shares: 12 bytes per pixel for one Float32 band. A coarse output, such as `--ts 1 1`,
-reads the whole source in one chunk, and a `sum` with several sources or a cutline holds every
-source whole. When this estimate exceeds 4 GiB, the `sum` is refused before its source is read;
-set `TERRIO_WARP_SUM_MAX_BYTES` to a positive integer byte count to change the budget, or sum a
-level with `--overview n`. Invalid settings are argument errors.
+reads the whole source in one chunk unless it reads an overview, and a `sum` with several
+sources or a cutline holds every source (or the overview read) whole. When this estimate
+exceeds 4 GiB, the `sum` is refused before its source is read; set `TERRIO_WARP_SUM_MAX_BYTES`
+to a positive integer byte count to change the budget, or sum a level with `--overview n`.
+Invalid settings are argument errors.
 
 Forced GCP overviews can give slightly different automatically suggested bounds than GDAL,
 which refits GCPs at the selected resolution. Specify `--te` and `--ts` for an identical
@@ -1222,8 +1239,9 @@ each weighted by the share of its area inside the output pixel, so that a grid
 covering the source keeps its total, up to floating-point rounding, in a
 floating-point output; an integer output also rounds each pixel to a whole number
 and clamps it to its type's range (a Byte output stores 255 for a sum of 400).
-A `sum` reads the source's full resolution unless a level is given (`--overview n`),
-and then sums that level's pixels: `AUTO` and `AUTO-n` choose no overview for it.
+A `sum` whose source dataset is opened at an overview level (`OVERVIEW_LEVEL`, which
+`terrio warp` writes for the overview it reads) counts each of its pixels for the source
+pixels it stands for, as `terrio warp -r sum` counts the overview it reads.
 Its memory budget is that of `terrio warp -r sum` (`TERRIO_WARP_SUM_MAX_BYTES`), and a
 window converted to another working type counts what the conversion holds at once: the
 window in its source type, as f64 values and, unless that type is Float64, in the working type.
