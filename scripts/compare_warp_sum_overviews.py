@@ -48,7 +48,7 @@ def fixtures(root, data):
         ds.BuildOverviews("AVERAGE", [2])
         ds = None
         extent = (1, 1, 3, 3) if name == "crop" else (0, 0, values.shape[1], values.shape[0])
-        size = (1, 1) if name != "oblong" and values.size <= 16 else (3, 2)
+        size = (3, 2) if values.size > 16 else (1, 1)
         yield name, path, extent, size, 1e-8
     path = root / "terrain.tif"
     ds = gdal.Translate(str(path), str(Path(data) / "usgs_dem.tif"), srcWin=[100, 100, 64, 64], outputType=gdal.GDT_Float64)
@@ -74,9 +74,12 @@ def main():
                 record = {"name": f"sum overview {name} {mode}", "tol": tol, "gdal_version": gdal.VersionInfo("RELEASE_NAME")}
                 try:
                     ds = gdal.Warp(str(reference), str(source), format="GTiff", outputBounds=extent, width=size[0], height=size[1],
-                                   resampleAlg="sum", outputType=gdal.GDT_Float64, overviewLevel="NONE" if mode == "NONE" else 0)
+                                   resampleAlg="sum", outputType=gdal.GDT_Float64, overviewLevel=0 if mode == "0" else mode)
                     if mode != "NONE":
                         src = gdal.Open(str(source))
+                        # Every fixture has one available level, and AUTO targets are coarse
+                        # enough to choose it. GDAL still receives the real AUTO selector.
+                        assert src.GetRasterBand(1).GetOverviewCount() == 1
                         overview = src.GetRasterBand(1).GetOverview(0)
                         scale = (src.RasterXSize/overview.XSize)*(src.RasterYSize/overview.YSize)
                         band = ds.GetRasterBand(1)

@@ -267,7 +267,8 @@
   the band's type unrounded: they were rounded to the source's type, which dropped a Byte source's
   fractions and capped its sums at 255.
 - Changed default: `sum` now uses overview estimates under `AUTO`/`AUTO-n`, instead of reading
-  full resolution. Totals and nodata footprints can change: partly nodata overview blocks count
+  full resolution. This is a numerical compatibility change. Totals and nodata footprints can
+  change: partly nodata overview blocks count
   their valid-pixel mean for the entire block and can assign values to otherwise nodata output
   pixels. Use `--overview NONE` for exact full-resolution validity and sums.
   A `sum` that reads an overview counts each of its pixels for the source pixels it stands for,
