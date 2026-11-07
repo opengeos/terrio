@@ -1069,6 +1069,15 @@ impl LazyRaster {
         Ok(ds)
     }
 
+    /// Whether [`LazyRaster::write`] can stream `self` to a tile archive (`PMTiles` or `MBTiles`)
+    /// at `path` without reading the whole raster into memory first.
+    pub fn can_stream_tile_archive(&self, path: &str, options: &crate::RasterWriteOptions) -> bool {
+        let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
+        self.dataset().is_none()
+            && matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles))
+            && self.input_paths().is_ok_and(|inputs| !crate::ops::strips::overwrites(path, &inputs))
+    }
+
     /// Writes the full-resolution image to `path`, as [`crate::write_raster_dataset`] writes the
     /// raster [`LazyRaster::read`] reads. A GeoTIFF or JPEG 2000 file read in place, or a VRT of
     /// such files copied or picked by nearest neighbour, written as a GeoTIFF or a COG (in a
@@ -1085,15 +1094,6 @@ impl LazyRaster {
     /// r.write("big_cog.tif", &options)?;
     /// # Ok::<(), terrio::Error>(())
     /// ```
-    /// Whether [`LazyRaster::write`] can stream `self` to a tile archive (`PMTiles` or `MBTiles`)
-    /// at `path` without reading the whole raster into memory first.
-    pub fn can_stream_tile_archive(&self, path: &str, options: &crate::RasterWriteOptions) -> bool {
-        let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
-        self.dataset().is_none()
-            && matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles))
-            && self.input_paths().is_ok_and(|inputs| !crate::ops::strips::overwrites(path, &inputs))
-    }
-
     pub fn write(&mut self, path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
         let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
         self.refuse_masked_tile_archive(driver, options)?;
