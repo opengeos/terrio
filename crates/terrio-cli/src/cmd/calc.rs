@@ -250,6 +250,35 @@ pub fn run(a: Args) -> terrio::Result<()> {
 mod tests {
     use super::rewrite_args;
 
+    /// Value spans come from clap independently of the rewriter's hand-written dispatch.
+    #[test]
+    fn rewrite_preserves_value_spans_from_parser_arities() {
+        let command = <super::Args as clap::Args>::augment_args(clap::Command::new("calc"));
+        for argument in command.get_arguments() {
+            let arity = if argument.get_action().takes_values() {
+                argument.get_num_args().map_or(1, |range| {
+                    assert_eq!(range.min_values(), range.max_values(), "{} has variable arity", argument.get_id());
+                    range.max_values()
+                })
+            } else {
+                0
+            };
+            for name in argument.get_long().into_iter().chain(argument.get_all_aliases().unwrap_or_default()) {
+                let mut args = vec!["terrio".to_string(), "calc".into(), format!("--{name}")];
+                args.extend(std::iter::repeat_n("-A".to_string(), arity));
+                if arity > 0 {
+                    args.push("literal.tif".into());
+                }
+                let mut expected = args.clone();
+                args.extend(["-B", "b.tif", "--calc", "B", "out.tif"].map(String::from));
+                expected.extend(["--input", "B=b.tif", "--calc", "B", "out.tif"].map(String::from));
+                let actual: Vec<_> =
+                    rewrite_args(args.into_iter().map(Into::into).collect()).into_iter().map(|s| s.into_string().unwrap()).collect();
+                assert_eq!(actual, expected, "--{name}");
+            }
+        }
+    }
+
     #[test]
     fn rewrites_gdal_calc_inputs() {
         let args: Vec<_> =
