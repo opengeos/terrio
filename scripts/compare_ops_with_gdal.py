@@ -338,8 +338,9 @@ def cases(d, tmp):
             vrt = os.path.join(tmp, f"gdal_holes_{method}_{tr}.vrt")
             run(["gdalbuildvrt", "-q", "-r", method, "-tr", tr, tr, vrt, holes])
             add(f"read GDAL {method} VRT with nodata tr {tr}", ["gdal_translate", vrt], ["translate", vrt], 1e-5)
-        # Written directly and upsampled by 2.8 (tr 0.0001), a cubic or Lanczos mosaic still
-        # differs from GDAL's next to some isolated nodata pixels (under 0.1 % of them).
+        # A mosaic written directly at tr 0.0007 matches GDAL's VRT read. At tr 0.0001 (upsampled
+        # by 2.8), not registered here, a cubic or Lanczos mosaic still differs from it next to
+        # some isolated nodata pixels (under 0.1 % of them).
         mosaic_vrt = os.path.join(tmp, f"gdal_holes_{method}_0.0007.vrt")
         add(f"mosaic {method} tr 0.0007 with nodata vs gdalbuildvrt", ["gdal_translate", mosaic_vrt], ["mosaic", holes, "-r", method, "--tr", "0.0007", "0.0007"], 1e-5)
     subset_vrt = os.path.join(tmp, "gdal_subset.vrt")

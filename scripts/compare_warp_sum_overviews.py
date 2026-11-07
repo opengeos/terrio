@@ -176,7 +176,7 @@ def main():
         for name, source, dst, tol in default_grid_fixtures(root, args.data):
             records.append(default_grid_record(root, args.terrio, name, source, dst, tol))
     passed = ["error" not in r and r.get("same_size") and r.get("same_type") and r.get("same_nodata")
-              and r.get("gt_diff_px", 1) <= 1e-8 and r.get("within_tol", 0) == 1 for r in records]
+              and r.get("same_crs", True) and r.get("gt_diff_px", 1) <= 1e-8 and r.get("within_tol", 0) == 1 for r in records]
     if args.json:
         print(json.dumps(records, indent=2))
     else:
