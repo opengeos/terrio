@@ -1355,6 +1355,8 @@ class DatasetReader(DatasetBase):
         # A per-dataset mask, internal or in a `.msk` sidecar (read by the raster, when the file
         # has no internal one).
         structure.mask_in_sidecar = bool(raster.has_mask) and not structure.has_mask
+        # Native discovery is authoritative for full-resolution TIFFs too: inferred tags
+        # must not advertise a mask the native reader cannot actually read.
         structure.has_mask = bool(raster.has_mask)
         # Bands a PAM sidecar doesn't list keep the file's own nodata, not band 1's PAM value.
         file_nodata = self._nodata

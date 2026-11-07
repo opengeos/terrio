@@ -26,9 +26,10 @@ fn flag_arity(s: &str) -> Option<usize> {
 /// `<input>` and `<output>` arguments following a 0- or 2-argument `--scale` are not
 /// consumed by clap as scale numbers.
 pub fn rewrite_args(args: Vec<OsString>) -> Vec<OsString> {
-    let non_flags: Vec<(usize, &str)> =
+    // Leading UTF-8 command words retain their original argument indices.
+    let words: Vec<(usize, &str)> =
         args.iter().enumerate().skip(1).filter_map(|(idx, a)| a.to_str().filter(|&s| s != "--json-usage").map(|s| (idx, s))).collect();
-    let sub_idx = match non_flags.as_slice() {
+    let sub_idx = match words.as_slice() {
         [(idx, "translate"), ..] | [(_, "raster"), (idx, "translate"), ..] => *idx,
         _ => return args,
     };
