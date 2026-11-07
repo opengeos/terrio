@@ -1230,7 +1230,8 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
             };
             let xt: Vec<(usize, Vec<f64>)> = (0..ow).map(|c| taps(c, rx, fx, s.width)).collect();
             let negative_weights = matches!(method, Resampling::Cubic | Resampling::Lanczos);
-            // GDAL works in `float` for these types (`GDALGetOvrWorkDataType`), in `double` else.
+            // GDAL's work type is `float` for these types (`GDALGetOvrWorkDataType`), `double` else:
+            // the result is rounded to float for them. The sums themselves stay in f64.
             let single = matches!(s.src_type, DataType::U8 | DataType::U16 | DataType::I8 | DataType::I16 | DataType::F32);
             let work = |v: f64| if single { v as f32 as f64 } else { v };
             crate::par::chunks_mut(&mut res, ow, |r, line| {
@@ -1265,7 +1266,7 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
                                 run = 0;
                             }
                         }
-                        let skipped = s.valid.is_some() && negative_weights && longest < wxs.len() / 2;
+                        let skipped = negative_weights && longest < wxs.len() / 2;
                         rows.push(if skipped || (s.valid.is_some() && wsum <= 0.0) {
                             None
                         } else if infinite {
