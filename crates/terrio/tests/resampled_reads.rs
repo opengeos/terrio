@@ -1,6 +1,6 @@
 //! Reads into outputs of other sizes (`LazyRaster::read_resampled` and its masks) of the rasters
 //! of `tests/data/resampled_reads`, against what GDAL 3.13.2 reads of them
-//! (the mixed-metadata internal/external and masked external cases use GDAL 3.13.3;
+//! (the RGB external, mixed-metadata internal/external and masked external cases use GDAL 3.13.3;
 //! each case records `gdal_version`)
 //! (`scripts/make_resampled_reads_fixtures.py`): pixels through `RasterIO` (the dataset's for
 //! several bands, as rasterio reads them, the band's for one) and masks through `GetMaskBand()`,

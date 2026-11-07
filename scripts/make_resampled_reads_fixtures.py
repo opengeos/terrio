@@ -25,7 +25,7 @@ With `--check-rasterio`, the files and `expected.json.gz` are only read: each `A
 with rasterio's `read(window=..., out_shape=..., resampling=...)` and `read_masks`, which needs
 rasterio rather than GDAL's bindings.
 
-Generation requires GDAL 3.13.3 and refreshes only the mixed-metadata and masked external
+Generation requires GDAL 3.13.3 and refreshes only the RGB, mixed-metadata and masked external
 fixtures plus the mixed internal fixture. Existing GDAL 3.13.2 cases and their TIFFs are kept
 unchanged. Every case records its oracle version; reproducing the historical cases requires
 that version and the generator from their original commit.
@@ -36,8 +36,8 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
-import sys
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -434,7 +434,7 @@ def main() -> int:
     reference = destination / "expected.json.gz"
     if not reference.is_file():
         parser.error("historical expected.json.gz is required; restore the checked-in fixtures first")
-    refreshed = {"mixed_external_overviews.tif", "masked_external_overviews.tif", "mixed_internal_overviews.tif"}
+    refreshed = {"rgb_external_overviews.tif", "mixed_external_overviews.tif", "masked_external_overviews.tif", "mixed_internal_overviews.tif"}
     previous = json.loads(gzip.decompress(reference.read_bytes()))
     expected = [dict(c, gdal_version=c.get("gdal_version", "3.13.2")) for c in previous if c["file"] not in refreshed]
     # Generate into scratch space: old TIFFs and their historical oracle values are never rewritten.
