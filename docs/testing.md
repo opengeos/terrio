@@ -1291,9 +1291,10 @@ The fixtures pin GDAL's behaviour where it is not obvious:
 - Cubic, cubic spline and Lanczos results are clamped to the band's `NBITS`: a GeoTIFF's internal
   mask (1 bit) reads as 0 and 1 with those kernels.
 - An overview of a paletted GeoTIFF reports no color table, so its bands are interpolated.
-- GDAL 3.13 skips NaN values of a masked floating-point chunk (GDAL 3.12, whose overviews
-  terrio's follow, sums them as NaN); resampled reads follow 3.13, overviews 3.12. Mode fills a
-  footprint without a valid pixel with 0 for a NaN nodata value (`GDALIsValueInRange`).
+- GDAL 3.13 skips NaN values of a masked floating-point chunk (GDAL 3.12 sums them as NaN).
+  Resampled reads follow the release `TERRIO_GDAL_COMPAT` selects (3.12 by default, as
+  `terrio.rio`'s rasterio parity tests expect), and the test selects 3.13; overviews follow 3.12.
+  Mode fills a footprint without a valid pixel with 0 for a NaN nodata value (`GDALIsValueInRange`).
 
 Values are compared bit for bit, but GDAL 3.13.2 built by clang for arm64 (Homebrew) contracts the
 multiply-adds of its average and RMS kernels into fused ones, rounding a mean exactly between two

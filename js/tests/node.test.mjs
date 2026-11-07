@@ -1248,6 +1248,86 @@ test("remote files read with range requests", async () => {
   }
 });
 
+test("resampled reads from overviews, local and remote", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "terrio-resampled-"));
+  // Two UInt16 bands, nodata 0 in a block, as a COG (with overviews).
+  const [w, h] = [1500, 1200];
+  const data = new Uint16Array(2 * w * h).map((_, i) => 1 + (i % 7919));
+  for (let y = 100; y < 300; y++) for (let x = 200; x < 400; x++) data[y * w + x] = 0;
+  const mem = terrio.rasterFromArray(data, w, h, [500000, 10, 0, 4100000, 0, -10], "EPSG:32610", 0);
+  const bytes = mem.toBytes("dem.tif", { format: "COG", compress: "DEFLATE" });
+  writeFileSync(join(dir, "dem.tif"), bytes);
+  const local = terrio.open(bytes, "dem.tif");
+  const ovr = local.overviews;
+  assert.ok(ovr.length >= 2, JSON.stringify(ovr));
+  const server = await serve(dir);
+  try {
+    const remote = await terrio.openUrl(server.url + "dem.tif", { blockSize: 16384 });
+    for (const ds of [local, remote]) {
+      const read = async (o) => await ds.readResampled(o);
+      // A window of the output's size is a plain read.
+      const plain = await read({ bands: [2], window: [600, 500, 100, 80], size: [100, 80] });
+      assert.ok(plain instanceof Uint16Array);
+      assert.deepEqual([...plain], [...local.readBand(2, [600, 500, 100, 80])]);
+      // An output of an overview's size reads that overview (AUTO, and the level named).
+      const [ow, oh] = ovr[1];
+      const level = local.readBand(1, undefined, 1);
+      for (const overview of [undefined, "AUTO", 1, "1"]) {
+        const got = await read({ bands: [1], size: [ow, oh], resampling: "average", overview });
+        assert.deepEqual([...got], [...level], `overview ${overview}`);
+      }
+      // Nearest neighbour from full resolution samples GDAL's pixel centres: 2i + 1 at half size.
+      const half = await read({ bands: [1], window: [0, 0, 400, 300], size: [200, 150], overview: "NONE" });
+      for (const [i, j] of [[0, 0], [10, 7], [199, 149], [150, 60]]) {
+        assert.equal(half[j * 200 + i], data[(2 * j + 1) * w + 2 * i + 1], `pixel ${i}, ${j}`);
+      }
+      // Several bands, band after band; masks 0 where nodata weighs everything.
+      const both = await read({ size: [150, 120], resampling: "average" });
+      assert.equal(both.length, 2 * 150 * 120);
+      const masks = await ds.readResampledMasks({ size: [150, 120], resampling: "average" });
+      assert.ok(masks instanceof Uint8Array);
+      assert.equal(masks.length, 2 * 150 * 120);
+      assert.equal(masks[15 * 150 + 30], 0);
+      assert.equal(both[15 * 150 + 30], 0);
+      assert.equal(masks[100 * 150 + 100], 255);
+      const together = await ds.readResampledWithMasks({ size: [150, 120], resampling: "average" });
+      assert.deepEqual([...together.data], [...both]);
+      assert.deepEqual([...together.masks], [...masks]);
+      // A fractional window.
+      const frac = await read({ bands: [1], window: [10.5, 20.25, 400.5, 300.75], size: [61, 52], resampling: "bilinear" });
+      assert.equal(frac.length, 61 * 52);
+      // Nearest neighbour samples the fractional window's pixel centres, not the truncated one's.
+      const [fw, fh, fx, fy, fxs, fys] = [27, 23, 10.5, 20.25, 40.5, 30.75];
+      const near = await read({ bands: [1], window: [fx, fy, fxs, fys], size: [fw, fh], overview: "NONE" });
+      const pick = (o, n, size) => Array.from({ length: size }, (_, i) => Math.floor((i + 0.5) * (n / size) + o + 1e-10));
+      const [cols, rows] = [pick(fx, fxs, fw), pick(fy, fys, fh)];
+      const [tcols, trows] = [pick(10, 40, fw), pick(20, 30, fh)];
+      assert.ok(cols.some((c, i) => c !== tcols[i]) && rows.some((r, j) => r !== trows[j]));
+      const expect = rows.flatMap((r) => cols.map((c) => data[r * w + c]));
+      assert.deepEqual([...near], expect);
+      // Errors.
+      await assert.rejects(async () => read({ bands: [1] }), /size/);
+      await assert.rejects(async () => read({ size: [10, 10], resampling: "gauss" }), /resampling/);
+      await assert.rejects(async () => read({ size: [10, 10], overview: "SOME" }), /overview/i);
+      await assert.rejects(async () => read({ size: [10, 10], outSize: [1, 1] }), /unknown field/);
+      await assert.rejects(async () => read({ size: [10, 10], bands: [3] }), /band/);
+    }
+    // Remote: the same pixels as local; a small output fetches an overview's tiles, not the image.
+    const small = await terrio.openUrl(server.url + "dem.tif", { blockSize: 16384 });
+    const got = await small.readResampled({ size: [150, 120], resampling: "average" });
+    assert.deepEqual([...got], [...local.readResampled({ size: [150, 120], resampling: "average" })]);
+    const reduced = small.stats().bytes;
+    const full = await terrio.openUrl(server.url + "dem.tif", { blockSize: 16384 });
+    await full.readResampled({ size: [150, 120], resampling: "average", overview: "NONE" });
+    assert.ok(reduced * 4 < full.stats().bytes, `${reduced} bytes from the overview, ${full.stats().bytes} from full resolution`);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
 test("remote real files read with range requests, as GDAL reads them", { skip: needs("parquet", "pointcloud") || SKIP_DATA }, async (t) => {
   if (!existsSync(join(DATA, "ne_places_rg.parquet"))) return t.skip("ne_places_rg.parquet is missing");
   const server = await serve(DATA);

@@ -353,6 +353,30 @@ class Raster:
     def read_mask(
         self, window: _Window | None = None, overview: int | None = None
     ) -> NDArray[Any] | None: ...
+    def read_resampled(
+        self,
+        size: tuple[int, int],
+        band: int | Sequence[int] | None = None,
+        window: tuple[float, float, float, float] | None = None,
+        resampling: str = "nearest",
+        overview: int | str | None = None,
+    ) -> NDArray[Any]: ...
+    def read_resampled_masks(
+        self,
+        size: tuple[int, int],
+        band: int | Sequence[int] | None = None,
+        window: tuple[float, float, float, float] | None = None,
+        resampling: str = "nearest",
+        overview: int | str | None = None,
+    ) -> NDArray[np.uint8]: ...
+    def read_resampled_with_masks(
+        self,
+        size: tuple[int, int],
+        band: int | Sequence[int] | None = None,
+        window: tuple[float, float, float, float] | None = None,
+        resampling: str = "nearest",
+        overview: int | str | None = None,
+    ) -> tuple[NDArray[Any], NDArray[np.uint8]]: ...
     @staticmethod
     def from_array(
         array: NDArray[Any],
