@@ -48,6 +48,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mosaic, m)?)?;
     m.add_class::<PyRegionWarp>()?;
     m.add_function(wrap_pyfunction!(_check_sum_window, m)?)?;
+    m.add("_SUM_AUTO_OVERVIEW", terrio::ops::warp::SUM_AUTO_OVERVIEW)?;
     Ok(())
 }
 
@@ -1252,7 +1253,9 @@ fn translate(
 ///         `"average"`, `"rms"`, `"mode"`, `"min"`, `"max"`, `"med"`, `"q1"`, `"q3"` or `"sum"`.
 ///     overview: Source pyramid selection: `"AUTO"` (default), `"AUTO-n"`, `"NONE"` or
 ///         a zero-based stored level. The output grid still uses full-resolution metadata.
-///         With `resampling="sum"`, `"AUTO"` and `"AUTO-n"` read full resolution.
+///         With `resampling="sum"`, `"AUTO"` and `"AUTO-n"` read full resolution, and each pixel
+///         of a level counts for the source pixels it stands for, so that the sum estimates the
+///         source's total.
 ///     srcnodata: The sources' nodata: a number, one per band, or `"none"` to ignore theirs.
 ///     dstnodata: The output nodata, or `"none"`. By default, the sources'.
 ///     ot: The output data type.
@@ -1294,7 +1297,7 @@ fn translate(
     src, dst=None, *, s_srs=None, t_srs=None, tr=None, te=None, te_srs=None, ts=None, dst_transform=None, tap=false,
     resampling="near", overview=None, srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125,
     format=None, compress=None, tile_size=None, bigtiff=false, gcps=None, order=0, gcp_method="auto",
-    rpc=None, to=None, wo=None, geoloc=false, geolocation=None, kernel_version=None, init=None
+    rpc=None, to=None, wo=None, geoloc=false, geolocation=None, kernel_version=None, init=None, _sum_scale=1.0
 ))]
 #[allow(clippy::too_many_arguments)]
 fn warp(
@@ -1331,6 +1334,7 @@ fn warp(
     geolocation: Option<&Bound<'_, pyo3::types::PyDict>>,
     kernel_version: Option<&str>,
     init: Option<&Bound<'_, PyAny>>,
+    _sum_scale: f64,
 ) -> PyResult<PyRaster> {
     if tap && tr.is_none() {
         return Err(invalid("tap needs tr"));
@@ -1378,6 +1382,9 @@ fn warp(
         kernel_version: terrio::ops::warp::KernelVersion::parse_or_configured(kernel_version).py()?,
         rpc_options: crate::rio::parse_rpc_options(to)?,
         geoloc,
+        // Private: `terrio.rio.warp.reproject` of a dataset opened at an overview level, whose
+        // pixels a `sum` counts for the full-resolution pixels they stand for.
+        sum_scale: _sum_scale,
         ..Default::default()
     };
     for (k, v) in wo.unwrap_or_default() {
@@ -1684,6 +1691,9 @@ fn _check_sum_window(pixels: u64, pixel_bytes: usize) -> PyResult<()> {
 ///         `rpc_options` (`RPC_HEIGHT`, `RPC_DEM`...).
 ///     kernel_version: The GDAL release whose bilinear/cubic resampling to reproduce, "3.12" or
 ///         "3.13". By default the `TERRIO_GDAL_COMPAT` option's, else "3.12".
+///     sum_scale: With `sum`, the full-resolution pixels each pixel of the source level stands
+///         for, `(W / w) * (H / h)` for a `w` x `h` overview of a `W` x `H` raster: each source
+///         value counts that many times. 1 by default; a positive number.
 #[pyclass(module = "terrio", name = "RegionWarp", frozen)]
 pub struct PyRegionWarp {
     inner: RegionWarp,
@@ -1692,7 +1702,7 @@ pub struct PyRegionWarp {
 #[pymethods]
 impl PyRegionWarp {
     #[new]
-    #[pyo3(signature = (src_size, src_transform, src_crs, dst_crs, dst_transform, resampling, error_threshold, dtype, src_nodata, dst_nodata=None, gcps=None, gcp_order=0, gcp_method="auto", rpc=None, rpc_options=None, kernel_version=None))]
+    #[pyo3(signature = (src_size, src_transform, src_crs, dst_crs, dst_transform, resampling, error_threshold, dtype, src_nodata, dst_nodata=None, gcps=None, gcp_order=0, gcp_method="auto", rpc=None, rpc_options=None, kernel_version=None, sum_scale=1.0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -1712,7 +1722,11 @@ impl PyRegionWarp {
         rpc: Option<std::collections::HashMap<String, String>>,
         rpc_options: Option<std::collections::HashMap<String, String>>,
         kernel_version: Option<&str>,
+        sum_scale: f64,
     ) -> PyResult<Self> {
+        if !(sum_scale.is_finite() && sum_scale > 0.0) {
+            return Err(invalid(format!("sum_scale must be a positive number, not {sum_scale}")));
+        }
         let kernel_version = terrio::ops::warp::KernelVersion::parse_or_configured(kernel_version).py()?;
         let (src_srs, dst_srs) = (SpatialRef::parse(src_crs).py()?, SpatialRef::parse(dst_crs).py()?);
         let (resampling, dtype) = (Resampling::parse(resampling).py()?, terrio::ops::parse_data_type(dtype).py()?);
@@ -1734,7 +1748,7 @@ impl PyRegionWarp {
                 dst_nodata,
             )
             .py()?;
-            return Ok(Self { inner: inner.with_kernel_version(kernel_version) });
+            return Ok(Self { inner: inner.with_kernel_version(kernel_version).with_sum_scale(sum_scale) });
         }
         let inner = match gcps {
             // GCPs georeference the source instead of `src_transform`.
@@ -1769,7 +1783,7 @@ impl PyRegionWarp {
             ),
         }
         .py()?;
-        Ok(Self { inner: inner.with_kernel_version(kernel_version) })
+        Ok(Self { inner: inner.with_kernel_version(kernel_version).with_sum_scale(sum_scale) })
     }
 
     /// The source window `(x, y, width, height)` a region `(x, y, width, height)` of the grid

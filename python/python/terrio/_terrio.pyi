@@ -173,6 +173,7 @@ __all__ = [
     "_set_warp_nodata_logger",
     "RegionWarp",
     "_check_sum_window",
+    "_SUM_AUTO_OVERVIEW",
     "config_push",
     "config_pop",
     "config_get",
@@ -197,6 +198,7 @@ __all__ = [
 ]
 
 __version__: str
+_SUM_AUTO_OVERVIEW: bool
 
 class _SupportsToDictRecords(Protocol):
     # A pandas DataFrame of labelled rows, read as `to_dict("records")`.
@@ -1150,6 +1152,7 @@ def warp(
     geolocation: Mapping[str, Any] | None = None,
     kernel_version: str | None = None,
     init: Raster | None = None,
+    _sum_scale: float = 1.0,
 ) -> Raster: ...
 def mosaic(
     srcs: _RasterSource | Sequence[_RasterSource],
@@ -1692,6 +1695,7 @@ class RegionWarp:
         rpc: Mapping[str, str] | None = None,
         rpc_options: Mapping[str, str] | None = None,
         kernel_version: str | None = None,
+        sum_scale: float = 1.0,
     ) -> RegionWarp: ...
     def source_window(self, region: _Window) -> _Window | None: ...
     def warp(

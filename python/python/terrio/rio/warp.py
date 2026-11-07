@@ -696,7 +696,9 @@ def reproject(
 
     Args:
         source: A 2-D or 3-D array, a `Band` (`terrio.rio.band(dataset, bidx)`) or a dataset.
-            A masked array is warped with its mask as an alpha band, as rasterio does.
+            A masked array is warped with its mask as an alpha band, as rasterio does. With `sum`,
+            each pixel of a dataset opened at an overview level (`overview_level`) counts for the
+            full-resolution pixels it stands for.
         destination: A 2-D or 3-D array (or a `Band` of a writer) to fill; created when None.
             For a masked array, a new masked array over its data is returned, masked where
             nothing was warped, as rasterio does.
@@ -740,7 +742,7 @@ def reproject(
             `TERRIO_WARP_SUM_MAX_BYTES` (4 GiB by default); it is raised before the bands are read.
     """
     from terrio.rio import Band
-    from terrio.rio.io import DatasetBase
+    from terrio.rio.io import DatasetBase, _sum_scale
 
     if sum(p is not None for p in (src_transform, gcps, rpcs, src_geoloc_array)) > 1:
         raise ValueError(
@@ -762,7 +764,8 @@ def reproject(
     if destination is None and dst_transform is not None:
         raise ValueError("Must provide destination if dst_transform is provided.")
 
-    # The source pixels and grid.
+    # The source pixels and grid. With `sum`, the full-resolution pixels each pixel stands for.
+    sum_scale = 1.0
     if isinstance(source, DatasetBase):
         source = Band(source, list(source.indexes), source.dtypes[0], source.shape)
     if isinstance(source, Band):
@@ -771,6 +774,7 @@ def reproject(
             # Refused before the bands are read when their memory would exceed the budget.
             count = len(bidx) if isinstance(bidx, (list, tuple)) else 1
             _terrio._check_sum_window(ds.width * ds.height, np.dtype(source.dtype).itemsize * count)
+            sum_scale = _sum_scale(ds, ds.width, ds.height)
         arr = ds.read(bidx)
         src_transform = ds.transform
         src_crs = src_crs or ds.crs
@@ -941,6 +945,7 @@ def reproject(
         dstnodata=dstnd,
         ot=ot,
         init=initial,
+        _sum_scale=sum_scale,
         **common,
     )
     res = np.asarray(out.read())

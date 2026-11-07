@@ -51,7 +51,8 @@ pub struct Args {
     #[arg(long)]
     kernel_version: Option<String>,
     /// Source overview: AUTO, AUTO-n, NONE, or a level numbered from 0. With `-r sum`, AUTO and
-    /// AUTO-n read full resolution.
+    /// AUTO-n read full resolution, and each pixel of a level counts for the source pixels it
+    /// stands for.
     #[arg(long, alias = "ovr", default_value = "AUTO")]
     overview: String,
 
