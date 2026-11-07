@@ -181,6 +181,29 @@ def inner_cutline(raster, path):
     return path
 
 
+def dem_with_holes(raster, path):
+    """Write a 400 x 400 crop of a DEM with nodata holes: a disc, a band of rows and a lattice.
+
+    Args:
+        raster: The DEM's path (Float32 with a nodata value).
+        path: The GeoTIFF file to write.
+
+    Returns:
+        The path.
+    """
+    ds = gdal.Translate(path, raster, srcWin=[1000, 1000, 400, 400])
+    band = ds.GetRasterBand(1)
+    nodata = band.GetNoDataValue()
+    a = band.ReadAsArray()
+    yy, xx = np.mgrid[:400, :400]
+    a[(yy - 120) ** 2 + (xx - 200) ** 2 < 30**2] = nodata
+    a[300:303, :] = nodata
+    a[::17, ::23] = nodata
+    band.WriteArray(a)
+    ds = None
+    return path
+
+
 def cases(d, tmp):
     """The comparison cases: name, GDAL commands, terrio commands, outputs and tolerance.
 
@@ -308,6 +331,17 @@ def cases(d, tmp):
         mosaic_vrt = os.path.join(tmp, "gdal_mosaic.vrt")
         run(["gdalbuildvrt", "-q", mosaic_vrt] + tiles)
         add("read GDAL mosaic VRT", ["gdal_translate", mosaic_vrt], ["translate", mosaic_vrt])
+    # Interpolating VRT sources with nodata: each row is averaged over its valid pixels, then the rows.
+    holes = dem_with_holes(dem, os.path.join(tmp, "dem_holes.tif"))
+    for method in ("bilinear", "cubic", "lanczos", "cubicspline"):
+        for tr in ("0.0001", "0.0007"):
+            vrt = os.path.join(tmp, f"gdal_holes_{method}_{tr}.vrt")
+            run(["gdalbuildvrt", "-q", "-r", method, "-tr", tr, tr, vrt, holes])
+            add(f"read GDAL {method} VRT with nodata tr {tr}", ["gdal_translate", vrt], ["translate", vrt], 1e-5)
+        # Written directly and upsampled by 2.8 (tr 0.0001), a cubic or Lanczos mosaic still
+        # differs from GDAL's next to some isolated nodata pixels (under 0.1 % of them).
+        mosaic_vrt = os.path.join(tmp, f"gdal_holes_{method}_0.0007.vrt")
+        add(f"mosaic {method} tr 0.0007 with nodata vs gdalbuildvrt", ["gdal_translate", mosaic_vrt], ["mosaic", holes, "-r", method, "--tr", "0.0007", "0.0007"], 1e-5)
     subset_vrt = os.path.join(tmp, "gdal_subset.vrt")
     run(["gdal_translate", "-q", "-of", "VRT", "-srcwin", "10", "20", "300", "200", "-scale", "500", "1500", "0", "1", "-ot", "Float32", lv, subset_vrt])
     add("read GDAL scaled subset VRT", ["gdal_translate", subset_vrt], ["translate", subset_vrt])

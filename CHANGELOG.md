@@ -8,6 +8,13 @@
   EPSG:4326 lost its last row and 0.4 % of its total. Sizes and geotransforms match
   GDAL 3.13.3; per-pixel values of a reprojected sum still differ from GDAL's.
 
+- Bilinear, cubic, cubic spline and Lanczos reads of VRT and mosaic sources with nodata
+  average each source row over its valid pixels, then the rows over the valid ones, as GDAL's
+  `RasterIOResampled` does, rather than all valid weights at once, and work in `float` for
+  8- and 16-bit and Float32 sources. Next to a nodata pixel, a bilinear value could differ from
+  GDAL's by 20. Reads of GDAL-built VRTs now match GDAL 3.13.3 on the conformance DEM; a
+  valid integer result rounding to the nodata value is not moved off it as GDAL does.
+
 - The `--json-usage` catalog (`schema_version` 0.1.1) records whether each argument is
   `repeatable` (clap Append/Count) and lists its `conflicts_with` arguments in both directions,
   including members of exclusive argument groups. A CI step requires a newer `schema_version`
