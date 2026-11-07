@@ -463,6 +463,16 @@ pub(crate) fn break_cog_layout<F: Read + Write + Seek>(f: &mut F, big: bool, all
 /// Refuses a path that is not a local file that can be written: remote objects, archive members
 /// and read-only files are not updated in place.
 pub(crate) fn writable_local_file(path: &str) -> Result<PathBuf> {
+    let p = local_file(path)?;
+    if std::fs::metadata(&p)?.permissions().readonly() {
+        return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::PermissionDenied, format!("'{}' is read-only", p.display()))));
+    }
+    Ok(p)
+}
+
+/// Refuses a path that is not a local file, which may be read-only: remote objects and archive
+/// members get no sidecar files next to them. Returns the file's canonical path.
+pub(crate) fn local_file(path: &str) -> Result<PathBuf> {
     let loc = crate::vfs::Location::parse(path);
     let crate::vfs::Location::Local(p) = loc else {
         return Err(Error::Unsupported(format!("'{path}' is not a local file: only local files can be updated in place")));
@@ -470,9 +480,6 @@ pub(crate) fn writable_local_file(path: &str) -> Result<PathBuf> {
     let meta = std::fs::metadata(&p).map_err(|e| Error::Io(std::io::Error::new(e.kind(), format!("{}: {e}", p.display()))))?;
     if !meta.is_file() {
         return Err(Error::InvalidArgument(format!("'{}' is not a file", p.display())));
-    }
-    if meta.permissions().readonly() {
-        return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::PermissionDenied, format!("'{}' is read-only", p.display()))));
     }
     Ok(std::fs::canonicalize(p)?)
 }
@@ -652,6 +659,9 @@ mod tests {
         perms.set_readonly(true);
         std::fs::set_permissions(&path, perms).unwrap();
         assert!(writable_local_file(path.to_str().unwrap()).is_err());
+        // A read-only file still takes sidecars next to it.
+        assert_eq!(local_file(path.to_str().unwrap()).unwrap(), std::fs::canonicalize(&path).unwrap());
+        assert!(matches!(local_file("https://example.com/a.tif"), Err(Error::Unsupported(_))));
         assert!(matches!(writable_local_file("https://example.com/a.tif"), Err(Error::Unsupported(_))));
         assert!(matches!(writable_local_file("/vsizip/a.zip/a.tif"), Err(Error::Unsupported(_))));
     }

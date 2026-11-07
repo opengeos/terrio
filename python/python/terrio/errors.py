@@ -38,6 +38,10 @@ class ResourceLimitError(TerrioError, MemoryError):
     """Reading a dataset exceeds a resource budget or available allocation capacity."""
 
 
+class CancelledError(TerrioError):
+    """An operation was cancelled by its progress callback (`add_overviews(progress=...)`)."""
+
+
 class InternalError(TerrioError):
     """A bug in terrio that this input reached: a Rust panic, caught before it reached Python.
 
@@ -49,6 +53,7 @@ class InternalError(TerrioError):
 
 __all__ = [
     "CRSError",
+    "CancelledError",
     "InternalError",
     "InvalidArgumentError",
     "InvalidDataError",

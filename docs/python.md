@@ -496,7 +496,25 @@ into an existing file and returns its changed window, or None for no overlap.
 Their keyword options follow the CLI, including compression, partial refresh,
 clipping geometry and overview updates. Local writable little-endian GeoTIFFs
 are required for in-place changes; external overview updates can fail after the
-base update commits.
+base update commits. External overviews (`external=True`) write only the `.ovr`
+sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`. Overviews are
+managed for GeoTIFFs only.
+
+`add_overviews(..., progress=callback)` calls `callback(fraction)` as the
+overviews are computed, with a fraction from 0 to 1 that never decreases (1 once
+every overview is computed, before they are written). A falsy return value other
+than `None` cancels, as with GDAL's Python callbacks, raising
+`terrio.errors.CancelledError`; an exception the callback raises cancels too and
+propagates. A cancellation changes no file: an existing `.ovr` stays as it was.
+
+```python
+def report(fraction):
+    print(f"{fraction:.0%}")
+    return not stop_requested()
+
+terrio.add_overviews("dem.tif", resampling="average", external=True,
+                     compression="DEFLATE", progress=report)
+```
 
 COG validation also accepts uploaded TIFF `bytes`. Use
 `terrio.validate_cog(data, profile="gdal", full_check=True)` for GDAL 3.13

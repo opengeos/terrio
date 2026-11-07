@@ -1,7 +1,7 @@
 """Type stubs for the `terrio._terrio` extension module."""
 
 import os
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Any, Literal, Protocol, TypeAlias, TypedDict, final, overload
 
 import numpy as np
@@ -2091,6 +2091,7 @@ def add_overviews(
     external: bool = False,
     compression: str | None = None,
     ignore_cog_layout_break: bool = False,
+    progress: Callable[[float], object] | None = None,
 ) -> list[tuple[int, int]]: ...
 def delete_overviews(
     path: str,

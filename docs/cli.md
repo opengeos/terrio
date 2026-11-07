@@ -1310,7 +1310,10 @@ A raster without a geotransform of its own (unreferenced, or georeferenced by
 ground control points) cannot be moved. With `--like`, a template without a
 geotransform gives its GCPs, or no georeferencing, instead of a unit-pixel grid.
 
-In-place operations require writable little-endian GeoTIFFs. Updating a COG
+In-place operations require writable little-endian GeoTIFFs. `overviews --external` writes only
+the `.ovr` sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`; its directory must be
+writable. A new sidecar is a BigTIFF when its images take more than about 4 GiB, and an
+existing classic TIFF sidecar that would grow past 4 GiB is refused. Updating a COG
 requires `--ignore-cog-layout-break` and can invalidate its optimized layout.
 Edits use a temporary file and rename; a failure before replacement preserves
 the original. A tag of a field type the TIFF specification does not define is

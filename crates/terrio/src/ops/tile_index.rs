@@ -350,7 +350,7 @@ fn index_source_error(path: &str, error: Error) -> Error {
         Error::InvalidArgument(_) => Error::InvalidArgument(message),
         Error::ResourceLimit(_) => Error::ResourceLimit(message),
         Error::Raster(_) | Error::Vector(_) | Error::InvalidData(_) => Error::InvalidData(message),
-        e @ Error::DecodedLimitExceeded { .. } => e,
+        e @ (Error::DecodedLimitExceeded { .. } | Error::Cancelled) => e,
     }
 }
 #[cfg(fs)]
