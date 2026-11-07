@@ -184,6 +184,7 @@ impl<'a> Styles<'a> {
     /// pushed to `table`, so this stays proportional to the document's own styles rather than
     /// rebuilding the map from the whole table on every call (#631).
     pub fn add_to(&mut self, table: &mut Vec<(String, String)>, known: &mut HashMap<String, String>) {
+        debug_assert_eq!(known.len(), table.len(), "known must hold the ids in the style table");
         for (id, style) in self.table() {
             if let Some(definition) = known.get(&id) {
                 if *definition != style {
@@ -641,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn add_to_keeps_known_across_documents_without_rebuilding() {
+    fn add_to_keeps_first_definition_across_documents() {
         let members = MemberIndex::new();
         let mut table = Vec::new();
         let mut known = HashMap::new();
