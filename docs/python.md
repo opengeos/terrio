@@ -355,8 +355,13 @@ with 8 bytes per pixel for the pixels' shares, would hold more than 4 GiB raises
 `WarpedVRT` and a `sum` `terrio.rio.warp.reproject` of a band or dataset: `overview=n` sums a
 level (for the `terrio.rio` ones, a source opened with `overview_level=n`, whose pixels count
 the same way), and the `TERRIO_WARP_SUM_MAX_BYTES` environment variable, a positive integer
-byte count, changes the budget. A `WarpedVRT` whose `dtype` differs from its source's counts
-the window in both types, which its cast holds at once.
+byte count, changes the budget. A `sum` read of a `WarpedVRT` warps a region whose source
+window's working memory exceeds its `warp_mem_limit` (64 MB by default) a part at a time, each
+part from its own window, with the same pixels, bit for bit: a reduced read of a large source
+without overviews holds one part's window at a time, and the budget applies to each part's
+window, so that only a part that cannot be split, one output pixel, can exceed it (several
+bands with source and output nodata values are warped whole). A `WarpedVRT` whose `dtype`
+differs from its source's counts the window in both types, which its cast holds at once.
 Calls with loaded inputs reuse their existing pixels, including repeated references.
 File GCPs/RPCs of the first path are retained in mixed path/`Raster` calls.
 

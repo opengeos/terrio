@@ -387,6 +387,17 @@
   passes, and one of a 32768 × 32768 band without overviews, or with `--overview NONE` (12 GiB),
   now errors, where it held the whole window in memory; a `sum` of several sources over 4 GiB in
   all now errors at any output size, where it held them all.
+- A `sum` read of a `terrio.rio` `WarpedVRT` warps a region whose source window's working memory
+  exceeds its `warp_mem_limit` (64 MB by default) a part at a time, halved along its longer side
+  until each part's window fits, down to single pixels, and each part from its own window: the
+  pixels are the same, bit for bit. A reduced read of the whole VRT over a large source without
+  overviews held the source window of half its output at once, whatever `warp_mem_limit`; it now
+  holds one part's: a 256 × 256 Float64 read of a 16384 × 16384 UInt16 band without overviews
+  peaked at 2,247 MiB of resident memory, and now at 271 MiB. `TERRIO_WARP_SUM_MAX_BYTES` bounds
+  each part's window, refused before any is read: a part fits `warp_mem_limit` unless it cannot be
+  split (one output pixel), so the budget no longer refuses a read for its footprint alone.
+  Several bands with source and output nodata values are warped whole, as whether a sum stored on
+  the output nodata value is moved off it depends on whether the window holds a nodata pixel.
 - With `GDAL_INGESTED_BYTES_AT_OPEN` (or `TERRIO_INGESTED_BYTES_AT_OPEN`) above a block (64 KiB
   by default), opening a remote file that the process-wide cache holds takes the ingested blocks
   from there and requests only those it no longer holds. Every reader of a file requested them

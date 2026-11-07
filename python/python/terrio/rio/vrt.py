@@ -157,10 +157,14 @@ class WarpedVRT(DatasetReader):
     estimates the source's total. A source opened at an overview level (`overview_level`) counts
     its pixels the same way. A reduced read of a window can take an implicit overview, whose
     pixels are comparable with the VRT's, or resample the VRT's pixels, so its sum is not the
-    source's: read the window at full size for its total. A `sum` read whose source window would
-    hold more than `TERRIO_WARP_SUM_MAX_BYTES` (4 GiB by default) raises `ResourceLimitError`
-    before the window is read. When `dtype` differs from the source's, the window counts in both
-    types.
+    source's: read the window at full size for its total. A `sum` holds the source window it
+    warps from: a region whose window's working memory exceeds `warp_mem_limit` (64 MB by
+    default) is warped a part at a time, each part from its own window, halved until each fits,
+    with the same pixels, bit for bit, so that a reduced read of a large source without overviews
+    holds one part's window at a time. Several bands with source and output nodata values are
+    warped whole. A `sum` read one of whose windows would hold more than
+    `TERRIO_WARP_SUM_MAX_BYTES` (4 GiB by default) raises `ResourceLimitError` before any window
+    is read. When `dtype` differs from the source's, a window counts in both types.
     """
 
     def __init__(
@@ -729,6 +733,8 @@ class WarpedVRT(DatasetReader):
     ) -> np.ndarray:
         """Warps a region of a grid (`GDALWarpOperation::WarpRegionToBuffer()`), all bands.
 
+        A `sum` region is warped a part at a time, each part from its own window (`_sum_parts`).
+
         Args:
             grid: The grid.
             region: `(x, y, w, h)` in the grid.
@@ -750,23 +756,81 @@ class WarpedVRT(DatasetReader):
             out[b] = self._init[b] if b < self._src_count else 0
         written = np.zeros((h, w), bool)
         if win is not None and win[2] > 0 and win[3] > 0:
+            parts = [(region, win)]
             if self.resampling == Resampling.sum:
-                # Refused before the window is read when its memory would exceed the budget. Cast
-                # to another working type, the window is held in both types at once.
+                parts = self._sum_parts(rw, region, win)
+                # Refused before any window is read when one would exceed the budget. Cast to
+                # another working type, a window is held in both types at once.
                 src, work = np.dtype(self.src_dataset.dtypes[0]), np.dtype(self._dtype)
                 itemsize = src.itemsize + (work.itemsize if work != src else 0)
-                _terrio._check_sum_window(win[2] * win[3], itemsize * self._src_count)
-            data, mask = self._source_window(grid.level, win)
-            warped, written = rw.warp(region, win, data, mask, self._init_value, direct)
-            warped = np.asarray(warped)
-            written = np.asarray(written)
-            for b in range(self._src_count):
-                out[b] = np.where(written, warped[b], out[b])
+                largest = max((part_win[2] * part_win[3] for _, part_win in parts), default=0)
+                _terrio._check_sum_window(largest, itemsize * self._src_count)
+            for part, part_win in parts:
+                data, mask = self._source_window(grid.level, part_win)
+                warped, done = rw.warp(part, part_win, data, mask, self._init_value, direct)
+                warped, done = np.asarray(warped), np.asarray(done)
+                px, py, pw, ph = part
+                rows, cols = slice(py - y, py - y + ph), slice(px - x, px - x + pw)
+                written[rows, cols] = done
+                for b in range(self._src_count):
+                    out[b, rows, cols] = np.where(done, warped[b], out[b, rows, cols])
         if self._dst_alpha:
             # GDALWarpDstAlphaMasker(): the density of warped pixels, scaled to DST_ALPHA_MAX.
             amax = {"int16": 32767, "uint16": 65535}.get(dtype.name, 255)
             out[self._dst_alpha - 1] = np.where(written, amax, 0).astype(dtype)
         return out
+
+    def _sum_parts(
+        self, rw: Any, region: tuple[int, int, int, int], win: tuple[int, int, int, int]
+    ) -> list[tuple[tuple[int, int, int, int], tuple[int, int, int, int]]]:
+        """The parts of a `sum` region to warp one at a time, each with its source window.
+
+        A `sum` holds the whole source window it warps from, which grows with the region's
+        footprint: a reduced read of a large source without overviews would hold most of it at
+        once. A region whose window's working memory exceeds `warp_mem_limit` is halved along
+        its longer side until each part's fits, down to single pixels, and each part is warped
+        from its own window. A `sum` pixel does not depend on the window it is warped from, so
+        the parts give the region's pixels, bit for bit. Two kinds of region are kept whole:
+        with several bands that have source and output nodata values, whether a sum stored on
+        the output nodata value is moved off it depends on whether the window holds a nodata
+        pixel; and a region one of whose halves cannot be transformed may reach pixels there
+        that the half would not.
+
+        Args:
+            rw: The region's warper.
+            region: `(x, y, w, h)` in the grid.
+            win: The region's source window, not empty.
+
+        Returns:
+            list: `(part, window)` pairs covering the region, but for parts whose window is
+            empty (no source pixel reaches them).
+        """
+        x, y, w, h = region
+        if (
+            self._working_memory(win[2], win[3], w, h) <= self._warp_memory
+            or w * h == 1
+            or (
+                self._src_count > 1
+                and self._warp_dst_nodata is not None
+                and any(v is not None for v in self._warp_src_nodata)
+            )
+        ):
+            return [(region, win)]
+        if w >= h:
+            half = w // 2
+            halves = [(x, y, half, h), (x + half, y, w - half, h)]
+        else:
+            half = h // 2
+            halves = [(x, y, w, half), (x, y + half, w, h - half)]
+        wins = [rw.source_window(p) for p in halves]
+        if any(v is None for v in wins):
+            return [(region, win)]
+        return [
+            part
+            for p, v in zip(halves, wins, strict=True)
+            if v[2] > 0 and v[3] > 0
+            for part in self._sum_parts(rw, p, v)
+        ]
 
     def _working_memory(self, sw: int, sh: int, dw: int, dh: int) -> float:
         """`GDALWarpOperation::GetWorkingMemoryForWindow()`.
