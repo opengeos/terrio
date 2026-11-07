@@ -308,7 +308,9 @@ Words filter by name or code (each must be in the name or begin the code or `AUT
 `geocentric`, `projected`, `vertical`, `compound`, `other`) are repeatable, and deprecated CRSs
 are left out unless `--include-deprecated`. `--json` prints each CRS's name, kind, deprecation,
 area of use and its bounds, projection method and celestial body, as GDAL's
-`OSRGetCRSInfoListFromDatabase` gives them. See [Listing registry CRSs](crs.md#listing-registry-crss).
+`OSRGetCRSInfoListFromDatabase` gives them. For MCP calls, supply search words and/or
+authority/kind filters: an unfiltered listing exceeds the server's 100,000-byte output cap
+and is truncated. See [Listing registry CRSs](crs.md#listing-registry-crss).
 
 ## pixel-info
 

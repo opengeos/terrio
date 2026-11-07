@@ -28,6 +28,10 @@ osr.UseExceptions()
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Pinned catalog counts for the CLI's wbprojection-fallback build (PROJ 9.8.1 snapshot).
+# Missing registry entries must fail even if a newer GDAL database lists additional codes.
+EXPECTED_COUNTS = {"EPSG": 7681, "ESRI": 2519, "IAU_2015": 2201}
+
 KINDS = {
     osr.OSR_CRS_TYPE_GEOGRAPHIC_2D: "geographic_2d",
     osr.OSR_CRS_TYPE_GEOGRAPHIC_3D: "geographic_3d",
@@ -90,6 +94,10 @@ def main():
         reference = gdal_entries(authority)
         ours = [e for e in listed if e["authority"] == authority]
         differs = []
+        if len(ours) != EXPECTED_COUNTS[authority]:
+            differs.append(f"catalog count {len(ours)} vs pinned {EXPECTED_COUNTS[authority]}")
+        if len({e["code"] for e in ours}) != len(ours):
+            differs.append("duplicate catalog codes")
         for e in ours:
             expected = reference.get(e["code"])
             if expected is None:
