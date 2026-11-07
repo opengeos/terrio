@@ -12,6 +12,10 @@
   `zarr.json` at once, and, in a Zarr v3 store, no longer looks for v2 documents (`.zarray`,
   `.zattrs`, `.zgroup`). The coordinate arrays that describe the band dimensions are read in
   parallel. Opening that TESSERA array went from 13 requests in a row to 4 round trips.
+- A sharded Zarr array keeps the indexes of the shards it has read while it is open (up to 64 MB
+  of entries), as zarrita and GDAL do: a later window in the same shard fetches only its inner
+  chunks, where it fetched the shard's index again first (256 KB and a round trip for a TESSERA
+  shard of 128 x 128 inner chunks).
 
 - Python's `Raster.read_resampled`, `read_resampled_masks` and `read_resampled_with_masks`, and
   JavaScript's `readResampled`, `readResampledMasks` and `readResampledWithMasks` (on `Dataset`

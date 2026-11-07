@@ -305,7 +305,18 @@ struct Array {
     separator: String,
     dims: Vec<String>,
     attrs: Value,
+    /// The indexes of the shards read so far, by chunk key ([`Array::shard_index`]).
+    shard_indexes: ShardIndexes,
 }
+
+/// Parsed shard indexes and the bytes their entries take, at most [`SHARD_INDEX_CACHE_BYTES`].
+type ShardIndexes = std::sync::Mutex<(std::collections::HashMap<String, ShardIndex>, usize)>;
+
+/// A parsed shard index (see [`parse_index`]).
+type ShardIndex = std::sync::Arc<[Option<(usize, usize)>]>;
+
+/// The most bytes of shard index entries an array keeps: 256 indexes of 128 x 128 inner chunks.
+const SHARD_INDEX_CACHE_BYTES: usize = 64 << 20;
 
 impl Array {
     /// The key of the chunk at grid position `idx`.
@@ -314,6 +325,32 @@ impl Array {
             return format!("{}0", self.key_prefix);
         }
         format!("{}{}", self.key_prefix, idx.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(&self.separator))
+    }
+
+    /// The index of the shard `key`, of `count` entries read from `range`, read once while the
+    /// array is open, as zarrita and GDAL keep them: a later window, or a strip of a window, in
+    /// the same shard fetches only its inner chunks. `None` when the shard is missing.
+    fn shard_index(&self, key: &str, count: usize, range: Range) -> Result<Option<ShardIndex>> {
+        if let Some(index) = self.shard_indexes.lock().ok().and_then(|c| c.0.get(key).cloned()) {
+            return Ok(Some(index));
+        }
+        let Some(bytes) = self.node.get(key, range)? else { return Ok(None) };
+        if bytes.len() < count * 16 {
+            return Err(bad("shard smaller than its index"));
+        }
+        let index: ShardIndex = parse_index(&bytes[..count * 16]).into();
+        if let Ok(mut c) = self.shard_indexes.lock() {
+            let size = count * std::mem::size_of::<Option<(usize, usize)>>();
+            // ponytail: dropped all at once when full; an LRU if windows wander over many shards.
+            if c.1 + size > SHARD_INDEX_CACHE_BYTES {
+                *c = Default::default();
+            }
+            if size <= SHARD_INDEX_CACHE_BYTES {
+                c.0.insert(key.to_string(), index.clone());
+                c.1 += size;
+            }
+        }
+        Ok(Some(index))
     }
 
     /// The fill value as one little-endian element.
@@ -448,6 +485,7 @@ fn read_array_opt(node: &Node) -> Result<Option<Array>> {
             separator: m["dimension_separator"].as_str().unwrap_or(".").to_string(),
             dims,
             attrs,
+            shard_indexes: ShardIndexes::default(),
         }));
     }
     let m = match (v2, node.json("zarr.json")?) {
@@ -494,6 +532,7 @@ fn read_array_opt(node: &Node) -> Result<Option<Array>> {
         separator,
         dims,
         attrs: m["attributes"].clone(),
+        shard_indexes: ShardIndexes::default(),
     }))
 }
 
@@ -1118,11 +1157,7 @@ fn decode_chunk(
     };
     let (count, index_len) = shard.index_len(&a.chunks).map_err(err)?;
     let range = if shard.index_at_start { Range::At(0, index_len as u64) } else { Range::Suffix(index_len as u64) };
-    let Some(index) = a.node.get(&key, range).map_err(err)? else { return Ok(()) };
-    if index.len() < count * 16 {
-        return Err(err(bad("shard smaller than its index")));
-    }
-    let index = parse_index(&index[..count * 16]);
+    let Some(index) = a.shard_index(&key, count, range).map_err(err)? else { return Ok(()) };
     let inner_grid: Vec<usize> = a.chunks.iter().zip(&shard.chunks).map(|(c, i)| c.div_ceil(*i)).collect();
     // The inner chunks wanted, by offset in the shard: (offset, end, origin).
     let mut chosen: Vec<(usize, usize, Vec<usize>)> = Vec::new();

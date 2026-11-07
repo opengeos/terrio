@@ -282,6 +282,10 @@ fn sharded_stores_read_only_the_inner_chunks_needed() {
     assert!(bytes < shard_size / 4, "{bytes} of {shard_size}");
     assert_eq!(w.raster.get(0, 0, 0), value(30, 40) as f64);
     assert_eq!(w.raster.get(0, 9, 19), value(39, 59) as f64);
+    // Another window of the shard: its index is kept, so one request for the inner chunks.
+    let w = r.read_window(Window::new(70, 90, 8, 8), &WindowOptions::default()).unwrap();
+    assert_eq!(counter.take().0, 1);
+    assert_eq!(w.raster.get(0, 7, 7), value(97, 77) as f64);
     // The whole array, the missing inner chunk filled.
     let all = r.read().unwrap();
     for (row, col) in [(0, 0), (199, 299), (150, 290), (48, 80), (63, 95)] {
