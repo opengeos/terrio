@@ -17,6 +17,17 @@
   and `--tr`) sum the NaN values of masked floating-point chunks, as GDAL 3.12 does, so an output
   pixel whose footprint holds one is NaN. In 0.7.0 they always skipped them, as GDAL 3.13 does.
   `TERRIO_GDAL_COMPAT=3.13` restores that, as for the other `RasterIO` kernels.
+- The registry CRSs terrio resolves can be listed, for searchable CRS pickers, without GDAL,
+  network access or a PROJ installation (#613): `terrio::crs::list_crs` (`terrio_crs::list_crs`),
+  `terrio.list_crs` in Python, `listCrs` in JavaScript and `terrio list-crs` (also an MCP tool),
+  printing as `projinfo --list-crs` does. Each entry has its authority and code, name, kind,
+  deprecation, area of use and its bounding box, projection method and celestial body, as GDAL's
+  `OSRGetCRSInfoListFromDatabase` gives them; queries filter by authority, kind, deprecation and
+  words of the name or code (`Albers` and `3577` both find EPSG:3577). The list holds 7,681 EPSG
+  CRSs (EPSG v12.029, `terrio::crs::EPSG_VERSION`), 2,519 ESRI CRSs and 2,201 IAU_2015 CRSs from
+  PROJ 9.8.1's database (`scripts/gen_crs_catalog.py`, 160 KB compressed), each one a code
+  `SpatialRef::parse` resolves; the conformance suite `crs-list` finds every entry identical to
+  GDAL 3.13.2's.
 - A netCDF snapshot (`terrio mdconvert`, `Dataset.write`) writes a netCDF-4 compound attribute
   as a compound, as GDAL 3.13.3's `gdalmdimtranslate -of netCDF` does (#565): `station_t
   z:station = {7, 12.5}` stays `station_t z:station = {7, 12.5}` where it became the text
