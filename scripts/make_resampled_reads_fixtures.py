@@ -9,7 +9,8 @@ The rasters are small GeoTIFFs with overviews: Byte RGB with an internal mask wh
 masks of their own, and the same with overviews built before the mask (none has one); UInt16 of odd
 size, Int16 and Float32 with nodata values (NaN included); Float32 with external overviews; RGBA
 with a Byte alpha band and two bands with a UInt16 one; a paletted band; a `.msk` sidecar mask;
-and two bands all valid, without overviews.
+two bands all valid, without overviews; and Byte RGB with external overviews that RasterIO
+chooses among twice.
 
 `expected.json.gz` holds, for each case (a file, bands, a window, an output size, a resampling and an
 overview selection), the pixels GDAL 3.13 reads, in the raster's type, and the masks, as the
@@ -196,6 +197,21 @@ def write_files(gdal: Any) -> list[dict[str, Any]]:
     for m in METHODS:
         cases += [case("valid.tif", (15, 12), resampling=m), case("valid.tif", (21, 16), (3.2, 2.1, 8.4, 6.3), m),
                   case("valid.tif", (40, 9), resampling=m)]
+    # Byte RGB with external overviews of 49 x 42 and 25 x 21: GDAL's band of the `.ovr`'s image
+    # has the file's other image as an overview, which RasterIO chooses again from the first.
+    name = "rgb_external_overviews.tif"
+    tiff(name, gdal.GDT_Byte, pattern(rng, 3, 83, 97, 1, 250).astype(np.uint8))
+    ds = gdal.Open(str(OUT / name))
+    ds.BuildOverviews("AVERAGE", [2, 4])
+    ds = None
+    # Band by band (a band alone, nearest neighbour and average), and through the dataset (the
+    # interpolating kernels, which choose an overview of the `.ovr`'s image when the buffer is
+    # smaller on both axes, else read its bands band by band).
+    cases += [case(name, (31, 27), bands=(1,)), case(name, (29, 25), (2.3, 3.4, 90.2, 78.3), bands=(2,)),
+              case(name, (26, 22), resampling="bilinear", bands=(1,)), case(name, (24, 20), (2, 3, 90, 78), "average", (3,)),
+              case(name, (31, 27)), case(name, (26, 22), resampling="average"), case(name, (26, 22), resampling="bilinear"),
+              case(name, (26, 22), resampling="cubic"), case(name, (26, 41), resampling="cubic"),
+              case(name, (24, 20), (2, 3, 90, 78), "lanczos")]
     # Levels read alone, as gdal_translate -ovr reads them.
     for overview in ("NONE", "0", "1", "9", "AUTO-1"):
         cases += [case("rgb_mask.tif", (20, 15), resampling="bilinear", overview=overview),

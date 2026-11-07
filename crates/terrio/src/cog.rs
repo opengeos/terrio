@@ -251,6 +251,12 @@ pub(crate) trait WindowSource: Send + Sync {
     fn level_keeps_mask_flags(&self, _level: usize) -> bool {
         true
     }
+    /// The overviews (numbered from 0) that GDAL's band of an overview level (`i + 1` for
+    /// overview `i`) has of its own, which `RasterIO` chooses among again (see
+    /// [`LazyRaster::level_overviews`]): by default, none.
+    fn level_overviews(&self, _level: usize) -> Vec<usize> {
+        Vec::new()
+    }
     /// The overviews of GDAL's per-dataset mask band (see [`LazyRaster::mask_band_overviews`]):
     /// by default, every overview of a source with a mask.
     fn mask_band_overviews(&self) -> Vec<(usize, usize)> {
@@ -318,6 +324,8 @@ struct SharedRaster {
     /// keeps the mask flags of full resolution without one.
     own_masks: Vec<bool>,
     keeps_mask_flags: Vec<bool>,
+    /// Per overview, the overviews of the shared reader's band of it.
+    level_overviews: Vec<Vec<usize>>,
     mask_overviews: Vec<(usize, usize)>,
     mask_bits: Option<u16>,
 }
@@ -356,6 +364,9 @@ impl WindowSource for SharedRaster {
     }
     fn level_keeps_mask_flags(&self, level: usize) -> bool {
         level.checked_sub(1).is_none_or(|i| self.keeps_mask_flags.get(i).copied().unwrap_or(true))
+    }
+    fn level_overviews(&self, level: usize) -> Vec<usize> {
+        level.checked_sub(1).and_then(|i| self.level_overviews.get(i).cloned()).unwrap_or_default()
     }
     fn mask_band_overviews(&self) -> Vec<(usize, usize)> {
         self.mask_overviews.clone()
@@ -431,6 +442,7 @@ impl LazyRaster {
         let mask = self.has_mask();
         let own_masks = (0..overviews.len()).map(|i| self.level_has_own_mask(i)).collect();
         let keeps_mask_flags = (0..overviews.len()).map(|i| self.level_keeps_mask_flags(i)).collect();
+        let level_overviews = (0..overviews.len()).map(|i| self.level_overviews(Some(i))).collect();
         let mask_overviews = self.mask_band_overviews();
         let mask_bits = self.mask_band_bits();
         let referenced = self.geotransform_present();
@@ -445,6 +457,7 @@ impl LazyRaster {
             mask,
             own_masks,
             keeps_mask_flags,
+            level_overviews,
             mask_overviews,
             mask_bits,
         };
@@ -1501,6 +1514,25 @@ impl LazyRaster {
             Inner::Tiff(t) => !t.levels.get(overview + 1).is_some_and(|l| l.external.is_some()),
             Inner::Source(_, s) => s.level_keeps_mask_flags(overview + 1),
             Inner::Memory(_) => true,
+        }
+    }
+
+    /// The overviews (numbered as [`LazyRaster::overviews`]) of GDAL's band of a level, which
+    /// `RasterIO` chooses among when it reads that band into a smaller buffer: every overview for
+    /// full resolution. The first level of an external `.ovr` is that file's image, whose band
+    /// has the file's other images as overviews, in their order there (GDAL's
+    /// `GDALDefaultOverviews::GetOverview`); other overviews have none.
+    pub(crate) fn level_overviews(&self, overview: Option<usize>) -> Vec<usize> {
+        let Some(i) = overview else { return (0..self.overviews().len()).collect() };
+        match &self.inner {
+            Inner::Tiff(t) if t.levels.get(i + 1).is_some_and(|l| l.external == Some(0)) => {
+                let mut own: Vec<(usize, usize)> =
+                    t.levels[1..].iter().enumerate().filter_map(|(j, l)| l.external.filter(|&k| k > 0).map(|k| (k, j))).collect();
+                own.sort_unstable();
+                own.into_iter().map(|(_, j)| j).collect()
+            }
+            Inner::Source(_, s) => s.level_overviews(i + 1),
+            Inner::Tiff(_) | Inner::Memory(_) => Vec::new(),
         }
     }
 

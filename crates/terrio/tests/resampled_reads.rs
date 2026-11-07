@@ -137,7 +137,7 @@ fn difference(read: &[f64], expected: &[f64], float: bool, case: &Case) -> Optio
 #[test]
 fn resampled_reads_are_gdal_reads() {
     let cases = cases();
-    assert_eq!(cases.len(), 238);
+    assert_eq!(cases.len(), 248);
     let mut failures = Vec::new();
     for case in &cases {
         let mut raster = terrio::open_raster_lazy(&case.path()).unwrap();
@@ -294,6 +294,24 @@ fn shared_handles_weight_overviews_by_their_own_masks() {
             assert_eq!(read_values(&a.raster.data), read_values(&b.raster.data), "{resampling:?} {overview:?}");
             assert_eq!(a_masks, b_masks, "{resampling:?} {overview:?}");
         }
+    }
+}
+
+/// A shared handle chooses again among an external `.ovr`'s other images when `RasterIO`
+/// chooses that file's image, as the reader it shares does: the reads GDAL makes from the
+/// `.ovr`'s second image.
+#[test]
+fn shared_handles_choose_among_external_overviews_twice() {
+    let path = dir().join("rgb_external_overviews.tif");
+    let mut direct = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap();
+    let mut shared = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap().shared();
+    let expected: Vec<Case> = cases().into_iter().filter(|c| c.file == "rgb_external_overviews.tif").collect();
+    assert_eq!(expected.len(), 10);
+    for case in &expected {
+        let a = read_values(&direct.read_resampled(&case.options).unwrap().raster.data);
+        let b = read_values(&shared.read_resampled(&case.options).unwrap().raster.data);
+        assert_eq!(a, b, "{}", case.name());
+        assert_eq!(difference(&b, &values(&case.data, &case.dtype), false, case), None, "{}", case.name());
     }
 }
 

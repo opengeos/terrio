@@ -942,7 +942,8 @@ def suite_translate_overviews(ctx):
     return suite_json_ops(
         ctx, "translate-overviews", "compare_translate_overviews_with_gdal.py", "Translate source overviews",
         "`gdal_translate -outsize/-ovr`",
-        "Level markers check the stored resolution of AUTO, AUTO-n, NONE and forced levels; real USGS "
+        "Level markers, internal and in an external `.ovr`, check the stored resolution of AUTO, AUTO-n, "
+        "NONE and forced levels; real USGS "
         "terrain (Float32, nodata) and Landsat RGB (Byte, internal mask) check every resampling. Pixels, "
         "types, nodata and geotransforms must match; differences of one value are reported within "
         "tolerance (arm64 GDAL builds round fused multiply-adds). A real COG served over HTTP must "
