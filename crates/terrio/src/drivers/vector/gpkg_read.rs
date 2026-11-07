@@ -862,6 +862,19 @@ mod tests {
                 vec![writer::Value::Text("features".into()), writer::Value::Text("broken".into())],
             ),
             (
+                "gpkg_geometry_columns",
+                "CREATE TABLE gpkg_geometry_columns(table_name TEXT,column_name TEXT,geometry_type_name TEXT,srs_id INTEGER,z INTEGER,m INTEGER,description TEXT)",
+                vec![
+                    writer::Value::Text("unrelated".into()),
+                    writer::Value::Text("geom".into()),
+                    writer::Value::Text("POINT".into()),
+                    writer::Value::Int(4326),
+                    writer::Value::Int(0),
+                    writer::Value::Int(0),
+                    writer::Value::Text("broken".into()),
+                ],
+            ),
+            (
                 "gpkg_ogr_contents",
                 "CREATE TABLE gpkg_ogr_contents(table_name TEXT,feature_count INTEGER,description TEXT)",
                 vec![writer::Value::Text("features".into()), writer::Value::Int(3), writer::Value::Text("broken".into())],
@@ -869,13 +882,50 @@ mod tests {
         ] {
             let record = writer::record(&values);
             let table = writer::Table { name: name.into(), sql: sql.into(), rows: vec![(1, values)], autoindexes: vec![] };
-            let mut bytes = writer::write_database(&[table], &[], 0, 0).unwrap();
+            let mut tables = vec![table];
+            if name == "gpkg_geometry_columns" {
+                tables.push(writer::Table {
+                    name: "gpkg_contents".into(),
+                    sql: "CREATE TABLE gpkg_contents(table_name TEXT,data_type TEXT,description TEXT)".into(),
+                    rows: vec![(
+                        1,
+                        vec![
+                            writer::Value::Text("features".into()),
+                            writer::Value::Text("features".into()),
+                            writer::Value::Text(String::new()),
+                        ],
+                    )],
+                    autoindexes: vec![],
+                });
+                tables.push(writer::Table {
+                    name: "features".into(),
+                    sql: "CREATE TABLE features(fid INTEGER PRIMARY KEY,geom POINT)".into(),
+                    rows: vec![],
+                    autoindexes: vec![],
+                });
+            }
+            let mut bytes = writer::write_database(&tables, &[], 0, 0).unwrap();
             let at = bytes.windows(record.len()).position(|b| b == record).unwrap();
             bytes[at + record[0] as usize - 1] += 2;
-            let db = Db::new(bytes).unwrap();
+            let db = Db::new(bytes.clone()).unwrap();
             assert!(db.optional_table(name).is_err(), "{name}");
             match name {
                 "gpkg_spatial_ref_sys" => assert!(set_crs(&db, &mut Layer::new("features"), 4326).is_err()),
+                "gpkg_geometry_columns" => {
+                    let dir = tempfile::tempdir().unwrap();
+                    let path = dir.path().join("malformed.gpkg");
+                    std::fs::write(&path, bytes).unwrap();
+                    let path = path.to_str().unwrap();
+                    let content = Content { name: "features".into(), data_type: "features".into(), description: String::new() };
+                    for error in [
+                        contents(&db).err().unwrap(),
+                        declared_layers(path, &[]).err().unwrap(),
+                        layer_def(&db, &content).err().unwrap(),
+                        summarize_layer(&db, &content, path).err().unwrap(),
+                    ] {
+                        assert!(error.to_string().contains("truncated record"), "{error}");
+                    }
+                }
                 "gpkg_contents" => assert!(stored_extent(&db, "features").is_err()),
                 _ => assert!(stored_feature_count(&db, "features").is_err()),
             }
