@@ -356,7 +356,7 @@ mod tests {
         assert_eq!(catalog_argument(args, "tr")["action"], "append");
         assert_eq!(catalog_argument(args, "tr")["num_args"], json!({"min":2,"max":2}));
         assert_eq!(catalog_argument(args, "tr")["repeatable"], true);
-        // Positional `paths` (Vec<PathBuf>) also uses Append action in clap, indicating
+        // Positional `paths` (Vec<String>) also uses Append action in clap, indicating
         // that multiple trailing positional operands are accepted into the collection.
         assert_eq!(catalog_argument(args, "paths")["action"], "append");
         assert_eq!(catalog_argument(args, "paths")["repeatable"], true);
