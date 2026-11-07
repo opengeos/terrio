@@ -314,7 +314,8 @@ pub struct VectorOpenOptions {
     /// How to read tile archives (PMTiles, MBTiles, MVT): the zoom level, clipping.
     pub tiles: crate::tiles::TileOpenOptions,
     /// Features to skip at the start of each layer, in file order (pyogrio's `skip_features`,
-    /// GDAL's `SetNextByIndex`). The Shapefile driver reads past them without decoding them;
+    /// GDAL's `SetNextByIndex`). Deleted Shapefile slots are excluded from this count;
+    /// FIDs still identify physical slots. The Shapefile driver skips their geometry/attributes;
     /// the other local drivers read every feature and keep the range.
     pub skip_features: usize,
     /// At most this many features per layer after the skipped ones (pyogrio's

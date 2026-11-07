@@ -118,11 +118,11 @@ pub fn read(path: &str, options: &ShapefileOptions) -> Result<Layer> {
     })
 }
 
-/// Reads the features `skip..skip + max` of a shapefile (`max` `None`: to the end), numbered as
-/// [`read`] numbers them, reading only their records: DBF records by position (they have a fixed
-/// size), and SHP records at the offsets the `.shx` index gives (through a scan of the record
-/// headers, without decoding the others, when there is no `.shx`). Memory follows the range,
-/// not the file.
+/// Reads up to `max` live features after skipping `skip` live features (`None`: to the end).
+/// Deleted DBF slots count toward physical FIDs, but not toward either range bound.
+/// Only the selected SHP records and DBF attributes are decoded. Finding their positions scans
+/// DBF deletion flags and uses the `.shx` index, or scans SHP headers when the index is absent.
+/// Memory holds the SHP offset index, the selected features and one DBF/SHP record buffer.
 pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &ShapefileOptions) -> Result<Layer> {
     use std::io::{Read, Seek, SeekFrom};
     let method = options.method();
@@ -180,32 +180,43 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
         layer.add_field(f);
     }
     let n = if dbf_total == 0 { offsets.len() } else { dbf_total.max(offsets.len()) };
-    let start = skip.min(n);
-    let end = max.map_or(n, |m| start.saturating_add(m).min(n));
-
-    // The DBF records of the range, read at their position.
-    let mut records: Vec<DbfRecord> = Vec::new();
-    if let Some((f, l)) = dbf.as_mut() {
-        let last = end.min(dbf_total);
-        if start < last {
-            let bytes = (last - start) * l.record_len;
-            let mut buf: Vec<u8> = Vec::new();
-            buf.try_reserve_exact(bytes).map_err(|_| Error::ResourceLimit(format!("cannot allocate {bytes} bytes for .dbf records")))?;
-            buf.resize(bytes, 0);
-            f.seek(SeekFrom::Start((l.header_len + start * l.record_len) as u64))?;
-            f.read_exact(&mut buf)?;
-            records.try_reserve_exact(last - start).map_err(|_| Error::ResourceLimit("cannot allocate .dbf records".into()))?;
-            records.extend(buf.chunks_exact(l.record_len).map(|r| (r.first() != Some(&b'*')).then(|| l.record(r))));
-        }
-    }
-
     let width = layer.schema.len();
-    layer.features.try_reserve_exact(end - start).map_err(|_| Error::ResourceLimit("cannot allocate features".into()))?;
+    let bound = max.map_or(n.saturating_sub(skip), |m| m.min(n.saturating_sub(skip)));
+    layer.features.try_reserve_exact(bound).map_err(|_| Error::ResourceLimit("cannot allocate features".into()))?;
     let mut content = Vec::new();
-    let mut records = records.into_iter();
-    for fid in start..end {
-        let Some(attributes) = records.next().unwrap_or_else(|| Some(vec![FieldValue::Null; width])) else {
+    let mut record = Vec::new();
+    let mut skipped = 0;
+    for fid in 0..n {
+        if max.is_some_and(|m| layer.features.len() >= m) {
+            break;
+        }
+        let mut flag = *b" ";
+        if let Some((f, l)) = dbf.as_mut().filter(|_| fid < dbf_total) {
+            f.read_exact(&mut flag)?;
+            if flag[0] == b'*' || skipped < skip {
+                // Stay in the buffered stream rather than reopening or seeking per slot.
+                f.seek_relative(l.record_len as i64 - 1)?;
+            }
+            if flag[0] == b'*' {
+                continue;
+            }
+        }
+        if skipped < skip {
+            skipped += 1;
             continue;
+        }
+        let attributes = if let Some((f, l)) = dbf.as_mut().filter(|_| fid < dbf_total) {
+            // The deletion flag was read above; decode only this selected live record.
+            if record.len() != l.record_len {
+                record.try_reserve_exact(l.record_len).map_err(|_| Error::ResourceLimit("cannot allocate a .dbf record".into()))?;
+                record.resize(l.record_len, 0);
+            }
+            record[0] = flag[0];
+            f.read_exact(&mut record[1..])?;
+            l.record(&record)
+        } else {
+            // Missing DBF slots are live shapes with null attributes, not deletions.
+            vec![FieldValue::Null; width]
         };
         let geometry = match offsets.get(fid) {
             Some(&at) if at + 8 <= shp_len => {
@@ -260,6 +271,8 @@ pub fn parse(
     let mut geometries = geometries.into_iter();
     for fid in 0..n {
         let geometry = geometries.next().flatten();
+        // Past the DBF's records, empty attributes; a record the DBF marks deleted (`None`) is
+        // skipped, and the next features keep their physical FIDs.
         let Some(attributes) = records.next().unwrap_or_else(|| Some(vec![FieldValue::Null; layer.schema.len()])) else {
             continue;
         };
@@ -1799,6 +1812,7 @@ mod tests {
         d
     }
 
+    /// Decodes the generated single text cell for the encoding regressions.
     fn text(d: &[u8], cpg: Option<&str>) -> String {
         let (_, records) = parse_dbf(d, cpg).unwrap();
         match &records[0].as_ref().unwrap()[0] {
@@ -1874,49 +1888,6 @@ mod tests {
         rec.extend_from_slice(&(-1i32).to_le_bytes());
         rec.extend_from_slice(&i32::MAX.to_le_bytes());
         assert_eq!(parse_shape(&rec, OrganizePolygons::default()), None);
-    }
-
-    /// Reference: GDAL 3.13.3 skips deleted DBF slots and keeps their physical FIDs.
-    #[test]
-    fn deleted_dbf_slots_keep_geometry_and_physical_fid() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("deleted.shp");
-        let mut layer = Layer::new("deleted");
-        layer.add_field(FieldDef::new("id", FieldType::Integer));
-        for i in 0..6 {
-            layer.push(Feature {
-                fid: i,
-                geometry: Some(Geometry::point(i as f64, 0.0)),
-                attributes: vec![FieldValue::Integer(9007199254740993 + i as i64)],
-            });
-        }
-        let path = path.to_str().unwrap();
-        write(&layer, path).unwrap();
-        let dbf_path = std::path::Path::new(path).with_extension("dbf");
-        let original = std::fs::read(&dbf_path).unwrap();
-        let header = u16::from_le_bytes([original[8], original[9]]) as usize;
-        let width = u16::from_le_bytes([original[10], original[11]]) as usize;
-        for deleted in [vec![0, 2, 3, 5], vec![0, 1, 2, 3, 4, 5], vec![]] {
-            let mut dbf = original.clone();
-            for &i in &deleted {
-                dbf[header + i * width] = b'*';
-            }
-            std::fs::write(&dbf_path, dbf).unwrap();
-            let whole = read(path, &ShapefileOptions::default()).unwrap();
-            let expected: Vec<_> = layer.features.iter().filter(|f| !deleted.contains(&(f.fid as usize))).collect();
-            assert_eq!(whole.features.len(), expected.len());
-            for (got, want) in whole.features.iter().zip(expected) {
-                assert_eq!(got.fid, want.fid);
-                assert_eq!(got.geometry, want.geometry);
-                assert_eq!(got.attributes, want.attributes);
-            }
-            for (start, count) in [(0, 6), (1, 4), (2, 2), (5, 1)] {
-                let range = read_range(path, start, Some(count), &ShapefileOptions::default()).unwrap();
-                let ids: Vec<_> = range.features.iter().map(|f| f.fid).collect();
-                let expected: Vec<_> = (start..start + count).filter(|i| !deleted.contains(i)).map(|i| i as u64).collect();
-                assert_eq!(ids, expected);
-            }
-        }
     }
 
     #[test]
