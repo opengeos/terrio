@@ -43,7 +43,7 @@ pub(crate) struct FgbHeader {
     has_m: bool,
     columns: Vec<ColumnType>,
     /// The number of features (0 when the writer did not know it).
-    features_count: u64,
+    pub(crate) features_count: u64,
     /// The node size of the packed R-tree spatial index, 0 without one.
     index_node_size: u16,
     /// The extent `[min_x, min_y, max_x, max_y]`, when the header has it.
@@ -58,7 +58,10 @@ pub(crate) fn header_len(start: &[u8]) -> Result<usize> {
     if start.len() < 12 || start[..3] != MAGIC[..3] || start[4..7] != MAGIC[4..7] {
         return Err(bad("not a FlatGeobuf file"));
     }
-    Ok(12 + u32::from_le_bytes([start[8], start[9], start[10], start[11]]) as usize)
+    usize::try_from(u32::from_le_bytes([start[8], start[9], start[10], start[11]]))
+        .ok()
+        .and_then(|n| n.checked_add(12))
+        .ok_or_else(|| bad("header too large for this platform"))
 }
 
 /// Reads a file's header (`buf` holds at least its first [`header_len`] bytes): the layer
@@ -128,12 +131,37 @@ pub(crate) fn decode_feature_exact(fbuf: &[u8], h: &FgbHeader, fid: u64) -> Resu
 
 fn decode(fbuf: &[u8], h: &FgbHeader, fid: u64, exact: bool) -> Result<Feature> {
     let f = flatgeobuf::size_prefixed_root_as_feature_with_opts(&verifier(), fbuf).map_err(|e| bad(&format!("feature {fid}: {e}")))?;
+    if let Some(g) = f.geometry() {
+        validate_dimensions(&g, h)?;
+    }
     let geometry = f.geometry().and_then(|g| to_geometry(&g, h.geometry_type, h.has_z, h.has_m, exact));
     let mut attributes = vec![FieldValue::Null; h.columns.len()];
     if let Some(props) = f.properties() {
         read_properties(props.bytes(), &h.columns, &mut attributes).map_err(|e| bad(&format!("feature {fid}: {e}")))?;
     }
     Ok(Feature { fid, geometry, attributes })
+}
+
+fn validate_dimensions(g: &FgbGeometry, h: &FgbHeader) -> Result<()> {
+    let n = g.xy().map_or(0, |xy| xy.len());
+    if !n.is_multiple_of(2) {
+        return Err(bad("odd XY coordinate count"));
+    }
+    for (declared, values) in [(h.has_z, g.z()), (h.has_m, g.m())] {
+        if let Some(values) = values {
+            if !declared || values.len() != n / 2 {
+                return Err(bad("inconsistent coordinate dimensions"));
+            }
+        } else if declared && n != 0 {
+            return Err(bad("missing coordinate dimension"));
+        }
+    }
+    if let Some(parts) = g.parts() {
+        for p in parts {
+            validate_dimensions(&p, h)?;
+        }
+    }
+    Ok(())
 }
 
 /// The size in bytes of the packed R-tree of `count` features, 0 without one. Computed in 64
@@ -177,16 +205,29 @@ fn level_bounds(count: u64, node_size: u16) -> Vec<(u64, u64)> {
 pub fn parse(buf: &[u8]) -> Result<Layer> {
     let (mut layer, h) = parse_header(buf)?;
     let index_size = usize::try_from(h.index_size).map_err(|_| bad("an index too large for this platform"))?;
-    let mut pos = header_len(buf)? + index_size;
+    let mut pos = header_len(buf)?.checked_add(index_size).filter(|&p| p <= buf.len()).ok_or_else(|| bad("truncated index"))?;
     let mut fid = 0u64;
-    while pos + 4 <= buf.len() {
+    while pos < buf.len() {
+        if buf.len() - pos < 4 {
+            return Err(bad("truncated feature size"));
+        }
         let len = u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]) as usize;
-        let fbuf = buf.get(pos..pos + 4 + len).ok_or_else(|| bad("truncated feature"))?;
+        let fbuf = buf
+            .get(pos..pos.checked_add(4).and_then(|p| p.checked_add(len)).ok_or_else(|| bad("feature size overflow"))?)
+            .ok_or_else(|| bad("truncated feature"))?;
         pos += 4 + len;
         layer.push(decode_feature(fbuf, &h, fid)?);
         fid += 1;
     }
+    check_count(fid, h.features_count)?;
     Ok(layer)
+}
+
+pub(crate) fn check_count(actual: u64, declared: u64) -> Result<()> {
+    if declared != 0 && actual != declared {
+        return Err(bad("feature count differs from header"));
+    }
+    Ok(())
 }
 
 /// What a FlatGeobuf header says about the file.
@@ -402,13 +443,19 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
             let data = read_at(data_start, file_len.saturating_sub(data_start))?;
             let mut pos = 0usize;
             let mut fid = 0u64;
-            while pos + 4 <= data.len() {
+            while pos < data.len() {
+                if data.len() - pos < 4 {
+                    return Err(bad("truncated feature size"));
+                }
                 let len = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
-                let fbuf = data.get(pos..pos + 4 + len).ok_or_else(|| bad("truncated feature"))?;
+                let fbuf = data
+                    .get(pos..pos.checked_add(4).and_then(|p| p.checked_add(len)).ok_or_else(|| bad("feature size overflow"))?)
+                    .ok_or_else(|| bad("truncated feature"))?;
                 pos += 4 + len;
                 layer.push(decode_feature(fbuf, header, fid)?);
                 fid += 1;
             }
+            check_count(fid, count)?;
             return Ok((info, layer));
         }
     }
@@ -891,6 +938,76 @@ fn build_polygon<'a>(fbb: &mut FlatBufferBuilder<'a>, exterior: &Ring, interiors
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture(count: u64, measured: bool, ms: &[f64]) -> Vec<u8> {
+        let mut b = FlatBufferBuilder::new();
+        let h = Header::create(
+            &mut b,
+            &HeaderArgs { features_count: count, index_node_size: 0, has_m: measured, geometry_type: FgbType::Point, ..Default::default() },
+        );
+        b.finish_size_prefixed(h, None);
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(b.finished_data());
+        if !ms.is_empty() {
+            let mut b = FlatBufferBuilder::new();
+            let xy = b.create_vector(&[1.0, 2.0]);
+            let m = b.create_vector(ms);
+            let g = FgbGeometry::create(&mut b, &GeometryArgs { xy: Some(xy), m: Some(m), ..Default::default() });
+            let f = FgbFeature::create(&mut b, &FeatureArgs { geometry: Some(g), ..Default::default() });
+            b.finish_size_prefixed(f, None);
+            bytes.extend_from_slice(b.finished_data());
+        }
+        bytes
+    }
+
+    fn both(bytes: &[u8]) -> bool {
+        let memory = parse(bytes).is_ok();
+        let range = read_filtered(&mut std::io::Cursor::new(bytes), bytes.len() as u64, None, &|_| Ok(())).is_ok();
+        assert_eq!(memory, range);
+        let mut file = tempfile::Builder::new().suffix(".fgb").tempfile().unwrap();
+        std::io::Write::write_all(&mut file, bytes).unwrap();
+        let stream = crate::stream::open_layers(file.path().to_str().unwrap(), &Default::default(), 1);
+        let stream_ok = stream.and_then(|streams| streams.into_iter().map(|s| s.read_all()).collect::<Result<Vec<_>>>()).is_ok();
+        assert_eq!(memory, stream_ok);
+        memory
+    }
+
+    #[test]
+    fn truncation_and_counts() {
+        assert!(both(&fixture(0, false, &[])));
+        assert!(!both(&fixture(1, false, &[])));
+        for count in [0, 1] {
+            for n in 1..4 {
+                let mut bytes = fixture(count, false, &[]);
+                bytes.extend_from_slice(&[16, 0, 0][..n]);
+                assert!(!both(&bytes));
+            }
+        }
+        let bytes = fixture(1, true, &[7.0]);
+        assert!(both(&bytes));
+        assert!(!both(&bytes[..bytes.len() - 1]));
+        assert!(!both(&fixture(2, true, &[7.0])));
+        let mut bytes = fixture(1, false, &[]);
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+        assert!(!both(&bytes));
+    }
+
+    #[test]
+    fn measures_are_preserved_and_dimensions_checked() {
+        let layer = parse(&fixture(1, true, &[7.0])).unwrap();
+        assert_eq!(layer.features[0].geometry.as_ref().unwrap().all_coords()[0].m, Some(7.0));
+        assert!(!both(&fixture(1, true, &[7.0, 8.0])));
+        assert!(!both(&fixture(1, false, &[7.0])));
+        let mut bytes = fixture(1, true, &[]);
+        let mut b = FlatBufferBuilder::new();
+        let xy = b.create_vector(&[1.0, 2.0, 3.0, 4.0]);
+        let m = b.create_vector(&[7.0]);
+        let g = FgbGeometry::create(&mut b, &GeometryArgs { xy: Some(xy), m: Some(m), ..Default::default() });
+        let f = FgbFeature::create(&mut b, &FeatureArgs { geometry: Some(g), ..Default::default() });
+        b.finish_size_prefixed(f, None);
+        bytes.extend_from_slice(b.finished_data());
+        assert!(!both(&bytes));
+    }
 
     fn sample() -> Layer {
         let mut l = Layer::new("sample").with_epsg(4326);
