@@ -214,21 +214,26 @@ fn level_bounds(count: u64, node_size: u16) -> Vec<(u64, u64)> {
     out
 }
 
+/// A complete size-prefixed feature and its next offset, or EOF at a record boundary.
+fn next_feature(data: &[u8], pos: usize) -> Result<Option<(&[u8], usize)>> {
+    if pos == data.len() {
+        return Ok(None);
+    }
+    let prefix = data.get(pos..).and_then(|tail| tail.get(..4)).ok_or_else(|| bad("truncated feature size"))?;
+    let len = u32::from_le_bytes(prefix.try_into().unwrap()) as usize;
+    let end = pos.checked_add(4).and_then(|p| p.checked_add(len)).ok_or_else(|| bad("feature size overflow"))?;
+    let feature = data.get(pos..end).ok_or_else(|| bad("truncated feature"))?;
+    Ok(Some((feature, end)))
+}
+
 /// Parses a FlatGeobuf file held in memory.
 pub fn parse(buf: &[u8]) -> Result<Layer> {
     let (mut layer, h) = parse_header(buf)?;
     let index_size = usize::try_from(h.index_size).map_err(|_| bad("an index too large for this platform"))?;
     let mut pos = header_len(buf)?.checked_add(index_size).filter(|&p| p <= buf.len()).ok_or_else(|| bad("truncated index"))?;
     let mut fid = 0u64;
-    while pos < buf.len() {
-        if buf.len() - pos < 4 {
-            return Err(bad("truncated feature size"));
-        }
-        let len = u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]) as usize;
-        let fbuf = buf
-            .get(pos..pos.checked_add(4).and_then(|p| p.checked_add(len)).ok_or_else(|| bad("feature size overflow"))?)
-            .ok_or_else(|| bad("truncated feature"))?;
-        pos += 4 + len;
+    while let Some((fbuf, next)) = next_feature(buf, pos)? {
+        pos = next;
         layer.push(decode_feature(fbuf, &h, fid)?);
         fid += 1;
     }
@@ -456,15 +461,8 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
             let data = read_at(data_start, file_len.saturating_sub(data_start))?;
             let mut pos = 0usize;
             let mut fid = 0u64;
-            while pos < data.len() {
-                if data.len() - pos < 4 {
-                    return Err(bad("truncated feature size"));
-                }
-                let len = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
-                let fbuf = data
-                    .get(pos..pos.checked_add(4).and_then(|p| p.checked_add(len)).ok_or_else(|| bad("feature size overflow"))?)
-                    .ok_or_else(|| bad("truncated feature"))?;
-                pos += 4 + len;
+            while let Some((fbuf, next)) = next_feature(&data, pos)? {
+                pos = next;
                 layer.push(decode_feature(fbuf, header, fid)?);
                 fid += 1;
             }
