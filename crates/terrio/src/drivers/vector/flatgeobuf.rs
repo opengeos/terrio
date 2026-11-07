@@ -940,26 +940,10 @@ fn build_polygon<'a>(fbb: &mut FlatBufferBuilder<'a>, exterior: &Ring, interiors
 mod tests {
     use super::*;
 
-    fn fixture(count: u64, measured: bool, ms: &[f64]) -> Vec<u8> {
-        let mut b = FlatBufferBuilder::new();
-        let h = Header::create(
-            &mut b,
-            &HeaderArgs { features_count: count, index_node_size: 0, has_m: measured, geometry_type: FgbType::Point, ..Default::default() },
-        );
-        b.finish_size_prefixed(h, None);
-        let mut bytes = MAGIC.to_vec();
-        bytes.extend_from_slice(b.finished_data());
-        if !ms.is_empty() {
-            let mut b = FlatBufferBuilder::new();
-            let xy = b.create_vector(&[1.0, 2.0]);
-            let m = b.create_vector(ms);
-            let g = FgbGeometry::create(&mut b, &GeometryArgs { xy: Some(xy), m: Some(m), ..Default::default() });
-            let f = FgbFeature::create(&mut b, &FeatureArgs { geometry: Some(g), ..Default::default() });
-            b.finish_size_prefixed(f, None);
-            bytes.extend_from_slice(b.finished_data());
-        }
-        bytes
+    mod fixtures {
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/common/flatgeobuf.rs"));
     }
+    use fixtures::fixture;
 
     fn both(bytes: &[u8]) -> bool {
         let memory = parse(bytes).is_ok();
