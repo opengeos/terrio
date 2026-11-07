@@ -3895,7 +3895,9 @@ per-occurrence `num_args` bounds, action, hidden status, delimiter and value nam
 maximum is `null`. `num_args` counts the values of one occurrence, not the total
 across repeats. `repeatable` is `true` only when clap accepts the option more than
 once (`append` and `count` actions); `set`, `set_true` and `set_false` options are
-not repeatable in clap terms, and a second occurrence is an error. terrio sets
+not repeatable in clap terms, and a second occurrence is an error. For positional
+arguments (such as `warp`'s `paths`), `repeatable: true` reflects variadic operand
+collection via clap's `append` action. terrio sets
 neither `args_override_self` nor `overrides_with`, so no option is made repeatable
 by an override. For example, `warp --tr 0.02 0.02 --tr 0.05 0.05` is accepted, but
 the command uses only the first pair (`0.02 0.02`); the catalog reports `--tr` as
