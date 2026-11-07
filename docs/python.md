@@ -324,7 +324,11 @@ raster = terrio.open_bytes(data, "dem.tif")  # from bytes; to bytes with raster.
 for the output alone (the tiles its window touches), from the stored resolution `overview` selects,
 as `gdal_translate -ovr`: `"AUTO"` (the default, the overview GDAL's RasterIO chooses for the output
 size), `"AUTO-n"`, `"NONE"` (full resolution) or a level from 0. A `Raster` in memory is
-translated at full resolution.
+translated at full resolution: open it with `terrio.open_raster(path, lazy=True)` for its
+overviews to be used, since `open_raster(path)` reads it into memory without them. One known
+difference from `gdal_translate`, shared with `terrio translate`: with `"AUTO-n"` and no
+`outsize` or `tr`, the output has the selected level's size (200 x 150 for a 400 x 300 `srcwin`
+read from overview 0), where `gdal_translate` keeps the window's full-resolution size.
 
 `clean_collar` and `nearblack` return a Byte `Raster`; a mask (`add_mask`, or an input's mask
 kept by `clean_collar`) needs `dst`, which holds it, and the returned `Raster` is then read from

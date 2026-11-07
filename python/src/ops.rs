@@ -1238,7 +1238,12 @@ pub(crate) fn finish_raster(
 ///         default: the overview GDAL's RasterIO chooses for the output size), `"AUTO-n"`,
 ///         `"NONE"` (full resolution) or a level from 0. Rasters read by window (GeoTIFFs, COGs,
 ///         Zarr...) are read for the output alone; rasters in memory, and those read whole, at
-///         full resolution (a level or `"AUTO-n"` is refused for a path read whole).
+///         full resolution (a level or `"AUTO-n"` is refused for a path read whole). A `Raster`
+///         honours overviews only when opened with `lazy=True`: `open_raster(path)` reads it
+///         into memory, without them. Known difference, shared with `terrio translate`: with
+///         `"AUTO-n"` and no `outsize`/`tr`, the output has the selected level's size (200 x 150
+///         for a 400 x 300 `srcwin` at level 0), where gdal_translate keeps the window's
+///         full-resolution size.
 ///     format: The output format's short name, for `dst`.
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
