@@ -313,13 +313,15 @@ pub struct VectorOpenOptions {
     pub spatial_filter: Option<(f64, f64, f64, f64)>,
     /// How to read tile archives (PMTiles, MBTiles, MVT): the zoom level, clipping.
     pub tiles: crate::tiles::TileOpenOptions,
-    /// Features to skip at the start of each layer, in file order (pyogrio's `skip_features`,
-    /// GDAL's `SetNextByIndex`). Deleted Shapefile slots are excluded from this count;
-    /// FIDs still identify physical slots. The Shapefile driver skips their geometry/attributes;
+    /// Live features to skip at the start of each layer, in file order. Deleted Shapefile
+    /// slots are excluded while FIDs still identify physical slots. On files without deleted
+    /// rows this matches pyogrio's `skip_features` and GDAL's `SetNextByIndex`; their Shapefile
+    /// fast-seek paths can count physical slots when records are deleted instead.
+    /// The Shapefile driver reads deletion flags without skipped geometry/attributes;
     /// the other local drivers read every feature and keep the range.
     pub skip_features: usize,
-    /// At most this many features per layer after the skipped ones (pyogrio's
-    /// `max_features`); `None` reads to the end.
+    /// At most this many live features per layer after the skipped ones; `None` reads to the end.
+    /// Unlike pyogrio, `Some(0)` returns no features rather than treating zero as unlimited.
     pub max_features: Option<usize>,
     /// Whether to read a feature-service query's following pages (`FEATURE_SERVER_PAGING`, as in
     /// GDAL's ESRIJSON driver). By default, unless its URL gives a `resultOffset`.
