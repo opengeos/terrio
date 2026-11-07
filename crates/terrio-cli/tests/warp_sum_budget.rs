@@ -58,6 +58,23 @@ fn a_sum_over_its_memory_budget_is_refused_before_its_source_is_read() {
     assert_eq!(total(&d.join("avg.tif")), 1.0);
 }
 
+#[test]
+fn an_automatic_sum_reads_the_overview_within_a_budget_the_full_resolution_exceeds() {
+    // 32 x 32 Float32 ones with an overview at 4, summed into 1 x 1 under 10,000 bytes: the full
+    // resolution would hold 12,288 bytes; `--overview AUTO`, the default, reads the overview (768)
+    // and counts each of its pixels for the 16 source pixels it stands for.
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    write_ones(d, "ones.tif", 1);
+    assert!(run(d, "20000", &["overviews", "ones.tif", "4", "-r", "average"]).status.success());
+    for auto in [&[][..], &["--overview", "AUTO"][..]] {
+        let args = [&["warp", "ones.tif", "out.tif", "-r", "sum", "--ts", "1", "1", "--ot", "Float64"][..], auto].concat();
+        let read = run(d, "10000", &args);
+        assert!(read.status.success(), "{auto:?}: {}", String::from_utf8_lossy(&read.stderr));
+        assert_eq!(total(&d.join("out.tif")), 1024.0, "{auto:?}");
+    }
+}
+
 /// An 18919 x 18919 Float32 VRT holding 32 x 32 ones in its corner.
 const LARGE: &str = r#"<VRTDataset rasterXSize="18919" rasterYSize="18919">
   <SRS>EPSG:3857</SRS>

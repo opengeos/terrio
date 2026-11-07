@@ -152,10 +152,11 @@ class WarpedVRT(DatasetReader):
     Pixels are warped when they are read, region by region, from the windows of the source (or
     of its overviews) each region needs. With `sum` resampling, a reduced read of the whole VRT,
     of any of its bands, is warped straight into a grid of the buffer's size from the source's
-    full resolution rather than from an implicit overview. A source opened at an overview level
-    (`overview_level`) counts each of its pixels for the source pixels it stands for, so that the
-    sum estimates the source's total. A reduced read of a window can take an implicit overview,
-    whose pixels are comparable with the VRT's, or resample the VRT's pixels, so its sum is not the
+    overview that the read's implicit overview is warped from (or from the full resolution when it
+    takes none), each of whose pixels counts for the source pixels it stands for, so that the sum
+    estimates the source's total. A source opened at an overview level (`overview_level`) counts
+    its pixels the same way. A reduced read of a window can take an implicit overview, whose
+    pixels are comparable with the VRT's, or resample the VRT's pixels, so its sum is not the
     source's: read the window at full size for its total. A `sum` read whose source window would
     hold more than `TERRIO_WARP_SUM_MAX_BYTES` (4 GiB by default) raises `ResourceLimitError`
     before the window is read. When `dtype` differs from the source's, the window counts in both

@@ -266,31 +266,28 @@
   was copied pixel for pixel when it spanned as many pixels as its destination, and their sums reach
   the band's type unrounded: they were rounded to the source's type, which dropped a Byte source's
   fractions and capped its sums at 255.
-- A `sum` now reads the source's full resolution unless it is given an overview level:
-  `--overview AUTO`, the default, and `AUTO-n` choose no overview for it, and a reduced read of the
-  whole of a `sum` `WarpedVRT` (`read(out_shape=...)`, of any of its bands) is warped from the full
-  resolution: it took one of the VRT's implicit overviews, and a read of some of the bands, or of a
-  VRT georeferenced by GCPs, resampled the VRT's pixels. An overview has one pixel per block of the
-  source's pixels, so a `sum` of it gave a fraction of the total, about a quarter at factor 2. A
-  coarse `sum` of a raster with overviews now reads more: from a remote 4096 × 4096 Float32 COG with
-  overviews at 2, 4 and 8, a warp to EPSG:4326 at a sixteenth of its resolution takes 17 requests
-  and 67.1 MB where its coarsest overview took 2 requests and 1.1 MB, and a `WarpedVRT` read at an
-  eighth of its size takes 5 requests and 67.1 MB where it took 2 and 1.1 MB. `--overview n`
-  (`overview=n` in Python, a `terrio.rio` dataset opened with `overview_level=n`, the source of a
-  warped VRT opened at `OVERVIEW_LEVEL`) reads level `n`, more cheaply, and counts each of its
-  pixels for the source pixels it stands for, `(W / w) × (H / h)` for a `w × h` overview of a
-  `W × H` source (exact ratios, also where the factor does not divide the size), so that the sum
-  estimates the source's total: it added the level's pixels, which gives the total divided by the
-  factor squared (0.39% of it from an overview at 16, 0.024% at 64). The estimate is the total, up
-  to rounding, for an `average` overview of floating-point data without nodata. Over 256 × 256
-  outputs of a 16384 × 16384 raster at 16, 32 and 64 times its pixel size, it was within 2 × 10⁻⁷
-  of the total of Float32 and Float64 data (windows whose edges cut overview pixels), 0.4% to 0.6%
-  above it for UInt16 data, whose averages are rounded to whole numbers at each level, and 1.4% to
-  2.6% above it for Float32 data 7% nodata, in two corners and in holes 40 pixels wide: an overview
-  pixel of a block partly nodata counts its mean for the whole block (a block wholly nodata stays
-  nodata). An overview resampled otherwise than by average gives an estimate from a sample of the
-  pixels. A sum outgrows small integer types: give a coarse `sum` a floating-point output type
-  (`--ot`, `ot=`, a `WarpedVRT`'s `dtype`), as a UInt16 output stores 65535 for any larger sum.
+- A `sum` that reads an overview counts each of its pixels for the source pixels it stands for,
+  `(W / w) × (H / h)` for a `w × h` overview of a `W × H` source (exact ratios, also where the
+  factor does not divide the size), so that it estimates the source's total at the overview's
+  cost, whether the automatic choice gives the overview (`--overview AUTO`, the default, and
+  `AUTO-n`; see `terrio::ops::warp::SUM_AUTO_OVERVIEW`) or a level is given (`--overview n`,
+  `overview=n` in Python, a `terrio.rio` dataset opened with `overview_level=n`, the source of a
+  warped VRT opened at `OVERVIEW_LEVEL`). It added the overview's pixels, each the mean of a block,
+  which gives the total divided by the factor squared: 0.39% of it from an overview at 16, 0.024%
+  at 64. `--overview NONE` (`overview="NONE"`) sums the full resolution exactly, reading all of it.
+  A reduced read of the whole of a `sum` `WarpedVRT` (`read(out_shape=...)`, of any of its bands)
+  is warped into the buffer's grid from the source's overview that the read's implicit overview is
+  warped from, counted the same way: a read of some of the bands, or of a VRT georeferenced by
+  GCPs, resampled the VRT's pixels. The estimate is the total, up to rounding, for an `average`
+  overview of floating-point data without nodata. Over 256 × 256 outputs of a 16384 × 16384 raster
+  at 16, 32 and 64 times its pixel size, it was within 2 × 10⁻⁷ of the total of Float32 and Float64
+  data (windows whose edges cut overview pixels), 0.4% to 0.6% above it for UInt16 data, whose
+  averages are rounded to whole numbers at each level, and 1.4% to 2.6% above it for Float32 data
+  7% nodata, in two corners and in holes 40 pixels wide: an overview pixel of a block partly nodata
+  counts its mean for the whole block (a block wholly nodata stays nodata). An overview resampled
+  otherwise than by average gives an estimate from a sample of the pixels. A sum outgrows small
+  integer types: give a coarse `sum` a floating-point output type (`--ot`, `ot=`, a `WarpedVRT`'s
+  `dtype`), as a UInt16 output stores 65535 for any larger sum.
 - A `sum` is refused before its source is read when it would hold more than 4 GiB, estimated as the
   source window an output chunk reads and 8 bytes per pixel of it for the pixels' shares (12 bytes
   per pixel for one Float32 band), with the copies a conversion to another working type holds at
@@ -301,8 +298,8 @@
   `overview_level=n` in `terrio.rio`) and `TERRIO_WARP_SUM_MAX_BYTES`, a positive byte count, which
   changes the budget; a `sum` read of a `WarpedVRT` and a `sum` `terrio.rio.warp.reproject` of a
   band or dataset are refused the same way. A 1 × 1 `sum` of a 16384 × 16384 Float32 band (3 GiB)
-  passes, and one of a 32768 × 32768 band (12 GiB) now errors, where it summed an overview (with
-  overviews) or held the whole window in memory (without); a `sum` of several sources over 4 GiB in
+  passes, and one of a 32768 × 32768 band without overviews, or with `--overview NONE` (12 GiB),
+  now errors, where it held the whole window in memory; a `sum` of several sources over 4 GiB in
   all now errors at any output size, where it held them all.
 - With `GDAL_INGESTED_BYTES_AT_OPEN` (or `TERRIO_INGESTED_BYTES_AT_OPEN`) above a block (64 KiB
   by default), opening a remote file that the process-wide cache holds takes the ingested blocks

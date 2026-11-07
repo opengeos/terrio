@@ -1253,9 +1253,9 @@ fn translate(
 ///         `"average"`, `"rms"`, `"mode"`, `"min"`, `"max"`, `"med"`, `"q1"`, `"q3"` or `"sum"`.
 ///     overview: Source pyramid selection: `"AUTO"` (default), `"AUTO-n"`, `"NONE"` or
 ///         a zero-based stored level. The output grid still uses full-resolution metadata.
-///         With `resampling="sum"`, `"AUTO"` and `"AUTO-n"` read full resolution, and each pixel
-///         of a level counts for the source pixels it stands for, so that the sum estimates the
-///         source's total.
+///         With `resampling="sum"`, each pixel of an overview counts for the source pixels it
+///         stands for, so that the sum estimates the source's total; `"NONE"` sums the full
+///         resolution exactly.
 ///     srcnodata: The sources' nodata: a number, one per band, or `"none"` to ignore theirs.
 ///     dstnodata: The output nodata, or `"none"`. By default, the sources'.
 ///     ot: The output data type.

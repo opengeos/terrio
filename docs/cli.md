@@ -1041,11 +1041,11 @@ based on the full-resolution source. Use `NONE` when the source pyramids were bu
 with a filter unsuitable for the analysis. Mosaics select a level independently for
 each source. GCP/RPC transformations retain their full-resolution coordinate meaning.
 
-`-r sum` takes no overview under `AUTO` or `AUTO-n`: it reads the full resolution, so a coarse
-`sum` of a remote raster with overviews reads much more of it. `--overview n` reads level `n`,
-an overview with one pixel per block of the source's pixels, which counts for the source pixels
-it stands for, `(W / w) × (H / h)` for a `w × h` overview of a `W × H` source (exact ratios), so
-that the sum estimates the source's total at the overview's cost. The estimate is the exact total, up to floating-point rounding, where the
+With `-r sum`, an overview has one pixel per block of the source's pixels, which counts for
+the source pixels it stands for, `(W / w) × (H / h)` for a `w × h` overview of a `W × H`
+source (exact ratios), so that the sum estimates the source's total at the overview's cost:
+`AUTO`, `AUTO-n` and `--overview n` read an overview so, and `--overview NONE` sums the full
+resolution exactly. The estimate is the exact total, up to floating-point rounding, where the
 overview holds the means of the pixels it covers (an `average` overview of a floating-point
 source without nodata). It is approximate where those means were rounded to an integer type,
 where a block is partly nodata (its mean counts for the whole block, so the estimate exceeds

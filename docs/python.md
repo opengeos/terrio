@@ -339,11 +339,11 @@ Paths, lazy `Raster` objects, and mixed/repeated inputs in mosaics retain their
 stored overviews. Selection precedes pixel reads and does not alter the output grid
 computed from the original metadata. Only the source resolution changes. Loaded rasters
 have no stored overviews: a requested numeric level warns and uses full resolution.
-With `resampling="sum"`, `"AUTO"` and `"AUTO-n"` choose no overview: the full resolution is
-read, which costs more for a remote raster. A level (`overview=1`) is an overview with one pixel
-per block of the source's pixels, which counts for the source pixels it stands for,
-`(W / w) * (H / h)` for a `w` x `h` overview of a `W` x `H` source, so that the sum estimates
-the source's total at the overview's cost. The estimate's accuracy is described under
+With `resampling="sum"`, an overview has one pixel per block of the source's pixels, which
+counts for the source pixels it stands for, `(W / w) * (H / h)` for a `w` x `h` overview of a
+`W` x `H` source, so that the sum estimates the source's total at the overview's cost:
+`"AUTO"`, `"AUTO-n"` and a level (`overview=1`) read an overview so, and `"NONE"` sums the
+full resolution exactly. The estimate's accuracy is described under
 [Warp source overviews](cli.md#warp-source-overviews): exact up to rounding for an `average`
 overview of floating-point data without nodata, approximate with rounded integer means, blocks
 partly nodata or other overview resamplings. Give a coarse `sum` a floating-point `ot`: a

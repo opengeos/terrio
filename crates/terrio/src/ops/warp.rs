@@ -1580,7 +1580,7 @@ fn src_nodata(s: &Source, o: &WarpOptions, band: usize) -> Option<f64> {
 /// covers, without nodata. With `false`, a `sum` reads the full resolution unless it is given a
 /// level. Either way, `NONE` reads the full resolution, and a given level is read and counted the
 /// same way. `terrio.rio`'s `WarpedVRT` follows it for a reduced read of the whole VRT.
-pub const SUM_AUTO_OVERVIEW: bool = false;
+pub const SUM_AUTO_OVERVIEW: bool = true;
 
 /// The default of `TERRIO_WARP_SUM_MAX_BYTES`: 4 GiB.
 const SUM_MAX_BYTES: u64 = 4 << 30;
@@ -5219,8 +5219,9 @@ mod tests {
 
     /// A `sum` that reads an overview counts each of its pixels for the source pixels it stands
     /// for, `(W / w) * (H / h)` for a `w` x `h` overview of a `W` x `H` source, so that it
-    /// estimates the source's total: in a lazy warp, a warp of several sources, a streamed warp and
-    /// a serialized warped VRT. `NONE` sums the full resolution.
+    /// estimates the source's total: whether the automatic choice gives the overview or a level is
+    /// given, in a lazy warp, a warp of several sources, a streamed warp and a serialized warped
+    /// VRT. `NONE` sums the full resolution.
     #[test]
     fn a_sum_counts_each_overview_pixel_for_the_source_pixels_it_stands_for() {
         let dir = tempfile::tempdir().unwrap();
@@ -5254,19 +5255,81 @@ mod tests {
         // The ratios are exact: 9 pixels of 100 / 9 source pixels each, not of 3 x 3.
         let odd_total = total(&odd, OverviewSelection::Level(0));
         assert!((odd_total - 100.0).abs() < 1e-12, "{odd_total}");
-        // The overview of the ramp holds one source pixel of each 2 x 2 block: the level sums those
-        // four pixels, each counted for its block, and `NONE` the 16 pixels.
+        // The overview of the ramp holds one source pixel of each 2 x 2 block: the automatic choice
+        // sums those four pixels, each counted for its block, and `NONE` the 16 pixels.
         let level = crate::open_raster_lazy(&ramp)
             .unwrap()
             .read_window(crate::Window::full(2, 2), &crate::WindowOptions { overview: Some(0), bands: Vec::new() })
             .unwrap();
         let sampled: f64 = level.raster.data.to_f64_vec().iter().sum();
-        assert_eq!(total(&ramp, OverviewSelection::Level(0)), 4.0 * sampled);
+        assert_eq!(total(&ramp, OverviewSelection::Auto), 4.0 * sampled);
+        assert_eq!(warped(&ramp, Resampling::Sum, OverviewSelection::Auto), warped(&ramp, Resampling::Sum, OverviewSelection::Level(0)));
         assert_eq!(total(&ramp, OverviewSelection::None), 120.0);
         assert_ne!(4.0 * sampled, 120.0);
         let average = |overview| warped(&ramp, Resampling::Average, overview);
         assert_eq!(average(OverviewSelection::Auto), average(OverviewSelection::Level(0)));
         assert_ne!(average(OverviewSelection::Auto), average(OverviewSelection::None));
+    }
+
+    /// A source that records the level and the number of pixels of each window read from it.
+    struct Counted<'a> {
+        raster: &'a mut crate::LazyRaster,
+        reads: Vec<(Option<usize>, usize)>,
+    }
+
+    impl WarpSource for Counted<'_> {
+        fn info(&mut self) -> Result<WarpSourceInfo> {
+            WarpSource::info(&mut *self.raster)
+        }
+        fn has_mask(&mut self) -> Result<bool> {
+            WarpSource::has_mask(&mut *self.raster)
+        }
+        fn read_mask(&mut self, window: crate::Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+            WarpSource::read_mask(&mut *self.raster, window, overview)
+        }
+        fn read_window(&mut self, window: crate::Window, options: &crate::WindowOptions) -> Result<RasterDataset> {
+            self.reads.push((options.overview, window.width * window.height));
+            WarpSource::read_window(&mut *self.raster, window, options)
+        }
+    }
+
+    /// A coarse `sum` with the automatic choice reads only the overview that choice gives, 64 times
+    /// fewer pixels than the full resolution here, and its total is the source's, up to rounding
+    /// (under 1e-12 of it), on an output grid whose pixels straddle the overview's.
+    #[test]
+    fn an_automatic_sum_reads_the_chosen_overview_and_estimates_the_total() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = |c: usize, r: usize| ((c * 7 + r * 13) % 50) as f64 + 0.25;
+        let path = write_with_overviews(dir.path(), "src.tif", (64, 64), vec![2, 4, 8], "average", f);
+        let exact: f64 = (0..64).flat_map(|r| (0..64).map(move |c| f(c, r))).sum();
+        // 7 x 7 output pixels of 64/7 source pixels: the automatic choice is the overview at 8.
+        let run = |overview: OverviewSelection| {
+            let mut lazy = crate::open_raster_lazy(&path).unwrap();
+            let mut source = Counted { raster: &mut lazy, reads: Vec::new() };
+            let o = WarpOptions {
+                size: Some((7, 7)),
+                resampling: Resampling::Sum,
+                overview,
+                output_type: Some(DataType::F64),
+                ..Default::default()
+            };
+            let out = warp_sources(&mut [&mut source as &mut dyn WarpSource], &o).unwrap().raster.data.to_f64_vec();
+            let levels: std::collections::BTreeSet<Option<usize>> = source.reads.iter().map(|r| r.0).collect();
+            (out, levels, source.reads.iter().map(|r| r.1).sum::<usize>())
+        };
+        let (auto, auto_levels, auto_pixels) = run(OverviewSelection::Auto);
+        let (full, full_levels, full_pixels) = run(OverviewSelection::None);
+        let (finer, finer_levels, _) = run(OverviewSelection::AutoOffset(1));
+        assert_eq!(auto_levels, std::collections::BTreeSet::from([Some(2)]), "the automatic choice reads the overview at 8");
+        assert_eq!(finer_levels, std::collections::BTreeSet::from([Some(1)]), "AUTO-1 reads the overview at 4");
+        assert_eq!(full_levels, std::collections::BTreeSet::from([None]), "NONE reads the full resolution");
+        assert_eq!((auto_pixels, full_pixels), (64, 4096));
+        for (name, out) in [("AUTO", &auto), ("AUTO-1", &finer), ("NONE", &full)] {
+            let total: f64 = out.iter().sum();
+            assert!(((total - exact) / exact).abs() < 1e-12, "{name}: {total}, not {exact}");
+        }
+        // An estimate: the output pixels are not those of the full resolution.
+        assert_ne!(auto, full);
     }
 
     /// An average overview pixel is the mean of the valid pixels of its block, and a `sum` counts
@@ -5297,6 +5360,7 @@ mod tests {
             };
             warp_lazy(&mut crate::open_raster_lazy(&path).unwrap(), &o).unwrap().raster.data.to_f64_vec()
         };
+        assert_eq!(warped(OverviewSelection::Auto), [8.0, 4.0, -9999.0, 12.0]);
         assert_eq!(warped(OverviewSelection::Level(0)), [8.0, 4.0, -9999.0, 12.0]);
         assert_eq!(warped(OverviewSelection::None), [6.0, 4.0, -9999.0, 12.0]);
     }
