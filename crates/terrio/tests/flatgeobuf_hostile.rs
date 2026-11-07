@@ -66,6 +66,25 @@ fn measures_are_preserved_and_dimensions_checked() {
     assert!(!both(&bytes));
 }
 
+#[test]
+fn declared_z_must_be_present() {
+    let mut b = FlatBufferBuilder::new();
+    let h = Header::create(
+        &mut b,
+        &HeaderArgs { features_count: 1, index_node_size: 0, has_z: true, geometry_type: FgbType::Point, ..Default::default() },
+    );
+    b.finish_size_prefixed(h, None);
+    let mut bytes = b"fgb\x03fgb\x00".to_vec();
+    bytes.extend_from_slice(b.finished_data());
+    let mut b = FlatBufferBuilder::new();
+    let xy = b.create_vector(&[1.0, 2.0]);
+    let g = FgbGeometry::create(&mut b, &GeometryArgs { xy: Some(xy), ..Default::default() });
+    let f = FgbFeature::create(&mut b, &FeatureArgs { geometry: Some(g), ..Default::default() });
+    b.finish_size_prefixed(f, None);
+    bytes.extend_from_slice(b.finished_data());
+    assert!(!both(&bytes));
+}
+
 /// A polygon or multiline with explicit ends, optionally nested in a collection.
 fn part_ends_fixture(kind: FgbType, ends: &[u32], nested: bool) -> Vec<u8> {
     let mut b = FlatBufferBuilder::new();
