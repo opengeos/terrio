@@ -1331,9 +1331,10 @@ fn translate(
             }
         },
         None => {
-            let mut r = src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow_mut();
-            let inner = &mut r.inner;
-            crate::with_warnings(py, || terrio::ops::translate::translate_lazy(inner, &o, overview))?
+            // A handle sharing the Raster's reader (pixels are not copied), so that the Raster
+            // is not borrowed while the GIL is released.
+            let mut lazy = input_lazy_raster(py, src)?;
+            crate::with_warnings(py, || terrio::ops::translate::translate_lazy(&mut lazy, &o, overview))?
         }
     };
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)

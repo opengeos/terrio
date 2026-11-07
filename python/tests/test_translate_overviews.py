@@ -109,3 +109,50 @@ def test_invalid_overview_values_are_refused(pyramid):
     for bad in ["invalid", True, 1.5]:
         with pytest.raises(terrio.InvalidArgumentError):
             terrio.translate(pyramid, outsize=(8, 8), overview=bad)
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+def test_a_raster_is_not_borrowed_while_it_is_translated(pyramid, lazy):
+    # translate releases the GIL while it reads, from a handle sharing the Raster's reader: other
+    # threads translating the same Raster, or asking for its properties, meanwhile do not find it
+    # borrowed ("Already borrowed").
+    import threading
+
+    r = (
+        terrio.open_raster(pyramid, lazy=True)
+        if lazy
+        else terrio.Raster.from_array(np.arange(512 * 512, dtype="float32").reshape(512, 512), GT)
+    )
+    expected = terrio.translate(r, outsize=(300, 300), resampling="bilinear", overview="NONE").read(
+        1
+    )
+    errors = []
+    done = threading.Event()
+
+    def translate():
+        try:
+            for _ in range(10):
+                out = terrio.translate(
+                    r, outsize=(300, 300), resampling="bilinear", overview="NONE"
+                )
+                np.testing.assert_array_equal(out.read(1), expected)
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    def properties():
+        try:
+            while not done.is_set():
+                assert r.width > 0 and r.height > 0
+                assert len(r.transform) == 6
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    workers = [threading.Thread(target=translate) for _ in range(2)]
+    watcher = threading.Thread(target=properties)
+    for t in [*workers, watcher]:
+        t.start()
+    for t in workers:
+        t.join()
+    done.set()
+    watcher.join()
+    assert not errors, errors
