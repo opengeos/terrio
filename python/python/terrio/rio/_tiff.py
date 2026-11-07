@@ -578,7 +578,7 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
 
     # A per-dataset mask: a transparency mask image.
     for ifd in ifds[1:]:
-        if _first(ifd.get(NEW_SUBFILE_TYPE)) & 4 and _first(ifd.get(PHOTOMETRIC)) == 4:
+        if _first(ifd.get(NEW_SUBFILE_TYPE)) & 5 == 4 and _first(ifd.get(PHOTOMETRIC)) == 4:
             if _first(ifd.get(WIDTH)) == s.width and _first(ifd.get(HEIGHT)) == s.height:
                 s.has_mask = True
     return s

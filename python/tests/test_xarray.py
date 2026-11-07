@@ -866,3 +866,63 @@ def test_overview_masks_match_opened_gdal_dataset(
             opened[:, :2, :].values, np.stack(expected)[:, :2, :], equal_nan=True
         )
         np.testing.assert_allclose(opened.values, np.stack(expected), equal_nan=True)
+
+
+@pytest.mark.parametrize("fallback", ["all_valid", "nodata", "alpha"])
+def test_reduced_mask_at_full_size_uses_validity_fallback(tmp_path, fallback):
+    """A reduced-resolution mask IFD is not a full-resolution dataset mask."""
+    import struct
+
+    from terrio.rio.enums import ColorInterp
+
+    path = tmp_path / "reduced-mask.tif"
+    values = np.array([[10, 20], [30, 40]], dtype="uint8")
+    count = 4 if fallback == "alpha" else 1
+    with rio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=2,
+        height=2,
+        count=count,
+        dtype="uint8",
+        nodata=20 if fallback == "nodata" else None,
+        transform=TRANSFORM,
+    ) as dst:
+        for band in range(1, count + 1):
+            dst.write(values if band != 4 else np.array([[255, 0], [0, 255]], dtype="uint8"), band)
+        if fallback == "alpha":
+            dst.colorinterp = (
+                ColorInterp.red,
+                ColorInterp.green,
+                ColorInterp.blue,
+                ColorInterp.alpha,
+            )
+        dst.write_mask(np.array([[0, 255], [255, 0]], dtype="uint8"))
+    # Set only the mask IFD's reduced-resolution bit, keeping its dimensions unchanged.
+    raw = bytearray(path.read_bytes())
+    assert raw[:4] == b"II*\x00"
+    offset = struct.unpack_from("<I", raw, 4)[0]
+    changed = False
+    while offset:
+        size = struct.unpack_from("<H", raw, offset)[0]
+        for index in range(size):
+            entry = offset + 2 + 12 * index
+            tag, kind, length, value = struct.unpack_from("<HHII", raw, entry)
+            if tag == 254 and kind == 4 and length == 1 and value & 4:
+                struct.pack_into("<I", raw, entry + 8, value | 1)
+                changed = True
+        offset = struct.unpack_from("<I", raw, offset + 2 + 12 * size)[0]
+    assert changed
+    path.write_bytes(raw)
+    expected = values.astype("float32")
+    if fallback == "nodata":
+        expected[values == 20] = np.nan
+    elif fallback == "alpha":
+        expected[0, 1] = expected[1, 0] = np.nan
+    da = txr.open_rasterio(str(path), masked=True, cache=False)
+    try:
+        np.testing.assert_allclose(da[:1, :1, :].values[0], expected[:1], equal_nan=True)
+        np.testing.assert_allclose(da.values[0], expected, equal_nan=True)
+    finally:
+        da.close()

@@ -562,7 +562,18 @@ pub fn read_mapping_file(path: &str) -> Result<String> {
     if meta.len() > 10_000_000 {
         return Err(Error::InvalidArgument("the mapping file is too large (maximum 10 MB)".into()));
     }
-    let file = std::fs::File::open(path).map_err(|e| Error::InvalidArgument(format!("cannot read {path}: {e}")))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // A path swapped for a FIFO after the metadata check must not block the open.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(|e| Error::InvalidArgument(format!("cannot read {path}: {e}")))?;
+    if !file.metadata()?.is_file() {
+        return Err(Error::InvalidArgument(format!("cannot read {path}: not a regular file")));
+    }
     let mut bytes = Vec::new();
     file.take(10_000_001).read_to_end(&mut bytes).map_err(|e| Error::InvalidArgument(format!("cannot read {path}: {e}")))?;
     if bytes.len() > 10_000_000 {
