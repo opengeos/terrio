@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A KMZ document that `doc.kml` links to several times is read, counted toward
+  `TERRIO_KMZ_MAX_SIZE` and parsed once, and gives one layer, named by the first link to it; a
+  link to `doc.kml` itself adds no layer. Each link used to read the document again and add a
+  layer with the same name: 100,000 links to one document, in a 25 KB archive, gave 100,000
+  identical layers and took 702 MiB. Linked documents are also found without scanning the
+  archive's names for each link, a scan that made 99,999 links to distinct documents take 25 s.
 - Python's `Raster.read_resampled`, `read_resampled_masks` and `read_resampled_with_masks`, and
   JavaScript's `readResampled`, `readResampledMasks` and `readResampledWithMasks` (on `Dataset`
   and, as promises, on `openUrl`'s `RemoteDataset`), read a window of some bands into an output
