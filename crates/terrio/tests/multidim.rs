@@ -379,25 +379,53 @@ fn netcdf_enum_attribute_metadata_differs_from_gdal() {
     assert_eq!(flag, Some("1"));
 }
 
-/// A netCDF snapshot of a file with user-defined attributes: the attributes GDAL cannot read
-/// either (`null`, a vlen or a compound with an array field) are left out, as `gdalmdimtranslate`
-/// leaves them out, and a compound is kept as its JSON text, as an object attribute of any source
-/// is; the HDF5 writer has no compound type.
+/// A netCDF snapshot of a file with user-defined attributes, as GDAL 3.13.3's
+/// `gdalmdimtranslate -of netCDF` copies it: the attributes GDAL cannot read either (`null`, a vlen
+/// or a compound with an array field) are left out, and compounds, nested ones too, are written as
+/// compounds that read back as the same objects, as do copies of the copy. The types the copy
+/// commits are compared with GDAL's in `multidim::netcdf`'s unit tests.
 #[cfg(feature = "netcdf-hdf5")]
 #[test]
 fn netcdf_snapshot_of_user_defined_attributes() {
-    let path = user_defined_fixture().join("user_defined_attrs.nc");
-    let original = terrio::multidim::open(path.to_str().unwrap()).unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("copy.nc");
-    original.write(file.to_str().unwrap()).unwrap();
-    let opened = terrio::multidim::open(file.to_str().unwrap()).unwrap();
-    let z = opened.array("/z").unwrap();
-    assert_eq!(z.info.attributes.get("counts"), None);
-    assert_eq!(z.info.attributes.get("grid"), None);
-    let station = z.info.attributes.get("station").and_then(|v| v.as_str()).expect("station is written as text");
-    assert_eq!(serde_json::from_str::<serde_json::Value>(station).unwrap(), json!({"id": 7, "elevation": 12.5}));
-    assert_eq!(opened.root.attributes.get("title"), Some(&json!("user-defined attributes")));
+    for (fixture, arrays) in [("user_defined_attrs.nc", &["/z"][..]), ("nested_compound_attrs.nc", &["/v0"][..])] {
+        let mut previous = terrio::multidim::open(user_defined_fixture().join(fixture).to_str().unwrap()).unwrap();
+        for generation in 1..=2 {
+            let file = dir.path().join(format!("{generation}_{fixture}"));
+            previous.write(file.to_str().unwrap()).unwrap();
+            let copy = terrio::multidim::open(file.to_str().unwrap()).unwrap();
+            assert_eq!(copy.root.attributes, previous.root.attributes, "{fixture} generation {generation}");
+            for array in arrays {
+                let expected: serde_json::Map<_, _> = previous
+                    .array(array)
+                    .unwrap()
+                    .info
+                    .attributes
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, v)| !v.is_null())
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                assert_eq!(
+                    copy.array(array).unwrap().info.attributes.as_object().unwrap(),
+                    &expected,
+                    "{fixture} {array} generation {generation}"
+                );
+            }
+            previous = copy;
+        }
+    }
+    let copy = terrio::multidim::open(dir.path().join("1_user_defined_attrs.nc").to_str().unwrap()).unwrap();
+    let z = &copy.array("/z").unwrap().info.attributes;
+    assert_eq!(z.get("counts"), None);
+    assert_eq!(z.get("grid"), None);
+    assert_eq!(z.get("station"), Some(&json!({"id": 7, "elevation": 12.5})));
+    assert_eq!(z.get("sample"), Some(&json!({"state": 1, "level": 200, "code": 81})));
+    assert_eq!(z.get("flag"), Some(&json!(1)));
+    assert_eq!(copy.root.attributes.get("origin"), Some(&json!({"id": 1, "elevation": -3.25})));
+    let nested = terrio::multidim::open(dir.path().join("1_nested_compound_attrs.nc").to_str().unwrap()).unwrap();
+    assert_eq!(nested.array("/v0").unwrap().info.attributes.get("site"), Some(&json!({"id": 3, "where": {"x": 1.5, "y": -2.5}})));
 }
 
 /// netCDF has no null: a `null` attribute of a source other than netCDF, such as a Zarr attribute
