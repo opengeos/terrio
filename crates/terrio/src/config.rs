@@ -71,6 +71,21 @@ pub fn thread_options() -> HashMap<String, Option<String>> {
     })
 }
 
+/// Runs `f` with `options` set on this thread, removing them afterwards even when `f` panics, so a
+/// failing test cannot leave them to the next on the thread.
+#[cfg(test)]
+pub(crate) fn with_options<T>(options: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            pop_scope();
+        }
+    }
+    push_scope(options.iter().map(|(k, v)| (k.to_string(), Some(v.to_string()))).collect());
+    let _pop = Pop;
+    f()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

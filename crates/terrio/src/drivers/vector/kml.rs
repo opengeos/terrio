@@ -20,7 +20,6 @@ use super::kml_style;
 use super::xml::{self, Element};
 use crate::{Error, Result};
 use std::fmt::Write as _;
-use std::io::Read as _;
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer, Ring};
 
 const FIXED: &[(&str, FieldType)] = &[
@@ -43,6 +42,17 @@ const MAX_STYLE_DOCUMENTS: usize = 256;
 /// How many decompressed bytes of text those documents may take together. Their parsed form takes
 /// several times that, which WASM's memory has to hold too.
 const MAX_STYLE_DOCUMENT_BYTES: u64 = 64 << 20;
+/// How many decompressed bytes of text a KMZ archive's main document and the layer documents it
+/// links to may take together by default (`TERRIO_KMZ_MAX_SIZE`). Reading them takes at least
+/// twice that in memory, and a deflated document expands up to 1,032 times its size in the archive.
+const DEFAULT_MAX_KMZ_DOCUMENT_BYTES: u64 = 512 << 20;
+
+/// The bytes a KMZ archive's main and layer documents may take together: `TERRIO_KMZ_MAX_SIZE`,
+/// else 512 MiB; the budget [`read_document`] starts from. Members are also read within the
+/// archive limits (`crate::vfs::ZipLimits`).
+pub(crate) fn max_kmz_document_bytes() -> u64 {
+    crate::config::get("TERRIO_KMZ_MAX_SIZE").and_then(|v| v.trim().parse().ok()).unwrap_or(DEFAULT_MAX_KMZ_DOCUMENT_BYTES)
+}
 
 /// A KML document's layers, and its style table: style ids and their OGR style strings.
 pub type Styled = (Vec<Layer>, Vec<(String, String)>);
@@ -65,7 +75,8 @@ pub fn read_kmz(path: &str) -> Result<Vec<Layer>> {
 
 /// Reads a KMZ file with its style table.
 pub fn read_kmz_styled(path: &str) -> Result<Styled> {
-    parse_kmz_styled(std::fs::read(path)?, &stem(path))
+    // Only the archive's directory and the members read are loaded.
+    kmz_styled(std::io::BufReader::new(std::fs::File::open(path)?), &stem(path))
 }
 
 /// Parses a KMZ archive held in memory. `default_name` names a root layer without a name.
@@ -75,20 +86,62 @@ pub fn parse_kmz(bytes: Vec<u8>, default_name: &str) -> Result<Vec<Layer>> {
 
 /// Parses a KMZ archive held in memory, with the style table of its documents.
 pub fn parse_kmz_styled(bytes: Vec<u8>, default_name: &str) -> Result<Styled> {
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
-    let names: Vec<String> = zip.file_names().filter_map(|n| n.ok().map(|n| n.into_owned())).collect();
-    let main = names
+    kmz_styled(std::io::Cursor::new(bytes), default_name)
+}
+
+/// The main document of a KMZ archive: `doc.kml` (in any case), else its first `.kml` member.
+fn main_document(names: &[String]) -> Result<String> {
+    names
         .iter()
         .find(|n| n.eq_ignore_ascii_case("doc.kml"))
         .or_else(|| names.iter().find(|n| n.to_ascii_lowercase().ends_with(".kml")))
-        .ok_or_else(|| Error::InvalidData("the KMZ archive holds no KML document".into()))?
-        .clone();
-    let mut read_limited = |name: &str, limit: u64| -> Result<String> {
-        let mut bytes = Vec::new();
-        zip.by_name(name)?.take(limit).read_to_end(&mut bytes)?;
-        Ok(xml::decode(&bytes))
-    };
-    let root = xml::parse(&read_limited(&main, u64::MAX)?)?;
+        .cloned()
+        .ok_or_else(|| Error::InvalidData("the KMZ archive holds no KML document".into()))
+}
+
+/// Reads the KML document named `name` from a KMZ archive within `budget`, the bytes left of
+/// `TERRIO_KMZ_MAX_SIZE` for the archive's documents, and takes its bytes from it.
+///
+/// Args:
+///     zip: The archive, read within the archive limits.
+///     name: The document's member name.
+///     budget: The bytes the archive's documents may still take; reduced by this one's.
+///
+/// Returns:
+///     The document's text, or `Error::ResourceLimit` when it does not fit the budget.
+fn read_document<R: std::io::Read + std::io::Seek>(zip: &mut crate::vfs::LimitedZip<R>, name: &str, budget: &mut u64) -> Result<String> {
+    let index = zip.archive().index_for_name(name).ok_or_else(|| Error::InvalidData(format!("KMZ: '{name}' is not in the archive")))?;
+    read_document_at(zip, index, budget)
+}
+
+/// [`read_document`] for the member at `index`.
+pub(crate) fn read_document_at<R: std::io::Read + std::io::Seek>(
+    zip: &mut crate::vfs::LimitedZip<R>,
+    index: usize,
+    budget: &mut u64,
+) -> Result<String> {
+    // A document declaring more than is left is refused before it is read. One inflating past what
+    // it declares is refused by `read_index`, so no read goes past the budget.
+    let (name, declared, _) = zip.entry(index)?;
+    if declared > *budget {
+        return Err(Error::ResourceLimit(format!(
+            "KMZ: the archive's KML documents hold more than the {} bytes allowed (TERRIO_KMZ_MAX_SIZE), at '{name}'",
+            max_kmz_document_bytes()
+        )));
+    }
+    let bytes = zip.read_index(index, *budget)?;
+    *budget -= bytes.len() as u64;
+    Ok(xml::decode(&bytes))
+}
+
+/// [`parse_kmz_styled`] from a reader of the archive: within the archive limits
+/// (`crate::vfs::ZipLimits`) and, for the main and layer documents, `TERRIO_KMZ_MAX_SIZE`.
+fn kmz_styled<R: std::io::Read + std::io::Seek>(reader: R, default_name: &str) -> Result<Styled> {
+    let mut zip = crate::vfs::LimitedZip::open(reader)?;
+    let names: Vec<String> = zip.archive().file_names().filter_map(|n| n.ok().map(|n| n.into_owned())).collect();
+    let main = main_document(&names)?;
+    let mut documents_budget = max_kmz_document_bytes();
+    let root = xml::parse(&read_document(&mut zip, &main, &mut documents_budget)?)?;
     // The documents that are layers, each with its layer name.
     let mut links = Vec::new();
     root.find_all("NetworkLink", &mut links);
@@ -98,12 +151,14 @@ pub fn parse_kmz_styled(bytes: Vec<u8>, default_name: &str) -> Result<Styled> {
         let href = href.trim_start_matches("./");
         if let Some(member) = names.iter().find(|n| n.as_str() == href) {
             let name = link.child_text("name").map_or_else(|| stem(member), str::to_string);
-            documents.push((member.clone(), xml::parse(&read_limited(member, u64::MAX)?)?, name));
+            documents.push((member.clone(), xml::parse(&read_document(&mut zip, member, &mut documents_budget)?)?, name));
         }
     }
     // The documents styles live in, as far as links from one to the next go. Each is read once here
-    // (a layer document a styleUrl names was also read above), and
-    // one that cannot be read, or past the limits, leaves its links as raw URLs.
+    // (a layer document a styleUrl names was also read above, and counts again toward
+    // `TERRIO_ZIP_MAX_SIZE`, though not toward the document budget), and
+    // one that cannot be read, or past the style budget, leaves its links as raw URLs. An archive
+    // past the archive limits is refused.
     let mut budget = MAX_STYLE_DOCUMENT_BYTES;
     let archived: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
     let mut members = kml_style::Members::new();
@@ -116,7 +171,14 @@ pub fn parse_kmz_styled(bytes: Vec<u8>, default_name: &str) -> Result<Styled> {
             continue;
         }
         // One byte past the budget tells a document that does not fit from one that just does.
-        let Ok(text) = read_limited(&name, budget + 1) else { continue };
+        let text = match zip.read_name(&name, budget) {
+            Ok(bytes) => xml::decode(&bytes),
+            Err(e) if e.is_resource_refusal() => return Err(e),
+            // A member inflating past its declared size is refused only by the message
+            // `is_past_declared` matches. If zip rewords it, that member is skipped here like an
+            // unreadable one, not refused; the vfs tests pin the message.
+            Err(_) => continue,
+        };
         if text.len() as u64 > budget {
             budget = 0;
             continue;
@@ -809,10 +871,10 @@ fn write_geometry(s: &mut String, g: &Geometry, flags: &Flags) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read as _;
 
     #[test]
     fn a_kmz_carries_the_files_its_styles_refer_to() {
-        use std::io::Read as _;
         let mut layer = Layer::new("pins").with_crs_epsg(4326);
         layer.add_field(FieldDef::new(kml_style::FIELD, FieldType::Text));
         layer.push(Feature {
@@ -994,6 +1056,80 @@ mod tests {
         }
         zip.finish().unwrap();
         buf.into_inner()
+    }
+
+    /// A KMZ archive of deflated members.
+    fn deflated(members: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(&mut buf);
+        for (name, bytes) in members {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated)).unwrap();
+            std::io::Write::write_all(&mut zip, bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        buf.into_inner()
+    }
+
+    /// A KML document with one placemark, padded by a comment of `padding` spaces.
+    fn padded(padding: usize) -> Vec<u8> {
+        let mut text = b"<kml><Document><Placemark><Point><coordinates>1,2</coordinates></Point></Placemark><!--".to_vec();
+        text.resize(text.len() + padding, b' ');
+        text.extend_from_slice(b"--></Document></kml>");
+        text
+    }
+
+    use crate::config::with_options;
+
+    #[test]
+    fn kmz_documents_are_read_within_the_document_budget() {
+        let kmz = deflated(&[("doc.kml", &padded(2 << 20))]);
+        assert!(kmz.len() < 16 << 10, "{} bytes", kmz.len());
+        // Within the default budget, the document reads.
+        assert_eq!(parse_kmz(kmz.clone(), "a").unwrap()[0].features.len(), 1);
+        let refused = with_options(&[("TERRIO_KMZ_MAX_SIZE", "1048576")], || parse_kmz(kmz.clone(), "a"));
+        assert!(
+            matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("TERRIO_KMZ_MAX_SIZE") && m.contains("doc.kml")),
+            "{refused:?}"
+        );
+        // A document of exactly the budget fits it.
+        let exact = padded(2 << 20).len().to_string();
+        assert!(with_options(&[("TERRIO_KMZ_MAX_SIZE", &exact)], || parse_kmz(kmz.clone(), "a")).is_ok());
+        // The main document and the layer documents it links to share the budget.
+        let main = br#"<kml><Document><NetworkLink><Link><href>layers/a.kml</href></Link></NetworkLink></Document></kml>"#;
+        let linked = deflated(&[("doc.kml", main), ("layers/a.kml", &padded(1 << 20))]);
+        assert_eq!(parse_kmz(linked.clone(), "a").unwrap()[0].features.len(), 1);
+        let budget = (padded(1 << 20).len() + main.len() - 1).to_string();
+        let refused = with_options(&[("TERRIO_KMZ_MAX_SIZE", &budget)], || parse_kmz(linked.clone(), "a"));
+        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("layers/a.kml")), "{refused:?}");
+        // And the path read from a file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("expansion.kmz");
+        std::fs::write(&path, &kmz).unwrap();
+        let refused = with_options(&[("TERRIO_KMZ_MAX_SIZE", "1048576")], || read_kmz(path.to_str().unwrap()));
+        assert!(refused.as_ref().is_err_and(Error::is_resource_refusal), "{refused:?}");
+    }
+
+    #[test]
+    fn kmz_archives_are_read_within_the_zip_limits() {
+        let kmz = deflated(&[("doc.kml", &padded(1 << 20))]);
+        let refused = with_options(&[("TERRIO_ZIP_MAX_RATIO", "10")], || parse_kmz(kmz.clone(), "a"));
+        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("TERRIO_ZIP_MAX_RATIO")), "{refused:?}");
+        let refused = with_options(&[("TERRIO_ZIP_MAX_SIZE", "1000")], || parse_kmz(kmz.clone(), "a"));
+        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("TERRIO_ZIP_MAX_SIZE")), "{refused:?}");
+        let many = deflated(&[("doc.kml", &padded(0)), ("a.txt", b""), ("b.txt", b"")]);
+        let refused = with_options(&[("TERRIO_ZIP_MAX_ENTRIES", "2")], || parse_kmz(many.clone(), "a"));
+        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("TERRIO_ZIP_MAX_ENTRIES")), "{refused:?}");
+        assert!(parse_kmz(many, "a").is_ok());
+        // A style document past the archive limits refuses the archive, rather than its styles
+        // being left out.
+        let main = br#"<kml><Document><Placemark><styleUrl>styles.kml#s</styleUrl><Point><coordinates>1,2</coordinates></Point></Placemark></Document></kml>"#;
+        let mut styles = br#"<kml><Document><Style id="s"/><!--"#.to_vec();
+        styles.resize(styles.len() + (1 << 20), b' ');
+        styles.extend_from_slice(b"--></Document></kml>");
+        let styled = deflated(&[("doc.kml", main), ("styles.kml", &styles)]);
+        assert!(parse_kmz(styled.clone(), "a").is_ok());
+        let refused = with_options(&[("TERRIO_ZIP_MAX_RATIO", "50")], || parse_kmz(styled.clone(), "a"));
+        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("styles.kml")), "{refused:?}");
     }
 
     fn pin(url: &str, inline: &str) -> String {

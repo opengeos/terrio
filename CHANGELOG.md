@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- KMZ archives are read within limits (#579). Their main document and the layer documents it
+  links to may take 512 MiB of decompressed text together (`TERRIO_KMZ_MAX_SIZE` changes it),
+  and the archive is checked against `TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO` and
+  `TERRIO_ZIP_MAX_SIZE` as `/vsizip/` checks it, so a 1 MiB KMZ whose `doc.kml` inflates to 1 GiB
+  is refused at once instead of taking 2 GiB of memory. A KMZ file is read from its directory and
+  the members needed rather than loaded whole. The same archive limits apply to zip archives
+  opened from memory and to the `TERRIO_WBVECTOR_FALLBACK` KMZ read. A style document that breaks
+  these limits now refuses the whole archive; a style document that cannot be read, or that takes
+  the style budget past its size, still leaves its links as URLs.
 - A remote read whose tiles span more than half the HTTP block cache's blocks
   (`TERRIO_HTTP_CACHE_SIZE`, 64 MiB by default) fetches them in batches of at most half the cache
   as it decodes them: each byte once when the tiles are decoded in file order, and at most one
