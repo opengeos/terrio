@@ -19,11 +19,11 @@ from rasterio.enums import Resampling as RR  # noqa: E402
 from rasterio.transform import from_origin  # noqa: E402
 from rasterio.windows import Window as RW  # noqa: E402
 
-MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
-
 import terrio.rio as trio  # noqa: E402
 from terrio.rio.enums import Resampling as TR  # noqa: E402
 from terrio.rio.windows import Window as TW  # noqa: E402
+
+MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
 
 METHODS = ["bilinear", "cubic", "cubic_spline", "lanczos", "average", "mode", "rms", "gauss"]
 # (window, out_shape): integer and fractional windows, at the window's size, down- and
@@ -234,6 +234,7 @@ def test_raster_read_resampled_matches_rasterio(sources, kind, method, read):
     max_frac = FMA_ROUNDING_MAX_FRAC if fma_tolerance else 0.0
     assert np.mean(~same) <= max_frac, f"{np.mean(~same):.4%} of pixels differ"
     assert bm.dtype == np.uint8
+    assert am.shape == bm.shape
     assert np.mean(am != bm) <= max_frac, f"{np.mean(am != bm):.4%} of the masks differ"
 
 
