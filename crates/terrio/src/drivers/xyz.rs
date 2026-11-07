@@ -14,9 +14,10 @@ use wbraster::raster::RasterData;
 use wbraster::{DataType, Raster};
 
 /// The most cells a grid may have for each of its points, and the most any grid may have
-/// whatever its points: terrio's bounds, not GDAL's. GDAL 3.13.3 reads sparser grids (6 points
-/// over 100001 x 2 cells) and refuses points whose spacing it cannot determine (three points
-/// 10^9 apart at a spacing of 10^-6, or at 10^300) rather than bounding the cell count.
+/// whatever its points: terrio's bounds, not GDAL's. GDAL 3.13.3 has no cell bound: it reads
+/// sparse grids (6 points over 100001 x 2 cells, read here too as under MIN_MAX_CELLS) and
+/// refuses points whose spacing it cannot determine (three points 10^9 apart at a spacing of
+/// 10^-6, or at 10^300). A grid sparser than these bounds that GDAL reads is refused here.
 const MAX_CELLS_PER_POINT: usize = 256;
 const MIN_MAX_CELLS: usize = 1 << 24;
 
