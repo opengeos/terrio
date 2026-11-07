@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 const EXPECTED_SCHEMA_VERSION: &str = "0.1.1";
 
 /// Digest of the canonical catalog for the current `schema_version`.
-const CATALOG_SHA256: &str = "0787a85294dddf150d5d996dc6ffcde3f71dc9a90972531ddac951938748564f";
+const CATALOG_SHA256: &str = "86313dd4bac35e08a933ab86d7be5d5cd2073a5bd2bca42dd43e4e5066896fb7";
 
 /// Rebuilds every object with its keys sorted, so the digest does not depend on whether
 /// `serde_json`'s `preserve_order` feature is enabled by the crates built alongside this one.

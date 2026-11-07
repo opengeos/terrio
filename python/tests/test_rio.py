@@ -1003,3 +1003,46 @@ def test_lazy_tiff_open_rejects_gdal_readable_dangling_ifd(tmp_path):
     np.testing.assert_array_equal(terrio.open_raster(str(path)).read(1), values)
     with pytest.raises(terrio.errors.TerrioIOError, match="buffer|IFD|directory"):
         terrio.open_raster(str(path), lazy=True)
+
+
+def test_unsupported_inferred_mask_is_not_advertised_or_copied(tmp_path):
+    """An unsupported mask header cannot supply a readable mask to rio copy."""
+    import struct
+
+    import terrio
+    from terrio.rio import _tiff
+    from terrio.rio.enums import MaskFlags
+    from terrio.rio.shutil import copy
+
+    path = tmp_path / "unsupported-mask.tif"
+    values = np.array([[1, 2], [3, 4]], dtype="uint8")
+    with rio.open(path, "w", driver="GTiff", width=2, height=2, count=1, dtype="uint8") as dst:
+        dst.write(values, 1)
+        dst.write_mask(np.array([[0, 255], [255, 0]], dtype="uint8"))
+    raw = bytearray(path.read_bytes())
+    assert raw[:4] == b"II*\x00"
+    offset = struct.unpack_from("<I", raw, 4)[0]
+    changed = False
+    while offset:
+        count = struct.unpack_from("<H", raw, offset)[0]
+        entries = {
+            struct.unpack_from("<H", raw, offset + 2 + 12 * i)[0]: offset + 2 + 12 * i
+            for i in range(count)
+        }
+        if 254 in entries and struct.unpack_from("<I", raw, entries[254] + 8)[0] & 4:
+            # Internal TIFF masks are one-bit images; tag inference does not check this.
+            struct.pack_into("<H", raw, entries[258] + 8, 8)
+            changed = True
+        offset = struct.unpack_from("<I", raw, offset + 2 + 12 * count)[0]
+    assert changed
+    path.write_bytes(raw)
+    native = terrio.open_raster(str(path), lazy=True)
+    assert _tiff.tiff_structure(str(path), native).has_mask
+    assert not native.has_mask
+    output = tmp_path / "copied.tif"
+    copy(path, output)
+    for candidate in (path, output):
+        with rio.open(candidate) as opened:
+            assert opened.mask_flag_enums == ([MaskFlags.all_valid],)
+            np.testing.assert_array_equal(opened.read(1), values)
+            np.testing.assert_array_equal(opened.read_masks(1), np.full((2, 2), 255, dtype="uint8"))

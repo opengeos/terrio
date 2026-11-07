@@ -76,8 +76,10 @@ pub struct MosaicSource<'a> {
     pub ds: &'a RasterDataset,
 }
 
-/// Builds a virtual mosaic of rasters in the same CRS, as `gdalbuildvrt` does. Paths are written
-/// relative to `vrt_dir` when they are inside it.
+/// Builds a virtual mosaic of rasters in the same CRS. Paths are written relative to
+/// `vrt_dir` when they are inside it. Unlike GDAL 3.13.3 `gdalbuildvrt`, this rejects
+/// mismatched band counts without band selection in ordinary mode, and target extents
+/// intersecting no source, rather than warning and skipping inputs or writing an empty VRT.
 pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&Path>) -> Result<VrtDataset> {
     build_vrt_impl(sources, o, vrt_dir, false)
 }

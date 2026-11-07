@@ -23,6 +23,7 @@ Suites:
                       (compare_catalogs_with_gdal.py)
     vrt               serialized warped/derived/kernel VRTs, masks and lazy windows
     overviews         source overview selection and HTTP COG bytes vs gdalwarp -ovr
+    sum-overviews     extensive sum estimates and exact NONE controls vs GDAL
     translate-overviews  resized reads from overviews and HTTP COG bytes vs gdal_translate
                       -outsize/-ovr (compare_translate_overviews_with_gdal.py)
     dem-calc          dem, calc, proximity, sieve vs GDAL's tools (compare_dem_calc_with_gdal.py)
@@ -961,6 +962,19 @@ def suite_overviews(ctx):
         "Full-resolution target grids, source-level selection and output pixels must match GDAL. "
         "Synthetic level markers and real USGS terrain exercise AUTO, AUTO-n, NONE and forced levels. "
         "A real COG served over HTTP must transfer less than half as many raster bytes with AUTO as NONE.",
+        2,
+    )
+
+
+def suite_sum_overviews(ctx):
+    """Extensive overview estimates and exact full-resolution sum controls."""
+    return suite_json_ops(
+        ctx, "sum-overviews", "compare_warp_sum_overviews.py", "Overview sum estimates",
+        "GDAL 3.13.3 full-resolution sums and explicitly area-scaled overview sums",
+        "NONE matches GDAL directly; overview estimates match its sum times the exact pixel-area "
+        "ratio, preserving masks, nodata, type, CRS and geotransform. Absolute tolerance 1e-8 "
+        "on controlled TIFFs and 1e-4 on real USGS terrain. Cropped cells, integer means and "
+        "partly nodata blocks are estimates, not claims of equality to full-resolution totals.",
         2,
     )
 
@@ -3255,6 +3269,7 @@ SUITES = OrderedDict(
         ("catalogs", suite_catalogs),
         ("vrt", suite_vrt),
         ("overviews", suite_overviews),
+        ("sum-overviews", suite_sum_overviews),
         ("translate-overviews", suite_translate_overviews),
         ("raster-manage", suite_raster_manage),
         ("indexes", suite_indexes),
