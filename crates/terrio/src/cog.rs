@@ -1889,6 +1889,8 @@ struct Level {
     /// How the image's chunks are decoded, settled by the level's first window read that gets to
     /// decoding: `Some(None)` when the `tiff` crate decodes them itself.
     codec: Option<Option<crate::tiff_codecs::ChunkCodec>>,
+    /// Whether the image is planar and its compression code, read by the level's first window read.
+    storage: Option<(bool, u16)>,
     /// Cached GDAL RESAMPLING metadata, including absence, for repeated selection.
     resampling: Option<Option<String>>,
 }
@@ -1990,6 +1992,7 @@ impl TiffRaster {
             external: None,
             tables: None,
             codec: None,
+            storage: None,
             resampling: None,
         }];
         let mut ifd = 1;
@@ -2012,6 +2015,7 @@ impl TiffRaster {
                         external: None,
                         tables: None,
                         codec: None,
+                        storage: None,
                         resampling: None,
                     });
                 }
@@ -2076,6 +2080,7 @@ impl TiffRaster {
                 external: Some(i),
                 tables: None,
                 codec: None,
+                storage: None,
                 resampling: None,
             });
         }
@@ -2138,7 +2143,15 @@ impl TiffRaster {
             self.current_ifd = ifd;
         }
         let (lw, lh) = (self.levels[level].width, self.levels[level].height);
-        let planar = dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).map_err(tiff_err)? == Some(2);
+        let (planar, compression) = match self.levels[level].storage {
+            Some(storage) => storage,
+            None => {
+                let planar = dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).map_err(tiff_err)? == Some(2);
+                let compression = dec.find_tag_unsigned::<u16>(Tag::Compression).map_err(tiff_err)?.unwrap_or(1);
+                self.levels[level].storage = Some((planar, compression));
+                (planar, compression)
+            }
+        };
         let (cw, ch) = dec.chunk_dimensions();
         let (cw, ch) = (cw as usize, ch as usize);
         let across = lw.div_ceil(cw);
@@ -2179,7 +2192,6 @@ impl TiffRaster {
         ranges.extend(chunks.iter().filter_map(|(i, ..)| tables.get(*i)).filter(|(_, n)| *n > 0));
         // Compressed chunks whose stored bytes run past the end of the file: refused, as GDAL does,
         // before anything is fetched.
-        let compression = dec.find_tag_unsigned::<u16>(Tag::Compression).map_err(tiff_err)?.unwrap_or(1);
         crate::geotiff::check_stored_chunks(compression, ranges.iter().copied(), self.file_len)?;
         drop(ranges);
 
