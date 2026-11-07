@@ -43,6 +43,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(transform_points, m)?)?;
     m.add_function(wrap_pyfunction!(set_grid_search_paths, m)?)?;
     m.add_function(wrap_pyfunction!(set_network_enabled, m)?)?;
+    m.add_function(wrap_pyfunction!(list_crs, m)?)?;
     m.add_function(wrap_pyfunction!(translate, m)?)?;
     m.add_function(wrap_pyfunction!(warp, m)?)?;
     m.add_function(wrap_pyfunction!(mosaic, m)?)?;
@@ -338,7 +339,7 @@ fn write_raster(
     bigtiff: bool,
 ) -> PyResult<()> {
     let options = write_options(driver, compress, tile_size, bigtiff)?;
-    py.detach_result(|| raster.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
+    raster.write_with_options(py, path, options)
 }
 
 /// Writes rasters into one netCDF-4 file, each in its group.
@@ -1051,6 +1052,65 @@ fn set_grid_search_paths(paths: Option<Vec<std::path::PathBuf>>) {
 #[pyo3(signature = (enabled))]
 fn set_network_enabled(enabled: Option<bool>) {
     terrio::crs::set_network_enabled(enabled);
+}
+
+/// Lists the CRSs of the registries terrio carries (EPSG, ESRI and IAU_2015), for searchable CRS
+/// pickers, without network or PROJ installation. They are described as GDAL's
+/// ``osr.GetCRSInfoListFromDatabase`` describes them, from PROJ 9.8.1's database (EPSG v12.029).
+///
+/// Every listed CRS resolves: ``f"{authority}:{code}"`` is a CRS terrio's functions take. ESRI
+/// CRSs on projections terrio does not compute are left out.
+///
+/// Args:
+///     text: Words the CRSs must match, whatever their case: each in the name, or beginning the
+///         code or ``"AUTHORITY:CODE"`` (``"Albers"``, ``"3577"``, ``"EPSG:3577"``,
+///         ``"gda94 albers"``). Every CRS when ``None``.
+///     authority: An authority (``"EPSG"``, ``"ESRI"`` or ``"IAU_2015"``) or a list of them.
+///         Every authority when ``None``.
+///     kind: A kind or a list of kinds: ``"geographic_2d"``, ``"geographic_3d"``,
+///         ``"geocentric"``, ``"projected"``, ``"vertical"``, ``"compound"`` or ``"other"``.
+///         Every kind when ``None``.
+///     include_deprecated: Whether to list deprecated CRSs too.
+///
+/// Returns:
+///     list[dict]: One entry per CRS, in order of authority and code: ``authority``, ``code``
+///     (int), ``name``, ``kind``, ``deprecated``, ``area_name`` (str or None), ``bounds``
+///     (``[west, south, east, north]`` in degrees, or None), ``projection_method`` (str or None)
+///     and ``celestial_body`` (str or None).
+///
+/// Raises:
+///     InvalidArgumentError: If an authority or a kind is unknown.
+#[pyfunction]
+#[pyo3(signature = (text=None, *, authority=None, kind=None, include_deprecated=false))]
+fn list_crs<'py>(
+    py: Python<'py>,
+    text: Option<String>,
+    authority: Option<&Bound<'py, PyAny>>,
+    kind: Option<&Bound<'py, PyAny>>,
+    include_deprecated: bool,
+) -> PyResult<Bound<'py, PyAny>> {
+    // A string, or a sequence of strings.
+    let strings = |v: Option<&Bound<'py, PyAny>>| -> PyResult<Vec<String>> {
+        match v {
+            None => Ok(Vec::new()),
+            Some(v) => match v.extract::<String>() {
+                Ok(s) => Ok(vec![s]),
+                Err(_) => v.extract::<Vec<String>>(),
+            },
+        }
+    };
+    let kinds = strings(kind)?
+        .iter()
+        .map(|k| k.parse::<terrio::crs::CrsKind>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(terrio::Error::from)
+        .py()?;
+    let authorities = strings(authority)?;
+    terrio::crs::check_authorities(&authorities).map_err(terrio::Error::from).py()?;
+    let query = terrio::crs::CrsQuery { authorities, kinds, include_deprecated, text };
+    let entries = py.detach_value(|| terrio::crs::list_crs(&query))?;
+    let text = serde_json::to_string(&entries).map_err(|e| invalid(e.to_string()))?;
+    py.import("json")?.call_method1("loads", (text,))
 }
 
 /// Parses a nodata argument: `None` for the datasets' own, `"none"` to ignore them, a number, or

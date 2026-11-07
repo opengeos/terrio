@@ -313,12 +313,15 @@ pub struct VectorOpenOptions {
     pub spatial_filter: Option<(f64, f64, f64, f64)>,
     /// How to read tile archives (PMTiles, MBTiles, MVT): the zoom level, clipping.
     pub tiles: crate::tiles::TileOpenOptions,
-    /// Features to skip at the start of each layer, in file order (pyogrio's `skip_features`,
-    /// GDAL's `SetNextByIndex`). The Shapefile driver reads past them without decoding them;
+    /// Live features to skip at the start of each layer, in file order. Deleted Shapefile
+    /// slots are excluded while FIDs still identify physical slots. On files without deleted
+    /// rows this matches pyogrio's `skip_features` and GDAL's `SetNextByIndex`; their Shapefile
+    /// fast-seek paths can count physical slots when records are deleted instead.
+    /// The Shapefile driver reads deletion flags without skipped geometry/attributes;
     /// the other local drivers read every feature and keep the range.
     pub skip_features: usize,
-    /// At most this many features per layer after the skipped ones (pyogrio's
-    /// `max_features`); `None` reads to the end.
+    /// At most this many live features per layer after the skipped ones; `None` reads to the end.
+    /// Unlike pyogrio, `Some(0)` returns no features rather than treating zero as unlimited.
     pub max_features: Option<usize>,
     /// Whether to read a feature-service query's following pages (`FEATURE_SERVER_PAGING`, as in
     /// GDAL's ESRIJSON driver). By default, unless its URL gives a `resultOffset`.
@@ -2396,6 +2399,44 @@ mod content_allow_list_tests {
             assert_eq!(summary(&by_fallback), (VectorDriver::KMZ, layers), "{options:?}");
             assert_eq!(features(&by_fallback), features(&by_driver), "{options:?}");
         }
+    }
+
+    /// With `TERRIO_WBVECTOR_FALLBACK=YES`, a KMZ archive named for no driver gives the layers the
+    /// same archive named `.kmz` gives: one for each document its `doc.kml` links to, however many
+    /// links name it, and none for a link to `doc.kml` itself or to a member the archive lacks.
+    #[cfg(not(feature = "gdal"))]
+    #[test]
+    fn the_wbvector_fallback_reads_each_document_a_kmz_links_to_once() {
+        use std::io::Write as _;
+        let link = |name: &str, href: &str| format!("<NetworkLink><name>{name}</name><Link><href>{href}</href></Link></NetworkLink>");
+        let kml = |body: &str| format!(r#"<kml xmlns="http://www.opengis.net/kml/2.2"><Document>{body}</Document></kml>"#);
+        let points = |n: usize| kml(&"<Placemark><Point><coordinates>1,2</coordinates></Point></Placemark>".repeat(n));
+        let links = [
+            link("points", "layers/points.kml"),
+            link("again", "./layers/points.kml"),
+            link("self", "doc.kml"),
+            link("missing", "layers/missing.kml"),
+            link("more", "layers/more.kml"),
+            link("more again", "layers/more.kml"),
+        ];
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (member, text) in [("doc.kml", kml(&links.concat())), ("layers/points.kml", points(2)), ("layers/more.kml", points(1))] {
+            zip.start_file(member, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(text.as_bytes()).unwrap();
+        }
+        let bytes = zip.finish().unwrap().into_inner();
+        let dir = tempfile::tempdir().unwrap();
+        let (kmz, payload) = (dir.path().join("linked.kmz"), dir.path().join("linked.payload"));
+        for path in [&kmz, &payload] {
+            std::fs::write(path, &bytes).unwrap();
+        }
+        let read = |path: &Path| match with(&[("TERRIO_WBVECTOR_FALLBACK", "YES")], || open(path.to_str().unwrap())) {
+            Ok(Dataset::Vector(v)) => (v.driver, v.layers.iter().map(|l| (l.name.clone(), l.features.len())).collect::<Vec<_>>()),
+            other => panic!("{path:?} not read as a vector dataset: {other:?}"),
+        };
+        let expected = (VectorDriver::KMZ, vec![("points".to_string(), 2), ("more".to_string(), 1)]);
+        assert_eq!(read(&payload), expected);
+        assert_eq!(read(&kmz), expected);
     }
 
     /// A member of [`raw_zip`]: its name, its bytes and its general purpose flags.

@@ -2188,14 +2188,15 @@ class TerrioDataset(XRasterBase):
         nodatavals = encoded_nodatavals if use_encoded else attr_nodatavals
         nodata = nodatavals[0]
         if (
-            all(v == nodata for v in nodatavals)
-            or np.isnan(np.array(nodatavals, dtype=float)).all()
+            all(v is None for v in nodatavals)
+            or all(v == nodata for v in nodatavals)
+            or all(isinstance(v, (int, float, np.number)) and np.isnan(v) for v in nodatavals)
         ):
             data_array.terrio.write_nodata(nodata, inplace=True, encoded=use_encoded)
         else:
             raise RioXarrayError(
                 "All nodata values must be the same when exporting to raster. "
-                f"Current values: {attr_nodatavals}"
+                f"Current values: {nodatavals}"
             )
         if self.crs is not None:
             data_array.terrio.write_crs(self.crs, inplace=True)

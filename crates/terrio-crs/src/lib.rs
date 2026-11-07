@@ -71,6 +71,7 @@ use serde::Serialize;
 #[cfg(feature = "wbprojection-fallback")]
 use wbprojection as wbp;
 
+mod catalog;
 mod datum;
 mod def;
 mod epsg;
@@ -88,6 +89,7 @@ pub(crate) mod wkt1;
 mod wkt1_write;
 mod wkt2;
 
+pub use catalog::{AUTHORITIES, CrsEntry, CrsKind, CrsQuery, EPSG_VERSION, check_authorities, list_crs};
 pub(crate) use def::Def;
 pub use grid::{register_grid, reset_grid_cache, set_grid_search_paths, set_network_enabled};
 #[doc(hidden)]

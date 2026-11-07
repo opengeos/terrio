@@ -129,12 +129,12 @@ class TerrioBackendEntrypoint(BackendEntrypoint):
             raise RioXarrayError(
                 "Multiple resolution sets found. Use 'variable' or 'group' to filter."
             )
+        close = rds._close
         if isinstance(rds, xarray.DataArray):
-            dataset = rds.to_dataset()
-            dataset.set_close(rds._close)
-            rds = dataset
+            rds = rds.to_dataset()
         if drop_variables is not None:
             rds = rds.drop_vars(drop_variables)
+        rds.set_close(close)
         return rds
 
     def guess_can_open(self, filename_or_obj: Any) -> bool:

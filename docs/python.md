@@ -313,6 +313,7 @@ xs, ys = terrio.transform_points([699960], [3900000], "EPSG:32610", "EPSG:4326")
 xs, ys, hs = terrio.transform_points([-100], [40], "EPSG:4979", "EPSG:4326+5773", [100])  # EGM96
 xs, ys, hs = terrio.transform_points([135], [-25], "EPSG:7912", "EPSG:7843", [0], s_coord_epoch=2010.0)
 terrio.set_grid_search_paths(["/data/proj-grids"])  # where datum shift grids are looked up
+albers = terrio.list_crs("albers", authority="EPSG", kind="projected")  # registry CRSs, for a CRS picker
 
 data = open("dem.tif", "rb").read()
 raster = terrio.open_bytes(data, "dem.tif")  # from bytes; to bytes with raster.to_bytes("x.tif")
@@ -501,7 +502,25 @@ into an existing file and returns its changed window, or None for no overlap.
 Their keyword options follow the CLI, including compression, partial refresh,
 clipping geometry and overview updates. Local writable little-endian GeoTIFFs
 are required for in-place changes; external overview updates can fail after the
-base update commits.
+base update commits. External overviews (`external=True`) write only the `.ovr`
+sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`. Overviews are
+managed for GeoTIFFs only.
+
+`add_overviews(..., progress=callback)` calls `callback(fraction)` as the
+overviews are computed, with a fraction from 0 to 1 that never decreases (1 once
+every overview is computed, before they are written). A falsy return value other
+than `None` cancels, as with GDAL's Python callbacks, raising
+`terrio.errors.CancelledError`; an exception the callback raises cancels too and
+propagates. A cancellation changes no file: an existing `.ovr` stays as it was.
+
+```python
+def report(fraction):
+    print(f"{fraction:.0%}")
+    return not stop_requested()
+
+terrio.add_overviews("dem.tif", resampling="average", external=True,
+                     compression="DEFLATE", progress=report)
+```
 
 COG validation also accepts uploaded TIFF `bytes`. Use
 `terrio.validate_cog(data, profile="gdal", full_check=True)` for GDAL 3.13

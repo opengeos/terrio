@@ -251,6 +251,16 @@ pub(crate) trait WindowSource: Send + Sync {
     fn level_keeps_mask_flags(&self, _level: usize) -> bool {
         true
     }
+    /// The overviews (numbered from 0) that GDAL's band of an overview level (`i + 1` for
+    /// overview `i`) has of its own, which `RasterIO` chooses among again (see
+    /// [`LazyRaster::level_overviews`]): by default, none.
+    fn level_band_overviews(&self, _level: usize) -> Vec<usize> {
+        Vec::new()
+    }
+    /// A candidate overview's GDAL `RESAMPLING` item (GDAL 3.13.3), if stored.
+    fn level_resampling(&mut self, _overview: usize) -> Option<String> {
+        None
+    }
     /// The overviews of GDAL's per-dataset mask band (see [`LazyRaster::mask_band_overviews`]):
     /// by default, every overview of a source with a mask.
     fn mask_band_overviews(&self) -> Vec<(usize, usize)> {
@@ -318,6 +328,8 @@ struct SharedRaster {
     /// keeps the mask flags of full resolution without one.
     own_masks: Vec<bool>,
     keeps_mask_flags: Vec<bool>,
+    /// Per overview, the overviews of the shared reader's band of it.
+    level_overviews: Vec<Vec<usize>>,
     mask_overviews: Vec<(usize, usize)>,
     mask_bits: Option<u16>,
 }
@@ -356,6 +368,12 @@ impl WindowSource for SharedRaster {
     }
     fn level_keeps_mask_flags(&self, level: usize) -> bool {
         level.checked_sub(1).is_none_or(|i| self.keeps_mask_flags.get(i).copied().unwrap_or(true))
+    }
+    fn level_band_overviews(&self, level: usize) -> Vec<usize> {
+        level.checked_sub(1).and_then(|i| self.level_overviews.get(i).cloned()).unwrap_or_default()
+    }
+    fn level_resampling(&mut self, overview: usize) -> Option<String> {
+        self.lock().ok()?.level_resampling(overview)
     }
     fn mask_band_overviews(&self) -> Vec<(usize, usize)> {
         self.mask_overviews.clone()
@@ -431,6 +449,7 @@ impl LazyRaster {
         let mask = self.has_mask();
         let own_masks = (0..overviews.len()).map(|i| self.level_has_own_mask(i)).collect();
         let keeps_mask_flags = (0..overviews.len()).map(|i| self.level_keeps_mask_flags(i)).collect();
+        let level_overviews = (0..overviews.len()).map(|i| self.level_overviews(Some(i))).collect();
         let mask_overviews = self.mask_band_overviews();
         let mask_bits = self.mask_band_bits();
         let referenced = self.geotransform_present();
@@ -445,6 +464,7 @@ impl LazyRaster {
             mask,
             own_masks,
             keeps_mask_flags,
+            level_overviews,
             mask_overviews,
             mask_bits,
         };
@@ -1069,6 +1089,15 @@ impl LazyRaster {
         Ok(ds)
     }
 
+    /// Whether [`LazyRaster::write`] can stream `self` to a tile archive (`PMTiles` or `MBTiles`)
+    /// at `path` without reading the whole raster into memory first.
+    pub fn can_stream_tile_archive(&self, path: &str, options: &crate::RasterWriteOptions) -> bool {
+        let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
+        self.dataset().is_none()
+            && matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles))
+            && self.input_paths().is_ok_and(|inputs| !crate::ops::strips::overwrites(path, &inputs))
+    }
+
     /// Writes the full-resolution image to `path`, as [`crate::write_raster_dataset`] writes the
     /// raster [`LazyRaster::read`] reads. A GeoTIFF or JPEG 2000 file read in place, or a VRT of
     /// such files copied or picked by nearest neighbour, written as a GeoTIFF or a COG (in a
@@ -1218,7 +1247,7 @@ impl LazyRaster {
 
     /// The nodata values of some bands (numbered from 1) at full resolution or of an overview,
     /// whose own tags a GeoTIFF's overview may carry.
-    pub(crate) fn level_band_nodata(&self, bands: &[usize], overview: Option<usize>) -> Vec<Option<f64>> {
+    pub fn level_band_nodata(&self, bands: &[usize], overview: Option<usize>) -> Vec<Option<f64>> {
         if let Inner::Tiff(t) = &self.inner {
             let tags = t.tags_at_level(overview.map_or(0, |i| i + 1));
             bands.iter().map(|b| tags.band_nodata.iter().find(|(i, _)| i == b).map(|(_, v)| *v).or(tags.nodata)).collect()
@@ -1450,7 +1479,7 @@ impl LazyRaster {
     /// `None`, all valid, as is the full-resolution image without a mask. Unlike
     /// [`LazyRaster::read_mask`], an overview without a mask of its own does not sample the
     /// full-resolution mask.
-    pub(crate) fn read_level_mask(&mut self, window: Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+    pub fn read_level_mask(&mut self, window: Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
         let Some(i) = overview else { return self.read_mask(window, None) };
         let (lw, lh) = self.level_size(overview)?;
         window.check(lw, lh)?;
@@ -1472,7 +1501,7 @@ impl LazyRaster {
 
     /// Whether overview `overview` has a per-dataset mask of its own, which
     /// [`LazyRaster::read_level_mask`] reads, rather than none.
-    pub(crate) fn level_has_own_mask(&self, overview: usize) -> bool {
+    pub fn level_has_own_mask(&self, overview: usize) -> bool {
         let Some(&size) = self.overviews().get(overview) else { return false };
         if let Inner::Tiff(t) = &self.inner
             && let Some(i) = t.levels[overview + 1].external
@@ -1501,6 +1530,25 @@ impl LazyRaster {
             Inner::Tiff(t) => !t.levels.get(overview + 1).is_some_and(|l| l.external.is_some()),
             Inner::Source(_, s) => s.level_keeps_mask_flags(overview + 1),
             Inner::Memory(_) => true,
+        }
+    }
+
+    /// The overviews (numbered as [`LazyRaster::overviews`]) of GDAL's band of a level, which
+    /// `RasterIO` chooses among when it reads that band into a smaller buffer: every overview for
+    /// full resolution. The first level of an external `.ovr` is that file's image, whose band
+    /// has the file's other images as overviews, in their order there (GDAL's
+    /// `GDALDefaultOverviews::GetOverview` in GDAL 3.13.3); other overviews have none.
+    pub(crate) fn level_overviews(&self, overview: Option<usize>) -> Vec<usize> {
+        let Some(i) = overview else { return (0..self.overviews().len()).collect() };
+        match &self.inner {
+            Inner::Tiff(t) if t.levels.get(i + 1).is_some_and(|l| l.external == Some(0)) => {
+                let mut own: Vec<(usize, usize)> =
+                    t.levels[1..].iter().enumerate().filter_map(|(j, l)| l.external.filter(|&k| k > 0).map(|_| (l.ifd, j))).collect();
+                own.sort_unstable();
+                own.into_iter().map(|(_, j)| j).collect()
+            }
+            Inner::Source(_, s) => s.level_band_overviews(i + 1),
+            Inner::Tiff(_) | Inner::Memory(_) => Vec::new(),
         }
     }
 
@@ -1554,27 +1602,39 @@ impl LazyRaster {
     /// The first overview's `RESAMPLING` item, which GDAL writes with the overviews it builds
     /// (`GTIFFBuildOverviewMetadata`), if any.
     pub fn overview_resampling(&mut self) -> Option<String> {
+        self.level_resampling(0)
+    }
+
+    /// A candidate overview's `RESAMPLING`, used by GDAL 3.13.3's best-overview selection.
+    pub(crate) fn level_resampling(&mut self, overview: usize) -> Option<String> {
+        if let Inner::Source(_, source) = &mut self.inner {
+            return source.level_resampling(overview);
+        }
         let Inner::Tiff(t) = &mut self.inner else { return None };
-        let (external, ifd) = t.levels.get(1).map(|l| (l.external, l.ifd))?;
-        // The first overview of an external `.ovr` is that file's image, with its own metadata.
-        let t = match (external, t.ovr.as_mut()) {
-            (Some(i), Some(ovr)) => {
-                let ifd = ovr.levels.get(i)?.ifd;
-                ovr.decoder.seek_to_image(ifd).ok()?;
-                ovr.current_ifd = ifd;
-                ovr
-            }
-            _ => {
-                t.decoder.seek_to_image(ifd).ok()?;
-                t.current_ifd = ifd;
-                t
-            }
-        };
-        let xml = t.decoder.get_tag_ascii_string(Tag::Unknown(42112)).ok()?;
-        crate::drivers::gtiff_write::parse_gdal_band_metadata(&xml)
-            .into_iter()
-            .find(|(b, k, _)| *b == 0 && k == "RESAMPLING")
-            .map(|(_, _, v)| v)
+        let level = t.levels.get(overview + 1)?;
+        if let Some(value) = &level.resampling {
+            return value.clone();
+        }
+        let (external, ifd) = (level.external, level.ifd);
+        let value = (|| {
+            // An external overview uses its own TIFF dataset's metadata.
+            let t = match (external, t.ovr.as_mut()) {
+                (Some(i), Some(ovr)) => {
+                    let ifd = ovr.levels.get(i)?.ifd;
+                    ovr.decoder.seek_to_image(ifd).ok()?;
+                    ovr.current_ifd = ifd;
+                    ovr
+                }
+                _ => {
+                    t.decoder.seek_to_image(ifd).ok()?;
+                    t.current_ifd = ifd;
+                    &mut *t
+                }
+            };
+            overview_resampling_metadata(&mut t.decoder).ok()
+        })()?;
+        t.levels[overview + 1].resampling = Some(value.clone());
+        value
     }
 
     /// A raster read by window by `source`, described by `header` (a dataset without pixels).
@@ -1802,6 +1862,17 @@ impl Seek for Source {
     }
 }
 
+/// A definitive metadata answer, distinguishing an absent tag from an I/O/decoding error.
+fn overview_resampling_metadata<R: Read + Seek>(decoder: &mut Decoder<R>) -> tiff::TiffResult<Option<String>> {
+    let xml = decoder.find_tag(Tag::Unknown(42112))?.map(|value| value.into_string()).transpose()?;
+    Ok(xml.and_then(|xml| {
+        crate::drivers::gtiff_write::parse_gdal_band_metadata(&xml)
+            .into_iter()
+            .find(|(band, key, _)| *band == 0 && key == "RESAMPLING")
+            .map(|(_, _, value)| value)
+    }))
+}
+
 /// One image of a TIFF: the full-resolution image or an overview.
 struct Level {
     /// The image's index in the file.
@@ -1818,6 +1889,8 @@ struct Level {
     /// How the image's chunks are decoded, settled by the level's first window read that gets to
     /// decoding: `Some(None)` when the `tiff` crate decodes them itself.
     codec: Option<Option<crate::tiff_codecs::ChunkCodec>>,
+    /// Cached GDAL RESAMPLING metadata, including absence, for repeated selection.
+    resampling: Option<Option<String>>,
 }
 
 struct TiffRaster {
@@ -1894,7 +1967,7 @@ impl TiffRaster {
         let tags = read_geo_tags_from(&mut source).ok_or_else(|| Error::InvalidData("not a TIFF file".into()))?;
         // A directory libtiff cannot read is refused here, before any pixel is decoded.
         tags.check_structure()?;
-        let masks = crate::tiff_mask::find_masks(&mut source);
+        let masks = crate::tiff_mask::find_masks(&mut source)?;
         let len = source.seek(SeekFrom::End(0))?;
         source.seek(SeekFrom::Start(0))?;
         let tiff_err = limits.error();
@@ -1917,6 +1990,7 @@ impl TiffRaster {
             external: None,
             tables: None,
             codec: None,
+            resampling: None,
         }];
         let mut ifd = 1;
         while dec.more_images() && ifd < MAX_IMAGES {
@@ -1930,7 +2004,16 @@ impl TiffRaster {
                     let (ow, oh) = dec.dimensions().map_err(tiff_err)?;
                     let (cw, ch) = dec.chunk_dimensions();
                     let block = (cw as usize, ch as usize);
-                    levels.push(Level { ifd, width: ow as usize, height: oh as usize, block, external: None, tables: None, codec: None });
+                    levels.push(Level {
+                        ifd,
+                        width: ow as usize,
+                        height: oh as usize,
+                        block,
+                        external: None,
+                        tables: None,
+                        codec: None,
+                        resampling: None,
+                    });
                 }
             }
             ifd += 1;
@@ -1993,6 +2076,7 @@ impl TiffRaster {
                 external: Some(i),
                 tables: None,
                 codec: None,
+                resampling: None,
             });
         }
         self.levels[1..].sort_by_key(|l| std::cmp::Reverse((l.width, l.height)));
@@ -2359,6 +2443,51 @@ pub(crate) fn sample_type<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<(DataT
 
 #[cfg(test)]
 mod tests {
+    /// A transient metadata read must remain retryable, rather than become cached absence.
+    #[test]
+    fn overview_metadata_read_error_can_be_retried() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        struct Reader {
+            inner: std::io::Cursor<Vec<u8>>,
+            fail: Arc<AtomicBool>,
+        }
+        impl std::io::Read for Reader {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                if self.fail.swap(false, Ordering::Relaxed) {
+                    return Err(std::io::Error::other("temporary read failure"));
+                }
+                self.inner.read(bytes)
+            }
+        }
+        impl std::io::Seek for Reader {
+            fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+                self.inner.seek(position)
+            }
+        }
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        {
+            let mut encoder = tiff::encoder::TiffEncoder::new(&mut bytes).unwrap();
+            let mut image = encoder.new_image::<tiff::encoder::colortype::Gray8>(1, 1).unwrap();
+            image
+                .encoder()
+                .write_tag(
+                    tiff::tags::Tag::Unknown(42112),
+                    "<GDALMetadata><Item name=\"RESAMPLING\" sample=\"0\">AVERAGE_BIT2GRAYSCALE</Item></GDALMetadata>",
+                )
+                .unwrap();
+            image.write_data(&[0u8]).unwrap();
+        }
+        let fail = Arc::new(AtomicBool::new(false));
+        let mut decoder =
+            tiff::decoder::Decoder::new(Reader { inner: std::io::Cursor::new(bytes.into_inner()), fail: fail.clone() }).unwrap();
+        fail.store(true, Ordering::Relaxed);
+        assert!(super::overview_resampling_metadata(&mut decoder).is_err());
+        assert_eq!(super::overview_resampling_metadata(&mut decoder).unwrap().as_deref(), Some("AVERAGE_BIT2GRAYSCALE"));
+    }
+
     #[test]
     fn window_allocation_capacity_overflow_returns_an_error() {
         let error = super::try_new_filled(crate::DataType::F64, usize::MAX, 0.0).unwrap_err();

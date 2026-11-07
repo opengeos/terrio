@@ -372,6 +372,11 @@ class _OverviewRaster:
             raise RasterioIOError(f"Cannot open overview level {level} of {name}")
         return cls(raster, n)
 
+    @property
+    def has_mask(self) -> bool:
+        """Whether the selected overview has its own native per-dataset mask."""
+        return bool(self._base._overview_has_mask(self._level))
+
     def _ovr(self, overview: int | None) -> int:
         return self._level if overview is None else self._level + 1 + overview
 
@@ -1370,7 +1375,9 @@ class DatasetReader(DatasetBase):
         # A per-dataset mask, internal or in a `.msk` sidecar (read by the raster, when the file
         # has no internal one).
         structure.mask_in_sidecar = bool(raster.has_mask) and not structure.has_mask
-        structure.has_mask = structure.has_mask or bool(raster.has_mask)
+        # Native discovery is authoritative for full-resolution TIFFs too: inferred tags
+        # must not advertise a mask the native reader cannot actually read.
+        structure.has_mask = bool(raster.has_mask)
         # Bands a PAM sidecar doesn't list keep the file's own nodata, not band 1's PAM value.
         file_nodata = self._nodata
         if structure.nodata_override is not None:

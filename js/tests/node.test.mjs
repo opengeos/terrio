@@ -359,6 +359,31 @@ test("PMTiles and MBTiles: rasters by window, vector tiles as layers", () => {
   }
 });
 
+test("listCrs lists the registry CRSs", () => {
+  for (const text of ["Albers", "3577", "EPSG:3577", "gda94 albers"]) {
+    assert.ok(terrio.listCrs(text).some((e) => e.authority === "EPSG" && e.code === 3577), text);
+  }
+  const [albers] = terrio.listCrs("EPSG:3577");
+  assert.equal(albers.name, "GDA94 / Australian Albers");
+  assert.equal(albers.kind, "projected");
+  assert.equal(albers.deprecated, false);
+  assert.deepEqual(albers.bounds, [112.85, -43.7, 153.69, -9.86]);
+  assert.equal(albers.projection_method, "Albers Equal Area");
+  assert.match(albers.area_name, /^Australia - Australian Capital Territory/);
+  const geographic = terrio.listCrs(undefined, { authority: "EPSG", kind: ["geographic_2d"] });
+  assert.ok(geographic.length > 600 && geographic.every((e) => e.kind === "geographic_2d" && !e.deprecated));
+  assert.deepEqual(terrio.listCrs("EPSG:3785"), []);
+  assert.equal(terrio.listCrs("EPSG:3785", { includeDeprecated: true })[0].deprecated, true);
+  const both = terrio.listCrs("albers", { authority: ["epsg", "ESRI"] });
+  assert.deepEqual([...new Set(both.map((e) => e.authority))].sort(), ["EPSG", "ESRI"]);
+  assert.ok(terrio.listCrs(undefined, { authority: "IAU_2015" }).every((e) => e.authority === "IAU_2015"));
+  assert.throws(() => terrio.listCrs(undefined, { authority: "OGC" }), /unknown CRS authority/);
+  assert.throws(() => terrio.listCrs(undefined, { kind: "geographic" }), /unknown CRS kind/);
+  assert.throws(() => terrio.listCrs(undefined, { authorty: "EPSG" }), /unknown field/);
+  assert.throws(() => terrio.listCrs(undefined, { includeDeprecated: "yes" }), /invalid type/);
+  assert.equal(terrio.describeCrs(`${albers.authority}:${albers.code}`).epsg, 3577);
+});
+
 test("CRS transforms", () => {
   const [xs, ys] = terrio.transformPoints([0, 180], [0, 0], "EPSG:4326", "EPSG:3857");
   assert.ok(xs instanceof Float64Array);
@@ -4027,4 +4052,16 @@ test("ZonalReducer and ZonalStream reject bad input", () => {
   }
   // The zones have a CRS and the grid has none.
   assert.throws(() => new terrio.ZonalReducer(a, 300, 200, transform, undefined), /both declare a CRS/);
+});
+
+
+test("vsi: listUrl refuses invalid depth before fetching", async () => {
+  for (const depth of ["2", Infinity, NaN, -1, 0.5]) {
+    let fetched = false;
+    await assert.rejects(terrio.listUrl("s3://bucket/dir", {
+      depth,
+      fetch: async () => { fetched = true; throw new Error("unexpected fetch"); },
+    }), /depth must be a non-negative integer/);
+    assert.equal(fetched, false);
+  }
 });

@@ -1,7 +1,7 @@
 """Type stubs for the `terrio._terrio` extension module."""
 
 import os
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Any, Literal, Protocol, TypeAlias, TypedDict, final, overload
 
 import numpy as np
@@ -64,6 +64,7 @@ __all__ = [
     "transform_points",
     "set_grid_search_paths",
     "set_network_enabled",
+    "list_crs",
     "translate",
     "warp",
     "mosaic",
@@ -350,6 +351,11 @@ class Raster:
         cols: Sequence[int],
         rows: Sequence[int],
         overview: int | None = None,
+    ) -> NDArray[Any] | None: ...
+    def _overview_has_mask(self, overview: int) -> bool: ...
+    def _overview_nodata(self, overview: int) -> list[float | None]: ...
+    def _read_level_mask(
+        self, window: _Window, overview: int | None = None
     ) -> NDArray[Any] | None: ...
     def read_mask(
         self, window: _Window | None = None, overview: int | None = None
@@ -1096,6 +1102,27 @@ def clear_block_cache() -> None: ...
 def config_options() -> dict[str, str | None]: ...
 def set_grid_search_paths(paths: Sequence[str | os.PathLike[str]] | None) -> None: ...
 def set_network_enabled(enabled: bool | None) -> None: ...
+
+class _CrsEntry(TypedDict):
+    authority: Literal["EPSG", "ESRI", "IAU_2015"]
+    code: int
+    name: str
+    kind: Literal[
+        "geographic_2d", "geographic_3d", "geocentric", "projected", "vertical", "compound", "other"
+    ]
+    deprecated: bool
+    area_name: str | None
+    bounds: list[float] | None
+    projection_method: str | None
+    celestial_body: str | None
+
+def list_crs(
+    text: str | None = None,
+    *,
+    authority: str | Sequence[str] | None = None,
+    kind: str | Sequence[str] | None = None,
+    include_deprecated: bool = False,
+) -> list[_CrsEntry]: ...
 def translate(
     src: _RasterSource,
     dst: str | None = None,
@@ -2073,6 +2100,7 @@ def add_overviews(
     external: bool = False,
     compression: str | None = None,
     ignore_cog_layout_break: bool = False,
+    progress: Callable[[float], object] | None = None,
 ) -> list[tuple[int, int]]: ...
 def delete_overviews(
     path: str,

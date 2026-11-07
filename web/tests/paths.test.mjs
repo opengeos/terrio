@@ -70,4 +70,35 @@ test("the page's form code is the same as terrio ui's", () => {
   const ui = definitions(readFileSync(new URL("../../crates/terrio-cli/src/ui.html", import.meta.url), "utf8"), names);
   const web = definitions(readFileSync(new URL("../index.html", import.meta.url), "utf8"), names);
   for (const name of names) assert.equal(web[name], ui[name], `${name} differs from ui.html`);
+
+  const runCommandLine = new Function(
+    `${web.isFlag}\n${web.flagName}\n${web.layout}\n${web.occurrences}\n${web.commandLine}\nreturn commandLine;`,
+  )();
+  const cmd = { path: ["terrio", "raster", "translate"] };
+  const posArg = { position: 0, num_args: { min: 1, max: 1 }, action: "set", allow_hyphen_values: false };
+  const fixedOpt = { long: "of", num_args: { min: 1, max: 1 }, action: "set" };
+  const variadicOpt = { long: "scale", num_args: { min: 2, max: 4 }, action: "append" };
+
+  assert.deepEqual(
+    runCommandLine(cmd, [
+      { arg: variadicOpt, read: () => "0 255" },
+      { arg: posArg, read: () => "in.tif" },
+    ]),
+    ["translate", "--scale", "0", "255", "--", "in.tif"],
+  );
+  assert.deepEqual(
+    runCommandLine(cmd, [
+      { arg: variadicOpt, read: () => "0 255" },
+      { arg: fixedOpt, read: () => "GTiff" },
+      { arg: posArg, read: () => "in.tif" },
+    ]),
+    ["translate", "--scale", "0", "255", "--of=GTiff", "in.tif"],
+  );
+  assert.deepEqual(
+    runCommandLine(cmd, [
+      { arg: fixedOpt, read: () => "GTiff" },
+      { arg: posArg, read: () => "in.tif" },
+    ]),
+    ["translate", "--of=GTiff", "in.tif"],
+  );
 });

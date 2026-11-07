@@ -140,12 +140,12 @@ pub fn sieve(ds: &RasterDataset, o: &SieveOptions) -> Result<RasterDataset> {
     let valid: Vec<bool> = match &o.mask {
         SieveMask::None => vec![true; w * h],
         SieveMask::Raster(m) => {
-            if (m.raster.cols, m.raster.rows) != (w, h) {
+            if (m.raster.cols, m.raster.rows) != (w, h) || m.raster.bands == 0 {
                 return Err(Error::InvalidArgument("the mask's size differs from the raster's".into()));
             }
             super::proximity::read_ints(m, 1, DataType::U8).into_iter().map(|v| v != 0.0).collect()
         }
-        SieveMask::Default => match ds.nodata() {
+        SieveMask::Default => match ds.band_nodata(o.band) {
             None => vec![true; w * h],
             Some(nd) => nodata_mask(&raw, nd, r.data_type),
         },
@@ -234,7 +234,7 @@ pub fn sieve(ds: &RasterDataset, o: &SieveOptions) -> Result<RasterDataset> {
             if id != u32::MAX && big[id as usize] != -1 { value_of[big[id as usize] as usize] as f64 } else { values[p] as f64 }
         })
         .collect();
-    build_raster(Grid::of(r), vec![out], r.data_type, ds.nodata(), &ds.crs(), super::convert_value)
+    build_raster(Grid::of(r), vec![out], r.data_type, ds.band_nodata(o.band), &ds.crs(), super::convert_value)
 }
 
 /// GDAL's nodata mask: pixels equal to the nodata value (NaN matching NaN; floats compared with

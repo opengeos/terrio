@@ -6,6 +6,8 @@
 The estimator deliberately differs from GDAL's unscaled overview sum. Its reference is
 GDAL's sum multiplied by the exact source/overview pixel-area ratio, only at valid pixels.
 NONE uses GDAL's full-resolution result directly. Includes a real USGS DEM crop.
+Each fixture has one overview and a coarse target, so AUTO checks level-0 selection;
+it does not exercise selection among multiple levels.
 """
 
 import argparse
@@ -54,7 +56,7 @@ def fixtures(root, data):
     ds = gdal.Translate(str(path), str(Path(data) / "usgs_dem.tif"), srcWin=[100, 100, 64, 64], outputType=gdal.GDT_Float64)
     ds.BuildOverviews("AVERAGE", [2])
     gt = ds.GetGeoTransform()
-    extent = (gt[0], gt[3] + 64*gt[5], gt[0] + 64*gt[1], gt[3])
+    extent = (gt[0], gt[3] + 64 * gt[5], gt[0] + 64 * gt[1], gt[3])
     ds = None
     yield "USGS", path, extent, (16, 16), 1e-4
 

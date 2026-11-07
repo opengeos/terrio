@@ -419,6 +419,63 @@ pub fn zonal_stats(zones: &Layer, sources: &mut [ZonalSource], options: &ZonalOp
     super::sample::finish_output(out, zones.schema.len(), options.dst_srs.as_ref(), options.decimal_places)
 }
 
+/// Computes [`zonal_stats`] while restoring logical band order after a caller groups sources.
+///
+/// `positions[k]` is the destination band slot of flattened source-band `k`. It must be a
+/// permutation of `0..total_bands`; validation precedes raster I/O. Zone fields, feature IDs,
+/// geometries and statistic order are preserved. Collision suffixes are assigned in source
+/// order before the appended statistic blocks are reordered.
+pub fn zonal_stats_with_band_order(
+    zones: &Layer,
+    sources: &mut [ZonalSource],
+    options: &ZonalOptions,
+    positions: &[usize],
+) -> Result<Layer> {
+    let bands: usize = sources.iter().map(|source| source.bands.len()).sum();
+    let invalid = || Error::InvalidArgument(format!("zonal band order must be a permutation of 0..{bands}"));
+    if positions.len() != bands {
+        return Err(invalid());
+    }
+    let mut seen = crate::dataset::fallible::filled(bands, false, "zonal band order")?;
+    for &position in positions {
+        if position >= bands || std::mem::replace(&mut seen[position], true) {
+            return Err(invalid());
+        }
+    }
+    if positions.iter().copied().eq(0..bands) {
+        return zonal_stats(zones, sources, options);
+    }
+    let stats = options.stats.len();
+    let columns = bands.checked_mul(stats).ok_or_else(|| Error::ResourceLimit("zonal band order overflows".into()))?;
+    let mut destination = crate::dataset::fallible::filled(columns, 0usize, "zonal column order")?;
+    let mut original = destination.clone();
+    for (band, &position) in positions.iter().enumerate() {
+        for stat in 0..stats {
+            destination[band * stats + stat] = position * stats + stat;
+            original[position * stats + stat] = band * stats + stat;
+        }
+    }
+    let mut out = zonal_stats(zones, sources, options)?;
+    let base = zones.schema.len();
+    let old_fields = out.schema.fields().to_vec();
+    out.schema = zones.schema.clone();
+    for &source in &original {
+        out.schema.add_field(old_fields[base + source].clone());
+    }
+    let mut working = destination.clone();
+    for feature in &mut out.features {
+        working.copy_from_slice(&destination);
+        for i in 0..columns {
+            while working[i] != i {
+                let j = working[i];
+                feature.attributes.swap(base + i, base + j);
+                working.swap(i, j);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Statistics of one band of one source for every zone feature: `values[s][f]` is statistic `s`
 /// (in [`ZonalOptions::stats`] order) of feature `f` (in layer order).
 #[derive(Debug, Clone, PartialEq)]
@@ -925,6 +982,65 @@ mod tests {
         let alone = zonal_stats(&zones, &mut [source(&[1]), source(&[2]), source(&[3])], &options).unwrap();
         assert_eq!(together.features[0].attributes, alone.features[0].attributes);
         assert_eq!(together.features[0].attributes.len(), 9);
+    }
+
+    #[test]
+    fn grouped_bands_keep_requested_column_and_value_order() {
+        use crate::{FieldDef, FieldType, FieldValue};
+        let raster = |value| {
+            let cfg = RasterConfig { cols: 1, rows: 1, bands: 1, data_type: DataType::F64, ..Default::default() };
+            let mut ds = RasterDataset::new(Raster::from_data(cfg, vec![value]).unwrap(), false);
+            ds.set_geo_transform([0., 1., 0., 1., 0., -1.]);
+            LazyRaster::from(ds)
+        };
+        let mut zones = Layer::new("zones");
+        zones.add_field(FieldDef::new("zone", FieldType::Text));
+        zones.features.push(Feature {
+            fid: 77,
+            geometry: Some(Geometry::polygon(
+                vec![Coord::xy(0., 0.), Coord::xy(1., 0.), Coord::xy(1., 1.), Coord::xy(0., 1.), Coord::xy(0., 0.)],
+                vec![],
+            )),
+            attributes: vec![FieldValue::Text("named".into())],
+        });
+        let mut sources = [
+            ZonalSource { raster: raster(2.).into(), bands: vec![ZonalBand::new(1, "a"), ZonalBand::new(1, "c")] },
+            ZonalSource { raster: raster(200.).into(), bands: vec![ZonalBand::new(1, "b")] },
+        ];
+        let options = ZonalOptions { stats: vec![Statistic::Mean, Statistic::Count], ..Default::default() };
+        let out = super::zonal_stats_with_band_order(&zones, &mut sources, &options, &[0, 2, 1]).unwrap();
+        assert_eq!(
+            out.schema.fields().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            ["zone", "a_mean", "a_count", "b_mean", "b_count", "c_mean", "c_count"]
+        );
+        assert_eq!(
+            out.features[0].attributes,
+            [
+                FieldValue::Text("named".into()),
+                FieldValue::Float(2.),
+                FieldValue::Integer(1),
+                FieldValue::Float(200.),
+                FieldValue::Integer(1),
+                FieldValue::Float(2.),
+                FieldValue::Integer(1)
+            ]
+        );
+        assert_eq!(out.features[0].fid, 77);
+        assert_eq!(out.features[0].geometry, zones.features[0].geometry);
+        let cycled = super::zonal_stats_with_band_order(&zones, &mut sources, &options, &[2, 0, 1]).unwrap();
+        assert_eq!(
+            cycled.schema.fields().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            ["zone", "c_mean", "c_count", "b_mean", "b_count", "a_mean", "a_count"]
+        );
+        assert_eq!(cycled.features[0].attributes, out.features[0].attributes);
+        let mut unread = [ZonalSource {
+            raster: super::ZonalRaster::Path("missing.tif".into()),
+            bands: vec![ZonalBand::new(1, "a"), ZonalBand::new(1, "b"), ZonalBand::new(1, "c")],
+        }];
+        for order in [vec![0], vec![0, 0, 1], vec![0, 1, 3]] {
+            let error = super::zonal_stats_with_band_order(&zones, &mut unread, &options, &order).unwrap_err();
+            assert!(error.to_string().contains("zonal band order"), "{error}");
+        }
     }
 
     #[test]

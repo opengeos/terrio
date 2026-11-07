@@ -605,6 +605,9 @@ pub fn nearblack_in_place(ds: &mut RasterDataset, o: &NearblackOptions) -> Resul
         src_bands = src_bands.saturating_sub(1);
         dst_bands -= 1;
     }
+    if dst_bands == 0 {
+        return Err(Error::InvalidArgument("the output would have no band".into()));
+    }
     let colors = colors(o, src_bands)?;
     let (w, h) = (ds.raster.cols, ds.raster.rows);
     let mut data = vec![0u8; w * h * dst_bands];

@@ -179,15 +179,19 @@ impl<'a> Styles<'a> {
     /// Adds the document's styles to the dataset's style table. An id another document of the
     /// archive already defines differently keeps that definition in the table; the placemarks of
     /// this document that use it get the style itself.
-    pub fn add_to(&mut self, table: &mut Vec<(String, String)>) {
-        // Rebuilt per document: an archive has at most a few hundred of those that matter.
-        let known: HashMap<String, String> = table.iter().cloned().collect();
+    ///
+    /// `known` is the same map across every document of a KMZ: insert each new id when it is
+    /// pushed to `table`, so this stays proportional to the document's own styles rather than
+    /// rebuilding the map from the whole table on every call (#631).
+    pub fn add_to(&mut self, table: &mut Vec<(String, String)>, known: &mut HashMap<String, String>) {
+        debug_assert_eq!(known.len(), table.len(), "known must hold the ids in the style table");
         for (id, style) in self.table() {
             if let Some(definition) = known.get(&id) {
                 if *definition != style {
                     self.shadowed.insert(id);
                 }
             } else {
+                known.insert(id.clone(), style.clone());
                 table.push((id, style));
             }
         }
@@ -635,6 +639,59 @@ mod tests {
         .unwrap();
         let members = MemberIndex::new();
         assert!(Styles::new(&doc, "", &members).table().is_empty());
+    }
+
+    #[test]
+    fn add_to_keeps_first_definition_across_documents() {
+        let members = MemberIndex::new();
+        let mut table = Vec::new();
+        let mut known = HashMap::new();
+
+        let first = xml::parse(
+            r##"<kml><Document>
+            <Style id="a"><LineStyle><color>ff0000ff</color><width>1</width></LineStyle></Style>
+            <Style id="b"><LineStyle><color>ff00ff00</color><width>2</width></LineStyle></Style>
+            </Document></kml>"##,
+        )
+        .unwrap();
+        Styles::new(&first, "", &members).add_to(&mut table, &mut known);
+        assert_eq!(table.len(), 2);
+        assert_eq!(known.len(), 2);
+
+        // Same ids, same definitions: table unchanged, no shadow.
+        let again = xml::parse(
+            r##"<kml><Document>
+            <Style id="a"><LineStyle><color>ff0000ff</color><width>1</width></LineStyle></Style>
+            </Document></kml>"##,
+        )
+        .unwrap();
+        let mut styles = Styles::new(&again, "", &members);
+        styles.add_to(&mut table, &mut known);
+        assert_eq!(table.len(), 2);
+        assert!(styles.shadowed.is_empty());
+
+        // Same id, different definition: first wins in the table; id is shadowed.
+        let shadow = xml::parse(
+            r##"<kml><Document>
+            <Style id="a"><LineStyle><color>ff0000ff</color><width>9</width></LineStyle></Style>
+            <Style id="c"><LineStyle><color>ffff0000</color><width>3</width></LineStyle></Style>
+            </Document></kml>"##,
+        )
+        .unwrap();
+        let mut styles = Styles::new(&shadow, "", &members);
+        styles.add_to(&mut table, &mut known);
+        assert_eq!(table.len(), 3);
+        assert_eq!(known.len(), 3);
+        assert!(styles.shadowed.contains("a"));
+        assert!(!styles.shadowed.contains("c"));
+        // First definition kept.
+        assert!(table.iter().any(|(id, s)| id == "a" && s.contains("w:1.000000px")));
+        assert!(table.iter().any(|(id, _)| id == "c"));
+
+        let mut original = Styles::new(&first, "", &members);
+        original.add_to(&mut table, &mut known);
+        assert_eq!(table.len(), 3);
+        assert!(original.shadowed.is_empty());
     }
 
     #[test]

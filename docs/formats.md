@@ -925,8 +925,11 @@ reads it.
 - **KMZ archives are read within limits**, whether opened from a file or from memory: the zip
   archive limits of `/vsizip/` (`TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO`,
   `TERRIO_ZIP_MAX_SIZE`), and 512 MiB of decompressed text for the main document and the layer
-  documents it links to together. Set `TERRIO_KMZ_MAX_SIZE` to a byte count to change that
-  budget; reading a KML document takes at least twice its size in memory, so in WebAssembly, whose
+  documents it links to together. Repeated links to a document read it once and emit its layers once.
+  Existing document and folder names are preserved; the first link supplies the default name
+  for an unnamed root, or the member stem when that link is unnamed. Set `TERRIO_KMZ_MAX_SIZE`
+  to a byte count to change that budget;
+  reading a KML document takes at least twice its size in memory, so in WebAssembly, whose
   memory is at most 4 GiB, a lower budget leaves room for the parsed layers. An archive past
   a limit is refused with a resource-limit error, which is not retried with GDAL. Zip archives
   opened from memory (Python and JavaScript byte reads) read their members within the same
