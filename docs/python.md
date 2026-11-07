@@ -39,6 +39,7 @@ thumb = cog.read(overview=2)
 # reads it: from the overview it chooses, so only that overview's tiles are fetched.
 small = cog.read_resampled((512, 512), resampling="average")  # size is (width, height)
 masks = cog.read_resampled_masks((512, 512), resampling="average")  # 0 invalid, 255 valid
+pixels, valid = cog.read_resampled_with_masks((512, 512), resampling="average")  # both at once
 part = cog.read_resampled((256, 256), band=1, window=(100.5, 200.25, 4096, 4096), overview="AUTO-1")
 # PMTiles and MBTiles raster tiles too: zoom levels are overviews (PMTiles read in place).
 tiles = terrio.open_raster("https://example.com/tiles.pmtiles", lazy=True)

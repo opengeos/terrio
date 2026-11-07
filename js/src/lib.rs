@@ -242,6 +242,14 @@ fn typed_array(data: RasterData) -> JsValue {
     }
 }
 
+/// `{ data, masks }`: pixels as a typed array of their type, masks as a `Uint8Array`.
+pub(crate) fn data_and_masks(data: RasterData, masks: &[u8]) -> JsValue {
+    let out = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&out, &"data".into(), &typed_array(data));
+    let _ = js_sys::Reflect::set(&out, &"masks".into(), &js_sys::Uint8Array::from(masks));
+    out.into()
+}
+
 /// Pixels from a typed array.
 pub(crate) fn raster_data(array: &JsValue) -> Result<RasterData, JsError> {
     macro_rules! try_types {
@@ -772,12 +780,23 @@ impl Dataset {
 
     /// Reads the mask bands of the bands `readResampled` reads, with the same options, as GDAL's
     /// `GetMaskBand()->RasterIO()`: a `Uint8Array`, band after band, 0 for invalid pixels and 255
-    /// for valid ones (or values between where a kernel resampled the mask).
+    /// for valid ones (or values between where a kernel resampled the mask). Bands with a nodata
+    /// value are read for their masks: `readResampledWithMasks` reads both without reading twice.
     #[wasm_bindgen(js_name = readResampledMasks)]
     pub fn read_resampled_masks(&self, options: JsValue) -> Result<js_sys::Uint8Array, JsError> {
         let o = parse_options::<ResampledArgs>(&options)?.options().map_err(js_err)?;
         let masks = self.raster()?.read_resampled_masks(&o).map_err(js_err)?;
         Ok(js_sys::Uint8Array::from(&masks[..]))
+    }
+
+    /// Reads what `readResampled` and `readResampledMasks` read, at once (same options):
+    /// `{ data, masks }`. Nodata masks are computed from the pixels read, rather than from a
+    /// second read of their bands.
+    #[wasm_bindgen(js_name = readResampledWithMasks)]
+    pub fn read_resampled_with_masks(&self, options: JsValue) -> Result<JsValue, JsError> {
+        let o = parse_options::<ResampledArgs>(&options)?.options().map_err(js_err)?;
+        let (ds, masks) = self.raster()?.read_resampled_with_masks(&o).map_err(js_err)?;
+        Ok(data_and_masks(ds.raster.data, &masks))
     }
 
     /// The vector layer names.

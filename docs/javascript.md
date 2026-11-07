@@ -20,6 +20,7 @@ const tile = dem.readBand(1, [0, 0, 256, 256]);   // a window [col_off, row_off,
 // overview it chooses: bands one after another. Also on remote datasets (openUrl), as promises.
 const small = dem.readResampled({ size: [256, 256], resampling: "average" });
 const masks = dem.readResampledMasks({ size: [256, 256], resampling: "average" }); // Uint8Array
+const { data, masks: valid } = dem.readResampledWithMasks({ size: [256, 256] }); // both at once
 const cog = dem.toBytes("dem_cog.tif", { format: "COG", compress: "DEFLATE" });
 
 const roads = open(geojsonBytes, "roads.geojson");

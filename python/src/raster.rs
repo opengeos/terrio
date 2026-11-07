@@ -508,7 +508,8 @@ impl PyRaster {
     ///
     /// A per-dataset mask is resampled from its own overviews; a nodata value masks the pixels
     /// `read_resampled` reads that are that value; an alpha band is the other bands' mask; bands
-    /// without one are all valid.
+    /// without one are all valid. Bands with a nodata value are read for their masks:
+    /// `read_resampled_with_masks` reads pixels and masks without reading them twice.
     ///
     /// Args:
     ///     size: The output `(width, height)`.
@@ -547,6 +548,49 @@ impl PyRaster {
         let bands = masks.len() / plane.max(1);
         let shape = if single { vec![h, w] } else { vec![bands, h, w] };
         to_numpy(py, RasterData::U8(masks), &shape)
+    }
+
+    /// Reads what `read_resampled` and `read_resampled_masks` read, at once: nodata masks are
+    /// computed from the pixels read, rather than from a second read of their bands.
+    ///
+    /// Args:
+    ///     size: The output `(width, height)`.
+    ///     band: The band (an int, numbered from 1), a sequence of bands, or `None` for all.
+    ///     window: The source window, as for `read_resampled`.
+    ///     resampling: The method, as for `read_resampled`.
+    ///     overview: The stored resolution, as for `read_resampled`.
+    ///
+    /// Returns:
+    ///     tuple[numpy.ndarray, numpy.ndarray]: The pixels, as `read_resampled` returns them, and
+    ///     the uint8 masks, as `read_resampled_masks` returns them.
+    ///
+    /// Raises:
+    ///     InvalidArgumentError: As `read_resampled`.
+    #[pyo3(signature = (size, band=None, window=None, resampling="nearest", overview=None))]
+    fn read_resampled_with_masks<'py>(
+        &mut self,
+        py: Python<'py>,
+        size: (usize, usize),
+        band: Option<&Bound<'py, PyAny>>,
+        window: Option<(f64, f64, f64, f64)>,
+        resampling: &str,
+        overview: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+        let (options, single) = self.resampled_options(size, band, window, resampling, overview)?;
+        let complex = self.is_complex();
+        let inner = &mut self.inner;
+        let (ds, mut masks) = py.detach_result(|| inner.read_resampled_with_masks(&options)).py()?;
+        let r = ds.raster;
+        let plane = r.rows * r.cols;
+        let bands = if complex { r.bands / 2 } else { r.bands };
+        let shape = if single { vec![r.rows, r.cols] } else { vec![bands, r.rows, r.cols] };
+        if complex {
+            // A complex band's mask is its real part's.
+            masks = masks.chunks(plane).step_by(2).flatten().copied().collect();
+        }
+        let masks = to_numpy(py, RasterData::U8(masks), &shape)?;
+        let pixels = if complex { complex_to_numpy(py, r.data, plane, &shape)? } else { to_numpy(py, r.data, &shape)? };
+        Ok((pixels, masks))
     }
 
     /// Whether the raster has a per-dataset mask (a GeoTIFF's internal mask, GDAL's

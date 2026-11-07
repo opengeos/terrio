@@ -180,6 +180,9 @@ def test_raster_read_resampled_matches_rasterio(sources, kind, method, read):
     name = method.replace("_", "")
     b = r.read_resampled(size, window=win, resampling=name)
     bm = r.read_resampled_masks(size, window=win, resampling=name)
+    both = r.read_resampled_with_masks(size, window=win, resampling=name)
+    assert np.array_equal(both[0], b, equal_nan=b.dtype.kind == "f")
+    assert np.array_equal(both[1], bm)
     assert b.dtype == a.dtype and b.shape == a.shape
     same = (a == b) | (np.isnan(a) & np.isnan(b)) if a.dtype.kind == "f" else a == b
     assert same.all(), f"{np.mean(~same):.4%} of pixels differ"
@@ -191,14 +194,22 @@ def test_raster_read_resampled_matches_rasterio(sources, kind, method, read):
 @pytest.mark.parametrize("overview", ["AUTO", "AUTO-1", "NONE", 0, 1, "1"])
 @pytest.mark.parametrize("method", ["nearest", "average"])
 def test_raster_read_resampled_overview_selection(sources, tmp_path, method, overview):
-    """The level `overview` names against `gdal_translate -outsize -ovr`."""
-    gdal = pytest.importorskip("osgeo.gdal")
+    """The level `overview` names against `gdal_translate -outsize -ovr`, run as a program so
+    that its GDAL is not loaded beside rasterio's. Skipped without it."""
+    import shutil
+    import subprocess
+
     import terrio
 
+    gdal_translate = shutil.which("gdal_translate")
+    if gdal_translate is None:
+        pytest.skip("gdal_translate is not installed")
     path = sources["u16-nodata"]
     out = str(tmp_path / "out.tif")
-    gdal.Translate(
-        out, path, width=200, height=150, resampleAlg=method, overviewLevel=str(overview)
+    subprocess.run(
+        [gdal_translate, "-q", "-outsize", "200", "150", "-r", method, "-ovr", str(overview)]
+        + [path, out],
+        check=True,
     )
     with rasterio.open(out) as s:
         a = s.read(1)

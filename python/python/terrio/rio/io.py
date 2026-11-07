@@ -1598,7 +1598,7 @@ class DatasetReader(DatasetBase):
             method is None
             # A window of the buffer's size at whole pixels is a plain read (`raster_io` reads it).
             or ((w, h) == (buf[1], buf[0]) and all(float(v).is_integer() for v in window))
-            # A dataset opened at an overview level (`_OverviewRaster`) is read through it.
+            # A dataset opened at an overview level (`_OverviewRaster`) is read by `raster_io`.
             or not isinstance(getattr(self, "_raster", None), _terrio.Raster)
             or type(self)._read_level is not DatasetReader._read_level
             or type(self)._mask_flags is not DatasetReader._mask_flags

@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- Python's `Raster.read_resampled` and `read_resampled_masks`, and JavaScript's `readResampled`
-  and `readResampledMasks` (on `Dataset` and, as promises, on `openUrl`'s `RemoteDataset`), read a
+- Python's `Raster.read_resampled`, `read_resampled_masks` and `read_resampled_with_masks`, and
+  JavaScript's `readResampled`, `readResampledMasks` and `readResampledWithMasks` (on `Dataset` and, as promises, on `openUrl`'s `RemoteDataset`), read a
   window of some bands into an output of another size as GDAL's `RasterIO` reads it, through
   `LazyRaster::read_resampled`: from the overview it chooses or the level `overview` names
   (`AUTO`, `AUTO-n`, `NONE` or a number, as `gdal_translate -ovr`), with fractional windows, so a

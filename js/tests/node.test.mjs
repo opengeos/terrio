@@ -1273,6 +1273,9 @@ test("resampled reads from overviews, local and remote", async () => {
       assert.equal(masks[15 * 150 + 30], 0);
       assert.equal(both[15 * 150 + 30], 0);
       assert.equal(masks[100 * 150 + 100], 255);
+      const together = await ds.readResampledWithMasks({ size: [150, 120], resampling: "average" });
+      assert.deepEqual([...together.data], [...both]);
+      assert.deepEqual([...together.masks], [...masks]);
       // A fractional window.
       const frac = await read({ bands: [1], window: [10.5, 20.25, 400.5, 300.75], size: [61, 52], resampling: "bilinear" });
       assert.equal(frac.length, 61 * 52);
