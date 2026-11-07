@@ -507,6 +507,9 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
     if let Some(a) = all.into_iter().find(|a| !hdf5_write::attribute_fits(a)) {
         return Err(bad(format!("attribute {} is too large for a netCDF-4 object header (64 KiB)", a.name)));
     }
+    if let Some((name, _)) = file.datatypes.iter().find(|(_, t)| !hdf5_write::datatype_fits(t)) {
+        return Err(bad(format!("compound type {name} is too large for a netCDF-4 object header (64 KiB)")));
+    }
     Ok(hdf5_write::encode(&file))
 }
 

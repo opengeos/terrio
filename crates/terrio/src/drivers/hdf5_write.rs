@@ -327,6 +327,11 @@ pub(crate) fn attribute_fits(a: &Attr) -> bool {
     9 + a.name.len() + 1 + datatype(&a.dtype).len() + dataspace(a.shape.as_deref()).len() + data <= usize::from(u16::MAX)
 }
 
+/// Whether a datatype message, such as a named compound type's, fits in an object header.
+pub(crate) fn datatype_fits(t: &H5Type) -> bool {
+    datatype(t).len() <= usize::from(u16::MAX)
+}
+
 /// An attribute message (version 3), its references resolved with `addr`.
 fn attribute(a: &Attr, addr: &Addresses, heap_ids: &[(usize, u32)]) -> Vec<u8> {
     let dt = datatype(&a.dtype);
@@ -830,5 +835,11 @@ mod tests {
             values: Values::ReferenceList(vec![(0, 0); 6000]),
         };
         assert!(!attribute_fits(&references));
+        let fields = |n: usize| H5Type::Compound {
+            size: 4 * n as u32,
+            fields: (0..n).map(|i| (format!("field_{i:05}"), 4 * i as u32, H5Type::Int { size: 4, signed: true })).collect(),
+        };
+        assert!(datatype_fits(&fields(10)));
+        assert!(!datatype_fits(&fields(5000)));
     }
 }
