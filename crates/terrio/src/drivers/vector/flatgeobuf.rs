@@ -1069,6 +1069,42 @@ mod tests {
         assert!(!both(&bytes));
     }
 
+    #[test]
+    fn indexed_headers_reject_counts_above_the_arithmetic_bound() {
+        // parse_header checks this limit before index_size/level_bounds, including in release.
+        for count in [u64::MAX, 1 << 58, (u64::MAX >> 8) + 1] {
+            for index_node_size in [2, 16, u16::MAX] {
+                let mut b = FlatBufferBuilder::new();
+                let h = Header::create(&mut b, &HeaderArgs { features_count: count, index_node_size, ..Default::default() });
+                b.finish_size_prefixed(h, None);
+                let mut bytes = MAGIC.to_vec();
+                bytes.extend_from_slice(b.finished_data());
+                let error = parse_header(&bytes).unwrap_err();
+                assert!(error.to_string().contains("implausible feature count"), "{error}");
+                assert!(!both(&bytes));
+            }
+        }
+    }
+
+    #[test]
+    fn largest_admitted_index_count_fits_u64() {
+        let count = u64::MAX >> 8;
+        for node_size in [2, 16, u16::MAX] {
+            // Independent wider-arithmetic oracle for the level sum and byte count.
+            let mut n = u128::from(count);
+            let mut total = n;
+            loop {
+                n = n.div_ceil(u128::from(node_size));
+                total += n;
+                if n == 1 {
+                    break;
+                }
+            }
+            let expected = u64::try_from(total * 40).unwrap();
+            assert_eq!(index_size(count, node_size), expected);
+        }
+    }
+
     fn sample() -> Layer {
         let mut l = Layer::new("sample").with_epsg(4326);
         l.add_field(FieldDef::new("name", FieldType::Text));
