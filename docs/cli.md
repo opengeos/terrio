@@ -3938,14 +3938,14 @@ pipeline's trailing expression, put the metadata flag before expression tokens.
 ### Catalog stability policy
 
 - The catalog is versioned by `schema_version`.
-- Every change to the catalog that lands on `main` bumps the patch version (`0.1.x`)
-  once, and updates the recorded digest `CATALOG_SHA256` in
-  `crates/terrio-cli/tests/usage_golden.rs` in the same commit. Changes that have not
-  landed share the next version. The `usage_golden` test fails on any change without
-  an updated digest. The digest is the SHA-256 of the canonical catalog (sorted keys,
-  no `version` field), so the repository holds no generated catalog file.
-- The minor version is settled when the series finishes.
-- Removals and renames are called out in the changelog section of the pull request.
+- The canonical digest (`CATALOG_SHA256` in `crates/terrio-cli/tests/usage_golden.rs`)
+  guards the full catalog, including arguments, subcommands, and help descriptions
+  (excluding only the top-level package `version`).
+- Every change to catalog contents or structure bumps the patch version (`0.1.x`),
+  and unreleased catalog changes share the next patch version until merged to `main`.
+- The `usage_golden` test fails on any catalog change without an updated digest in
+  the same commit. Because the digest is computed from sorted canonical JSON, the
+  repository holds no generated catalog file.
 
 ## OGC API Features
 
