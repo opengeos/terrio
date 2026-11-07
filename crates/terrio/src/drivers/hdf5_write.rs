@@ -11,9 +11,10 @@
 //!   datasets and subgroups, with link and attribute creation order tracked;
 //! - datasets of fixed-point, floating-point and fixed-length string types, contiguous or
 //!   chunked, optionally with the shuffle and deflate filters;
-//! - attributes of those types, plus object references for dimension scales: variable-length
-//!   lists of references (`DIMENSION_LIST`, in a global heap) and compound lists of references and
-//!   indices (`REFERENCE_LIST`).
+//! - attributes of those types and of compounds of them, plus object references for dimension
+//!   scales: variable-length lists of references (`DIMENSION_LIST`, in a global heap) and compound
+//!   lists of references and indices (`REFERENCE_LIST`);
+//! - named (committed) datatypes in the root group, as netCDF-4 user-defined types.
 //!
 //! The format is described at <https://docs.hdfgroup.org/hdf5/develop/_f_m_t3.html>.
 
@@ -41,6 +42,8 @@ pub(crate) enum H5Type {
     RefVlen,
     /// The dimension scales' `{dataset reference, dimension index}` compound.
     RefList,
+    /// A compound of `size` bytes: its fields' names, byte offsets and types.
+    Compound { size: u32, fields: Vec<(String, u32, H5Type)> },
 }
 
 impl H5Type {
@@ -51,6 +54,7 @@ impl H5Type {
             Self::Ref => 8,
             Self::RefVlen => 16,
             Self::RefList => 12,
+            Self::Compound { size, .. } => *size,
         }
     }
 
@@ -89,6 +93,17 @@ impl H5Type {
                 out.extend_from_slice(b"dimension\0");
                 out.push(8);
                 Self::Int { size: 4, signed: false }.encode(out);
+            }
+            Self::Compound { size, fields } => {
+                // Version 3: unpadded names, and offsets in as few bytes as the size needs.
+                header(out, 6, 3, fields.len() as u32, *size);
+                let offset_bytes = (1..4).find(|&n| u64::from(*size) < 1 << (8 * n)).unwrap_or(4);
+                for (name, offset, dtype) in fields {
+                    out.extend_from_slice(name.as_bytes());
+                    out.push(0);
+                    out.extend_from_slice(&offset.to_le_bytes()[..offset_bytes]);
+                    dtype.encode(out);
+                }
             }
         }
     }
@@ -162,6 +177,9 @@ pub(crate) struct File {
     pub datasets: Vec<Dataset>,
     /// Attributes of subgroups, by path (`group/sub`).
     pub group_attrs: Vec<(String, Vec<Attr>)>,
+    /// Named datatypes of the root group, linked before its other members in this order; a type
+    /// another one uses comes first, as netCDF-C reads them in creation order.
+    pub datatypes: Vec<(String, H5Type)>,
 }
 
 /// The groups of a file below the root, by path, parents before children, in the order their
@@ -197,6 +215,8 @@ fn split_path(path: &str) -> (&str, &str) {
 struct Addresses {
     /// Each subgroup's object header, in `group_paths` order.
     groups: Vec<u64>,
+    /// Each named datatype's object header.
+    datatypes: Vec<u64>,
     /// Each dataset's object header.
     datasets: Vec<u64>,
     /// The global heap collection.
@@ -503,6 +523,9 @@ pub(crate) fn encode(f: &File) -> Vec<u8> {
     // in the order they appear, then its attributes.
     let group_header = |path: &str, attrs: &[Attr], addr: &Addresses| -> Vec<u8> {
         let mut links: Vec<(&str, u64)> = Vec::new();
+        if path.is_empty() {
+            links.extend(f.datatypes.iter().zip(&addr.datatypes).map(|((name, _), &at)| (name.as_str(), at)));
+        }
         for (gi, g) in groups.iter().enumerate() {
             let (parent, name) = split_path(g);
             if parent == path {
@@ -539,7 +562,11 @@ pub(crate) fn encode(f: &File) -> Vec<u8> {
     let group_attrs = |path: &str| f.group_attrs.iter().find(|(p, _)| p.trim_matches('/') == path).map_or(&[][..], |(_, a)| a.as_slice());
     let build = |addr: &Addresses| -> (Vec<u8>, Vec<Vec<u8>>, Vec<Vec<u8>>) {
         let root = group_header("", &f.attrs, addr);
-        let group_headers: Vec<Vec<u8>> = groups.iter().map(|g| group_header(g, group_attrs(g), addr)).collect();
+        let mut group_headers: Vec<Vec<u8>> = groups.iter().map(|g| group_header(g, group_attrs(g), addr)).collect();
+        // A named datatype's header holds only its datatype, as the HDF5 library writes one:
+        // readers such as hdf5-reader take a header with attribute messages but no dataspace for
+        // a group's. It follows the groups' headers.
+        group_headers.extend(f.datatypes.iter().map(|(_, dtype)| Header { messages: vec![(MSG_DATATYPE, datatype(dtype))] }.encode()));
         let mut headers = Vec::new();
         for (i, d) in f.datasets.iter().enumerate() {
             let mut h = Header { messages: Vec::new() };
@@ -592,14 +619,16 @@ pub(crate) fn encode(f: &File) -> Vec<u8> {
     };
 
     let n = f.datasets.len();
-    let placeholder = Addresses { groups: vec![0; groups.len()], datasets: vec![0; n], heap: 0, data: vec![0; n] };
+    let placeholder =
+        Addresses { groups: vec![0; groups.len()], datatypes: vec![0; f.datatypes.len()], datasets: vec![0; n], heap: 0, data: vec![0; n] };
     let (root, group_headers, headers) = build(&placeholder);
     let mut at = 48 + root.len() as u64;
-    let mut group_addrs = Vec::with_capacity(groups.len());
+    let mut group_addrs = Vec::with_capacity(group_headers.len());
     for h in &group_headers {
         group_addrs.push(at);
         at += h.len() as u64;
     }
+    let datatype_addrs = group_addrs.split_off(groups.len());
     let mut dataset_addrs = Vec::with_capacity(n);
     for h in &headers {
         dataset_addrs.push(at);
@@ -637,7 +666,7 @@ pub(crate) fn encode(f: &File) -> Vec<u8> {
             None => {}
         }
     }
-    let addr = Addresses { groups: group_addrs, datasets: dataset_addrs, heap: heap_addr, data: data_addrs };
+    let addr = Addresses { groups: group_addrs, datatypes: datatype_addrs, datasets: dataset_addrs, heap: heap_addr, data: data_addrs };
     let (root, group_headers, headers) = build(&addr);
     let eof = at;
 
@@ -700,6 +729,7 @@ mod tests {
         File {
             attrs: vec![Attr::text("Conventions", "CF-1.5")],
             group_attrs: Vec::new(),
+            datatypes: Vec::new(),
             datasets: vec![
                 Dataset {
                     name: "x".into(),

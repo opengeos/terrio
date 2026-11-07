@@ -114,31 +114,157 @@ fn attribute(a: &NcAttrValue) -> Value {
 fn attributes(attrs: &[NcAttribute]) -> Value {
     Value::Object(attrs.iter().map(|a| (a.name.clone(), attribute(&a.value))).collect())
 }
-fn attribute_types(attrs: &[NcAttribute]) -> AttributeTypes {
-    attrs
+/// The named HDF5 datatypes a netCDF-4 group defines, with its ancestors' after its own: the
+/// user-defined types in scope there, as netCDF-C finds them.
+type NamedTypes = Vec<(String, hdf5_reader::Datatype)>;
+fn named_types(hdf: &hdf5_reader::Hdf5File, p: &str) -> NamedTypes {
+    let parts: Vec<_> = p.split('/').filter(|n| !n.is_empty()).collect();
+    let mut out = Vec::new();
+    for depth in (0..=parts.len()).rev() {
+        let group = hdf.root_group().and_then(|root| parts[..depth].iter().try_fold(root, |g, name| g.group(name)));
+        if let Ok(group) = group {
+            out.extend(group_named_types(hdf, &group).unwrap_or_default());
+        }
+    }
+    out
+}
+/// The named datatypes linked from one HDF5 group, from its compact or dense link storage.
+fn group_named_types(hdf: &hdf5_reader::Hdf5File, group: &hdf5_reader::group::Group) -> hdf5_reader::error::Result<NamedTypes> {
+    use hdf5_reader::messages::{HdfMessage, link::LinkTarget};
+    let (storage, offset_size, length_size) = (group.storage(), group.offset_size(), group.length_size());
+    let mut links = Vec::new();
+    for message in &hdf.get_or_parse_header(group.address())?.messages {
+        match message {
+            HdfMessage::Link(link) => links.push(link.clone()),
+            HdfMessage::LinkInfo(info) if !hdf5_reader::io::Cursor::is_undefined_offset(info.fractal_heap_address, offset_size) => {
+                let heap =
+                    hdf5_reader::fractal_heap::FractalHeap::parse_at_storage(storage, info.fractal_heap_address, offset_size, length_size)?;
+                let index = hdf5_reader::btree_v2::BTreeV2Header::parse_at_storage(
+                    storage,
+                    info.btree_name_index_address,
+                    offset_size,
+                    length_size,
+                )?;
+                for record in
+                    hdf5_reader::btree_v2::collect_btree_v2_records_storage(storage, &index, offset_size, length_size, None, &[], None)?
+                {
+                    if let hdf5_reader::btree_v2::BTreeV2Record::LinkNameHash { heap_id, .. } = record {
+                        let bytes = heap.get_object_storage(&heap_id, storage, offset_size, length_size)?;
+                        links.push(hdf5_reader::messages::link::parse(
+                            &mut hdf5_reader::io::Cursor::new(&bytes),
+                            offset_size,
+                            length_size,
+                            bytes.len(),
+                        )?);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for link in links {
+        let LinkTarget::Hard { address } = link.target else { continue };
+        let header = hdf.get_or_parse_header(address)?;
+        // A named datatype's object header holds a datatype but, unlike a dataset, no dataspace.
+        if header.messages.iter().any(|m| matches!(m, HdfMessage::Dataspace(_))) {
+            continue;
+        }
+        if let Some(datatype) = header.messages.iter().find_map(|m| match m {
+            HdfMessage::Datatype(d) => Some(d.datatype.clone()),
+            _ => None,
+        }) {
+            out.push((link.name, datatype));
+        }
+    }
+    Ok(out)
+}
+/// Whether an HDF5 datatype is the one netCDF-C reads as `t`.
+fn same_type(t: &NcType, h: &hdf5_reader::Datatype) -> bool {
+    use hdf5_reader::Datatype as H;
+    match (t, h) {
+        (NcType::Compound { size, fields }, H::Compound { size: hsize, fields: hfields }) => {
+            size == hsize
+                && fields.len() == hfields.len()
+                && fields
+                    .iter()
+                    .zip(hfields)
+                    .all(|(f, h)| f.name == h.name && f.offset == u64::from(h.byte_offset) && same_type(&f.dtype, &h.datatype))
+        }
+        (NcType::Enum { base, .. }, H::Enum { base: hbase, .. }) => same_type(base, hbase),
+        (NcType::Array { base, dims }, H::Array { base: hbase, dims: hdims }) => dims == hdims && same_type(base, hbase),
+        (NcType::Char, H::String { .. }) => true,
+        (NcType::Float, H::FloatingPoint { size: 4, .. }) | (NcType::Double, H::FloatingPoint { size: 8, .. }) => true,
+        (t, H::FixedPoint { size, signed, .. }) => numeric_type(t).is_some_and(|d| {
+            d.size_bytes() == usize::from(*size) && matches!(d, DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64) == *signed
+        }),
+        _ => false,
+    }
+}
+/// A netCDF-4 compound type as a snapshot writes it, as GDAL 3.13.3 does: enum fields as their
+/// base type and char fields as unsigned bytes. `None` when a field, at any depth, is of a type
+/// GDAL does not carry (fixed-size arrays, vlens, opaques and strings). The type is named as its
+/// group, or an ancestor, names it (`named`), else `fallback`.
+fn compound_type(t: &NcType, named: &NamedTypes, fallback: &str) -> Option<CompoundType> {
+    let NcType::Compound { size, fields } = t else { return None };
+    let fields = fields
         .iter()
-        .filter_map(|a| {
-            let dtype = match &a.value {
-                NcAttrValue::Bytes(_) => DataType::I8,
-                NcAttrValue::UBytes(_) => DataType::U8,
-                NcAttrValue::Shorts(_) => DataType::I16,
-                NcAttrValue::UShorts(_) => DataType::U16,
-                NcAttrValue::Ints(_) => DataType::I32,
-                NcAttrValue::UInts(_) => DataType::U32,
-                NcAttrValue::Int64s(_) => DataType::I64,
-                NcAttrValue::UInt64s(_) => DataType::U64,
-                NcAttrValue::Floats(_) => DataType::F32,
-                NcAttrValue::Doubles(_) => DataType::F64,
-                NcAttrValue::Chars(_) | NcAttrValue::Strings(_) | NcAttrValue::UserDefined { .. } => return None,
+        .map(|f| {
+            let dtype = match &f.dtype {
+                NcType::Char => FieldType::Number(DataType::U8),
+                NcType::Enum { base, .. } => FieldType::Number(numeric_type(base)?),
+                nested @ NcType::Compound { .. } => FieldType::Compound(compound_type(nested, named, &format!("{}_t", f.name))?),
+                other => FieldType::Number(numeric_type(other)?),
             };
-            Some((a.name.clone(), dtype))
+            Some(CompoundField { name: f.name.clone(), offset: usize::try_from(f.offset).ok()?, dtype })
         })
-        .collect()
+        .collect::<Option<Vec<_>>>()?;
+    let name = named.iter().find(|(_, h)| same_type(t, h)).map_or_else(|| fallback.to_owned(), |(name, _)| name.clone());
+    Some(CompoundType { name, size: *size as usize, fields })
+}
+/// The source types of attributes; `named` gives the named types in scope, read only when a
+/// compound attribute needs one.
+fn attribute_types(attrs: &[NcAttribute], named: &dyn Fn() -> NamedTypes) -> AttributeTypes {
+    let mut types = AttributeTypes::new();
+    let mut scope: Option<NamedTypes> = None;
+    for a in attrs {
+        let dtype = match &a.value {
+            NcAttrValue::Bytes(_) => DataType::I8,
+            NcAttrValue::UBytes(_) => DataType::U8,
+            NcAttrValue::Shorts(_) => DataType::I16,
+            NcAttrValue::UShorts(_) => DataType::U16,
+            NcAttrValue::Ints(_) => DataType::I32,
+            NcAttrValue::UInts(_) => DataType::U32,
+            NcAttrValue::Int64s(_) => DataType::I64,
+            NcAttrValue::UInt64s(_) => DataType::U64,
+            NcAttrValue::Floats(_) => DataType::F32,
+            NcAttrValue::Doubles(_) => DataType::F64,
+            // An enum is written as its base integer type, as GDAL 3.13.3 copies it.
+            NcAttrValue::UserDefined { dtype: NcType::Enum { base, .. }, .. } => match numeric_type(base) {
+                Some(dtype) => dtype,
+                None => continue,
+            },
+            // A compound that reads as a value (not `null`) keeps its type.
+            NcAttrValue::UserDefined { dtype: dtype @ NcType::Compound { .. }, .. } => {
+                if !attribute(&a.value).is_null() {
+                    let scope = scope.get_or_insert_with(named);
+                    if let Some(compound) = compound_type(dtype, scope, &format!("{}_t", a.name)) {
+                        types.compound.insert(a.name.clone(), compound);
+                    }
+                }
+                continue;
+            }
+            NcAttrValue::Chars(_) | NcAttrValue::Strings(_) | NcAttrValue::UserDefined { .. } => continue,
+        };
+        types.numeric.insert(a.name.clone(), dtype);
+    }
+    types
 }
 fn group(g: &NcGroup, p: &str, file: &Arc<NcFile>, hdf: Option<&hdf5_reader::Hdf5File>, inherited: &[Dimension]) -> Result<Group> {
     let mut out = Group::new(p);
     out.attributes = attributes(&g.attributes);
-    out.attribute_types = attribute_types(&g.attributes);
+    let named = || hdf.map(|h| named_types(h, p)).unwrap_or_default();
+    out.attribute_types = attribute_types(&g.attributes, &named);
     let mut visible = inherited.to_vec();
     for d in &g.dimensions {
         let full = path(p, &d.name);
@@ -201,7 +327,7 @@ fn group(g: &NcGroup, p: &str, file: &Arc<NcFile>, hdf: Option<&hdf5_reader::Hdf
                 coordinates,
             },
             source: Source::Netcdf(Arc::clone(file)),
-            attribute_types: attribute_types(&v.attributes),
+            attribute_types: attribute_types(&v.attributes, &named),
         });
     }
     // Lossy netCDF reconstruction can omit HDF5-specific datatypes. Report those
@@ -555,6 +681,58 @@ mod attribute_tests {
             check(&zarr);
             assert!(zarr.root.attributes.get("_terrio_attribute_types").is_none());
             check(&crate::multidim::open_bytes(&zarr.to_netcdf_bytes().unwrap()).unwrap());
+        }
+    }
+
+    /// A snapshot commits the compound types GDAL 3.13.3's `gdalmdimtranslate -of netCDF` copy
+    /// commits, with the same names, offsets and member types (an enum member as its base type, a
+    /// char as an unsigned byte), and its attributes have the types of the copy's: what `ncdump -h`
+    /// prints of the types and attributes then matches. `netcdf_copy_types` in `expected.json`
+    /// describes GDAL's copies, as this test describes terrio's. `nested_compound_attrs.nc` keeps
+    /// its root group's links, the named types among them, in dense storage.
+    #[test]
+    fn snapshot_compound_types_match_gdal_copy() {
+        use hdf5_reader::Datatype as H;
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_user_defined");
+        let expected: Value = serde_json::from_slice(&std::fs::read(dir.join("expected.json")).unwrap()).unwrap();
+        fn describe(t: &H, named: &NamedTypes) -> Value {
+            Value::String(match t {
+                H::FixedPoint { size, signed, .. } => format!("{}int{}", if *signed { "" } else { "u" }, u32::from(*size) * 8),
+                H::FloatingPoint { size, .. } => format!("float{}", u32::from(*size) * 8),
+                H::Compound { .. } => named.iter().find(|(_, n)| n == t).map_or_else(|| "anonymous".into(), |(name, _)| name.clone()),
+                other => format!("{other:?}"),
+            })
+        }
+        let bookkeeping = ["CLASS", "NAME", "REFERENCE_LIST", "DIMENSION_LIST", "_Netcdf4Coordinates", "_Netcdf4Dimid", "_NCProperties"];
+        for (fixture, gdal) in expected["netcdf_copy_types"].as_object().unwrap() {
+            let source = open(dir.join(fixture).to_str().unwrap()).unwrap();
+            let hdf = hdf5_reader::Hdf5File::from_vec(super::write::netcdf_bytes(&source).unwrap()).unwrap();
+            let root = hdf.root_group().unwrap();
+            let named = group_named_types(&hdf, &root).unwrap();
+            let types: serde_json::Map<_, _> = named
+                .iter()
+                .map(|(name, t)| {
+                    let H::Compound { size, fields } = t else { panic!("{name} is not a compound") };
+                    let fields: Vec<_> =
+                        fields.iter().map(|f| serde_json::json!([f.name, f.byte_offset, describe(&f.datatype, &named)])).collect();
+                    (name.clone(), serde_json::json!({"size": size, "fields": fields}))
+                })
+                .collect();
+            assert_eq!(Value::Object(types), gdal["types"], "{fixture}");
+            let mut attributes = serde_json::Map::new();
+            let objects = std::iter::once(("/".to_owned(), root.attributes().unwrap()))
+                .chain(root.datasets().unwrap().into_iter().map(|d| (format!("/{}", d.name().trim_start_matches('/')), d.attributes())));
+            for (path, attrs) in objects {
+                let found: serde_json::Map<_, _> = attrs
+                    .iter()
+                    .filter(|a| !bookkeeping.contains(&a.name.as_str()) && !matches!(a.datatype, H::String { .. } | H::VarLen { .. }))
+                    .map(|a| (a.name.clone(), describe(&a.datatype, &named)))
+                    .collect();
+                if !found.is_empty() {
+                    attributes.insert(path, Value::Object(found));
+                }
+            }
+            assert_eq!(Value::Object(attributes), gdal["attributes"], "{fixture}");
         }
     }
 }

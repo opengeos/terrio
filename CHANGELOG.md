@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A netCDF snapshot (`terrio mdconvert`, `Dataset.write`) writes a netCDF-4 compound attribute
+  as a compound, as GDAL 3.13.3's `gdalmdimtranslate -of netCDF` does (#565): `station_t
+  z:station = {7, 12.5}` stays `station_t z:station = {7, 12.5}` where it became the text
+  `{"id":7,"elevation":12.5}`. The type is committed under its source name, nested compound
+  types too, with enum fields as their base integer type and char fields as unsigned bytes; an
+  enum attribute is written as its base type (`z:flag = 1b`, where it was a 64-bit integer).
+  `ncdump -h` prints the same types and attributes as for GDAL's copy. Zarr object attributes are
+  still written as JSON text.
 - KMZ archives are read within limits (#579). Their main document and the layer documents it
   links to may take 512 MiB of decompressed text together (`TERRIO_KMZ_MAX_SIZE` changes it),
   and the archive is checked against `TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO` and

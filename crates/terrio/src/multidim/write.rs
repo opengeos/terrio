@@ -203,7 +203,51 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
             values: Values::Bytes(value.to_le_bytes().to_vec()),
         }
     }
-    fn attrs(raw: &Value, types: &AttributeTypes) -> Vec<Attr> {
+    fn compound(t: &CompoundType) -> H5Type {
+        H5Type::Compound {
+            size: t.size as u32,
+            fields: t
+                .fields
+                .iter()
+                .map(|f| {
+                    let field = match &f.dtype {
+                        FieldType::Number(d) => dtype(*d),
+                        FieldType::Compound(c) => compound(c),
+                    };
+                    (f.name.clone(), f.offset as u32, field)
+                })
+                .collect(),
+        }
+    }
+    /// Packs one compound value into `out` (its `t.size` bytes); false when the value is not an
+    /// object of exactly the type's fields, each representable in its type.
+    fn pack(value: &Value, t: &CompoundType, out: &mut [u8]) -> bool {
+        let Some(object) = value.as_object().filter(|o| o.len() == t.fields.len()) else {
+            return false;
+        };
+        t.fields.iter().all(|f| {
+            let Some(v) = object.get(&f.name) else { return false };
+            match &f.dtype {
+                FieldType::Number(d) => {
+                    let bytes = sample(v, *d);
+                    valid_fill(v, *d) && out.get_mut(f.offset..f.offset + bytes.len()).map(|o| o.copy_from_slice(&bytes)).is_some()
+                }
+                FieldType::Compound(c) => out.get_mut(f.offset..f.offset + c.size).is_some_and(|o| pack(v, c, o)),
+            }
+        })
+    }
+    /// Records a compound type, and the compounds it uses before it, to be committed.
+    fn commit(t: &CompoundType, committed: &mut Vec<CompoundType>) {
+        for f in &t.fields {
+            if let FieldType::Compound(c) = &f.dtype {
+                commit(c, committed);
+            }
+        }
+        if !committed.contains(t) {
+            committed.push(t.clone());
+        }
+    }
+    fn attrs(raw: &Value, types: &AttributeTypes, committed: &mut Vec<CompoundType>) -> Vec<Attr> {
         let Some(attrs) = raw.as_object() else {
             return Vec::new();
         };
@@ -232,7 +276,7 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
             // `tests/data/netcdf_user_defined/expected.json`); netCDF-C would read a zero-length
             // string attribute back as "". A typed empty list is written with its type.
             .filter(|(name, value)| {
-                let empty_untyped = value.as_array().is_some_and(|v| v.is_empty()) && !types.contains_key(*name);
+                let empty_untyped = value.as_array().is_some_and(|v| v.is_empty()) && !types.contains(name);
                 !value.is_null() && !empty_untyped
             })
             .map(|(name, value)| {
@@ -240,7 +284,21 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
                     Value::Array(v) => (v.clone(), Some(vec![v.len() as u64])),
                     v => (vec![v.clone()], None),
                 };
-                if let Some(&native) = types.get(name)
+                // A compound is written as one, as GDAL 3.13.3's `gdalmdimtranslate` copies it: a
+                // one-dimensional attribute whose type a named datatype of the same name defines.
+                if let Some(t) = types.compound.get(name) {
+                    let mut bytes = vec![0; values.len() * t.size];
+                    if !values.is_empty() && values.iter().zip(bytes.chunks_mut(t.size.max(1))).all(|(v, out)| pack(v, t, out)) {
+                        commit(t, committed);
+                        return Attr {
+                            name: name.clone(),
+                            dtype: compound(t),
+                            shape: Some(vec![values.len() as u64]),
+                            values: Values::Bytes(bytes),
+                        };
+                    }
+                }
+                if let Some(&native) = types.numeric.get(name)
                     && values.iter().all(|v| v.is_number() || matches!(v.as_str(), Some("NaN" | "Infinity" | "-Infinity")))
                 {
                     return Attr {
@@ -309,18 +367,20 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
             }
         }
     }
-    let mut file = hdf5_write::File { attrs: attrs(&dataset.root.attributes, &dataset.root.attribute_types), ..Default::default() };
+    let mut committed = Vec::new();
+    let mut file =
+        hdf5_write::File { attrs: attrs(&dataset.root.attributes, &dataset.root.attribute_types, &mut committed), ..Default::default() };
     file.attrs.push(Attr::text("_NCProperties", concat!("version=2,terrio=", env!("CARGO_PKG_VERSION"))));
-    fn group_attrs(group: &Group, out: &mut Vec<(String, Vec<Attr>)>) {
+    fn group_attrs(group: &Group, out: &mut Vec<(String, Vec<Attr>)>, committed: &mut Vec<CompoundType>) {
         for child in &group.groups {
-            out.push((child.path.trim_matches('/').into(), attrs(&child.attributes, &child.attribute_types)));
-            group_attrs(child, out);
+            out.push((child.path.trim_matches('/').into(), attrs(&child.attributes, &child.attribute_types, committed)));
+            group_attrs(child, out, committed);
         }
     }
-    group_attrs(&dataset.root, &mut file.group_attrs);
+    group_attrs(&dataset.root, &mut file.group_attrs, &mut committed);
     for array in &arrays {
         let shape = array.shape();
-        let mut attributes = attrs(&array.info.attributes, &array.attribute_types);
+        let mut attributes = attrs(&array.info.attributes, &array.attribute_types, &mut committed);
         let fill = sample(&array.info.attributes["_FillValue"], array.info.data_type);
         if array.info.attributes.get("_FillValue").is_some() {
             attributes.retain(|a| a.name != "_FillValue");
@@ -432,6 +492,16 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
                 values: Values::ReferenceList(references),
             });
         }
+    }
+    // The compound types, named in the root group as GDAL names them. A name already taken there,
+    // by an array, a group or another type of that name, gets a numeric suffix.
+    let mut taken: std::collections::HashSet<String> =
+        file.datasets.iter().map(|d| d.name.split('/').next().unwrap_or_default().to_owned()).collect();
+    taken.extend(file.group_attrs.iter().map(|(p, _)| p.split('/').next().unwrap_or_default().to_owned()));
+    for t in &committed {
+        let name = (1..).map(|i| if i == 1 { t.name.clone() } else { format!("{}_{i}", t.name) }).find(|n| !taken.contains(n)).unwrap();
+        taken.insert(name.clone());
+        file.datatypes.push((name, compound(t)));
     }
     Ok(hdf5_write::encode(&file))
 }
