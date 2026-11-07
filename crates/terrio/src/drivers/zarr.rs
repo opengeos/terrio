@@ -1925,7 +1925,7 @@ const MAX_BANDS: usize = 65536;
 /// GDAL's band metadata `DIM_<name>_INDEX`, `DIM_<name>_VALUE` and `DIM_<name>_UNIT` (the
 /// coordinate and its unit, when the dimension has a coordinate array, found by `coord`), as
 /// `BAND_<n>_DIM_<name>_...` items, and the dimensions as `DIM_EXTRA`.
-fn band_dim_metadata(array: &Array, bds: &[usize], coord: impl Fn(usize) -> Option<Array>) -> Vec<(String, String)> {
+fn band_dim_metadata(array: &Array, bds: &[usize], coord: impl Fn(usize) -> Option<Array> + Sync) -> Vec<(String, String)> {
     let sizes: Vec<usize> = bds.iter().map(|&d| array.shape[d]).collect();
     let bands: usize = sizes.iter().product();
     if bds.len() < 2 || bands > MAX_BAND_DIM_METADATA {
@@ -1933,10 +1933,13 @@ fn band_dim_metadata(array: &Array, bds: &[usize], coord: impl Fn(usize) -> Opti
     }
     let names: Vec<String> =
         bds.iter().map(|&d| array.dims.get(d).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| format!("dim{d}"))).collect();
-    let coords: Vec<Option<Array>> = bds.iter().map(|&d| coord(d).filter(|a| a.shape == [array.shape[d]])).collect();
-    let values: Vec<Option<Vec<f64>>> = coords.iter().map(|a| a.as_ref().and_then(read_all_f64)).collect();
-    let units: Vec<Option<String>> =
-        coords.iter().map(|a| a.as_ref().and_then(|a| a.attrs["units"].as_str().map(str::to_string))).collect();
+    // Each dimension's coordinates at once: on a remote store, their reads are round trips.
+    let (values, units): (Vec<Option<Vec<f64>>>, Vec<Option<String>>) = crate::par::map_range(bds.len(), |k| {
+        let a = coord(bds[k]).filter(|a| a.shape == [array.shape[bds[k]]]);
+        (a.as_ref().and_then(read_all_f64), a.and_then(|a| a.attrs["units"].as_str().map(str::to_string)))
+    })
+    .into_iter()
+    .unzip();
     let mut out = vec![("DIM_EXTRA".to_string(), format!("{{{}}}", names.join(",")))];
     for b in 1..=bands {
         for (k, i) in band_index(&sizes, b).into_iter().enumerate() {

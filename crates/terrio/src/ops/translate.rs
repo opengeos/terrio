@@ -666,9 +666,6 @@ fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelec
         None => (round_if_close(r.0), round_if_close(r.1), round_if_close(r.2), round_if_close(r.3)),
     });
     let read = ResampledReadOptions { bands: bands.clone(), window, size: geom.size, resampling, overview: selection };
-    // gdal_translate's virtual dataset reads its bands together when they are the source's
-    // first ones in order (`VRTDataset::CheckCompatibleForDatasetIO`).
-    let together = bands.iter().enumerate().all(|(i, &b)| b == i + 1);
     let gcps = level_header
         .gcps
         .iter()
@@ -686,6 +683,11 @@ fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelec
         && read
             .window
             .is_some_and(|(wx, wy, wxs, wys)| [wx, wy, wxs, wys].iter().all(|v| v.fract() == 0.0) && (wxs, wys) == (ow as f64, oh as f64));
+    // gdal_translate's virtual dataset reads its bands together when they are the source's
+    // first ones in order (`VRTDataset::CheckCompatibleForDatasetIO`). A copy reads the same
+    // values either way, so its bands are read together: a Zarr chunk holding many bands is then
+    // fetched and decoded once, not once per band.
+    let together = copy || bands.iter().enumerate().all(|(i, &b)| b == i + 1);
     // A level read alone (`--overview NONE` or a level) rounds each request's window to whole
     // pixels within 0.001 (`fixed_request`): a strip's own origin may round off the whole
     // output's sampling grid.

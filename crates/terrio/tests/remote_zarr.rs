@@ -371,6 +371,40 @@ fn cmip6_on_gcs_as_gdal_reads_it() {
     assert_eq!(w.raster.get(0, 0, 0), 286.898_07_f32 as f64);
 }
 
+/// Embeddings stored as TESSERA stores them: every band of a pixel in one chunk. Translating a
+/// window of bands that are not the first ones (one year of `(time, band, y, x)`) fetches the
+/// chunk once, not once per band.
+#[test]
+fn translated_bands_sharing_a_chunk_fetch_it_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("e.zarr");
+    std::fs::create_dir_all(store.join("a/c/0/0")).unwrap();
+    std::fs::write(store.join("zarr.json"), r#"{"zarr_format": 3, "node_type": "group", "attributes": {}}"#).unwrap();
+    let meta = serde_json::json!({
+        "zarr_format": 3, "node_type": "array", "shape": [8, 16, 16], "data_type": "int8",
+        "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [8, 16, 16]}},
+        "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
+        "fill_value": 0, "dimension_names": ["band", "y", "x"],
+        "attributes": {"spatial:transform": [10.0, 0.0, 500000.0, 0.0, -10.0, 4600000.0], "proj:code": "EPSG:32630"},
+        "codecs": [{"name": "bytes"}]
+    });
+    std::fs::write(store.join("a/zarr.json"), serde_json::to_vec(&meta).unwrap()).unwrap();
+    // Band b (from 0) holds b * 10 + row.
+    let chunk: Vec<u8> = (0..8).flat_map(|b| (0..16).flat_map(move |r| [(b * 10 + r) as u8; 16])).collect();
+    std::fs::write(store.join("a/c/0/0/0"), chunk).unwrap();
+    let (url, counter) = serve(dir.path().to_path_buf());
+    let mut src = terrio::open_raster_lazy(&format!("ZARR:\"{url}/e.zarr\":/a")).unwrap();
+    counter.take();
+    let o = terrio::ops::translate::TranslateOptions { src_win: Some((2.0, 3.0, 4.0, 5.0)), bands: vec![5, 6, 7, 8], ..Default::default() };
+    let out = terrio::ops::translate::translate_lazy(&mut src, &o, terrio::ops::overview::OverviewSelection::Auto).unwrap();
+    assert_eq!(counter.take().0, 1);
+    assert_eq!(out.raster.bands, 4);
+    for k in 0..4 {
+        assert_eq!(out.raster.get(k, 0, 0), ((k + 4) * 10 + 3) as f64);
+        assert_eq!(out.raster.get(k, 4, 3), ((k + 4) * 10 + 7) as f64);
+    }
+}
+
 #[test]
 fn multidimensional_sparse_strides_fetch_only_selected_chunks() {
     let dir = tempfile::tempdir().unwrap();
