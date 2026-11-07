@@ -680,3 +680,57 @@ def test_to_raster_lazy_and_options(files, tmp_path, monkeypatch):
     txr.open_rasterio(files["rgb"]).terrio.to_raster(str(tmp_path / "x.zarr"))
     assert opened[-1]["driver"] == "Zarr"
     assert "blockxsize" not in opened[-1] and "tiled" not in opened[-1]
+
+
+def test_per_dataset_mask_and_backend_close(tmp_path):
+    masked_path = tmp_path / "masked.tif"
+    pixels = np.array([[10, 20], [30, 40]], dtype="uint8")
+    mask = np.array([[255, 0], [0, 255]], dtype="uint8")
+    with rio.open(
+        masked_path,
+        "w",
+        driver="GTiff",
+        width=2,
+        height=2,
+        count=1,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=Affine.translation(0.0, 2.0) * Affine.scale(1.0, -1.0),
+    ) as dst:
+        dst.write(pixels, 1)
+        dst.write_mask(mask)
+
+    da = txr.open_rasterio(str(masked_path), masked=True)
+    expected = np.array([[[10.0, np.nan], [np.nan, 40.0]]], dtype="float32")
+    np.testing.assert_allclose(da.values, expected, equal_nan=True)
+    np.testing.assert_allclose(da[:, :1, 1:].values, expected[:, :1, 1:], equal_nan=True)
+
+    from terrio.xarray._backend import TerrioBackendEntrypoint
+
+    ep = TerrioBackendEntrypoint()
+    ds1 = ep.open_dataset(str(masked_path))
+    assert ds1._close is not None
+    pool1 = ds1["band_data"].variable._data.array.source.pool
+    ds1.close()
+    assert pool1._shared is None and not pool1._free
+
+    rgb_path = tmp_path / "rgb_drop.tif"
+    with rio.open(
+        rgb_path,
+        "w",
+        driver="GTiff",
+        width=2,
+        height=2,
+        count=2,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=Affine.translation(0.0, 2.0) * Affine.scale(1.0, -1.0),
+    ) as dst:
+        dst.write(pixels, 1)
+        dst.write(pixels, 2)
+    ds2 = ep.open_dataset(str(rgb_path), band_as_variable=True, drop_variables=("band_1",))
+    assert "band_1" not in ds2.data_vars and "band_2" in ds2.data_vars
+    assert ds2._close is not None
+    pool2 = ds2["band_2"].variable._data.array.source.pool
+    ds2.close()
+    assert pool2._shared is None and not pool2._free

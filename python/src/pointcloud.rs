@@ -1899,9 +1899,12 @@ fn raster_arg(py: Python<'_>, v: &Bound<'_, PyAny>) -> PyResult<terrio::RasterDa
     if let Ok(path) = v.extract::<String>() {
         return py.detach_result(|| terrio::open_raster(&path)).py();
     }
-    let mut r = v.extract::<PyRefMut<'_, crate::raster::PyRaster>>()?;
-    let r = &mut *r;
-    py.detach_result(|| r.with_dataset(|ds| Ok(ds.clone()))).py()
+    let mut shared = v.extract::<PyRefMut<'_, crate::raster::PyRaster>>()?.inner.shared();
+    py.detach_result(|| match shared.dataset() {
+        Some(ds) => Ok(ds.clone()),
+        None => shared.read(),
+    })
+    .py()
 }
 
 /// A vector layer given as a path (its layer `layer`, or the first), a `Layer` or a

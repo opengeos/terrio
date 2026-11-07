@@ -71,6 +71,8 @@ pub fn rewrite_args(args: Vec<OsString>) -> Vec<OsString> {
     let strs: Vec<&str> = args.iter().filter_map(|a| a.to_str()).collect();
     let mut calc_exprs = Vec::new();
     let mut has_f_band_or_all = false;
+    let mut has_explicit_f_input = false;
+    let is_f_pair = |v: &str| v.split_once('=').is_some_and(|(k, _)| k.trim() == "f");
     let mut i = 0;
     while i < strs.len() {
         let s = strs[i];
@@ -84,8 +86,19 @@ pub fn rewrite_args(args: Vec<OsString>) -> Vec<OsString> {
             i += 2;
             continue;
         }
+        if s == "--input" {
+            if strs.get(i + 1).is_some_and(|v| is_f_pair(v)) {
+                has_explicit_f_input = true;
+            }
+            i += 2;
+            continue;
+        }
         if let Some(expr) = s.strip_prefix("--calc=") {
             calc_exprs.push(expr);
+        } else if let Some(inp) = s.strip_prefix("--input=") {
+            if is_f_pair(inp) {
+                has_explicit_f_input = true;
+            }
         } else if s.starts_with("--f_band")
             || s.starts_with("--f-band")
             || s == "--allBands=f"
@@ -96,8 +109,8 @@ pub fn rewrite_args(args: Vec<OsString>) -> Vec<OsString> {
         }
         i += 1;
     }
-    let f_is_input =
-        has_f_band_or_all || calc_exprs.iter().any(|e| e.split(|c: char| !c.is_alphanumeric() && c != '_').any(|tok| tok == "f"));
+    let f_is_input = !has_explicit_f_input
+        && (has_f_band_or_all || calc_exprs.iter().any(|e| e.split(|c: char| !c.is_alphanumeric() && c != '_').any(|tok| tok == "f")));
     let mut out = Vec::with_capacity(args.len());
     let mut it = args.into_iter().peekable();
     while let Some(arg) = it.next() {
@@ -272,5 +285,21 @@ mod tests {
         let var_f_args: Vec<_> = ["terrio", "calc", "-f", "a.tif", "--calc", "f + 1", "out.tif"].iter().map(Into::into).collect();
         let var_f_out: Vec<String> = rewrite_args(var_f_args).into_iter().map(|s| s.into_string().unwrap()).collect();
         assert_eq!(var_f_out, ["terrio", "calc", "--input", "f=a.tif", "--calc", "f + 1", "out.tif"]);
+
+        let f_band_args: Vec<_> =
+            ["terrio", "calc", "-f", "a.tif", "--f_band", "2", "--calc", "1", "out.tif"].iter().map(Into::into).collect();
+        let f_band_out: Vec<String> = rewrite_args(f_band_args).into_iter().map(|s| s.into_string().unwrap()).collect();
+        assert_eq!(f_band_out, ["terrio", "calc", "--input", "f=a.tif", "--input-band", "f=2", "--calc", "1", "out.tif"]);
+
+        let explicit_f_args: Vec<_> = ["terrio", "calc", "-A", "a.tif", "--input", "f=b.tif", "-f", "COG", "--calc", "A*f", "out.tif"]
+            .iter()
+            .map(Into::into)
+            .collect();
+        let explicit_f_out: Vec<String> = rewrite_args(explicit_f_args).into_iter().map(|s| s.into_string().unwrap()).collect();
+        assert_eq!(explicit_f_out, ["terrio", "calc", "--input", "A=a.tif", "--input", "f=b.tif", "-f", "COG", "--calc", "A*f", "out.tif"]);
+
+        let dash_args: Vec<_> = ["terrio", "calc", "-A", "a.tif", "--calc", "A", "--", "-B", "out.tif"].iter().map(Into::into).collect();
+        let dash_out: Vec<String> = rewrite_args(dash_args).into_iter().map(|s| s.into_string().unwrap()).collect();
+        assert_eq!(dash_out, ["terrio", "calc", "--input", "A=a.tif", "--calc", "A", "--", "-B", "out.tif"]);
     }
 }

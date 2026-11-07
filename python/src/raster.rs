@@ -593,7 +593,10 @@ impl PyRaster {
         })
         .py()?;
         if self.inner.dataset().is_none() && tile_archive {
-            return py.detach_result(|| self.inner.write(path, &options)).py();
+            match py.detach_result(|| self.inner.write(path, &options)) {
+                Err(terrio::Error::Unsupported(msg)) if msg == "source inventory unavailable" => {}
+                res => return res.py(),
+            }
         }
         py.detach_result(|| self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
     }

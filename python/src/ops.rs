@@ -344,7 +344,10 @@ fn write_raster(
     })
     .py()?;
     if raster.inner.dataset().is_none() && tile_archive {
-        return py.detach_result(|| raster.inner.write(path, &options)).py();
+        match py.detach_result(|| raster.inner.write(path, &options)) {
+            Err(terrio::Error::Unsupported(msg)) if msg == "source inventory unavailable" => {}
+            res => return res.py(),
+        }
     }
     py.detach_result(|| raster.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
 }

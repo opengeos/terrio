@@ -318,18 +318,23 @@ fn decompress_with_limit(data: &[u8], codec: u8, limit: Option<usize>, resource:
     }
 }
 
-/// The number of tiles in the zoom levels below `z`: the first tile id of zoom `z`.
+/// The number of tiles in the zoom levels below `z` (`z <= 31`): the first tile id of zoom `z`.
 pub(crate) fn zoom_base(z: u8) -> u64 {
     // (4^z - 1) / 3
-    if z > 32 {
+    debug_assert!(z <= 31, "PMTiles zoom level {z} exceeds 31");
+    if z > 31 {
         return u64::MAX;
     }
     (((1u128 << (2 * z as u32)) - 1) / 3) as u64
 }
 
-/// The PMTiles tile id of tile `(z, x, y)`: the zoom's base plus the tile's Hilbert curve index.
+/// The PMTiles tile id of tile `(z, x, y)` for `z <= 30`: the zoom's base plus the tile's
+/// Hilbert curve index.
 pub(crate) fn zxy_to_tile_id(z: u8, x: u32, y: u32) -> u64 {
-    let z = z.min(31);
+    debug_assert!(z <= 30, "PMTiles zoom level {z} exceeds 30");
+    if z > 30 {
+        return u64::MAX;
+    }
     let n = 1i64 << z;
     let (mut xx, mut yy) = (x as i64, y as i64);
     let mut d: i64 = 0;
@@ -452,6 +457,9 @@ impl Reader {
 
     /// The location `(offset, length)` of a tile's data, absolute in the file.
     pub(crate) fn locate(&mut self, z: u8, x: u32, y: u32) -> Result<Option<(u64, u32)>> {
+        if z > 30 {
+            return Ok(None);
+        }
         let id = zxy_to_tile_id(z, x, y);
         let mut entries = self.root.clone();
         for _ in 0..4 {
@@ -508,6 +516,9 @@ impl Reader {
 
     /// The tiles `(x, y)` present at zoom `z`, in tile id order, read from the directories.
     pub(crate) fn tiles_at_zoom(&mut self, z: u8) -> Result<Vec<(u32, u32)>> {
+        if z > 30 {
+            return Ok(Vec::new());
+        }
         let (lo, hi) = (zoom_base(z), zoom_base(z + 1));
         let mut out = Vec::new();
         let root = self.root.clone();
@@ -563,6 +574,9 @@ pub(crate) struct ArchiveParams {
 /// consecutive tiles sharing data as run-length entries, directories split into leaves when the
 /// root does not fit in the first 16 KiB, the metadata gzipped.
 pub(crate) fn write_archive(mut tiles: Vec<OutTile>, metadata: &[u8], params: &ArchiveParams) -> Result<Vec<u8>> {
+    if params.min_zoom > 30 || params.max_zoom > 30 || params.min_zoom > params.max_zoom || tiles.iter().any(|t| t.z > 30) {
+        return Err(Error::InvalidArgument("PMTiles zoom levels must be at most 30".into()));
+    }
     tiles.sort_by_key(|t| zxy_to_tile_id(t.z, t.x, t.y));
     let addressed = tiles.len() as u64;
     let mut tile_data: Vec<u8> = Vec::new();
@@ -898,8 +912,22 @@ mod tests {
 
         let bad_zoom = Header { min_zoom: 64, max_zoom: 64, ..h.clone() };
         assert!(Header::parse(&bad_zoom.to_bytes()).is_err());
-        assert_eq!(zoom_base(64), u64::MAX);
-        let _ = zxy_to_tile_id(64, 0, 0);
+        assert_eq!(zoom_base(31), (((1u128 << 62) - 1) / 3) as u64);
+        assert!(
+            write_archive(
+                vec![OutTile { z: 32, x: 0, y: 0, data: vec![1] }],
+                b"{}",
+                &ArchiveParams {
+                    tile_type: TILE_MVT,
+                    tile_compression: COMPRESSION_NONE,
+                    min_zoom: 0,
+                    max_zoom: 32,
+                    bounds: [0.0, 0.0, 1.0, 1.0],
+                    center: (0.0, 0.0, 0),
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -91,14 +91,7 @@ pub struct ReclassifyArgs {
 /// Runs `terrio reclassify`.
 pub fn reclassify(a: ReclassifyArgs) -> terrio::Result<()> {
     let mapping = match a.mapping.strip_prefix('@') {
-        Some(path) => {
-            if std::env::var_os("TERRIO_MCP_TOOL").is_some() {
-                return Err(terrio::Error::InvalidArgument(
-                    "@file mappings are not read in MCP tool calls: pass the mapping string directly".into(),
-                ));
-            }
-            read_mapping_file(path)?
-        }
+        Some(path) => read_mapping_file(path)?,
         None => a.mapping,
     };
     let ds = open(&a.input)?;

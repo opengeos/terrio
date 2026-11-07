@@ -33,11 +33,11 @@ def disjoint_bounds(bounds1: Sequence[float], bounds2: Sequence[float]) -> bool:
     Raises:
         ValueError: If the boxes do not have the same orientation.
     """
-    north_up1 = bounds1[3] > bounds1[1]
-    north_up2 = bounds2[3] > bounds2[1]
-    if north_up1 != north_up2:
+    dy1 = bounds1[3] - bounds1[1]
+    dy2 = bounds2[3] - bounds2[1]
+    if (dy1 > 0 and dy2 < 0) or (dy1 < 0 and dy2 > 0):
         raise ValueError("Bounds must both have the same orientation")
-    if north_up1:
+    if dy1 > 0 or dy2 > 0:
         return (
             bounds1[0] > bounds2[2]
             or bounds2[0] > bounds1[2]

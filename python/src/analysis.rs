@@ -189,16 +189,24 @@ fn zonal_stats(
         Ok(crate::ops::raster_path(raster)?.map_or(Key::Object(raster.as_ptr() as usize), Key::Path))
     };
     let mut sources: Vec<ZonalSource> = Vec::new();
+    let mut source_slots: Vec<Vec<usize>> = Vec::new();
+    let mut next_slot = 0usize;
     let mut seen: std::collections::HashMap<Key, usize> = std::collections::HashMap::new();
     for (item, prefix) in items.iter().zip(&prefixes) {
         let Ok(row) = item.cast::<pyo3::types::PyDict>() else {
             let item_bands: Vec<ZonalBand> = bands.iter().map(|&band| ZonalBand::new(band, format!("{prefix}_b{band}"))).collect();
+            let slots: Vec<usize> = (next_slot..next_slot + item_bands.len()).collect();
+            next_slot += item_bands.len();
             let k = key(item)?;
             match seen.get(&k) {
-                Some(&i) => sources[i].bands.extend(item_bands),
+                Some(&i) => {
+                    sources[i].bands.extend(item_bands);
+                    source_slots[i].extend(slots);
+                }
                 None => {
                     seen.insert(k, sources.len());
                     sources.push(ZonalSource { raster: zonal_raster(py, item)?, bands: item_bands });
+                    source_slots.push(slots);
                 }
             }
             continue;
@@ -238,15 +246,44 @@ fn zonal_stats(
         };
         let row_bands =
             terrio::ops::zonal::labelled_bands(&row_bands, time.as_deref(), label.as_deref(), |band| format!("{prefix}_b{band}"));
-        match seen.get(&key(&raster)?) {
-            Some(&i) => sources[i].bands.extend(row_bands),
+        let slots: Vec<usize> = (next_slot..next_slot + row_bands.len()).collect();
+        next_slot += row_bands.len();
+        let k = key(&raster)?;
+        match seen.get(&k) {
+            Some(&i) => {
+                sources[i].bands.extend(row_bands);
+                source_slots[i].extend(slots);
+            }
             None => {
-                seen.insert(key(&raster)?, sources.len());
+                seen.insert(k, sources.len());
                 sources.push(ZonalSource { raster: zonal_raster(py, &raster)?, bands: row_bands });
+                source_slots.push(slots);
             }
         }
     }
-    let inner = crate::with_warnings(py, || terrio::ops::zonal::zonal_stats(&zones, &mut sources, &options))?;
+    let mut inner = crate::with_warnings(py, || terrio::ops::zonal::zonal_stats(&zones, &mut sources, &options))?;
+    let slots: Vec<usize> = source_slots.into_iter().flatten().collect();
+    if !slots.iter().copied().eq(0..slots.len()) {
+        let base = zones.schema.len();
+        let n_stats = options.stats.len();
+        let mut perm = vec![0usize; slots.len() * n_stats];
+        for (k, &slot) in slots.iter().enumerate() {
+            for s in 0..n_stats {
+                perm[slot * n_stats + s] = base + k * n_stats + s;
+            }
+        }
+        let old_fields = inner.schema.fields().to_vec();
+        inner.schema = zones.schema.clone();
+        for &src in &perm {
+            inner.schema.add_field(old_fields[src].clone());
+        }
+        for feature in &mut inner.features {
+            let old_attrs = feature.attributes.clone();
+            for (dst, &src) in perm.iter().enumerate() {
+                feature.attributes[base + dst] = old_attrs[src].clone();
+            }
+        }
+    }
     Ok(PyLayer::from(inner))
 }
 

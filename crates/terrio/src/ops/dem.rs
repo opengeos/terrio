@@ -1949,6 +1949,9 @@ fn rgba(c: &[ColorEntry], v: f64, mode: ColorSelection) -> [i32; 4] {
     let mut lower = 0;
     if c[0].value.is_nan() {
         if v.is_nan() || c.len() == 1 {
+            // In GDAL's GDALColorReliefGetRGBA (apps/gdaldem_lib.cpp), signed `int` bounds
+            // `lower = 1, upper = 0` break with `idx = upper + 1 == nColorAssociation`, which
+            // returns `[0; 4]` for Exact and `pasColorAssociation[0]` otherwise.
             return if !v.is_nan() && mode == ColorSelection::Exact { [0; 4] } else { col(&c[0]) };
         }
         lower = 1;

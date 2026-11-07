@@ -933,6 +933,9 @@ struct CutLayers {
 fn cut_layers(layers: &[Layer], o: &TileWriteOptions) -> Result<CutLayers> {
     let min_zoom = o.min_zoom.unwrap_or(0);
     let max_zoom = o.max_zoom.unwrap_or(5);
+    if min_zoom > 30 || max_zoom > 30 {
+        return Err(Error::InvalidArgument(format!("zoom levels must be at most 30 (got {min_zoom}..={max_zoom})")));
+    }
     if min_zoom > max_zoom {
         return Err(Error::InvalidArgument(format!("the minimum zoom level {min_zoom} is above the maximum {max_zoom}")));
     }

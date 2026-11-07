@@ -313,11 +313,12 @@ class _Source:
                         m = raster.read_mask(
                             window=(c0, r0, c1 - c0, r1 - r0), overview=self.overview
                         )
-                    ds_mask = (
-                        np.asarray(m) == 0
-                        if m is not None
-                        else np.zeros(data.shape[1:], dtype=bool)
-                    )
+                    if m is None:
+                        if self.overview is None:
+                            raise RioXarrayError(f"cannot read dataset mask of {self.name}")
+                        ds_mask = np.zeros(data.shape[1:], dtype=bool)
+                    else:
+                        ds_mask = np.asarray(m) == 0
                 bad = ds_mask
             if bad is None or not bad.any():
                 continue
@@ -425,8 +426,12 @@ def _open_source(
             "units": tuple(riods.units),
             "band_tags": [dict(riods.tags(b)) for b in riods.indexes],
         }
+        mask_flags = tuple(int(sum(f.value for f in fl)) for fl in riods.mask_flag_enums)
         if overview_level is not None:
             band_meta = _overview_band_metadata(riods, first, overview_level)
+            if width > 0 and height > 0:
+                if first.read_mask(window=(0, 0, 1, 1), overview=overview_level) is not None:
+                    mask_flags = tuple(MaskFlags.per_dataset.value for _ in range(riods.count))
         src = _Source(
             name=riods.name,
             path=_terrio_path(riods.name),
@@ -446,7 +451,7 @@ def _open_source(
             transform=transform,
             crs=riods.crs,
             block_shapes=block_shapes,
-            mask_flags=tuple(int(sum(f.value for f in fl)) for fl in riods.mask_flag_enums),
+            mask_flags=mask_flags,
             alpha_band=alpha,
             profile=dict(riods.profile),
             overview=overview_level,

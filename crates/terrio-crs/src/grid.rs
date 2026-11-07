@@ -588,6 +588,8 @@ fn read_tiff(reader: GridReader) -> Option<GridFile> {
             west = tie[3] - tie[0] * h_res;
             north = tie[4] + tie[1] * v_res;
         }
+        // As in PROJ's GTiffGrid::open, horizontal resolution must be positive (west-to-east)
+        // while vertical resolution may be either sign (south-up is swapped below).
         if !(h_res > 0.0 && h_res.is_finite() && v_res != 0.0 && v_res.is_finite()) {
             return None;
         }
@@ -1164,26 +1166,23 @@ fn hierarchy(file: &GridFile, keep: impl Fn(&Source, usize) -> Option<Use>) -> V
                 Some(&p) => nodes[p].1.push(id),
                 None => top.push(id),
             }
-            named.insert(name.clone(), id);
+            if !name.is_empty() {
+                named.entry(name.clone()).or_insert(id);
+            }
             continue;
         }
-        if !parent.is_empty() {
-            if let Some(&p) = named.get(parent)
-                && nodes[p].0.ext.contains(ext)
-            {
-                nodes[p].1.push(id);
-                if !name.is_empty() {
-                    named.insert(name.clone(), id);
-                }
-                continue;
+        if !parent.is_empty()
+            && let Some(&p) = named.get(parent)
+            && nodes[p].0.ext.contains(ext)
+        {
+            nodes[p].1.push(id);
+            if !name.is_empty() {
+                named.entry(name.clone()).or_insert(id);
             }
-        } else if !name.is_empty() {
-            named.insert(name.clone(), id);
-            top.push(id);
             continue;
         }
         if !name.is_empty() {
-            named.insert(name.clone(), id);
+            named.entry(name.clone()).or_insert(id);
         }
         // By extents.
         let kind = src.meta("TYPE", -1).to_string();
@@ -2109,9 +2108,11 @@ mod tests {
             format: Format::Tiff,
         });
         let ext = Extent::world();
+        let inner = Extent { west: -0.5, south: -0.5, east: 0.5, north: 0.5, res_x: 0.1, res_y: 0.1, geographic: true };
         let file = GridFile {
             sources: vec![
                 (ext, src.clone(), "root".into(), String::new()),
+                (inner, src.clone(), "root".into(), String::new()),
                 (ext, src.clone(), "self".into(), "self".into()),
                 (ext, src.clone(), "a".into(), "b".into()),
                 (ext, src, "b".into(), "a".into()),
@@ -2120,6 +2121,7 @@ mod tests {
         };
         let grids = hierarchy(&file, |_, _| Some(Use::Generic));
         assert!(!grids.is_empty());
+        assert_eq!(grids[0].children[0].ext.west, inner.west);
     }
 
     #[test]

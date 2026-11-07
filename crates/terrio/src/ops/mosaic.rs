@@ -167,9 +167,9 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
         if o.bands.is_empty() && sources.iter().any(|s| s.ds.raster.bands != nbands) {
             return Err(Error::InvalidArgument("sources have different band counts".into()));
         }
-        if sources.iter().any(|s| band_list(s.ds).iter().any(|b| *b == 0 || *b > s.ds.raster.bands)) {
-            return Err(Error::InvalidArgument("a source lacks one of the requested bands".into()));
-        }
+    }
+    if sources.iter().any(|s| band_list(s.ds).iter().any(|b| *b == 0 || *b > s.ds.raster.bands)) {
+        return Err(Error::InvalidArgument("a source lacks one of the requested bands".into()));
     }
     let src_nodata = |s: &MosaicSource, b: usize, band: usize| match &o.src_nodata {
         Nodata::Auto => s.ds.band_nodata(band),
@@ -229,8 +229,8 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
             }
         }
     }
-    if bands.is_empty() {
-        return Err(Error::InvalidArgument("the mosaic has no bands in the target extent".into()));
+    if bands.iter().all(|b| b.sources.is_empty()) {
+        return Err(Error::InvalidArgument("no source rasters intersect the target extent".into()));
     }
     let srs = (!srs.is_unknown()).then_some(srs);
     Ok(VrtDataset { width, height, geo_transform: Some([min_x, we, 0.0, max_y, 0.0, ns]), srs, bands })
@@ -677,8 +677,18 @@ mod tests {
         assert!(mosaic(&srcs, &MosaicOptions::default()).is_err());
 
         let single = [MosaicSource { path: "a.tif".into(), ds: &a }];
+        for separate in [false, true] {
+            assert!(
+                mosaic(&single, &MosaicOptions { separate, extent: Some((100.0, 100.0, 110.0, 110.0)), ..Default::default() }).is_err()
+            );
+        }
         assert!(
-            mosaic(&single, &MosaicOptions { separate: true, extent: Some((100.0, 100.0, 110.0, 110.0)), ..Default::default() }).is_err()
+            build_vrt(
+                &[MosaicSource { path: "b.tif".into(), ds: &b }, MosaicSource { path: "a.tif".into(), ds: &a }],
+                &MosaicOptions { separate: true, bands: vec![2], extent: Some((0.0, 0.0, 4.0, 4.0)), ..Default::default() },
+                None,
+            )
+            .is_err()
         );
         assert!(mosaic(&single, &MosaicOptions { resolution: ResolutionStrategy::User(0.0, 1.0), ..Default::default() }).is_err());
     }

@@ -11,38 +11,88 @@ use terrio::ops::overview::OverviewSelection;
 use terrio::ops::translate::{Scale, Size, TranslateOptions, translate, translate_lazy_to_file};
 use terrio::ops::{Resampling, parse_data_type};
 
+fn flag_arity(s: &str) -> Option<usize> {
+    match s {
+        "-b" | "--band" | "--ot" | "--projwin-srs" | "-r" | "--resampling" | "--overview" | "--ovr" | "--exponent" | "--a-nodata"
+        | "--a-srs" | "-f" | "--format" | "--of" | "--compress" | "--tile-size" | "--co" => Some(1),
+        "--outsize" | "--tr" => Some(2),
+        "--srcwin" | "--projwin" | "--a-ullr" => Some(4),
+        "--bigtiff" | "--json-usage" | "-h" | "--help" | "-V" | "--version" => Some(0),
+        _ => None,
+    }
+}
+
 /// Rewrites `terrio translate ... --scale [s0 s1] <input> <output>` so that positional
 /// `<input>` and `<output>` arguments following a 0- or 2-argument `--scale` are not
 /// consumed by clap as scale numbers.
 pub fn rewrite_args(args: Vec<OsString>) -> Vec<OsString> {
-    if args.iter().skip(1).find_map(|a| a.to_str().filter(|s| !s.starts_with('-'))) != Some("translate") {
+    let Some(sub_idx) = args.iter().enumerate().skip(1).find_map(|(idx, a)| (a.to_str() == Some("translate")).then_some(idx)) else {
         return args;
-    }
+    };
     let mut out = Vec::with_capacity(args.len());
-    let mut i = 0;
+    out.extend_from_slice(&args[..=sub_idx]);
+    let mut pos_before = 0usize;
+    let mut i = sub_idx + 1;
     while i < args.len() {
         let s = args[i].to_str();
         if s == Some("--") {
             out.extend_from_slice(&args[i..]);
             break;
         }
+        if let Some(arity) = s.and_then(flag_arity) {
+            let end = (i + 1 + arity).min(args.len());
+            out.extend_from_slice(&args[i..end]);
+            i = end;
+            continue;
+        }
         if s == Some("--scale") {
             let mut k = 0usize;
             while k < 4 && i + 1 + k < args.len() && args[i + 1 + k].to_str().is_some_and(|t| t.parse::<f64>().is_ok()) {
                 k += 1;
             }
-            if k < 4 {
-                let mut m = k;
-                while i + 1 + m < args.len() && args[i + 1 + m].to_str().is_some_and(|t| !t.starts_with('-')) {
-                    m += 1;
+            let mut m = k;
+            while i + 1 + m < args.len() && args[i + 1 + m].to_str().is_some_and(|t| !t.starts_with('-')) {
+                m += 1;
+            }
+            // Count positional arguments after this `--scale` span.
+            let mut pos_after = 0usize;
+            let mut j = i + 1 + m;
+            while j < args.len() {
+                let sj = args[j].to_str();
+                if sj == Some("--") {
+                    pos_after += args.len() - (j + 1);
+                    break;
                 }
-                if (k == 0 || k == 2) && (1..=2).contains(&(m - k)) {
-                    out.extend_from_slice(&args[i + 1 + k..i + 1 + m]);
-                    out.extend_from_slice(&args[i..i + 1 + k]);
-                    i += 1 + m;
-                    continue;
+                if let Some(arity) = sj.and_then(flag_arity) {
+                    j += 1 + arity;
+                } else if sj.is_some_and(|t| t.starts_with('-')) {
+                    j += 1;
+                } else {
+                    pos_after += 1;
+                    j += 1;
                 }
             }
+            let need = 2usize.saturating_sub(pos_before + pos_after);
+            let scale_len = if need > 0 && m >= need && matches!(m - need, 0 | 2 | 4) && m - need <= k {
+                Some(m - need)
+            } else if matches!(k, 0 | 2) && (1..=2).contains(&(m - k)) {
+                Some(k)
+            } else {
+                None
+            };
+            if let Some(s_len) = scale_len
+                && s_len < m
+                && s_len < 4
+            {
+                out.extend_from_slice(&args[i + 1 + s_len..i + 1 + m]);
+                out.extend_from_slice(&args[i..i + 1 + s_len]);
+                pos_before += m - s_len;
+                i += 1 + m;
+                continue;
+            }
+        }
+        if s.is_some_and(|t| !t.starts_with('-')) {
+            pos_before += 1;
         }
         out.push(args[i].clone());
         i += 1;
@@ -188,6 +238,15 @@ mod tests {
             (
                 vec!["terrio", "translate", "--scale", "0", "1000", "0", "255", "in.tif", "out.tif"],
                 vec!["terrio", "translate", "--scale", "0", "1000", "0", "255", "in.tif", "out.tif"],
+            ),
+            (vec!["terrio", "translate", "--scale", "1e3", "out.tif"], vec!["terrio", "translate", "1e3", "out.tif", "--scale"]),
+            (
+                vec!["terrio", "translate", "--scale", "0", "1000", "1e3", "out.tif"],
+                vec!["terrio", "translate", "1e3", "out.tif", "--scale", "0", "1000"],
+            ),
+            (
+                vec!["terrio", "translate", "in.tif", "--a-nodata", "--scale", "none", "out.tif"],
+                vec!["terrio", "translate", "in.tif", "--a-nodata", "--scale", "none", "out.tif"],
             ),
         ] {
             let out: Vec<String> =
