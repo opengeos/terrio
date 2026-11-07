@@ -117,7 +117,7 @@ def main():
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     gdal.UseExceptions()
-    ogr.DontUseExceptions()
+    ogr.UseExceptions()
     with tempfile.TemporaryDirectory(prefix="shapefile-deleted-") as directory:
         results = compare(args.probe.resolve(), Path(directory))
     print(json.dumps(results, indent=2) if args.json else "\n".join(f"{r['name']}: {r['status']}" for r in results))

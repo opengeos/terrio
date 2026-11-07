@@ -2462,7 +2462,9 @@ cargo build --release -p terrio --example shapefile_rows
 python scripts/conformance.py ../terrio-data --only shapefile-deleted --strict
 ```
 
-No downloaded data or Terrio Python bindings are needed for this suite.
+The GDAL/OGR Python bindings (`osgeo`) are required; Terrio Python bindings and
+downloaded data are not. The positional data-directory argument is required by the
+conformance runner, but this suite generates its fixtures in a temporary directory.
 
 ### GeoPackage text encodings
 

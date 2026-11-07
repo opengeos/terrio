@@ -124,6 +124,8 @@ pub fn read(path: &str, options: &ShapefileOptions) -> Result<Layer> {
 /// DBF deletion flags and uses the `.shx` index, or scans SHP headers when the index is absent.
 /// Memory holds the SHP offset index, the selected features, DBF/SHP record buffers and up to
 /// 64 KiB for scanning short DBF rows. Wide rows retain sparse one-byte flag reads.
+/// Every deep page scans the skipped physical prefix: short rows read that prefix in buffered
+/// blocks, while wide rows require one flag read/seek per slot. No per-file deletion index is cached.
 pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &ShapefileOptions) -> Result<Layer> {
     use std::io::{Read, Seek, SeekFrom};
     let method = options.method();
