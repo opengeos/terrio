@@ -759,7 +759,7 @@ impl IndexedLayer {
                 }
             }
         } else {
-            for (rowid, row) in self.db.stored_rows(self.root)? {
+            for (rowid, row) in self.db.rows(self.root)? {
                 if let Some(feature) = self.feature(rowid, row, bbox) {
                     layer.push(feature);
                 }

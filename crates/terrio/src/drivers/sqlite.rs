@@ -91,6 +91,15 @@ pub(crate) fn bad(msg: &str) -> Error {
     Error::InvalidData(format!("SQLite: {msg}"))
 }
 
+/// The text encoding of a database header's encoding field, as SQLite reads it: its two low bits,
+/// 0 meaning UTF-8. 1 for UTF-8, 2 and 3 for UTF-16LE and UTF-16BE.
+pub(crate) fn text_encoding(field: u32) -> u32 {
+    match field & 3 {
+        0 => 1,
+        encoding => encoding,
+    }
+}
+
 /// Reads a varint at `i`: `(value, length)`.
 pub(crate) fn varint(b: &[u8], i: usize) -> Option<(i64, usize)> {
     let mut v: u64 = 0;
@@ -446,21 +455,30 @@ impl Db {
     }
 
     /// The raw rows of a table: `(rowid, values)` with a rowid alias column left NULL, as
-    /// stored. For rewriting a database.
+    /// stored. For rewriting a database: invalid text is an error, not rewritten as U+FFFD.
     pub(crate) fn stored_rows(&self, root: u32) -> Result<Vec<(i64, Vec<Value>)>> {
+        let mut rows = Vec::new();
+        self.scan(root, &mut rows, 0)?;
+        rows.into_iter().map(|(rowid, payload)| Ok((rowid, super::sqlite_repack::decode_record(&payload, self.text_encoding())?))).collect()
+    }
+
+    /// The rows of the table b-tree rooted at `root`, as [`Db::stored_rows`] gives them but
+    /// decoded for reading, as [`Db::decode_record`] does.
+    pub(crate) fn rows(&self, root: u32) -> Result<Vec<(i64, Vec<Value>)>> {
         let mut rows = Vec::new();
         self.scan(root, &mut rows, 0)?;
         rows.into_iter().map(|(rowid, payload)| Ok((rowid, self.decode_record(&payload)?))).collect()
     }
 
-    /// Decode text using the encoding declared by this database.
+    /// Decodes a record for reading, its text in the database's encoding. Invalid text becomes
+    /// U+FFFD, as SQLite and GDAL still read it; a malformed record is an error.
     pub(crate) fn decode_record(&self, payload: &[u8]) -> Result<Vec<Value>> {
-        super::sqlite_repack::decode_record(payload, self.text_encoding())
+        super::sqlite_repack::decode_record_lossy(payload, self.text_encoding())
     }
 
     /// The text encoding of the database: 1 for UTF-8, 2 and 3 for UTF-16.
     pub(crate) fn text_encoding(&self) -> u32 {
-        u32::from_be_bytes([self.data[56], self.data[57], self.data[58], self.data[59]])
+        text_encoding(u32::from_be_bytes([self.data[56], self.data[57], self.data[58], self.data[59]]))
     }
 
     /// A 32-bit header field at `offset` (`user_version` at 60, `application_id` at 68).

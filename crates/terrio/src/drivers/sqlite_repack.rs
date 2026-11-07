@@ -589,6 +589,16 @@ impl MapSource<'_> {
 /// Decode an encoded SQLite record with the database's declared text encoding. Unlike the
 /// permissive display reader, validation reports truncated fields and invalid text.
 pub(crate) fn decode_record(record: &[u8], encoding: u32) -> Result<Vec<super::sqlite::Value>> {
+    decode(record, encoding, false)
+}
+
+/// As [`decode_record`], but invalid text becomes U+FFFD rather than an error, as SQLite and
+/// GDAL still read it. Malformed records remain errors.
+pub(crate) fn decode_record_lossy(record: &[u8], encoding: u32) -> Result<Vec<super::sqlite::Value>> {
+    decode(record, encoding, true)
+}
+
+fn decode(record: &[u8], encoding: u32, lossy: bool) -> Result<Vec<super::sqlite::Value>> {
     use super::sqlite::Value;
     fields(record)?
         .into_iter()
@@ -607,17 +617,25 @@ pub(crate) fn decode_record(record: &[u8], encoding: u32) -> Result<Vec<super::s
                 9 => Value::Int(1),
                 serial if serial % 2 == 0 => Value::Blob(bytes.to_vec()),
                 _ => Value::Text(match encoding {
+                    1 if lossy => String::from_utf8_lossy(bytes).into_owned(),
                     1 => std::str::from_utf8(bytes).map_err(|_| bad("invalid UTF-8 record text"))?.to_owned(),
                     2 | 3 => {
                         let (words, rest) = bytes.as_chunks::<2>();
-                        if !rest.is_empty() {
+                        if !rest.is_empty() && !lossy {
                             return Err(bad("odd UTF-16 record length"));
                         }
                         let units =
                             words.iter().map(|pair| if encoding == 2 { u16::from_le_bytes(*pair) } else { u16::from_be_bytes(*pair) });
-                        char::decode_utf16(units)
-                            .collect::<std::result::Result<String, _>>()
-                            .map_err(|_| bad("invalid UTF-16 record text"))?
+                        let mut text = String::with_capacity(bytes.len());
+                        for unit in char::decode_utf16(units) {
+                            text.push(unit.or_else(|_| {
+                                if lossy { Ok(char::REPLACEMENT_CHARACTER) } else { Err(bad("invalid UTF-16 record text")) }
+                            })?);
+                        }
+                        if !rest.is_empty() {
+                            text.push(char::REPLACEMENT_CHARACTER);
+                        }
+                        text
                     }
                     _ => return Err(bad("unknown text encoding")),
                 }),
@@ -1019,6 +1037,28 @@ with sqlite3.connect(sys.argv[1]) as a, sqlite3.connect(sys.argv[2]) as b:
         odd[1] += 1;
         assert!(decode_record(&odd, 2).is_err());
         assert!(decode_record(&odd, 1).is_ok());
+    }
+    #[test]
+    fn lossy_record_text_replaces_invalid_text_only() {
+        use super::super::sqlite::Value as V;
+        use writer::Value;
+        let text = |bytes: Vec<u8>| {
+            let mut record = writer::record(&[Value::Blob(bytes)]);
+            record[1] += 1; // Blob serial type to text of the same length.
+            record
+        };
+        let replaced = |s: &str| [V::Text(s.into())];
+        assert_eq!(decode_record_lossy(&text(b"a\xffb".to_vec()), 1).unwrap(), replaced("a\u{fffd}b"));
+        // A lone high surrogate, then an odd trailing byte.
+        assert_eq!(decode_record_lossy(&text(vec![0x61, 0, 0, 0xd8, 0x62, 0]), 2).unwrap(), replaced("a\u{fffd}b"));
+        assert_eq!(decode_record_lossy(&text(vec![0, 0x61, 0xd8, 0, 0, 0x62, 7]), 3).unwrap(), replaced("a\u{fffd}b\u{fffd}"));
+        for (encoding, bytes) in [(1, vec![0xff]), (2, vec![0, 0xd8]), (3, vec![0xd8, 0])] {
+            assert!(decode_record(&text(bytes), encoding).is_err());
+        }
+        // Structure is still checked: a text length past the record's end.
+        let mut truncated = text(b"ab".to_vec());
+        truncated[1] += 2;
+        assert!(decode_record_lossy(&truncated, 1).is_err());
     }
 }
 
