@@ -1214,7 +1214,7 @@ fn read_band(ds: &RasterDataset, band: usize) -> Result<Band<'_>> {
     }
     let n = r.rows * r.cols;
     let s = (band - 1) * n;
-    let nodata = ds.nodata();
+    let nodata = ds.band_nodata(band);
     macro_rules! int {
         ($v:expr, $lo:expr, $hi:expr) => {{
             let nd = nodata.and_then(|d| {
@@ -1650,7 +1650,7 @@ impl ColorMap {
     /// resolves percentages: `range` when given (GDAL uses the statistics cached in the
     /// dataset's `.aux.xml`, see [`pam_statistics`]), otherwise the band's minimum and maximum.
     pub fn parse(text: &str, ds: &RasterDataset, band: usize, range: Option<(f64, f64)>) -> Result<Self> {
-        Self::parse_with(text, ds.nodata(), range, || band_range(ds, band))
+        Self::parse_with(text, ds.band_nodata(band), range, || band_range(ds, band))
     }
 
     /// [`ColorMap::parse`] for a DEM read by window: percentages, when there are some and no
@@ -1667,7 +1667,7 @@ impl ColorMap {
         if max_memory_mib.is_some_and(|m| m.is_nan() || m <= 0.0) {
             return Err(Error::InvalidArgument("invalid max_memory_mib".into()));
         }
-        let nodata = src.header().nodata();
+        let nodata = src.header().band_nodata(band);
         Self::parse_with(text, nodata, range, || lazy_band_range(src, band, max_memory_mib))
     }
 
@@ -1758,7 +1758,7 @@ fn band_range(ds: &RasterDataset, band: usize) -> Result<(f64, f64)> {
     if band == 0 || band > ds.raster.bands {
         return Err(Error::InvalidArgument(format!("unable to fetch band #{band}")));
     }
-    let nodata = ds.nodata();
+    let nodata = ds.band_nodata(band);
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
     for v in super::band_f64(&ds.raster, band - 1) {
         if v.is_nan() || nodata.is_some_and(|nd| super::is_nodata(v, nd)) {
@@ -1780,7 +1780,7 @@ fn lazy_band_range(src: &mut crate::LazyRaster, band: usize, max_memory_mib: Opt
         return Err(Error::InvalidArgument(format!("unable to fetch band #{band}")));
     }
     let header = src.header();
-    let nodata = header.nodata();
+    let nodata = header.band_nodata(band);
     let (w, h) = (src.width(), src.height());
     let rows = budget_rows(src, max_memory_mib, w.max(1) * (src.data_type().size_bytes() + 8));
     let read = crate::WindowOptions { bands: vec![band], ..Default::default() };
@@ -1943,10 +1943,13 @@ fn process_colors(c: &mut Vec<ColorEntry>, nodata: Option<f64>, mode: ColorSelec
 /// `GDALColorReliefGetRGBA()`: the color of a value.
 fn rgba(c: &[ColorEntry], v: f64, mode: ColorSelection) -> [i32; 4] {
     let col = |e: &ColorEntry| [e.r, e.g, e.b, e.a];
+    if c.is_empty() {
+        return [0; 4];
+    }
     let mut lower = 0;
     if c[0].value.is_nan() {
-        if v.is_nan() {
-            return col(&c[0]);
+        if v.is_nan() || c.len() == 1 {
+            return if !v.is_nan() && mode == ColorSelection::Exact { [0; 4] } else { col(&c[0]) };
         }
         lower = 1;
     }
@@ -2022,7 +2025,7 @@ pub fn color_relief_vrt(
     if c.is_empty() {
         return Err(Error::InvalidArgument("the color map is empty".into()));
     }
-    process_colors(&mut c, ds.nodata(), o.color_selection);
+    process_colors(&mut c, ds.band_nodata(o.band), o.color_selection);
     let vrt_dir = vrt_path.and_then(|p| std::path::Path::new(p).parent());
     let (filename, relative_to_vrt) = super::mosaic::source_path(src_path, vrt_dir);
     let (w, h) = (r.cols as f64, r.rows as f64);
@@ -2096,7 +2099,7 @@ impl Relief {
         if c.is_empty() {
             return Err(Error::InvalidArgument("the color map is empty".into()));
         }
-        process_colors(&mut c, ds.nodata(), o.color_selection);
+        process_colors(&mut c, ds.band_nodata(o.band), o.color_selection);
         // Byte, Int16 and UInt16 are read as integers, the other types as Float32.
         let exact = matches!(r.data_type, DataType::U8 | DataType::I16 | DataType::U16);
         let cache: Option<Vec<[i32; 4]>> = exact.then(|| {
@@ -2786,6 +2789,18 @@ nv 10 20 30 0
         assert_eq!(out.raster.get(0, 1, 0), 255.0);
         assert_eq!(atof("12.5%"), 12.5);
         assert_eq!(atoi("12abc"), 12);
+
+        // A color map containing only an `nv` entry for NaN nodata does not underflow on valid pixels.
+        let nan_ds = dem_ds(vec![f64::NAN, 10.0, 20.0, 30.0], 2, 2, DataType::F32, Some(f64::NAN), 1.0);
+        let nv_only = ColorMap::parse("nv 10 20 30 255\n", &nan_ds, 1, None).unwrap();
+        let out_nv = color_relief(&nan_ds, &nv_only, &DemOptions { alpha: true, ..Default::default() }).unwrap();
+        assert_eq!(out_nv.raster.get(0, 0, 0), 10.0);
+        assert_eq!(out_nv.raster.get(0, 0, 1), 10.0);
+        let out_exact =
+            color_relief(&nan_ds, &nv_only, &DemOptions { alpha: true, color_selection: ColorSelection::Exact, ..Default::default() })
+                .unwrap();
+        assert_eq!(out_exact.raster.get(0, 0, 0), 10.0);
+        assert_eq!(out_exact.raster.get(0, 0, 1), 0.0);
     }
 
     #[test]

@@ -485,10 +485,16 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     let bands: usize = if interleaved {
         dims[2].size as usize
     } else if nd > 2 {
-        dims[..nd - 2].iter().map(|d| d.size as usize).product::<usize>().max(1)
+        dims[..nd - 2]
+            .iter()
+            .try_fold(1usize, |acc, d| acc.checked_mul(d.size as usize))
+            .ok_or_else(|| err(path, "variable dimensions overflow"))?
     } else {
         1
     };
+    if cols == 0 || rows == 0 || bands == 0 {
+        return Err(err(path, format!("variable '{}' has an empty dimension", var.name)));
+    }
     // `_Unsigned` marks the signed types of netCDF-3; GDAL ignores it on `Int64`, which netCDF-4
     // pairs with `UInt64`.
     let unsigned = matches!(var.dtype(), NcType::Byte | NcType::Short | NcType::Int)
@@ -952,10 +958,12 @@ fn flip(r: &mut wbraster::Raster) {
     let (cols, rows) = (r.cols, r.rows);
     macro_rules! go {
         ($v:expr) => {
-            for band in $v.chunks_mut(cols * rows) {
-                for row in 0..rows / 2 {
-                    let (a, b) = band.split_at_mut((rows - 1 - row) * cols);
-                    a[row * cols..(row + 1) * cols].swap_with_slice(&mut b[..cols]);
+            if cols > 0 && rows > 0 {
+                for band in $v.chunks_exact_mut(cols * rows) {
+                    for row in 0..rows / 2 {
+                        let (a, b) = band.split_at_mut((rows - 1 - row) * cols);
+                        a[row * cols..(row + 1) * cols].swap_with_slice(&mut b[..cols]);
+                    }
                 }
             }
         };

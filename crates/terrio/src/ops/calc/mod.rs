@@ -473,8 +473,6 @@ pub fn calc(inputs: &[CalcInput], o: &CalcOptions) -> Result<RasterDataset> {
         CalcNodata::None => None,
         CalcNodata::Value(v) => Some(Val::Float(v)),
     };
-    let in_nodata: Vec<Option<f64>> = sources.iter().map(|s| if o.hide_nodata { None } else { s.nodata() }).collect();
-
     // Evaluate in chunks of rows.
     let n = width * height;
     let chunk = (262_144 / width.max(1)).max(1) * width;
@@ -490,7 +488,9 @@ pub fn calc(inputs: &[CalcInput], o: &CalcOptions) -> Result<RasterDataset> {
             for (i, (a, s)) in inputs.iter().zip(&sources).enumerate() {
                 let band = if all_bands_index == Some(i) { b + 1 } else { a.band };
                 let arr = read_chunk(&s.raster, band, start, end);
-                if let Some(nd) = in_nodata[i] {
+                if !o.hide_nodata
+                    && let Some(nd) = s.band_nodata(band)
+                {
                     let eq = eval::binary_compare_eq(&Val::Arr(arr.clone()), &Val::Float(nd))?;
                     let m = mask.get_or_insert_with(|| vec![false; len]);
                     for (m, e) in m.iter_mut().zip(eq) {

@@ -652,8 +652,8 @@ fn radius_within(poly: &P, radius: f64) -> bool {
     };
     let mut heap = BinaryHeap::from([cell(env.center(), env.width().max(env.height()) / 2.)]);
     let mut best = poly.interior_point().map_or(0., |p| distance(p.0));
-    let tolerance = radius * 0.0001;
-    let factor = (env.width().hypot(env.height()) / tolerance).ln().max(1.) as usize;
+    let tolerance = (radius * 0.0001).max(f64::MIN_POSITIVE);
+    let factor = (env.width().hypot(env.height()) / tolerance).ln().clamp(1., 1000.) as usize;
     for _ in 0..2000 + 2000 * factor {
         let Some(c) = heap.pop() else { break };
         best = best.max(c.d);

@@ -554,10 +554,16 @@ pub fn mapping_from_file_text(text: &str) -> Result<String> {
 /// Reads a UTF-8 mapping file with the same 10 MB raw-input limit on native surfaces.
 pub fn read_mapping_file(path: &str) -> Result<String> {
     use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| Error::InvalidArgument(format!("cannot read {path}: {e}")))?;
+    let meta = file.metadata().map_err(|e| Error::InvalidArgument(format!("cannot read {path}: {e}")))?;
+    if !meta.is_file() {
+        return Err(Error::InvalidArgument(format!("cannot read {path}: not a regular file")));
+    }
+    if meta.len() > 10_000_000 {
+        return Err(Error::InvalidArgument("the mapping file is too large (maximum 10 MB)".into()));
+    }
     let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .and_then(|file| file.take(10_000_001).read_to_end(&mut bytes))
-        .map_err(|e| Error::InvalidArgument(format!("cannot read {path}: {e}")))?;
+    file.take(10_000_001).read_to_end(&mut bytes).map_err(|e| Error::InvalidArgument(format!("cannot read {path}: {e}")))?;
     if bytes.len() > 10_000_000 {
         return Err(Error::InvalidArgument("the mapping file is too large (maximum 10 MB)".into()));
     }

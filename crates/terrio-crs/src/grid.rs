@@ -424,14 +424,23 @@ fn read_ntv2(b: &[u8]) -> Option<GridFile> {
         if !(ext.west < ext.east && ext.south < ext.north && ext.res_x > 1e-10 && ext.res_y > 1e-10) {
             return None;
         }
-        let cols = ((ext.east - ext.west) / ext.res_x + 0.5).abs() as usize + 1;
-        let rows = ((ext.north - ext.south) / ext.res_y + 0.5).abs() as usize + 1;
-        let count = i32_at(h, 168, le)?.max(0) as usize;
-        if count / cols != rows {
+        let cols_f = ((ext.east - ext.west) / ext.res_x + 0.5).abs();
+        let rows_f = ((ext.north - ext.south) / ext.res_y + 0.5).abs();
+        if !(cols_f < i32::MAX as f64 && rows_f < i32::MAX as f64) {
             return None;
         }
-        let data = pos + 176;
-        let (mut lat, mut lon) = (vec![0f32; cols * rows], vec![0f32; cols * rows]);
+        let cols = cols_f as usize + 1;
+        let rows = rows_f as usize + 1;
+        let count = usize::try_from(i32_at(h, 168, le)?).ok()?;
+        if cols.checked_mul(rows) != Some(count) {
+            return None;
+        }
+        let data = pos.checked_add(176)?;
+        let next_pos = data.checked_add(count.checked_mul(16)?)?;
+        if next_pos > b.len() {
+            return None;
+        }
+        let (mut lat, mut lon) = (vec![0f32; count], vec![0f32; count]);
         for y in 0..rows {
             for x in 0..cols {
                 // Rows run east to west.
@@ -453,7 +462,7 @@ fn read_ntv2(b: &[u8]) -> Option<GridFile> {
             format: Format::Ntv2,
         });
         out.push((ext, src, name, parent));
-        pos = data + count * 16;
+        pos = next_pos;
     }
     Some(GridFile { sources: out, format: Format::Ntv2 })
 }
@@ -462,13 +471,22 @@ fn read_ntv2(b: &[u8]) -> Option<GridFile> {
 fn read_gtx(b: &[u8]) -> Option<GridFile> {
     let (yo, mut xo, ys, xs) = (f64_at(b, 0, false)?, f64_at(b, 8, false)?, f64_at(b, 16, false)?, f64_at(b, 24, false)?);
     let (rows, cols) = (i32_at(b, 32, false)?, i32_at(b, 36, false)?);
-    if cols <= 0 || rows <= 0 || !(-360.0..=360.0).contains(&xo) || !(-90.0..=90.0).contains(&yo) {
+    if cols <= 0
+        || rows <= 0
+        || !(xs > 0.0 && xs.is_finite() && ys > 0.0 && ys.is_finite())
+        || !(-360.0..=360.0).contains(&xo)
+        || !(-90.0..=90.0).contains(&yo)
+    {
         return None;
     }
     if xo >= 180.0 {
         xo -= 360.0;
     }
     let (rows, cols) = (rows as usize, cols as usize);
+    let count = rows.checked_mul(cols)?;
+    if b.len() < 40usize.checked_add(count.checked_mul(4)?)? {
+        return None;
+    }
     let ext = Extent {
         west: xo * DEG_TO_RAD,
         south: yo * DEG_TO_RAD,
@@ -478,7 +496,7 @@ fn read_gtx(b: &[u8]) -> Option<GridFile> {
         north: (yo + ys * (rows - 1) as f64) * DEG_TO_RAD,
         geographic: true,
     };
-    let v: Option<Vec<f32>> = (0..rows * cols).map(|i| f32_at(b, 40 + 4 * i, false)).collect();
+    let v: Option<Vec<f32>> = (0..count).map(|i| f32_at(b, 40 + 4 * i, false)).collect();
     let src = Arc::new(Source {
         values: Values::Mem(vec![v?]),
         width: cols,
@@ -537,6 +555,9 @@ fn read_tiff(reader: GridReader) -> Option<GridFile> {
             Some(tw) => (tw as usize, num(&mut dec, Tag::TileLength)? as usize),
             None => (width, (num(&mut dec, Tag::RowsPerStrip).unwrap_or(height as u64) as usize).min(height)),
         };
+        if width == 0 || height == 0 || samples == 0 || block_w == 0 || block_h == 0 {
+            return None;
+        }
         let geokeys = dec.find_tag(Tag::GeoKeyDirectoryTag).ok().flatten().and_then(|v| v.into_u16_vec().ok()).unwrap_or_default();
         let mut geographic = true;
         let mut pixel_is_area = false;
@@ -566,6 +587,9 @@ fn read_tiff(reader: GridReader) -> Option<GridFile> {
             v_res = scale[1];
             west = tie[3] - tie[0] * h_res;
             north = tie[4] + tie[1] * v_res;
+        }
+        if !(h_res > 0.0 && h_res.is_finite() && v_res != 0.0 && v_res.is_finite()) {
+            return None;
         }
         if pixel_is_area {
             west += 0.5 * h_res;
@@ -601,8 +625,8 @@ fn read_tiff(reader: GridReader) -> Option<GridFile> {
                 scale_offset[smp] = (scale.unwrap_or(1.0), offset.unwrap_or(0.0));
             }
         }
-        let blocks_per_row = width.div_ceil(block_w.max(1));
-        let blocks = blocks_per_row * height.div_ceil(block_h.max(1));
+        let blocks_per_row = width.div_ceil(block_w);
+        let blocks = blocks_per_row.checked_mul(height.div_ceil(block_h))?;
         // The chunks the file has: no more blocks than these can be decoded, whatever its size
         // tags say.
         let offsets = if dec.get_chunk_type() == tiff::decoder::ChunkType::Tile { Tag::TileOffsets } else { Tag::StripOffsets };
@@ -1143,19 +1167,23 @@ fn hierarchy(file: &GridFile, keep: impl Fn(&Source, usize) -> Option<Use>) -> V
             named.insert(name.clone(), id);
             continue;
         }
-        if !name.is_empty() {
-            named.insert(name.clone(), id);
-        }
         if !parent.is_empty() {
             if let Some(&p) = named.get(parent)
                 && nodes[p].0.ext.contains(ext)
             {
                 nodes[p].1.push(id);
+                if !name.is_empty() {
+                    named.insert(name.clone(), id);
+                }
                 continue;
             }
         } else if !name.is_empty() {
+            named.insert(name.clone(), id);
             top.push(id);
             continue;
+        }
+        if !name.is_empty() {
+            named.insert(name.clone(), id);
         }
         // By extents.
         let kind = src.meta("TYPE", -1).to_string();
@@ -1524,6 +1552,9 @@ pub(crate) fn vgrid_value(sets: &[Arc<GridSet>], lon: f64, lat: f64, multiplier:
         4 => weights.iter().map(|(v, wt)| *v as f64 * wt).sum::<f64>(),
         _ => {
             let total: f64 = valid.iter().map(|(_, wt)| wt).sum();
+            if total <= 0.0 {
+                return None;
+            }
             valid.iter().map(|(v, wt)| *v as f64 * wt).sum::<f64>() / total
         }
     };
@@ -2037,5 +2068,77 @@ mod tests {
         assert_eq!(hgrid_apply(&sets, 0.1, 0.2, false), Some((0.1, 0.2)));
         assert!(hgrids("@surely_missing_grid.tif").unwrap().is_empty());
         assert!(hgrids("surely_missing_grid.tif").is_none());
+    }
+
+    #[test]
+    fn malformed_ntv2_and_gtx_headers_do_not_overflow_or_overallocate() {
+        // GTX header claiming i32::MAX x i32::MAX cells in 40 bytes.
+        let mut gtx = vec![0u8; 40];
+        gtx[16..24].copy_from_slice(&1.0f64.to_be_bytes());
+        gtx[24..32].copy_from_slice(&1.0f64.to_be_bytes());
+        gtx[32..36].copy_from_slice(&i32::MAX.to_be_bytes());
+        gtx[36..40].copy_from_slice(&i32::MAX.to_be_bytes());
+        assert!(read_gtx(&gtx).is_none());
+
+        // NTv2 header claiming a huge count in 352 bytes.
+        let mut ntv2 = vec![0u8; 352];
+        ntv2[8] = 11;
+        ntv2[40..44].copy_from_slice(&1i32.to_le_bytes());
+        ntv2[56..63].copy_from_slice(b"SECONDS");
+        let sub = &mut ntv2[176..352];
+        sub[..8].copy_from_slice(b"SUB_NAME");
+        for (i, val) in [0.0f64, 360000.0, -360000.0, 0.0, 1e-9, 1e-9].into_iter().enumerate() {
+            sub[72 + 16 * i..80 + 16 * i].copy_from_slice(&val.to_le_bytes());
+        }
+        sub[168..172].copy_from_slice(&i32::MAX.to_le_bytes());
+        assert!(read_ntv2(&ntv2).is_none());
+    }
+
+    #[test]
+    fn self_parenting_or_cyclic_subgrids_do_not_recurse_infinitely() {
+        let src = Arc::new(Source {
+            values: Values::Null,
+            width: 2,
+            height: 2,
+            samples: 1,
+            meta: HashMap::new(),
+            nodata: None,
+            scale_offset: Vec::new(),
+            first: None,
+            subfile_type: 0,
+            format: Format::Tiff,
+        });
+        let ext = Extent::world();
+        let file = GridFile {
+            sources: vec![
+                (ext, src.clone(), "root".into(), String::new()),
+                (ext, src.clone(), "self".into(), "self".into()),
+                (ext, src.clone(), "a".into(), "b".into()),
+                (ext, src, "b".into(), "a".into()),
+            ],
+            format: Format::Tiff,
+        };
+        let grids = hierarchy(&file, |_, _| Some(Use::Generic));
+        assert!(!grids.is_empty());
+    }
+
+    #[test]
+    fn vgrid_edge_with_zero_weight_valid_corners_returns_none() {
+        let src = Arc::new(Source {
+            values: Values::Mem(vec![vec![f32::NAN, f32::NAN, 10.0, 20.0]]),
+            width: 2,
+            height: 2,
+            samples: 1,
+            meta: HashMap::new(),
+            nodata: None,
+            scale_offset: Vec::new(),
+            first: None,
+            subfile_type: 0,
+            format: Format::Tiff,
+        });
+        let ext = Extent { west: 0.0, south: 0.0, east: 1.0, north: 1.0, res_x: 1.0, res_y: 1.0, geographic: true };
+        let set = Arc::new(GridSet { grids: vec![Grid { ext, src, usage: Use::V { sample: 0 }, children: Vec::new() }] });
+        // At lat = 0.0 (south edge), the two southern corners are NaN and the two northern corners have weight 0.
+        assert_eq!(vgrid_value(&[set], 0.5, 0.0, 1.0), None);
     }
 }

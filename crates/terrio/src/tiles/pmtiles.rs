@@ -82,6 +82,9 @@ impl Header {
         if b[7] != 3 {
             return Err(bad(format!("version {} is not supported (only 3)", b[7])));
         }
+        if b[100] > 30 || b[101] > 30 || b[100] > b[101] {
+            return Err(bad(format!("invalid zoom range {}..={}", b[100], b[101])));
+        }
         let u = |at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap_or_default());
         let i = |at: usize| i32::from_le_bytes(b[at..at + 4].try_into().unwrap_or_default());
         Ok(Header {
@@ -318,11 +321,15 @@ fn decompress_with_limit(data: &[u8], codec: u8, limit: Option<usize>, resource:
 /// The number of tiles in the zoom levels below `z`: the first tile id of zoom `z`.
 pub(crate) fn zoom_base(z: u8) -> u64 {
     // (4^z - 1) / 3
-    ((1u128 << (2 * z as u32)) as u64).wrapping_sub(1) / 3
+    if z > 32 {
+        return u64::MAX;
+    }
+    (((1u128 << (2 * z as u32)) - 1) / 3) as u64
 }
 
 /// The PMTiles tile id of tile `(z, x, y)`: the zoom's base plus the tile's Hilbert curve index.
 pub(crate) fn zxy_to_tile_id(z: u8, x: u32, y: u32) -> u64 {
+    let z = z.min(31);
     let n = 1i64 << z;
     let (mut xx, mut yy) = (x as i64, y as i64);
     let mut d: i64 = 0;
@@ -888,6 +895,11 @@ mod tests {
         assert_eq!(parse_directory(&serialize_directory(&entries)).unwrap(), entries);
         let h = Header { tile_type: TILE_MVT, max_zoom: 14, min_lon_e7: -1_800_000_000, center_lat_e7: -456, ..Default::default() };
         assert_eq!(Header::parse(&h.to_bytes()).unwrap(), h);
+
+        let bad_zoom = Header { min_zoom: 64, max_zoom: 64, ..h.clone() };
+        assert!(Header::parse(&bad_zoom.to_bytes()).is_err());
+        assert_eq!(zoom_base(64), u64::MAX);
+        let _ = zxy_to_tile_id(64, 0, 0);
     }
 
     #[test]

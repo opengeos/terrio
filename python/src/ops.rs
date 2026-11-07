@@ -336,7 +336,16 @@ fn write_raster(
     tile_size: Option<u32>,
     bigtiff: bool,
 ) -> PyResult<()> {
-    let options = write_options(driver, compress, tile_size, bigtiff)?;
+    let mut options = write_options(driver, compress, tile_size, bigtiff)?;
+    let resolved_driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(path));
+    let tile_archive = matches!(resolved_driver, Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles));
+    py.detach_result(|| {
+        raster.inner.prepare_output_mask(path, &mut options, Window::full(raster.inner.width(), raster.inner.height()), None)
+    })
+    .py()?;
+    if raster.inner.dataset().is_none() && tile_archive {
+        return py.detach_result(|| raster.inner.write(path, &options)).py();
+    }
     py.detach_result(|| raster.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
 }
 

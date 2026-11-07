@@ -6,9 +6,49 @@
 //! `terrio translate`.
 
 use super::rasterout::{OutputArgs, open, srs};
+use std::ffi::OsString;
 use terrio::ops::overview::OverviewSelection;
 use terrio::ops::translate::{Scale, Size, TranslateOptions, translate, translate_lazy_to_file};
 use terrio::ops::{Resampling, parse_data_type};
+
+/// Rewrites `terrio translate ... --scale [s0 s1] <input> <output>` so that positional
+/// `<input>` and `<output>` arguments following a 0- or 2-argument `--scale` are not
+/// consumed by clap as scale numbers.
+pub fn rewrite_args(args: Vec<OsString>) -> Vec<OsString> {
+    if args.iter().skip(1).find_map(|a| a.to_str().filter(|s| !s.starts_with('-'))) != Some("translate") {
+        return args;
+    }
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        let s = args[i].to_str();
+        if s == Some("--") {
+            out.extend_from_slice(&args[i..]);
+            break;
+        }
+        if s == Some("--scale") {
+            let mut k = 0usize;
+            while k < 4 && i + 1 + k < args.len() && args[i + 1 + k].to_str().is_some_and(|t| t.parse::<f64>().is_ok()) {
+                k += 1;
+            }
+            if k < 4 {
+                let mut m = k;
+                while i + 1 + m < args.len() && args[i + 1 + m].to_str().is_some_and(|t| !t.starts_with('-')) {
+                    m += 1;
+                }
+                if (k == 0 || k == 2) && (1..=2).contains(&(m - k)) {
+                    out.extend_from_slice(&args[i + 1 + k..i + 1 + m]);
+                    out.extend_from_slice(&args[i..i + 1 + k]);
+                    i += 1 + m;
+                    continue;
+                }
+            }
+        }
+        out.push(args[i].clone());
+        i += 1;
+    }
+    out
+}
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -128,4 +168,31 @@ pub fn run(a: Args) -> terrio::Result<()> {
         )));
     }
     a.out.write(&translate(&open(&a.input)?, &o)?, &a.output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rewrite_args;
+
+    #[test]
+    fn rewrites_scale_before_positional_paths() {
+        for (input, expected) in [
+            (
+                vec!["terrio", "translate", "--ot", "Byte", "--scale", "in.tif", "out.tif"],
+                vec!["terrio", "translate", "--ot", "Byte", "in.tif", "out.tif", "--scale"],
+            ),
+            (
+                vec!["terrio", "translate", "--scale", "0", "1000", "in.tif", "out.tif"],
+                vec!["terrio", "translate", "in.tif", "out.tif", "--scale", "0", "1000"],
+            ),
+            (
+                vec!["terrio", "translate", "--scale", "0", "1000", "0", "255", "in.tif", "out.tif"],
+                vec!["terrio", "translate", "--scale", "0", "1000", "0", "255", "in.tif", "out.tif"],
+            ),
+        ] {
+            let out: Vec<String> =
+                rewrite_args(input.into_iter().map(Into::into).collect()).into_iter().map(|s| s.into_string().unwrap()).collect();
+            assert_eq!(out, expected);
+        }
+    }
 }

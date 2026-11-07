@@ -35,7 +35,7 @@ def disjoint_bounds(bounds1: Sequence[float], bounds2: Sequence[float]) -> bool:
     """
     north_up1 = bounds1[3] > bounds1[1]
     north_up2 = bounds2[3] > bounds2[1]
-    if not north_up1 and north_up2:
+    if north_up1 != north_up2:
         raise ValueError("Bounds must both have the same orientation")
     if north_up1:
         return (

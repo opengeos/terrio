@@ -287,6 +287,7 @@ class _Source:
         """
         out: np.ndarray | None = None
         alpha: np.ndarray | None = None
+        ds_mask: np.ndarray | None = None
         for k, b in enumerate(bands):
             flags = self.mask_flags[b - 1]
             bad: np.ndarray | None = None
@@ -305,6 +306,19 @@ class _Source:
                     a = self.read([self.alpha_band], window)[0]
                     alpha = a == 0 if a.dtype == np.uint8 or a.dtype.kind in "iu" else a < 1
                 bad = alpha
+            elif flags & MaskFlags.per_dataset.value:
+                if ds_mask is None:
+                    (r0, r1), (c0, c1) = window
+                    with self.pool.acquire() as raster:
+                        m = raster.read_mask(
+                            window=(c0, r0, c1 - c0, r1 - r0), overview=self.overview
+                        )
+                    ds_mask = (
+                        np.asarray(m) == 0
+                        if m is not None
+                        else np.zeros(data.shape[1:], dtype=bool)
+                    )
+                bad = ds_mask
             if bad is None or not bad.any():
                 continue
             if out is None:

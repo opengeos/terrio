@@ -155,25 +155,36 @@ function occurrences(arg, text) {
 
 function commandLine(command, fields) {
   const options = [], positionals = [];
+  let lastOptionArg = null;
   for (const { arg, read } of fields) {
     const value = read();
     if (arg.position != null) {
       positionals.push({ arg, values: occurrences(arg, value).flat() });
     } else if (isFlag(arg)) {
-      if (value) options.push(flagName(arg));
+      if (value) {
+        options.push(flagName(arg));
+        lastOptionArg = arg;
+      }
     } else if (arg.action === "count") {
-      for (let i = 0; i < Number(value || 0); i++) options.push(flagName(arg));
+      const count = Number(value || 0);
+      for (let i = 0; i < count; i++) options.push(flagName(arg));
+      if (count > 0) lastOptionArg = arg;
     } else {
       for (const tokens of occurrences(arg, value)) {
         // `--x=-1`: a value beginning with a hyphen is not taken for an option.
         if (tokens.length === 1 && arg.long) options.push(`--${arg.long}=${tokens[0]}`);
         else options.push(flagName(arg), ...tokens);
+        lastOptionArg = arg;
       }
     }
   }
   positionals.sort((a, b) => a.arg.position - b.arg.position);
-  const needsSeparator = positionals.some((p) => !p.arg.allow_hyphen_values && p.values.some((v) => v.startsWith("-")));
-  return [...command.path.slice(2), ...options, ...(needsSeparator ? ["--"] : []), ...positionals.flatMap((p) => p.values)];
+  const posValues = positionals.flatMap((p) => p.values);
+  const needsSeparator =
+    posValues.length > 0 &&
+    (positionals.some((p) => !p.arg.allow_hyphen_values && p.values.some((v) => v.startsWith("-"))) ||
+      (lastOptionArg != null && (lastOptionArg.num_args.max === null || lastOptionArg.num_args.min !== lastOptionArg.num_args.max)));
+  return [...command.path.slice(2), ...options, ...(needsSeparator ? ["--"] : []), ...posValues];
 }
 
 function shellQuote(token) {

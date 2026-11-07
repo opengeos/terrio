@@ -464,6 +464,7 @@ const STACK_SIZE: usize = 8 << 20;
 /// [`run_as`], on the calling thread.
 fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32 {
     let args = cmd::calc::rewrite_args(args);
+    let args = cmd::translate::rewrite_args(args);
     if let Some(catalog) = usage::requested(&args) {
         use std::io::Write;
         if let Err(error) = writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&catalog).expect("JSON command catalog"))

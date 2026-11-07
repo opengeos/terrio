@@ -127,7 +127,12 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
                     ns = ns.min(gt[5]);
                 }
             }
-            ResolutionStrategy::User(x, y) => (we, ns) = (x, -y),
+            ResolutionStrategy::User(x, y) => {
+                if !(x > 0.0 && y > 0.0 && x.is_finite() && y.is_finite()) {
+                    return Err(Error::InvalidArgument("user resolution must be finite and positive".into()));
+                }
+                (we, ns) = (x, -y);
+            }
         }
     }
     if let Some(e) = o.extent {
@@ -155,8 +160,16 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
         }
     };
     let nbands = band_list(first.ds).len();
-    if !o.separate && sources.iter().any(|s| band_list(s.ds).iter().any(|b| *b > s.ds.raster.bands)) {
-        return Err(Error::InvalidArgument("a source lacks one of the requested bands".into()));
+    if !o.separate {
+        if nbands == 0 {
+            return Err(Error::InvalidArgument("a source has no bands".into()));
+        }
+        if o.bands.is_empty() && sources.iter().any(|s| s.ds.raster.bands != nbands) {
+            return Err(Error::InvalidArgument("sources have different band counts".into()));
+        }
+        if sources.iter().any(|s| band_list(s.ds).iter().any(|b| *b == 0 || *b > s.ds.raster.bands)) {
+            return Err(Error::InvalidArgument("a source lacks one of the requested bands".into()));
+        }
     }
     let src_nodata = |s: &MosaicSource, b: usize, band: usize| match &o.src_nodata {
         Nodata::Auto => s.ds.band_nodata(band),
@@ -215,6 +228,9 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
                 bands[target].sources.push(src);
             }
         }
+    }
+    if bands.is_empty() {
+        return Err(Error::InvalidArgument("the mosaic has no bands in the target extent".into()));
     }
     let srs = (!srs.is_unknown()).then_some(srs);
     Ok(VrtDataset { width, height, geo_transform: Some([min_x, we, 0.0, max_y, 0.0, ns]), srs, bands })
@@ -649,5 +665,21 @@ mod tests {
         let out = mosaic(&srcs, &MosaicOptions { separate: true, ..Default::default() }).unwrap();
         assert_eq!(out.raster.bands, 2);
         assert_eq!(out.raster.data.to_f64_vec()[16 + 5], 2.0);
+    }
+
+    #[test]
+    fn rejects_mismatched_band_counts_disjoint_separate_extent_and_bad_resolution() {
+        let a = tile(0.0, 4.0, 1.0);
+        let grid = Grid { width: 4, height: 4, geo_transform: [0.0, 1.0, 0.0, 4.0, 0.0, -1.0] };
+        let b = super::super::build_raster(grid, vec![vec![1.0; 16], vec![2.0; 16]], DataType::F32, None, &SpatialRef::default(), |x, _| x)
+            .unwrap();
+        let srcs = [MosaicSource { path: "a.tif".into(), ds: &a }, MosaicSource { path: "b.tif".into(), ds: &b }];
+        assert!(mosaic(&srcs, &MosaicOptions::default()).is_err());
+
+        let single = [MosaicSource { path: "a.tif".into(), ds: &a }];
+        assert!(
+            mosaic(&single, &MosaicOptions { separate: true, extent: Some((100.0, 100.0, 110.0, 110.0)), ..Default::default() }).is_err()
+        );
+        assert!(mosaic(&single, &MosaicOptions { resolution: ResolutionStrategy::User(0.0, 1.0), ..Default::default() }).is_err());
     }
 }

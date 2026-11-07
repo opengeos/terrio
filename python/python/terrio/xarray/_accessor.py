@@ -2187,9 +2187,8 @@ class TerrioDataset(XRasterBase):
         use_encoded = bool(encoded_nodatavals)
         nodatavals = encoded_nodatavals if use_encoded else attr_nodatavals
         nodata = nodatavals[0]
-        if (
-            all(v == nodata for v in nodatavals)
-            or np.isnan(np.array(nodatavals, dtype=float)).all()
+        if all(v == nodata for v in nodatavals) or all(
+            isinstance(v, (int, float, np.number)) and np.isnan(v) for v in nodatavals
         ):
             data_array.terrio.write_nodata(nodata, inplace=True, encoded=use_encoded)
         else:

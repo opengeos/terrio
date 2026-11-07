@@ -192,11 +192,15 @@ fn zonal_stats(
     let mut seen: std::collections::HashMap<Key, usize> = std::collections::HashMap::new();
     for (item, prefix) in items.iter().zip(&prefixes) {
         let Ok(row) = item.cast::<pyo3::types::PyDict>() else {
-            seen.entry(key(item)?).or_insert(sources.len());
-            sources.push(ZonalSource {
-                raster: zonal_raster(py, item)?,
-                bands: bands.iter().map(|&band| ZonalBand::new(band, format!("{prefix}_b{band}"))).collect(),
-            });
+            let item_bands: Vec<ZonalBand> = bands.iter().map(|&band| ZonalBand::new(band, format!("{prefix}_b{band}"))).collect();
+            let k = key(item)?;
+            match seen.get(&k) {
+                Some(&i) => sources[i].bands.extend(item_bands),
+                None => {
+                    seen.insert(k, sources.len());
+                    sources.push(ZonalSource { raster: zonal_raster(py, item)?, bands: item_bands });
+                }
+            }
             continue;
         };
         // None, NaN, NaT (which differ from themselves) and pandas' NA, a DataFrame's missing
