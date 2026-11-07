@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Datum-grid hierarchy uses the first duplicate parent name and nests unparented subgrids under
+  the first containing extent. Existing ambiguous grid files can select a different datum-shift
+  grid. Native TIFFs with malformed IFD chains must be repaired or rewritten before opening.
+
 - `terrio.rio.coords.disjoint_bounds` rejects opposite nondegenerate orientations in either
   argument order; zero-height bounds remain boundary lines. Calc window alignment retains
   blank nodata/zero-filled inputs outside the window rather than rejecting the calculation.

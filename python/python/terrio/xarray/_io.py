@@ -434,9 +434,7 @@ def _open_source(
             band_meta = _overview_band_metadata(riods, first, overview_level)
             nodatavals = tuple(first._overview_nodata(overview_level))
             if width > 0 and height > 0:
-                own_mask = (
-                    first._read_level_mask(window=(0, 0, 1, 1), overview=overview_level) is not None
-                )
+                own_mask = first._overview_has_mask(overview_level)
                 if own_mask:
                     mask_flags = tuple(MaskFlags.per_dataset.value for _ in range(riods.count))
                 else:
