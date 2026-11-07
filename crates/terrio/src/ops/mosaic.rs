@@ -285,7 +285,9 @@ fn absolute(path: &str) -> String {
 
 /// Mosaics rasters into one, as `gdal_merge.py` (or `gdalbuildvrt` followed by
 /// `gdal_translate`) does. When a source's CRS differs from the output's, all sources are
-/// reprojected with [`warp`] instead.
+/// reprojected with [`warp`] instead. Without an explicit band selection, non-separate inputs
+/// must have equal band counts. Unlike GDAL 3.13.3 `gdalbuildvrt`, which warns and skips a
+/// mismatched input, this operation returns an error rather than silently omitting a source.
 pub fn mosaic(sources: &[MosaicSource], o: &MosaicOptions) -> Result<RasterDataset> {
     let first = sources.first().ok_or_else(|| Error::InvalidArgument("no source rasters".into()))?;
     let dst = o.dst_srs.clone().unwrap_or_else(|| first.ds.crs());

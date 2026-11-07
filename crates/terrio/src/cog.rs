@@ -1227,7 +1227,7 @@ impl LazyRaster {
 
     /// The nodata values of some bands (numbered from 1) at full resolution or of an overview,
     /// whose own tags a GeoTIFF's overview may carry.
-    pub(crate) fn level_band_nodata(&self, bands: &[usize], overview: Option<usize>) -> Vec<Option<f64>> {
+    pub fn level_band_nodata(&self, bands: &[usize], overview: Option<usize>) -> Vec<Option<f64>> {
         if let Inner::Tiff(t) = &self.inner {
             let tags = t.tags_at_level(overview.map_or(0, |i| i + 1));
             bands.iter().map(|b| tags.band_nodata.iter().find(|(i, _)| i == b).map(|(_, v)| *v).or(tags.nodata)).collect()
@@ -1459,7 +1459,7 @@ impl LazyRaster {
     /// `None`, all valid, as is the full-resolution image without a mask. Unlike
     /// [`LazyRaster::read_mask`], an overview without a mask of its own does not sample the
     /// full-resolution mask.
-    pub(crate) fn read_level_mask(&mut self, window: Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+    pub fn read_level_mask(&mut self, window: Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
         let Some(i) = overview else { return self.read_mask(window, None) };
         let (lw, lh) = self.level_size(overview)?;
         window.check(lw, lh)?;

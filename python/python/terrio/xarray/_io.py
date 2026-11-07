@@ -310,7 +310,7 @@ class _Source:
                 if ds_mask is None:
                     (r0, r1), (c0, c1) = window
                     with self.pool.acquire() as raster:
-                        m = raster.read_mask(
+                        m = raster._read_level_mask(
                             window=(c0, r0, c1 - c0, r1 - r0), overview=self.overview
                         )
                     if m is None:
@@ -418,7 +418,7 @@ def _open_source(
         namespaces = {}
         if riods.driver == "ENVI":
             namespaces["ENVI"] = riods.tags(ns="ENVI")
-        alpha = riods.structure.alpha_band() if riods.count else None
+        alpha = riods._mask_alpha() if riods.count else None
         band_meta: dict[str, Any] = {
             "scales": tuple(riods.scales),
             "offsets": tuple(riods.offsets),
@@ -427,11 +427,24 @@ def _open_source(
             "band_tags": [dict(riods.tags(b)) for b in riods.indexes],
         }
         mask_flags = tuple(int(sum(f.value for f in fl)) for fl in riods.mask_flag_enums)
+        nodatavals = tuple(riods.nodatavals)
         if overview_level is not None:
             band_meta = _overview_band_metadata(riods, first, overview_level)
+            nodatavals = tuple(first._overview_nodata(overview_level))
             if width > 0 and height > 0:
-                if first.read_mask(window=(0, 0, 1, 1), overview=overview_level) is not None:
+                if first._read_level_mask(window=(0, 0, 1, 1), overview=overview_level) is not None:
+                    # A dataset mask takes precedence over nodata and alpha in GDAL.
                     mask_flags = tuple(MaskFlags.per_dataset.value for _ in range(riods.count))
+                else:
+                    # No fallback to the base dataset mask: use this level's nodata/alpha.
+                    mask_flags = tuple(
+                        MaskFlags.nodata.value
+                        if nodatavals[b - 1] is not None
+                        else MaskFlags.per_dataset.value | MaskFlags.alpha.value
+                        if alpha is not None and b != alpha
+                        else MaskFlags.all_valid.value
+                        for b in riods.indexes
+                    )
         src = _Source(
             name=riods.name,
             path=_terrio_path(riods.name),
@@ -440,7 +453,7 @@ def _open_source(
             height=height,
             count=riods.count,
             dtypes=tuple(riods.dtypes),
-            nodatavals=tuple(riods.nodatavals),
+            nodatavals=nodatavals,
             scales=band_meta["scales"],
             offsets=band_meta["offsets"],
             descriptions=band_meta["descriptions"],

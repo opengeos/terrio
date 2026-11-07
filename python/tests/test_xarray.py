@@ -749,4 +749,65 @@ def test_per_dataset_mask_and_backend_close(tmp_path):
     ds_no_nodata.terrio.to_raster(str(out_no_nodata))
     with rio.open(out_no_nodata) as check_ds:
         assert check_ds.nodata is None and check_ds.count == 2
+    ds_nan = ds_no_nodata.astype("float32")
+    for variable in ds_nan.data_vars.values():
+        variable.terrio.write_nodata(np.float32(np.nan), inplace=True)
+    out_nan = tmp_path / "rgb_nan_nodata_out.tif"
+    ds_nan.terrio.to_raster(str(out_nan))
+    with rio.open(out_nan) as check_ds:
+        assert check_ds.count == 2 and np.isnan(check_ds.nodata)
+    ds_nan.close()
     ds_no_nodata.close()
+
+
+@pytest.mark.parametrize(
+    "mask_before_overviews,external", [(False, False), (True, False), (True, True)]
+)
+def test_overview_uses_own_mask_and_dataset_mask_precedence(
+    tmp_path, mask_before_overviews, external
+):
+    """Match GDAL 3.13.3 overview masks, including absent masks and valid nodata pixels."""
+    gdal = pytest.importorskip("osgeo.gdal")
+    path = str(tmp_path / "overview_mask.tif")
+    pixels = np.full((8, 8), 10, dtype="float32")
+    pixels[4:, 4:] = -9999
+    ds = gdal.GetDriverByName("GTiff").Create(path, 8, 8, 2, gdal.GDT_Float32)
+    ds.SetGeoTransform([0, 1, 0, 8, 0, -1])
+    for band in (1, 2):
+        ds.GetRasterBand(band).WriteArray(pixels)
+        ds.GetRasterBand(band).SetNoDataValue(-9999)
+    if not mask_before_overviews:
+        ds.BuildOverviews("NEAREST", [2])
+    # Force an internal mask independently of the process's GDAL configuration.
+    with gdal.config_option("GDAL_TIFF_INTERNAL_MASK", "YES"):
+        ds.CreateMaskBand(gdal.GMF_PER_DATASET)
+    mask = np.full((8, 8), 255, dtype="uint8")
+    mask[:4, :4] = 0
+    ds.GetRasterBand(1).GetMaskBand().WriteArray(mask)
+    if mask_before_overviews and not external:
+        ds.BuildOverviews("NEAREST", [2])
+    ds = None
+    if external:
+        ds = gdal.Open(path)
+        ds.BuildOverviews("NEAREST", [2])
+        ds = None
+        # An external overview is a separate dataset: its nodata can differ from the base.
+        ds = gdal.Open(path + ".ovr", gdal.GA_Update)
+        for band in (1, 2):
+            data = ds.GetRasterBand(band).ReadAsArray()
+            data[data == -9999] = -8888
+            ds.GetRasterBand(band).WriteArray(data)
+            ds.GetRasterBand(band).SetNoDataValue(-8888)
+        ds = None
+    reference = gdal.Open(path)
+    expected = []
+    for band in (1, 2):
+        overview = reference.GetRasterBand(band).GetOverview(0)
+        data = overview.ReadAsArray().astype("float32")
+        data[overview.GetMaskBand().ReadAsArray() == 0] = np.nan
+        expected.append(data)
+    with txr.open_rasterio(path, masked=True, overview_level=0) as opened:
+        np.testing.assert_allclose(opened.values, np.stack(expected), equal_nan=True)
+        np.testing.assert_allclose(
+            opened[:, :2, :2].values, np.stack(expected)[:, :2, :2], equal_nan=True
+        )
