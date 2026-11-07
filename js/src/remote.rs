@@ -6,7 +6,7 @@
 //! ([`terrio::sparse::SparseFile`]); when it needs blocks not fetched yet, they are fetched (in
 //! parallel requests, nearby ranges merged) and the read runs again, until it has all it needs.
 
-use crate::{Dataset, crs_string, js_err, js_error, parse_options, to_js, typed_array};
+use crate::{Dataset, ResampledArgs, crs_string, data_and_masks, js_err, js_error, parse_options, to_js, typed_array};
 use serde::Deserialize;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -624,6 +624,60 @@ impl RemoteDataset {
                 })
                 .await?;
             Ok(typed_array(ds.raster.data))
+        })
+    }
+
+    /// Rasters: reads a window into an output of another size, as `Dataset.readResampled` does
+    /// (same options), fetching only the tiles of the overview `RasterIO` would choose.
+    #[wasm_bindgen(js_name = readResampled)]
+    pub fn read_resampled(&self, options: JsValue) -> js_sys::Promise {
+        let me = RemoteDataset { state: self.state.clone() };
+        wasm_bindgen_futures::future_to_promise(async move {
+            let o = parse_options::<ResampledArgs>(&options)?.options().map_err(js_err)?;
+            let ds = me
+                .state
+                .run(|r| match r.as_mut().and_then(Reader::raster) {
+                    Some(r) => r.read_resampled(&o),
+                    None => Err(terrio::Error::InvalidArgument("not a raster".into())),
+                })
+                .await?;
+            Ok(typed_array(ds.raster.data))
+        })
+    }
+
+    /// Rasters: reads the mask bands of the bands `readResampled` reads, as
+    /// `Dataset.readResampledMasks` does (same options): a `Uint8Array`.
+    #[wasm_bindgen(js_name = readResampledMasks)]
+    pub fn read_resampled_masks(&self, options: JsValue) -> js_sys::Promise {
+        let me = RemoteDataset { state: self.state.clone() };
+        wasm_bindgen_futures::future_to_promise(async move {
+            let o = parse_options::<ResampledArgs>(&options)?.options().map_err(js_err)?;
+            let masks = me
+                .state
+                .run(|r| match r.as_mut().and_then(Reader::raster) {
+                    Some(r) => r.read_resampled_masks(&o),
+                    None => Err(terrio::Error::InvalidArgument("not a raster".into())),
+                })
+                .await?;
+            Ok(js_sys::Uint8Array::from(&masks[..]).into())
+        })
+    }
+
+    /// Rasters: reads pixels and masks at once, as `Dataset.readResampledWithMasks` does (same
+    /// options): `{ data, masks }`.
+    #[wasm_bindgen(js_name = readResampledWithMasks)]
+    pub fn read_resampled_with_masks(&self, options: JsValue) -> js_sys::Promise {
+        let me = RemoteDataset { state: self.state.clone() };
+        wasm_bindgen_futures::future_to_promise(async move {
+            let o = parse_options::<ResampledArgs>(&options)?.options().map_err(js_err)?;
+            let (ds, masks) = me
+                .state
+                .run(|r| match r.as_mut().and_then(Reader::raster) {
+                    Some(r) => r.read_resampled_with_masks(&o),
+                    None => Err(terrio::Error::InvalidArgument("not a raster".into())),
+                })
+                .await?;
+            Ok(data_and_masks(ds.raster.data, &masks))
         })
     }
 

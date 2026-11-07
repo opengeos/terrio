@@ -127,6 +127,18 @@ _OVERVIEW_RESAMPLING = {
     Resampling.gauss: "gauss",
 }
 
+# The methods the core's resampled read (`Raster.read_resampled`) reads, by `Resampling` value.
+_CORE_RESAMPLING = {
+    int(Resampling.nearest): "nearest",
+    int(Resampling.bilinear): "bilinear",
+    int(Resampling.cubic): "cubic",
+    int(Resampling.cubic_spline): "cubicspline",
+    int(Resampling.lanczos): "lanczos",
+    int(Resampling.average): "average",
+    int(Resampling.rms): "rms",
+    int(Resampling.mode): "mode",
+}
+
 
 def _alpha_mask(a: np.ndarray) -> np.ndarray:
     """An alpha band's values as the mask band GDAL makes of it.
@@ -1502,6 +1514,12 @@ class DatasetReader(DatasetBase):
             return np.zeros((len(indexes), max(buf[0], 0), max(buf[1], 0)), self._dtype)
         if fw[2] <= 0 or fw[3] <= 0:
             return np.zeros((len(indexes), buf[0], buf[1]), self._dtype)
+        core = self._core_resampled(fw, buf, resampling)
+        if core is not None:
+            try:
+                return np.asarray(self._raster.read_resampled(band=list(indexes), **core))
+            except Exception as err:
+                raise RasterioIOError(f"Read failed: {err}") from err
         nodata = self.nodatavals[0] if self._count else None
         if resampling == Resampling.nearest:
             return raster_io(
@@ -1551,6 +1569,54 @@ class DatasetReader(DatasetBase):
             if group
         ]
         return parts[0] if len(parts) == 1 else np.concatenate(parts)
+
+    def _core_resampled(
+        self,
+        window: tuple[float, float, float, float],
+        buf: tuple[int, int],
+        resampling: Resampling,
+    ) -> dict[str, Any] | None:
+        """The arguments of the core's resampled read (`Raster.read_resampled`), when it reads.
+
+        The core reads a window into a buffer of another size as GDAL's `RasterIO` does, from
+        the overview it would choose, with GDAL's mask bands. Plain reads (a window of the
+        buffer's size), datasets read otherwise (opened at an overview level, written in memory,
+        or through subclasses), nodata values a PAM sidecar sets, paletted and complex bands, and
+        Gaussian resampling, which the core does not read, are read by `raster_io` instead.
+
+        Args:
+            window: `(x_off, y_off, x_size, y_size)` in full-resolution pixels.
+            buf: The output `(height, width)`.
+            resampling: The resampling method.
+
+        Returns:
+            dict | None: The keyword arguments of the read but the bands, or None.
+        """
+        method = _CORE_RESAMPLING.get(int(resampling))
+        _, _, w, h = window
+        if (
+            method is None
+            # A window of the buffer's size at whole pixels is a plain read (`raster_io` reads it).
+            or ((w, h) == (buf[1], buf[0]) and all(float(v).is_integer() for v in window))
+            # A dataset opened at an overview level (`_OverviewRaster`) is read by `raster_io`.
+            or not isinstance(getattr(self, "_raster", None), _terrio.Raster)
+            # Subclasses overriding how levels, samples or masks are read keep their hooks.
+            or type(self)._read_level is not DatasetReader._read_level
+            or type(self)._sample_level is not DatasetReader._sample_level
+            or type(self)._mask_reader is not DatasetReader._mask_reader
+            or type(self)._mask_flags is not DatasetReader._mask_flags
+            or self.structure.colormap is not None
+            or np.dtype(self._dtype).kind == "c"
+            # The core masks the raster's own nodata value: a PAM sidecar's is not its.
+            or self._nodatavals is not None
+            or repr(self._nodata) != repr(self._raster.nodata)
+        ):
+            return None
+        return {
+            "size": (buf[1], buf[0]),
+            "window": tuple(float(v) for v in window),
+            "resampling": method,
+        }
 
     def _mask_reader(self) -> Any:
         """Reads the GDAL mask bands of bands over a window of a level, for resampled reads.
@@ -1611,11 +1677,7 @@ class DatasetReader(DatasetBase):
         for k, b in enumerate(indexes):
             f = flags[b - 1]
             if f & MaskFlags.nodata.value:
-                vals = (
-                    data[k]
-                    if data is not None
-                    else self._io([b], window, buf, resampling)[0]
-                )
+                vals = data[k] if data is not None else self._io([b], window, buf, resampling)[0]
                 nd = self.nodatavals[b - 1]
                 assert nd is not None
                 out[k][is_nodata(vals, nd)] = 0
@@ -1652,6 +1714,13 @@ class DatasetReader(DatasetBase):
             if window is None
             else (window.col_off, window.row_off, window.width, window.height)
         )
+        core = self._core_resampled(fw, buf, Resampling(resampling))
+        if core is not None and buf[0] > 0 and buf[1] > 0 and fw[2] > 0 and fw[3] > 0:
+            # The per-dataset mask is every band's mask band: band 1's, from its own overviews.
+            try:
+                return np.asarray(raster.read_resampled_masks(band=1, **core))
+            except Exception as err:
+                raise RasterioIOError(f"Read failed: {err}") from err
         out: np.ndarray = np.asarray(
             raster_io(
                 read,
@@ -3176,7 +3245,7 @@ class MemPointerDataset(DatasetWriter):
             raise RasterioIOError(f"Invalid MEM dataset: {name}") from None
         strides = (band, line, pixel)
         # The bytes the strides reach, from the lowest address (offsets may be negative).
-        reach = [(n - 1) * s for n, s in zip((count, height, width), strides)]
+        reach = [(n - 1) * s for n, s in zip((count, height, width), strides, strict=True)]
         low = sum(r for r in reach if r < 0)
         size = sum(r for r in reach if r > 0) + dtype.itemsize - low
         buffer = (ctypes.c_char * size).from_address(address + low)

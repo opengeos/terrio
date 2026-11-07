@@ -10,6 +10,21 @@
   the fraction of the overviews computed, from 0 to 1 and never decreasing, to a callback that can
   cancel (#612). A cancellation returns `Error::Cancelled` (Python
   `terrio.errors.CancelledError`) and changes no file: an existing `.ovr` stays as it was.
+- Python's `Raster.read_resampled`, `read_resampled_masks` and `read_resampled_with_masks`, and
+  JavaScript's `readResampled`, `readResampledMasks` and `readResampledWithMasks` (on `Dataset`
+  and, as promises, on `openUrl`'s `RemoteDataset`), read a window of some bands into an output
+  of another size as GDAL's `RasterIO` reads it, through
+  `LazyRaster::read_resampled`: from the overview it chooses or the level `overview` names
+  (`AUTO`, `AUTO-n`, `NONE` or a number, as `gdal_translate -ovr`), with fractional windows, so a
+  remote COG read into a small output fetches only an overview's tiles (#429).
+- `terrio.rio` reads `out_shape` reads of GeoTIFFs and other rasters read by window through that
+  core read (nearest, bilinear, cubic, cubic spline, Lanczos, average, RMS and mode; Gaussian,
+  paletted and complex bands, datasets opened with `overview_level` and written datasets keep
+  their own path), and resamples a per-dataset mask from the mask's own overviews (#429).
+- Changed default: resampled reads (`LazyRaster::read_resampled`, `terrio translate --outsize`
+  and `--tr`) sum the NaN values of masked floating-point chunks, as GDAL 3.12 does, so an output
+  pixel whose footprint holds one is NaN. In 0.7.0 they always skipped them, as GDAL 3.13 does.
+  `TERRIO_GDAL_COMPAT=3.13` restores that, as for the other `RasterIO` kernels.
 - A netCDF snapshot (`terrio mdconvert`, `Dataset.write`) writes a netCDF-4 compound attribute
   as a compound, as GDAL 3.13.3's `gdalmdimtranslate -of netCDF` does (#565): `station_t
   z:station = {7, 12.5}` stays `station_t z:station = {7, 12.5}` where it became the text
