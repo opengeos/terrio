@@ -29,7 +29,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use super::sqlite::varint;
+use super::sqlite::{PageSet, cell_pointer, varint};
 use super::vector::sqlite::{self as w, PageStore};
 use crate::{Error, Result};
 
@@ -403,8 +403,7 @@ impl Editor {
         let right = interior.then(|| u32::from_be_bytes([page[h + 8], page[h + 9], page[h + 10], page[h + 11]]));
         let mut cells = Vec::with_capacity(count);
         for c in 0..count {
-            let p = h + header + 2 * c;
-            let off = u16::from_be_bytes([page[p], page[p + 1]]) as usize;
+            let off = cell_pointer(page, h + header + 2 * c)?;
             if off >= size {
                 return Err(bad("cell offset"));
             }
@@ -500,12 +499,16 @@ impl Editor {
     }
 
     /// Every page of the b-tree rooted at `root`: its nodes and overflow pages.
+    /// A node reached twice (a cycle, or interior pages sharing children) is an error, before
+    /// a page could be freed twice or a walk visit exponentially many nodes.
     pub(crate) fn tree_pages(&mut self, root: u32, out: &mut Vec<u32>) -> Result<()> {
         let mut stack = vec![(root, 0usize)];
+        let mut visited = PageSet::new(u64::from(self.n_pages));
         while let Some((n, depth)) = stack.pop() {
             if depth > 64 {
                 return Err(bad("b-tree too deep"));
             }
+            visited.insert(n)?;
             out.push(n);
             let node = self.node(n)?;
             for c in &node.cells {
@@ -535,14 +538,17 @@ impl Editor {
         Ok(())
     }
 
-    /// Every row of a table b-tree: `(rowid, payload)`.
+    /// Every row of a table b-tree: `(rowid, payload)`. A page reached twice is an error, as in
+    /// the reader's scan.
     pub(crate) fn scan(&mut self, root: u32) -> Result<Vec<(i64, Vec<u8>)>> {
         let mut out = Vec::new();
         let mut stack = vec![(root, 0usize)];
+        let mut visited = PageSet::new(u64::from(self.n_pages));
         while let Some((n, depth)) = stack.pop() {
             if depth > 64 {
                 return Err(bad("b-tree too deep"));
             }
+            visited.insert(n)?;
             let node = self.node(n)?;
             match node.kind {
                 0x05 => {
@@ -576,8 +582,7 @@ impl Editor {
             let count = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
             let header = if kind == 0x05 { 12 } else { 8 };
             let cell = |c: usize| -> Result<usize> {
-                let p = h + header + 2 * c;
-                let off = u16::from_be_bytes([page[p], page[p + 1]]) as usize;
+                let off = cell_pointer(page, h + header + 2 * c)?;
                 if off >= page.len() { Err(bad("cell offset")) } else { Ok(off) }
             };
             // A binary search of the cells' keys, read in place.
@@ -602,7 +607,7 @@ impl Editor {
                 0x05 => {
                     n = if lo < count {
                         let off = cell(lo)?;
-                        Self::child(&page[off..off + 4])
+                        Self::child(page.get(off..off + 4).ok_or_else(|| bad("cell"))?)
                     } else {
                         u32::from_be_bytes([page[h + 8], page[h + 9], page[h + 10], page[h + 11]])
                     };
@@ -1380,6 +1385,22 @@ mod tests {
     fn root_of(path: &Path) -> u32 {
         let db = Db::new(std::fs::read(path).unwrap()).unwrap();
         db.schema().unwrap().into_iter().find(|e| e.1 == "t").unwrap().3
+    }
+
+    /// Interior pages that share children are an error for the editor's walks too: scanning
+    /// a table or listing its pages to free them would otherwise visit 2^depth nodes, so an
+    /// in-place update of a hostile GeoPackage would hang. Five levels here would visit the
+    /// leaf 32 times.
+    #[test]
+    fn b_tree_pages_reached_twice_are_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dag.db");
+        std::fs::write(&path, crate::drivers::sqlite::fixtures::shared_children(5)).unwrap();
+        let mut editor = Editor::open(&path).unwrap().unwrap_or_else(|e| panic!("{}", e.0));
+        let error = editor.scan(1).unwrap_err();
+        assert!(error.to_string().contains("reached twice"), "{error}");
+        let error = editor.tree_pages(1, &mut Vec::new()).unwrap_err();
+        assert!(error.to_string().contains("reached twice"), "{error}");
     }
 
     #[test]

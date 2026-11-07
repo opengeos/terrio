@@ -138,18 +138,24 @@ pub(crate) fn varint(b: &[u8], i: usize) -> Option<(i64, usize)> {
 /// The pages of a database a b-tree walk has reached: one bit per page of the file, so that a
 /// walk of a large file costs an eighth of a byte per page, and a page reached twice (a cycle, or
 /// interior pages sharing children) is found.
-pub(crate) struct PageSet(Vec<u64>);
+pub(crate) struct PageSet {
+    bits: Vec<u64>,
+    pages: u64,
+}
 
 impl PageSet {
     /// An empty set for a file of `pages` pages.
     pub(crate) fn new(pages: u64) -> Self {
-        PageSet(vec![0; usize::try_from(pages.div_ceil(64)).unwrap_or(usize::MAX)])
+        PageSet { bits: vec![0; usize::try_from(pages.div_ceil(64)).unwrap_or(usize::MAX)], pages }
     }
 
     /// Adds page `n` (1-based). An error when it was there already, or is not a page of the file.
     pub(crate) fn insert(&mut self, n: u32) -> Result<()> {
-        let i = (n as usize).checked_sub(1).ok_or_else(|| bad("page 0"))?;
-        let word = self.0.get_mut(i / 64).ok_or_else(|| bad("page out of range"))?;
+        if n == 0 || u64::from(n) > self.pages {
+            return Err(bad("page out of range"));
+        }
+        let i = n as usize - 1;
+        let word = self.bits.get_mut(i / 64).ok_or_else(|| bad("page out of range"))?;
         let bit = 1u64 << (i % 64);
         if *word & bit != 0 {
             return Err(bad("b-tree page reached twice"));
@@ -216,7 +222,7 @@ impl Db {
     /// walked first, then the leaf pages are decoded in parallel.
     fn scan(&self, root: u32, out: &mut Vec<(i64, Vec<u8>)>, depth: usize) -> Result<()> {
         let mut leaves = Vec::new();
-        let failure = self.leaves(root, &mut leaves, &mut PageSet::new((self.data.len() / self.page_size) as u64), depth).err();
+        let failure = self.leaves(root, &mut leaves, &mut PageSet::new(self.pages() as u64), depth).err();
         let rows = crate::par::map_range(leaves.len(), |i| self.leaf_rows(leaves[i]));
         // The first error in page order, as a sequential scan would meet it.
         for r in rows {
@@ -924,22 +930,24 @@ pub(crate) fn column_defaults(sql: &str) -> Vec<Option<Value>> {
         .collect()
 }
 
+/// Hostile SQLite page layouts shared by the readers' and the editor's tests.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
+pub(crate) mod fixtures {
     /// A database of `pages` zeroed 512-byte pages behind an SQLite header.
-    fn database(pages: usize) -> Vec<u8> {
+    pub(crate) fn database(pages: usize) -> Vec<u8> {
         let mut b = vec![0u8; 512 * pages];
         b[..16].copy_from_slice(b"SQLite format 3\0");
         b[16..18].copy_from_slice(&512u16.to_be_bytes());
+        (b[18], b[19], b[21], b[22], b[23]) = (1, 1, 64, 32, 32);
+        b[28..32].copy_from_slice(&(pages as u32).to_be_bytes());
+        b[44..48].copy_from_slice(&4u32.to_be_bytes());
         b[56..60].copy_from_slice(&1u32.to_be_bytes());
         b
     }
 
     /// Makes page `n` an interior table page whose one cell child and right-most pointer both
     /// name `child`.
-    fn interior(b: &mut [u8], n: usize, child: u32) {
+    pub(crate) fn interior(b: &mut [u8], n: usize, child: u32) {
         let (page, h) = ((n - 1) * 512, if n == 1 { 100 } else { 0 });
         b[page + h] = 0x05;
         b[page + h + 3..page + h + 5].copy_from_slice(&1u16.to_be_bytes());
@@ -948,6 +956,24 @@ mod tests {
         b[page + 400..page + 404].copy_from_slice(&child.to_be_bytes());
         b[page + 404] = 1;
     }
+
+    /// A b-tree rooted at page 1 of `levels` interior pages, each page's cell and right-most
+    /// pointer both naming the next page, over an empty leaf: a walk that does not notice a
+    /// page reached twice visits the leaf 2^levels times.
+    pub(crate) fn shared_children(levels: usize) -> Vec<u8> {
+        let mut b = database(levels + 1);
+        for n in 1..=levels {
+            interior(&mut b, n, n as u32 + 1);
+        }
+        b[levels * 512] = 0x0d;
+        b
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::{database, interior, shared_children};
+    use super::*;
 
     /// Makes page 1 a table leaf with one cell at offset 200 of rowid 1 and payload `size`,
     /// returning where its local payload starts.
@@ -1022,12 +1048,7 @@ mod tests {
     /// ran forever. Five levels here would visit the leaf 32 times.
     #[test]
     fn b_tree_pages_reached_twice_are_errors() {
-        let mut b = database(6);
-        for n in 1..6 {
-            interior(&mut b, n, n as u32 + 1);
-        }
-        b[5 * 512] = 0x0d;
-        let db = Db::new(b).unwrap();
+        let db = Db::new(shared_children(5)).unwrap();
         let error = db.schema().unwrap_err();
         assert!(error.to_string().contains("reached twice"), "{error}");
         assert!(db.raw_rows("t").is_err());

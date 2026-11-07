@@ -276,24 +276,9 @@ mod tests {
     /// 2^depth leaves. Five levels here would visit the leaf 32 times.
     #[test]
     fn b_tree_pages_reached_twice_are_errors() {
-        let mut b = vec![0u8; 512 * 6];
-        b[..16].copy_from_slice(b"SQLite format 3\0");
-        b[16..18].copy_from_slice(&512u16.to_be_bytes());
-        b[56..60].copy_from_slice(&1u32.to_be_bytes());
-        for n in 1..6usize {
-            let (page, h) = ((n - 1) * 512, if n == 1 { 100 } else { 0 });
-            let child = (n as u32 + 1).to_be_bytes();
-            b[page + h] = 0x05;
-            b[page + h + 3..page + h + 5].copy_from_slice(&1u16.to_be_bytes());
-            b[page + h + 8..page + h + 12].copy_from_slice(&child);
-            b[page + h + 12..page + h + 14].copy_from_slice(&400u16.to_be_bytes());
-            b[page + 400..page + 404].copy_from_slice(&child);
-            b[page + 404] = 1;
-        }
-        b[5 * 512] = 0x0d;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("dag.gpkg");
-        std::fs::write(&path, b).unwrap();
+        std::fs::write(&path, crate::drivers::sqlite::fixtures::shared_children(5)).unwrap();
         let error = FileDb::open(path.to_str().unwrap()).err().expect("an error");
         assert!(error.to_string().contains("reached twice"), "{error}");
     }
