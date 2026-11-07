@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Python's `Raster.read_resampled` and `read_resampled_masks`, and JavaScript's `readResampled`
+  and `readResampledMasks` (on `Dataset` and, as promises, on `openUrl`'s `RemoteDataset`), read a
+  window of some bands into an output of another size as GDAL's `RasterIO` reads it, through
+  `LazyRaster::read_resampled`: from the overview it chooses or the level `overview` names
+  (`AUTO`, `AUTO-n`, `NONE` or a number, as `gdal_translate -ovr`), with fractional windows, so a
+  remote COG read into a small output fetches only an overview's tiles (#429).
+- `terrio.rio` reads `out_shape` reads of GeoTIFFs and other rasters read by window through that
+  core read (nearest, bilinear, cubic, cubic spline, Lanczos, average, RMS and mode; Gaussian,
+  paletted and complex bands, datasets opened with `overview_level` and written datasets keep
+  their own path), and resamples a per-dataset mask from the mask's own overviews (#429).
+- Resampled reads (`LazyRaster::read_resampled`, `terrio translate --outsize`) skip NaN values of
+  masked floating-point chunks only when `TERRIO_GDAL_COMPAT=3.13` selects GDAL 3.13's behavior,
+  as the other `RasterIO` kernels do; by default they sum them as NaN, as GDAL 3.12 does.
 - KMZ archives are read within limits (#579). Their main document and the layer documents it
   links to may take 512 MiB of decompressed text together (`TERRIO_KMZ_MAX_SIZE` changes it),
   and the archive is checked against `TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO` and

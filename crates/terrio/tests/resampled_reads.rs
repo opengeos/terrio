@@ -133,9 +133,11 @@ fn difference(read: &[f64], expected: &[f64], float: bool, case: &Case) -> Optio
     (rounded > (read.len() / 100).max(1)).then(|| format!("{rounded} of {} values rounded otherwise (first {first:?})", read.len()))
 }
 
-/// Every case, against GDAL 3.13.2's reads.
+/// Every case, against GDAL 3.13.2's reads, with GDAL 3.13's behavior selected (it skips NaN
+/// values in the masked chunks of the kernels; GDAL 3.12, the default, does not).
 #[test]
 fn resampled_reads_are_gdal_reads() {
+    terrio::config::push_scope([("TERRIO_GDAL_COMPAT".to_string(), Some("3.13".to_string()))].into());
     let cases = cases();
     assert_eq!(cases.len(), 238);
     let mut failures = Vec::new();
@@ -163,6 +165,7 @@ fn resampled_reads_are_gdal_reads() {
             }
         }
     }
+    terrio::config::pop_scope();
     assert!(failures.is_empty(), "{} of {} cases differ from GDAL:\n{}", failures.len(), cases.len(), failures.join("\n"));
 }
 

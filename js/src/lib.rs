@@ -139,6 +139,51 @@ pub(crate) fn parse_options<T: serde::de::DeserializeOwned + Default>(options: &
     serde_json::from_str(&text).map_err(|e| JsError::new(&format!("options: {e}")))
 }
 
+/// The `overview` option of a resampled read: an overview number or `"AUTO"`, `"AUTO-n"`,
+/// `"NONE"`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OverviewArg {
+    Level(usize),
+    Name(String),
+}
+
+/// Options of `readResampled` and `readResampledMasks`.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+pub(crate) struct ResampledArgs {
+    /// The bands, from 1 (all by default).
+    bands: Option<Vec<usize>>,
+    /// The source window `[colOff, rowOff, width, height]` in full-resolution pixels, possibly
+    /// fractional (the whole raster by default).
+    window: Option<[f64; 4]>,
+    /// The output `[width, height]`.
+    size: Option<[usize; 2]>,
+    /// The resampling method (nearest by default).
+    resampling: Option<String>,
+    /// The stored resolution read.
+    overview: Option<OverviewArg>,
+}
+
+impl ResampledArgs {
+    /// The read's options.
+    pub(crate) fn options(&self) -> terrio::Result<terrio::ResampledReadOptions> {
+        use terrio::ops::overview::OverviewSelection;
+        let [w, h] = self.size.ok_or_else(|| terrio::Error::InvalidArgument("size [width, height] is required".into()))?;
+        Ok(terrio::ResampledReadOptions {
+            bands: self.bands.clone().unwrap_or_default(),
+            window: self.window.map(|[x, y, w, h]| (x, y, w, h)),
+            size: (w, h),
+            resampling: self.resampling.as_deref().map(terrio::ops::Resampling::parse).transpose()?.unwrap_or_default(),
+            overview: match &self.overview {
+                None => OverviewSelection::Auto,
+                Some(OverviewArg::Level(i)) => OverviewSelection::Level(*i),
+                Some(OverviewArg::Name(n)) => OverviewSelection::parse(n)?,
+            },
+        })
+    }
+}
+
 /// A shallow copy of an options object without `key`, whose value is not read (the value itself
 /// when it is not an object).
 fn without_key(options: &JsValue, key: &str) -> Result<JsValue, JsError> {
@@ -706,6 +751,33 @@ impl Dataset {
         };
         let ds = r.read_window(window, &WindowOptions { bands: vec![band], overview }).map_err(js_err)?;
         Ok(typed_array(ds.raster.data))
+    }
+
+    /// Reads a window into an output of another size, as GDAL's `RasterIO` reads it
+    /// (`gdal_translate -outsize`): from the overview it would choose, resampled with its kernels,
+    /// invalid pixels (masked, nodata, transparent) carrying no weight. Returns a typed array of
+    /// the raster's own type, band after band, row after row.
+    ///
+    /// Options: `size` (`[width, height]`, required), `bands` (from 1, all by default), `window`
+    /// (`[colOff, rowOff, width, height]` in full-resolution pixels, possibly fractional; the
+    /// whole raster by default), `resampling` (`nearest`, the default, `bilinear`, `cubic`,
+    /// `cubicspline`, `lanczos`, `average`, `rms`, `mode`) and `overview` (`"AUTO"`, the
+    /// default, `"AUTO-n"`, `"NONE"` or an overview number, as `gdal_translate -ovr`).
+    #[wasm_bindgen(js_name = readResampled)]
+    pub fn read_resampled(&self, options: JsValue) -> Result<JsValue, JsError> {
+        let o = parse_options::<ResampledArgs>(&options)?.options().map_err(js_err)?;
+        let ds = self.raster()?.read_resampled(&o).map_err(js_err)?;
+        Ok(typed_array(ds.raster.data))
+    }
+
+    /// Reads the mask bands of the bands `readResampled` reads, with the same options, as GDAL's
+    /// `GetMaskBand()->RasterIO()`: a `Uint8Array`, band after band, 0 for invalid pixels and 255
+    /// for valid ones (or values between where a kernel resampled the mask).
+    #[wasm_bindgen(js_name = readResampledMasks)]
+    pub fn read_resampled_masks(&self, options: JsValue) -> Result<js_sys::Uint8Array, JsError> {
+        let o = parse_options::<ResampledArgs>(&options)?.options().map_err(js_err)?;
+        let masks = self.raster()?.read_resampled_masks(&o).map_err(js_err)?;
+        Ok(js_sys::Uint8Array::from(&masks[..]))
     }
 
     /// The vector layer names.

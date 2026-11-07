@@ -783,7 +783,7 @@ fn resampled_read(read: &Read, request: Request, dataset: bool, block_width: usi
         block_width,
         dataset,
         max,
-        nan_aware: true,
+        nan_aware: crate::ops::warp::KernelVersion::configured() == crate::ops::warp::KernelVersion::Gdal313,
     }
 }
 
