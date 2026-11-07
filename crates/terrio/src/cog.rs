@@ -254,7 +254,7 @@ pub(crate) trait WindowSource: Send + Sync {
     /// The overviews (numbered from 0) that GDAL's band of an overview level (`i + 1` for
     /// overview `i`) has of its own, which `RasterIO` chooses among again (see
     /// [`LazyRaster::level_overviews`]): by default, none.
-    fn level_overviews(&self, _level: usize) -> Vec<usize> {
+    fn level_band_overviews(&self, _level: usize) -> Vec<usize> {
         Vec::new()
     }
     /// The overviews of GDAL's per-dataset mask band (see [`LazyRaster::mask_band_overviews`]):
@@ -365,7 +365,7 @@ impl WindowSource for SharedRaster {
     fn level_keeps_mask_flags(&self, level: usize) -> bool {
         level.checked_sub(1).is_none_or(|i| self.keeps_mask_flags.get(i).copied().unwrap_or(true))
     }
-    fn level_overviews(&self, level: usize) -> Vec<usize> {
+    fn level_band_overviews(&self, level: usize) -> Vec<usize> {
         level.checked_sub(1).and_then(|i| self.level_overviews.get(i).cloned()).unwrap_or_default()
     }
     fn mask_band_overviews(&self) -> Vec<(usize, usize)> {
@@ -1527,11 +1527,11 @@ impl LazyRaster {
         match &self.inner {
             Inner::Tiff(t) if t.levels.get(i + 1).is_some_and(|l| l.external == Some(0)) => {
                 let mut own: Vec<(usize, usize)> =
-                    t.levels[1..].iter().enumerate().filter_map(|(j, l)| l.external.filter(|&k| k > 0).map(|k| (k, j))).collect();
+                    t.levels[1..].iter().enumerate().filter_map(|(j, l)| l.external.filter(|&k| k > 0).map(|_| (l.ifd, j))).collect();
                 own.sort_unstable();
                 own.into_iter().map(|(_, j)| j).collect()
             }
-            Inner::Source(_, s) => s.level_overviews(i + 1),
+            Inner::Source(_, s) => s.level_band_overviews(i + 1),
             Inner::Tiff(_) | Inner::Memory(_) => Vec::new(),
         }
     }

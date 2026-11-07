@@ -442,19 +442,21 @@ impl LazyRaster {
             // which reads its own overviews in turn; otherwise, or when it keeps its level, its
             // bands (which have overviews) are read band by band, each choosing its level as
             // `GDALRasterBand::IRasterIO` does.
+            let chosen = self.overview_of(read, base, levels);
             if base.reduces_both(read.buf)
-                && let Some(request) = self.overview_of(read, base, levels)
+                && let Some(request) = chosen
             {
                 let levels = self.level_overviews(request.level);
                 return self.plan_from(read, kinds, request, &levels);
             }
-            let request = self.auto_request(read, base, levels);
+            let request = self.auto_request(read, base, levels, chosen);
             return vec![Part { bands: all, request, how: self.band_how(read, request) }];
         }
         if together {
             return self.at_level(read, kinds, all, base, true);
         }
-        let request = self.auto_request(read, base, levels);
+        let chosen = self.overview_of(read, base, levels);
+        let request = self.auto_request(read, base, levels, chosen);
         vec![Part { bands: all, request, how: self.band_how(read, request) }]
     }
 
@@ -557,15 +559,17 @@ impl LazyRaster {
     }
 
     /// The request `GDALRasterBand::IRasterIO` makes of a read from the band of a level, of
-    /// request `base`, whose overviews are `levels`: of the overview it chooses (see
-    /// [`LazyRaster::overview_of`]), whose band chooses among its own overviews in turn (an
-    /// external `.ovr`'s first level), else of `base`.
-    fn auto_request(&mut self, read: &Read, base: Request, levels: &[usize]) -> Request {
+    /// request `base`, whose overviews are `levels`: of the overview it chooses, `chosen` (the
+    /// result of [`LazyRaster::overview_of`] for `base`), whose band chooses among its own
+    /// overviews in turn (an external `.ovr`'s first level), else of `base`.
+    fn auto_request(&mut self, read: &Read, base: Request, levels: &[usize], chosen: Option<Request>) -> Request {
         let mut request = base;
         let mut levels = levels.to_vec();
-        while let Some(next) = self.overview_of(read, request, &levels) {
-            request = next;
-            levels = self.level_overviews(next.level);
+        let mut next = chosen;
+        while let Some(found) = next {
+            request = found;
+            levels = self.level_overviews(found.level);
+            next = self.overview_of(read, request, &levels);
         }
         request
     }
