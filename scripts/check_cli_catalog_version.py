@@ -69,7 +69,7 @@ def main():
     args = parser.parse_args()
     try:
         check(args.base, Path(__file__).resolve().parents[1])
-    except (OSError, ValueError, KeyError) as error:
+    except (OSError, ValueError, KeyError, TypeError) as error:
         parser.exit(1, f"{error}\n")
     print("Catalog version agrees with the protected base comparison.")
 

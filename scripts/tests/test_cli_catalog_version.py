@@ -84,6 +84,22 @@ class CatalogVersionTests(unittest.TestCase):
                 self.assertIn("invalid catalog version:", result.stderr)
                 self.assertNotIn("Traceback", result.stderr)
 
+    def test_malformed_schema_structure_reports_clean_cli_error(self):
+        script = self.repo / "scripts" / "check_cli_catalog_version.py"
+        script.parent.mkdir()
+        script.write_text(Path(guard.__file__).read_text())
+        schemas = (None, [], {"properties": []}, {"properties": {"schema_version": []}})
+        for schema in schemas:
+            with self.subTest(schema=schema):
+                (self.repo / guard.SCHEMA).write_text(json.dumps(schema))
+                result = subprocess.run(
+                    [sys.executable, str(script), "--base", self.base],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertTrue(result.stderr.strip())
+                self.assertNotIn("Traceback", result.stderr)
+
     def test_missing_base_is_not_treated_as_initial_catalog(self):
         with self.assertRaisesRegex(ValueError, "base revision is not available"):
             guard.check("missing-revision", self.repo)
