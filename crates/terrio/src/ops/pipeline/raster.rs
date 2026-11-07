@@ -121,6 +121,9 @@ impl WindowSource for View {
     fn level_band_overviews(&self, level: usize) -> Vec<usize> {
         level.checked_sub(1).and_then(|i| self.level_overviews.get(i).cloned()).unwrap_or_default()
     }
+    fn level_resampling(&mut self, overview: usize) -> Option<String> {
+        self.lock().ok()?.level_resampling(overview)
+    }
     fn block_size(&self) -> Option<(usize, usize)> {
         self.block
     }
@@ -266,19 +269,8 @@ fn view_inner(mut source: LazyRaster, bands: Vec<usize>, crop: Option<Window>, r
     // The view keeps each overview's nested overviews (an external `.ovr`'s images): the same
     // overviews, numbered the same, as the source's.
     let level_overviews: Vec<Vec<usize>> = (0..source.overviews().len()).map(|i| source.level_overviews(Some(i))).collect();
-    let reader = View {
-        referenced,
-        source: Mutex::new(source),
-        bands,
-        crop,
-        full_size,
-        overviews,
-        level_overviews,
-        block,
-        mask,
-        alpha,
-        band_types,
-    };
+    let reader =
+        View { referenced, source: Mutex::new(source), bands, crop, full_size, overviews, level_overviews, block, mask, alpha, band_types };
     Ok(LazyRaster::from_source(header, Box::new(reader)))
 }
 

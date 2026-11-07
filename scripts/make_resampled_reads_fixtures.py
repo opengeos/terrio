@@ -212,6 +212,39 @@ def write_files(gdal: Any) -> list[dict[str, Any]]:
               case(name, (31, 27)), case(name, (26, 22), resampling="average"), case(name, (26, 22), resampling="bilinear"),
               case(name, (26, 22), resampling="cubic"), case(name, (26, 41), resampling="cubic"),
               case(name, (24, 20), (2, 3, 90, 78), "lanczos")]
+    # Mixed metadata: GDAL 3.13.3 excludes only the marked candidate, at each level.
+    name = "mixed_external_overviews.tif"
+    ds = tiff(name, gdal.GDT_Byte, pattern(rng, 1, 83, 97, 1, 250).astype(np.uint8))
+    ds = None
+    ds = gdal.Open(str(OUT / name))
+    ds.BuildOverviews("AVERAGE", [2, 4])
+    ds = None
+    ds = gdal.Open(str(OUT / (name + ".ovr")), gdal.GA_Update)
+    ds.GetRasterBand(1).GetOverview(0).SetMetadataItem("RESAMPLING", "AVERAGE_BIT2GRAYSCALE")
+    ds = None
+    cases += [case(name, (31, 27)), case(name, (26, 22), resampling="bilinear"),
+              case(name, (20, 17), resampling="cubic")]
+    # External overviews with dataset masks: invalid samples must affect interpolation after
+    # the second level selection, including for shared readers.
+    name = "masked_external_overviews.tif"
+    ds = tiff(name, gdal.GDT_Byte, pattern(rng, 3, 83, 97, 1, 250).astype(np.uint8))
+    ds.CreateMaskBand(gdal.GMF_PER_DATASET)
+    mask = np.full((83, 97), 255, np.uint8)
+    mask[12:55, 16:65] = 0
+    ds.GetRasterBand(1).GetMaskBand().WriteArray(mask)
+    ds = None
+    ds = gdal.Open(str(OUT / name))
+    ds.BuildOverviews("AVERAGE", [2, 4])
+    ds = None
+    ds = gdal.Open(str(OUT / (name + ".ovr")), gdal.GA_Update)
+    ds.CreateMaskBand(gdal.GMF_PER_DATASET)
+    mask = np.full((ds.RasterYSize, ds.RasterXSize), 255, np.uint8)
+    mask[6:28, 8:33] = 0
+    ds.GetRasterBand(1).GetMaskBand().WriteArray(mask)
+    ds.BuildOverviews("AVERAGE", [2])
+    ds = None
+    cases += [case(name, (31, 27), bands=(1,)), case(name, (26, 22), resampling="bilinear"),
+              case(name, (26, 22), resampling="cubic"), case(name, (26, 41), resampling="cubic")]
     # Levels read alone, as gdal_translate -ovr reads them.
     for overview in ("NONE", "0", "1", "9", "AUTO-1"):
         cases += [case("rgb_mask.tif", (20, 15), resampling="bilinear", overview=overview),

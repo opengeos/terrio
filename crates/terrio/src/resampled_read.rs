@@ -431,7 +431,7 @@ impl LazyRaster {
         self.plan_from(read, kinds, read.full, &levels)
     }
 
-    /// How `GDALDataset::IRasterIO` reads the bands of a read from the dataset of a level, of
+    /// How GDAL 3.13.3's `GDALDataset::IRasterIO` reads the bands of a read from the dataset of a level, of
     /// request `base`, whose band has overviews `levels` (see [`LazyRaster::level_overviews`]).
     fn plan_from(&mut self, read: &Read, kinds: &[MaskKind], base: Request, levels: &[usize]) -> Vec<Part> {
         let all = 0..read.bands.len();
@@ -449,14 +449,14 @@ impl LazyRaster {
                 let levels = self.level_overviews(request.level);
                 return self.plan_from(read, kinds, request, &levels);
             }
-            let request = self.auto_request(read, base, levels, chosen);
+            let request = self.auto_request(read, base, chosen);
             return vec![Part { bands: all, request, how: self.band_how(read, request) }];
         }
         if together {
             return self.at_level(read, kinds, all, base, true);
         }
         let chosen = self.overview_of(read, base, levels);
-        let request = self.auto_request(read, base, levels, chosen);
+        let request = self.auto_request(read, base, chosen);
         vec![Part { bands: all, request, how: self.band_how(read, request) }]
     }
 
@@ -559,32 +559,33 @@ impl LazyRaster {
     }
 
     /// The request `GDALRasterBand::IRasterIO` makes of a read from the band of a level, of
-    /// request `base`, whose overviews are `levels`: of the overview it chooses, `chosen` (the
+    /// request `base` in GDAL 3.13.3: of the overview it chooses, `chosen` (the
     /// result of [`LazyRaster::overview_of`] for `base`), whose band chooses among its own
     /// overviews in turn (an external `.ovr`'s first level), else of `base`.
-    fn auto_request(&mut self, read: &Read, base: Request, levels: &[usize], chosen: Option<Request>) -> Request {
+    fn auto_request(&mut self, read: &Read, base: Request, chosen: Option<Request>) -> Request {
         let mut request = base;
-        let mut levels = levels.to_vec();
         let mut next = chosen;
         while let Some(found) = next {
             request = found;
-            levels = self.level_overviews(found.level);
+            let levels = self.level_overviews(found.level);
             next = self.overview_of(read, request, &levels);
         }
         request
     }
 
-    /// The request of the overview among `levels` that `GDALBandGetBestOverviewLevel2` chooses
+    /// The request of the overview among `levels` that GDAL 3.13.3's `GDALBandGetBestOverviewLevel2` chooses
     /// for a request `base` of a band when the buffer is smaller than the window on either axis;
     /// `None` when it reads `base`.
     fn overview_of(&mut self, read: &Read, base: Request, levels: &[usize]) -> Option<Request> {
         if levels.is_empty() || !base.reduces(read.buf) {
             return None;
         }
-        // GDAL ignores overviews of AVERAGE_BIT2GRAYSCALE resampling, as GeoTIFFs record it.
-        if self.overview_resampling().is_some_and(|r| r.to_ascii_uppercase().starts_with("AVERAGE_BIT2")) {
-            return None;
-        }
+        // GDAL 3.13.3 checks each candidate's metadata, including nested external levels.
+        let levels: Vec<usize> = levels
+            .iter()
+            .copied()
+            .filter(|&i| !self.level_resampling(i).is_some_and(|r| r.to_ascii_uppercase().starts_with("AVERAGE_BIT2")))
+            .collect();
         let overviews = self.overviews();
         let sizes: Vec<(usize, usize)> = levels.iter().map(|&i| overviews[i]).collect();
         let threshold = oversampling_threshold(read.resampling);

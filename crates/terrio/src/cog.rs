@@ -257,6 +257,10 @@ pub(crate) trait WindowSource: Send + Sync {
     fn level_band_overviews(&self, _level: usize) -> Vec<usize> {
         Vec::new()
     }
+    /// A candidate overview's GDAL `RESAMPLING` item (GDAL 3.13.3), if stored.
+    fn level_resampling(&mut self, _overview: usize) -> Option<String> {
+        None
+    }
     /// The overviews of GDAL's per-dataset mask band (see [`LazyRaster::mask_band_overviews`]):
     /// by default, every overview of a source with a mask.
     fn mask_band_overviews(&self) -> Vec<(usize, usize)> {
@@ -367,6 +371,9 @@ impl WindowSource for SharedRaster {
     }
     fn level_band_overviews(&self, level: usize) -> Vec<usize> {
         level.checked_sub(1).and_then(|i| self.level_overviews.get(i).cloned()).unwrap_or_default()
+    }
+    fn level_resampling(&mut self, overview: usize) -> Option<String> {
+        self.lock().ok()?.level_resampling(overview)
     }
     fn mask_band_overviews(&self) -> Vec<(usize, usize)> {
         self.mask_overviews.clone()
@@ -1521,7 +1528,7 @@ impl LazyRaster {
     /// `RasterIO` chooses among when it reads that band into a smaller buffer: every overview for
     /// full resolution. The first level of an external `.ovr` is that file's image, whose band
     /// has the file's other images as overviews, in their order there (GDAL's
-    /// `GDALDefaultOverviews::GetOverview`); other overviews have none.
+    /// `GDALDefaultOverviews::GetOverview` in GDAL 3.13.3); other overviews have none.
     pub(crate) fn level_overviews(&self, overview: Option<usize>) -> Vec<usize> {
         let Some(i) = overview else { return (0..self.overviews().len()).collect() };
         match &self.inner {
@@ -1586,8 +1593,16 @@ impl LazyRaster {
     /// The first overview's `RESAMPLING` item, which GDAL writes with the overviews it builds
     /// (`GTIFFBuildOverviewMetadata`), if any.
     pub fn overview_resampling(&mut self) -> Option<String> {
+        self.level_resampling(0)
+    }
+
+    /// A candidate overview's `RESAMPLING`, used by GDAL 3.13.3's best-overview selection.
+    pub(crate) fn level_resampling(&mut self, overview: usize) -> Option<String> {
+        if let Inner::Source(_, source) = &mut self.inner {
+            return source.level_resampling(overview);
+        }
         let Inner::Tiff(t) = &mut self.inner else { return None };
-        let (external, ifd) = t.levels.get(1).map(|l| (l.external, l.ifd))?;
+        let (external, ifd) = t.levels.get(overview + 1).map(|l| (l.external, l.ifd))?;
         // The first overview of an external `.ovr` is that file's image, with its own metadata.
         let t = match (external, t.ovr.as_mut()) {
             (Some(i), Some(ovr)) => {
