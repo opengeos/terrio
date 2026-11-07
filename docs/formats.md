@@ -873,6 +873,11 @@ reads it.
   1,000 points to a 2-million-point file takes about as long as `ogr2ogr -append`. Files in
   write-ahead-log mode with a pending log, with auto-vacuum, or with triggers on the layer other
   than GDAL's are rewritten whole instead.
+- **Native FlatGeobuf validation** rejects incomplete record framing, truncated indexes and
+  payloads, mismatches with nonzero declared feature counts, and invalid declared coordinate
+  dimensions or out-of-bounds/decreasing part ends. In builds with the optional GDAL backend,
+  eager opens can retry a native refusal through GDAL and retain GDAL's admission behavior.
+  Range-backed and streaming FlatGeobuf reads use the native checks in either build.
 - **Streaming**: GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq and CSV
   layers are read a chunk of features at a time (GeoPackages a leaf page of the table at a time,
   through the R-tree with `--spat`; GeoParquet a record batch at a time), and FlatGeobuf,
@@ -920,8 +925,11 @@ reads it.
 - **KMZ archives are read within limits**, whether opened from a file or from memory: the zip
   archive limits of `/vsizip/` (`TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO`,
   `TERRIO_ZIP_MAX_SIZE`), and 512 MiB of decompressed text for the main document and the layer
-  documents it links to together. Set `TERRIO_KMZ_MAX_SIZE` to a byte count to change that
-  budget; reading a KML document takes at least twice its size in memory, so in WebAssembly, whose
+  documents it links to together. Repeated links to a document read it once and emit its layers once.
+  Existing document and folder names are preserved; the first link supplies the default name
+  for an unnamed root, or the member stem when that link is unnamed. Set `TERRIO_KMZ_MAX_SIZE`
+  to a byte count to change that budget;
+  reading a KML document takes at least twice its size in memory, so in WebAssembly, whose
   memory is at most 4 GiB, a lower budget leaves room for the parsed layers. An archive past
   a limit is refused with a resource-limit error, which is not retried with GDAL. Zip archives
   opened from memory (Python and JavaScript byte reads) read their members within the same

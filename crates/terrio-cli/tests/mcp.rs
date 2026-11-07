@@ -90,6 +90,33 @@ fn serves_the_commands() {
     }
 }
 
+/// `list-crs`: a read-only tool, printing as `projinfo --list-crs` does, or JSON.
+#[test]
+fn lists_registry_crs() {
+    let replies = session(&[
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+        call(2, "list-crs", &["gda94", "albers", "--authority", "EPSG", "--kind", "projected", "--json"]),
+        call(3, "list-crs", &["EPSG:3785", "--include-deprecated"]),
+        call(4, "list-crs", &["--kind", "geographic"]),
+    ]);
+    let tools = replies[&1]["result"]["tools"].as_array().unwrap();
+    let tool = tools.iter().find(|t| t["name"] == "list-crs").unwrap();
+    assert_eq!(tool["annotations"]["readOnlyHint"], true);
+
+    let list: Value = serde_json::from_str(replies[&2]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let albers = list.as_array().unwrap().iter().find(|e| e["code"] == 3577).unwrap();
+    assert_eq!(albers["authority"], "EPSG");
+    assert_eq!(albers["name"], "GDA94 / Australian Albers");
+    assert_eq!(albers["kind"], "projected");
+    assert_eq!(albers["bounds"], json!([112.85, -43.7, 153.69, -9.86]));
+
+    let text = replies[&3]["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("EPSG:3785 \"Popular Visualisation CRS / Mercator\" [deprecated]"), "{text}");
+
+    assert_eq!(replies[&4]["result"]["isError"], true);
+    assert!(replies[&4]["result"]["content"][0]["text"].as_str().unwrap().contains("geographic_2d"));
+}
+
 #[test]
 fn topology_tools_are_discoverable_and_execute_the_cli() {
     let dir = tempfile::tempdir().unwrap();
@@ -850,4 +877,21 @@ fn preview_returns_the_image_it_draws() {
     }
     assert!(named.exists());
     assert_eq!(replies[&3]["result"]["isError"], true);
+}
+
+/// A failed redirected write must fail the command, rather than report truncated output as success.
+#[cfg(target_os = "linux")]
+#[test]
+fn crs_listing_propagates_output_errors() {
+    for json in [false, true] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_terrio"));
+        command.args(["list-crs", "3577"]);
+        if json {
+            command.arg("--json");
+        }
+        let full = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
+        let output = command.stdout(full).output().unwrap();
+        assert!(!output.status.success(), "json={json}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("space"), "{output:?}");
+    }
 }

@@ -64,6 +64,7 @@ __all__ = [
     "transform_points",
     "set_grid_search_paths",
     "set_network_enabled",
+    "list_crs",
     "translate",
     "warp",
     "mosaic",
@@ -1094,6 +1095,27 @@ def clear_block_cache() -> None: ...
 def config_options() -> dict[str, str | None]: ...
 def set_grid_search_paths(paths: Sequence[str | os.PathLike[str]] | None) -> None: ...
 def set_network_enabled(enabled: bool | None) -> None: ...
+
+class _CrsEntry(TypedDict):
+    authority: Literal["EPSG", "ESRI", "IAU_2015"]
+    code: int
+    name: str
+    kind: Literal[
+        "geographic_2d", "geographic_3d", "geocentric", "projected", "vertical", "compound", "other"
+    ]
+    deprecated: bool
+    area_name: str | None
+    bounds: list[float] | None
+    projection_method: str | None
+    celestial_body: str | None
+
+def list_crs(
+    text: str | None = None,
+    *,
+    authority: str | Sequence[str] | None = None,
+    kind: str | Sequence[str] | None = None,
+    include_deprecated: bool = False,
+) -> list[_CrsEntry]: ...
 def translate(
     src: _RasterSource,
     dst: str | None = None,

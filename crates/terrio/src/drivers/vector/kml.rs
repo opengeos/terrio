@@ -145,14 +145,20 @@ fn kmz_styled<R: std::io::Read + std::io::Seek>(reader: R, default_name: &str) -
     // The documents that are layers, each with its layer name.
     let mut links = Vec::new();
     root.find_all("NetworkLink", &mut links);
+    let archived: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
+    // Each document is read, counted toward the budget and parsed once, however many links name
+    // it. Its first link supplies the default name; document and folder names are kept.
+    // The main document is not read again.
+    let mut linked = std::collections::HashSet::from([main.as_str()]);
     let mut documents: Vec<(String, Element, String)> = Vec::new();
     for link in links {
         let Some(href) = link.child("Link").or_else(|| link.child("Url")).and_then(|l| l.child_text("href")) else { continue };
         let href = href.trim_start_matches("./");
-        if let Some(member) = names.iter().find(|n| n.as_str() == href) {
-            let name = link.child_text("name").map_or_else(|| stem(member), str::to_string);
-            documents.push((member.clone(), xml::parse(&read_document(&mut zip, member, &mut documents_budget)?)?, name));
+        if !archived.contains(href) || !linked.insert(href) {
+            continue;
         }
+        let name = link.child_text("name").map_or_else(|| stem(href), str::to_string);
+        documents.push((href.to_string(), xml::parse(&read_document(&mut zip, href, &mut documents_budget)?)?, name));
     }
     // The documents styles live in, as far as links from one to the next go. Each is read once here
     // (a layer document a styleUrl names was also read above, and counts again toward
@@ -160,7 +166,6 @@ fn kmz_styled<R: std::io::Read + std::io::Seek>(reader: R, default_name: &str) -
     // one that cannot be read, or past the style budget, leaves its links as raw URLs. An archive
     // past the archive limits is refused.
     let mut budget = MAX_STYLE_DOCUMENT_BYTES;
-    let archived: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
     let mut members = kml_style::Members::new();
     let mut pending = kml_style::linked_members(&root, &main);
     for (member, document, _) in &documents {
@@ -1078,6 +1083,17 @@ mod tests {
         text
     }
 
+    /// A `NetworkLink` to `href`, with a `<name>` when `name` is not empty.
+    fn network_link(name: &str, href: &str) -> String {
+        let name = if name.is_empty() { String::new() } else { format!("<name>{name}</name>") };
+        format!("<NetworkLink>{name}<Link><href>{href}</href></Link></NetworkLink>")
+    }
+
+    /// Each layer's name and feature count.
+    fn summary(layers: &[Layer]) -> Vec<(&str, usize)> {
+        layers.iter().map(|l| (l.name.as_str(), l.features.len())).collect()
+    }
+
     use crate::config::with_options;
 
     #[test]
@@ -1130,6 +1146,65 @@ mod tests {
         assert!(parse_kmz(styled.clone(), "a").is_ok());
         let refused = with_options(&[("TERRIO_ZIP_MAX_RATIO", "50")], || parse_kmz(styled.clone(), "a"));
         assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("styles.kml")), "{refused:?}");
+    }
+
+    #[test]
+    fn repeated_links_preserve_document_and_folder_layers() {
+        let point = "<Placemark><Point><coordinates>1,2</coordinates></Point></Placemark>";
+        for (document, expected) in [
+            (format!("<kml><Document><name>inside</name>{point}</Document></kml>"), vec![("inside", 1)]),
+            (format!("<kml><Document><Folder><name>folder</name>{point}</Folder></Document></kml>"), vec![("a", 0), ("folder", 1)]),
+            (format!("<kml><Document>{point}</Document></kml>"), vec![("a", 1)]),
+        ] {
+            // A later named link must not change the first unnamed link's default.
+            let first = network_link("", "layers/a.kml");
+            let repeated = format!("{first}{}", network_link("later", "./layers/a.kml"));
+            for links in [first, repeated] {
+                let main = format!("<kml><Document>{links}</Document></kml>");
+                let layers = parse_kmz(archive(&[("doc.kml", &main), ("layers/a.kml", &document)]), "main").unwrap();
+                assert_eq!(summary(&layers), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn a_document_linked_several_times_is_one_layer() {
+        // The first link to a document names its layer; the others, written with `./` or not, add
+        // none. A link to a member the archive does not hold is left out.
+        let links = [
+            network_link("first", "./layers/a.kml"),
+            network_link("missing", "layers/missing.kml"),
+            network_link("second", "layers/a.kml"),
+            network_link("", "layers/a.kml"),
+            network_link("", "layers/b.kml"),
+        ];
+        let main = format!("<kml><Document>{}</Document></kml>", links.concat());
+        let kmz = deflated(&[("doc.kml", main.as_bytes()), ("layers/a.kml", &padded(0)), ("layers/b.kml", &padded(0))]);
+        assert_eq!(summary(&parse_kmz(kmz, "main").unwrap()), [("first", 1), ("b", 1)]);
+    }
+
+    #[test]
+    fn a_document_linked_several_times_counts_once_toward_the_document_budget() {
+        let main = format!("<kml><Document>{}{}</Document></kml>", network_link("", "layers/a.kml"), network_link("", "./layers/a.kml"));
+        let member = padded(1 << 20);
+        let kmz = deflated(&[("doc.kml", main.as_bytes()), ("layers/a.kml", &member)]);
+        // A budget that holds doc.kml and the document once is enough.
+        let once = (main.len() + member.len()).to_string();
+        let read = with_options(&[("TERRIO_KMZ_MAX_SIZE", &once)], || parse_kmz(kmz.clone(), "main"));
+        let layers = read.unwrap_or_else(|e| panic!("refused within {once} bytes: {e}"));
+        assert_eq!(summary(&layers), [("a", 1)]);
+        // The document still counts toward it: a byte less refuses the archive.
+        let short = (main.len() + member.len() - 1).to_string();
+        let refused = with_options(&[("TERRIO_KMZ_MAX_SIZE", &short)], || parse_kmz(kmz.clone(), "main"));
+        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("layers/a.kml")), "{refused:?}");
+    }
+
+    #[test]
+    fn a_link_to_the_main_document_adds_no_layer() {
+        let point = "<Placemark><Point><coordinates>1,2</coordinates></Point></Placemark>";
+        let main = format!("<kml><Document>{point}{}{}</Document></kml>", network_link("again", "doc.kml"), network_link("", "./doc.kml"));
+        let kmz = deflated(&[("doc.kml", main.as_bytes())]);
+        assert_eq!(summary(&parse_kmz(kmz, "main").unwrap()), [("main", 1)]);
     }
 
     fn pin(url: &str, inline: &str) -> String {
