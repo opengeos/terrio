@@ -53,9 +53,9 @@ pub fn polygonize(ds: &RasterDataset, options: &PolygonizeOptions) -> Result<Lay
     }
     let (cols, rows) = (r.cols, r.rows);
     let values = r.band_to_vec_f64(options.band);
-    let nodata = if options.ignore_nodata { None } else { ds.nodata() };
+    let nodata = if options.ignore_nodata { None } else { ds.band_nodata(options.band + 1) };
     let mask = match &options.mask {
-        Some(m) if (m.raster.cols, m.raster.rows) != (cols, rows) => {
+        Some(m) if (m.raster.cols, m.raster.rows) != (cols, rows) || m.raster.bands == 0 => {
             return Err(Error::InvalidArgument("the mask raster must have the size of the input".into()));
         }
         Some(m) => Some(m.raster.band_to_vec_f64(0)),

@@ -79,6 +79,10 @@ pub struct MosaicSource<'a> {
 /// Builds a virtual mosaic of rasters in the same CRS, as `gdalbuildvrt` does. Paths are written
 /// relative to `vrt_dir` when they are inside it.
 pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&Path>) -> Result<VrtDataset> {
+    build_vrt_impl(sources, o, vrt_dir, false)
+}
+
+fn build_vrt_impl(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&Path>, allow_empty: bool) -> Result<VrtDataset> {
     let first = sources.first().ok_or_else(|| Error::InvalidArgument("no source rasters".into()))?;
     let srs = first.ds.crs();
     for s in sources {
@@ -127,7 +131,12 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
                     ns = ns.min(gt[5]);
                 }
             }
-            ResolutionStrategy::User(x, y) => (we, ns) = (x, -y),
+            ResolutionStrategy::User(x, y) => {
+                if !(x > 0.0 && y > 0.0 && x.is_finite() && y.is_finite()) {
+                    return Err(Error::InvalidArgument("user resolution must be finite and positive".into()));
+                }
+                (we, ns) = (x, -y);
+            }
         }
     }
     if let Some(e) = o.extent {
@@ -155,7 +164,18 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
         }
     };
     let nbands = band_list(first.ds).len();
-    if !o.separate && sources.iter().any(|s| band_list(s.ds).iter().any(|b| *b > s.ds.raster.bands)) {
+    if !o.separate {
+        if nbands == 0 {
+            return Err(Error::InvalidArgument("a source has no bands".into()));
+        }
+        // As in GDAL 3.13's `gdalbuildvrt` (`apps/gdalbuildvrt_lib.cpp`), when `-separate` is
+        // false and `-b` is not specified, every source must have the same band count as the
+        // first source.
+        if o.bands.is_empty() && sources.iter().any(|s| s.ds.raster.bands != nbands) {
+            return Err(Error::InvalidArgument("sources have different band counts".into()));
+        }
+    }
+    if sources.iter().any(|s| band_list(s.ds).iter().any(|b| *b == 0 || *b > s.ds.raster.bands)) {
         return Err(Error::InvalidArgument("a source lacks one of the requested bands".into()));
     }
     let src_nodata = |s: &MosaicSource, b: usize, band: usize| match &o.src_nodata {
@@ -216,6 +236,11 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
             }
         }
     }
+    // Both `separate: true` (no bands pushed) and `separate: false` (pre-allocated bands with
+    // no overlapping sources) fail consistently when no source intersects the target extent.
+    if !allow_empty && bands.iter().all(|b| b.sources.is_empty()) {
+        return Err(Error::InvalidArgument("no source rasters intersect the target extent".into()));
+    }
     let srs = (!srs.is_unknown()).then_some(srs);
     Ok(VrtDataset { width, height, geo_transform: Some([min_x, we, 0.0, max_y, 0.0, ns]), srs, bands })
 }
@@ -267,7 +292,9 @@ fn absolute(path: &str) -> String {
 
 /// Mosaics rasters into one, as `gdal_merge.py` (or `gdalbuildvrt` followed by
 /// `gdal_translate`) does. When a source's CRS differs from the output's, all sources are
-/// reprojected with [`warp`] instead.
+/// reprojected with [`warp`] instead. Without an explicit band selection, non-separate inputs
+/// must have equal band counts. Unlike GDAL 3.13.3 `gdalbuildvrt`, which warns and skips a
+/// mismatched input, this operation returns an error rather than silently omitting a source.
 pub fn mosaic(sources: &[MosaicSource], o: &MosaicOptions) -> Result<RasterDataset> {
     let first = sources.first().ok_or_else(|| Error::InvalidArgument("no source rasters".into()))?;
     let dst = o.dst_srs.clone().unwrap_or_else(|| first.ds.crs());
@@ -293,6 +320,13 @@ pub fn mosaic(sources: &[MosaicSource], o: &MosaicOptions) -> Result<RasterDatas
     }
     let vrt = build_vrt(sources, o, None)?;
     // Read from the datasets already in memory rather than reopening the files.
+    vrt_from_memory(&vrt, sources)
+}
+
+/// Calc aligns every input to its requested window, including inputs wholly outside it.
+/// Such inputs must retain the VRT's normal nodata/zero fill instead of failing as an empty mosaic.
+pub(super) fn mosaic_allow_empty(sources: &[MosaicSource], o: &MosaicOptions) -> Result<RasterDataset> {
+    let vrt = build_vrt_impl(sources, o, None, true)?;
     vrt_from_memory(&vrt, sources)
 }
 
@@ -649,5 +683,31 @@ mod tests {
         let out = mosaic(&srcs, &MosaicOptions { separate: true, ..Default::default() }).unwrap();
         assert_eq!(out.raster.bands, 2);
         assert_eq!(out.raster.data.to_f64_vec()[16 + 5], 2.0);
+    }
+
+    #[test]
+    fn rejects_mismatched_band_counts_disjoint_separate_extent_and_bad_resolution() {
+        let a = tile(0.0, 4.0, 1.0);
+        let grid = Grid { width: 4, height: 4, geo_transform: [0.0, 1.0, 0.0, 4.0, 0.0, -1.0] };
+        let b = super::super::build_raster(grid, vec![vec![1.0; 16], vec![2.0; 16]], DataType::F32, None, &SpatialRef::default(), |x, _| x)
+            .unwrap();
+        let srcs = [MosaicSource { path: "a.tif".into(), ds: &a }, MosaicSource { path: "b.tif".into(), ds: &b }];
+        assert!(mosaic(&srcs, &MosaicOptions::default()).is_err());
+
+        let single = [MosaicSource { path: "a.tif".into(), ds: &a }];
+        for separate in [false, true] {
+            assert!(
+                mosaic(&single, &MosaicOptions { separate, extent: Some((100.0, 100.0, 110.0, 110.0)), ..Default::default() }).is_err()
+            );
+        }
+        assert!(
+            build_vrt(
+                &[MosaicSource { path: "b.tif".into(), ds: &b }, MosaicSource { path: "a.tif".into(), ds: &a }],
+                &MosaicOptions { separate: true, bands: vec![2], extent: Some((0.0, 0.0, 4.0, 4.0)), ..Default::default() },
+                None,
+            )
+            .is_err()
+        );
+        assert!(mosaic(&single, &MosaicOptions { resolution: ResolutionStrategy::User(0.0, 1.0), ..Default::default() }).is_err());
     }
 }

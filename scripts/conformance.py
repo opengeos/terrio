@@ -557,7 +557,8 @@ def suite_indexes(ctx):
 def suite_raster_manage(ctx):
     """Real DEM raster management, cross-read and compared by GDAL."""
     suite = Suite("raster-manage", "Raster management", "GDAL 3.13.3",
-                  "Creation types/bands, metadata escaping, nodata, internal/external overview add/delete, "
+                  "Creation types/bands, metadata escaping, nodata, internal overview add/delete and external "
+                  "overview add/delete beside read-only GeoTIFFs (left unchanged), "
                   "exact Landsat Byte/UInt16/Float32 mode on uneven levels, "
                   "internal mask overviews added, refreshed (whole and over an extent) and added again over "
                   "gdaladdo's, and real DEM subset updates: masks, mask blocks, type, nodata, CRS and "
@@ -608,6 +609,31 @@ def suite_vsi(ctx):
         return suite
     for result in results:
         suite.cases.append(Case("vsi", result["name"], result["status"], result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out) or f"exit {code}"
+    return suite
+
+
+def suite_shapefile_deleted(ctx):
+    """Deleted DBF slots, physical FIDs and live-feature paging against OGR."""
+    suite = Suite("shapefile-deleted", "Shapefile deleted records", "GDAL/OGR 3.13.3",
+                  "90 generated-file cases: whole/streamed reads, FIDs, exact scalar attributes/nulls and ISO WKB; "
+                  "live-feature skip/max with and without SHX, including null geometry.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    probe = Path(ctx.terrio).parent / "examples" / ("shapefile_rows.exe" if os.name == "nt" else "shapefile_rows")
+    if not probe.is_file():
+        suite.error = "needs cargo build -p terrio --example shapefile_rows in the CLI's build profile"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_shapefile_deleted.py"), "--probe", str(probe), "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("Shapefile deleted records", result["name"], result["status"], result["detail"]))
     if code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out) or f"exit {code}"
     return suite
@@ -944,7 +970,8 @@ def suite_translate_overviews(ctx):
     return suite_json_ops(
         ctx, "translate-overviews", "compare_translate_overviews_with_gdal.py", "Translate source overviews",
         "`gdal_translate -outsize/-ovr`",
-        "Level markers check the stored resolution of AUTO, AUTO-n, NONE and forced levels; real USGS "
+        "Level markers, internal and in an external `.ovr`, check the stored resolution of AUTO, AUTO-n, "
+        "NONE and forced levels; real USGS "
         "terrain (Float32, nodata) and Landsat RGB (Byte, internal mask) check every resampling. Pixels, "
         "types, nodata and geotransforms must match; differences of one value are reported within "
         "tolerance (arm64 GDAL builds round fused multiply-adds). A real COG served over HTTP must "
@@ -3217,6 +3244,7 @@ SUITES = OrderedDict(
         ("shapefile-archives", suite_shapefile_archives),
         ("vsi", suite_vsi),
         ("shapefile-rings", suite_shapefile_rings),
+        ("shapefile-deleted", suite_shapefile_deleted),
         ("raster-roundtrip", suite_raster_roundtrip),
         ("windows", suite_windows),
         ("ops", suite_ops),

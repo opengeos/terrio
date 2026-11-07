@@ -963,3 +963,17 @@ def test_streaming_writes(tmp_path, monkeypatch):
         with rio.open(path) as ds:
             assert ds.read(1, window=Window(0, 0, 6, 6))[:, 5].tolist() == data[0, :6, 5].tolist()
             assert np.array_equal(ds.dataset_mask(), mask)
+
+
+def test_disjoint_bounds_mixed_orientations_and_degenerate_lines():
+    from terrio.rio.coords import disjoint_bounds
+
+    north = (0, 0, 2, 2)
+    south = (0, 2, 2, 0)
+    for a, b in [(north, south), (south, north)]:
+        with pytest.raises(ValueError, match="same orientation"):
+            disjoint_bounds(a, b)
+    for box in [north, south]:
+        for line, expected in [((0, 1, 2, 1), False), ((0, 3, 2, 3), True)]:
+            assert disjoint_bounds(line, box) is expected
+            assert disjoint_bounds(box, line) is expected

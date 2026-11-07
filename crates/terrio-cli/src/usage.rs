@@ -113,6 +113,7 @@ fn value_type(arg: &Arg, path: &[String]) -> &'static str {
             arg.get_id().as_str(),
             "input"
                 | "output"
+                | "outfile"
                 | "path"
                 | "paths"
                 | "source"
@@ -123,7 +124,25 @@ fn value_type(arg: &Arg, path: &[String]) -> &'static str {
                 | "reference"
                 | "template"
                 | "rasters"
+                | "raster"
+                | "datasource"
+                | "density"
+                | "index"
+                | "overlay"
+                | "color_file"
+                | "color_map"
+                | "config"
+                | "weights"
+                | "position_dataset"
+                | "observer_points"
+                | "tile_index"
+                | "csv"
+                | "base_file"
+                | "pan"
+                | "spectral"
         ) || (arg.get_id() == "inputs" && !path.get(1).is_some_and(|p| p == "calc"))
+            || (path.get(1).is_some_and(|p| p == "layer-algebra") && arg.get_id() == "method")
+            || (path.get(1).is_some_and(|p| p == "attach-palette") && arg.get_id() == "palette")
             || (path.get(1).is_some_and(|p| p == "lineref") && matches!(arg.get_id().as_str(), "lines" | "points" | "parts"));
         return if location { "path" } else { "string" };
     }

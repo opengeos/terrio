@@ -41,6 +41,19 @@ impl PyRaster {
         }
     }
 
+    /// Writes the raster to `path` with `options`, streaming tile archives by tile row when lazy
+    /// and falling back to a whole read when the source inventory is unavailable.
+    pub(crate) fn write_with_options(&mut self, py: Python<'_>, path: &str, mut options: RasterWriteOptions) -> PyResult<()> {
+        py.detach_result(|| {
+            self.inner.prepare_output_mask(path, &mut options, Window::full(self.inner.width(), self.inner.height()), None)?;
+            if self.inner.can_stream_tile_archive(path, &options) {
+                return self.inner.write(path, &options);
+            }
+            self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))
+        })
+        .py()
+    }
+
     fn crs_ref(&self) -> SpatialRef {
         self.inner.crs()
     }
@@ -643,6 +656,35 @@ impl PyRaster {
         mask.map(|m| to_numpy(py, RasterData::U8(m), &[window.height, window.width])).transpose()
     }
 
+    /// Internal overview metadata from the native mask discovery, without reading pixels.
+    fn _overview_has_mask(&self, overview: usize) -> PyResult<bool> {
+        self.inner.overviews().get(overview).ok_or_else(|| invalid(format!("no overview {overview}")))?;
+        Ok(self.inner.level_has_own_mask(overview))
+    }
+
+    /// Internal xarray metadata for a selected overview's own nodata values.
+    fn _overview_nodata(&self, overview: usize) -> PyResult<Vec<Option<f64>>> {
+        self.inner.overviews().get(overview).ok_or_else(|| invalid(format!("no overview {overview}")))?;
+        let bands: Vec<usize> = (1..=self.inner.band_count()).collect();
+        Ok(self.inner.level_band_nodata(&bands, Some(overview)))
+    }
+
+    /// Internal xarray mask read: only the selected level's own dataset mask, without
+    /// sampling the full-resolution mask when an overview has none (GDAL 3.13.3).
+    #[pyo3(signature = (window, overview=None))]
+    fn _read_level_mask<'py>(
+        &mut self,
+        py: Python<'py>,
+        window: (usize, usize, usize, usize),
+        overview: Option<usize>,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let (x, y, width, height) = window;
+        let window = Window::new(x, y, width, height);
+        let inner = &mut self.inner;
+        let mask = py.detach_result(|| inner.read_level_mask(window, overview)).py()?;
+        mask.map(|m| to_numpy(py, RasterData::U8(m), &[height, width])).transpose()
+    }
+
     /// Creates a raster from a NumPy array.
     ///
     /// Args:
@@ -778,18 +820,7 @@ impl PyRaster {
         options_.color_table = colormap.unwrap_or_default();
         options_.overviews = overviews.unwrap_or_default();
         options_.overview_resampling = overview_resampling;
-        let mut options = options_;
-        // A raster read by window is written as a tile archive a tile row at a time.
-        let driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(path));
-        let tile_archive = matches!(driver, Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles));
-        py.detach_result(|| {
-            self.inner.prepare_output_mask(path, &mut options, Window::full(self.inner.width(), self.inner.height()), None)
-        })
-        .py()?;
-        if self.inner.dataset().is_none() && tile_archive {
-            return py.detach_result(|| self.inner.write(path, &options)).py();
-        }
-        py.detach_result(|| self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
+        self.write_with_options(py, path, options_)
     }
 
     /// Encodes the raster in a file format, in memory, preserving its dataset mask for GeoTIFF/COG.

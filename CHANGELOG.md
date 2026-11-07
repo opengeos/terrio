@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- `terrio.rio.coords.disjoint_bounds` rejects opposite nondegenerate orientations in either
+  argument order; zero-height bounds remain boundary lines. Calc window alignment retains
+  blank nodata/zero-filled inputs outside the window rather than rejecting the calculation.
+
+- JavaScript `listUrl` rejects invalid `depth` values, including strings and `Infinity`;
+  omit `depth` or pass `null` for unlimited traversal. Native TIFF opens now reject unreadable or
+  malformed directory/tag tables discovered during mask scanning, including files without masks,
+  instead of silently treating them as maskless.
+  Only tags relevant to image layout and masks are decoded; unrelated private tags are skipped.
+
+- Whole-file Shapefile reads, streaming reads and conversions omit deleted DBF records,
+  preserving the physical feature IDs of live records.
+
+- Shapefile `skip_features` and `max_features` count live rows: deleted DBF records are passed
+  over and count toward neither bound, while FIDs still number physical slots. pyogrio's
+  `skip_features` (and GDAL's fast seek) can count deleted slots instead, so `terrio.pyogrio`
+  pages a Shapefile with deleted rows differently from pyogrio. Files without deleted rows
+  page the same in both.
+
 - Native FlatGeobuf readers reject incomplete records, mismatched nonzero feature counts and
   invalid coordinate dimensions/part bounds. GDAL-enabled eager reads retain GDAL fallback
   admission behavior; native range and stream checks apply in either build.
@@ -85,6 +104,14 @@
   their mask rows, which a refused call left queued. Once a block row of a GeoTIFF other than a
   COG fails to be written, the writer refuses more rows and `finish`, which could write a file
   missing it.
+- External overviews are built, refreshed and deleted beside a read-only GeoTIFF, as
+  `gdaladdo -ro` builds them (#612): `add_overviews`, `refresh_overviews` and `delete_overviews`
+  with `external` (and `terrio overviews --external`) write only the `.ovr` sidecar and no longer
+  refuse a file that cannot be written. Internal overviews still need a writable file.
+- `add_overviews_with_progress` (Rust) and `add_overviews(..., progress=callback)` (Python) report
+  the fraction of the overviews computed, from 0 to 1 and never decreasing, to a callback that can
+  cancel (#612). A cancellation returns `Error::Cancelled` (Python
+  `terrio.errors.CancelledError`) and changes no file: an existing `.ovr` stays as it was.
 - `terrio tile` (Python `terrio.raster_tiles`, JavaScript `rasterTiles`) builds each lower-zoom
   tile from the four tiles below it, as GDAL does, instead of rendering it from the source (#574).
   Tiles are generated depth first, with at most four tiles per zoom level in memory, and every
@@ -151,6 +178,9 @@
   the same path takes 0.10 to 0.11 s per write as EHdr (was 0.15 to 0.16 s), 0.11 to 0.12 s as ENVI
   (0.15 to 0.76 s), 0.10 to 0.11 s as SAGA (0.15 to 0.39 s) and 0.25 s as RST (0.30 to 0.67 s). A
   slope file-to-file benchmark takes 0.53 s, where it took 1.01 s (`gdaldem`: 0.90 s).
+- Code-only raster CRSs now export terrio's registry WKT, preserving the EPSG authority and
+  datum identity (#610). This corrects false northing in GDA94 MGA zones, US survey-foot State
+  Plane definitions and Web Mercator's spherical model. Explicit WKT stored in a file is kept.
 - Python operations given a `terrio.Raster` held in memory share it instead of copying it; the
   `mask=` raster of `footprint` and `polygonize`, the rasters of the point-cloud functions and
   the rasters written as netCDF groups are still copied. An operation does not change
@@ -224,6 +254,12 @@
   reader never reads them. In a build with the `gdal` feature and without `grib`, a `.grib2` path
   that is a Zarr store was decoded by wbraster's Zarr reader (ruzstd 0.8, RUSTSEC-2026-0344) with
   no option set; the GDAL backend reads it now, as it reads GRIB files in such a build.
+- Raster operations use each selected band's nodata, and overview mask discovery reports I/O
+  failures instead of silently losing validity (#627). Mosaics reject inconsistent band counts
+  and target extents intersecting no source, including separate-band mosaics. Reclassification
+  mapping-file inputs are restricted to regular files.
+- Python's `write_raster` forwards dataset masks and streams eligible PMTiles/MBTiles writes.
+  Tile archives that cannot represent a dataset mask are refused before creating output (#627).
 - CI checks `Cargo.lock` against the RustSec advisory database (`cargo audit`, the `audit` job)
   on every pull request and push to main. `.cargo/audit.toml` ignores the five advisories of zip
   8.6.0 and ruzstd 0.8.3, which wbraster 0.2.1 requires, until a wbraster release depends on zip

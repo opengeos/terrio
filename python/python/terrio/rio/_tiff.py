@@ -576,9 +576,10 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
     if isinstance(rpc, list) and len(rpc) == 92:
         s.rpc_tag = [float(v) for v in rpc]
 
-    # A per-dataset mask: a transparency mask image.
+    # A per-dataset mask of the selected image: type 4 at full resolution, type 5 for an overview.
+    mask_type = 5 if getattr(raster, "_level", None) is not None else 4
     for ifd in ifds[1:]:
-        if _first(ifd.get(NEW_SUBFILE_TYPE)) & 4 and _first(ifd.get(PHOTOMETRIC)) == 4:
+        if _first(ifd.get(NEW_SUBFILE_TYPE)) & 5 == mask_type and _first(ifd.get(PHOTOMETRIC)) == 4:
             if _first(ifd.get(WIDTH)) == s.width and _first(ifd.get(HEIGHT)) == s.height:
                 s.has_mask = True
     return s

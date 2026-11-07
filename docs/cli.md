@@ -1310,7 +1310,10 @@ A raster without a geotransform of its own (unreferenced, or georeferenced by
 ground control points) cannot be moved. With `--like`, a template without a
 geotransform gives its GCPs, or no georeferencing, instead of a unit-pixel grid.
 
-In-place operations require writable little-endian GeoTIFFs. Updating a COG
+In-place operations require writable little-endian GeoTIFFs. `overviews --external` writes only
+the `.ovr` sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`; its directory must be
+writable. A new sidecar is a BigTIFF when its images take more than about 4 GiB, and an
+existing classic TIFF sidecar that would grow past 4 GiB is refused. Updating a COG
 requires `--ignore-cog-layout-break` and can invalidate its optimized layout.
 Edits use a temporary file and rename; a failure before replacement preserves
 the original. A tag of a field type the TIFF specification does not define is
@@ -1944,6 +1947,8 @@ terrio reclassify nlcd.tif groups.tif -m "11=1;[21,25)=2;[41,44)=4;DEFAULT=0"
 terrio reclassify dem.tif zones.tif -m "NO_DATA=0;[0,1500)=1;[1500,inf)=2" --ot Byte
 terrio reclassify nlcd.tif groups.tif -m @mapping.txt
 ```
+
+Mapping files must be regular files; directories, FIFOs and pipe-based process substitution are refused.
 
 As `gdal raster reclassify`, with GDAL's mapping syntax in `-m`/`--mapping`: `from=to` entries separated by `;`.
 `from` is a value, an interval (`[a,b)`, `(a,b]`, `(-inf,b]`, `[a,inf)`...), `NO_DATA` (the

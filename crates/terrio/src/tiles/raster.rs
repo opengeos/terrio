@@ -684,6 +684,9 @@ fn warp_plan<'a>(ds: &'a RasterDataset, o: &TileWriteOptions, grid: Option<Grid>
             }
         }
     }
+    if o.min_zoom.is_some_and(|z| z > 30) || o.max_zoom.is_some_and(|z| z > 30) {
+        return Err(Error::InvalidArgument("zoom levels must be at most 30".into()));
+    }
     if let Some(z) = o.max_zoom {
         zoom = z;
     }

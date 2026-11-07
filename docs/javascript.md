@@ -573,7 +573,8 @@ it, and `listUrl` provides remote listings. WebAssembly has no local file system
 and no request signing: tar archives, local files, signed S3 requests and writes to object stores
 are available in the native CLI, Rust and Python only. `/vsimem/` files carry no dates, so
 `vsiSync` compares content when an in-memory endpoint lacks a timestamp. In browsers, a store must allow the
-page's origin (CORS) for `listUrl`.
+page's origin (CORS) for `listUrl`. Its optional `depth` must be a finite, non-negative
+integer; omit it (or pass `null`) for unlimited depth. Strings and `Infinity` are rejected.
 
 HTML index responses use a readable byte stream, a 4 KiB sniff prefix and a 4 MiB body
 limit, matching the native path. Binary/ordinary web content is refused; custom `fetch`

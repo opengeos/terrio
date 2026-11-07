@@ -413,7 +413,11 @@ def read(
     max_features=None,
     return_fids=False,
 ):
-    """Pyogrio's `raw.read`, for the arguments terrio supports: `(meta, fids, geometry, fields)`."""
+    """Pyogrio's `raw.read`, for the arguments terrio supports: `(meta, fids, geometry, fields)`.
+
+    Shapefile paging counts live features, unlike pyogrio/GDAL physical-slot fast seeking
+    when DBF records have been deleted. Returned FIDs retain physical slot numbers.
+    """
     if skip_features < 0:
         raise ValueError("'skip_features' must be >= 0")
     if max_features is not None and max_features < 0:

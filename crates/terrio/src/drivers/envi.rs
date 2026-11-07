@@ -159,9 +159,9 @@ fn parse_map_info(v: &str) -> Option<([f64; 6], Option<CrsInfo>)> {
             _ if south => 32700 + zone,
             _ => 32600 + zone,
         };
-        Some(CrsInfo::from_epsg(code))
+        Some(crate::crs::epsg_crs_info(code))
     } else if projection == "geographic lat/lon" {
-        Some(CrsInfo::from_epsg(match datum.as_str() {
+        Some(crate::crs::epsg_crs_info(match datum.as_str() {
             "north america 1983" => 4269,
             "north america 1927" => 4267,
             "wgs-72" => 4322,

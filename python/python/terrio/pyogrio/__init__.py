@@ -177,6 +177,9 @@ def read_dataframe(
 
     Takes pyogrio's arguments; `bbox` and `mask` keep the features whose geometry intersects
     them. Returns a DataFrame when `read_geometry` is false.
+
+    Shapefile paging counts live features and skips deleted DBF slots. This intentionally
+    differs from pyogrio/GDAL fast seeking, which can count physical slots including deletions.
     """
     import geopandas as gp  # type: ignore[import-untyped, import-not-found, unused-ignore]
     import pandas as pd  # type: ignore[import-untyped, import-not-found, unused-ignore]

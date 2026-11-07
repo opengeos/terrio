@@ -68,6 +68,9 @@ and drivers below.
 - [x] Fill nodata: inverse-distance and nearest interpolation, validity masks, maximum
       pixel distance and smoothing, preserving valid source pixels. Done in
       [#239](https://github.com/opengeos/terrio/pull/239), through Rust, CLI/MCP, Python and JavaScript.
+- [x] Overview creation progress and cancellation in Rust/Python, and external overview
+      add/refresh/delete beside read-only GeoTIFFs (#612, #618). Cancellation preserves
+      the source and any existing sidecar.
 - [x] Overview-aware warping: explicit source overview selection, automatic selection for
       downsampling and a full-resolution override, reducing remote COG reads. Implemented in
       [#242](https://github.com/opengeos/terrio/pull/242), through Rust, CLI/MCP, Python and JavaScript.

@@ -71,10 +71,15 @@ macro_rules! typed {
 /// Decodes raw samples into band-major raster data.
 pub(crate) fn decode(bytes: &[u8], l: &Layout) -> Result<RasterData> {
     let size = l.data_type.size_bytes();
-    let n = l.cols * l.rows * l.bands;
+    let n = l
+        .cols
+        .checked_mul(l.rows)
+        .and_then(|v| v.checked_mul(l.bands))
+        .ok_or_else(|| Error::InvalidData("raster dimensions overflow".into()))?;
+    let need = n.checked_mul(size).ok_or_else(|| Error::InvalidData("raster byte length overflow".into()))?;
     let body = bytes.get(l.offset..).unwrap_or_default();
-    if body.len() < n * size {
-        return Err(Error::InvalidData(format!("expected {} bytes of pixels, found {}", n * size, body.len())));
+    if body.len() < need {
+        return Err(Error::InvalidData(format!("expected {need} bytes of pixels, found {}", body.len())));
     }
     macro_rules! go {
         ($t:ty, $v:ident) => {{
@@ -492,11 +497,10 @@ pub(crate) fn crs_from_text(text: &str) -> Option<CrsInfo> {
     let text = text.trim();
     // A WKT whose outermost node carries an EPSG identifier (WKT2 `ID`, WKT1 `AUTHORITY`).
     if let Some(code) = root_epsg(text) {
-        let mut info = CrsInfo::from_epsg(code);
-        if info.wkt.is_none() {
-            info.wkt = Some(text.to_string());
-        }
-        return Some(info);
+        // The registry's WKT for the code when the stored text is wbraster's or the registry's;
+        // otherwise the stored text, as for other WKT a file holds with a code.
+        let stored = CrsInfo { epsg: Some(code), wkt: Some(text.to_string()), proj4: None };
+        return Some(CrsInfo { epsg: Some(code), wkt: crate::crs::raster_crs_wkt(&stored), proj4: None });
     }
     let mut s = SpatialRef::parse(text).ok()?;
     if s.is_unknown() {
@@ -521,7 +525,7 @@ pub(crate) fn crs_from_text(text: &str) -> Option<CrsInfo> {
             s.epsg = None;
         }
     }
-    Some(CrsInfo { epsg: s.epsg, wkt: s.wkt.or_else(|| s.epsg.and_then(|c| wbprojection::to_ogc_wkt(c).ok())), proj4: s.proj4 })
+    Some(CrsInfo { epsg: s.epsg, wkt: s.wkt.or_else(|| s.epsg.and_then(|c| crate::crs::epsg_crs_info(c).wkt)), proj4: s.proj4 })
 }
 
 /// The EPSG code in the identifier that closes a WKT's outermost node.
@@ -575,7 +579,7 @@ fn esri_name_epsg(wkt: &str) -> Option<u32> {
 /// else its ESRI code).
 pub(crate) fn spatial_ref(crs: &CrsInfo) -> SpatialRef {
     let epsg = crs.epsg.or_else(|| crs.wkt.as_deref().and_then(crs_from_text).and_then(|c| c.epsg));
-    SpatialRef { epsg, wkt: crs.wkt.clone(), proj4: crs.proj4.clone(), esri: None }.with_esri()
+    SpatialRef { epsg, wkt: crate::crs::raster_crs_wkt(crs), proj4: crs.proj4.clone(), esri: None }.with_esri()
 }
 
 /// The CRS as WKT that GDAL recognizes.
@@ -1042,6 +1046,17 @@ pub(crate) fn write_replacing(path: impl AsRef<std::path::Path>, bytes: impl AsR
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A WKT whose root names an EPSG code is kept as stored, not replaced by the registry's text,
+    /// unless the stored text is the registry's or wbraster's generated WKT.
+    #[test]
+    fn a_root_epsg_wkt_keeps_its_stored_text() {
+        let stored = "GEOGCS[\"my WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],\
+            PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],AUTHORITY[\"EPSG\",\"4326\"]]";
+        let info = crs_from_text(stored).unwrap();
+        assert_eq!(info.epsg, Some(4326));
+        assert_eq!(info.wkt.as_deref(), Some(stored));
+    }
 
     /// Until finished, a file written over holds zeros where its signature goes, so an interrupted
     /// write leaves nothing that opens as a raster; a patch of the header lands in the held bytes.

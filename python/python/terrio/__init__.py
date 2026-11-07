@@ -191,6 +191,7 @@ from terrio._terrio import (
 )
 from terrio.errors import (
     CRSError,
+    InternalError,
     InvalidArgumentError,
     InvalidDataError,
     NotFoundError,
@@ -215,6 +216,7 @@ __all__ = [
     "DatasetIndex",
     "FeatureStream",
     "GeoTiffWriter",
+    "InternalError",
     "InvalidArgumentError",
     "InvalidDataError",
     "Layer",

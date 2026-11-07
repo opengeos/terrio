@@ -745,7 +745,7 @@ impl GeoTags {
     /// The CRS, from the EPSG code or the user-defined parameters.
     pub(crate) fn crs_info(&self) -> wbraster::CrsInfo {
         match (self.epsg, &self.proj4) {
-            (Some(code), _) => wbraster::CrsInfo::from_epsg(code),
+            (Some(code), _) => crate::crs::epsg_crs_info(code),
             (None, Some(p)) => crate::crs::SpatialRef::from_proj4(p).map(|s| s.to_crs_info()).unwrap_or_default(),
             (None, None) => self.crs.clone().unwrap_or_default(),
         }

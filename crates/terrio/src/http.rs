@@ -46,6 +46,8 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
+use ureq::unversioned::resolver::DefaultResolver;
+use ureq::unversioned::transport::{Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport};
 
 pub(crate) mod store;
 
@@ -1043,7 +1045,7 @@ fn tls_config() -> ureq::tls::TlsConfig {
 }
 
 fn new_agent(options: &HttpOptions) -> ureq::Agent {
-    ureq::Agent::config_builder()
+    let config = ureq::Agent::config_builder()
         .tls_config(tls_config())
         .http_status_as_error(false)
         .max_redirects(0)
@@ -1055,8 +1057,96 @@ fn new_agent(options: &HttpOptions) -> ureq::Agent {
         // follow the thread count if 64 proves too few or too many.
         .max_idle_connections(64)
         .max_idle_connections_per_host(64)
-        .build()
-        .into()
+        .build();
+    let connector = DefaultConnector::new().chain(Http10CloseConnector);
+    ureq::Agent::with_parts(config, connector, DefaultResolver::default())
+}
+
+/// Wraps each connection in [`Http10Close`], after TLS, where it sees the responses in plain text.
+#[derive(Debug)]
+struct Http10CloseConnector;
+
+impl Connector<Box<dyn Transport>> for Http10CloseConnector {
+    type Out = Http10Close;
+
+    fn connect(&self, _: &ConnectionDetails, chained: Option<Box<dyn Transport>>) -> std::result::Result<Option<Http10Close>, ureq::Error> {
+        Ok(chained.map(|inner| Http10Close { inner, response_head: false, closing: false }))
+    }
+}
+
+/// A connection that is not reused after an HTTP/1.0 response without the `keep-alive`
+/// connection option, which, as RFC 9112 section 9.3 says, means "the connection will close after
+/// the current response". ureq (ureq-proto 0.6.5) closes it only after `Connection: close` or a
+/// close-delimited body, so it would pool such a connection and send a later request on it once
+/// the server had closed it, failing with "Peer disconnected" (issue #632).
+#[derive(Debug)]
+struct Http10Close {
+    inner: Box<dyn Transport>,
+    /// A request was sent and its final response head has not been seen whole yet.
+    response_head: bool,
+    /// The connection is not to be reused.
+    closing: bool,
+}
+
+impl Transport for Http10Close {
+    fn buffers(&mut self) -> &mut dyn Buffers {
+        self.inner.buffers()
+    }
+
+    fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> std::result::Result<(), ureq::Error> {
+        self.response_head = true;
+        self.inner.transmit_output(amount, timeout)
+    }
+
+    fn await_input(&mut self, timeout: NextTimeout) -> std::result::Result<bool, ureq::Error> {
+        let progress = self.inner.await_input(timeout)?;
+        // ureq consumes a response's head only once it is whole, so the input holds it from its
+        // start until then.
+        if self.response_head
+            && let Some(close) = closes_after(self.inner.buffers().input())
+        {
+            self.response_head = false;
+            self.closing |= close;
+        }
+        Ok(progress)
+    }
+
+    fn is_open(&mut self) -> bool {
+        !self.closing && self.inner.is_open()
+    }
+
+    fn is_tls(&self) -> bool {
+        self.inner.is_tls()
+    }
+}
+
+/// Whether the connection closes after the response whose head starts `input`: an HTTP/1.0
+/// response without a `Connection` header naming `keep-alive`. Informational heads are skipped;
+/// `None` until the final head is whole.
+fn closes_after(mut input: &[u8]) -> Option<bool> {
+    loop {
+        let crlf = input.windows(4).position(|w| w == b"\r\n\r\n").map(|at| (at, 4));
+        let lf = input.windows(2).position(|w| w == b"\n\n").map(|at| (at, 2));
+        let (end, delimiter) = crlf.into_iter().chain(lf).min_by_key(|(at, _)| *at)?;
+        let head = String::from_utf8_lossy(&input[..end]);
+        let mut lines = head.lines();
+        let mut status = lines.next()?.split_ascii_whitespace();
+        let version = status.next()?;
+        let code: u16 = status.next()?.parse().ok()?;
+        // ureq consumes informational heads before the final one. Inspect every head already
+        // buffered here too: no further await_input is needed when the final head arrived with it.
+        if (100..200).contains(&code) && code != 101 {
+            input = &input[end + delimiter..];
+            continue;
+        }
+        if version != "HTTP/1.0" {
+            return Some(false);
+        }
+        let keep_alive = lines.filter_map(|line| line.split_once(':')).any(|(name, value)| {
+            name.trim().eq_ignore_ascii_case("connection") && value.split(',').any(|o| o.trim().eq_ignore_ascii_case("keep-alive"))
+        });
+        return Some(!keep_alive);
+    }
 }
 
 /// The part of an object to fetch.
@@ -2790,6 +2880,106 @@ mod tests {
             }
         });
         (url, connections)
+    }
+
+    /// A server answering requests on each connection with successive `heads` (then the last)
+    /// and "ok", never closing a
+    /// connection itself, and the number of connections it has accepted.
+    fn serve_open_connections(heads: Vec<&'static str>, split: bool) -> (String, Arc<AtomicU64>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let connections = Arc::new(AtomicU64::new(0));
+        let accepted = connections.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                accepted.fetch_add(1, Ordering::SeqCst);
+                let heads = heads.clone();
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut request = 0;
+                    while !read_head(&mut reader).is_empty() {
+                        let head = heads[request.min(heads.len() - 1)];
+                        request += 1;
+                        let response = format!("{head}\r\nContent-Length: 2\r\n\r\nok");
+                        let result = if split {
+                            let boundary = response.find("\r\n\r\n").unwrap() + 4;
+                            stream.write_all(&response.as_bytes()[..boundary]).and_then(|_| {
+                                std::thread::sleep(std::time::Duration::from_millis(10));
+                                stream.write_all(&response.as_bytes()[boundary..])
+                            })
+                        } else {
+                            stream.write_all(response.as_bytes())
+                        };
+                        if result.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (url, connections)
+    }
+
+    /// An HTTP/1.0 response without the keep-alive option ends its connection (RFC 9112, section
+    /// 9.3): the next request opens another one rather than being sent on a connection the server
+    /// may have closed (issue #632). With `Connection: keep-alive`, or in HTTP/1.1, the
+    /// connection is reused. The server here leaves every connection open, so a reuse shows.
+    #[test]
+    fn http10_responses_without_keep_alive_end_their_connection() {
+        for (head, expected) in [
+            ("HTTP/1.0 200 OK", 3),
+            ("HTTP/1.0 200 OK\r\nConnection: Keep-Alive", 1),
+            ("HTTP/1.1 200 OK", 1),
+            ("HTTP/1.1 200 OK\r\nConnection: close", 3),
+        ] {
+            let (url, connections) = serve_open_connections(vec![head], false);
+            let agent = new_agent(&options());
+            for _ in 0..3 {
+                let mut response = agent.get(&url).call().unwrap();
+                assert_eq!(response.body_mut().read_to_vec().unwrap(), b"ok");
+            }
+            assert_eq!(connections.load(Ordering::SeqCst), expected, "{head:?}");
+        }
+    }
+
+    /// Persistence is checked again after each request on a reused connection.
+    #[test]
+    fn http10_keep_alive_can_end_after_a_reused_request() {
+        let (url, connections) = serve_open_connections(vec!["HTTP/1.0 200 OK\r\nConnection: keep-alive", "HTTP/1.0 200 OK"], false);
+        let agent = new_agent(&options());
+        for expected in [1, 1, 2] {
+            let mut response = agent.get(&url).call().unwrap();
+            assert_eq!(response.body_mut().read_to_vec().unwrap(), b"ok");
+            assert_eq!(connections.load(Ordering::SeqCst), expected);
+        }
+    }
+
+    /// Informational heads do not determine final-response persistence (RFC 9112 section 9.3).
+    #[test]
+    fn informational_headers_before_http10_do_not_keep_the_connection_alive() {
+        for split in [false, true] {
+            let (url, connections) = serve_open_connections(vec!["HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.0 200 OK"], split);
+            let agent = new_agent(&options());
+            for _ in 0..3 {
+                let mut response = agent.get(&url).call().unwrap();
+                assert_eq!(response.body_mut().read_to_vec().unwrap(), b"ok");
+            }
+            assert_eq!(connections.load(Ordering::SeqCst), 3, "split={split}");
+        }
+    }
+
+    #[test]
+    fn reads_whether_a_response_closes_its_connection() {
+        assert_eq!(closes_after(b"HTTP/1.0 200 OK\r\nContent-Le"), None);
+        assert_eq!(closes_after(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok"), Some(true));
+        assert_eq!(closes_after(b"HTTP/1.0 206 Partial\nConnection: foo, keep-alive\n\n"), Some(false));
+        assert_eq!(closes_after(b"HTTP/1.0 200 OK\r\nX-Connection: keep-alive\r\n\r\n"), Some(true));
+        assert_eq!(closes_after(b"HTTP/1.1 200 OK\r\n\r\n"), Some(false));
+        assert_eq!(closes_after(b"HTTP/1.1 103 Early Hints\r\n\r\n"), None);
+        assert_eq!(closes_after(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.0 200 OK\r\nContent-Le"), None);
+        assert_eq!(closes_after(b"HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.0 200 OK\r\n\r\n"), Some(true));
+        assert_eq!(closes_after(b"HTTP/1.0 200 OK\n\nConnection: keep-alive\r\n\r\n"), Some(true));
     }
 
     /// Remote files opened one after another, each with a client of its own, send their requests

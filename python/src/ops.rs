@@ -338,7 +338,7 @@ fn write_raster(
     bigtiff: bool,
 ) -> PyResult<()> {
     let options = write_options(driver, compress, tile_size, bigtiff)?;
-    py.detach_result(|| raster.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
+    raster.write_with_options(py, path, options)
 }
 
 /// Writes rasters into one netCDF-4 file, each in its group.

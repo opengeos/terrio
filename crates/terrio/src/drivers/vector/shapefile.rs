@@ -118,11 +118,14 @@ pub fn read(path: &str, options: &ShapefileOptions) -> Result<Layer> {
     })
 }
 
-/// Reads the features `skip..skip + max` of a shapefile (`max` `None`: to the end), numbered as
-/// [`read`] numbers them, reading only their records: DBF records by position (they have a fixed
-/// size), and SHP records at the offsets the `.shx` index gives (through a scan of the record
-/// headers, without decoding the others, when there is no `.shx`). Memory follows the range,
-/// not the file.
+/// Reads up to `max` live features after skipping `skip` live features (`None`: to the end).
+/// Deleted DBF slots count toward physical FIDs, but not toward either range bound.
+/// Only the selected SHP records and DBF attributes are decoded. Finding their positions scans
+/// DBF deletion flags and uses the `.shx` index, or scans SHP headers when the index is absent.
+/// Memory holds the SHP offset index, the selected features, DBF/SHP record buffers and up to
+/// 64 KiB for scanning short DBF rows. Wide rows retain sparse one-byte flag reads.
+/// Every deep page scans the skipped physical prefix: short rows read that prefix in buffered
+/// blocks, while wide rows require one flag read/seek per slot. No per-file deletion index is cached.
 pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &ShapefileOptions) -> Result<Layer> {
     use std::io::{Read, Seek, SeekFrom};
     let method = options.method();
@@ -161,8 +164,8 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
 
     let (fields, dbf_total, mut dbf) = match sidecar(&base, "dbf") {
         Some(p) => {
-            let mut f = std::io::BufReader::new(std::fs::File::open(p)?);
-            let len = f.get_ref().metadata()?.len();
+            let mut f = std::fs::File::open(p)?;
+            let len = f.metadata()?.len();
             let mut first = [0u8; 32];
             f.read_exact(&mut first).map_err(|_| Error::InvalidData("truncated .dbf file".into()))?;
             let header_len = dbf_header_len(&first)?;
@@ -172,7 +175,10 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
             let l = dbf_layout(&header, cpg.as_deref())?;
             let held = (len as usize).saturating_sub(l.header_len) / l.record_len.max(1);
             let total = if l.record_len == 0 { 0 } else { l.count.min(held) };
-            (l.fields.clone(), total, Some((f, l)))
+            // Dense short records benefit from batched reads. Wide records keep sparse flag
+            // reads instead of fetching tens of KiB of skipped attributes for each flag.
+            let capacity = if l.record_len <= 256 { 64 * 1024 } else { 1 };
+            (l.fields.clone(), total, Some((std::io::BufReader::with_capacity(capacity, f), l)))
         }
         None => (Vec::new(), 0, None),
     };
@@ -180,30 +186,47 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
         layer.add_field(f);
     }
     let n = if dbf_total == 0 { offsets.len() } else { dbf_total.max(offsets.len()) };
-    let start = skip.min(n);
-    let end = max.map_or(n, |m| start.saturating_add(m).min(n));
-
-    // The DBF records of the range, read at their position.
-    let mut records: Vec<Vec<FieldValue>> = Vec::new();
-    if let Some((f, l)) = dbf.as_mut() {
-        let last = end.min(dbf_total);
-        if start < last {
-            let bytes = (last - start) * l.record_len;
-            let mut buf: Vec<u8> = Vec::new();
-            buf.try_reserve_exact(bytes).map_err(|_| Error::ResourceLimit(format!("cannot allocate {bytes} bytes for .dbf records")))?;
-            buf.resize(bytes, 0);
-            f.seek(SeekFrom::Start((l.header_len + start * l.record_len) as u64))?;
-            f.read_exact(&mut buf)?;
-            records.try_reserve_exact(last - start).map_err(|_| Error::ResourceLimit("cannot allocate .dbf records".into()))?;
-            records.extend(buf.chunks_exact(l.record_len).map(|r| l.record(r)));
-        }
-    }
-
     let width = layer.schema.len();
-    layer.features.try_reserve_exact(end - start).map_err(|_| Error::ResourceLimit("cannot allocate features".into()))?;
+    let bound = max.map_or(n.saturating_sub(skip), |m| m.min(n.saturating_sub(skip)));
+    layer.features.try_reserve_exact(bound).map_err(|_| Error::ResourceLimit("cannot allocate features".into()))?;
     let mut content = Vec::new();
-    let mut records = records.into_iter();
-    for fid in start..end {
+    let mut record = Vec::new();
+    let mut skipped = 0;
+    let mut dbf_position = dbf.as_ref().map_or(0, |(_, l)| l.header_len);
+    for fid in 0..n {
+        if max.is_some_and(|m| layer.features.len() >= m) {
+            break;
+        }
+        let mut flag = *b" ";
+        if let Some((f, l)) = dbf.as_mut().filter(|_| fid < dbf_total) {
+            // Skip within a bounded buffer when records are small, avoiding a seek/read pair
+            // per slot. Large strides still seek without reading skipped attribute payloads.
+            let position = l.header_len + fid * l.record_len;
+            f.seek_relative((position - dbf_position) as i64)?;
+            f.read_exact(&mut flag)?;
+            dbf_position = position + 1;
+            if flag[0] == b'*' {
+                continue;
+            }
+        }
+        if skipped < skip {
+            skipped += 1;
+            continue;
+        }
+        let attributes = if let Some((f, l)) = dbf.as_mut().filter(|_| fid < dbf_total) {
+            // The deletion flag was read above; decode only this selected live record.
+            if record.len() != l.record_len {
+                record.try_reserve_exact(l.record_len).map_err(|_| Error::ResourceLimit("cannot allocate a .dbf record".into()))?;
+                record.resize(l.record_len, 0);
+            }
+            record[0] = flag[0];
+            f.read_exact(&mut record[1..])?;
+            dbf_position += record.len() - 1;
+            l.record(&record)
+        } else {
+            // Missing DBF slots are live shapes with null attributes, not deletions.
+            vec![FieldValue::Null; width]
+        };
         let geometry = match offsets.get(fid) {
             Some(&at) if at + 8 <= shp_len => {
                 shp.seek(SeekFrom::Start(at + 4))?;
@@ -217,7 +240,6 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
             }
             _ => None,
         };
-        let attributes = records.next().unwrap_or_else(|| vec![FieldValue::Null; width]);
         layer.push(Feature { fid: fid as u64, geometry, attributes });
     }
     apply_prj(&mut layer, prj.as_deref());
@@ -258,7 +280,11 @@ pub fn parse(
     let mut geometries = geometries.into_iter();
     for fid in 0..n {
         let geometry = geometries.next().flatten();
-        let attributes = records.next().unwrap_or_else(|| vec![FieldValue::Null; layer.schema.len()]);
+        // Past the DBF's records, empty attributes; a record the DBF marks deleted (`None`) is
+        // skipped, and the next features keep their physical FIDs.
+        let Some(attributes) = records.next().unwrap_or_else(|| Some(vec![FieldValue::Null; layer.schema.len()])) else {
+            continue;
+        };
         layer.push(Feature { fid: fid as u64, geometry, attributes });
     }
     apply_prj(&mut layer, prj);
@@ -892,14 +918,17 @@ impl DbfLayout {
     }
 }
 
+/// A physical DBF slot; None marks a deleted record.
+type DbfRecord = Option<Vec<FieldValue>>;
+
 /// Parses a `.dbf` file into field definitions and records.
-fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<Vec<FieldValue>>)> {
+fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<DbfRecord>)> {
     let l = dbf_layout(d, cpg)?;
     // The header's record count is not trusted: only the records the file holds are read, and
     // their list is allocated fallibly.
     let held = d.len().saturating_sub(l.header_len) / l.record_len.max(1);
     let count = if l.record_len == 0 { 0 } else { l.count.min(held) };
-    let mut records: Vec<Vec<FieldValue>> = Vec::new();
+    let mut records: Vec<DbfRecord> = Vec::new();
     records
         .try_reserve_exact(count)
         .map_err(|_| Error::ResourceLimit(format!("the .dbf file declares {count} records, more than memory holds")))?;
@@ -907,7 +936,7 @@ fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<Vec<Fiel
     // list reserved above.
     let record = |i: usize| {
         let start = l.header_len + i * l.record_len;
-        l.record(&d[start..start + l.record_len])
+        (d[start] != b'*').then(|| l.record(&d[start..start + l.record_len]))
     };
     #[cfg(not(target_arch = "wasm32"))]
     crate::par::install(|| {
@@ -1792,9 +1821,10 @@ mod tests {
         d
     }
 
+    /// Decodes the generated single text cell for the encoding regressions.
     fn text(d: &[u8], cpg: Option<&str>) -> String {
         let (_, records) = parse_dbf(d, cpg).unwrap();
-        match &records[0][0] {
+        match &records[0].as_ref().unwrap()[0] {
             FieldValue::Text(s) => s.clone(),
             v => panic!("{v:?}"),
         }

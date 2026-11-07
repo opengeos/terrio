@@ -1,7 +1,7 @@
 """Type stubs for the `terrio._terrio` extension module."""
 
 import os
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Any, Literal, Protocol, TypeAlias, TypedDict, final, overload
 
 import numpy as np
@@ -349,6 +349,11 @@ class Raster:
         cols: Sequence[int],
         rows: Sequence[int],
         overview: int | None = None,
+    ) -> NDArray[Any] | None: ...
+    def _overview_has_mask(self, overview: int) -> bool: ...
+    def _overview_nodata(self, overview: int) -> list[float | None]: ...
+    def _read_level_mask(
+        self, window: _Window, overview: int | None = None
     ) -> NDArray[Any] | None: ...
     def read_mask(
         self, window: _Window | None = None, overview: int | None = None
@@ -2091,6 +2096,7 @@ def add_overviews(
     external: bool = False,
     compression: str | None = None,
     ignore_cog_layout_break: bool = False,
+    progress: Callable[[float], object] | None = None,
 ) -> list[tuple[int, int]]: ...
 def delete_overviews(
     path: str,
