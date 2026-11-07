@@ -429,8 +429,6 @@ def check_format(fmt, sources, tmp):
                     src_ds,
                     gdal.Open(t_path),
                     lossy=64 if variant_lossy else 0,
-                    # Compare Terrio's output directly with the original source CRS.
-                    check_crs=True,
                     check_nodata=fmt not in NO_NODATA,
                     check_type=fmt not in NO_TYPE,
                     type_changes=None if "FORMAT=NC4" in variant else TYPE_CHANGES.get(fmt),

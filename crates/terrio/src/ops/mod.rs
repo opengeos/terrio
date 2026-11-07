@@ -424,9 +424,7 @@ pub(crate) fn crs_info(srs: &SpatialRef) -> CrsInfo {
     match srs.epsg {
         Some(code) => {
             let mut c = crate::crs::epsg_crs_info(code);
-            if c.wkt.is_none() {
-                c.wkt = srs.to_wkt();
-            }
+            c.wkt = crate::crs::raster_crs_wkt(&srs.to_crs_info()).or(c.wkt);
             c
         }
         None => CrsInfo { epsg: None, wkt: srs.to_wkt(), proj4: srs.proj4.clone() },

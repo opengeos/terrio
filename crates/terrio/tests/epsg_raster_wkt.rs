@@ -105,3 +105,28 @@ fn stored_wkt_with_code_is_kept() {
     assert_eq!(srs.epsg, Some(32633));
     assert_eq!(srs.to_wkt().as_deref(), Some(esri));
 }
+
+/// A conflicting root identifier does not authorize replacing a file's explicit definition.
+#[test]
+fn stored_wkt_with_mismatched_root_code_is_kept() {
+    let registry = SpatialRef::from_epsg(32633).unwrap().to_wkt().unwrap();
+    let mismatched = registry.replace("AUTHORITY[\"EPSG\",\"32633\"]]", "AUTHORITY[\"EPSG\",\"32632\"]]");
+    assert_ne!(mismatched, registry);
+    let crs = wbraster::CrsInfo { epsg: Some(32632), wkt: Some(mismatched.clone()), proj4: None };
+    let srs = dataset(crs, 500000.0, 5000000.0).crs();
+    assert_eq!(srs.epsg, Some(32632));
+    assert_eq!(srs.to_wkt(), Some(mismatched));
+}
+
+/// Raster creation preserves a supplied definition even when its identifier has registry WKT.
+#[test]
+fn create_raster_keeps_supplied_wkt() {
+    use terrio::ops::create::{CreateOptions, create_raster};
+    let registry = SpatialRef::from_epsg(4979).unwrap().to_wkt().unwrap();
+    let custom = registry.replacen("WGS 84", "Custom WGS 84", 1);
+    assert_ne!(custom, registry);
+    let srs = SpatialRef { epsg: Some(4979), wkt: Some(custom.clone()), ..Default::default() };
+    let options = CreateOptions { size: Some((2, 2)), crs: Some(srs), ..Default::default() };
+    let created = create_raster(None, &options).unwrap();
+    assert_eq!(created.crs().to_wkt(), Some(custom));
+}
