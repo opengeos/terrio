@@ -18,7 +18,9 @@ use std::collections::HashMap;
 type EntryIndex = HashMap<(String, bool), usize>;
 
 /// Removes credentials from diagnostics and public names: the user information of a URL's
-/// authority (`https://user:password@host/`) and credential-bearing query strings.
+/// authority (`https://user:password@host/`) and credential-bearing query strings. A password is
+/// removed when it is percent-encoded, as URLs require: an unencoded `/`, `?` or `#` in it ends the
+/// authority, so the rest is taken for the path (an `@` in a path is not user information).
 pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
     let mut out = std::borrow::Cow::Borrowed(url);
     if let Some(scheme) = url.find("://") {

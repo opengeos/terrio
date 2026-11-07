@@ -1982,20 +1982,25 @@ impl RangeReader {
         }
         s.evict();
         let bs = s.block_size;
-        let mut wanted: Vec<u64> = ranges
+        let blocks = ranges
             .iter()
             .filter(|(off, len)| *len > 0 && *off < s.len)
             // Lengths come from file metadata (a TIFF's byte counts), so the end saturates.
             .filter(|(off, len)| s.prefix.as_ref().is_none_or(|p| off.saturating_add(*len) > p.len() as u64))
             .flat_map(|(off, len)| *off / bs..=(off.saturating_add(*len).min(s.len) - 1) / bs)
-            .filter(|b| !s.blocks.contains_key(b))
-            // A prefetch only saves requests; the plan stays bounded whatever the ranges and the
-            // file's length (a byte count past a huge file's end would list every block to its
-            // end), and blocks past it are fetched as reads reach them.
-            .take(Self::MAX_PLANNED_BLOCKS)
-            .collect();
-        wanted.sort_unstable();
-        wanted.dedup();
+            .filter(|b| !s.blocks.contains_key(b));
+        // A prefetch only saves requests; the plan stays bounded whatever the ranges and the
+        // file's length (a byte count past a huge file's end would list every block to its end).
+        // Distinct blocks count toward the bound, so overlapping ranges do not use it up; blocks
+        // past it are fetched as reads reach them.
+        let mut planned = std::collections::BTreeSet::new();
+        for b in blocks {
+            if planned.len() >= Self::MAX_PLANNED_BLOCKS {
+                break;
+            }
+            planned.insert(b);
+        }
+        let wanted: Vec<u64> = planned.into_iter().collect();
         // A prefetch of cached blocks keeps the plan of an earlier one that is still being read.
         if wanted.is_empty() {
             return Ok(());
