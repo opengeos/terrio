@@ -72,10 +72,12 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: taiki-e/install-action@v2
         with:
-          tool: wasm-pack
+          tool: wasm-pack@0.15.1
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+      # The npm release.yml publishes with, so that a failing install shows here first.
+      - run: npm install -g npm@12.2.2 && npm --version
       - name: Build the package as the release does
         run: |
           node js/build.mjs

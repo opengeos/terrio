@@ -109,7 +109,9 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
       # Trusted publishing cannot create a crate before it has an owner/configuration.
       # Bootstrap terrio-crs manually and configure its trusted publisher before a tag
       # starts any uploads in this job. See docs/crs.md for the one-time setup.
@@ -156,8 +158,9 @@ jobs:
           toolchain: nightly-2026-10-15
           targets: wasm32-unknown-unknown
           components: rust-src
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
+          toolchain: stable
           targets: wasm32-unknown-unknown
       - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
@@ -166,8 +169,8 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      # Trusted publishing needs npm 11.5.1 or later. Pinned: this job holds the token that
-      # publishes, so a new npm release is taken by a reviewed change, not on the next run.
+      # Trusted publishing needs npm 11.5.1 or later. Pinned: this job holds the OIDC publishing
+      # rights, so a new npm release is taken by a reviewed change, not on the next run.
       - run: npm install -g npm@12.2.2
       - name: Build the package (browsers, bundlers, and Node.js through init)
         run: |
