@@ -668,11 +668,10 @@ fn read_dataset(
         (x, y, other) = (1, Some(0), Some(2));
     }
     // A field whose dimension list leaves its columns, rows or bands on the same dimension (no
-    // `XDim`, say) is read in GDAL's default layout instead. Not GDAL's handling of such a field:
-    // GDAL 3.13.3 reports a `(Band, Foo, YDim)` field of 1 x 1 x 10 values as 10 x 10 and reads
-    // zeros.
+    // `XDim`, say) is refused: its layout is unknown. GDAL 3.13.3 reports a `(Band, Foo, YDim)`
+    // field of 1 x 1 x 10 values as 10 x 10 and reads zeros.
     if !valid_layout(&shape, x, y, other) {
-        (x, y, other) = (nd - 1, (nd >= 2).then(|| nd - 2), (nd == 3).then_some(0));
+        return Err(err(path, format!("{}: its dimensions do not name distinct columns, rows and bands", e.path)));
     }
     let (cols, rows, bands) = (shape[x], y.map_or(1, |y| shape[y]), other.map_or(1, |o| shape[o]));
     let raw = ds.read_raw_bytes().map_err(|e| err(path, e))?;
@@ -986,9 +985,9 @@ mod tests {
 
     /// An HDF-EOS5 grid field whose dimension list has no `XDim` (`Band`, `Foo`, `YDim`): its
     /// columns and rows would both be its last dimension, gathering 10 x 10 values from a field
-    /// of 10. It is read in GDAL's default layout instead (GDAL 3.13.3 reports 10 x 10 zeros).
+    /// of 10. It is refused (GDAL 3.13.3 reports 10 x 10 zeros).
     #[test]
-    fn a_grid_field_without_an_x_dimension_is_read_in_the_default_layout() {
+    fn a_grid_field_without_an_x_dimension_is_refused() {
         use super::super::hdf5_write::{Dataset, File, H5Type, Storage};
         let meta = "GROUP=SwathStructure\nEND_GROUP=SwathStructure\nGROUP=GridStructure\n\tGROUP=GRID_1\n\t\tGridName=\"G\"\n\t\tXDim=10\n\t\tYDim=1\n\t\tGROUP=Dimension\n\t\t\tOBJECT=Dimension_1\n\t\t\t\tDimensionName=\"Band\"\n\t\t\t\tSize=1\n\t\t\tEND_OBJECT=Dimension_1\n\t\t\tOBJECT=Dimension_2\n\t\t\t\tDimensionName=\"Foo\"\n\t\t\t\tSize=1\n\t\t\tEND_OBJECT=Dimension_2\n\t\t\tOBJECT=Dimension_3\n\t\t\t\tDimensionName=\"YDim\"\n\t\t\t\tSize=10\n\t\t\tEND_OBJECT=Dimension_3\n\t\tEND_GROUP=Dimension\n\t\tGROUP=DataField\n\t\t\tOBJECT=DataField_1\n\t\t\t\tDataFieldName=\"F\"\n\t\t\t\tDataType=H5T_NATIVE_FLOAT\n\t\t\t\tDimList=(\"Band\",\"Foo\",\"YDim\")\n\t\t\tEND_OBJECT=DataField_1\n\t\tEND_GROUP=DataField\n\tEND_GROUP=GRID_1\nEND_GROUP=GridStructure\nEND\n";
         let ds = |name: &str, dtype: H5Type, shape: Option<Vec<u64>>, data: Vec<u8>| Dataset {
@@ -1016,9 +1015,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("eos.h5");
         std::fs::write(&p, super::super::hdf5_write::encode(&f)).unwrap();
-        let r = read(&p, "eos.h5", None).unwrap();
-        assert_eq!((r.raster.cols, r.raster.rows, r.raster.bands), (10, 1, 1));
-        assert_eq!(r.raster.data.to_f64_vec(), (0..10).map(f64::from).collect::<Vec<_>>());
+        let e = read(&p, "eos.h5", None).unwrap_err();
+        assert!(e.to_string().contains("do not name distinct columns, rows and bands"), "{e}");
     }
 
     #[test]

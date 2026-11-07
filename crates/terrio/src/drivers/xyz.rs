@@ -17,8 +17,10 @@ use wbraster::{DataType, Raster};
 /// whatever its points: terrio's bounds, not GDAL's. GDAL 3.13.3 has no cell bound: it reads
 /// sparse grids (6 points over 100001 x 2 cells, read here too as under MIN_MAX_CELLS) and
 /// refuses points whose spacing it cannot determine (three points 10^9 apart at a spacing of
-/// 10^-6, or at 10^300). A grid sparser than these bounds that GDAL reads is refused here.
-const MAX_CELLS_PER_POINT: usize = 256;
+/// 10^-6, or at 10^300). A grid sparser than these bounds that GDAL reads is refused here. A file
+/// of 10^6 points (about 25 MB) may thus declare at most 6.4 x 10^7 cells, 512 MB of Float64
+/// values.
+const MAX_CELLS_PER_POINT: usize = 64;
 const MIN_MAX_CELLS: usize = 1 << 24;
 
 /// The number of cells `extent / step + 1` along an axis, `None` when it is out of range.
@@ -143,6 +145,10 @@ mod tests {
         // Points at 10^300: a cell count past any integer.
         let e = read_text("0 0 1\n1 1 2\n1e300 1e300 3\n").unwrap_err();
         assert!(e.to_string().contains("not a regular grid"), "{e}");
+        // Past 2^24 cells, a grid may have 64 cells a point: 3 points on a grid of 4101 x 4101
+        // cells (just over 2^24) are refused before anything is allocated.
+        let e = read_text("0 0 1\n1 1 1\n4100 4100 1\n").unwrap_err();
+        assert!(e.to_string().contains("3 points spread over a grid of more than 16777216 cells"), "{e}");
     }
 
     #[test]
