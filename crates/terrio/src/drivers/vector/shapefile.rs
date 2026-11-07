@@ -161,8 +161,8 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
 
     let (fields, dbf_total, mut dbf) = match sidecar(&base, "dbf") {
         Some(p) => {
-            let mut f = std::io::BufReader::new(std::fs::File::open(p)?);
-            let len = f.get_ref().metadata()?.len();
+            let mut f = std::fs::File::open(p)?;
+            let len = f.metadata()?.len();
             let mut first = [0u8; 32];
             f.read_exact(&mut first).map_err(|_| Error::InvalidData("truncated .dbf file".into()))?;
             let header_len = dbf_header_len(&first)?;
@@ -192,11 +192,10 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
         }
         let mut flag = *b" ";
         if let Some((f, l)) = dbf.as_mut().filter(|_| fid < dbf_total) {
+            // Fixed-stride unbuffered reads avoid pulling skipped attribute bytes into a
+            // BufReader on deep pages. Only selected live rows read the rest of the record.
+            f.seek(SeekFrom::Start((l.header_len + fid * l.record_len) as u64))?;
             f.read_exact(&mut flag)?;
-            if flag[0] == b'*' || skipped < skip {
-                // Stay in the buffered stream rather than reopening or seeking per slot.
-                f.seek_relative(l.record_len as i64 - 1)?;
-            }
             if flag[0] == b'*' {
                 continue;
             }
