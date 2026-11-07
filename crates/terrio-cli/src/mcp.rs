@@ -58,6 +58,7 @@ const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
+const INTERNAL_ERROR: i64 = -32603;
 
 /// The most tool calls of one batch that run at once.
 const BATCH_CONCURRENCY: usize = 8;
@@ -183,15 +184,18 @@ impl Server {
     /// [`BATCH_CONCURRENCY`] at a time (a batch is one message, however many commands it
     /// starts): that many workers take the next call as each finishes one. Then sends their
     /// replies with the batch's other `replies` in one array, as JSON-RPC answers a batch, so
-    /// those wait for the calls. A cancelled call gets no reply; a batch left without any gets
-    /// none.
+    /// those wait for the calls. A cancelled call gets no reply (one cancelled while queued is
+    /// never started); a batch left without any gets none. The calls are registered once the
+    /// whole batch is read, so a cancel inside the same batch finds nothing; and as JSON-RPC
+    /// requires distinct ids, two calls of a batch sharing an id share its cancel.
     fn spawn_batch(&mut self, mut replies: Vec<Value>, calls: Vec<ToolCall>) {
         let runs: Vec<_> = calls.into_iter().map(|call| self.start(call)).collect();
         let send = self.send.clone();
         self.workers.retain(|w| !w.is_finished());
         self.workers.push(std::thread::spawn(move || {
+            let width = runs.len().min(BATCH_CONCURRENCY);
             let queue = Arc::new(Mutex::new(runs.into_iter()));
-            let workers: Vec<_> = (0..BATCH_CONCURRENCY)
+            let workers: Vec<_> = (0..width)
                 .map(|_| {
                     let queue = queue.clone();
                     std::thread::spawn(move || {
@@ -222,14 +226,22 @@ impl Server {
         self.running.lock().unwrap().insert(key.clone(), cancel.clone());
         let (terrio, running) = (self.terrio.clone(), self.running.clone());
         move || {
-            let reply = call_tool(&terrio, &name, args, &cancel);
+            // A call cancelled while it waited for a worker (or by a shutdown) is not started.
+            let reply = if cancel.load(Ordering::Relaxed) {
+                None
+            } else {
+                // A panic is this call's error, not the loss of the other replies its worker holds.
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call_tool(&terrio, &name, args, &cancel)))
+                    .map(|r| r.map(|r| json!({"jsonrpc": "2.0", "id": id, "result": r})))
+                    .unwrap_or_else(|_| Some(error(&id, INTERNAL_ERROR, "the tool call failed unexpectedly")))
+            };
             // Unless a request reusing the id took the entry meanwhile.
-            let mut running = running.lock().unwrap();
+            let mut running = running.lock().unwrap_or_else(PoisonError::into_inner);
             if running.get(&key).is_some_and(|c| Arc::ptr_eq(c, &cancel)) {
                 running.remove(&key);
             }
             drop(running);
-            reply.map(|r| json!({"jsonrpc": "2.0", "id": id, "result": r}))
+            reply
         }
     }
 
@@ -651,18 +663,51 @@ mod tests {
             &mut s,
             &json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "slow"}}).to_string(),
         );
+        // The cancel itself stops the call, before any shutdown: it leaves the running calls.
+        while !s.running.lock().unwrap().is_empty() {
+            assert!(started.elapsed() < Duration::from_secs(10), "the cancelled call kept running");
+            std::thread::sleep(Duration::from_millis(20));
+        }
         s.shutdown();
-        assert!(started.elapsed() < Duration::from_secs(10));
         assert!(replies.try_recv().is_err());
     }
 
+    /// A call cancelled while it waits for a worker never starts its command: the first
+    /// [`BATCH_CONCURRENCY`] calls are slow, the next one would leave a marker file.
+    #[cfg(unix)]
+    #[test]
+    fn a_queued_call_cancelled_never_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("started");
+        let (send, replies) = std::sync::mpsc::channel();
+        // `sh -c '...' info [marker]`: with an argument, leaves the marker; without, sleeps.
+        let script = r#"if [ -n "$1" ]; then touch "$1"; else sleep 2; fi"#;
+        let mut s = Server::new(vec!["sh".into(), "-c".into(), script.into()], send);
+        let call = |id: &str, args: Vec<&str>| json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": "info", "arguments": {"args": args}}});
+        let mut batch: Vec<Value> = (0..BATCH_CONCURRENCY).map(|i| call(&format!("slow{i}"), vec![])).collect();
+        batch.push(call("queued", vec![marker.to_str().unwrap()]));
+        assert!(handle_on_big_stack(&mut s, &Value::Array(batch).to_string()).is_none());
+        handle_on_big_stack(
+            &mut s,
+            &json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "queued"}}).to_string(),
+        );
+        let reply: Value = serde_json::from_str(&replies.recv_timeout(Duration::from_secs(60)).unwrap()).unwrap();
+        s.shutdown();
+        assert_eq!(reply.as_array().unwrap().len(), BATCH_CONCURRENCY, "the cancelled call got a reply");
+        assert!(!marker.exists(), "the cancelled call's command ran");
+    }
+
     /// A batch of more tool calls than [`BATCH_CONCURRENCY`] runs at most that many at once:
-    /// with commands that each take a second, twice the bound takes two seconds, not one.
+    /// each command records how many were running when it started, and twice the bound of
+    /// one-second commands takes two seconds, not one.
     #[cfg(unix)]
     #[test]
     fn a_large_batch_runs_a_bounded_number_of_calls_at_once() {
+        let dir = tempfile::tempdir().unwrap();
         let (send, replies) = std::sync::mpsc::channel();
-        let mut s = Server::new(vec!["sh".into(), "-c".into(), "sleep 1".into()], send);
+        let d = dir.path().to_str().unwrap();
+        let script = format!(r#"touch "{d}/$$"; ls "{d}" | grep -c '^[0-9]' >> "{d}/counts.txt"; sleep 1; rm "{d}/$$""#);
+        let mut s = Server::new(vec!["sh".into(), "-c".into(), script.into()], send);
         let batch: Vec<Value> = (0..2 * BATCH_CONCURRENCY)
             .map(|i| json!({"jsonrpc": "2.0", "id": i, "method": "tools/call", "params": {"name": "info", "arguments": {"args": []}}}))
             .collect();
@@ -673,6 +718,9 @@ mod tests {
         s.shutdown();
         assert_eq!(reply.as_array().unwrap().len(), 2 * BATCH_CONCURRENCY);
         assert!(took >= Duration::from_millis(1900), "{took:?}: more than {BATCH_CONCURRENCY} calls ran at once");
+        let counts = std::fs::read_to_string(dir.path().join("counts.txt")).unwrap();
+        let peak = counts.lines().filter_map(|l| l.trim().parse::<usize>().ok()).max().unwrap();
+        assert!(peak <= BATCH_CONCURRENCY, "{peak} calls ran at once");
     }
 
     /// A slow call holds back no other: with one call of three seconds and the bound's worth of
