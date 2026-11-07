@@ -360,6 +360,24 @@ impl TransformOptions {
 }
 
 pub use terrio_crs::CoordinateOperation;
+pub use terrio_crs::{AUTHORITIES, CrsEntry, CrsKind, CrsQuery, EPSG_VERSION, check_authorities};
+
+/// The CRSs of the registries terrio carries (EPSG [`EPSG_VERSION`], ESRI and IAU_2015) that a
+/// query selects, for searchable CRS pickers, as GDAL's `OSRGetCRSInfoListFromDatabase` describes
+/// them: name, kind, deprecation, area of use, projection method and celestial body. Needs no
+/// network and no PROJ installation; [`SpatialRef::parse`] resolves each one's
+/// [`CrsEntry::authority_code`] (see the standalone engine's `list_crs`).
+///
+/// ```
+/// use terrio::crs::{CrsKind, CrsQuery, list_crs};
+///
+/// let query = CrsQuery { kinds: vec![CrsKind::Projected], text: Some("Albers".into()), ..Default::default() };
+/// assert!(list_crs(&query).iter().any(|e| e.authority_code() == "EPSG:3577"));
+/// ```
+pub fn list_crs(query: &CrsQuery) -> Vec<CrsEntry> {
+    initialize();
+    terrio_crs::list_crs(query)
+}
 
 /// A coordinate transformer backed by the shared standalone engine.
 pub struct Transformer(terrio_crs::Transformer);
