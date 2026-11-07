@@ -817,7 +817,7 @@ def test_dataset_export_requires_matching_nodata(tmp_path):
 )
 @pytest.mark.parametrize("has_nodata", [False, True])
 def test_overview_masks_match_opened_gdal_dataset(
-    tmp_path, mask_before_overviews, external, has_nodata
+    tmp_path, mask_before_overviews, external, has_nodata, monkeypatch
 ):
     """Match GDAL 3.13.3 overview masks, including absent masks and valid nodata pixels."""
     gdal = pytest.importorskip("osgeo.gdal")
@@ -861,7 +861,16 @@ def test_overview_masks_match_opened_gdal_dataset(
         data = overview.ReadAsArray().astype("float32")
         data[overview.GetMaskBand().ReadAsArray() == 0] = np.nan
         expected.append(data)
+    mask_reads = []
+    read_mask = terrio.Raster._read_level_mask
+
+    def counted_mask_read(self, *args, **kwargs):
+        mask_reads.append(kwargs)
+        return read_mask(self, *args, **kwargs)
+
+    monkeypatch.setattr(terrio.Raster, "_read_level_mask", counted_mask_read)
     with txr.open_rasterio(path, masked=True, overview_level=0, cache=False) as opened:
+        assert mask_reads == [], "opening overview metadata must not decode mask payload"
         np.testing.assert_allclose(
             opened[:, :2, :].values, np.stack(expected)[:, :2, :], equal_nan=True
         )
