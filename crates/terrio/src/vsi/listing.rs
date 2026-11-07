@@ -29,13 +29,34 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
         }
     }
     if let Some((base, query)) = out.split_once('?') {
-        let lower = query.to_ascii_lowercase();
+        // Parameter names as a server reads them too: `%6Bey=` is `key=`.
+        let lower = format!("{query}&{}", percent_decoded(query)).to_ascii_lowercase();
         const KEYS: [&str; 9] = ["sig", "token=", "credential=", "api_key=", "apikey=", "access_key=", "key=", "password=", "passwd="];
         if KEYS.iter().any(|key| lower.contains(key)) {
             return format!("{base}?<redacted>").into();
         }
     }
     out
+}
+
+/// `text` with its `%XX` escapes decoded (invalid escapes and non-UTF-8 bytes kept as they are).
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && let (Some(h), Some(l)) = (bytes.get(i + 1).copied().and_then(hex), bytes.get(i + 2).copied().and_then(hex))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// An entry of a remote listing.
@@ -765,6 +786,7 @@ mod tests {
         assert_eq!(super::redact_url("https://example.com/a@b.tif"), "https://example.com/a@b.tif");
         assert_eq!(super::redact_url("/vsizip/local@archive.zip/x.tif"), "/vsizip/local@archive.zip/x.tif");
         assert!(super::redact_url("https://example.com/f.tif?password=hunter2").ends_with("?<redacted>"));
+        assert!(super::redact_url("https://example.com/f.tif?%6Bey=AIza123").ends_with("?<redacted>"));
     }
 
     #[test]

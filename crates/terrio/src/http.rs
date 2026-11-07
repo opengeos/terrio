@@ -1966,6 +1966,9 @@ impl RangeReader {
         self.lock().map(|s| s.client.url.clone()).unwrap_or_default()
     }
 
+    /// The most blocks a prefetch plans (8 MiB of block indices; 16 GiB of 16 KiB blocks).
+    const MAX_PLANNED_BLOCKS: usize = 1 << 20;
+
     /// Fetches the blocks covering the byte ranges `(offset, length)` that are not cached yet, in as
     /// few requests as it can: runs of missing blocks separated by at most two cached blocks are
     /// fetched together. Ranges larger than half the cache are fetched a batch at a time, the
@@ -1985,6 +1988,10 @@ impl RangeReader {
             .filter(|(off, len)| s.prefix.as_ref().is_none_or(|p| off.saturating_add(*len) > p.len() as u64))
             .flat_map(|(off, len)| *off / bs..=(off.saturating_add(*len).min(s.len) - 1) / bs)
             .filter(|b| !s.blocks.contains_key(b))
+            // A prefetch only saves requests; the plan stays bounded whatever the ranges and the
+            // file's length (a byte count past a huge file's end would list every block to its
+            // end), and blocks past it are fetched as reads reach them.
+            .take(Self::MAX_PLANNED_BLOCKS)
             .collect();
         wanted.sort_unstable();
         wanted.dedup();
@@ -2637,11 +2644,17 @@ mod tests {
     #[test]
     fn a_prefetch_whose_end_overflows_is_clamped_to_the_file() {
         let data = test_data();
-        let (url, _) = serve(data.clone(), Mode::Ranges);
-        let r = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+        let (url, count) = serve(data.clone(), Mode::Ranges);
+        let mut r = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+        let opened = count.load(Ordering::SeqCst);
         r.prefetch(&[(16, u64::MAX - 15), (5, u64::MAX)]).unwrap();
-        let mut r = r;
-        assert_eq!(read_range(&mut r, 16, 100), data[16..116]);
+        // The prefetch fetched (the blocks to the file's end, or their first batch) ...
+        assert!(count.load(Ordering::SeqCst) > opened);
+        let prefetched = count.load(Ordering::SeqCst);
+        // ... so that a read just past the first block needs no request of its own.
+        let at = 4096 + 16;
+        assert_eq!(read_range(&mut r, at, 100), data[at as usize..at as usize + 100]);
+        assert_eq!(count.load(Ordering::SeqCst), prefetched);
     }
 
     /// The inclusive byte ranges of the requests a [`test_server`] saw.

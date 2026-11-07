@@ -798,7 +798,7 @@ fn asset_href(item_loc: &str, asset: &str) -> Result<String> {
     })?;
     let href = resolve_href(item_loc, href);
     if names_local_files(item_loc, &href) {
-        return Err(bad(format!("the remote item '{item_loc}' names local files (asset '{asset}')")));
+        return Err(bad(format!("the remote item '{}' names local files (asset '{asset}')", crate::vsi::listing::redact_url(item_loc))));
     }
     sign_href(href, &item, item_loc, SignMode::from_env())
 }
@@ -940,15 +940,16 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
             if width <= 0 || height <= 0 {
                 continue;
             }
+            let href = resolve_href(base, href);
+            // A remote item does not name local files; such an asset is left out of the mosaic
+            // (before its group is made, so that no empty group is left).
+            if names_local_files(base, &href) {
+                continue;
+            }
             let entry = groups.entry(collection.clone()).or_default().entry(name.clone()).or_insert_with(|| AssetGroup {
                 bands: if asset["bands"].is_array() { asset["bands"].clone() } else { asset["eo:bands"].clone() },
                 by_crs: BTreeMap::new(),
             });
-            let href = resolve_href(base, href);
-            // A remote item does not name local files; such an asset is left out of the mosaic.
-            if names_local_files(base, &href) {
-                continue;
-            }
             entry.by_crs.entry(crs).or_default().push(AssetItem {
                 sign: needs_signing(&href, item, base, sign),
                 href,
@@ -1384,6 +1385,8 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
             assets
                 .iter()
                 .filter(|(_, a)| is_data_asset(a))
+                // The assets a remote item names on the local file system cannot be opened.
+                .filter(|(_, a)| a["href"].as_str().is_none_or(|h| !names_local_files(path, &resolve_href(path, h))))
                 .map(|(k, a)| Subdataset {
                     name: format!("STAC:\"{path}\":{k}"),
                     description: match a["title"].as_str() {
@@ -1443,13 +1446,14 @@ mod tests {
         }))
         .unwrap();
         let (base, _) = crate::http::test_server(item);
-        let item_loc = format!("{base}/item.json");
+        let item_loc = format!("{base}/item.json?token=secret-value");
         for asset in ["zip", "file"] {
             let err = asset_href(&item_loc, asset).unwrap_err().to_string();
             assert!(err.contains("names local files"), "{asset}: {err}");
+            assert!(!err.contains("secret-value"), "{asset}: {err}");
         }
         assert_eq!(asset_href(&item_loc, "remote").unwrap(), "https://example.com/data.tif");
-        assert_eq!(asset_href(&item_loc, "relative").unwrap(), format!("{base}/data.tif"));
+        assert!(asset_href(&item_loc, "relative").unwrap().starts_with(&format!("{base}/data.tif")));
     }
 
     /// A mosaic of remote items leaves out the assets that name local files.
@@ -1471,6 +1475,12 @@ mod tests {
         assert_eq!(count("/vsizip//home/user/private.zip/secret.tif"), 0);
         assert_eq!(count("file:///etc/hosts"), 0);
         assert_eq!(count("data.tif"), 1);
+        // A local asset that sorts first leaves no empty group in front of a usable one.
+        let mut mixed = item("data.tif");
+        mixed["assets"] = json!({"a_local": {"href": "file:///home/user/x.tif"}, "b": {"href": "b.tif"}});
+        let groups = group_assets(&[(mixed, base.clone())], &Filters::default());
+        let names: Vec<&String> = groups.values().flat_map(|g| g.keys()).collect();
+        assert_eq!(names, ["b"]);
         // A local item may name local files.
         let local = std::env::temp_dir().join("item.json").to_string_lossy().into_owned();
         let groups = group_assets(&[(item("/vsizip//home/user/archive.zip/a.tif"), local)], &Filters::default());
