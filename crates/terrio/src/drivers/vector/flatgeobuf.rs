@@ -132,7 +132,7 @@ pub(crate) fn decode_feature_exact(fbuf: &[u8], h: &FgbHeader, fid: u64) -> Resu
 fn decode(fbuf: &[u8], h: &FgbHeader, fid: u64, exact: bool) -> Result<Feature> {
     let f = flatgeobuf::size_prefixed_root_as_feature_with_opts(&verifier(), fbuf).map_err(|e| bad(&format!("feature {fid}: {e}")))?;
     if let Some(g) = f.geometry() {
-        validate_dimensions(&g, h)?;
+        validate_geometry(&g, h)?;
     }
     let geometry = f.geometry().and_then(|g| to_geometry(&g, h.geometry_type, h.has_z, h.has_m, exact));
     let mut attributes = vec![FieldValue::Null; h.columns.len()];
@@ -142,7 +142,9 @@ fn decode(fbuf: &[u8], h: &FgbHeader, fid: u64, exact: bool) -> Result<Feature> 
     Ok(Feature { fid, geometry, attributes })
 }
 
-fn validate_dimensions(g: &FgbGeometry, h: &FgbHeader) -> Result<()> {
+/// Checks coordinate pairs, declared dimensions and part ends before any coordinate slicing.
+/// Nested parts obey the same bounds; undeclared and extra ordinate values are ignored.
+fn validate_geometry(g: &FgbGeometry, h: &FgbHeader) -> Result<()> {
     let n = g.xy().map_or(0, |xy| xy.len());
     if !n.is_multiple_of(2) {
         return Err(bad("odd XY coordinate count"));
@@ -157,9 +159,19 @@ fn validate_dimensions(g: &FgbGeometry, h: &FgbHeader) -> Result<()> {
             _ => {}
         }
     }
+    if let Some(ends) = g.ends() {
+        let mut previous = 0;
+        for end in ends {
+            let end = end as usize;
+            if end < previous || end > n / 2 {
+                return Err(bad("geometry part ends decrease or exceed the coordinate count"));
+            }
+            previous = end;
+        }
+    }
     if let Some(parts) = g.parts() {
         for p in parts {
-            validate_dimensions(&p, h)?;
+            validate_geometry(&p, h)?;
         }
     }
     Ok(())
@@ -1000,6 +1012,21 @@ mod tests {
         bytes.truncate(header_end);
         bytes.extend_from_slice(b.finished_data());
         assert!(!accepts(&bytes));
+    }
+
+    #[test]
+    fn geometry_validation_rejects_invalid_part_ends() {
+        let (_, header) = parse_header(&dimension_fixture(false, false, None, None)).unwrap();
+        for (ends, valid) in [(&[4_u32, 2][..], false), (&[2, 5][..], false), (&[2, 4][..], true)] {
+            let mut b = FlatBufferBuilder::new();
+            let xy = b.create_vector(&[0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0]);
+            let ends = b.create_vector(ends);
+            let g = FgbGeometry::create(&mut b, &GeometryArgs { xy: Some(xy), ends: Some(ends), ..Default::default() });
+            let f = FgbFeature::create(&mut b, &FeatureArgs { geometry: Some(g), ..Default::default() });
+            b.finish_size_prefixed(f, None);
+            let feature = flatgeobuf::size_prefixed_root_as_feature(b.finished_data()).unwrap();
+            assert_eq!(validate_geometry(&feature.geometry().unwrap(), &header).is_ok(), valid);
+        }
     }
 
     #[test]

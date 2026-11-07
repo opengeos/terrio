@@ -4,6 +4,7 @@ use flatbuffers::FlatBufferBuilder;
 use flatgeobuf::{Feature as FgbFeature, FeatureArgs, Geometry as FgbGeometry, GeometryArgs, GeometryType as FgbType, Header, HeaderArgs};
 const MAGIC: [u8; 8] = [b'f', b'g', b'b', 3, b'f', b'g', b'b', 0];
 
+/// A header with the requested count and, for nonempty measures, one measured point.
 pub fn fixture(count: u64, measured: bool, ms: &[f64]) -> Vec<u8> {
     let mut b = FlatBufferBuilder::new();
     let h = Header::create(

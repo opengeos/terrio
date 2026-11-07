@@ -5,7 +5,7 @@
 // the native decoder even with GDAL enabled; this suite compares the native public APIs.
 #![cfg(all(feature = "flatgeobuf", not(feature = "gdal")))]
 use flatbuffers::FlatBufferBuilder;
-use flatgeobuf::{Feature as FgbFeature, FeatureArgs, Geometry as FgbGeometry, GeometryArgs};
+use flatgeobuf::{Feature as FgbFeature, FeatureArgs, Geometry as FgbGeometry, GeometryArgs, GeometryType as FgbType, Header, HeaderArgs};
 use terrio::{Layer, Result};
 #[path = "common/flatgeobuf.rs"]
 mod fixtures;
@@ -64,4 +64,48 @@ fn measures_are_preserved_and_dimensions_checked() {
     b.finish_size_prefixed(f, None);
     bytes.extend_from_slice(b.finished_data());
     assert!(!both(&bytes));
+}
+
+/// A polygon or multiline with explicit ends, optionally nested in a collection.
+fn part_ends_fixture(kind: FgbType, ends: &[u32], nested: bool) -> Vec<u8> {
+    let mut b = FlatBufferBuilder::new();
+    let h = Header::create(
+        &mut b,
+        &HeaderArgs {
+            features_count: 1,
+            index_node_size: 0,
+            geometry_type: if nested { FgbType::GeometryCollection } else { kind },
+            ..Default::default()
+        },
+    );
+    b.finish_size_prefixed(h, None);
+    let mut bytes = b"fgb\x03fgb\x00".to_vec();
+    bytes.extend_from_slice(b.finished_data());
+    let mut b = FlatBufferBuilder::new();
+    let xy = b.create_vector(&[0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0]);
+    let ends = b.create_vector(ends);
+    let mut geometry = FgbGeometry::create(&mut b, &GeometryArgs { xy: Some(xy), ends: Some(ends), type_: kind, ..Default::default() });
+    if nested {
+        let parts = b.create_vector(&[geometry]);
+        geometry =
+            FgbGeometry::create(&mut b, &GeometryArgs { parts: Some(parts), type_: FgbType::GeometryCollection, ..Default::default() });
+    }
+    let f = FgbFeature::create(&mut b, &FeatureArgs { geometry: Some(geometry), ..Default::default() });
+    b.finish_size_prefixed(f, None);
+    bytes.extend_from_slice(b.finished_data());
+    bytes
+}
+
+#[test]
+fn part_ends_are_checked_before_splitting() {
+    for kind in [FgbType::Polygon, FgbType::MultiLineString] {
+        for nested in [false, true] {
+            for ends in [&[4, 2][..], &[2, 5][..], &[u32::MAX][..]] {
+                assert!(!both(&part_ends_fixture(kind, ends, nested)));
+            }
+            for ends in [&[4][..], &[2, 4][..], &[0, 4][..], &[4, 4][..]] {
+                assert!(both(&part_ends_fixture(kind, ends, nested)));
+            }
+        }
+    }
 }
