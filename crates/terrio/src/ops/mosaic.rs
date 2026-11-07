@@ -229,6 +229,8 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
             }
         }
     }
+    // Both `separate: true` (no bands pushed) and `separate: false` (pre-allocated bands with
+    // no overlapping sources) fail consistently when no source intersects the target extent.
     if bands.iter().all(|b| b.sources.is_empty()) {
         return Err(Error::InvalidArgument("no source rasters intersect the target extent".into()));
     }

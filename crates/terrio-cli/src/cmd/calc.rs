@@ -65,7 +65,7 @@ pub struct Args {
 /// Rewrites gdal_calc.py's input options (`-A path`, `--A_band n`) into terrio's (`--input
 /// A=path`, `--input-band A=n`) when the subcommand is `calc`.
 pub fn rewrite_args(args: Vec<OsString>) -> Vec<OsString> {
-    if args.iter().skip(1).find_map(|a| a.to_str().filter(|s| !s.starts_with('-'))) != Some("calc") {
+    if args.iter().skip(1).find_map(|a| a.to_str().filter(|&s| s != "--json-usage")) != Some("calc") {
         return args;
     }
     let strs: Vec<&str> = args.iter().filter_map(|a| a.to_str()).collect();

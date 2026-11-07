@@ -42,19 +42,14 @@ impl PyRaster {
     /// Writes the raster to `path` with `options`, streaming tile archives by tile row when lazy
     /// and falling back to a whole read when the source inventory is unavailable.
     pub(crate) fn write_with_options(&mut self, py: Python<'_>, path: &str, mut options: RasterWriteOptions) -> PyResult<()> {
-        let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
-        let tile_archive = matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles));
         py.detach_result(|| {
-            self.inner.prepare_output_mask(path, &mut options, Window::full(self.inner.width(), self.inner.height()), None)
-        })
-        .py()?;
-        if self.inner.dataset().is_none() && tile_archive {
-            match py.detach_result(|| self.inner.write(path, &options)) {
-                Err(e) if e.is_source_inventory_unavailable() => {}
-                res => return res.py(),
+            self.inner.prepare_output_mask(path, &mut options, Window::full(self.inner.width(), self.inner.height()), None)?;
+            if self.inner.can_stream_tile_archive(path, &options) {
+                return self.inner.write(path, &options);
             }
-        }
-        py.detach_result(|| self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
+            self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))
+        })
+        .py()
     }
 
     fn crs_ref(&self) -> SpatialRef {

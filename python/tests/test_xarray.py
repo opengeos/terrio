@@ -742,3 +742,11 @@ def test_per_dataset_mask_and_backend_close(tmp_path):
     assert pool2._free or pool2._shared is not None
     ds2.close()
     assert pool2._shared is None and not pool2._free
+
+    ds_no_nodata = txr.open_rasterio(str(rgb_path), band_as_variable=True)
+    assert ds_no_nodata["band_1"].terrio.nodata is None
+    out_no_nodata = tmp_path / "rgb_no_nodata_out.tif"
+    ds_no_nodata.terrio.to_raster(str(out_no_nodata))
+    with rio.open(out_no_nodata) as check_ds:
+        assert check_ds.nodata is None and check_ds.count == 2
+    ds_no_nodata.close()

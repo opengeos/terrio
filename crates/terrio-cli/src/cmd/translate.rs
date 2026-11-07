@@ -27,7 +27,7 @@ fn flag_arity(s: &str) -> Option<usize> {
 /// consumed by clap as scale numbers.
 pub fn rewrite_args(args: Vec<OsString>) -> Vec<OsString> {
     let non_flags: Vec<(usize, &str)> =
-        args.iter().enumerate().skip(1).filter_map(|(idx, a)| a.to_str().filter(|s| !s.starts_with('-')).map(|s| (idx, s))).collect();
+        args.iter().enumerate().skip(1).filter_map(|(idx, a)| a.to_str().filter(|&s| s != "--json-usage").map(|s| (idx, s))).collect();
     let sub_idx = match non_flags.as_slice() {
         [(idx, "translate"), ..] | [(_, "raster"), (idx, "translate"), ..] => *idx,
         _ => return args,

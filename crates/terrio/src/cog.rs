@@ -268,7 +268,7 @@ pub(crate) trait WindowSource: Send + Sync {
     }
     /// Files a non-streamed source reads; unknown inventories must fail before an export.
     fn input_paths(&self) -> Result<Vec<String>> {
-        Err(Error::source_inventory_unavailable())
+        Err(Error::Unsupported("source inventory unavailable".into()))
     }
     /// The source as [`LazyRaster::write`] reads it a strip of rows at a time, several strips at
     /// once; `None` when it is read whole.
@@ -1085,6 +1085,15 @@ impl LazyRaster {
     /// r.write("big_cog.tif", &options)?;
     /// # Ok::<(), terrio::Error>(())
     /// ```
+    /// Whether [`LazyRaster::write`] can stream `self` to a tile archive (`PMTiles` or `MBTiles`)
+    /// at `path` without reading the whole raster into memory first.
+    pub fn can_stream_tile_archive(&self, path: &str, options: &crate::RasterWriteOptions) -> bool {
+        let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
+        self.dataset().is_none()
+            && matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles))
+            && self.input_paths().is_ok_and(|inputs| !crate::ops::strips::overwrites(path, &inputs))
+    }
+
     pub fn write(&mut self, path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
         let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
         self.refuse_masked_tile_archive(driver, options)?;

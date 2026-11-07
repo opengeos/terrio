@@ -2117,7 +2117,7 @@ mod tests {
         let file = GridFile {
             sources: vec![
                 (ext, src.clone(), "root".into(), String::new()),
-                (inner, src.clone(), "root".into(), String::new()),
+                (inner, src.clone(), "unparented_named_subgrid".into(), String::new()),
                 (dup2, src.clone(), "dup".into(), "root".into()),
                 (inner, src.clone(), "dup".into(), "root".into()),
                 (child_of_dup, src.clone(), "leaf".into(), "dup".into()),
@@ -2129,6 +2129,7 @@ mod tests {
         };
         let grids = hierarchy(&file, |_, _| Some(Use::Generic));
         assert!(!grids.is_empty());
+        // Unparented named GeoTIFF subgrid nests under "root" by extent containment.
         assert_eq!(grids[0].children[0].ext.west, inner.west);
         // Duplicate grid_name "dup" resolves to the first "dup" (dup2), not the second.
         let first_dup = grids[0].children.iter().find(|c| (c.ext.west - dup2.west).abs() < 1e-12).unwrap();
