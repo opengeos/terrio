@@ -8,17 +8,24 @@ use terrio::{FieldValue, VectorOpenOptions};
 /// Reads one live-feature page without rewriting its physical feature IDs.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
-    if args.len() != 4 {
-        return Err("usage: shapefile_rows FILE SKIP MAX (or - for no maximum)".into());
+    if !(4..=5).contains(&args.len()) || (args.len() == 5 && args[4] != "--stream") {
+        return Err("usage: shapefile_rows FILE SKIP MAX (or - for no maximum) [--stream]".into());
     }
     let options = VectorOpenOptions {
         skip_features: args[2].parse()?,
         max_features: if args[3] == "-" { None } else { Some(args[3].parse()?) },
         ..Default::default()
     };
-    let data = terrio::open_vector(&args[1], &options)?;
+    let layers = if args.len() == 5 {
+        if options.skip_features != 0 || options.max_features.is_some() {
+            return Err("the stream comparison reads the whole live result set".into());
+        }
+        terrio::stream::open_layers(&args[1], &options, 2)?.into_iter().map(|r| r.read_all()).collect::<terrio::Result<Vec<_>>>()?
+    } else {
+        terrio::open_vector(&args[1], &options)?.layers
+    };
     let mut rows = Vec::new();
-    for layer in &data.layers {
+    for layer in &layers {
         for feature in &layer.features {
             let mut attributes = Vec::new();
             for value in &feature.attributes {

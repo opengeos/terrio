@@ -123,3 +123,68 @@ fn ranges_preserve_shapes_without_dbf_records() {
         assert!(features.iter().all(|f| f.attributes.iter().all(|v| *v == FieldValue::Null)));
     }
 }
+
+/// Streaming and conversions skip deleted slots, including a whole deleted batch.
+#[test]
+fn streamed_deleted_rows_keep_physical_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let (layer, path, original) = six_points(dir.path());
+    for deleted in DELETIONS {
+        delete(&path, &original, deleted);
+        let reader = || terrio::stream::open_layers(&path, &Default::default(), 2).unwrap().remove(0);
+        let streamed = reader().read_all().unwrap();
+        assert_live(&streamed.features, &layer, deleted);
+        let iterated = reader().collect::<terrio::Result<Vec<_>>>().unwrap();
+        assert_live(&iterated, &layer, deleted);
+        let output = dir.path().join("converted.geojson");
+        let output = output.to_str().unwrap();
+        let options = terrio::stream::ConvertOptions { chunk_size: 1, ..Default::default() };
+        terrio::stream::convert(&path, output, &options).unwrap();
+        let converted = terrio::open_vector(output, &Default::default()).unwrap().layers.remove(0);
+        let expected: Vec<_> = layer.features.iter().filter(|f| !deleted.contains(&(f.fid as usize))).collect();
+        assert_eq!(converted.features.len(), expected.len());
+        for (actual, expected) in converted.features.iter().zip(expected) {
+            assert_eq!(actual.geometry, expected.geometry);
+            assert_eq!(actual.attributes, expected.attributes);
+        }
+    }
+
+    // The first 8192 physical rows form an empty live batch, not EOF.
+    let path = dir.path().join("batch.shp");
+    let path = path.to_str().unwrap();
+    let mut large = Layer::new("batch");
+    for i in 0..9000 {
+        large.push(Feature { fid: i, geometry: Some(Geometry::point(i as f64, 0.0)), attributes: vec![] });
+    }
+    terrio::write_vector(&[large], path, &Default::default()).unwrap();
+    let original = std::fs::read(std::path::Path::new(path).with_extension("dbf")).unwrap();
+    delete(path, &original, &(0..8192).collect::<Vec<_>>());
+    let streamed = terrio::stream::open_layers(path, &Default::default(), 2).unwrap().remove(0).read_all().unwrap();
+    assert_eq!(streamed.features.iter().map(|f| f.fid).collect::<Vec<_>>(), (8192..9000).collect::<Vec<_>>());
+}
+
+/// Missing or truncated DBF records remain live shapes with null attributes in streams.
+#[test]
+fn streaming_preserves_shapes_without_dbf_records() {
+    for absent in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, path, mut dbf) = six_points(dir.path());
+        let dbf_path = std::path::Path::new(&path).with_extension("dbf");
+        if absent {
+            std::fs::remove_file(dbf_path).unwrap();
+        } else {
+            let header = u16::from_le_bytes([dbf[8], dbf[9]]) as usize;
+            let width = u16::from_le_bytes([dbf[10], dbf[11]]) as usize;
+            dbf.truncate(header + width);
+            std::fs::write(dbf_path, dbf).unwrap();
+        }
+        let whole = terrio::open_vector(&path, &Default::default()).unwrap().layers.remove(0);
+        let streamed = terrio::stream::open_layers(&path, &Default::default(), 1).unwrap().remove(0).read_all().unwrap();
+        assert_eq!(streamed.features.len(), whole.features.len());
+        for (actual, expected) in streamed.features.iter().zip(&whole.features) {
+            assert_eq!(actual.fid, expected.fid);
+            assert_eq!(actual.geometry, expected.geometry);
+            assert_eq!(actual.attributes, expected.attributes);
+        }
+    }
+}

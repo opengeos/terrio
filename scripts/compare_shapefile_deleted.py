@@ -62,6 +62,23 @@ def reference(path, skip, maximum):
     return rows
 
 
+def compare_case(probe, path, skip, maximum, expected, name, stream=False):
+    """Record a failed process or malformed output as one differing case, then continue."""
+    command = [str(probe), str(path), str(skip), "-" if maximum is None else str(maximum)]
+    if stream:
+        command.append("--stream")
+    try:
+        process = subprocess.run(command, capture_output=True, text=True, check=False, timeout=60)
+        if process.returncode:
+            raise ValueError(f"probe exit {process.returncode}: {process.stderr[-1000:]}")
+        actual = json.loads(process.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        return {"name": name, "status": "differs", "detail": str(error)}
+    return {"name": name, "status": "identical" if actual == expected else "differs",
+            "detail": f"GDAL {gdal.__version__}; {len(expected)} live features; "
+            + ("FIDs, attributes/nulls and WKB exact" if actual == expected else f"expected {expected!r}, got {actual!r}")}
+
+
 def compare(probe, directory):
     """Exercise full reads and paging, indexed and header-scan SHP access."""
     path = directory / "deleted.shp"
@@ -84,13 +101,10 @@ def compare(probe, directory):
                     references[key] = reference(path, skip, maximum)
                 # Reuse the OGR result before SHX removal: OGR requires that index.
                 expected = references[key]
-                process = subprocess.run([str(probe), str(path), str(skip), "-" if maximum is None else str(maximum)],
-                                         capture_output=True, text=True, check=True)
-                actual = json.loads(process.stdout)
-                results.append({"name": f"indexed={indexed} deleted={deleted} skip={skip} max={maximum}",
-                                "status": "identical" if actual == expected else "differs",
-                                "detail": f"GDAL {gdal.__version__}; {len(expected)} live features; "
-                                + ("FIDs, attributes/nulls and WKB exact" if actual == expected else f"expected {expected!r}, got {actual!r}")})
+                name = f"indexed={indexed} deleted={deleted} skip={skip} max={maximum}"
+                results.append(compare_case(probe, path, skip, maximum, expected, name))
+            name = f"stream indexed={indexed} deleted={deleted}"
+            results.append(compare_case(probe, path, 0, None, references[(deleted, 0, None)], name, stream=True))
     return results
 
 

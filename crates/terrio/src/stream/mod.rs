@@ -508,15 +508,18 @@ impl FeatureSource for ShpSource {
         let (fields, first) = (self.fields, self.fid);
         let (layout, organize) = (self.dbf.as_ref().map(|(_, l, _)| l), self.organize);
         let out = crate::par::map_range(count, |i| {
+            let record = layout.filter(|_| i < n).map(|l| (&records[i * l.record_len..(i + 1) * l.record_len], l));
+            if record.is_some_and(|(bytes, _)| bytes.first() == Some(&b'*')) {
+                return None;
+            }
             let geometry = shapes.get(i).and_then(|rec| shapefile::decode_shape(rec, organize));
-            let attributes = match layout {
-                Some(l) if i < n => l.record(&records[i * l.record_len..(i + 1) * l.record_len]),
-                _ => vec![wbvector::FieldValue::Null; fields],
-            };
-            Feature { fid: first + i as u64, geometry, attributes }
+            let attributes = record.map_or_else(|| vec![wbvector::FieldValue::Null; fields], |(bytes, l)| l.record(bytes));
+            Some(Feature { fid: first + i as u64, geometry, attributes })
         });
+        // Advance over physical slots, even when this entire batch was deleted. An empty live
+        // batch is Some(empty), not EOF; FeatureReader::fill continues to the next batch.
         self.fid += count as u64;
-        Ok(Some(out))
+        Ok(Some(out.into_iter().flatten().collect()))
     }
 }
 

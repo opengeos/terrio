@@ -2452,7 +2452,7 @@ node --test --test-name-pattern='single named layer' js/tests/node.test.mjs
 ## Deleted Shapefile records
 
 The `shapefile-deleted` suite generates small OGR Shapefiles and marks DBF slots
-deleted without repacking. It compares whole reads and live-feature pages against
+deleted without repacking. It compares whole reads, streaming reads and live-feature pages against
 OGR, retaining physical FIDs, exact scalar attributes/nulls and ISO WKB bytes.
 Null geometry still counts as a live feature; both indexed and unindexed reads
 are checked. Build the bridge in the same profile as the CLI:
