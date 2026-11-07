@@ -1966,7 +1966,8 @@ impl RangeReader {
         self.lock().map(|s| s.client.url.clone()).unwrap_or_default()
     }
 
-    /// The most blocks a prefetch plans (8 MiB of block indices; 16 GiB of 16 KiB blocks).
+    /// The most blocks a prefetch plans (8 MiB of block indices; 64 GiB of the default 64 KiB
+    /// blocks).
     const MAX_PLANNED_BLOCKS: usize = 1 << 20;
 
     /// Fetches the blocks covering the byte ranges `(offset, length)` that are not cached yet, in as
@@ -2643,6 +2644,8 @@ mod tests {
     // range's end (which planned about 2^48 blocks and aborted on the allocation).
     #[test]
     fn a_prefetch_whose_end_overflows_is_clamped_to_the_file() {
+        // The read after the prefetch must find its blocks in the process-wide cache too.
+        let _guard = cache_test_guard();
         let data = test_data();
         let (url, count) = serve(data.clone(), Mode::Ranges);
         let mut r = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
