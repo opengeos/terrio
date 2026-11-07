@@ -594,8 +594,13 @@ impl FeatureSource for FgbSource {
         let (mut raw, mut bytes) = (Vec::new(), 0);
         while raw.len() < self.batch && bytes < self.batch_bytes {
             let mut len = [0u8; 4];
-            if read_full(&mut self.r, &mut len)? < 4 {
+            let got = read_full(&mut self.r, &mut len)?;
+            if got == 0 {
+                fgb::check_count(self.fid + raw.len() as u64, self.header.features_count)?;
                 break;
+            }
+            if got != 4 {
+                return Err(Error::InvalidData("FlatGeobuf: truncated feature size".into()));
             }
             let n = u32::from_le_bytes(len) as usize;
             // Read as it comes rather than allocated from the (untrusted) length.
@@ -624,12 +629,19 @@ fn open_fgb(path: &str, batch: usize) -> Result<(Layer, Box<dyn FeatureSource>)>
     let mut start = [0u8; 12];
     let n = read_full(&mut r, &mut start)?;
     let len = fgb::header_len(&start[..n])?;
+    let file_len = r.get_ref().metadata()?.len();
+    if len as u64 > file_len {
+        return Err(Error::InvalidData("FlatGeobuf: truncated header".into()));
+    }
     let mut buf = start.to_vec();
     buf.resize(len, 0);
     if read_full(&mut r, &mut buf[12..])? < len - 12 {
         return Err(Error::InvalidData("FlatGeobuf: truncated header".into()));
     }
     let (layer, header) = fgb::parse_header(&buf)?;
+    if (len as u64).checked_add(header.index_size).is_none_or(|end| end > file_len) {
+        return Err(Error::InvalidData("FlatGeobuf: truncated index".into()));
+    }
     r.seek_relative(header.index_size as i64)?;
     Ok((layer, Box::new(FgbSource { r, header, fid: 0, batch, batch_bytes: source_bytes(CHUNK_BYTES) })))
 }
