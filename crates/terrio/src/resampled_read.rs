@@ -866,6 +866,8 @@ pub(crate) fn best_overview(
     best_overview_filtered((w, h), overviews, window, (bw, bh), threshold, |_| true)
 }
 
+/// The same size rule as `best_overview`, with eligibility checked only for improving
+/// candidates. The callback receives a zero-based index into `overviews`, not a level number.
 fn best_overview_filtered(
     (w, h): (usize, usize),
     overviews: &[(usize, usize)],

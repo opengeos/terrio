@@ -13,7 +13,7 @@ two bands all valid, without overviews; and Byte RGB with external overviews tha
 chooses among twice.
 
 `expected.json.gz` holds, for each case (a file, bands, a window, an output size, a resampling and an
-overview selection), the pixels GDAL 3.13 reads, in the raster's type, and the masks, as the
+overview selection), the pixels the recorded `gdal_version` reads, in the raster's type, and the masks, as the
 hexadecimal of their little-endian bytes. Pixels of several bands are read through the dataset
 (`GDALDatasetRasterIOEx`, as rasterio reads them), a band alone through the band, and masks through
 `GetMaskBand()` with the same window, size and resampling. A selection other than `AUTO` is read
@@ -24,6 +24,11 @@ rasterio give GDAL the same integer window. Needs GDAL's Python bindings (exactl
 With `--check-rasterio`, the files and `expected.json.gz` are only read: each `AUTO` case is compared
 with rasterio's `read(window=..., out_shape=..., resampling=...)` and `read_masks`, which needs
 rasterio rather than GDAL's bindings.
+
+Generation requires GDAL 3.13.3 and refreshes only the mixed-metadata and masked external
+fixtures plus the mixed internal fixture. Existing GDAL 3.13.2 cases and their TIFFs are kept
+unchanged. Every case records its oracle version; reproducing the historical cases requires
+that version and the generator from their original commit.
 """
 
 from __future__ import annotations
@@ -32,6 +37,8 @@ import argparse
 import gzip
 import json
 import sys
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -224,6 +231,15 @@ def write_files(gdal: Any) -> list[dict[str, Any]]:
     ds = None
     cases += [case(name, (31, 27)), case(name, (26, 22), resampling="bilinear"),
               case(name, (20, 17), resampling="cubic")]
+    # Internal mixed markers follow the same per-candidate exclusion rule.
+    name = "mixed_internal_overviews.tif"
+    ds = tiff(name, gdal.GDT_Byte, np.ones((1, 64, 64), dtype=np.uint8))
+    ds.BuildOverviews("AVERAGE", [2, 4])
+    ds.GetRasterBand(1).GetOverview(0).Fill(10)
+    ds.GetRasterBand(1).GetOverview(1).Fill(20)
+    ds.GetRasterBand(1).GetOverview(1).SetMetadataItem("RESAMPLING", "AVERAGE_BIT2GRAYSCALE")
+    ds = None
+    cases += [case(name, (16, 16), resampling=m) for m in ("nearest", "bilinear", "cubic")]
     # External overviews with dataset masks: invalid samples must affect interpolation after
     # the second level selection, including for shared readers.
     name = "masked_external_overviews.tif"
@@ -399,6 +415,7 @@ def check_rasterio(expected: list[dict[str, Any]]) -> int:
 
 
 def main() -> int:
+    global OUT
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--check-rasterio", action="store_true")
     args = parser.parse_args()
@@ -413,9 +430,25 @@ def main() -> int:
     if gdal.__version__ != "3.13.3":
         print(f"GDAL 3.13.3 is the pinned generator reference, not {gdal.__version__}", file=sys.stderr)
         return 1
-    cases = write_files(gdal)
-    rasterio_like = RasterIO(gdal)
-    expected = [gdal_case(gdal, rasterio_like, c) for c in cases]
+    destination = OUT
+    reference = destination / "expected.json.gz"
+    if not reference.is_file():
+        parser.error("historical expected.json.gz is required; restore the checked-in fixtures first")
+    refreshed = {"mixed_external_overviews.tif", "masked_external_overviews.tif", "mixed_internal_overviews.tif"}
+    previous = json.loads(gzip.decompress(reference.read_bytes()))
+    expected = [dict(c, gdal_version=c.get("gdal_version", "3.13.2")) for c in previous if c["file"] not in refreshed]
+    # Generate into scratch space: old TIFFs and their historical oracle values are never rewritten.
+    with tempfile.TemporaryDirectory(prefix="terrio-fixtures-") as temporary:
+        OUT = Path(temporary)
+        try:
+            cases = [c for c in write_files(gdal) if c["file"] in refreshed]
+            rasterio_like = RasterIO(gdal)
+            expected += [dict(gdal_case(gdal, rasterio_like, c), gdal_version=gdal.__version__) for c in cases]
+            for name in sorted(refreshed):
+                for generated in OUT.glob(name + "*"):
+                    shutil.copyfile(generated, destination / generated.name)
+        finally:
+            OUT = destination
     text = json.dumps(expected, separators=(",", ":")) + "\n"
     (OUT / "expected.json.gz").write_bytes(gzip.compress(text.encode(), mtime=0))
     print(f"{len(expected)} cases in {OUT / 'expected.json.gz'}")

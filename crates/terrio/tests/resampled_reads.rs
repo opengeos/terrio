@@ -1,6 +1,7 @@
 //! Reads into outputs of other sizes (`LazyRaster::read_resampled` and its masks) of the rasters
 //! of `tests/data/resampled_reads`, against what GDAL 3.13.2 reads of them
-//! (the mixed-metadata and masked external cases use GDAL 3.13.3)
+//! (the mixed-metadata internal/external and masked external cases use GDAL 3.13.3;
+//! each case records `gdal_version`)
 //! (`scripts/make_resampled_reads_fixtures.py`): pixels through `RasterIO` (the dataset's for
 //! several bands, as rasterio reads them, the band's for one) and masks through `GetMaskBand()`,
 //! or, for a level read alone, the pixels `gdal_translate -ovr` writes. Values are compared bit
@@ -140,7 +141,7 @@ fn difference(read: &[f64], expected: &[f64], float: bool, case: &Case) -> Optio
 fn resampled_reads_are_gdal_reads() {
     terrio::config::push_scope([("TERRIO_GDAL_COMPAT".to_string(), Some("3.13".to_string()))].into());
     let cases = cases();
-    assert_eq!(cases.len(), 255);
+    assert_eq!(cases.len(), 258);
     let mut failures = Vec::new();
     for case in &cases {
         let mut raster = terrio::open_raster_lazy(&case.path()).unwrap();
