@@ -3905,12 +3905,14 @@ Types are `string`, `integer`, `number`, `boolean`, `path` or
 parsers whose result type is not recognized report `unknown`.
 
 `conflicts_with` lists the `name` values (clap argument ids) of the other arguments
-of the same command that clap rejects together with this one. Match it against
-`name`, not `long`: the two differ for many flags (`name` `dst_crs`, `long`
-`dst-crs`). Each declared pair is listed on both sides, so `rasterize` `tr` and
-`ts` each name the other.
-Known limits: `requires` is not reported, because clap 4.6 exposes no accessor for
-it, and a hand-written table would drift from the clap definitions (G16 follow-up).
+of the same command that clap rejects together with this one, including arguments
+mutually exclusive through an exclusive argument group (such as `vector-clip`'s
+`bbox`, `geometry` and `like`). Match it against `name`, not `long`: the two differ
+for many flags (`name` `dst_crs`, `long` `dst-crs`). Each declared pair is listed on
+both sides, so `rasterize` `tr` and `ts` each name the other.
+Known limits: `requires` is not reported, because clap 4.6 exposes no public
+accessor for it, and a hand-written table would drift from the clap definitions
+(left for a future clap release or dedicated macro tracking).
 Predicate forms such as `requires_if` are not reported either; no command uses
 them today. Relations are descriptive only, and parsing rules do not change.
 
