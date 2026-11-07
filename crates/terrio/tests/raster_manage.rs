@@ -564,3 +564,32 @@ fn refresh_rejects_a_malformed_bounding_box_before_writing() {
     }
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }
+
+/// Directory failure is detected before computing external levels (GDAL 3.13.3 reference).
+#[cfg(unix)]
+#[test]
+fn external_overview_directory_failure_precedes_computation() {
+    use std::os::unix::fs::PermissionsExt;
+    use terrio::ops::overview::add_overviews_with_progress;
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "readonly-dir.tif", &sample(256, 192), &tiled());
+    let permissions = std::fs::metadata(dir.path()).unwrap().permissions();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let mut seen = Vec::new();
+    let result = add_overviews_with_progress(
+        &path,
+        &OverviewOptions { levels: vec![2, 4], external: true, ..Default::default() },
+        &mut |fraction| {
+            seen.push(fraction);
+            true
+        },
+    );
+    std::fs::set_permissions(dir.path(), permissions).unwrap();
+    // Root can write through mode bits; ordinary users must fail before any computed progress.
+    if result.is_err() {
+        assert_eq!(seen, vec![0.0]);
+        assert!(!std::path::Path::new(&format!("{path}.ovr")).exists());
+    } else {
+        assert_eq!(unsafe { libc::geteuid() }, 0, "{seen:?}");
+    }
+}

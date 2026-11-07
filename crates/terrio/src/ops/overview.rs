@@ -236,10 +236,10 @@ pub fn add_overviews(path: &str, options: &OverviewOptions) -> Result<Vec<(usize
 /// [`add_overviews`], reporting its progress to `progress`, which can cancel it.
 ///
 /// `progress` gets the fraction done, which never decreases: 0 before the overviews are computed,
-/// then the share of the work done (the pixels read and the overview pixels computed and
-/// encoded), and 1 once every overview is computed and encoded, before the file is published.
-/// Returning `false` cancels: [`Error::Cancelled`] is returned and no file is changed (an existing `.ovr` stays as
-/// it was). A call that has nothing to compute gets 0 and 1.
+/// then an estimate of the work done, and 1 once every overview is computed and encoded, before
+/// the file is published. Streaming progress averages the jobs' output-row fractions within
+/// each pass. Returning `false` cancels: [`Error::Cancelled`] is returned and no file is changed
+/// (an existing `.ovr` stays as it was). A call that has nothing to compute gets 0 and 1.
 pub fn add_overviews_with_progress(
     path: &str,
     options: &OverviewOptions,
@@ -288,21 +288,18 @@ fn add_overviews_reporting(path: &str, options: &OverviewOptions, report: &mut R
         }
         let compression = options.compression.as_deref().unwrap_or("NONE");
         let main_dir = &main.dirs[images(&main).main.unwrap_or(0)];
-        let levels = build_new_levels(
-            &mut src,
-            main_dir,
-            &sizes,
-            method,
-            compression,
-            options.compression.is_some(),
-            existing.as_ref().map(|t| t.dirs.as_slice()),
-            report,
-        )?;
-        drop(src);
-        let mut all_sizes = sizes;
+        let mut all_sizes = sizes.clone();
+        // Open the same publication temporary before computing the pyramid: an unwritable
+        // directory must fail before expensive work, without a separate preflight file.
+        let build = |previous: Option<&[Directory]>| {
+            let levels = build_new_levels(&mut src, main_dir, &sizes, method, compression, options.compression.is_some(), previous, report);
+            drop(src);
+            levels
+        };
         if let Some(existing) = existing {
             all_sizes.extend(existing.dirs.iter().filter(|d| d.is_overview() && !d.is_mask()).map(Directory::size));
             gtiff_update::update_file(&ovr, |f| {
+                let levels = build(Some(&existing.dirs))?;
                 let mut a = Appender::new(f, existing.big)?;
                 let mut dirs = existing.dirs;
                 for img in levels {
@@ -317,7 +314,7 @@ fn add_overviews_reporting(path: &str, options: &OverviewOptions, report: &mut R
                 a.finish(&dirs)
             })?;
         } else {
-            gtiff_update::replace_file(&ovr, |f| write_ovr(f, levels, main_dir))?;
+            gtiff_update::replace_file(&ovr, |f| write_ovr(f, build(None)?, main_dir))?;
         }
         return Ok(sorted_sizes(all_sizes));
     }
@@ -996,9 +993,9 @@ type Parts = Vec<(Option<RasterData>, Option<Vec<u8>>)>;
 /// computed from full resolution is computed in that pass, chunk by chunk, so that the image is
 /// never held whole. The other levels are computed from the previous level, held in memory.
 ///
-/// `report` gets the fraction done, by pixels: those of each source a pass of [`run_jobs`] reads
-/// (the full-resolution image, or a previous level), and those of each level `each` takes. It
-/// gets 1 once `each` has taken the last level.
+/// `report` gets a work estimate: passes and encoded levels are weighted by pixel count,
+/// while progress within a streaming pass averages its jobs' output-row fractions. It gets 1
+/// once `each` has taken the last level.
 fn whole_levels(
     srcs: &mut Sources,
     levels: &[WholeLevel],
