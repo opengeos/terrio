@@ -1,7 +1,7 @@
 //! A read-only SQLite reader that reads pages from the file as it needs them, so that the
 //! feature tables of GeoPackages larger than memory are read a leaf page at a time.
 
-use crate::drivers::sqlite::{self, Db, SchemaEntry, Table, Value, bad, varint};
+use crate::drivers::sqlite::{self, SchemaEntry, Table, Value, bad, varint};
 use crate::drivers::vector::gpkg_read::Tables;
 use crate::{Error, Result};
 use std::io::{Read, Seek, SeekFrom};
@@ -13,6 +13,7 @@ pub(crate) struct FileDb {
     page_size: usize,
     usable: usize,
     pages: u64,
+    encoding: u32,
     schema: Vec<SchemaEntry>,
 }
 
@@ -38,12 +39,19 @@ impl FileDb {
         // SQLite requires at least 480 usable bytes a page.
         let usable = page_size.checked_sub(h[20] as usize).filter(|&u| u >= 480).ok_or_else(|| bad("invalid reserved space"))?;
         let len = file.metadata()?.len();
-        let mut db = Self { file: Mutex::new(file), page_size, usable, pages: len / page_size as u64, schema: Vec::new() };
+        let mut db = Self {
+            file: Mutex::new(file),
+            page_size,
+            usable,
+            pages: len / page_size as u64,
+            encoding: sqlite::text_encoding(u32::from_be_bytes([h[56], h[57], h[58], h[59]])),
+            schema: Vec::new(),
+        };
         let mut entries = Vec::new();
         let mut cursor = db.cursor(1);
         while let Some(rows) = cursor.next_leaf(&db)? {
             for (_, payload) in rows {
-                let r = Db::record_values(&payload);
+                let r = db.decode_record(&payload)?;
                 let text = |i: usize| r.get(i).and_then(Value::as_str).unwrap_or_default().to_string();
                 entries.push((text(0), text(1), text(2), r.get(3).and_then(Value::as_i64).unwrap_or(0) as u32, text(4)));
             }
@@ -95,6 +103,11 @@ impl FileDb {
     /// A cursor over the rows of the table b-tree rooted at `root`, in rowid order.
     pub(crate) fn cursor(&self, root: u32) -> Cursor {
         Cursor { stack: vec![vec![root].into_iter()] }
+    }
+
+    /// Decodes a record for reading, as [`crate::drivers::sqlite::Db::decode_record`] does.
+    pub(crate) fn decode_record(&self, payload: &[u8]) -> Result<Vec<Value>> {
+        crate::drivers::sqlite_repack::decode_record_lossy(payload, self.encoding)
     }
 
     /// The root page and `CREATE TABLE` statement of a rowid table.
@@ -187,7 +200,7 @@ impl Tables for FileDb {
         let mut cursor = self.cursor(root);
         while let Some(leaf) = cursor.next_leaf(self)? {
             for (rowid, payload) in leaf {
-                rows.push(row_values(&payload, rowid, columns.len(), rowid_col));
+                rows.push(row_values(self, &payload, rowid, columns.len(), rowid_col)?);
             }
         }
         Ok(Table { columns, rows })
@@ -242,15 +255,15 @@ impl Tables for FileDb {
     }
 }
 
-/// A row's values from its record, as [`Db::table`] gives them: padded to the table's columns,
+/// A row's values from its record, as [`crate::drivers::sqlite::Db::table`] gives them: padded to the table's columns,
 /// the rowid alias column filled in.
-pub(crate) fn row_values(payload: &[u8], rowid: i64, columns: usize, rowid_col: Option<usize>) -> Vec<Value> {
-    let mut v = Db::record_values(payload);
+pub(crate) fn row_values(db: &FileDb, payload: &[u8], rowid: i64, columns: usize, rowid_col: Option<usize>) -> Result<Vec<Value>> {
+    let mut v = db.decode_record(payload)?;
     v.resize(columns.max(v.len()), Value::Null);
     if let Some(c) = rowid_col
         && v[c] == Value::Null
     {
         v[c] = Value::Int(rowid);
     }
-    v
+    Ok(v)
 }

@@ -190,3 +190,33 @@ fn streaming_preserves_shapes_without_dbf_records() {
         }
     }
 }
+
+/// A deep live-feature page crosses the bounded DBF scan buffer, retaining row pairing.
+#[test]
+fn ranged_flags_cross_buffer_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("buffered.shp");
+    let path = path.to_str().unwrap();
+    let mut layer = Layer::new("buffered");
+    layer.add_field(FieldDef::new("id", FieldType::Integer));
+    for i in 0..10_000 {
+        layer.push(Feature { fid: i, geometry: Some(Geometry::point(i as f64, 0.0)), attributes: vec![FieldValue::Integer(i as i64)] });
+    }
+    terrio::write_vector(&[layer], path, &Default::default()).unwrap();
+    let original = std::fs::read(std::path::Path::new(path).with_extension("dbf")).unwrap();
+    delete(path, &original, &(0..10_000).step_by(10).collect::<Vec<_>>());
+    for indexed in [true, false] {
+        if !indexed {
+            std::fs::remove_file(std::path::Path::new(path).with_extension("shx")).unwrap();
+        }
+        let page =
+            terrio::open_vector(path, &VectorOpenOptions { skip_features: 8000, max_features: Some(3), ..Default::default() }).unwrap();
+        let expected: Vec<u64> = (0..10_000).filter(|i| i % 10 != 0).skip(8000).take(3).collect();
+        for (feature, fid) in page.layers[0].features.iter().zip(&expected) {
+            assert_eq!(feature.fid, *fid);
+            assert_eq!(feature.attributes, vec![FieldValue::Integer(*fid as i64)]);
+            assert_eq!(feature.geometry, Some(Geometry::point(*fid as f64, 0.0)));
+        }
+        assert_eq!(page.layers[0].features.len(), expected.len());
+    }
+}

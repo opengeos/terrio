@@ -172,7 +172,7 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
             let l = dbf_layout(&header, cpg.as_deref())?;
             let held = (len as usize).saturating_sub(l.header_len) / l.record_len.max(1);
             let total = if l.record_len == 0 { 0 } else { l.count.min(held) };
-            (l.fields.clone(), total, Some((f, l)))
+            (l.fields.clone(), total, Some((std::io::BufReader::with_capacity(64 * 1024, f), l)))
         }
         None => (Vec::new(), 0, None),
     };
@@ -186,16 +186,19 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
     let mut content = Vec::new();
     let mut record = Vec::new();
     let mut skipped = 0;
+    let mut dbf_position = dbf.as_ref().map_or(0, |(_, l)| l.header_len);
     for fid in 0..n {
         if max.is_some_and(|m| layer.features.len() >= m) {
             break;
         }
         let mut flag = *b" ";
         if let Some((f, l)) = dbf.as_mut().filter(|_| fid < dbf_total) {
-            // Fixed-stride unbuffered reads avoid pulling skipped attribute bytes into a
-            // BufReader on deep pages. Only selected live rows read the rest of the record.
-            f.seek(SeekFrom::Start((l.header_len + fid * l.record_len) as u64))?;
+            // Skip within a bounded buffer when records are small, avoiding a seek/read pair
+            // per slot. Large strides still seek without reading skipped attribute payloads.
+            let position = l.header_len + fid * l.record_len;
+            f.seek_relative((position - dbf_position) as i64)?;
             f.read_exact(&mut flag)?;
+            dbf_position = position + 1;
             if flag[0] == b'*' {
                 continue;
             }
@@ -212,6 +215,7 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
             }
             record[0] = flag[0];
             f.read_exact(&mut record[1..])?;
+            dbf_position += record.len() - 1;
             l.record(&record)
         } else {
             // Missing DBF slots are live shapes with null attributes, not deletions.

@@ -295,7 +295,7 @@ impl Checker {
         if pyramids.is_empty() {
             return Ok(());
         }
-        let text_encoding = u32::from_be_bytes(bytes[56..60].try_into().expect("snapshot checked header"));
+        let text_encoding = crate::drivers::sqlite::header_text_encoding(bytes)?;
         sqlite_repack::inspect(bytes, |entry, rowid, record| {
             if entry.0 != "table" {
                 return Ok(());
