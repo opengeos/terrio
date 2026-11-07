@@ -2,14 +2,10 @@
 
 ## Unreleased
 
-- External overviews are built, refreshed and deleted beside a read-only GeoTIFF, as
-  `gdaladdo -ro` builds them (#612): `add_overviews`, `refresh_overviews` and `delete_overviews`
-  with `external` (and `terrio overviews --external`) write only the `.ovr` sidecar and no longer
-  refuse a file that cannot be written. Internal overviews still need a writable file.
-- `add_overviews_with_progress` (Rust) and `add_overviews(..., progress=callback)` (Python) report
-  the fraction of the overviews computed, from 0 to 1 and never decreasing, to a callback that can
-  cancel (#612). A cancellation returns `Error::Cancelled` (Python
-  `terrio.errors.CancelledError`) and changes no file: an existing `.ovr` stays as it was.
+- Native FlatGeobuf readers reject incomplete records, mismatched nonzero feature counts and
+  invalid coordinate dimensions/part bounds. GDAL-enabled eager reads retain GDAL fallback
+  admission behavior; native range and stream checks apply in either build.
+
 - Python's `Raster.read_resampled`, `read_resampled_masks` and `read_resampled_with_masks`, and
   JavaScript's `readResampled`, `readResampledMasks` and `readResampledWithMasks` (on `Dataset`
   and, as promises, on `openUrl`'s `RemoteDataset`), read a window of some bands into an output
@@ -69,6 +65,14 @@
   their mask rows, which a refused call left queued. Once a block row of a GeoTIFF other than a
   COG fails to be written, the writer refuses more rows and `finish`, which could write a file
   missing it.
+- External overviews are built, refreshed and deleted beside a read-only GeoTIFF, as
+  `gdaladdo -ro` builds them (#612): `add_overviews`, `refresh_overviews` and `delete_overviews`
+  with `external` (and `terrio overviews --external`) write only the `.ovr` sidecar and no longer
+  refuse a file that cannot be written. Internal overviews still need a writable file.
+- `add_overviews_with_progress` (Rust) and `add_overviews(..., progress=callback)` (Python) report
+  the fraction of the overviews computed, from 0 to 1 and never decreasing, to a callback that can
+  cancel (#612). A cancellation returns `Error::Cancelled` (Python
+  `terrio.errors.CancelledError`) and changes no file: an existing `.ovr` stays as it was.
 - `terrio tile` (Python `terrio.raster_tiles`, JavaScript `rasterTiles`) builds each lower-zoom
   tile from the four tiles below it, as GDAL does, instead of rendering it from the source (#574).
   Tiles are generated depth first, with at most four tiles per zoom level in memory, and every

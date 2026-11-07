@@ -416,7 +416,8 @@ pub(crate) fn compact(bytes: &[u8]) -> Result<Vec<u8>> {
     let mut schema = Vec::new();
     source.tree(1, false, &mut schema, 0)?;
     if matches!(be(bytes, 68)?, 0x4750_4b47 | 0x4750_3130 | 0x4750_3131) {
-        let names = schema.iter().map(|(_, record)| schema_name(record, be(bytes, 56)?)).collect::<Result<Vec<_>>>()?;
+        let encoding = super::sqlite::header_text_encoding(bytes)?;
+        let names = schema.iter().map(|(_, record)| schema_name(record, encoding)).collect::<Result<Vec<_>>>()?;
         if ["gpkg_contents", "gpkg_spatial_ref_sys"].iter().any(|required| !names.iter().any(|name| name.eq_ignore_ascii_case(required))) {
             return Err(bad("GeoPackage base tables are missing"));
         }
@@ -589,38 +590,59 @@ impl MapSource<'_> {
 /// Decode an encoded SQLite record with the database's declared text encoding. Unlike the
 /// permissive display reader, validation reports truncated fields and invalid text.
 pub(crate) fn decode_record(record: &[u8], encoding: u32) -> Result<Vec<super::sqlite::Value>> {
+    decode(record, encoding, false)
+}
+
+/// As [`decode_record`], but invalid text becomes U+FFFD for display reads. This does not
+/// preserve raw SQLite text bytes. Malformed records remain errors.
+pub(crate) fn decode_record_lossy(record: &[u8], encoding: u32) -> Result<Vec<super::sqlite::Value>> {
+    decode(record, encoding, true)
+}
+
+fn decode(record: &[u8], encoding: u32, lossy: bool) -> Result<Vec<super::sqlite::Value>> {
     use super::sqlite::Value;
-    let layout = fields(record)?;
-    let mut values = super::sqlite::Db::record_values(record);
-    // SQLite exposes a stored NaN REAL as SQL NULL, including in view expressions.
-    for value in &mut values {
-        if matches!(value, Value::Real(number) if number.is_nan()) {
-            *value = Value::Null;
-        }
-    }
-    for (value, (serial, range)) in values.iter_mut().zip(layout) {
-        if serial >= 13 && serial % 2 == 1 {
-            let text = &record[range];
-            let decoded = match encoding {
-                1 => String::from_utf8(text.to_vec()).map_err(|_| bad("invalid UTF-8 record text"))?,
-                2 | 3 => {
-                    if !text.len().is_multiple_of(2) {
-                        return Err(bad("odd UTF-16 record length"));
+    fields(record)?
+        .into_iter()
+        .map(|(serial, range)| {
+            let bytes = &record[range];
+            Ok(match serial {
+                0 => Value::Null,
+                // Big-endian two's complement, 1 to 8 bytes.
+                1..=6 => Value::Int(bytes.iter().fold(if bytes[0] & 0x80 != 0 { -1 } else { 0 }, |v, b| (v << 8) | i64::from(*b))),
+                // SQLite exposes a stored NaN REAL as SQL NULL, including in view expressions.
+                7 => match f64::from_bits(u64::from_be_bytes(bytes.try_into().map_err(|_| bad("record real"))?)) {
+                    x if x.is_nan() => Value::Null,
+                    x => Value::Real(x),
+                },
+                8 => Value::Int(0),
+                9 => Value::Int(1),
+                serial if serial % 2 == 0 => Value::Blob(bytes.to_vec()),
+                _ => Value::Text(match encoding {
+                    1 if lossy => String::from_utf8_lossy(bytes).into_owned(),
+                    1 => std::str::from_utf8(bytes).map_err(|_| bad("invalid UTF-8 record text"))?.to_owned(),
+                    2 | 3 => {
+                        let (words, rest) = bytes.as_chunks::<2>();
+                        if !rest.is_empty() && !lossy {
+                            return Err(bad("odd UTF-16 record length"));
+                        }
+                        let units =
+                            words.iter().map(|pair| if encoding == 2 { u16::from_le_bytes(*pair) } else { u16::from_be_bytes(*pair) });
+                        let mut text = String::with_capacity(bytes.len());
+                        for unit in char::decode_utf16(units) {
+                            text.push(unit.or_else(|_| {
+                                if lossy { Ok(char::REPLACEMENT_CHARACTER) } else { Err(bad("invalid UTF-16 record text")) }
+                            })?);
+                        }
+                        if !rest.is_empty() {
+                            text.push(char::REPLACEMENT_CHARACTER);
+                        }
+                        text
                     }
-                    let words: Vec<_> = text
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|pair| if encoding == 2 { u16::from_le_bytes(*pair) } else { u16::from_be_bytes(*pair) })
-                        .collect();
-                    String::from_utf16(&words).map_err(|_| bad("invalid UTF-16 record text"))?
-                }
-                _ => return Err(bad("unknown text encoding")),
-            };
-            *value = Value::Text(decoded);
-        }
-    }
-    Ok(values)
+                    _ => return Err(bad("unknown text encoding")),
+                }),
+            })
+        })
+        .collect()
 }
 
 /// Inspect every encoded table/index and page owner without allocating a replacement image.
@@ -640,7 +662,7 @@ pub(crate) fn inspect(
     });
     let mut source = Source::validated(bytes)?;
     let (size, count) = (source.size, source.count);
-    let encoding = be(bytes, 56)?;
+    let encoding = super::sqlite::header_text_encoding(bytes)?;
     let mut encoded = Vec::new();
     source.tree(1, false, &mut encoded, 0)?;
     check_rowids(&encoded)?;
@@ -833,6 +855,19 @@ mod validation_tests {
         assert!(matches!(decode_record(&record,1).unwrap().as_slice(),[super::super::sqlite::Value::Real(number)] if number.is_infinite()));
     }
     #[test]
+    fn record_numbers_and_blobs_match_the_display_reader() {
+        use writer::Value;
+        let mut values = vec![Value::Null, Value::Real(-2.5), Value::Blob(vec![0, 255, 7]), Value::Text("é水".into())];
+        // Every integer width, at both ends of its range (serial types 1 to 6, 8 and 9).
+        for bits in [8, 16, 24, 32, 48, 64] {
+            let max = if bits == 64 { i64::MAX } else { (1i64 << (bits - 1)) - 1 };
+            values.extend([Value::Int(max), Value::Int(-max - 1)]);
+        }
+        values.extend([Value::Int(0), Value::Int(1)]);
+        let record = writer::record(&values);
+        assert_eq!(decode_record(&record, 1).unwrap(), super::super::sqlite::Db::record_values(&record));
+    }
+    #[test]
     fn adjacent_fragments_require_an_exact_bounded_total() {
         let mut page = vec![0u8; 512];
         page[0] = 13;
@@ -1003,6 +1038,28 @@ with sqlite3.connect(sys.argv[1]) as a, sqlite3.connect(sys.argv[2]) as b:
         odd[1] += 1;
         assert!(decode_record(&odd, 2).is_err());
         assert!(decode_record(&odd, 1).is_ok());
+    }
+    #[test]
+    fn lossy_record_text_replaces_invalid_text_only() {
+        use super::super::sqlite::Value as V;
+        use writer::Value;
+        let text = |bytes: Vec<u8>| {
+            let mut record = writer::record(&[Value::Blob(bytes)]);
+            record[1] += 1; // Blob serial type to text of the same length.
+            record
+        };
+        let replaced = |s: &str| [V::Text(s.into())];
+        assert_eq!(decode_record_lossy(&text(b"a\xffb".to_vec()), 1).unwrap(), replaced("a\u{fffd}b"));
+        // A lone high surrogate, then an odd trailing byte.
+        assert_eq!(decode_record_lossy(&text(vec![0x61, 0, 0, 0xd8, 0x62, 0]), 2).unwrap(), replaced("a\u{fffd}b"));
+        assert_eq!(decode_record_lossy(&text(vec![0, 0x61, 0xd8, 0, 0, 0x62, 7]), 3).unwrap(), replaced("a\u{fffd}b\u{fffd}"));
+        for (encoding, bytes) in [(1, vec![0xff]), (2, vec![0, 0xd8]), (3, vec![0xd8, 0])] {
+            assert!(decode_record(&text(bytes), encoding).is_err());
+        }
+        // Structure is still checked: a text length past the record's end.
+        let mut truncated = text(b"ab".to_vec());
+        truncated[1] += 2;
+        assert!(decode_record_lossy(&truncated, 1).is_err());
     }
 }
 

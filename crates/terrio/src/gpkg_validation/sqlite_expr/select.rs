@@ -336,7 +336,7 @@ impl View {
         budget: &ViewBudget,
         visitor: &mut dyn FnMut(&[Value]) -> Result<bool>,
     ) -> Result<()> {
-        let encoding = u32::from_be_bytes(bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header"))?);
+        let encoding = crate::drivers::sqlite::header_text_encoding(bytes)?;
         let (count, offset) = self.window.evaluate(encoding, db.unicode_case)?;
         if count == Some(0) {
             return Ok(());
