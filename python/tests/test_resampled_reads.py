@@ -3,7 +3,8 @@ resampling=...)` with kernels GDAL's `RasterIOResampled` applies.
 
 Each source is written by GDAL (through rasterio), and read by both with integer and fractional
 windows, at the window's size, down- and upsampled, and whole. Pixels and the masks of
-`masked=True` reads must be identical: no tolerance. Skipped without rasterio.
+`masked=True` reads must be identical: no tolerance, except the macOS arm64 FMA rounding cases
+listed in `FMA_ROUNDING_CASES`. Skipped without rasterio.
 """
 
 import platform
@@ -17,6 +18,8 @@ rasterio = pytest.importorskip("rasterio")
 from rasterio.enums import Resampling as RR  # noqa: E402
 from rasterio.transform import from_origin  # noqa: E402
 from rasterio.windows import Window as RW  # noqa: E402
+
+MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
 
 import terrio.rio as trio  # noqa: E402
 from terrio.rio.enums import Resampling as TR  # noqa: E402
@@ -184,15 +187,22 @@ CORE_READS = {
 }
 
 
-MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
 # rasterio's macOS arm64 wheel builds GDAL with fused multiply-adds (see FMA_SENSITIVE in
 # test_rio_vs_rasterio.py), which rounds the source coordinates and kernel weights of a 1100 x
 # 1500 upsample of a nodata-weighted source differently in the last bits: on macOS arm64 at most
-# 0.0029% of the pixels (48 of 1.65 million) differed, in six whole-up reads of the uint16 and
-# float32 sources with nodata. Linux and Windows agree with terrio exactly, and so does every other
-# read there. The share of pixels, and of mask values, each of these may differ by on macOS arm64.
+# 0.0029% of the pixels (48 of 1.65 million) differed, in the six whole-up reads below. Linux and
+# Windows agree with terrio exactly, and so does every other read on macOS arm64. On macOS arm64
+# each of these cases may differ from rasterio in at most FMA_ROUNDING_MAX_FRAC of the pixels,
+# and of the mask values.
 FMA_ROUNDING_MAX_FRAC = 1e-4
-FMA_ROUNDING_KINDS = {"u16-nodata", "f32-nodata"}
+FMA_ROUNDING_CASES = {
+    ("u16-nodata", "average"),
+    ("f32-nodata", "bilinear"),
+    ("f32-nodata", "cubic"),
+    ("f32-nodata", "cubic_spline"),
+    ("f32-nodata", "lanczos"),
+    ("f32-nodata", "average"),
+}
 
 
 @pytest.mark.parametrize("read", list(CORE_READS))
@@ -220,15 +230,8 @@ def test_raster_read_resampled_matches_rasterio(sources, kind, method, read):
     assert np.array_equal(both[1], bm)
     assert b.dtype == a.dtype and b.shape == a.shape
     same = (a == b) | (np.isnan(a) & np.isnan(b)) if a.dtype.kind == "f" else a == b
-    fma = (
-        MACOS_ARM
-        and read == "whole-up"
-        and kind in FMA_ROUNDING_KINDS
-        and method != "nearest"
-        and method != "mode"
-        and method != "rms"
-    )
-    max_frac = FMA_ROUNDING_MAX_FRAC if fma else 0.0
+    fma_tolerance = MACOS_ARM and read == "whole-up" and (kind, method) in FMA_ROUNDING_CASES
+    max_frac = FMA_ROUNDING_MAX_FRAC if fma_tolerance else 0.0
     assert np.mean(~same) <= max_frac, f"{np.mean(~same):.4%} of pixels differ"
     assert bm.dtype == np.uint8
     assert np.mean(am != bm) <= max_frac, f"{np.mean(am != bm):.4%} of the masks differ"
