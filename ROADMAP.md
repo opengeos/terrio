@@ -74,6 +74,9 @@ and drivers below.
 - [x] Overview-aware warping: explicit source overview selection, automatic selection for
       downsampling and a full-resolution override, reducing remote COG reads. Implemented in
       [#242](https://github.com/opengeos/terrio/pull/242), through Rust, CLI/MCP, Python and JavaScript.
+      Terrio’s area-scaled overview `sum` estimates (#637, #638) support AUTO/AUTO-n and
+      explicit levels; NONE keeps full-resolution sums. Estimates intentionally differ from
+      GDAL’s unscaled overview sums; partial cells and nodata can change values and validity.
 - [x] Overview-aware resampled window reads with GDAL `RasterIO` semantics
       ([#429](https://github.com/opengeos/terrio/issues/429)): the Rust read
       (`LazyRaster::read_resampled` and its masks) and `terrio translate --outsize/--tr/--overview`
