@@ -7,12 +7,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
+/// Builds the root clap command with parser tables ready for inspection.
 fn root() -> Command {
     let mut command = crate::Cli::command();
     command.build();
     command
 }
 
+/// Returns whether `command` is part of the exposed public command tree.
 fn exposed(command: &Command) -> bool {
     !matches!(command.get_name(), "mcp" | "ui" | "view" | "help")
 }
@@ -66,6 +68,7 @@ pub(crate) fn requested(args: &[OsString]) -> Option<Value> {
     }))
 }
 
+/// Recursively describes `command` and its subcommands as a JSON catalog object.
 fn describe(command: &Command, path: &[String]) -> Value {
     let mut children: Vec<_> =
         if path.len() == 1 { commands().collect() } else { command.get_subcommands().filter(|c| exposed(c)).cloned().collect() };
@@ -90,6 +93,7 @@ fn describe(command: &Command, path: &[String]) -> Value {
     })
 }
 
+/// Determines the schema type string for `arg` within the given command `path`.
 fn value_type(arg: &Arg, path: &[String]) -> &'static str {
     let id = arg.get_value_parser().type_id();
     if id == TypeId::of::<bool>()
@@ -135,9 +139,10 @@ fn value_type(arg: &Arg, path: &[String]) -> &'static str {
     }
 }
 
-/// Conflicts of each argument of `command`, keyed and listed by the catalog `name` (the clap id). clap
-/// records a conflict on one argument only, so both sides are recorded here. Only arguments
-/// of this command are listed.
+/// Conflicts of each argument of `command`, keyed and listed by the catalog `name` (the clap id).
+/// clap records a conflict on one argument only, and exclusive argument groups do not report
+/// member-to-member conflicts through `get_arg_conflicts_with`. Both directions and exclusive
+/// group pairs are recorded here. Only arguments of this command are listed.
 fn conflicts(command: &Command) -> BTreeMap<String, BTreeSet<String>> {
     let own: Vec<&Arg> = command.get_arguments().collect();
     let ids: BTreeSet<&str> = own.iter().map(|arg| arg.get_id().as_str()).collect();
@@ -151,9 +156,24 @@ fn conflicts(command: &Command) -> BTreeMap<String, BTreeSet<String>> {
             map.entry(other.get_id().as_str().to_string()).or_default().insert(arg.get_id().as_str().to_string());
         }
     }
+    for group in command.get_groups() {
+        if group.clone().is_multiple() {
+            continue;
+        }
+        let members: Vec<&str> = group.get_args().filter(|id| ids.contains(id.as_str())).map(|id| id.as_str()).collect();
+        for (i, &a) in members.iter().enumerate() {
+            for &b in &members[i + 1..] {
+                if a != b {
+                    map.entry(a.to_string()).or_default().insert(b.to_string());
+                    map.entry(b.to_string()).or_default().insert(a.to_string());
+                }
+            }
+        }
+    }
     map
 }
 
+/// Builds the catalog argument JSON representation for `arg`.
 fn argument(arg: &Arg, path: &[String], conflicts: &BTreeMap<String, BTreeSet<String>>) -> Value {
     let range = arg.get_num_args().unwrap_or_else(|| if arg.get_action().takes_values() { 1.into() } else { 0.into() });
     let max = range.max_values();
