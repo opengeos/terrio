@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 use flatbuffers::FlatBufferBuilder;
 use flatgeobuf::{Feature as FgbFeature, FeatureArgs, Geometry as FgbGeometry, GeometryArgs, GeometryType as FgbType, Header, HeaderArgs};
