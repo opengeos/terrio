@@ -119,9 +119,10 @@ READ_VARIANTS = {
 }
 
 # Test rasters whose CRS a format's GDAL round trip does not keep, so that GDAL's reading is no
-# reference: GDAL reads an ENVI header's US survey feet (`units=Feet`) as international feet, an
-# RST State Plane system (`SPC83NY4`, in feet) back in metres (EPSG:32118), and an ERS MGA zone
-# (`MGA55`) as a UTM CRS without its datum. terrio reads no CRS from these RST and ERS systems.
+# reference for the CRS (their other properties are still compared): GDAL reads an ENVI header's US
+# survey feet (`units=Feet`) as international feet, an RST State Plane system (`SPC83NY4`, in feet)
+# back in metres (EPSG:32118), and an ERS MGA zone (`MGA55`) as a UTM CRS without its datum. terrio
+# reads no CRS from these RST and ERS systems.
 CRS_NOT_KEPT = {("ENVI", "int16_ftus"), ("RST", "int16_ftus"), ("ERS", "float32_mga55")}
 
 # GDAL driver name -> terrio format name for writing.
@@ -361,8 +362,9 @@ def check_format(fmt, sources, tmp):
     ext, co, _, _, lossy, writable = FORMATS[fmt]
     results = {"read": [], "write": []}
     for name, src, dtype, bands in sources:
-        if not fits(fmt, dtype, bands) or (fmt not in ("GTiff", "COG") and name == "float32_big") or (fmt, name) in CRS_NOT_KEPT:
+        if not fits(fmt, dtype, bands) or (fmt not in ("GTiff", "COG") and name == "float32_big"):
             continue
+        check_crs = (fmt, name) not in CRS_NOT_KEPT
         src_ds = gdal.Open(src)
         # GDAL writes, terrio reads.
         for r, read_co in enumerate([co] + READ_VARIANTS.get(fmt, [])):
@@ -377,8 +379,8 @@ def check_format(fmt, sources, tmp):
                 if err:
                     results["read"].append((label, [f"terrio: {err}"]))
                 else:
-                    diffs = compare(gdal_open(g_path), gdal.Open(t_tif), lossy=3 if lossy else 0)
-                    exported = exported_crs_differs(g_path)
+                    diffs = compare(gdal_open(g_path), gdal.Open(t_tif), lossy=3 if lossy else 0, check_crs=check_crs)
+                    exported = exported_crs_differs(g_path) if check_crs else None
                     results["read"].append((label, diffs + [exported] if exported else diffs))
             except RuntimeError as e:
                 results["read"].append((label, [f"GDAL cannot write it: {e}"]))
@@ -403,6 +405,7 @@ def check_format(fmt, sources, tmp):
                     src_ds,
                     gdal.Open(t_path),
                     lossy=64 if variant_lossy else 0,
+                    check_crs=check_crs,
                     check_nodata=fmt not in NO_NODATA,
                     check_type=fmt not in NO_TYPE,
                     type_changes=None if "FORMAT=NC4" in variant else TYPE_CHANGES.get(fmt),
