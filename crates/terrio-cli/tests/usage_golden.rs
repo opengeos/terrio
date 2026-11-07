@@ -31,6 +31,7 @@ fn catalog_digest(mut catalog: Value) -> String {
     Sha256::digest(text.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Compares the current `--json-usage` canonical digest against the recorded SHA-256 golden constant.
 #[test]
 fn usage_catalog_matches_recorded_digest() {
     let output =

@@ -224,6 +224,8 @@ fn argument(arg: &Arg, path: &[String], conflicts: &BTreeMap<String, BTreeSet<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs `terrio` with `args` on a dedicated thread with the CLI's standard stack size.
     fn usage(args: &[&str]) -> Option<Value> {
         std::thread::scope(|scope| {
             std::thread::Builder::new()
@@ -345,6 +347,7 @@ mod tests {
         assert_eq!(profile["choices"], json!(["rio-cogeo", "gdal"]));
     }
 
+    /// Verifies that repeatable status accurately tracks clap Append and Count actions.
     #[test]
     fn repeatable_follows_clap_occurrence_rules() {
         let result = usage(&["terrio", "warp", "--json-usage"]).unwrap();
@@ -364,6 +367,7 @@ mod tests {
         assert_eq!(catalog_argument(args, "tap")["repeatable"], false);
     }
 
+    /// Verifies that both sides of declared argument conflicts and exclusive group members are listed.
     #[test]
     fn conflicts_with_lists_both_sides_of_a_declared_pair() {
         // `ts` declares `conflicts_with = "tr"` in clap; `like` declares `conflicts_with_all`
@@ -384,8 +388,10 @@ mod tests {
         assert_eq!(catalog_argument(args, "like")["conflicts_with"], json!(["bbox", "geometry"]));
     }
 
+    /// Verifies that `conflicts_with` is symmetric and refers only to arguments defined on the command.
     #[test]
     fn conflicts_with_is_symmetric_and_names_existing_arguments() {
+        /// Recursively verifies conflict symmetry for all arguments in `command` and its subcommands.
         fn check(command: &Value) {
             let args = command["arguments"].as_array().unwrap();
             let identifier = |a: &Value| a["name"].as_str().unwrap().to_string();
