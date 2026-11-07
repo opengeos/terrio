@@ -654,7 +654,7 @@ impl Approx<'_> {
 pub(crate) fn suggested_output(ds: &RasterDataset, dst: &SpatialRef) -> Result<([f64; 6], usize, usize, [f64; 4])> {
     let src = ds.crs();
     let t = GenImgProj::new(ds.geo_transform(), &src, dst)?;
-    suggested_warp_output(&t, ds.raster.cols, ds.raster.rows, &src, dst)
+    suggested_warp_output(&t, ds.raster.cols, ds.raster.rows, &src, dst, false)
 }
 
 /// The output grid GDAL suggests (`GDALSuggestedWarpOutput2()`) for a raster of `width` x
@@ -674,7 +674,7 @@ pub fn suggested_grid(width: usize, height: usize, gt: [f64; 6], src: &SpatialRe
         return Err(Error::InvalidArgument("the source raster is empty".into()));
     }
     let t = GenImgProj::new(gt, src, dst)?;
-    let (gt, w, h, _) = suggested_warp_output(&t, width, height, src, dst)?;
+    let (gt, w, h, _) = suggested_warp_output(&t, width, height, src, dst, false)?;
     Ok((gt, w, h))
 }
 
@@ -695,7 +695,7 @@ pub fn suggested_grid_gcps(
     }
     let g = super::gcp::GcpTransformer::new(gcps, method, order)?;
     let t = GenImgProj::with_gcps(src, dst, g)?;
-    let (gt, w, h, _) = suggested_warp_output(&t, width, height, src, dst)?;
+    let (gt, w, h, _) = suggested_warp_output(&t, width, height, src, dst, false)?;
     Ok((gt, w, h))
 }
 
@@ -718,19 +718,24 @@ pub fn suggested_grid_rpc(
     let r = super::rpc::RpcTransformer::new(rpc, options)?;
     let src = SpatialRef::from_epsg(4326)?;
     let t = GenImgProj::with_georef(&src, dst, Georef::Rpc(std::sync::Arc::new(r)))?;
-    let (gt, w, h, _) = suggested_warp_output(&t, width, height, &src, dst)?;
+    let (gt, w, h, _) = suggested_warp_output(&t, width, height, &src, dst, false)?;
     Ok((gt, w, h))
 }
 
 /// GDAL's `GDALSuggestedWarpOutput2()`: the extent of the transformed source and a square pixel
 /// size that keeps the number of pixels along the diagonal. Returns the geotransform, the size and
 /// the extent `[min_x, min_y, max_x, max_y]`.
+///
+/// `round_up` is GDAL's `GDAL_SWO_ROUND_UP_SIZE`, which `gdalwarp -r sum` passes so that the
+/// output covers every source pixel: the size is `ceil(n - 1e-5)` rather than `n` rounded to the
+/// nearest (GDAL 3.13.0).
 fn suggested_warp_output(
     t: &GenImgProj,
     w: usize,
     h: usize,
     src_srs: &SpatialRef,
     dst_srs: &SpatialRef,
+    round_up: bool,
 ) -> Result<([f64; 6], usize, usize, [f64; 4])> {
     let (wf, hf) = (w as f64, h as f64);
     if t.ct.is_none() && t.src_gt[2] == 0.0 && t.src_gt[4] == 0.0 && t.src_gcp.is_none() && t.dst_gt == IDENTITY {
@@ -905,8 +910,9 @@ fn suggested_warp_output(
     }
     let diagonal = (ddx * ddx + ddy * ddy).sqrt();
     let pixel = diagonal / (wf * wf + hf * hf).sqrt();
-    let pixels = ((maxx - minx) / pixel + 0.5) as usize;
-    let lines = ((maxy - miny) / pixel + 0.5) as usize;
+    let size = |n: f64| if round_up { (n - 1e-5).ceil() as usize } else { (n + 0.5) as usize };
+    let pixels = size((maxx - minx) / pixel);
+    let lines = size((maxy - miny) / pixel);
     if pixels == 0 || lines == 0 {
         return Err(Error::InvalidData("the computed output size is empty".into()));
     }
@@ -1020,7 +1026,7 @@ fn output_grid(sources: &[Source], dst_srs: &SpatialRef, o: &WarpOptions, te: Op
         }
         let (mut gt, mut ext) = ([0.0; 6], [0.0; 4]);
         if needs_suggested {
-            let (g, _, _, e) = suggested_warp_output(&t, s.grid.width, s.grid.height, &s.srs, dst_srs)?;
+            let (g, _, _, e) = suggested_warp_output(&t, s.grid.width, s.grid.height, &s.srs, dst_srs, o.resampling == Resampling::Sum)?;
             (gt, ext) = (g, e);
         }
         let sgt = s.grid.geo_transform;
@@ -1441,7 +1447,8 @@ impl<'a> Plan<'a> {
                 ((maxx - minx) / self.grid.width as f64).min((maxy - miny) / self.grid.height as f64)
             } else {
                 let source = &self.srcs[k];
-                let (natural, _, _, _) = suggested_warp_output(&t, source.grid.width, source.grid.height, &source.srs, &self.dst_srs)?;
+                let (natural, _, _, _) =
+                    suggested_warp_output(&t, source.grid.width, source.grid.height, &source.srs, &self.dst_srs, false)?;
                 1.0 / natural[1].abs()
             }
         } else {
@@ -1490,7 +1497,7 @@ impl<'a> Plan<'a> {
         if !o.rpc_output_window || k != 0 {
             return Some((0, 0, w as usize, h as usize));
         }
-        let Ok((_, _, _, e)) = suggested_warp_output(t, s.grid.width, s.grid.height, &s.srs, &self.dst_srs) else {
+        let Ok((_, _, _, e)) = suggested_warp_output(t, s.grid.width, s.grid.height, &s.srs, &self.dst_srs, false) else {
             return Some((0, 0, w as usize, h as usize));
         };
         let limit = i32::MAX as f64 / 2.0;
@@ -5077,6 +5084,36 @@ mod tests {
                         out.raster.cols,
                         out.raster.rows
                     );
+                }
+            }
+        }
+    }
+
+    /// Without a size, a resolution or an extent, `sum` rounds the suggested output's size up, as
+    /// `gdalwarp -r sum` asks `GDALSuggestedWarpOutput2()` to (`GDAL_SWO_ROUND_UP_SIZE`): the
+    /// output covers the whole source and keeps its total. Rounded to the nearest, the last row
+    /// (and column) of these outputs was missing, and with them part of the total. Sizes and
+    /// totals are those of GDAL 3.13.3 for the same 41 x 37 Float32 UTM 15N raster.
+    #[test]
+    fn sum_rounds_the_suggested_size_up_to_cover_the_whole_source() {
+        let ds = raster(41, 37, [100.0, 10.0, 0.0, 500.0, 0.0, -10.0], 32615, |c, r| ((c * 7 + r * 13) % 50) as f64 + 0.25);
+        let total = 37537.25;
+        assert_eq!(ds.raster.data.to_f64_vec().iter().sum::<f64>(), total);
+        for (epsg, sum_size, near_size, origin) in [
+            (4326, (41, 38), (41, 37), (-97.48784799800276, 0.004509716313918138)),
+            (32616, (42, 38), (41, 37), (-673652.1899873905, 506.9841153833499)),
+            (3857, (41, 38), (41, 37), (-10852297.59766972, 502.0193242058349)),
+        ] {
+            let dst = SpatialRef::from_epsg(epsg).unwrap();
+            for (resampling, size) in [(Resampling::Sum, sum_size), (Resampling::Nearest, near_size)] {
+                let o = WarpOptions { dst_srs: Some(dst.clone()), resampling, output_type: Some(DataType::F64), ..Default::default() };
+                let out = warp(&[&ds], &o).unwrap();
+                assert_eq!((out.raster.cols, out.raster.rows), size, "EPSG:{epsg} {resampling:?}");
+                let gt = out.geo_transform();
+                assert!((gt[0] - origin.0).abs() <= 1e-9 * origin.0.abs() && (gt[3] - origin.1).abs() <= 1e-9, "EPSG:{epsg}: {gt:?}");
+                if resampling == Resampling::Sum {
+                    let sum: f64 = out.raster.data.to_f64_vec().iter().filter(|v| **v != -9999.0).sum();
+                    assert!(((sum - total) / total).abs() < 1e-9, "EPSG:{epsg}: {sum}, not {total}");
                 }
             }
         }

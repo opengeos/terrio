@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `warp -r sum` without `--ts`, `--tr` or `--te` rounds the suggested output size up, as
+  gdalwarp does for a sum (`GDAL_SWO_ROUND_UP_SIZE`), so that the output covers the whole
+  source and keeps its total. Rounded to the nearest, a 41 x 37 UTM raster reprojected to
+  EPSG:4326 lost its last row and 0.4 % of its total. Sizes and geotransforms match
+  GDAL 3.13.3; per-pixel values of a reprojected sum still differ from GDAL's.
+
 - The `--json-usage` catalog (`schema_version` 0.1.1) records whether each argument is
   `repeatable` (clap Append/Count) and lists its `conflicts_with` arguments in both directions,
   including members of exclusive argument groups. A CI step requires a newer `schema_version`
