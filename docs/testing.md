@@ -2448,3 +2448,19 @@ cargo test -p terrio --features gdal --test gdal_backend
 pytest python/tests/test_layer_selection.py
 node --test --test-name-pattern='single named layer' js/tests/node.test.mjs
 ```
+
+### GeoPackage text encodings
+
+`cargo test -p terrio --test sqlite_encodings` reads the small SQLite-generated
+snapshots in `crates/terrio/tests/data/sqlite_encodings`; it needs no Python
+executable. The directory contains the generator and SHA-256 manifest for
+regeneration. Tests cover non-ASCII schema names, UTF-8/UTF-16LE/UTF-16BE,
+whole and R-tree-filtered eager/streamed reads, and malformed records. Unit tests
+also exercise `IndexedLayer` and malformed R-tree child records.
+
+The vector/raster display readers return Unicode strings and replace invalid
+text with U+FFFD, retaining the previous UTF-8 replacement policy and applying it
+to UTF-16. This is not raw-byte text preservation or a guarantee about SQLite's
+conversion of invalid text. Malformed CRS, geometry-column, layer-count and extent records propagate
+errors instead of being treated as absent metadata. Genuinely absent optional
+tables retain their fallback. Validation and stored-row rewrite decoding stay strict.

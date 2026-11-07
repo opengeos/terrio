@@ -38,6 +38,10 @@ pub(crate) trait Tables {
     fn schema(&self) -> Result<Vec<sqlite::SchemaEntry>>;
     /// Reads a whole table by name.
     fn table(&self, name: &str) -> Result<sqlite::Table>;
+    /// An optional table may be absent; errors reading a present table must propagate.
+    fn optional_table(&self, name: &str) -> Result<Option<sqlite::Table>> {
+        if self.schema()?.iter().any(|e| e.0 == "table" && e.1.eq_ignore_ascii_case(name)) { self.table(name).map(Some) } else { Ok(None) }
+    }
     /// The payload of the row `rowid` of the table b-tree rooted at `root`.
     fn lookup(&self, root: u32, rowid: i64) -> Result<Option<Vec<u8>>>;
     /// The `CREATE TABLE` statement of a table.
@@ -73,7 +77,7 @@ pub(crate) fn contents(db: &impl Tables) -> Result<(Vec<Content>, Vec<Content>)>
             Content { name: text("table_name"), data_type: text("data_type"), description: text("description") }
         })
         .collect();
-    let geometry_columns = db.table("gpkg_geometry_columns").ok();
+    let geometry_columns = db.optional_table("gpkg_geometry_columns")?;
     let mut features: Vec<Content> = Vec::new();
     if let Some(g) = &geometry_columns {
         for r in &g.rows {
@@ -202,7 +206,7 @@ pub(crate) fn declared_layers(path: &str, wanted: &[String]) -> Result<Vec<Decla
         let defaults = sqlite::column_defaults(&sql);
         let mut layer = Layer::new(c.name.clone());
         let mut geometry = None;
-        if let Ok(g) = db.table("gpkg_geometry_columns")
+        if let Some(g) = db.optional_table("gpkg_geometry_columns")?
             && let Some(r) =
                 g.rows.iter().find(|r| g.get(r, "table_name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(&c.name)))
         {
@@ -210,7 +214,7 @@ pub(crate) fn declared_layers(path: &str, wanted: &[String]) -> Result<Vec<Decla
             let type_name = g.get(r, "geometry_type_name").and_then(Value::as_str).unwrap_or("GEOMETRY").to_string();
             layer.geom_type = geometry_type(&type_name);
             if let Some(srs_id) = g.get(r, "srs_id").and_then(Value::as_i64) {
-                set_crs(&db, &mut layer, srs_id);
+                set_crs(&db, &mut layer, srs_id)?;
             }
             let z = g.get(r, "z").and_then(Value::as_i64).unwrap_or(0);
             let m = g.get(r, "m").and_then(Value::as_i64).unwrap_or(0);
@@ -247,13 +251,13 @@ pub(crate) fn declared_layers(path: &str, wanted: &[String]) -> Result<Vec<Decla
 /// Sets a layer's CRS from a `gpkg_spatial_ref_sys` entry: its EPSG code when the organization
 /// is EPSG and the registry knows the code, otherwise its definition. The undefined SRSs (-1,
 /// 0, GDAL's 99999, or a definition of `undefined`) give none.
-fn set_crs(db: &impl Tables, layer: &mut Layer, srs_id: i64) {
-    let Ok(t) = db.table("gpkg_spatial_ref_sys") else { return };
-    let Some(row) = t.rows.iter().find(|r| t.get(r, "srs_id").and_then(Value::as_i64) == Some(srs_id)) else { return };
+fn set_crs(db: &impl Tables, layer: &mut Layer, srs_id: i64) -> Result<()> {
+    let Some(t) = db.optional_table("gpkg_spatial_ref_sys")? else { return Ok(()) };
+    let Some(row) = t.rows.iter().find(|r| t.get(r, "srs_id").and_then(Value::as_i64) == Some(srs_id)) else { return Ok(()) };
     let org = t.get(row, "organization").and_then(Value::as_str).unwrap_or_default();
     // GDAL's undefined SRS.
     if org.eq_ignore_ascii_case("GDAL") && srs_id == 99999 {
-        return;
+        return Ok(());
     }
     let def = t.get(row, "definition").and_then(Value::as_str).unwrap_or_default().trim();
     if org.eq_ignore_ascii_case("EPSG")
@@ -261,14 +265,15 @@ fn set_crs(db: &impl Tables, layer: &mut Layer, srs_id: i64) {
         && wbprojection::to_ogc_wkt(code as u32).is_ok()
     {
         layer.set_crs_epsg(Some(code as u32));
-        return;
+        return Ok(());
     }
     if def.is_empty() || def.eq_ignore_ascii_case("undefined") {
-        return;
+        return Ok(());
     }
     let s = crate::crs::SpatialRef::from_wkt(def);
     layer.set_crs_wkt(Some(def.to_string()));
     layer.set_crs_epsg(s.epsg);
+    Ok(())
 }
 
 /// Decodes a GeoPackage geometry blob: the `GP` header, then WKB.
@@ -443,10 +448,10 @@ pub(crate) fn rtree_candidates(db: &impl Tables, rtree: &str, bbox: Rect) -> Res
     let node = |n: i64| -> Result<Option<Vec<u8>>> {
         let Some(payload) = db.lookup(root, n)? else { return Ok(None) };
         // Node records hold an integer and a blob, never text: no text encoding applies.
-        let mut values = Db::record_values(&payload);
+        let mut values = crate::drivers::sqlite_repack::decode_record(&payload, 1)?;
         Ok(match values.get_mut(1) {
             Some(Value::Blob(b)) => Some(std::mem::take(b)),
-            _ => None,
+            _ => return Err(bad(format!("R-tree '{rtree}' node is not a blob"))),
         })
     };
     let (x0, y0, x1, y1) = bbox;
@@ -456,10 +461,10 @@ pub(crate) fn rtree_candidates(db: &impl Tables, rtree: &str, bbox: Rect) -> Res
     let depth = u16::from_be_bytes([root_node[0], root_node[1]]) as usize;
     let mut stack: Vec<(Vec<u8>, usize)> = vec![(root_node, 0)];
     while let Some((data, level)) = stack.pop() {
-        let Some(count) = data.get(2..4).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize) else { continue };
+        let count = data.get(2..4).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize).ok_or_else(|| bad("truncated R-tree node"))?;
         for i in 0..count {
             let c = 4 + i * 24;
-            let Some(cell) = data.get(c..c + 24) else { break };
+            let cell = data.get(c..c + 24).ok_or_else(|| bad("truncated R-tree node cells"))?;
             let id = i64::from_be_bytes(cell[..8].try_into().unwrap_or_default());
             let f = |k: usize| f64::from(f32::from_be_bytes(cell[8 + 4 * k..12 + 4 * k].try_into().unwrap_or_default()));
             let (minx, maxx, miny, maxy) = (f(0), f(1), f(2), f(3));
@@ -468,7 +473,8 @@ pub(crate) fn rtree_candidates(db: &impl Tables, rtree: &str, bbox: Rect) -> Res
             }
             if level == depth {
                 out.push(id);
-            } else if let Some(child) = node(id)? {
+            } else {
+                let child = node(id)?.ok_or_else(|| bad("missing R-tree child node"))?;
                 stack.push((child, level + 1));
             }
         }
@@ -508,7 +514,7 @@ pub(crate) fn layer_def(db: &impl Tables, c: &Content) -> Result<LayerDef> {
     // The geometry column, its type and SRS.
     let mut geom_name: Option<String> = None;
     let mut layer = Layer::new(c.name.clone());
-    if let Ok(g) = db.table("gpkg_geometry_columns")
+    if let Some(g) = db.optional_table("gpkg_geometry_columns")?
         && let Some(r) =
             g.rows.iter().find(|r| g.get(r, "table_name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(&c.name)))
     {
@@ -516,7 +522,7 @@ pub(crate) fn layer_def(db: &impl Tables, c: &Content) -> Result<LayerDef> {
         geom_name = Some(col.to_string());
         layer.geom_type = g.get(r, "geometry_type_name").and_then(Value::as_str).and_then(geometry_type);
         if let Some(srs_id) = g.get(r, "srs_id").and_then(Value::as_i64) {
-            set_crs(db, &mut layer, srs_id);
+            set_crs(db, &mut layer, srs_id)?;
         }
     }
     let fid_col = sqlite::rowid_column(&sql);
@@ -623,18 +629,23 @@ pub(crate) fn summarize(path: &str) -> Result<Option<(Vec<LayerSummary>, Vec<Con
 }
 
 /// The feature count GDAL keeps for a table in `gpkg_ogr_contents`, when the file has one.
-fn stored_feature_count(db: &Db, table: &str) -> Option<usize> {
-    let t = db.table("gpkg_ogr_contents").ok()?;
-    let r = t.rows.iter().find(|r| t.get(r, "table_name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(table)))?;
-    usize::try_from(t.get(r, "feature_count")?.as_i64()?).ok()
+fn stored_feature_count(db: &Db, table: &str) -> Result<Option<usize>> {
+    let Some(t) = db.optional_table("gpkg_ogr_contents")? else { return Ok(None) };
+    Ok(t.rows
+        .iter()
+        .find(|r| t.get(r, "table_name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(table)))
+        .and_then(|r| usize::try_from(t.get(r, "feature_count")?.as_i64()?).ok()))
 }
 
 /// A table's extent in `gpkg_contents`, when all four bounds are set.
-fn stored_extent(db: &Db, table: &str) -> Option<(f64, f64, f64, f64)> {
-    let t = db.table("gpkg_contents").ok()?;
-    let r = t.rows.iter().find(|r| t.get(r, "table_name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(table)))?;
-    let v = |name: &str| t.get(r, name).and_then(Value::as_f64).filter(|v| v.is_finite());
-    Some((v("min_x")?, v("min_y")?, v("max_x")?, v("max_y")?))
+fn stored_extent(db: &Db, table: &str) -> Result<Option<(f64, f64, f64, f64)>> {
+    let Some(t) = db.optional_table("gpkg_contents")? else { return Ok(None) };
+    let extent = || {
+        let r = t.rows.iter().find(|r| t.get(r, "table_name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(table)))?;
+        let v = |name: &str| t.get(r, name).and_then(Value::as_f64).filter(|v| v.is_finite());
+        Some((v("min_x")?, v("min_y")?, v("max_x")?, v("max_y")?))
+    };
+    Ok(extent())
 }
 
 /// What a layer summary needs of a geometry: its type, whether it has Z coordinates, its bounds.
@@ -649,7 +660,7 @@ fn summarize_layer(db: &Db, c: &Content, path: &str) -> Result<LayerSummary> {
     // The `z` flag of the geometry column: 0 prohibited, 1 mandatory, 2 optional.
     let mut z_flag = None;
     let mut layer = Layer::new(c.name.clone());
-    if let Ok(g) = db.table("gpkg_geometry_columns")
+    if let Some(g) = db.optional_table("gpkg_geometry_columns")?
         && let Some(r) =
             g.rows.iter().find(|r| g.get(r, "table_name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(&c.name)))
     {
@@ -658,7 +669,7 @@ fn summarize_layer(db: &Db, c: &Content, path: &str) -> Result<LayerSummary> {
         layer.geom_type = g.get(r, "geometry_type_name").and_then(Value::as_str).and_then(geometry_type);
         z_flag = g.get(r, "z").and_then(Value::as_i64);
         if let Some(srs_id) = g.get(r, "srs_id").and_then(Value::as_i64) {
-            set_crs(db, &mut layer, srs_id);
+            set_crs(db, &mut layer, srs_id)?;
         }
     }
     let fid_col = sqlite::rowid_column(&sql);
@@ -676,8 +687,8 @@ fn summarize_layer(db: &Db, c: &Content, path: &str) -> Result<LayerSummary> {
     // As `ogrinfo -so` does: the feature count GDAL keeps in `gpkg_ogr_contents`, the extent of
     // `gpkg_contents` and the declared geometry type, without reading the features. Each falls
     // back to the features when the file doesn't have it.
-    let stored_count = stored_feature_count(db, &c.name);
-    let stored_extent = stored_extent(db, &c.name);
+    let stored_count = stored_feature_count(db, &c.name)?;
+    let stored_extent = stored_extent(db, &c.name)?;
     let declared = layer.geom_type.filter(|_| matches!(z_flag, Some(0 | 1)));
     if let (Some(feature_count), Some(t)) = (stored_count, declared)
         && (stored_extent.is_some() || feature_count == 0)
@@ -784,6 +795,96 @@ impl Tables for IndexedLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_rtree_child_records_fail_eager_and_streamed_queries() {
+        use super::super::sqlite as writer;
+        let node = |depth: u16, id: i64| {
+            let mut bytes = depth.to_be_bytes().to_vec();
+            bytes.extend_from_slice(&1u16.to_be_bytes());
+            bytes.extend_from_slice(&id.to_be_bytes());
+            for bound in [0.0f32, 20.0, 0.0, 20.0] {
+                bytes.extend_from_slice(&bound.to_be_bytes());
+            }
+            bytes
+        };
+        for corruption in [0, 1, 2] {
+            let child = if corruption == 2 { vec![0, 0, 0, 1] } else { node(0, 2) };
+            let values = vec![writer::Value::Null, writer::Value::Blob(child)];
+            let child_record = writer::record(&values);
+            let table = writer::Table {
+                name: "rtree_test_node".into(),
+                sql: "CREATE TABLE rtree_test_node(nodeno INTEGER PRIMARY KEY,data BLOB)".into(),
+                rows: vec![(1, vec![writer::Value::Null, writer::Value::Blob(node(1, 2))]), (2, values)],
+                autoindexes: vec![],
+            };
+            let mut bytes = writer::write_database(&[table], &[], 0, 0).unwrap();
+            if corruption == 1 {
+                let at = bytes.windows(child_record.len()).position(|b| b == child_record).unwrap();
+                // The blob now claims a byte outside the SQLite record, not outside the page.
+                bytes[at + child_record[0] as usize - 1] += 2;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("nodes.gpkg");
+            std::fs::write(&path, &bytes).unwrap();
+            let eager = Db::new(bytes).unwrap();
+            let streamed = crate::stream::sqlite::FileDb::open(path.to_str().unwrap()).unwrap();
+            let bbox = (5.0, 5.0, 15.0, 15.0);
+            let a = rtree_candidates(&eager, "rtree_test", bbox);
+            let b = rtree_candidates(&streamed, "rtree_test", bbox);
+            if corruption == 0 {
+                assert_eq!(a.unwrap(), Some(vec![2]));
+                assert_eq!(b.unwrap(), Some(vec![2]));
+            } else {
+                assert!(a.is_err());
+                assert!(b.is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_optional_metadata_is_not_treated_as_absent() {
+        use super::super::sqlite as writer;
+        for (name, sql, values) in [
+            (
+                "gpkg_spatial_ref_sys",
+                "CREATE TABLE gpkg_spatial_ref_sys(srs_id INTEGER,organization TEXT,organization_coordsys_id INTEGER,definition TEXT)",
+                vec![
+                    writer::Value::Int(4326),
+                    writer::Value::Text("EPSG".into()),
+                    writer::Value::Int(4326),
+                    writer::Value::Text("broken".into()),
+                ],
+            ),
+            (
+                "gpkg_contents",
+                "CREATE TABLE gpkg_contents(table_name TEXT,description TEXT)",
+                vec![writer::Value::Text("features".into()), writer::Value::Text("broken".into())],
+            ),
+            (
+                "gpkg_ogr_contents",
+                "CREATE TABLE gpkg_ogr_contents(table_name TEXT,feature_count INTEGER,description TEXT)",
+                vec![writer::Value::Text("features".into()), writer::Value::Int(3), writer::Value::Text("broken".into())],
+            ),
+        ] {
+            let record = writer::record(&values);
+            let table = writer::Table { name: name.into(), sql: sql.into(), rows: vec![(1, values)], autoindexes: vec![] };
+            let mut bytes = writer::write_database(&[table], &[], 0, 0).unwrap();
+            let at = bytes.windows(record.len()).position(|b| b == record).unwrap();
+            bytes[at + record[0] as usize - 1] += 2;
+            let db = Db::new(bytes).unwrap();
+            assert!(db.optional_table(name).is_err(), "{name}");
+            match name {
+                "gpkg_spatial_ref_sys" => assert!(set_crs(&db, &mut Layer::new("features"), 4326).is_err()),
+                "gpkg_contents" => assert!(stored_extent(&db, "features").is_err()),
+                _ => assert!(stored_feature_count(&db, "features").is_err()),
+            }
+        }
+        let absent = Db::new(writer::write_database(&[], &[], 0, 0).unwrap()).unwrap();
+        assert!(stored_extent(&absent, "features").unwrap().is_none());
+        assert!(stored_feature_count(&absent, "features").unwrap().is_none());
+        assert!(set_crs(&absent, &mut Layer::new("features"), 4326).is_ok());
+    }
 
     #[test]
     fn empty_flag_with_nonempty_wkb_is_rejected_consistently_with_index_envelopes() {

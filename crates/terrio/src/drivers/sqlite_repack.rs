@@ -592,8 +592,8 @@ pub(crate) fn decode_record(record: &[u8], encoding: u32) -> Result<Vec<super::s
     decode(record, encoding, false)
 }
 
-/// As [`decode_record`], but invalid text becomes U+FFFD rather than an error, as SQLite and
-/// GDAL still read it. Malformed records remain errors.
+/// As [`decode_record`], but invalid text becomes U+FFFD for display reads. This does not
+/// preserve raw SQLite text bytes. Malformed records remain errors.
 pub(crate) fn decode_record_lossy(record: &[u8], encoding: u32) -> Result<Vec<super::sqlite::Value>> {
     decode(record, encoding, true)
 }

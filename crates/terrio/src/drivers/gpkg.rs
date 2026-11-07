@@ -13,6 +13,7 @@
 
 use super::common::xml_escape;
 use super::sqlite::{Db, Table, Value};
+use super::vector::gpkg_read::Tables;
 use super::{common, nodata};
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
@@ -318,7 +319,7 @@ pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<Raste
     let (bands, values) = grid.unwrap_or((1, vec![0.0; cols * rows]));
     let data_type = if gridded { coverage.3 } else { DataType::U8 };
     let data = RasterData::from_f64_vec(data_type, values);
-    let crs = srs_id.and_then(|id| crs_for_srs(db, id)).unwrap_or_default();
+    let crs = srs_id.map(|id| crs_for_srs(db, id)).transpose()?.flatten().unwrap_or_default();
     let gt = [minx, rx, 0.0, maxy, 0.0, -ry];
     let nodata = if gridded { coverage.2 } else { tile_nodata };
     let raster = common::make_raster(cols, rows, bands, data, gt, crs, nodata)?;
@@ -326,16 +327,16 @@ pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<Raste
 }
 
 /// The CRS of a `gpkg_spatial_ref_sys` entry.
-fn crs_for_srs(db: &Db, id: i64) -> Option<CrsInfo> {
-    let t = db.table("gpkg_spatial_ref_sys").ok()?;
-    let row = t.rows.iter().find(|r| i(&t, r, "srs_id") == Some(id))?;
+fn crs_for_srs(db: &Db, id: i64) -> Result<Option<CrsInfo>> {
+    let Some(t) = db.optional_table("gpkg_spatial_ref_sys")? else { return Ok(None) };
+    let Some(row) = t.rows.iter().find(|r| i(&t, r, "srs_id") == Some(id)) else { return Ok(None) };
     let org = t.get(row, "organization").and_then(Value::as_str).unwrap_or_default();
     if org.eq_ignore_ascii_case("EPSG")
         && let Some(code) = i(&t, row, "organization_coordsys_id").filter(|c| *c > 0)
     {
-        return Some(CrsInfo::from_epsg(code as u32));
+        return Ok(Some(CrsInfo::from_epsg(code as u32)));
     }
-    t.get(row, "definition").and_then(Value::as_str).and_then(common::crs_from_text)
+    Ok(t.get(row, "definition").and_then(Value::as_str).and_then(common::crs_from_text))
 }
 
 /// The tile size GDAL writes.
@@ -650,6 +651,31 @@ pub(crate) fn add_raster(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_srs_records_do_not_silently_drop_raster_crs() {
+        use super::super::vector::sqlite as writer;
+        let values = vec![
+            writer::Value::Int(4326),
+            writer::Value::Text("EPSG".into()),
+            writer::Value::Int(4326),
+            writer::Value::Text("broken".into()),
+        ];
+        let record = writer::record(&values);
+        let table = writer::Table {
+            name: "gpkg_spatial_ref_sys".into(),
+            sql: "CREATE TABLE gpkg_spatial_ref_sys(srs_id INTEGER,organization TEXT,organization_coordsys_id INTEGER,definition TEXT)"
+                .into(),
+            rows: vec![(1, values)],
+            autoindexes: vec![],
+        };
+        let mut bytes = writer::write_database(&[table], &[], 0, 0).unwrap();
+        let at = bytes.windows(record.len()).position(|b| b == record).unwrap();
+        bytes[at + record[0] as usize - 1] += 2;
+        assert!(crs_for_srs(&Db::new(bytes).unwrap(), 4326).is_err());
+        let absent = Db::new(writer::write_database(&[], &[], 0, 0).unwrap()).unwrap();
+        assert!(crs_for_srs(&absent, 4326).unwrap().is_none());
+    }
 
     #[test]
     fn layers_and_rasters_in_one_file() {
