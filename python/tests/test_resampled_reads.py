@@ -188,8 +188,8 @@ CORE_READS = {
 
 
 # rasterio's macOS arm64 wheel builds GDAL with fused multiply-adds (see FMA_SENSITIVE in
-# test_rio_vs_rasterio.py), which rounds the source coordinates and kernel weights of a 1100 x
-# 1500 upsample of a nodata-weighted source differently in the last bits: on macOS arm64 at most
+# test_rio_vs_rasterio.py). The cause of this 1100 x 1500 upsample of a nodata-weighted source
+# differing in the last bits is inferred from that precedent, not measured: on macOS arm64 at most
 # 0.0029% of the pixels (48 of 1.65 million) differed, in the six whole-up reads below. Linux and
 # Windows agree with terrio exactly, and so does every other read on macOS arm64. On macOS arm64
 # each of these cases may differ from rasterio in at most FMA_ROUNDING_MAX_FRAC of the pixels,
