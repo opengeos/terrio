@@ -130,7 +130,8 @@ fn create_raster(
 /// Adds internal or external GeoTIFF overview levels. Returns their pixel sizes.
 ///
 /// `progress`, when given, is called with the fraction done, a float from 0 to 1 that never
-/// decreases (1 once the overviews are computed, before they are written). A falsy return value
+/// decreases (1 once every overview is computed and encoded, before the file is published).
+/// A falsy return value
 /// other than `None` cancels, as in GDAL: `terrio.errors.CancelledError` is raised and no file is
 /// changed. An exception it raises cancels too, and is raised again.
 #[pyfunction]

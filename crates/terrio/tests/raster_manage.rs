@@ -311,6 +311,9 @@ fn external_overviews_of_read_only_files() {
     let err = add_overviews(&path, &o).unwrap_err();
     assert!(err.to_string().contains("read-only") && err.to_string().contains(".ovr"), "{err}");
     assert_eq!(std::fs::read(&ovr).unwrap(), ovr_bytes);
+    let err = refresh_overviews(&path, &refresh).unwrap_err();
+    assert!(err.to_string().contains("read-only") && err.to_string().contains(".ovr"), "{err}");
+    assert_eq!(std::fs::read(&ovr).unwrap(), ovr_bytes);
 }
 
 /// `add_overviews_with_progress` reports a fraction that never decreases, from 0 to 1, and a

@@ -392,6 +392,9 @@ pub fn refresh_overviews(path: &str, options: &RefreshOptions) -> Result<Vec<(us
     if options.external && !target.is_file() {
         return Err(Error::InvalidArgument(format!("'{}' has no external overviews ({} is missing)", path, target.display())));
     }
+    if options.external {
+        gtiff_update::writable_local_file(&target.to_string_lossy())?;
+    }
     // Over an extent, the sidecar keeps its other pixels from the raster's overviews, which are
     // its internal ones when it has them.
     if options.external && !options.bbox.is_empty() && parse_file(std::path::Path::new(path))?.dirs.iter().any(Directory::is_overview) {
@@ -2009,7 +2012,7 @@ mod tests {
                     // The progress never decreases, moves step by step, and ends at 1.
                     let case = format!("{method:?} {multiband} {bands} {has_mask}");
                     assert!(reported.windows(2).all(|p| p[0] <= p[1]), "{case}: {reported:?}");
-                    assert!(reported.len() > 2 * sizes.len() && reported[0] >= 0.0, "{case}: {reported:?}");
+                    assert!(reported.len() > 2 * sizes.len() && reported[0] == 0.0, "{case}: {reported:?}");
                     assert_eq!(reported.last(), Some(&1.0), "{case}");
                     // Every full-resolution row is read once, forward, in windows of whole blocks.
                     let reads = reads.lock().unwrap();
