@@ -974,11 +974,8 @@ fn srs_to_crs(srs: &gdal::spatial_ref::SpatialRef) -> Option<wbraster::CrsInfo> 
     };
     Some(match code {
         Some(code) => {
-            let mut info = crate::crs::epsg_crs_info(code);
-            if info.wkt.is_none() {
-                info.wkt = Some(wkt);
-            }
-            info
+            let stored = wbraster::CrsInfo { epsg: Some(code), wkt: Some(wkt), proj4: None };
+            wbraster::CrsInfo { wkt: crate::crs::raster_crs_wkt(&stored), ..stored }
         }
         None => common::crs_from_text(&wkt).unwrap_or_else(|| wbraster::CrsInfo { wkt: Some(wkt), ..Default::default() }),
     })
@@ -1372,5 +1369,21 @@ mod limits_tests {
         let mut budget = VectorBudget { remaining: 16_384, limit: 16_384 };
         assert!(layer_from(&mut layer, "first", &mut budget).is_ok());
         assert!(matches!(layer_from(&mut layer, "second", &mut budget), Err(Error::ResourceLimit(_))));
+    }
+}
+
+#[cfg(test)]
+mod crs_tests {
+    /// GDAL 3.13.3 preserves explicit WKT even when its root identifies a known EPSG code.
+    #[test]
+    fn supplied_definition_is_kept_with_identified_code() {
+        let registry = crate::crs::SpatialRef::from_epsg(4979).unwrap().to_wkt().unwrap();
+        let custom = registry.replacen("WGS 84", "Custom WGS 84", 1);
+        let srs = gdal::spatial_ref::SpatialRef::from_wkt(&custom).unwrap();
+        let expected = srs.to_wkt().unwrap();
+        assert!(expected.contains("Custom WGS 84"));
+        let actual = super::srs_to_crs(&srs).unwrap();
+        assert_eq!(actual.epsg, Some(4979));
+        assert_eq!(actual.wkt, Some(expected));
     }
 }

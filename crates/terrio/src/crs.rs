@@ -312,8 +312,8 @@ impl SpatialRef {
 /// of terrio's EPSG registry, which GDAL 3.13 writes for the code. Drivers use it in place of
 /// `wbraster::CrsInfo::from_epsg`, whose generated WKT describes some codes otherwise (MGA zones
 /// without their false northing, US-foot State Plane CRSs in metres, Web Mercator on the
-/// ellipsoid) and drops the EPSG authority and datum names. No WKT for a code terrio does not
-/// know, as wbraster's. The enabled `wbprojection-fallback` retains codes known only to
+/// ellipsoid) and drops the EPSG authority and datum names. A code the registry does not know
+/// has no WKT, as with wbraster's constructor. The enabled `wbprojection-fallback` retains codes known only to
 /// wbprojection. Like wbraster 0.2.1's constructor, `proj4` is absent for a code-only CRS.
 pub(crate) fn epsg_crs_info(code: u32) -> wbraster::CrsInfo {
     wbraster::CrsInfo { epsg: Some(code), wkt: SpatialRef::from_epsg(code).ok().and_then(|s| s.wkt), proj4: None }
