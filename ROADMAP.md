@@ -53,6 +53,8 @@ appearance require a separate future design.
 - [x] Unstable v0.1 `--json-usage` catalog from the shared clap/MCP command tree:
       nested command paths, aliases, typed argument metadata, defaults, choices and
       arity, a checked-in JSON Schema, and the Python CLI entrypoint.
+- [x] Parser repeatability, symmetric argument/group conflicts, and catalog version/digest
+      checks against the protected PR base (#633).
 - [ ] Mutation/idempotency metadata and conditional command effects, shared with
       MCP hints, as a separate follow-up.
 
