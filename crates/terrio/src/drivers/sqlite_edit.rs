@@ -846,9 +846,12 @@ impl Editor {
                 let cell = w::table_cell(self, rowid, &rec)?;
                 if keys.get(i) == Some(&rowid) {
                     let mut freed = Vec::new();
-                    // A chain naming a page twice is an error, not a page freed twice.
-                    let mut owned = PageSet::new(u64::from(self.n_pages));
-                    self.overflow_pages(0x0d, &cells[i], &mut freed, &mut owned)?;
+                    // A chain naming a page twice is an error, not a page freed twice. Only a cell
+                    // with overflow pages needs the set, which costs a page-count-sized allocation.
+                    if self.cell_payload_parts(0x0d, &cells[i])?.2.is_some() {
+                        let mut owned = PageSet::new(u64::from(self.n_pages));
+                        self.overflow_pages(0x0d, &cells[i], &mut freed, &mut owned)?;
+                    }
                     for p in freed {
                         self.free(p)?;
                     }
