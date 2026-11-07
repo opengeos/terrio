@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Terrio CLI usage catalog v0.1 (unstable)",
+  "title": "Terrio CLI usage catalog v0.1.1 (unstable)",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -176,7 +176,7 @@
         },
         "repeatable": {
           "type": "boolean",
-          "description": "True for clap Append or Count actions. Options may occur again; positional Append arguments collect multiple operands. This describes parser acceptance, not whether the operation uses every repeated value."
+          "description": "Whether the argument is accepted multiple times by the parser (clap Append or Count actions). For options, indicates whether repeating the flag is valid; for positional arguments, indicates variadic operand collection. This describes parser acceptance, not whether the operation uses every repeated value."
         },
         "global": {
           "type": "boolean"
