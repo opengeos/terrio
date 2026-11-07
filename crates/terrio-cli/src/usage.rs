@@ -371,6 +371,14 @@ mod tests {
         assert_eq!(catalog_argument(args, "tr")["conflicts_with"], json!(["like", "ts"]));
         // `tap` declares only `requires = "tr"`; requires is deferred, so it lists no conflicts.
         assert_eq!(catalog_argument(args, "tap")["conflicts_with"], json!([]));
+
+        // `vector-clip` groups `bbox`, `geometry` and `like` into an exclusive ArgGroup:
+        // members mutually conflict pairwise even though no direct `conflicts_with` is declared on each Arg.
+        let result = usage(&["terrio", "vector-clip", "--json-usage"]).unwrap();
+        let args = result["command"]["arguments"].as_array().unwrap();
+        assert_eq!(catalog_argument(args, "bbox")["conflicts_with"], json!(["geometry", "like"]));
+        assert_eq!(catalog_argument(args, "geometry")["conflicts_with"], json!(["bbox", "like"]));
+        assert_eq!(catalog_argument(args, "like")["conflicts_with"], json!(["bbox", "geometry"]));
     }
 
     #[test]
