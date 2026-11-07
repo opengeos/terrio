@@ -611,6 +611,31 @@ def suite_vsi(ctx):
     return suite
 
 
+def suite_shapefile_deleted(ctx):
+    """Deleted DBF slots, physical FIDs and live-feature paging against OGR."""
+    suite = Suite("shapefile-deleted", "Shapefile deleted records", "GDAL/OGR",
+                  "90 generated-file cases: whole/streamed reads, FIDs, exact scalar attributes/nulls and ISO WKB; "
+                  "live-feature skip/max with and without SHX, including null geometry.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    probe = Path(ctx.terrio).parent / "examples" / ("shapefile_rows.exe" if os.name == "nt" else "shapefile_rows")
+    if not probe.is_file():
+        suite.error = "needs cargo build -p terrio --example shapefile_rows in the CLI's build profile"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_shapefile_deleted.py"), "--probe", str(probe), "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("Shapefile deleted records", result["name"], result["status"], result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out) or f"exit {code}"
+    return suite
+
+
 def suite_shapefile_rings(ctx):
     """Self-touching Shapefile polygon rings, split as GDAL 3.13 does (#308)."""
     suite = Suite("shapefile-rings", "Shapefile self-touching rings", "GDAL/OGR (3.13.1 reading frozen for GDAL 3.12)",
@@ -3194,6 +3219,7 @@ SUITES = OrderedDict(
         ("shapefile-archives", suite_shapefile_archives),
         ("vsi", suite_vsi),
         ("shapefile-rings", suite_shapefile_rings),
+        ("shapefile-deleted", suite_shapefile_deleted),
         ("raster-roundtrip", suite_raster_roundtrip),
         ("windows", suite_windows),
         ("ops", suite_ops),
