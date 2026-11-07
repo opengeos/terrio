@@ -237,7 +237,8 @@ pub fn add_overviews(path: &str, options: &OverviewOptions) -> Result<Vec<(usize
 ///
 /// `progress` gets the fraction done, which never decreases: 0 before the overviews are computed,
 /// then the share of the work done (the pixels read and the overview pixels computed and
-/// encoded), and 1 once every overview is computed, before they are written. Returning `false`
+/// encoded), and 1 once every overview is computed and encoded, before the file is published.
+/// Returning `false`
 /// cancels: [`Error::Cancelled`] is returned and no file is changed (an existing `.ovr` stays as
 /// it was). A call that has nothing to compute gets 0 and 1.
 pub fn add_overviews_with_progress(
