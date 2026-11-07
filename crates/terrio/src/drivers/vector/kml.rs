@@ -147,7 +147,8 @@ fn kmz_styled<R: std::io::Read + std::io::Seek>(reader: R, default_name: &str) -
     root.find_all("NetworkLink", &mut links);
     let archived: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
     // Each document is read, counted toward the budget and parsed once, however many links name
-    // it, and its first link names its layer. The main document is not read again.
+    // it. Its first link supplies the default name; document and folder names are kept.
+    // The main document is not read again.
     let mut linked = std::collections::HashSet::from([main.as_str()]);
     let mut documents: Vec<(String, Element, String)> = Vec::new();
     for link in links {
@@ -1145,6 +1146,25 @@ mod tests {
         assert!(parse_kmz(styled.clone(), "a").is_ok());
         let refused = with_options(&[("TERRIO_ZIP_MAX_RATIO", "50")], || parse_kmz(styled.clone(), "a"));
         assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("styles.kml")), "{refused:?}");
+    }
+
+    #[test]
+    fn repeated_links_preserve_document_and_folder_layers() {
+        let point = "<Placemark><Point><coordinates>1,2</coordinates></Point></Placemark>";
+        for (document, expected) in [
+            (format!("<kml><Document><name>inside</name>{point}</Document></kml>"), vec![("inside", 1)]),
+            (format!("<kml><Document><Folder><name>folder</name>{point}</Folder></Document></kml>"), vec![("a", 0), ("folder", 1)]),
+            (format!("<kml><Document>{point}</Document></kml>"), vec![("a", 1)]),
+        ] {
+            // A later named link must not change the first unnamed link's default.
+            let first = network_link("", "layers/a.kml");
+            let repeated = format!("{first}{}", network_link("later", "./layers/a.kml"));
+            for links in [first, repeated] {
+                let main = format!("<kml><Document>{links}</Document></kml>");
+                let layers = parse_kmz(archive(&[("doc.kml", &main), ("layers/a.kml", &document)]), "main").unwrap();
+                assert_eq!(summary(&layers), expected);
+            }
+        }
     }
 
     #[test]

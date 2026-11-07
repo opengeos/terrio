@@ -3,7 +3,8 @@
 ## Unreleased
 
 - A KMZ document that `doc.kml` links to several times is read, counted toward
-  `TERRIO_KMZ_MAX_SIZE` and parsed once, and gives one layer, named by the first link to it; a
+  `TERRIO_KMZ_MAX_SIZE` and parsed once, and emits its existing layers once. Document and
+  folder names are kept; the first link supplies the default name for an unnamed root. A
   link to `doc.kml` itself adds no layer. Each link used to read the document again and add a
   layer with the same name: 100,000 links to one document, in a 25 KB archive, gave 100,000
   identical layers and took 702 MiB. Linked documents are also found without scanning the
