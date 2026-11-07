@@ -7,6 +7,9 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 
+/// Expected schema version of the CLI catalog.
+const EXPECTED_SCHEMA_VERSION: &str = "0.1.1";
+
 /// Digest of the canonical catalog for the current `schema_version`.
 const CATALOG_SHA256: &str = "eb8cc834ea23835baca1bce2230c427c93d4368fe2a3ee57740eb56d9d68f145";
 
@@ -39,11 +42,18 @@ fn usage_catalog_matches_recorded_digest() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let live: Value = serde_json::from_slice(&output.stdout).expect("catalog is JSON");
 
+    assert_eq!(
+        live["schema_version"], EXPECTED_SCHEMA_VERSION,
+        "the --json-usage catalog version changed without updating EXPECTED_SCHEMA_VERSION in usage_golden.rs"
+    );
+
     let digest = catalog_digest(live);
     assert_eq!(
         digest, CATALOG_SHA256,
         "the --json-usage catalog changed. Bump schema_version (patch, e.g. 0.1.1 -> 0.1.2) in \
-         usage.rs, the schema const and the tests, then set CATALOG_SHA256 in \
+         usage.rs, the schema const and title in schemas/cli-usage-v0.1.schema.json, the version \
+         expectations in tests/usage_golden.rs, tests/json_usage.rs, tests/ui.rs, and \
+         python/tests/test_cli.py, then set CATALOG_SHA256 in \
          crates/terrio-cli/tests/usage_golden.rs to the new digest in the same commit"
     );
 }
