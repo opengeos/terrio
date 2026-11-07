@@ -46,6 +46,8 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
+use ureq::unversioned::resolver::DefaultResolver;
+use ureq::unversioned::transport::{Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport};
 
 pub(crate) mod store;
 
@@ -1060,9 +1062,6 @@ fn new_agent(options: &HttpOptions) -> ureq::Agent {
     ureq::Agent::with_parts(config, connector, DefaultResolver::default())
 }
 
-use ureq::unversioned::resolver::DefaultResolver;
-use ureq::unversioned::transport::{Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport};
-
 /// Wraps each connection in [`Http10Close`], after TLS, where it sees the responses in plain text.
 #[derive(Debug)]
 struct Http10CloseConnector;
@@ -1083,7 +1082,7 @@ impl Connector<Box<dyn Transport>> for Http10CloseConnector {
 #[derive(Debug)]
 struct Http10Close {
     inner: Box<dyn Transport>,
-    /// A request was sent and its response's head has not been seen whole yet.
+    /// A request was sent and its final response head has not been seen whole yet.
     response_head: bool,
     /// The connection is not to be reused.
     closing: bool,
@@ -1122,18 +1121,32 @@ impl Transport for Http10Close {
 }
 
 /// Whether the connection closes after the response whose head starts `input`: an HTTP/1.0
-/// response without a `Connection` header naming `keep-alive`. `None` until the head is whole.
-fn closes_after(input: &[u8]) -> Option<bool> {
-    let end = input.windows(4).position(|w| w == b"\r\n\r\n").or_else(|| input.windows(2).position(|w| w == b"\n\n"))?;
-    let head = String::from_utf8_lossy(&input[..end]);
-    let mut lines = head.lines();
-    if !lines.next().is_some_and(|status| status.starts_with("HTTP/1.0")) {
-        return Some(false);
+/// response without a `Connection` header naming `keep-alive`. Informational heads are skipped;
+/// `None` until the final head is whole.
+fn closes_after(mut input: &[u8]) -> Option<bool> {
+    loop {
+        let crlf = input.windows(4).position(|w| w == b"\r\n\r\n").map(|at| (at, 4));
+        let lf = input.windows(2).position(|w| w == b"\n\n").map(|at| (at, 2));
+        let (end, delimiter) = crlf.into_iter().chain(lf).min_by_key(|(at, _)| *at)?;
+        let head = String::from_utf8_lossy(&input[..end]);
+        let mut lines = head.lines();
+        let mut status = lines.next()?.split_ascii_whitespace();
+        let version = status.next()?;
+        let code: u16 = status.next()?.parse().ok()?;
+        // ureq consumes informational heads before the final one. Inspect every head already
+        // buffered here too: no further await_input is needed when the final head arrived with it.
+        if (100..200).contains(&code) && code != 101 {
+            input = &input[end + delimiter..];
+            continue;
+        }
+        if version != "HTTP/1.0" {
+            return Some(false);
+        }
+        let keep_alive = lines.filter_map(|line| line.split_once(':')).any(|(name, value)| {
+            name.trim().eq_ignore_ascii_case("connection") && value.split(',').any(|o| o.trim().eq_ignore_ascii_case("keep-alive"))
+        });
+        return Some(!keep_alive);
     }
-    let keep_alive = lines.filter_map(|line| line.split_once(':')).any(|(name, value)| {
-        name.trim().eq_ignore_ascii_case("connection") && value.split(',').any(|o| o.trim().eq_ignore_ascii_case("keep-alive"))
-    });
-    Some(!keep_alive)
 }
 
 /// The part of an object to fetch.
@@ -2869,9 +2882,10 @@ mod tests {
         (url, connections)
     }
 
-    /// A server answering every request on a connection with `head` and "ok", never closing a
+    /// A server answering requests on each connection with successive `heads` (then the last)
+    /// and "ok", never closing a
     /// connection itself, and the number of connections it has accepted.
-    fn serve_open_connections(head: &'static str) -> (String, Arc<AtomicU64>) {
+    fn serve_open_connections(heads: Vec<&'static str>, split: bool) -> (String, Arc<AtomicU64>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/", listener.local_addr().unwrap());
         let connections = Arc::new(AtomicU64::new(0));
@@ -2880,10 +2894,24 @@ mod tests {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
                 accepted.fetch_add(1, Ordering::SeqCst);
+                let heads = heads.clone();
                 std::thread::spawn(move || {
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut request = 0;
                     while !read_head(&mut reader).is_empty() {
-                        if stream.write_all(format!("{head}\r\nContent-Length: 2\r\n\r\nok").as_bytes()).is_err() {
+                        let head = heads[request.min(heads.len() - 1)];
+                        request += 1;
+                        let response = format!("{head}\r\nContent-Length: 2\r\n\r\nok");
+                        let result = if split {
+                            let boundary = response.find("\r\n\r\n").unwrap() + 4;
+                            stream.write_all(&response.as_bytes()[..boundary]).and_then(|_| {
+                                std::thread::sleep(std::time::Duration::from_millis(10));
+                                stream.write_all(&response.as_bytes()[boundary..])
+                            })
+                        } else {
+                            stream.write_all(response.as_bytes())
+                        };
+                        if result.is_err() {
                             return;
                         }
                     }
@@ -2905,13 +2933,39 @@ mod tests {
             ("HTTP/1.1 200 OK", 1),
             ("HTTP/1.1 200 OK\r\nConnection: close", 3),
         ] {
-            let (url, connections) = serve_open_connections(head);
+            let (url, connections) = serve_open_connections(vec![head], false);
             let agent = new_agent(&options());
             for _ in 0..3 {
                 let mut response = agent.get(&url).call().unwrap();
                 assert_eq!(response.body_mut().read_to_vec().unwrap(), b"ok");
             }
             assert_eq!(connections.load(Ordering::SeqCst), expected, "{head:?}");
+        }
+    }
+
+    /// Persistence is checked again after each request on a reused connection.
+    #[test]
+    fn http10_keep_alive_can_end_after_a_reused_request() {
+        let (url, connections) = serve_open_connections(vec!["HTTP/1.0 200 OK\r\nConnection: keep-alive", "HTTP/1.0 200 OK"], false);
+        let agent = new_agent(&options());
+        for expected in [1, 1, 2] {
+            let mut response = agent.get(&url).call().unwrap();
+            assert_eq!(response.body_mut().read_to_vec().unwrap(), b"ok");
+            assert_eq!(connections.load(Ordering::SeqCst), expected);
+        }
+    }
+
+    /// Informational heads do not determine final-response persistence (RFC 9112 section 9.3).
+    #[test]
+    fn informational_headers_before_http10_do_not_keep_the_connection_alive() {
+        for split in [false, true] {
+            let (url, connections) = serve_open_connections(vec!["HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.0 200 OK"], split);
+            let agent = new_agent(&options());
+            for _ in 0..3 {
+                let mut response = agent.get(&url).call().unwrap();
+                assert_eq!(response.body_mut().read_to_vec().unwrap(), b"ok");
+            }
+            assert_eq!(connections.load(Ordering::SeqCst), 3, "split={split}");
         }
     }
 
@@ -2922,6 +2976,10 @@ mod tests {
         assert_eq!(closes_after(b"HTTP/1.0 206 Partial\nConnection: foo, keep-alive\n\n"), Some(false));
         assert_eq!(closes_after(b"HTTP/1.0 200 OK\r\nX-Connection: keep-alive\r\n\r\n"), Some(true));
         assert_eq!(closes_after(b"HTTP/1.1 200 OK\r\n\r\n"), Some(false));
+        assert_eq!(closes_after(b"HTTP/1.1 103 Early Hints\r\n\r\n"), None);
+        assert_eq!(closes_after(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.0 200 OK\r\nContent-Le"), None);
+        assert_eq!(closes_after(b"HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.0 200 OK\r\n\r\n"), Some(true));
+        assert_eq!(closes_after(b"HTTP/1.0 200 OK\n\nConnection: keep-alive\r\n\r\n"), Some(true));
     }
 
     /// Remote files opened one after another, each with a client of its own, send their requests
