@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- JavaScript `listUrl` rejects invalid `depth` values, including strings and `Infinity`;
+  omit `depth` or pass `null` for unlimited traversal. Native TIFF mask discovery now
+  rejects unreadable or malformed directory/tag tables instead of silently dropping masks.
+
 - Native FlatGeobuf readers reject incomplete records, mismatched nonzero feature counts and
   invalid coordinate dimensions/part bounds. GDAL-enabled eager reads retain GDAL fallback
   admission behavior; native range and stream checks apply in either build.

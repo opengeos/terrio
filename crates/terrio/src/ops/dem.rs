@@ -2795,7 +2795,8 @@ nv 10 20 30 0
         assert_eq!(atof("12.5%"), 12.5);
         assert_eq!(atoi("12abc"), 12);
 
-        // A color map containing only an `nv` entry for NaN nodata does not underflow on valid pixels.
+        // GDAL 3.13.3 DEMProcessing (MEM, nv 10 20 30 255) yields that RGBA at every pixel
+        // in the default mode; exact mode gives transparent black at valid unmatched pixels.
         let nan_ds = dem_ds(vec![f64::NAN, 10.0, 20.0, 30.0], 2, 2, DataType::F32, Some(f64::NAN), 1.0);
         let nv_only = ColorMap::parse("nv 10 20 30 255\n", &nan_ds, 1, None).unwrap();
         let out_nv = color_relief(&nan_ds, &nv_only, &DemOptions { alpha: true, ..Default::default() }).unwrap();

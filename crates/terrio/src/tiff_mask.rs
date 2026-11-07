@@ -52,8 +52,17 @@ fn read_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: bool) -> std:
         u16_at(&b) as u64
     };
     let entry_len = if big { 20 } else { 12 };
-    let mut entries = vec![0u8; (count as usize).min(4096) * entry_len];
+    let kept = count.min(4096) as usize;
+    let mut entries = vec![0u8; kept * entry_len];
     f.read_exact(&mut entries)?;
+    // Decode a bounded prefix, but the chain pointer follows the entire IFD table.
+    let remaining = (count - kept as u64)
+        .checked_mul(entry_len as u64)
+        .and_then(|bytes| i64::try_from(bytes).ok())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "TIFF IFD table is too large"))?;
+    if remaining != 0 {
+        f.seek(SeekFrom::Current(remaining))?;
+    }
     let mut next = [0u8; 8];
     let next = if big {
         f.read_exact(&mut next)?;
@@ -76,10 +85,11 @@ fn read_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: bool) -> std:
             _ => continue,
         };
         let (n, inline, inline_len) = if big { (u64_at(&e[4..12]), &e[12..20], 8) } else { (u32_at(&e[4..8]) as u64, &e[8..12], 4) };
-        let Some(len) = (n as usize).checked_mul(size) else { return Ok(None) };
-        if len > 1 << 28 {
-            continue;
-        }
+        let len = usize::try_from(n)
+            .ok()
+            .and_then(|n| n.checked_mul(size))
+            .filter(|len| *len <= 1 << 28)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "TIFF tag length is too large"))?;
         let data = if len <= inline_len {
             inline[..len].to_vec()
         } else {
@@ -313,6 +323,55 @@ mod tests {
         bytes.extend_from_slice(&1000u32.to_le_bytes());
         let error = find_masks(&mut std::io::Cursor::new(bytes)).unwrap_err();
         assert!(matches!(error, Error::Io(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof), "{error}");
+    }
+
+    /// A valid large IFD keeps its actual chain pointer after the bounded decoded prefix.
+    #[test]
+    fn mask_discovery_skips_unparsed_ifd_entries() {
+        let count = 5009usize;
+        let mask_ifd = 8 + 2 + 12 * count + 4;
+        let pixels = mask_ifd + 2 + 12 * 9 + 4;
+        let mut tags = vec![(256u16, 1u32), (257, 1), (258, 8), (259, 1), (262, 1), (273, pixels as u32), (277, 1), (278, 1), (279, 1)];
+        tags.extend((50000..55000).map(|tag| (tag, 0)));
+        let mut bytes = b"II\x2a\0\x08\0\0\0".to_vec();
+        let mut ifd = |tags: &[(u16, u32)], next: u32| {
+            bytes.extend_from_slice(&(tags.len() as u16).to_le_bytes());
+            for (tag, value) in tags {
+                bytes.extend_from_slice(&tag.to_le_bytes());
+                bytes.extend_from_slice(&4u16.to_le_bytes());
+                bytes.extend_from_slice(&1u32.to_le_bytes());
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            bytes.extend_from_slice(&next.to_le_bytes());
+        };
+        ifd(&tags, mask_ifd as u32);
+        ifd(&[(254, 4), (256, 1), (257, 1), (258, 1), (262, 4), (273, pixels as u32 + 1), (277, 1), (278, 1), (279, 1)], 0);
+        bytes.extend_from_slice(&[99, 128]);
+        let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(bytes.clone())).unwrap();
+        assert!(matches!(decoder.read_image().unwrap(), tiff::decoder::DecodingResult::U8(values) if values == [99]));
+        let masks = find_masks(&mut std::io::Cursor::new(bytes.clone())).unwrap();
+        assert_eq!(masks.len(), 1);
+        assert_eq!(masks[0].offsets, [pixels as u64 + 1]);
+        let mut raster = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap();
+        assert!(raster.has_mask());
+        assert_eq!(raster.read_mask(crate::Window::new(0, 0, 1, 1), None).unwrap(), Some(vec![255]));
+    }
+
+    /// Unrepresentable and oversized tag lengths cannot silently hide later mask directories.
+    #[test]
+    fn mask_discovery_rejects_oversized_tag_lengths() {
+        for count in [u64::MAX, (1 << 28) + 1] {
+            let mut bytes = b"II\x2b\0\x08\0\0\0".to_vec();
+            bytes.extend_from_slice(&16u64.to_le_bytes());
+            bytes.extend_from_slice(&1u64.to_le_bytes());
+            bytes.extend_from_slice(&324u16.to_le_bytes());
+            bytes.extend_from_slice(&16u16.to_le_bytes());
+            bytes.extend_from_slice(&count.to_le_bytes());
+            bytes.extend_from_slice(&0u64.to_le_bytes());
+            bytes.extend_from_slice(&0u64.to_le_bytes());
+            let error = find_masks(&mut std::io::Cursor::new(bytes)).unwrap_err();
+            assert!(matches!(error, Error::Io(ref e) if e.kind() == std::io::ErrorKind::InvalidData), "{error}");
+        }
     }
 
     fn mask(block: (usize, usize), compression: u16, count: u64) -> MaskImage {

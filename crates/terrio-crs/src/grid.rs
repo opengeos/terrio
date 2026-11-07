@@ -588,8 +588,9 @@ fn read_tiff(reader: GridReader) -> Option<GridFile> {
             west = tie[3] - tie[0] * h_res;
             north = tie[4] + tie[1] * v_res;
         }
-        // As in PROJ 9.8.1's GTiffGrid::open (src/grids.cpp), horizontal resolution must be positive
-        // (west-to-east) while vertical resolution may be either sign (south-up is swapped below).
+        // Reject nonfinite/degenerate resolution. PROJ 9.8.1's GTiffDataset::nextGrid
+        // (src/grids.cpp) likewise requires west-to-east resolution and accepts either vertical
+        // sign; its additional extent/minimum-resolution checks are not reproduced here.
         if !(h_res > 0.0 && h_res.is_finite() && v_res != 0.0 && v_res.is_finite()) {
             return None;
         }
@@ -2019,6 +2020,37 @@ pub(crate) fn gridshift_apply(
 
 #[cfg(test)]
 mod tests {
+    /// Resolution-orientation and empty-dimension safety checks, as in PROJ 9.8.1's
+    /// GTiffDataset::nextGrid; this does not claim its complete extent/admission parity.
+    #[test]
+    fn geotiff_grids_reject_invalid_resolution_and_dimensions() {
+        use std::io::Cursor;
+        use tiff::encoder::{TiffEncoder, colortype::Gray32Float};
+        use tiff::tags::Tag;
+        let file = |scale: [f64; 3], invalid: Option<(Tag, u32)>| {
+            let mut output = Cursor::new(Vec::new());
+            {
+                let mut encoder = TiffEncoder::new(&mut output).unwrap();
+                let mut image = encoder.new_image::<Gray32Float>(2, 2).unwrap();
+                image.encoder().write_tag(Tag::ModelPixelScaleTag, &scale[..]).unwrap();
+                image.encoder().write_tag(Tag::ModelTiepointTag, &[0.0f64, 0.0, 0.0, 0.0, 1.0, 0.0][..]).unwrap();
+                if let Some((tag, value)) = invalid {
+                    image.encoder().write_tag(tag, value).unwrap();
+                }
+                image.write_data(&[0.0f32; 4]).unwrap();
+            }
+            super::read_tiff(super::GridReader::Bytes(Cursor::new(output.into_inner().into())))
+        };
+        assert!(file([1.0, 1.0, 0.0], None).is_some());
+        for scale in
+            [[-1.0, 1.0, 0.0], [0.0, 1.0, 0.0], [f64::NAN, 1.0, 0.0], [f64::INFINITY, 1.0, 0.0], [1.0, 0.0, 0.0], [1.0, f64::NAN, 0.0]]
+        {
+            assert!(file(scale, None).is_none(), "{scale:?}");
+        }
+        assert!(file([1.0, 1.0, 0.0], Some((Tag::ImageWidth, 0))).is_none());
+        assert!(file([1.0, 1.0, 0.0], Some((Tag::TileWidth, 0))).is_none());
+    }
+
     /// Every process-wide lock of the grids is one `host::hold_for_fork` takes across a fork (an
     /// embedding library's fork handlers hold them), so that a child never starts with one held
     /// by a thread it does not have.

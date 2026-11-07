@@ -972,3 +972,25 @@ def test_rio_opened_overview_uses_overview_only_mask(tmp_path):
         actual = src.read(1, masked=True)
         np.testing.assert_array_equal(actual.mask, [[True, False], [True, False]])
         np.testing.assert_array_equal(actual[:, 1], [3, 11])
+
+
+def test_sidecar_only_mask_flags_and_uncached_reads_agree(tmp_path):
+    """GDAL 3.13.3 sidecar masks use the same native discovery as full-resolution reads."""
+    gdal = pytest.importorskip("osgeo.gdal")
+    path = tmp_path / "sidecar-mask.tif"
+    pixels = np.array([[10, 20], [30, 40]], dtype="uint8")
+    with gdal.config_option("GDAL_TIFF_INTERNAL_MASK", "NO"):
+        dst = gdal.GetDriverByName("GTiff").Create(str(path), 2, 2, 1, gdal.GDT_Byte)
+        dst.GetRasterBand(1).WriteArray(pixels)
+        dst.CreateMaskBand(gdal.GMF_PER_DATASET)
+        dst.GetRasterBand(1).GetMaskBand().WriteArray(np.array([[255, 0], [0, 255]], dtype="uint8"))
+        dst = None
+    assert path.with_suffix(".tif.msk").is_file()
+    with rio.open(path) as src:
+        from terrio.rio.enums import MaskFlags
+
+        assert src.mask_flag_enums == ([MaskFlags.per_dataset],)
+    expected = np.array([[[10, np.nan], [np.nan, 40]]], dtype="float32")
+    with txr.open_rasterio(str(path), masked=True, cache=False) as opened:
+        np.testing.assert_allclose(opened[:, :1, :].values, expected[:, :1, :], equal_nan=True)
+        np.testing.assert_allclose(opened.values, expected, equal_nan=True)
