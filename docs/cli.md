@@ -1925,6 +1925,8 @@ terrio reclassify dem.tif zones.tif -m "NO_DATA=0;[0,1500)=1;[1500,inf)=2" --ot 
 terrio reclassify nlcd.tif groups.tif -m @mapping.txt
 ```
 
+Mapping files must be regular files; directories, FIFOs and pipe-based process substitution are refused.
+
 As `gdal raster reclassify`, with GDAL's mapping syntax in `-m`/`--mapping`: `from=to` entries separated by `;`.
 `from` is a value, an interval (`[a,b)`, `(a,b]`, `(-inf,b]`, `[a,inf)`...), `NO_DATA` (the
 band's nodata value), `NAN` or `DEFAULT` (any other value); `to` is a value, `NO_DATA` or

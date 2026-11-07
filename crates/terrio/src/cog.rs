@@ -1903,7 +1903,7 @@ impl TiffRaster {
         let tags = read_geo_tags_from(&mut source).ok_or_else(|| Error::InvalidData("not a TIFF file".into()))?;
         // A directory libtiff cannot read is refused here, before any pixel is decoded.
         tags.check_structure()?;
-        let masks = crate::tiff_mask::find_masks(&mut source);
+        let masks = crate::tiff_mask::find_masks(&mut source)?;
         let len = source.seek(SeekFrom::End(0))?;
         source.seek(SeekFrom::Start(0))?;
         let tiff_err = limits.error();

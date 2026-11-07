@@ -2196,7 +2196,7 @@ class TerrioDataset(XRasterBase):
         else:
             raise RioXarrayError(
                 "All nodata values must be the same when exporting to raster. "
-                f"Current values: {attr_nodatavals}"
+                f"Current values: {nodatavals}"
             )
         if self.crs is not None:
             data_array.terrio.write_crs(self.crs, inplace=True)

@@ -701,14 +701,15 @@ def test_per_dataset_mask_and_backend_close(tmp_path):
         dst.write_mask(mask)
         dst.build_overviews([2])
 
-    da = txr.open_rasterio(str(masked_path), masked=True)
+    da = txr.open_rasterio(str(masked_path), masked=True, cache=False)
     expected = np.array([[[10.0, np.nan], [np.nan, 40.0]]], dtype="float32")
+    np.testing.assert_allclose(da[:, :1, :].values, expected[:, :1, :], equal_nan=True)
     np.testing.assert_allclose(da.values, expected, equal_nan=True)
-    np.testing.assert_allclose(da[:, :1, 1:].values, expected[:, :1, 1:], equal_nan=True)
 
     da_ovr = txr.open_rasterio(str(masked_path), masked=True, overview_level=0)
     assert da_ovr.shape == (1, 1, 1)
-    assert np.isnan(da_ovr.values).all() or np.isfinite(da_ovr.values).all()
+    assert da_ovr.values[0, 0, 0] == 10.0
+    da_ovr.close()
     masked_ovr_path = tmp_path / "masked_ovr_4x4.tif"
     with rio.open(
         masked_ovr_path,
@@ -791,6 +792,26 @@ def test_per_dataset_mask_and_backend_close(tmp_path):
     ds_nan_nodata.close()
 
 
+def test_dataset_export_requires_matching_nodata(tmp_path):
+    """None and NaN are distinct declarations; encoded errors report the compared values."""
+    from terrio.xarray.exceptions import RioXarrayError
+
+    base = xr.DataArray(
+        np.array([[np.nan, 1], [2, 3]], dtype="float32"),
+        dims=("y", "x"),
+        coords={"x": [0.5, 1.5], "y": [1.5, 0.5]},
+    ).terrio.write_crs("EPSG:4326")
+    second = base.terrio.write_nodata(np.nan)
+    dataset = xr.Dataset({"first": base, "second": second})
+    output = str(tmp_path / "mismatched.tif")
+    with pytest.raises(RioXarrayError, match="All nodata values must be the same"):
+        dataset.terrio.to_raster(output)
+    for name, value in [("first", -1), ("second", -2)]:
+        dataset[name].terrio.write_nodata(value, encoded=True, inplace=True)
+    with pytest.raises(RioXarrayError, match=r"Current values:.*-1.*-2"):
+        dataset.terrio.to_raster(output)
+
+
 @pytest.mark.parametrize(
     "mask_before_overviews,external", [(False, False), (True, False), (True, True)]
 )
@@ -840,8 +861,8 @@ def test_overview_masks_match_opened_gdal_dataset(
         data = overview.ReadAsArray().astype("float32")
         data[overview.GetMaskBand().ReadAsArray() == 0] = np.nan
         expected.append(data)
-    with txr.open_rasterio(path, masked=True, overview_level=0) as opened:
-        np.testing.assert_allclose(opened.values, np.stack(expected), equal_nan=True)
+    with txr.open_rasterio(path, masked=True, overview_level=0, cache=False) as opened:
         np.testing.assert_allclose(
-            opened[:, :2, :2].values, np.stack(expected)[:, :2, :2], equal_nan=True
+            opened[:, :2, :].values, np.stack(expected)[:, :2, :], equal_nan=True
         )
+        np.testing.assert_allclose(opened.values, np.stack(expected), equal_nan=True)

@@ -200,6 +200,12 @@
   reader never reads them. In a build with the `gdal` feature and without `grib`, a `.grib2` path
   that is a Zarr store was decoded by wbraster's Zarr reader (ruzstd 0.8, RUSTSEC-2026-0344) with
   no option set; the GDAL backend reads it now, as it reads GRIB files in such a build.
+- Raster operations use each selected band's nodata, and overview mask discovery reports I/O
+  failures instead of silently losing validity (#627). Mosaics reject inconsistent band counts
+  and target extents intersecting no source, including separate-band mosaics. Reclassification
+  mapping-file inputs are restricted to regular files.
+- Python's `write_raster` forwards dataset masks and streams eligible PMTiles/MBTiles writes.
+  Tile archives that cannot represent a dataset mask are refused before creating output (#627).
 - CI checks `Cargo.lock` against the RustSec advisory database (`cargo audit`, the `audit` job)
   on every pull request and push to main. `.cargo/audit.toml` ignores the five advisories of zip
   8.6.0 and ruzstd 0.8.3, which wbraster 0.2.1 requires, until a wbraster release depends on zip

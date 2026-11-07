@@ -552,6 +552,7 @@ pub fn mapping_from_file_text(text: &str) -> Result<String> {
 }
 
 /// Reads a UTF-8 mapping file with the same 10 MB raw-input limit on native surfaces.
+/// Accepts regular files only; FIFOs and pipe-based process substitution are not supported.
 pub fn read_mapping_file(path: &str) -> Result<String> {
     use std::io::Read;
     let meta = std::fs::metadata(path).map_err(|e| Error::InvalidArgument(format!("cannot read {path}: {e}")))?;

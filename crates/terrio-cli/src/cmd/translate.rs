@@ -227,9 +227,43 @@ pub fn run(a: Args) -> terrio::Result<()> {
 mod tests {
     use super::rewrite_args;
 
+    /// Rewriting must consume exactly the values the independently defined clap parser accepts.
+    #[test]
+    fn rewrite_arities_match_parser_options() {
+        let command = <super::Args as clap::Args>::augment_args(clap::Command::new("translate"));
+        for argument in command.get_arguments() {
+            if argument.get_id() == "scale" || !argument.get_action().takes_values() {
+                continue;
+            }
+            if argument.get_long().is_none() && argument.get_short().is_none() {
+                continue;
+            }
+            let arity = argument.get_num_args().map_or(1, |range| {
+                assert_eq!(range.min_values(), range.max_values(), "{} has variable arity", argument.get_id());
+                range.max_values()
+            });
+            let longs = argument.get_long().into_iter().chain(argument.get_all_aliases().unwrap_or_default());
+            for flag in longs {
+                assert_eq!(super::flag_arity(&format!("--{flag}")), Some(arity), "--{flag}");
+            }
+            let shorts = argument.get_short().into_iter().chain(argument.get_all_short_aliases().unwrap_or_default());
+            for flag in shorts {
+                assert_eq!(super::flag_arity(&format!("-{flag}")), Some(arity), "-{flag}");
+            }
+        }
+    }
+
     #[test]
     fn rewrites_scale_before_positional_paths() {
         for (input, expected) in [
+            (
+                vec!["terrio", "raster", "translate", "--scale", "in.tif", "out.tif"],
+                vec!["terrio", "raster", "translate", "in.tif", "out.tif", "--scale"],
+            ),
+            (
+                vec!["terrio", "translate", "--scale", "--", "in.tif", "out.tif"],
+                vec!["terrio", "translate", "--scale", "--", "in.tif", "out.tif"],
+            ),
             (
                 vec!["terrio", "translate", "--ot", "Byte", "--scale", "in.tif", "out.tif"],
                 vec!["terrio", "translate", "--ot", "Byte", "in.tif", "out.tif", "--scale"],
