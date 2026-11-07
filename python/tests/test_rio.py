@@ -977,3 +977,29 @@ def test_disjoint_bounds_mixed_orientations_and_degenerate_lines():
         for line, expected in [((0, 1, 2, 1), False), ((0, 3, 2, 3), True)]:
             assert disjoint_bounds(line, box) is expected
             assert disjoint_bounds(box, line) is expected
+
+
+def test_lazy_tiff_open_rejects_gdal_readable_dangling_ifd(tmp_path):
+    """GDAL 3.13.3 tolerates this chain with a warning; Terrio requires valid IFDs."""
+    import struct
+
+    import terrio
+
+    gdal = pytest.importorskip("osgeo.gdal")
+    path = tmp_path / "dangling-ifd.tif"
+    values = np.array([[1, 2], [3, 4]], dtype="uint8")
+    dataset = gdal.GetDriverByName("GTiff").Create(str(path), 2, 2, 1, gdal.GDT_Byte)
+    dataset.GetRasterBand(1).WriteArray(values)
+    dataset = None
+    raw = bytearray(path.read_bytes())
+    assert raw[:4] == b"II*\x00"
+    offset = struct.unpack_from("<I", raw, 4)[0]
+    entries = struct.unpack_from("<H", raw, offset)[0]
+    struct.pack_into("<I", raw, offset + 2 + 12 * entries, len(raw) + 1024)
+    path.write_bytes(raw)
+    with gdal.quiet_errors():
+        reference = gdal.Open(str(path))
+        np.testing.assert_array_equal(reference.ReadAsArray(), values)
+    np.testing.assert_array_equal(terrio.open_raster(str(path)).read(1), values)
+    with pytest.raises(terrio.errors.TerrioIOError, match="buffer|IFD|directory"):
+        terrio.open_raster(str(path), lazy=True)

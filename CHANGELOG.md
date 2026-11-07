@@ -4,14 +4,14 @@
 
 - Datum-grid hierarchy uses the first duplicate parent name and nests unparented subgrids under
   the first containing extent. Existing ambiguous grid files can select a different datum-shift
-  grid. Native TIFFs with malformed IFD chains must be repaired or rewritten before opening.
+  grid. Lazy TIFF reads require malformed IFD chains to be repaired or rewritten before opening.
 
 - `terrio.rio.coords.disjoint_bounds` rejects opposite nondegenerate orientations in either
   argument order; zero-height bounds remain boundary lines. Calc window alignment retains
   blank nodata/zero-filled inputs outside the window rather than rejecting the calculation.
 
 - JavaScript `listUrl` rejects invalid `depth` values, including strings and `Infinity`;
-  omit `depth` or pass `null` for unlimited traversal. Native TIFF opens now reject unreadable or
+  omit `depth` or pass `null` for unlimited traversal. Native lazy TIFF opens now reject unreadable or
   malformed directory/tag tables discovered during mask scanning, including files without masks,
   instead of silently treating them as maskless.
   Only tags relevant to image layout and masks are decoded; unrelated private tags are skipped.
