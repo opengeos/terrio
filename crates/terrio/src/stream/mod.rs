@@ -704,10 +704,10 @@ impl FeatureSource for GpkgSource {
         let (def, columns, rowid_col, bbox, first) = (&self.def, self.columns, self.rowid_col, self.bbox, self.n);
         let features = crate::par::map_range(rows.len(), |i| {
             let (rowid, payload) = &rows[i];
-            def.feature(&sqlite::row_values(payload, *rowid, columns, rowid_col), first + i as i64, bbox)
+            sqlite::row_values(&self.db, payload, *rowid, columns, rowid_col).map(|row| def.feature(&row, first + i as i64, bbox))
         });
         self.n += rows.len() as i64;
-        Ok(Some(features.into_iter().flatten().collect()))
+        Ok(Some(features.into_iter().collect::<Result<Vec<_>>>()?.into_iter().flatten().collect()))
     }
 }
 

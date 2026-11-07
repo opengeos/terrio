@@ -244,9 +244,7 @@ impl Checker {
         for object in self.db.objects.iter().filter(|entry| entry.0 == "index" && entry.4.is_empty()) {
             self.report.require(indexes.iter().any(|index| index.name == object.1), 6, format!("{}: orphan automatic index", object.1));
         }
-        let encoding = u32::from_be_bytes(
-            bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| Error::InvalidData("truncated SQLite header".into()))?,
-        );
+        let encoding = crate::drivers::sqlite::header_text_encoding(bytes)?;
         let mut invalid_values = std::collections::BTreeSet::new();
         sqlite_repack::inspect(bytes, |entry, rowid, record| {
             if entry.0 != "table" {

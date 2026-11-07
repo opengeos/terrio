@@ -7,7 +7,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 use terrio::crs::SpatialRef;
 use terrio::formats::RasterDriver;
-use terrio::{DataType, LazyRaster, RasterDataset, RasterWriteOptions, Window, WindowOptions};
+use terrio::ops::Resampling;
+use terrio::ops::overview::OverviewSelection;
+use terrio::{DataType, LazyRaster, RasterDataset, RasterWriteOptions, ResampledReadOptions, Window, WindowOptions};
 use wbraster::raster::RasterData;
 
 /// A metadata domain as Python gets it: the band (from 1, 0 for the dataset), the domain, its items.
@@ -133,6 +135,57 @@ fn parse_bands(band: Option<&Bound<'_, PyAny>>) -> PyResult<(Vec<usize>, bool)> 
             Ok(i) => Ok((vec![i], true)),
             Err(_) => Ok((b.extract::<Vec<usize>>().map_err(|_| invalid("band must be an int or a sequence of ints"))?, false)),
         },
+    }
+}
+
+/// Parses the `overview` argument of a resampled read: `"AUTO"`, `"AUTO-n"`, `"NONE"`, an
+/// overview number (an int or its digits), or `None` for `"AUTO"`.
+fn parse_overview_selection(overview: Option<&Bound<'_, PyAny>>) -> PyResult<OverviewSelection> {
+    match overview {
+        None => Ok(OverviewSelection::Auto),
+        Some(o) => match o.extract::<usize>() {
+            Ok(i) => Ok(OverviewSelection::Level(i)),
+            Err(_) => {
+                let text =
+                    o.extract::<String>().map_err(|_| invalid("overview must be \"AUTO\", \"AUTO-n\", \"NONE\" or an overview number"))?;
+                OverviewSelection::parse(&text).py()
+            }
+        },
+    }
+}
+
+impl PyRaster {
+    /// The options of a resampled read, from the arguments `read_resampled` takes, with the bands
+    /// as the raster numbers them (a complex band's real and imaginary parts), and whether a
+    /// single band was asked for.
+    fn resampled_options(
+        &self,
+        size: (usize, usize),
+        band: Option<&Bound<'_, PyAny>>,
+        window: Option<(f64, f64, f64, f64)>,
+        resampling: &str,
+        overview: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<(ResampledReadOptions, bool)> {
+        let (mut bands, single) = parse_bands(band)?;
+        if self.is_complex() {
+            if bands.is_empty() {
+                bands = (1..=self.inner.band_count()).collect();
+            } else {
+                let count = self.inner.band_count() / 2;
+                if let Some(b) = bands.iter().find(|b| **b == 0 || **b > count) {
+                    return Err(invalid(format!("no band {b}: the raster has {count} band(s)")));
+                }
+                bands = bands.iter().flat_map(|b| [2 * b - 1, 2 * b]).collect();
+            }
+        }
+        let options = ResampledReadOptions {
+            bands,
+            window,
+            size,
+            resampling: Resampling::parse(resampling).py()?,
+            overview: parse_overview_selection(overview)?,
+        };
+        Ok((options, single))
     }
 }
 
@@ -412,6 +465,147 @@ impl PyRaster {
         let data = py.detach_result(|| inner.read_sampled(&cols, &rows, &options)).py()?;
         let count = if options.bands.is_empty() { self.inner.band_count() } else { options.bands.len() };
         data.map(|d| to_numpy(py, d, &[count, rows.len(), cols.len()])).transpose()
+    }
+
+    /// Reads a window into an output of another size, as GDAL's `RasterIO` reads it
+    /// (`gdal_translate -outsize`, rasterio's `read(window=..., out_shape=..., resampling=...)`).
+    ///
+    /// The stored resolution is the overview `RasterIO` would choose (or the one `overview`
+    /// names), so a small output of a large raster reads only an overview's blocks, and for a
+    /// remote COG fetches only its tiles. Invalid pixels (masked out, nodata, or transparent in an
+    /// alpha band) carry no weight in the kernels.
+    ///
+    /// Args:
+    ///     size: The output `(width, height)`.
+    ///     band: The band to read (an int, numbered from 1), a sequence of bands, or `None` for
+    ///         all bands.
+    ///     window: The source window `(col_off, row_off, width, height)` in full-resolution
+    ///         pixels, possibly fractional, within the raster; `None` for the whole raster.
+    ///     resampling: `"nearest"` (the default), `"bilinear"`, `"cubic"`, `"cubicspline"`,
+    ///         `"lanczos"`, `"average"`, `"rms"` or `"mode"`.
+    ///     overview: The stored resolution read, as `gdal_translate -ovr` takes it: `"AUTO"` (the
+    ///         default, `RasterIO`'s choice), `"AUTO-n"`, `"NONE"` (full resolution) or an
+    ///         overview number (0 is the largest). The window stays in full-resolution pixels.
+    ///
+    /// Returns:
+    ///     numpy.ndarray: The pixels in the raster's own dtype, `(height, width)` when `band` is
+    ///     an int, otherwise `(bands, height, width)`.
+    ///
+    /// Raises:
+    ///     InvalidArgumentError: If a band does not exist, the output or the window is empty,
+    ///         the window is not within the raster, or the method is not a known name.
+    ///     UnsupportedError: If the method applies to warps only (`min`, `max`, `med`, `q1`,
+    ///         `q3`, `sum`).
+    #[pyo3(signature = (size, band=None, window=None, resampling="nearest", overview=None))]
+    fn read_resampled<'py>(
+        &mut self,
+        py: Python<'py>,
+        size: (usize, usize),
+        band: Option<&Bound<'py, PyAny>>,
+        window: Option<(f64, f64, f64, f64)>,
+        resampling: &str,
+        overview: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let (options, single) = self.resampled_options(size, band, window, resampling, overview)?;
+        let complex = self.is_complex();
+        let inner = &mut self.inner;
+        let r = py.detach_result(|| inner.read_resampled(&options)).py()?.raster;
+        let bands = if complex { r.bands / 2 } else { r.bands };
+        let shape = if single { vec![r.rows, r.cols] } else { vec![bands, r.rows, r.cols] };
+        if complex {
+            return complex_to_numpy(py, r.data, r.rows * r.cols, &shape);
+        }
+        to_numpy(py, r.data, &shape)
+    }
+
+    /// Reads the mask bands of the bands `read_resampled` reads, with the same arguments, as
+    /// GDAL's `GetMaskBand()->RasterIO()` reads them.
+    ///
+    /// A per-dataset mask is resampled from its own overviews; a nodata value masks the pixels
+    /// `read_resampled` reads that are that value; an alpha band is the other bands' mask; bands
+    /// without one are all valid. Bands with a nodata value are read for their masks:
+    /// `read_resampled_with_masks` reads pixels and masks without reading them twice.
+    ///
+    /// Args:
+    ///     size: The output `(width, height)`.
+    ///     band: The band (an int, numbered from 1), a sequence of bands, or `None` for all.
+    ///     window: The source window, as for `read_resampled`.
+    ///     resampling: The method, as for `read_resampled`.
+    ///     overview: The stored resolution, as for `read_resampled`.
+    ///
+    /// Returns:
+    ///     numpy.ndarray: uint8, 0 for invalid pixels and 255 for valid ones (or values between
+    ///     where a kernel resampled the mask), `(height, width)` when `band` is an int, otherwise
+    ///     `(bands, height, width)`.
+    ///
+    /// Raises:
+    ///     InvalidArgumentError: As `read_resampled`.
+    #[pyo3(signature = (size, band=None, window=None, resampling="nearest", overview=None))]
+    fn read_resampled_masks<'py>(
+        &mut self,
+        py: Python<'py>,
+        size: (usize, usize),
+        band: Option<&Bound<'py, PyAny>>,
+        window: Option<(f64, f64, f64, f64)>,
+        resampling: &str,
+        overview: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let (options, single) = self.resampled_options(size, band, window, resampling, overview)?;
+        let complex = self.is_complex();
+        let inner = &mut self.inner;
+        let mut masks = py.detach_result(|| inner.read_resampled_masks(&options)).py()?;
+        let (w, h) = size;
+        let plane = w * h;
+        if complex {
+            // A complex band's mask is its real part's.
+            masks = masks.chunks(plane).step_by(2).flatten().copied().collect();
+        }
+        let bands = masks.len() / plane.max(1);
+        let shape = if single { vec![h, w] } else { vec![bands, h, w] };
+        to_numpy(py, RasterData::U8(masks), &shape)
+    }
+
+    /// Reads what `read_resampled` and `read_resampled_masks` read, at once: nodata masks are
+    /// computed from the pixels read, rather than from a second read of their bands.
+    ///
+    /// Args:
+    ///     size: The output `(width, height)`.
+    ///     band: The band (an int, numbered from 1), a sequence of bands, or `None` for all.
+    ///     window: The source window, as for `read_resampled`.
+    ///     resampling: The method, as for `read_resampled`.
+    ///     overview: The stored resolution, as for `read_resampled`.
+    ///
+    /// Returns:
+    ///     tuple[numpy.ndarray, numpy.ndarray]: The pixels, as `read_resampled` returns them, and
+    ///     the uint8 masks, as `read_resampled_masks` returns them.
+    ///
+    /// Raises:
+    ///     InvalidArgumentError: As `read_resampled`.
+    #[pyo3(signature = (size, band=None, window=None, resampling="nearest", overview=None))]
+    fn read_resampled_with_masks<'py>(
+        &mut self,
+        py: Python<'py>,
+        size: (usize, usize),
+        band: Option<&Bound<'py, PyAny>>,
+        window: Option<(f64, f64, f64, f64)>,
+        resampling: &str,
+        overview: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+        let (options, single) = self.resampled_options(size, band, window, resampling, overview)?;
+        let complex = self.is_complex();
+        let inner = &mut self.inner;
+        let (ds, mut masks) = py.detach_result(|| inner.read_resampled_with_masks(&options)).py()?;
+        let r = ds.raster;
+        let plane = r.rows * r.cols;
+        let bands = if complex { r.bands / 2 } else { r.bands };
+        let shape = if single { vec![r.rows, r.cols] } else { vec![bands, r.rows, r.cols] };
+        if complex {
+            // A complex band's mask is its real part's.
+            masks = masks.chunks(plane).step_by(2).flatten().copied().collect();
+        }
+        let masks = to_numpy(py, RasterData::U8(masks), &shape)?;
+        let pixels = if complex { complex_to_numpy(py, r.data, plane, &shape)? } else { to_numpy(py, r.data, &shape)? };
+        Ok((pixels, masks))
     }
 
     /// Whether the raster has a per-dataset mask (a GeoTIFF's internal mask, GDAL's
