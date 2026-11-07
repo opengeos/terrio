@@ -1240,8 +1240,8 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
                 // average of its valid pixels by their horizontal weights, or invalid when it has
                 // none (or too few consecutive ones for a kernel with negative weights). The
                 // column of rows is then the average of its valid rows by their vertical weights,
-                // invalid by the same rules. Both passes keep a total weight above 0.0, with no
-                // epsilon, as GDAL 3.13.3 does (`dfWeightSum > 0.0` in both passes of
+                // invalid by the same rules. With nodata, a pass keeps a total weight above 0.0,
+                // with no epsilon, as GDAL 3.13.3 does (`dfWeightSum > 0.0` in both passes of
                 // `GDALResampleChunk_ConvolutionT`, gcore/overview.cpp).
                 let mut rows: Vec<Option<f64>> = Vec::with_capacity(wys.len());
                 for c in 0..ow {
