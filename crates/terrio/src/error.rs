@@ -45,6 +45,9 @@ pub enum Error {
     /// A dataset was found but its contents are not valid.
     #[error("{0}")]
     InvalidData(String),
+    /// The operation was cancelled by its progress callback.
+    #[error("the operation was cancelled")]
+    Cancelled,
 }
 
 impl Error {

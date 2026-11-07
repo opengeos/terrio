@@ -1,5 +1,7 @@
 """Raster creation, overview management and in-place update APIs."""
 
+import os
+
 import numpy as np
 import pytest
 
@@ -140,3 +142,75 @@ def test_noop_edit_and_updates_preserve_cog_bytes(tmp_path):
         )
         assert terrio.update_raster(source, str(path), ignore_cog_layout_break=True) is None
         assert path.read_bytes() == original
+
+
+def _float_raster(path, cols=256, rows=192):
+    values = np.arange(cols * rows, dtype="float32").reshape(rows, cols)
+    terrio.Raster.from_array(values, (0, 1, 0, rows, 0, -1), crs="EPSG:3857").write(str(path))
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_add_overviews_progress_and_cancellation(tmp_path, external):
+    from terrio.errors import CancelledError, TerrioError
+
+    path = tmp_path / "progress.tif"
+    _float_raster(path)
+    seen = []
+    # `list.append` returns None, which goes on.
+    sizes = terrio.add_overviews(
+        str(path), [2], resampling="average", external=external, progress=seen.append
+    )
+    assert sizes == [(128, 96)]
+    assert seen[0] == 0.0 and seen[-1] == 1.0 and seen == sorted(seen) and len(seen) > 2
+    changed = tmp_path / ("progress.tif.ovr" if external else "progress.tif")
+    before = changed.read_bytes()
+
+    # A falsy return cancels partway; the file (and the sidecar built before) is kept.
+    calls = []
+
+    def until(fraction):
+        calls.append(fraction)
+        return fraction < 0.3
+
+    with pytest.raises(CancelledError, match="cancelled") as info:
+        terrio.add_overviews(
+            str(path), [2, 4, 8], resampling="average", external=external, progress=until
+        )
+    assert isinstance(info.value, TerrioError)
+    assert 0.3 <= calls[-1] < 1.0
+    assert changed.read_bytes() == before
+
+    # An exception raised by the callback cancels too, and is raised again.
+    def fail(fraction):
+        if fraction > 0:
+            raise KeyError("stop")
+
+    with pytest.raises(KeyError, match="stop"):
+        terrio.add_overviews(str(path), [2, 4, 8], external=external, progress=fail)
+    assert changed.read_bytes() == before
+    assert terrio.open_raster(str(path), lazy=True).overviews == [(128, 96)]
+    assert not [p.name for p in tmp_path.iterdir() if ".terrio-" in p.name]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file permissions")
+def test_external_overviews_of_read_only_file(tmp_path):
+    path = tmp_path / "read-only.tif"
+    _float_raster(path)
+    path.chmod(0o444)
+    before = path.read_bytes()
+    try:
+        # Internal overviews change the file: refused.
+        with pytest.raises(terrio.TerrioIOError, match="read-only"):
+            terrio.add_overviews(str(path), [2])
+        assert terrio.add_overviews(str(path), [2, 4], resampling="average", external=True) == [
+            (128, 96),
+            (64, 48),
+        ]
+        assert terrio.refresh_overviews(str(path), external=True) == [(128, 96), (64, 48)]
+        overview = terrio.open_raster(str(path), lazy=True).read(1, overview=0)
+        np.testing.assert_array_equal(overview[0, :2], [128.5, 130.5])
+        terrio.delete_overviews(str(path), external=True)
+        assert not (tmp_path / "read-only.tif.ovr").exists()
+        assert path.read_bytes() == before
+    finally:
+        path.chmod(0o644)

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- External overviews are built, refreshed and deleted beside a read-only GeoTIFF, as
+  `gdaladdo -ro` builds them (#612): `add_overviews`, `refresh_overviews` and `delete_overviews`
+  with `external` (and `terrio overviews --external`) write only the `.ovr` sidecar and no longer
+  refuse a file that cannot be written. Internal overviews still need a writable file.
+- `add_overviews_with_progress` (Rust) and `add_overviews(..., progress=callback)` (Python) report
+  the fraction of the overviews computed, from 0 to 1 and never decreasing, to a callback that can
+  cancel (#612). A cancellation returns `Error::Cancelled` (Python
+  `terrio.errors.CancelledError`) and changes no file: an existing `.ovr` stays as it was.
 - A netCDF snapshot (`terrio mdconvert`, `Dataset.write`) writes a netCDF-4 compound attribute
   as a compound, as GDAL 3.13.3's `gdalmdimtranslate -of netCDF` does (#565): `station_t
   z:station = {7, 12.5}` stays `station_t z:station = {7, 12.5}` where it became the text
