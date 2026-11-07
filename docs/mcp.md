@@ -88,5 +88,6 @@ bytes; for a large dataset, ask for `info --json` of one layer (`-l`) rather tha
 
 Commands run in the background, so the server keeps answering while a long `warp` or `filter`
 works. When the client cancels a call (or times it out, if it sends a cancellation), or quits, the
-command is stopped. The tool calls of a JSON-RPC batch run the same way, at most 8 at a time, and
-the batch's replies are sent together once its calls are done.
+command is stopped. The tool calls of a JSON-RPC batch run the same way, at most 8 of a batch's
+calls at a time (single calls are not limited), and the batch's replies, those of its other
+requests included, are sent together once its calls are done.
