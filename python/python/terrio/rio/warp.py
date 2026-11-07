@@ -696,9 +696,9 @@ def reproject(
 
     Args:
         source: A 2-D or 3-D array, a `Band` (`terrio.rio.band(dataset, bidx)`) or a dataset.
-            A masked array is warped with its mask as an alpha band, as rasterio does. With `sum`,
-            each pixel of a dataset opened at an overview level (`overview_level`) counts for the
-            full-resolution pixels it stands for.
+            A masked array is warped with its mask as an alpha band, as rasterio does.
+            With `sum`, each pixel of a dataset opened at an overview level (`overview_level`)
+            counts for the full-resolution pixels it stands for.
         destination: A 2-D or 3-D array (or a `Band` of a writer) to fill; created when None.
             For a masked array, a new masked array over its data is returned, masked where
             nothing was warped, as rasterio does.
