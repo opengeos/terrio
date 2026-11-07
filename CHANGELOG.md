@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The `--json-usage` catalog (`schema_version` 0.1.1) records whether each argument is
+  `repeatable` (clap Append/Count) and lists its `conflicts_with` arguments in both directions,
+  including members of exclusive argument groups. A CI step requires a newer `schema_version`
+  whenever the catalog digest changes relative to the pull request's base.
+
 - Calc disambiguates `-f` between the output format and a referenced `f` input, and preserves
   literal arguments and fixed-arity option values. Translate handles zero- or two-value
   `--scale` options before input/output paths without consuming the paths as scale values.

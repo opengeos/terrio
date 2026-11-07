@@ -198,6 +198,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Catalog changes bump the version relative to the protected base
+        if: github.event_name == 'pull_request'
+        env:
+          CLI_CATALOG_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$CLI_CATALOG_BASE_SHA"
+          python3 -m unittest discover -s scripts/tests -p test_cli_catalog_version.py
+          python3 scripts/check_cli_catalog_version.py --base "$CLI_CATALOG_BASE_SHA"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Documentation builds without warnings (missing docs included)

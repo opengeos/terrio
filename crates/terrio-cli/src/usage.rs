@@ -3,15 +3,18 @@
 use clap::{Arg, ArgAction, Command, CommandFactory};
 use serde_json::{Value, json};
 use std::any::TypeId;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
+/// Builds the root clap command with parser tables ready for inspection.
 fn root() -> Command {
     let mut command = crate::Cli::command();
     command.build();
     command
 }
 
+/// Returns whether `command` is part of the exposed public command tree.
 fn exposed(command: &Command) -> bool {
     !matches!(command.get_name(), "mcp" | "ui" | "view" | "help")
 }
@@ -57,7 +60,7 @@ pub(crate) fn requested(args: &[OsString]) -> Option<Value> {
         return None;
     }
     Some(json!({
-        "schema_version": "0.1",
+        "schema_version": "0.1.1",
         "unstable": true,
         "program": "terrio",
         "version": env!("CARGO_PKG_VERSION"),
@@ -65,6 +68,7 @@ pub(crate) fn requested(args: &[OsString]) -> Option<Value> {
     }))
 }
 
+/// Recursively describes `command` and its subcommands as a JSON catalog object.
 fn describe(command: &Command, path: &[String]) -> Value {
     let mut children: Vec<_> =
         if path.len() == 1 { commands().collect() } else { command.get_subcommands().filter(|c| exposed(c)).cloned().collect() };
@@ -77,7 +81,8 @@ fn describe(command: &Command, path: &[String]) -> Value {
             describe(&child, &path)
         })
         .collect();
-    let arguments: Vec<_> = command.get_arguments().map(|arg| argument(arg, path)).collect();
+    let arg_conflicts = conflicts(command);
+    let arguments: Vec<_> = command.get_arguments().map(|arg| argument(arg, path, &arg_conflicts)).collect();
     json!({
         "name": command.get_name(),
         "path": path,
@@ -88,6 +93,7 @@ fn describe(command: &Command, path: &[String]) -> Value {
     })
 }
 
+/// Determines the schema type string for `arg` within the given command `path`.
 fn value_type(arg: &Arg, path: &[String]) -> &'static str {
     let id = arg.get_value_parser().type_id();
     if id == TypeId::of::<bool>()
@@ -152,7 +158,42 @@ fn value_type(arg: &Arg, path: &[String]) -> &'static str {
     }
 }
 
-fn argument(arg: &Arg, path: &[String]) -> Value {
+/// Conflicts of each argument of `command`, keyed and listed by the catalog `name` (the clap id).
+/// clap records a conflict on one argument only, and exclusive argument groups do not report
+/// member-to-member conflicts through `get_arg_conflicts_with`. Both directions and exclusive
+/// group pairs are recorded here. Only arguments of this command are listed.
+fn conflicts(command: &Command) -> BTreeMap<String, BTreeSet<String>> {
+    let own: Vec<&Arg> = command.get_arguments().collect();
+    let ids: BTreeSet<&str> = own.iter().map(|arg| arg.get_id().as_str()).collect();
+    let mut map: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for arg in &own {
+        for other in command.get_arg_conflicts_with(arg) {
+            if other.get_id() == arg.get_id() || !ids.contains(other.get_id().as_str()) {
+                continue;
+            }
+            map.entry(arg.get_id().as_str().to_string()).or_default().insert(other.get_id().as_str().to_string());
+            map.entry(other.get_id().as_str().to_string()).or_default().insert(arg.get_id().as_str().to_string());
+        }
+    }
+    for group in command.get_groups() {
+        if group.clone().is_multiple() {
+            continue;
+        }
+        let members: Vec<&str> = group.get_args().filter(|id| ids.contains(id.as_str())).map(|id| id.as_str()).collect();
+        for (i, &a) in members.iter().enumerate() {
+            for &b in &members[i + 1..] {
+                if a != b {
+                    map.entry(a.to_string()).or_default().insert(b.to_string());
+                    map.entry(b.to_string()).or_default().insert(a.to_string());
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Builds the catalog argument JSON representation for `arg`.
+fn argument(arg: &Arg, path: &[String], conflicts: &BTreeMap<String, BTreeSet<String>>) -> Value {
     let range = arg.get_num_args().unwrap_or_else(|| if arg.get_action().takes_values() { 1.into() } else { 0.into() });
     let max = range.max_values();
     let choices: Vec<_> = if arg.get_action().takes_values() {
@@ -172,6 +213,9 @@ fn argument(arg: &Arg, path: &[String]) -> Value {
         ArgAction::Version => "version",
         _ => "unknown",
     };
+    // clap accepts Append and Count again; a second Set, SetTrue or SetFalse is an
+    // ArgumentConflict unless args_override_self or overrides_with applies (terrio sets neither).
+    let repeatable = matches!(arg.get_action(), ArgAction::Append | ArgAction::Count);
     json!({
         "name": arg.get_id().as_str(),
         "short": arg.get_short().map(|c| c.to_string()),
@@ -186,17 +230,21 @@ fn argument(arg: &Arg, path: &[String]) -> Value {
         "required": arg.is_required_set(),
         "num_args": {"min": range.min_values(), "max": (max != usize::MAX).then_some(max)},
         "action": action,
+        "repeatable": repeatable,
         "global": arg.is_global_set(),
         "hidden": arg.is_hide_set(),
         "value_names": arg.get_value_names().unwrap_or_default().iter().map(ToString::to_string).collect::<Vec<_>>(),
         "value_delimiter": arg.get_value_delimiter().map(|c| c.to_string()),
         "allow_hyphen_values": arg.is_allow_hyphen_values_set(),
+        "conflicts_with": conflicts.get(arg.get_id().as_str()).map(|names| names.iter().cloned().collect::<Vec<_>>()).unwrap_or_default(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs `terrio` with `args` on a dedicated thread with the CLI's standard stack size.
     fn usage(args: &[&str]) -> Option<Value> {
         std::thread::scope(|scope| {
             std::thread::Builder::new()
@@ -206,6 +254,11 @@ mod tests {
                 .join()
                 .unwrap()
         })
+    }
+
+    /// The catalog entry for the argument named `name` in a command's `arguments` array.
+    fn catalog_argument<'a>(args: &'a [Value], name: &str) -> &'a Value {
+        args.iter().find(|a| a["name"] == name).unwrap()
     }
 
     #[test]
@@ -298,19 +351,108 @@ mod tests {
     fn types_defaults_choices_and_arities_follow_clap() {
         let result = usage(&["terrio", "warp", "--json-usage"]).unwrap();
         let args = result["command"]["arguments"].as_array().unwrap();
-        let arg = |name: &str| args.iter().find(|a| a["name"] == name).unwrap();
-        assert_eq!(arg("paths")["type"], "path");
-        assert_eq!(arg("paths")["num_args"], json!({"min":2,"max":null}));
-        assert_eq!(arg("paths")["required"], true);
-        assert_eq!(arg("tr")["type"], "number");
-        assert_eq!(arg("tr")["num_args"], json!({"min":2,"max":2}));
-        assert_eq!(arg("ts")["type"], "integer");
-        assert_eq!(arg("tap")["type"], "boolean");
-        assert_eq!(arg("tap")["default"], json!(["false"]));
-        assert_eq!(arg("tap")["choices"], json!([]));
-        assert_eq!(arg("resampling")["default"], json!(["near"]));
+        assert_eq!(catalog_argument(args, "paths")["type"], "path");
+        assert_eq!(catalog_argument(args, "paths")["num_args"], json!({"min":2,"max":null}));
+        assert_eq!(catalog_argument(args, "paths")["required"], true);
+        assert_eq!(catalog_argument(args, "tr")["type"], "number");
+        assert_eq!(catalog_argument(args, "tr")["num_args"], json!({"min":2,"max":2}));
+        assert_eq!(catalog_argument(args, "ts")["type"], "integer");
+        assert_eq!(catalog_argument(args, "tap")["type"], "boolean");
+        assert_eq!(catalog_argument(args, "tap")["default"], json!(["false"]));
+        assert_eq!(catalog_argument(args, "tap")["choices"], json!([]));
+        assert_eq!(catalog_argument(args, "resampling")["default"], json!(["near"]));
         let result = usage(&["terrio", "validate-cog", "--json-usage"]).unwrap();
         let profile = result["command"]["arguments"].as_array().unwrap().iter().find(|a| a["name"] == "profile").unwrap();
         assert_eq!(profile["choices"], json!(["rio-cogeo", "gdal"]));
+    }
+
+    /// Verifies that repeatable status accurately tracks clap Append and Count actions.
+    #[test]
+    fn repeatable_follows_clap_occurrence_rules() {
+        let result = usage(&["terrio", "warp", "--json-usage"]).unwrap();
+        let args = result["command"]["arguments"].as_array().unwrap();
+        // `--tr` is Append with two values per occurrence: clap keeps every occurrence.
+        assert_eq!(catalog_argument(args, "tr")["action"], "append");
+        assert_eq!(catalog_argument(args, "tr")["num_args"], json!({"min":2,"max":2}));
+        assert_eq!(catalog_argument(args, "tr")["repeatable"], true);
+        // Positional `paths` (Vec<String>) also uses Append action in clap, indicating
+        // that multiple trailing positional operands are accepted into the collection.
+        assert_eq!(catalog_argument(args, "paths")["action"], "append");
+        assert_eq!(catalog_argument(args, "paths")["repeatable"], true);
+        // A second Set or SetTrue occurrence is an ArgumentConflict in clap.
+        assert_eq!(catalog_argument(args, "srcnodata")["action"], "set");
+        assert_eq!(catalog_argument(args, "srcnodata")["repeatable"], false);
+        assert_eq!(catalog_argument(args, "tap")["action"], "set_true");
+        assert_eq!(catalog_argument(args, "tap")["repeatable"], false);
+
+        // Verify that clap's parser rejects repeated Set/SetTrue options with an ArgumentConflict.
+        let parse_err = std::thread::Builder::new()
+            .stack_size(crate::STACK_SIZE)
+            .spawn(|| root().try_get_matches_from(["terrio", "warp", "a.tif", "b.tif", "--srcnodata", "0", "--srcnodata", "1"]))
+            .unwrap()
+            .join()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(parse_err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let appended = std::thread::Builder::new()
+            .stack_size(crate::STACK_SIZE)
+            .spawn(|| {
+                let parsed = root()
+                    .try_get_matches_from(["terrio", "warp", "a.tif", "b.tif", "--tr", "0.02", "0.02", "--tr", "0.05", "0.05"])
+                    .unwrap();
+                parsed.subcommand_matches("warp").unwrap().get_many::<f64>("tr").unwrap().copied().collect::<Vec<_>>()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(appended, [0.02, 0.02, 0.05, 0.05]);
+    }
+
+    /// Verifies that both sides of declared argument conflicts and exclusive group members are listed.
+    #[test]
+    fn conflicts_with_lists_both_sides_of_a_declared_pair() {
+        // `ts` declares `conflicts_with = "tr"` in clap; `like` declares `conflicts_with_all`
+        // over tr, ts and te. The catalog lists both sides of each declared pair.
+        let result = usage(&["terrio", "rasterize", "--json-usage"]).unwrap();
+        let args = result["command"]["arguments"].as_array().unwrap();
+        assert_eq!(catalog_argument(args, "ts")["conflicts_with"], json!(["like", "tr"]));
+        assert_eq!(catalog_argument(args, "tr")["conflicts_with"], json!(["like", "ts"]));
+        assert_eq!(catalog_argument(args, "te")["conflicts_with"], json!(["like"]));
+        // `tap` declares only `requires = "tr"`; requires is deferred, so it lists no conflicts.
+        assert_eq!(catalog_argument(args, "tap")["conflicts_with"], json!([]));
+
+        // `vector-clip` groups `bbox`, `geometry` and `like` into an exclusive ArgGroup:
+        // members mutually conflict pairwise even though no direct `conflicts_with` is declared on each Arg.
+        let result = usage(&["terrio", "vector-clip", "--json-usage"]).unwrap();
+        let args = result["command"]["arguments"].as_array().unwrap();
+        assert_eq!(catalog_argument(args, "bbox")["conflicts_with"], json!(["geometry", "like"]));
+        assert_eq!(catalog_argument(args, "geometry")["conflicts_with"], json!(["bbox", "like"]));
+        assert_eq!(catalog_argument(args, "like")["conflicts_with"], json!(["bbox", "geometry"]));
+    }
+
+    /// Verifies that `conflicts_with` is symmetric and refers only to arguments defined on the command.
+    #[test]
+    fn conflicts_with_is_symmetric_and_names_existing_arguments() {
+        /// Recursively verifies conflict symmetry for all arguments in `command` and its subcommands.
+        fn check(command: &Value) {
+            let args = command["arguments"].as_array().unwrap();
+            let identifier = |a: &Value| a["name"].as_str().unwrap().to_string();
+            for a in args {
+                for other in a["conflicts_with"].as_array().unwrap() {
+                    let other = other.as_str().unwrap();
+                    let target = args
+                        .iter()
+                        .find(|b| identifier(b) == other)
+                        .unwrap_or_else(|| panic!("{} conflicts with unknown {other}", command["path"]));
+                    let back: Vec<_> = target["conflicts_with"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+                    assert!(back.contains(&identifier(a).as_str()), "{other} does not list {} back", identifier(a));
+                }
+            }
+            for child in command["subcommands"].as_array().unwrap() {
+                check(child);
+            }
+        }
+        let result = usage(&["terrio", "--json-usage"]).unwrap();
+        check(&result["command"]);
     }
 }

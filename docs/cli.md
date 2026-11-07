@@ -3930,19 +3930,43 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.1"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,
 per-occurrence `num_args` bounds, action, hidden status, delimiter and value names. An unbounded
-maximum is `null`. Types are `string`, `integer`, `number`, `boolean`, `path` or
+maximum is `null`. `num_args` counts the values of one occurrence, not the total
+across repeats. `repeatable` is `true` only when clap accepts the option more than
+once (`append` and `count` actions); `set`, `set_true` and `set_false` options are
+not repeatable in clap terms, and a second occurrence is an error. For positional
+arguments (such as `warp`'s `paths`), `repeatable: true` reflects variadic operand
+collection via clap's `append` action. terrio sets
+neither `args_override_self` nor `overrides_with`, so no option is made repeatable
+by an override. For example, `warp --tr 0.02 0.02 --tr 0.05 0.05` is accepted, but
+the command uses only the first pair (`0.02 0.02`); the catalog reports `--tr` as
+`repeatable: true` with `num_args` 2, so it does not promise that later pairs apply.
+Types are `string`, `integer`, `number`, `boolean`, `path` or
 `unknown`; dataset locations represented as strings are tagged as paths. Custom
 parsers whose result type is not recognized report `unknown`.
 
+`conflicts_with` lists the `name` values (clap argument ids) of the other arguments
+of the same command that clap rejects together with this one, including arguments
+mutually exclusive through an exclusive argument group (such as `vector-clip`'s
+`bbox`, `geometry` and `like`). Match it against `name`, not `long`: the two differ
+for many flags (`name` `dst_crs`, `long` `dst-crs`). Each declared pair is listed on
+both sides, so `rasterize` `tr` and `ts` each name the other.
+Known limits: `requires` is not reported, because clap 4.6 exposes no public
+accessor for it, and a hand-written table would drift from the clap definitions
+(deferred until clap exposes an accessor or a dedicated relation tracker is added).
+Predicate requirements (such as `viewshed`'s `required_if_eq_any`) and conditional
+rules (`requires_if`) are also not reported. Relations are descriptive only, and
+parsing rules do not change.
+
 The [v0.1 JSON Schema](https://github.com/opengeos/terrio/blob/main/schemas/cli-usage-v0.1.schema.json)
-describes the payload. This initial schema is unstable: consumers should check
+describes the payload (the schema file retains the `v0.1` name across the `0.1.x` series).
+This initial schema is unstable: consumers should check
 `schema_version`. `required` describes unconditional clap requirements; conditional
-requirements, conflicts, mutation/idempotency rules and pipeline-step semantics
+requirements, mutation/idempotency rules and pipeline-step semantics
 are outside this version. Choices list only those registered in clap; additional
 numeric ranges and runtime parser constraints remain enforced by the CLI. The catalog includes accepted hidden options, including `--json-usage` itself and
 `calc` compatibility flags, even when ordinary `--help` omits them.
@@ -3954,6 +3978,19 @@ Clap distinguishes the metadata flag from literal values. For example,
 `terrio info -- --json-usage` treats `--json-usage` as the dataset name, and
 `--srcnodata --json-usage` treats it as the nodata argument's value. For the
 pipeline's trailing expression, put the metadata flag before expression tokens.
+
+### Catalog stability policy
+
+- The catalog is versioned by `schema_version`.
+- The canonical digest (`CATALOG_SHA256` in `crates/terrio-cli/tests/usage_golden.rs`)
+  guards the full catalog, including arguments, subcommands, and help descriptions
+  (excluding only the top-level package `version`).
+- Every change to catalog contents or structure bumps the patch version (`0.1.x`),
+  and unreleased catalog changes share the next patch version until merged to `main`.
+- The `usage_golden` test fails on any catalog change without an updated digest in
+  the same commit. Required CI also compares the version and recorded digest with
+  the pull request's protected base commit, rejecting a digest-only update. Because the
+  digest is computed from sorted canonical JSON, the repository holds no generated catalog file.
 
 ## OGC API Features
 
