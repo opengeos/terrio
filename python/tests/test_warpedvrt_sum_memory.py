@@ -1,5 +1,7 @@
 """A `sum` WarpedVRT warps a region a part at a time, each part from its own source window."""
 
+import tracemalloc
+
 import numpy as np
 import pytest
 
@@ -176,3 +178,59 @@ def test_the_sum_budget_counts_the_largest_part(tmp_path, monkeypatch):
     monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "1000000")
     with pytest.raises(terrio.ResourceLimitError, match=r"about 6316032 bytes"):
         tile(path, 4, (1, 64, 128), **grid)
+
+
+def traced(path, limit, shape, **kw):
+    """The peak of the arrays Python allocates during a reduced `sum` read, and the windows read.
+
+    The windows the source reads arrive allocated by terrio, not traced: what is traced is what
+    the read allocates in Python, a converted copy of a window among it.
+    """
+    with terrio.rio.open(path) as src:
+        windows = recorded(src)
+        with WarpedVRT(src, resampling=Resampling.sum, warp_mem_limit=limit, **kw) as vrt:
+            tracemalloc.start()
+            try:
+                vrt.read(out_shape=shape)
+                return tracemalloc.get_traced_memory()[1], windows
+            finally:
+                tracemalloc.stop()
+
+
+def test_a_sum_takes_a_source_its_dtype_holds_as_it_is(tmp_path):
+    # 2048 x 2048 uint16 summed into 128 x 128 a part at a time (16 MB). Float64 holds every
+    # uint16 value, and the kernel reads each value as a float64 either way: the windows are
+    # not converted, so no float64 copy of one is allocated, and the read allocates less than
+    # half of one. Uint8 does not hold them: those windows are converted first, which allocates
+    # at least a window's worth.
+    n = 2048
+    values = (np.arange(n * n, dtype="uint64") % 1009).astype("uint16").reshape(n, n)
+    path, grid = square(n, values, tmp_path, "u16.tif")
+    peak, windows = traced(path, 16, (1, 128, 128), dtype="float64", **grid)
+    largest = max(w * h for _, _, w, h in windows)
+    assert peak < largest * 8 / 2, (peak, largest)
+    peak, windows = traced(path, 16, (1, 128, 128), dtype="uint8", **grid)
+    largest = max(w * h for _, _, w, h in windows)
+    assert peak >= largest, (peak, largest)
+
+
+@pytest.mark.parametrize(
+    "source, dtype", [("uint16", "float64"), ("float32", "float64"), ("float32", "uint16")]
+)
+def test_a_sum_in_another_dtype_sums_the_values_converted_to_it(tmp_path, source, dtype):
+    # A `sum` through a WarpedVRT of another dtype gives the pixels of the same values converted
+    # to that dtype first, bit for bit: uint16 and float32 in float64, which holds them, warped
+    # as they are; float32 fractions in uint16, which does not hold them, rounded first (0.3
+    # counts as 0), where adding them as they are would give other sums.
+    n = 512
+    rng = np.random.default_rng(11)
+    if source == "uint16":
+        values = rng.integers(0, 65535, (n, n), dtype="uint16")
+    else:
+        values = (rng.random((n, n), dtype="float32") * 3).astype("float32")
+    converted = values.astype(dtype) if dtype == "float64" else np.floor(values + 0.5).astype(dtype)
+    path, grid = square(n, values, tmp_path, "src.tif")
+    same, _ = square(n, converted, tmp_path, "converted.tif")
+    warped, _ = tile(path, PARTS, (1, 32, 32), dtype=dtype, **grid)
+    expected, _ = tile(same, PARTS, (1, 32, 32), dtype=dtype, **grid)
+    np.testing.assert_array_equal(bits(warped), bits(expected))

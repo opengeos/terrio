@@ -164,7 +164,8 @@ class WarpedVRT(DatasetReader):
     holds one part's window at a time. Several bands with source and output nodata values are
     warped whole. A `sum` read one of whose windows would hold more than
     `TERRIO_WARP_SUM_MAX_BYTES` (4 GiB by default) raises `ResourceLimitError` before any window
-    is read. When `dtype` differs from the source's, a window counts in both types.
+    is read. A `sum` warps a window in the source's type when `dtype` holds every value of it
+    (float32 in float64); otherwise the window is converted first and counts in both types.
     """
 
     def __init__(
@@ -681,8 +682,9 @@ class WarpedVRT(DatasetReader):
             window: `(x, y, w, h)`.
 
         Returns:
-            tuple: The source bands `(count, h, w)` in the working data type, and the per-dataset
-            mask (or alpha) the warper uses without nodata values, or None.
+            tuple: The source bands `(count, h, w)` in the working data type (in their own for a
+            `sum` whose working type holds them, see `_sum_holds`), and the per-dataset mask (or
+            alpha) the warper uses without nodata values, or None.
         """
         ds = self.src_dataset
         bands = list(range(1, self._src_count + 1))
@@ -697,10 +699,27 @@ class WarpedVRT(DatasetReader):
                 if flags & MaskFlags.per_dataset.value and not flags & MaskFlags.alpha.value:
                     # GDALWarpSrcMaskMasker(): the source's per-dataset mask.
                     mask = self._source_mask(level, window)
-        if data.dtype != np.dtype(self._dtype):
-            # The source is read in the working data type.
+        if data.dtype != np.dtype(self._dtype) and not self._sum_holds(data.dtype):
+            # The source is read in the working data type, unless a `sum` takes it as it is.
             data = gdal_cast(data, self._dtype)
         return np.ascontiguousarray(data), mask
+
+    def _sum_holds(self, dtype: Any) -> bool:
+        """Whether a `sum` warps a source window of a data type as it is, without converting it.
+
+        The `sum` kernel reads each source value as a float64 and adds it in float64, so that a
+        working type holding every value of the window's type would change none of them: such
+        a window is warped in its own type, and not held in both. A window whose values the
+        working type does not all hold (float64 into float32, floats into an integer type) is
+        converted first, as for the other resamplings.
+
+        Args:
+            dtype: The source window's data type.
+
+        Returns:
+            bool: Whether the window is warped as it is.
+        """
+        return self.resampling == Resampling.sum and _holds(np.dtype(dtype), np.dtype(self._dtype))
 
     def _source_mask(self, level: int | None, window: tuple[int, int, int, int]) -> Any:
         """The source's per-dataset mask in a window of a level.
@@ -759,10 +778,10 @@ class WarpedVRT(DatasetReader):
             parts = [(region, win)]
             if self.resampling == Resampling.sum:
                 parts = self._sum_parts(rw, region, win)
-                # Refused before any window is read when one would exceed the budget. Cast to
-                # another working type, a window is held in both types at once.
+                # Refused before any window is read when one would exceed the budget. Converted
+                # to the working type (see `_sum_holds`), a window is held in both types at once.
                 src, work = np.dtype(self.src_dataset.dtypes[0]), np.dtype(self._dtype)
-                itemsize = src.itemsize + (work.itemsize if work != src else 0)
+                itemsize = src.itemsize + (0 if self._sum_holds(src) else work.itemsize)
                 largest = max((part_win[2] * part_win[3] for _, part_win in parts), default=0)
                 _terrio._check_sum_window(largest, itemsize * self._src_count)
             for part, part_win in parts:
@@ -1354,6 +1373,35 @@ def _gdal(dtype: str) -> str:
     from terrio.rio.dtypes import _gdal_typename
 
     return _gdal_typename(dtype)
+
+
+# The data types a source window is read in, which a warp takes as they are.
+_WINDOW_TYPES = frozenset(
+    ("uint8", "int8", "uint16", "int16", "uint32", "int32", "uint64", "int64", "float32", "float64")
+)
+
+
+def _holds(src: np.dtype, work: np.dtype) -> bool:
+    """Whether every value of one data type is a value of another.
+
+    Args:
+        src: A source window's data type.
+        work: A working data type.
+
+    Returns:
+        bool: True for the same type, an integer type into one holding its range, an integer
+        type of at most 24 bits into float32 or of at most 53 into float64, and float32 into
+        float64; False for anything else, and for types a window is not read in.
+    """
+    if src.name not in _WINDOW_TYPES or work.name not in _WINDOW_TYPES:
+        return False
+    if src == work:
+        return True
+    if work.kind == "f":
+        if src.kind == "f":
+            return work.itemsize > src.itemsize
+        return np.iinfo(src).bits <= np.finfo(work).nmant + 1
+    return src.kind != "f" and bool(np.can_cast(src, work, "safe"))
 
 
 __all__ = ["WarpedVRT"]

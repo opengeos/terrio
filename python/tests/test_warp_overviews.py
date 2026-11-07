@@ -354,16 +354,22 @@ def test_a_sum_counts_the_bytes_of_every_band(tmp_path, monkeypatch):
 
 
 def test_a_sum_counts_the_working_type_of_a_warped_vrt(tmp_path, monkeypatch):
-    # Two bands of 32 x 32 Float32 ones read through a `WarpedVRT` summed into 1 x 1, under 20,000
-    # bytes. Cast to a float64 working type, a window is held in both types at once: 4 + 8 bytes
-    # per band and pixel, 32,768 with the shares. In float32 it holds 4 per band (16,384) and fits.
-    path = str(tmp_path / "two.tif")
+    # Two bands of 32 x 32 ones read through a `WarpedVRT` summed into 1 x 1, under 20,000
+    # bytes. Float64 converted to a float32 working type, a window is held in both types at once:
+    # 8 + 4 bytes per band and pixel, 32,768 with the shares. Float32 in a float64 working type,
+    # which holds every float32 value, is not converted: 4 bytes per band (16,384), and it fits,
+    # as in float32.
+    path, f64 = str(tmp_path / "two.tif"), str(tmp_path / "f64.tif")
     terrio.Raster.from_array(np.ones((2, 32, 32), "float32"), GT, crs="EPSG:3857").write(path)
+    terrio.Raster.from_array(np.ones((2, 32, 32), "float64"), GT, crs="EPSG:3857").write(f64)
     monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "20000")
-    with terrio.rio.open(path) as src:
-        with WarpedVRT(src, resampling=Resampling.sum, dtype="float64") as vrt:
+    with terrio.rio.open(f64) as src:
+        with WarpedVRT(src, resampling=Resampling.sum, dtype="float32") as vrt:
             with pytest.raises(terrio.ResourceLimitError, match=r"about 32768 bytes"):
                 vrt.read(out_shape=(2, 1, 1))
+    with terrio.rio.open(path) as src:
+        with WarpedVRT(src, resampling=Resampling.sum, dtype="float64") as vrt:
+            assert vrt.read(out_shape=(2, 1, 1)).sum(axis=(1, 2)).tolist() == [1024.0, 1024.0]
         with WarpedVRT(src, resampling=Resampling.sum) as vrt:
             assert vrt.read(out_shape=(2, 1, 1)).sum(axis=(1, 2)).tolist() == [1024.0, 1024.0]
 

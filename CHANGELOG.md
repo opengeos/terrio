@@ -398,6 +398,14 @@
   split (one output pixel), so the budget no longer refuses a read for its footprint alone.
   Several bands with source and output nodata values are warped whole, as whether a sum stored on
   the output nodata value is moved off it depends on whether the window holds a nodata pixel.
+- A `sum` read of a `terrio.rio` `WarpedVRT` whose `dtype` holds every value of the source's type
+  (uint16 or float32 in float64) takes each source window in its own type instead of converting
+  it to the VRT's: the kernel reads each value as a float64 either way, so the pixels are the same,
+  bit for bit, and a uint16 window of a float64 VRT is held in 2 + 2 bytes per pixel (the window
+  and the copy the warp takes) instead of 8 + 8 once converted: the 256 × 256 read above now peaks
+  at 222 MiB. `TERRIO_WARP_SUM_MAX_BYTES` counts such a window in the source's type only. A
+  `dtype` that does not hold the values (float64 in float32, floats in an integer type) still
+  converts the window first, and the budget counts both types.
 - With `GDAL_INGESTED_BYTES_AT_OPEN` (or `TERRIO_INGESTED_BYTES_AT_OPEN`) above a block (64 KiB
   by default), opening a remote file that the process-wide cache holds takes the ingested blocks
   from there and requests only those it no longer holds. Every reader of a file requested them

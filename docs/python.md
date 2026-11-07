@@ -360,8 +360,11 @@ window's working memory exceeds its `warp_mem_limit` (64 MB by default) a part a
 part from its own window, with the same pixels, bit for bit: a reduced read of a large source
 without overviews holds one part's window at a time, and the budget applies to each part's
 window, so that only a part that cannot be split, one output pixel, can exceed it (several
-bands with source and output nodata values are warped whole). A `WarpedVRT` whose `dtype`
-differs from its source's counts the window in both types, which its cast holds at once.
+bands with source and output nodata values are warped whole). A `sum` read of a `WarpedVRT`
+takes a source window in its own type when the VRT's `dtype` holds every value of it (uint16 or
+float32 in float64), as its kernel reads each value as a float64 either way; a `dtype` that does
+not (float64 in float32, floats in an integer type) converts the window first, and counts it in
+both types, which the conversion holds at once.
 Calls with loaded inputs reuse their existing pixels, including repeated references.
 File GCPs/RPCs of the first path are retained in mixed path/`Raster` calls.
 
