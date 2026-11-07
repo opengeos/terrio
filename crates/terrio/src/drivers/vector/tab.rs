@@ -480,7 +480,7 @@ impl<'a> MapFile<'a> {
                 } else {
                     (0, 0)
                 };
-                let mut s = CoordStream::new(self, ptr, org);
+                let mut s = CoordStream::new(self, ptr, org)?;
                 Some(match t {
                     0x07 | 0x08 => {
                         let n = size / if compressed { 4 } else { 8 };
@@ -529,7 +529,7 @@ impl<'a> MapFile<'a> {
                 } else {
                     (0, 0)
                 };
-                let mut s = CoordStream::new(self, ptr, org);
+                let mut s = CoordStream::new(self, ptr, org)?;
                 Some(Geometry::MultiPoint((0..n).map(|_| s.point(compressed).map(|p| self.at(p))).collect::<Result<_>>()?))
             }
             0x37 | 0x38 | 0x46 | 0x47 => self.collection(&mut c, t, compressed)?,
@@ -547,8 +547,15 @@ impl<'a> MapFile<'a> {
         let n = usize::try_from(n).map_err(|_| bad("section count"))?;
         let section_size: usize = if version >= 450 { 28 } else { 24 };
         // The headers are stored in the file: a count whose headers need more bytes than it has
-        // is corrupt, and is rejected before it sizes an allocation.
-        let total_hdr = section_size.checked_mul(n).filter(|&len| len <= self.b.len()).ok_or_else(|| bad("section count"))?;
+        // is corrupt, and is rejected before it sizes an allocation. A header as stored is its
+        // vertex and hole counts, two points (4 bytes each compressed) and the data offset.
+        let counts: usize = if version >= 450 { 4 } else { 2 };
+        let holes: usize = if version >= 800 { 4 } else { 2 };
+        let stored = counts + holes + 2 * if compressed { 4 } else { 8 } + 4;
+        if stored.checked_mul(n).is_none_or(|len| len > self.b.len()) {
+            return Err(bad("section count"));
+        }
+        let total_hdr = section_size * n;
         let mut hdrs = Vec::with_capacity(n);
         let mut total = 0usize;
         for _ in 0..n {
@@ -669,7 +676,7 @@ impl<'a> MapFile<'a> {
         }
         c.skip(12 + 3 + 1 + 1 + 3);
         let org = if compressed { (c.i32()?, c.i32()?) } else { (0, 0) };
-        let mut s = CoordStream::new(self, ptr, org);
+        let mut s = CoordStream::new(self, ptr, org)?;
         // Each part starts with a mini-header: its label point and bounds (relative to its own
         // compressed origin, read from the header too in V650 files).
         let mini = |s: &mut CoordStream| -> Result<()> {
@@ -778,11 +785,16 @@ struct CoordStream<'a> {
 }
 
 impl<'a> CoordStream<'a> {
-    fn new(m: &MapFile<'a>, ptr: usize, origin: (i32, i32)) -> Self {
+    /// A stream from `ptr`, which must lie in the file (a negative pointer read as `usize` does
+    /// not).
+    fn new(m: &MapFile<'a>, ptr: usize, origin: (i32, i32)) -> Result<Self> {
+        if ptr >= m.b.len() {
+            return Err(bad("coordinate pointer out of range"));
+        }
         let mut s = Self { b: m.b, block: m.block, pos: ptr, end: 0, next: 0, hops: 0, origin };
         s.enter(ptr - ptr % m.block);
         s.pos = if ptr.is_multiple_of(m.block) { ptr + 8 } else { ptr };
-        s
+        Ok(s)
     }
 
     fn enter(&mut self, block: usize) {
@@ -1467,11 +1479,11 @@ mod tests {
         // A coordinate block at 512 holding 100 bytes, with no next block.
         b[514..516].copy_from_slice(&100i16.to_le_bytes());
         let m = map_file(&b);
-        let mut s = CoordStream::new(&m, 520, (0, 0));
+        let mut s = CoordStream::new(&m, 520, (0, 0)).unwrap();
         let error = m.sections(&mut s, false, 450, i32::MAX).unwrap_err();
         assert!(error.to_string().contains("section count"), "{error}");
         // A count that fits still reads its headers, and fails here on their offsets.
-        let mut s = CoordStream::new(&m, 520, (0, 0));
+        let mut s = CoordStream::new(&m, 520, (0, 0)).unwrap();
         assert!(m.sections(&mut s, false, 450, 3).unwrap_err().to_string().contains("section offset"));
     }
 
@@ -1483,9 +1495,36 @@ mod tests {
         b[514..516].copy_from_slice(&8i16.to_le_bytes());
         b[516..520].copy_from_slice(&512i32.to_le_bytes());
         let m = map_file(&b);
-        let mut s = CoordStream::new(&m, 520, (0, 0));
+        let mut s = CoordStream::new(&m, 520, (0, 0)).unwrap();
         let error = (0..1000).try_for_each(|_| s.i32().map(drop)).unwrap_err();
         assert!(error.to_string().contains("loops"), "{error}");
+    }
+
+    /// A coordinate pointer outside the file, such as -1 read as `usize` (a multiple of a
+    /// 4369-byte block, where adding the block header overflowed), is an error.
+    #[test]
+    fn coordinate_pointers_outside_the_file_are_errors() {
+        let b = vec![0u8; 1024];
+        let mut m = map_file(&b);
+        m.block = 4369;
+        for ptr in [usize::MAX, 1024] {
+            assert!(CoordStream::new(&m, ptr, (0, 0)).is_err(), "{ptr}");
+        }
+        assert!(CoordStream::new(&m, 520, (0, 0)).is_ok());
+    }
+
+    /// The section count bound is the headers' stored size: compressed V450 headers take 18
+    /// bytes, so a compact file whose sections fit is not rejected by the 28-byte logical size.
+    #[test]
+    fn section_counts_are_bounded_by_the_stored_header_size() {
+        let b = vec![0u8; 1024];
+        let m = map_file(&b);
+        // 50 compressed headers take 900 bytes, within the file, but 1400 at 28 bytes each.
+        let mut s = CoordStream::new(&m, 0, (0, 0)).unwrap();
+        let error = m.sections(&mut s, true, 450, 50).unwrap_err();
+        assert!(!error.to_string().contains("section count"), "{error}");
+        let mut s = CoordStream::new(&m, 0, (0, 0)).unwrap();
+        assert!(m.sections(&mut s, true, 450, 57).unwrap_err().to_string().contains("section count"));
     }
 
     #[test]

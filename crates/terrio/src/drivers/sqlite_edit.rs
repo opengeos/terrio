@@ -265,6 +265,10 @@ impl Editor {
         let file_pages = (file.metadata()?.len() / page_size as u64) as u32;
         // The in-header size is valid when the version-valid-for number matches the change counter.
         let n_pages = if be(28) > 0 && be(92) == be(24) { be(28) } else { file_pages };
+        // As SQLite: a database larger than its file is corrupt. Page sets are sized by it.
+        if n_pages > file_pages {
+            return Err(bad("the header's page count exceeds the file"));
+        }
         Ok(Ok(Self {
             file,
             path: path.to_path_buf(),
@@ -483,13 +487,15 @@ impl Editor {
         Ok(out)
     }
 
-    /// The overflow pages of a cell.
-    fn overflow_pages(&mut self, kind: u8, cell: &[u8], out: &mut Vec<u32>) -> Result<()> {
+    /// The overflow pages of a cell, each added to `visited`: a page owned twice (a looping
+    /// chain, or cells sharing an overflow page) is an error, so that it is not freed twice.
+    fn overflow_pages(&mut self, kind: u8, cell: &[u8], out: &mut Vec<u32>, visited: &mut PageSet) -> Result<()> {
         let (size, _, overflow) = self.cell_payload_parts(kind, cell)?;
         let mut next = overflow.unwrap_or(0);
         let local = self.local_len(kind, size);
         let mut left = size - local;
         while next != 0 && left > 0 {
+            visited.insert(next)?;
             out.push(next);
             let p = self.page(next)?;
             next = u32::from_be_bytes([p[0], p[1], p[2], p[3]]);
@@ -499,8 +505,9 @@ impl Editor {
     }
 
     /// Every page of the b-tree rooted at `root`: its nodes and overflow pages.
-    /// A node reached twice (a cycle, or interior pages sharing children) is an error, before
-    /// a page could be freed twice or a walk visit exponentially many nodes.
+    /// A page reached twice (a cycle, interior pages sharing children, or an overflow page
+    /// owned twice) is an error, before a page could be freed twice or a walk visit
+    /// exponentially many nodes.
     pub(crate) fn tree_pages(&mut self, root: u32, out: &mut Vec<u32>) -> Result<()> {
         let mut stack = vec![(root, 0usize)];
         let mut visited = PageSet::new(u64::from(self.n_pages));
@@ -516,7 +523,7 @@ impl Editor {
                     stack.push((Self::child(c), depth + 1));
                 }
                 if node.kind != 0x05 {
-                    self.overflow_pages(node.kind, c, out)?;
+                    self.overflow_pages(node.kind, c, out, &mut visited)?;
                 }
             }
             if let Some(r) = node.right {
@@ -655,10 +662,12 @@ impl Editor {
     pub(crate) fn count_rows(&mut self, root: u32) -> Result<u64> {
         let mut total = 0u64;
         let mut stack = vec![(root, 0usize)];
+        let mut visited = PageSet::new(u64::from(self.n_pages));
         while let Some((n, depth)) = stack.pop() {
             if depth > 64 {
                 return Err(bad("b-tree too deep"));
             }
+            visited.insert(n)?;
             let h = Self::header_offset(n);
             let page = self.page(n)?;
             let count = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
@@ -668,9 +677,8 @@ impl Editor {
                     let right = u32::from_be_bytes([page[h + 8], page[h + 9], page[h + 10], page[h + 11]]);
                     let mut kids = Vec::with_capacity(count + 1);
                     for c in 0..count {
-                        let p = h + 12 + 2 * c;
-                        let off = u16::from_be_bytes([page[p], page[p + 1]]) as usize;
-                        kids.push(Self::child(&page[off..off + 4]));
+                        let off = cell_pointer(page, h + 12 + 2 * c)?;
+                        kids.push(Self::child(page.get(off..off + 4).ok_or_else(|| bad("cell"))?));
                     }
                     kids.push(right);
                     stack.extend(kids.into_iter().map(|k| (k, depth + 1)));
@@ -838,7 +846,9 @@ impl Editor {
                 let cell = w::table_cell(self, rowid, &rec)?;
                 if keys.get(i) == Some(&rowid) {
                     let mut freed = Vec::new();
-                    self.overflow_pages(0x0d, &cells[i], &mut freed)?;
+                    // A chain naming a page twice is an error, not a page freed twice.
+                    let mut owned = PageSet::new(u64::from(self.n_pages));
+                    self.overflow_pages(0x0d, &cells[i], &mut freed, &mut owned)?;
                     for p in freed {
                         self.free(p)?;
                     }
@@ -1399,6 +1409,45 @@ mod tests {
         let mut editor = Editor::open(&path).unwrap().unwrap_or_else(|e| panic!("{}", e.0));
         let error = editor.scan(1).unwrap_err();
         assert!(error.to_string().contains("reached twice"), "{error}");
+        let error = editor.tree_pages(1, &mut Vec::new()).unwrap_err();
+        assert!(error.to_string().contains("reached twice"), "{error}");
+        let error = editor.count_rows(1).unwrap_err();
+        assert!(error.to_string().contains("reached twice"), "{error}");
+    }
+
+    /// A header declaring more pages than the file has is an error, before it sizes a walk's
+    /// page set (`u32::MAX` pages would be 512 MiB of bits).
+    #[test]
+    fn page_counts_beyond_the_file_are_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pages.db");
+        let mut b = crate::drivers::sqlite::fixtures::shared_children(1);
+        b[28..32].copy_from_slice(&u32::MAX.to_be_bytes());
+        std::fs::write(&path, b).unwrap();
+        let error = Editor::open(&path).err().expect("an error");
+        assert!(error.to_string().contains("page count"), "{error}");
+    }
+
+    /// An overflow page owned twice, here a chain that names its own page as the next one, is
+    /// an error when listing a tree's pages to free them, not a page freed twice.
+    #[test]
+    fn overflow_pages_owned_twice_are_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("overflow.db");
+        let mut b = crate::drivers::sqlite::fixtures::database(3);
+        // A table leaf at page 1 with one cell of rowid 1 and a payload of two overflow pages;
+        // its local part is 92 bytes, then the first overflow page number.
+        b[100] = 0x0d;
+        b[103..105].copy_from_slice(&1u16.to_be_bytes());
+        b[108..110].copy_from_slice(&200u16.to_be_bytes());
+        let size = 92 + 2 * 508u16;
+        b[200] = 0x80 | (size >> 7) as u8;
+        b[201] = (size & 0x7f) as u8;
+        b[202] = 1;
+        b[203 + 92..203 + 96].copy_from_slice(&2u32.to_be_bytes());
+        b[512..516].copy_from_slice(&2u32.to_be_bytes());
+        std::fs::write(&path, b).unwrap();
+        let mut editor = Editor::open(&path).unwrap().unwrap_or_else(|e| panic!("{}", e.0));
         let error = editor.tree_pages(1, &mut Vec::new()).unwrap_err();
         assert!(error.to_string().contains("reached twice"), "{error}");
     }

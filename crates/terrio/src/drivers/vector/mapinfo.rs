@@ -706,10 +706,11 @@ mod tests {
     }
 
     /// A `Region` or `Pline Multiple` count far beyond the file's tokens is an error, not an
-    /// allocation of that many parts (20 billion rings would need 480 GB).
+    /// allocation of that many parts (20 billion rings would need 480 GB). `usize::MAX` parses
+    /// on every target, so the count reaches the allocation on 32-bit builds too.
     #[test]
     fn part_counts_beyond_the_file_are_errors() {
-        for statement in ["Region 20000000000", "Pline Multiple 20000000000"] {
+        for statement in [format!("Region {}", usize::MAX), format!("Pline Multiple {}", usize::MAX)] {
             let mif = format!("Version 300\nCharset \"UTF-8\"\nColumns 1\n  N Integer\nData\n\n{statement}\n1\n0 0\n");
             assert!(parse(mif.as_bytes(), None, "t").is_err(), "{statement}");
         }

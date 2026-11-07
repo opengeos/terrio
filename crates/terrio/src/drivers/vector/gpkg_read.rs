@@ -699,9 +699,10 @@ fn summarize_layer(db: &Db, c: &Content, path: &str) -> Result<LayerSummary> {
     let rows = db.raw_rows(&c.name)?;
 
     // Each geometry's type, Z flag and bounds.
-    // A record whose values run past its end is an error, as reading the layer reports it.
+    // A record whose values run past its end is an error, as reading the layer reports it:
+    // every record's layout is checked, with or without a geometry column.
     let geometries = crate::par::map_range(rows.len(), |i| -> Result<Option<GeometrySummary>> {
-        let Some(geom_col) = geom_col else { return Ok(None) };
+        let Some(geom_col) = geom_col else { return Db::check_record(&rows[i].1).map(|()| None) };
         let Value::Blob(b) = Db::record_column(&rows[i].1, geom_col)? else { return Ok(None) };
         Ok(decode_geometry(&b).map(|g| {
             let bbox = g.bbox().map(|b| (b.min_x, b.min_y, b.max_x, b.max_y));
@@ -1116,6 +1117,38 @@ mod tests {
             assert_eq!(s.layer.crs_wkt(), l.crs_wkt());
             assert_eq!(format!("{:?}", s.layer.schema.fields()), format!("{:?}", l.schema.fields()));
         }
+    }
+
+    /// A feature record whose geometry runs past the record is an error for the summary, as
+    /// for reading the layer, not a feature without a geometry. The layer's mixed geometry
+    /// types send the summary to its feature scan.
+    #[test]
+    fn summaries_of_truncated_geometry_records_are_errors() {
+        let mut l = Layer::new("mixed").with_epsg(4326);
+        l.add_field(FieldDef::new("name", FieldType::Text));
+        let marker = "MARKER-TRUNCATED";
+        l.push(Feature { fid: 1, geometry: Some(Geometry::point(1.0, 2.0)), attributes: vec![FieldValue::Text(marker.into())] });
+        l.push(Feature {
+            fid: 2,
+            geometry: Some(Geometry::line_string(vec![wbvector::Coord::xy(0.0, 0.0), wbvector::Coord::xy(1.0, 1.0)])),
+            attributes: vec![FieldValue::Text("b".into())],
+        });
+        let mut bytes = super::super::geopackage::to_bytes(&[l]).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.gpkg");
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(summarize(path.to_str().unwrap()).is_ok());
+        // The record: its header (length, NULL fid, BLOB geometry, TEXT name), the geometry,
+        // then the name. The geometry's declared length becomes 57 bytes, past the record.
+        let at = bytes.windows(marker.len()).position(|w| w == marker.as_bytes()).unwrap();
+        let text = 13 + 2 * marker.len() as u8;
+        let header = (at.saturating_sub(200)..at).rev().find(|&h| bytes[h] == 4 && bytes[h + 1] == 0 && bytes[h + 3] == text).unwrap();
+        let geometry = (bytes[header + 2] as usize - 12) / 2;
+        assert_eq!(header + 4 + geometry, at);
+        bytes[header + 2] = 12 + 2 * 57;
+        std::fs::write(&path, &bytes).unwrap();
+        let error = summarize(path.to_str().unwrap()).err().expect("an error");
+        assert!(error.to_string().contains("truncated record"), "{error}");
     }
 
     #[test]

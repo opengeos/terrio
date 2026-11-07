@@ -146,7 +146,8 @@ pub(crate) struct PageSet {
 impl PageSet {
     /// An empty set for a file of `pages` pages.
     pub(crate) fn new(pages: u64) -> Self {
-        PageSet { bits: vec![0; usize::try_from(pages.div_ceil(64)).unwrap_or(usize::MAX)], pages }
+        // `pages` is bounded by a file's length or a `u32`, so its words fit in memory.
+        PageSet { bits: vec![0; usize::try_from(pages.div_ceil(64)).expect("page count fits in memory")], pages }
     }
 
     /// Adds page `n` (1-based). An error when it was there already, or is not a page of the file.
@@ -332,18 +333,35 @@ impl Db {
 
     /// Decodes a record (a row's payload). A record whose values run past its end is an error.
     pub(crate) fn record_values(payload: &[u8]) -> Result<Vec<Value>> {
-        Self::record(payload)
+        let (types, mut pos) = Self::record_types(payload)?;
+        let mut out = Vec::with_capacity(types.len());
+        for t in types {
+            let (value, len) = Self::value(payload, t, pos)?;
+            pos += len;
+            out.push(value);
+        }
+        Ok(out)
     }
 
-    /// The serial types of a record's columns, and where its values start: an error when the
-    /// header runs past the record.
+    /// Checks a record's layout, as decoding it would, without decoding its values.
+    pub(crate) fn check_record(payload: &[u8]) -> Result<()> {
+        Self::record_types(payload).map(drop)
+    }
+
+    /// The serial types of a record's columns, and where its values start. An error when the
+    /// header is incomplete or runs past the record, or the values it declares do.
     fn record_types(payload: &[u8]) -> Result<(Vec<i64>, usize)> {
-        let Some((header_len, n)) = varint(payload, 0) else { return Ok((Vec::new(), 0)) };
-        let header_len = usize::try_from(header_len).ok().filter(|&len| len <= payload.len()).ok_or_else(|| bad("record header"))?;
+        if payload.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
+        let (header_len, n) = varint(payload, 0).ok_or_else(|| bad("record header"))?;
+        let header_len =
+            usize::try_from(header_len).ok().filter(|&len| len >= n && len <= payload.len()).ok_or_else(|| bad("record header"))?;
         let mut types = Vec::new();
-        let mut i = n;
+        let (mut i, mut end) = (n, header_len);
         while i < header_len {
-            let Some((t, k)) = varint(payload, i) else { break };
+            let (t, k) = varint(payload, i).filter(|&(_, k)| i + k <= header_len).ok_or_else(|| bad("record header"))?;
+            end = end.checked_add(Self::value_len(t)).filter(|&end| end <= payload.len()).ok_or_else(|| bad("truncated record"))?;
             types.push(t);
             i += k;
         }
@@ -387,26 +405,15 @@ impl Db {
         }
     }
 
-    /// Decodes a record.
-    fn record(payload: &[u8]) -> Result<Vec<Value>> {
-        let (types, mut pos) = Self::record_types(payload)?;
-        let mut out = Vec::with_capacity(types.len());
-        for t in types {
-            let (value, len) = Self::value(payload, t, pos)?;
-            pos += len;
-            out.push(value);
-        }
-        Ok(out)
-    }
-
     /// Decodes one column of a record, as [`Db::table`] reads it (`Null` past the record's last
-    /// column; the rowid alias column is not filled in). A column, or a column before it, that
-    /// runs past the record is an error.
+    /// column; the rowid alias column is not filled in). A record whose header is incomplete, or
+    /// any of whose values runs past its end, is an error, whichever column is asked for.
     pub(crate) fn record_column(payload: &[u8], column: usize) -> Result<Value> {
         let (types, mut pos) = Self::record_types(payload)?;
         let Some(&t) = types.get(column) else { return Ok(Value::Null) };
+        // `record_types` has checked that every value lies within the record.
         for &t in &types[..column] {
-            pos = pos.checked_add(Self::value_len(t)).filter(|&end| end <= payload.len()).ok_or_else(|| bad("truncated record"))?;
+            pos += Self::value_len(t);
         }
         Ok(Self::value(payload, t, pos)?.0)
     }
