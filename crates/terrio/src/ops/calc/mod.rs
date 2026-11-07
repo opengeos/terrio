@@ -43,7 +43,7 @@ pub mod expr;
 pub use eval::DType;
 pub use expr::Expr;
 
-use super::mosaic::{MosaicOptions, MosaicSource, mosaic};
+use super::mosaic::{MosaicOptions, MosaicSource, mosaic_allow_empty};
 use super::{Grid, build_raster};
 use crate::{Error, RasterDataset, Result};
 use eval::{Arr, Data, Evaluator, Val};
@@ -455,7 +455,7 @@ pub fn calc(inputs: &[CalcInput], o: &CalcOptions) -> Result<RasterDataset> {
         }
         let mo = MosaicOptions { extent: Some((rect.x, rect.y, rect.max_x(), rect.max_y())), ..Default::default() };
         for (s, a) in sources.iter_mut().zip(inputs) {
-            let m = mosaic(&[MosaicSource { path: a.name.clone(), ds: a.ds }], &mo)?;
+            let m = mosaic_allow_empty(&[MosaicSource { path: a.name.clone(), ds: a.ds }], &mo)?;
             *s = Cow::Owned(m);
         }
         gt_check = sources[0].geo_transform();
@@ -628,6 +628,25 @@ mod tests {
         assert_eq!(i.geo_transform()[0], 1.0);
         let c = ds(vec![2.0; 6], 3, 2, DataType::I16, None, 0.0);
         assert!(calc(&[input("A", &a), input("C", &c)], &base).is_err());
+    }
+
+    /// An off-window input is aligned to fill pixels, as in GDAL 3.13.3 gdal_calc.
+    #[test]
+    fn projwin_keeps_fill_for_nonintersecting_inputs() {
+        for nodata in [None, Some(-99.0)] {
+            let a = ds(vec![1.0; 4], 2, 2, DataType::F32, nodata, 0.0);
+            let b = ds(vec![2.0; 4], 2, 2, DataType::F32, nodata, 10.0);
+            let options = CalcOptions {
+                calc: vec!["A + B".into()],
+                extent: CalcExtent::Union,
+                projwin: Some((0.0, 2.0, 2.0, 0.0)),
+                ..Default::default()
+            };
+            let out = calc(&[input("A", &a), input("B", &b)], &options).unwrap();
+            assert_eq!((out.raster.cols, out.raster.rows), (3, 3));
+            let expected = if nodata.is_some() { vec![out.nodata().unwrap(); 9] } else { vec![1., 1., 0., 1., 1., 0., 0., 0., 0.] };
+            assert_eq!(out.raster.data.to_f64_vec(), expected);
+        }
     }
 
     #[test]

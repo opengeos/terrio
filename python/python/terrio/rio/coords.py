@@ -31,7 +31,8 @@ def disjoint_bounds(bounds1: Sequence[float], bounds2: Sequence[float]) -> bool:
         bool: True when the boxes are disjoint (boxes touching at an edge intersect).
 
     Raises:
-        ValueError: If the boxes do not have the same orientation.
+        ValueError: If two nondegenerate boxes have opposite orientations.
+            A zero-height box is treated as a boundary line in either orientation.
     """
     dy1 = bounds1[3] - bounds1[1]
     dy2 = bounds2[3] - bounds2[1]

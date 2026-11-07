@@ -160,6 +160,27 @@ def compare(gdal_path, terrio_path, tol, radius=None):
     return res
 
 
+def calc_window_cases(tmp, calc):
+    """Register disjoint-input window fills against GDAL 3.13.3's calc behavior."""
+    for nodata in (None, -99):
+        paths = []
+        for name, left, value in (("a", 0, 1), ("b", 10, 2)):
+            path = os.path.join(tmp, f"window_{name}_{nodata}.tif")
+            dataset = gdal.GetDriverByName("GTiff").Create(path, 2, 2, 1, gdal.GDT_Float32)
+            dataset.SetGeoTransform((left, 1, 0, 2, 0, -1))
+            band = dataset.GetRasterBand(1)
+            band.Fill(value)
+            if nodata is not None:
+                band.SetNoDataValue(nodata)
+            band = None
+            dataset = None
+            paths.append(path)
+        calc(
+            f"projwin disjoint input nodata={nodata}",
+            ["-A", paths[0], "-B", paths[1], "--calc", "A+B", "--projwin", "0", "2", "2", "0", "--NoDataValue", "-9999"],
+        )
+
+
 def cases(d, tmp):
     """The comparison cases.
 
@@ -270,6 +291,8 @@ def cases(d, tmp):
     # gdal_calc.py: terrio takes the same arguments.
     def calc(name, args, tol=0.0):
         add(f"calc {name}", ["gdal_calc.py", "--quiet", "--overwrite", "--outfile", "{out}", *args], ["calc", "--outfile", "{out}", *args], tol)
+
+    calc_window_cases(tmp, calc)
 
     red = ["-A", landsat, "--A_band", "3"]
     nir = ["-B", landsat, "--B_band", "4"]

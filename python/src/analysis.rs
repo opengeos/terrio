@@ -261,29 +261,8 @@ fn zonal_stats(
             }
         }
     }
-    let mut inner = crate::with_warnings(py, || terrio::ops::zonal::zonal_stats(&zones, &mut sources, &options))?;
-    let slots: Vec<usize> = source_slots.into_iter().flatten().collect();
-    if !slots.iter().copied().eq(0..slots.len()) {
-        let base = zones.schema.len();
-        let n_stats = options.stats.len();
-        let mut perm = vec![0usize; slots.len() * n_stats];
-        for (k, &slot) in slots.iter().enumerate() {
-            for s in 0..n_stats {
-                perm[slot * n_stats + s] = base + k * n_stats + s;
-            }
-        }
-        let old_fields = inner.schema.fields().to_vec();
-        inner.schema = zones.schema.clone();
-        for &src in &perm {
-            inner.schema.add_field(old_fields[src].clone());
-        }
-        for feature in &mut inner.features {
-            let old_attrs = feature.attributes.clone();
-            for (dst, &src) in perm.iter().enumerate() {
-                feature.attributes[base + dst] = old_attrs[src].clone();
-            }
-        }
-    }
+    let positions: Vec<usize> = source_slots.into_iter().flatten().collect();
+    let inner = crate::with_warnings(py, || terrio::ops::zonal::zonal_stats_with_band_order(&zones, &mut sources, &options, &positions))?;
     Ok(PyLayer::from(inner))
 }
 

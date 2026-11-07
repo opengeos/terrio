@@ -2,9 +2,15 @@
 
 ## Unreleased
 
+- `terrio.rio.coords.disjoint_bounds` rejects opposite nondegenerate orientations in either
+  argument order; zero-height bounds remain boundary lines. Calc window alignment retains
+  blank nodata/zero-filled inputs outside the window rather than rejecting the calculation.
+
 - JavaScript `listUrl` rejects invalid `depth` values, including strings and `Infinity`;
-  omit `depth` or pass `null` for unlimited traversal. Native TIFF mask discovery now
-  rejects unreadable or malformed directory/tag tables instead of silently dropping masks.
+  omit `depth` or pass `null` for unlimited traversal. Native TIFF opens now reject unreadable or
+  malformed directory/tag tables discovered during mask scanning, including files without masks,
+  instead of silently treating them as maskless.
+  Only tags relevant to image layout and masks are decoded; unrelated private tags are skipped.
 
 - Whole-file Shapefile reads, streaming reads and conversions omit deleted DBF records,
   preserving the physical feature IDs of live records.

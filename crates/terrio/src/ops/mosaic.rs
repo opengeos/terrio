@@ -79,6 +79,10 @@ pub struct MosaicSource<'a> {
 /// Builds a virtual mosaic of rasters in the same CRS, as `gdalbuildvrt` does. Paths are written
 /// relative to `vrt_dir` when they are inside it.
 pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&Path>) -> Result<VrtDataset> {
+    build_vrt_impl(sources, o, vrt_dir, false)
+}
+
+fn build_vrt_impl(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&Path>, allow_empty: bool) -> Result<VrtDataset> {
     let first = sources.first().ok_or_else(|| Error::InvalidArgument("no source rasters".into()))?;
     let srs = first.ds.crs();
     for s in sources {
@@ -234,7 +238,7 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
     }
     // Both `separate: true` (no bands pushed) and `separate: false` (pre-allocated bands with
     // no overlapping sources) fail consistently when no source intersects the target extent.
-    if bands.iter().all(|b| b.sources.is_empty()) {
+    if !allow_empty && bands.iter().all(|b| b.sources.is_empty()) {
         return Err(Error::InvalidArgument("no source rasters intersect the target extent".into()));
     }
     let srs = (!srs.is_unknown()).then_some(srs);
@@ -316,6 +320,13 @@ pub fn mosaic(sources: &[MosaicSource], o: &MosaicOptions) -> Result<RasterDatas
     }
     let vrt = build_vrt(sources, o, None)?;
     // Read from the datasets already in memory rather than reopening the files.
+    vrt_from_memory(&vrt, sources)
+}
+
+/// Calc aligns every input to its requested window, including inputs wholly outside it.
+/// Such inputs must retain the VRT's normal nodata/zero fill instead of failing as an empty mosaic.
+pub(super) fn mosaic_allow_empty(sources: &[MosaicSource], o: &MosaicOptions) -> Result<RasterDataset> {
+    let vrt = build_vrt_impl(sources, o, None, true)?;
     vrt_from_memory(&vrt, sources)
 }
 
