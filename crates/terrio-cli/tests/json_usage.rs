@@ -23,7 +23,7 @@ fn root_nested_alias_and_variadic_catalogs_need_no_datasets() {
         let output = run(&args, dir.path());
         assert!(output.status.success(), "{args:?}: {}", String::from_utf8_lossy(&output.stderr));
         let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(value["schema_version"], "0.1");
+        assert_eq!(value["schema_version"], "0.1.1");
         assert_eq!(value["command"]["path"], json!(path));
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }

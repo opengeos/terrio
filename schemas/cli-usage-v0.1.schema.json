@@ -12,7 +12,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "0.1"
+      "const": "0.1.1"
     },
     "unstable": {
       "const": true
@@ -174,6 +174,9 @@
             "unknown"
           ]
         },
+        "repeatable": {
+          "type": "boolean"
+        },
         "global": {
           "type": "boolean"
         },
@@ -194,6 +197,12 @@
         },
         "allow_hyphen_values": {
           "type": "boolean"
+        },
+        "conflicts_with": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [
@@ -210,11 +219,13 @@
         "required",
         "num_args",
         "action",
+        "repeatable",
         "global",
         "hidden",
         "value_names",
         "value_delimiter",
-        "allow_hyphen_values"
+        "allow_hyphen_values",
+        "conflicts_with"
       ]
     }
   }

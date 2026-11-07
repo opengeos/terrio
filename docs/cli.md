@@ -3887,14 +3887,32 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.1"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,
 per-occurrence `num_args` bounds, action, hidden status, delimiter and value names. An unbounded
-maximum is `null`. Types are `string`, `integer`, `number`, `boolean`, `path` or
+maximum is `null`. `num_args` counts the values of one occurrence, not the total
+across repeats. `repeatable` is `true` only when clap accepts the option more than
+once (`append` and `count` actions); `set`, `set_true` and `set_false` options are
+not repeatable in clap terms, and a second occurrence is an error. terrio sets
+neither `args_override_self` nor `overrides_with`, so no option is made repeatable
+by an override. For example, `warp --tr 0.02 0.02 --tr 0.05 0.05` is accepted, but
+the command uses only the first pair (`0.02 0.02`); the catalog reports `--tr` as
+`repeatable: true` with `num_args` 2, so it does not promise that later pairs apply.
+Types are `string`, `integer`, `number`, `boolean`, `path` or
 `unknown`; dataset locations represented as strings are tagged as paths. Custom
 parsers whose result type is not recognized report `unknown`.
+
+`conflicts_with` lists the `name` values (clap argument ids) of the other arguments
+of the same command that clap rejects together with this one. Match it against
+`name`, not `long`: the two differ for many flags (`name` `dst_crs`, `long`
+`dst-crs`). Each declared pair is listed on both sides, so `rasterize` `tr` and
+`ts` each name the other.
+Known limits: `requires` is not reported, because clap 4.6 exposes no accessor for
+it, and a hand-written table would drift from the clap definitions (G16 follow-up).
+Predicate forms such as `requires_if` are not reported either; no command uses
+them today. Relations are descriptive only, and parsing rules do not change.
 
 The [v0.1 JSON Schema](https://github.com/opengeos/terrio/blob/main/schemas/cli-usage-v0.1.schema.json)
 describes the payload. This initial schema is unstable: consumers should check
@@ -3911,6 +3929,18 @@ Clap distinguishes the metadata flag from literal values. For example,
 `terrio info -- --json-usage` treats `--json-usage` as the dataset name, and
 `--srcnodata --json-usage` treats it as the nodata argument's value. For the
 pipeline's trailing expression, put the metadata flag before expression tokens.
+
+### Catalog stability policy
+
+- The catalog is versioned by `schema_version`.
+- Every change to the catalog that lands on `main` bumps the patch version (`0.1.x`)
+  once, and updates the recorded digest `CATALOG_SHA256` in
+  `crates/terrio-cli/tests/usage_golden.rs` in the same commit. Changes that have not
+  landed share the next version. The `usage_golden` test fails on any change without
+  an updated digest. The digest is the SHA-256 of the canonical catalog (sorted keys,
+  no `version` field), so the repository holds no generated catalog file.
+- The minor version is settled when the series finishes.
+- Removals and renames are called out in the changelog section of the pull request.
 
 ## OGC API Features
 
