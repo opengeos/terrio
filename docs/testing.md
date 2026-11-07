@@ -2449,7 +2449,7 @@ pytest python/tests/test_layer_selection.py
 node --test --test-name-pattern='single named layer' js/tests/node.test.mjs
 ```
 
-## Deleted Shapefile records
+### Deleted Shapefile records
 
 The `shapefile-deleted` suite generates small OGR Shapefiles and marks DBF slots
 deleted without repacking. It compares whole reads, streaming reads and live-feature pages against

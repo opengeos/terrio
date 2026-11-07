@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 # SPDX-License-Identifier: MIT
 """Deleted Shapefile rows and live-feature pages against an independent OGR read.
+Reference: GDAL 3.13.3 (OGR), with physical FIDs and live-feature paging checked separately.
+
 
 Generate small real SHP/DBF files with OGR, then mark DBF slots without repacking.
 Compare physical FIDs, exact scalar attributes/nulls and ISO WKB bytes. A live row

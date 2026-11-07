@@ -613,7 +613,7 @@ def suite_vsi(ctx):
 
 def suite_shapefile_deleted(ctx):
     """Deleted DBF slots, physical FIDs and live-feature paging against OGR."""
-    suite = Suite("shapefile-deleted", "Shapefile deleted records", "GDAL/OGR",
+    suite = Suite("shapefile-deleted", "Shapefile deleted records", "GDAL/OGR 3.13.3",
                   "90 generated-file cases: whole/streamed reads, FIDs, exact scalar attributes/nulls and ISO WKB; "
                   "live-feature skip/max with and without SHX, including null geometry.")
     if missing_modules("osgeo"):

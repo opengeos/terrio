@@ -122,7 +122,8 @@ pub fn read(path: &str, options: &ShapefileOptions) -> Result<Layer> {
 /// Deleted DBF slots count toward physical FIDs, but not toward either range bound.
 /// Only the selected SHP records and DBF attributes are decoded. Finding their positions scans
 /// DBF deletion flags and uses the `.shx` index, or scans SHP headers when the index is absent.
-/// Memory holds the SHP offset index, the selected features and one DBF/SHP record buffer.
+/// Memory holds the SHP offset index, the selected features, DBF/SHP record buffers and up to
+/// 64 KiB for scanning short DBF rows. Wide rows retain sparse one-byte flag reads.
 pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &ShapefileOptions) -> Result<Layer> {
     use std::io::{Read, Seek, SeekFrom};
     let method = options.method();
@@ -172,7 +173,10 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
             let l = dbf_layout(&header, cpg.as_deref())?;
             let held = (len as usize).saturating_sub(l.header_len) / l.record_len.max(1);
             let total = if l.record_len == 0 { 0 } else { l.count.min(held) };
-            (l.fields.clone(), total, Some((std::io::BufReader::with_capacity(64 * 1024, f), l)))
+            // Dense short records benefit from batched reads. Wide records keep sparse flag
+            // reads instead of fetching tens of KiB of skipped attributes for each flag.
+            let capacity = if l.record_len <= 256 { 64 * 1024 } else { 1 };
+            (l.fields.clone(), total, Some((std::io::BufReader::with_capacity(capacity, f), l)))
         }
         None => (Vec::new(), 0, None),
     };

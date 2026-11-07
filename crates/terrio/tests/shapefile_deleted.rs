@@ -220,3 +220,32 @@ fn ranged_flags_cross_buffer_boundaries() {
         assert_eq!(page.layers[0].features.len(), expected.len());
     }
 }
+
+/// Wide DBF rows keep sparse flag reads without losing the selected attribute payloads.
+#[test]
+fn wide_record_pages_keep_attribute_pairing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wide.shp");
+    let path = path.to_str().unwrap();
+    let mut layer = Layer::new("wide");
+    layer.add_field(FieldDef::new("first", FieldType::Text));
+    layer.add_field(FieldDef::new("second", FieldType::Text));
+    for i in 0..100 {
+        layer.push(Feature {
+            fid: i,
+            geometry: Some(Geometry::point(i as f64, 0.0)),
+            attributes: vec![FieldValue::Text(format!("{i:04}{}", "a".repeat(250))), FieldValue::Text("b".repeat(254))],
+        });
+    }
+    terrio::write_vector(&[layer.clone()], path, &Default::default()).unwrap();
+    let original = std::fs::read(std::path::Path::new(path).with_extension("dbf")).unwrap();
+    assert!(u16::from_le_bytes([original[10], original[11]]) > 256);
+    delete(path, &original, &[0, 51]);
+    let page = terrio::open_vector(path, &VectorOpenOptions { skip_features: 50, max_features: Some(2), ..Default::default() }).unwrap();
+    assert_eq!(page.layers[0].features.len(), 2);
+    for (got, want) in page.layers[0].features.iter().zip(&layer.features[52..54]) {
+        assert_eq!(got.fid, want.fid);
+        assert_eq!(got.geometry, want.geometry);
+        assert_eq!(got.attributes, want.attributes);
+    }
+}
