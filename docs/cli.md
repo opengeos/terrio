@@ -3934,13 +3934,14 @@ for many flags (`name` `dst_crs`, `long` `dst-crs`). Each declared pair is liste
 both sides, so `rasterize` `tr` and `ts` each name the other.
 Known limits: `requires` is not reported, because clap 4.6 exposes no public
 accessor for it, and a hand-written table would drift from the clap definitions
-(left for a future clap release or dedicated macro tracking).
+(deferred until clap exposes an accessor or a dedicated relation tracker is added).
 Predicate requirements (such as `viewshed`'s `required_if_eq_any`) and conditional
 rules (`requires_if`) are also not reported. Relations are descriptive only, and
 parsing rules do not change.
 
 The [v0.1 JSON Schema](https://github.com/opengeos/terrio/blob/main/schemas/cli-usage-v0.1.schema.json)
-describes the payload. This initial schema is unstable: consumers should check
+describes the payload (the schema file retains the `v0.1` name across the `0.1.x` series).
+This initial schema is unstable: consumers should check
 `schema_version`. `required` describes unconditional clap requirements; conditional
 requirements, mutation/idempotency rules and pipeline-step semantics
 are outside this version. Choices list only those registered in clap; additional

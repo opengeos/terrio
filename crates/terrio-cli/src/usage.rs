@@ -365,6 +365,16 @@ mod tests {
         assert_eq!(catalog_argument(args, "srcnodata")["repeatable"], false);
         assert_eq!(catalog_argument(args, "tap")["action"], "set_true");
         assert_eq!(catalog_argument(args, "tap")["repeatable"], false);
+
+        // Verify that clap's parser rejects repeated Set/SetTrue options with an ArgumentConflict.
+        let parse_err = std::thread::Builder::new()
+            .stack_size(crate::STACK_SIZE)
+            .spawn(|| root().try_get_matches_from(["terrio", "warp", "a.tif", "b.tif", "--srcnodata", "0", "--srcnodata", "1"]))
+            .unwrap()
+            .join()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(parse_err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     /// Verifies that both sides of declared argument conflicts and exclusive group members are listed.
@@ -376,6 +386,7 @@ mod tests {
         let args = result["command"]["arguments"].as_array().unwrap();
         assert_eq!(catalog_argument(args, "ts")["conflicts_with"], json!(["like", "tr"]));
         assert_eq!(catalog_argument(args, "tr")["conflicts_with"], json!(["like", "ts"]));
+        assert_eq!(catalog_argument(args, "te")["conflicts_with"], json!(["like"]));
         // `tap` declares only `requires = "tr"`; requires is deferred, so it lists no conflicts.
         assert_eq!(catalog_argument(args, "tap")["conflicts_with"], json!([]));
 
