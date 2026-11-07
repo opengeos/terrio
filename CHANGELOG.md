@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Public `build_vrt` and mosaic entry points reject unselected mixed band counts and target
+  extents intersecting no source. These strict checks deliberately differ from GDAL
+  `gdalbuildvrt`; calc retains zero/nodata-filled alignment outside its input extents.
+
 - Datum-grid hierarchy uses the first duplicate parent name and nests unparented subgrids under
   the first containing extent. Existing ambiguous grid files can select a different datum-shift
   grid. Lazy TIFF reads require malformed IFD chains to be repaired or rewritten before opening.
