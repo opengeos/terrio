@@ -975,9 +975,11 @@ def suite_sum_overviews(ctx):
         "ratio, preserving masks, nodata, type, CRS and geotransform. Absolute tolerance 1e-8 "
         "on controlled TIFFs and 1e-4 on real USGS terrain. Cropped cells, integer means and "
         "partly nodata blocks are estimates, not claims of equality to full-resolution totals. "
-        "Default-grid cases (no size, resolution or extent) must match GDAL's rounded-up size, type, "
-        "nodata, CRS and geotransform, and terrio's total must be within 1e-9 (UTM fixture) or "
-        "1e-6 (USGS) relative of both the source's and GDAL's; their pixels are not compared.",
+        "Default-grid cases (no extent; no size or resolution, --ts alone or --tr alone) must match "
+        "GDAL's rounded-up size, type, nodata, CRS and geotransform. Without --tr, terrio's total "
+        "must be within 1e-9 (UTM fixture) or 1e-6 (USGS) relative of both the source's and GDAL's; "
+        "with --tr, whose grid need not cover the source, within 5e-4 relative of GDAL's. Their "
+        "pixels are not compared.",
         2,
     )
 

@@ -219,7 +219,8 @@ def integer_copy(raster, path, data_type, nodata):
     """
     src = gdal.Open(raster)
     band = src.GetRasterBand(1)
-    a, valid = band.ReadAsArray(), band.ReadAsArray() != band.GetNoDataValue()
+    a = band.ReadAsArray()
+    valid = a != band.GetNoDataValue()
     if data_type == "Byte":
         values = np.clip((a - 3000) / 4, 1, 255).astype("uint8")
     else:

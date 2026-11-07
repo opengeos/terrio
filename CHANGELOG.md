@@ -2,19 +2,24 @@
 
 ## Unreleased
 
-- `warp -r sum` without `--ts`, `--tr` or `--te` rounds the suggested output size up, as
-  gdalwarp does for a sum (`GDAL_SWO_ROUND_UP_SIZE`), so that the output covers the whole
-  source and keeps its total. Rounded to the nearest, a 41 x 37 UTM raster reprojected to
-  EPSG:4326 lost its last row and 0.4 % of its total. Sizes and geotransforms match
-  GDAL 3.13.3; per-pixel values of a reprojected sum still differ from GDAL's.
+- `warp -r sum` without `--te` rounds the suggested output extent's size up, as gdalwarp does
+  for a sum (`GDAL_SWO_ROUND_UP_SIZE`), so that the output covers the whole source. Without
+  `--ts` or `--tr` this sets the output size; with `--ts` alone, the pixel size spans the
+  rounded-up extent; with `--tr` alone, the extent the resolution divides. Rounded to the
+  nearest, a 41 x 37 UTM raster reprojected to EPSG:4326 lost its last row and 0.4 % of its
+  total. Sizes and geotransforms match GDAL 3.13.3 in all three cases; per-pixel values of a
+  reprojected sum still differ from GDAL's.
 
 - Bilinear, cubic, cubic spline and Lanczos reads of VRT and mosaic sources with nodata
   average each source row over its valid pixels, then the rows over the valid ones, as GDAL's
-  `RasterIOResampled` does, rather than all valid weights at once, and round the result to
-  `float` for 8- and 16-bit and Float32 sources. Next to a nodata pixel, a bilinear value could
-  differ from GDAL's by 20. Reads of GDAL-built VRTs now agree with GDAL 3.13.3 on the
-  conformance DEM within an absolute 1e-5 (the registered tolerance; the runs were exact); a
-  valid integer result rounding to the nodata value is not moved off it as GDAL does.
+  `RasterIOResampled` does, rather than all valid weights at once. For 8- and 16-bit and
+  Float32 sources, with or without nodata, these reads also round the result to `float`, GDAL's
+  work type. Next to a nodata pixel, a bilinear value could differ from GDAL's by 20. Reads of
+  GDAL-built VRTs now agree with GDAL 3.13.3 on the conformance DEM within an absolute 1e-5
+  (the registered tolerance; the runs were exact). Known differences remain: a valid 8-bit
+  cubic or Lanczos result clamped onto the nodata value is not moved off it as GDAL does, and a
+  cubic or Lanczos mosaic written directly to a file at 2.8x upsampling differs from GDAL's VRT
+  read next to some isolated nodata pixels (under 0.1 % of them).
 
 - The `--json-usage` catalog (`schema_version` 0.1.1) records whether each argument is
   `repeatable` (clap Append/Count) and lists its `conflicts_with` arguments in both directions,

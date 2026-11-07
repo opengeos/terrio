@@ -1020,7 +1020,7 @@ terrio warp INPUT... OUTPUT [options]
 `sum`), `--srcnodata`, `--dstnodata`, `--ot`, `--cutline` (+ `--crop-to-cutline`), `--et`,
 `--order`, `--tps`, `--rpc`, `--to` and `--wo`. Several inputs are mosaicked into one output. The default output grid
 follows GDAL's `GDALSuggestedWarpOutput2`, whose size `-r sum` rounds up as `gdalwarp` does, so
-that the output covers the whole source; `--dst-transform X0 A B Y0 D E` with `--ts` sets any
+that the output covers the whole source (also with `--ts` or `--tr` alone, without `--te`); `--dst-transform X0 A B Y0 D E` with `--ts` sets any
 affine output grid instead, rotated ones included (GDAL's warper API, which `gdalwarp` does not
 expose). Rotated and south-up inputs are warped through their
 geotransform; a GeoTIFF georeferenced by GCPs is warped with GDAL's GCP transformers: a
