@@ -492,7 +492,7 @@ pub(crate) fn crs_from_text(text: &str) -> Option<CrsInfo> {
     let text = text.trim();
     // A WKT whose outermost node carries an EPSG identifier (WKT2 `ID`, WKT1 `AUTHORITY`).
     if let Some(code) = root_epsg(text) {
-        let mut info = CrsInfo::from_epsg(code);
+        let mut info = crate::crs::epsg_crs_info(code);
         if info.wkt.is_none() {
             info.wkt = Some(text.to_string());
         }
@@ -521,7 +521,7 @@ pub(crate) fn crs_from_text(text: &str) -> Option<CrsInfo> {
             s.epsg = None;
         }
     }
-    Some(CrsInfo { epsg: s.epsg, wkt: s.wkt.or_else(|| s.epsg.and_then(|c| wbprojection::to_ogc_wkt(c).ok())), proj4: s.proj4 })
+    Some(CrsInfo { epsg: s.epsg, wkt: s.wkt.or_else(|| s.epsg.and_then(|c| crate::crs::epsg_crs_info(c).wkt)), proj4: s.proj4 })
 }
 
 /// The EPSG code in the identifier that closes a WKT's outermost node.
@@ -575,7 +575,7 @@ fn esri_name_epsg(wkt: &str) -> Option<u32> {
 /// else its ESRI code).
 pub(crate) fn spatial_ref(crs: &CrsInfo) -> SpatialRef {
     let epsg = crs.epsg.or_else(|| crs.wkt.as_deref().and_then(crs_from_text).and_then(|c| c.epsg));
-    SpatialRef { epsg, wkt: crs.wkt.clone(), proj4: crs.proj4.clone(), esri: None }.with_esri()
+    SpatialRef { epsg, wkt: crate::crs::raster_crs_wkt(crs), proj4: crs.proj4.clone(), esri: None }.with_esri()
 }
 
 /// The CRS as WKT that GDAL recognizes.

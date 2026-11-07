@@ -47,7 +47,7 @@ fn crs_from_erm(projection: &str, datum: &str) -> Option<CrsInfo> {
     let p = projection.to_ascii_uppercase();
     let d = datum.to_ascii_uppercase();
     if let Some(code) = p.strip_prefix("EPSG:").and_then(|c| c.parse().ok()) {
-        return Some(CrsInfo::from_epsg(code));
+        return Some(crate::crs::epsg_crs_info(code));
     }
     if p == "GEODETIC" {
         let code = match d.as_str() {
@@ -56,20 +56,20 @@ fn crs_from_erm(projection: &str, datum: &str) -> Option<CrsInfo> {
             "NAD27" => 4267,
             "GDA94" => 4283,
             "WGS72DOD" => 4322,
-            _ => return d.strip_prefix("EPSG:").and_then(|c| c.parse().ok()).map(CrsInfo::from_epsg),
+            _ => return d.strip_prefix("EPSG:").and_then(|c| c.parse().ok()).map(crate::crs::epsg_crs_info),
         };
-        return Some(CrsInfo::from_epsg(code));
+        return Some(crate::crs::epsg_crs_info(code));
     }
     let utm = |prefix: &str| p.strip_prefix(prefix).and_then(|z| z.parse::<u32>().ok()).filter(|z| (1..=60).contains(z));
     if let Some(z) = utm("NUTM") {
-        return Some(CrsInfo::from_epsg(match d.as_str() {
+        return Some(crate::crs::epsg_crs_info(match d.as_str() {
             "NAD83" => 26900 + z,
             "NAD27" => 26700 + z,
             _ => 32600 + z,
         }));
     }
     if let Some(z) = utm("SUTM") {
-        return Some(CrsInfo::from_epsg(32700 + z));
+        return Some(crate::crs::epsg_crs_info(32700 + z));
     }
     None
 }

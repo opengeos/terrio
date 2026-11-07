@@ -333,7 +333,7 @@ fn crs_for_srs(db: &Db, id: i64) -> Option<CrsInfo> {
     if org.eq_ignore_ascii_case("EPSG")
         && let Some(code) = i(&t, row, "organization_coordsys_id").filter(|c| *c > 0)
     {
-        return Some(CrsInfo::from_epsg(code as u32));
+        return Some(crate::crs::epsg_crs_info(code as u32));
     }
     t.get(row, "definition").and_then(Value::as_str).and_then(common::crs_from_text)
 }

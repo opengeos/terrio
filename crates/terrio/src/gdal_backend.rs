@@ -974,7 +974,7 @@ fn srs_to_crs(srs: &gdal::spatial_ref::SpatialRef) -> Option<wbraster::CrsInfo> 
     };
     Some(match code {
         Some(code) => {
-            let mut info = wbraster::CrsInfo::from_epsg(code);
+            let mut info = crate::crs::epsg_crs_info(code);
             if info.wkt.is_none() {
                 info.wkt = Some(wkt);
             }

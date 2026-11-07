@@ -1188,7 +1188,7 @@ impl Ellipsoid {
     /// The CRS of a latitude/longitude grid: EPSG:4326 for WGS 84 regular grids, as GDAL.
     fn geographic_crs(&self, regular: bool) -> CrsInfo {
         if regular && self.is_wgs84() {
-            return CrsInfo::from_epsg(4326);
+            return crate::crs::epsg_crs_info(4326);
         }
         let wkt = format!("{},AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST]]", self.geogcs());
         CrsInfo { epsg: None, wkt: Some(wkt), proj4: None }

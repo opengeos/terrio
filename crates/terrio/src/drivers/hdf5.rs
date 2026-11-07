@@ -763,7 +763,7 @@ fn attr_f64s(attrs: &[Attribute], name: &str) -> Option<Vec<f64>> {
 /// `Column Spacing`, and the UTM or UPS projection of the root's `Map Projection` attributes;
 /// WGS 84 for the others (whose corners GDAL gives as GCPs, which terrio does not model).
 fn csk_georeferencing(f: &Hdf5File, w: &Walk, attrs: &[Attribute], level: &str) -> (Option<[f64; 6]>, Option<wbraster::CrsInfo>) {
-    let wgs84 = wbraster::CrsInfo::from_epsg(4326);
+    let wgs84 = crate::crs::epsg_crs_info(4326);
     if !(starts_with_ci(level, "GEC") || starts_with_ci(level, "GTC")) {
         return (None, Some(wgs84));
     }
@@ -791,7 +791,7 @@ fn csk_georeferencing(f: &Hdf5File, w: &Walk, attrs: &[Attribute], level: &str) 
                 && (1.0..=60.0).contains(&zone)
                 && (zone * 6.0 - 183.0 - c[1]).abs() < 1e-9;
             if id.eq_ignore_ascii_case("UTM") && utm {
-                return (gt, Some(wbraster::CrsInfo::from_epsg(if y0 == 0.0 { 32600 } else { 32700 } + zone as u32)));
+                return (gt, Some(crate::crs::epsg_crs_info(if y0 == 0.0 { 32600 } else { 32700 } + zone as u32)));
             }
             let proj = if id.eq_ignore_ascii_case("UTM") {
                 Some(format!("+proj=tmerc +lat_0={} +lon_0={} +k={} +x_0={x0} +y_0={y0} +datum=WGS84 +units=m +no_defs", c[0], c[1], k[0]))
@@ -849,7 +849,7 @@ fn georeferencing(f: &Hdf5File, w: &Walk, e: &Entry, attrs: &[Attribute], nd: us
         let gattrs = g.attributes();
         let epsg = string_attr(&gattrs, "epsg_code").and_then(|s| s.trim().parse::<u32>().ok()).filter(|c| *c > 0);
         crs = match epsg {
-            Some(code) => Some(wbraster::CrsInfo::from_epsg(code)),
+            Some(code) => Some(crate::crs::epsg_crs_info(code)),
             None => super::cf::cf_crs(
                 |k| string_attr(&gattrs, k),
                 |k| {

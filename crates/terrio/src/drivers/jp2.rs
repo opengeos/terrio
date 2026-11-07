@@ -573,7 +573,7 @@ fn georeferencing(b: &[u8]) -> (Option<[f64; 6]>, Option<CrsInfo>) {
     if let Some((_, payload)) = top.iter().find(|(t, p)| t == b"uuid" && p.starts_with(&GEOJP2_UUID))
         && let Some(tags) = crate::geotiff::read_geo_tags_from(std::io::Cursor::new(&payload[16..]))
     {
-        let crs = tags.epsg.map(CrsInfo::from_epsg).or(tags.crs);
+        let crs = tags.epsg.map(crate::crs::epsg_crs_info).or(tags.crs);
         let gt = tags
             .geo_transform
             .map(|gt| if tags.pixel_is_point { [gt[0] - gt[1] / 2.0, gt[1], gt[2], gt[3] - gt[5] / 2.0, gt[4], gt[5]] } else { gt });
@@ -608,7 +608,7 @@ fn gml_georeferencing(xml: &str) -> (Option<[f64; 6]>, Option<CrsInfo>) {
             .map(|t| t.split([' ', ',', '\n', '\t']).filter_map(|v| v.trim().parse().ok()).collect())
             .collect()
     };
-    let crs = epsg.map(CrsInfo::from_epsg);
+    let crs = epsg.map(crate::crs::epsg_crs_info);
     let origin = numbers("pos").into_iter().next().or_else(|| numbers("coordinates").into_iter().next());
     let vectors = numbers("offsetVector");
     let (Some(o), [v1, v2, ..]) = (origin, vectors.as_slice()) else {

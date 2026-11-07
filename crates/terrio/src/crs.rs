@@ -268,7 +268,7 @@ impl SpatialRef {
         self.as_core().to_wbp().map_err(Into::into)
     }
     pub(crate) fn from_raster_crs(c: &wbraster::CrsInfo) -> Self {
-        let mut s = Self { epsg: c.epsg, wkt: c.wkt.clone(), proj4: c.proj4.clone(), esri: None };
+        let mut s = Self { epsg: c.epsg, wkt: raster_crs_wkt(c), proj4: c.proj4.clone(), esri: None };
         // A WKT made from a PROJ string is not identified: it can describe less than the PROJ
         // string (the registry's loose matches took a Robinson on another meridian for ESRI's).
         if s.epsg.is_none()
@@ -305,6 +305,28 @@ impl SpatialRef {
     pub fn apply_to_layer(&self, layer: &mut wbvector::Layer) {
         layer.set_crs_epsg(self.epsg);
         layer.set_crs_wkt(self.to_wkt());
+    }
+}
+
+/// A raster CRS known only by its EPSG code, as the raster model stores it: the code and the WKT
+/// of terrio's EPSG registry, which GDAL writes for the code. Drivers use it in place of
+/// `wbraster::CrsInfo::from_epsg`, whose generated WKT describes some codes otherwise (MGA zones
+/// without their false northing, US-foot State Plane CRSs in metres, Web Mercator on the
+/// ellipsoid) and drops the EPSG authority and datum names. No WKT for a code terrio does not
+/// know, as wbraster's.
+pub(crate) fn epsg_crs_info(code: u32) -> wbraster::CrsInfo {
+    wbraster::CrsInfo { epsg: Some(code), wkt: SpatialRef::from_epsg(code).ok().and_then(|s| s.wkt), proj4: None }
+}
+
+/// The WKT of a raster CRS: the registry's (see [`epsg_crs_info`]) in place of the WKT
+/// `wbraster::CrsInfo::from_epsg` generates for its EPSG code, as wbraster's readers and callers
+/// building rasters store it, otherwise the stored WKT (which a file holds) unchanged.
+pub(crate) fn raster_crs_wkt(c: &wbraster::CrsInfo) -> Option<String> {
+    match (c.epsg, c.wkt.as_deref()) {
+        (Some(code), Some(wkt)) if wbprojection::to_ogc_wkt(code).is_ok_and(|generated| generated == wkt) => {
+            epsg_crs_info(code).wkt.or_else(|| c.wkt.clone())
+        }
+        _ => c.wkt.clone(),
     }
 }
 
