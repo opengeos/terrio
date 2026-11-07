@@ -49,6 +49,9 @@ fn reads_text_in_each_database_encoding() {
         let truncated = path(&format!("{encoding}-truncated"));
         for bbox in [None, Some((5.0, 5.0, 15.0, 15.0))] {
             let options = VectorOpenOptions { spatial_filter: bbox, ..Default::default() };
+            // With GDAL enabled the public eager open may fall back after a native error.
+            // Native eager rejection is also covered directly in gpkg_read's unit tests.
+            #[cfg(not(feature = "gdal"))]
             assert!(terrio::open_vector(&truncated, &options).is_err(), "{encoding}");
             assert!(terrio::stream::open_layers(&truncated, &options, 1).and_then(|mut r| r.remove(0).read_all()).is_err(), "{encoding}");
         }

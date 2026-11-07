@@ -797,6 +797,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn malformed_feature_records_fail_native_eager_reads_even_with_gdal_enabled() {
+        mod fixtures {
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/sqlite_encodings/fixtures.rs"));
+        }
+        for (name, bytes) in fixtures::DATABASES.iter().filter(|(name, _)| name.ends_with("-truncated")) {
+            let db = Db::new(bytes.to_vec()).unwrap();
+            for bbox in [None, Some((5., 5., 15., 15.))] {
+                assert!(read_db(&db, &[], bbox).is_err(), "{name}");
+            }
+        }
+    }
+
+    #[test]
     fn malformed_rtree_child_records_fail_eager_and_streamed_queries() {
         use super::super::sqlite as writer;
         let node = |depth: u16, id: i64| {
