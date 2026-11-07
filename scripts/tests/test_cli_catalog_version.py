@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -67,6 +68,21 @@ class CatalogVersionTests(unittest.TestCase):
             guard.check(base, self.repo)
         self.write("0.1.1", "b" * 64)
         guard.check(base, self.repo)
+
+    def test_non_string_versions_report_clean_cli_error(self):
+        script = self.repo / "scripts" / "check_cli_catalog_version.py"
+        script.parent.mkdir()
+        script.write_text(Path(guard.__file__).read_text())
+        for value in (None, 1, False, ["0", "1"]):
+            with self.subTest(value=value):
+                self.write(value, "a" * 64)
+                result = subprocess.run(
+                    [sys.executable, str(script), "--base", self.base],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("invalid catalog version:", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
 
     def test_missing_base_is_not_treated_as_initial_catalog(self):
         with self.assertRaisesRegex(ValueError, "base revision is not available"):

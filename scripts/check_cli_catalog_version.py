@@ -24,6 +24,8 @@ def digest(text):
 def version(text):
     """Read and normalize the schema version, including the original two-part 0.1."""
     value = json.loads(text)["properties"]["schema_version"]["const"]
+    if not isinstance(value, str):
+        raise ValueError(f"invalid catalog version: {value!r}")
     parts = value.split(".")
     if len(parts) not in (2, 3) or any(not part.isdecimal() for part in parts):
         raise ValueError(f"invalid catalog version: {value!r}")
