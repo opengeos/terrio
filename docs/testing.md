@@ -9,6 +9,23 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Updating the ordinary CI GDAL reference
+
+`GDAL_REFERENCE_VERSION` in `.github/workflows/ci.yml` controls both micromamba GDAL
+package pins, the external-overview comparison's exact version assertion, and the
+GDAL component of the generated-data cache key. Its current value remains 3.12.2.
+Changing it invalidates that workflow's dataset cache automatically.
+
+The parity job separately pins rasterio 1.5.2 and rio-cogeo 7.0.4. Rasterio's wheel
+bundles its own GDAL: changing the environment variable does not replace that library.
+When upgrading, select and validate a compatible wheel; the assertion intentionally
+fails if its bundled GDAL differs, including a development-version suffix.
+
+Coordinate upgrades with the independent pins and matching cache key in
+`.github/workflows/ci-extended.yml`, the PROJ reference, and any regenerated reference
+data. Keep historical GDAL version annotations attached to the results they describe;
+update current-reference documentation and tests only after validating the new oracle.
+
 ## Test data
 
 `scripts/fetch_test_data.sh DIR` downloads public data and derives copies in other formats with
