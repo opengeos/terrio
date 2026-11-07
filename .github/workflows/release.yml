@@ -112,6 +112,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master; toolchain set by input
         with:
           toolchain: stable
+      # dtolnay/rust-toolchain is pinned to a master commit in every workflow: it has no release
+      # tags, so Dependabot does not bump it; update all its pins together by hand.
       # Trusted publishing cannot create a crate before it has an owner/configuration.
       # Bootstrap terrio-crs manually and configure its trusted publisher before a tag
       # starts any uploads in this job. See docs/crs.md for the one-time setup.
