@@ -522,7 +522,7 @@ pub(crate) fn gctp_crs(proj: i32, zone: i64, params: &[f64], sphere: i64) -> Opt
                 north = false;
             }
             if wgs84 {
-                return Some(wbraster::CrsInfo::from_epsg(if north { 32600 } else { 32700 } + z as u32));
+                return Some(crate::crs::epsg_crs_info(if north { 32600 } else { 32700 } + z as u32));
             }
             format!("+proj=utm +zone={z}{}", if north { "" } else { " +south" })
         }
@@ -579,7 +579,7 @@ pub(crate) fn gctp_crs(proj: i32, zone: i64, params: &[f64], sphere: i64) -> Opt
         gctp_ellipsoid(sphere).unwrap_or((6378137.0, 298.257223563))
     };
     if wgs84 && proj == 0 {
-        return Some(wbraster::CrsInfo::from_epsg(4326));
+        return Some(crate::crs::epsg_crs_info(4326));
     }
     let ellps = match ellipsoid {
         (r, 0.0) => format!("+R={r}"),

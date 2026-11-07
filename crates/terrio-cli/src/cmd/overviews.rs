@@ -18,7 +18,8 @@ use terrio::ops::overview::{
 /// recompute them from the full-resolution image (`gdal raster overview refresh`).
 ///
 /// The file is updated through a copy renamed over it: an error leaves it as it was. Only local,
-/// writable little-endian GeoTIFFs are updated.
+/// writable little-endian GeoTIFFs are updated; with `--external`, only the `.ovr` sidecar is
+/// written, so the GeoTIFF may be read-only (gdaladdo's `-ro`).
 #[derive(clap::Args)]
 pub struct Args {
     /// The GeoTIFF.

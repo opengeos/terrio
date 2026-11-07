@@ -169,42 +169,55 @@ def main():
                     )
                     shutil.copyfile(sample, a)
                     shutil.copyfile(sample, b)
-                    run(
-                        [
-                            "gdaladdo",
-                            *(["-ro"] if external else []),
-                            "-r",
-                            method,
-                            a,
-                            2,
-                            4,
-                        ]
-                    )
-                    run(
-                        [
-                            args.terrio,
-                            "overviews",
-                            b,
-                            *(["--external"] if external else []),
-                            "-r",
-                            method,
-                            2,
-                            4,
-                        ]
-                    )
-                    status, detail = compare(a, b)
-                    run(["gdaladdo", *(["-ro"] if external else []), "-clean", a])
-                    run(
-                        [
-                            args.terrio,
-                            "overviews",
-                            b,
-                            *(["--external"] if external else []),
-                            "--clean",
-                        ]
-                    )
-                    compare(a, b)
-                    return status, detail + "; delete leaves matching base raster"
+                    try:
+                        if external:
+                            # External overviews leave the file itself untouched: read-only
+                            # files take them too (gdaladdo -ro, terrio --external).
+                            for path in [a, b]:
+                                path.chmod(0o444)
+                        before = b.read_bytes()
+                        run(
+                            [
+                                "gdaladdo",
+                                *(["-ro"] if external else []),
+                                "-r",
+                                method,
+                                a,
+                                2,
+                                4,
+                            ]
+                        )
+                        run(
+                            [
+                                args.terrio,
+                                "overviews",
+                                b,
+                                *(["--external"] if external else []),
+                                "-r",
+                                method,
+                                2,
+                                4,
+                            ]
+                        )
+                        status, detail = compare(a, b)
+                        if external and b.read_bytes() != before:
+                            raise AssertionError("the read-only GeoTIFF changed")
+                        run(["gdaladdo", *(["-ro"] if external else []), "-clean", a])
+                        run(
+                            [
+                                args.terrio,
+                                "overviews",
+                                b,
+                                *(["--external"] if external else []),
+                                "--clean",
+                            ]
+                        )
+                        compare(a, b)
+                    finally:
+                        for path in [a, b]:
+                            path.chmod(0o644)
+                    read_only = "; read-only GeoTIFF unchanged" if external else ""
+                    return status, detail + read_only + "; delete leaves matching base raster"
 
                 case(
                     f"{'external' if external else 'internal'} overviews {method} and delete",

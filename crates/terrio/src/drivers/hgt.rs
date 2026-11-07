@@ -19,7 +19,7 @@ use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
 use std::io::Read;
 use std::path::Path;
-use wbraster::{CrsInfo, DataType, Raster};
+use wbraster::{DataType, Raster};
 
 /// The value of void cells.
 const NODATA: f64 = -32768.0;
@@ -174,7 +174,7 @@ fn tile((lat, lon): (i32, i32), (cols, rows, data_type): (usize, usize, DataType
     let (dx, dy) = (1.0 / (cols - 1) as f64, 1.0 / (rows - 1) as f64);
     let gt = [lon as f64 - dx / 2.0, dx, 0.0, (lat + 1) as f64 + dy / 2.0, 0.0, -dy];
     let nodata = (data_type != DataType::U8).then_some(NODATA);
-    let mut raster = common::raster_header(cols, rows, 1, data_type, gt, CrsInfo::from_epsg(4326), nodata)?;
+    let mut raster = common::raster_header(cols, rows, 1, data_type, gt, crate::crs::epsg_crs_info(4326), nodata)?;
     raster.metadata.push(("AREA_OR_POINT".into(), "Point".into()));
     let mut ds = RasterDataset::with_driver(raster, RasterDriver::SRTMHGT, nodata.is_some());
     // Error, image and water body layers are not heights.
@@ -249,6 +249,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wbraster::CrsInfo;
     use wbraster::raster::RasterData;
 
     #[test]

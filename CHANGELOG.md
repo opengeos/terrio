@@ -6,6 +6,15 @@
   omit `depth` or pass `null` for unlimited traversal. Native TIFF mask discovery now
   rejects unreadable or malformed directory/tag tables instead of silently dropping masks.
 
+- Whole-file Shapefile reads, streaming reads and conversions omit deleted DBF records,
+  preserving the physical feature IDs of live records.
+
+- Shapefile `skip_features` and `max_features` count live rows: deleted DBF records are passed
+  over and count toward neither bound, while FIDs still number physical slots. pyogrio's
+  `skip_features` (and GDAL's fast seek) can count deleted slots instead, so `terrio.pyogrio`
+  pages a Shapefile with deleted rows differently from pyogrio. Files without deleted rows
+  page the same in both.
+
 - Native FlatGeobuf readers reject incomplete records, mismatched nonzero feature counts and
   invalid coordinate dimensions/part bounds. GDAL-enabled eager reads retain GDAL fallback
   admission behavior; native range and stream checks apply in either build.
@@ -22,9 +31,22 @@
   paletted and complex bands, datasets opened with `overview_level` and written datasets keep
   their own path), and resamples a per-dataset mask from the mask's own overviews (#429).
 - Changed default: resampled reads (`LazyRaster::read_resampled`, `terrio translate --outsize`
-  and `--tr`) sum the NaN values of masked floating-point chunks, as GDAL 3.12 does, so an output
-  pixel whose footprint holds one is NaN. In 0.7.0 they always skipped them, as GDAL 3.13 does.
-  `TERRIO_GDAL_COMPAT=3.13` restores that, as for the other `RasterIO` kernels.
+  and `--tr`) with the convolution kernels (bilinear, cubic, cubic spline and Lanczos) sum the NaN
+  values of masked floating-point chunks, as GDAL 3.12 does, so an output pixel whose footprint
+  holds one is NaN. Average, RMS, Gaussian, mode and nearest reads are unaffected. In 0.7.0
+  the convolution kernels always skipped them, as GDAL 3.13 does. `TERRIO_GDAL_COMPAT=3.13` restores that, as for
+  the other `RasterIO` kernels.
+- The registry CRSs terrio resolves can be listed, for searchable CRS pickers, without GDAL,
+  network access or a PROJ installation (#613): `terrio::crs::list_crs` (`terrio_crs::list_crs`),
+  `terrio.list_crs` in Python, `listCrs` in JavaScript and `terrio list-crs` (also an MCP tool),
+  printing as `projinfo --list-crs` does. Each entry has its authority and code, name, kind,
+  deprecation, area of use and its bounding box, projection method and celestial body, as GDAL's
+  `OSRGetCRSInfoListFromDatabase` gives them; queries filter by authority, kind, deprecation and
+  words of the name or code (`Albers` and `3577` both find EPSG:3577). The list holds 7,681 EPSG
+  CRSs (EPSG v12.029, `terrio::crs::EPSG_VERSION`), 2,519 ESRI CRSs and 2,201 IAU_2015 CRSs from
+  PROJ 9.8.1's database (`scripts/gen_crs_catalog.py`, 160 KB compressed), each one a code
+  `SpatialRef::parse` resolves; the conformance suite `crs-list` finds every entry identical to
+  GDAL 3.13.2's.
 - A netCDF snapshot (`terrio mdconvert`, `Dataset.write`) writes a netCDF-4 compound attribute
   as a compound, as GDAL 3.13.3's `gdalmdimtranslate -of netCDF` does (#565): `station_t
   z:station = {7, 12.5}` stays `station_t z:station = {7, 12.5}` where it became the text
@@ -46,6 +68,13 @@
   opened from memory and to the `TERRIO_WBVECTOR_FALLBACK` KMZ read. A style document that breaks
   these limits now refuses the whole archive; a style document that cannot be read, or that takes
   the style budget past its size, still leaves its links as URLs.
+- A KMZ document that `doc.kml` links to several times is read, counted toward
+  `TERRIO_KMZ_MAX_SIZE` and parsed once, and emits its existing layers once. Document and
+  folder names are kept; the first link supplies the default name for an unnamed root. A
+  link to `doc.kml` itself adds no layer. Each link used to read the document again and add a
+  layer with the same name: 100,000 links to one document, in a 25 KB archive, gave 100,000
+  identical layers and took 702 MiB. Linked documents are also found without scanning the
+  archive's names for each link, a scan that made 99,999 links to distinct documents take 25 s.
 - A remote read whose tiles span more than half the HTTP block cache's blocks
   (`TERRIO_HTTP_CACHE_SIZE`, 64 MiB by default) fetches them in batches of at most half the cache
   as it decodes them: each byte once when the tiles are decoded in file order, and at most one
@@ -69,6 +98,14 @@
   their mask rows, which a refused call left queued. Once a block row of a GeoTIFF other than a
   COG fails to be written, the writer refuses more rows and `finish`, which could write a file
   missing it.
+- External overviews are built, refreshed and deleted beside a read-only GeoTIFF, as
+  `gdaladdo -ro` builds them (#612): `add_overviews`, `refresh_overviews` and `delete_overviews`
+  with `external` (and `terrio overviews --external`) write only the `.ovr` sidecar and no longer
+  refuse a file that cannot be written. Internal overviews still need a writable file.
+- `add_overviews_with_progress` (Rust) and `add_overviews(..., progress=callback)` (Python) report
+  the fraction of the overviews computed, from 0 to 1 and never decreasing, to a callback that can
+  cancel (#612). A cancellation returns `Error::Cancelled` (Python
+  `terrio.errors.CancelledError`) and changes no file: an existing `.ovr` stays as it was.
 - `terrio tile` (Python `terrio.raster_tiles`, JavaScript `rasterTiles`) builds each lower-zoom
   tile from the four tiles below it, as GDAL does, instead of rendering it from the source (#574).
   Tiles are generated depth first, with at most four tiles per zoom level in memory, and every
@@ -135,6 +172,9 @@
   the same path takes 0.10 to 0.11 s per write as EHdr (was 0.15 to 0.16 s), 0.11 to 0.12 s as ENVI
   (0.15 to 0.76 s), 0.10 to 0.11 s as SAGA (0.15 to 0.39 s) and 0.25 s as RST (0.30 to 0.67 s). A
   slope file-to-file benchmark takes 0.53 s, where it took 1.01 s (`gdaldem`: 0.90 s).
+- Code-only raster CRSs now export terrio's registry WKT, preserving the EPSG authority and
+  datum identity (#610). This corrects false northing in GDA94 MGA zones, US survey-foot State
+  Plane definitions and Web Mercator's spherical model. Explicit WKT stored in a file is kept.
 - Python operations given a `terrio.Raster` held in memory share it instead of copying it; the
   `mask=` raster of `footprint` and `polygonize`, the rasters of the point-cloud functions and
   the rasters written as netCDF groups are still copied. An operation does not change

@@ -1366,6 +1366,9 @@ from the same dataset.
 crates/terrio-crs/src/projjson_db.tsv.zst is derived from the same dataset (EPSG v12.029), through
 PROJ 9.7.1's database, under the same terms; the EPSG method and parameter names and codes in
 crates/terrio-crs/src/projjson_gdal.rs come from it too.
+The EPSG names, areas of use and projection method names in
+crates/terrio-crs/data/crs_catalog.tsv.zst are derived from the same dataset (EPSG v12.029),
+through PROJ 9.8.1's database and GDAL (scripts/gen_crs_catalog.py), under the same terms.
 
 -------------------------------------------------------------------------------
 Esri projection engine data
@@ -1374,6 +1377,9 @@ Esri projection engine data
 crates/terrio-crs/data/esri.tsv.zst, and the Esri datum names in
 crates/terrio-crs/data/datums.tsv.zst, are derived, through PROJ 9.7.1's database, from Esri's
 projection engine documentation (https://github.com/Esri/projection-engine-db-doc), modified.
+The ESRI names, areas of use and projection method names in
+crates/terrio-crs/data/crs_catalog.tsv.zst are derived from the same documentation (ArcGIS Pro
+3.6), through PROJ 9.8.1's database.
 
   Copyright © 2010-2025 Esri
 
@@ -1400,6 +1406,8 @@ data/sql/iau.sql, Git blob 900564ccf2e1f77fb708ddc2c8544843b29bc24a, generated b
 scripts/build_db_from_iau.py (Copyright (c) 2021, Hobu Inc; author Even Rouault), under PROJ's
 license (see the PROJ section). The source planetary reference is the IAU Working Group report
 at https://doi.org/10.1007/s10569-017-9805-5 .
+The IAU_2015 names in crates/terrio-crs/data/crs_catalog.tsv.zst come from the same source,
+through PROJ 9.8.1's database.
 
 -------------------------------------------------------------------------------
 CRS benchmark reference data

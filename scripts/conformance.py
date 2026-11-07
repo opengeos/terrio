@@ -59,6 +59,8 @@ Suites:
     crs               every EPSG CRS's transformations vs GDAL's (tests/epsg_accuracy.rs)
     crs-grids         the same with datum shift grids, then grids, geoid models and coordinate
                       epochs (tests/epsg_accuracy_grids.rs, compare_crs_grids_with_gdal.py)
+    crs-list          ``terrio list-crs`` vs GDAL's GetCRSInfoListFromDatabase, field by field, for
+                      the EPSG, ESRI and IAU_2015 CRSs (compare_crs_list_with_gdal.py)
 
 Usage:
     python scripts/conformance.py ../terrio-data [--output docs/conformance.md] [--json FILE]
@@ -555,7 +557,8 @@ def suite_indexes(ctx):
 def suite_raster_manage(ctx):
     """Real DEM raster management, cross-read and compared by GDAL."""
     suite = Suite("raster-manage", "Raster management", "GDAL 3.13.3",
-                  "Creation types/bands, metadata escaping, nodata, internal/external overview add/delete, "
+                  "Creation types/bands, metadata escaping, nodata, internal overview add/delete and external "
+                  "overview add/delete beside read-only GeoTIFFs (left unchanged), "
                   "exact Landsat Byte/UInt16/Float32 mode on uneven levels, "
                   "internal mask overviews added, refreshed (whole and over an extent) and added again over "
                   "gdaladdo's, and real DEM subset updates: masks, mask blocks, type, nodata, CRS and "
@@ -606,6 +609,31 @@ def suite_vsi(ctx):
         return suite
     for result in results:
         suite.cases.append(Case("vsi", result["name"], result["status"], result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out) or f"exit {code}"
+    return suite
+
+
+def suite_shapefile_deleted(ctx):
+    """Deleted DBF slots, physical FIDs and live-feature paging against OGR."""
+    suite = Suite("shapefile-deleted", "Shapefile deleted records", "GDAL/OGR 3.13.3",
+                  "90 generated-file cases: whole/streamed reads, FIDs, exact scalar attributes/nulls and ISO WKB; "
+                  "live-feature skip/max with and without SHX, including null geometry.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    probe = Path(ctx.terrio).parent / "examples" / ("shapefile_rows.exe" if os.name == "nt" else "shapefile_rows")
+    if not probe.is_file():
+        suite.error = "needs cargo build -p terrio --example shapefile_rows in the CLI's build profile"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_shapefile_deleted.py"), "--probe", str(probe), "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("Shapefile deleted records", result["name"], result["status"], result["detail"]))
     if code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out) or f"exit {code}"
     return suite
@@ -1743,6 +1771,27 @@ def suite_iau(ctx):
         return suite
     for case in cases:
         suite.cases.append(Case("IAU_2015", case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
+def suite_crs_list(ctx):
+    """The registry CRSs ``terrio list-crs`` lists against GDAL's CRS info list."""
+    suite = Suite("crs-list", "Registry CRS listing", "GDAL/PROJ",
+                  "Every EPSG, ESRI and IAU_2015 CRS terrio lists vs osr.GetCRSInfoListFromDatabase: name, "
+                  "kind, deprecation, area of use and its bounds, projection method and celestial body.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_crs_list_with_gdal.py"), "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case("list-crs", case["name"], case["status"], case["detail"]))
     if code and not any(c.status == DIFFERS for c in suite.cases):
         suite.error = tail(err or out)
     return suite
@@ -3194,6 +3243,7 @@ SUITES = OrderedDict(
         ("shapefile-archives", suite_shapefile_archives),
         ("vsi", suite_vsi),
         ("shapefile-rings", suite_shapefile_rings),
+        ("shapefile-deleted", suite_shapefile_deleted),
         ("raster-roundtrip", suite_raster_roundtrip),
         ("windows", suite_windows),
         ("ops", suite_ops),
@@ -3275,6 +3325,7 @@ SUITES = OrderedDict(
         ("projjson", suite_projjson),
         ("projjson-export", suite_projjson_export),
         ("iau", suite_iau),
+        ("crs-list", suite_crs_list),
         ("crs-grids", suite_crs_grids),
     ]
 )

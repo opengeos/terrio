@@ -52,6 +52,7 @@ Every command, in alphabetical order. `terrio --help` prints this list, and
 | [`is-valid`](#vector-topology) | Report the validity of each feature's geometry |
 | [`layer-algebra`](#vector-topology) | Polygon, line and point layer algebra (seven operations) |
 | [`lineref`](#lineref) | Linear referencing (like ogrlineref) |
+| [`list-crs`](#list-crs) | List the registry CRSs terrio resolves |
 | [`make-point`](#make-point) | Make point geometries from coordinate fields |
 | [`make-valid`](#vector-topology) | Repair invalid geometries |
 | [`mcp`](#mcp) | Serve these commands to AI agents over MCP |
@@ -291,6 +292,25 @@ year) use it for time-dependent transformations, and a point that cannot be tran
 [Coordinate Systems](crs.md#datum-shift-grids)). `--projjson` prints only the CRS as PROJJSON, so that
 `terrio crs CRS --projjson > crs.json` writes a PROJJSON file (see
 [Writing PROJJSON](crs.md#writing-projjson)); it cannot be combined with `--to` or `--wkt`.
+
+## list-crs
+
+```sh
+terrio list-crs albers --authority EPSG --kind projected   # EPSG:3577 "GDA94 / Australian Albers"...
+terrio list-crs 3577 --json
+terrio list-crs --kind geographic_2d --include-deprecated
+```
+
+Lists the CRSs of the registries terrio carries, one per line as `projinfo --list-crs` prints
+them (`EPSG:3577 "GDA94 / Australian Albers"`, then ` [deprecated]`), without network or PROJ.
+Words filter by name or code (each must be in the name or begin the code or `AUTHORITY:CODE`),
+`--authority` (`EPSG`, `ESRI`, `IAU_2015`) and `--kind` (`geographic_2d`, `geographic_3d`,
+`geocentric`, `projected`, `vertical`, `compound`, `other`) are repeatable, and deprecated CRSs
+are left out unless `--include-deprecated`. `--json` prints each CRS's name, kind, deprecation,
+area of use and its bounds, projection method and celestial body, as GDAL's
+`OSRGetCRSInfoListFromDatabase` gives them. For MCP calls, supply search words and/or
+authority/kind filters: an unfiltered listing exceeds the server's 100,000-byte output cap
+and is truncated. See [Listing registry CRSs](crs.md#listing-registry-crss).
 
 ## pixel-info
 
@@ -1290,7 +1310,10 @@ A raster without a geotransform of its own (unreferenced, or georeferenced by
 ground control points) cannot be moved. With `--like`, a template without a
 geotransform gives its GCPs, or no georeferencing, instead of a unit-pixel grid.
 
-In-place operations require writable little-endian GeoTIFFs. Updating a COG
+In-place operations require writable little-endian GeoTIFFs. `overviews --external` writes only
+the `.ovr` sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`; its directory must be
+writable. A new sidecar is a BigTIFF when its images take more than about 4 GiB, and an
+existing classic TIFF sidecar that would grow past 4 GiB is refused. Updating a COG
 requires `--ignore-cog-layout-break` and can invalidate its optimized layout.
 Edits use a temporary file and rename; a failure before replacement preserves
 the original. A tag of a field type the TIFF specification does not define is
