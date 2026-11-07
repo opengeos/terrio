@@ -701,6 +701,9 @@ WebAssembly (the `terrio-js` npm package):
 
 ## Standalone CRS crate (#268)
 
+- [x] Searchable EPSG/ESRI/IAU registry catalog for CRS pickers through Rust, CLI/MCP,
+      Python and JavaScript, with name/code, kind and authority filters (#613, #619).
+
 - [x] Extract `terrio-crs` in this workspace with its tables, standalone tests and
       attribution, keeping `terrio::crs` compatible. Share grid configuration and
       decoded caches; keep network transport optional and lazy. Landed in #274.

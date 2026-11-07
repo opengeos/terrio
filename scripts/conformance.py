@@ -59,6 +59,8 @@ Suites:
     crs               every EPSG CRS's transformations vs GDAL's (tests/epsg_accuracy.rs)
     crs-grids         the same with datum shift grids, then grids, geoid models and coordinate
                       epochs (tests/epsg_accuracy_grids.rs, compare_crs_grids_with_gdal.py)
+    crs-list          ``terrio list-crs`` vs GDAL's GetCRSInfoListFromDatabase, field by field, for
+                      the EPSG, ESRI and IAU_2015 CRSs (compare_crs_list_with_gdal.py)
 
 Usage:
     python scripts/conformance.py ../terrio-data [--output docs/conformance.md] [--json FILE]
@@ -1748,6 +1750,27 @@ def suite_iau(ctx):
     return suite
 
 
+def suite_crs_list(ctx):
+    """The registry CRSs ``terrio list-crs`` lists against GDAL's CRS info list."""
+    suite = Suite("crs-list", "Registry CRS listing", "GDAL/PROJ",
+                  "Every EPSG, ESRI and IAU_2015 CRS terrio lists vs osr.GetCRSInfoListFromDatabase: name, "
+                  "kind, deprecation, area of use and its bounds, projection method and celestial body.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_crs_list_with_gdal.py"), "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case("list-crs", case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_perspective(ctx):
     """Native near-sided and tilted perspective, including visibility/domain limits."""
     suite = Suite("perspective", "Perspective projections", "GDAL/PROJ",
@@ -3275,6 +3298,7 @@ SUITES = OrderedDict(
         ("projjson", suite_projjson),
         ("projjson-export", suite_projjson_export),
         ("iau", suite_iau),
+        ("crs-list", suite_crs_list),
         ("crs-grids", suite_crs_grids),
     ]
 )

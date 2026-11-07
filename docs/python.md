@@ -313,6 +313,7 @@ xs, ys = terrio.transform_points([699960], [3900000], "EPSG:32610", "EPSG:4326")
 xs, ys, hs = terrio.transform_points([-100], [40], "EPSG:4979", "EPSG:4326+5773", [100])  # EGM96
 xs, ys, hs = terrio.transform_points([135], [-25], "EPSG:7912", "EPSG:7843", [0], s_coord_epoch=2010.0)
 terrio.set_grid_search_paths(["/data/proj-grids"])  # where datum shift grids are looked up
+albers = terrio.list_crs("albers", authority="EPSG", kind="projected")  # registry CRSs, for a CRS picker
 
 data = open("dem.tif", "rb").read()
 raster = terrio.open_bytes(data, "dem.tif")  # from bytes; to bytes with raster.to_bytes("x.tif")
