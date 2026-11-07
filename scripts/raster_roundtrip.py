@@ -327,8 +327,15 @@ def exported_crs_differs(path):
     reported = osr.SpatialReference()
     if reported.ImportFromWkt(wkt) != 0:
         return "exported WKT unreadable"
-    if not same_srs(reported, osr.SpatialReference(wkt=expected)):
+    reference = osr.SpatialReference(wkt=expected)
+    if not same_srs(reported, reference):
         return f"exported WKT differs: {reported.ExportToProj4()}"
+    # Code-only EPSG exports must retain identifiers as well as equivalent coordinates.
+    if reference.GetAuthorityName(None) == "EPSG":
+        if (reported.GetAuthorityName(None), reported.GetAuthorityCode(None)) != ("EPSG", reference.GetAuthorityCode(None)):
+            return "exported WKT EPSG authority differs"
+        if reported.GetAttrValue("DATUM") != reference.GetAttrValue("DATUM"):
+            return "exported WKT datum identity differs"
     return None
 
 
@@ -420,7 +427,9 @@ def check_format(fmt, sources, tmp):
                     src_ds,
                     gdal.Open(t_path),
                     lossy=64 if variant_lossy else 0,
-                    check_crs=check_crs,
+                    # RST's GDAL-written SPC83NY4 reference is wrong, but terrio's own PAM
+                    # output must still preserve the original source's EPSG:2263 CRS.
+                    check_crs=check_crs or (fmt == "RST" and name == "int16_ftus"),
                     check_nodata=fmt not in NO_NODATA,
                     check_type=fmt not in NO_TYPE,
                     type_changes=None if "FORMAT=NC4" in variant else TYPE_CHANGES.get(fmt),
