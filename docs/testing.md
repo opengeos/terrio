@@ -2458,9 +2458,27 @@ regeneration. Tests cover non-ASCII schema names, UTF-8/UTF-16LE/UTF-16BE,
 whole and R-tree-filtered eager/streamed reads, and malformed records. Unit tests
 also exercise `IndexedLayer` and malformed R-tree child records.
 
-The vector/raster display readers return Unicode strings and replace invalid
+The Rust vector/raster display readers return Unicode strings and replace invalid
 text with U+FFFD, retaining the previous UTF-8 replacement policy and applying it
 to UTF-16. This is not raw-byte text preservation or a guarantee about SQLite's
 conversion of invalid text. Malformed CRS, geometry-column, layer-count and extent records propagate
 errors instead of being treated as absent metadata. Genuinely absent optional
-tables retain their fallback. Validation and stored-row rewrite decoding stay strict.
+tables retain their fallback. This includes the optional raster metadata,
+metadata-reference and per-tile ancillary tables. Metadata tables are decoded
+whole: one malformed record can therefore fail an open even when it belongs to
+an unrelated layer.
+
+Validation decoding stays strict. Stored-row rewrite decoding is **now strict**:
+rewriting a UTF-8 database with invalid text or malformed records fails rather
+than silently re-encoding replacement text. Display reads remain lossy for
+invalid Unicode. Record payload bytes not described by the header are rejected;
+host sqlite3 3.54.0 rejects the tested surplus-byte records too.
+
+Header encodings use SQLite's low two bits, with zero meaning UTF-8, consistently
+across reads, inspection, validation expression evaluation and compaction.
+Regression tests cover high-bit aliases and preserve UTF-16 rewrite refusal.
+
+These error assertions cover the Rust decoders. With the `gdal` feature, public
+eager opens may fall back to GDAL after a Rust error; the fallback keeps GDAL's
+admission behavior. Native eager rejection is checked directly in unit tests,
+and streamed GPKG reads continue to use the Rust reader in that build.
