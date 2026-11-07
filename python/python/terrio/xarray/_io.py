@@ -310,6 +310,8 @@ class _Source:
                 if ds_mask is None:
                     (r0, r1), (c0, c1) = window
                     with self.pool.acquire() as raster:
+                        # GDAL 3.13.3's opened overview dataset uses its own mask only.
+                        # Nodata and alpha are selected separately in mask_flags below.
                         m = raster._read_level_mask(
                             window=(c0, r0, c1 - c0, r1 - r0), overview=self.overview
                         )
@@ -432,11 +434,12 @@ def _open_source(
             band_meta = _overview_band_metadata(riods, first, overview_level)
             nodatavals = tuple(first._overview_nodata(overview_level))
             if width > 0 and height > 0:
-                if first._read_level_mask(window=(0, 0, 1, 1), overview=overview_level) is not None:
-                    # A dataset mask takes precedence over nodata and alpha in GDAL.
+                own_mask = (
+                    first._read_level_mask(window=(0, 0, 1, 1), overview=overview_level) is not None
+                )
+                if own_mask:
                     mask_flags = tuple(MaskFlags.per_dataset.value for _ in range(riods.count))
                 else:
-                    # No fallback to the base dataset mask: use this level's nodata/alpha.
                     mask_flags = tuple(
                         MaskFlags.nodata.value
                         if nodatavals[b - 1] is not None

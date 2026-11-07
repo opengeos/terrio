@@ -265,7 +265,7 @@ impl Compound {
             }
             return Ok(());
         }
-        let encoding = u32::from_be_bytes(bytes.get(56..60).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("truncated header"))?);
+        let encoding = crate::drivers::sqlite::header_text_encoding(bytes)?;
         let mut memory = budget.memory();
         let mut collect = |arm: &View| -> Result<Vec<Vec<Value>>> {
             let mut rows = Vec::new();

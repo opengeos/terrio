@@ -164,6 +164,9 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
         if nbands == 0 {
             return Err(Error::InvalidArgument("a source has no bands".into()));
         }
+        // As in GDAL 3.13's `gdalbuildvrt` (`apps/gdalbuildvrt_lib.cpp`), when `-separate` is
+        // false and `-b` is not specified, every source must have the same band count as the
+        // first source.
         if o.bands.is_empty() && sources.iter().any(|s| s.ds.raster.bands != nbands) {
             return Err(Error::InvalidArgument("sources have different band counts".into()));
         }

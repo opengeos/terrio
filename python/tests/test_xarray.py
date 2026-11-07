@@ -699,11 +699,41 @@ def test_per_dataset_mask_and_backend_close(tmp_path):
     ) as dst:
         dst.write(pixels, 1)
         dst.write_mask(mask)
+        dst.build_overviews([2])
 
     da = txr.open_rasterio(str(masked_path), masked=True)
     expected = np.array([[[10.0, np.nan], [np.nan, 40.0]]], dtype="float32")
     np.testing.assert_allclose(da.values, expected, equal_nan=True)
     np.testing.assert_allclose(da[:, :1, 1:].values, expected[:, :1, 1:], equal_nan=True)
+
+    da_ovr = txr.open_rasterio(str(masked_path), masked=True, overview_level=0)
+    assert da_ovr.shape == (1, 1, 1)
+    assert np.isnan(da_ovr.values).all() or np.isfinite(da_ovr.values).all()
+    masked_ovr_path = tmp_path / "masked_ovr_4x4.tif"
+    with rio.open(
+        masked_ovr_path,
+        "w",
+        driver="GTiff",
+        width=4,
+        height=4,
+        count=1,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=Affine(1.0, 0.0, 0.0, 0.0, -1.0, 4.0),
+    ) as dst:
+        dst.write(np.arange(1, 17, dtype="uint8").reshape(4, 4), 1)
+        dst.write_mask(
+            np.array(
+                [[255, 255, 0, 0], [255, 255, 0, 0], [0, 0, 255, 255], [0, 0, 255, 255]],
+                dtype="uint8",
+            )
+        )
+        dst.build_overviews([2])
+    da_ovr4 = txr.open_rasterio(str(masked_ovr_path), masked=True, overview_level=0)
+    assert da_ovr4.shape == (1, 2, 2)
+    assert np.isfinite(da_ovr4.values[0, 0, 0]) and np.isnan(da_ovr4.values[0, 0, 1])
+    assert np.isnan(da_ovr4.values[0, 1, 0]) and np.isfinite(da_ovr4.values[0, 1, 1])
+    da_ovr4.close()
 
     from terrio.xarray._backend import TerrioBackendEntrypoint
 
@@ -749,22 +779,24 @@ def test_per_dataset_mask_and_backend_close(tmp_path):
     ds_no_nodata.terrio.to_raster(str(out_no_nodata))
     with rio.open(out_no_nodata) as check_ds:
         assert check_ds.nodata is None and check_ds.count == 2
-    ds_nan = ds_no_nodata.astype("float32")
-    for variable in ds_nan.data_vars.values():
-        variable.terrio.write_nodata(np.float32(np.nan), inplace=True)
-    out_nan = tmp_path / "rgb_nan_nodata_out.tif"
-    ds_nan.terrio.to_raster(str(out_nan))
-    with rio.open(out_nan) as check_ds:
-        assert check_ds.count == 2 and np.isnan(check_ds.nodata)
-    ds_nan.close()
     ds_no_nodata.close()
+    ds_nan_nodata = txr.open_rasterio(str(rgb_path), band_as_variable=True).astype("float32")
+    ds_nan_nodata["band_1"].terrio.write_nodata(np.float32("nan"), inplace=True)
+    ds_nan_nodata["band_2"].terrio.write_nodata(float("nan"), inplace=True)
+    out_nan_nodata = tmp_path / "rgb_nan_nodata_out.tif"
+    ds_nan_nodata.terrio.to_raster(str(out_nan_nodata))
+    with rio.open(out_nan_nodata) as check_nan_ds:
+        assert check_nan_ds.nodata is not None and np.isnan(check_nan_ds.nodata)
+        assert check_nan_ds.count == 2
+    ds_nan_nodata.close()
 
 
 @pytest.mark.parametrize(
     "mask_before_overviews,external", [(False, False), (True, False), (True, True)]
 )
-def test_overview_uses_own_mask_and_dataset_mask_precedence(
-    tmp_path, mask_before_overviews, external
+@pytest.mark.parametrize("has_nodata", [False, True])
+def test_overview_masks_match_opened_gdal_dataset(
+    tmp_path, mask_before_overviews, external, has_nodata
 ):
     """Match GDAL 3.13.3 overview masks, including absent masks and valid nodata pixels."""
     gdal = pytest.importorskip("osgeo.gdal")
@@ -775,7 +807,8 @@ def test_overview_uses_own_mask_and_dataset_mask_precedence(
     ds.SetGeoTransform([0, 1, 0, 8, 0, -1])
     for band in (1, 2):
         ds.GetRasterBand(band).WriteArray(pixels)
-        ds.GetRasterBand(band).SetNoDataValue(-9999)
+        if has_nodata:
+            ds.GetRasterBand(band).SetNoDataValue(-9999)
     if not mask_before_overviews:
         ds.BuildOverviews("NEAREST", [2])
     # Force an internal mask independently of the process's GDAL configuration.
@@ -791,6 +824,7 @@ def test_overview_uses_own_mask_and_dataset_mask_precedence(
         ds = gdal.Open(path)
         ds.BuildOverviews("NEAREST", [2])
         ds = None
+    if external and has_nodata:
         # An external overview is a separate dataset: its nodata can differ from the base.
         ds = gdal.Open(path + ".ovr", gdal.GA_Update)
         for band in (1, 2):
@@ -799,10 +833,10 @@ def test_overview_uses_own_mask_and_dataset_mask_precedence(
             ds.GetRasterBand(band).WriteArray(data)
             ds.GetRasterBand(band).SetNoDataValue(-8888)
         ds = None
-    reference = gdal.Open(path)
+    reference = gdal.OpenEx(path, open_options=["OVERVIEW_LEVEL=0"])
     expected = []
     for band in (1, 2):
-        overview = reference.GetRasterBand(band).GetOverview(0)
+        overview = reference.GetRasterBand(band)
         data = overview.ReadAsArray().astype("float32")
         data[overview.GetMaskBand().ReadAsArray() == 0] = np.nan
         expected.append(data)

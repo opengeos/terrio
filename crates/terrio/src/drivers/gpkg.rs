@@ -13,6 +13,7 @@
 
 use super::common::xml_escape;
 use super::sqlite::{Db, Table, Value};
+use super::vector::gpkg_read::Tables;
 use super::{common, nodata};
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
@@ -235,14 +236,14 @@ pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<Raste
             coverage = (scale, offset, f(&anc, a, "data_null"), t);
         }
     }
-    let tile_anc = if gridded { db.table("gpkg_2d_gridded_tile_ancillary").ok() } else { None };
+    let tile_anc = if gridded { db.optional_table("gpkg_2d_gridded_tile_ancillary")? } else { None };
 
     // GDAL records the band count and nodata value of tile pyramids in gpkg_metadata; without
     // them, tiles are read as RGBA.
-    let md = db.table("gpkg_metadata").ok();
+    let md = db.optional_table("gpkg_metadata")?;
     // The metadata attached to this table, when the references say which.
     let md_ids: Vec<i64> = db
-        .table("gpkg_metadata_reference")
+        .optional_table("gpkg_metadata_reference")?
         .map(|t| {
             t.rows
                 .iter()
@@ -318,7 +319,7 @@ pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<Raste
     let (bands, values) = grid.unwrap_or((1, vec![0.0; cols * rows]));
     let data_type = if gridded { coverage.3 } else { DataType::U8 };
     let data = RasterData::from_f64_vec(data_type, values);
-    let crs = srs_id.and_then(|id| crs_for_srs(db, id)).unwrap_or_default();
+    let crs = srs_id.map(|id| crs_for_srs(db, id)).transpose()?.flatten().unwrap_or_default();
     let gt = [minx, rx, 0.0, maxy, 0.0, -ry];
     let nodata = if gridded { coverage.2 } else { tile_nodata };
     let raster = common::make_raster(cols, rows, bands, data, gt, crs, nodata)?;
@@ -326,16 +327,16 @@ pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<Raste
 }
 
 /// The CRS of a `gpkg_spatial_ref_sys` entry.
-fn crs_for_srs(db: &Db, id: i64) -> Option<CrsInfo> {
-    let t = db.table("gpkg_spatial_ref_sys").ok()?;
-    let row = t.rows.iter().find(|r| i(&t, r, "srs_id") == Some(id))?;
+fn crs_for_srs(db: &Db, id: i64) -> Result<Option<CrsInfo>> {
+    let Some(t) = db.optional_table("gpkg_spatial_ref_sys")? else { return Ok(None) };
+    let Some(row) = t.rows.iter().find(|r| i(&t, r, "srs_id") == Some(id)) else { return Ok(None) };
     let org = t.get(row, "organization").and_then(Value::as_str).unwrap_or_default();
     if org.eq_ignore_ascii_case("EPSG")
         && let Some(code) = i(&t, row, "organization_coordsys_id").filter(|c| *c > 0)
     {
-        return Some(CrsInfo::from_epsg(code as u32));
+        return Ok(Some(CrsInfo::from_epsg(code as u32)));
     }
-    t.get(row, "definition").and_then(Value::as_str).and_then(common::crs_from_text)
+    Ok(t.get(row, "definition").and_then(Value::as_str).and_then(common::crs_from_text))
 }
 
 /// The tile size GDAL writes.
@@ -650,6 +651,83 @@ pub(crate) fn add_raster(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_raster_metadata_distinguishes_absence_from_corrupt_records() {
+        use super::super::vector::sqlite as writer;
+        for (data_type, name) in
+            [(DataType::U8, "gpkg_metadata"), (DataType::U8, "gpkg_metadata_reference"), (DataType::U16, "gpkg_2d_gridded_tile_ancillary")]
+        {
+            let cfg = wbraster::RasterConfig { cols: 1, rows: 1, bands: 1, data_type, ..Default::default() };
+            let raster = wbraster::Raster::from_data_native(cfg, RasterData::from_f64_vec(data_type, vec![7.0])).unwrap();
+            let bytes = to_bytes(&raster, Some(0.0), "grid", None).unwrap();
+            let db = Db::new(bytes.clone()).unwrap();
+            let control = read_db(&db, Some("grid"), Path::new("raster.gpkg")).unwrap();
+            assert_eq!(control.raster.data.to_f64_vec(), vec![7.0]);
+            let schema = db.schema().unwrap();
+            let root = schema.iter().find(|e| e.0 == "table" && e.1 == name).unwrap().3;
+            let stored = db.stored_rows(root).unwrap();
+            assert!(!stored.is_empty(), "{name}");
+            let convert = |v: Value| match v {
+                Value::Null => writer::Value::Null,
+                Value::Int(v) => writer::Value::Int(v),
+                Value::Real(v) => writer::Value::Real(v),
+                Value::Text(v) => writer::Value::Text(v),
+                Value::Blob(v) => writer::Value::Blob(v),
+            };
+            let values = stored[0].1.clone().into_iter().map(convert).collect::<Vec<_>>();
+            let record = writer::record(&values);
+            assert!(record[0] < 128 && record[1] < 128);
+            let at = bytes.windows(record.len()).position(|b| b == record).unwrap();
+            let mut corrupt = bytes.clone();
+            corrupt[at + 1] = 10; // Reserved serial type: the table exists but its record is malformed.
+            assert!(read_db(&Db::new(corrupt).unwrap(), Some("grid"), Path::new("raster.gpkg")).is_err(), "{name}");
+            // Rebuild the same image with only the optional table absent.
+            let tables = schema
+                .into_iter()
+                .filter(|e| e.0 == "table" && e.1 != name)
+                .map(|e| writer::Table {
+                    rows: db.stored_rows(e.3).unwrap().into_iter().map(|(id, row)| (id, row.into_iter().map(convert).collect())).collect(),
+                    autoindexes: super::super::sqlite::autoindex_columns(&e.4),
+                    name: e.1,
+                    sql: e.4,
+                })
+                .collect::<Vec<_>>();
+            let absent = writer::write_database(&tables, &[], 10400, 0x47504b47).unwrap();
+            let fallback = read_db(&Db::new(absent).unwrap(), Some("grid"), Path::new("raster.gpkg")).unwrap();
+            if name == "gpkg_metadata" {
+                assert_eq!(fallback.raster.bands, 4);
+                assert_eq!(fallback.nodata(), None);
+            } else {
+                assert_eq!(fallback.raster.data.to_f64_vec(), vec![7.0]);
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_srs_records_do_not_silently_drop_raster_crs() {
+        use super::super::vector::sqlite as writer;
+        let values = vec![
+            writer::Value::Int(4326),
+            writer::Value::Text("EPSG".into()),
+            writer::Value::Int(4326),
+            writer::Value::Text("broken".into()),
+        ];
+        let record = writer::record(&values);
+        let table = writer::Table {
+            name: "gpkg_spatial_ref_sys".into(),
+            sql: "CREATE TABLE gpkg_spatial_ref_sys(srs_id INTEGER,organization TEXT,organization_coordsys_id INTEGER,definition TEXT)"
+                .into(),
+            rows: vec![(1, values)],
+            autoindexes: vec![],
+        };
+        let mut bytes = writer::write_database(&[table], &[], 0, 0).unwrap();
+        let at = bytes.windows(record.len()).position(|b| b == record).unwrap();
+        bytes[at + record[0] as usize - 1] += 2;
+        assert!(crs_for_srs(&Db::new(bytes).unwrap(), 4326).is_err());
+        let absent = Db::new(writer::write_database(&[], &[], 0, 0).unwrap()).unwrap();
+        assert!(crs_for_srs(&absent, 4326).unwrap().is_none());
+    }
 
     #[test]
     fn layers_and_rasters_in_one_file() {

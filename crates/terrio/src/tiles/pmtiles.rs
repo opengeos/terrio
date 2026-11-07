@@ -318,7 +318,8 @@ fn decompress_with_limit(data: &[u8], codec: u8, limit: Option<usize>, resource:
     }
 }
 
-/// The number of tiles in the zoom levels below `z` (`z <= 31`): the first tile id of zoom `z`.
+/// The number of tiles in the zoom levels below `z` (`z <= 31`): the first tile id of zoom `z`,
+/// or `u64::MAX` when `z > 31`.
 pub(crate) fn zoom_base(z: u8) -> u64 {
     // (4^z - 1) / 3
     if z > 31 {
@@ -328,7 +329,7 @@ pub(crate) fn zoom_base(z: u8) -> u64 {
 }
 
 /// The PMTiles tile id of tile `(z, x, y)` for `z <= 30`: the zoom's base plus the tile's
-/// Hilbert curve index.
+/// Hilbert curve index, or `u64::MAX` when `z > 30`.
 pub(crate) fn zxy_to_tile_id(z: u8, x: u32, y: u32) -> u64 {
     if z > 30 {
         return u64::MAX;
