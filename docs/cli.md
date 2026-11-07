@@ -52,7 +52,7 @@ Every command, in alphabetical order. `terrio --help` prints this list, and
 | [`is-valid`](#vector-topology) | Report the validity of each feature's geometry |
 | [`layer-algebra`](#vector-topology) | Polygon, line and point layer algebra (seven operations) |
 | [`lineref`](#lineref) | Linear referencing (like ogrlineref) |
-| [`list-crs`](#list-crs) | List the registry CRSs terrio resolves (EPSG, ESRI, IAU_2015), as `projinfo --list-crs` |
+| [`list-crs`](#list-crs) | List the registry CRSs terrio resolves |
 | [`make-point`](#make-point) | Make point geometries from coordinate fields |
 | [`make-valid`](#vector-topology) | Repair invalid geometries |
 | [`mcp`](#mcp) | Serve these commands to AI agents over MCP |

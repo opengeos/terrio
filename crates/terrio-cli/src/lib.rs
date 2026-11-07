@@ -91,9 +91,10 @@ enum Command {
     Formats(cmd::formats::Args),
     /// Describe a CRS, or transform coordinates between two.
     Crs(cmd::crs::Args),
-    /// List the registry CRSs terrio resolves (EPSG, ESRI, IAU_2015), as `projinfo --list-crs`.
+    /// List the registry CRSs terrio resolves.
     ///
-    /// Filters by authority, kind and words of the name or code; no network or PROJ needed.
+    /// The EPSG, ESRI and IAU_2015 CRSs, as `projinfo --list-crs` lists them, filtered by
+    /// authority, kind and words of the name or code; no network or PROJ needed.
     ListCrs(cmd::crs::ListArgs),
     /// Burn vector geometries into a raster.
     Rasterize(cmd::rasterize::Args),
