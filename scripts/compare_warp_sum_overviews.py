@@ -91,6 +91,7 @@ def main():
                     if result.returncode:
                         raise RuntimeError(result.stderr.strip())
                     record.update(compare(str(reference), str(actual), tol))
+                    record["same_georeferencing"] = record["gt_diff_px"] <= 1e-8
                     expected, got = gdal.Open(str(reference)), gdal.Open(str(actual))
                     if not expected.GetSpatialRef().IsSame(got.GetSpatialRef()):
                         raise AssertionError("CRS differs")
