@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Whole-file Shapefile reads, streaming reads and conversions omit deleted DBF records,
+  preserving the physical feature IDs of live records.
+
+- Shapefile `skip_features` and `max_features` count live rows: deleted DBF records are passed
+  over and count toward neither bound, while FIDs still number physical slots. pyogrio's
+  `skip_features` (and GDAL's fast seek) can count deleted slots instead, so `terrio.pyogrio`
+  pages a Shapefile with deleted rows differently from pyogrio. Files without deleted rows
+  page the same in both.
+
 - Native FlatGeobuf readers reject incomplete records, mismatched nonzero feature counts and
   invalid coordinate dimensions/part bounds. GDAL-enabled eager reads retain GDAL fallback
   admission behavior; native range and stream checks apply in either build.

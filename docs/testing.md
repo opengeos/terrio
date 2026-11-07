@@ -2454,6 +2454,23 @@ pytest python/tests/test_layer_selection.py
 node --test --test-name-pattern='single named layer' js/tests/node.test.mjs
 ```
 
+### Deleted Shapefile records
+
+The `shapefile-deleted` suite generates small OGR Shapefiles and marks DBF slots
+deleted without repacking. It compares whole reads, streaming reads and live-feature pages against
+OGR, retaining physical FIDs, exact scalar attributes/nulls and ISO WKB bytes.
+Null geometry still counts as a live feature; both indexed and unindexed reads
+are checked. Build the bridge in the same profile as the CLI:
+
+```sh
+cargo build --release -p terrio --example shapefile_rows
+python scripts/conformance.py ../terrio-data --only shapefile-deleted --strict
+```
+
+The GDAL/OGR Python bindings (`osgeo`) are required; Terrio Python bindings and
+downloaded data are not. The positional data-directory argument is required by the
+conformance runner, but this suite generates its fixtures in a temporary directory.
+
 ### GeoPackage text encodings
 
 `cargo test -p terrio --test sqlite_encodings` reads the small SQLite-generated

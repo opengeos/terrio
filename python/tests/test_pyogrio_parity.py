@@ -659,6 +659,37 @@ def test_feature_range_parity(pyogrio, corpus, skip, limit):
 
 
 @pytest.mark.filterwarnings("ignore")
+def test_deleted_shapefile_ranges_use_live_rows(pyogrio, tmp_path):
+    """Deleted-row paging slices sequential live rows, not GDAL's fast physical seek.
+
+    pyogrio 0.13.0/GDAL 3.12.4 can return FID 1 for skip_features=1 when
+    slots 0 and 2 are deleted. Terrio intentionally returns the second live
+    feature, FID 3. Compare with a slice of pyogrio's whole live result set.
+    """
+    path = write_shapefile(
+        tmp_path / "deleted",
+        1,
+        [(i, i) for i in range(4)],
+        [("ID", "N", 9, 0)],
+        [[i] for i in range(4)],
+    )
+    dbf_path = os.path.splitext(path)[0] + ".dbf"
+    with open(dbf_path, "rb") as source:
+        data = bytearray(source.read())
+    header, width = struct.unpack_from("<HH", data, 8)
+    for slot in (0, 2):
+        data[header + slot * width] = ord("*")
+    with open(dbf_path, "wb") as target:
+        target.write(data)
+    live = pyogrio.read_dataframe(path, fid_as_index=True)
+    for skip, limit in ((0, 1), (1, 1), (2, None)):
+        ours = tpg.read_dataframe(path, skip_features=skip, max_features=limit, fid_as_index=True)
+        expected = live.iloc[skip : None if limit is None else skip + limit]
+        assert _snapshot(ours) == _snapshot(expected)
+        assert ours.index.tolist() == expected.index.tolist()
+
+
+@pytest.mark.filterwarnings("ignore")
 def test_file_object_and_bytes_parity(pyogrio, corpus):
     """A statistics service reads `gpd.read_file(handle)`: file objects and bytes, GeoJSON and
     zipped."""
