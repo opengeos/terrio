@@ -1,11 +1,15 @@
 // Written to match the behavior of:
 //   GDAL v3.13.3:
 //     doc/source/programs/gdaltransform.rst
+//   PROJ 9.8.1:
+//     docs/source/apps/projinfo.rst (--list-crs)
 // No code is translated from these sources.
 
-//! `terrio crs`.
+//! `terrio crs` and `terrio list-crs`.
 
-use terrio::crs::{SpatialRef, TransformOptions, Transformer};
+use clap::builder::TypedValueParser;
+use std::io::Write;
+use terrio::crs::{CrsKind, CrsQuery, SpatialRef, TransformOptions, Transformer, list_crs};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -108,6 +112,47 @@ pub fn run(a: Args) -> terrio::Result<()> {
         let nums: Vec<f64> = line.split([' ', ',', '\t']).filter(|s| !s.is_empty()).filter_map(|s| s.parse().ok()).collect();
         if nums.len() >= 2 && print(&nums).is_err() {
             println!("transformation failed.");
+        }
+    }
+    Ok(())
+}
+
+#[derive(clap::Args)]
+pub struct ListArgs {
+    /// Words the CRSs must match, whatever their case: each in the name, or beginning the code or
+    /// `AUTHORITY:CODE` (`Albers`, `3577`, `EPSG:3577`, `gda94 albers`). Every CRS when none.
+    text: Vec<String>,
+    /// List only the CRSs of this authority (repeatable).
+    #[arg(long, value_name = "AUTHORITY", value_parser = clap::builder::PossibleValuesParser::new(["EPSG", "ESRI", "IAU_2015"]).map(|a| a.to_string()), ignore_case = true)]
+    authority: Vec<String>,
+    /// List only the CRSs of this kind (repeatable).
+    #[arg(long, value_name = "KIND", value_parser = clap::builder::PossibleValuesParser::new(CrsKind::ALL.map(CrsKind::as_str)).map(|k| k.parse::<CrsKind>().expect("a listed kind")), ignore_case = true)]
+    kind: Vec<CrsKind>,
+    /// List deprecated CRSs too, marked `[deprecated]`.
+    #[arg(long, visible_alias = "allow-deprecated")]
+    include_deprecated: bool,
+    /// Print JSON: an array of `{authority, code, name, kind, deprecated, area_name, bounds,
+    /// projection_method, celestial_body}`, bounds being west, south, east and north in degrees.
+    #[arg(long)]
+    json: bool,
+}
+
+/// Lists registry CRSs, one per line as `projinfo --list-crs` prints them: `EPSG:3577 "GDA94 /
+/// Australian Albers"`, then ` [deprecated]` for a deprecated CRS.
+pub fn list(a: ListArgs) -> terrio::Result<()> {
+    let query =
+        CrsQuery { authorities: a.authority, kinds: a.kind, include_deprecated: a.include_deprecated, text: Some(a.text.join(" ")) };
+    let entries = list_crs(&query);
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&entries).map_err(|e| terrio::Error::InvalidData(e.to_string()))?);
+        return Ok(());
+    }
+    let mut out = std::io::stdout().lock();
+    for e in entries {
+        let deprecated = if e.deprecated { " [deprecated]" } else { "" };
+        // A closed pipe (`| head`) ends the listing.
+        if writeln!(out, "{}:{} \"{}\"{deprecated}", e.authority, e.code, e.name).is_err() {
+            break;
         }
     }
     Ok(())

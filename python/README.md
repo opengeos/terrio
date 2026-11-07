@@ -153,6 +153,7 @@ dist = terrio.proximity("roads.tif", values=[1], distunits="GEO")
 clean = terrio.sieve("landcover.tif", threshold=10, connectedness=8)
 png = terrio.render("dem.tif", colormap="terrain", max_size=512)  # PNG bytes; Rasters also render in Jupyter
 xs, ys = terrio.transform_points([699960], [3900000], "EPSG:32610", "EPSG:4326")
+albers = terrio.list_crs("albers", authority="EPSG", kind="projected")  # registry CRSs, for a CRS picker
 
 data = open("dem.tif", "rb").read()
 raster = terrio.open_bytes(data, "dem.tif")  # from bytes; to bytes with raster.to_bytes("x.tif")

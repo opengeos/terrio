@@ -14,7 +14,7 @@ WebAssembly for browsers and Node.js. Datasets are opened from bytes, with a fil
 format, and written back to bytes.
 
 ```js
-import init, { open, fromGeoJSON, fromArrowIPC, rasterFromArray, registerGrid, transformPoints, describeCrs, openPoints, pointsFromArrays } from "terrio-js";
+import init, { open, fromGeoJSON, fromArrowIPC, rasterFromArray, registerGrid, transformPoints, describeCrs, listCrs, openPoints, pointsFromArrays } from "terrio-js";
 
 await init(); // in Node.js: await init({ module_or_path: fs.readFileSync(wasmPath) })
 
@@ -35,6 +35,7 @@ const back = fromArrowIPC(ipc, "roads");
 const [xs, ys] = transformPoints([-122.4], [37.8], "EPSG:4326", "EPSG:32610");
 registerGrid("us_nga_egm96_15.tif", gridBytes);  // datum shift and geoid grids, from bytes
 const [lon, lat, h] = transformPoints([-100], [40], "EPSG:4979", "EPSG:4326+5773", [100]);
+const albers = listCrs("albers", { authority: "EPSG", kind: "projected" }); // registry CRSs, for a CRS picker
 
 // Point clouds: LAS, LAZ, COPC, PLY and E57.
 const lidar = openPoints(lazBytes, "tile.laz");

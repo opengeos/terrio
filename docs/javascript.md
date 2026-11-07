@@ -5,7 +5,7 @@ WebAssembly for browsers and Node.js. Datasets are opened from bytes, with a fil
 format, and written back to bytes. Try it without installing anything on the [Playground](playground.md).
 
 ```js
-import init, { open, fromGeoJSON, fromArrowIPC, rasterFromArray, registerGrid, transformPoints, describeCrs } from "terrio-js";
+import init, { open, fromGeoJSON, fromArrowIPC, rasterFromArray, registerGrid, transformPoints, describeCrs, listCrs } from "terrio-js";
 import { tableFromIPC, tableToIPC } from "apache-arrow";
 
 await init(); // in Node.js: await init({ module_or_path: fs.readFileSync(wasmPath) })
@@ -30,6 +30,8 @@ const [xs, ys] = transformPoints([-122.4], [37.8], "EPSG:4326", "EPSG:32610");
 registerGrid("us_nga_egm96_15.tif", new Uint8Array(await (await fetch(gridUrl)).arrayBuffer()));
 const [lon, lat, h] = transformPoints([-100], [40], "EPSG:4979", "EPSG:4326+5773", [100]);
 transformPoints([135], [-25], "EPSG:7912", "EPSG:7843", [0], { sCoordEpoch: 2010.0 });
+// The registry CRSs, for a CRS picker: [{ authority, code, name, kind, deprecated, area_name, bounds, ... }].
+const albers = listCrs("albers", { authority: "EPSG", kind: "projected" });
 ```
 
 In WebAssembly, these formats are read from and written to memory:

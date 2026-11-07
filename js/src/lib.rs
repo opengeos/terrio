@@ -1057,6 +1057,60 @@ pub fn describe_crs(crs: &str) -> Result<JsValue, JsError> {
     }))
 }
 
+/// One string, or an array of them.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            OneOrMany::One(s) => vec![s],
+            OneOrMany::Many(v) => v,
+        }
+    }
+}
+
+/// Options for [`list_crs`], as a JavaScript object.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct ListCrsOptions {
+    /// An authority (`"EPSG"`, `"ESRI"`, `"IAU_2015"`) or an array of them.
+    authority: Option<OneOrMany>,
+    /// A kind or an array of kinds.
+    kind: Option<OneOrMany>,
+    include_deprecated: bool,
+}
+
+/// The CRSs of the registries terrio carries (EPSG, ESRI and IAU_2015), for searchable CRS
+/// pickers, as GDAL's `OSRGetCRSInfoListFromDatabase` describes them (PROJ 9.8.1's database, EPSG
+/// v12.029): `[{ authority, code, name, kind, deprecated, area_name, bounds, projection_method,
+/// celestial_body }]`, in order of authority and code, `bounds` being `[west, south, east, north]`
+/// in degrees. `` `${authority}:${code}` `` is a CRS the other functions take.
+///
+/// `text`: words each CRS must match, whatever their case: in the name, or beginning the code or
+/// `AUTHORITY:CODE` (`"Albers"`, `"3577"`, `"EPSG:3577"`); every CRS when `undefined`. Options:
+/// `authority` (`"EPSG"`, `"ESRI"`, `"IAU_2015"`, or an array), `kind` (`"geographic_2d"`,
+/// `"geographic_3d"`, `"geocentric"`, `"projected"`, `"vertical"`, `"compound"`, `"other"`, or an
+/// array) and `includeDeprecated`.
+#[wasm_bindgen(js_name = listCrs)]
+pub fn list_crs(text: Option<String>, options: JsValue) -> Result<JsValue, JsError> {
+    let o: ListCrsOptions = parse_options(&options)?;
+    let kinds = o.kind.map(OneOrMany::into_vec).unwrap_or_default();
+    let kinds =
+        kinds.iter().map(|k| k.parse::<terrio::crs::CrsKind>()).collect::<Result<Vec<_>, _>>().map_err(|e| JsError::new(&e.to_string()))?;
+    let query = terrio::crs::CrsQuery {
+        authorities: o.authority.map(OneOrMany::into_vec).unwrap_or_default(),
+        kinds,
+        include_deprecated: o.include_deprecated,
+        text,
+    };
+    to_js(&terrio::crs::list_crs(&query))
+}
+
 /// The PROJJSON v0.7 of a CRS; throws for a CRS it would describe wrongly.
 #[wasm_bindgen(js_name = crsToProjjson)]
 pub fn crs_to_projjson(crs: &str) -> Result<String, JsError> {

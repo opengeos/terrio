@@ -52,6 +52,7 @@ Every command, in alphabetical order. `terrio --help` prints this list, and
 | [`is-valid`](#vector-topology) | Report the validity of each feature's geometry |
 | [`layer-algebra`](#vector-topology) | Polygon, line and point layer algebra (seven operations) |
 | [`lineref`](#lineref) | Linear referencing (like ogrlineref) |
+| [`list-crs`](#list-crs) | List the registry CRSs terrio resolves (EPSG, ESRI, IAU_2015), as `projinfo --list-crs` |
 | [`make-point`](#make-point) | Make point geometries from coordinate fields |
 | [`make-valid`](#vector-topology) | Repair invalid geometries |
 | [`mcp`](#mcp) | Serve these commands to AI agents over MCP |
@@ -291,6 +292,23 @@ year) use it for time-dependent transformations, and a point that cannot be tran
 [Coordinate Systems](crs.md#datum-shift-grids)). `--projjson` prints only the CRS as PROJJSON, so that
 `terrio crs CRS --projjson > crs.json` writes a PROJJSON file (see
 [Writing PROJJSON](crs.md#writing-projjson)); it cannot be combined with `--to` or `--wkt`.
+
+## list-crs
+
+```sh
+terrio list-crs albers --authority EPSG --kind projected   # EPSG:3577 "GDA94 / Australian Albers"...
+terrio list-crs 3577 --json
+terrio list-crs --kind geographic_2d --include-deprecated
+```
+
+Lists the CRSs of the registries terrio carries, one per line as `projinfo --list-crs` prints
+them (`EPSG:3577 "GDA94 / Australian Albers"`, then ` [deprecated]`), without network or PROJ.
+Words filter by name or code (each must be in the name or begin the code or `AUTHORITY:CODE`),
+`--authority` (`EPSG`, `ESRI`, `IAU_2015`) and `--kind` (`geographic_2d`, `geographic_3d`,
+`geocentric`, `projected`, `vertical`, `compound`, `other`) are repeatable, and deprecated CRSs
+are left out unless `--include-deprecated`. `--json` prints each CRS's name, kind, deprecation,
+area of use and its bounds, projection method and celestial body, as GDAL's
+`OSRGetCRSInfoListFromDatabase` gives them. See [Listing registry CRSs](crs.md#listing-registry-crss).
 
 ## pixel-info
 
