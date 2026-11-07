@@ -309,7 +309,7 @@ impl SpatialRef {
 }
 
 /// A raster CRS known only by its EPSG code, as the raster model stores it: the code and the WKT
-/// of terrio's EPSG registry, which GDAL writes for the code. Drivers use it in place of
+/// of terrio's EPSG registry, which GDAL 3.13 writes for the code. Drivers use it in place of
 /// `wbraster::CrsInfo::from_epsg`, whose generated WKT describes some codes otherwise (MGA zones
 /// without their false northing, US-foot State Plane CRSs in metres, Web Mercator on the
 /// ellipsoid) and drops the EPSG authority and datum names. No WKT for a code terrio does not

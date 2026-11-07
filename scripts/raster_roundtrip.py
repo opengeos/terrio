@@ -318,7 +318,10 @@ def exported_crs_differs(path):
     p = subprocess.run([TERRIO, "info", "--json", path], capture_output=True, text=True)
     if p.returncode != 0:
         return f"terrio info: {(p.stderr.strip() or 'failed')[-300:]}"
-    wkt = (json.loads(p.stdout).get("crs") or {}).get("wkt")
+    try:
+        wkt = (json.loads(p.stdout).get("crs") or {}).get("wkt")
+    except (ValueError, AttributeError):
+        return "exported JSON unreadable"
     if not wkt:
         return "exported WKT missing"
     reported = osr.SpatialReference()
