@@ -175,7 +175,8 @@
           ]
         },
         "repeatable": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "True for clap Append or Count actions. Options may occur again; positional Append arguments collect multiple operands. This describes parser acceptance, not whether the operation uses every repeated value."
         },
         "global": {
           "type": "boolean"
