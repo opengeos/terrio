@@ -851,4 +851,11 @@ mod tests {
         let error = reclassify(&src, &ReclassifyOptions { mapping: "9=1".into(), output_type: None }).unwrap_err();
         assert!(error.to_string().contains("encountered value 1 with no specified mapping"));
     }
+
+    #[test]
+    fn read_mapping_file_rejects_non_regular_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = read_mapping_file(dir.path().to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("not a regular file"), "{err}");
+    }
 }

@@ -695,7 +695,7 @@ def test_per_dataset_mask_and_backend_close(tmp_path):
         count=1,
         dtype="uint8",
         crs="EPSG:4326",
-        transform=Affine.translation(0.0, 2.0) * Affine.scale(1.0, -1.0),
+        transform=Affine(1.0, 0.0, 0.0, 0.0, -1.0, 2.0),
     ) as dst:
         dst.write(pixels, 1)
         dst.write_mask(mask)
@@ -707,10 +707,17 @@ def test_per_dataset_mask_and_backend_close(tmp_path):
 
     from terrio.xarray._backend import TerrioBackendEntrypoint
 
+    def unwrap_pool(data_array):
+        arr = data_array.variable._data
+        while hasattr(arr, "array"):
+            arr = arr.array
+        return arr.source.pool
+
     ep = TerrioBackendEntrypoint()
     ds1 = ep.open_dataset(str(masked_path))
     assert ds1._close is not None
-    pool1 = ds1["band_data"].variable._data.array.source.pool
+    pool1 = unwrap_pool(ds1["band_data"])
+    assert pool1._free or pool1._shared is not None
     ds1.close()
     assert pool1._shared is None and not pool1._free
 
@@ -724,13 +731,14 @@ def test_per_dataset_mask_and_backend_close(tmp_path):
         count=2,
         dtype="uint8",
         crs="EPSG:4326",
-        transform=Affine.translation(0.0, 2.0) * Affine.scale(1.0, -1.0),
+        transform=Affine(1.0, 0.0, 0.0, 0.0, -1.0, 2.0),
     ) as dst:
         dst.write(pixels, 1)
         dst.write(pixels, 2)
     ds2 = ep.open_dataset(str(rgb_path), band_as_variable=True, drop_variables=("band_1",))
     assert "band_1" not in ds2.data_vars and "band_2" in ds2.data_vars
     assert ds2._close is not None
-    pool2 = ds2["band_2"].variable._data.array.source.pool
+    pool2 = unwrap_pool(ds2["band_2"])
+    assert pool2._free or pool2._shared is not None
     ds2.close()
     assert pool2._shared is None and not pool2._free

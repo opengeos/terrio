@@ -39,6 +39,24 @@ impl PyRaster {
         }
     }
 
+    /// Writes the raster to `path` with `options`, streaming tile archives by tile row when lazy
+    /// and falling back to a whole read when the source inventory is unavailable.
+    pub(crate) fn write_with_options(&mut self, py: Python<'_>, path: &str, mut options: RasterWriteOptions) -> PyResult<()> {
+        let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
+        let tile_archive = matches!(driver, Some(RasterDriver::PMTiles | RasterDriver::MBTiles));
+        py.detach_result(|| {
+            self.inner.prepare_output_mask(path, &mut options, Window::full(self.inner.width(), self.inner.height()), None)
+        })
+        .py()?;
+        if self.inner.dataset().is_none() && tile_archive {
+            match py.detach_result(|| self.inner.write(path, &options)) {
+                Err(e) if e.is_source_inventory_unavailable() => {}
+                res => return res.py(),
+            }
+        }
+        py.detach_result(|| self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
+    }
+
     fn crs_ref(&self) -> SpatialRef {
         self.inner.crs()
     }
@@ -584,21 +602,7 @@ impl PyRaster {
         options_.color_table = colormap.unwrap_or_default();
         options_.overviews = overviews.unwrap_or_default();
         options_.overview_resampling = overview_resampling;
-        let mut options = options_;
-        // A raster read by window is written as a tile archive a tile row at a time.
-        let driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(path));
-        let tile_archive = matches!(driver, Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles));
-        py.detach_result(|| {
-            self.inner.prepare_output_mask(path, &mut options, Window::full(self.inner.width(), self.inner.height()), None)
-        })
-        .py()?;
-        if self.inner.dataset().is_none() && tile_archive {
-            match py.detach_result(|| self.inner.write(path, &options)) {
-                Err(terrio::Error::Unsupported(msg)) if msg == "source inventory unavailable" => {}
-                res => return res.py(),
-            }
-        }
-        py.detach_result(|| self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
+        self.write_with_options(py, path, options_)
     }
 
     /// Encodes the raster in a file format, in memory, preserving its dataset mask for GeoTIFF/COG.

@@ -55,6 +55,16 @@ impl Error {
             || matches!(self, Self::Io(error) if error.kind() == std::io::ErrorKind::OutOfMemory)
     }
 
+    /// An error reporting that a source cannot enumerate the files it reads.
+    pub fn source_inventory_unavailable() -> Self {
+        Self::Unsupported("source inventory unavailable".into())
+    }
+
+    /// Whether this error reports that a source cannot enumerate the files it reads.
+    pub fn is_source_inventory_unavailable(&self) -> bool {
+        matches!(self, Self::Unsupported(msg) if msg == "source inventory unavailable")
+    }
+
     /// The error of a driver this build leaves out: terrio was built without `feature`.
     #[allow(dead_code)]
     pub(crate) fn disabled(feature: &str) -> Error {

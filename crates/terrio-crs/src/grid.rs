@@ -588,8 +588,8 @@ fn read_tiff(reader: GridReader) -> Option<GridFile> {
             west = tie[3] - tie[0] * h_res;
             north = tie[4] + tie[1] * v_res;
         }
-        // As in PROJ's GTiffGrid::open, horizontal resolution must be positive (west-to-east)
-        // while vertical resolution may be either sign (south-up is swapped below).
+        // As in PROJ 9.7's GTiffGrid::open (src/grids.cpp), horizontal resolution must be positive
+        // (west-to-east) while vertical resolution may be either sign (south-up is swapped below).
         if !(h_res > 0.0 && h_res.is_finite() && v_res != 0.0 && v_res.is_finite()) {
             return None;
         }
@@ -1171,6 +1171,9 @@ fn hierarchy(file: &GridFile, keep: impl Fn(&Source, usize) -> Option<Use>) -> V
             }
             continue;
         }
+        // As in PROJ 9.7's GTiffDataset::open / insertIntoHierarchy (src/grids.cpp), explicit
+        // parent_grid_name links to the first matching earlier grid containing `ext`, and
+        // unparented GeoTIFF subgrids nest by extent containment.
         if !parent.is_empty()
             && let Some(&p) = named.get(parent)
             && nodes[p].0.ext.contains(ext)
@@ -2109,10 +2112,15 @@ mod tests {
         });
         let ext = Extent::world();
         let inner = Extent { west: -0.5, south: -0.5, east: 0.5, north: 0.5, res_x: 0.1, res_y: 0.1, geographic: true };
+        let dup2 = Extent { west: -0.8, south: -0.8, east: 0.8, north: 0.8, res_x: 0.1, res_y: 0.1, geographic: true };
+        let child_of_dup = Extent { west: -0.2, south: -0.2, east: 0.2, north: 0.2, res_x: 0.05, res_y: 0.05, geographic: true };
         let file = GridFile {
             sources: vec![
                 (ext, src.clone(), "root".into(), String::new()),
                 (inner, src.clone(), "root".into(), String::new()),
+                (dup2, src.clone(), "dup".into(), "root".into()),
+                (inner, src.clone(), "dup".into(), "root".into()),
+                (child_of_dup, src.clone(), "leaf".into(), "dup".into()),
                 (ext, src.clone(), "self".into(), "self".into()),
                 (ext, src.clone(), "a".into(), "b".into()),
                 (ext, src, "b".into(), "a".into()),
@@ -2122,6 +2130,10 @@ mod tests {
         let grids = hierarchy(&file, |_, _| Some(Use::Generic));
         assert!(!grids.is_empty());
         assert_eq!(grids[0].children[0].ext.west, inner.west);
+        // Duplicate grid_name "dup" resolves to the first "dup" (dup2), not the second.
+        let first_dup = grids[0].children.iter().find(|c| (c.ext.west - dup2.west).abs() < 1e-12).unwrap();
+        assert_eq!(first_dup.children.len(), 1);
+        assert_eq!(first_dup.children[0].ext.west, child_of_dup.west);
     }
 
     #[test]

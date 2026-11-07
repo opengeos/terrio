@@ -336,20 +336,8 @@ fn write_raster(
     tile_size: Option<u32>,
     bigtiff: bool,
 ) -> PyResult<()> {
-    let mut options = write_options(driver, compress, tile_size, bigtiff)?;
-    let resolved_driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(path));
-    let tile_archive = matches!(resolved_driver, Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles));
-    py.detach_result(|| {
-        raster.inner.prepare_output_mask(path, &mut options, Window::full(raster.inner.width(), raster.inner.height()), None)
-    })
-    .py()?;
-    if raster.inner.dataset().is_none() && tile_archive {
-        match py.detach_result(|| raster.inner.write(path, &options)) {
-            Err(terrio::Error::Unsupported(msg)) if msg == "source inventory unavailable" => {}
-            res => return res.py(),
-        }
-    }
-    py.detach_result(|| raster.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
+    let options = write_options(driver, compress, tile_size, bigtiff)?;
+    raster.write_with_options(py, path, options)
 }
 
 /// Writes rasters into one netCDF-4 file, each in its group.

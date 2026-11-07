@@ -268,7 +268,7 @@ pub(crate) trait WindowSource: Send + Sync {
     }
     /// Files a non-streamed source reads; unknown inventories must fail before an export.
     fn input_paths(&self) -> Result<Vec<String>> {
-        Err(Error::Unsupported("source inventory unavailable".into()))
+        Err(Error::source_inventory_unavailable())
     }
     /// The source as [`LazyRaster::write`] reads it a strip of rows at a time, several strips at
     /// once; `None` when it is read whole.

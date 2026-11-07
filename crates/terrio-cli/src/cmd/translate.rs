@@ -26,8 +26,11 @@ fn flag_arity(s: &str) -> Option<usize> {
 /// `<input>` and `<output>` arguments following a 0- or 2-argument `--scale` are not
 /// consumed by clap as scale numbers.
 pub fn rewrite_args(args: Vec<OsString>) -> Vec<OsString> {
-    let Some(sub_idx) = args.iter().enumerate().skip(1).find_map(|(idx, a)| (a.to_str() == Some("translate")).then_some(idx)) else {
-        return args;
+    let non_flags: Vec<(usize, &str)> =
+        args.iter().enumerate().skip(1).filter_map(|(idx, a)| a.to_str().filter(|s| !s.starts_with('-')).map(|s| (idx, s))).collect();
+    let sub_idx = match non_flags.as_slice() {
+        [(idx, "translate"), ..] | [(_, "raster"), (idx, "translate"), ..] => *idx,
+        _ => return args,
     };
     let mut out = Vec::with_capacity(args.len());
     out.extend_from_slice(&args[..=sub_idx]);
@@ -247,6 +250,10 @@ mod tests {
             (
                 vec!["terrio", "translate", "in.tif", "--a-nodata", "--scale", "none", "out.tif"],
                 vec!["terrio", "translate", "in.tif", "--a-nodata", "--scale", "none", "out.tif"],
+            ),
+            (
+                vec!["terrio", "info", "translate", "--scale", "0", "1000", "in.tif"],
+                vec!["terrio", "info", "translate", "--scale", "0", "1000", "in.tif"],
             ),
         ] {
             let out: Vec<String> =
