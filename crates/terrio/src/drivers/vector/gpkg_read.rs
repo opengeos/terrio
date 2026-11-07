@@ -699,12 +699,16 @@ fn summarize_layer(db: &Db, c: &Content, path: &str) -> Result<LayerSummary> {
     let rows = db.raw_rows(&c.name)?;
 
     // Each geometry's type, Z flag and bounds.
-    let geometries: Vec<Option<GeometrySummary>> = crate::par::map_range(rows.len(), |i| {
-        let Value::Blob(b) = Db::record_column(&rows[i].1, geom_col?) else { return None };
-        let g = decode_geometry(&b)?;
-        let bbox = g.bbox().map(|b| (b.min_x, b.min_y, b.max_x, b.max_y));
-        Some((g.geom_type(), crate::vector::geometry_has_z(&g), bbox))
+    // A record whose values run past its end is an error, as reading the layer reports it.
+    let geometries = crate::par::map_range(rows.len(), |i| -> Result<Option<GeometrySummary>> {
+        let Some(geom_col) = geom_col else { return Ok(None) };
+        let Value::Blob(b) = Db::record_column(&rows[i].1, geom_col)? else { return Ok(None) };
+        Ok(decode_geometry(&b).map(|g| {
+            let bbox = g.bbox().map(|b| (b.min_x, b.min_y, b.max_x, b.max_y));
+            (g.geom_type(), crate::vector::geometry_has_z(&g), bbox)
+        }))
     });
+    let geometries = geometries.into_iter().collect::<Result<Vec<_>>>()?;
     let present = || geometries.iter().flatten();
     let geometry_type = crate::vector::geometry_type_name_of(layer.geom_type, present().map(|g| g.0), present().take(100).any(|g| g.1));
     let extent = crate::vector::extent_of(present().filter_map(|g| g.2));

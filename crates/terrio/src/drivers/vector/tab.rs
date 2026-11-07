@@ -545,8 +545,10 @@ impl<'a> MapFile<'a> {
     /// The section headers of a region or multiple polyline: `(vertices, holes, vertex offset)`.
     fn sections(&self, s: &mut CoordStream, compressed: bool, version: u32, n: i32) -> Result<(Vec<Section>, Vec<Coord>)> {
         let n = usize::try_from(n).map_err(|_| bad("section count"))?;
-        let section_size = if version >= 450 { 28 } else { 24 };
-        let total_hdr = section_size * n;
+        let section_size: usize = if version >= 450 { 28 } else { 24 };
+        // The headers are stored in the file: a count whose headers need more bytes than it has
+        // is corrupt, and is rejected before it sizes an allocation.
+        let total_hdr = section_size.checked_mul(n).filter(|&len| len <= self.b.len()).ok_or_else(|| bad("section count"))?;
         let mut hdrs = Vec::with_capacity(n);
         let mut total = 0usize;
         for _ in 0..n {
@@ -559,11 +561,11 @@ impl<'a> MapFile<'a> {
                 (usize::try_from(vertices).map_err(|_| bad("vertices"))?, usize::try_from(holes).map_err(|_| bad("holes"))?);
             let offset = data.checked_sub(total_hdr).ok_or_else(|| bad("section offset"))? / 8;
             hdrs.push((vertices, holes, offset));
-            total += vertices;
+            total = total.checked_add(vertices).ok_or_else(|| bad("vertices"))?;
         }
         let pts = (0..total).map(|_| s.point(compressed).map(|p| self.at(p))).collect::<Result<Vec<_>>>()?;
         for &(v, _, o) in &hdrs {
-            if o + v > pts.len() {
+            if o.checked_add(v).is_none_or(|end| end > pts.len()) {
                 return Err(bad("section vertices out of range"));
             }
         }
@@ -770,12 +772,14 @@ struct CoordStream<'a> {
     pos: usize,
     end: usize,
     next: usize,
+    /// The blocks entered so far: a chain entering more blocks than the file has loops.
+    hops: usize,
     origin: (i32, i32),
 }
 
 impl<'a> CoordStream<'a> {
     fn new(m: &MapFile<'a>, ptr: usize, origin: (i32, i32)) -> Self {
-        let mut s = Self { b: m.b, block: m.block, pos: ptr, end: 0, next: 0, origin };
+        let mut s = Self { b: m.b, block: m.block, pos: ptr, end: 0, next: 0, hops: 0, origin };
         s.enter(ptr - ptr % m.block);
         s.pos = if ptr.is_multiple_of(m.block) { ptr + 8 } else { ptr };
         s
@@ -783,18 +787,22 @@ impl<'a> CoordStream<'a> {
 
     fn enter(&mut self, block: usize) {
         let used = le_i16(self.b, block + 2).unwrap_or(0).max(0) as usize;
-        self.end = block + 8 + used;
+        // Saturating: a pointer near the top of the address space reads as truncated data.
+        self.end = block.saturating_add(8 + used);
         self.next = le_i32(self.b, block + 4).unwrap_or(0).max(0) as usize;
-        self.pos = block + 8;
+        self.pos = block.saturating_add(8);
     }
 
     fn bytes<const N: usize>(&mut self) -> Result<[u8; N]> {
         let mut out = [0u8; N];
         for o in out.iter_mut() {
             if self.pos >= self.end && self.next > 0 && self.next < self.b.len() {
+                self.hops += 1;
+                if self.hops > self.b.len() / self.block {
+                    return Err(bad("coordinate block chain loops"));
+                }
                 let next = self.next;
                 self.enter(next);
-                let _ = self.block;
             }
             *o = *self.b.get(self.pos).ok_or_else(|| bad("truncated coordinates"))?;
             self.pos += 1;
@@ -1431,6 +1439,53 @@ mod tests {
         let crate::Dataset::Vector(v) = crate::memory::codec::open(bytes, "pts.zip", &Default::default()).unwrap() else { panic!() };
         assert_eq!(v.layers[0].features[0].geometry, Some(Geometry::point(1.5, 2.5)));
         assert_eq!(v.layers[0].crs_epsg(), Some(4326));
+    }
+
+    /// A map file over `b`, with 512-byte blocks and unscaled coordinates, for decoding
+    /// coordinate streams directly.
+    fn map_file(b: &[u8]) -> MapFile<'_> {
+        MapFile {
+            b,
+            block: 512,
+            quadrant: 1,
+            scale: (1.0, 1.0),
+            displ: (0.0, 0.0),
+            precision: (0.0, 0.0),
+            counts: [0; 4],
+            proj: 0,
+            datum: 0,
+            units: 0,
+            params: [0.0; 6],
+        }
+    }
+
+    /// A section count of `i32::MAX` is rejected because its headers cannot fit in the file,
+    /// before it sizes an allocation of them (51 GB here).
+    #[test]
+    fn section_counts_beyond_the_file_are_errors() {
+        let mut b = vec![0u8; 1024];
+        // A coordinate block at 512 holding 100 bytes, with no next block.
+        b[514..516].copy_from_slice(&100i16.to_le_bytes());
+        let m = map_file(&b);
+        let mut s = CoordStream::new(&m, 520, (0, 0));
+        let error = m.sections(&mut s, false, 450, i32::MAX).unwrap_err();
+        assert!(error.to_string().contains("section count"), "{error}");
+        // A count that fits still reads its headers, and fails here on their offsets.
+        let mut s = CoordStream::new(&m, 520, (0, 0));
+        assert!(m.sections(&mut s, false, 450, 3).unwrap_err().to_string().contains("section offset"));
+    }
+
+    /// A coordinate block that names itself as the next block is an error, not an endless
+    /// stream of the same bytes.
+    #[test]
+    fn looping_coordinate_blocks_are_errors() {
+        let mut b = vec![0u8; 1024];
+        b[514..516].copy_from_slice(&8i16.to_le_bytes());
+        b[516..520].copy_from_slice(&512i32.to_le_bytes());
+        let m = map_file(&b);
+        let mut s = CoordStream::new(&m, 520, (0, 0));
+        let error = (0..1000).try_for_each(|_| s.i32().map(drop)).unwrap_err();
+        assert!(error.to_string().contains("loops"), "{error}");
     }
 
     #[test]
