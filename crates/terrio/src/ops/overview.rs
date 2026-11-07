@@ -253,8 +253,10 @@ pub fn add_overviews_with_progress(
     };
     let out = add_overviews_reporting(path, options, &mut report)?;
     if last < 1.0 {
-        // Nothing was computed: the work is done.
-        progress(1.0);
+        // Nothing was computed: the work is done, but a cancellation still counts.
+        if !progress(1.0) {
+            return Err(Error::Cancelled);
+        }
     }
     Ok(out)
 }
@@ -279,6 +281,10 @@ fn add_overviews_reporting(path: &str, options: &OverviewOptions, report: &mut R
         let existing = if ovr.is_file() { Some(parse_file(&ovr)?) } else { None };
         if sizes.is_empty() {
             return Ok(existing.map_or_else(Vec::new, |t| t.dirs.iter().filter(|d| !d.is_mask()).map(Directory::size).collect()));
+        }
+        if existing.is_some() {
+            // The sidecar is replaced through a copy, which keeps a read-only mode: refuse it here.
+            gtiff_update::writable_local_file(&ovr.to_string_lossy())?;
         }
         let compression = options.compression.as_deref().unwrap_or("NONE");
         let main_dir = &main.dirs[images(&main).main.unwrap_or(0)];

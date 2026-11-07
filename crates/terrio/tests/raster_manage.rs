@@ -301,6 +301,16 @@ fn external_overviews_of_read_only_files() {
     delete_overviews(&path, &DeleteOptions { external: true, ..Default::default() }).unwrap();
     assert!(!std::path::Path::new(&format!("{path}.ovr")).exists());
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    // An existing sidecar that is read-only is refused, and left as it was.
+    add_overviews(&path, &o).unwrap();
+    let ovr = format!("{path}.ovr");
+    let ovr_bytes = std::fs::read(&ovr).unwrap();
+    let mut perms = std::fs::metadata(&ovr).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&ovr, perms).unwrap();
+    let err = add_overviews(&path, &o).unwrap_err();
+    assert!(err.to_string().contains("read-only") && err.to_string().contains(".ovr"), "{err}");
+    assert_eq!(std::fs::read(&ovr).unwrap(), ovr_bytes);
 }
 
 /// `add_overviews_with_progress` reports a fraction that never decreases, from 0 to 1, and a
@@ -356,6 +366,14 @@ fn overview_progress_and_cancellation() {
         })
         .unwrap();
         assert_eq!(seen, vec![0.0, 1.0]);
+        // The final report can cancel as well.
+        let mut calls = Vec::new();
+        let cancelled = add_overviews_with_progress(&path, &none, &mut |f| {
+            calls.push(f);
+            f < 1.0
+        });
+        assert!(matches!(cancelled, Err(terrio::Error::Cancelled)), "{calls:?}");
+        assert_eq!(calls, vec![0.0, 1.0]);
         assert_eq!(level(&path, Some(2)), built);
         assert_eq!(std::path::Path::new(&ovr).exists(), external);
     }
