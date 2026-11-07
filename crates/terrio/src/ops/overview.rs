@@ -238,8 +238,7 @@ pub fn add_overviews(path: &str, options: &OverviewOptions) -> Result<Vec<(usize
 /// `progress` gets the fraction done, which never decreases: 0 before the overviews are computed,
 /// then the share of the work done (the pixels read and the overview pixels computed and
 /// encoded), and 1 once every overview is computed and encoded, before the file is published.
-/// Returning `false`
-/// cancels: [`Error::Cancelled`] is returned and no file is changed (an existing `.ovr` stays as
+/// Returning `false` cancels: [`Error::Cancelled`] is returned and no file is changed (an existing `.ovr` stays as
 /// it was). A call that has nothing to compute gets 0 and 1.
 pub fn add_overviews_with_progress(
     path: &str,
@@ -322,6 +321,12 @@ fn add_overviews_reporting(path: &str, options: &OverviewOptions, report: &mut R
         }
         return Ok(sorted_sizes(all_sizes));
     }
+    if factors.is_empty() {
+        // A no-op must not replace the file, including when the final callback cancels.
+        report(1.0)?;
+        let tiff = parse_file(&file)?;
+        return Ok(sorted_sizes(images(&tiff).overviews.iter().map(|o| o.0).collect()));
+    }
     let compression = options.compression.clone();
     let cog = options.ignore_cog_layout_break;
     gtiff_update::update_file(&file, move |f| {
@@ -354,6 +359,7 @@ pub fn delete_overviews(path: &str, options: &DeleteOptions) -> Result<()> {
     if options.external {
         let ovr = ovr_path(std::path::Path::new(path));
         if ovr.is_file() {
+            gtiff_update::writable_local_file(&ovr.to_string_lossy())?;
             crate::geotiff::check_tiff_allowed(&ovr, &ovr.to_string_lossy())?;
             let tiff = parse_file(&ovr)?;
             if tiff.dirs.is_empty() || !tiff.dirs.iter().all(|d| d.is_overview() || d.is_mask()) {
@@ -1179,7 +1185,6 @@ fn steps(
 /// image when `prev` is `None`: their steps run in the order of their last source rows, so the
 /// image is read forward once and only the rows the current steps need are held. After each
 /// step, `report` gets the fraction of the jobs' rows computed.
-#[allow(clippy::too_many_arguments)]
 fn run_jobs(
     srcs: &mut Sources,
     prev: Option<&Computed>,

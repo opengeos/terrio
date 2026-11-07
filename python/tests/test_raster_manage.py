@@ -214,3 +214,13 @@ def test_external_overviews_of_read_only_file(tmp_path):
         assert path.read_bytes() == before
     finally:
         path.chmod(0o644)
+
+
+@pytest.mark.parametrize("result", [False, 0, "", [], {}])
+def test_overview_falsy_callback_cancels(tmp_path, result):
+    path = tmp_path / "cancel.tif"
+    _float_raster(path)
+    before = path.read_bytes()
+    with pytest.raises(terrio.errors.CancelledError):
+        terrio.add_overviews(str(path), [2], progress=lambda _: result)
+    assert path.read_bytes() == before

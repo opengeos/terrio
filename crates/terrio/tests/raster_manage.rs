@@ -314,6 +314,9 @@ fn external_overviews_of_read_only_files() {
     let err = refresh_overviews(&path, &refresh).unwrap_err();
     assert!(err.to_string().contains("read-only") && err.to_string().contains(".ovr"), "{err}");
     assert_eq!(std::fs::read(&ovr).unwrap(), ovr_bytes);
+    let err = delete_overviews(&path, &DeleteOptions { external: true, ..Default::default() }).unwrap_err();
+    assert!(err.to_string().contains("read-only") && err.to_string().contains(".ovr"), "{err}");
+    assert_eq!(std::fs::read(&ovr).unwrap(), ovr_bytes);
 }
 
 /// `add_overviews_with_progress` reports a fraction that never decreases, from 0 to 1, and a
@@ -361,6 +364,8 @@ fn overview_progress_and_cancellation() {
         assert!(terrio::open_raster_lazy(&fresh).unwrap().overviews().is_empty());
 
         // Nothing to compute: 0, then 1.
+        let no_work_before = std::fs::metadata(&path).unwrap();
+        let no_work_bytes = std::fs::read(&path).unwrap();
         let mut seen = Vec::new();
         let none = OverviewOptions { levels: Vec::new(), min_size: 512, ..o.clone() };
         add_overviews_with_progress(&path, &none, &mut |f| {
@@ -377,6 +382,14 @@ fn overview_progress_and_cancellation() {
         });
         assert!(matches!(cancelled, Err(terrio::Error::Cancelled)), "{calls:?}");
         assert_eq!(calls, vec![0.0, 1.0]);
+        let no_work_after = std::fs::metadata(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), no_work_bytes);
+        assert_eq!(no_work_after.modified().unwrap(), no_work_before.modified().unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(no_work_after.ino(), no_work_before.ino());
+        }
         assert_eq!(level(&path, Some(2)), built);
         assert_eq!(std::path::Path::new(&ovr).exists(), external);
     }
