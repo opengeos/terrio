@@ -1325,16 +1325,25 @@ fn translate(
     // window touches, of its bands, from the overview `overview` selects), and one in memory, or
     // that the lazy reader cannot read (GDAL may), whole at full resolution.
     let out = match raster_path(src)? {
-        Some(path) => match open_translate_source(py, &path)? {
-            Some(mut lazy) => crate::with_warnings(py, || terrio::ops::translate::translate_lazy(&mut lazy, &o, overview))?,
-            None => {
-                if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(_)) {
-                    return Err(terrio::Error::Unsupported(format!("overview needs a raster read by window; {path} is read whole"))).py();
+        Some(path) => {
+            // The open and the translation run under one `with_warnings`, so that the open's
+            // warnings reach Python too.
+            let lazy = crate::with_warnings(py, || match open_translate_source(&path)? {
+                Some(mut lazy) => terrio::ops::translate::translate_lazy(&mut lazy, &o, overview).map(Some),
+                None => Ok(None),
+            })?;
+            match lazy {
+                Some(out) => out,
+                None => {
+                    if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(_)) {
+                        return Err(terrio::Error::Unsupported(format!("overview needs a raster read by window; {path} is read whole")))
+                            .py();
+                    }
+                    let ds = crate::with_warnings(py, || terrio::open_raster(&path))?;
+                    py.detach_result(|| terrio::ops::translate::translate(&ds, &o)).py()?
                 }
-                let ds = crate::with_warnings(py, || terrio::open_raster(&path))?;
-                py.detach_result(|| terrio::ops::translate::translate(&ds, &o)).py()?
             }
-        },
+        }
         None => {
             // A handle sharing the Raster's reader (pixels are not copied), so that the Raster
             // is not borrowed while the GIL is released.
@@ -1349,15 +1358,15 @@ fn translate(
 /// when it is read whole: named `gdal:`, or not readable by the lazy reader (GDAL may read it).
 /// Errors GDAL's fallback does not retry either (invalid arguments, network failures, missing
 /// local files, resource refusals) are kept.
-fn open_translate_source(py: Python<'_>, path: &str) -> PyResult<Option<terrio::LazyRaster>> {
+fn open_translate_source(path: &str) -> terrio::Result<Option<terrio::LazyRaster>> {
     if path.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("gdal:")) {
         return Ok(None);
     }
-    match py.detach_result(|| terrio::open_raster_lazy(path)) {
+    match terrio::open_raster_lazy(path) {
         Ok(src) => Ok(Some(src)),
-        Err(e @ (terrio::Error::InvalidArgument(_) | terrio::Error::Http(_))) => Err(e).py(),
-        Err(e) if e.is_resource_refusal() => Err(e).py(),
-        Err(terrio::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound && !path.contains(':') => Err(terrio::Error::Io(e)).py(),
+        Err(e @ (terrio::Error::InvalidArgument(_) | terrio::Error::Http(_))) => Err(e),
+        Err(e) if e.is_resource_refusal() => Err(e),
+        Err(terrio::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound && !path.contains(':') => Err(terrio::Error::Io(e)),
         Err(_) => Ok(None),
     }
 }
