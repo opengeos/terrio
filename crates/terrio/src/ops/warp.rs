@@ -1576,8 +1576,9 @@ fn src_nodata(s: &Source, o: &WarpOptions, band: usize) -> Option<f64> {
 /// Whether a `sum` takes part in the automatic overview choice (`AUTO`, `AUTO-n`) as the other
 /// resamplings do. An overview has one pixel per block of the source's pixels, which a `sum`
 /// counts for the source pixels it stands for, so that it estimates the source's total at the
-/// overview's cost: exactly, up to rounding, where the overview holds the means of the pixels it
-/// covers, without nodata. With `false`, a `sum` reads the full resolution unless it is given a
+/// overview's cost: exactly, up to rounding, when the footprint covers complete overview cells
+/// holding floating-point means without nodata. Cropping through overview cells can make even
+/// the total approximate. With `false`, a `sum` reads the full resolution unless it is given a
 /// level. Either way, `NONE` reads the full resolution, and a given level is read and counted the
 /// same way. `terrio.rio`'s `WarpedVRT` follows it for a reduced read of the whole VRT.
 pub const SUM_AUTO_OVERVIEW: bool = true;
@@ -4330,7 +4331,8 @@ impl RegionWarp {
 
     /// Counts each source pixel of a `sum` for `scale` pixels of the full resolution: the source
     /// pixels a pixel of the level warped stands for, `(W / w) * (H / h)` for a `w` x `h` overview
-    /// of a `W` x `H` raster. 1 by default.
+    /// of a `W` x `H` raster. 1 by default. Must be positive and finite; [`Self::warp`]
+    /// rejects invalid scales before allocating the output.
     pub fn with_sum_scale(mut self, scale: f64) -> Self {
         self.sum_scale = scale;
         self
@@ -4506,6 +4508,9 @@ impl RegionWarp {
         init: f64,
         padded_scale: bool,
     ) -> Result<(RasterData, Vec<bool>)> {
+        if !(self.sum_scale.is_finite() && self.sum_scale > 0.0) {
+            return Err(Error::InvalidArgument(format!("the sum scale must be a positive number, not {}", self.sum_scale)));
+        }
         let (dx, dy, dw, dh) = region;
         let bands = self.src_nodata.len();
         let n = dw * dh;
@@ -5572,6 +5577,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn region_sum_rejects_invalid_pixel_scales() {
+        let srs = SpatialRef::from_epsg(3857).unwrap();
+        let gt = [0., 1., 0., 2., 0., -1.];
+        let data = RasterData::F64(vec![1.; 4]);
+        let region = || RegionWarp::new((2, 2), gt, &srs, &srs, gt, Resampling::Sum, 0., DataType::F64, vec![None], None).unwrap();
+        for scale in [0., -1., f64::NAN, f64::INFINITY] {
+            let result = region().with_sum_scale(scale).warp((0, 0, 2, 2), (0, 0, 2, 2), &data, None, 0., false);
+            assert!(matches!(result, Err(Error::InvalidArgument(_))), "scale {scale}: {result:?}");
+        }
+        let (actual, _) = region().with_sum_scale(2.).warp((0, 0, 2, 2), (0, 0, 2, 2), &data, None, 0., false).unwrap();
+        assert_eq!(actual.to_f64_vec(), vec![2.; 4]);
     }
 
     /// The same warps' values, pinned: checksums of terrio's results in one chunk and in many

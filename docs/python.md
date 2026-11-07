@@ -345,8 +345,9 @@ counts for the source pixels it stands for, `(W / w) * (H / h)` for a `w` x `h` 
 `"AUTO"`, `"AUTO-n"` and a level (`overview=1`) read an overview so, and `"NONE"` sums the
 full resolution exactly. The estimate's accuracy is described under
 [Warp source overviews](cli.md#warp-source-overviews): exact up to rounding for an `average`
-overview of floating-point data without nodata, approximate with rounded integer means, blocks
-partly nodata or other overview resamplings. Give a coarse `sum` a floating-point `ot`: a
+overview of floating-point data without nodata when the footprint covers complete overview
+cells. Cropping through those cells makes even the total approximate; rounded integer means,
+partly nodata blocks and other overview resamplings also introduce approximation. Give a coarse `sum` a floating-point `ot`: a
 `"UInt16"` output stores 65535 for any larger sum. A `sum` whose source window, estimated
 with 8 bytes per pixel for the pixels' shares, would hold more than 4 GiB raises
 `ResourceLimitError` (a `MemoryError`) before it is read, and so do a `sum` read of a

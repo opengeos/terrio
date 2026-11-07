@@ -1047,7 +1047,10 @@ source (exact ratios), so that the sum estimates the source's total at the overv
 `AUTO`, `AUTO-n` and `--overview n` read an overview so, and `--overview NONE` sums the full
 resolution exactly. The estimate is the exact total, up to floating-point rounding, where the
 overview holds the means of the pixels it covers (an `average` overview of a floating-point
-source without nodata). It is approximate where those means were rounded to an integer type,
+source without nodata), when the requested footprint covers complete overview cells. A crop
+through overview cells makes even the total approximate: a 2 × 2 block [100, 0; 0, 0] has mean
+25, so a crop containing only the 100-valued source pixel estimates 25 instead of 100 from that
+overview. It is also approximate where those means were rounded to an integer type,
 where a block is partly nodata (its mean counts for the whole block, so the estimate exceeds
 the sum of the valid pixels there; a block wholly nodata stays nodata), and where the overview
 was resampled otherwise than by average (a `nearest` overview gives an estimate from a sample of

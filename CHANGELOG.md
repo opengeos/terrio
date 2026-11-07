@@ -266,7 +266,11 @@
   was copied pixel for pixel when it spanned as many pixels as its destination, and their sums reach
   the band's type unrounded: they were rounded to the source's type, which dropped a Byte source's
   fractions and capped its sums at 255.
-- A `sum` that reads an overview counts each of its pixels for the source pixels it stands for,
+- Changed default: `sum` now uses overview estimates under `AUTO`/`AUTO-n`, instead of reading
+  full resolution. Totals and nodata footprints can change: partly nodata overview blocks count
+  their valid-pixel mean for the entire block and can assign values to otherwise nodata output
+  pixels. Use `--overview NONE` for exact full-resolution validity and sums.
+  A `sum` that reads an overview counts each of its pixels for the source pixels it stands for,
   `(W / w) × (H / h)` for a `w × h` overview of a `W × H` source (exact ratios, also where the
   factor does not divide the size), so that it estimates the source's total at the overview's
   cost, whether the automatic choice gives the overview (`--overview AUTO`, the default, and
@@ -279,7 +283,8 @@
   is warped into the buffer's grid from the source's overview that the read's implicit overview is
   warped from, counted the same way: a read of some of the bands, or of a VRT georeferenced by
   GCPs, resampled the VRT's pixels. The estimate is the total, up to rounding, for an `average`
-  overview of floating-point data without nodata. Over 256 × 256 outputs of a 16384 × 16384 raster
+  overview of floating-point data without nodata when the footprint covers complete overview
+  cells; crops through those cells can have substantial total error. Over 256 × 256 outputs of a 16384 × 16384 raster
   at 16, 32 and 64 times its pixel size, it was within 2 × 10⁻⁷ of the total of Float32 and Float64
   data (windows whose edges cut overview pixels), 0.4% to 0.6% above it for UInt16 data, whose
   averages are rounded to whole numbers at each level, and 1.4% to 2.6% above it for Float32 data

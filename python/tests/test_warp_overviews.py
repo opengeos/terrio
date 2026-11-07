@@ -490,3 +490,36 @@ def test_loaded_sources_warn_once_for_unavailable_level():
         result = terrio.warp([memory, memory], ts=(8, 8), overview=0)
     assert len(warnings) == 1
     np.testing.assert_array_equal(result.read(1), expected.read(1))
+
+
+def test_cropped_sum_can_differ_from_full_resolution_total(tmp_path):
+    """A partial overview cell loses the distribution within its averaged source block."""
+    path = str(tmp_path / "contrast.tif")
+    terrio.Raster.from_array(
+        np.array([[100, 0], [0, 0]], dtype="float64"),
+        (0, 1, 0, 2, 0, -1),
+        crs="EPSG:3857",
+    ).write(path, overviews=[2], overview_resampling="average")
+    options = dict(te=(0, 1, 1, 2), ts=(1, 1), resampling="sum", ot="Float64")
+    estimated = terrio.warp(path, overview=0, **options)
+    exact = terrio.warp(path, overview="NONE", **options)
+    np.testing.assert_array_equal(estimated.read(1), [[25.0]])
+    np.testing.assert_array_equal(exact.read(1), [[100.0]])
+    assert estimated.transform == exact.transform == (0.0, 1.0, 0.0, 2.0, 0.0, -1.0)
+
+
+def test_implicit_vrt_level_keeps_the_opened_source_scale(tmp_path):
+    """An implicit VRT level stays comparable to its already-scaled base pixels."""
+    from terrio.rio.windows import Window
+
+    path = str(tmp_path / "opened-level.tif")
+    terrio.Raster.from_array(
+        np.ones((8, 8), dtype="float32"),
+        (0, 1, 0, 8, 0, -1),
+        crs="EPSG:3857",
+    ).write(path, overviews=[2, 4], overview_resampling="average")
+    with terrio.rio.open(path, overview_level=0) as source:
+        with WarpedVRT(source, resampling=Resampling.sum, dtype="float64") as vrt:
+            np.testing.assert_array_equal(vrt.read(1), np.full((4, 4), 4.0))
+            reduced = vrt.read(1, window=Window(0, 0, 2, 2), out_shape=(1, 1))
+            np.testing.assert_array_equal(reduced, [[4.0]])
