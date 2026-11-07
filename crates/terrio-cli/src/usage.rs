@@ -81,8 +81,8 @@ fn describe(command: &Command, path: &[String]) -> Value {
             describe(&child, &path)
         })
         .collect();
-    let conflicts = conflicts(command);
-    let arguments: Vec<_> = command.get_arguments().map(|arg| argument(arg, path, &conflicts)).collect();
+    let arg_conflicts = conflicts(command);
+    let arguments: Vec<_> = command.get_arguments().map(|arg| argument(arg, path, &arg_conflicts)).collect();
     json!({
         "name": command.get_name(),
         "path": path,
