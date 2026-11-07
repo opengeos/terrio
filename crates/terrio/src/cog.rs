@@ -1481,7 +1481,7 @@ impl LazyRaster {
 
     /// Whether overview `overview` has a per-dataset mask of its own, which
     /// [`LazyRaster::read_level_mask`] reads, rather than none.
-    pub(crate) fn level_has_own_mask(&self, overview: usize) -> bool {
+    pub fn level_has_own_mask(&self, overview: usize) -> bool {
         let Some(&size) = self.overviews().get(overview) else { return false };
         if let Inner::Tiff(t) = &self.inner
             && let Some(i) = t.levels[overview + 1].external

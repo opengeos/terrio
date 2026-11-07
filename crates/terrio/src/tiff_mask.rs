@@ -305,6 +305,16 @@ mod tests {
         assert_eq!(masks[0].offsets, [138, 170]);
     }
 
+    /// A dangling IFD chain is malformed input, not evidence that no dataset mask exists.
+    #[test]
+    fn mask_discovery_rejects_dangling_ifd_chain() {
+        let mut bytes = b"II\x2a\0\x08\0\0\0".to_vec();
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&1000u32.to_le_bytes());
+        let error = find_masks(&mut std::io::Cursor::new(bytes)).unwrap_err();
+        assert!(matches!(error, Error::Io(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof), "{error}");
+    }
+
     fn mask(block: (usize, usize), compression: u16, count: u64) -> MaskImage {
         let (width, height) = block;
         MaskImage {

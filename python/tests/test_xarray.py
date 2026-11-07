@@ -926,3 +926,49 @@ def test_reduced_mask_at_full_size_uses_validity_fallback(tmp_path, fallback):
         np.testing.assert_allclose(da.values[0], expected, equal_nan=True)
     finally:
         da.close()
+
+
+def test_rio_opened_overview_uses_overview_only_mask(tmp_path):
+    """Opened overview flags and pixels use the same native mask discovery."""
+    import struct
+
+    from terrio.rio.enums import MaskFlags, Resampling
+
+    path = tmp_path / "overview-only-mask.tif"
+    values = np.arange(1, 17, dtype="uint8").reshape(4, 4)
+    mask = np.full((4, 4), 255, dtype="uint8")
+    mask[:, :2] = 0
+    with rio.open(
+        path, "w", driver="GTiff", width=4, height=4, count=1, dtype="uint8", transform=TRANSFORM
+    ) as dst:
+        dst.write(values, 1)
+        dst.write_mask(mask)
+        dst.build_overviews([2], Resampling.nearest)
+    # Unlink the full-resolution mask IFD, preserving the overview's type-5 mask.
+    raw = bytearray(path.read_bytes())
+    assert raw[:4] == b"II*\x00"
+    link = 4
+    removed = False
+    while offset := struct.unpack_from("<I", raw, link)[0]:
+        size = struct.unpack_from("<H", raw, offset)[0]
+        tags = {
+            struct.unpack_from("<H", raw, offset + 2 + 12 * i)[0]: struct.unpack_from(
+                "<I", raw, offset + 10 + 12 * i
+            )[0]
+            for i in range(size)
+        }
+        next_link = offset + 2 + 12 * size
+        if tags.get(254, 0) == 4:
+            struct.pack_into("<I", raw, link, struct.unpack_from("<I", raw, next_link)[0])
+            removed = True
+        else:
+            link = next_link
+    assert removed
+    path.write_bytes(raw)
+    with rio.open(path) as src:
+        assert src.mask_flag_enums == ([MaskFlags.all_valid],)
+    with rio.open(path, overview_level=0) as src:
+        assert src.mask_flag_enums == ([MaskFlags.per_dataset],)
+        actual = src.read(1, masked=True)
+        np.testing.assert_array_equal(actual.mask, [[True, False], [True, False]])
+        np.testing.assert_array_equal(actual[:, 1], [3, 11])

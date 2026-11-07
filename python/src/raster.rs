@@ -656,6 +656,12 @@ impl PyRaster {
         mask.map(|m| to_numpy(py, RasterData::U8(m), &[window.height, window.width])).transpose()
     }
 
+    /// Internal overview metadata from the native mask discovery, without reading pixels.
+    fn _overview_has_mask(&self, overview: usize) -> PyResult<bool> {
+        self.inner.overviews().get(overview).ok_or_else(|| invalid(format!("no overview {overview}")))?;
+        Ok(self.inner.level_has_own_mask(overview))
+    }
+
     /// Internal xarray metadata for a selected overview's own nodata values.
     fn _overview_nodata(&self, overview: usize) -> PyResult<Vec<Option<f64>>> {
         self.inner.overviews().get(overview).ok_or_else(|| invalid(format!("no overview {overview}")))?;

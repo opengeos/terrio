@@ -1172,8 +1172,9 @@ fn hierarchy(file: &GridFile, keep: impl Fn(&Source, usize) -> Option<Use>) -> V
             continue;
         }
         // As in PROJ 9.8.1's GTiffDataset::open / insertIntoHierarchy (src/grids.cpp), explicit
-        // parent_grid_name links to the first matching earlier grid containing `ext`, and
-        // unparented GeoTIFF subgrids nest by extent containment.
+        // parent_grid_name resolves to the first earlier grid with that name, provided it
+        // contains `ext`; later duplicate names are not tried. Unparented GeoTIFF subgrids
+        // nest by extent containment. NTv2 also resolves duplicate parent names first-wins.
         if !parent.is_empty()
             && let Some(&p) = named.get(parent)
             && nodes[p].0.ext.contains(ext)
