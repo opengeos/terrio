@@ -686,6 +686,11 @@ mod tests {
         // First definition kept.
         assert!(table.iter().any(|(id, s)| id == "a" && s.contains("w:1.000000px")));
         assert!(table.iter().any(|(id, _)| id == "c"));
+
+        let mut original = Styles::new(&first, "", &members);
+        original.add_to(&mut table, &mut known);
+        assert_eq!(table.len(), 3);
+        assert!(original.shadowed.is_empty());
     }
 
     #[test]

@@ -1082,6 +1082,8 @@ mod tests {
         assert!(table.iter().any(|(id, s)| id == "s0" && s.contains("w:1.000000px")), "{table:?}");
         assert!(table.iter().any(|(id, _)| id == "s1"));
         assert!(table.iter().any(|(id, _)| id == "s2"));
+        assert_eq!(style(&layers[0], 0), "@s0");
+        assert!(style(&layers[3], 0).contains("w:9.000000px"));
     }
 
     /// A KMZ archive of the members given.
