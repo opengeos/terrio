@@ -1059,8 +1059,11 @@ fn scatter_strided(
 
 /// Byte ranges of a shard closer than this are fetched in one request.
 const MERGE_GAP: usize = 256 * 1024;
-/// The most bytes fetched in one request of inner chunks, so that large reads go in parallel.
-const MAX_RUN: usize = 16 * 1024 * 1024;
+/// The most bytes fetched in one request of inner chunks, so that large reads go in parallel: a
+/// connection far from the server delivers a large range slowly while its window grows. Reading
+/// 34.5 MB of TESSERA embeddings across the Atlantic took a median 9.95 s in runs of 16 MiB and
+/// 6.26 s in runs of 1 MiB (8.16 s in runs of 256 KiB, whose requests then cost more).
+const MAX_RUN: usize = 1 << 20;
 
 /// The bytes one chunk decoding holds: a chunk's decoded bytes, or, for a shard read by parts, an
 /// inner chunk's. `usize::MAX` when they overflow (such chunks are refused before decoding).
