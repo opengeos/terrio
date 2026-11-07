@@ -59,6 +59,9 @@ const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 
+/// The most tool calls of one batch that run at once.
+const BATCH_CONCURRENCY: usize = 8;
+
 /// A tool call to run: its request id, tool name and command-line arguments.
 type ToolCall = (Value, String, Vec<OsString>);
 
@@ -122,7 +125,7 @@ impl Server {
 
     /// The reply to `msg`; a tool call's runs on a thread of its own and is sent from there, or,
     /// in a batch, joins the batch's `calls`.
-    fn handle_value(&mut self, msg: &Value, batch: Option<&mut Vec<ToolCall>>) -> Option<Value> {
+    fn handle_value(&mut self, msg: &Value, calls: Option<&mut Vec<ToolCall>>) -> Option<Value> {
         let Some(obj) = msg.as_object() else {
             return Some(error(&Value::Null, INVALID_REQUEST, "expected a JSON-RPC object"));
         };
@@ -150,7 +153,7 @@ impl Server {
             return Some(match tool_call(&params) {
                 Err((code, message)) => error(&id, code, &message),
                 Ok((name, args)) => {
-                    match batch {
+                    match calls {
                         Some(calls) => calls.push((id, name, args)),
                         None => self.spawn(id, name, args),
                     }
@@ -176,16 +179,23 @@ impl Server {
         }));
     }
 
-    /// Runs a batch's tool calls, each on a thread of its own and cancellable as a single call
-    /// is, then sends their replies with the batch's other `replies`, in one array. A cancelled
-    /// call gets no reply; a batch left without any gets none.
+    /// Runs a batch's tool calls, cancellable as single calls are, at most
+    /// [`BATCH_CONCURRENCY`] at a time (a batch is one message, however many commands it
+    /// starts), then sends their replies with the batch's other `replies`, in one array. A
+    /// cancelled call gets no reply; a batch left without any gets none.
     fn spawn_batch(&mut self, mut replies: Vec<Value>, calls: Vec<ToolCall>) {
         let runs: Vec<_> = calls.into_iter().map(|call| self.start(call)).collect();
         let send = self.send.clone();
         self.workers.retain(|w| !w.is_finished());
         self.workers.push(std::thread::spawn(move || {
-            let calls: Vec<_> = runs.into_iter().map(std::thread::spawn).collect();
-            replies.extend(calls.into_iter().filter_map(|c| c.join().ok().flatten()));
+            let mut runs = runs.into_iter();
+            loop {
+                let wave: Vec<_> = runs.by_ref().take(BATCH_CONCURRENCY).map(std::thread::spawn).collect();
+                if wave.is_empty() {
+                    break;
+                }
+                replies.extend(wave.into_iter().filter_map(|c| c.join().ok().flatten()));
+            }
             if !replies.is_empty() {
                 let _ = send.send(Value::Array(replies).to_string());
             }
@@ -632,6 +642,25 @@ mod tests {
         s.shutdown();
         assert!(started.elapsed() < Duration::from_secs(10));
         assert!(replies.try_recv().is_err());
+    }
+
+    /// A batch of more tool calls than [`BATCH_CONCURRENCY`] runs them a wave at a time: with
+    /// commands that each take a second, twice the bound takes two waves, not one.
+    #[cfg(unix)]
+    #[test]
+    fn a_large_batch_runs_a_bounded_number_of_calls_at_once() {
+        let (send, replies) = std::sync::mpsc::channel();
+        let mut s = Server::new(vec!["sh".into(), "-c".into(), "sleep 1".into()], send);
+        let batch: Vec<Value> = (0..2 * BATCH_CONCURRENCY)
+            .map(|i| json!({"jsonrpc": "2.0", "id": i, "method": "tools/call", "params": {"name": "info", "arguments": {"args": []}}}))
+            .collect();
+        let started = std::time::Instant::now();
+        assert!(handle_on_big_stack(&mut s, &Value::Array(batch).to_string()).is_none());
+        let reply: Value = serde_json::from_str(&replies.recv_timeout(Duration::from_secs(60)).unwrap()).unwrap();
+        let took = started.elapsed();
+        s.shutdown();
+        assert_eq!(reply.as_array().unwrap().len(), 2 * BATCH_CONCURRENCY);
+        assert!(took >= Duration::from_millis(1900), "{took:?}: more than {BATCH_CONCURRENCY} calls ran at once");
     }
 
     /// A batch's replies go back together, its tool calls' with its other requests'.
