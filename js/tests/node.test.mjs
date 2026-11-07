@@ -1280,6 +1280,12 @@ test("translate reads the overview -ovr selects", () => {
     assert.deepEqual([win.width, win.height], [200, 150]);
   }
   assert.throws(() => terrio.translate(opened, { overview: "invalid" }), /overview/i);
+  // Bytes of a format decoded whole are translated at full resolution, as before.
+  const asc = new TextEncoder().encode("ncols 4\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3 4\n5 6 7 8\n");
+  const small = terrio.translate({ bytes: asc, filename: "grid.asc" }, { srcwin: [1, 0, 2, 2] });
+  assert.deepEqual([...small.readBand(1)], [2, 3, 6, 7]);
+  // Bytes that are not a raster are still refused.
+  assert.throws(() => terrio.translate({ bytes: new Uint8Array([73, 73, 42, 0, 0, 0, 0, 0]), filename: "bad.tif" }, {}));
 });
 
 test("resampled reads from overviews, local and remote", async () => {

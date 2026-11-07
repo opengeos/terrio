@@ -494,6 +494,31 @@ pub fn translate(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         assign_ullr: tuple4(a.a_ullr),
     };
     let overview = overview_arg(a.overview)?;
+    // As Python's `translate` and `terrio translate`: bytes the lazy reader cannot read are
+    // decoded whole, as before, and translated at full resolution.
+    if Dataset::lookup(&src).is_none()
+        && let Some((bytes, name)) = file_bytes(&src)
+    {
+        let lazy = match terrio::memory::open_raster_lazy_bytes(bytes.clone(), &name) {
+            Ok(r) => Some(r),
+            Err(e @ terrio::Error::InvalidArgument(_)) => return Err(js_err(e)),
+            Err(e) if e.is_resource_refusal() => return Err(js_err(e)),
+            Err(_) => None,
+        };
+        let out = match lazy {
+            Some(mut r) => terrio::ops::translate::translate_lazy(&mut r, &o, overview),
+            None => {
+                if matches!(
+                    overview,
+                    terrio::ops::overview::OverviewSelection::Level(_) | terrio::ops::overview::OverviewSelection::AutoOffset(_)
+                ) {
+                    return Err(invalid(format!("overview needs a raster read by window; '{name}' is read whole")));
+                }
+                terrio::memory::open_raster_bytes(bytes, &name).and_then(|ds| terrio::ops::translate::translate(&ds, &o))
+            }
+        };
+        return Ok(Dataset::from_raster(out.map_err(js_err)?));
+    }
     let mut src = input_lazy_raster(&src)?;
     Ok(Dataset::from_raster(terrio::ops::translate::translate_lazy(&mut src, &o, overview).map_err(js_err)?))
 }
