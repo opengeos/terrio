@@ -67,16 +67,16 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     // spacing would declare more cells than any file of points could fill. Missing cells are
     // allowed, up to MAX_CELLS_PER_POINT for each point given (and any grid of up to
     // MIN_MAX_CELLS cells), and no more than the memory can hold.
-    let n = cols.zip(rows).and_then(|(c, r)| c.checked_mul(r));
     let most = pts.len().saturating_mul(MAX_CELLS_PER_POINT).max(MIN_MAX_CELLS);
-    let n = n.filter(|n| *n <= most).ok_or_else(|| {
+    let dims = cols.zip(rows).filter(|(c, r)| c.checked_mul(*r).is_some_and(|n| n <= most));
+    let (cols, rows) = dims.ok_or_else(|| {
         Error::InvalidData(format!(
             "{}: {} points spread over a grid of more than {most} cells: not a regular grid",
             path.display(),
             pts.len()
         ))
     })?;
-    let (cols, rows) = (cols.unwrap_or(1), rows.unwrap_or(1));
+    let n = cols * rows;
     fallible::check_usable(n.checked_mul(size_of::<f64>()), || format!("XYZ: a grid of {cols} x {rows} cells"))
         .map_err(|e| Error::InvalidData(format!("{}: {e}", path.display())))?;
     let mut grid = fallible::filled(n, 0.0f64, "an XYZ grid")?;

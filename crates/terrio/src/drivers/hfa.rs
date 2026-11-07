@@ -291,6 +291,8 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
                 if block_len.checked_mul(size).is_none_or(|b| src.len() < b) {
                     return Err(bad("short block"));
                 }
+                // Each visible sample decoded straight into the band: measured faster than a bulk
+                // decode of the block through a Float64 buffer (Byte and Float32 rasters of 64 MB).
                 visible.each(0, block_len, |r, c| {
                     let at = (r * bw + c) * size;
                     put(r, c, sample(&src[at..at + size], data_type));
@@ -402,7 +404,7 @@ mod tests {
         // 4294967295 x 4294967295 pixels in a 2 KB file: their count overflows the size of a
         // buffer of Float64 values.
         let e = read_bytes(&imagine(u32::MAX, u32::MAX, 1, 1, 1, &packed_block(0, &[7]))).unwrap_err();
-        assert!(e.to_string().contains("allocate") || e.to_string().contains("address space"), "{e}");
+        assert_eq!(e.to_string(), "Imagine: a raster of 4294967295 x 4294967295 x 1: more bytes than the address space holds");
         // 4096 x 4096 pixels in single-pixel blocks need 16777216 block entries, not 1: refused,
         // as GDAL 3.13.3 refuses a block index shorter than the raster's blocks.
         let e = read_bytes(&imagine(1 << 12, 1 << 12, 1, 1, 1, &packed_block(0, &[7]))).unwrap_err();
@@ -423,6 +425,18 @@ mod tests {
         // A 2 x 2 raster in 2 x 1 blocks: the blocks of rows 0 and 1 both point to (11, 12).
         let ds = read_bytes(&imagine(2, 2, 2, 1, 2, &packed_block(10, &[1, 2]))).unwrap();
         assert_eq!(ds.raster.data.to_f64_vec(), vec![11.0, 12.0, 11.0, 12.0]);
+    }
+
+    #[test]
+    fn reads_uncompressed_blocks_clipped_to_the_raster() {
+        // A 3 x 3 raster in 2 x 2 blocks, each the uncompressed (1, 2, 3, 4): the right column and
+        // bottom row of blocks are cut to the raster.
+        let mut b = imagine(3, 3, 2, 2, 4, &[1, 2, 3, 4]);
+        for k in 0..4 {
+            b[1022 + 14 * k + 12] = 0;
+        }
+        let ds = read_bytes(&b).unwrap();
+        assert_eq!(ds.raster.data.to_f64_vec(), vec![1.0, 2.0, 1.0, 3.0, 4.0, 3.0, 1.0, 2.0, 1.0]);
     }
 
     #[test]
