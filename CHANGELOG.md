@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Shapefile `skip_features` and `max_features` count live rows: deleted DBF records are passed
+  over and count toward neither bound, while FIDs still number physical slots. pyogrio's
+  `skip_features` (and GDAL's fast seek) can count deleted slots instead, so `terrio.pyogrio`
+  pages a Shapefile with deleted rows differently from pyogrio. Files without deleted rows
+  page the same in both.
 - Python's `Raster.read_resampled`, `read_resampled_masks` and `read_resampled_with_masks`, and
   JavaScript's `readResampled`, `readResampledMasks` and `readResampledWithMasks` (on `Dataset`
   and, as promises, on `openUrl`'s `RemoteDataset`), read a window of some bands into an output

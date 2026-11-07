@@ -119,7 +119,9 @@ fn ranges_preserve_shapes_without_dbf_records() {
         let options = VectorOpenOptions { skip_features: 1, max_features: Some(2), ..Default::default() };
         let data = terrio::open_vector(&path, &options).unwrap();
         let features = &data.layers[0].features;
+        let width = data.layers[0].schema.len();
         assert_eq!(features.iter().map(|f| f.fid).collect::<Vec<_>>(), [1, 2]);
+        assert!(features.iter().all(|f| f.attributes.len() == width));
         assert!(features.iter().all(|f| f.attributes.iter().all(|v| *v == FieldValue::Null)));
     }
 }
