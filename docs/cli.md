@@ -3915,13 +3915,14 @@ both sides, so `rasterize` `tr` and `ts` each name the other.
 Known limits: `requires` is not reported, because clap 4.6 exposes no public
 accessor for it, and a hand-written table would drift from the clap definitions
 (left for a future clap release or dedicated macro tracking).
-Predicate forms such as `requires_if` are not reported either; no command uses
-them today. Relations are descriptive only, and parsing rules do not change.
+Predicate requirements (such as `viewshed`'s `required_if_eq_any`) and conditional
+rules (`requires_if`) are also not reported. Relations are descriptive only, and
+parsing rules do not change.
 
 The [v0.1 JSON Schema](https://github.com/opengeos/terrio/blob/main/schemas/cli-usage-v0.1.schema.json)
 describes the payload. This initial schema is unstable: consumers should check
 `schema_version`. `required` describes unconditional clap requirements; conditional
-requirements, conflicts, mutation/idempotency rules and pipeline-step semantics
+requirements, mutation/idempotency rules and pipeline-step semantics
 are outside this version. Choices list only those registered in clap; additional
 numeric ranges and runtime parser constraints remain enforced by the CLI. The catalog includes accepted hidden options, including `--json-usage` itself and
 `calc` compatibility flags, even when ordinary `--help` omits them.
