@@ -17,7 +17,7 @@ import terrio.rio as trio
 import terrio.rio.shutil  # noqa: F401
 
 rasterio = pytest.importorskip("rasterio")
-import rasterio.shutil  # noqa: E402, F811
+import rasterio.shutil  # noqa: E402, F811 - importorskip assigned rasterio
 from rasterio.enums import Resampling as RR  # noqa: E402
 from rasterio.transform import from_origin  # noqa: E402
 
