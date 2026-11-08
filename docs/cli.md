@@ -3819,6 +3819,9 @@ HTML redirect file's path, so the token stays out of process arguments. On Unix,
 permissions 0600 inside a 0700 temporary directory. Sandboxed browsers, including some Snap
 packages, may be unable to read it; paste the printed address manually if automatic opening
 fails, or use `--no-open`. The same launch behavior applies to `terrio view`.
+The redirect directory is removed on normal cleanup. Ctrl-C or another terminating signal
+can leave a private `terrio-ui-*` directory in the system temporary directory. Its token
+expires when the server stops; you can remove that directory after stopping the server.
 To use it on another computer, forward the
 port (`ssh -L 8080:127.0.0.1:8080 host`, then `terrio ui --port 8080 --no-open` on the host).
 

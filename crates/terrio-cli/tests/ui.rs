@@ -190,5 +190,8 @@ fn browser_launches_use_private_files_for_ui_and_view() {
         assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
         assert_eq!(ui.send("GET", if map { "/map" } else { "/" }, "", "").0, 200);
+        // The child is killed without unwinding, so expire its token before removing its file.
+        drop(ui);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }
