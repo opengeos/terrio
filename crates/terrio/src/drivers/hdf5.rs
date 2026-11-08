@@ -788,20 +788,25 @@ fn read_dataset(
     Ok(out)
 }
 
-/// Checks the whole decoded buffer before asking the HDF5 reader to allocate it.
+/// Checks a whole raw or decoded pixel buffer before asking the HDF5 reader to allocate it.
 fn checked_dataset_bytes(shape: &[usize], element: Option<usize>, name: &str) -> Result<usize> {
     let bytes = element.and_then(|element| shape.iter().try_fold(element, |n, d| n.checked_mul(*d)));
-    fallible::check_usable(bytes, || format!("HDF5 dataset {name}: decoded buffer is too large")).map_err(Error::ResourceLimit)
+    fallible::check_usable(bytes, || format!("HDF5 dataset {name}: pixel buffer is too large")).map_err(Error::ResourceLimit)
 }
 
 /// Limits coexisting pixel buffers; hosts without memory discovery use a 512 MiB budget.
-fn checked_peak_bytes(buffers: &[usize], usable: Option<u64>, name: &str) -> Result<usize> {
+fn checked_peak_bytes(buffers: &[usize], usable: Option<u64>, name: &str) -> Result<()> {
     const FALLBACK_BUDGET: u64 = 512 * 1024 * 1024;
     let most = usable.unwrap_or(FALLBACK_BUDGET);
     let peak = buffers.iter().try_fold(0usize, |sum, bytes| sum.checked_add(*bytes));
     match peak {
-        Some(bytes) if (bytes as u64) <= most => Ok(bytes),
-        _ => Err(Error::ResourceLimit(format!("HDF5 dataset {name}: peak pixel buffers {peak:?} exceed the {most}-byte memory budget"))),
+        Some(bytes) if (bytes as u64) <= most => Ok(()),
+        _ => {
+            let needed = peak.map_or_else(|| "more bytes than the address space holds".to_string(), |bytes| format!("{bytes} bytes"));
+            Err(Error::ResourceLimit(format!(
+                "HDF5 dataset {name}: peak pixel buffers need {needed}, exceeding the {most}-byte memory budget"
+            )))
+        }
     }
 }
 
@@ -1014,11 +1019,15 @@ mod tests {
 
     #[test]
     fn bounds_coexisting_pixel_buffers() {
-        assert_eq!(checked_peak_bytes(&[6, 6, 6], Some(18), "grid").unwrap(), 18);
+        assert!(checked_peak_bytes(&[6, 6, 6], Some(18), "grid").is_ok());
         assert!(matches!(checked_peak_bytes(&[6, 6, 6], Some(17), "grid"), Err(Error::ResourceLimit(_))));
         assert!(matches!(checked_peak_bytes(&[usize::MAX, 1], Some(u64::MAX), "grid"), Err(Error::ResourceLimit(_))));
         assert!(matches!(checked_peak_bytes(&[300 * 1024 * 1024; 2], None, "grid"), Err(Error::ResourceLimit(_))));
-        assert_eq!(checked_peak_bytes(&[1024], None, "grid").unwrap(), 1024);
+        assert!(checked_peak_bytes(&[1024], None, "grid").is_ok());
+        let error = checked_peak_bytes(&[6, 6, 6], Some(17), "grid").unwrap_err().to_string();
+        assert!(error.contains("need 18 bytes"), "{error}");
+        let error = checked_peak_bytes(&[usize::MAX, 1], Some(u64::MAX), "grid").unwrap_err().to_string();
+        assert!(error.contains("more bytes than the address space holds"), "{error}");
     }
 
     #[test]
