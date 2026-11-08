@@ -18,8 +18,8 @@
   of entries), as zarrita does: a later window in the same shard fetches only its inner
   chunks, where it fetched the shard's index again first (256 KB and a round trip for a TESSERA
   shard of 128 x 128 inner chunks).
-- A window of a sharded remote Zarr array fetches nearby inner chunks in requests of at most
-  1 MiB, in parallel, where they took up to 16 MiB each: a connection far from the server delivers
+- A window of a sharded remote Zarr array coalesces nearby inner chunks with a
+  1 MiB target, in parallel (a larger individual chunk is fetched whole), previously 16 MiB: a connection far from the server delivers
   a large range slowly; local stores keep reads of up to 16 MiB. Reading 34.5 MB of the TESSERA
   embeddings from Europe took a median 6.3 s instead of 10.0 s (8 runs each), and the 192 x 192
   window above 5.2 s instead of 6.4 s.
