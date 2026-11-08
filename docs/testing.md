@@ -2528,3 +2528,20 @@ tests cover combined allocations, overflow and the fallback independently of the
 Scalar-text checks require filesystem support. A separate public WASM check used a 1,400-byte
 fill-only file declaring 300 MiB of raw Float64 pixels: its 600 MiB combined raw/decoded
 buffers were refused by the 512 MiB fallback budget, below the wasm32 address-space bound.
+
+## Rasterize background initialization
+
+The `vector-ops` conformance suite includes 21 Natural Earth country comparisons for
+nodata backgrounds, explicit zero initialization, multiple bands, additive burns and NaN,
+with Int16, Float32 and Byte outputs. Run those cases alone with:
+
+```sh
+python scripts/compare_vector_ops_with_gdal.py ../terrio-data --only rasterize-nodata
+```
+
+Pixel values (NaNs equal), validity masks and types are exact; CRSs are equivalent and
+geotransforms agree within 1e-12 source units. GeoTIFF is the GDAL pixel reference for COG
+outputs because `gdal_rasterize` cannot create COGs directly. ENVI cases are labelled
+`GTiff oracle`: GDAL converts the GeoTIFF rasterization to ENVI before comparison.
+This checks Terrio's consistent background policy rather than GDAL's driver-dependent
+ENVI initialization.
