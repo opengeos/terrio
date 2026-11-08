@@ -2520,6 +2520,6 @@ before the fallback budget runs. On 64-bit hosts without memory discovery, the 5
 combined pixel-buffer budget refuses it. A host with a discovered limit permitting the
 fixture checks its declared-size arithmetic without attempting the read. Synthetic budget
 tests cover combined allocations, overflow and the fallback independently of the host's memory.
-Scalar-text checks also run on every host. A separate public WASM check used a 1,400-byte
+Scalar-text checks require filesystem support. A separate public WASM check used a 1,400-byte
 fill-only file declaring 300 MiB of raw Float64 pixels: its 600 MiB combined raw/decoded
 buffers were refused by the 512 MiB fallback budget, below the wasm32 address-space bound.
