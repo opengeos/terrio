@@ -93,6 +93,19 @@ fn call(obj: &JsValue, method: &str, args: &[JsValue]) -> Result<JsValue, JsErro
     f.apply(obj, &a).map_err(js_error)
 }
 
+/// Release an unused response without replacing the original request error.
+async fn cancel_body(response: &JsValue) {
+    let body = get(response, "body");
+    if body.is_null() || body.is_undefined() {
+        return;
+    }
+    if let Ok(value) = call(&body, "cancel", &[])
+        && let Ok(promise) = value.dyn_into::<js_sys::Promise>()
+    {
+        let _ = JsFuture::from(promise).await;
+    }
+}
+
 impl Fetcher {
     /// Starts a request for bytes `first..=last` (all of them with `None`), or a `HEAD` request.
     fn request(&self, range: Option<(u64, u64)>, head: bool) -> Result<js_sys::Promise, JsError> {
@@ -196,39 +209,100 @@ impl Fetcher {
             }
             // Every request settled before any is looked at (see `fetch_batch`).
             let settled = js_sys::Array::from(&JsFuture::from(js_sys::Promise::all_settled(&promises)).await.map_err(js_error)?);
-            for ((key, range), s) in batch.iter().zip(settled.iter()) {
-                if get(&s, "status").as_string().as_deref() != Some("fulfilled") {
-                    return Err(js_error(get(&s, "reason")));
+            let result: Result<(), JsError> = async {
+                for ((key, range), s) in batch.iter().zip(settled.iter()) {
+                    if get(&s, "status").as_string().as_deref() != Some("fulfilled") {
+                        return Err(js_error(get(&s, "reason")));
+                    }
+                    let response = get(&s, "value");
+                    let status = get(&response, "status").as_f64().unwrap_or(0.0) as u16;
+                    if status != 200 && status != 206 {
+                        cancel_body(&response).await;
+                        self.requests.set(self.requests.get() + 1);
+                        if status == 404
+                            || (status == 403
+                                && self.allow_missing_metadata403
+                                && matches!(key.rsplit('/').next(), Some(".zmetadata" | ".zarray" | ".zgroup" | "zarr.json")))
+                        {
+                            objects.insert(key, *range, None);
+                            continue;
+                        }
+                        return Err(JsError::new(&format!("{base}/{key}: HTTP status {status}")));
+                    }
+                    let f = self.any_response(js_sys::Promise::resolve(&response)).await?;
+                    if f.status == 206 && !matches!(*range, ObjectRange::At(_, 0) | ObjectRange::Suffix(0)) {
+                        // Browsers may hide Content-Range under CORS. When exposed, check
+                        // position as well as length; a same-sized wrong range corrupts pixels.
+                        if let Some(header) =
+                            call(&get(&response, "headers"), "get", &["content-range".into()]).ok().and_then(|v| v.as_string())
+                        {
+                            let parsed = (|| {
+                                let (interval, total) = header.strip_prefix("bytes ")?.split_once('/')?;
+                                let (first, last) = interval.split_once('-')?;
+                                let total = if total == "*" { None } else { Some(total.parse::<u64>().ok()?) };
+                                Some((first.parse::<u64>().ok()?, last.parse::<u64>().ok()?, total))
+                            })();
+                            let valid = parsed.is_some_and(|(first, last, total)| {
+                                first <= last
+                                    && total.is_none_or(|total| last < total)
+                                    && last - first + 1 == f.data.len() as u64
+                                    && match *range {
+                                        ObjectRange::At(o, n) => first == o && last.checked_add(1) == o.checked_add(n),
+                                        ObjectRange::Suffix(n) => {
+                                            total.is_none_or(|total| first == total.saturating_sub(n) && last == total - 1)
+                                        }
+                                        ObjectRange::Whole => first == 0 && total.is_none_or(|total| last == total - 1),
+                                    }
+                            });
+                            if !valid {
+                                return Err(JsError::new("object range response has an unexpected Content-Range"));
+                            }
+                        }
+                        if let ObjectRange::Suffix(n) = *range
+                            && f.data.len() as u64 > n
+                        {
+                            return Err(JsError::new("object suffix response exceeds requested length"));
+                        }
+                        if let ObjectRange::At(_, n) = *range
+                            && f.data.len() as u64 != n
+                        {
+                            return Err(JsError::new("object range response has an unexpected length"));
+                        }
+                    }
+                    let data = match (f.status, *range) {
+                        (200 | 206, ObjectRange::At(_, 0) | ObjectRange::Suffix(0)) => Some(Vec::new()),
+                        (200 | 206, ObjectRange::Whole) | (206, _) => Some(f.data),
+                        // A server that ignores `Range` sends the whole object: the part asked.
+                        (200, ObjectRange::At(o, n)) => Some(
+                            f.data
+                                .get(
+                                    usize::try_from(o).map_err(|_| JsError::new("object offset exceeds address space"))?
+                                        ..usize::try_from(o.checked_add(n).ok_or_else(|| JsError::new("object range overflow"))?)
+                                            .map_err(|_| JsError::new("object range exceeds address space"))?,
+                                )
+                                .map(<[u8]>::to_vec)
+                                .ok_or_else(|| JsError::new(&format!("{base}/{key}: bytes {o}+{n} past the end of the object")))?,
+                        ),
+                        (200, ObjectRange::Suffix(n)) => {
+                            Some(f.data[f.data.len().saturating_sub(usize::try_from(n).unwrap_or(usize::MAX))..].to_vec())
+                        }
+                        (status, _) => return Err(JsError::new(&format!("{base}/{key}: HTTP status {status}"))),
+                    };
+                    objects.insert(key, *range, data);
                 }
-                let f = self.any_response(js_sys::Promise::resolve(&get(&s, "value"))).await?;
-                let data = match (f.status, *range) {
-                    (404, _) => None,
-                    (403, _)
-                        if self.allow_missing_metadata403
-                            && matches!(key.rsplit('/').next(), Some(".zmetadata" | ".zarray" | ".zgroup" | "zarr.json")) =>
-                    {
-                        None
-                    }
-                    (200 | 206, ObjectRange::At(_, 0) | ObjectRange::Suffix(0)) => Some(Vec::new()),
-                    (200 | 206, ObjectRange::Whole) | (206, _) => Some(f.data),
-                    // A server that ignores `Range` sends the whole object: the part asked.
-                    (200, ObjectRange::At(o, n)) => Some(
-                        f.data
-                            .get(
-                                usize::try_from(o).map_err(|_| JsError::new("object offset exceeds address space"))?
-                                    ..usize::try_from(o.checked_add(n).ok_or_else(|| JsError::new("object range overflow"))?)
-                                        .map_err(|_| JsError::new("object range exceeds address space"))?,
-                            )
-                            .map(<[u8]>::to_vec)
-                            .ok_or_else(|| JsError::new(&format!("{base}/{key}: bytes {o}+{n} past the end of the object")))?,
-                    ),
-                    (200, ObjectRange::Suffix(n)) => {
-                        Some(f.data[f.data.len().saturating_sub(usize::try_from(n).unwrap_or(usize::MAX))..].to_vec())
-                    }
-                    (status, _) => return Err(JsError::new(&format!("{base}/{key}: HTTP status {status}"))),
-                };
-                objects.insert(key, *range, data);
+                Ok(())
             }
+            .await;
+            if result.is_err() {
+                // Settling fetch promises does not consume their bodies. Release every
+                // remaining response when one member of the batch fails.
+                for s in settled.iter() {
+                    if get(&s, "status").as_string().as_deref() == Some("fulfilled") {
+                        cancel_body(&get(&s, "value")).await;
+                    }
+                }
+            }
+            result?;
         }
         Ok(())
     }

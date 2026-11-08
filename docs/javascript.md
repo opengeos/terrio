@@ -57,15 +57,18 @@ whole. `openOapif(url, options)` reads OGC API Features services over `fetch`.
 HTTP 403 fails by default. For anonymous stores returning 403 for absent metadata, explicitly
 set `allowMissingMetadata403: true`; this accepts ambiguous version/existence probes. Denied
 v2 `.zattrs` documents, chunks and shards always fail. A `zarr.json` 403 remains an
-ambiguous absent-version probe, including its embedded v3 attributes.
+ambiguous absent-version probe, including its embedded v3 attributes. This strict default
+is specific to the JavaScript fetch backend; native anonymous S3 reads retain their existing
+missing-object 403 policy.
 
 A remote Zarr store (v2 or v3, sharded or not) opens with `openUrl` too: the store or group at
 the URL (`.zarr`, or `format: "Zarr"`) and the array `array` within it, read as a raster by
 window. Opening fetches its metadata documents, and a window the shard indexes and chunks it
 needs, nearby inner chunks coalesced with a 1 MiB target (a single larger chunk is fetched
 whole), the indexes kept for later windows. A year of the TESSERA embeddings (128 bands of a
-192 x 192 window, 5 MB) reads in about 4 seconds in Chrome from Europe, where the TESSERA Zarr Explorer, which reads it with zarrita,
-takes about 9 seconds:
+192 x 192 window, 5 MB) reads in about 4 seconds after opening in Chrome from Europe.
+Opening plus reading takes about 5–6 seconds in that measurement. The TESSERA Zarr Explorer,
+which reads it with zarrita, takes about 9 seconds for the window:
 
 ```js
 const store = "https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/tessera/tessera/zarr/v1.1-dclimate/utm30";

@@ -1491,24 +1491,67 @@ test("remote Zarr stores are read by window", { skip: needs("zarr") }, async () 
     const v = await z.readBand(1, [40, 12, 2, 2]);
     assert.equal(v[3], value(13, 41));
     assert.equal(z.stats().requests - opened, 5);
-    const fragment = await terrio.openUrl(server.url + "s.zarr?token=test#view", { array: "a" });
+    const fragment = await terrio.openUrl(server.url + "s.zarr?token=test#view", { array: "a", fetch: (url, options) => {
+      assert.equal(new URL(url).searchParams.get("token"), "test");
+      assert.equal(new URL(url).hash, "");
+      return fetch(url, options);
+    } });
     assert.equal((await fragment.readBand(1, [28, 10, 1, 1]))[0], value(10, 28));
     cpSync(join(dir, "s.zarr/a"), join(dir, "s.zarr/a#?"), { recursive: true });
     const encoded = await terrio.openUrl(server.url + "s.zarr", { array: "a#?" });
     assert.equal((await encoded.readBand(1, [28, 10, 1, 1]))[0], value(10, 28));
     // A denied shard must not be mistaken for an absent shard and replaced by fill values.
     const denied = await terrio.openUrl(server.url + "s.zarr", {
-      array: "a", headers: { Authorization: "Bearer test" },
+      array: "a", headers: { Authorization: "Bearer test" }, allowMissingMetadata403: true,
       fetch: (url, options) => url.includes("/c/") ? Promise.resolve(new Response("", { status: 403 })) : fetch(url, options),
     });
     await assert.rejects(denied.readBand(1, [0, 0, 1, 1]), /403/);
+    // Rejected batches release every response without buffering an error body.
+    let cancelled = 0;
+    let shardRequests = 0;
+    const failedBatch = await terrio.openUrl(server.url + "s.zarr", {
+      array: "a",
+      fetch: (url, options) => {
+        if (!url.includes("/c/")) return fetch(url, options);
+        const body = new ReadableStream({ cancel() { cancelled++; } });
+        return Promise.resolve(new Response(body, { status: shardRequests++ === 0 ? 403 : 206 }));
+      },
+    });
+    await assert.rejects(failedBatch.readBand(1, [0, 0, 64, 64]), /403/);
+    assert.equal(shardRequests, 4);
+    assert.equal(cancelled, shardRequests);
+    const shortRange = await terrio.openUrl(server.url + "s.zarr", {
+      array: "a", fetch: (url, options) => url.includes("/c/")
+        ? Promise.resolve(new Response(new Uint8Array(1), { status: 206 })) : fetch(url, options),
+    });
+    await assert.rejects(shortRange.readBand(1, [1, 1, 1, 1]), /range response|index|shard/i);
+    const unknownTotal = await terrio.openUrl(server.url + "s.zarr", {
+      array: "a", fetch: async (url, options) => {
+        const response = await fetch(url, options);
+        if (!url.includes("/c/")) return response;
+        const headers = new Headers(response.headers);
+        headers.set("Content-Range", headers.get("Content-Range").replace(/\/\d+$/, "/*"));
+        return new Response(response.body, { status: 206, headers });
+      },
+    });
+    assert.equal((await unknownTotal.readBand(1, [1, 1, 1, 1]))[0], 101);
+    const misplacedRange = await terrio.openUrl(server.url + "s.zarr", {
+      array: "a", fetch: async (url, options) => {
+        const response = await fetch(url, options);
+        if (!url.includes("/c/")) return response;
+        const headers = new Headers(response.headers);
+        headers.set("Content-Range", "bytes 0-259/2308");
+        return new Response(response.body, { status: 206, headers });
+      },
+    });
+    await assert.rejects(misplacedRange.readBand(1, [1, 1, 1, 1]), /Content-Range/);
     const forbiddenMetadata = (url, options) => url.endsWith("/.zmetadata")
       ? Promise.resolve(new Response("", { status: 403 })) : fetch(url, options);
     await assert.rejects(terrio.openUrl(server.url + "s.zarr", { array: "a", fetch: forbiddenMetadata }), /403/);
     const anonymous = await terrio.openUrl(server.url + "s.zarr", {
       array: "a", fetch: forbiddenMetadata, allowMissingMetadata403: true,
     });
-    assert.equal((await anonymous.readBand(1, [0, 0, 1, 1]))[0], 0);
+    assert.equal((await anonymous.readBand(1, [1, 1, 1, 1]))[0], 101);
     mkdirSync(join(dir, "v2.zarr"));
     writeFileSync(join(dir, "v2.zarr/.zarray"), JSON.stringify({
       zarr_format: 2, shape: [2, 2], chunks: [2, 2], dtype: "<u2", compressor: null,

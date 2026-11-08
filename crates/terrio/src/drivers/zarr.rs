@@ -2750,7 +2750,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parallel_coordinates_keep_the_callers_chunk_policy_for_absent_chunks() {        let dir = tempfile::tempdir().unwrap();
+    fn parallel_coordinates_keep_the_callers_chunk_policy_for_absent_chunks() {
+        let dir = tempfile::tempdir().unwrap();
         let main = dir.path().join("a");
         let coordinate = dir.path().join("coordinate");
         for (path, shape, chunks) in [(&main, vec![2, 2, 1, 1], vec![2, 2, 1, 1]), (&coordinate, vec![2], vec![MAX_CHUNK_BYTES / 8 + 1])] {

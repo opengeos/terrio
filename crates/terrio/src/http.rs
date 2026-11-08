@@ -1264,7 +1264,8 @@ impl ObjectFetcher {
             let key = "TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS";
             options.insert(key.into(), crate::config::get(key));
         }
-        crate::config::with_thread_options(options, || self.get_with_options(remote, range))    }
+        crate::config::with_thread_options(options, || self.get_with_options(remote, range))
+    }
 
     fn get_with_options(&self, remote: &Remote, range: ByteRange) -> Result<Option<Vec<u8>>> {
         // A region already learned is the client's from the start (its URL is the regional one).
@@ -2564,7 +2565,8 @@ mod tests {
             }
             let output = command.output().unwrap();
             assert!(output.status.success());
-            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));            return;
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
         }
         let (url, seen) = serve_recording_by(
             |headers| {
