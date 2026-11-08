@@ -198,6 +198,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Catalog changes bump the version relative to the protected base
+        if: github.event_name == 'pull_request'
+        env:
+          CLI_CATALOG_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$CLI_CATALOG_BASE_SHA"
+          python3 -m unittest discover -s scripts/tests -p test_cli_catalog_version.py
+          python3 scripts/check_cli_catalog_version.py --base "$CLI_CATALOG_BASE_SHA"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Documentation builds without warnings (missing docs included)
@@ -261,6 +269,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
+      - name: Install checksum-pinned wasm-opt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/install_binaryen_ci.sh
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -412,7 +424,7 @@ jobs:
         with:
           name: wheel-ubuntu-latest
           path: dist
-      # This wheel bundles the GDAL reference; changing the version above does not change the wheel.
+      # This wheel bundles its own GDAL; changing GDAL_REFERENCE_VERSION does not change it.
       - name: Install the wheel and reference implementations
         run: python -m pip install pytest rasterio==1.5.2 rio-cogeo==7.0.4 dist/*.whl
       - name: Compare external overviews with the reference

@@ -253,8 +253,9 @@ jobs:
             --disallowedTools "Bash,Read(//proc/**),Read(//sys/**),Read(/${{ runner.temp }}/**),Read(~/.claude/**),Read(.git/config),Edit(/${{ runner.temp }}/**),Edit(.git/**),Edit(.github/**),Edit(~/.claude/**),Edit(~/.gitconfig),Edit(~/.config/git/**)"
             --allowedTools "Read(./**),Grep,Glob,Edit(./**),Write(./**)"
 
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master; toolchain set by input
         with:
+          toolchain: stable
           components: rustfmt
 
       - name: Commit and bundle

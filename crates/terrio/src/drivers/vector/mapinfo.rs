@@ -270,8 +270,10 @@ fn statement(t: &mut Tokens) -> Option<Option<Geometry>> {
         "pline" => {
             if t.peek().is_some_and(|w| w.eq_ignore_ascii_case("multiple")) {
                 t.next();
+                // Not preallocated from the count: each part reads its own tokens, so a count
+                // larger than the file stops at the end of the tokens instead of allocating it.
                 let n = t.count()?;
-                let mut parts = Vec::with_capacity(n);
+                let mut parts = Vec::new();
                 for _ in 0..n {
                     let c = t.count()?;
                     parts.push(t.coords(c)?);
@@ -283,8 +285,9 @@ fn statement(t: &mut Tokens) -> Option<Option<Geometry>> {
             }
         }
         "region" => {
+            // As for `Pline Multiple`: the count is not trusted for an allocation.
             let n = t.count()?;
-            let mut rings = Vec::with_capacity(n);
+            let mut rings = Vec::new();
             for _ in 0..n {
                 let c = t.count()?;
                 rings.push(t.coords(c)?);
@@ -700,5 +703,16 @@ mod tests {
         let l = parse(mif.as_bytes(), Some(mid.as_bytes()), "t").unwrap();
         assert_eq!(l.features[0].attributes[0], FieldValue::Text("2020年1".into()));
         assert_eq!(l.features[0].attributes[1], FieldValue::Text("20200102年年千".into()));
+    }
+
+    /// A `Region` or `Pline Multiple` count far beyond the file's tokens is an error, not an
+    /// allocation of that many parts (20 billion rings would need 480 GB). `usize::MAX` parses
+    /// on every target, so the count reaches the allocation on 32-bit builds too.
+    #[test]
+    fn part_counts_beyond_the_file_are_errors() {
+        for statement in [format!("Region {}", usize::MAX), format!("Pline Multiple {}", usize::MAX)] {
+            let mif = format!("Version 300\nCharset \"UTF-8\"\nColumns 1\n  N Integer\nData\n\n{statement}\n1\n0 0\n");
+            assert!(parse(mif.as_bytes(), None, "t").is_err(), "{statement}");
+        }
     }
 }

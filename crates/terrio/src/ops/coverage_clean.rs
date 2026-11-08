@@ -652,8 +652,10 @@ fn radius_within(poly: &P, radius: f64) -> bool {
     };
     let mut heap = BinaryHeap::from([cell(env.center(), env.width().max(env.height()) / 2.)]);
     let mut best = poly.interior_point().map_or(0., |p| distance(p.0));
-    let tolerance = radius * 0.0001;
-    let factor = (env.width().hypot(env.height()) / tolerance).ln().max(1.) as usize;
+    let tolerance = (radius * 0.0001).max(f64::MIN_POSITIVE);
+    // Extreme extent/tolerance ratios can overflow to infinity. Bound work (2,002,000
+    // cells at most) and keep the iteration-count arithmetic from overflowing.
+    let factor = (env.width().hypot(env.height()) / tolerance).ln().clamp(1., 1000.) as usize;
     for _ in 0..2000 + 2000 * factor {
         let Some(c) = heap.pop() else { break };
         best = best.max(c.d);
@@ -790,6 +792,13 @@ mod tests {
             assert!(super::super::coverage::check_coverage(&out, &Default::default()).unwrap().is_empty());
         }
     }
+    #[test]
+    fn tiny_positive_gap_radius_does_not_overflow_iteration_budget() {
+        // Five vertices bypass the exact triangle/quadrilateral shortcuts.
+        let poly = geo::Polygon::new(geo::LineString::from(vec![(0., 0.), (10., 0.), (10., 10.), (5., 11.), (0., 10.), (0., 0.)]), vec![]);
+        assert!(!radius_within(&poly, f64::MIN_POSITIVE));
+    }
+
     #[test]
     fn snapping_nodes_and_partial_shared_edge() {
         let l = layer(vec![rectangle(0., 0., 2., 4.), rectangle(2.001, 1., 2., 2.)]);

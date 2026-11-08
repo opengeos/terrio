@@ -216,9 +216,7 @@ impl Checker {
             }
         }
         if !pending.is_empty() {
-            let encoding = u32::from_be_bytes(
-                bytes.get(56..60).and_then(|v| v.try_into().ok()).ok_or_else(|| Error::InvalidData("truncated SQLite header".into()))?,
-            );
+            let encoding = crate::drivers::sqlite::header_text_encoding(bytes)?;
             let mut found = BTreeSet::new();
             sqlite_repack::inspect(bytes, |entry, rowid, record| {
                 let Some(ids) = wanted.get(&entry.1) else { return Ok(()) };

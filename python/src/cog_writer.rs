@@ -109,7 +109,7 @@ impl PyCogWriter {
         let mut header = RasterDataset::new(raster, nodata.is_some());
         header.set_geo_transform(transform);
         let mut o = write_options(Some("COG"), compress, None, bigtiff)?;
-        o.creation_options = options.unwrap_or_default().into_iter().collect();
+        o.creation_options = crate::raster::validated_creation_options(options)?;
         o.band_metadata = band_metadata.unwrap_or_default().iter().map(parse_band_metadata).collect::<PyResult<_>>()?;
         o.color_table = colormap.unwrap_or_default();
         o.gcps = parse_gcps(gcps);

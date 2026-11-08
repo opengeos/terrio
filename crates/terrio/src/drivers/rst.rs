@@ -66,12 +66,12 @@ pub(crate) const LOCAL_METRES: &str = r#"LOCAL_CS["Unknown",UNIT["metre",1],AXIS
 fn crs_from_ref(name: &str, path: &Path) -> Option<CrsInfo> {
     let n = name.to_ascii_lowercase();
     if n == "latlong" {
-        return Some(CrsInfo::from_epsg(4326));
+        return Some(crate::crs::epsg_crs_info(4326));
     }
     if let Some(z) = n.strip_prefix("utm-") {
         let (zone, hemi) = z.split_at(z.len().checked_sub(1)?);
         let zone: u32 = zone.parse().ok()?;
-        return Some(CrsInfo::from_epsg(if hemi == "s" { 32700 } else { 32600 } + zone));
+        return Some(crate::crs::epsg_crs_info(if hemi == "s" { 32700 } else { 32600 } + zone));
     }
     if n.is_empty() || n == "plane" {
         return None;
@@ -93,7 +93,7 @@ fn crs_from_ref(name: &str, path: &Path) -> Option<CrsInfo> {
         "wgs_1984" | "wgs84" => 4326,
         _ => return None,
     };
-    Some(CrsInfo::from_epsg(code))
+    Some(crate::crs::epsg_crs_info(code))
 }
 
 /// Writes an Idrisi raster: `.rst` and `.rdc`. Byte, Int16 and Float32 are stored as they are;

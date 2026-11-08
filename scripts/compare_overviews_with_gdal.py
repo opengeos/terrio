@@ -50,13 +50,13 @@ def cases(data, tmp):
     ds = None
     sources.append(("USGS", cropped))
     for label, path in sources:
-        for choice in ["AUTO", "AUTO-1", "AUTO-2", "NONE", "0", "1", "2", "8"]:
+        for choice in ["AUTO", "AUTO-0", "AUTO-1", "AUTO-2", "NONE", "0", "1", "2", "8"]:
             for width, height in [(48, 40), (97, 81), (48, 160)]:
                 for resampling in ["near", "bilinear", "average"]:
                     yield (f"overview {label} {choice} {width}x{height} {resampling}", [path], {
                         "width": width, "height": height, "resampleAlg": resampling, "overviewLevel": choice,
                     }, ["--ts", str(width), str(height), "-r", resampling, "--overview", choice])
-        for choice in ["AUTO", "AUTO-1", "NONE", "1"]:
+        for choice in ["AUTO", "AUTO-0", "AUTO-1", "NONE", "1"]:
             # Several sources go through the whole-selected-level compositing path.
             yield (f"overview {label} mosaic {choice}", [path, path], {
                 "width": 48, "height": 40, "resampleAlg": "near", "overviewLevel": choice,
@@ -71,7 +71,7 @@ def cases(data, tmp):
                 for x, y in [(0, 0), (512, 0), (0, 512), (512, 512), (256, 256), (128, 384)]], crs.ExportToWkt())
     ds.BuildOverviews("AVERAGE", [2, 4, 8])
     ds = None
-    for choice in ["AUTO", "AUTO-1", "NONE", "0", "1", "2"]:
+    for choice in ["AUTO", "AUTO-0", "AUTO-1", "NONE", "0", "1", "2"]:
         yield (f"overview GCP USGS {choice}", [gcp_path], {
             "width": 128, "height": 128, "resampleAlg": "near", "overviewLevel": choice,
             "polynomialOrder": 1, "outputBounds": [1000, 464, 2024, 2000],

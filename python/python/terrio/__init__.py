@@ -102,6 +102,7 @@ from terrio._terrio import (
     lineref_create,
     lineref_position,
     lineref_subline,
+    list_crs,
     list_layers,
     make_point,
     make_valid,
@@ -190,6 +191,7 @@ from terrio._terrio import (
 )
 from terrio.errors import (
     CRSError,
+    InternalError,
     InvalidArgumentError,
     InvalidDataError,
     NotFoundError,
@@ -214,6 +216,7 @@ __all__ = [
     "DatasetIndex",
     "FeatureStream",
     "GeoTiffWriter",
+    "InternalError",
     "InvalidArgumentError",
     "InvalidDataError",
     "Layer",
@@ -336,6 +339,7 @@ __all__ = [
     "transform_points",
     "set_grid_search_paths",
     "set_network_enabled",
+    "list_crs",
     "translate",
     "vector_grid",
     "lineref_create",

@@ -113,6 +113,22 @@ pub fn open_raster_lazy_bytes(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> 
     open_raster_bytes(bytes, name).map(LazyRaster::from)
 }
 
+/// Backwards-compatible name for the input opened by the shared translate policy.
+pub use crate::ops::translate::OpenedRaster as OpenedRasterBytes;
+
+/// [`open_raster_lazy_bytes`], falling back to [`open_raster_bytes`] for a TIFF the lazy reader
+/// refuses (as `terrio translate` falls back to reading a file whole), without copying the bytes:
+/// the lazy reader shares them, and they are taken back from it when it fails. Invalid arguments
+/// and resource refusals of the lazy reader are kept, as are the errors of other formats, which
+/// the whole decode would read with the same decoder.
+///
+/// # Errors
+///
+/// As [`open_raster_lazy_bytes`], or as [`open_raster_bytes`] after a fallback.
+pub fn open_raster_lazy_bytes_or_whole(bytes: Vec<u8>, name: &str) -> Result<OpenedRasterBytes> {
+    crate::ops::translate::open_bytes(bytes, name, crate::ops::overview::OverviewSelection::Auto)
+}
+
 /// Opens a Zarr store (or GeoZarr) from its files: `(path, bytes)` pairs, paths relative to the
 /// store's directory or its parent (`.zgroup`, `dem/.zarray`, `dem/0.0`...), as a key-value store
 /// holds them.
@@ -1306,6 +1322,20 @@ mod tests {
             let err = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).sum::<f64>() / a.len() as f64;
             assert!(err < 3.0, "JPEG {bands} bands: mean error {err}");
         }
+    }
+
+    #[test]
+    fn tiff_bytes_open_lazily_or_whole() {
+        let ds = raster(2, DataType::I32);
+        let bytes = write_raster_bytes(&ds, "a.tif", &Default::default()).unwrap();
+        let Ok(OpenedRasterBytes::Lazy(mut r)) = open_raster_lazy_bytes_or_whole(bytes, "a.tif") else { panic!() };
+        assert_eq!(r.read().unwrap().raster.data.to_f64_vec(), ds.raster.data.to_f64_vec());
+        // Bytes neither reader reads are refused; other formats open as the lazy opener opens them.
+        let mut broken = b"II*\0".to_vec();
+        broken.extend([0xff; 60]);
+        assert!(open_raster_lazy_bytes_or_whole(broken, "b.tif").is_err());
+        let asc = b"ncols 2\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n".to_vec();
+        assert!(matches!(open_raster_lazy_bytes_or_whole(asc, "c.asc"), Ok(OpenedRasterBytes::Lazy(_))));
     }
 
     #[test]

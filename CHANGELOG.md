@@ -20,6 +20,147 @@
   parallel, where they took up to 16 MiB each: a connection far from the server delivers a large
   range slowly. Reading 34.5 MB of the TESSERA embeddings from Europe took a median 6.3 s instead
   of 10.0 s (8 runs each), and the 192 x 192 window above 5.2 s instead of 6.4 s.
+- Python raster creation-option mappings reject conflicting names that differ only by case,
+  including `Raster.write`, grouped netCDF output and streaming GeoTIFF/COG writers.
+
+- A `WarpedVRT` read holds each source window it warps once: the warp reads the window where it
+  is, with the GIL held, instead of copying it first (`RegionWarp::warp` takes the bands borrowed,
+  a `RasterDataRef`, which a `&RasterData` converts to). The copy doubled what a read held: a
+  256 x 256 `nearest` tile of a 16384 x 16384 UInt16 raster without overviews, whose blocks each
+  warp half the raster, peaked at 702 MiB and now peaks at 456 MiB (2,237 and 1,469 MiB read as
+  Float64, whose conversion still holds the window in both types). The pixels are the same. The
+  window a read warps from is read-only; arrays given to the private `RegionWarp.warp` binding
+  are read in place when C-contiguous and read-only, and copied first otherwise.
+
+- HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
+  refusing buffers beyond the address space or known usable-memory limit with a terminal resource
+  error. Coexisting pixel buffers are checked together; hosts without memory discovery use a
+  512 MiB combined pixel-buffer budget. This intentionally refuses previously readable
+  datasets exceeding that budget on macOS, Windows and WASM; the refusal remains terminal
+  even with GDAL enabled, so a fallback cannot bypass the allocation limit. HDF-EOS5 structure text is limited to 16 MiB before
+  decoding, including fill-only files.
+  This metadata cap applies to every HDF5 open, even when selecting an unrelated subdataset.
+
+- Python and JavaScript `translate` read paths, lazy rasters and byte inputs by window and take an
+  `overview` option (`AUTO` by default, `AUTO-n`, `NONE` or a level), as `terrio translate` and
+  `gdal_translate -ovr` do. Resized outputs of rasters with overviews can therefore change: they
+  are read from the overview GDAL picks for the output size, not full resolution; pass
+  `overview="NONE"` for the previous result. Python `rasterize` and `vector_grid` take
+  `tile_size` and `bigtiff`.
+
+- `translate --overview AUTO-n` without `--outsize` or `--tr` keeps the full-resolution
+  output size while reading the selected overview, as `gdal_translate` does. A 400 x 300
+  source window now stays 400 x 300 instead of shrinking to the overview's resolution.
+  `AUTO-0` is now equivalent to `AUTO` across all resampled reads, including Python and
+  JavaScript readers, VRTs and translate, and permits the same whole-read fallbacks.
+
+- `warp -r sum` without `--te` rounds the suggested output extent's size up, as gdalwarp does
+  for a sum (`GDAL_SWO_ROUND_UP_SIZE`), so that the output covers the whole source. Without
+  `--ts` or `--tr` this sets the output size; with `--ts` alone, the pixel size spans the
+  rounded-up extent; with `--tr` alone, the extent the resolution divides. Rounded to the
+  nearest, a 41 x 37 UTM raster reprojected to EPSG:4326 lost its last row and 0.4 % of its
+  total. Sizes and geotransforms match GDAL 3.13.3 in all three cases; per-pixel values of a
+  reprojected sum still differ from GDAL's.
+
+- `ui` and `view` open the browser through a private HTML redirect file, keeping the session
+  token out of process arguments. If a sandboxed browser cannot read the file, paste the
+  printed address manually or use `--no-open`.
+
+- Bilinear, cubic, cubic spline and Lanczos reads of VRT and mosaic sources with nodata
+  average each source row over its valid pixels, then the rows over the valid ones, as GDAL's
+  `RasterIOResampled` does, rather than all valid weights at once. For 8- and 16-bit and
+  Float32 sources, with or without nodata, these reads also round the result to `float`, GDAL's
+  work type. Next to a nodata pixel, a bilinear value could differ from GDAL's by 20. Reads of
+  GDAL-built VRTs now agree with GDAL 3.13.3 on the conformance DEM within an absolute 1e-5
+  (the registered tolerance; the runs were exact). Known differences remain: a valid 8-bit
+  cubic or Lanczos result clamped onto the nodata value is not moved off it as GDAL does, and a
+  cubic or Lanczos mosaic written directly to a file at 2.8x upsampling differs from GDAL's VRT
+  read next to some isolated nodata pixels (under 0.1 % of them).
+
+- Rasterize initializes uncovered pixels to the specified nodata value unless explicit
+  initialization values are given. This follows GDAL's GeoTIFF behavior for all Terrio
+  output formats and in-memory rasters, so uncovered pixels remain invalid by default.
+  This changes existing `--add --a-nodata` calls that omitted `--init`. Integer nodata values
+  must be representable in the output type; finite Float32 nodata must be within its range.
+  Additive burns start
+  from the background (nodata -1 plus burn 7 yields 6); use explicit zero initialization
+  to accumulate from zero.
+  The CLI catalog is now version 0.1.2 to describe this initialization default accurately.
+
+- The `--json-usage` catalog (`schema_version` 0.1.1) records whether each argument is
+  `repeatable` (clap Append/Count) and lists its `conflicts_with` arguments in both directions,
+  including members of exclusive argument groups. A CI step requires a newer `schema_version`
+  whenever the catalog digest changes relative to the pull request's base.
+
+- Python raster operations accept format-specific `options` dictionaries when writing a
+  destination, as `Raster.write` and CLI `--co` do. Creation options also reach streamed
+  terrain/warp/pansharpen outputs, mask-writing paths, palette operations and `create_raster`.
+  In `calc`, `options` is now the output-options keyword; rename any raster input called `options`.
+  Virtual VRT outputs reject creation-option mappings in warp, mosaic, color-relief and
+  pansharpen; direct XML outputs no longer silently discard them.
+
+- Calc disambiguates `-f` between the output format and a referenced `f` input, and preserves
+  literal arguments and fixed-arity option values. Translate handles zero- or two-value
+  `--scale` options before input/output paths without consuming the paths as scale values.
+
+- Translate's lazy-open and whole-read fallback policy now lives in the Rust core and is shared
+  by the CLI, Python path inputs and JavaScript byte inputs. Terminal opening errors and
+  overview refusals remain consistent; lazy destinations retain streaming writes.
+  Overview refusal diagnostics now use shared wording and quote the input name across the
+  CLI and bindings; callers should not match the previous surface-specific message text.
+  Whole-read fallback for bytes remains TIFF-only: GDAL-only non-TIFF files may translate
+  by path but fail from bytes.
+
+- `rio stack --co KEY=VALUE` now applies creation options to the output instead of silently
+  discarding them.
+
+- Remote STAC, STACIT and STACTA documents require
+  `TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES` to select assets using configured cloud credentials
+  or cross-origin custom HTTP headers. Checks include declared assets during metadata reads and
+  concrete deferred tile opens, nested native sources and cached readers after settings change.
+  Export and overview reads enforce the same policy, including parallel tile workers. Asset
+  checks use the final response origin after redirects. Actual clients check resolved credentials
+  before requests; cached parts retain consistent provenance. Layer listing rejects raster pointers
+  from metadata, without reading their pixels or traversing catalog children.
+  Native public unsigned cloud reads remain supported, including S3 with
+  `AWS_NO_SIGN_REQUEST=YES`. GDAL asset reads selected by remote documents always require the
+  opt-in because GDAL can follow nested sources and use additional credentials. Named STAC,
+  STACIT and STACTA documents, local or remote, are not retried through GDAL after any native error.
+  STACTA also preserves invalid-argument and resource refusals instead of treating them as
+  missing tiles or metadata-only container fallbacks, including for local items. Remote STAC
+  errors that could otherwise trigger pointer fallback become `InvalidArgument` with the redacted
+  native cause. Malformed remote JSON containing a STAC marker is conservatively terminal.
+
+- Public `build_vrt` and same-CRS mosaic entry points reject unselected mixed band counts and
+  target extents intersecting no source. These strict checks deliberately differ from GDAL
+  `gdalbuildvrt`; calc retains zero/nodata-filled alignment outside its input extents.
+
+- Datum-grid hierarchy uses the first duplicate parent name and nests unparented subgrids under
+  the first containing extent. Existing ambiguous grid files can select a different datum-shift
+  grid. Lazy TIFF reads require malformed IFD chains to be repaired or rewritten before opening.
+
+- `terrio.rio.coords.disjoint_bounds` rejects opposite nondegenerate orientations in either
+  argument order; zero-height bounds remain boundary lines. Calc window alignment retains
+  blank nodata/zero-filled inputs outside the window rather than rejecting the calculation.
+
+- JavaScript `listUrl` rejects invalid `depth` values, including strings and `Infinity`;
+  omit `depth` or pass `null` for unlimited traversal. Native lazy TIFF opens now reject unreadable or
+  malformed directory/tag tables discovered during mask scanning, including files without masks,
+  instead of silently treating them as maskless.
+  Only tags relevant to image layout and masks are decoded; unrelated private tags are skipped.
+
+- Whole-file Shapefile reads, streaming reads and conversions omit deleted DBF records,
+  preserving the physical feature IDs of live records.
+
+- Shapefile `skip_features` and `max_features` count live rows: deleted DBF records are passed
+  over and count toward neither bound, while FIDs still number physical slots. pyogrio's
+  `skip_features` (and GDAL's fast seek) can count deleted slots instead, so `terrio.pyogrio`
+  pages a Shapefile with deleted rows differently from pyogrio. Files without deleted rows
+  page the same in both.
+
+- Native FlatGeobuf readers reject incomplete records, mismatched nonzero feature counts and
+  invalid coordinate dimensions/part bounds. GDAL-enabled eager reads retain GDAL fallback
+  admission behavior; native range and stream checks apply in either build.
 
 - Python's `Raster.read_resampled`, `read_resampled_masks` and `read_resampled_with_masks`, and
   JavaScript's `readResampled`, `readResampledMasks` and `readResampledWithMasks` (on `Dataset`
@@ -33,9 +174,22 @@
   paletted and complex bands, datasets opened with `overview_level` and written datasets keep
   their own path), and resamples a per-dataset mask from the mask's own overviews (#429).
 - Changed default: resampled reads (`LazyRaster::read_resampled`, `terrio translate --outsize`
-  and `--tr`) sum the NaN values of masked floating-point chunks, as GDAL 3.12 does, so an output
-  pixel whose footprint holds one is NaN. In 0.7.0 they always skipped them, as GDAL 3.13 does.
-  `TERRIO_GDAL_COMPAT=3.13` restores that, as for the other `RasterIO` kernels.
+  and `--tr`) with the convolution kernels (bilinear, cubic, cubic spline and Lanczos) sum the NaN
+  values of masked floating-point chunks, as GDAL 3.12 does, so an output pixel whose footprint
+  holds one is NaN. Average, RMS, Gaussian, mode and nearest reads are unaffected. In 0.7.0
+  the convolution kernels always skipped them, as GDAL 3.13 does. `TERRIO_GDAL_COMPAT=3.13` restores that, as for
+  the other `RasterIO` kernels.
+- The registry CRSs terrio resolves can be listed, for searchable CRS pickers, without GDAL,
+  network access or a PROJ installation (#613): `terrio::crs::list_crs` (`terrio_crs::list_crs`),
+  `terrio.list_crs` in Python, `listCrs` in JavaScript and `terrio list-crs` (also an MCP tool),
+  printing as `projinfo --list-crs` does. Each entry has its authority and code, name, kind,
+  deprecation, area of use and its bounding box, projection method and celestial body, as GDAL's
+  `OSRGetCRSInfoListFromDatabase` gives them; queries filter by authority, kind, deprecation and
+  words of the name or code (`Albers` and `3577` both find EPSG:3577). The list holds 7,681 EPSG
+  CRSs (EPSG v12.029, `terrio::crs::EPSG_VERSION`), 2,519 ESRI CRSs and 2,201 IAU_2015 CRSs from
+  PROJ 9.8.1's database (`scripts/gen_crs_catalog.py`, 160 KB compressed), each one a code
+  `SpatialRef::parse` resolves; the conformance suite `crs-list` finds every entry identical to
+  GDAL 3.13.2's.
 - A netCDF snapshot (`terrio mdconvert`, `Dataset.write`) writes a netCDF-4 compound attribute
   as a compound, as GDAL 3.13.3's `gdalmdimtranslate -of netCDF` does (#565): `station_t
   z:station = {7, 12.5}` stays `station_t z:station = {7, 12.5}` where it became the text
@@ -57,6 +211,13 @@
   opened from memory and to the `TERRIO_WBVECTOR_FALLBACK` KMZ read. A style document that breaks
   these limits now refuses the whole archive; a style document that cannot be read, or that takes
   the style budget past its size, still leaves its links as URLs.
+- A KMZ document that `doc.kml` links to several times is read, counted toward
+  `TERRIO_KMZ_MAX_SIZE` and parsed once, and emits its existing layers once. Document and
+  folder names are kept; the first link supplies the default name for an unnamed root. A
+  link to `doc.kml` itself adds no layer. Each link used to read the document again and add a
+  layer with the same name: 100,000 links to one document, in a 25 KB archive, gave 100,000
+  identical layers and took 702 MiB. Linked documents are also found without scanning the
+  archive's names for each link, a scan that made 99,999 links to distinct documents take 25 s.
 - A remote read whose tiles span more than half the HTTP block cache's blocks
   (`TERRIO_HTTP_CACHE_SIZE`, 64 MiB by default) fetches them in batches of at most half the cache
   as it decodes them: each byte once when the tiles are decoded in file order, and at most one
@@ -80,6 +241,14 @@
   their mask rows, which a refused call left queued. Once a block row of a GeoTIFF other than a
   COG fails to be written, the writer refuses more rows and `finish`, which could write a file
   missing it.
+- External overviews are built, refreshed and deleted beside a read-only GeoTIFF, as
+  `gdaladdo -ro` builds them (#612): `add_overviews`, `refresh_overviews` and `delete_overviews`
+  with `external` (and `terrio overviews --external`) write only the `.ovr` sidecar and no longer
+  refuse a file that cannot be written. Internal overviews still need a writable file.
+- `add_overviews_with_progress` (Rust) and `add_overviews(..., progress=callback)` (Python) report
+  the fraction of the overviews computed, from 0 to 1 and never decreasing, to a callback that can
+  cancel (#612). A cancellation returns `Error::Cancelled` (Python
+  `terrio.errors.CancelledError`) and changes no file: an existing `.ovr` stays as it was.
 - `terrio tile` (Python `terrio.raster_tiles`, JavaScript `rasterTiles`) builds each lower-zoom
   tile from the four tiles below it, as GDAL does, instead of rendering it from the source (#574).
   Tiles are generated depth first, with at most four tiles per zoom level in memory, and every
@@ -146,6 +315,9 @@
   the same path takes 0.10 to 0.11 s per write as EHdr (was 0.15 to 0.16 s), 0.11 to 0.12 s as ENVI
   (0.15 to 0.76 s), 0.10 to 0.11 s as SAGA (0.15 to 0.39 s) and 0.25 s as RST (0.30 to 0.67 s). A
   slope file-to-file benchmark takes 0.53 s, where it took 1.01 s (`gdaldem`: 0.90 s).
+- Code-only raster CRSs now export terrio's registry WKT, preserving the EPSG authority and
+  datum identity (#610). This corrects false northing in GDA94 MGA zones, US survey-foot State
+  Plane definitions and Web Mercator's spherical model. Explicit WKT stored in a file is kept.
 - Python operations given a `terrio.Raster` held in memory share it instead of copying it; the
   `mask=` raster of `footprint` and `polygonize`, the rasters of the point-cloud functions and
   the rasters written as netCDF groups are still copied. An operation does not change
@@ -219,6 +391,12 @@
   reader never reads them. In a build with the `gdal` feature and without `grib`, a `.grib2` path
   that is a Zarr store was decoded by wbraster's Zarr reader (ruzstd 0.8, RUSTSEC-2026-0344) with
   no option set; the GDAL backend reads it now, as it reads GRIB files in such a build.
+- Raster operations use each selected band's nodata, and overview mask discovery reports I/O
+  failures instead of silently losing validity (#627). Mosaics reject inconsistent band counts
+  and target extents intersecting no source, including separate-band mosaics. Reclassification
+  mapping-file inputs are restricted to regular files.
+- Python's `write_raster` forwards dataset masks and streams eligible PMTiles/MBTiles writes.
+  Tile archives that cannot represent a dataset mask are refused before creating output (#627).
 - CI checks `Cargo.lock` against the RustSec advisory database (`cargo audit`, the `audit` job)
   on every pull request and push to main. `.cargo/audit.toml` ignores the five advisories of zip
   8.6.0 and ruzstd 0.8.3, which wbraster 0.2.1 requires, until a wbraster release depends on zip
@@ -281,17 +459,38 @@
   was copied pixel for pixel when it spanned as many pixels as its destination, and their sums reach
   the band's type unrounded: they were rounded to the source's type, which dropped a Byte source's
   fractions and capped its sums at 255.
-- A `sum` now reads the source's full resolution unless it is given an overview level:
-  `--overview AUTO`, the default, and `AUTO-n` choose no overview for it, and a reduced read of the
-  whole of a `sum` `WarpedVRT` (`read(out_shape=...)`, of any of its bands) is warped from the full
-  resolution: it took one of the VRT's implicit overviews, and a read of some of the bands, or of a
-  VRT georeferenced by GCPs, resampled the VRT's pixels. An overview has one pixel per block of the
-  source's pixels, so a `sum` of it gave a fraction of the total, about a quarter at factor 2. A
-  coarse `sum` of a raster with overviews now reads more: from a remote 4096 × 4096 Float32 COG with
-  overviews at 2, 4 and 8, a warp to EPSG:4326 at a sixteenth of its resolution takes 17 requests
-  and 67.1 MB where its coarsest overview took 2 requests and 1.1 MB, and a `WarpedVRT` read at an
-  eighth of its size takes 5 requests and 67.1 MB where it took 2 and 1.1 MB. `--overview n`
-  (`overview=n` in Python) still reads level `n`, more cheaply, and the `sum` is then that level's.
+- Changed default: `sum` now uses overview estimates under `AUTO`/`AUTO-n`, instead of reading
+  full resolution. This is a numerical compatibility change. Totals and nodata footprints can
+  change: partly nodata overview blocks count
+  their valid-pixel mean for the entire block and can assign values to otherwise nodata output
+  pixels. Use `--overview NONE` for exact full-resolution validity and sums.
+  A `sum` that reads an overview counts each of its pixels for the source pixels it stands for,
+  `(W / w) × (H / h)` for a `w × h` overview of a `W × H` source (exact ratios, also where the
+  factor does not divide the size), so that it estimates the source's total at the overview's
+  cost, whether the automatic choice gives the overview (`--overview AUTO`, the default, and
+  `AUTO-n`; see `terrio::ops::warp::SUM_AUTO_OVERVIEW`) or a level is given (`--overview n`,
+  `overview=n` in Python, a `terrio.rio` dataset opened with `overview_level=n`, the source of a
+  warped VRT opened at `OVERVIEW_LEVEL`). It added the overview's pixels, each the mean of a block,
+  which gives the total divided by the factor squared: 0.39% of it from an overview at 16, 0.024%
+  at 64. `--overview NONE` (`overview="NONE"`) sums the full resolution exactly, reading all of it.
+  A reduced read of the whole of a `sum` `WarpedVRT` (`read(out_shape=...)`, of any of its bands)
+  is warped into the buffer's grid from the source's overview that the read's implicit overview is
+  warped from, counted the same way: a read of some of the bands, or of a VRT georeferenced by
+  GCPs, resampled the VRT's pixels. The estimate is the total, up to rounding, for an `average`
+  overview of floating-point data without nodata when the footprint covers complete overview
+  cells; crops through those cells can have substantial total error. Over 256 × 256 outputs of a
+  16384 × 16384 raster at 16, 32 and 64 times its pixel size, it was within 2 × 10⁻⁷ of the
+  total of Float32 and Float64 data (windows whose edges cut overview pixels), 0.4% to 0.6%
+  above it for UInt16 data, whose averages are rounded to whole numbers at each level, and 1.4%
+  to 2.6% above it for Float32 data 7% nodata, in two corners and in holes 40 pixels wide: an
+  overview pixel of a block partly nodata counts its mean for the whole block (a block wholly
+  nodata stays nodata). An overview resampled otherwise than by average gives an estimate from a
+  sample of the pixels. A sum outgrows small integer types: give a coarse `sum` a floating-point
+  output type (`--ot`, `ot=`, a `WarpedVRT`'s `dtype`), as a UInt16 output stores 65535 for any
+  larger sum.
+- Rust `WarpOptions` adds `sum_scale` (default `1.0`) for sources opened at an overview
+  level. Exhaustive struct literals must add `sum_scale: 1.0`; literals using
+  `..Default::default()` need no change.
 - A `sum` is refused before its source is read when it would hold more than 4 GiB, estimated as the
   source window an output chunk reads and 8 bytes per pixel of it for the pixels' shares (12 bytes
   per pixel for one Float32 band), with the copies a conversion to another working type holds at
@@ -302,9 +501,29 @@
   `overview_level=n` in `terrio.rio`) and `TERRIO_WARP_SUM_MAX_BYTES`, a positive byte count, which
   changes the budget; a `sum` read of a `WarpedVRT` and a `sum` `terrio.rio.warp.reproject` of a
   band or dataset are refused the same way. A 1 × 1 `sum` of a 16384 × 16384 Float32 band (3 GiB)
-  passes, and one of a 32768 × 32768 band (12 GiB) now errors, where it summed an overview (with
-  overviews) or held the whole window in memory (without); a `sum` of several sources over 4 GiB in
+  passes, and one of a 32768 × 32768 band without overviews, or with `--overview NONE` (12 GiB),
+  now errors, where it held the whole window in memory; a `sum` of several sources over 4 GiB in
   all now errors at any output size, where it held them all.
+- A `sum` read of a `terrio.rio` `WarpedVRT` warps a region whose source window's working memory
+  exceeds its `warp_mem_limit` (64 MB by default) a part at a time, halved along its longer side
+  until each part's window fits, down to single pixels, and each part from its own window: the
+  pixels are the same, bit for bit. A reduced read of the whole VRT over a large source without
+  overviews held the source window of half its output at once, whatever `warp_mem_limit`; it now
+  holds one part's: a 256 × 256 Float64 read of a 16384 × 16384 UInt16 band without overviews
+  peaked at 2,231 MiB of resident memory, and now at 226 MiB. `TERRIO_WARP_SUM_MAX_BYTES` bounds
+  each part's window, refused before any is read: a part fits `warp_mem_limit` unless it cannot be
+  split (one output pixel) or is kept whole, so the budget no longer refuses a read for its footprint alone.
+  Several bands with source and output nodata values are warped whole, as whether a sum stored on
+  the output nodata value is moved off it depends on whether the window holds a nodata pixel.
+  A region one of whose halves cannot be transformed is also kept whole.
+- A `sum` read of a `terrio.rio` `WarpedVRT` whose `dtype` holds every value of the source's type
+  (uint16 or float32 in float64) takes each source window in its own type instead of converting
+  it to the VRT's: the kernel reads each value as a float64 either way, so the pixels are the same,
+  bit for bit, and a uint16 window of a float64 VRT is held in 2 + 2 bytes per pixel (the window
+  and the copy the warp takes) instead of 8 + 8 once converted: the 256 × 256 read above now peaks
+  at 226 MiB. `TERRIO_WARP_SUM_MAX_BYTES` counts such a window in the source's type only. A
+  `dtype` that does not hold the values (float64 in float32, floats in an integer type) still
+  converts the window first, and the budget counts both types.
 - With `GDAL_INGESTED_BYTES_AT_OPEN` (or `TERRIO_INGESTED_BYTES_AT_OPEN`) above a block (64 KiB
   by default), opening a remote file that the process-wide cache holds takes the ingested blocks
   from there and requests only those it no longer holds. Every reader of a file requested them

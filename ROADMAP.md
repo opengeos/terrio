@@ -53,6 +53,8 @@ appearance require a separate future design.
 - [x] Unstable v0.1 `--json-usage` catalog from the shared clap/MCP command tree:
       nested command paths, aliases, typed argument metadata, defaults, choices and
       arity, a checked-in JSON Schema, and the Python CLI entrypoint.
+- [x] Parser repeatability, symmetric argument/group conflicts, and catalog version/digest
+      checks against the protected PR base (#633).
 - [ ] Mutation/idempotency metadata and conditional command effects, shared with
       MCP hints, as a separate follow-up.
 
@@ -66,9 +68,15 @@ and drivers below.
 - [x] Fill nodata: inverse-distance and nearest interpolation, validity masks, maximum
       pixel distance and smoothing, preserving valid source pixels. Done in
       [#239](https://github.com/opengeos/terrio/pull/239), through Rust, CLI/MCP, Python and JavaScript.
+- [x] Overview creation progress and cancellation in Rust/Python, and external overview
+      add/refresh/delete beside read-only GeoTIFFs (#612, #618). Cancellation preserves
+      the source and any existing sidecar.
 - [x] Overview-aware warping: explicit source overview selection, automatic selection for
       downsampling and a full-resolution override, reducing remote COG reads. Implemented in
       [#242](https://github.com/opengeos/terrio/pull/242), through Rust, CLI/MCP, Python and JavaScript.
+      Terrio’s area-scaled overview `sum` estimates (#637, #638) support AUTO/AUTO-n and
+      explicit levels; NONE keeps full-resolution sums. Estimates intentionally differ from
+      GDAL’s unscaled overview sums; partial cells and nodata can change values and validity.
 - [x] Overview-aware resampled window reads with GDAL `RasterIO` semantics
       ([#429](https://github.com/opengeos/terrio/issues/429)): the Rust read
       (`LazyRaster::read_resampled` and its masks) and `terrio translate --outsize/--tr/--overview`
@@ -496,6 +504,9 @@ Command-group progress:
 
 Python:
 
+- [x] Format-specific creation options on raster operations with standard output keywords
+      (`options=`, as with `Raster.write` and CLI `--co`), including streamed outputs,
+      mask-writing paths, palette operations and `create_raster` (#648, #660).
 - [x] A rasterio-compatible API, `terrio.rio` (`import terrio.rio as rasterio`): datasets opened for
       reading, writing and update with profiles, windowed and incremental writes, masks, `windows`,
       `transform`, `features`, `warp`, `merge`, `mask`, `WarpedVRT` and `MemoryFile`, checked against
@@ -700,6 +711,9 @@ WebAssembly (the `terrio-js` npm package):
       STL, COLLADA, OBJ, glTF/GLB and FBX importers.
 
 ## Standalone CRS crate (#268)
+
+- [x] Searchable EPSG/ESRI/IAU registry catalog for CRS pickers through Rust, CLI/MCP,
+      Python and JavaScript, with name/code, kind and authority filters (#613, #619).
 
 - [x] Extract `terrio-crs` in this workspace with its tables, standalone tests and
       attribution, keeping `terrio::crs` compatible. Share grid configuration and

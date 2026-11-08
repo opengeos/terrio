@@ -61,6 +61,10 @@ pub(crate) fn is_stacta(doc: &Value) -> bool {
 /// A `STACTA:` name's item, and the asset and tile matrix set it asks for.
 type Name = (String, Option<String>, Option<String>);
 
+pub(crate) fn document_location(path: &str) -> Option<Result<String>> {
+    parse_name(path).map(|result| result.map(|name| name.0))
+}
+
 /// A `STACTA:"item":asset:tms` name: the item, and the asset and tile matrix set asked for.
 /// `Err` for a `STACTA:` name of more parts, which GDAL does not open.
 fn parse_name(path: &str) -> Option<Result<Name>> {
@@ -96,9 +100,13 @@ fn sniff_local(path: &str) -> bool {
     if !base.ends_with(".json") {
         return false;
     }
-    let crate::vfs::Location::Local(p) = crate::vfs::Location::parse(path) else { return false };
+    let crate::vfs::Location::Local(p) = crate::vfs::Location::parse(path) else {
+        return false;
+    };
     let mut head = Vec::with_capacity(SNIFF_BYTES as usize);
-    let Ok(f) = std::fs::File::open(p) else { return false };
+    let Ok(f) = std::fs::File::open(p) else {
+        return false;
+    };
     if std::io::Read::read_to_end(&mut std::io::Read::take(f, SNIFF_BYTES), &mut head).is_err() {
         return false;
     }
@@ -124,19 +132,23 @@ pub(crate) struct Item {
     doc: Value,
     metadata: Vec<(String, String)>,
     loc: String,
+    requested: String,
 }
 
 impl Item {
     /// Parses an item's bytes. `None` when they are not JSON.
-    pub(crate) fn parse(bytes: &[u8], loc: &str) -> Option<Self> {
+    pub(crate) fn parse(bytes: &[u8], loc: &str, requested: &str) -> Option<Self> {
+        let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
         let doc: Value = serde_json::from_slice(bytes).ok()?;
         let text = std::str::from_utf8(bytes).ok()?;
-        Some(Self { metadata: properties_metadata(text).unwrap_or_default(), doc, loc: loc.to_string() })
+        Some(Self { metadata: properties_metadata(text).unwrap_or_default(), doc, loc: loc.to_string(), requested: requested.to_string() })
     }
 
     fn load(loc: &str) -> Result<Self> {
-        let bytes = crate::stac::fetch(loc)?;
-        Self::parse(&bytes, loc).ok_or_else(|| bad(format!("'{loc}' is not JSON")))
+        let (bytes, location) = crate::stac::fetch_document(loc)?;
+        let item = Self::parse(&bytes, &location, loc).ok_or_else(|| bad(format!("'{loc}' is not JSON")))?;
+        crate::stac::check_document_assets(&item.doc, &location)?;
+        Ok(item)
     }
 
     /// Whether the item is one of tiled assets.
@@ -210,11 +222,11 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
             }
         }
     }
-    let bytes = match crate::stac::fetch(path) {
+    let (bytes, location) = match crate::stac::fetch_document(path) {
         Ok(b) => b,
         Err(e) => return Some(Err(e)),
     };
-    let item = Item::parse(&bytes, path)?;
+    let item = Item::parse(&bytes, &location, path)?;
     item.is_stacta().then(|| open_first(item, None, None))
 }
 
@@ -261,6 +273,9 @@ pub(crate) fn info_item(item: Item, asset: Option<&str>, tms: Option<&str>, opti
         Opened::Raster(r) => *r,
         Opened::Container(subs) => match open_container_first(&item, subs.clone()) {
             Ok(r) => r,
+            Err(e) if matches!(e, Error::InvalidArgument(_)) || e.is_resource_refusal() => {
+                return Err(e);
+            }
             Err(_) => return Ok(Info::Raster(Box::new(container_info(subs)))),
         },
     };
@@ -399,6 +414,9 @@ struct Level {
 
 /// A STACTA raster read by window: the tiles a window touches are opened and read.
 struct Tiled {
+    /// The document that selected the tile template, checked for each concrete tile href too.
+    document: String,
+    policy: Option<crate::stac::AssetReadPolicy>,
     levels: Vec<Level>,
     data_type: DataType,
     band_types: Vec<DataType>,
@@ -430,15 +448,6 @@ fn stac_data_type(name: &str) -> Option<Result<DataType>> {
     }))
 }
 
-/// Whether a location is on the local file system (a local zip archive's members included).
-fn local_backed(loc: &crate::vfs::Location) -> bool {
-    match loc {
-        crate::vfs::Location::Local(_) => true,
-        crate::vfs::Location::Zip { archive, .. } => local_backed(archive),
-        _ => false,
-    }
-}
-
 /// The resolved href template of an asset template, with `{TileMatrixSet}` replaced. An item
 /// that is not on the local file system does not name local files (`file://`, local paths,
 /// `/vsizip/` of local archives): an error.
@@ -454,16 +463,13 @@ fn href_template(item_loc: &str, href: &str, tms: &str) -> Result<String> {
             crate::stac::resolve_href(item_loc, href.strip_prefix("./").unwrap_or(&href))
         }
     };
-    let parse = crate::vfs::Location::parse;
-    if !local_backed(&parse(item_loc)) && local_backed(&parse(&resolved)) {
-        return Err(bad(format!("the remote item '{item_loc}' names local files ({href})")));
-    }
+    crate::stac::check_asset_access(item_loc, &resolved)?;
     Ok(resolved)
 }
 
 /// Whether a configuration option is true, as GDAL's `CPLTestBool`.
 fn config_true(key: &str) -> bool {
-    std::env::var(key).is_ok_and(|v| !matches!(v.trim().to_ascii_uppercase().as_str(), "NO" | "FALSE" | "OFF" | "0"))
+    crate::config::get(key).is_some_and(|v| !matches!(v.trim().to_ascii_uppercase().as_str(), "NO" | "FALSE" | "OFF" | "0"))
 }
 
 /// Refuses a STACTA item when a raster allow-list is set without the STACTA driver: an item is a
@@ -482,6 +488,11 @@ fn check_allowed() -> Result<()> {
 /// Opens an asset of an item at a tile matrix set (by default, the first of each), or lists the
 /// subdatasets of an item of several when neither is asked for. `extra` is metadata to add.
 fn open_item(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: Vec<(String, String)>) -> Result<Opened> {
+    crate::stac::keep_remote_refusal(&item.loc, open_item_native(item, asset, tms, extra))
+}
+
+fn open_item_native(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: Vec<(String, String)>) -> Result<Opened> {
+    crate::stac::check_document_assets(&item.doc, &item.loc)?;
     check_allowed()?;
     let doc = &item.doc;
     let props = doc["properties"].as_object().ok_or_else(|| bad("Missing properties"))?;
@@ -501,10 +512,10 @@ fn open_item(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: Vec<(St
         for a in templates.keys() {
             if sets.len() >= 2 {
                 for t in sets.keys() {
-                    subs.push((format!("STACTA:\"{}\":{a}:{t}", item.loc), format!("Asset {a}, tile matrix set {t}")));
+                    subs.push((format!("STACTA:\"{}\":{a}:{t}", item.requested), format!("Asset {a}, tile matrix set {t}")));
                 }
             } else {
-                subs.push((format!("STACTA:\"{}\":{a}", item.loc), format!("Asset {a}")));
+                subs.push((format!("STACTA:\"{}\":{a}", item.requested), format!("Asset {a}")));
             }
         }
         return Ok(Opened::Container(subs));
@@ -585,10 +596,14 @@ fn open_item(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: Vec<(St
         for m in &matrices {
             let (col, row) = limits.get(&m.id).map_or((0, 0), |l| (l.min_col, l.min_row));
             let url = tile_href(&url_template, &m.id, row, col);
-            match LazyRaster::open(&url) {
+            crate::stac::check_asset_access(&item.loc, &url)?;
+            match crate::stac::with_asset_read(&item.loc, &url, || LazyRaster::open(&url)) {
                 Ok(r) => {
                     proto = Some((url, r));
                     break;
+                }
+                Err(e) if matches!(e, Error::InvalidArgument(_)) || e.is_resource_refusal() => {
+                    return Err(e);
                 }
                 Err(e) if !skip_missing => return Err(bad(format!("Cannot open {url}: {e}"))),
                 Err(_) => {}
@@ -687,18 +702,33 @@ fn open_item(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: Vec<(St
     };
     let mut header = RasterDataset::with_driver(raster, RasterDriver::STACTA, nodata.is_some());
     header.band_nodata = nodatas;
-    let source = Tiled { levels, data_type, band_types: types, band_fills, skip_missing, block, tiles: Mutex::new(cache) };
+    let source = Tiled {
+        document: item.loc.clone(),
+        policy: crate::stac::AssetReadPolicy::current(),
+        levels,
+        data_type,
+        band_types: types,
+        band_fills,
+        skip_missing,
+        block,
+        tiles: Mutex::new(cache),
+    };
     Ok(Opened::Raster(Box::new(LazyRaster::from_source(header, Box::new(source)))))
 }
 
 impl Tiled {
     /// Reads a window of a tile, or `None` when it is missing and missing tiles are skipped.
     fn read_tile(&self, href: &str, w: Window, bands: &[usize]) -> Result<Option<Vec<f64>>> {
+        // Cached rasters enforce their captured consent requirement; a new open below
+        // resolves current credentials, including path-specific settings.
         let cached = self.tiles.lock().ok().and_then(|mut m| m.remove(href));
         let tile = match cached {
             Some(t) => t,
-            None => match LazyRaster::open(href) {
+            None => match crate::stac::with_asset_read(&self.document, href, || LazyRaster::open(href)) {
                 Ok(r) => Some(r),
+                Err(e) if matches!(e, Error::InvalidArgument(_)) || e.is_resource_refusal() => {
+                    return Err(e);
+                }
                 Err(_) if self.skip_missing => None,
                 Err(e) => {
                     return Err(bad(format!(
@@ -781,7 +811,11 @@ impl WindowSource for Tiled {
             }
         }
         let this: &Tiled = self;
-        let reads = crate::par::map_range(tiles.len(), |i| this.read_tile(&tiles[i].0, tiles[i].3, bands));
+        let context = crate::stac::AssetReadContext::capture(self.policy.clone());
+        let reads = crate::par::map_range(tiles.len(), |i| {
+            let _scope = context.enter()?;
+            this.read_tile(&tiles[i].0, tiles[i].3, bands)
+        });
         for ((_, dx, dy, sub), r) in tiles.iter().zip(reads) {
             let Some(values) = r? else { continue };
             let (dx, dy) = (*dx as usize, *dy as usize);
@@ -948,6 +982,90 @@ fn escape_jsonc(s: &str) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(remote)]
+    #[test]
+    fn concrete_tile_credentials_are_not_hidden_by_templates_or_skip_missing() {
+        let (base, seen) = crate::http::test_server(Vec::new());
+        let prefix = format!("{base}/tiles/0/");
+        crate::http::set_path_specific_option(&prefix, "GDAL_HTTP_HEADERS", Some("X-Api-Key: test-secret"));
+        crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+            let doc = "https://catalog.example/item.json";
+            let template = format!("{base}/tiles/{{TileMatrix}}/{{TileRow}}/{{TileCol}}.tif");
+            assert!(matches!(href_template(doc, &template, "WebMercatorQuad"), Err(Error::InvalidArgument(_))));
+            let source = Tiled {
+                document: doc.into(),
+                policy: None,
+                levels: Vec::new(),
+                data_type: DataType::U8,
+                band_types: vec![DataType::U8],
+                band_fills: vec![0.0],
+                skip_missing: true,
+                block: (1, 1),
+                tiles: Mutex::new(HashMap::new()),
+            };
+            let result = source.read_tile(&format!("{prefix}0/0.tif"), Window::full(1, 1), &[1]);
+            assert!(matches!(result, Err(Error::InvalidArgument(_))));
+        });
+        crate::http::clear_path_specific_options(Some(&prefix));
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn new_tile_workers_keep_root_policy_and_read_time_options() {
+        let (base, seen) = crate::http::test_server(Vec::new());
+        let href = format!("{base}/tile.tif");
+        // Only the concrete tile has credentials; the public template document is readable.
+        crate::http::set_path_specific_option(&href, "GDAL_HTTP_HEADERS", Some("X-Key: synthetic-secret"));
+        let mut source = crate::stac::with_asset_read("https://catalog.example/root.json", &format!("{base}/child.json"), || {
+            Ok(Tiled {
+                document: format!("{base}/child.json"),
+                policy: crate::stac::AssetReadPolicy::current(),
+                levels: vec![Level {
+                    template: href.clone(),
+                    tile_w: 1,
+                    tile_h: 1,
+                    min_col: 0,
+                    min_row: 0,
+                    raw_w: 64,
+                    raw_h: 1,
+                    off_x: 0,
+                    off_y: 0,
+                    width: 64,
+                    height: 1,
+                }],
+                data_type: DataType::U8,
+                band_types: vec![DataType::U8],
+                band_fills: vec![0.0],
+                skip_missing: true,
+                block: (1, 1),
+                tiles: Mutex::new(HashMap::new()),
+            })
+        })
+        .unwrap();
+        crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+            let error = source.read(0, Window::full(64, 1), &[1]).unwrap_err();
+            assert!(matches!(error, Error::InvalidArgument(_)), "{error}");
+        });
+        assert!(seen.lock().unwrap().is_empty());
+        crate::http::clear_path_specific_options(Some(&href));
+    }
+
+    #[test]
+    fn container_names_keep_requested_location_after_redirects() {
+        let doc = serde_json::to_vec(&serde_json::json!({
+            "type":"Feature", "stac_version":"1.0.0", "stac_extensions":["tiled-assets"],
+            "properties":{"tiles:tile_matrix_sets":{"Quad":{}}},
+            "asset_templates":{"a":{"href":"./{TileMatrix}.tif"},"b":{"href":"./{TileMatrix}.tif"}}
+        }))
+        .unwrap();
+        let requested = "https://catalog.example/alias.json";
+        let item = Item::parse(&doc, "https://public.example/item.json?sig=server-issued-secret", requested).unwrap();
+        let Opened::Container(names) = open_item(&item, None, None, Vec::new()).unwrap() else { panic!("expected container") };
+        assert_eq!(names.len(), 2);
+        assert!(names.iter().all(|(name, _)| name.starts_with(&format!("STACTA:\"{requested}\":"))));
+    }
+
     #[test]
     fn mixed_band_windows_keep_integer_nodata_comparisons_exact() {
         let raster = crate::Raster::from_data_native(
@@ -959,6 +1077,8 @@ mod tests {
         let mut header = tile.clone();
         header.band_nodata = vec![Some(4_294_967_295.0), Some(1.5)];
         let source = Tiled {
+            document: String::new(),
+            policy: None,
             levels: vec![Level {
                 template: "tile".into(),
                 tile_w: 2,

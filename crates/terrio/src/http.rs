@@ -46,6 +46,8 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
+use ureq::unversioned::resolver::DefaultResolver;
+use ureq::unversioned::transport::{Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport};
 
 pub(crate) mod store;
 
@@ -382,6 +384,12 @@ fn origin(url: &str) -> &str {
     &url[..end]
 }
 
+/// Origin equality with a cheap exact fast path and URL-normalized host/default ports.
+fn same_response_origin(left: &str, right: &str) -> bool {
+    origin(left) == origin(right)
+        || (crate::vfs::url_origin(left).is_some() && crate::vfs::url_origin(left) == crate::vfs::url_origin(right))
+}
+
 /// The host (and port) of a URL.
 fn host_of(url: &str) -> &str {
     let o = origin(url);
@@ -408,6 +416,9 @@ struct Client {
     remote: Remote,
     /// The URL requests go to (after S3 region discovery or a redirect).
     url: String,
+    /// The final response location, kept separately so redirect auth stays tied to `url`.
+    response_url: String,
+    asset_policy: Option<crate::stac::AssetReadPolicy>,
     /// A query added to an S3 object's URL (`?list-type=2&...` for a listing), or empty.
     query: String,
     s3: Option<S3Auth>,
@@ -511,6 +522,8 @@ impl Client {
             pid: std::process::id(),
             options,
             remote: remote.clone(),
+            response_url: url.clone(),
+            asset_policy: crate::stac::AssetReadPolicy::current(),
             url,
             query: String::new(),
             s3,
@@ -527,6 +540,32 @@ impl Client {
         client.on_azure_endpoint = client.azure && client.resolve_on_azure_endpoint();
         client.headers = client.resolve_headers();
         client
+    }
+
+    fn check_asset_request(&mut self, url: &str) -> Result<()> {
+        if self.asset_policy.is_none() {
+            self.asset_policy = crate::stac::AssetReadPolicy::current();
+        }
+        if let Some(policy) = &self.asset_policy {
+            let headers = origin(url) == origin(&self.url) && !self.headers.is_empty();
+            let signed = url == self.url && self.s3.as_ref().is_some_and(|auth| auth.creds.is_some());
+            let query = url == self.url && policy.has_ambient_query(url);
+            policy.check_client(url, headers || signed || query, matches!(self.remote, Remote::S3(_)) || self.azure)?;
+        }
+        Ok(())
+    }
+
+    fn check_cached_consent(&mut self) -> Result<()> {
+        if self.asset_policy.is_none() {
+            self.check_asset_request(&self.url.clone())?;
+        }
+        self.asset_policy.as_ref().map_or(Ok(()), crate::stac::AssetReadPolicy::check_consent)
+    }
+
+    fn observe_response(&self, response: &str) {
+        if let Some(policy) = &self.asset_policy {
+            policy.observe_response(&self.url, response);
+        }
     }
 
     /// The first of `keys` set for this file's requests: by the creating thread's options, else by
@@ -640,6 +679,7 @@ impl Client {
         let mut redirects = 0;
         let mut attempt = 0;
         loop {
+            self.check_asset_request(&url)?;
             let mut req = agent_in(self.pid, &self.agent, || own_agent(&self.options)).get(&url);
             if let Some(r) = &range_header {
                 req = req.header("Range", r);
@@ -727,9 +767,12 @@ impl Client {
                 if !self.redirects.allow(&self.url, &to) {
                     return Err(redirect_refused(&self.url, &to));
                 }
+                self.observe_response(&to);
                 url = to;
                 continue;
             }
+            self.observe_response(&url);
+            self.response_url = url.clone();
             match status {
                 200 | 206 | 416 => return Ok(response),
                 404 if self.missing_ok => return Ok(response),
@@ -885,6 +928,28 @@ impl Client {
         }
         Ok(n)
     }
+}
+
+/// Whether an open would send configured headers or S3 credentials, without making a request.
+/// All custom headers are conservatively treated as credentials (API keys need not use a
+/// standard header name). This uses the same path-specific options and credential profiles as
+/// the actual client.
+pub(crate) fn uses_configured_credentials(remote: &Remote) -> bool {
+    let client = Client::new(remote, HttpOptions::from_env());
+    if !client.headers.is_empty() || client.s3.as_ref().is_some_and(|auth| auth.creds.is_some()) {
+        return true;
+    }
+    // A template cannot match a concrete path-specific prefix yet. Treat any overlapping
+    // fixed prefix as potentially credentialed, then check the concrete tile again at open.
+    client.path_names().iter().any(|name| {
+        name.split_once('{').is_some_and(|(fixed, _)| {
+            path_options_read().iter().any(|(prefix, options)| {
+                (fixed.starts_with(prefix) || prefix.starts_with(fixed))
+                    && (options.get("GDAL_HTTP_HEADERS").is_some_and(|v| !v.trim().is_empty())
+                        || (client.azure && options.get("AZURE_STORAGE_ACCESS_TOKEN").is_some_and(|v| !v.trim().is_empty())))
+            })
+        })
+    })
 }
 
 /// The error of a body over its cap.
@@ -1043,7 +1108,7 @@ fn tls_config() -> ureq::tls::TlsConfig {
 }
 
 fn new_agent(options: &HttpOptions) -> ureq::Agent {
-    ureq::Agent::config_builder()
+    let config = ureq::Agent::config_builder()
         .tls_config(tls_config())
         .http_status_as_error(false)
         .max_redirects(0)
@@ -1055,8 +1120,96 @@ fn new_agent(options: &HttpOptions) -> ureq::Agent {
         // follow the thread count if 64 proves too few or too many.
         .max_idle_connections(64)
         .max_idle_connections_per_host(64)
-        .build()
-        .into()
+        .build();
+    let connector = DefaultConnector::new().chain(Http10CloseConnector);
+    ureq::Agent::with_parts(config, connector, DefaultResolver::default())
+}
+
+/// Wraps each connection in [`Http10Close`], after TLS, where it sees the responses in plain text.
+#[derive(Debug)]
+struct Http10CloseConnector;
+
+impl Connector<Box<dyn Transport>> for Http10CloseConnector {
+    type Out = Http10Close;
+
+    fn connect(&self, _: &ConnectionDetails, chained: Option<Box<dyn Transport>>) -> std::result::Result<Option<Http10Close>, ureq::Error> {
+        Ok(chained.map(|inner| Http10Close { inner, response_head: false, closing: false }))
+    }
+}
+
+/// A connection that is not reused after an HTTP/1.0 response without the `keep-alive`
+/// connection option, which, as RFC 9112 section 9.3 says, means "the connection will close after
+/// the current response". ureq (ureq-proto 0.6.5) closes it only after `Connection: close` or a
+/// close-delimited body, so it would pool such a connection and send a later request on it once
+/// the server had closed it, failing with "Peer disconnected" (issue #632).
+#[derive(Debug)]
+struct Http10Close {
+    inner: Box<dyn Transport>,
+    /// A request was sent and its final response head has not been seen whole yet.
+    response_head: bool,
+    /// The connection is not to be reused.
+    closing: bool,
+}
+
+impl Transport for Http10Close {
+    fn buffers(&mut self) -> &mut dyn Buffers {
+        self.inner.buffers()
+    }
+
+    fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> std::result::Result<(), ureq::Error> {
+        self.response_head = true;
+        self.inner.transmit_output(amount, timeout)
+    }
+
+    fn await_input(&mut self, timeout: NextTimeout) -> std::result::Result<bool, ureq::Error> {
+        let progress = self.inner.await_input(timeout)?;
+        // ureq consumes a response's head only once it is whole, so the input holds it from its
+        // start until then.
+        if self.response_head
+            && let Some(close) = closes_after(self.inner.buffers().input())
+        {
+            self.response_head = false;
+            self.closing |= close;
+        }
+        Ok(progress)
+    }
+
+    fn is_open(&mut self) -> bool {
+        !self.closing && self.inner.is_open()
+    }
+
+    fn is_tls(&self) -> bool {
+        self.inner.is_tls()
+    }
+}
+
+/// Whether the connection closes after the response whose head starts `input`: an HTTP/1.0
+/// response without a `Connection` header naming `keep-alive`. Informational heads are skipped;
+/// `None` until the final head is whole.
+fn closes_after(mut input: &[u8]) -> Option<bool> {
+    loop {
+        let crlf = input.windows(4).position(|w| w == b"\r\n\r\n").map(|at| (at, 4));
+        let lf = input.windows(2).position(|w| w == b"\n\n").map(|at| (at, 2));
+        let (end, delimiter) = crlf.into_iter().chain(lf).min_by_key(|(at, _)| *at)?;
+        let head = String::from_utf8_lossy(&input[..end]);
+        let mut lines = head.lines();
+        let mut status = lines.next()?.split_ascii_whitespace();
+        let version = status.next()?;
+        let code: u16 = status.next()?.parse().ok()?;
+        // ureq consumes informational heads before the final one. Inspect every head already
+        // buffered here too: no further await_input is needed when the final head arrived with it.
+        if (100..200).contains(&code) && code != 101 {
+            input = &input[end + delimiter..];
+            continue;
+        }
+        if version != "HTTP/1.0" {
+            return Some(false);
+        }
+        let keep_alive = lines.filter_map(|line| line.split_once(':')).any(|(name, value)| {
+            name.trim().eq_ignore_ascii_case("connection") && value.split(',').any(|o| o.trim().eq_ignore_ascii_case("keep-alive"))
+        });
+        return Some(!keep_alive);
+    }
 }
 
 /// The part of an object to fetch.
@@ -1366,10 +1519,15 @@ pub(crate) fn get_capped(remote: &Remote, cap: u64) -> Result<Vec<u8>> {
 
 /// [`get_capped`], its redirects followed as `redirects` allows.
 pub(crate) fn get_capped_following(remote: &Remote, cap: u64, redirects: Redirects) -> Result<Vec<u8>> {
+    get_capped_response(remote, cap, redirects).map(|response| response.body)
+}
+
+pub(crate) fn get_capped_response(remote: &Remote, cap: u64, redirects: Redirects) -> Result<JsonResponse> {
     let mut client = Client::new(remote, HttpOptions::from_env());
     client.body_cap = Some(cap);
     client.redirects = redirects;
-    Ok(client.fetch(None)?.data)
+    let body = client.fetch(None)?.data;
+    Ok(JsonResponse { body, url: client.response_url })
 }
 
 /// Reads a whole remote file (a STAC item, a GeoJSON document) into memory by range, as
@@ -1377,15 +1535,24 @@ pub(crate) fn get_capped_following(remote: &Remote, cap: u64, redirects: Redirec
 /// once its length is known, before its body is fetched. Its redirects are followed as
 /// `redirects` allows.
 pub(crate) fn get_file(remote: &Remote, redirects: Redirects) -> Result<Vec<u8>> {
+    get_file_response(remote, redirects).map(|response| response.body)
+}
+
+pub(crate) fn get_file_response(remote: &Remote, redirects: Redirects) -> Result<JsonResponse> {
     let reader = RangeReader::open_following(remote, HttpOptions::from_env(), redirects)?;
     let mut s = reader.lock()?;
     let cap = json_max_size();
     if s.len > cap {
         return Err(over_cap(&s.client.url, cap));
     }
+    let refuse_mixed = |mixed| {
+        if mixed { Err(Error::InvalidArgument("remote document bytes came from different response origins".into())) } else { Ok(()) }
+    };
+    refuse_mixed(s.mixed_origins)?;
     let mut out = Vec::new();
     s.copy_to(&mut out)?;
-    Ok(out)
+    refuse_mixed(s.mixed_origins)?;
+    Ok(JsonResponse { body: out, url: s.client.response_url.clone() })
 }
 
 /// A "directory" of an object store: the objects below a prefix.
@@ -1411,13 +1578,6 @@ pub(crate) fn list_subdirectories(dir: &Directory) -> Result<Option<Vec<String>>
     out.sort();
     out.dedup();
     Ok(Some(out))
-}
-
-/// Sends a `POST` of a JSON body (a STAC API search, for instance) and returns the response's
-/// body. Redirects that keep the method (307 and 308) are followed as `redirects` allows, and
-/// transient errors retried.
-pub(crate) fn post_json(url: &str, body: &[u8], headers: &[(String, String)], redirects: Redirects) -> Result<Vec<u8>> {
-    request("POST", url, Some(body), headers, json_max_size(), redirects)
 }
 
 /// The seconds a `Retry-After` header asks to wait: a number of seconds, or an HTTP date
@@ -1447,6 +1607,7 @@ pub(crate) fn seconds_until_utc(y: i64, m: i64, d: i64, h: i64, mi: i64, s: i64)
 
 /// Fetches a whole remote file with extra request headers (an API key, for instance), following
 /// redirects as `redirects` allows and retrying transient errors.
+#[cfg(test)]
 pub(crate) fn get_with_headers(url: &str, headers: &[(String, String)], redirects: Redirects) -> Result<Vec<u8>> {
     get_with_headers_capped(url, headers, json_max_size(), redirects)
 }
@@ -1480,7 +1641,7 @@ fn request(method: &str, url: &str, body: Option<&[u8]>, headers: &[(String, Str
     request_response(method, url, body, headers, cap, policy).map(|response| response.body)
 }
 
-fn request_response(
+pub(crate) fn request_response(
     method: &str,
     url: &str,
     body: Option<&[u8]>,
@@ -1620,10 +1781,21 @@ static EVICTION_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// tests rely on.
 #[cfg(test)]
 pub(crate) fn cache_test_guard() -> CacheTestGuard {
-    static SERIAL: Mutex<()> = Mutex::new(());
-    let serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let serial = CACHE_TEST_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     EVICTION_HELD.store(true, Ordering::SeqCst);
     CacheTestGuard { _serial: serial }
+}
+
+/// Serializes the holders of [`cache_test_guard`] and of [`cache_eviction_test_guard`].
+#[cfg(test)]
+static CACHE_TEST_SERIAL: Mutex<()> = Mutex::new(());
+
+/// The guard of the tests that rely on the process-wide cache dropping blocks (a block read
+/// again once evicted is fetched again): it keeps them from running while a
+/// [`cache_test_guard`] holds the cache's eviction, without holding it itself.
+#[cfg(test)]
+pub(crate) fn cache_eviction_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    CACHE_TEST_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// See [`cache_test_guard`].
@@ -1679,6 +1851,8 @@ pub fn clear_cache() {
 #[derive(Default)]
 struct CachedFile {
     len: u64,
+    /// Cached metadata keeps the origin that supplied its bytes, not just the requested URL.
+    response_url: String,
     /// The whole file, from a server that ignored a range.
     whole: Option<Arc<[u8]>>,
     /// The file's first bytes, from a first request shorter than a block.
@@ -1707,14 +1881,28 @@ impl FileCache {
         Self { files: BTreeMap::new(), order: VecDeque::new(), bytes: 0 }
     }
 
-    /// Stores a part of the file `key` of length `len`, then drops the oldest parts beyond
+    fn forget(&mut self, key: &str) {
+        if let Some(old) = self.files.remove(key) {
+            let bytes = old.whole.iter().chain(old.prefix.iter()).map(|data| data.len() as u64).sum::<u64>()
+                + old.blocks.values().map(|data| data.len() as u64).sum::<u64>();
+            self.bytes = self.bytes.saturating_sub(bytes);
+        }
+        self.order.retain(|(old, _)| old != key);
+    }
+
+    /// Stores bytes with their cache key and effective response URL, then drops parts beyond
     /// `budget` bytes. A part larger than the budget is not kept.
-    fn store(&mut self, key: &str, len: u64, slot: Slot, data: Arc<[u8]>, budget: u64) {
+    fn store(&mut self, source: (&str, &str), len: u64, slot: Slot, data: Arc<[u8]>, budget: u64) {
+        let (key, response_url) = source;
         if data.len() as u64 > budget {
             return;
         }
+        if self.files.get(key).is_some_and(|file| !same_response_origin(&file.response_url, response_url)) {
+            self.forget(key);
+        }
         let file = self.files.entry(key.to_string()).or_default();
         file.len = len;
+        file.response_url = response_url.to_string();
         let old = match slot {
             Slot::Whole => file.whole.replace(data.clone()),
             Slot::Prefix => file.prefix.replace(data.clone()),
@@ -1782,6 +1970,8 @@ struct Shared {
     /// ([`Shared::fetch_planned`]), the next batch when a read reaches one not cached. A deque, so
     /// that taking batches from its front does not shift the rest.
     plan: VecDeque<u64>,
+    response_origin: Option<String>,
+    mixed_origins: bool,
 }
 
 impl RangeReader {
@@ -1808,6 +1998,7 @@ impl RangeReader {
             options.ingested_bytes_at_open.map_or(FIRST_READ.min(block_size), |n| n.max(block_size).div_ceil(block_size) * block_size);
         let mut client = Client::new(remote, options);
         client.redirects = redirects;
+        client.check_asset_request(&client.url.clone())?;
         let key = client.cache_key();
         let mut shared = Shared {
             client,
@@ -1821,6 +2012,8 @@ impl RangeReader {
             whole: None,
             prefix: None,
             plan: VecDeque::new(),
+            response_origin: None,
+            mixed_origins: false,
         };
         if let Some(missing) = shared.load_cached(first_len) {
             // The blocks of the first bytes that the process-wide cache no longer holds, each run
@@ -1828,6 +2021,7 @@ impl RangeReader {
             shared.fetch_blocks(&missing, 0)?;
         } else {
             let first = shared.client.fetch(Some((0, first_len - 1)))?;
+            shared.observe_source();
             match first.status {
                 206 => {
                     shared.len = first.total_len.ok_or_else(|| {
@@ -1865,6 +2059,12 @@ impl RangeReader {
         self.lock().map(|s| s.client.url.clone()).unwrap_or_default()
     }
 
+    /// The most blocks a prefetch plans (64 GiB of the default 64 KiB blocks; the ordered set
+    /// holding them takes a few times their 8 MiB of indices). Past it, the plan keeps the first
+    /// distinct blocks in the order of the ranges given, and the others are fetched as reads
+    /// reach them.
+    const MAX_PLANNED_BLOCKS: usize = 1 << 20;
+
     /// Fetches the blocks covering the byte ranges `(offset, length)` that are not cached yet, in as
     /// few requests as it can: runs of missing blocks separated by at most two cached blocks are
     /// fetched together. Ranges larger than half the cache are fetched a batch at a time, the
@@ -1877,15 +2077,27 @@ impl RangeReader {
         }
         s.evict();
         let bs = s.block_size;
-        let mut wanted: Vec<u64> = ranges
+        let blocks = ranges
             .iter()
             .filter(|(off, len)| *len > 0 && *off < s.len)
-            .filter(|(off, len)| s.prefix.as_ref().is_none_or(|p| off + len > p.len() as u64))
-            .flat_map(|(off, len)| *off / bs..=((off + len).min(s.len) - 1) / bs)
-            .filter(|b| !s.blocks.contains_key(b))
-            .collect();
-        wanted.sort_unstable();
-        wanted.dedup();
+            // Lengths come from file metadata (a TIFF's byte counts), so the end saturates.
+            .filter(|(off, len)| s.prefix.as_ref().is_none_or(|p| off.saturating_add(*len) > p.len() as u64))
+            .flat_map(|(off, len)| *off / bs..=(off.saturating_add(*len).min(s.len) - 1) / bs)
+            .filter(|b| !s.blocks.contains_key(b));
+        // A prefetch only saves requests; the plan stays bounded whatever the ranges and the
+        // file's length (a byte count past a huge file's end would list every block to its end).
+        // Distinct blocks count toward the bound; blocks past it are fetched as reads reach them.
+        // The walk over the ranges is bounded too, duplicates included (four times the bound), so
+        // that many ranges over the same bytes cannot stall the reader; past it they only lose
+        // the prefetch, not data.
+        let mut planned = std::collections::BTreeSet::new();
+        for b in blocks.take(4 * Self::MAX_PLANNED_BLOCKS) {
+            if planned.len() >= Self::MAX_PLANNED_BLOCKS {
+                break;
+            }
+            planned.insert(b);
+        }
+        let wanted: Vec<u64> = planned.into_iter().collect();
         // A prefetch of cached blocks keeps the plan of an earlier one that is still being read.
         if wanted.is_empty() {
             return Ok(());
@@ -1918,6 +2130,11 @@ impl Shared {
         self.len = file.len;
         self.whole = file.whole.clone();
         self.prefix = file.prefix.clone();
+        if self.whole.is_some() || self.prefix.is_some() {
+            self.client.response_url = file.response_url.clone();
+            self.response_origin = Some(origin(&file.response_url).to_string());
+            self.client.observe_response(&file.response_url);
+        }
         if self.whole.is_some() || end <= prefix {
             return Some(Vec::new());
         }
@@ -1932,12 +2149,30 @@ impl Shared {
                 None => missing.push(b),
             }
         }
+        if !self.blocks.is_empty() {
+            self.client.response_url = file.response_url.clone();
+            self.response_origin = Some(origin(&file.response_url).to_string());
+            self.client.observe_response(&file.response_url);
+        }
         Some(missing)
+    }
+
+    fn observe_source(&mut self) {
+        let received = origin(&self.client.response_url);
+        if self.response_origin.as_deref().is_some_and(|expected| !same_response_origin(expected, received)) {
+            self.mixed_origins = true;
+            file_cache().forget(&self.key);
+        }
+        self.response_origin.get_or_insert_with(|| received.to_string());
     }
 
     /// Takes block `b` from the process-wide cache. Returns whether it held it.
     fn load_cached_block(&mut self, b: u64) -> bool {
-        let data = file_cache().files.get(&self.key).and_then(|f| f.blocks.get(&(self.block_size, b)).cloned());
+        let data = file_cache()
+            .files
+            .get(&self.key)
+            .filter(|file| self.response_origin.as_deref().is_none_or(|expected| same_response_origin(expected, &file.response_url)))
+            .and_then(|f| f.blocks.get(&(self.block_size, b)).cloned());
         match data {
             Some(d) => {
                 if self.blocks.insert(b, d).is_none() {
@@ -1950,12 +2185,16 @@ impl Shared {
     }
 
     fn store_whole(&mut self, data: Arc<[u8]>) {
-        file_cache().store(&self.key, self.len, Slot::Whole, data.clone(), self.shared_budget);
+        if !self.mixed_origins {
+            file_cache().store((&self.key, &self.client.response_url), self.len, Slot::Whole, data.clone(), self.shared_budget);
+        }
         self.whole = Some(data);
     }
 
     fn store_prefix(&mut self, data: Arc<[u8]>) {
-        file_cache().store(&self.key, self.len, Slot::Prefix, data.clone(), self.shared_budget);
+        if !self.mixed_origins {
+            file_cache().store((&self.key, &self.client.response_url), self.len, Slot::Prefix, data.clone(), self.shared_budget);
+        }
         self.prefix = Some(data);
     }
 
@@ -1995,7 +2234,15 @@ impl Shared {
         for (i, chunk) in data.chunks(bs).enumerate() {
             let b = first_block + i as u64;
             let chunk: Arc<[u8]> = chunk.into();
-            cache.store(&self.key, self.len, Slot::Block(self.block_size, b), chunk.clone(), self.shared_budget);
+            if !self.mixed_origins {
+                cache.store(
+                    (&self.key, &self.client.response_url),
+                    self.len,
+                    Slot::Block(self.block_size, b),
+                    chunk.clone(),
+                    self.shared_budget,
+                );
+            }
             if self.blocks.insert(b, chunk).is_none() {
                 self.order.push_back(b);
             }
@@ -2027,6 +2274,7 @@ impl Shared {
             let mut data = held.to_vec();
             if from <= last {
                 let fetched = self.client.fetch(Some((from, last))).map_err(io::Error::other)?;
+                self.observe_source();
                 match fetched.status {
                     206 if fetched.data.len() as u64 == last - from + 1 => data.extend_from_slice(&fetched.data),
                     200 if fetched.data.len() as u64 == self.len => {
@@ -2049,6 +2297,7 @@ impl Shared {
 
     /// Copies the bytes at `pos` into `buf`, fetching what is missing. Returns the count copied.
     fn read_at(&mut self, pos: u64, buf: &mut [u8]) -> io::Result<usize> {
+        self.client.check_cached_consent().map_err(io::Error::other)?;
         if pos >= self.len || buf.is_empty() {
             return Ok(0);
         }
@@ -2123,6 +2372,7 @@ impl Shared {
     /// Writes the whole file to `out`: the bytes held from its start, then the rest in one
     /// request (see [`Client::stream_range`]).
     fn copy_to(&mut self, out: &mut dyn io::Write) -> Result<()> {
+        self.client.check_cached_consent()?;
         if let Some(whole) = &self.whole {
             out.write_all(whole)?;
             return Ok(());
@@ -2145,6 +2395,7 @@ impl Shared {
         }
         if at < self.len {
             self.client.stream_range(at, self.len - 1, out)?;
+            self.observe_source();
         }
         Ok(())
     }
@@ -2226,9 +2477,15 @@ pub(crate) type TestRoute = (String, u16, Vec<(String, String)>, Vec<u8>);
 /// other with a 404, recording every request. Returns its base URL.
 #[cfg(test)]
 pub(crate) fn test_routes(routes: Vec<TestRoute>) -> (String, TestRequests) {
+    test_routes_with(|_| routes)
+}
+
+#[cfg(test)]
+pub(crate) fn test_routes_with(make_routes: impl FnOnce(&str) -> Vec<TestRoute>) -> (String, TestRequests) {
     use std::io::{BufRead, BufReader, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
+    let routes = make_routes(&base);
     let seen: TestRequests = Arc::new(Mutex::new(Vec::new()));
     let record = seen.clone();
     std::thread::spawn(move || {
@@ -2270,6 +2527,39 @@ pub(crate) fn test_routes(routes: Vec<TestRoute>) -> (String, TestRequests) {
 mod tests {
     use super::*;
     use crate::vsi::listing::{xml_elements, xml_unescape};
+
+    #[test]
+    fn response_origin_changes_invalidate_all_cached_parts() {
+        let mut cache = FileCache::new();
+        cache.store(("source", "https://b.example/item.json"), 128, Slot::Block(64, 0), Arc::from(&b"bbbb"[..]), 1024);
+        cache.store(("source", "https://a.example/item.json"), 128, Slot::Block(32, 0), Arc::from(&b"aaaa"[..]), 1024);
+        let file = cache.files.get("source").unwrap();
+        assert!(!file.blocks.contains_key(&(64, 0)));
+        assert_eq!(file.blocks[&(32, 0)].as_ref(), b"aaaa");
+        assert_eq!(cache.bytes, 4);
+        cache.store(("source", "https://A.example:443/other.json"), 128, Slot::Block(64, 1), Arc::from(&b"same"[..]), 1024);
+        assert!(cache.files["source"].blocks.contains_key(&(32, 0)), "equivalent normalized origins keep their parts");
+        assert_eq!(cache.bytes, 8);
+    }
+
+    #[test]
+    fn document_fetch_refuses_a_cached_prefix_from_another_origin() {
+        let _serial = cache_test_guard();
+        let (base, _) = test_server(vec![b'a'; 64 * 1024]);
+        let remote = Remote::Url(format!("{base}/item.json"));
+        let key = Client::new(&remote, HttpOptions::from_env()).cache_key();
+        file_cache().store(
+            (&key, "https://other.example/item.json"),
+            64 * 1024,
+            Slot::Prefix,
+            Arc::from(vec![b'b'; FIRST_READ as usize]),
+            1 << 20,
+        );
+        let error = get_file_response(&remote, Redirects::Any).err().unwrap();
+        assert!(matches!(error, Error::InvalidArgument(ref message) if message.contains("different response origins")), "{error}");
+        let fresh = get_file_response(&remote, Redirects::Any).unwrap();
+        assert!(fresh.body.iter().all(|byte| *byte == b'a'), "mixed cached parts were discarded");
+    }
 
     #[test]
     fn reads_retry_after() {
@@ -2530,6 +2820,26 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 3);
     }
 
+    // A TIFF's byte counts reach `prefetch` unchecked: a count near `u64::MAX` must not wrap the
+    // range's end (which planned about 2^48 blocks and aborted on the allocation).
+    #[test]
+    fn a_prefetch_whose_end_overflows_is_clamped_to_the_file() {
+        // The read after the prefetch must find its blocks in the process-wide cache too.
+        let _guard = cache_test_guard();
+        let data = test_data();
+        let (url, count) = serve(data.clone(), Mode::Ranges);
+        let mut r = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+        let opened = count.load(Ordering::SeqCst);
+        r.prefetch(&[(16, u64::MAX - 15), (5, u64::MAX)]).unwrap();
+        // The prefetch fetched (the blocks to the file's end, or their first batch) ...
+        assert!(count.load(Ordering::SeqCst) > opened);
+        let prefetched = count.load(Ordering::SeqCst);
+        // ... so that a read just past the first block needs no request of its own.
+        let at = 4096 + 16;
+        assert_eq!(read_range(&mut r, at, 100), data[at as usize..at as usize + 100]);
+        assert_eq!(count.load(Ordering::SeqCst), prefetched);
+    }
+
     /// The inclusive byte ranges of the requests a [`test_server`] saw.
     fn requested(seen: &[Option<String>]) -> Vec<(u64, u64)> {
         seen.iter()
@@ -2566,6 +2876,7 @@ mod tests {
     // and leave the plan too, so that one of them read again once evicted is fetched alone.
     #[test]
     fn blocks_a_read_fetched_past_its_batch_leave_the_plan() {
+        let _guard = cache_eviction_test_guard();
         let data = test_data();
         let (url, seen) = test_server(data.clone());
         let opts = HttpOptions { cache_size: 16 * 4096, ..options() };
@@ -2790,6 +3101,106 @@ mod tests {
             }
         });
         (url, connections)
+    }
+
+    /// A server answering requests on each connection with successive `heads` (then the last)
+    /// and "ok", never closing a
+    /// connection itself, and the number of connections it has accepted.
+    fn serve_open_connections(heads: Vec<&'static str>, split: bool) -> (String, Arc<AtomicU64>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let connections = Arc::new(AtomicU64::new(0));
+        let accepted = connections.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                accepted.fetch_add(1, Ordering::SeqCst);
+                let heads = heads.clone();
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut request = 0;
+                    while !read_head(&mut reader).is_empty() {
+                        let head = heads[request.min(heads.len() - 1)];
+                        request += 1;
+                        let response = format!("{head}\r\nContent-Length: 2\r\n\r\nok");
+                        let result = if split {
+                            let boundary = response.find("\r\n\r\n").unwrap() + 4;
+                            stream.write_all(&response.as_bytes()[..boundary]).and_then(|_| {
+                                std::thread::sleep(std::time::Duration::from_millis(10));
+                                stream.write_all(&response.as_bytes()[boundary..])
+                            })
+                        } else {
+                            stream.write_all(response.as_bytes())
+                        };
+                        if result.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (url, connections)
+    }
+
+    /// An HTTP/1.0 response without the keep-alive option ends its connection (RFC 9112, section
+    /// 9.3): the next request opens another one rather than being sent on a connection the server
+    /// may have closed (issue #632). With `Connection: keep-alive`, or in HTTP/1.1, the
+    /// connection is reused. The server here leaves every connection open, so a reuse shows.
+    #[test]
+    fn http10_responses_without_keep_alive_end_their_connection() {
+        for (head, expected) in [
+            ("HTTP/1.0 200 OK", 3),
+            ("HTTP/1.0 200 OK\r\nConnection: Keep-Alive", 1),
+            ("HTTP/1.1 200 OK", 1),
+            ("HTTP/1.1 200 OK\r\nConnection: close", 3),
+        ] {
+            let (url, connections) = serve_open_connections(vec![head], false);
+            let agent = new_agent(&options());
+            for _ in 0..3 {
+                let mut response = agent.get(&url).call().unwrap();
+                assert_eq!(response.body_mut().read_to_vec().unwrap(), b"ok");
+            }
+            assert_eq!(connections.load(Ordering::SeqCst), expected, "{head:?}");
+        }
+    }
+
+    /// Persistence is checked again after each request on a reused connection.
+    #[test]
+    fn http10_keep_alive_can_end_after_a_reused_request() {
+        let (url, connections) = serve_open_connections(vec!["HTTP/1.0 200 OK\r\nConnection: keep-alive", "HTTP/1.0 200 OK"], false);
+        let agent = new_agent(&options());
+        for expected in [1, 1, 2] {
+            let mut response = agent.get(&url).call().unwrap();
+            assert_eq!(response.body_mut().read_to_vec().unwrap(), b"ok");
+            assert_eq!(connections.load(Ordering::SeqCst), expected);
+        }
+    }
+
+    /// Informational heads do not determine final-response persistence (RFC 9112 section 9.3).
+    #[test]
+    fn informational_headers_before_http10_do_not_keep_the_connection_alive() {
+        for split in [false, true] {
+            let (url, connections) = serve_open_connections(vec!["HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.0 200 OK"], split);
+            let agent = new_agent(&options());
+            for _ in 0..3 {
+                let mut response = agent.get(&url).call().unwrap();
+                assert_eq!(response.body_mut().read_to_vec().unwrap(), b"ok");
+            }
+            assert_eq!(connections.load(Ordering::SeqCst), 3, "split={split}");
+        }
+    }
+
+    #[test]
+    fn reads_whether_a_response_closes_its_connection() {
+        assert_eq!(closes_after(b"HTTP/1.0 200 OK\r\nContent-Le"), None);
+        assert_eq!(closes_after(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok"), Some(true));
+        assert_eq!(closes_after(b"HTTP/1.0 206 Partial\nConnection: foo, keep-alive\n\n"), Some(false));
+        assert_eq!(closes_after(b"HTTP/1.0 200 OK\r\nX-Connection: keep-alive\r\n\r\n"), Some(true));
+        assert_eq!(closes_after(b"HTTP/1.1 200 OK\r\n\r\n"), Some(false));
+        assert_eq!(closes_after(b"HTTP/1.1 103 Early Hints\r\n\r\n"), None);
+        assert_eq!(closes_after(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.0 200 OK\r\nContent-Le"), None);
+        assert_eq!(closes_after(b"HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.0 200 OK\r\n\r\n"), Some(true));
+        assert_eq!(closes_after(b"HTTP/1.0 200 OK\n\nConnection: keep-alive\r\n\r\n"), Some(true));
     }
 
     /// Remote files opened one after another, each with a client of its own, send their requests
@@ -3524,10 +3935,10 @@ mod tests {
     fn the_cache_test_guard_holds_the_caches_eviction() {
         let _serial = cache_test_guard();
         let mut cache = file_cache();
-        cache.store("guard-test://first", 5, Slot::Whole, Arc::from(&b"first"[..]), 1 << 20);
+        cache.store(("guard-test://first", "guard-test://first"), 5, Slot::Whole, Arc::from(&b"first"[..]), 1 << 20);
         // A budget the cache is already over: without the guard, this store evicts the oldest
         // entries, the one above among them.
-        cache.store("guard-test://second", 6, Slot::Whole, Arc::from(&b"second"[..]), 6);
+        cache.store(("guard-test://second", "guard-test://second"), 6, Slot::Whole, Arc::from(&b"second"[..]), 6);
         assert!(cache.files.get("guard-test://first").is_some_and(|f| f.whole.is_some()), "evicted while the guard was held");
     }
 

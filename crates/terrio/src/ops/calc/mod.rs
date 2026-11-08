@@ -43,7 +43,7 @@ pub mod expr;
 pub use eval::DType;
 pub use expr::Expr;
 
-use super::mosaic::{MosaicOptions, MosaicSource, mosaic};
+use super::mosaic::{MosaicOptions, MosaicSource, mosaic_allow_empty};
 use super::{Grid, build_raster};
 use crate::{Error, RasterDataset, Result};
 use eval::{Arr, Data, Evaluator, Val};
@@ -455,7 +455,7 @@ pub fn calc(inputs: &[CalcInput], o: &CalcOptions) -> Result<RasterDataset> {
         }
         let mo = MosaicOptions { extent: Some((rect.x, rect.y, rect.max_x(), rect.max_y())), ..Default::default() };
         for (s, a) in sources.iter_mut().zip(inputs) {
-            let m = mosaic(&[MosaicSource { path: a.name.clone(), ds: a.ds }], &mo)?;
+            let m = mosaic_allow_empty(&[MosaicSource { path: a.name.clone(), ds: a.ds }], &mo)?;
             *s = Cow::Owned(m);
         }
         gt_check = sources[0].geo_transform();
@@ -473,8 +473,6 @@ pub fn calc(inputs: &[CalcInput], o: &CalcOptions) -> Result<RasterDataset> {
         CalcNodata::None => None,
         CalcNodata::Value(v) => Some(Val::Float(v)),
     };
-    let in_nodata: Vec<Option<f64>> = sources.iter().map(|s| if o.hide_nodata { None } else { s.nodata() }).collect();
-
     // Evaluate in chunks of rows.
     let n = width * height;
     let chunk = (262_144 / width.max(1)).max(1) * width;
@@ -490,7 +488,9 @@ pub fn calc(inputs: &[CalcInput], o: &CalcOptions) -> Result<RasterDataset> {
             for (i, (a, s)) in inputs.iter().zip(&sources).enumerate() {
                 let band = if all_bands_index == Some(i) { b + 1 } else { a.band };
                 let arr = read_chunk(&s.raster, band, start, end);
-                if let Some(nd) = in_nodata[i] {
+                if !o.hide_nodata
+                    && let Some(nd) = s.band_nodata(band)
+                {
                     let eq = eval::binary_compare_eq(&Val::Arr(arr.clone()), &Val::Float(nd))?;
                     let m = mask.get_or_insert_with(|| vec![false; len]);
                     for (m, e) in m.iter_mut().zip(eq) {
@@ -628,6 +628,25 @@ mod tests {
         assert_eq!(i.geo_transform()[0], 1.0);
         let c = ds(vec![2.0; 6], 3, 2, DataType::I16, None, 0.0);
         assert!(calc(&[input("A", &a), input("C", &c)], &base).is_err());
+    }
+
+    /// An off-window input is aligned to fill pixels, as in GDAL 3.13.3 gdal_calc.
+    #[test]
+    fn projwin_keeps_fill_for_nonintersecting_inputs() {
+        for nodata in [None, Some(-99.0)] {
+            let a = ds(vec![1.0; 4], 2, 2, DataType::F32, nodata, 0.0);
+            let b = ds(vec![2.0; 4], 2, 2, DataType::F32, nodata, 10.0);
+            let options = CalcOptions {
+                calc: vec!["A + B".into()],
+                extent: CalcExtent::Union,
+                projwin: Some((0.0, 2.0, 2.0, 0.0)),
+                ..Default::default()
+            };
+            let out = calc(&[input("A", &a), input("B", &b)], &options).unwrap();
+            assert_eq!((out.raster.cols, out.raster.rows), (3, 3));
+            let expected = if nodata.is_some() { vec![out.nodata().unwrap(); 9] } else { vec![1., 1., 0., 1., 1., 0., 0., 0., 0.] };
+            assert_eq!(out.raster.data.to_f64_vec(), expected);
+        }
     }
 
     #[test]

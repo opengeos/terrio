@@ -25,6 +25,20 @@ use crate::{Error, Result};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+/// Whether a name carries a URL scheme, GDAL subdataset prefix or `/vsi` prefix rather
+/// than naming a plain local file. Windows drive letters are part of local paths, including
+/// drive-relative names (`C:file`) and verbatim paths (`\\?\C:\dir`). No scheme or GDAL
+/// subdataset prefix is a single letter. This classification is independent of the host OS.
+pub(crate) fn is_gdal_name(name: &str) -> bool {
+    if name.starts_with("/vsi") {
+        return true;
+    }
+    let name = name.strip_prefix(r"\\?\").unwrap_or(name);
+    let bytes = name.as_bytes();
+    let rest = if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' { &name[2..] } else { name };
+    rest.contains(':')
+}
+
 /// Extensions of the files that make up a shapefile besides the `.shp` itself.
 #[cfg(remote)]
 const SHAPEFILE_SIDECARS: &[&str] = &["shx", "dbf", "prj", "cpg"];
@@ -1052,6 +1066,40 @@ impl Seek for RemoteArchive {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_paths_are_not_gdal_names() {
+        for name in [
+            "",
+            "missing.tif",
+            "/tmp/missing.tif",
+            r"C:\data\missing.tif",
+            "C:/data/missing.tif",
+            "C:missing.tif",
+            r"\\?\C:\data\missing.tif",
+            r"\\server\share\missing.tif",
+            r"\\?\UNC\server\share\missing.tif",
+        ] {
+            assert!(!super::is_gdal_name(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn vsi_schemes_and_subdatasets_are_gdal_names() {
+        for name in [
+            "/vsimem/example.grb",
+            "/vsizip/archive.zip/image.tif",
+            "/vsis3/bucket:key.tif",
+            "gdal:missing.tif",
+            "GDAL:C:/data/input.tif",
+            "HDF5:\"C:/data/input.h5\"://dataset",
+            "https://example.com/input.tif",
+            "s3://bucket/missing.tif",
+            "é:input.tif",
+        ] {
+            assert!(super::is_gdal_name(name), "{name}");
+        }
+    }
+
     #[test]
     fn query_component_escapes_require_two_hex_digits() {
         assert_eq!(super::decode_query_component("%+1-%G0-%1-%"), "% 1-%G0-%1-%");

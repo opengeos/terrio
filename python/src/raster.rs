@@ -9,6 +9,7 @@ use terrio::crs::SpatialRef;
 use terrio::formats::RasterDriver;
 use terrio::ops::Resampling;
 use terrio::ops::overview::OverviewSelection;
+use terrio::ops::warp::RasterDataRef;
 use terrio::{DataType, LazyRaster, RasterDataset, RasterWriteOptions, ResampledReadOptions, Window, WindowOptions};
 use wbraster::raster::RasterData;
 
@@ -39,6 +40,19 @@ impl PyRaster {
             Some(ds) => f(ds),
             None => f(&self.inner.read()?),
         }
+    }
+
+    /// Writes the raster to `path` with `options`, streaming tile archives by tile row when lazy
+    /// and falling back to a whole read when the source inventory is unavailable.
+    pub(crate) fn write_with_options(&mut self, py: Python<'_>, path: &str, mut options: RasterWriteOptions) -> PyResult<()> {
+        py.detach_result(|| {
+            self.inner.prepare_output_mask(path, &mut options, Window::full(self.inner.width(), self.inner.height()), None)?;
+            if self.inner.can_stream_tile_archive(path, &options) {
+                return self.inner.write(path, &options);
+            }
+            self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))
+        })
+        .py()
     }
 
     fn crs_ref(&self) -> SpatialRef {
@@ -111,6 +125,34 @@ pub(crate) fn from_numpy(array: &Bound<'_, PyUntypedArray>) -> PyResult<RasterDa
         return Ok(RasterData::U8(a.as_array().iter().map(|b| *b as u8).collect()));
     }
     Err(invalid(format!("unsupported array dtype {dtype}: use an integer or float32/float64 array")))
+}
+
+/// Runs `f` on a NumPy array's values in C order, read where they are when the array is
+/// C-contiguous and not writeable, copied first (`from_numpy`) otherwise. `f` may release the
+/// GIL only when `borrowed` is false. A read-only flag does not exclude writable aliases, so
+/// the borrowed path must keep Python threads from mutating those aliases. As with other NumPy
+/// borrows, callers must exclude native writers already running outside the GIL. While borrowed,
+/// `f` must not call Python (including warning callbacks or error conversion).
+pub(crate) fn with_numpy<R>(array: &Bound<'_, PyUntypedArray>, f: impl FnOnce(RasterDataRef<'_>, bool) -> R) -> PyResult<R> {
+    let py = array.py();
+    let writeable: bool = array.getattr("flags")?.getattr("writeable")?.extract()?;
+    if !writeable && array.is_c_contiguous() {
+        let dtype = array.dtype();
+        macro_rules! try_types {
+            ($($t:ty => $v:ident),*) => {
+                $(if dtype.is_equiv_to(&numpy::dtype::<$t>(py))
+                    && let Ok(a) = array.cast::<PyArrayDyn<$t>>()
+                    && let Ok(a) = a.try_readonly()
+                    && let Ok(values) = a.as_slice()
+                {
+                    return Ok(f(RasterDataRef::$v(values), true));
+                })*
+            };
+        }
+        try_types!(u8 => U8, i8 => I8, u16 => U16, i16 => I16, u32 => U32, i32 => I32, u64 => U64, i64 => I64, f32 => F32, f64 => F64);
+    }
+    let data = from_numpy(array)?;
+    Ok(f(RasterDataRef::from(&data), false))
 }
 
 /// Parses a `band` argument: `None` (all bands), an int, or a sequence of ints. Returns the bands
@@ -643,6 +685,35 @@ impl PyRaster {
         mask.map(|m| to_numpy(py, RasterData::U8(m), &[window.height, window.width])).transpose()
     }
 
+    /// Internal overview metadata from the native mask discovery, without reading pixels.
+    fn _overview_has_mask(&self, overview: usize) -> PyResult<bool> {
+        self.inner.overviews().get(overview).ok_or_else(|| invalid(format!("no overview {overview}")))?;
+        Ok(self.inner.level_has_own_mask(overview))
+    }
+
+    /// Internal xarray metadata for a selected overview's own nodata values.
+    fn _overview_nodata(&self, overview: usize) -> PyResult<Vec<Option<f64>>> {
+        self.inner.overviews().get(overview).ok_or_else(|| invalid(format!("no overview {overview}")))?;
+        let bands: Vec<usize> = (1..=self.inner.band_count()).collect();
+        Ok(self.inner.level_band_nodata(&bands, Some(overview)))
+    }
+
+    /// Internal xarray mask read: only the selected level's own dataset mask, without
+    /// sampling the full-resolution mask when an overview has none (GDAL 3.13.3).
+    #[pyo3(signature = (window, overview=None))]
+    fn _read_level_mask<'py>(
+        &mut self,
+        py: Python<'py>,
+        window: (usize, usize, usize, usize),
+        overview: Option<usize>,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let (x, y, width, height) = window;
+        let window = Window::new(x, y, width, height);
+        let inner = &mut self.inner;
+        let mask = py.detach_result(|| inner.read_level_mask(window, overview)).py()?;
+        mask.map(|m| to_numpy(py, RasterData::U8(m), &[height, width])).transpose()
+    }
+
     /// Creates a raster from a NumPy array.
     ///
     /// Args:
@@ -773,23 +844,12 @@ impl PyRaster {
             }
             options_.mask = Some(m.as_array().iter().copied().collect());
         }
-        options_.creation_options = options.unwrap_or_default().into_iter().collect();
+        options_.creation_options = validated_creation_options(options)?;
         options_.band_metadata = band_metadata.unwrap_or_default().iter().map(parse_band_metadata).collect::<PyResult<_>>()?;
         options_.color_table = colormap.unwrap_or_default();
         options_.overviews = overviews.unwrap_or_default();
         options_.overview_resampling = overview_resampling;
-        let mut options = options_;
-        // A raster read by window is written as a tile archive a tile row at a time.
-        let driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(path));
-        let tile_archive = matches!(driver, Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles));
-        py.detach_result(|| {
-            self.inner.prepare_output_mask(path, &mut options, Window::full(self.inner.width(), self.inner.height()), None)
-        })
-        .py()?;
-        if self.inner.dataset().is_none() && tile_archive {
-            return py.detach_result(|| self.inner.write(path, &options)).py();
-        }
-        py.detach_result(|| self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
+        self.write_with_options(py, path, options_)
     }
 
     /// Encodes the raster in a file format, in memory, preserving its dataset mask for GeoTIFF/COG.
@@ -884,6 +944,32 @@ pub(crate) fn write_options(
 ) -> PyResult<RasterWriteOptions> {
     let driver = driver.map(|d| RasterDriver::from_name(d).ok_or_else(|| invalid(format!("unknown raster format '{d}'")))).transpose()?;
     Ok(RasterWriteOptions { driver, compression: compress, tile_size, bigtiff, ..Default::default() })
+}
+
+/// Output options shared by operations that write a raster destination.
+pub(crate) fn write_options_with_creation(
+    driver: Option<&str>,
+    compress: Option<String>,
+    tile_size: Option<u32>,
+    bigtiff: bool,
+    creation_options: Option<std::collections::BTreeMap<String, String>>,
+) -> PyResult<RasterWriteOptions> {
+    let mut options = write_options(driver, compress, tile_size, bigtiff)?;
+    options.creation_options = validated_creation_options(creation_options)?;
+    Ok(options)
+}
+
+/// Raster creation-option mappings have case-insensitive, unambiguous names across writers.
+pub(crate) fn validated_creation_options(mapping: Option<std::collections::BTreeMap<String, String>>) -> PyResult<Vec<(String, String)>> {
+    let mut keys = std::collections::HashSet::new();
+    let mut options = Vec::new();
+    for (key, value) in mapping.unwrap_or_default() {
+        if !keys.insert(key.to_ascii_uppercase()) {
+            return Err(invalid(format!("duplicate creation option '{key}' (names are case-insensitive)")));
+        }
+        options.push((key, value));
+    }
+    Ok(options)
 }
 
 /// `(key, value)` string pairs from a mapping or a sequence of pairs, in order.
@@ -1018,7 +1104,7 @@ impl PyGeoTiffWriter {
         let mut header = RasterDataset::new(raster, nodata.is_some());
         header.set_geo_transform(transform);
         let mut o = write_options(Some("GTiff"), compress, tile_size, bigtiff)?;
-        o.creation_options = options.unwrap_or_default().into_iter().collect();
+        o.creation_options = validated_creation_options(options)?;
         o.band_metadata = band_metadata.unwrap_or_default().iter().map(parse_band_metadata).collect::<PyResult<_>>()?;
         o.color_table = colormap.unwrap_or_default();
         o.gcps = parse_gcps(gcps);

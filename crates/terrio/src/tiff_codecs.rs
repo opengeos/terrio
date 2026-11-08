@@ -689,19 +689,45 @@ impl ChunkCodec {
                 let wc = w * spp;
                 let mut tmp = vec![0u8; row];
                 for r in data.chunks_exact_mut(row) {
-                    for i in spp..row {
-                        r[i] = r[i].wrapping_add(r[i - spp]);
-                    }
-                    tmp.copy_from_slice(r);
-                    for v in 0..wc {
-                        let mut be = [0u8; 8];
-                        for (b, byte) in be[..size].iter_mut().enumerate() {
-                            *byte = tmp[b * wc + v];
+                    // The sums along the row, into `tmp`.
+                    if spp == 1 {
+                        let mut sum = 0u8;
+                        for (t, &x) in tmp.iter_mut().zip(r.iter()) {
+                            sum = sum.wrapping_add(x);
+                            *t = sum;
                         }
-                        let out = &mut r[v * size..(v + 1) * size];
-                        out.copy_from_slice(&be[..size]);
-                        if cfg!(target_endian = "little") {
-                            out.reverse();
+                    } else {
+                        tmp[..spp].copy_from_slice(&r[..spp]);
+                        for i in spp..row {
+                            tmp[i] = r[i].wrapping_add(tmp[i - spp]);
+                        }
+                    }
+                    // Each sample from its bytes, one in each plane: most significant first, so
+                    // big-endian, in native-endian order.
+                    macro_rules! join {
+                        ($n:literal, $t:ty) => {{
+                            let planes: [&[u8]; $n] = std::array::from_fn(|b| &tmp[b * wc..(b + 1) * wc]);
+                            for (v, out) in r.as_chunks_mut::<$n>().0.iter_mut().enumerate() {
+                                *out = <$t>::from_be_bytes(std::array::from_fn(|b| planes[b][v])).to_ne_bytes();
+                            }
+                        }};
+                    }
+                    match size {
+                        2 => join!(2, u16),
+                        4 => join!(4, u32),
+                        8 => join!(8, u64),
+                        _ => {
+                            for v in 0..wc {
+                                let mut be = [0u8; 8];
+                                for (b, byte) in be[..size].iter_mut().enumerate() {
+                                    *byte = tmp[b * wc + v];
+                                }
+                                let out = &mut r[v * size..(v + 1) * size];
+                                out.copy_from_slice(&be[..size]);
+                                if cfg!(target_endian = "little") {
+                                    out.reverse();
+                                }
+                            }
                         }
                     }
                 }
@@ -1729,6 +1755,36 @@ mod tests {
         // A chunk that ends short is an error; one that would expand further is cut.
         assert!(decompress(32773, raw.clone(), 9).is_err());
         assert_eq!(decompress(32773, raw, 4).unwrap(), vec![1, 2, 3, 9]);
+    }
+
+    /// The floating-point predictor (3) is undone for Float16, Float32 and Float64 samples, one to
+    /// four per pixel, each against the values the rows were built from.
+    #[test]
+    fn floating_point_predictor_is_undone_for_every_sample_size_and_count() {
+        for (sample, spp) in [Sample::F16, Sample::F32, Sample::F64].into_iter().flat_map(|s| (1..=4).map(move |p| (s, p))) {
+            let (size, w, rows) = (sample.size(), 7, 3);
+            let wc = w * spp;
+            let bits = (size * 8) as u16;
+            let codec = ChunkCodec { codec: Codec::Lzma, sample, spp, predictor: 3, bits, ..packed(8, spp) };
+            // Samples of arbitrary bytes, most significant first.
+            let mut seed = 0x9E37_79B9u32;
+            let mut next = move || {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 24) as u8
+            };
+            let values: Vec<Vec<u8>> = (0..rows * wc).map(|_| (0..size).map(|_| next()).collect()).collect();
+            let (mut stored, mut expected) = (Vec::new(), Vec::new());
+            for row in values.chunks(wc) {
+                // The row as byte planes, then differenced at the distance of a pixel's samples.
+                let planes: Vec<u8> = (0..size).flat_map(|b| row.iter().map(move |v| v[b])).collect();
+                stored.extend((0..planes.len()).map(|i| if i < spp { planes[i] } else { planes[i].wrapping_sub(planes[i - spp]) }));
+                for v in row {
+                    expected.extend(if cfg!(target_endian = "little") { v.iter().rev().copied().collect::<Vec<u8>>() } else { v.clone() });
+                }
+            }
+            codec.unpredict(&mut stored, w);
+            assert_eq!(stored, expected, "{sample:?} with {spp} samples");
+        }
     }
 
     #[test]

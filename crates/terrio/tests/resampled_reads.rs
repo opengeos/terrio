@@ -1,5 +1,7 @@
 //! Reads into outputs of other sizes (`LazyRaster::read_resampled` and its masks) of the rasters
 //! of `tests/data/resampled_reads`, against what GDAL 3.13.2 reads of them
+//! (the RGB external, mixed-metadata internal/external and masked external cases use GDAL 3.13.3;
+//! each case records `gdal_version`)
 //! (`scripts/make_resampled_reads_fixtures.py`): pixels through `RasterIO` (the dataset's for
 //! several bands, as rasterio reads them, the band's for one) and masks through `GetMaskBand()`,
 //! or, for a level read alone, the pixels `gdal_translate -ovr` writes. Values are compared bit
@@ -133,13 +135,13 @@ fn difference(read: &[f64], expected: &[f64], float: bool, case: &Case) -> Optio
     (rounded > (read.len() / 100).max(1)).then(|| format!("{rounded} of {} values rounded otherwise (first {first:?})", read.len()))
 }
 
-/// Every case, against GDAL 3.13.2's reads, with GDAL 3.13's behavior selected (it skips NaN
-/// values in the masked chunks of the kernels; GDAL 3.12, the default, does not).
+/// Every case against its recorded reference: original cases 3.13.2, added cases 3.13.3,
+/// with GDAL 3.13 behavior selected (masked convolution chunks skip NaN values).
 #[test]
 fn resampled_reads_are_gdal_reads() {
     terrio::config::push_scope([("TERRIO_GDAL_COMPAT".to_string(), Some("3.13".to_string()))].into());
     let cases = cases();
-    assert_eq!(cases.len(), 238);
+    assert_eq!(cases.len(), 258);
     let mut failures = Vec::new();
     for case in &cases {
         let mut raster = terrio::open_raster_lazy(&case.path()).unwrap();
@@ -296,6 +298,26 @@ fn shared_handles_weight_overviews_by_their_own_masks() {
             let (b, b_masks) = shared.read_resampled_with_masks(&o).unwrap();
             assert_eq!(read_values(&a.raster.data), read_values(&b.raster.data), "{resampling:?} {overview:?}");
             assert_eq!(a_masks, b_masks, "{resampling:?} {overview:?}");
+        }
+    }
+}
+
+/// A shared handle chooses again among an external `.ovr`'s other images when `RasterIO`
+/// chooses that file's image, as the reader it shares does: the reads GDAL makes from the
+/// `.ovr`'s second image.
+#[test]
+fn shared_handles_choose_among_external_overviews_twice() {
+    for file in ["rgb_external_overviews.tif", "mixed_external_overviews.tif", "masked_external_overviews.tif"] {
+        let path = dir().join(file);
+        let mut direct = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        let mut shared = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap().shared();
+        let expected: Vec<Case> = cases().into_iter().filter(|c| c.file == file).collect();
+        assert!(!expected.is_empty());
+        for case in &expected {
+            let a = read_values(&direct.read_resampled(&case.options).unwrap().raster.data);
+            let b = read_values(&shared.read_resampled(&case.options).unwrap().raster.data);
+            assert_eq!(a, b, "{}", case.name());
+            assert_eq!(difference(&b, &values(&case.data, &case.dtype), false, case), None, "{}", case.name());
         }
     }
 }

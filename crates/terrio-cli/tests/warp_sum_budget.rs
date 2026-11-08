@@ -38,7 +38,8 @@ fn a_sum_over_its_memory_budget_is_refused_before_its_source_is_read() {
     // shares: 12,288 bytes at full resolution, 768 for the overview's 64 pixels.
     write_ones(d, "ones.tif", 1);
     assert!(run(d, "20000", &["overviews", "ones.tif", "4", "-r", "average"]).status.success());
-    let sum = ["warp", "ones.tif", "out.tif", "-r", "sum", "--ts", "1", "1", "--ot", "Float64"];
+    let base = ["warp", "ones.tif", "out.tif", "-r", "sum", "--ts", "1", "1", "--ot", "Float64"];
+    let sum = [&base[..], &["--overview", "NONE"]].concat();
 
     let refused = run(d, "10000", &sum);
     let message = String::from_utf8_lossy(&refused.stderr);
@@ -49,12 +50,30 @@ fn a_sum_over_its_memory_budget_is_refused_before_its_source_is_read() {
     let under = run(d, "20000", &sum);
     assert!(under.status.success(), "{}", String::from_utf8_lossy(&under.stderr));
     assert_eq!(total(&d.join("out.tif")), 1024.0);
-    let level = run(d, "10000", &[&sum[..], &["--overview", "0"]].concat());
+    // The level the message names: its 64 pixels, each counted for the 16 source pixels it stands for.
+    let level = run(d, "10000", &[&base[..], &["--overview", "0"]].concat());
     assert!(level.status.success(), "{}", String::from_utf8_lossy(&level.stderr));
-    assert_eq!(total(&d.join("out.tif")), 64.0);
+    assert_eq!(total(&d.join("out.tif")), 1024.0);
     let average = run(d, "10000", &["warp", "ones.tif", "avg.tif", "-r", "average", "--ts", "1", "1", "--overview", "NONE"]);
     assert!(average.status.success(), "{}", String::from_utf8_lossy(&average.stderr));
     assert_eq!(total(&d.join("avg.tif")), 1.0);
+}
+
+#[test]
+fn an_automatic_sum_reads_the_overview_within_a_budget_the_full_resolution_exceeds() {
+    // 32 x 32 Float32 ones with an overview at 4, summed into 1 x 1 under 10,000 bytes: the full
+    // resolution would hold 12,288 bytes; `--overview AUTO`, the default, reads the overview (768)
+    // and counts each of its pixels for the 16 source pixels it stands for.
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    write_ones(d, "ones.tif", 1);
+    assert!(run(d, "20000", &["overviews", "ones.tif", "4", "-r", "average"]).status.success());
+    for auto in [&[][..], &["--overview", "AUTO"][..]] {
+        let args = [&["warp", "ones.tif", "out.tif", "-r", "sum", "--ts", "1", "1", "--ot", "Float64"][..], auto].concat();
+        let read = run(d, "10000", &args);
+        assert!(read.status.success(), "{auto:?}: {}", String::from_utf8_lossy(&read.stderr));
+        assert_eq!(total(&d.join("out.tif")), 1024.0, "{auto:?}");
+    }
 }
 
 /// An 18919 x 18919 Float32 VRT holding 32 x 32 ones in its corner.

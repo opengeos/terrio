@@ -92,7 +92,7 @@ fn apply(ed: &mut Editor, layers: &[Layer], mode: UpdateMode, preserve_declared_
     // The schema.
     let mut entries = Vec::new();
     for (rowid, payload) in ed.scan(1)? {
-        let values: Vec<w::Value> = Db::record_values(&payload).into_iter().map(gu::to_w).collect();
+        let values: Vec<w::Value> = Db::record_values(&payload)?.into_iter().map(gu::to_w).collect();
         let text = |i: usize| values.get(i).and_then(gu::text).unwrap_or_default().to_string();
         let root = values.get(3).and_then(gu::int).unwrap_or(0) as u32;
         entries.push(Entry { rowid, kind: text(0), name: text(1), table: text(2), root, sql: text(4), values: values.clone() });
@@ -110,8 +110,11 @@ fn apply(ed: &mut Editor, layers: &[Layer], mode: UpdateMode, preserve_declared_
                 if gu::keywords_contain(&e.sql, "WITHOUT ROWID") {
                     return not_in_place(format!("'{}' is a WITHOUT ROWID table", e.name));
                 }
-                let rows =
-                    ed.scan(e.root)?.into_iter().map(|(id, p)| (id, Db::record_values(&p).into_iter().map(gu::to_w).collect())).collect();
+                let rows = ed
+                    .scan(e.root)?
+                    .into_iter()
+                    .map(|(id, p)| Ok((id, Db::record_values(&p)?.into_iter().map(gu::to_w).collect())))
+                    .collect::<Result<Vec<_>>>()?;
                 tables.push(Table { name: e.name.clone(), sql: e.sql.clone(), rows, autoindexes: r::autoindex_columns(&e.sql) });
             }
             "table" if e.root == 0 => objects.push(object("table", e)),
@@ -256,8 +259,11 @@ fn append(ed: &mut Editor, d: &mut Database, entries: &[Entry], dropped: &BTreeS
     let records: Vec<(i64, Vec<u8>)> = crate::par::map_range(enc.rows.len(), |i| (enc.rows[i].0, w::record(&enc.rows[i].1)));
     ed.append(table.root, records)?;
     if !indexes.is_empty() {
-        let rows: Vec<(i64, Vec<w::Value>)> =
-            ed.scan(table.root)?.into_iter().map(|(id, p)| (id, Db::record_values(&p).into_iter().map(gu::to_w).collect())).collect();
+        let rows: Vec<(i64, Vec<w::Value>)> = ed
+            .scan(table.root)?
+            .into_iter()
+            .map(|(id, p)| Ok((id, Db::record_values(&p)?.into_iter().map(gu::to_w).collect())))
+            .collect::<Result<_>>()?;
         for (root, cols) in indexes {
             ed.rebuild_index(root, &w::index_keys(&rows, &cols))?;
         }
@@ -433,7 +439,7 @@ impl Rtree {
             parents: BTreeMap::new(),
         };
         let root = ed.lookup(t.node_root, 1)?.ok_or_else(|| Error::InvalidData(format!("R-tree '{rt}' has no root node")))?;
-        let blob = match Db::record_values(&root).pop() {
+        let blob = match Db::record_values(&root)?.pop() {
             Some(r::Value::Blob(b)) => b,
             _ => return Err(Error::InvalidData(format!("R-tree '{rt}': invalid root node"))),
         };
@@ -481,7 +487,7 @@ impl Rtree {
     fn node(&mut self, ed: &mut Editor, id: i64) -> Result<&mut Vec<Cell>> {
         if !self.nodes.contains_key(&id) {
             let rec = ed.lookup(self.node_root, id)?.ok_or_else(|| Error::InvalidData(format!("R-tree node {id} missing")))?;
-            let cells = match Db::record_values(&rec).pop() {
+            let cells = match Db::record_values(&rec)?.pop() {
                 Some(r::Value::Blob(b)) if b.len() >= 4 => Self::decode(&b),
                 _ => return Err(Error::InvalidData(format!("R-tree node {id} invalid"))),
             };
