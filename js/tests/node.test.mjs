@@ -1509,6 +1509,18 @@ test("remote Zarr stores are read by window", { skip: needs("zarr") }, async () 
       array: "a", fetch: forbiddenMetadata, allowMissingMetadata403: true,
     });
     assert.equal((await anonymous.readBand(1, [0, 0, 1, 1]))[0], 0);
+    mkdirSync(join(dir, "v2.zarr"));
+    writeFileSync(join(dir, "v2.zarr/.zarray"), JSON.stringify({
+      zarr_format: 2, shape: [2, 2], chunks: [2, 2], dtype: "<u2", compressor: null,
+      fill_value: 0, order: "C", filters: null,
+    }));
+    await assert.rejects(terrio.openUrl(server.url + "v2.zarr", {
+      allowMissingMetadata403: true,
+      fetch: (url, options) => url.endsWith("/.zattrs")
+        ? Promise.resolve(new Response("", { status: 403 })) : fetch(url, options),
+    }), /403/);
+    await assert.rejects(terrio.openUrl(server.url + "missing.zarr?token=secret#view"), e =>
+      /no Zarr metadata/.test(e.message) && !e.message.includes("secret"));
     // A tiny inner chunk beyond 4 GiB: the WASM heap only holds its index and one 128-byte chunk.
     const largeOffset = 2 ** 32 + 128;
     const largeIndex = Buffer.alloc(260, 255);

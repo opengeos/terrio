@@ -716,8 +716,9 @@ impl LazyRaster {
 
     /// Opens the array at `key` (`""` for the store's root: a group's single array) of a Zarr
     /// store whose objects the caller fetches (see [`crate::sparse::SparseObjects`]), named
-    /// `name` in messages, read by window as a remote store is. Opening and reads fail until the
-    /// objects they need are fetched, and are then run again.
+    /// `name` in messages, read by window as a remote store is. A group requires consolidated
+    /// metadata to discover its arrays; otherwise pass the array's key explicitly. Opening and
+    /// reads fail until the objects they need are fetched, and are then run again.
     #[cfg(feature = "zarr")]
     pub fn from_zarr_objects(objects: std::sync::Arc<crate::sparse::SparseObjects>, name: &str, key: &str) -> Result<Self> {
         crate::formats::check_driver_allowed("Zarr", "a Zarr store", crate::formats::Kind::Raster)?;

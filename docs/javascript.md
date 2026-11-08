@@ -55,8 +55,8 @@ spatial index by bounding box, decoding only the features found; a file without 
 whole. `openOapif(url, options)` reads OGC API Features services over `fetch`.
 
 HTTP 403 fails by default. For anonymous stores returning 403 for absent metadata, explicitly
-set `allowMissingMetadata403: true`; this accepts ambiguous metadata absence. Denied chunks and
-shards always fail.
+set `allowMissingMetadata403: true`; this accepts ambiguous version/existence probes. Denied
+attribute documents, chunks and shards always fail.
 
 A remote Zarr store (v2 or v3, sharded or not) opens with `openUrl` too: the store or group at
 the URL (`.zarr`, or `format: "Zarr"`) and the array `array` within it, read as a raster by

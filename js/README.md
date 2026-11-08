@@ -71,8 +71,8 @@ whole. `openOapif(url, options)` reads OGC API Features services over `fetch`.
 
 Remote Zarr requests fail on HTTP 403 by default, including metadata. For anonymous object
 stores that return 403 for absent metadata keys, explicitly set `allowMissingMetadata403: true`.
-This accepts missing metadata ambiguity; use it only for stores you know are publicly readable.
-Denied chunks and shards always fail, including with this option.
+This accepts version/existence-probe ambiguity; use it only for known public stores.
+Denied attribute documents, chunks and shards always fail, including with this option.
 
 A remote Zarr store (v2 or v3, sharded or not) opens with `openUrl` too: the store or group at
 the URL (`.zarr`, or `format: "Zarr"`) and the array `array` within it, read as a raster by

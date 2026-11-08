@@ -45,7 +45,7 @@ struct OpenUrlOptions {
     format: Option<String>,
     /// Zarr: the array to read, its path within the store (or group) at the URL.
     array: Option<String>,
-    /// Opt in to anonymous object stores returning 403 for absent metadata keys.
+    /// Opt in to 403 for anonymous version/existence probes; attributes remain strict.
     allow_missing_metadata403: bool,
 }
 
@@ -205,7 +205,7 @@ impl Fetcher {
                     (404, _) => None,
                     (403, _)
                         if self.allow_missing_metadata403
-                            && matches!(key.rsplit('/').next(), Some(".zmetadata" | ".zarray" | ".zattrs" | ".zgroup" | "zarr.json")) =>
+                            && matches!(key.rsplit('/').next(), Some(".zmetadata" | ".zarray" | ".zgroup" | "zarr.json")) =>
                     {
                         None
                     }
@@ -349,7 +349,8 @@ impl State {
             }
             self.fetcher.fetch_into(&self.file, &missing).await?;
         }
-        Err(JsError::new(&format!("{}: the read still needed more bytes after {MAX_ROUNDS} rounds of requests", self.fetcher.url)))
+        let name = self.fetcher.url.split(['?', '#']).next().unwrap_or("remote");
+        Err(JsError::new(&format!("{name}: the read still needed more bytes after {MAX_ROUNDS} rounds of requests")))
     }
 }
 
@@ -426,7 +427,7 @@ fn check_built(format: &str) -> Result<(), JsError> {
 /// `cacheSize` (256 MB kept between reads, not during one: a read holds all the bytes it needs),
 /// `format` (when the URL does not tell it), `array` (Zarr), `allowMissingMetadata403`
 /// (false: opt in only for anonymous stores that report absent metadata as forbidden;
-/// denied chunks and shards always fail).
+/// denied attribute documents, chunks and shards always fail).
 ///
 /// Servers must answer range requests; in browsers, cross-origin servers must allow the `Range`
 /// header and expose `Content-Range` (CORS).
@@ -469,7 +470,7 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
     {
         check_built("Zarr")?;
         #[cfg(feature = "zarr")]
-        return open_zarr(url, fetcher, o).await;
+        return open_zarr(path.to_string(), fetcher, o).await;
     }
     // Blocks of 512 bytes to 16 MiB: the first request is one block.
     let block = o.block_size.clamp(512, 16 << 20);
