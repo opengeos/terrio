@@ -64,7 +64,7 @@ than Terrio's raster/vector library:
 
 ```toml
 [dependencies]
-terrio-crs = "0.2"
+terrio-crs = "0.2.3"
 ```
 
 The [published crate](https://crates.io/crates/terrio-crs/0.2.3) works offline by
