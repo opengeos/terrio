@@ -32,6 +32,10 @@
   total. Sizes and geotransforms match GDAL 3.13.3 in all three cases; per-pixel values of a
   reprojected sum still differ from GDAL's.
 
+- `ui` and `view` open the browser through a private HTML redirect file, keeping the session
+  token out of process arguments. If a sandboxed browser cannot read the file, paste the
+  printed address manually or use `--no-open`.
+
 - Bilinear, cubic, cubic spline and Lanczos reads of VRT and mosaic sources with nodata
   average each source row over its valid pixels, then the rows over the valid ones, as GDAL's
   `RasterIOResampled` does, rather than all valid weights at once. For 8- and 16-bit and

@@ -3816,9 +3816,15 @@ button opens the dataset in a [map](#view) in a new tab, drawn with the form's `
 
 The server runs commands with your permissions, including those that overwrite or delete files, so
 it listens on the loopback interface only and each API request must carry a random token, which is
-part of the printed address: treat the address as a password. The token is briefly on the command
-line of the process that opens the browser, where other users of a shared computer could read it;
-use `--no-open` there and paste the address yourself. To use it on another computer, forward the
+part of the printed address: treat the address as a password. Browser launchers receive a private
+HTML redirect file's path, so the token stays out of process arguments. On Unix, the file has
+permissions 0600 inside a 0700 temporary directory. Sandboxed browsers, including some Snap
+packages, may be unable to read it; paste the printed address manually if automatic opening
+fails, or use `--no-open`. The same launch behavior applies to `terrio view`.
+The server runs until process termination and has no graceful shutdown. Each successful browser
+launch leaves a private `terrio-ui-*` directory in the system temporary directory when the server
+stops, including with Ctrl-C. Its token expires when the server stops; remove the directory afterward.
+To use it on another computer, forward the
 port (`ssh -L 8080:127.0.0.1:8080 host`, then `terrio ui --port 8080 --no-open` on the host).
 
 As with [MCP tools](#mcp), a run returns up to 100,000 bytes of output when the command ends, a
