@@ -1314,6 +1314,11 @@ The `translate-overviews` conformance suite (`scripts/compare_translate_overview
 compares `terrio translate` with `gdal_translate -outsize`, `-tr` and `-ovr` on levels holding
 markers, real USGS terrain (Float32, nodata) and Landsat RGB (Byte, internal mask): pixels, types,
 nodata and geotransforms, and the HTTP bytes of a real COG resized with `AUTO` and `NONE`.
+Default-size source and georeferenced windows check that `AUTO-n` keeps the full-resolution
+output size while explicit level numbers reduce it, including real terrain with nodata.
+These default-size cases also compare equivalent CRSs and exact validity masks.
+The HTTP comparison records bytes and request counts for a 400 x 300 source window
+with `NONE` and `AUTO-1`, checking the actual pixels at the unchanged output size.
 `gdal_translate` reads its output in swaths of 128 rows (into a GeoTIFF of default layout), and in
 blocks of 128 x 128 pixels when its bands are not the source's first ones in order, each a
 `RasterIO` request of its own: at a swath's first row or a block's first column, an average, RMS
@@ -2515,5 +2520,28 @@ through path and byte inputs, and check arithmetic overflow without allocating.
 chunks. Recreate it with h5py by creating `grid` with `shape=(2**20, 2**20)`, `dtype="f8"`,
 `chunks=(16, 16)` and `fillvalue=-9999`, without assigning any values. Its declared decoded
 size is 8 TiB. These are resource-limit checks, independent of GDAL's allocation policy.
-Tests that depend on a discoverable usable-memory limit skip those allocations where the
-limit is unavailable or would permit them. Scalar-text and overflow checks still run.
+On 32-bit hosts, including wasm32, the 8 TiB fixture is refused by the address-space check
+before the fallback budget runs. On 64-bit hosts without memory discovery, the 512 MiB
+combined pixel-buffer budget refuses it. A host with a discovered limit permitting the
+fixture checks its declared-size arithmetic without attempting the read. Synthetic budget
+tests cover combined allocations, overflow and the fallback independently of the host's memory.
+Scalar-text checks require filesystem support. A separate public WASM check used a 1,400-byte
+fill-only file declaring 300 MiB of raw Float64 pixels: its 600 MiB combined raw/decoded
+buffers were refused by the 512 MiB fallback budget, below the wasm32 address-space bound.
+
+## Rasterize background initialization
+
+The `vector-ops` conformance suite includes 21 Natural Earth country comparisons for
+nodata backgrounds, explicit zero initialization, multiple bands, additive burns and NaN,
+with Int16, Float32 and Byte outputs. Run those cases alone with:
+
+```sh
+python scripts/compare_vector_ops_with_gdal.py ../terrio-data --only rasterize-nodata
+```
+
+Pixel values (NaNs equal), validity masks and types are exact; CRSs are equivalent and
+geotransforms agree within 1e-12 source units. GeoTIFF is the GDAL pixel reference for COG
+outputs because `gdal_rasterize` cannot create COGs directly. ENVI cases are labelled
+`GTiff oracle`: GDAL converts the GeoTIFF rasterization to ENVI before comparison.
+This checks Terrio's consistent background policy rather than GDAL's driver-dependent
+ENVI initialization.

@@ -248,7 +248,11 @@ def test_rasterize_and_polygonize(tmp_path):
     assert (a == 3).sum() == (a == 7).sum() > 0
     out = tmp_path / "burned.tif"
     terrio.rasterize(layer, str(out), burn=1, ts=(15, 5), nodata=255)
-    assert 0 < terrio.open_raster(str(out)).read(1).sum() < 75
+    written = terrio.open_raster(str(out))
+    assert written.nodata == 255
+    values = written.read(1)
+    assert set(np.unique(values)) == {1, 255}
+    assert 0 < np.count_nonzero(values != 255) < 75
     polys = terrio.polygonize(r, field="v")
     assert polys.geometry_type == "Polygon"
     assert sorted(polys.columns()["v"]) == [3, 7]

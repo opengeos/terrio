@@ -7,9 +7,30 @@
   terrain/warp/pansharpen outputs, mask-writing paths, palette operations and `create_raster`.
   In `calc`, `options` is now the output-options keyword; rename any raster input called `options`.
 
+- Rasterize initializes uncovered pixels to the specified nodata value unless explicit
+  initialization values are given. This follows GDAL's GeoTIFF behavior for all Terrio
+  output formats and in-memory rasters, so uncovered pixels remain invalid by default.
+  Integer nodata values must be representable in the output type. Additive burns start
+  from the background (nodata -1 plus burn 7 yields 6); use explicit zero initialization
+  to accumulate from zero.
+  The CLI catalog is now version 0.1.2 to describe this initialization default accurately.
+
+- `ui` and `view` open the browser through a private HTML redirect file, keeping the session
+  token out of process arguments. If a sandboxed browser cannot read the file, paste the
+  printed address manually or use `--no-open`.
+
+- `translate --overview AUTO-n` without `--outsize` or `--tr` keeps the full-resolution
+  output size while reading the selected overview, as `gdal_translate` does. A 400 x 300
+  source window now stays 400 x 300 instead of shrinking to the overview's resolution.
+  `AUTO-0` is treated as `AUTO` for selecting the source resolution.
+
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource
-  error. HDF-EOS5 structure text is limited to 16 MiB before decoding, including fill-only files.
+  error. Coexisting pixel buffers are checked together; hosts without memory discovery use a
+  512 MiB combined pixel-buffer budget. This intentionally refuses previously readable
+  datasets exceeding that budget on macOS, Windows and WASM; the refusal remains terminal
+  even with GDAL enabled, so a fallback cannot bypass the allocation limit. HDF-EOS5 structure text is limited to 16 MiB before
+  decoding, including fill-only files.
   This metadata cap applies to every HDF5 open, even when selecting an unrelated subdataset.
 
 - Python and JavaScript `translate` read paths, lazy rasters and byte inputs by window and take an

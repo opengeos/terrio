@@ -1710,10 +1710,21 @@ static EVICTION_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// tests rely on.
 #[cfg(test)]
 pub(crate) fn cache_test_guard() -> CacheTestGuard {
-    static SERIAL: Mutex<()> = Mutex::new(());
-    let serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let serial = CACHE_TEST_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     EVICTION_HELD.store(true, Ordering::SeqCst);
     CacheTestGuard { _serial: serial }
+}
+
+/// Serializes the holders of [`cache_test_guard`] and of [`cache_eviction_test_guard`].
+#[cfg(test)]
+static CACHE_TEST_SERIAL: Mutex<()> = Mutex::new(());
+
+/// The guard of the tests that rely on the process-wide cache dropping blocks (a block read
+/// again once evicted is fetched again): it keeps them from running while a
+/// [`cache_test_guard`] holds the cache's eviction, without holding it itself.
+#[cfg(test)]
+pub(crate) fn cache_eviction_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    CACHE_TEST_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// See [`cache_test_guard`].
@@ -1955,6 +1966,12 @@ impl RangeReader {
         self.lock().map(|s| s.client.url.clone()).unwrap_or_default()
     }
 
+    /// The most blocks a prefetch plans (64 GiB of the default 64 KiB blocks; the ordered set
+    /// holding them takes a few times their 8 MiB of indices). Past it, the plan keeps the first
+    /// distinct blocks in the order of the ranges given, and the others are fetched as reads
+    /// reach them.
+    const MAX_PLANNED_BLOCKS: usize = 1 << 20;
+
     /// Fetches the blocks covering the byte ranges `(offset, length)` that are not cached yet, in as
     /// few requests as it can: runs of missing blocks separated by at most two cached blocks are
     /// fetched together. Ranges larger than half the cache are fetched a batch at a time, the
@@ -1967,15 +1984,27 @@ impl RangeReader {
         }
         s.evict();
         let bs = s.block_size;
-        let mut wanted: Vec<u64> = ranges
+        let blocks = ranges
             .iter()
             .filter(|(off, len)| *len > 0 && *off < s.len)
-            .filter(|(off, len)| s.prefix.as_ref().is_none_or(|p| off + len > p.len() as u64))
-            .flat_map(|(off, len)| *off / bs..=((off + len).min(s.len) - 1) / bs)
-            .filter(|b| !s.blocks.contains_key(b))
-            .collect();
-        wanted.sort_unstable();
-        wanted.dedup();
+            // Lengths come from file metadata (a TIFF's byte counts), so the end saturates.
+            .filter(|(off, len)| s.prefix.as_ref().is_none_or(|p| off.saturating_add(*len) > p.len() as u64))
+            .flat_map(|(off, len)| *off / bs..=(off.saturating_add(*len).min(s.len) - 1) / bs)
+            .filter(|b| !s.blocks.contains_key(b));
+        // A prefetch only saves requests; the plan stays bounded whatever the ranges and the
+        // file's length (a byte count past a huge file's end would list every block to its end).
+        // Distinct blocks count toward the bound; blocks past it are fetched as reads reach them.
+        // The walk over the ranges is bounded too, duplicates included (four times the bound), so
+        // that many ranges over the same bytes cannot stall the reader; past it they only lose
+        // the prefetch, not data.
+        let mut planned = std::collections::BTreeSet::new();
+        for b in blocks.take(4 * Self::MAX_PLANNED_BLOCKS) {
+            if planned.len() >= Self::MAX_PLANNED_BLOCKS {
+                break;
+            }
+            planned.insert(b);
+        }
+        let wanted: Vec<u64> = planned.into_iter().collect();
         // A prefetch of cached blocks keeps the plan of an earlier one that is still being read.
         if wanted.is_empty() {
             return Ok(());
@@ -2620,6 +2649,26 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 3);
     }
 
+    // A TIFF's byte counts reach `prefetch` unchecked: a count near `u64::MAX` must not wrap the
+    // range's end (which planned about 2^48 blocks and aborted on the allocation).
+    #[test]
+    fn a_prefetch_whose_end_overflows_is_clamped_to_the_file() {
+        // The read after the prefetch must find its blocks in the process-wide cache too.
+        let _guard = cache_test_guard();
+        let data = test_data();
+        let (url, count) = serve(data.clone(), Mode::Ranges);
+        let mut r = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+        let opened = count.load(Ordering::SeqCst);
+        r.prefetch(&[(16, u64::MAX - 15), (5, u64::MAX)]).unwrap();
+        // The prefetch fetched (the blocks to the file's end, or their first batch) ...
+        assert!(count.load(Ordering::SeqCst) > opened);
+        let prefetched = count.load(Ordering::SeqCst);
+        // ... so that a read just past the first block needs no request of its own.
+        let at = 4096 + 16;
+        assert_eq!(read_range(&mut r, at, 100), data[at as usize..at as usize + 100]);
+        assert_eq!(count.load(Ordering::SeqCst), prefetched);
+    }
+
     /// The inclusive byte ranges of the requests a [`test_server`] saw.
     fn requested(seen: &[Option<String>]) -> Vec<(u64, u64)> {
         seen.iter()
@@ -2656,6 +2705,7 @@ mod tests {
     // and leave the plan too, so that one of them read again once evicted is fetched alone.
     #[test]
     fn blocks_a_read_fetched_past_its_batch_leave_the_plan() {
+        let _guard = cache_eviction_test_guard();
         let data = test_data();
         let (url, seen) = test_server(data.clone());
         let opts = HttpOptions { cache_size: 16 * 4096, ..options() };

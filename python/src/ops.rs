@@ -789,7 +789,8 @@ pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<A
 ///     like: Use the grid of this raster (a path or a `Raster`).
 ///     ot: The output data type: `"Byte"`, `"Int16"`, `"UInt16"`, `"Int32"`, `"Float32"`,
 ///         `"Float64"` (the default)...
-///     init: The initial pixel values (a number, or one per band). 0 by default.
+///     init: The initial pixel values (a number, or one per band). Defaults to nodata when set,
+///         otherwise 0, for all output formats and in-memory rasters.
 ///     nodata: The output nodata value.
 ///     all_touched: Burn every pixel touched by lines or polygons, not only those whose centre is
 ///         inside.

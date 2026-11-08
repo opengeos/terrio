@@ -222,8 +222,14 @@ CRS, and NISAR's coordinates its geotransform, as GDAL 3.13 reads them.
 
 HDF5 raster datasets are decoded whole. Before decoding, the declared raw and expanded
 pixel buffers are each checked against the address space and the process's usable-memory
-limit, when known. These are individual buffer checks, not an aggregate memory budget:
-raw, reordered, complex-component and decoded buffers can coexist during a read.
+limit, when known. Their combined peak (raw, reordered, complex-component and decoded
+pixel buffers) is also checked before decoding. Hosts without memory discovery use a
+512 MiB combined pixel-buffer budget, including WASM, macOS and Windows (memory discovery
+currently reads Linux `/proc` files). This intentionally refuses larger desktop HDF5
+reads too, even with the GDAL backend enabled. This budget excludes metadata,
+input bytes and decoder scratch allocations; it is not a process-wide memory guarantee.
+For ordinary standard-layout pixels, raw and decoded buffers coexist, so a 512 MiB combined
+budget permits about 256 MiB of raw pixels. Reordering and complex components can add buffers.
 Resource refusals are terminal, including when the optional GDAL backend is enabled.
 HDF-EOS5 structure text is limited to 16 MiB before decoding on every HDF5 open, even
 when selecting a subdataset that would not use it.

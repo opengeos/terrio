@@ -96,7 +96,7 @@ def _levels(path):
 def _assert_same(expected, actual, what):
     a, b = _levels(expected), _levels(actual)
     assert [x.shape for x in b] == [x.shape for x in a], f"{what}: levels"
-    for i, (x, y) in enumerate(zip(a, b, strict=False)):
+    for i, (x, y) in enumerate(zip(a, b, strict=True)):
         same = (x == y) | (np.isnan(x) & np.isnan(y)) if x.dtype.kind == "f" else x == y
         if not same.all():
             d = np.abs(x.astype("float64") - y.astype("float64"))[~same]
@@ -298,7 +298,7 @@ def _levels_and_masks(path):
 def _assert_same_masked(expected, actual, what):
     a, b = _levels_and_masks(expected), _levels_and_masks(actual)
     assert [x[0].shape for x in b] == [x[0].shape for x in a], f"{what}: levels"
-    for i, ((x, xm), (y, ym)) in enumerate(zip(a, b, strict=False)):
+    for i, ((x, xm), (y, ym)) in enumerate(zip(a, b, strict=True)):
         diff = np.mean(xm != ym)
         assert diff == 0, f"{what}: level {i} {x.shape}: {diff:.4%} of the mask differs"
         same = (x == y) | (np.isnan(x) & np.isnan(y)) if x.dtype.kind == "f" else x == y
