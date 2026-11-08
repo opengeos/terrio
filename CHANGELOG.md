@@ -2,11 +2,6 @@
 
 ## Unreleased
 
-- `translate --overview AUTO-n` without `--outsize` or `--tr` keeps the full-resolution
-  output size while reading the selected overview, as `gdal_translate` does. A 400 x 300
-  source window now stays 400 x 300 instead of shrinking to the overview's resolution.
-  `AUTO-0` is treated as `AUTO` for selecting the source resolution.
-
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource
   error. Coexisting pixel buffers are checked together; hosts without memory discovery use a
@@ -22,6 +17,11 @@
   are read from the overview GDAL picks for the output size, not full resolution; pass
   `overview="NONE"` for the previous result. Python `rasterize` and `vector_grid` take
   `tile_size` and `bigtiff`.
+
+- `translate --overview AUTO-n` without `--outsize` or `--tr` keeps the full-resolution
+  output size while reading the selected overview, as `gdal_translate` does. A 400 x 300
+  source window now stays 400 x 300 instead of shrinking to the overview's resolution.
+  `AUTO-0` is treated as `AUTO` for selecting the source resolution.
 
 - `warp -r sum` without `--te` rounds the suggested output extent's size up, as gdalwarp does
   for a sum (`GDAL_SWO_ROUND_UP_SIZE`), so that the output covers the whole source. Without
