@@ -312,3 +312,32 @@ def test_pansharpen_vrt_rejects_creation_options(tmp_path, inputs, options, expl
             inputs["dem_path"], inputs["rgb_path"], str(path), options=options, **output
         )
     assert not path.exists()
+
+
+@pytest.mark.parametrize("operation", ["mosaic", "warp", "color_relief"])
+@pytest.mark.parametrize("options", [{}, {"COMPRESS": "DEFLATE"}])
+@pytest.mark.parametrize("explicit_format", [False, True])
+def test_virtual_outputs_reject_creation_options(
+    tmp_path, inputs, operation, options, explicit_format
+):
+    """Virtual outputs refuse writer mappings without publishing an XML file."""
+    extension = "xml" if explicit_format and operation != "mosaic" else "vrt"
+    path = tmp_path / f"output.{extension}"
+    output = {"format": "VRT"} if explicit_format else {}
+    with pytest.raises(ValueError, match="creation options do not apply to a VRT output"):
+        if operation == "mosaic":
+            terrio.mosaic([inputs["dem_path"]], str(path), options=options, **output)
+        elif operation == "warp":
+            terrio.warp(inputs["dem_path"], str(path), options=options, **output)
+        else:
+            colors = tmp_path / "colors.txt"
+            colors.write_text("0 0 0 0\n100 255 255 255\nnv 0 0 0 0\n")
+            terrio.dem(
+                inputs["dem_path"],
+                "color-relief",
+                str(path),
+                color_file=str(colors),
+                options=options,
+                **output,
+            )
+    assert not path.exists()

@@ -178,6 +178,9 @@ fn dem(
         (None, Some(d)) => d.to_ascii_lowercase().ends_with(".vrt"),
         (None, None) => false,
     };
+    if vrt_out && creation_options.is_some() {
+        return Err(invalid("creation options do not apply to a VRT output"));
+    }
     // A path to a path: read and written a strip of rows at a time.
     if let (Some(src_path), Some(out_path), false) = (path.as_deref(), dst, vrt_out) {
         let options = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)?;

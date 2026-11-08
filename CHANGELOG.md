@@ -66,7 +66,8 @@
   destination, as `Raster.write` and CLI `--co` do. Creation options also reach streamed
   terrain/warp/pansharpen outputs, mask-writing paths, palette operations and `create_raster`.
   In `calc`, `options` is now the output-options keyword; rename any raster input called `options`.
-  Pansharpen refuses creation options for virtual VRT outputs instead of silently ignoring them.
+  Virtual VRT outputs reject creation-option mappings in warp, mosaic, color-relief and
+  pansharpen; direct XML outputs no longer silently discard them.
 
 - Calc disambiguates `-f` between the output format and a referenced `f` input, and preserves
   literal arguments and fixed-arity option values. Translate handles zero- or two-value
