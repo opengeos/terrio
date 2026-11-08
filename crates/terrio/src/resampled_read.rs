@@ -64,9 +64,9 @@ pub struct ResampledReadOptions {
     /// chooses the first overview of an external `.ovr`, it chooses again, as for that level,
     /// among the `.ovr`'s other images, as GDAL's band of that level has them as overviews.
     /// `AutoOffset(n)` reads, alone, the level `n` finer than the first overview no wider than
-    /// the output (`Auto` past full resolution, and `AutoOffset(0)` is `Auto`), `None` full
-    /// resolution and `Level(i)` overview
-    /// `i` (the last one when there are fewer). A level read alone is read with the window scaled
+    /// the output (`Auto` past full resolution; `AutoOffset(0)` is `Auto`), `None` full
+    /// resolution and `Level(i)` overview `i` (the last one when there are fewer). A level read
+    /// alone is read with the window scaled
     /// to it as `gdal_translate`'s source requests it: values within 0.001 of a whole pixel are
     /// rounded to it, and sizes are rounded rather than truncated.
     pub overview: OverviewSelection,
