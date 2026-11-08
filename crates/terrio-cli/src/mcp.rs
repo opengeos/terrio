@@ -680,8 +680,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("started");
         let (send, replies) = std::sync::mpsc::channel();
-        // `sh -c '...' info [marker]`: with an argument, leaves the marker; without, sleeps.
-        let script = r#"if [ -n "$1" ]; then touch "$1"; else sleep 2; fi"#;
+        // `sh -c '...' info [marker]`: with an argument, leaves the marker; without, sleeps long
+        // enough that no worker frees up before the cancel is handled (shutdown ends them).
+        let script = r#"if [ -n "$1" ]; then touch "$1"; else sleep 30; fi"#;
         let mut s = Server::new(vec!["sh".into(), "-c".into(), script.into()], send);
         let call = |id: &str, args: Vec<&str>| json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": "info", "arguments": {"args": args}}});
         let mut batch: Vec<Value> = (0..BATCH_CONCURRENCY).map(|i| call(&format!("slow{i}"), vec![])).collect();
@@ -691,9 +692,9 @@ mod tests {
             &mut s,
             &json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "queued"}}).to_string(),
         );
-        let reply: Value = serde_json::from_str(&replies.recv_timeout(Duration::from_secs(60)).unwrap()).unwrap();
         s.shutdown();
-        assert_eq!(reply.as_array().unwrap().len(), BATCH_CONCURRENCY, "the cancelled call got a reply");
+        // Every call was cancelled (the slow ones by the shutdown): no reply at all.
+        assert!(replies.try_recv().is_err(), "a cancelled call got a reply");
         assert!(!marker.exists(), "the cancelled call's command ran");
     }
 
