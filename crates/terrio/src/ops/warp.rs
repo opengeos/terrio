@@ -3004,16 +3004,20 @@ impl WarpContext<'_> {
         if self.resampling == Resampling::Sum && !self.translation {
             // Sampled edges do not bound a strongly curved or folded transformation. Include
             // every exact footprint corner, in the same batches as the kernel (RPCs depend on
-            // their batch). Keep only one row in memory, including interior extrema.
+            // their batch). Planning precedes memory-limit splitting, so retain only a fixed
+            // number of corners even for a very wide output, including interior extrema.
             let mut scratch = CornerBatch::default();
             for y in dy..=dy + dh {
-                let row = self.sum_corner_row(dx, y, dw, &mut scratch);
-                for ((x, y), ok) in row.x.iter().zip(&row.y).zip(&row.ok) {
-                    if *ok && x.is_finite() && y.is_finite() {
-                        x0 = x0.min(*x);
-                        y0 = y0.min(*y);
-                        x1 = x1.max(*x);
-                        y1 = y1.max(*y);
+                for offset in (0..=dw).step_by(SUM_CORNER_BATCH) {
+                    let n = (dw - offset).min(SUM_CORNER_BATCH - 1);
+                    let row = self.sum_corner_row(dx + offset, y, n, &mut scratch);
+                    for ((x, y), ok) in row.x.iter().zip(&row.y).zip(&row.ok) {
+                        if *ok && x.is_finite() && y.is_finite() {
+                            x0 = x0.min(*x);
+                            y0 = y0.min(*y);
+                            x1 = x1.max(*x);
+                            y1 = y1.max(*y);
+                        }
                     }
                 }
             }
@@ -5265,6 +5269,7 @@ mod tests {
 
     /// GDAL 3.13.3's sampled source window is insufficient for exact sum footprints near
     /// polar extrema: its 18-degree samples miss extrema at 45-degree longitudes by 41 pixels.
+    /// The region spans several corner batches and begins off their boundaries.
     #[test]
     fn sum_source_window_contains_curved_footprints() {
         let src = SpatialRef::from_epsg(3413).unwrap();
@@ -5275,7 +5280,7 @@ mod tests {
             gt,
             &src,
             &dst,
-            [-180.0, 1.0, 0.0, 61.0, 0.0, -1.0],
+            [-181.75, 0.25, 0.0, 61.0, 0.0, -1.0],
             Resampling::Sum,
             0.125,
             DataType::F64,
@@ -5283,12 +5288,12 @@ mod tests {
             None,
         )
         .unwrap();
-        let (sx, sy, sw, sh) = rw.source_window((0, 0, 360, 1)).unwrap();
+        let (sx, sy, sw, sh) = rw.source_window((7, 0, 1440, 1)).unwrap();
         assert!(sw < 9000 && sh < 9000, "must not use the whole-source fallback");
         let ctx = rw.context();
         let mut scratch = CornerBatch::default();
         for y in 0..=1 {
-            let row = ctx.sum_corner_row(0, y, 360, &mut scratch);
+            let row = ctx.sum_corner_row(7, y, 1440, &mut scratch);
             for ((x, y), ok) in row.x.into_iter().zip(row.y).zip(row.ok) {
                 if ok {
                     assert!(x >= sx as f64 && x <= (sx + sw) as f64, "x={x}, window {sx}+{sw}");

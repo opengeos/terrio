@@ -2621,3 +2621,8 @@ were 0.398 s at 1 GB, 1.089 s at 1 MB, 2.297 s at 64 KB and 3.167 s at 4 KB.
 Every run totaled 97275019.84721899. Thus many small chunks have a substantial
 planning cost; the bounded RPC cache does not eliminate repeated pointwise corner
 transforms. These are observations, not an invariant timing bound.
+
+Bounds planning scans at most 512 corners at a time, including the final endpoint,
+with roughly 17 KiB of coordinate/validity scratch rather than allocating an entire
+output-width row before memory-limit splitting. The polar regression starts off a
+global batch boundary and spans several batches; RPC batch membership stays global.

@@ -1,8 +1,14 @@
 """A `sum` across a reprojection keeps the exact total: its corners are transformed exactly."""
 
+import json
 import math
+import os
+import subprocess
+import sys
+import textwrap
 
 import numpy as np
+import pytest
 
 import terrio
 import terrio.rio
@@ -98,3 +104,41 @@ def test_a_sum_of_a_reprojected_tile_keeps_the_exact_total(tmp_path):
     for name, tile in tiles:
         error = (float(np.asarray(tile, dtype="float64").sum()) - exact) / exact
         assert abs(error) < 1e-9, (name, error)
+
+
+@pytest.mark.skipif(not os.path.exists("/proc/self/status"), reason="reads peak RSS from /proc")
+def test_sum_window_planning_uses_bounded_scratch():
+    # Planning precedes chunk splitting. Two million output columns used to allocate a full
+    # ~34 MB corner row before the memory limit could be applied; no source pixels are read.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent("""
+            import json
+            from terrio import _terrio
+
+            def peak():
+                with open("/proc/self/status") as f:
+                    return next(int(line.split()[1]) for line in f
+                                if line.startswith("VmHWM:")) * 1024
+
+            rw = _terrio.RegionWarp(
+                (10000, 10000), (-5000000., 1000., 0., 5000000., 0., -1000.),
+                "EPSG:3413", "EPSG:4326", (-180., .00018, 0., 61., 0., -1.),
+                "sum", .125, "float64", [None],
+            )
+            rw.source_window((0, 0, 512, 1))  # Warm up the transformer and registry.
+            before = peak()
+            window = rw.source_window((0, 0, 2000000, 1))
+            print(json.dumps([peak() - before, window]))
+        """),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    growth, window = json.loads(result.stdout.splitlines()[-1])
+    assert window is not None and window[2] > 0 and window[3] > 0
+    assert growth < 8 * 1024 * 1024, (growth, window)
