@@ -324,6 +324,8 @@ Raster operations with `dst` and the standard output keywords accept `options={.
 like `Raster.write(options=...)` and CLI `--co`. This includes streamed terrain/warp outputs,
 mask-writing operations, palette operations and `create_raster`. The options apply to the
 destination write; they do not change an in-memory result when `dst` is omitted.
+Operation mappings reject duplicate names that differ only in case, such as `COMPRESS` and
+`compress`, so conflicting aliases cannot depend on a writer's precedence rules.
 `create_raster` requires `dst` whenever file-output options, including `options`, are supplied.
 For GeoTIFF/COG, `compress` overrides `options["COMPRESS"]`, and `bigtiff=True` forces BigTIFF
 even with `options={"BIGTIFF": "NO"}`. Explicit block-size creation options override `tile_size`:

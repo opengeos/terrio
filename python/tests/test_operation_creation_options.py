@@ -354,3 +354,19 @@ def test_warp_init_virtual_output_rejects_creation_options(
     with pytest.raises(ValueError, match="creation options do not apply to a VRT output"):
         terrio.warp(inputs["dem_path"], str(path), init=inputs["dem"], options=options, **output)
     assert not path.exists()
+
+
+@pytest.mark.parametrize("operation", ["translate", "create_raster"])
+@pytest.mark.parametrize("format_name", ["GTiff", "netCDF"])
+def test_creation_options_reject_conflicting_case_aliases(tmp_path, inputs, operation, format_name):
+    """A mapping cannot leave contradictory aliases for individual writers to resolve."""
+    path = tmp_path / "output.tif"
+    with pytest.raises(ValueError, match="duplicate creation option"):
+        write_operation(
+            operation,
+            inputs,
+            path,
+            format=format_name,
+            options={"COMPRESS": "DEFLATE", "compress": "LZW"},
+        )
+    assert not path.exists()

@@ -926,7 +926,13 @@ pub(crate) fn write_options_with_creation(
     creation_options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<RasterWriteOptions> {
     let mut options = write_options(driver, compress, tile_size, bigtiff)?;
-    options.creation_options = creation_options.unwrap_or_default().into_iter().collect();
+    let mut keys = std::collections::HashSet::new();
+    for (key, value) in creation_options.unwrap_or_default() {
+        if !keys.insert(key.to_ascii_uppercase()) {
+            return Err(invalid(format!("duplicate creation option '{key}' (names are case-insensitive)")));
+        }
+        options.creation_options.push((key, value));
+    }
     Ok(options)
 }
 
