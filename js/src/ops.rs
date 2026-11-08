@@ -501,7 +501,7 @@ pub fn translate(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         use terrio::memory::OpenedRasterBytes;
         use terrio::ops::overview::OverviewSelection;
         // A level needs the bytes read by window: refused before any whole decode.
-        if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(_)) {
+        if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(1..)) {
             let mut r = match terrio::memory::open_raster_lazy_bytes(bytes, &name) {
                 Ok(r) => r,
                 Err(e @ terrio::Error::InvalidArgument(_)) => return Err(js_err(e)),

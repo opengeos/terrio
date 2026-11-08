@@ -281,6 +281,8 @@ let small = cog.read_resampled(&options)?; // the 512 x 512 overview's tiles, ge
   first image of an external `.ovr`, it chooses again among the file's other images, as GDAL's
   band of that image has them as overviews. `AutoOffset(0)` is `Auto` in every resampled read;
   positive `AutoOffset(n)`, `None` and `Level(i)` read a level alone, as `gdal_translate -ovr` does.
+  A positive offset beyond the available finer levels, or on an image without overviews,
+  falls back to `Auto`.
 - Invalid pixels carry no weight: those the level's mask band masks (the dataset's mask, an
   overview's own; an overview without one is all valid, as in GDAL), their band's nodata value
   (NaN for NaN, nothing outside the type's range) or the alpha band of a two- or four-band raster.
