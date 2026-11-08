@@ -627,6 +627,11 @@
   open options. Naming coordinate or WKT columns reads geometries from them, and the `GEOMETRY`
   layer creation option writes them (#405).
 
+- GML and WFS normalize northing-first projected authority identifiers to GIS XY, including
+  EPSG:6708. Standalone layers with conflicting coordinate-axis declarations are now refused.
+  Older Terrio GML files that wrote XY under northing-first EPSG URNs need their `srsName`
+  changed to a short `EPSG:` name before reading. Unknown EPSG codes are written with short
+  names and XY coordinates, preserving coordinates without reconstructing a custom CRS (#681).
 - Remote GeoJSON and GML responses open by detected content when their URLs have no
   file extension, including WFS GetFeature requests (#494).
 - XML element-count and nesting budget refusals report `ResourceLimitError` in Python,

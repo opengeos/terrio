@@ -109,7 +109,7 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
             let body = if operation.eq_ignore_ascii_case("GetCapabilities") {
                 let mut caps = capabilities(&endpoint, version);
                 if mode.starts_with("projected") {
-                    caps = caps.replace("4326", "6708");
+                    caps = caps.replace("EPSG::4326", "EPSG::6708").replace("EPSG:4326", "EPSG:6708");
                 }
                 if mode.starts_with("feature-default-") {
                     let namespace = match mode {
@@ -250,7 +250,7 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                     } else {
                         let mut data = page(if target.contains("empty") { "empty" } else { "roads" }, version, offset, count);
                         if mode.starts_with("projected") {
-                            data = data.replace("4326", "6708");
+                            data = data.replace("EPSG::4326", "EPSG::6708").replace("EPSG:4326", "EPSG:6708");
                         }
                         if mode == "projected-mixed-axis" {
                             data = data
