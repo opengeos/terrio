@@ -80,7 +80,8 @@ pub struct RasterizeOptions {
     pub grid: Option<Grid>,
     /// `-ot`: the output data type. Float64 by default.
     pub data_type: Option<DataType>,
-    /// `-init`: the initial values, one per band (or one for all). 0 by default.
+    /// `-init`: the initial values, one per band (or one for all). The nodata value by default,
+    /// or 0 when none is set. This follows GDAL's GeoTIFF background for every output format.
     pub init: Vec<f64>,
     /// `-a_nodata`: the nodata value of the output. 0 when not given, as `gdal_rasterize` sets.
     pub nodata: Option<f64>,
@@ -151,7 +152,7 @@ fn burn<T: Pixel>(layers: &[Layer], options: &RasterizeOptions, grid: &Grid, ban
     let n = grid.cols * grid.rows;
     let mut bufs: Vec<Vec<T>> = (0..bands)
         .map(|b| {
-            let init = options.init.get(b).or(options.init.last()).copied().unwrap_or(0.0);
+            let init = options.init.get(b).or(options.init.last()).copied().or(options.nodata).unwrap_or(0.0);
             vec![T::from_f64(cast(init, dtype)); n]
         })
         .collect();
@@ -897,6 +898,36 @@ mod tests {
 
     fn pixels(r: &RasterDataset) -> Vec<f64> {
         r.raster.band_to_vec_f64(0)
+    }
+
+    /// GDAL 3.13's GeoTIFF background is nodata unless -init overrides it.
+    #[test]
+    fn background_uses_nodata_unless_initialized_explicitly() {
+        let layers = [layer(vec![Geometry::multi_point(vec![Coord::xy(1.5, 1.5)])])];
+        let options = RasterizeOptions {
+            burn_values: vec![7.0, 9.0],
+            grid: Some(grid(3, 2)),
+            data_type: Some(DataType::I16),
+            nodata: Some(-1.0),
+            ..Default::default()
+        };
+        let out = rasterize(&layers, &options).unwrap();
+        assert_eq!(out.nodata(), Some(-1.0));
+        assert_eq!(out.raster.data.to_f64_vec(), [-1.0, 7.0, -1.0, -1.0, -1.0, -1.0, -1.0, 9.0, -1.0, -1.0, -1.0, -1.0]);
+        for o in [RasterizeOptions { init: vec![0.0], ..options.clone() }, RasterizeOptions { nodata: None, ..options.clone() }] {
+            let out = rasterize(&layers, &o).unwrap();
+            assert_eq!(out.raster.data.to_f64_vec(), [0.0, 7.0, 0.0, 0.0, 0.0, 0.0, 0.0, 9.0, 0.0, 0.0, 0.0, 0.0]);
+        }
+        let out = rasterize(&layers, &RasterizeOptions { merge: MergeAlg::Add, ..options.clone() }).unwrap();
+        assert_eq!(pixels(&out), [-1.0, 6.0, -1.0, -1.0, -1.0, -1.0]);
+        let out = rasterize(&layers, &RasterizeOptions { nodata: Some(f64::NAN), data_type: Some(DataType::F32), ..options }).unwrap();
+        assert!(out.raster.data.to_f64_vec().iter().enumerate().all(|(i, &v)| if i == 1 {
+            v == 7.0
+        } else if i == 7 {
+            v == 9.0
+        } else {
+            v.is_nan()
+        }));
     }
 
     #[test]

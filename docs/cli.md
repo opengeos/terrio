@@ -3327,6 +3327,11 @@ terrio rasterize INPUT OUTPUT (--burn VALUE | -a FIELD) (--tr X Y | --ts W H | -
 `-l`, `--sql`, `--where`, `--te`, `--tap`, `--ot`, `--init`, `--a-nodata`, `--at` (all touched),
 `--add`, `--a-srs`. Points, lines and polygons are burned with GDAL's algorithms, pixel for pixel.
 
+Without `--init`, the background starts at `--a-nodata` when given, otherwise at 0.
+Explicit `--init` values take precedence, including 0. This matches GDAL's new GeoTIFF
+background. Terrio uses this policy for all output formats and in-memory rasters; GDAL's
+initialization is driver-dependent (for example, its ENVI output defaults to 0).
+
 ## vector-grid
 
 ```sh
@@ -3931,7 +3936,7 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1.1"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.2"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,

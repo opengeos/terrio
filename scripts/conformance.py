@@ -1633,7 +1633,8 @@ def suite_vector_ops(ctx):
         "Vector operations",
         "`ogr2ogr`, `gdal_rasterize`, `gdal_polygonize.py`",
         "Conversions with `ogr2ogr`'s options (where, spat, select, sql, nlt...) compared feature "
-        "by feature; rasterized pixels compared exactly; polygons compared by count, holes and "
+        "by feature; rasterized pixels compared exactly, including nodata backgrounds, masks, "
+        "types and CRSs (ENVI uses a GDAL-converted GeoTIFF reference); polygons compared by count, holes and "
         "validity, and by rasterizing them back.",
     )
     _code, out, err = run([sys.executable, str(SCRIPTS / "compare_vector_ops_with_gdal.py"), ctx.data, "--terrio", ctx.terrio])

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Rasterize initializes uncovered pixels to the specified nodata value unless explicit
+  initialization values are given. This follows GDAL's GeoTIFF behavior for all Terrio
+  output formats and in-memory rasters, so uncovered pixels remain invalid by default.
+  The CLI catalog is now version 0.1.2 to describe this initialization default accurately.
+
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource
   error. HDF-EOS5 structure text is limited to 16 MiB before decoding, including fill-only files.

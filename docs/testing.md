@@ -2517,3 +2517,20 @@ chunks. Recreate it with h5py by creating `grid` with `shape=(2**20, 2**20)`, `d
 size is 8 TiB. These are resource-limit checks, independent of GDAL's allocation policy.
 Tests that depend on a discoverable usable-memory limit skip those allocations where the
 limit is unavailable or would permit them. Scalar-text and overflow checks still run.
+
+## Rasterize background initialization
+
+The `vector-ops` conformance suite includes 21 Natural Earth country comparisons for
+nodata backgrounds, explicit zero initialization, multiple bands, additive burns and NaN,
+with Int16, Float32 and Byte outputs. Run those cases alone with:
+
+```sh
+python scripts/compare_vector_ops_with_gdal.py ../terrio-data --only rasterize-nodata
+```
+
+Pixel values (NaNs equal), validity masks and types are exact; CRSs are equivalent and
+geotransforms agree within 1e-12 source units. GeoTIFF is the GDAL pixel reference for COG
+outputs because `gdal_rasterize` cannot create COGs directly. ENVI cases are labelled
+`GTiff oracle`: GDAL converts the GeoTIFF rasterization to ENVI before comparison.
+This checks Terrio's consistent background policy rather than GDAL's driver-dependent
+ENVI initialization.
