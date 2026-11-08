@@ -105,8 +105,9 @@ fn create_raster(
     bigtiff: bool,
     options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
-    if dst.is_none() && (copy_overviews || overwrite || format.is_some() || compress.is_some() || tile_size.is_some() || bigtiff) {
+    if dst.is_none()
+        && (copy_overviews || overwrite || format.is_some() || compress.is_some() || tile_size.is_some() || bigtiff || options.is_some())
+    {
         return Err(invalid("file-output options require dst"));
     }
     let template = like.map(|src| source(py, src)).transpose()?;
@@ -125,7 +126,7 @@ fn create_raster(
         overwrite,
     };
     if let Some(path) = dst {
-        let write = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)?;
+        let write = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, options)?;
         with_warnings(py, || create::create_raster_file_from_template(path, template.as_ref(), &o, &write))?;
         return Ok(PyRaster { inner: with_warnings(py, || terrio::open_raster_lazy(path))? });
     }

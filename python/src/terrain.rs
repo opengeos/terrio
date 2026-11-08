@@ -290,7 +290,6 @@ fn calc(
     options: Option<std::collections::BTreeMap<String, String>>,
     inputs: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
     let exprs: Vec<String> = match calc.extract::<String>() {
         Ok(s) => vec![s],
         Err(_) => calc.extract().map_err(|_| invalid("calc is an expression or a list of expressions"))?,
@@ -349,7 +348,7 @@ fn calc(
             terrio::ops::calc::calc(&inputs, &o)
         })
         .py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, options)
 }
 
 /// Computes the distance from every pixel to the nearest target pixel, like `terrio proximity`
@@ -399,7 +398,6 @@ fn proximity(
     bigtiff: bool,
     options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
     let values = match values {
         None => Vec::new(),
         Some(v) => match v.extract::<String>() {
@@ -424,7 +422,7 @@ fn proximity(
     };
     let ds = input_raster(py, src)?;
     let out = py.detach_result(|| terrio::ops::proximity::proximity(&ds, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, options)
 }
 
 /// Merges raster areas smaller than a threshold into their largest neighbour, like
@@ -466,7 +464,6 @@ fn sieve(
     bigtiff: bool,
     options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
     if connectedness != 4 && connectedness != 8 {
         return Err(invalid("connectedness is 4 or 8"));
     }
@@ -488,7 +485,7 @@ fn sieve(
             terrio::ops::sieve::sieve(&ds, &SieveOptions { band, threshold, eight_connected: connectedness == 8, mask })
         })
         .py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, options)
 }
 
 /// Single-observer viewshed on a projected DEM.
@@ -526,7 +523,6 @@ fn viewshed(
     bigtiff: bool,
     options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
     use terrio::ops::viewshed::{ViewshedMode, ViewshedOptions};
     let o = ViewshedOptions {
         band,
@@ -542,7 +538,7 @@ fn viewshed(
     };
     let ds = input_raster(py, src)?;
     let out = py.detach_result(|| terrio::ops::viewshed::viewshed(&ds, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, options)
 }
 
 /// Fills raster holes using GDAL's four-quadrant interpolation.

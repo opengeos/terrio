@@ -74,7 +74,6 @@ fn neighbors(
     bigtiff: bool,
     options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
     let methods = match method {
         Some(m) => strings(m, "method")?.iter().map(|m| NeighborMethod::parse(m)).collect::<terrio::Result<_>>().py()?,
         None => Vec::new(),
@@ -96,7 +95,7 @@ fn neighbors(
     };
     let ds = input_raster(py, src)?;
     let out = py.detach_result(|| terrio::ops::neighbors::neighbors(&ds, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, options)
 }
 
 /// Runs a collar cleaning: `clean_collar` applies GDAL's clean-collar defaults (an input's alpha
@@ -216,7 +215,6 @@ fn nearblack(
     bigtiff: bool,
     options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
     collar(
         py,
         src,
@@ -233,7 +231,7 @@ fn nearblack(
         compress,
         tile_size,
         bigtiff,
-        creation_options,
+        options,
     )
 }
 
@@ -282,7 +280,6 @@ fn clean_collar(
     bigtiff: bool,
     options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
     collar(
         py,
         src,
@@ -299,7 +296,7 @@ fn clean_collar(
         compress,
         tile_size,
         bigtiff,
-        creation_options,
+        options,
     )
 }
 
@@ -373,12 +370,11 @@ fn enhance(
     bigtiff: bool,
     options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
     let ds = input_raster(py, src)?;
     let tables = luts(py, src, &ds, equalize, config, src_scale, lut_bins)?;
     let o = EnhanceOptions { bins: lut_bins, output_type: terrio::ops::parse_data_type(ot).py()? };
     let out = py.detach_result(|| terrio::ops::enhance::enhance(&ds, &tables, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, options)
 }
 
 /// Computes histogram-equalization tables, as `gdalenhance -equalize -config FILE` writes them.

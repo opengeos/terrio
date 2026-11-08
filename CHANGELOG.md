@@ -5,6 +5,7 @@
 - Python raster operations accept format-specific `options` dictionaries when writing a
   destination, as `Raster.write` and CLI `--co` do. Creation options also reach streamed
   terrain/warp/pansharpen outputs, mask-writing paths, palette operations and `create_raster`.
+  In `calc`, `options` is now the output-options keyword; rename any raster input called `options`.
 
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource

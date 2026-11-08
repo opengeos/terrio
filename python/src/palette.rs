@@ -251,10 +251,9 @@ fn palette_to_rgb(
     options: Option<std::collections::BTreeMap<String, String>>,
     overwrite: bool,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
     let destination = destination(py, None, dst, overwrite)?;
     let output = with_source(py, src, destination, |source| palette::palette_to_rgb_lazy(source, rgba))?;
-    finish(py, output, dst, format, compress, tile_size, bigtiff, creation_options)
+    finish(py, output, dst, format, compress, tile_size, bigtiff, options)
 }
 /// Attaches a color map without changing Byte/UInt16 indices, nodata or dataset masks.
 /// color_map accepts a palette Raster/path, bytes or RGBA sequence. The operation materializes
@@ -277,9 +276,8 @@ fn attach_palette(
     options: Option<std::collections::BTreeMap<String, String>>,
     overwrite: bool,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
     let destination = destination(py, Some(color_map), dst, overwrite)?;
     let colors = table(py, color_map, None)?;
     let output = with_source(py, src, destination, |source| palette::attach_palette_lazy(source, &colors))?;
-    finish(py, output, dst, format, compress, tile_size, bigtiff, creation_options)
+    finish(py, output, dst, format, compress, tile_size, bigtiff, options)
 }

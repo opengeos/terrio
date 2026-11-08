@@ -50,11 +50,10 @@ fn unscale(
     bigtiff: bool,
     options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
     let o = UnscaleOptions { output_type: ot.map(parse_data_type).transpose().py()? };
     let ds = input_raster(py, src)?;
     let out = py.detach_result(|| terrio::ops::pixel::unscale(&ds, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, options)
 }
 
 /// Replaces nodata values with an alpha band, like `terrio nodata-to-alpha` (GDAL's
@@ -87,7 +86,6 @@ fn nodata_to_alpha(
     bigtiff: bool,
     options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
     let nodata: Vec<f64> = match nodata {
         None => Vec::new(),
         Some(v) => match v.extract::<f64>() {
@@ -98,7 +96,7 @@ fn nodata_to_alpha(
     let o = NodataToAlphaOptions { nodata };
     let ds = input_raster(py, src)?;
     let out = py.detach_result(|| terrio::ops::pixel::nodata_to_alpha(&ds, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, options)
 }
 
 /// Maps values or ranges of values to new values, like `terrio reclassify` (GDAL's
@@ -134,7 +132,6 @@ fn reclassify(
     bigtiff: bool,
     options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
     let mapping = match mapping.strip_prefix('@') {
         Some(path) => read_mapping_file(path).py()?,
         None => mapping.to_string(),
@@ -142,7 +139,7 @@ fn reclassify(
     let o = ReclassifyOptions { mapping, output_type: ot.map(parse_data_type).transpose().py()? };
     let ds = input_raster(py, src)?;
     let out = py.detach_result(|| terrio::ops::pixel::reclassify(&ds, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, options)
 }
 
 /// One vector feature per pixel, like `terrio as-features` (GDAL's `gdal raster as-features`).
@@ -229,10 +226,9 @@ fn blend(
     bigtiff: bool,
     options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
     let o = terrio::ops::blend::BlendOptions { operator: terrio::ops::blend::BlendOperator::parse(operator).py()?, opacity };
     let base = input_raster(py, src)?;
     let overlay = input_raster(py, overlay)?;
     let out = py.detach_result(|| terrio::ops::blend::blend(&base, &overlay, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, options)
 }

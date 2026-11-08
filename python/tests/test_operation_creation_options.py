@@ -1,6 +1,6 @@
 """Creation options reach raster writers without changing the operation's result.
 
-Storage and metadata readback was validated with GDAL 3.12.1.
+Storage and metadata readback was validated with GDAL 3.13.3.
 """
 
 import numpy as np
@@ -8,8 +8,14 @@ import pytest
 
 import terrio
 
-gdal = pytest.importorskip("osgeo.gdal")
-gdal.UseExceptions()
+
+@pytest.fixture
+def gdal():
+    """Load GDAL only for tests that inspect its readback."""
+    module = pytest.importorskip("osgeo.gdal")
+    module.UseExceptions()
+    return module
+
 
 CREATION = {
     "TILED": "YES",
@@ -175,7 +181,7 @@ def write_operation(name, sources, destination, **output):
 
 
 @pytest.mark.parametrize("operation", OPERATIONS)
-def test_creation_options_reach_each_operation_writer(tmp_path, inputs, operation):
+def test_creation_options_reach_each_operation_writer(tmp_path, inputs, operation, gdal):
     """Check real TIFF storage tags and preserve all pixel and validity information.
 
     Args:
@@ -231,3 +237,19 @@ def test_format_specific_creation_options(tmp_path, inputs, format_name):
     result = terrio.open_raster(str(path))
     np.testing.assert_array_equal(result.read(), inputs["dem"].read())
     assert result.transform == inputs["dem"].transform
+
+
+@pytest.mark.parametrize("options", [{}, {"COMPRESS": "DEFLATE"}])
+def test_create_raster_creation_options_require_destination(options):
+    """Reject file-output options instead of silently ignoring them in memory."""
+    with pytest.raises(ValueError, match="file-output options require dst"):
+        terrio.create_raster(size=(2, 2), options=options)
+
+
+@pytest.mark.parametrize("operation", ["translate", "write_raster", "create_raster"])
+def test_compression_keyword_overrides_creation_option(tmp_path, inputs, operation, gdal):
+    """Read the actual storage selected when the two compression inputs conflict."""
+    path = tmp_path / "compression.tif"
+    write_operation(operation, inputs, path, compress="LZW", options={"COMPRESS": "DEFLATE"})
+    result = gdal.Open(str(path))
+    assert result.GetMetadata("IMAGE_STRUCTURE")["COMPRESSION"] == "LZW"

@@ -1293,7 +1293,6 @@ fn translate(
     bigtiff: bool,
     options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
-    let creation_options = options;
     let overview = overview_arg(overview)?;
     let size = |v: &Bound<'_, PyAny>| -> PyResult<Size> {
         match v.extract::<usize>() {
@@ -1367,7 +1366,7 @@ fn translate(
             crate::with_warnings(py, || terrio::ops::translate::translate_lazy(&mut lazy, &o, overview))?
         }
     };
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, options)
 }
 
 /// The raster at `path` opened for reading by window, as `terrio translate` opens it, or, when
@@ -1766,7 +1765,6 @@ fn mosaic(
     bigtiff: bool,
     options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<Option<PyRaster>> {
-    let creation_options = options;
     let resolution = match tr {
         Some((x, y)) => ResolutionStrategy::User(x, y),
         None => ResolutionStrategy::parse(resolution).py()?,
@@ -1809,7 +1807,7 @@ fn mosaic(
             terrio::ops::mosaic::mosaic(&sources, &o)
         })
         .py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options).map(Some)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, options).map(Some)
 }
 
 /// Refuses, before it is read, a `sum`'s source window of `pixels` pixels of `pixel_bytes` bytes

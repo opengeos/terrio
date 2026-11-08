@@ -324,6 +324,11 @@ Raster operations with `dst` and the standard output keywords accept `options={.
 like `Raster.write(options=...)` and CLI `--co`. This includes streamed terrain/warp outputs,
 mask-writing operations, palette operations and `create_raster`. The options apply to the
 destination write; they do not change an in-memory result when `dst` is omitted.
+`create_raster` requires `dst` whenever file-output options, including `options`, are supplied.
+For GeoTIFF/COG, `compress` overrides `options["COMPRESS"]`, and `bigtiff=True` forces BigTIFF
+even with `options={"BIGTIFF": "NO"}`. Explicit block-size creation options override `tile_size`:
+`BLOCKXSIZE`/`BLOCKYSIZE` for tiled GeoTIFF, or `BLOCKSIZE` for COG. Otherwise `tile_size`
+supplies the tile dimensions. The same rules apply to `Raster.write`.
 In `calc`, `options` is an output keyword rather than a raster variable name.
 
 ```python
