@@ -1418,8 +1418,9 @@ pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -
 ///
 /// Input pixels must be band-major, each band row-major. The native GTiff writer packs these
 /// into pixel-interleaved storage by default (`INTERLEAVE=PIXEL`, `PlanarConfiguration=1`).
-/// Set `INTERLEAVE=BAND` in [`RasterWriteOptions::creation_options`] for separate planes
-/// (`PlanarConfiguration=2`); this does not change the required input buffer layout.
+/// Set `INTERLEAVE=BAND` in [`RasterWriteOptions::creation_options`] for separate planes in
+/// multiband rasters (`PlanarConfiguration=2`); single-band output uses `PlanarConfiguration=1`
+/// with either option. This does not change the required input buffer layout.
 ///
 /// ```no_run
 /// use terrio::formats::RasterDriver;

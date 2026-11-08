@@ -39,7 +39,7 @@ println!("{}", terrio::info::info(&ds, &Default::default()).to_text());
 nodata with `band_nodata(band)` (one-based) or `nodata()` (band 1). To replace it
 with one shared value, clear the per-band vector and update both shared fields.
 
-## Raster buffer layouts
+## Raster buffer layout
 
 `RasterData` buffers passed to `Raster::from_data_native` must contain complete bands
 one after another: `[band0_plane, band1_plane, ...]`. Within each band, pixels are
@@ -60,16 +60,18 @@ overview levels. Use the **returned window's** dimensions in the index formula; 
 planes follow the requested band order (band selectors are one-based).
 `read_window_f32` and `read_window_f64` also return band-major, row-major values.
 For one band, the index is simply `row * width + col`; there is no row/column transpose.
-`ops::warp::warp` consumes and returns band-major rasters, so a window result can be
-passed directly as a source without reordering its pixels. A window read does not
-retain the dataset mask, so masked-out sample values may be treated as valid by
-`warp`. Use `ops::warp::warp_lazy` when dataset masks must affect validity.
+`ops::warp::warp` borrows band-major source rasters and returns a band-major raster,
+so a window result can be passed directly as a source without reordering its pixels.
+`LazyRaster::read_window` does not retain the dataset mask, so masked-out sample
+values may be treated as valid by `warp`. Floating-point window reads apply the mask
+as NaN. Use `ops::warp::warp_lazy` when dataset masks must affect validity.
 
 The in-memory layout is independent of TIFF storage. The current native GTiff writer
 used by `write_raster_dataset` defaults to `INTERLEAVE=PIXEL`
 (`PlanarConfiguration=1`, chunky). Set
 `creation_options: vec![("INTERLEAVE".into(), "BAND".into())]` in `RasterWriteOptions`
-for separate planes (`PlanarConfiguration=2`), or explicitly request `PIXEL`.
+for separate planes in multiband rasters (`PlanarConfiguration=2`), or explicitly
+request `PIXEL`. Single-band output uses `PlanarConfiguration=1` with either option.
 Both choices take the same band-major input buffer; the writer packs it for the file.
 
 ## Writing

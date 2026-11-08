@@ -134,9 +134,10 @@
 //! pixel-interleaved RGB/RGBA buffers to planes before passing them to the constructor.
 //! [`LazyRaster::read_window`] and floating-point window reads return the same layout, using
 //! the returned window's dimensions and requested band order, including at overview levels.
-//! [`ops::warp::warp`] consumes and returns band-major rasters; no reordering is needed between
-//! a window read and a warp. Window reads do not retain the dataset mask; use
-//! [`ops::warp::warp_lazy`] when dataset masks must affect validity. A single band uses
+//! [`ops::warp::warp`] borrows band-major source rasters and returns a band-major raster; no
+//! reordering is needed between a window read and a warp. [`LazyRaster::read_window`] does not
+//! retain the dataset mask; use [`ops::warp::warp_lazy`] when dataset masks must affect validity.
+//! Floating-point window reads apply the mask as NaN. A single band uses
 //! `data[row * cols + col]`, without transposing.
 //!
 //! ```rust
@@ -163,8 +164,9 @@
 //!
 //! TIFF storage is independent of this buffer layout. The native GTiff writer defaults to
 //! pixel-interleaved storage (`INTERLEAVE=PIXEL`, `PlanarConfiguration=1`); request separate
-//! planes with `INTERLEAVE=BAND` (`PlanarConfiguration=2`) in
-//! [`RasterWriteOptions::creation_options`]. Both take band-major buffers.
+//! planes for multiband rasters with `INTERLEAVE=BAND` (`PlanarConfiguration=2`) in
+//! [`RasterWriteOptions::creation_options`]. Single-band output uses `PlanarConfiguration=1`
+//! with either option. Both take band-major buffers.
 //!
 //! # Features
 //!
