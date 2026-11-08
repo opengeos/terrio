@@ -380,7 +380,7 @@ fn write_netcdf_groups(
         let ds = raster.with_dataset(|ds| Ok(ds.clone())).py()?;
         datasets.push((group, ds));
     }
-    let o = terrio::RasterWriteOptions { creation_options: options.unwrap_or_default().into_iter().collect(), ..Default::default() };
+    let o = terrio::RasterWriteOptions { creation_options: crate::raster::validated_creation_options(options)?, ..Default::default() };
     let refs: Vec<(&str, &terrio::RasterDataset)> = datasets.iter().map(|(g, ds)| (g.as_str(), ds)).collect();
     py.detach_result(|| terrio::write_netcdf_groups(&refs, path, &o)).py()
 }
