@@ -909,6 +909,10 @@ test("operations on in-memory rasters and layers", () => {
     assert.deepEqual([r.width, r.height], [30, 10]);
     assert.equal(r.readBand(1)[0], 3);
     assert.equal(r.readBand(1)[29], 7);
+    const withNodata = terrio.rasterize(src, { burn: 7, tr: [1, 1], te: [0, 0, 30, 10], ot: "Byte", nodata: 255 });
+    assert.deepEqual(new Set(withNodata.readBand(1)), new Set([7, 255]));
+    const initialized = terrio.rasterize(src, { burn: 7, tr: [1, 1], te: [0, 0, 30, 10], ot: "Byte", nodata: 255, init: 0 });
+    assert.deepEqual(new Set(initialized.readBand(1)), new Set([7, 0]));
   }
   const like = terrio.rasterize(SQUARES, { burn: [5], like: terrio.rasterize(SQUARES, { burn: 1, ts: [60, 20] }) });
   assert.deepEqual([like.width, like.height], [60, 20]);
@@ -1267,7 +1271,7 @@ test("translate reads the overview -ovr selects", () => {
   const [ow, oh] = ovr[0];
   const level = [...opened.readBand(1, undefined, 0)];
   for (const src of [opened, bytes, { bytes, filename: "pyramid.tif" }]) {
-    for (const overview of [undefined, "AUTO", 0, "0"]) {
+    for (const overview of [undefined, "AUTO", "AUTO-0", 0, "0"]) {
       const out = terrio.translate(src, { outsize: [ow, oh], resampling: "average", overview });
       assert.deepEqual([out.width, out.height], [ow, oh]);
       assert.deepEqual([...out.readBand(1)], level, `overview ${overview}`);
@@ -1293,6 +1297,23 @@ test("translate reads the overview -ovr selects", () => {
       /needs a raster read by window; 'bad.tif' is read whole \(/,
     );
   }
+});
+
+test("translate AUTO-0 keeps the whole-read byte fallback", () => {
+  const asc = new TextEncoder().encode("ncols 4\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3 4\n5 6 7 8\n");
+  for (const overview of ["AUTO", "AUTO-0"]) {
+    const out = terrio.translate({ bytes: asc, filename: "grid.asc" }, { srcwin: [1, 0, 2, 2], overview });
+    assert.deepEqual([...out.readBand(1)], [2, 3, 6, 7]);
+  }
+  const invalid = { bytes: new Uint8Array([73, 73, 42, 0, 0, 0, 0, 0]), filename: "bad.tif" };
+  let autoError;
+  try {
+    terrio.translate(invalid, { overview: "AUTO" });
+  } catch (error) {
+    autoError = error.message;
+  }
+  assert.ok(autoError, "invalid TIFF bytes must fail in the whole-read backend");
+  assert.throws(() => terrio.translate(invalid, { overview: "AUTO-0" }), { message: autoError });
 });
 
 test("resampled reads from overviews, local and remote", async () => {
