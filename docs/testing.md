@@ -2600,3 +2600,24 @@ regression's 100 × 100 image and 300 × 260 DEM, median of five reads after war
 took 11.7 versus 7.5 ms at threshold 0.125, and 11.7 versus 11.7 ms at threshold 0.
 These small local probes are not throughput guarantees; source-window corner scans
 also add transformation work during chunk planning. The machine was not reserved.
+
+The real fixed-grid crop is registered in `scripts/compare_warp_sum_overviews.py`
+and the `sum-overviews` conformance suite, with the sum kernel's suggested grid
+(rather than the nearest-neighbour grid, which can crop an edge). Run:
+
+```sh
+python scripts/conformance.py ../terrio-data --only sum-overviews --strict
+```
+
+A GDAL 3.13.3 run with the optimized CLI passed all 38 cases: 27 identical and 11
+within their documented tolerances. The fixed-grid cases check size, type, nodata,
+CRS, geotransform, masks, totals and bitwise threshold independence; they record
+rather than require equality of pixels against GDAL.
+
+A single-thread optimized Rust `warp` probe on the same 400 × 400 synthetic UTM
+source, with the tile footprint rendered at 1024 × 1024, measured recursive
+planning under smaller `memory_limit` values. Medians of three runs after warmup
+were 0.398 s at 1 GB, 1.089 s at 1 MB, 2.297 s at 64 KB and 3.167 s at 4 KB.
+Every run totaled 97275019.84721899. Thus many small chunks have a substantial
+planning cost; the bounded RPC cache does not eliminate repeated pointwise corner
+transforms. These are observations, not an invariant timing bound.

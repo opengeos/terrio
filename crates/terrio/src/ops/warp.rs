@@ -3476,19 +3476,30 @@ impl WarpContext<'_> {
             } else {
                 // RPC/DEM transforms depend on the complete 513-point batch. Reuse that exact
                 // batch across narrow chunks, with a fixed bound (~560 KiB of sample storage).
-                let mut cache = self.t.sum_batches.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(i) = cache.iter().position(|(b, r, _)| *b == batch && *r == y) {
-                    let entry = cache.remove(i).unwrap();
-                    xs.copy_from_slice(&entry.2.x);
-                    ys.copy_from_slice(&entry.2.y);
-                    ok.copy_from_slice(&entry.2.ok);
-                    cache.push_back(entry);
-                } else {
-                    self.approx.exact(true, xs, ys, ok, 0..BATCH + 1, &need);
-                    if cache.len() == 64 {
-                        cache.pop_front();
+                let hit = {
+                    let mut cache = self.t.sum_batches.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(i) = cache.iter().position(|(b, r, _)| *b == batch && *r == y) {
+                        let entry = cache.remove(i).unwrap();
+                        xs.copy_from_slice(&entry.2.x);
+                        ys.copy_from_slice(&entry.2.y);
+                        ok.copy_from_slice(&entry.2.ok);
+                        cache.push_back(entry);
+                        true
+                    } else {
+                        false
                     }
-                    cache.push_back((batch, y, CornerRow { x: xs.clone(), y: ys.clone(), ok: ok.clone() }));
+                };
+                if !hit {
+                    // Transform without the cache lock so Rayon row groups remain parallel.
+                    self.approx.exact(true, xs, ys, ok, 0..BATCH + 1, &need);
+                    let mut cache = self.t.sum_batches.lock().unwrap_or_else(|e| e.into_inner());
+                    // A racing worker may have inserted this deterministic batch meanwhile.
+                    if !cache.iter().any(|(b, r, _)| *b == batch && *r == y) {
+                        if cache.len() == 64 {
+                            cache.pop_front();
+                        }
+                        cache.push_back((batch, y, CornerRow { x: xs.clone(), y: ys.clone(), ok: ok.clone() }));
+                    }
                 }
             }
             row.x.extend_from_slice(&xs[need.clone()]);
