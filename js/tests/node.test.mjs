@@ -909,6 +909,10 @@ test("operations on in-memory rasters and layers", () => {
     assert.deepEqual([r.width, r.height], [30, 10]);
     assert.equal(r.readBand(1)[0], 3);
     assert.equal(r.readBand(1)[29], 7);
+    const withNodata = terrio.rasterize(src, { burn: 7, tr: [1, 1], te: [0, 0, 30, 10], ot: "Byte", nodata: 255 });
+    assert.deepEqual(new Set(withNodata.readBand(1)), new Set([7, 255]));
+    const initialized = terrio.rasterize(src, { burn: 7, tr: [1, 1], te: [0, 0, 30, 10], ot: "Byte", nodata: 255, init: 0 });
+    assert.deepEqual(new Set(initialized.readBand(1)), new Set([7, 0]));
   }
   const like = terrio.rasterize(SQUARES, { burn: [5], like: terrio.rasterize(SQUARES, { burn: 1, ts: [60, 20] }) });
   assert.deepEqual([like.width, like.height], [60, 20]);
@@ -1290,7 +1294,7 @@ test("translate reads the overview -ovr selects", () => {
   for (const overview of [0, "AUTO-1"]) {
     assert.throws(
       () => terrio.translate({ bytes: new Uint8Array([73, 73, 42, 0, 0, 0, 0, 0]), filename: "bad.tif" }, { overview }),
-      /needs a raster read by window; 'bad.tif' is read whole \(/,
+      /needs a raster read by window \(`--overview`\); 'bad\.tif' is read whole \(/,
     );
   }
 });

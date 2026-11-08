@@ -531,6 +531,7 @@ struct RasterizeArgs {
 /// `src`: vector data (a `Dataset`, bytes or GeoJSON). Options: `burn` (a value, or one per
 /// band) or `attribute`, `layers`, `sql`, `where`, `tr`, `ts`, `te`, `tap`, `like` (a raster
 /// whose grid to use), `ot`, `init`, `nodata`, `allTouched`, `add`, `aSrs`.
+/// Without `init`, uncovered pixels start at `nodata` when set, otherwise 0, for every format.
 #[wasm_bindgen]
 pub fn rasterize(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     let (rest, taken) = split_options(&options, &["like"])?;

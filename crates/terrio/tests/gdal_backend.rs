@@ -59,7 +59,7 @@ fn translate_input_policy_falls_back_to_whole_gdal_reads() {
     assert!(original.complex);
     let options = TranslateOptions { src_win: Some((2.0, 1.0, 5.0, 4.0)), ..Default::default() };
     let expected = translate(&original, &options).unwrap();
-    for overview in [OverviewSelection::Auto, OverviewSelection::None] {
+    for overview in [OverviewSelection::Auto, OverviewSelection::AutoOffset(0), OverviewSelection::None] {
         for source in [path.to_string(), format!("GDAL:{path}")] {
             let actual = translate_path(&source, &options, overview).unwrap();
             assert_same_raster(&actual, &expected, "whole path translation");

@@ -80,7 +80,8 @@ pub struct RasterizeOptions {
     pub grid: Option<Grid>,
     /// `-ot`: the output data type. Float64 by default.
     pub data_type: Option<DataType>,
-    /// `-init`: the initial values, one per band (or one for all). 0 by default.
+    /// `-init`: the initial values, one per band (or one for all). The nodata value by default,
+    /// or 0 when none is set. This follows GDAL's GeoTIFF background for every output format.
     pub init: Vec<f64>,
     /// `-a_nodata`: the nodata value of the output. 0 when not given, as `gdal_rasterize` sets.
     pub nodata: Option<f64>,
@@ -114,6 +115,15 @@ pub fn rasterize(layers: &[Layer], options: &RasterizeOptions) -> Result<RasterD
     };
     let bands = options.burn_values.len().max(1);
     let dtype = options.data_type.unwrap_or(DataType::F64);
+    if let Some(nodata) = options.nodata
+        && super::is_integer(dtype)
+    {
+        let (lo, hi) = super::type_range(dtype);
+        let upper_exclusive = matches!(dtype, DataType::U64 | DataType::I64);
+        if !nodata.is_finite() || nodata.fract() != 0.0 || nodata < lo || nodata > hi || (upper_exclusive && nodata == hi) {
+            return Err(Error::InvalidArgument(format!("nodata {nodata} is not representable in {}", super::data_type_name(dtype))));
+        }
+    }
     let data = match dtype {
         DataType::U8 => RasterData::U8(burn(layers, options, &grid, bands, dtype)?),
         DataType::I8 => RasterData::I8(burn(layers, options, &grid, bands, dtype)?),
@@ -151,7 +161,7 @@ fn burn<T: Pixel>(layers: &[Layer], options: &RasterizeOptions, grid: &Grid, ban
     let n = grid.cols * grid.rows;
     let mut bufs: Vec<Vec<T>> = (0..bands)
         .map(|b| {
-            let init = options.init.get(b).or(options.init.last()).copied().unwrap_or(0.0);
+            let init = options.init.get(b).or(options.init.last()).copied().or(options.nodata).unwrap_or(0.0);
             vec![T::from_f64(cast(init, dtype)); n]
         })
         .collect();
@@ -897,6 +907,70 @@ mod tests {
 
     fn pixels(r: &RasterDataset) -> Vec<f64> {
         r.raster.band_to_vec_f64(0)
+    }
+
+    /// GDAL 3.13.3's GeoTIFF background is nodata unless -init overrides it.
+    #[test]
+    fn background_uses_nodata_unless_initialized_explicitly() {
+        let layers = [layer(vec![Geometry::multi_point(vec![Coord::xy(1.5, 1.5)])])];
+        let options = RasterizeOptions {
+            burn_values: vec![7.0, 9.0],
+            grid: Some(grid(3, 2)),
+            data_type: Some(DataType::I16),
+            nodata: Some(-1.0),
+            ..Default::default()
+        };
+        let out = rasterize(&layers, &options).unwrap();
+        assert_eq!(out.nodata(), Some(-1.0));
+        assert_eq!(out.raster.data.to_f64_vec(), [-1.0, 7.0, -1.0, -1.0, -1.0, -1.0, -1.0, 9.0, -1.0, -1.0, -1.0, -1.0]);
+        for o in [RasterizeOptions { init: vec![0.0], ..options.clone() }, RasterizeOptions { nodata: None, ..options.clone() }] {
+            let out = rasterize(&layers, &o).unwrap();
+            assert_eq!(out.raster.data.to_f64_vec(), [0.0, 7.0, 0.0, 0.0, 0.0, 0.0, 0.0, 9.0, 0.0, 0.0, 0.0, 0.0]);
+        }
+        let out = rasterize(&layers, &RasterizeOptions { merge: MergeAlg::Add, ..options.clone() }).unwrap();
+        assert_eq!(pixels(&out), [-1.0, 6.0, -1.0, -1.0, -1.0, -1.0]);
+        let out = rasterize(&layers, &RasterizeOptions { nodata: Some(f64::NAN), data_type: Some(DataType::F32), ..options }).unwrap();
+        assert!(out.raster.data.to_f64_vec().iter().enumerate().all(|(i, &v)| if i == 1 {
+            v == 7.0
+        } else if i == 7 {
+            v == 9.0
+        } else {
+            v.is_nan()
+        }));
+    }
+
+    #[test]
+    fn refuses_unrepresentable_integer_nodata() {
+        let layers = [layer(vec![Geometry::multi_point(vec![Coord::xy(1.5, 1.5)])])];
+        for (dtype, nodata) in [
+            (DataType::I16, f64::NAN),
+            (DataType::U8, -1.0),
+            (DataType::I16, 1.5),
+            (DataType::I16, f64::INFINITY),
+            (DataType::U64, 2f64.powi(64)),
+            (DataType::I64, 2f64.powi(63)),
+        ] {
+            let options = RasterizeOptions {
+                burn_values: vec![7.0],
+                grid: Some(grid(3, 2)),
+                data_type: Some(dtype),
+                nodata: Some(nodata),
+                ..Default::default()
+            };
+            assert!(matches!(rasterize(&layers, &options), Err(Error::InvalidArgument(message)) if message.contains("not representable")));
+        }
+        for (dtype, nodata) in [(DataType::U8, 255.0), (DataType::I16, -32768.0), (DataType::I64, -2f64.powi(63))] {
+            let options = RasterizeOptions {
+                burn_values: vec![7.0],
+                grid: Some(grid(3, 2)),
+                data_type: Some(dtype),
+                nodata: Some(nodata),
+                ..Default::default()
+            };
+            let result = rasterize(&layers, &options).unwrap();
+            assert_eq!(pixels(&result)[0], nodata);
+            assert_eq!(result.nodata(), Some(nodata));
+        }
     }
 
     #[test]
