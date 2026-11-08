@@ -55,6 +55,9 @@ pub(crate) struct Store {
     consolidated: Option<HashMap<String, Value>>,
     /// Metadata documents read so far (`None` for missing ones).
     cache: Mutex<HashMap<String, Option<Value>>>,
+    /// The root of a remote store is a Zarr v3 node: v2 documents (`.zarray`, `.zattrs`,
+    /// `.zgroup`) are missing without being requested, as a v3 hierarchy holds v3 nodes.
+    v3: bool,
     /// The child names listed so far of remote keys.
     #[cfg(remote)]
     listings: Mutex<HashMap<String, Vec<String>>>,
@@ -105,6 +108,7 @@ impl Store {
             name,
             consolidated: None,
             cache: Mutex::new(HashMap::new()),
+            v3: false,
             #[cfg(remote)]
             listings: Mutex::new(HashMap::new()),
         }
@@ -225,6 +229,9 @@ impl Store {
         if let Some(v) = self.cache.lock().ok().and_then(|c| c.get(key).cloned()) {
             return Ok(v);
         }
+        if self.v3 && matches!(key.rsplit('/').next(), Some(".zarray" | ".zattrs" | ".zgroup")) {
+            return Ok(None);
+        }
         let v = match self.get(key, Range::Whole)? {
             Some(b) => Some(
                 serde_json::from_slice::<Value>(&b)
@@ -251,13 +258,28 @@ impl Store {
     /// `consolidated_metadata` of a v3 root group.
     fn load_consolidated(&mut self) -> Result<()> {
         let mut map = HashMap::new();
-        if let Some(m) = self.probe(".zmetadata")?
+        // Both looked for at once: on a remote store, each is a round trip.
+        let this = &*self;
+        let options = crate::config::thread_options();
+        let mut found = crate::par::map_range(2, |i| {
+            crate::config::with_thread_options(options.clone(), || this.probe([".zmetadata", "zarr.json"][i]))
+        })
+        .into_iter();
+        let v2 = found.next().unwrap_or(Ok(None))?;
+        // A v2 store's consolidated metadata stands alone: a failed read of the root's
+        // `zarr.json` (a transient error, a 403) does not fail it.
+        let root = found.next().unwrap_or(Ok(None));
+        let root = if v2.as_ref().is_some_and(|m| m["metadata"].is_object()) { root.unwrap_or(None) } else { root? };
+        // Requests saved on a remote store only: a local one looks for every document, as it
+        // costs nothing.
+        self.v3 = !self.is_local() && root.as_ref().is_some_and(|r| r["zarr_format"] == 3);
+        if let Some(m) = v2
             && let Some(meta) = m["metadata"].as_object()
         {
             for (k, v) in meta {
                 map.insert(k.trim_start_matches('/').to_string(), v.clone());
             }
-        } else if let Some(root) = self.probe("zarr.json")?
+        } else if let Some(root) = root
             && let Some(meta) = root["consolidated_metadata"]["metadata"].as_object()
             && !meta.is_empty()
         {
