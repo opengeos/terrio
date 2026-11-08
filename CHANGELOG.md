@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- `terrio translate` reads the bands of a window it copies pixel for pixel together, whichever
+  bands they are. It used to read bands that are not the source's first ones in order one by one,
+  as `gdal_translate`'s virtual dataset does, and without GDAL's block cache a Zarr chunk holding
+  many bands was then fetched and decoded once per band. One year (128 bands) of a 192 x 192
+  window of the TESSERA embeddings store on source.coop, its chunks holding 128 bands, read from
+  Europe: a band alone took 4.8 to 7 s and about 4.4 MB, and the 128 bands were stopped
+  unfinished after 2 minutes (about 560 MB at that rate). The 128 bands and their per-pixel scales
+  now take a median 6.2 s (4.4 to 8.1 s, 5 runs), 6.5 MB in 21 requests, opening included.
+- Opening a remote Zarr store requests its v2 consolidated metadata (`.zmetadata`) and its root
+  `zarr.json` at once, and, in a Zarr v3 store, no longer looks for v2 documents (`.zarray`,
+  `.zattrs`, `.zgroup`). The coordinate arrays that describe the band dimensions are read in
+  parallel. Opening that TESSERA array went from 13 requests in a row to 4 round trips.
+- A sharded Zarr array keeps the indexes of the shards it has read while it is open (up to 64 MB
+  of entries), as zarrita does: a later window in the same shard fetches only its inner
+  chunks, where it fetched the shard's index again first (256 KB and a round trip for a TESSERA
+  shard of 128 x 128 inner chunks).
+- A window of a sharded remote Zarr array coalesces nearby inner chunks with a
+  1 MiB target, in parallel (a larger individual chunk is fetched whole), previously 16 MiB:
+  a connection far from the server delivers
+  a large range slowly; local stores keep reads of up to 16 MiB. Reading 34.5 MB of the TESSERA
+  embeddings from Europe took a median 6.3 s instead of 10.0 s (8 runs each), and the 192 x 192
+  window above 5.2 s instead of 6.4 s.
 - A `sum` warp transforms the corners of each output pixel exactly, whatever the error threshold
   (`--et`, `et`, or `tolerance` in `terrio.rio`), which still bounds how the source window a
   chunk reads is found. The corners outline each source pixel's share of an output pixel.
