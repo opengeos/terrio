@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Python raster creation-option mappings reject conflicting names that differ only by case,
+  including `Raster.write`, grouped netCDF output and streaming GeoTIFF/COG writers.
+
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource
   error. Coexisting pixel buffers are checked together; hosts without memory discovery use a
@@ -61,6 +64,13 @@
   `repeatable` (clap Append/Count) and lists its `conflicts_with` arguments in both directions,
   including members of exclusive argument groups. A CI step requires a newer `schema_version`
   whenever the catalog digest changes relative to the pull request's base.
+
+- Python raster operations accept format-specific `options` dictionaries when writing a
+  destination, as `Raster.write` and CLI `--co` do. Creation options also reach streamed
+  terrain/warp/pansharpen outputs, mask-writing paths, palette operations and `create_raster`.
+  In `calc`, `options` is now the output-options keyword; rename any raster input called `options`.
+  Virtual VRT outputs reject creation-option mappings in warp, mosaic, color-relief and
+  pansharpen; direct XML outputs no longer silently discard them.
 
 - Calc disambiguates `-f` between the output format and a referenced `f` input, and preserves
   literal arguments and fixed-arity option values. Translate handles zero- or two-value

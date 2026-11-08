@@ -2,7 +2,7 @@
 //! `clean_collar`, `enhance` and `enhance_luts`, with keyword arguments.
 
 use crate::ops::{finish_raster, input_raster, raster_path};
-use crate::raster::{PyRaster, write_options};
+use crate::raster::PyRaster;
 use crate::{Detach, PyResultExt, invalid};
 use pyo3::prelude::*;
 use terrio::ops::enhance::{BandLut, EnhanceOptions};
@@ -48,13 +48,14 @@ fn strings(v: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<String>> {
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
 ///     bigtiff: Write a BigTIFF, for `dst`.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: The filtered raster, in memory.
 #[pyfunction]
 #[pyo3(signature = (
     src, dst=None, *, kernel, method=None, size=None, band=None, ot="Float64", nodata=None, format=None, compress=None,
-    tile_size=None, bigtiff=false
+    tile_size=None, bigtiff=false, options=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn neighbors(
@@ -71,6 +72,7 @@ fn neighbors(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
     let methods = match method {
         Some(m) => strings(m, "method")?.iter().map(|m| NeighborMethod::parse(m)).collect::<terrio::Result<_>>().py()?,
@@ -93,7 +95,7 @@ fn neighbors(
     };
     let ds = input_raster(py, src)?;
     let out = py.detach_result(|| terrio::ops::neighbors::neighbors(&ds, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, options)
 }
 
 /// Runs a collar cleaning: `clean_collar` applies GDAL's clean-collar defaults (an input's alpha
@@ -115,6 +117,7 @@ fn collar(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    creation_options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
     let has_mask = keep
         && match raster_path(src)? {
@@ -156,10 +159,12 @@ fn collar(
         return Err(invalid("a mask (add_mask, or an input with a mask) needs dst, the file that holds it"));
     }
     let collar = py.detach_result(|| terrio::ops::nearblack::nearblack(&ds, &o)).py()?;
-    let Some(mask) = collar.mask else { return finish_raster(py, collar.dataset, dst, format, compress, tile_size, bigtiff) };
+    let Some(mask) = collar.mask else {
+        return finish_raster(py, collar.dataset, dst, format, compress, tile_size, bigtiff, creation_options);
+    };
     // A mask is kept by the file it is written to.
     let path = dst.expect("mask output requires dst, checked before processing");
-    let mut options = write_options(format, compress, tile_size, bigtiff)?;
+    let mut options = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)?;
     options.mask = Some(mask);
     py.detach_result(|| terrio::write_raster_dataset(&collar.dataset, path, &options)).py()?;
     Ok(PyRaster { inner: py.detach_result(|| terrio::open_raster_lazy(path)).py()? })
@@ -183,13 +188,14 @@ fn collar(
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
 ///     bigtiff: Write a BigTIFF, for `dst`.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: The cleaned Byte raster (read from `dst` when it has a mask).
 #[pyfunction]
 #[pyo3(signature = (
     src, dst=None, *, colors=None, white=false, color_threshold=15, pixel_distance=2, add_alpha=false, add_mask=false,
-    algorithm="twopasses", format=None, compress=None, tile_size=None, bigtiff=false
+    algorithm="twopasses", format=None, compress=None, tile_size=None, bigtiff=false, options=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn nearblack(
@@ -207,6 +213,7 @@ fn nearblack(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
     collar(
         py,
@@ -224,6 +231,7 @@ fn nearblack(
         compress,
         tile_size,
         bigtiff,
+        options,
     )
 }
 
@@ -245,13 +253,14 @@ fn nearblack(
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
 ///     bigtiff: Write a BigTIFF, for `dst`.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: The cleaned Byte raster (read from `dst` when it has a mask).
 #[pyfunction]
 #[pyo3(signature = (
     src, dst=None, *, colors=None, white=false, color_threshold=15, pixel_distance=2, add_alpha=false, add_mask=false,
-    algorithm="floodfill", format=None, compress=None, tile_size=None, bigtiff=false
+    algorithm="floodfill", format=None, compress=None, tile_size=None, bigtiff=false, options=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn clean_collar(
@@ -269,6 +278,7 @@ fn clean_collar(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
     collar(
         py,
@@ -286,6 +296,7 @@ fn clean_collar(
         compress,
         tile_size,
         bigtiff,
+        options,
     )
 }
 
@@ -334,13 +345,14 @@ fn luts(
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
 ///     bigtiff: Write a BigTIFF, for `dst`.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: The enhanced raster, in memory.
 #[pyfunction]
 #[pyo3(signature = (
     src, dst=None, *, equalize=false, config=None, src_scale=None, lut_bins=256, ot="Byte", format=None, compress=None,
-    tile_size=None, bigtiff=false
+    tile_size=None, bigtiff=false, options=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn enhance(
@@ -356,12 +368,13 @@ fn enhance(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
     let ds = input_raster(py, src)?;
     let tables = luts(py, src, &ds, equalize, config, src_scale, lut_bins)?;
     let o = EnhanceOptions { bins: lut_bins, output_type: terrio::ops::parse_data_type(ot).py()? };
     let out = py.detach_result(|| terrio::ops::enhance::enhance(&ds, &tables, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, options)
 }
 
 /// Computes histogram-equalization tables, as `gdalenhance -equalize -config FILE` writes them.
