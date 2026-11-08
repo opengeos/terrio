@@ -89,7 +89,23 @@ pub fn translate_bytes(bytes: Vec<u8>, name: &str, options: &TranslateOptions, o
 fn terminal_open_error(error: &Error, name: &str) -> bool {
     matches!(error, Error::InvalidArgument(_) | Error::Http(_))
         || error.is_resource_refusal()
-        || matches!(error, Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound && !name.contains(':'))
+        || matches!(error, Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound && !has_prefix_or_scheme(name))
+}
+
+/// Whether `name` carries a driver or scheme prefix (`gdal:`, `NETCDF:`, `https:`), as opposed to
+/// a plain local path. A leading Windows drive letter (`C:\data`, `C:/data`) is not a prefix.
+fn has_prefix_or_scheme(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    let rest = if bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && bytes.get(2).is_none_or(|&b| b == b'\\' || b == b'/')
+    {
+        &name[2..]
+    } else {
+        name
+    };
+    rest.contains(':')
 }
 
 /// Refuses a stored-level selector before allocating a whole raster.
@@ -936,6 +952,19 @@ mod tests {
         let missing = tempfile::tempdir().unwrap().path().join("missing.tif");
         let result = translate_path(missing.to_str().unwrap(), &TranslateOptions::default(), OverviewSelection::Level(0));
         assert!(matches!(result, Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound));
+    }
+
+    #[test]
+    fn windows_drive_letters_are_not_scheme_prefixes() {
+        for local in ["missing.tif", r"C:\data\missing.tif", "c:/data/missing.tif", "C:"] {
+            assert!(!has_prefix_or_scheme(local), "{local}");
+        }
+        for prefixed in ["gdal:missing.tif", "NETCDF:file.nc:var", r"C:\data\file.nc:var", "https://example.com/a.tif", "ab:c"] {
+            assert!(has_prefix_or_scheme(prefixed), "{prefixed}");
+        }
+        let missing = Error::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert!(terminal_open_error(&missing, r"C:\Users\runner\missing.tif"));
+        assert!(!terminal_open_error(&missing, "gdal:missing.tif"));
     }
 
     #[test]
