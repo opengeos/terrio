@@ -932,6 +932,9 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     if !retry {
         return Err(e);
     }
+    // Keep an asset-policy refusal terminal and visible, rather than replacing it with the
+    // native format error when a remote STAC-selected raster needs the optional backend.
+    crate::stac::check_gdal_asset_read()?;
     gdal(path).map_err(|gdal_error| if gdal_error.is_resource_refusal() { gdal_error } else { e })
 }
 

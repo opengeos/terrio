@@ -353,6 +353,10 @@ impl AssetReadPolicy {
     }
 
     fn for_asset(document: &str, href: &str) -> Result<Option<Self>> {
+        let inherited = Self::current();
+        // A nested document must not replace the original catalog's origin and thereby turn
+        // a cross-origin authenticated read into a same-origin exemption.
+        let document = inherited.as_ref().map_or(document, |p| p.document.as_str());
         check_asset_access(document, href)?;
         if local_backed(&crate::vfs::Location::parse(document)) {
             return Ok(None);
@@ -361,11 +365,14 @@ impl AssetReadPolicy {
         let credentialed = asset_uses_credentials(document, href);
         #[cfg(not(remote))]
         let credentialed = false;
-        Ok(Some(Self {
-            document: document.into(),
-            href: href.into(),
-            credentialed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(credentialed)),
-        }))
+        // Nested eager opens can finish before their pixels become a lazy memory raster.
+        // Share the requirement so an inner GDAL/authenticated read marks its parent too.
+        let document = document.to_string();
+        let required = inherited.map(|p| p.credentialed).unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        if credentialed {
+            required.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(Some(Self { document, href: href.into(), credentialed: required }))
     }
 
     pub(crate) fn enter(&self) -> Result<AssetReadScope> {
@@ -1820,6 +1827,25 @@ mod tests {
         );
     }
 
+    /// An intermediate catalog cannot claim the original caller's cross-origin credentials
+    /// through a same-origin exemption of its own (reference GDAL 3.13.3 header behavior).
+    #[cfg(remote)]
+    #[test]
+    fn nested_documents_keep_the_original_catalog_origin() {
+        crate::config::with_options(&[("GDAL_HTTP_HEADERS", ""), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+            let result = with_asset_read("https://catalog.example/item.json", "https://other.example/nested.json", || {
+                crate::config::with_options(&[("GDAL_HTTP_HEADERS", "Authorization: test-secret")], || {
+                    with_asset_read("https://other.example/nested.json", "https://other.example/private.tif", || Ok(()))
+                })
+            });
+            assert!(
+                matches!(result, Err(Error::InvalidArgument(ref text)) if text.contains("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS")),
+                "{result:?}"
+            );
+            assert!(AssetReadPolicy::current().is_none());
+        });
+    }
+
     /// Remote VRT assets inherit the catalog's policy through deferred native source reads.
     #[cfg(remote)]
     #[test]
@@ -1860,12 +1886,25 @@ mod tests {
         let href = format!("{server}/public.tif");
         let document = format!("{server}/item.json");
         crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+            let fallback: Result<()> = with_asset_read(&document, &href, || {
+                crate::dataset::gdal_fallback(&href, Err(Error::Unsupported("native format".into())), |_| {
+                    panic!("GDAL asset fallback must be refused before the backend runs")
+                })
+            });
+            assert!(matches!(fallback, Err(Error::InvalidArgument(ref text)) if text.contains("GDAL asset reads require")), "{fallback:?}");
             let error = with_asset_read(&document, &href, || crate::gdal_backend::open_raster(&href)).unwrap_err();
             assert!(matches!(error, Error::InvalidArgument(ref text) if text.contains("GDAL asset reads require")), "{error}");
             assert!(seen.lock().unwrap().is_empty());
         });
         let mut raster = crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "YES")], || {
-            with_asset_read(&document, &href, || crate::gdal_backend::open_raster(&href).map(LazyRaster::from)).unwrap()
+            with_asset_read(&document, &href, || {
+                let dataset = {
+                    let _nested = AssetReadPolicy::enter_nested(&href)?;
+                    crate::gdal_backend::open_raster(&href)?
+                };
+                Ok(LazyRaster::from(dataset))
+            })
+            .unwrap()
         });
         crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
             assert!(raster.read_window(Window::new(0, 0, 1, 1), &Default::default()).is_err());
