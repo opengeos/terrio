@@ -1,5 +1,16 @@
 # Testing Against GDAL
 
+GDAL is terrio's reference: drivers and operations are compared with GDAL on real-world files.
+The conformance suites run against GDAL 3.12.2 and PROJ 9.8.1 in `ci-extended.yml`, on every push
+to `main` and on pull requests on demand (Run workflow, or a `ci:conformance` or `ci:all` label).
+Suites that require GDAL 3.13 run only in a local environment with that version. The Python
+tests set `TERRIO_GDAL_COMPAT=3.13` when rasterio's (or `osgeo.gdal`'s) GDAL is 3.13, so that
+terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull requests
+compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
+Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
+
+## Translate input-opening policy
+
 Translate input-opening policy is tested with `cargo test -p terrio --lib ops::translate::tests`
 and `cargo test -p terrio --features gdal --test gdal_backend translate_input_policy`.
 The latter reads the generated `translate_complex_half.tif` fixture: GDAL 3.12.1 wrote
@@ -10,15 +21,6 @@ including `GDAL:` paths and destination writes. Explicit levels are refused befo
 Default-feature tests cover lazy paths/bytes, streamed outputs, missing local files and the
 shared terminal-error classification. Existing Python and Node overview regressions exercise
 the same entry points through the bindings.
-
-GDAL is terrio's reference: drivers and operations are compared with GDAL on real-world files.
-The conformance suites run against GDAL 3.12.2 and PROJ 9.8.1 in `ci-extended.yml`, on every push
-to `main` and on pull requests on demand (Run workflow, or a `ci:conformance` or `ci:all` label).
-Suites that require GDAL 3.13 run only in a local environment with that version. The Python
-tests set `TERRIO_GDAL_COMPAT=3.13` when rasterio's (or `osgeo.gdal`'s) GDAL is 3.13, so that
-terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull requests
-compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
-Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
 ## Updating the ordinary CI GDAL reference
 
