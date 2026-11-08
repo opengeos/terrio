@@ -528,8 +528,13 @@ projected CRSs retain XY for every identifier form. Heights are preserved. The G
 writer emits authority-order coordinates and envelopes for its EPSG URNs. WFS 1.1/2.0
 bounding boxes follow the advertised authority order; WFS 1.0 bounding boxes use XY.
 Standalone layers with conflicting coordinate-axis declarations, including nested geometry
-members, are refused. Unknown EPSG identifiers cannot reconstruct a custom CRS from their URN
-alone; such exports do not support a CRS-preserving local round trip.
+members, are refused. Unknown EPSG identifiers are written with short `EPSG:` names and XY
+coordinates, preserving coordinate values on a local round trip; their custom CRS definition
+cannot be reconstructed from the code alone.
+
+Older Terrio versions wrote XY coordinates under northing-first projected EPSG URNs. Such
+files need their `srsName` changed to the short `EPSG:` form before reading; the current reader
+honors the declared authority order and cannot distinguish those old files from valid GML.
 
 ### CityGML
 

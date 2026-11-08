@@ -538,15 +538,16 @@ fn xsd(layer: &Layer) -> String {
 pub fn to_string(layer: &Layer, schema: &str) -> String {
     let name = element_name(&layer.name);
     let code = super::naming_epsg(layer);
-    // The emitted EPSG URN declares authority order, even when source WKT omits axes or
-    // declares another order. If the authority is unavailable, retain the layer's declared
-    // axes. Geometry coordinates are already in traditional GIS XY order.
-    let swap = code.is_some()
-        && code
-            .and_then(|code| SpatialRef::from_epsg(code).ok())
-            .unwrap_or_else(|| SpatialRef::from_layer(layer))
-            .has_north_east_axis_order();
-    let srs = code.map(|c| format!(r#" srsName="urn:ogc:def:crs:EPSG::{c}""#)).unwrap_or_default();
+    // Only a resolvable authority declares recoverable authority axes. Keep unknown codes
+    // in the legacy XY naming convention, so reading them cannot silently transpose coordinates.
+    let canonical = code.and_then(|code| SpatialRef::from_epsg(code).ok());
+    let swap = canonical.as_ref().is_some_and(SpatialRef::has_north_east_axis_order);
+    let srs = code
+        .map(|c| {
+            let name = if canonical.is_some() { format!("urn:ogc:def:crs:EPSG::{c}") } else { format!("EPSG:{c}") };
+            format!(r#" srsName="{name}""#)
+        })
+        .unwrap_or_default();
     let fields = written_fields(layer);
     let mut s = String::new();
     let _ = write!(
@@ -760,16 +761,22 @@ mod tests {
     }
 
     #[test]
-    fn gml_writer_retains_declared_axes_when_authority_is_unknown() {
-        let mut layer = Layer::new("places").with_epsg(999999);
+    fn gml_writer_retains_xy_when_authority_is_unknown() {
         assert!(SpatialRef::from_epsg(999999).is_err());
-        layer.set_crs_wkt(Some(
-            r#"GEOGCS["Custom geographic",DATUM["Custom",SPHEROID["Sphere",6371000,0]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","999999"]]"#.into(),
-        ));
-        layer.push(Feature { fid: 0, geometry: Some(Geometry::point(12.24, 43.56)), attributes: vec![] });
-        let text = to_string(&layer, "");
-        assert!(text.contains("urn:ogc:def:crs:EPSG::999999"), "{text}");
-        assert!(text.contains(">43.56 12.24<"), "{text}");
+        let geographic = r#"GEOGCS["Custom geographic",DATUM["Custom",SPHEROID["Sphere",6371000,0]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","999999"]]"#;
+        let projected = format!(
+            r#"PROJCS["Custom projected",{geographic},PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",0],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1],AXIS["Northing",NORTH],AXIS["Easting",EAST],AUTHORITY["EPSG","999999"]]"#
+        );
+        for wkt in [geographic, projected.as_str()] {
+            let mut layer = Layer::new("places").with_epsg(999999);
+            layer.set_crs_wkt(Some(wkt.into()));
+            layer.push(Feature { fid: 0, geometry: Some(Geometry::point(12.24, 43.56)), attributes: vec![] });
+            let text = to_string(&layer, "");
+            assert!(text.contains(r#"srsName="EPSG:999999""#), "{text}");
+            assert!(text.contains(">12.24 43.56<"), "{text}");
+            let restored = &parse(&xml::parse(&text).unwrap(), None).unwrap()[0];
+            assert_eq!(restored.features[0].geometry, layer.features[0].geometry);
+        }
     }
 
     #[test]

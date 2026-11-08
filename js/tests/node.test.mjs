@@ -304,7 +304,10 @@ test("GML projected authority axes keep GIS XY through byte reads and writes", (
       const source = terrio.open(new TextEncoder().encode(xml), "input.gml");
       const expected = [...xy, 7];
       assert.deepEqual(source.toGeoJSON().features[0].geometry.coordinates, expected, name);
-      const restored = terrio.open(source.toBytes("output.gml"), "output.gml");
+      const bytes = source.toBytes("output.gml");
+      // The WASM codec returns raw XML; the native writer bundles its XSD sidecar as ZIP.
+      assert.match(new TextDecoder().decode(bytes), /^<\?xml/);
+      const restored = terrio.open(bytes, "output.gml");
       assert.deepEqual(restored.toGeoJSON().features[0].geometry.coordinates, expected, name);
       restored.free();
       source.free();
