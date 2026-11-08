@@ -517,8 +517,9 @@ fn xsd(layer: &Layer) -> String {
 pub fn to_string(layer: &Layer, schema: &str) -> String {
     let name = element_name(&layer.name);
     let code = super::naming_epsg(layer);
-    // The emitted EPSG URN declares authority order for projected and geographic CRSs alike.
-    let swap = code.is_some() && SpatialRef::from_layer(layer).has_north_east_axis_order();
+    // The emitted EPSG URN declares authority order, even when source WKT omits axes or
+    // declares another order. Geometry coordinates are already in traditional GIS XY order.
+    let swap = code.and_then(|code| SpatialRef::from_epsg(code).ok()).is_some_and(|srs| srs.has_north_east_axis_order());
     let srs = code.map(|c| format!(r#" srsName="urn:ogc:def:crs:EPSG::{c}""#)).unwrap_or_default();
     let fields = written_fields(layer);
     let mut s = String::new();
@@ -715,6 +716,21 @@ mod tests {
         let restored = &parse(&xml::parse(&text).unwrap(), None).unwrap()[0];
         assert_eq!(restored.features[0].geometry, layer.features[0].geometry);
         assert_eq!(restored.crs_epsg(), Some(6708));
+    }
+
+    /// GDAL 3.13.3 uses the emitted EPSG URN's axes even when source WKT has no AXIS clauses.
+    #[test]
+    fn gml_writer_uses_emitted_authority_axes_when_source_axes_are_absent() {
+        let mut layer = Layer::new("places").with_epsg(4326);
+        layer.set_crs_wkt(Some(
+            r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AUTHORITY["EPSG","4326"]]"#.into(),
+        ));
+        layer.push(Feature { fid: 0, geometry: Some(Geometry::point(12.24, 43.56)), attributes: vec![] });
+        let text = to_string(&layer, "");
+        assert!(text.contains("urn:ogc:def:crs:EPSG::4326"), "{text}");
+        assert!(text.contains(">43.56 12.24<"), "{text}");
+        let restored = &parse(&xml::parse(&text).unwrap(), None).unwrap()[0];
+        assert_eq!(restored.features[0].geometry, layer.features[0].geometry);
     }
 
     #[test]

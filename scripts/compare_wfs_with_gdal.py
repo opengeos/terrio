@@ -201,8 +201,9 @@ def compare_gml_axis_order(command, record):
                     encoding="utf-8",
                 )
                 try:
-                    reference = gdal.OpenEx(str(source), gdal.OF_VECTOR)
-                    expected = snapshot(reference.GetLayer(0))
+                    source_dataset = gdal.OpenEx(str(source), gdal.OF_VECTOR)
+                    expected = snapshot(source_dataset.GetLayer(0))
+                    source_dataset = None
                 except Exception as error:
                     record(
                         f"{name} reference",
@@ -220,17 +221,28 @@ def compare_gml_axis_order(command, record):
                     except Exception as error:
                         record(f"{name} to {extension}", "differs", str(error))
                 ref_json = root / f"{code}-{label}-reference.geojson"
-                reference = gdal.VectorTranslate(
-                    str(ref_json), str(source), format="GeoJSON", dstSRS="EPSG:4326"
-                )
-                reference = None
-                reference = gdal.OpenEx(str(ref_json), gdal.OF_VECTOR)
-                expected = snapshot(reference.GetLayer(0))
+                try:
+                    ref_dataset = gdal.VectorTranslate(
+                        str(ref_json), str(source), format="GeoJSON", dstSRS="EPSG:4326"
+                    )
+                    if ref_dataset is None:
+                        raise RuntimeError("GDAL could not reproject the reference")
+                    ref_dataset = None  # Close and flush output before reopening it.
+                    ref_dataset = gdal.OpenEx(str(ref_json), gdal.OF_VECTOR)
+                    expected_reprojected = snapshot(ref_dataset.GetLayer(0))
+                    ref_dataset = None
+                except Exception as error:
+                    record(
+                        f"{name} to EPSG:4326 reference",
+                        "not compared",
+                        f"GDAL {gdal.VersionInfo('RELEASE_NAME')}: {error}",
+                    )
+                    continue
                 output = root / f"{code}-{label}-out.geojson"
                 try:
                     command("convert", str(source), str(output), "--t-srs", "EPSG:4326")
                     actual = gdal.OpenEx(str(output), gdal.OF_VECTOR)
-                    detail = compare_layer(expected, actual.GetLayer(0))
+                    detail = compare_layer(expected_reprojected, actual.GetLayer(0))
                     record(f"{name} to EPSG:4326", "within tolerance", detail)
                 except Exception as error:
                     record(f"{name} to EPSG:4326", "differs", str(error))

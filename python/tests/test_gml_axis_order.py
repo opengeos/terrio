@@ -56,8 +56,10 @@ def test_gml_axis_order_across_paths_bytes_and_writes(
             *expected,
             7,
         ]
-        output = layer.to_bytes("output.gml")
-        restored = terrio.open_bytes(output, filename="output.zip")[0]
+        # Native GML writes a .gml plus its .xsd sidecar, bundled as ZIP bytes.
+        archive = layer.to_bytes("output.gml")
+        assert archive.startswith(b"PK")
+        restored = terrio.open_bytes(archive, filename="output.zip")[0]
         assert restored.crs == layer.crs
         assert (
             restored.to_geojson()["features"][0]["geometry"]

@@ -495,8 +495,8 @@ fn validate_simple(
             if expected_crs.is_some_and(|expected| !expected.same_as(&actual)) {
                 return Err(invalid("a geometry CRS differs from the requested layer CRS"));
             }
-            if actual.has_north_east_axis_order()
-                && page_srs.is_some_and(|reference| gml::authority_axis_order(reference) != gml::authority_axis_order(srs))
+            if page_srs.is_some_and(|reference| gml::authority_axis_order(reference) != gml::authority_axis_order(srs))
+                && actual.has_north_east_axis_order()
             {
                 return Err(invalid("mixed geometry axis orders within a page are unsupported"));
             }
