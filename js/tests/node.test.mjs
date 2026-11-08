@@ -1286,6 +1286,13 @@ test("translate reads the overview -ovr selects", () => {
   assert.deepEqual([...small.readBand(1)], [2, 3, 6, 7]);
   // Bytes that are not a raster are still refused.
   assert.throws(() => terrio.translate({ bytes: new Uint8Array([73, 73, 42, 0, 0, 0, 0, 0]), filename: "bad.tif" }, {}));
+  // A level is refused, before any whole decode, for bytes the lazy reader cannot open.
+  for (const overview of [0, "AUTO-1"]) {
+    assert.throws(
+      () => terrio.translate({ bytes: new Uint8Array([73, 73, 42, 0, 0, 0, 0, 0]), filename: "bad.tif" }, { overview }),
+      /needs a raster read by window; 'bad.tif' is read whole \(/,
+    );
+  }
 });
 
 test("resampled reads from overviews, local and remote", async () => {

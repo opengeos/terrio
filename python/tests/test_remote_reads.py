@@ -578,9 +578,7 @@ def test_a_remote_srtm_tile_is_known_by_its_name_and_size(tmp_path, serve):
     terrio.clear_http_cache()
     server = serve(root=tmp_path / "tile")
     url = f"{server.url}/N37W120.img"
-    with pytest.raises(
-        Exception, match="holds SRTMHGT data, and the SRTMHGT driver is not allowed"
-    ):
+    with pytest.raises(Exception, match="holds SRTMHGT data, and the SRTMHGT driver is not allowed"):
         rio.open(url, driver="HFA")
     assert len(server.log) == 1, server.log
     with rio.open(url) as ds:
@@ -625,11 +623,7 @@ def test_a_remote_file_under_a_tile_extension_not_named_as_a_tile_is_refused(tmp
                 server = serve()
                 with pytest.raises(Exception, match="not recognized as being in a supported"):
                     open_as_raster(f"{server.url}/{kind}/{name}")
-                assert server.bytes_sent() <= 16384 and len(server.log) == 1, (
-                    kind,
-                    name,
-                    server.log,
-                )
+                assert server.bytes_sent() <= 16384 and len(server.log) == 1, (kind, name, server.log)
 
 
 def test_translate_reads_a_remote_window_by_range(tmp_path, serve):
@@ -656,5 +650,6 @@ def test_translate_reads_a_remote_window_by_range(tmp_path, serve):
     server = serve()
     out = terrio.translate(f"{server.url}/cog.tif", srcwin=(512, 256, 256, 256))
     np.testing.assert_array_equal(out.read(1), pixels[0, 256:512, 512:768])
+    assert out.transform == pytest.approx((505120.0, 10.0, 0.0, 4597440.0, 0.0, -10.0))
     # About 8.4 MB of noise; the window's tile is 1/64 of it, read in blocks of 16 KiB or more.
     assert server.bytes_sent() < size / 16, (server.bytes_sent(), size, server.log)
