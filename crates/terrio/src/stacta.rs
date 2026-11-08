@@ -96,9 +96,13 @@ fn sniff_local(path: &str) -> bool {
     if !base.ends_with(".json") {
         return false;
     }
-    let crate::vfs::Location::Local(p) = crate::vfs::Location::parse(path) else { return false };
+    let crate::vfs::Location::Local(p) = crate::vfs::Location::parse(path) else {
+        return false;
+    };
     let mut head = Vec::with_capacity(SNIFF_BYTES as usize);
-    let Ok(f) = std::fs::File::open(p) else { return false };
+    let Ok(f) = std::fs::File::open(p) else {
+        return false;
+    };
     if std::io::Read::read_to_end(&mut std::io::Read::take(f, SNIFF_BYTES), &mut head).is_err() {
         return false;
     }
@@ -129,6 +133,7 @@ pub(crate) struct Item {
 impl Item {
     /// Parses an item's bytes. `None` when they are not JSON.
     pub(crate) fn parse(bytes: &[u8], loc: &str) -> Option<Self> {
+        let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
         let doc: Value = serde_json::from_slice(bytes).ok()?;
         let text = std::str::from_utf8(bytes).ok()?;
         Some(Self { metadata: properties_metadata(text).unwrap_or_default(), doc, loc: loc.to_string() })
@@ -263,7 +268,9 @@ pub(crate) fn info_item(item: Item, asset: Option<&str>, tms: Option<&str>, opti
         Opened::Raster(r) => *r,
         Opened::Container(subs) => match open_container_first(&item, subs.clone()) {
             Ok(r) => r,
-            Err(e) if matches!(e, Error::InvalidArgument(_)) || e.is_resource_refusal() => return Err(e),
+            Err(e) if matches!(e, Error::InvalidArgument(_)) || e.is_resource_refusal() => {
+                return Err(e);
+            }
             Err(_) => return Ok(Info::Raster(Box::new(container_info(subs)))),
         },
     };
@@ -589,7 +596,9 @@ fn open_item_native(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: 
                     proto = Some((url, r));
                     break;
                 }
-                Err(e) if matches!(e, Error::InvalidArgument(_)) || e.is_resource_refusal() => return Err(e),
+                Err(e) if matches!(e, Error::InvalidArgument(_)) || e.is_resource_refusal() => {
+                    return Err(e);
+                }
                 Err(e) if !skip_missing => return Err(bad(format!("Cannot open {url}: {e}"))),
                 Err(_) => {}
             }
@@ -711,7 +720,9 @@ impl Tiled {
             Some(t) => t,
             None => match LazyRaster::open(href) {
                 Ok(r) => Some(r),
-                Err(e) if matches!(e, Error::InvalidArgument(_)) || e.is_resource_refusal() => return Err(e),
+                Err(e) if matches!(e, Error::InvalidArgument(_)) || e.is_resource_refusal() => {
+                    return Err(e);
+                }
                 Err(_) if self.skip_missing => None,
                 Err(e) => {
                     return Err(bad(format!(

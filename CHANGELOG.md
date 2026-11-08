@@ -2,16 +2,12 @@
 
 ## Unreleased
 
-- Remote STAC, STACIT and STACTA documents require
-  `TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES` to select assets using configured cloud credentials
-  or cross-origin custom HTTP headers. Checks include declared assets during metadata reads and
-  concrete deferred tile opens. Public unsigned cloud reads remain supported, including S3 with
-  `AWS_NO_SIGN_REQUEST=YES`. Native pointer-policy refusals are not retried through GDAL.
-
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource
   error. Coexisting pixel buffers are checked together; hosts without memory discovery use a
-  512 MiB combined pixel-buffer budget. HDF-EOS5 structure text is limited to 16 MiB before
+  512 MiB combined pixel-buffer budget. This intentionally refuses previously readable
+  datasets exceeding that budget on macOS, Windows and WASM; the refusal remains terminal
+  even with GDAL enabled, so a fallback cannot bypass the allocation limit. HDF-EOS5 structure text is limited to 16 MiB before
   decoding, including fill-only files.
   This metadata cap applies to every HDF5 open, even when selecting an unrelated subdataset.
 
@@ -52,6 +48,12 @@
 
 - `rio stack --co KEY=VALUE` now applies creation options to the output instead of silently
   discarding them.
+
+- Remote STAC, STACIT and STACTA documents require
+  `TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES` to select assets using configured cloud credentials
+  or cross-origin custom HTTP headers. Checks include declared assets during metadata reads and
+  concrete deferred tile opens. Public unsigned cloud reads remain supported, including S3 with
+  `AWS_NO_SIGN_REQUEST=YES`. Native pointer-policy refusals are not retried through GDAL.
 
 - Public `build_vrt` and same-CRS mosaic entry points reject unselected mixed band counts and
   target extents intersecting no source. These strict checks deliberately differ from GDAL

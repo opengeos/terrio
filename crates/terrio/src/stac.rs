@@ -109,11 +109,18 @@ fn fetch_link_json(loc: &str) -> Result<Value> {
     parse_document(&fetch_as(loc, true)?, loc)
 }
 
+/// Identifies STAC metadata as GDAL 3.13.3's STACIT/STACTA drivers do, including JSONC.
+fn has_stac_marker(bytes: &[u8]) -> bool {
+    String::from_utf8_lossy(bytes).contains("\"stac_version\"") || crate::stacta::names_tiled_assets(bytes)
+}
+
 /// Checks declared asset credentials before any later metadata error can trigger a fallback.
 fn parse_document(bytes: &[u8], loc: &str) -> Result<Value> {
     let doc = serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
         .map_err(|e| bad(format!("{}: {e}", crate::vsi::listing::redact_url(loc))))?;
-    check_document_assets(&doc, loc)?;
+    if has_stac_marker(bytes) || crate::stacta::is_stacta(&doc) {
+        check_document_assets(&doc, loc)?;
+    }
     Ok(doc)
 }
 
@@ -141,7 +148,9 @@ impl Request {
             #[cfg(remote)]
             Some(body) => crate::http::post_json(&self.url, &serde_json::to_vec(body).map_err(bad)?, &self.headers, link_redirects(link))?,
             #[cfg(not(remote))]
-            _ => return Err(bad(format!("{}: POST requests and request headers need the `remote` feature", self.url))),
+            _ => {
+                return Err(bad(format!("{}: POST requests and request headers need the `remote` feature", self.url)));
+            }
         };
         parse_document(&bytes, &self.url)
     }
@@ -422,7 +431,7 @@ fn asset_uses_credentials(doc_loc: &str, href: &str) -> bool {
     false
 }
 
-/// Explicit credential sources that the optional GDAL backend understands beyond native auth.
+/// Explicit credential sources understood by GDAL 3.13.3 beyond native auth.
 /// This only inspects configuration and credential profile contents, never a metadata service or an SDK.
 #[cfg(all(remote, feature = "gdal"))]
 fn gdal_cloud_credentials(s3: bool, gs: bool, az: bool) -> bool {
@@ -637,7 +646,9 @@ fn needs_signing(href: &str, item: &Value, base: &str, mode: SignMode) -> bool {
 
 /// An Azure Blob Storage href with a current Planetary Computer SAS token appended.
 fn signed(href: String) -> Result<String> {
-    let Some((account, container)) = blob_container(&href) else { return Ok(href) };
+    let Some((account, container)) = blob_container(&href) else {
+        return Ok(href);
+    };
     let token = pc_token(account, container)?;
     Ok(format!("{href}{}{token}", if href.contains('?') { '&' } else { '?' }))
 }
@@ -746,6 +757,15 @@ fn own_items(doc: Value, loc: &str) -> Items {
     Items { items, truncated: false }
 }
 
+/// A pagination diagnostic location: local paths unchanged, remote URLs without credentials.
+fn pagination_location(location: &str) -> std::borrow::Cow<'_, str> {
+    if crate::vfs::Location::parse(location).is_local() {
+        std::borrow::Cow::Borrowed(location)
+    } else {
+        crate::vsi::listing::redact_url(without_query(location))
+    }
+}
+
 /// A URL without its query (where a SAS token or signature would be), for messages.
 fn without_query(url: &str) -> &str {
     url.split(['?', '#']).next().unwrap_or(url)
@@ -781,7 +801,9 @@ fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<It
                         out.truncated = true;
                         return Ok(out);
                     }
-                    let Some(href) = link["href"].as_str() else { continue };
+                    let Some(href) = link["href"].as_str() else {
+                        continue;
+                    };
                     let href = resolve_href(&base, href);
                     if matches!(link["rel"].as_str(), Some("item" | "items" | "child")) && !may_follow(&base, &href) {
                         crate::warnings::warn(format!(
@@ -804,7 +826,9 @@ fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<It
                 }
             }
         }
-        None => return Err(bad(format!("'{loc}' is not a STAC item, item collection, collection or catalog"))),
+        None => {
+            return Err(bad(format!("'{loc}' is not a STAC item, item collection, collection or catalog")));
+        }
     }
     Ok(out)
 }
@@ -822,21 +846,24 @@ fn read_pages(mut doc: Value, mut cur: Request, max_items: usize, out: &mut Item
             out.items.push((f.clone(), cur.url.clone()));
         }
         // https://github.com/radiantearth/stac-api-spec/tree/release/v1.0.0/item-search#pagination
-        let Some(next) = next_request(&doc, &cur) else { return Ok(()) };
+        let Some(next) = next_request(&doc, &cur) else {
+            return Ok(());
+        };
         if next == cur || pages > 10_000 {
             return Ok(());
         }
+        let location = || pagination_location(&cur.url);
         if !may_follow(&cur.url, &next.url) {
             crate::warnings::warn(format!(
                 "STAC: the next page of '{}' is on another origin or names local files: not followed",
-                crate::vsi::listing::redact_url(without_query(&cur.url))
+                location()
             ));
             return Ok(());
         }
         // A search made with GET is not continued with a POST its page asks for, unless asked
         // (`TERRIO_STAC_ALLOW_POST=YES`); one made with POST (`method=POST`) is.
         if next.body.is_some() && cur.body.is_none() && !option_on("TERRIO_STAC_ALLOW_POST") {
-            crate::warnings::warn(format!("STAC: the next page of '{}' is a POST request: not followed", without_query(&cur.url)));
+            crate::warnings::warn(format!("STAC: the next page of '{}' is a POST request: not followed", location()));
             return Ok(());
         }
         doc = next.fetch(true)?;
@@ -994,7 +1021,9 @@ fn asset_href(item_loc: &str, asset: &str) -> Result<String> {
     let doc = fetch_json(item_loc)?;
     let item = match kind(&doc) {
         Some(Kind::Item) => doc,
-        _ => return Err(bad(format!("'{}' is not a STAC item", crate::vsi::listing::redact_url(item_loc)))),
+        _ => {
+            return Err(bad(format!("'{}' is not a STAC item", crate::vsi::listing::redact_url(item_loc))));
+        }
     };
     let a = &item["assets"][asset];
     let href = a["href"].as_str().ok_or_else(|| {
@@ -1098,8 +1127,12 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
             {
                 continue;
             }
-            let Some(href) = asset["href"].as_str().filter(|h| !h.is_empty()) else { continue };
-            let get = |k: &str| if asset.get(k).is_some() { &asset[k] } else { &props[k] };
+            let Some(href) = asset["href"].as_str().filter(|h| !h.is_empty()) else {
+                continue;
+            };
+            let get = |k: &str| {
+                if asset.get(k).is_some() { &asset[k] } else { &props[k] }
+            };
             let crs = if !get("proj:code").is_null() && get("proj:code").as_str().is_some() {
                 get("proj:code").as_str().unwrap_or_default().to_string()
             } else if !get("proj:epsg").is_null() {
@@ -1434,18 +1467,10 @@ fn probe(path: &str) -> Option<Result<Probe>> {
         }
         Ok(v) if kind(&v).is_some() => Some(Ok(Probe::Stac(v))),
         Err(error) if matches!(error, Error::InvalidArgument(_)) || error.is_resource_refusal() => Some(Err(error)),
-        Err(error)
-            if !loc.is_local()
-                && (loc.file_name().to_ascii_lowercase().ends_with(".json")
-                    || loc.file_name().to_ascii_lowercase().ends_with(".geojson")
-                    || bytes
-                        .strip_prefix(b"\xef\xbb\xbf")
-                        .unwrap_or(&bytes)
-                        .iter()
-                        .copied()
-                        .find(|b| !b.is_ascii_whitespace())
-                        .is_some_and(|b| matches!(b, b'{' | b'[' | b'/'))) =>
-        {
+        Ok(_) if !loc.is_local() && has_stac_marker(&bytes) => {
+            Some(Err(Error::InvalidArgument("STAC: unsupported remote document; GDAL pointer fallback is disabled".into())))
+        }
+        Err(error) if !loc.is_local() && has_stac_marker(&bytes) => {
             Some(Err(Error::InvalidArgument(format!("STAC: invalid remote JSON document; GDAL pointer fallback is disabled ({error})"))))
         }
         _ if loc.is_local() => None,
@@ -1468,19 +1493,22 @@ pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
         return Some(r.and_then(|mut r| r.read()).map(Dataset::Raster));
     }
     match parse_name(path) {
-        Some(Name::Asset { item, asset }) => return Some(asset_href(&item, &asset).and_then(|href| crate::open(&href))),
-        Some(Name::Mosaic { .. }) => return Some(open_lazy(path)?.and_then(|mut r| r.read()).map(Dataset::Raster)),
+        Some(Name::Asset { item, asset }) => {
+            return Some(asset_href(&item, &asset).and_then(|href| crate::open(&href)));
+        }
+        Some(Name::Mosaic { .. }) => {
+            return Some(open_lazy(path)?.and_then(|mut r| r.read()).map(Dataset::Raster));
+        }
         None => {}
     }
-    Some(keep_remote_refusal(
-        path,
-        match probe(path)? {
-            Ok(Probe::Stac(doc)) => footprint_dataset(doc, path, DEFAULT_MAX_ITEMS).map(|(v, _)| Dataset::Vector(v)),
-            Ok(Probe::Stacta(item)) => crate::stacta::open_first(*item, None, None).and_then(|mut r| r.read()).map(Dataset::Raster),
-            Ok(Probe::Other(ds)) => Ok(*ds),
-            Err(e) => Err(e),
-        },
-    ))
+    Some(match probe(path)? {
+        Ok(Probe::Stac(doc)) => keep_remote_refusal(path, footprint_dataset(doc, path, DEFAULT_MAX_ITEMS).map(|(v, _)| Dataset::Vector(v))),
+        Ok(Probe::Stacta(item)) => {
+            keep_remote_refusal(path, crate::stacta::open_first(*item, None, None).and_then(|mut r| r.read()).map(Dataset::Raster))
+        }
+        Ok(Probe::Other(ds)) => Ok(*ds),
+        Err(e) => Err(e),
+    })
 }
 
 /// [`open`] for a raster. A remote document that [`probe`] would fetch whole by range (one named
@@ -1531,7 +1559,7 @@ fn refused_as_raster(path: &str) -> Option<Error> {
             Ok(h) => h,
             Err(e) => return Some(e),
         };
-        if String::from_utf8_lossy(&head).contains("\"stac_version\"") || crate::stacta::names_tiled_assets(&head) {
+        if has_stac_marker(&head) {
             return None;
         }
         looked = head.len();
@@ -1616,7 +1644,9 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
     }
     let doc = match probe(path)? {
         Ok(Probe::Stac(doc)) => doc,
-        Ok(Probe::Stacta(item)) => return Some(crate::stacta::info_item(*item, None, None, options)),
+        Ok(Probe::Stacta(item)) => {
+            return Some(crate::stacta::info_item(*item, None, None, options));
+        }
         Ok(Probe::Other(ds)) => return Some(Ok(crate::info::info(&ds, options))),
         Err(e) => return Some(Err(e)),
     };
@@ -1815,6 +1845,42 @@ mod tests {
         let mut stac = b"\xef\xbb\xbf".to_vec();
         stac.extend_from_slice(br#"{"type":"Feature","stac_version":"1.0.0","assets":{}}"#);
         assert!(parse_document(&stac, "https://catalog.example/item.json").is_ok());
+    }
+
+    /// Ordinary JSON retains its native error and does not acquire STAC credential policy.
+    #[cfg(remote)]
+    #[test]
+    fn unrelated_remote_json_keeps_its_reader_policy() {
+        for bytes in [b"{}".as_slice(), b"{".as_slice()] {
+            let expected = crate::memory::open_bytes(bytes.to_vec(), "data.json").map(|_| ()).unwrap_err();
+            let (server, _) = crate::http::test_server(bytes.to_vec());
+            let actual = super::open(&format!("{server}/data.json")).unwrap().map(|_| ()).unwrap_err();
+            assert_eq!(std::mem::discriminant(&actual), std::mem::discriminant(&expected), "{actual}");
+        }
+        let bytes = br#"{"type":"FeatureCollection","features":[],"assets":{"unrelated":{"href":"s3://private/data.tif"}}}"#;
+        let (server, _) = crate::http::test_server(bytes.to_vec());
+        crate::config::with_options(
+            &[
+                ("AWS_ACCESS_KEY_ID", "test-key"),
+                ("AWS_SECRET_ACCESS_KEY", "test-secret"),
+                ("AWS_NO_SIGN_REQUEST", "NO"),
+                ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO"),
+            ],
+            || assert!(super::open(&format!("{server}/data.json")).unwrap().is_ok()),
+        );
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_stacta_accepts_a_utf8_bom() {
+        let mut bytes = b"\xef\xbb\xbf".to_vec();
+        bytes.extend_from_slice(
+            br#"{"type":"Feature","stac_version":"1.0.0","properties":{"tiles:tile_matrix_sets":{}},"asset_templates":{},"assets":{}}"#,
+        );
+        let (server, _) = crate::http::test_server(bytes.clone());
+        let path = format!("{server}/item.json");
+        assert!(crate::stacta::Item::parse(&bytes, &path).is_some());
+        assert!(matches!(probe(&path), Some(Ok(Probe::Stacta(_)))));
     }
 
     /// Region/project settings alone do not authorize cloud signing or bearer credentials.
@@ -2016,6 +2082,38 @@ mod tests {
         let _ = open(&format!("{base}/collection.json"));
         assert_eq!(seen.lock().unwrap().len(), 2, "a same-origin item link is followed");
         assert!(internal_seen.lock().unwrap().is_empty(), "another origin was requested: {:?}", internal_seen.lock().unwrap());
+    }
+
+    /// Both rejected pagination paths name the host without credentials or queries.
+    #[cfg(remote)]
+    #[test]
+    fn pagination_warnings_redact_credentials_and_queries() {
+        for (links, warning) in [
+            (json!([{"rel": "next", "method": "POST", "href": "page2.json", "body": {"query": "x"}}]), "is a POST request"),
+            (json!([{"rel": "next", "href": "https://other.example/page2.json"}]), "on another origin"),
+        ] {
+            let (base, seen) = crate::http::test_server(item_collection(links));
+            let with_password = base.replacen("http://", "http://user:secret@", 1);
+            crate::warnings::take();
+            crate::config::with_options(&[("TERRIO_STAC_ALLOW_POST", "NO"), ("TERRIO_STAC_FOLLOW_CROSS_ORIGIN", "NO")], || {
+                assert_eq!(open(&format!("{with_password}/items.geojson?session=private")).layers[0].features.len(), 1);
+            });
+            let warnings = crate::warnings::take();
+            let message = warnings.iter().find(|w| w.contains(warning)).expect("a rejected pagination warning");
+            assert!(message.contains("127.0.0.1"), "{message}");
+            for secret in ["user", "secret", "private", "?"] {
+                assert!(!message.contains(secret), "{message}");
+            }
+            assert_eq!(seen.lock().unwrap().len(), 1);
+        }
+    }
+
+    /// URL-looking text is legal inside a local filename and must not be altered.
+    #[test]
+    fn pagination_locations_preserve_local_paths() {
+        let path = "/data/a://team@host/items.json?part=one";
+        assert_eq!(pagination_location(path), path);
+        assert_eq!(pagination_location("https://user:secret@example.com/items.json?session=private"), "https://example.com/items.json");
     }
 
     /// With cross-origin links allowed (`TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`), another origin

@@ -172,12 +172,13 @@ require the opt-in (custom authentication headers still need consent). A signatu
 an href and public Planetary Computer signing are not ambient user credentials.
 
 Refusals are terminal. Named `STAC:`, `STACIT:` and `STACTA:` documents are not reinterpreted by
-GDAL after a native error, though individual raster assets can still use the GDAL backend.
-Recognized remote STAC reader errors and invalid remote JSON also do not select a second pointer
-parser. Explicit `GDAL:` opens delegate to GDAL's own policies. The optional backend additionally
-checks its explicitly configured cloud credential sources, conservatively treating credential
-configuration files as configured; it does not query an identity metadata service to discover
-credentials. See [GDAL's cloud authentication options](https://gdal.org/en/stable/user/virtual_file_systems.html).
+GDAL after a native error, for local and remote document locations alike; individual raster assets
+can still use the GDAL backend. Recognized remote STAC reader errors, including malformed JSON
+that identifies STAC metadata, also do not select a second pointer parser. Ordinary non-STAC
+remote documents retain their existing fallback behavior. Explicit `GDAL:` opens delegate to GDAL's own policies. The optional backend additionally
+checks its explicitly configured cloud credential sources and credential-bearing profile keys.
+Existing credential files that cannot be read are treated conservatively as configured; the
+check does not query an identity metadata service to discover credentials. See [GDAL's cloud authentication options](https://gdal.org/en/stable/user/virtual_file_systems.html).
 Consent never permits remote documents to name local files.
 
 A STAC item of tiled assets (GDAL's STACTA, see [Formats](formats.md#stac)) opens from its URL
