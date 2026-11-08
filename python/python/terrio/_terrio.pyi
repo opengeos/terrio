@@ -1034,6 +1034,8 @@ def rasterize(
     a_srs: str | None = None,
     format: str | None = None,
     compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
 ) -> Raster: ...
 def polygonize(
     src: _RasterSource,
@@ -1140,6 +1142,7 @@ def translate(
     a_nodata: float | str | None = None,
     a_srs: str | None = None,
     a_ullr: _Bounds | None = None,
+    overview: int | str | None = None,
     format: str | None = None,
     compress: str | None = None,
     tile_size: int | None = None,
@@ -1285,6 +1288,8 @@ def vector_grid(
     nodata: float | None = None,
     format: str | None = None,
     compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
 ) -> Raster:
     """Grid scattered vector points into a raster, as gdal_grid."""
     ...

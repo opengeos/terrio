@@ -75,6 +75,8 @@ fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<Strin
 ///         nodata when given, as gdal_grid does.
 ///     format: The output format's short name, for `dst`.
 ///     compress: GeoTIFF/COG compression, for `dst`.
+///     tile_size: GeoTIFF/COG tile size, for `dst`.
+///     bigtiff: Write a BigTIFF, for `dst`.
 ///
 /// Returns:
 ///     Raster: The raster, in memory, one band per layer.
@@ -83,7 +85,7 @@ fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<Strin
     src, dst=None, *, algorithm="invdist", zfield=None, zoffset=0.0, zmultiply=1.0, layers=None, sql=None, r#where=None,
     bbox=None, extent=None, size=None, resolution=None, ot=None, crs=None, power=None, smoothing=None, radius=None,
     radius1=None, radius2=None, angle=None, min_points=None, max_points=None, min_points_per_quadrant=None,
-    max_points_per_quadrant=None, nodata=None, format=None, compress=None
+    max_points_per_quadrant=None, nodata=None, format=None, compress=None, tile_size=None, bigtiff=false
 ))]
 #[allow(clippy::too_many_arguments)]
 fn vector_grid(
@@ -116,6 +118,8 @@ fn vector_grid(
     nodata: Option<f64>,
     format: Option<&str>,
     compress: Option<String>,
+    tile_size: Option<u32>,
+    bigtiff: bool,
 ) -> PyResult<PyRaster> {
     if layers.as_ref().is_some_and(Vec::is_empty) {
         return Err(invalid("give at least one layer name"));
@@ -152,7 +156,7 @@ fn vector_grid(
         data_type: ot.map(data_type).transpose()?.unwrap_or(DataType::F64),
         crs: srs(crs)?,
     };
-    let write = dst.map(|_| write_options(format, compress, None, false)).transpose()?;
+    let write = dst.map(|_| write_options(format, compress, tile_size, bigtiff)).transpose()?;
     let out = crate::with_warnings(py, || -> terrio::Result<RasterDataset> {
         let out = terrio::ops::vector_grid::vector_grid_from_layers(&all, sql.as_deref(), named, &options)?;
         if let (Some(path), Some(o)) = (dst, &write) {
