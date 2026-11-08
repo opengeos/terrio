@@ -930,7 +930,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
         Error::InvalidArgument(_) | Error::Http(_) => false,
         e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
-        Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => path.contains(':') || path.starts_with("/vsi"),
+        Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => vfs::is_gdal_name(path),
         _ => true,
     };
     if !retry {
@@ -943,8 +943,35 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
 }
 
 #[cfg(all(test, feature = "gdal"))]
-mod fallback_limits {
+mod fallback_tests {
     use super::*;
+
+    #[test]
+    fn missing_windows_files_are_not_retried() {
+        for path in [r"C:\data\missing.tif", "C:/data/missing.tif", "C:missing.tif", r"\\?\C:\data\missing.tif"] {
+            let result: Result<()> = gdal_fallback(path, Err(std::io::Error::from(std::io::ErrorKind::NotFound).into()), |_| {
+                panic!("missing local file retried through GDAL: {path}")
+            });
+            assert!(matches!(result, Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound));
+        }
+    }
+
+    #[test]
+    fn missing_gdal_names_are_retried() {
+        for path in [
+            "/vsimem/example.grb",
+            "/vsizip/archive.zip/input.tif",
+            "gdal:input.tif",
+            "HDF5:\"input.h5\"://dataset",
+            "s3://bucket/input.tif",
+        ] {
+            let result = gdal_fallback(path, Err(std::io::Error::from(std::io::ErrorKind::NotFound).into()), |name| {
+                assert_eq!(name, path);
+                Ok(())
+            });
+            assert!(result.is_ok(), "{path}");
+        }
+    }
 
     #[test]
     fn stac_pointer_refusals_are_not_reinterpreted_by_gdal() {
