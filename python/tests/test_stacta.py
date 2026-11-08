@@ -97,3 +97,15 @@ def test_stacta_rio_and_subdatasets(tmp_path):
         assert (src.width, src.height, src.count, src.nodata) == (32, 32, 1, -1)
         assert src.overviews(1) == [2]
         np.testing.assert_array_equal(src.read(1, window=((14, 18), (14, 18))), full[14:18, 14:18])
+
+
+def test_stacta_multiple_matrix_sets_list_the_same_subdatasets_as_info(tmp_path):
+    path, _ = write_pyramid(tmp_path)
+    item = json.loads(path.read_text())
+    sets = item["properties"]["tiles:tile_matrix_sets"]
+    sets["Other"] = dict(sets["Quad"], identifier="Other")
+    path.write_text(json.dumps(item))
+    expected = [entry["name"] for entry in terrio.info(str(path))["subdatasets"]]
+    assert len(expected) == 2
+    with rasterio.open(str(path)) as source:
+        assert source.subdatasets == expected

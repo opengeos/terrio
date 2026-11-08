@@ -1046,3 +1046,82 @@ def test_unsupported_inferred_mask_is_not_advertised_or_copied(tmp_path):
             assert opened.mask_flag_enums == ([MaskFlags.all_valid],)
             np.testing.assert_array_equal(opened.read(1), values)
             np.testing.assert_array_equal(opened.read_masks(1), np.full((2, 2), 255, dtype="uint8"))
+
+
+def test_subdatasets_listed_without_opening_again(tmp_path, monkeypatch):
+    """A file's subdatasets come from its open raster, as `info` lists them: no second open."""
+    import terrio
+    from terrio import _terrio
+
+    t = (480000.0, 30.0, 0.0, 4400000.0, 0.0, -30.0)
+    a = terrio.Raster.from_array(np.arange(12, dtype="float32").reshape(3, 4), t, "EPSG:32613")
+    nc = str(tmp_path / "groups.nc")
+    terrio.write_netcdf_groups({"/g/a": a, "/g/b": a, "/c": a}, nc)
+    store = tmp_path / "s.zarr"
+    store.mkdir()
+    (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "group", "attributes": {}}')
+    array = {
+        "zarr_format": 3,
+        "node_type": "array",
+        "shape": [3, 4],
+        "data_type": "float32",
+        "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [3, 4]}},
+        "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
+        "fill_value": 0,
+        "codecs": [{"name": "bytes", "configuration": {"endian": "little"}}],
+        "dimension_names": ["y", "x"],
+    }
+    for name in ("a", "b"):
+        (store / name).mkdir()
+        (store / name / "zarr.json").write_text(json.dumps(array))
+    listed = {p: [s["name"] for s in terrio.info(p)["subdatasets"]] for p in (nc, str(store))}
+
+    calls: list[str] = []
+    real_info = _terrio.info
+    real_open = _terrio.open_raster
+    opens: list[str] = []
+
+    def spy_open(path, *args, **kwargs):
+        opens.append(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(_terrio, "open_raster", spy_open)
+
+    def spy(path, *args, **kwargs):
+        calls.append(path)
+        return real_info(path, *args, **kwargs)
+
+    monkeypatch.setattr(_terrio, "info", spy)
+    for path, names in listed.items():
+        assert len(names) >= 2
+        with rio.open(path) as src:
+            before = len(opens)
+            assert src.subdatasets == names
+            assert len(opens) == before
+        with rio.open(names[0]) as sub:
+            before = len(opens)
+            assert sub.subdatasets == []
+            assert len(opens) == before
+    assert calls == []
+
+
+def test_geopackage_subdatasets_keep_info_fallback(tmp_path):
+    gdal = pytest.importorskip("osgeo.gdal")
+    import terrio
+
+    path = str(tmp_path / "tables.gpkg")
+    source = gdal.GetDriverByName("MEM").Create("", 2, 2, 1, gdal.GDT_Byte)
+    source.SetGeoTransform((0, 1, 0, 2, 0, -1))
+    source.SetProjection("EPSG:4326")
+    for index, name in enumerate(("first", "second")):
+        source.GetRasterBand(1).Fill(index + 1)
+        options = [f"RASTER_TABLE={name}", "TILE_FORMAT=PNG"]
+        if index:
+            options.append("APPEND_SUBDATASET=YES")
+        target = gdal.Translate(path, source, format="GPKG", creationOptions=options)
+        assert target is not None
+        target = None
+    expected = [item["name"] for item in terrio.info(path)["subdatasets"]]
+    assert len(expected) == 2
+    with rio.open(path) as dataset:
+        assert dataset.subdatasets == expected
