@@ -419,6 +419,10 @@ pub fn open_raster_lazy(path: &str) -> Result<LazyRaster> {
 }
 
 impl LazyRaster {
+    pub(crate) fn enter_asset_read(&self) -> Result<Option<crate::stac::AssetReadScope>> {
+        self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()
+    }
+
     /// Shares this raster without decoding pixels or copying loaded pixel buffers.
     /// Lazy handles serialize access to their existing reader and retain window/overview reads.
     /// Handles are read-only aliases: replacing one handle does not replace the others. Loaded
@@ -454,6 +458,7 @@ impl LazyRaster {
         let mask_overviews = self.mask_band_overviews();
         let mask_bits = self.mask_band_bits();
         let referenced = self.geotransform_present();
+        let policy = self.asset_policy.clone();
         let replacement = Self::from(header.clone());
         let original = std::mem::replace(self, replacement);
         let shared = SharedRaster {
@@ -470,7 +475,10 @@ impl LazyRaster {
             mask_bits,
         };
         *self = Self::from_source(header.clone(), Box::new(shared.clone()));
-        Self::from_source(header, Box::new(shared))
+        self.asset_policy = policy.clone();
+        let mut alias = Self::from_source(header, Box::new(shared));
+        alias.asset_policy = policy;
+        alias
     }
 
     pub(crate) fn geotransform_present(&self) -> bool {
@@ -533,7 +541,7 @@ impl LazyRaster {
         // A missing file, or a directory, is named in the error.
         let mut r = Self::open_without_sidecars(path).map_err(|e| e.naming_local_file(path))?;
         r.find_sidecar_mask(path);
-        if policy.is_some() {
+        if r.asset_policy.is_none() {
             r.asset_policy = policy;
         }
         Ok(r)
@@ -1127,6 +1135,8 @@ impl LazyRaster {
     /// # Ok::<(), terrio::Error>(())
     /// ```
     pub fn write(&mut self, path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
+        let context = crate::stac::AssetReadContext::capture(self.asset_policy.clone());
+        context.check()?;
         let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
         self.refuse_masked_tile_archive(driver, options)?;
         let source_mask = options.mask.is_none() && self.has_mask() && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
@@ -1164,6 +1174,7 @@ impl LazyRaster {
                 |i| {
                     let y = i * rows;
                     let h = rows.min(height - y);
+                    let _scope = context.enter()?;
                     Ok((s.read_rows(Window::new(0, y, width, h), &all)?, h))
                 },
                 |_, (data, h)| out.write(data, h),
@@ -1623,6 +1634,7 @@ impl LazyRaster {
 
     /// A candidate overview's `RESAMPLING`, used by GDAL 3.13.3's best-overview selection.
     pub(crate) fn level_resampling(&mut self, overview: usize) -> Option<String> {
+        let _scope = self.enter_asset_read().ok()?;
         if let Inner::Source(_, source) = &mut self.inner {
             return source.level_resampling(overview);
         }

@@ -61,31 +61,36 @@ fn is_url(s: &str) -> bool {
 /// file named as a document (`.json`, `.geojson`) is read by range, as GDAL's `/vsicurl/` reads it
 /// (a server that ignores ranges is refused for a file more than ten times the first request);
 /// other URLs (STAC API endpoints) with one request. Either is capped at `CPL_JSON_MAX_SIZE`.
+#[cfg(test)]
 pub(crate) fn fetch(loc: &str) -> Result<Vec<u8>> {
+    fetch_document(loc).map(|(bytes, _)| bytes)
+}
+
+/// A document's bytes and effective location, retained together through redirects and caching.
+pub(crate) fn fetch_document(loc: &str) -> Result<(Vec<u8>, String)> {
     fetch_as(loc, false)
 }
 
-/// [`fetch`] of a location the caller chose, or with `link`, one a document's link chose: its
-/// requests are then redirected only to its own origin (see [`link_redirects`]).
-fn fetch_as(loc: &str, link: bool) -> Result<Vec<u8>> {
+fn fetch_as(loc: &str, link: bool) -> Result<(Vec<u8>, String)> {
     use crate::vfs::Location;
     #[cfg(not(remote))]
     let _ = link;
     match Location::parse(loc) {
-        Location::Local(p) => Ok(std::fs::read(p)?),
+        Location::Local(p) => Ok((std::fs::read(p)?, loc.to_string())),
         #[cfg(remote)]
         l @ (Location::Url(_) | Location::S3 { .. }) => {
             let remote = l.remote().ok_or_else(|| bad(format!("'{loc}' is not remote")))?;
             let name = l.file_name().to_ascii_lowercase();
             if name.ends_with(".json") || name.ends_with(".geojson") {
-                crate::http::get_file(&remote, link_redirects(link))
+                crate::http::get_file_response(&remote, link_redirects(link))
             } else {
-                crate::http::get_capped_following(&remote, crate::http::json_max_size(), link_redirects(link))
+                crate::http::get_capped_response(&remote, crate::http::json_max_size(), link_redirects(link))
             }
+            .map(|response| (response.body, if matches!(l, Location::S3 { .. }) { loc.to_string() } else { response.url }))
         }
         _ => {
             let local = crate::vfs::resolve(loc)?;
-            Ok(std::fs::read(local.path())?)
+            Ok((std::fs::read(local.path())?, loc.to_string()))
         }
     }
 }
@@ -100,13 +105,13 @@ fn link_redirects(link: bool) -> crate::http::Redirects {
     if link && !option_on("TERRIO_STAC_FOLLOW_CROSS_ORIGIN") { crate::http::Redirects::SameOrigin } else { crate::http::Redirects::Any }
 }
 
-fn fetch_json(loc: &str) -> Result<Value> {
-    parse_document(&fetch(loc)?, loc)
+fn fetch_json(loc: &str) -> Result<(Value, String)> {
+    fetch_link_document(loc, false)
 }
 
-/// [`fetch_json`] of a link's target: see [`fetch_as`].
-fn fetch_link_json(loc: &str) -> Result<Value> {
-    parse_document(&fetch_as(loc, true)?, loc)
+fn fetch_link_document(loc: &str, link: bool) -> Result<(Value, String)> {
+    let (bytes, location) = fetch_as(loc, link)?;
+    Ok((parse_document(&bytes, &location)?, location))
 }
 
 /// Identifies STAC metadata as GDAL 3.13.3's STACIT/STACTA drivers do, including JSONC.
@@ -140,18 +145,29 @@ impl Request {
 
     /// Fetches the page: a request the caller made, or with `link`, one a document's `next` link
     /// chose, whose redirects lead to its own origin only (see [`link_redirects`]).
-    fn fetch(&self, link: bool) -> Result<Value> {
-        let bytes = match &self.body {
+    fn fetch(&mut self, link: bool) -> Result<Value> {
+        let (bytes, location) = match &self.body {
             None if self.headers.is_empty() => fetch_as(&self.url, link)?,
             #[cfg(remote)]
-            None => crate::http::get_with_headers(&self.url, &self.headers, link_redirects(link))?,
-            #[cfg(remote)]
-            Some(body) => crate::http::post_json(&self.url, &serde_json::to_vec(body).map_err(bad)?, &self.headers, link_redirects(link))?,
-            #[cfg(not(remote))]
-            _ => {
-                return Err(bad(format!("{}: POST requests and request headers need the `remote` feature", self.url)));
+            body => {
+                let bytes = body.as_ref().map(serde_json::to_vec).transpose().map_err(bad)?;
+                let response = crate::http::request_response(
+                    if body.is_some() { "POST" } else { "GET" },
+                    &self.url,
+                    bytes.as_deref(),
+                    &self.headers,
+                    crate::http::json_max_size(),
+                    link_redirects(link),
+                )?;
+                (response.body, response.url)
             }
+            #[cfg(not(remote))]
+            _ => return Err(bad("POST requests and request headers need the `remote` feature")),
         };
+        if crate::vfs::url_origin(&self.url) != crate::vfs::url_origin(&location) {
+            self.headers.clear();
+        }
+        self.url = location;
         parse_document(&bytes, &self.url)
     }
 }
@@ -327,6 +343,7 @@ pub(crate) fn names_local_files(doc_loc: &str, href: &str) -> bool {
 #[derive(Clone)]
 pub(crate) struct AssetReadPolicy {
     document: String,
+    same_origin_allowed: bool,
     credentialed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -355,26 +372,36 @@ impl AssetReadPolicy {
     }
 
     fn for_asset(document: &str, href: &str) -> Result<Option<Self>> {
+        let selected = match parse_name(href) {
+            Some(Name::Asset { item, .. }) => Some(item),
+            Some(Name::Mosaic { source, .. }) => Some(source),
+            None => crate::stacta::document_location(href).transpose()?,
+        };
+        let href = selected.as_deref().unwrap_or(href);
         let inherited = Self::current();
         // A nested document must not replace the original catalog's origin and thereby turn
         // a cross-origin authenticated read into a same-origin exemption.
         let document = inherited.as_ref().map_or(document, |p| p.document.as_str());
-        check_asset_access(document, href)?;
+        let same_origin_allowed = inherited.as_ref().is_none_or(|policy| policy.same_origin_allowed);
+        check_asset_access_with_origin(document, href, same_origin_allowed)?;
         if local_backed(&crate::vfs::Location::parse(document)) {
             return Ok(None);
         }
         #[cfg(remote)]
-        let credentialed = asset_uses_credentials(document, href);
+        let credentialed = asset_uses_credentials_with_origin(document, href, same_origin_allowed);
         #[cfg(not(remote))]
         let credentialed = false;
         // Nested eager opens can finish before their pixels become a lazy memory raster.
         // Share the requirement so an inner GDAL/authenticated read marks its parent too.
+        let same_origin_allowed = same_origin_allowed
+            && crate::vfs::url_origin(document).is_some()
+            && crate::vfs::url_origin(document) == crate::vfs::url_origin(href);
         let document = document.to_string();
         let required = inherited.map(|p| p.credentialed).unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
         if credentialed {
             required.store(true, std::sync::atomic::Ordering::Relaxed);
         }
-        Ok(Some(Self { document, credentialed: required }))
+        Ok(Some(Self { document, same_origin_allowed, credentialed: required }))
     }
 
     pub(crate) fn enter(&self) -> Result<AssetReadScope> {
@@ -396,6 +423,41 @@ impl AssetReadPolicy {
     /// Checks a nested raster against the remote document, rather than its immediate parent.
     pub(crate) fn nested(path: &str) -> Result<Option<Self>> {
         Self::current().map_or(Ok(None), |p| Self::for_asset(&p.document, path))
+    }
+}
+
+/// A read-time snapshot for workers that may open nested sources. Options and provenance
+/// travel together; the lexical scope itself stays on the thread that enters it.
+pub(crate) struct AssetReadContext {
+    policy: Option<AssetReadPolicy>,
+    options: std::collections::HashMap<String, Option<String>>,
+}
+
+pub(crate) struct AssetReadContextScope {
+    _policy: Option<AssetReadScope>,
+}
+
+impl Drop for AssetReadContextScope {
+    fn drop(&mut self) {
+        crate::config::pop_scope();
+    }
+}
+
+impl AssetReadContext {
+    pub(crate) fn capture(policy: Option<AssetReadPolicy>) -> Self {
+        Self { policy, options: crate::config::thread_options() }
+    }
+
+    pub(crate) fn check(&self) -> Result<()> {
+        let _scope = self.enter()?;
+        Ok(())
+    }
+
+    pub(crate) fn enter(&self) -> Result<AssetReadContextScope> {
+        crate::config::push_scope(self.options.clone());
+        let mut scope = AssetReadContextScope { _policy: None };
+        scope._policy = self.policy.as_ref().map(AssetReadPolicy::enter).transpose()?;
+        Ok(scope)
     }
 }
 
@@ -423,6 +485,13 @@ pub(crate) fn check_gdal_asset_read() -> Result<()> {
 /// credentials, not a signature already present in the document's href or public PC signing.
 /// Local-file and credential refusals are terminal, including through the GDAL fallback.
 pub(crate) fn check_asset_access(doc_loc: &str, href: &str) -> Result<()> {
+    let allowed = AssetReadPolicy::current().is_none_or(|policy| policy.same_origin_allowed);
+    check_asset_access_with_origin(doc_loc, href, allowed)
+}
+
+fn check_asset_access_with_origin(doc_loc: &str, href: &str, same_origin_allowed: bool) -> Result<()> {
+    #[cfg(not(remote))]
+    let _ = same_origin_allowed;
     let redact = crate::vsi::listing::redact_url;
     if names_local_files(doc_loc, href) {
         return Err(Error::InvalidArgument(format!("STAC: the remote item '{}' names local files ({})", redact(doc_loc), redact(href))));
@@ -430,7 +499,7 @@ pub(crate) fn check_asset_access(doc_loc: &str, href: &str) -> Result<()> {
     #[cfg(remote)]
     if !local_backed(&crate::vfs::Location::parse(doc_loc))
         && !option_on("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS")
-        && asset_uses_credentials(doc_loc, href)
+        && asset_uses_credentials_with_origin(doc_loc, href, same_origin_allowed)
     {
         return Err(Error::InvalidArgument(format!(
             "STAC: remote document '{}' selects asset '{}' with configured credentials; \
@@ -497,7 +566,7 @@ pub(crate) fn keep_remote_refusal<T>(location: &str, result: Result<T>) -> Resul
 
 /// A backing object, including one inside nested zip archives, that would use ambient auth.
 #[cfg(remote)]
-fn asset_uses_credentials(doc_loc: &str, href: &str) -> bool {
+fn asset_uses_credentials_with_origin(doc_loc: &str, href: &str, same_origin_allowed: bool) -> bool {
     use crate::vfs::Location;
     fn backing(location: &Location) -> &Location {
         match location {
@@ -509,8 +578,12 @@ fn asset_uses_credentials(doc_loc: &str, href: &str) -> bool {
     let object = backing(&location);
     // Preserve the provider spelling too: gs:// and az:// become ordinary URLs in Location.
     let s3 = matches!(object, Location::S3 { .. });
-    let gs = href.contains("gs://") || href.contains("/vsigs/");
-    let az = href.contains("az://") || href.contains("/vsiaz/");
+    let mut provider = href;
+    while let Some(rest) = provider.strip_prefix("/vsizip/") {
+        provider = rest.strip_prefix('{').unwrap_or(rest);
+    }
+    let gs = provider.starts_with("gs://") || provider.starts_with("/vsigs/");
+    let az = provider.starts_with("az://") || provider.starts_with("azure://") || provider.starts_with("/vsiaz/");
     let cloud = s3 || gs || az;
     let same_http_origin = match (backing(&Location::parse(doc_loc)), object) {
         (Location::Url(from), Location::Url(to)) => crate::vfs::url_origin(from) == crate::vfs::url_origin(to),
@@ -519,7 +592,9 @@ fn asset_uses_credentials(doc_loc: &str, href: &str) -> bool {
     // Same-origin ordinary HTTP assets keep their existing header authentication. Cloud URI
     // assets require consent even when the document is held in the same bucket/account.
     // Do not resolve unrelated cloud profiles for same-origin ordinary HTTP assets.
-    if (cloud || !same_http_origin) && object.remote().is_some_and(|remote| crate::http::uses_configured_credentials(&remote)) {
+    if (cloud || !same_origin_allowed || !same_http_origin)
+        && object.remote().is_some_and(|remote| crate::http::uses_configured_credentials(&remote))
+    {
         return true;
     }
     // az:// parsing appends the configured SAS, which is not an HTTP header. Native Azure
@@ -931,13 +1006,19 @@ fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<It
                     }
                     match link["rel"].as_str() {
                         Some("item") => {
-                            let item = fetch_link_json(&href)?;
+                            let (item, href) = fetch_link_document(&href, true)?;
                             if kind(&item) == Some(Kind::Item) {
                                 out.items.push((item, href));
                             }
                         }
-                        Some("items") => read_pages(fetch_link_json(&href)?, Request::get(&href), max_items, &mut out)?,
-                        Some("child") if depth < 8 => queue.push((fetch_link_json(&href)?, href, depth + 1)),
+                        Some("items") => {
+                            let (doc, href) = fetch_link_document(&href, true)?;
+                            read_pages(doc, Request::get(&href), max_items, &mut out)?;
+                        }
+                        Some("child") if depth < 8 => {
+                            let (doc, href) = fetch_link_document(&href, true)?;
+                            queue.push((doc, href, depth + 1));
+                        }
                         _ => {}
                     }
                 }
@@ -963,7 +1044,7 @@ fn read_pages(mut doc: Value, mut cur: Request, max_items: usize, out: &mut Item
             out.items.push((f.clone(), cur.url.clone()));
         }
         // https://github.com/radiantearth/stac-api-spec/tree/release/v1.0.0/item-search#pagination
-        let Some(next) = next_request(&doc, &cur) else {
+        let Some(mut next) = next_request(&doc, &cur) else {
             return Ok(());
         };
         if next == cur || pages > 10_000 {
@@ -1134,8 +1215,14 @@ fn parse_name(path: &str) -> Option<Name> {
 }
 
 /// The href of an asset of an item, resolved against the item's location.
+#[cfg(test)]
 fn asset_href(item_loc: &str, asset: &str) -> Result<String> {
-    let doc = fetch_json(item_loc)?;
+    asset_target(item_loc, asset).map(|(href, _)| href)
+}
+
+fn asset_target(item_loc: &str, asset: &str) -> Result<(String, String)> {
+    let (doc, location) = fetch_json(item_loc)?;
+    let item_loc = location.as_str();
     let item = match kind(&doc) {
         Some(Kind::Item) => doc,
         _ => {
@@ -1150,7 +1237,7 @@ fn asset_href(item_loc: &str, asset: &str) -> Result<String> {
     })?;
     let href = resolve_href(item_loc, href);
     check_asset_access(item_loc, &href)?;
-    sign_href(href, &item, item_loc, SignMode::from_env())
+    sign_href(href, &item, item_loc, SignMode::from_env()).map(|href| (href, location))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1554,7 +1641,7 @@ pub(crate) fn may_be_stac(path: &str) -> bool {
 /// A STAC document at `path`: `None` when it is not one (having read at most its first bytes
 /// for local files). A remote JSON document that is not STAC is opened as GeoJSON.
 enum Probe {
-    Stac(Value),
+    Stac(Value, String),
     /// An item with tiled assets (see [`crate::stacta`]).
     Stacta(Box<crate::stacta::Item>),
     Other(Box<Dataset>),
@@ -1575,15 +1662,15 @@ fn probe(path: &str) -> Option<Result<Probe>> {
     } else if !matches!(loc, crate::vfs::Location::Url(_) | crate::vfs::Location::S3 { .. }) {
         return None;
     }
-    let bytes = match fetch(path) {
+    let (bytes, location) = match fetch_document(path) {
         Ok(b) => b,
         Err(e) => return Some(Err(e)),
     };
-    match parse_document(&bytes, path) {
+    match parse_document(&bytes, &location) {
         Ok(v) if crate::stacta::is_stacta(&v) && kind(&v) == Some(Kind::Item) => {
-            crate::stacta::Item::parse(&bytes, path).map(|item| Ok(Probe::Stacta(Box::new(item))))
+            crate::stacta::Item::parse(&bytes, &location).map(|item| Ok(Probe::Stacta(Box::new(item))))
         }
-        Ok(v) if kind(&v).is_some() => Some(Ok(Probe::Stac(v))),
+        Ok(v) if kind(&v).is_some() => Some(Ok(Probe::Stac(v, location))),
         Err(error) if matches!(error, Error::InvalidArgument(_)) || error.is_resource_refusal() => Some(Err(error)),
         Ok(v) if !loc.is_local() && (v.get("stac_version").is_some() || crate::stacta::is_stacta(&v)) => {
             Some(Err(Error::InvalidArgument("STAC: unsupported remote document; GDAL pointer fallback is disabled".into())))
@@ -1616,7 +1703,7 @@ fn open_document(path: &str, as_raster: bool) -> Option<Result<Dataset>> {
     }
     match parse_name(path) {
         Some(Name::Asset { item, asset }) => {
-            return Some(asset_href(&item, &asset).and_then(|href| with_asset_read(&item, &href, || crate::open(&href))));
+            return Some(asset_target(&item, &asset).and_then(|(href, item)| with_asset_read(&item, &href, || crate::open(&href))));
         }
         Some(Name::Mosaic { .. }) => {
             return Some(open_lazy(path)?.and_then(|mut r| r.read()).map(Dataset::Raster));
@@ -1624,11 +1711,13 @@ fn open_document(path: &str, as_raster: bool) -> Option<Result<Dataset>> {
         None => {}
     }
     Some(match probe(path)? {
-        Ok(Probe::Stac(_)) if as_raster && !local_backed(&crate::vfs::Location::parse(path)) => Err(Error::InvalidArgument(format!(
+        Ok(Probe::Stac(_, _)) if as_raster && !local_backed(&crate::vfs::Location::parse(path)) => Err(Error::InvalidArgument(format!(
             "'{}' is a vector, not a raster dataset; GDAL pointer fallback is disabled",
             crate::vsi::listing::redact_url(path)
         ))),
-        Ok(Probe::Stac(doc)) => keep_remote_refusal(path, footprint_dataset(doc, path, DEFAULT_MAX_ITEMS).map(|(v, _)| Dataset::Vector(v))),
+        Ok(Probe::Stac(doc, location)) => {
+            keep_remote_refusal(path, footprint_dataset(doc, &location, DEFAULT_MAX_ITEMS).map(|(v, _)| Dataset::Vector(v)))
+        }
         Ok(Probe::Stacta(item)) => {
             keep_remote_refusal(path, crate::stacta::open_first(*item, None, None).and_then(|mut r| r.read()).map(Dataset::Raster))
         }
@@ -1699,10 +1788,12 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
         return Some(r);
     }
     Some(match parse_name(path)? {
-        Name::Asset { item, asset } => asset_href(&item, &asset).and_then(|href| with_asset_read(&item, &href, || LazyRaster::open(&href))),
+        Name::Asset { item, asset } => {
+            asset_target(&item, &asset).and_then(|(href, item)| with_asset_read(&item, &href, || LazyRaster::open(&href)))
+        }
         Name::Mosaic { source, filters } => (|| {
             filters.check()?;
-            let request = search_request(&source, &filters);
+            let mut request = search_request(&source, &filters);
             let doc = request.fetch(false)?;
             let mut max = filters.max_items.unwrap_or(DEFAULT_MAX_ITEMS);
             if filters.max_items.is_none()
@@ -1727,13 +1818,14 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
     match parse_name(path) {
         Some(Name::Asset { item, asset }) => {
             return Some(
-                asset_href(&item, &asset).and_then(|href| with_asset_read(&item, &href, || crate::info::info_path(&href, options))),
+                asset_target(&item, &asset)
+                    .and_then(|(href, item)| with_asset_read(&item, &href, || crate::info::info_path(&href, options))),
             );
         }
         Some(Name::Mosaic { source, filters }) => {
             let several = (|| -> Result<Option<Info>> {
                 filters.check()?;
-                let request = search_request(&source, &filters);
+                let mut request = search_request(&source, &filters);
                 let doc = request.fetch(false)?;
                 let max = filters.max_items.unwrap_or(DEFAULT_MAX_ITEMS);
                 let name = layer_name(&doc, &source);
@@ -1759,14 +1851,15 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
         }
         None => {}
     }
-    let doc = match probe(path)? {
-        Ok(Probe::Stac(doc)) => doc,
+    let (doc, location) = match probe(path)? {
+        Ok(Probe::Stac(doc, location)) => (doc, location),
         Ok(Probe::Stacta(item)) => {
             return Some(crate::stacta::info_item(*item, None, None, options));
         }
         Ok(Probe::Other(ds)) => return Some(Ok(crate::info::info(&ds, options))),
         Err(e) => return Some(Err(e)),
     };
+    let path = location.as_str();
     let is_item = kind(&doc) == Some(Kind::Item);
     let assets: Vec<(String, Value)> =
         if is_item { doc["assets"].as_object().into_iter().flatten().map(|(k, v)| (k.clone(), v.clone())).collect() } else { Vec::new() };
@@ -1826,6 +1919,12 @@ mod tests {
                         let error = reader.read_window(window, &Default::default()).unwrap_err();
                         assert!(matches!(error, Error::InvalidArgument(ref text) if text.contains("cached credentialed asset")), "{error}");
                         assert!(reader.read_mask(window, None).is_err());
+                        assert!(reader.read_resampled(&crate::ResampledReadOptions { size: (1, 1), ..Default::default() }).is_err());
+                        assert!(reader.overview_resampling().is_none());
+                        let output = tempfile::tempdir().unwrap();
+                        let path = output.path().join("revoked.tif");
+                        assert!(reader.write(path.to_str().unwrap(), &Default::default()).is_err());
+                        assert!(!path.exists(), "consent is checked before creating output");
                     }
                     let mut worker_reader = shared.shared();
                     let error = std::thread::spawn(move || {
@@ -1839,6 +1938,68 @@ mod tests {
                     assert!(matches!(error, Error::InvalidArgument(_)), "deferred worker reads retain policy: {error}");
                     assert_eq!(seen.lock().unwrap().len(), before, "no retained signed client may issue another request");
                 });
+            },
+        );
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn redirected_item_uses_response_origin_for_asset_consent() {
+        let (base, seen) = crate::http::test_routes_with(|base| {
+            let doc = serde_json::to_vec(&json!({
+                "type":"Feature", "stac_version":"1.0.0", "properties":{}, "geometry":null,
+                "assets":{"data":{"href":format!("{base}/private.tif")}}
+            }))
+            .unwrap();
+            let (other, _) = crate::http::test_routes(vec![("/item.json".into(), 200, Vec::new(), doc)]);
+            vec![
+                ("/item.json".into(), 302, vec![("Location".into(), format!("{other}/item.json"))], Vec::new()),
+                (
+                    "/catalog.json".into(),
+                    200,
+                    Vec::new(),
+                    serde_json::to_vec(&json!({
+                        "type":"Catalog", "stac_version":"1.0.0", "links":[{"rel":"item","href":"item.json"}]
+                    }))
+                    .unwrap(),
+                ),
+            ]
+        });
+        crate::http::set_path_specific_option(&format!("{base}/private.tif"), "GDAL_HTTP_HEADERS", Some("X-Key: synthetic-secret"));
+        crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO"), ("TERRIO_STAC_FOLLOW_CROSS_ORIGIN", "YES")], || {
+            let error = asset_target(&format!("{base}/item.json"), "data").unwrap_err();
+            assert!(matches!(error, Error::InvalidArgument(_)), "{error}");
+            let error = crate::open_vector(&format!("{base}/catalog.json"), &Default::default()).unwrap_err();
+            assert!(matches!(error, Error::InvalidArgument(_)), "{error}");
+            assert!(seen.lock().unwrap().iter().all(|(request, _)| !request.contains("/private.tif")));
+        });
+        crate::http::clear_path_specific_options(Some(&format!("{base}/private.tif")));
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn nested_remote_selectors_authorize_the_document_and_its_assets() {
+        crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+            with_asset_read("https://catalog.example/item.json", "https://public.example/data.vrt", || {
+                for selector in [r#"STAC:"https://public.example/child.json":data"#, r#"STACTA:"https://public.example/child.json":data"#] {
+                    assert!(AssetReadPolicy::nested(selector)?.is_some());
+                }
+                assert!(AssetReadPolicy::nested(r#"STAC:"/tmp/private.json":data"#).is_err());
+                Ok(())
+            })
+            .unwrap();
+        });
+    }
+
+    #[cfg(all(remote, feature = "gdal"))]
+    #[test]
+    fn provider_names_inside_http_paths_do_not_select_cloud_credentials() {
+        crate::config::with_options(
+            &[("AZURE_STORAGE_SAS_TOKEN", "synthetic-sas"), ("GS_OAUTH2_REFRESH_TOKEN", "synthetic-token")],
+            || {
+                for href in ["https://public.example/gs://image.tif", "https://public.example/image.tif?next=az://bucket/key"] {
+                    assert!(!asset_uses_credentials_with_origin("https://catalog.example/item.json", href, true));
+                }
             },
         );
     }
@@ -1918,7 +2079,7 @@ mod tests {
             ],
             || {
                 let result =
-                    with_asset_read("https://catalog.example/item.json", &href, || LazyRaster::open(&href).and_then(|mut r| r.read()));
+                    with_asset_read("https://catalog.example/item.json", &href, || LazyRaster::open(&href)).and_then(|mut r| r.read());
                 assert!(
                     matches!(result, Err(Error::InvalidArgument(ref text)) if text.contains("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS")),
                     "{result:?}"
@@ -2016,7 +2177,8 @@ mod tests {
                         assert!(!message.contains("document-secret") && !message.contains("test-secret"), "{message}");
                     }
                 }
-                for result in [crate::open(&item).map(|_| ()), crate::open_raster(&item).map(|_| ())] {
+                for result in [crate::open(&item).map(|_| ()), crate::open_raster(&item).map(|_| ()), crate::list_layers(&item).map(|_| ())]
+                {
                     assert!(matches!(result, Err(Error::InvalidArgument(_))));
                 }
                 let mosaic = format!("STACIT:\"{item}\":asset=data");

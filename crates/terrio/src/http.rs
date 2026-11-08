@@ -410,6 +410,8 @@ struct Client {
     remote: Remote,
     /// The URL requests go to (after S3 region discovery or a redirect).
     url: String,
+    /// The final response location, kept separately so redirect auth stays tied to `url`.
+    response_url: String,
     /// A query added to an S3 object's URL (`?list-type=2&...` for a listing), or empty.
     query: String,
     s3: Option<S3Auth>,
@@ -513,6 +515,7 @@ impl Client {
             pid: std::process::id(),
             options,
             remote: remote.clone(),
+            response_url: url.clone(),
             url,
             query: String::new(),
             s3,
@@ -732,6 +735,7 @@ impl Client {
                 url = to;
                 continue;
             }
+            self.response_url = url.clone();
             match status {
                 200 | 206 | 416 => return Ok(response),
                 404 if self.missing_ok => return Ok(response),
@@ -1478,10 +1482,15 @@ pub(crate) fn get_capped(remote: &Remote, cap: u64) -> Result<Vec<u8>> {
 
 /// [`get_capped`], its redirects followed as `redirects` allows.
 pub(crate) fn get_capped_following(remote: &Remote, cap: u64, redirects: Redirects) -> Result<Vec<u8>> {
+    get_capped_response(remote, cap, redirects).map(|response| response.body)
+}
+
+pub(crate) fn get_capped_response(remote: &Remote, cap: u64, redirects: Redirects) -> Result<JsonResponse> {
     let mut client = Client::new(remote, HttpOptions::from_env());
     client.body_cap = Some(cap);
     client.redirects = redirects;
-    Ok(client.fetch(None)?.data)
+    let body = client.fetch(None)?.data;
+    Ok(JsonResponse { body, url: client.response_url })
 }
 
 /// Reads a whole remote file (a STAC item, a GeoJSON document) into memory by range, as
@@ -1489,6 +1498,10 @@ pub(crate) fn get_capped_following(remote: &Remote, cap: u64, redirects: Redirec
 /// once its length is known, before its body is fetched. Its redirects are followed as
 /// `redirects` allows.
 pub(crate) fn get_file(remote: &Remote, redirects: Redirects) -> Result<Vec<u8>> {
+    get_file_response(remote, redirects).map(|response| response.body)
+}
+
+pub(crate) fn get_file_response(remote: &Remote, redirects: Redirects) -> Result<JsonResponse> {
     let reader = RangeReader::open_following(remote, HttpOptions::from_env(), redirects)?;
     let mut s = reader.lock()?;
     let cap = json_max_size();
@@ -1497,7 +1510,7 @@ pub(crate) fn get_file(remote: &Remote, redirects: Redirects) -> Result<Vec<u8>>
     }
     let mut out = Vec::new();
     s.copy_to(&mut out)?;
-    Ok(out)
+    Ok(JsonResponse { body: out, url: s.client.response_url.clone() })
 }
 
 /// A "directory" of an object store: the objects below a prefix.
@@ -1523,13 +1536,6 @@ pub(crate) fn list_subdirectories(dir: &Directory) -> Result<Option<Vec<String>>
     out.sort();
     out.dedup();
     Ok(Some(out))
-}
-
-/// Sends a `POST` of a JSON body (a STAC API search, for instance) and returns the response's
-/// body. Redirects that keep the method (307 and 308) are followed as `redirects` allows, and
-/// transient errors retried.
-pub(crate) fn post_json(url: &str, body: &[u8], headers: &[(String, String)], redirects: Redirects) -> Result<Vec<u8>> {
-    request("POST", url, Some(body), headers, json_max_size(), redirects)
 }
 
 /// The seconds a `Retry-After` header asks to wait: a number of seconds, or an HTTP date
@@ -1559,6 +1565,7 @@ pub(crate) fn seconds_until_utc(y: i64, m: i64, d: i64, h: i64, mi: i64, s: i64)
 
 /// Fetches a whole remote file with extra request headers (an API key, for instance), following
 /// redirects as `redirects` allows and retrying transient errors.
+#[cfg(test)]
 pub(crate) fn get_with_headers(url: &str, headers: &[(String, String)], redirects: Redirects) -> Result<Vec<u8>> {
     get_with_headers_capped(url, headers, json_max_size(), redirects)
 }
@@ -1592,7 +1599,7 @@ fn request(method: &str, url: &str, body: Option<&[u8]>, headers: &[(String, Str
     request_response(method, url, body, headers, cap, policy).map(|response| response.body)
 }
 
-fn request_response(
+pub(crate) fn request_response(
     method: &str,
     url: &str,
     body: Option<&[u8]>,
@@ -1802,6 +1809,8 @@ pub fn clear_cache() {
 #[derive(Default)]
 struct CachedFile {
     len: u64,
+    /// Cached metadata keeps the origin that supplied its bytes, not just the requested URL.
+    response_url: String,
     /// The whole file, from a server that ignored a range.
     whole: Option<Arc<[u8]>>,
     /// The file's first bytes, from a first request shorter than a block.
@@ -1830,14 +1839,16 @@ impl FileCache {
         Self { files: BTreeMap::new(), order: VecDeque::new(), bytes: 0 }
     }
 
-    /// Stores a part of the file `key` of length `len`, then drops the oldest parts beyond
+    /// Stores bytes with their cache key and effective response URL, then drops parts beyond
     /// `budget` bytes. A part larger than the budget is not kept.
-    fn store(&mut self, key: &str, len: u64, slot: Slot, data: Arc<[u8]>, budget: u64) {
+    fn store(&mut self, source: (&str, &str), len: u64, slot: Slot, data: Arc<[u8]>, budget: u64) {
+        let (key, response_url) = source;
         if data.len() as u64 > budget {
             return;
         }
         let file = self.files.entry(key.to_string()).or_default();
         file.len = len;
+        file.response_url = response_url.to_string();
         let old = match slot {
             Slot::Whole => file.whole.replace(data.clone()),
             Slot::Prefix => file.prefix.replace(data.clone()),
@@ -2057,6 +2068,7 @@ impl Shared {
             return None;
         }
         self.len = file.len;
+        self.client.response_url = file.response_url.clone();
         self.whole = file.whole.clone();
         self.prefix = file.prefix.clone();
         if self.whole.is_some() || end <= prefix {
@@ -2091,12 +2103,12 @@ impl Shared {
     }
 
     fn store_whole(&mut self, data: Arc<[u8]>) {
-        file_cache().store(&self.key, self.len, Slot::Whole, data.clone(), self.shared_budget);
+        file_cache().store((&self.key, &self.client.response_url), self.len, Slot::Whole, data.clone(), self.shared_budget);
         self.whole = Some(data);
     }
 
     fn store_prefix(&mut self, data: Arc<[u8]>) {
-        file_cache().store(&self.key, self.len, Slot::Prefix, data.clone(), self.shared_budget);
+        file_cache().store((&self.key, &self.client.response_url), self.len, Slot::Prefix, data.clone(), self.shared_budget);
         self.prefix = Some(data);
     }
 
@@ -2136,7 +2148,13 @@ impl Shared {
         for (i, chunk) in data.chunks(bs).enumerate() {
             let b = first_block + i as u64;
             let chunk: Arc<[u8]> = chunk.into();
-            cache.store(&self.key, self.len, Slot::Block(self.block_size, b), chunk.clone(), self.shared_budget);
+            cache.store(
+                (&self.key, &self.client.response_url),
+                self.len,
+                Slot::Block(self.block_size, b),
+                chunk.clone(),
+                self.shared_budget,
+            );
             if self.blocks.insert(b, chunk).is_none() {
                 self.order.push_back(b);
             }
@@ -2367,9 +2385,15 @@ pub(crate) type TestRoute = (String, u16, Vec<(String, String)>, Vec<u8>);
 /// other with a 404, recording every request. Returns its base URL.
 #[cfg(test)]
 pub(crate) fn test_routes(routes: Vec<TestRoute>) -> (String, TestRequests) {
+    test_routes_with(|_| routes)
+}
+
+#[cfg(test)]
+pub(crate) fn test_routes_with(make_routes: impl FnOnce(&str) -> Vec<TestRoute>) -> (String, TestRequests) {
     use std::io::{BufRead, BufReader, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
+    let routes = make_routes(&base);
     let seen: TestRequests = Arc::new(Mutex::new(Vec::new()));
     let record = seen.clone();
     std::thread::spawn(move || {
@@ -3786,10 +3810,10 @@ mod tests {
     fn the_cache_test_guard_holds_the_caches_eviction() {
         let _serial = cache_test_guard();
         let mut cache = file_cache();
-        cache.store("guard-test://first", 5, Slot::Whole, Arc::from(&b"first"[..]), 1 << 20);
+        cache.store(("guard-test://first", "guard-test://first"), 5, Slot::Whole, Arc::from(&b"first"[..]), 1 << 20);
         // A budget the cache is already over: without the guard, this store evicts the oldest
         // entries, the one above among them.
-        cache.store("guard-test://second", 6, Slot::Whole, Arc::from(&b"second"[..]), 6);
+        cache.store(("guard-test://second", "guard-test://second"), 6, Slot::Whole, Arc::from(&b"second"[..]), 6);
         assert!(cache.files.get("guard-test://first").is_some_and(|f| f.whole.is_some()), "evicted while the guard was held");
     }
 

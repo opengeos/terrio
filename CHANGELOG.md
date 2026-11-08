@@ -83,12 +83,16 @@
   `TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES` to select assets using configured cloud credentials
   or cross-origin custom HTTP headers. Checks include declared assets during metadata reads and
   concrete deferred tile opens, nested native sources and cached readers after settings change.
+  Export and overview reads enforce the same policy, including parallel tile workers. Asset
+  checks use the final response origin after redirects.
   Native public unsigned cloud reads remain supported, including S3 with
   `AWS_NO_SIGN_REQUEST=YES`. GDAL asset reads selected by remote documents always require the
   opt-in because GDAL can follow nested sources and use additional credentials. Named STAC,
   STACIT and STACTA documents, local or remote, are not retried through GDAL after any native error.
   STACTA also preserves invalid-argument and resource refusals instead of treating them as
-  missing tiles or metadata-only container fallbacks, including for local items.
+  missing tiles or metadata-only container fallbacks, including for local items. Remote STAC
+  errors that could otherwise trigger pointer fallback become `InvalidArgument` with the redacted
+  native cause. Malformed remote JSON containing a STAC marker is conservatively terminal.
 
 - Public `build_vrt` and same-CRS mosaic entry points reject unselected mixed band counts and
   target extents intersecting no source. These strict checks deliberately differ from GDAL

@@ -862,6 +862,7 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
 
 /// The layer names of a vector dataset, without reading the features when the format allows it.
 pub fn list_layers(path: &str) -> Result<Vec<String>> {
+    let _scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
     if let Some(target) = crate::drivers::vector::oapif::service_target(path) {
         #[cfg(remote)]
@@ -895,6 +896,12 @@ pub fn list_layers(path: &str) -> Result<Vec<String>> {
 }
 
 fn list_layers_native(path: &str) -> Result<Vec<String>> {
+    if let Some(result) = crate::stac::open(path) {
+        return result.and_then(|dataset| match dataset {
+            Dataset::Vector(vector) => Ok(vector.layers.into_iter().map(|layer| layer.name).collect()),
+            Dataset::Raster(_) => Err(Error::Unsupported("a raster has no vector layers".into())),
+        });
+    }
     if is_tile_archive(path) {
         #[cfg(feature = "tiles")]
         return crate::tiles::layer_names(path);

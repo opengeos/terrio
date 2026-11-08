@@ -163,15 +163,19 @@ HTTP headers (including path-specific headers). Any custom header is treated as 
 authentication because API keys can use arbitrary names. Ordinary HTTP assets on the document's own
 origin retain their header authentication; cloud URI assets require consent even in the same
 bucket/account. Local documents retain credentialed access.
-For catalog-link traversal, the exemption uses each fetched document's origin. Following a
+For catalog-link traversal, the exemption uses each fetched document's final response origin,
+including after redirects. Following a
 cross-origin child requires `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES` and already sends configured
 headers to that child. Nested raster/asset-selected documents instead retain their selecting
-origin throughout the scoped asset read.
+origin throughout the scoped asset read. Once that asset chain crosses origins, nested sources
+require consent for configured headers even if they point back to the original origin.
 
 Checks run while parsing the document, including assets that were not selected, so metadata listing
 also requires consent when such assets are declared. Deferred mosaic opens and concrete tile URLs
 and nested native raster sources are checked too. Cached readers retain the original consent
-requirement, even after credentials are removed or unsigned reads are enabled. Without credentials,
+requirement, even after credentials are removed or unsigned reads are enabled. Export, overview
+metadata and resampled reads enforce it before source I/O; parallel readers carry the policy and
+the options in effect when the read starts. Without credentials,
 public cloud hrefs remain usable. With AWS credentials configured, `AWS_NO_SIGN_REQUEST=YES` keeps
 public S3 reads unsigned and does not require the opt-in (custom authentication headers still need
 consent). A signature already in an href and public Planetary Computer signing are not ambient user
@@ -184,7 +188,10 @@ such GDAL asset read requires the opt-in, even for an apparently public URL: GDA
 sources or use credentials unknown to the native reader. Public formats handled by native readers
 retain unsigned access without the opt-in. Recognized remote STAC reader errors, including malformed
 JSON that identifies STAC metadata, also do not select a second pointer parser. Ordinary non-STAC
-remote documents retain their existing fallback behavior. Explicit `GDAL:` opens delegate to GDAL's
+remote documents retain their existing fallback behavior. Remote STAC reader errors that would
+otherwise permit pointer fallback are reported as `InvalidArgument`, preserving the redacted
+native cause. Malformed JSON containing a STAC marker is conservatively treated as a pointer
+document, even when that marker cannot be verified as a top-level field. Explicit `GDAL:` opens delegate to GDAL's
 own policies. The optional backend additionally checks its explicitly configured cloud credential
 sources and credential-bearing keys in the selected AWS profile and selected
 credential/configuration files. Existing credential files that cannot be read are treated

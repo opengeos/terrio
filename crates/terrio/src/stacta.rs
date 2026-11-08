@@ -61,6 +61,10 @@ pub(crate) fn is_stacta(doc: &Value) -> bool {
 /// A `STACTA:` name's item, and the asset and tile matrix set it asks for.
 type Name = (String, Option<String>, Option<String>);
 
+pub(crate) fn document_location(path: &str) -> Option<Result<String>> {
+    parse_name(path).map(|result| result.map(|name| name.0))
+}
+
 /// A `STACTA:"item":asset:tms` name: the item, and the asset and tile matrix set asked for.
 /// `Err` for a `STACTA:` name of more parts, which GDAL does not open.
 fn parse_name(path: &str) -> Option<Result<Name>> {
@@ -140,7 +144,8 @@ impl Item {
     }
 
     fn load(loc: &str) -> Result<Self> {
-        let bytes = crate::stac::fetch(loc)?;
+        let (bytes, location) = crate::stac::fetch_document(loc)?;
+        let loc = location.as_str();
         let item = Self::parse(&bytes, loc).ok_or_else(|| bad(format!("'{loc}' is not JSON")))?;
         crate::stac::check_document_assets(&item.doc, loc)?;
         Ok(item)
@@ -217,11 +222,11 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
             }
         }
     }
-    let bytes = match crate::stac::fetch(path) {
+    let (bytes, location) = match crate::stac::fetch_document(path) {
         Ok(b) => b,
         Err(e) => return Some(Err(e)),
     };
-    let item = Item::parse(&bytes, path)?;
+    let item = Item::parse(&bytes, &location)?;
     item.is_stacta().then(|| open_first(item, None, None))
 }
 
@@ -411,6 +416,7 @@ struct Level {
 struct Tiled {
     /// The document that selected the tile template, checked for each concrete tile href too.
     document: String,
+    policy: Option<crate::stac::AssetReadPolicy>,
     levels: Vec<Level>,
     data_type: DataType,
     band_types: Vec<DataType>,
@@ -463,7 +469,7 @@ fn href_template(item_loc: &str, href: &str, tms: &str) -> Result<String> {
 
 /// Whether a configuration option is true, as GDAL's `CPLTestBool`.
 fn config_true(key: &str) -> bool {
-    std::env::var(key).is_ok_and(|v| !matches!(v.trim().to_ascii_uppercase().as_str(), "NO" | "FALSE" | "OFF" | "0"))
+    crate::config::get(key).is_some_and(|v| !matches!(v.trim().to_ascii_uppercase().as_str(), "NO" | "FALSE" | "OFF" | "0"))
 }
 
 /// Refuses a STACTA item when a raster allow-list is set without the STACTA driver: an item is a
@@ -698,6 +704,7 @@ fn open_item_native(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: 
     header.band_nodata = nodatas;
     let source = Tiled {
         document: item.loc.clone(),
+        policy: crate::stac::AssetReadPolicy::current(),
         levels,
         data_type,
         band_types: types,
@@ -804,7 +811,11 @@ impl WindowSource for Tiled {
             }
         }
         let this: &Tiled = self;
-        let reads = crate::par::map_range(tiles.len(), |i| this.read_tile(&tiles[i].0, tiles[i].3, bands));
+        let context = crate::stac::AssetReadContext::capture(self.policy.clone());
+        let reads = crate::par::map_range(tiles.len(), |i| {
+            let _scope = context.enter()?;
+            this.read_tile(&tiles[i].0, tiles[i].3, bands)
+        });
         for ((_, dx, dy, sub), r) in tiles.iter().zip(reads) {
             let Some(values) = r? else { continue };
             let (dx, dy) = (*dx as usize, *dy as usize);
@@ -983,6 +994,7 @@ mod tests {
             assert!(matches!(href_template(doc, &template, "WebMercatorQuad"), Err(Error::InvalidArgument(_))));
             let source = Tiled {
                 document: doc.into(),
+                policy: None,
                 levels: Vec::new(),
                 data_type: DataType::U8,
                 band_types: vec![DataType::U8],
@@ -998,6 +1010,47 @@ mod tests {
         assert!(seen.lock().unwrap().is_empty());
     }
 
+    #[cfg(remote)]
+    #[test]
+    fn new_tile_workers_keep_root_policy_and_read_time_options() {
+        let (base, seen) = crate::http::test_server(Vec::new());
+        let href = format!("{base}/tile.tif");
+        // Only the concrete tile has credentials; the public template document is readable.
+        crate::http::set_path_specific_option(&href, "GDAL_HTTP_HEADERS", Some("X-Key: synthetic-secret"));
+        let mut source = crate::stac::with_asset_read("https://catalog.example/root.json", &format!("{base}/child.json"), || {
+            Ok(Tiled {
+                document: format!("{base}/child.json"),
+                policy: crate::stac::AssetReadPolicy::current(),
+                levels: vec![Level {
+                    template: href.clone(),
+                    tile_w: 1,
+                    tile_h: 1,
+                    min_col: 0,
+                    min_row: 0,
+                    raw_w: 64,
+                    raw_h: 1,
+                    off_x: 0,
+                    off_y: 0,
+                    width: 64,
+                    height: 1,
+                }],
+                data_type: DataType::U8,
+                band_types: vec![DataType::U8],
+                band_fills: vec![0.0],
+                skip_missing: true,
+                block: (1, 1),
+                tiles: Mutex::new(HashMap::new()),
+            })
+        })
+        .unwrap();
+        crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+            let error = source.read(0, Window::full(64, 1), &[1]).unwrap_err();
+            assert!(matches!(error, Error::InvalidArgument(_)), "{error}");
+        });
+        assert!(seen.lock().unwrap().is_empty());
+        crate::http::clear_path_specific_options(Some(&href));
+    }
+
     #[test]
     fn mixed_band_windows_keep_integer_nodata_comparisons_exact() {
         let raster = crate::Raster::from_data_native(
@@ -1010,6 +1063,7 @@ mod tests {
         header.band_nodata = vec![Some(4_294_967_295.0), Some(1.5)];
         let source = Tiled {
             document: String::new(),
+            policy: None,
             levels: vec![Level {
                 template: "tile".into(),
                 tile_w: 2,

@@ -211,6 +211,7 @@ impl LazyRaster {
     /// # Ok::<(), terrio::Error>(())
     /// ```
     pub fn read_resampled(&mut self, options: &ResampledReadOptions) -> Result<RasterDataset> {
+        let _scope = self.enter_asset_read()?;
         let read = self.check_resampled(options)?;
         let kinds = self.mask_kinds(&read.bands);
         let data = self.resample_bands(&read, &kinds)?;
@@ -235,6 +236,7 @@ impl LazyRaster {
     ///
     /// As [`LazyRaster::read_resampled`].
     pub fn read_resampled_masks(&mut self, options: &ResampledReadOptions) -> Result<Vec<u8>> {
+        let _scope = self.enter_asset_read()?;
         let read = self.check_resampled(options)?;
         let kinds = self.read_mask_kinds(&read);
         // A nodata mask band reads its band band by band, as a read of that band alone does.
@@ -256,6 +258,7 @@ impl LazyRaster {
     ///
     /// As [`LazyRaster::read_resampled`].
     pub fn read_resampled_with_masks(&mut self, options: &ResampledReadOptions) -> Result<(RasterDataset, Vec<u8>)> {
+        let _scope = self.enter_asset_read()?;
         let read = self.check_resampled(options)?;
         let kinds = self.read_mask_kinds(&read);
         let data = self.resample_bands(&read, &kinds)?;
