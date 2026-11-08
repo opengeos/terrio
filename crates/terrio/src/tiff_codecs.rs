@@ -1757,12 +1757,15 @@ mod tests {
         assert_eq!(decompress(32773, raw, 4).unwrap(), vec![1, 2, 3, 9]);
     }
 
+    /// The floating-point predictor (3) is undone for Float16, Float32 and Float64 samples, one to
+    /// four per pixel, each against the values the rows were built from.
     #[test]
     fn floating_point_predictor_is_undone_for_every_sample_size_and_count() {
-        for (sample, spp) in [(Sample::F16, 1), (Sample::F16, 3), (Sample::F32, 1), (Sample::F32, 4), (Sample::F64, 1), (Sample::F64, 2)] {
+        for (sample, spp) in [Sample::F16, Sample::F32, Sample::F64].into_iter().flat_map(|s| (1..=4).map(move |p| (s, p))) {
             let (size, w, rows) = (sample.size(), 7, 3);
             let wc = w * spp;
-            let codec = ChunkCodec { codec: Codec::Lzma, sample, spp, predictor: 3, ..packed(8, spp) };
+            let bits = (size * 8) as u16;
+            let codec = ChunkCodec { codec: Codec::Lzma, sample, spp, predictor: 3, bits, ..packed(8, spp) };
             // Samples of arbitrary bytes, most significant first.
             let mut seed = 0x9E37_79B9u32;
             let mut next = move || {
