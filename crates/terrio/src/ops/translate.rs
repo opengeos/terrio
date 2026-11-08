@@ -806,8 +806,10 @@ fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelec
     // gdal_translate's virtual dataset reads its bands together when they are the source's
     // first ones in order (`VRTDataset::CheckCompatibleForDatasetIO`). A copy reads the same
     // values either way, so its bands are read together: a Zarr chunk holding many bands is then
-    // fetched and decoded once, not once per band.
-    let together = copy || bands.iter().enumerate().all(|(i, &b)| b == i + 1);
+    // fetched and decoded once, not once per band. But for a VRT read whole, whose read of several
+    // bands holds them all as 8-byte values at once.
+    let whole_vrt = src.driver() == crate::formats::RasterDriver::VRT && !src.reads_by_window();
+    let together = (copy && !whole_vrt) || bands.iter().enumerate().all(|(i, &b)| b == i + 1);
     // A level read alone (`--overview NONE` or a level) rounds each request's window to whole
     // pixels within 0.001 (`fixed_request`): a strip's own origin may round off the whole
     // output's sampling grid.
@@ -1168,6 +1170,77 @@ mod tests {
                 assert_eq!(a.crs().to_wkt(), b.crs().to_wkt(), "{case}");
             }
         }
+    }
+
+    #[test]
+    fn copies_read_their_bands_together_as_band_by_band() {
+        // A copy reads all its bands at once (a Zarr chunk holding many bands is then fetched
+        // once), where gdal_translate's VRT reads bands that are not the first ones one by one:
+        // the same values, nodata and masks, with a per-dataset mask, per-band nodata and alpha.
+        let dir = tempfile::tempdir().unwrap();
+        let rgb = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/resampled_reads/rgb_mask.tif").to_string();
+        let vrt = dir.path().join("nodata_alpha.vrt").to_str().unwrap().to_string();
+        let band = |b: usize, source: usize, extra: &str| {
+            format!(
+                "<VRTRasterBand dataType=\"Byte\" band=\"{b}\">{extra}<SimpleSource><SourceFilename relativeToVRT=\"0\">{rgb}</SourceFilename>\
+                 <SourceBand>{source}</SourceBand><SrcRect xOff=\"0\" yOff=\"0\" xSize=\"64\" ySize=\"48\"/>\
+                 <DstRect xOff=\"0\" yOff=\"0\" xSize=\"64\" ySize=\"48\"/></SimpleSource></VRTRasterBand>"
+            )
+        };
+        let bands_xml: String =
+            [0, 7, 9].iter().enumerate().map(|(i, nd)| band(i + 1, i + 1, &format!("<NoDataValue>{nd}</NoDataValue>"))).collect();
+        std::fs::write(
+            &vrt,
+            format!(
+                "<VRTDataset rasterXSize=\"64\" rasterYSize=\"48\"><GeoTransform>500000, 30, 0, 4100000, 0, -30</GeoTransform>{bands_xml}{}</VRTDataset>",
+                band(4, 1, "<ColorInterp>Alpha</ColorInterp>")
+            ),
+        )
+        .unwrap();
+        for (path, bands) in [(&rgb, vec![2, 3]), (&vrt, vec![2, 3, 4]), (&vrt, vec![4, 2])] {
+            let mut src = crate::open_raster_lazy(path).unwrap();
+            let read = ResampledReadOptions {
+                bands: bands.clone(),
+                window: Some((3.0, 5.0, 20.0, 10.0)),
+                size: (20, 10),
+                resampling: Resampling::Nearest,
+                overview: OverviewSelection::Auto,
+            };
+            let together = src.read_resampled(&read).unwrap();
+            let by_band = src.read_resampled_by_band(&read).unwrap();
+            assert_eq!(together.raster.data.to_f64_vec(), by_band.raster.data.to_f64_vec(), "{path} {bands:?}");
+            assert_eq!(together.band_nodata, by_band.band_nodata, "{path} {bands:?}");
+            let (_, masks) = src.read_resampled_with_masks(&read).unwrap();
+            let each: Vec<u8> = bands
+                .iter()
+                .flat_map(|&b| src.read_resampled_with_masks(&ResampledReadOptions { bands: vec![b], ..read.clone() }).unwrap().1)
+                .collect();
+            assert_eq!(masks, each, "{path} {bands:?}");
+            assert!(masks.contains(&0) && masks.contains(&255), "{path} {bands:?}: masked and valid pixels");
+            // translate takes that read, and gives what translating the whole source gives.
+            let o = TranslateOptions { src_win: Some((3.0, 5.0, 20.0, 10.0)), bands: bands.clone(), ..Default::default() };
+            assert!(matches!(plan_lazy(&mut src, &o, OverviewSelection::Auto).unwrap(), Planned::Read(r) if r.together && r.copy));
+            let lazy = translate_lazy(&mut src, &o, OverviewSelection::Auto).unwrap();
+            let eager = translate(&src.read().unwrap(), &o).unwrap();
+            assert_eq!(lazy.raster.data.to_f64_vec(), eager.raster.data.to_f64_vec(), "{path} {bands:?}");
+            assert_eq!(lazy.band_nodata, eager.band_nodata, "{path} {bands:?}");
+        }
+        // A VRT read whole (of resampled sources) reads bands that are not its first ones one by
+        // one, as it holds the bands of a read as 8-byte values at once.
+        let whole = dir.path().join("lanczos.vrt").to_str().unwrap().to_string();
+        let lanczos = |b: usize| {
+            format!(
+                "<VRTRasterBand dataType=\"Byte\" band=\"{b}\"><ComplexSource resampling=\"lanczos\"><SourceFilename relativeToVRT=\"0\">{rgb}</SourceFilename>\
+                 <SourceBand>{b}</SourceBand><SrcRect xOff=\"0\" yOff=\"0\" xSize=\"64\" ySize=\"48\"/>\
+                 <DstRect xOff=\"0\" yOff=\"0\" xSize=\"20\" ySize=\"15\"/></ComplexSource></VRTRasterBand>"
+            )
+        };
+        std::fs::write(&whole, format!("<VRTDataset rasterXSize=\"20\" rasterYSize=\"15\">{}{}</VRTDataset>", lanczos(1), lanczos(2)))
+            .unwrap();
+        let mut src = crate::open_raster_lazy(&whole).unwrap();
+        assert!(!src.reads_by_window());
+        let o = TranslateOptions { src_win: Some((2.0, 3.0, 10.0, 8.0)), bands: vec![2], ..Default::default() };
+        assert!(matches!(plan_lazy(&mut src, &o, OverviewSelection::Auto).unwrap(), Planned::Read(r) if r.copy && !r.together));
     }
 
     #[test]

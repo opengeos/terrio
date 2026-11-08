@@ -315,7 +315,8 @@ type ShardIndexes = std::sync::Mutex<(std::collections::HashMap<String, ShardInd
 /// A parsed shard index (see [`parse_index`]).
 type ShardIndex = std::sync::Arc<[Option<(usize, usize)>]>;
 
-/// The most bytes of shard index entries an array keeps: 256 indexes of 128 x 128 inner chunks.
+/// The most bytes of parsed shard index entries an array keeps (24 bytes an entry): about 170
+/// indexes of 128 x 128 inner chunks.
 const SHARD_INDEX_CACHE_BYTES: usize = 64 << 20;
 
 impl Array {
@@ -328,7 +329,7 @@ impl Array {
     }
 
     /// The index of the shard `key`, of `count` entries read from `range`, read once while the
-    /// array is open, as zarrita and GDAL keep them: a later window, or a strip of a window, in
+    /// array is open, as zarrita keeps them: a later window, or a strip of a window, in
     /// the same shard fetches only its inner chunks. `None` when the shard is missing.
     fn shard_index(&self, key: &str, count: usize, range: Range) -> Result<Option<ShardIndex>> {
         if let Some(index) = self.shard_indexes.lock().ok().and_then(|c| c.0.get(key).cloned()) {
@@ -339,9 +340,12 @@ impl Array {
             return Err(bad("shard smaller than its index"));
         }
         let index: ShardIndex = parse_index(&bytes[..count * 16]).into();
-        if let Ok(mut c) = self.shard_indexes.lock() {
+        // Kept unless another window read it meanwhile, which counted its bytes.
+        if let Ok(mut c) = self.shard_indexes.lock()
+            && !c.0.contains_key(key)
+        {
             let size = count * std::mem::size_of::<Option<(usize, usize)>>();
-            // ponytail: dropped all at once when full; an LRU if windows wander over many shards.
+            // Dropped all at once when full: an LRU would suit windows wandering over many shards.
             if c.1 + size > SHARD_INDEX_CACHE_BYTES {
                 *c = Default::default();
             }
@@ -1059,11 +1063,14 @@ fn scatter_strided(
 
 /// Byte ranges of a shard closer than this are fetched in one request.
 const MERGE_GAP: usize = 256 * 1024;
-/// The most bytes fetched in one request of inner chunks, so that large reads go in parallel: a
-/// connection far from the server delivers a large range slowly while its window grows. Reading
-/// 34.5 MB of TESSERA embeddings across the Atlantic took a median 9.95 s in runs of 16 MiB and
-/// 6.26 s in runs of 1 MiB (8.16 s in runs of 256 KiB, whose requests then cost more).
+/// The most bytes fetched in one request of inner chunks of a remote store, so that large reads
+/// go in parallel: a connection far from the server delivers a large range slowly while its
+/// window grows. Reading 34.5 MB of TESSERA embeddings across the Atlantic took a median 9.95 s in
+/// runs of 16 MiB and 6.26 s in runs of 1 MiB (8.16 s in runs of 256 KiB, whose requests then cost
+/// more).
 const MAX_RUN: usize = 1 << 20;
+/// [`MAX_RUN`] for a local store, read without round trips.
+const MAX_LOCAL_RUN: usize = 16 << 20;
 
 /// The bytes one chunk decoding holds: a chunk's decoded bytes, or, for a shard read by parts, an
 /// inner chunk's. `usize::MAX` when they overflow (such chunks are refused before decoding).
@@ -1175,9 +1182,10 @@ fn decode_chunk(
     chosen.sort_by_key(|w| w.0);
     // Runs of nearby inner chunks, each fetched in one request.
     let mut runs: Vec<(usize, usize)> = Vec::new();
+    let max_run = if a.node.is_remote() { MAX_RUN } else { MAX_LOCAL_RUN };
     for (k, w) in chosen.iter().enumerate() {
         match runs.last_mut() {
-            Some((s, e)) if w.0 <= chosen[*e - 1].1.saturating_add(MERGE_GAP) && w.1 - chosen[*s].0 <= MAX_RUN => *e = k + 1,
+            Some((s, e)) if w.0 <= chosen[*e - 1].1.saturating_add(MERGE_GAP) && w.1 - chosen[*s].0 <= max_run => *e = k + 1,
             _ => runs.push((k, k + 1)),
         }
     }
@@ -1971,13 +1979,17 @@ fn band_dim_metadata(array: &Array, bds: &[usize], coord: impl Fn(usize) -> Opti
     }
     let names: Vec<String> =
         bds.iter().map(|&d| array.dims.get(d).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| format!("dim{d}"))).collect();
-    // Each dimension's coordinates at once: on a remote store, their reads are round trips.
-    let (values, units): (Vec<Option<Vec<f64>>>, Vec<Option<String>>) = crate::par::map_range(bds.len(), |k| {
+    // Each dimension's coordinates at once (on a remote store, their reads are round trips),
+    // dimensions of the same name read once.
+    let first: Vec<usize> = (0..bds.len()).map(|k| names.iter().position(|n| *n == names[k]).unwrap_or(k)).collect();
+    let read: Vec<(Option<Vec<f64>>, Option<String>)> = crate::par::map_range(bds.len(), |k| {
+        if first[k] != k {
+            return (None, None);
+        }
         let a = coord(bds[k]).filter(|a| a.shape == [array.shape[bds[k]]]);
         (a.as_ref().and_then(read_all_f64), a.and_then(|a| a.attrs["units"].as_str().map(str::to_string)))
-    })
-    .into_iter()
-    .unzip();
+    });
+    let (values, units): (Vec<Option<Vec<f64>>>, Vec<Option<String>>) = first.iter().map(|&k| read[k].clone()).unzip();
     let mut out = vec![("DIM_EXTRA".to_string(), format!("{{{}}}", names.join(",")))];
     for b in 1..=bands {
         for (k, i) in band_index(&sizes, b).into_iter().enumerate() {

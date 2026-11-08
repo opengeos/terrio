@@ -22,11 +22,20 @@ struct Counter {
     bytes: Arc<AtomicU64>,
     /// While set, every request is answered 401 (as a server failing or denying access).
     fail: Arc<std::sync::atomic::AtomicBool>,
+    /// The paths requested, in order.
+    paths: Arc<std::sync::Mutex<Vec<String>>>,
+    /// Paths answered 401, whatever the other settings.
+    fail_paths: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl Counter {
     fn take(&self) -> (u64, u64) {
         (self.requests.swap(0, Ordering::SeqCst), self.bytes.swap(0, Ordering::SeqCst))
+    }
+
+    /// The paths requested since the last call.
+    fn take_paths(&self) -> Vec<String> {
+        std::mem::take(&mut *self.paths.lock().unwrap())
     }
 }
 
@@ -60,11 +69,12 @@ fn serve(root: PathBuf) -> (String, Counter) {
                     }
                 }
                 c.requests.fetch_add(1, Ordering::SeqCst);
-                if c.fail.load(Ordering::SeqCst) {
+                let path = first.split_whitespace().nth(1).unwrap_or("/").split('?').next().unwrap().trim_start_matches('/').to_string();
+                c.paths.lock().unwrap().push(path.clone());
+                if c.fail.load(Ordering::SeqCst) || c.fail_paths.lock().unwrap().contains(&path) {
                     let _ = stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                     return;
                 }
-                let path = first.split_whitespace().nth(1).unwrap_or("/").split('?').next().unwrap().trim_start_matches('/').to_string();
                 let file = root.join(&path);
                 let Ok(data) = std::fs::read(&file).map_err(|_| ()).and_then(|d| if file.is_file() { Ok(d) } else { Err(()) }) else {
                     let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
@@ -169,6 +179,11 @@ fn metadata_read_failures_are_errors() {
     assert!(err.contains("401"), "{err}");
     counter.fail.store(false, Ordering::SeqCst);
     assert_eq!(terrio::open_raster_lazy(&remote).unwrap().width(), 30);
+    // The root's `zarr.json`, looked for beside `.zmetadata`, failing does not fail a v2 store
+    // whose consolidated metadata was read.
+    counter.fail_paths.lock().unwrap().push("v2.zarr/zarr.json".into());
+    assert_eq!(terrio::open_raster_lazy(&remote).unwrap().width(), 30);
+    counter.fail_paths.lock().unwrap().clear();
     // An array document that is not JSON (as a truncated or error body sent with 200) is
     // reported as such, not taken for a missing array.
     let store = dir.path().join("v2.zarr");
@@ -399,6 +414,10 @@ fn translated_bands_sharing_a_chunk_fetch_it_once() {
     let (url, counter) = serve(dir.path().to_path_buf());
     let mut src = terrio::open_raster_lazy(&format!("ZARR:\"{url}/e.zarr\":/a")).unwrap();
     counter.take();
+    // A v3 store: no v2 document is looked for.
+    let opened = counter.take_paths();
+    assert!(opened.contains(&"e.zarr/a/zarr.json".to_string()), "{opened:?}");
+    assert!(!opened.iter().any(|p| [".zarray", ".zattrs", ".zgroup"].iter().any(|f| p.ends_with(f))), "{opened:?}");
     let o = terrio::ops::translate::TranslateOptions { src_win: Some((2.0, 3.0, 4.0, 5.0)), bands: vec![5, 6, 7, 8], ..Default::default() };
     let out = terrio::ops::translate::translate_lazy(&mut src, &o, terrio::ops::overview::OverviewSelection::Auto).unwrap();
     assert_eq!(counter.take().0, 1);
@@ -407,6 +426,11 @@ fn translated_bands_sharing_a_chunk_fetch_it_once() {
         assert_eq!(out.raster.get(k, 0, 0), ((k + 4) * 10 + 3) as f64);
         assert_eq!(out.raster.get(k, 4, 3), ((k + 4) * 10 + 7) as f64);
     }
+    // Bands in another order: still the chunk once, the bands in the order asked.
+    let o = terrio::ops::translate::TranslateOptions { bands: vec![8, 5], ..o };
+    let out = terrio::ops::translate::translate_lazy(&mut src, &o, terrio::ops::overview::OverviewSelection::Auto).unwrap();
+    assert_eq!(counter.take().0, 1);
+    assert_eq!((out.raster.get(0, 0, 0), out.raster.get(1, 0, 0)), ((7 * 10 + 3) as f64, (4 * 10 + 3) as f64));
 }
 
 /// A store whose objects the caller fetches (terrio-js, with `fetch`): opening and reads run
