@@ -162,10 +162,13 @@ class WarpedVRT(DatasetReader):
     default) is warped a part at a time, each part from its own window, halved until each fits,
     with the same pixels, bit for bit, so that a reduced read of a large source without overviews
     holds one part's window at a time. Several bands with source and output nodata values are
-    warped whole. A `sum` read one of whose windows would hold more than
+    warped whole, as is a region one of whose halves cannot be transformed. These exceptions
+    can exceed `warp_mem_limit` or be refused by the sum budget. A `sum` read one of whose
+    windows would hold more than
     `TERRIO_WARP_SUM_MAX_BYTES` (4 GiB by default) raises `ResourceLimitError` before any window
     is read. A `sum` warps a window in the source's type when `dtype` holds every value of it
-    (float32 in float64); otherwise the window is converted first and counts in both types.
+    (uint16 or float32 in float64); otherwise the window is converted first and counts in both
+    types.
     """
 
     def __init__(
@@ -825,6 +828,8 @@ class WarpedVRT(DatasetReader):
             empty (no source pixel reaches them).
         """
         x, y, w, h = region
+        # Splitting follows GDAL's working-type estimate, even when _sum_holds preserves a
+        # narrower source type. The refusal budget below instead counts actual stored types.
         if (
             self._working_memory(win[2], win[3], w, h) <= self._warp_memory
             or w * h == 1

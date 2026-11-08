@@ -374,12 +374,21 @@ byte count, changes the budget. A `sum` read of a `WarpedVRT` warps a region who
 window's working memory exceeds its `warp_mem_limit` (64 MB by default) a part at a time, each
 part from its own window, with the same pixels, bit for bit: a reduced read of a large source
 without overviews holds one part's window at a time, and the budget applies to each part's
-window, so that only a part that cannot be split, one output pixel, can exceed it (several
-bands with source and output nodata values are warped whole). A `sum` read of a `WarpedVRT`
+window. A single output pixel cannot be split. A region remains whole when either half cannot
+be transformed, or when it has several bands with source and output nodata values; these
+exceptions can exceed `warp_mem_limit` or cause the sum budget to reject the read. A `sum` read
+of a `WarpedVRT`
 takes a source window in its own type when the VRT's `dtype` holds every value of it (uint16 or
 float32 in float64), as its kernel reads each value as a float64 either way; a `dtype` that does
 not (float64 in float32, floats in an integer type) converts the window first, and counts it in
-both types, which the conversion holds at once.
+both types, which the conversion holds at once. Part sizing deliberately uses the working type's
+width, following GDAL's working-memory estimate even when the source type is narrower.
+Splitting can read overlapping source tiles repeatedly. The decoded-tile cache normally reuses
+them, but a tile larger than its capacity is decoded for each part that needs it. For example,
+a 4096 × 4096 Float32 tile exceeds the default 64 MiB cache once entry overhead is included.
+Set `TERRIO_CACHEMAX` before opening the source (for example, `128M`) to retain such tiles,
+with that additional memory cost, or use a source with smaller tiles or overviews. The warp
+memory limit bounds part windows, not codec buffers or the separate decoded-tile cache.
 Calls with loaded inputs reuse their existing pixels, including repeated references.
 File GCPs/RPCs of the first path are retained in mixed path/`Raster` calls.
 

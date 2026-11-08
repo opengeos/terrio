@@ -448,11 +448,12 @@
   pixels are the same, bit for bit. A reduced read of the whole VRT over a large source without
   overviews held the source window of half its output at once, whatever `warp_mem_limit`; it now
   holds one part's: a 256 × 256 Float64 read of a 16384 × 16384 UInt16 band without overviews
-  peaked at 2,231 MiB of resident memory, and now at 259 MiB. `TERRIO_WARP_SUM_MAX_BYTES` bounds
+  peaked at 2,231 MiB of resident memory, and now at 226 MiB. `TERRIO_WARP_SUM_MAX_BYTES` bounds
   each part's window, refused before any is read: a part fits `warp_mem_limit` unless it cannot be
-  split (one output pixel), so the budget no longer refuses a read for its footprint alone.
+  split (one output pixel) or is kept whole, so the budget no longer refuses a read for its footprint alone.
   Several bands with source and output nodata values are warped whole, as whether a sum stored on
   the output nodata value is moved off it depends on whether the window holds a nodata pixel.
+  A region one of whose halves cannot be transformed is also kept whole.
 - A `sum` read of a `terrio.rio` `WarpedVRT` whose `dtype` holds every value of the source's type
   (uint16 or float32 in float64) takes each source window in its own type instead of converting
   it to the VRT's: the kernel reads each value as a float64 either way, so the pixels are the same,
