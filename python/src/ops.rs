@@ -1239,13 +1239,14 @@ pub(crate) fn finish_raster(
 ///         the overview GDAL's RasterIO chooses for the output size), `"AUTO-n"`, `"NONE"` (full
 ///         resolution) or a level from 0. Rasters read by window (GeoTIFFs, COGs, Zarr...) are read
 ///         for the output alone; rasters in memory, and those read whole, at full resolution. A
-///         level or `"AUTO-n"` is refused for a path the lazy reader cannot open (read whole by the
-///         fallback); on a raster without overviews (an ASCII grid, a `Raster` in memory) a level
+///         level or nonzero `"AUTO-n"` offset is refused for a path the lazy reader cannot open
+///         (read whole by the fallback); `"AUTO-0"` follows `"AUTO"`. On a raster without
+///         overviews (an ASCII grid, a `Raster` in memory) a level
 ///         warns and reads full resolution, as gdal_translate and `terrio translate` do. A `Raster`
 ///         honours overviews only when opened with `lazy=True`: `open_raster(path)` reads it into
-///         memory, without them. Known difference, shared with `terrio translate`: with `"AUTO-n"`
-///         and no `outsize`/`tr`, the output has the selected level's size (200 x 150 for a 400 x
-///         300 `srcwin` at level 0), where gdal_translate keeps the window's full-resolution size.
+///         memory, without them. With `"AUTO-n"` and no `outsize`/`tr`, the output keeps the
+///         window's full-resolution size, as gdal_translate does. An explicit overview level
+///         instead uses that level's size when no output size or resolution is supplied.
 ///     format: The output format's short name, for `dst`.
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
