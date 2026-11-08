@@ -850,12 +850,13 @@ def test_a_warp_of_a_raster_in_memory_releases_the_gil():
     No speed threshold decides, only whether the thread ran at all."""
     data = np.random.default_rng(0).random((3000, 3000), dtype="float32")
     src = terrio.Raster.from_array(data, (500000.0, 10.0, 0.0, 4000000.0, 0.0, -10.0), "EPSG:32631")
-    span, errors = [], []
+    reference = terrio.warp(src, t_srs="EPSG:32632", resampling="bilinear")
+    span, errors, out = [], [], []
 
     def warp():
         span.append(time.perf_counter())
         try:
-            terrio.warp(src, t_srs="EPSG:32632", resampling="bilinear")
+            out.append(terrio.warp(src, t_srs="EPSG:32632", resampling="bilinear"))
         except Exception as e:  # a thread's exception is otherwise lost
             errors.append(e)
         span.append(time.perf_counter())
@@ -871,6 +872,10 @@ def test_a_warp_of_a_raster_in_memory_releases_the_gil():
     start, end = span
     quarter = (end - start) / 4
     assert any(start + quarter < t < end - quarter for t in seen), (end - start, len(seen))
+    # and the warp is the one made with the GIL held: same pixels and georeferencing
+    (warped,) = out
+    np.testing.assert_array_equal(warped.read(), reference.read())
+    assert (warped.transform, warped.crs) == (reference.transform, reference.crs)
 
 
 # Half the width of the Web Mercator world, in meters (EPSG:3857).

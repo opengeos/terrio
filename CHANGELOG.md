@@ -5,8 +5,8 @@
 - `warp` of a `Raster` in memory releases the GIL for the whole warp: it takes the raster's
   shared pixels (no copy) and warps them after releasing it, so warps from Python threads
   (rioxarray-style `reproject` of xarray arrays on a thread pool) overlap. 96 warps of
-  3000 x 3000 on 12 threads took 2.36 s instead of 3.8 s and more; on one thread, 96 warps of
-  1000 x 1000 and of 3000 x 3000 took 0.31 s and 3.9 s, before and after.
+  3000 x 3000 on 12 threads took 2.36 s instead of 3.8 s and more. Other Python threads now run
+  during the warp and may use the raster; the warp reads the pixels it was called with.
 
 - A `sum` warp transforms the corners of each output pixel exactly, whatever the error threshold
   (`--et`, `et`, or `tolerance` in `terrio.rio`), which still bounds how the source window a
