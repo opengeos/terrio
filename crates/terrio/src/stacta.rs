@@ -132,22 +132,22 @@ pub(crate) struct Item {
     doc: Value,
     metadata: Vec<(String, String)>,
     loc: String,
+    requested: String,
 }
 
 impl Item {
     /// Parses an item's bytes. `None` when they are not JSON.
-    pub(crate) fn parse(bytes: &[u8], loc: &str) -> Option<Self> {
+    pub(crate) fn parse(bytes: &[u8], loc: &str, requested: &str) -> Option<Self> {
         let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
         let doc: Value = serde_json::from_slice(bytes).ok()?;
         let text = std::str::from_utf8(bytes).ok()?;
-        Some(Self { metadata: properties_metadata(text).unwrap_or_default(), doc, loc: loc.to_string() })
+        Some(Self { metadata: properties_metadata(text).unwrap_or_default(), doc, loc: loc.to_string(), requested: requested.to_string() })
     }
 
     fn load(loc: &str) -> Result<Self> {
         let (bytes, location) = crate::stac::fetch_document(loc)?;
-        let loc = location.as_str();
-        let item = Self::parse(&bytes, loc).ok_or_else(|| bad(format!("'{loc}' is not JSON")))?;
-        crate::stac::check_document_assets(&item.doc, loc)?;
+        let item = Self::parse(&bytes, &location, loc).ok_or_else(|| bad(format!("'{loc}' is not JSON")))?;
+        crate::stac::check_document_assets(&item.doc, &location)?;
         Ok(item)
     }
 
@@ -226,7 +226,7 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
         Ok(b) => b,
         Err(e) => return Some(Err(e)),
     };
-    let item = Item::parse(&bytes, &location)?;
+    let item = Item::parse(&bytes, &location, path)?;
     item.is_stacta().then(|| open_first(item, None, None))
 }
 
@@ -512,10 +512,10 @@ fn open_item_native(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: 
         for a in templates.keys() {
             if sets.len() >= 2 {
                 for t in sets.keys() {
-                    subs.push((format!("STACTA:\"{}\":{a}:{t}", item.loc), format!("Asset {a}, tile matrix set {t}")));
+                    subs.push((format!("STACTA:\"{}\":{a}:{t}", item.requested), format!("Asset {a}, tile matrix set {t}")));
                 }
             } else {
-                subs.push((format!("STACTA:\"{}\":{a}", item.loc), format!("Asset {a}")));
+                subs.push((format!("STACTA:\"{}\":{a}", item.requested), format!("Asset {a}")));
             }
         }
         return Ok(Opened::Container(subs));
@@ -1049,6 +1049,21 @@ mod tests {
         });
         assert!(seen.lock().unwrap().is_empty());
         crate::http::clear_path_specific_options(Some(&href));
+    }
+
+    #[test]
+    fn container_names_keep_requested_location_after_redirects() {
+        let doc = serde_json::to_vec(&serde_json::json!({
+            "type":"Feature", "stac_version":"1.0.0", "stac_extensions":["tiled-assets"],
+            "properties":{"tiles:tile_matrix_sets":{"Quad":{}}},
+            "asset_templates":{"a":{"href":"./{TileMatrix}.tif"},"b":{"href":"./{TileMatrix}.tif"}}
+        }))
+        .unwrap();
+        let requested = "https://catalog.example/alias.json";
+        let item = Item::parse(&doc, "https://public.example/item.json?sig=server-issued-secret", requested).unwrap();
+        let Opened::Container(names) = open_item(&item, None, None, Vec::new()).unwrap() else { panic!("expected container") };
+        assert_eq!(names.len(), 2);
+        assert!(names.iter().all(|(name, _)| name.starts_with(&format!("STACTA:\"{requested}\":"))));
     }
 
     #[test]

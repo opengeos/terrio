@@ -599,7 +599,7 @@ fn asset_uses_credentials_with_origin(doc_loc: &str, href: &str, same_origin_all
     }
     // az:// parsing appends the configured SAS, which is not an HTTP header. Native Azure
     // currently uses it even if GDAL's AZURE_NO_SIGN_REQUEST option is set.
-    if az && crate::config::get("AZURE_STORAGE_SAS_TOKEN").is_some() {
+    if az && crate::config::get("AZURE_STORAGE_SAS_TOKEN").is_some_and(|value| !value.trim().is_empty()) {
         return true;
     }
     #[cfg(feature = "gdal")]
@@ -1668,7 +1668,7 @@ fn probe(path: &str) -> Option<Result<Probe>> {
     };
     match parse_document(&bytes, &location) {
         Ok(v) if crate::stacta::is_stacta(&v) && kind(&v) == Some(Kind::Item) => {
-            crate::stacta::Item::parse(&bytes, &location).map(|item| Ok(Probe::Stacta(Box::new(item))))
+            crate::stacta::Item::parse(&bytes, &location, path).map(|item| Ok(Probe::Stacta(Box::new(item))))
         }
         Ok(v) if kind(&v).is_some() => Some(Ok(Probe::Stac(v, location))),
         Err(error) if matches!(error, Error::InvalidArgument(_)) || error.is_resource_refusal() => Some(Err(error)),
@@ -1859,6 +1859,7 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
         Ok(Probe::Other(ds)) => return Some(Ok(crate::info::info(&ds, options))),
         Err(e) => return Some(Err(e)),
     };
+    let requested = path;
     let path = location.as_str();
     let is_item = kind(&doc) == Some(Kind::Item);
     let assets: Vec<(String, Value)> =
@@ -1872,7 +1873,7 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
                 // The assets a remote item names on the local file system cannot be opened.
                 .filter(|(_, a)| a["href"].as_str().is_none_or(|h| !names_local_files(path, &resolve_href(path, h))))
                 .map(|(k, a)| Subdataset {
-                    name: format!("STAC:\"{path}\":{k}"),
+                    name: format!("STAC:\"{requested}\":{k}"),
                     description: match a["title"].as_str() {
                         Some(t) => format!("Asset {k}: {t}"),
                         None => format!("Asset {k}"),
@@ -1880,7 +1881,7 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
                 })
                 .collect()
         } else {
-            stacit_subdatasets(path, &groups, "")
+            stacit_subdatasets(requested, &groups, "")
         };
         Info::Vector(v)
     }))
@@ -2001,6 +2002,47 @@ mod tests {
                     assert!(!asset_uses_credentials_with_origin("https://catalog.example/item.json", href, true));
                 }
             },
+        );
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn redirected_subdataset_names_keep_the_requested_location() {
+        let doc = serde_json::to_vec(&json!({
+            "type":"Feature", "stac_version":"1.0.0", "id":"x", "properties":{}, "geometry":null,
+            "assets":{"data":{"href":"https://public.example/data.tif"}}
+        }))
+        .unwrap();
+        let (other, _) = crate::http::test_routes(vec![("/item.json".into(), 200, Vec::new(), doc)]);
+        let (base, _) = crate::http::test_routes(vec![(
+            "/alias.json".into(),
+            302,
+            vec![("Location".into(), format!("{other}/item.json?sig=server-issued-secret"))],
+            Vec::new(),
+        )]);
+        let requested = format!("{base}/alias.json");
+        let Info::Vector(info) = crate::info::info_path(&requested, &Default::default()).unwrap() else {
+            panic!("expected vector metadata")
+        };
+        assert_eq!(info.subdatasets.len(), 1);
+        assert_eq!(info.subdatasets[0].name, format!("STAC:\"{requested}\":data"));
+        assert!(!serde_json::to_string(&info).unwrap().contains("server-issued-secret"));
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn empty_azure_sas_does_not_require_asset_consent() {
+        crate::config::with_options(
+            &[
+                ("AZURE_STORAGE_SAS_TOKEN", ""),
+                ("AZURE_STORAGE_BEARER_TOKEN", ""),
+                ("AZURE_STORAGE_ACCOUNT", "synthetic"),
+                ("AZURE_NO_SIGN_REQUEST", "YES"),
+                ("GDAL_HTTP_HEADERS", ""),
+                ("GDAL_HTTP_HEADER_FILE", ""),
+                ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO"),
+            ],
+            || check_asset_access("https://catalog.example/item.json", "az://public/data.tif").unwrap(),
         );
     }
 
@@ -2367,7 +2409,7 @@ mod tests {
         );
         let (server, _) = crate::http::test_server(bytes.clone());
         let path = format!("{server}/item.json");
-        assert!(crate::stacta::Item::parse(&bytes, &path).is_some());
+        assert!(crate::stacta::Item::parse(&bytes, &path, &path).is_some());
         assert!(matches!(probe(&path), Some(Ok(Probe::Stacta(_)))));
     }
 

@@ -164,7 +164,8 @@ authentication because API keys can use arbitrary names. Ordinary HTTP assets on
 origin retain their header authentication; cloud URI assets require consent even in the same
 bucket/account. Local documents retain credentialed access.
 For catalog-link traversal, the exemption uses each fetched document's final response origin,
-including after redirects. Following a
+including after redirects. Subdataset names keep the caller's requested location, so a redirect
+does not add a server-issued signed URL to those names. Following a
 cross-origin child requires `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES` and already sends configured
 headers to that child. Nested raster/asset-selected documents instead retain their selecting
 origin throughout the scoped asset read. Once that asset chain crosses origins, nested sources
