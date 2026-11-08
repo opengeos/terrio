@@ -417,6 +417,10 @@ memory limit bounds part windows, not codec buffers or the separate decoded-tile
 Calls with loaded inputs reuse their existing pixels, including repeated references.
 File GCPs/RPCs of the first path are retained in mixed path/`Raster` calls.
 
+A `sum` transforms the corners of each output pixel exactly, whatever the error threshold (`et`,
+or `tolerance` in `terrio.rio`), so that each source pixel counts for its share of the output
+pixel's area: see [warp](cli.md#warp).
+
 ### Geolocation-array warping
 
 `terrio.warp(path, geoloc=True, t_srs="EPSG:4326")` requires the longitude/latitude arrays

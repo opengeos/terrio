@@ -105,17 +105,24 @@ def total(path):
 def default_grid_record(root, terrio, name, source, dst, grid, tol):
     """Compares a sum on the suggested grid by size, georeferencing and totals.
 
-    ``grid`` is ``None``, ``("ts", (width, height))`` or ``("tr", (xres, yres))``.
+    ``grid`` is ``None``, ``("ts", (width, height))``, ``("tr", (xres, yres))`` or
+    ``("fixed", (extent, size, threshold))`` for a shared explicit grid.
     """
     reference, actual = root / "default-gdal.tif", root / "default-terrio.tif"
     record = {"name": f"sum default grid {name}", "tol": tol, "gdal_version": gdal.VersionInfo("RELEASE_NAME")}
     try:
         kind, value = grid or (None, None)
-        options = {"ts": {"width": value[0], "height": value[1]}, "tr": {"xRes": value[0], "yRes": value[1]}}[kind] if kind else {}
+        if kind == "fixed":
+            extent, size, threshold = value
+            options = {"outputBounds": extent, "width": size[0], "height": size[1], "errorThreshold": threshold}
+        else:
+            options = {"ts": {"width": value[0], "height": value[1]}, "tr": {"xRes": value[0], "yRes": value[1]}}[kind] if kind else {}
         gdal.Warp(str(reference), str(source), format="GTiff", dstSRS=dst, resampleAlg="sum",
                   outputType=gdal.GDT_Float64, overviewLevel="NONE", **options)
         command = [terrio, "warp", str(source), str(actual), "--t-srs", dst, "-r", "sum", "--ot", "Float64", "--overview", "NONE"]
-        if kind:
+        if kind == "fixed":
+            command += ["--te", *map(str, extent), "--ts", *map(str, size), "--et", str(threshold)]
+        elif kind:
             command += [f"--{kind}", *map(str, value)]
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode:
@@ -193,6 +200,31 @@ def main():
                 ds = expected = got = src = overview = band = None
         for name, source, dst, grid, tol in default_grid_fixtures(root, args.data):
             records.append(default_grid_record(root, args.terrio, name, source, dst, grid, tol))
+        # Exact corner shares deliberately differ from GDAL per pixel. Register the real
+        # crop probe with total/metadata checks and bitwise threshold invariance instead.
+        source = root / "terrain-default.tif"
+        suggested = gdal.Warp("", str(source), format="MEM", dstSRS="EPSG:3857", width=256, height=256,
+                              resampleAlg="sum", outputType=gdal.GDT_Float64, errorThreshold=0.0)
+        gt = suggested.GetGeoTransform()
+        extent = (gt[0], gt[3] + 256 * gt[5], gt[0] + 256 * gt[1], gt[3])
+        first = None
+        for threshold in (0.0, 0.125, 4.0):
+            record = default_grid_record(root, args.terrio, f"USGS fixed 256x256 et={threshold}",
+                                         source, "EPSG:3857", ("fixed", (extent, (256, 256), threshold)), 1e-6)
+            if "error" not in record:
+                expected = gdal.Open(str(root / "default-gdal.tif"))
+                got = gdal.Open(str(root / "default-terrio.tif"))
+                a, b = got.ReadAsArray(), expected.ReadAsArray()
+                record["max_pixel_difference_from_gdal"] = float(np.max(np.abs(a - b)))
+                record["same_mask"] = bool(np.array_equal(expected.GetRasterBand(1).GetMaskBand().ReadAsArray(),
+                                                         got.GetRasterBand(1).GetMaskBand().ReadAsArray()))
+                expected = got = None
+                if first is None:
+                    first = a
+                record["same_pixels_across_thresholds"] = bool(np.array_equal(first, a, equal_nan=True))
+                if not record["same_mask"] or not record["same_pixels_across_thresholds"]:
+                    record["error"] = "fixed-grid masks differ or sum pixels depend on the threshold"
+            records.append(record)
     passed = ["error" not in r and r.get("same_size") and r.get("same_type") and r.get("same_nodata")
               and r.get("same_crs", True) and r.get("gt_diff_px", 1) <= 1e-8 and r.get("within_tol", 0) == 1 for r in records]
     if args.json:

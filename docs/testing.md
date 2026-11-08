@@ -2568,3 +2568,61 @@ outputs because `gdal_rasterize` cannot create COGs directly. ENVI cases are lab
 `GTiff oracle`: GDAL converts the GeoTIFF rasterization to ENVI before comparison.
 This checks Terrio's consistent background policy rather than GDAL's driver-dependent
 ENVI initialization.
+
+## Exact sum footprints
+
+A reprojected `sum` uses quadrilaterals of exactly transformed output-pixel corners,
+including their extrema in source-window bounds. This deliberately differs from GDAL
+3.13.3's area kernel, even with `-et 0`: pixel equality is not a conformance claim for
+this case. Existing `sum-overviews` comparisons still cover same-CRS controlled sums
+and total tolerances for reprojected default grids.
+
+A local GDAL 3.13.3 comparison used the 400 × 400 crop at source offset (1000, 1000)
+of `USGS_1_n40w106.tif`, warped to EPSG:3857 on GDAL's 256 × 256 suggested grid, in
+Float64 with full-resolution source pixels. At thresholds 0, 0.125 and 4, both totals
+were exactly 526094763.3955078; maximum absolute per-pixel differences from GDAL were
+0.003154 or less. Terrio's pixels were identical across those thresholds. This
+single terrain crop does not establish a universal error bound against GDAL.
+
+The curved-grid regression independently integrates the transformed tile outline,
+and exercises `terrio.warp`, `WarpedVRT` and `reproject`. The polar source-window
+regression covers extrema between sampled edge points: the prior window missed 68
+exact corners, by up to about 39 source pixels. RPC/DEM chunk comparisons retain
+complete 513-point batches; a bounded 64-entry cache reuses them across nearby
+chunks and regions (about 560 KiB of sample storage per transformer). Cache eviction
+only changes recomputation, never batch membership or pixels.
+
+Indicative local single-thread timings (optimized bindings, one warmup and medians of
+seven reads) for that synthetic 400 × 400 UTM source into a 256 × 256 Web Mercator
+tile were 26.7 ms with exact corners/bounds versus 5.3 ms before at threshold 0.125;
+at threshold 0, 26.4 versus 15.8 ms. A separate RPC/DEM probe using the Rust RPC
+regression's 100 × 100 image and 300 × 260 DEM, median of five reads after warmup,
+took 11.7 versus 7.5 ms at threshold 0.125, and 11.7 versus 11.7 ms at threshold 0.
+These small local probes are not throughput guarantees; source-window corner scans
+also add transformation work during chunk planning. The machine was not reserved.
+
+The real fixed-grid crop is registered in `scripts/compare_warp_sum_overviews.py`
+and the `sum-overviews` conformance suite, with the sum kernel's suggested grid
+(rather than the nearest-neighbour grid, which can crop an edge). Run:
+
+```sh
+python scripts/conformance.py ../terrio-data --only sum-overviews --strict
+```
+
+A GDAL 3.13.3 run with the optimized CLI passed all 38 cases: 27 identical and 11
+within their documented tolerances. The fixed-grid cases check size, type, nodata,
+CRS, geotransform, masks, totals and bitwise threshold independence; they record
+rather than require equality of pixels against GDAL.
+
+A single-thread optimized Rust `warp` probe on the same 400 × 400 synthetic UTM
+source, with the tile footprint rendered at 1024 × 1024, measured recursive
+planning under smaller `memory_limit` values. Medians of three runs after warmup
+were 0.398 s at 1 GB, 1.089 s at 1 MB, 2.297 s at 64 KB and 3.167 s at 4 KB.
+Every run totaled 97275019.84721899. Thus many small chunks have a substantial
+planning cost; the bounded RPC cache does not eliminate repeated pointwise corner
+transforms. These are observations, not an invariant timing bound.
+
+Bounds planning scans at most 512 corners at a time, including the final endpoint,
+with roughly 17 KiB of coordinate/validity scratch rather than allocating an entire
+output-width row before memory-limit splitting. The polar regression starts off a
+global batch boundary and spans several batches; RPC batch membership stays global.

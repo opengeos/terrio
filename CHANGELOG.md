@@ -28,6 +28,17 @@
   parallel, where they took up to 16 MiB each: a connection far from the server delivers a large
   range slowly. Reading 34.5 MB of the TESSERA embeddings from Europe took a median 6.3 s instead
   of 10.0 s (8 runs each), and the 192 x 192 window above 5.2 s instead of 6.4 s.
+- A `sum` warp transforms the corners of each output pixel exactly, whatever the error threshold
+  (`--et`, `et`, or `tolerance` in `terrio.rio`), which still bounds how the source window a
+  chunk reads is found. The corners outline each source pixel's share of an output pixel.
+  Interpolated within the threshold along runs of 512 corners, as before, they were off by up to
+  0.09 source pixels on a 256 x 256 tile reprojected from UTM to Web Mercator at the source's
+  resolution, and the tile's total was 5.2e-5 off the integral of the source over the tile;
+  it is now within 1e-9 relative error. Source windows include every exact corner, including
+  extrema between edge samples. Exact corners and bounds require additional transformation work;
+  see `docs/testing.md` for measured costs and the intentional difference from GDAL's sum kernel.
+  The other resamplings are unchanged.
+
 - Python raster creation-option mappings reject conflicting names that differ only by case,
   including `Raster.write`, grouped netCDF output and streaming GeoTIFF/COG writers.
 
