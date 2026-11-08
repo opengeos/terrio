@@ -214,7 +214,11 @@ def compare_gml_axis_order(command, record):
                 try:
                     expected = snapshot(source_dataset.GetLayer(0))
                 except RuntimeError as error:
-                    record(f"{name} reference", "not compared" if label == "legacy-url" else "differs", str(error))
+                    record(
+                        f"{name} reference",
+                        "not compared" if label == "legacy-url" else "differs",
+                        str(error),
+                    )
                     continue
                 finally:
                     source_dataset = None
@@ -249,7 +253,11 @@ def compare_gml_axis_order(command, record):
                 try:
                     expected_reprojected = snapshot(ref_dataset.GetLayer(0))
                 except RuntimeError as error:
-                    record(f"{name} to EPSG:4326 reference", "not compared" if label == "legacy-url" else "differs", str(error))
+                    record(
+                        f"{name} to EPSG:4326 reference",
+                        "not compared" if label == "legacy-url" else "differs",
+                        str(error),
+                    )
                     continue
                 finally:
                     ref_dataset = None
