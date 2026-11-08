@@ -114,8 +114,11 @@ def _listed_subdatasets(metadata: Sequence[tuple[str, str]]) -> list[str]:
     names: dict[int, str] = {}
     for key, value in metadata:
         n, _, kind = key.removeprefix("SUBDATASET_").partition("_")
-        if key.startswith("SUBDATASET_") and kind == "NAME" and n.isdigit() and value:
-            if 0 < int(n) <= 100_000:
+        # ASCII digits, an optional `+` as Rust's `usize` parsing takes; a file's keys could hold
+        # others (`int` refuses `²`, and numbers of thousands of digits).
+        n = n.removeprefix("+")
+        if key.startswith("SUBDATASET_") and kind == "NAME" and value:
+            if n.isascii() and n.isdigit() and len(n) <= 6 and 0 < int(n) <= 100_000:
                 names[int(n)] = value
     return [names[n] for n in sorted(names)]
 

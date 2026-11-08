@@ -1076,13 +1076,31 @@ def test_subdatasets_listed_without_opening_again(tmp_path, monkeypatch):
         (store / name / "zarr.json").write_text(json.dumps(array))
     listed = {p: [s["name"] for s in terrio.info(p)["subdatasets"]] for p in (nc, str(store))}
 
-    def opened_again(*args, **kwargs):
-        raise AssertionError("the file was opened again")
+    calls: list[str] = []
+    real_info = _terrio.info
 
-    monkeypatch.setattr(_terrio, "info", opened_again)
+    def spy(path, *args, **kwargs):
+        calls.append(path)
+        return real_info(path, *args, **kwargs)
+
+    monkeypatch.setattr(_terrio, "info", spy)
     for path, names in listed.items():
         assert len(names) >= 2
         with rio.open(path) as src:
             assert src.subdatasets == names
         with rio.open(names[0]) as sub:
             assert sub.subdatasets == []
+    assert calls == []
+    # Keys as `info` reads them, and none that would fail to parse.
+    from terrio.rio.io import _listed_subdatasets
+
+    keys = [
+        "SUBDATASET_2_NAME",
+        "SUBDATASET_+1_NAME",
+        "SUBDATASET_\u00b2_NAME",
+        "SUBDATASET_" + "9" * 5000 + "_NAME",
+    ]
+    assert _listed_subdatasets([(k, k) for k in keys]) == [
+        "SUBDATASET_+1_NAME",
+        "SUBDATASET_2_NAME",
+    ]
