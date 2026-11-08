@@ -31,7 +31,7 @@
 //! | `TERRIO_HTTP_BLOCK_SIZE` (bytes) | `CPL_VSIL_CURL_CHUNK_SIZE` | 65536 |
 //! | `TERRIO_HTTP_CACHE_SIZE` (bytes): the block cache of each open file, and the process-wide cache | `CPL_VSIL_CURL_CACHE_SIZE` | 67108864 |
 //! | `TERRIO_HTTP_USERAGENT` | `GDAL_HTTP_USERAGENT` | `terrio/VERSION` |
-//! | `TERRIO_HTTP_MULTIRANGE=SERIAL`: fetch the byte runs of one read one after another rather than in parallel | `GDAL_HTTP_MULTIRANGE` | `PARALLEL` |
+//! | `TERRIO_HTTP_MULTIRANGE`: `PARALLEL` requests the byte runs of one read up to 8 at once; `SERIAL` (or `SINGLE_GET`) one after another; any other value is `PARALLEL` | `GDAL_HTTP_MULTIRANGE` | `PARALLEL` |
 //! | `TERRIO_HTTP_LOG=YES`: print each request, and each new process-wide connection pool, to standard error | `CPL_CURL_VERBOSE` | off |
 //! | `TERRIO_JSON_MAX_SIZE` (bytes, `K`, `M` or `G` suffixes): the largest JSON document fetched whole | `CPL_JSON_MAX_SIZE` | 100 MB |
 //!
@@ -175,7 +175,8 @@ impl HttpOptions {
                 .and_then(|v| v.parse::<u64>().ok())
                 .filter(|n| *n > 0)
                 .map(|n| n.min(64 << 20)),
-            // GDAL's SERIAL and SINGLE_GET both send one request at a time here.
+            // GDAL's SERIAL and SINGLE_GET both send one request at a time here; any other value
+            // is PARALLEL, as GDAL takes it (`cpl_vsil_curl.cpp`, `ReadMultiRange`).
             parallel_ranges: var("TERRIO_HTTP_MULTIRANGE", "GDAL_HTTP_MULTIRANGE")
                 .is_none_or(|v| !matches!(v.to_ascii_uppercase().as_str(), "SERIAL" | "SINGLE_GET")),
         }
@@ -403,6 +404,28 @@ fn same_response_origin(left: &str, right: &str) -> bool {
 fn host_of(url: &str) -> &str {
     let o = origin(url);
     o.find("://").map_or(o, |i| &o[i + 3..])
+}
+
+/// The calling thread's options ([`crate::config`]) and STAC asset policy, for requests a worker
+/// thread sends on its behalf: what a request reads of them while it is sent (consent, an S3
+/// endpoint) is then the caller's, as when the caller sends it.
+#[derive(Clone)]
+struct CallerContext {
+    options: HashMap<String, Option<String>>,
+    policy: Option<crate::stac::AssetReadPolicy>,
+}
+
+impl CallerContext {
+    fn capture() -> Self {
+        Self { options: crate::config::thread_options(), policy: crate::stac::AssetReadPolicy::current() }
+    }
+
+    /// Sets the caller's options on this thread, for as long as it lives (a worker's lifetime),
+    /// and enters its policy, which checks its consent again, until the scope returned is dropped.
+    fn enter(self) -> Result<Option<crate::stac::AssetReadScope>> {
+        crate::config::push_scope(self.options);
+        self.policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()
+    }
 }
 
 /// A response that returned data.
@@ -2293,26 +2316,40 @@ impl Shared {
             // ponytail: a thread per run, PARALLEL_RUNS at a time; a pool of request threads if
             // spawning ever shows next to a request's latency
             const PARALLEL_RUNS: usize = 8;
-            for group in runs.chunks(PARALLEL_RUNS) {
-                let fetched: Vec<(Client, Option<Result<Fetched>>)> = std::thread::scope(|scope| {
+            let context = CallerContext::capture();
+            let mut runs = runs.into_iter().peekable();
+            while runs.peek().is_some() {
+                // PARALLEL_RUNS requests at a time; a run its held bytes cover sends none
+                let mut group = Vec::new();
+                let mut requested = 0;
+                while requested < PARALLEL_RUNS
+                    && let Some(run) = runs.next()
+                {
+                    requested += usize::from(run.2 <= run.3);
+                    group.push(run);
+                }
+                let fetched: Vec<Option<(Client, Result<Fetched>)>> = std::thread::scope(|scope| {
                     let handles: Vec<_> = group
                         .iter()
                         .map(|&(_, _, from, last)| {
-                            let mut client = self.client.clone();
-                            scope.spawn(move || {
-                                let fetched = (from <= last).then(|| client.fetch(Some((from, last))));
-                                (client, fetched)
+                            (from <= last).then(|| {
+                                let (mut client, context) = (self.client.clone(), context.clone());
+                                scope.spawn(move || {
+                                    let fetched = context.enter().and_then(|_policy| client.fetch(Some((from, last))));
+                                    (client, fetched)
+                                })
                             })
                         })
                         .collect();
-                    handles.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+                    handles.into_iter().map(|h| h.map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))).collect()
                 });
-                for ((start, held, from, last), (client, fetched)) in group.iter().zip(fetched) {
+                for ((start, held, from, last), fetched) in group.into_iter().zip(fetched) {
                     // what a request learned (a region, a redirect) is kept, as serially
-                    if fetched.is_some() {
+                    let fetched = fetched.map(|(client, fetched)| {
                         self.client = client;
-                    }
-                    if self.store_run(*start, held.clone(), *from, *last, fetched)? {
+                        fetched
+                    });
+                    if self.store_run(start, held, from, last, fetched)? {
                         return Ok(());
                     }
                 }
@@ -2914,6 +2951,32 @@ mod tests {
             }
         });
         (url, peak)
+    }
+
+    #[test]
+    fn a_worker_requests_with_the_callers_options_and_asset_policy() {
+        // A credentialed asset's policy: entered only where the options give consent, which the
+        // caller's scope does and the environment does not.
+        let allowed = [("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "YES"), ("TERRIO_TEST_CALLER_OPTION", "one")];
+        let (option, policy) = crate::config::with_options(&allowed, || {
+            let policy = crate::stac::AssetReadPolicy::for_tests("https://example.com/item.json", true);
+            let _entered = policy.enter().expect("the caller's scope gives consent");
+            let context = CallerContext::capture();
+            std::thread::spawn(move || {
+                let entered = context.enter().map(|scope| scope.is_some());
+                (crate::config::get("TERRIO_TEST_CALLER_OPTION"), entered)
+            })
+            .join()
+            .unwrap()
+        });
+        assert_eq!(option.as_deref(), Some("one"));
+        assert!(matches!(policy, Ok(true)), "the policy is entered with the caller's consent");
+        // Without the caller's scope, the worker sees the environment: no consent, refused.
+        let context = CallerContext {
+            options: HashMap::new(),
+            policy: Some(crate::stac::AssetReadPolicy::for_tests("https://example.com/item.json", true)),
+        };
+        assert!(std::thread::spawn(move || context.enter().is_err()).join().unwrap());
     }
 
     #[test]
