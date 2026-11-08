@@ -108,6 +108,9 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
             let operation = parameter(&target, "REQUEST").unwrap_or("");
             let body = if operation.eq_ignore_ascii_case("GetCapabilities") {
                 let mut caps = capabilities(&endpoint, version);
+                if mode.starts_with("projected") {
+                    caps = caps.replace("4326", "6708");
+                }
                 if mode.starts_with("feature-default-") {
                     let namespace = match mode {
                         "feature-default-local" => "urn:test",
@@ -246,6 +249,13 @@ fn serve(version: &'static str, mode: &'static str) -> (String, Arc<Mutex<Vec<St
                         )
                     } else {
                         let mut data = page(if target.contains("empty") { "empty" } else { "roads" }, version, offset, count);
+                        if mode.starts_with("projected") {
+                            data = data.replace("4326", "6708");
+                        }
+                        if mode == "projected-mixed-axis" {
+                            data = data
+                                .replace(r#"srsName="urn:ogc:def:crs:EPSG::6708"><gml:pos>51 11"#, r#"srsName="EPSG:6708"><gml:pos>11 51"#);
+                        }
                         if matches!(mode, "bad-integer" | "bad-float" | "bad-boolean") {
                             data = data.replace("<t:rank>1</t:rank>", "<t:rank>abc</t:rank>");
                         }
@@ -510,6 +520,36 @@ fn disabled_paging_ranges_include_skipped_features() {
     assert_eq!(ds.layers[0].features.len(), 2);
     assert_eq!(ds.layers[0].features[0].attributes[2], FieldValue::Integer(3));
     assert_eq!(ds.layers[0].features.iter().map(|feature| feature.fid).collect::<Vec<_>>(), [2, 3]);
+}
+
+/// GDAL 3.12.1 WFS convention: 1.0 uses XY; 1.1/2.0 use declared N-E axis order.
+#[test]
+fn projected_northing_first_reads_and_filters_follow_wfs_version() {
+    for version in ["1.0.0", "1.1.0", "2.0.0"] {
+        let (source, requests) = serve(version, "projected");
+        let options = VectorOpenOptions {
+            layers: vec!["roads".into()],
+            max_features: Some(1),
+            spatial_filter: Some((9., 49., 12., 52.)),
+            ..Default::default()
+        };
+        let ds = terrio::open_vector(&source, &options).unwrap();
+        assert_eq!(ds.layers[0].crs_epsg(), Some(6708));
+        assert_eq!(ds.layers[0].features[0].geometry, Some(Geometry::point(10., 50.)));
+        let requests = requests.lock().unwrap();
+        let feature = requests.iter().find(|q| q.contains("REQUEST=GetFeature")).unwrap();
+        let bbox = if version == "1.0.0" { "BBOX=9%2C49%2C12%2C52" } else { "BBOX=49%2C9%2C52%2C12%2C" };
+        assert!(feature.contains(bbox), "{version}: {feature}");
+    }
+}
+
+#[test]
+fn projected_pages_refuse_mixed_axis_order_conventions() {
+    let (source, requests) = serve("2.0.0", "projected-mixed-axis");
+    let options = VectorOpenOptions { layers: vec!["roads".into()], ..Default::default() };
+    let error = terrio::open_vector(&source, &options).unwrap_err();
+    assert!(error.to_string().contains("mixed geometry axis orders"), "{error}");
+    assert_eq!(requests.lock().unwrap().len(), 3);
 }
 
 #[test]

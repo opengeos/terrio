@@ -167,6 +167,75 @@ def compare_layer(reference, actual, *, inferred_gml=False):
     return detail
 
 
+def compare_gml_axis_order(command, record):
+    """Compare local GML axis conventions, exports and reprojection with GDAL.
+
+    Args:
+        command: Callable running the terrio CLI with positional arguments.
+        record: Callable collecting a case name, status and comparison detail.
+    """
+    controls = [
+        (6708, (4823832.72, 561996.39), (561996.39, 4823832.72)),
+        (7792, (561996.39, 4823832.72), (561996.39, 4823832.72)),
+        (4326, (43.56, 12.24), (12.24, 43.56)),
+    ]
+    forms = [
+        ("urn", "urn:ogc:def:crs:EPSG::{code}", True),
+        ("legacy-urn", "urn:x-ogc:def:crs:EPSG:{code}", True),
+        ("url", "http://www.opengis.net/def/crs/EPSG/0/{code}", True),
+        ("legacy-url", "http://www.opengis.net/gml/srs/epsg.xml#{code}", False),
+        ("short", "EPSG:{code}", False),
+    ]
+    with tempfile.TemporaryDirectory(prefix="terrio-gml-axes-") as directory:
+        root = Path(directory)
+        for code, authority, xy in controls:
+            for label, template, uses_authority in forms:
+                name = f"GML EPSG:{code} {label}"
+                pos = authority if uses_authority else xy
+                source = root / f"{code}-{label}.gml"
+                source.write_text(
+                    '<gml:FeatureCollection xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:ex="urn:test">'
+                    '<gml:featureMember><ex:p gml:id="p.0"><ex:name>a</ex:name><ex:geom>'
+                    f'<gml:Point srsName="{template.format(code=code)}"><gml:pos>{pos[0]} {pos[1]}</gml:pos>'
+                    "</gml:Point></ex:geom></ex:p></gml:featureMember></gml:FeatureCollection>",
+                    encoding="utf-8",
+                )
+                try:
+                    reference = gdal.OpenEx(str(source), gdal.OF_VECTOR)
+                    expected = snapshot(reference.GetLayer(0))
+                except Exception as error:
+                    record(
+                        f"{name} reference",
+                        "not compared",
+                        f"GDAL {gdal.VersionInfo('RELEASE_NAME')}: {error}",
+                    )
+                    continue
+                for extension in ["gpkg", "shp", "gml"]:
+                    output = root / f"{code}-{label}-out.{extension}"
+                    try:
+                        command("convert", str(source), str(output))
+                        actual = gdal.OpenEx(str(output), gdal.OF_VECTOR)
+                        detail = compare_layer(expected, actual.GetLayer(0))
+                        record(f"{name} to {extension}", "within tolerance", detail)
+                    except Exception as error:
+                        record(f"{name} to {extension}", "differs", str(error))
+                ref_json = root / f"{code}-{label}-reference.geojson"
+                reference = gdal.VectorTranslate(
+                    str(ref_json), str(source), format="GeoJSON", dstSRS="EPSG:4326"
+                )
+                reference = None
+                reference = gdal.OpenEx(str(ref_json), gdal.OF_VECTOR)
+                expected = snapshot(reference.GetLayer(0))
+                output = root / f"{code}-{label}-out.geojson"
+                try:
+                    command("convert", str(source), str(output), "--t-srs", "EPSG:4326")
+                    actual = gdal.OpenEx(str(output), gdal.OF_VECTOR)
+                    detail = compare_layer(expected, actual.GetLayer(0))
+                    record(f"{name} to EPSG:4326", "within tolerance", detail)
+                except Exception as error:
+                    record(f"{name} to EPSG:4326", "differs", str(error))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--terrio", default="target/release/terrio")
@@ -193,6 +262,7 @@ def main():
             raise RuntimeError(proc.stderr.strip())
         return proc.stdout
 
+    compare_gml_axis_order(command, record)
     if not args.remote:
         record("public WFS", "not compared", "pass --remote to contact public services")
     else:

@@ -286,6 +286,32 @@ test("CityGML writer selects both native versions and retains flat XYZ metadata"
   source.free();
 });
 
+test("GML projected authority axes keep GIS XY through byte reads and writes", () => {
+  // GDAL 3.12.1: authority identifiers use N-E for EPSG:6708 and latitude-longitude for EPSG:4326.
+  for (const [code, authority, xy] of [
+    [6708, [4823832.72, 561996.39], [561996.39, 4823832.72]],
+    [7792, [561996.39, 4823832.72], [561996.39, 4823832.72]],
+    [4326, [43.56, 12.24], [12.24, 43.56]],
+  ]) {
+    for (const [name, position] of [
+      [`urn:ogc:def:crs:EPSG::${code}`, authority],
+      [`urn:x-ogc:def:crs:EPSG:${code}`, authority],
+      [`http://www.opengis.net/def/crs/EPSG/0/${code}`, authority],
+      [`http://www.opengis.net/gml/srs/epsg.xml#${code}`, xy],
+      [`EPSG:${code}`, xy],
+    ]) {
+      const xml = `<FeatureCollection><featureMember><p><geom><Point srsName="${name}" srsDimension="3"><pos>${position.join(" ")} 7</pos></Point></geom></p></featureMember></FeatureCollection>`;
+      const source = terrio.open(new TextEncoder().encode(xml), "input.gml");
+      const expected = [...xy, 7];
+      assert.deepEqual(source.toGeoJSON().features[0].geometry.coordinates, expected, name);
+      const restored = terrio.open(source.toBytes("output.gml"), "output.gml");
+      assert.deepEqual(restored.toGeoJSON().features[0].geometry.coordinates, expected, name);
+      restored.free();
+      source.free();
+    }
+  }
+});
+
 test("vector from GeoJSON, to other formats and back", () => {
   const ds = terrio.fromGeoJSON(SQUARES, "squares");
   assert.equal(ds.kind, "vector");
