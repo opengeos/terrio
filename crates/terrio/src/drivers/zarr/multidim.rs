@@ -12,7 +12,7 @@ impl MdSource {
         let start: Vec<_> = selection.iter().map(|s| s.start).collect();
         let counts: Vec<_> = selection.iter().map(|s| s.count).collect();
         if selection.iter().all(|s| s.step == 1) {
-            return read_region(&self.array, &start, &counts);
+            return read_region(&self.array, &start, &counts, REMOTE_AT_ONCE);
         }
         // Partition selected indices by the actual I/O/decompression unit. Shards
         // with no outer codecs can fetch individual inner chunks through read_region.
@@ -56,7 +56,7 @@ impl MdSource {
             let shape: Vec<_> = chosen.iter().map(|r| r.1).collect();
             let start: Vec<_> = chosen.iter().map(|r| r.2).collect();
             let extent: Vec<_> = chosen.iter().zip(selection).map(|(r, s)| (r.1 - 1) * s.step + 1).collect();
-            let raw = read_region(&self.array, &start, &extent)?;
+            let raw = read_region(&self.array, &start, &extent, REMOTE_AT_ONCE)?;
             let selected = if shape == extent {
                 raw
             } else {

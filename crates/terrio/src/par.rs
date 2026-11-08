@@ -501,6 +501,39 @@ pub(crate) fn map_range_coarse<R: Send>(n: usize, f: impl Fn(usize) -> R + Sync 
     map_range_on::<true, R>(n, f)
 }
 
+/// Maps `f` over `0..n`, keeping the order, with up to `at_once` calls at a time on threads of
+/// their own (native builds), for work that mostly waits on a server: on the pool, as many
+/// requests would be in flight as the machine has cores. The threads end before this returns, so
+/// a fork never copies them half done; the pool's work `f` starts runs on the pool as usual.
+/// One call at a time, and in WebAssembly, on the calling thread.
+pub(crate) fn map_waiting<R: Send>(n: usize, at_once: usize, f: impl Fn(usize) -> R + Sync) -> Vec<R> {
+    #[cfg(not(target_family = "wasm"))]
+    if at_once.min(n) > 1 {
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let mut done: Vec<(usize, R)> = std::thread::scope(|s| {
+            let workers: Vec<_> = (0..at_once.min(n))
+                .map(|_| {
+                    s.spawn(|| {
+                        let mut mine = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if i >= n {
+                                return mine;
+                            }
+                            mine.push((i, f(i)));
+                        }
+                    })
+                })
+                .collect();
+            workers.into_iter().flat_map(|w| w.join().unwrap_or_else(|p| std::panic::resume_unwind(p))).collect()
+        });
+        done.sort_unstable_by_key(|(i, _)| *i);
+        return done.into_iter().map(|(_, r)| r).collect();
+    }
+    let _ = at_once;
+    (0..n).map(f).collect()
+}
+
 /// Calls `f` on each item of an owned list with its index, in parallel (fine-grained work).
 pub(crate) fn for_each_owned<T: Send>(items: Vec<T>, f: impl Fn(usize, T) + Sync + Send) {
     for_each_owned_on::<false, T>(items, f)

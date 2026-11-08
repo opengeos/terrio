@@ -1103,6 +1103,38 @@ fn at_once(bytes: usize, threads: usize, usable: Option<u64>) -> usize {
     usable.map_or(threads, |m| usize::try_from(m / 2 / bytes as u64).unwrap_or(usize::MAX).clamp(1, threads))
 }
 
+/// The most requests a read of a remote store keeps in flight (native builds). They wait on the
+/// server, not on the cores: on terrio's pool, a machine of 12 cores fetched the 18 inner chunks
+/// of a 512 x 512 window of 128 bands of the OlmoEarth embeddings store on source.coop (66 MB, a
+/// server answering in about 0.8 s) 12 at a time, in 6.4 to 7.8 s; 32 at a time, in 5.0 to 5.4 s.
+const REMOTE_AT_ONCE: usize = 32;
+
+/// How a read of `total` chunks of an array goes, given the most `requests` in flight it may have
+/// (remote stores, [`REMOTE_AT_ONCE`] for a whole read): how many chunks at once, how many inner
+/// chunks of a shard (runs of them) each fetches at once, and whether on threads that wait on the
+/// server ([`crate::par::map_waiting`]) rather than the pool. A local store's chunks are decoded
+/// as many at once as the pool runs and the memory holds ([`decoding_at_once`]).
+fn read_plan(a: &Array, total: usize, requests: usize) -> (usize, usize, bool) {
+    let bytes = decoded_bytes(a);
+    if cfg!(not(target_family = "wasm")) && a.node.is_remote() {
+        // A request in flight holds its bytes and a decoded chunk: half the memory at most.
+        let usable = crate::dataset::fallible::usable_memory();
+        let fit = usable.map_or(requests, |m| usize::try_from(m / 4 / bytes.max(1) as u64).unwrap_or(usize::MAX)).clamp(1, requests.max(1));
+        let chunks = fit.min(total).max(1);
+        return (chunks, (fit / chunks).max(1), true);
+    }
+    let at_once = decoding_at_once(bytes);
+    (at_once, if at_once < crate::par::threads() { 1 } else { at_once }, false)
+}
+
+/// [`at_most`], or on threads waiting on a server ([`read_plan`]), `at_once` at a time.
+fn each(waiting: bool, n: usize, at_once: usize, f: impl Fn(usize) -> Result<()> + Sync + Send) -> Result<()> {
+    if waiting {
+        return crate::par::map_waiting(n, at_once, f).into_iter().collect();
+    }
+    at_most(n, at_once, f)
+}
+
 /// Calls `f` on each of `0..n`, in parallel, at most `at_once` at a time; the first error. As many
 /// as the thread pool runs: all of them on the pool, as it schedules them.
 fn at_most(n: usize, at_once: usize, f: impl Fn(usize) -> Result<()> + Sync + Send) -> Result<()> {
@@ -1144,13 +1176,13 @@ type Put<'a> = dyn Fn(&Decoded, &[usize], &[usize]) + Sync + 'a;
 
 /// Decodes the chunk at grid position `idx` of an array and hands it to `put`; for a shard read by
 /// parts, its index, then the inner chunks `wanted` keeps (given an inner chunk's origin and
-/// shape), nearby ones fetched in one request, decoded `inner_at_once` at a time. Missing chunks
-/// are not handed.
+/// shape), nearby ones fetched in one request, decoded `inner_at_once` at a time (on threads
+/// waiting on the server when `waiting`, see [`read_plan`]). Missing chunks are not handed.
 fn decode_chunk(
     a: &Array,
     idx: &[usize],
     allow_big: bool,
-    inner_at_once: usize,
+    (inner_at_once, waiting): (usize, bool),
     wanted: &(dyn Fn(&[usize], &[usize]) -> bool + Sync),
     put: &Put,
 ) -> Result<()> {
@@ -1201,7 +1233,9 @@ fn decode_chunk(
         }
         Ok(())
     };
-    if inner_at_once >= crate::par::threads() {
+    if waiting {
+        crate::par::map_waiting(runs.len(), inner_at_once, fetch).into_iter().collect::<Result<()>>().map_err(err)
+    } else if inner_at_once >= crate::par::threads() {
         crate::par::map_range(runs.len(), fetch).into_iter().collect::<Result<()>>().map_err(err)
     } else {
         at_most(runs.len(), inner_at_once, fetch).map_err(err)
@@ -1211,8 +1245,8 @@ fn decode_chunk(
 /// Reads the region of shape `shape` at `start` of an array: little-endian elements in C order,
 /// missing chunks set to the fill value. Only the chunks (or, in shards, the inner chunks)
 /// intersecting the region are read, in parallel, as many at once as the memory allows
-/// ([`decoding_at_once`]).
-fn read_region(a: &Array, start: &[usize], shape: &[usize]) -> Result<Vec<u8>> {
+/// ([`decoding_at_once`]); from a remote store, with at most `requests` in flight ([`read_plan`]).
+fn read_region(a: &Array, start: &[usize], shape: &[usize], requests: usize) -> Result<Vec<u8>> {
     let nd = a.shape.len();
     if a.chunks.len() != nd || a.chunks.contains(&0) {
         return Err(bad("chunk shape and array shape differ in rank"));
@@ -1238,11 +1272,10 @@ fn read_region(a: &Array, start: &[usize], shape: &[usize]) -> Result<Vec<u8>> {
     };
     let wanted =
         |iorigin: &[usize], ishape: &[usize]| (0..nd).all(|d| iorigin[d] < start[d] + shape[d] && iorigin[d] + ishape[d] > start[d]);
-    let at_once = decoding_at_once(decoded_bytes(a));
-    let inner_at_once = if at_once < crate::par::threads() { 1 } else { at_once };
-    at_most(total, at_once, |i| {
+    let (at_once, inner_at_once, waiting) = read_plan(a, total, requests);
+    each(waiting, total, at_once, |i| {
         let idx: Vec<usize> = unravel(i, &counts).iter().zip(&first).map(|(k, f)| k + f).collect();
-        decode_chunk(a, &idx, allow_big, inner_at_once, &wanted, &put)
+        decode_chunk(a, &idx, allow_big, (inner_at_once, waiting), &wanted, &put)
     })?;
     out.into_inner().map_err(|_| bad("a chunk decoder panicked"))
 }
@@ -1291,9 +1324,8 @@ fn read_points(a: &Array, sel: &[Vec<usize>]) -> Result<Vec<u8>> {
     let counts: Vec<usize> = groups.iter().map(Vec::len).collect();
     // At most one chunk per selected element: the product does not overflow.
     let total: usize = counts.iter().product();
-    let at_once = decoding_at_once(decoded_bytes(a));
-    let inner_at_once = if at_once < crate::par::threads() { 1 } else { at_once };
-    at_most(total, at_once, |i| {
+    let (at_once, inner_at_once, waiting) = read_plan(a, total, REMOTE_AT_ONCE);
+    each(waiting, total, at_once, |i| {
         let k = unravel(i, &counts);
         let members: Vec<&[(usize, usize)]> = (0..nd).map(|d| groups[d][k[d]].1.as_slice()).collect();
         let idx: Vec<usize> = (0..nd).map(|d| groups[d][k[d]].0).collect();
@@ -1332,14 +1364,14 @@ fn read_points(a: &Array, sel: &[Vec<usize>]) -> Result<Vec<u8>> {
                 }
             }
         };
-        decode_chunk(a, &idx, allow_big, inner_at_once, &wanted, &put)
+        decode_chunk(a, &idx, allow_big, (inner_at_once, waiting), &wanted, &put)
     })?;
     out.into_inner().map_err(|_| bad("a chunk decoder panicked"))
 }
 
 /// An array's values, all of them, as `f64` (for coordinate arrays).
 fn read_all_f64(a: &Array) -> Option<Vec<f64>> {
-    let bytes = read_region(a, &vec![0; a.shape.len()], &a.shape).ok()?;
+    let bytes = read_region(a, &vec![0; a.shape.len()], &a.shape, REMOTE_AT_ONCE).ok()?;
     let size = a.data_type.size_bytes();
     let n = bytes.len() / size;
     // As the region was: refused past the memory the process can use, allocated fallibly.
@@ -1584,7 +1616,7 @@ impl Level {
             format!("a window of {}x{} pixels in {} band(s) is too large", w.width, w.height, bands.len())
         })
         .map_err(limited)?;
-        let Some(&last) = self.bds.last() else { return self.read_group(w, bands) };
+        let Some(&last) = self.bds.last() else { return self.read_group(w, bands, REMOTE_AT_ONCE) };
         let step = self.array.chunks[last].max(1);
         let mut unique: Vec<usize> = bands.to_vec();
         unique.sort_unstable();
@@ -1607,12 +1639,19 @@ impl Level {
             }
         }
         if groups.len() == 1 && groups[0] == bands {
-            return self.read_group(w, bands);
+            return self.read_group(w, bands, REMOTE_AT_ONCE);
         }
-        // In parallel unless their chunks are decoded a few at a time ([`decoding_at_once`]).
-        let read = |i: usize| Ok((groups[i].clone(), self.read_group(w, &groups[i])?));
+        // In parallel unless their chunks are decoded a few at a time ([`decoding_at_once`]); from
+        // a remote store, sharing the requests a read keeps in flight ([`read_plan`]).
+        let at_once = groups.len().min(REMOTE_AT_ONCE);
+        let read_with = |i: usize, requests: usize| Ok((groups[i].clone(), self.read_group(w, &groups[i], requests)?));
+        let read = |i: usize| read_with(i, REMOTE_AT_ONCE);
         let parts = if decoding_at_once(decoded_bytes(&self.array)) < crate::par::threads() {
             (0..groups.len()).map(read).collect::<Result<Vec<_>>>()?
+        } else if read_plan(&self.array, groups.len(), REMOTE_AT_ONCE).2 {
+            crate::par::map_waiting(groups.len(), at_once, |i| read_with(i, (REMOTE_AT_ONCE / at_once).max(1)))
+                .into_iter()
+                .collect::<Result<Vec<_>>>()?
         } else {
             crate::par::map_range(groups.len(), read).into_iter().collect::<Result<Vec<_>>>()?
         };
@@ -1641,7 +1680,7 @@ impl Level {
 
     /// Reads a window of some bands, those between the first and the last (in band order) read
     /// together.
-    fn read_group(&self, w: crate::Window, bands: &[usize]) -> Result<RasterData> {
+    fn read_group(&self, w: crate::Window, bands: &[usize], requests: usize) -> Result<RasterData> {
         let a = &self.array;
         let nd = a.shape.len();
         let (_, rows) = self.size();
@@ -1659,7 +1698,7 @@ impl Level {
             start[d] = lo;
             shape[d] = hi - lo + 1;
         }
-        let bytes = read_region(a, &start, &shape)?;
+        let bytes = read_region(a, &start, &shape, requests)?;
         // Rearranged band-major, north-up, from the region's little-endian elements.
         let size = a.data_type.size_bytes();
         let strides: Vec<usize> = (0..nd).map(|d| shape[d + 1..].iter().product()).collect();

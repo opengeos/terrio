@@ -26,6 +26,11 @@ struct Counter {
     paths: Arc<std::sync::Mutex<Vec<String>>>,
     /// Paths answered 401, whatever the other settings.
     fail_paths: Arc<std::sync::Mutex<Vec<String>>>,
+    /// Milliseconds each request waits before its answer (a distant server).
+    delay_ms: Arc<AtomicU64>,
+    /// The requests being answered, and the most at once.
+    in_flight: Arc<AtomicU64>,
+    most_in_flight: Arc<AtomicU64>,
 }
 
 impl Counter {
@@ -69,6 +74,17 @@ fn serve(root: PathBuf) -> (String, Counter) {
                     }
                 }
                 c.requests.fetch_add(1, Ordering::SeqCst);
+                let now = c.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                c.most_in_flight.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(c.delay_ms.load(Ordering::SeqCst)));
+                // Answered (or dropped) when this guard goes.
+                struct Done(Arc<AtomicU64>);
+                impl Drop for Done {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::SeqCst);
+                    }
+                }
+                let _done = Done(c.in_flight.clone());
                 let path = first.split_whitespace().nth(1).unwrap_or("/").split('?').next().unwrap().trim_start_matches('/').to_string();
                 c.paths.lock().unwrap().push(path.clone());
                 if c.fail.load(Ordering::SeqCst) || c.fail_paths.lock().unwrap().contains(&path) {
@@ -167,6 +183,28 @@ fn remote_stores_are_read_by_window() {
 
 /// A metadata document that cannot be read is an error naming the failure (not "no Zarr
 /// metadata"), and is not remembered as missing: the store opens once the server answers.
+/// Requests wait on the server, not on the cores: a window of many chunks keeps more requests in
+/// flight than a machine's cores (terrio's pool) would, up to the read's limit of 32.
+#[test]
+fn remote_chunks_are_fetched_more_at_once_than_cores() {
+    let dir = tempfile::tempdir().unwrap();
+    // A chunk per band: 40 chunks for a window of all the bands.
+    let ds = raster(16, 16, 40);
+    write_zarr(dir.path(), "b.zarr", &ds, &[("FORMAT", "ZARR_V3")]);
+    let (url, counter) = serve(dir.path().to_path_buf());
+    let mut r = terrio::open_raster_lazy(&format!("{url}/b.zarr")).unwrap();
+    counter.take();
+    counter.delay_ms.store(300, Ordering::SeqCst);
+    counter.most_in_flight.store(0, Ordering::SeqCst);
+    let bands: Vec<usize> = (1..=40).collect();
+    let w = r.read_window(Window::new(0, 0, 16, 16), &WindowOptions { bands, overview: None }).unwrap();
+    assert_eq!(counter.take().0, 40);
+    let most = counter.most_in_flight.load(Ordering::SeqCst);
+    assert!(most >= 24, "{most} requests in flight at most");
+    let local = terrio::open_raster(dir.path().join("b.zarr").to_str().unwrap()).unwrap();
+    assert_eq!(w.raster.data.to_f64_vec(), local.raster.data.to_f64_vec());
+}
+
 #[test]
 fn metadata_read_failures_are_errors() {
     let dir = tempfile::tempdir().unwrap();
