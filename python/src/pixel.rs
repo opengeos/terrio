@@ -32,11 +32,12 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
 ///     bigtiff: Write a BigTIFF, for `dst`.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: `value * scale + offset` per band; nodata pixels keep the nodata value.
 #[pyfunction]
-#[pyo3(signature = (src, dst=None, *, ot=None, format=None, compress=None, tile_size=None, bigtiff=false))]
+#[pyo3(signature = (src, dst=None, *, ot=None, format=None, compress=None, tile_size=None, bigtiff=false, options=None))]
 #[allow(clippy::too_many_arguments)]
 fn unscale(
     py: Python<'_>,
@@ -47,11 +48,13 @@ fn unscale(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     let o = UnscaleOptions { output_type: ot.map(parse_data_type).transpose().py()? };
     let ds = input_raster(py, src)?;
     let out = py.detach_result(|| terrio::ops::pixel::unscale(&ds, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
 }
 
 /// Replaces nodata values with an alpha band, like `terrio nodata-to-alpha` (GDAL's
@@ -66,11 +69,12 @@ fn unscale(
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
 ///     bigtiff: Write a BigTIFF, for `dst`.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: The bands without nodata values, then an alpha band of their type (0 or 255).
 #[pyfunction]
-#[pyo3(signature = (src, dst=None, *, nodata=None, format=None, compress=None, tile_size=None, bigtiff=false))]
+#[pyo3(signature = (src, dst=None, *, nodata=None, format=None, compress=None, tile_size=None, bigtiff=false, options=None))]
 #[allow(clippy::too_many_arguments)]
 fn nodata_to_alpha(
     py: Python<'_>,
@@ -81,7 +85,9 @@ fn nodata_to_alpha(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     let nodata: Vec<f64> = match nodata {
         None => Vec::new(),
         Some(v) => match v.extract::<f64>() {
@@ -92,7 +98,7 @@ fn nodata_to_alpha(
     let o = NodataToAlphaOptions { nodata };
     let ds = input_raster(py, src)?;
     let out = py.detach_result(|| terrio::ops::pixel::nodata_to_alpha(&ds, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
 }
 
 /// Maps values or ranges of values to new values, like `terrio reclassify` (GDAL's
@@ -109,11 +115,12 @@ fn nodata_to_alpha(
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
 ///     bigtiff: Write a BigTIFF, for `dst`.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: The reclassified bands, with the source's nodata values.
 #[pyfunction]
-#[pyo3(signature = (src, mapping, dst=None, *, ot=None, format=None, compress=None, tile_size=None, bigtiff=false))]
+#[pyo3(signature = (src, mapping, dst=None, *, ot=None, format=None, compress=None, tile_size=None, bigtiff=false, options=None))]
 #[allow(clippy::too_many_arguments)]
 fn reclassify(
     py: Python<'_>,
@@ -125,7 +132,9 @@ fn reclassify(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     let mapping = match mapping.strip_prefix('@') {
         Some(path) => read_mapping_file(path).py()?,
         None => mapping.to_string(),
@@ -133,7 +142,7 @@ fn reclassify(
     let o = ReclassifyOptions { mapping, output_type: ot.map(parse_data_type).transpose().py()? };
     let ds = input_raster(py, src)?;
     let out = py.detach_result(|| terrio::ops::pixel::reclassify(&ds, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
 }
 
 /// One vector feature per pixel, like `terrio as-features` (GDAL's `gdal raster as-features`).
@@ -201,8 +210,11 @@ fn as_features(
 }
 
 /// Blends equal-sized Byte images. Operator names match GDAL; opacity is 0..100.
+///
+/// Args:
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 #[pyfunction]
-#[pyo3(signature = (src, overlay, dst=None, *, operator="src-over", opacity=100, format=None, compress=None, tile_size=None, bigtiff=false))]
+#[pyo3(signature = (src, overlay, dst=None, *, operator="src-over", opacity=100, format=None, compress=None, tile_size=None, bigtiff=false, options=None))]
 #[allow(clippy::too_many_arguments)]
 fn blend(
     py: Python<'_>,
@@ -215,10 +227,12 @@ fn blend(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     let o = terrio::ops::blend::BlendOptions { operator: terrio::ops::blend::BlendOperator::parse(operator).py()?, opacity };
     let base = input_raster(py, src)?;
     let overlay = input_raster(py, overlay)?;
     let out = py.detach_result(|| terrio::ops::blend::blend(&base, &overlay, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
 }

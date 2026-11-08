@@ -320,6 +320,18 @@ data = open("dem.tif", "rb").read()
 raster = terrio.open_bytes(data, "dem.tif")  # from bytes; to bytes with raster.to_bytes("x.tif")
 ```
 
+Raster operations with `dst` and the standard output keywords accept `options={...}`, just
+like `Raster.write(options=...)` and CLI `--co`. This includes streamed terrain/warp outputs,
+mask-writing operations, palette operations and `create_raster`. The options apply to the
+destination write; they do not change an in-memory result when `dst` is omitted.
+In `calc`, `options` is an output keyword rather than a raster variable name.
+
+```python
+terrio.dem("dem.tif", "slope", "slope.tif", options={"COMPRESS": "DEFLATE", "TILED": "YES"})
+terrio.translate("dem.tif", "terrain.nc", options={"FORMAT": "NC4", "COMPRESS": "DEFLATE"})
+terrio.translate("dem.tif", "terrain.zarr", options={"FORMAT": "ZARR_V3"})
+```
+
 `translate` reads rasters by window as `terrio translate` does: a path or a lazy `Raster` is read
 for the output alone (the tiles its window touches), from the stored resolution `overview` selects,
 as `gdal_translate -ovr`: `"AUTO"` (the default, the overview GDAL's RasterIO chooses for the output

@@ -68,6 +68,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 ///         rows in flight may take, which sets their height. By default, strips of about 64 MiB
 ///         of input values. Refused otherwise, and for a VRT `dst` or a `dst` that is `src`
 ///         (read whole).
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: The result. When `src` and `dst` are paths, the DEM is read and the result written
@@ -78,7 +79,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     src, processing, dst=None, *, color_file=None, band=1, z=1.0, scale=None, xscale=None, yscale=None, azimuth=None,
     altitude=None, combined=false, multidirectional=false, igor=false, alg=None, percent=false, trigonometric=false,
     zero_for_flat=false, compute_edges=false, alpha=false, exact_color_entry=false, nearest_color_entry=false,
-    format=None, compress=None, tile_size=None, bigtiff=false, kernel_version="3.12", max_memory_mib=None
+    format=None, compress=None, tile_size=None, bigtiff=false, options=None, kernel_version="3.12", max_memory_mib=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn dem(
@@ -109,9 +110,11 @@ fn dem(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
     kernel_version: &str,
     max_memory_mib: Option<f64>,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     if [combined, multidirectional, igor].iter().filter(|b| **b).count() > 1 {
         return Err(invalid("combined, multidirectional and igor exclude each other"));
     }
@@ -177,7 +180,7 @@ fn dem(
     };
     // A path to a path: read and written a strip of rows at a time.
     if let (Some(src_path), Some(out_path), false) = (path.as_deref(), dst, vrt_out) {
-        let options = crate::raster::write_options(format, compress, tile_size, bigtiff)?;
+        let options = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)?;
         let out = crate::with_warnings(py, || {
             let mut lazy = terrio::open_raster_lazy(src_path)?;
             match (product, color_file) {
@@ -217,7 +220,7 @@ fn dem(
                 terrio::open_raster(out_path)
             })
             .py()?;
-        return finish_raster(py, out, None, None, None, None, false);
+        return finish_raster(py, out, None, None, None, None, false, None);
     }
     let out = py
         .detach_result(|| match (product, color_file) {
@@ -231,7 +234,7 @@ fn dem(
             (None, None) => unreachable!("checked"),
         })
         .py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
 }
 
 /// Evaluates band math over rasters, like `terrio calc` (GDAL's `gdal_calc.py`), with NumPy's
@@ -259,13 +262,14 @@ fn dem(
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
 ///     bigtiff: Write a BigTIFF, for `dst`.
 ///     **inputs: The inputs (paths or `Raster`s) and their bands (`<name>_band`, from 1).
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: The result, in memory.
 #[pyfunction]
 #[pyo3(signature = (
     calc, dst=None, *, r#type=None, nodata=None, hide_nodata=false, extent=None, projwin=None, all_bands=None,
-    projection_check=false, format=None, compress=None, tile_size=None, bigtiff=false, **inputs
+    projection_check=false, format=None, compress=None, tile_size=None, bigtiff=false, options=None, **inputs
 ))]
 #[allow(clippy::too_many_arguments)]
 fn calc(
@@ -283,8 +287,10 @@ fn calc(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
     inputs: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     let exprs: Vec<String> = match calc.extract::<String>() {
         Ok(s) => vec![s],
         Err(_) => calc.extract().map_err(|_| invalid("calc is an expression or a list of expressions"))?,
@@ -343,7 +349,7 @@ fn calc(
             terrio::ops::calc::calc(&inputs, &o)
         })
         .py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
 }
 
 /// Computes the distance from every pixel to the nearest target pixel, like `terrio proximity`
@@ -365,13 +371,14 @@ fn calc(
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
 ///     bigtiff: Write a BigTIFF, for `dst`.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: The distances, in memory.
 #[pyfunction]
 #[pyo3(signature = (
     src, dst=None, *, band=1, values=None, distunits="PIXEL", maxdist=None, nodata=None, use_input_nodata=false,
-    fixed_buf_val=None, ot="Float32", format=None, compress=None, tile_size=None, bigtiff=false
+    fixed_buf_val=None, ot="Float32", format=None, compress=None, tile_size=None, bigtiff=false, options=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn proximity(
@@ -390,7 +397,9 @@ fn proximity(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     let values = match values {
         None => Vec::new(),
         Some(v) => match v.extract::<String>() {
@@ -415,7 +424,7 @@ fn proximity(
     };
     let ds = input_raster(py, src)?;
     let out = py.detach_result(|| terrio::ops::proximity::proximity(&ds, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
 }
 
 /// Merges raster areas smaller than a threshold into their largest neighbour, like
@@ -433,13 +442,14 @@ fn proximity(
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
 ///     bigtiff: Write a BigTIFF, for `dst`.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: The sieved raster, in memory.
 #[pyfunction]
 #[pyo3(signature = (
     src, dst=None, *, band=1, threshold=2, connectedness=4, mask=None, format=None, compress=None, tile_size=None,
-    bigtiff=false
+    bigtiff=false, options=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn sieve(
@@ -454,7 +464,9 @@ fn sieve(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     if connectedness != 4 && connectedness != 8 {
         return Err(invalid("connectedness is 4 or 8"));
     }
@@ -476,7 +488,7 @@ fn sieve(
             terrio::ops::sieve::sieve(&ds, &SieveOptions { band, threshold, eight_connected: connectedness == 8, mask })
         })
         .py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
 }
 
 /// Single-observer viewshed on a projected DEM.
@@ -487,9 +499,12 @@ fn sieve(
 /// `os` sets observer spacing in pixels (default 10), and returns normalized Byte visibility.
 /// Pass `0, 0` for the required positional coordinates in ACCUM; the CLI may omit them. Numeric nodata
 /// is treated as elevation, as in GDAL; nonfinite elevations are rejected.
+///
+/// Args:
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 #[pyfunction]
 #[pyo3(signature = (src, ox, oy, dst=None, *, oz=2.0, tz=0.0, md=0.0, cc=None, om="NORMAL", ov=0, band=1, os=10,
-    format=None, compress=None, tile_size=None, bigtiff=false))]
+    format=None, compress=None, tile_size=None, bigtiff=false, options=None))]
 #[allow(clippy::too_many_arguments)]
 fn viewshed(
     py: Python<'_>,
@@ -509,7 +524,9 @@ fn viewshed(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     use terrio::ops::viewshed::{ViewshedMode, ViewshedOptions};
     let o = ViewshedOptions {
         band,
@@ -525,7 +542,7 @@ fn viewshed(
     };
     let ds = input_raster(py, src)?;
     let out = py.detach_result(|| terrio::ops::viewshed::viewshed(&ds, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
 }
 
 /// Fills raster holes using GDAL's four-quadrant interpolation.
@@ -543,13 +560,14 @@ fn viewshed(
 ///     compress: GeoTIFF compression for dst.
 ///     tile_size: GeoTIFF tile size for dst.
 ///     bigtiff: Write a BigTIFF for dst.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: One band, with the source's type, nodata and georeferencing.
 #[pyfunction]
 #[pyo3(signature = (src, dst=None, *, band=1, mask=None, max_distance=100.0,
     interpolation="inv_dist", smoothing_iterations=0, format=None, compress=None,
-    tile_size=None, bigtiff=false))]
+    tile_size=None, bigtiff=false, options=None))]
 #[allow(clippy::too_many_arguments)]
 fn fill_nodata(
     py: Python<'_>,
@@ -564,7 +582,9 @@ fn fill_nodata(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     use terrio::ops::fill_nodata::{FillNodataOptions, Interpolation, raster_mask};
     let method = Interpolation::parse(interpolation).py()?;
     let use_default_mask = mask.is_none();
@@ -588,7 +608,7 @@ fn fill_nodata(
     };
     let options = FillNodataOptions { band, mask: bytes.as_deref(), max_distance, interpolation: method, smoothing_iterations };
     let out = py.detach_result(|| terrio::ops::fill_nodata::fill_nodata(&ds, &options)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
 }
 
 /// Weighted Brovey pansharpening at the panchromatic resolution.
@@ -596,9 +616,12 @@ fn fill_nodata(
 /// `spectral` is one path/Raster or a list; every input band contributes to the
 /// intensity. `bands` selects output bands from that flattened sequence, from 1.
 /// Weights are not normalized. `nodata` is a number, "none", or None to infer it.
+///
+/// Args:
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 #[pyfunction]
 #[pyo3(signature=(pan, spectral, dst=None, *, weights=None, bands=None, pan_band=1, resampling="cubic",
-    bitdepth=None, nodata=None, spat_adjust="union", ot=None, format=None, compress=None, tile_size=None, bigtiff=false))]
+    bitdepth=None, nodata=None, spat_adjust="union", ot=None, format=None, compress=None, tile_size=None, bigtiff=false, options=None))]
 #[allow(clippy::too_many_arguments)]
 fn pansharpen(
     py: Python<'_>,
@@ -617,7 +640,9 @@ fn pansharpen(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     use terrio::ops::pansharpen::{PansharpenExtent, PansharpenNodata, PansharpenOptions, SpectralBand};
     let nodata = match nodata {
         None => PansharpenNodata::Auto,
@@ -666,7 +691,7 @@ fn pansharpen(
             return Ok(PyRaster { inner });
         }
         if let Some(dst) = dst {
-            let options = crate::raster::write_options(format, compress, tile_size, bigtiff)?;
+            let options = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)?;
             py.detach_result(|| terrio::ops::pansharpen::vrt::pansharpen_to_path(&pan_path, &sources, &o, dst, &options)).py()?;
             return Ok(PyRaster { inner: py.detach_result(|| terrio::open_raster_lazy(dst)).py()? });
         }
@@ -683,5 +708,5 @@ fn pansharpen(
     let inputs =
         datasets.iter().flat_map(|(_, ds)| (1..=ds.raster.bands).map(move |band| SpectralBand { dataset: ds, band })).collect::<Vec<_>>();
     let out = py.detach_result(|| terrio::ops::pansharpen::pansharpen(&pan, &inputs, &o)).py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
 }

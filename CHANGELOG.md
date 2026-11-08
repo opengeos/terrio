@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Python raster operations accept format-specific `options` dictionaries when writing a
+  destination, as `Raster.write` and CLI `--co` do. Creation options also reach streamed
+  terrain/warp/pansharpen outputs, mask-writing paths, palette operations and `create_raster`.
+
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource
   error. HDF-EOS5 structure text is limited to 16 MiB before decoding, including fill-only files.

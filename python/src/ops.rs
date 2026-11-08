@@ -328,8 +328,10 @@ fn drivers<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
 ///         or `"WEBP"`.
 ///     tile_size: Write GeoTIFF tiles of this size.
 ///     bigtiff: Write a BigTIFF.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 #[pyfunction]
-#[pyo3(signature = (raster, path, driver=None, compress=None, tile_size=None, bigtiff=false))]
+#[pyo3(signature = (raster, path, driver=None, compress=None, tile_size=None, bigtiff=false, options=None))]
+#[allow(clippy::too_many_arguments)]
 fn write_raster(
     py: Python<'_>,
     raster: &mut PyRaster,
@@ -338,8 +340,10 @@ fn write_raster(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<()> {
-    let options = write_options(driver, compress, tile_size, bigtiff)?;
+    let creation_options = options;
+    let options = crate::raster::write_options_with_creation(driver, compress, tile_size, bigtiff, creation_options)?;
     raster.write_with_options(py, path, options)
 }
 
@@ -795,6 +799,7 @@ pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<A
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
 ///     bigtiff: Write a BigTIFF, for `dst`.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: The raster, in memory.
@@ -802,7 +807,7 @@ pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<A
 #[pyo3(signature = (
     src, dst=None, *, layers=None, sql=None, burn=None, attribute=None, r#where=None, tr=None, ts=None, te=None,
     tap=false, like=None, ot=None, init=None, nodata=None, all_touched=false, add=false, a_srs=None, format=None,
-    compress=None, tile_size=None, bigtiff=false
+    compress=None, tile_size=None, bigtiff=false, options=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn rasterize(
@@ -829,7 +834,9 @@ fn rasterize(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     let numbers = |v: Option<&Bound<'_, PyAny>>| -> PyResult<Vec<f64>> {
         match v {
             None => Ok(Vec::new()),
@@ -873,7 +880,8 @@ fn rasterize(
         merge: if add { MergeAlg::Add } else { MergeAlg::Replace },
         assign_srs: srs(a_srs)?,
     };
-    let write = dst.map(|_| write_options(format, compress, tile_size, bigtiff)).transpose()?;
+    let write =
+        dst.map(|_| crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)).transpose()?;
     let out = py
         .detach_result(|| -> terrio::Result<RasterDataset> {
             let out = terrio::ops::rasterize::rasterize(&to_burn, &options)?;
@@ -1204,9 +1212,10 @@ pub(crate) fn finish_raster(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    creation_options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
     if let Some(path) = dst {
-        let o = write_options(format, compress, tile_size, bigtiff)?;
+        let o = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)?;
         py.detach_result(|| terrio::write_raster_dataset(&out, path, &o)).py()?;
     }
     Ok(PyRaster::from_dataset(out))
@@ -1249,6 +1258,7 @@ pub(crate) fn finish_raster(
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
 ///     bigtiff: Write a BigTIFF, for `dst`.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: The result, in memory.
@@ -1256,7 +1266,7 @@ pub(crate) fn finish_raster(
 #[pyo3(signature = (
     src, dst=None, *, bands=None, ot=None, srcwin=None, projwin=None, projwin_srs=None, outsize=None, tr=None,
     resampling=None, scale=None, exponent=None, a_nodata=None, a_srs=None, a_ullr=None, overview=None, format=None,
-    compress=None, tile_size=None, bigtiff=false
+    compress=None, tile_size=None, bigtiff=false, options=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn translate(
@@ -1281,7 +1291,9 @@ fn translate(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     let overview = overview_arg(overview)?;
     let size = |v: &Bound<'_, PyAny>| -> PyResult<Size> {
         match v.extract::<usize>() {
@@ -1355,7 +1367,7 @@ fn translate(
             crate::with_warnings(py, || terrio::ops::translate::translate_lazy(&mut lazy, &o, overview))?
         }
     };
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
 }
 
 /// The raster at `path` opened for reading by window, as `terrio translate` opens it, or, when
@@ -1431,6 +1443,7 @@ fn open_translate_source(path: &str) -> terrio::Result<Result<terrio::LazyRaster
 ///     init: A `Raster` holding the values the output starts from (all its bands, on the output
 ///         grid, in any type), as GDAL warps without `INIT_DEST`: pixels no valid source pixel
 ///         reaches keep them. By default the output starts at its nodata value, else 0.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: The result, in memory.
@@ -1438,7 +1451,7 @@ fn open_translate_source(path: &str) -> terrio::Result<Result<terrio::LazyRaster
 #[pyo3(signature = (
     src, dst=None, *, s_srs=None, t_srs=None, tr=None, te=None, te_srs=None, ts=None, dst_transform=None, tap=false,
     resampling="near", overview=None, srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125,
-    format=None, compress=None, tile_size=None, bigtiff=false, gcps=None, order=0, gcp_method="auto",
+    format=None, compress=None, tile_size=None, bigtiff=false, options=None, gcps=None, order=0, gcp_method="auto",
     rpc=None, to=None, wo=None, geoloc=false, geolocation=None, kernel_version=None, init=None, _sum_scale=1.0
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -1466,6 +1479,7 @@ fn warp(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
     gcps: Option<Vec<GcpTuple>>,
     order: u32,
     gcp_method: &str,
@@ -1478,6 +1492,7 @@ fn warp(
     init: Option<&Bound<'_, PyAny>>,
     _sum_scale: f64,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     if tap && tr.is_none() {
         return Err(invalid("tap needs tr"));
     }
@@ -1540,7 +1555,7 @@ fn warp(
                 terrio::ops::warp::warp_onto(&refs, &o, &initial.raster.data)
             })
             .py()?;
-        return finish_raster(py, out, dst, format, compress, tile_size, bigtiff);
+        return finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options);
     }
     enum Input {
         File(Box<terrio::LazyRaster>),
@@ -1628,7 +1643,7 @@ fn warp(
             [Arg::Path(path)] => path.clone(),
             _ => return Err(invalid("serialized warped VRT output needs a single source path")),
         };
-        let options = write_options(format, compress, tile_size, bigtiff)?;
+        let options = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)?;
         py.detach_result(|| terrio::ops::warp::warp_to_path(&[source], &o, path, &options)).py()?;
         return Ok(PyRaster { inner: py.detach_result(|| terrio::open_raster_lazy(path)).py()? });
     }
@@ -1693,7 +1708,7 @@ fn warp(
         let mut refs = inputs.iter_mut().map(|r| r as &mut dyn terrio::ops::warp::WarpSource).collect::<Vec<_>>();
         terrio::ops::warp::warp_sources(&mut refs, &prepared)
     })?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options)
 }
 
 /// Mosaics rasters into one, like `terrio mosaic` (GDAL's `gdalbuildvrt` then
@@ -1719,6 +1734,7 @@ fn warp(
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
 ///     bigtiff: Write a BigTIFF, for `dst`.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster | None: The mosaic, in memory; `None` when a `.vrt` was written.
@@ -1726,7 +1742,7 @@ fn warp(
 #[pyo3(signature = (
     srcs, dst=None, *, resolution="average", tr=None, te=None, tap=false, separate=false, bands=None, nodata=None,
     srcnodata=None, dstnodata=None, resampling="near", t_srs=None, format=None, compress=None, tile_size=None,
-    bigtiff=false
+    bigtiff=false, options=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn mosaic(
@@ -1748,7 +1764,9 @@ fn mosaic(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<Option<PyRaster>> {
+    let creation_options = options;
     let resolution = match tr {
         Some((x, y)) => ResolutionStrategy::User(x, y),
         None => ResolutionStrategy::parse(resolution).py()?,
@@ -1791,7 +1809,7 @@ fn mosaic(
             terrio::ops::mosaic::mosaic(&sources, &o)
         })
         .py()?;
-    finish_raster(py, out, dst, format, compress, tile_size, bigtiff).map(Some)
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff, creation_options).map(Some)
 }
 
 /// Refuses, before it is read, a `sum`'s source window of `pixels` pixels of `pixel_bytes` bytes

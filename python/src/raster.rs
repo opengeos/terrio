@@ -917,6 +917,19 @@ pub(crate) fn write_options(
     Ok(RasterWriteOptions { driver, compression: compress, tile_size, bigtiff, ..Default::default() })
 }
 
+/// Output options shared by operations that write a raster destination.
+pub(crate) fn write_options_with_creation(
+    driver: Option<&str>,
+    compress: Option<String>,
+    tile_size: Option<u32>,
+    bigtiff: bool,
+    creation_options: Option<std::collections::BTreeMap<String, String>>,
+) -> PyResult<RasterWriteOptions> {
+    let mut options = write_options(driver, compress, tile_size, bigtiff)?;
+    options.creation_options = creation_options.unwrap_or_default().into_iter().collect();
+    Ok(options)
+}
+
 /// `(key, value)` string pairs from a mapping or a sequence of pairs, in order.
 pub(crate) fn string_pairs(obj: &Bound<'_, PyAny>) -> PyResult<Vec<(String, String)>> {
     let items = if obj.hasattr("items")? { obj.call_method0("items")? } else { obj.clone() };

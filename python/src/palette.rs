@@ -1,6 +1,6 @@
 //! Palette operations use the shared quantizer and retain lazy-source validity masks.
 use crate::ops::raster_path;
-use crate::raster::{PyRaster, write_options};
+use crate::raster::PyRaster;
 use crate::{Detach, PyResultExt, invalid};
 use numpy::{PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::prelude::*;
@@ -143,9 +143,10 @@ fn finish(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    creation_options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
     if let Some(path) = dst {
-        let mut options = write_options(format, compress, tile_size, bigtiff)?;
+        let mut options = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)?;
         py.detach_result(|| {
             output.prepare_output_mask(path, &mut options, terrio::Window::full(output.width(), output.height()), None)?;
             terrio::write_raster_dataset(&output.read()?, path, &options)
@@ -184,11 +185,12 @@ fn read_color_table(py: Python<'_>, source: &Bound<'_, PyAny>, filename: Option<
 ///     tile_size: GeoTIFF tile size for dst.
 ///     bigtiff: Write BigTIFF for dst.
 ///     overwrite: Permit replacing an existing destination.
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 ///
 /// Returns:
 ///     Raster: One Byte band, its color table and nodata, on the source grid.
 #[pyfunction]
-#[pyo3(signature=(src, dst=None, *, color_count=256, bit_depth=5, dither=true, color_map=None, output_nodata=None, mask=None, format=None, compress=None, tile_size=None, bigtiff=false, overwrite=false))]
+#[pyo3(signature=(src, dst=None, *, color_count=256, bit_depth=5, dither=true, color_map=None, output_nodata=None, mask=None, format=None, compress=None, tile_size=None, bigtiff=false, options=None, overwrite=false))]
 #[allow(clippy::too_many_arguments)]
 fn rgb_to_palette(
     py: Python<'_>,
@@ -204,8 +206,10 @@ fn rgb_to_palette(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
     overwrite: bool,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     let destination = destination(py, color_map, dst, overwrite)?;
     let mut options = PaletteOptions {
         color_count,
@@ -225,12 +229,15 @@ fn rgb_to_palette(
         }
         palette::rgb_to_palette_lazy(source, &options).map(LazyRaster::from)
     })?;
-    finish(py, output, dst, format, compress, tile_size, bigtiff)
+    finish(py, output, dst, format, compress, tile_size, bigtiff, creation_options)
 }
 /// Expands an indexed Raster/path to RGB, or RGBA with rgba=True, preserving dataset masks.
 /// The full raster is materialized. Output options and overwrite behavior match rgb_to_palette.
+///
+/// Args:
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 #[pyfunction]
-#[pyo3(signature=(src, dst=None, *, rgba=false, format=None, compress=None, tile_size=None, bigtiff=false, overwrite=false))]
+#[pyo3(signature=(src, dst=None, *, rgba=false, format=None, compress=None, tile_size=None, bigtiff=false, options=None, overwrite=false))]
 #[allow(clippy::too_many_arguments)]
 fn palette_to_rgb(
     py: Python<'_>,
@@ -241,17 +248,22 @@ fn palette_to_rgb(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
     overwrite: bool,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     let destination = destination(py, None, dst, overwrite)?;
     let output = with_source(py, src, destination, |source| palette::palette_to_rgb_lazy(source, rgba))?;
-    finish(py, output, dst, format, compress, tile_size, bigtiff)
+    finish(py, output, dst, format, compress, tile_size, bigtiff, creation_options)
 }
 /// Attaches a color map without changing Byte/UInt16 indices, nodata or dataset masks.
 /// color_map accepts a palette Raster/path, bytes or RGBA sequence. The operation materializes
 /// the source; output options and overwrite behavior match rgb_to_palette.
+///
+/// Args:
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 #[pyfunction]
-#[pyo3(signature=(src, color_map, dst=None, *, format=None, compress=None, tile_size=None, bigtiff=false, overwrite=false))]
+#[pyo3(signature=(src, color_map, dst=None, *, format=None, compress=None, tile_size=None, bigtiff=false, options=None, overwrite=false))]
 #[allow(clippy::too_many_arguments)]
 fn attach_palette(
     py: Python<'_>,
@@ -262,10 +274,12 @@ fn attach_palette(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
     overwrite: bool,
 ) -> PyResult<PyRaster> {
+    let creation_options = options;
     let destination = destination(py, Some(color_map), dst, overwrite)?;
     let colors = table(py, color_map, None)?;
     let output = with_source(py, src, destination, |source| palette::attach_palette_lazy(source, &colors))?;
-    finish(py, output, dst, format, compress, tile_size, bigtiff)
+    finish(py, output, dst, format, compress, tile_size, bigtiff, creation_options)
 }
