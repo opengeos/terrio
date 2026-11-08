@@ -1133,3 +1133,25 @@ def test_subdataset_metadata_empty_duplicates_remove_prior_names():
             ("SUBDATASET_1_NAME", ""),
         ]
     ) == ["two"]
+
+
+def test_geopackage_subdatasets_keep_info_fallback(tmp_path):
+    gdal = pytest.importorskip("osgeo.gdal")
+    import terrio
+
+    path = str(tmp_path / "tables.gpkg")
+    source = gdal.GetDriverByName("MEM").Create("", 2, 2, 1, gdal.GDT_Byte)
+    source.SetGeoTransform((0, 1, 0, 2, 0, -1))
+    source.SetProjection("EPSG:4326")
+    for index, name in enumerate(("first", "second")):
+        source.GetRasterBand(1).Fill(index + 1)
+        options = [f"RASTER_TABLE={name}", "TILE_FORMAT=PNG"]
+        if index:
+            options.append("APPEND_SUBDATASET=YES")
+        target = gdal.Translate(path, source, format="GPKG", creationOptions=options)
+        assert target is not None
+        target = None
+    expected = [item["name"] for item in terrio.info(path)["subdatasets"]]
+    assert len(expected) == 2
+    with rio.open(path) as dataset:
+        assert dataset.subdatasets == expected
