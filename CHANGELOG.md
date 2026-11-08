@@ -76,6 +76,14 @@
   literal arguments and fixed-arity option values. Translate handles zero- or two-value
   `--scale` options before input/output paths without consuming the paths as scale values.
 
+- Translate's lazy-open and whole-read fallback policy now lives in the Rust core and is shared
+  by the CLI, Python path inputs and JavaScript byte inputs. Terminal opening errors and
+  overview refusals remain consistent; lazy destinations retain streaming writes.
+  Overview refusal diagnostics now use shared wording and quote the input name across the
+  CLI and bindings; callers should not match the previous surface-specific message text.
+  Whole-read fallback for bytes remains TIFF-only: GDAL-only non-TIFF files may translate
+  by path but fail from bytes.
+
 - `rio stack --co KEY=VALUE` now applies creation options to the output instead of silently
   discarding them.
 

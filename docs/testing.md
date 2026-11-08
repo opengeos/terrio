@@ -9,6 +9,19 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Translate input-opening policy
+
+Translate input-opening policy is tested with `cargo test -p terrio --lib ops::translate::tests`
+and `cargo test -p terrio --features gdal --test gdal_backend translate_input_policy`.
+The latter reads the generated `translate_complex_half.tif` fixture: GDAL 3.12.1 wrote
+16 x 8 CFloat16 samples with real values 0..127 and imaginary values -real-1,
+EPSG:32613 and transform `[500000,30,0,4100000,0,-30]`. The native lazy reader refuses
+that sample type, so path and byte tests exercise a successful whole-read GDAL fallback,
+including `GDAL:` paths and destination writes. Explicit levels are refused before fallback.
+Default-feature tests cover lazy paths/bytes, streamed outputs, missing local files and the
+shared terminal-error classification. Existing Python and Node overview regressions exercise
+the same entry points through the bindings.
+
 ## Updating the ordinary CI GDAL reference
 
 `GDAL_REFERENCE_VERSION` in `.github/workflows/ci.yml` controls both micromamba GDAL
