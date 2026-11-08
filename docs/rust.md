@@ -278,8 +278,9 @@ let small = cog.read_resampled(&options)?; // the 512 x 512 overview's tiles, ge
   otherwise (`GDAL_OVERVIEW_OVERSAMPLING_THRESHOLD`), plus 0.1, the search stopping within 0.1 of
   it. Candidates marked `AVERAGE_BIT2*` are excluded individually, for both internal and
   external overviews, following GDAL 3.13.3. Unmarked levels remain eligible. When that is the
-  first image of an external `.ovr`, it chooses again among the file's other images, as GDAL's band of that image has them as overviews. `AutoOffset(n)`, `None` and
-  `Level(i)` read a level alone, as `gdal_translate -ovr` does.
+  first image of an external `.ovr`, it chooses again among the file's other images, as GDAL's
+  band of that image has them as overviews. `AutoOffset(0)` is `Auto` in every resampled read;
+  positive `AutoOffset(n)`, `None` and `Level(i)` read a level alone, as `gdal_translate -ovr` does.
 - Invalid pixels carry no weight: those the level's mask band masks (the dataset's mask, an
   overview's own; an overview without one is all valid, as in GDAL), their band's nodata value
   (NaN for NaN, nothing outside the type's range) or the alpha band of a two- or four-band raster.

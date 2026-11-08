@@ -85,6 +85,7 @@ def test_an_average_to_a_quarter_size_matches_gdal_translate(gdal, pyramid, lazy
     [
         (None, None),
         ("AUTO", "AUTO"),
+        ("AUTO-0", "AUTO-0"),
         ("auto-1", "AUTO-1"),
         ("NONE", "NONE"),
         (0, "0"),
@@ -95,11 +96,6 @@ def test_an_average_to_a_quarter_size_matches_gdal_translate(gdal, pyramid, lazy
 def test_overview_selects_the_level_as_gdal_translate_ovr(gdal, pyramid, lazy, mode, ovr):
     src = terrio.open_raster(pyramid, lazy=True) if lazy else pyramid
     windows = [["-outsize", "200", "200", "-r", "bilinear"], ["-srcwin", "100", "60", "400", "300"]]
-    if str(mode).upper().startswith("AUTO-"):
-        # Known difference, shared with `terrio translate --overview AUTO-1`: without an output
-        # size, gdal_translate keeps the window's full-resolution size (400 x 300) and reads it
-        # from overview 0, where terrio writes the 200 x 150 of that level.
-        windows = windows[:1]
     for options in windows:
         kwargs = (
             {"outsize": (200, 200), "resampling": "bilinear"}
@@ -205,3 +201,18 @@ def test_a_level_of_a_raster_without_overviews_warns_and_reads_full_resolution(t
     with pytest.warns(UserWarning, match="cannot get overview level 0"):
         out = terrio.translate(str(path), srcwin=(1, 0, 2, 2), overview=0)
     np.testing.assert_array_equal(out.read(1), [[2, 3], [6, 7]])
+
+
+def test_automatic_zero_keeps_the_whole_read_fallback(pyramid):
+    """AUTO-0 reaches the same whole-read backend as AUTO (GDAL 3.13.3 reference)."""
+    source = f"gdal:{pyramid}"
+    try:
+        expected = terrio.translate(source, outsize=(32, 24), overview="AUTO")
+    except (terrio.UnsupportedError, terrio.NotFoundError) as expected_error:
+        with pytest.raises(type(expected_error)) as actual:
+            terrio.translate(source, outsize=(32, 24), overview="AUTO-0")
+        assert str(actual.value) == str(expected_error)
+    else:
+        actual = terrio.translate(source, outsize=(32, 24), overview="AUTO-0")
+        np.testing.assert_array_equal(actual.read(), expected.read())
+        assert actual.transform == expected.transform
