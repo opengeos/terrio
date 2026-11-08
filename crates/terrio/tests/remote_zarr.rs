@@ -427,10 +427,11 @@ fn translated_bands_sharing_a_chunk_fetch_it_once() {
         assert_eq!(out.raster.get(k, 4, 3), ((k + 4) * 10 + 7) as f64);
     }
     // Bands in another order: still the chunk once, the bands in the order asked.
-    let o = terrio::ops::translate::TranslateOptions { bands: vec![8, 5], ..o };
+    let o = terrio::ops::translate::TranslateOptions { bands: vec![8, 5, 8], ..o };
     let out = terrio::ops::translate::translate_lazy(&mut src, &o, terrio::ops::overview::OverviewSelection::Auto).unwrap();
     assert_eq!(counter.take().0, 1);
     assert_eq!((out.raster.get(0, 0, 0), out.raster.get(1, 0, 0)), ((7 * 10 + 3) as f64, (4 * 10 + 3) as f64));
+    assert_eq!(out.raster.get(2, 0, 0), (7 * 10 + 3) as f64);
 }
 
 /// A store whose objects the caller fetches (terrio-js, with `fetch`): opening and reads run
@@ -460,7 +461,9 @@ fn stores_fetched_by_the_caller_are_read_in_rounds() {
     let objects = std::sync::Arc::new(SparseObjects::new());
     let mut requests = 0;
     let mut fetch = |objects: &SparseObjects| {
-        for (key, range) in objects.missing() {
+        let missing = objects.missing();
+        assert!(!missing.is_empty(), "permanent error without missing objects");
+        for (key, range) in missing {
             requests += 1;
             let data = std::fs::read(store.join(&key)).ok().map(|b| match range {
                 ObjectRange::Whole => b,
@@ -473,6 +476,7 @@ fn stores_fetched_by_the_caller_are_read_in_rounds() {
     let mut rounds = 0;
     let mut r = loop {
         rounds += 1;
+        assert!(rounds <= 32, "fetch loop did not converge");
         match terrio::LazyRaster::from_zarr_objects(objects.clone(), "s.zarr", "a") {
             Ok(r) if !objects.has_missing() => break r,
             _ => fetch(&objects),
@@ -485,6 +489,7 @@ fn stores_fetched_by_the_caller_are_read_in_rounds() {
     let (window, mut rounds) = (Window::new(28, 10, 8, 4), 0);
     let w = loop {
         rounds += 1;
+        assert!(rounds <= 32, "fetch loop did not converge");
         match r.read_window(window, &WindowOptions::default()) {
             Ok(w) if !objects.has_missing() => break w,
             _ => fetch(&objects),
@@ -497,6 +502,7 @@ fn stores_fetched_by_the_caller_are_read_in_rounds() {
     rounds = 0;
     loop {
         rounds += 1;
+        assert!(rounds <= 32, "fetch loop did not converge");
         match r.read_window(Window::new(40, 12, 2, 2), &WindowOptions::default()) {
             Ok(w) if !objects.has_missing() => break assert_eq!(w.raster.get(0, 1, 1), value(13, 41) as f64),
             _ => fetch(&objects),
@@ -516,18 +522,26 @@ fn stores_fetched_by_the_caller_are_read_in_rounds() {
     }
     let objects = std::sync::Arc::new(SparseObjects::new());
     let fetch_v2 = |objects: &SparseObjects| {
-        for (key, range) in objects.missing() {
+        let missing = objects.missing();
+        assert!(!missing.is_empty(), "permanent error without missing objects");
+        for (key, range) in missing {
             assert_eq!(range, ObjectRange::Whole);
             objects.insert(&key, range, std::fs::read(v2.join(&key)).ok());
         }
     };
+    let mut rounds = 0;
     let mut r = loop {
+        rounds += 1;
+        assert!(rounds <= 32);
         match terrio::LazyRaster::from_zarr_objects(objects.clone(), "v2.zarr", "b") {
             Ok(r) if !objects.has_missing() => break r,
             _ => fetch_v2(&objects),
         }
     };
+    rounds = 0;
     let w = loop {
+        rounds += 1;
+        assert!(rounds <= 32);
         match r.read_window(Window::new(2, 1, 3, 2), &WindowOptions::default()) {
             Ok(w) if !objects.has_missing() => break w,
             _ => fetch_v2(&objects),
@@ -564,4 +578,38 @@ fn multidimensional_sparse_strides_fetch_only_selected_chunks() {
     let (requests, bytes) = counter.take();
     assert_eq!(requests, 2);
     assert_eq!(bytes, 4);
+}
+
+/// Coordinate objects must arrive before the public constructor exposes a final transform.
+#[test]
+fn caller_fetched_coordinates_are_required_before_open_succeeds() {
+    use terrio::sparse::{ObjectRange, SparseObjects};
+    let objects = Arc::new(SparseObjects::new());
+    let array = |shape: &[usize]| {
+        serde_json::json!({
+            "zarr_format":2,"shape":shape,"chunks":shape,"dtype":"<f8",
+            "compressor":null,"fill_value":null,"order":"C","filters":null
+        })
+    };
+    let metadata = serde_json::json!({
+        ".zgroup":{"zarr_format":2}, ".zattrs":{},
+        "a/.zarray":array(&[2,3]),
+        "a/.zattrs":{"_ARRAY_DIMENSIONS":["y","x"]},
+        "x/.zarray":array(&[3]), "x/.zattrs":{"_ARRAY_DIMENSIONS":["x"],"axis":"X"},
+        "y/.zarray":array(&[2]), "y/.zattrs":{"_ARRAY_DIMENSIONS":["y"],"axis":"Y"}
+    });
+    objects.insert(".zmetadata", ObjectRange::Whole, Some(serde_json::to_vec(&serde_json::json!({"metadata":metadata})).unwrap()));
+    objects.insert("zarr.json", ObjectRange::Whole, None);
+    assert!(terrio::LazyRaster::from_zarr_objects(objects.clone(), "coordinates.zarr", "a").is_err());
+    assert!(objects.has_missing());
+    for (key, range) in objects.missing() {
+        let values: &[f64] = match key.as_str() {
+            "x/0" => &[105., 115., 125.],
+            "y/0" => &[195., 185.],
+            _ => panic!("unexpected {key}"),
+        };
+        objects.insert(&key, range, Some(values.iter().flat_map(|v| v.to_le_bytes()).collect()));
+    }
+    let raster = terrio::LazyRaster::from_zarr_objects(objects, "coordinates.zarr", "a").unwrap();
+    assert_eq!(raster.geo_transform(), [100., 10., 0., 200., 0., -10.]);
 }

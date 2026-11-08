@@ -45,11 +45,19 @@ struct OpenUrlOptions {
     format: Option<String>,
     /// Zarr: the array to read, its path within the store (or group) at the URL.
     array: Option<String>,
+    /// Opt in to anonymous object stores returning 403 for absent metadata keys.
+    allow_missing_metadata403: bool,
 }
 
 impl Default for OpenUrlOptions {
     fn default() -> Self {
-        Self { block_size: terrio::sparse::DEFAULT_BLOCK_SIZE, cache_size: 256 << 20, format: None, array: None }
+        Self {
+            block_size: terrio::sparse::DEFAULT_BLOCK_SIZE,
+            cache_size: 256 << 20,
+            format: None,
+            array: None,
+            allow_missing_metadata403: false,
+        }
     }
 }
 
@@ -58,6 +66,7 @@ struct Fetcher {
     url: String,
     fetch: js_sys::Function,
     headers: JsValue,
+    allow_missing_metadata403: bool,
     requests: Cell<u64>,
     bytes: Cell<u64>,
 }
@@ -160,20 +169,30 @@ impl Fetcher {
     }
 
     /// Fetches parts of objects of a store at the URL into `objects`, [`MAX_PARALLEL`] requests at
-    /// a time: `key` at `url/key`. A missing object (status 404, or 403 as S3 answers anonymous
-    /// requests for missing keys) is handed over as missing.
+    /// a time: `key` at `url/key`. Missing objects (404) are handed over as missing.
+    /// With explicit opt-in, metadata probes also accept 403, as anonymous S3 stores can
+    /// answer for absent keys. Denied chunks/shards remain errors rather than fill-valued data.
     async fn fetch_objects(&self, objects: &SparseObjects, parts: &[(String, ObjectRange)]) -> Result<(), JsError> {
-        let (base, query) = self.url.split_once('?').map_or((self.url.as_str(), String::new()), |(b, q)| (b, format!("?{q}")));
+        let url = self.url.split('#').next().unwrap_or(&self.url);
+        let (base, query) = url.split_once('?').map_or((url, String::new()), |(b, q)| (b, format!("?{q}")));
         let base = base.trim_end_matches('/');
         for batch in parts.chunks(MAX_PARALLEL) {
             let promises = js_sys::Array::new();
             for (key, range) in batch {
                 let header = match *range {
                     ObjectRange::Whole => None,
-                    ObjectRange::At(o, n) => Some(format!("bytes={o}-{}", o + n.max(1) - 1)),
+                    ObjectRange::At(o, n) => Some(format!(
+                        "bytes={o}-{}",
+                        o.checked_add(n.saturating_sub(1)).ok_or_else(|| JsError::new("object range overflow"))?
+                    )),
                     ObjectRange::Suffix(n) => Some(format!("bytes=-{}", n.max(1))),
                 };
-                promises.push(self.request_to(&format!("{base}/{key}{query}"), header, false)?.as_ref());
+                let encoded = key
+                    .split('/')
+                    .map(|part| js_sys::encode_uri_component(part).as_string().unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                promises.push(self.request_to(&format!("{base}/{encoded}{query}"), header, false)?.as_ref());
             }
             // Every request settled before any is looked at (see `fetch_batch`).
             let settled = js_sys::Array::from(&JsFuture::from(js_sys::Promise::all_settled(&promises)).await.map_err(js_error)?);
@@ -183,17 +202,29 @@ impl Fetcher {
                 }
                 let f = self.any_response(js_sys::Promise::resolve(&get(&s, "value"))).await?;
                 let data = match (f.status, *range) {
-                    (403 | 404, _) => None,
-                    (_, ObjectRange::At(_, 0) | ObjectRange::Suffix(0)) => Some(Vec::new()),
+                    (404, _) => None,
+                    (403, _)
+                        if self.allow_missing_metadata403
+                            && matches!(key.rsplit('/').next(), Some(".zmetadata" | ".zarray" | ".zattrs" | ".zgroup" | "zarr.json")) =>
+                    {
+                        None
+                    }
+                    (200 | 206, ObjectRange::At(_, 0) | ObjectRange::Suffix(0)) => Some(Vec::new()),
                     (200 | 206, ObjectRange::Whole) | (206, _) => Some(f.data),
                     // A server that ignores `Range` sends the whole object: the part asked.
                     (200, ObjectRange::At(o, n)) => Some(
                         f.data
-                            .get(o as usize..(o + n) as usize)
+                            .get(
+                                usize::try_from(o).map_err(|_| JsError::new("object offset exceeds address space"))?
+                                    ..usize::try_from(o.checked_add(n).ok_or_else(|| JsError::new("object range overflow"))?)
+                                        .map_err(|_| JsError::new("object range exceeds address space"))?,
+                            )
                             .map(<[u8]>::to_vec)
                             .ok_or_else(|| JsError::new(&format!("{base}/{key}: bytes {o}+{n} past the end of the object")))?,
                     ),
-                    (200, ObjectRange::Suffix(n)) => Some(f.data[f.data.len().saturating_sub(n as usize)..].to_vec()),
+                    (200, ObjectRange::Suffix(n)) => {
+                        Some(f.data[f.data.len().saturating_sub(usize::try_from(n).unwrap_or(usize::MAX))..].to_vec())
+                    }
                     (status, _) => return Err(JsError::new(&format!("{base}/{key}: HTTP status {status}"))),
                 };
                 objects.insert(key, *range, data);
@@ -393,7 +424,9 @@ fn check_built(format: &str) -> Result<(), JsError> {
 /// Options: `headers` (sent with every request, for authorization), `fetch` (the function to
 /// call instead of `globalThis.fetch`), `blockSize` (64 KiB: reads fetch whole blocks),
 /// `cacheSize` (256 MB kept between reads, not during one: a read holds all the bytes it needs),
-/// `format` (when the URL does not tell it), `array` (Zarr).
+/// `format` (when the URL does not tell it), `array` (Zarr), `allowMissingMetadata403`
+/// (false: opt in only for anonymous stores that report absent metadata as forbidden;
+/// denied chunks and shards always fail).
 ///
 /// Servers must answer range requests; in browsers, cross-origin servers must allow the `Range`
 /// header and expose `Content-Range` (CORS).
@@ -418,14 +451,21 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
     } else {
         get(&js_sys::global(), "fetch").dyn_into().map_err(|_| JsError::new("no fetch function: pass one as options.fetch"))?
     };
-    let fetcher = Fetcher { url: url.clone(), fetch, headers, requests: Cell::new(0), bytes: Cell::new(0) };
+    let fetcher = Fetcher {
+        url: url.clone(),
+        fetch,
+        headers,
+        allow_missing_metadata403: o.allow_missing_metadata403,
+        requests: Cell::new(0),
+        bytes: Cell::new(0),
+    };
     // A format this build leaves out fails before any request, when the URL or the options tell it.
     let path = url.split(['?', '#']).next().unwrap_or(&url);
     if let Ok(format) = detect(path, &[], o.format.as_deref()) {
         check_built(format)?;
     }
     if o.format.as_deref().is_some_and(|f| f.eq_ignore_ascii_case("zarr"))
-        || path.trim_end_matches('/').to_ascii_lowercase().ends_with(".zarr")
+        || (o.format.is_none() && path.trim_end_matches('/').to_ascii_lowercase().ends_with(".zarr"))
     {
         check_built("Zarr")?;
         #[cfg(feature = "zarr")]

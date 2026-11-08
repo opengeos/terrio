@@ -54,17 +54,21 @@ polygons runs out of memory, but in the memory64 module (see below). `openUrl` r
 spatial index by bounding box, decoding only the features found; a file without one is still read
 whole. `openOapif(url, options)` reads OGC API Features services over `fetch`.
 
+HTTP 403 fails by default. For anonymous stores returning 403 for absent metadata, explicitly
+set `allowMissingMetadata403: true`; this accepts ambiguous metadata absence. Denied chunks and
+shards always fail.
+
 A remote Zarr store (v2 or v3, sharded or not) opens with `openUrl` too: the store or group at
 the URL (`.zarr`, or `format: "Zarr"`) and the array `array` within it, read as a raster by
 window. Opening fetches its metadata documents, and a window the shard indexes and chunks it
-needs, nearby inner chunks of a shard in requests of up to 1 MiB, the indexes kept for later
-windows. A year of the TESSERA embeddings (128 bands of a 192 x 192 window, 5 MB) reads in about
+needs, nearby inner chunks coalesced with a 1 MiB target (a single larger chunk is fetched
+whole), the indexes kept for later windows. A year of the TESSERA embeddings (128 bands of a 192 x 192 window, 5 MB) reads in about
 4 seconds in Chrome from Europe, where the TESSERA Zarr Explorer, which reads it with zarrita,
-takes about 9:
+takes about 9 seconds:
 
 ```js
 const store = "https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/tessera/tessera/zarr/v1.1-dclimate/utm30";
-const emb = await openUrl(store, { format: "Zarr", array: "embeddings" }); // (time, band, y, x): 1152 bands
+const emb = await openUrl(store, { format: "Zarr", array: "embeddings", allowMissingMetadata403: true }); // (time, band, y, x): 1152 bands
 const year2025 = await emb.read({ window: [45184, 360000, 192, 192], bands: Array.from({ length: 128 }, (_, i) => 1025 + i) });
 ```
 

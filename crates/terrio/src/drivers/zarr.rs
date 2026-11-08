@@ -313,7 +313,7 @@ struct Array {
 type ShardIndexes = std::sync::Mutex<(std::collections::HashMap<String, ShardIndex>, usize)>;
 
 /// A parsed shard index (see [`parse_index`]).
-type ShardIndex = std::sync::Arc<[Option<(usize, usize)>]>;
+type ShardIndex = std::sync::Arc<[Option<(u64, u64)>]>;
 
 /// The most bytes of parsed shard index entries an array keeps (24 bytes an entry): about 170
 /// indexes of 128 x 128 inner chunks.
@@ -344,7 +344,7 @@ impl Array {
         if let Ok(mut c) = self.shard_indexes.lock()
             && !c.0.contains_key(key)
         {
-            let size = count * std::mem::size_of::<Option<(usize, usize)>>();
+            let size = count * std::mem::size_of::<Option<(u64, u64)>>();
             // Dropped all at once when full: an LRU would suit windows wandering over many shards.
             if c.1 + size > SHARD_INDEX_CACHE_BYTES {
                 *c = Default::default();
@@ -964,7 +964,15 @@ fn chunk_buffer(p: &Pipeline, raw: Vec<u8>, cshape: &[usize], t: DataType, fill:
         let zeros = vec![0usize; cshape.len()];
         for (j, entry) in index.iter().enumerate() {
             let Some((o, l)) = *entry else { continue };
-            let chunk = copied(data.get(o..o.saturating_add(l)).ok_or_else(|| bad("shard index out of range"))?, "a Zarr chunk")?;
+            let chunk = copied(
+                data.get(
+                    usize::try_from(o).map_err(|_| bad("shard offset exceeds address space"))?
+                        ..usize::try_from(o.checked_add(l).ok_or_else(|| bad("shard index out of range"))?)
+                            .map_err(|_| bad("shard offset exceeds address space"))?,
+                )
+                .ok_or_else(|| bad("shard index out of range"))?,
+                "a Zarr chunk",
+            )?;
             let buf = chunk_buffer(&shard.inner, chunk, &shard.chunks, t, fill, allow_big)?;
             let origin: Vec<usize> = unravel(j, &inner_grid).iter().zip(&shard.chunks).map(|(i, c)| i * c).collect();
             scatter_strided(&buf.bytes, &buf.strides, &origin, &shard.chunks, &mut out, &zeros, cshape, t.size_bytes());
@@ -975,14 +983,14 @@ fn chunk_buffer(p: &Pipeline, raw: Vec<u8>, cshape: &[usize], t: DataType, fill:
 }
 
 /// A shard index: `(offset, length)` of each inner chunk, `None` for missing ones.
-fn parse_index(b: &[u8]) -> Vec<Option<(usize, usize)>> {
+fn parse_index(b: &[u8]) -> Vec<Option<(u64, u64)>> {
     b.as_chunks::<16>()
         .0
         .iter()
         .map(|e| {
             let o = u64::from_le_bytes(e[..8].try_into().unwrap_or_default());
             let l = u64::from_le_bytes(e[8..].try_into().unwrap_or_default());
-            (o != u64::MAX || l != u64::MAX).then_some((o as usize, l as usize))
+            (o != u64::MAX || l != u64::MAX).then_some((o, l))
         })
         .collect()
 }
@@ -1170,7 +1178,7 @@ fn decode_chunk(
     let Some(index) = a.shard_index(&key, count, range).map_err(err)? else { return Ok(()) };
     let inner_grid: Vec<usize> = a.chunks.iter().zip(&shard.chunks).map(|(c, i)| c.div_ceil(*i)).collect();
     // The inner chunks wanted, by offset in the shard: (offset, end, origin).
-    let mut chosen: Vec<(usize, usize, Vec<usize>)> = Vec::new();
+    let mut chosen: Vec<(u64, u64, Vec<usize>)> = Vec::new();
     for (j, entry) in index.iter().enumerate() {
         let Some((o, l)) = *entry else { continue };
         let iorigin: Vec<usize> = unravel(j, &inner_grid).iter().zip(&shard.chunks).zip(&origin).map(|((i, c), o)| o + i * c).collect();
@@ -1185,7 +1193,7 @@ fn decode_chunk(
     let max_run = if a.node.is_remote() { MAX_RUN } else { MAX_LOCAL_RUN };
     for (k, w) in chosen.iter().enumerate() {
         match runs.last_mut() {
-            Some((s, e)) if w.0 <= chosen[*e - 1].1.saturating_add(MERGE_GAP) && w.1 - chosen[*s].0 <= max_run => *e = k + 1,
+            Some((s, e)) if w.0 <= chosen[*e - 1].1.saturating_add(MERGE_GAP as u64) && w.1 - chosen[*s].0 <= max_run as u64 => *e = k + 1,
             _ => runs.push((k, k + 1)),
         }
     }
@@ -1193,9 +1201,17 @@ fn decode_chunk(
         let (s, e) = runs[r];
         let from = chosen[s].0;
         let to = chosen[s..e].iter().map(|w| w.1).max().unwrap_or(from);
-        let Some(bytes) = a.node.get(&key, Range::At(from as u64, (to - from) as u64))? else { return Ok(()) };
+        let Some(bytes) = a.node.get(&key, Range::At(from, to - from))? else { return Ok(()) };
         for (o, end, iorigin) in &chosen[s..e] {
-            let part = copied(bytes.get(o - from..end - from).ok_or_else(|| bad("shard index out of range"))?, "a Zarr chunk")?;
+            let part = copied(
+                bytes
+                    .get(
+                        usize::try_from(o - from).map_err(|_| bad("shard range exceeds address space"))?
+                            ..usize::try_from(end - from).map_err(|_| bad("shard range exceeds address space"))?,
+                    )
+                    .ok_or_else(|| bad("shard index out of range"))?,
+                "a Zarr chunk",
+            )?;
             let buf = chunk_buffer(&shard.inner, part, &shard.chunks, a.data_type, &fill, allow_big)?;
             put(&buf, iorigin, &shard.chunks);
         }
@@ -2097,8 +2113,11 @@ pub(crate) fn open_lazy(name: &str) -> Option<Result<crate::LazyRaster>> {
 /// Opens an array (or the single array of a group) of a store whose objects the caller fetches,
 /// read by window: see [`crate::LazyRaster::from_zarr_objects`].
 pub(crate) fn open_objects(objects: std::sync::Arc<crate::sparse::SparseObjects>, name: &str, key: &str) -> Result<crate::LazyRaster> {
-    let node = Node::sparse(objects, name, key)?;
+    let node = Node::sparse(objects.clone(), name, key)?;
     let (header, source) = open_node(&node, true)?;
+    if objects.has_missing() {
+        return Err(bad("Zarr opening requires objects not fetched yet"));
+    }
     Ok(crate::LazyRaster::from_source(header, Box::new(source)))
 }
 

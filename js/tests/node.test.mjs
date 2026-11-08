@@ -1435,7 +1435,7 @@ test("remote real files read with range requests, as GDAL reads them", { skip: n
 });
 
 test("remote Zarr stores are read by window", { skip: needs("zarr") }, async () => {
-  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync, cpSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const dir = mkdtempSync(join(tmpdir(), "terrio-zarr-"));
   // A v3 array of 64 x 64 UInt16 values row * 100 + col, in shards of 32 x 32 holding inner chunks
@@ -1480,7 +1480,7 @@ test("remote Zarr stores are read by window", { skip: needs("zarr") }, async () 
   }
   const server = await serve(dir);
   try {
-    const z = await terrio.openUrl(server.url + "s.zarr", { array: "a" });
+    const z = await terrio.openUrl(server.url + "s.zarr", { array: "a", cacheSize: 0 });
     assert.deepEqual([z.kind, z.format, z.width, z.height, z.crs], ["raster", "Zarr", 64, 64, "EPSG:32630"]);
     const opened = z.stats().requests;
     // A window across two shards: their indexes, then the inner chunks it needs.
@@ -1491,6 +1491,47 @@ test("remote Zarr stores are read by window", { skip: needs("zarr") }, async () 
     const v = await z.readBand(1, [40, 12, 2, 2]);
     assert.equal(v[3], value(13, 41));
     assert.equal(z.stats().requests - opened, 5);
+    const fragment = await terrio.openUrl(server.url + "s.zarr?token=test#view", { array: "a" });
+    assert.equal((await fragment.readBand(1, [28, 10, 1, 1]))[0], value(10, 28));
+    cpSync(join(dir, "s.zarr/a"), join(dir, "s.zarr/a#?"), { recursive: true });
+    const encoded = await terrio.openUrl(server.url + "s.zarr", { array: "a#?" });
+    assert.equal((await encoded.readBand(1, [28, 10, 1, 1]))[0], value(10, 28));
+    // A denied shard must not be mistaken for an absent shard and replaced by fill values.
+    const denied = await terrio.openUrl(server.url + "s.zarr", {
+      array: "a", headers: { Authorization: "Bearer test" },
+      fetch: (url, options) => url.includes("/c/") ? Promise.resolve(new Response("", { status: 403 })) : fetch(url, options),
+    });
+    await assert.rejects(denied.readBand(1, [0, 0, 1, 1]), /403/);
+    const forbiddenMetadata = (url, options) => url.endsWith("/.zmetadata")
+      ? Promise.resolve(new Response("", { status: 403 })) : fetch(url, options);
+    await assert.rejects(terrio.openUrl(server.url + "s.zarr", { array: "a", fetch: forbiddenMetadata }), /403/);
+    const anonymous = await terrio.openUrl(server.url + "s.zarr", {
+      array: "a", fetch: forbiddenMetadata, allowMissingMetadata403: true,
+    });
+    assert.equal((await anonymous.readBand(1, [0, 0, 1, 1]))[0], 0);
+    // A tiny inner chunk beyond 4 GiB: the WASM heap only holds its index and one 128-byte chunk.
+    const largeOffset = 2 ** 32 + 128;
+    const largeIndex = Buffer.alloc(260, 255);
+    largeIndex.writeBigUInt64LE(BigInt(largeOffset), 0);
+    largeIndex.writeBigUInt64LE(128n, 8);
+    largeIndex.writeUInt32LE(crc32c(largeIndex.subarray(0, 256)), 256);
+    const seen = [];
+    const large = await terrio.openUrl(server.url + "s.zarr", {
+      array: "a",
+      fetch: (url, options) => {
+        if (!url.includes("/c/")) return fetch(url, options);
+        const range = new Headers(options.headers).get("Range");
+        seen.push(range);
+        return Promise.resolve(new Response(range.startsWith("bytes=-") ? largeIndex : new Uint8Array(new Uint16Array(64).fill(37).buffer), { status: 206 }));
+      },
+    });
+    assert.equal((await large.readBand(1, [0, 0, 1, 1]))[0], 37);
+    assert.ok(seen.includes(`bytes=${largeOffset}-${largeOffset + 127}`), seen.join(", "));
+    // Explicit format takes precedence over the misleading suffix.
+    const tif = terrio.rasterFromArray(new Uint16Array([1, 2, 3, 4]), 2, 2, [0, 1, 0, 2, 0, -1]);
+    writeFileSync(join(dir, "image.zarr"), tif.toBytes("image.tif"));
+    const explicit = await terrio.openUrl(server.url + "image.zarr", { format: "GTiff" });
+    assert.deepEqual(Array.from(await explicit.readBand(1)), [1, 2, 3, 4]);
     await assert.rejects(terrio.openUrl(server.url + "missing.zarr"), /no Zarr metadata/);
   } finally {
     server.close();
