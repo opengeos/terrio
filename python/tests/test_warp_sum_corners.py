@@ -9,7 +9,7 @@ import terrio.rio
 from terrio.rio.enums import Resampling
 from terrio.rio.transform import from_origin
 from terrio.rio.vrt import WarpedVRT
-from terrio.rio.warp import transform
+from terrio.rio.warp import reproject, transform
 
 # A Web Mercator tile at z13 (13/4419/2617), 256 x 256, over 10 m UTM 33N pixels.
 ORIGIN = math.pi * 6378137.0
@@ -77,6 +77,24 @@ def test_a_sum_of_a_reprojected_tile_keeps_the_exact_total(tmp_path):
         WarpedVRT(src, resampling=Resampling.sum, width=256, height=256, **grid) as vrt,
     ):
         read = vrt.read(1)
-    for name, tile in (("terrio.warp", warped), ("WarpedVRT", read)):
+    tiles = [("terrio.warp", warped), ("WarpedVRT", read)]
+    reference = None
+    for tolerance in (0.0, 0.125, 4.0):
+        tile, _ = reproject(
+            values,
+            np.zeros((256, 256), dtype="float64"),
+            src_transform=from_origin(x0, y0, 10.0, 10.0),
+            src_crs="EPSG:32633",
+            dst_transform=grid["transform"],
+            dst_crs=grid["crs"],
+            resampling=Resampling.sum,
+            tolerance=tolerance,
+        )
+        if reference is None:
+            reference = tile
+        else:
+            np.testing.assert_array_equal(tile, reference)
+        tiles.append((f"reproject tolerance={tolerance}", tile))
+    for name, tile in tiles:
         error = (float(np.asarray(tile, dtype="float64").sum()) - exact) / exact
         assert abs(error) < 1e-9, (name, error)

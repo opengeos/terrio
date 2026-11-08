@@ -2545,3 +2545,26 @@ outputs because `gdal_rasterize` cannot create COGs directly. ENVI cases are lab
 `GTiff oracle`: GDAL converts the GeoTIFF rasterization to ENVI before comparison.
 This checks Terrio's consistent background policy rather than GDAL's driver-dependent
 ENVI initialization.
+
+## Exact sum footprints
+
+A reprojected `sum` uses quadrilaterals of exactly transformed output-pixel corners,
+including their extrema in source-window bounds. This deliberately differs from GDAL
+3.13.3's area kernel, even with `-et 0`: pixel equality is not a conformance claim for
+this case. Existing `sum-overviews` comparisons still cover same-CRS controlled sums
+and total tolerances for reprojected default grids.
+
+A local GDAL 3.13.3 comparison used the 400 × 400 crop at source offset (1000, 1000)
+of `USGS_1_n40w106.tif`, warped to EPSG:3857 on GDAL's 256 × 256 suggested grid, in
+Float64 with full-resolution source pixels. At thresholds 0, 0.125 and 4, both totals
+were exactly 526094763.3955078; maximum absolute per-pixel differences from GDAL were
+0.003154 or less. Terrio's pixels were identical across those thresholds. This
+single terrain crop does not establish a universal error bound against GDAL.
+
+The curved-grid regression independently integrates the transformed tile outline,
+and exercises `terrio.warp`, `WarpedVRT` and `reproject`. The polar source-window
+regression covers extrema between sampled edge points: the prior window missed 68
+exact corners, by up to about 39 source pixels. RPC/DEM chunk comparisons retain
+complete 513-point batches; a bounded 64-entry cache reuses them across nearby
+chunks and regions (about 560 KiB of sample storage per transformer). Cache eviction
+only changes recomputation, never batch membership or pixels.

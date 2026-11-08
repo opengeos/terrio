@@ -1052,9 +1052,10 @@ terrio warp scene.tif scene_utm.tif --rpc --to RPC_DEM=dem.tif --t-srs EPSG:3272
 
 With `-r sum`, each output pixel adds the valid source pixels it overlaps, each weighted by the
 share of its area inside the output pixel. The corners that outline those shares are transformed
-exactly, whatever `--et`, which bounds how the source window a chunk reads is found: a 256 × 256
+exactly, whatever `--et` is. Source windows include these exact corners as well as the
+sampled bounds: a 256 × 256
 tile reprojected from UTM to Web Mercator at the source's resolution totals the integral of the
-source over it within 10⁻⁹. Transforming every corner takes time: such a tile took 35 ms on one
+source over it within a relative error of 10⁻⁹. Transforming every corner takes time: such a tile took 35 ms on one
 thread, against 18 ms with interpolated corners.
 
 ### Warp source overviews

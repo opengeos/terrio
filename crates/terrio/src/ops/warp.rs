@@ -25,7 +25,10 @@
 //! Reprojection and resampling: an equivalent of `gdalwarp`.
 //!
 //! The output grid, the coordinate transformation and the resampling kernels follow GDAL's warper
-//! closely so that results can be compared pixel for pixel:
+//! closely so that results can be compared pixel for pixel. `sum` deliberately uses exact
+//! corner footprints rather than GDAL 3.13.3's area-kernel approximation; reprojected sums can
+//! therefore differ even with an exact transformer (`-et 0`). See the sum conformance notes.
+//! Other kernels follow these rules:
 //!
 //! - the default output grid is GDAL's `GDALSuggestedWarpOutput2()`, followed by `gdalwarp`'s
 //!   adjustments for `-te`, `-tr`, `-ts` and `-tap`;
@@ -368,6 +371,8 @@ struct GenImgProj {
     dst_inv: [f64; 6],
     /// Source CRS to destination CRS, and back; `None` when both are the same.
     ct: Option<(Transformer, Transformer)>,
+    /// Exact RPC corner batches shared by neighbouring chunks and regions, bounded to 64 entries.
+    sum_batches: std::sync::Mutex<std::collections::VecDeque<(usize, usize, CornerRow)>>,
 }
 
 const IDENTITY: [f64; 6] = [0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
@@ -387,7 +392,16 @@ impl GenImgProj {
                 Transformer::with_options(dst_srs, src_srs, options)?.with_reverse_degree_division(),
             ))
         };
-        Ok(Self { src_gt, src_inv, src_gcp: None, src_scale: (1.0, 1.0), dst_gt: IDENTITY, dst_inv: IDENTITY, ct })
+        Ok(Self {
+            src_gt,
+            src_inv,
+            src_gcp: None,
+            src_scale: (1.0, 1.0),
+            dst_gt: IDENTITY,
+            dst_inv: IDENTITY,
+            ct,
+            sum_batches: Default::default(),
+        })
     }
 
     /// A transformer whose source is georeferenced by GCPs or RPCs.
@@ -425,6 +439,7 @@ impl GenImgProj {
     }
 
     fn set_dst_gt(&mut self, gt: [f64; 6]) {
+        self.sum_batches.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
         self.dst_gt = gt;
         self.dst_inv = invert_gt(&gt).unwrap_or(IDENTITY);
     }
@@ -2981,10 +2996,22 @@ impl WarpContext<'_> {
             }
         }
         if self.resampling == Resampling::Sum && !self.translation {
-            // A `sum` takes every source pixel inside its output pixels' corners, which are
-            // transformed exactly and lie between the points sampled here, which are interpolated
-            // to within the error threshold: a pixel more than the threshold around these bounds
-            // holds them. A threshold below zero interpolates nothing, and pads as one of zero does.
+            // Sampled edges do not bound a strongly curved or folded transformation. Include
+            // every exact footprint corner, in the same batches as the kernel (RPCs depend on
+            // their batch). Keep only one row in memory, including interior extrema.
+            let mut scratch = CornerBatch::default();
+            for y in dy..=dy + dh {
+                let row = self.sum_corner_row(dx, y, dw, &mut scratch);
+                for ((x, y), ok) in row.x.iter().zip(&row.y).zip(&row.ok) {
+                    if *ok && x.is_finite() && y.is_finite() {
+                        x0 = x0.min(*x);
+                        y0 = y0.min(*y);
+                        x1 = x1.max(*x);
+                        y1 = y1.max(*y);
+                    }
+                }
+            }
+            // Preserve the sampled-window padding as well.
             let pad = 1.0 + self.approx.max_error.max(0.0).ceil();
             (x0, y0, x1, y1) = (x0 - pad, y0 - pad, x1 + pad, y1 + pad);
         }
@@ -3423,20 +3450,41 @@ impl WarpContext<'_> {
     /// batch, only the chunk's corners are computed otherwise. `scratch` holds a batch's points,
     /// for the rows of corners of a group of rows to share.
     fn sum_corners(&self, c: &Chunk, y: usize, scratch: &mut CornerBatch) -> CornerRow {
+        self.sum_corner_row(c.dx, c.dy + y, c.dw, scratch)
+    }
+
+    fn sum_corner_row(&self, dx: usize, y: usize, n: usize, scratch: &mut CornerBatch) -> CornerRow {
         const BATCH: usize = SUM_CORNER_BATCH;
-        let n = c.dw;
         let mut row = CornerRow { x: Vec::with_capacity(n + 1), y: Vec::with_capacity(n + 1), ok: Vec::with_capacity(n + 1) };
         let CornerBatch { x: xs, y: ys, ok } = scratch;
-        for batch in c.dx / BATCH..=(c.dx + n) / BATCH {
+        for batch in dx / BATCH..=(dx + n) / BATCH {
             let start = batch * BATCH;
             for (i, (x, v)) in xs.iter_mut().zip(ys.iter_mut()).enumerate() {
-                (*x, *v) = ((start + i) as f64, (c.dy + y) as f64);
+                (*x, *v) = ((start + i) as f64, y as f64);
             }
             // The batch's corners that the chunk needs, short of the batch's last point: that is
             // the next batch's first, which the next batch computes.
-            let need = c.dx.max(start) - start..(c.dx + n).min(start + BATCH - 1) - start + 1;
-            let points = 0..xs.len();
-            self.approx.exact(true, xs, ys, ok, points, &need);
+            let need = dx.max(start) - start..(dx + n).min(start + BATCH - 1) - start + 1;
+            if self.t.pointwise(true) {
+                self.approx.exact(true, xs, ys, ok, 0..BATCH + 1, &need);
+            } else {
+                // RPC/DEM transforms depend on the complete 513-point batch. Reuse that exact
+                // batch across narrow chunks, with a fixed bound (~560 KiB of sample storage).
+                let mut cache = self.t.sum_batches.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(i) = cache.iter().position(|(b, r, _)| *b == batch && *r == y) {
+                    let entry = cache.remove(i).unwrap();
+                    xs.copy_from_slice(&entry.2.x);
+                    ys.copy_from_slice(&entry.2.y);
+                    ok.copy_from_slice(&entry.2.ok);
+                    cache.push_back(entry);
+                } else {
+                    self.approx.exact(true, xs, ys, ok, 0..BATCH + 1, &need);
+                    if cache.len() == 64 {
+                        cache.pop_front();
+                    }
+                    cache.push_back((batch, y, CornerRow { x: xs.clone(), y: ys.clone(), ok: ok.clone() }));
+                }
+            }
             row.x.extend_from_slice(&xs[need.clone()]);
             row.y.extend_from_slice(&ys[need.clone()]);
             row.ok.extend_from_slice(&ok[need]);
@@ -5191,12 +5239,46 @@ mod tests {
             };
             warp(&[&ds], &o).unwrap().raster.data.to_f64_vec()
         };
-        let (exact, default) = (warped(0.0), warped(0.125));
-        let total = |v: &[f64]| v.iter().sum::<f64>();
-        let relative = (total(&default) - total(&exact)) / total(&exact);
-        assert!(relative.abs() < 1e-12, "the default threshold's total is {relative:e} off the exact transformation's");
-        let differ = default.iter().zip(&exact).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
-        assert_eq!(differ, 0, "{differ} pixels differ from the exact transformation's");
+        let exact = warped(0.0);
+        for threshold in [0.125, 4.0] {
+            let actual = warped(threshold);
+            assert_eq!(actual, exact, "threshold {threshold}");
+        }
+    }
+
+    /// GDAL 3.13.3's sampled source window is insufficient for exact sum footprints near
+    /// polar extrema: its 18-degree samples miss extrema at 45-degree longitudes by 41 pixels.
+    #[test]
+    fn sum_source_window_contains_curved_footprints() {
+        let src = SpatialRef::from_epsg(3413).unwrap();
+        let dst = SpatialRef::from_epsg(4326).unwrap();
+        let gt = [-5_000_000.0, 1000.0, 0.0, 5_000_000.0, 0.0, -1000.0];
+        let rw = RegionWarp::new(
+            (10000, 10000),
+            gt,
+            &src,
+            &dst,
+            [-180.0, 1.0, 0.0, 61.0, 0.0, -1.0],
+            Resampling::Sum,
+            0.125,
+            DataType::F64,
+            vec![None],
+            None,
+        )
+        .unwrap();
+        let (sx, sy, sw, sh) = rw.source_window((0, 0, 360, 1)).unwrap();
+        assert!(sw < 9000 && sh < 9000, "must not use the whole-source fallback");
+        let ctx = rw.context();
+        let mut scratch = CornerBatch::default();
+        for y in 0..=1 {
+            let row = ctx.sum_corner_row(0, y, 360, &mut scratch);
+            for ((x, y), ok) in row.x.into_iter().zip(row.y).zip(row.ok) {
+                if ok {
+                    assert!(x >= sx as f64 && x <= (sx + sw) as f64, "x={x}, window {sx}+{sw}");
+                    assert!(y >= sy as f64 && y <= (sy + sh) as f64, "y={y}, window {sy}+{sh}");
+                }
+            }
+        }
     }
 
     /// Where a change of CRS bends the output's rows across the source's grid, the corners of a
