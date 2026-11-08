@@ -71,24 +71,41 @@ pub fn thread_options() -> HashMap<String, Option<String>> {
     })
 }
 
-/// Runs `f` with `options` set on this thread, removing them afterwards even when `f` panics, so a
-/// failing test cannot leave them to the next on the thread.
-#[cfg(test)]
-pub(crate) fn with_options<T>(options: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+/// Runs `f` with `options` as this thread's innermost scope, popped afterwards even when `f`
+/// panics: work handed to another thread runs with the options of the thread that handed it
+/// ([`thread_options`]).
+pub(crate) fn with_scope<T>(options: HashMap<String, Option<String>>, f: impl FnOnce() -> T) -> T {
     struct Pop;
     impl Drop for Pop {
         fn drop(&mut self) {
             pop_scope();
         }
     }
-    push_scope(options.iter().map(|(k, v)| (k.to_string(), Some(v.to_string()))).collect());
+    push_scope(options);
     let _pop = Pop;
     f()
+}
+
+/// Runs `f` with `options` set on this thread, removing them afterwards even when `f` panics, so a
+/// failing test cannot leave them to the next on the thread.
+#[cfg(test)]
+pub(crate) fn with_options<T>(options: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+    with_scope(options.iter().map(|(k, v)| (k.to_string(), Some(v.to_string()))).collect(), f)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn options_handed_to_another_thread_apply_there() {
+        let key = "TERRIO_CONFIG_TEST_HANDED";
+        let seen = with_options(&[(key, "set")], || {
+            let options = thread_options();
+            std::thread::spawn(move || (get(key), with_scope(options, || get(key)), get(key))).join().unwrap()
+        });
+        assert_eq!(seen, (None, Some("set".to_string()), None));
+    }
 
     #[test]
     fn scopes_override_the_environment_on_their_thread_only() {

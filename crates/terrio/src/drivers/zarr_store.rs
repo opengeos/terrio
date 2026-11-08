@@ -260,7 +260,10 @@ impl Store {
         let mut map = HashMap::new();
         // Both looked for at once: on a remote store, each is a round trip.
         let this = &*self;
-        let mut found = crate::par::map_range(2, |i| this.probe([".zmetadata", "zarr.json"][i])).into_iter();
+        let options = crate::config::thread_options();
+        let mut found =
+            crate::par::map_range(2, |i| crate::config::with_scope(options.clone(), || this.probe([".zmetadata", "zarr.json"][i])))
+                .into_iter();
         let v2 = found.next().unwrap_or(Ok(None))?;
         // A v2 store's consolidated metadata stands alone: a failed read of the root's
         // `zarr.json` (a transient error, a 403) does not fail it.

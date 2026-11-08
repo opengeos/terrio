@@ -1982,12 +1982,16 @@ fn band_dim_metadata(array: &Array, bds: &[usize], coord: impl Fn(usize) -> Opti
     // Each dimension's coordinates at once (on a remote store, their reads are round trips),
     // dimensions of the same name read once.
     let first: Vec<usize> = (0..bds.len()).map(|k| names.iter().position(|n| *n == names[k]).unwrap_or(k)).collect();
+    // On the pool's threads, with the caller's scoped options (`TERRIO_ZARR_ALLOW_BIG_TILE_SIZE`).
+    let options = crate::config::thread_options();
     let read: Vec<(Option<Vec<f64>>, Option<String>)> = crate::par::map_range(bds.len(), |k| {
         if first[k] != k {
             return (None, None);
         }
-        let a = coord(bds[k]).filter(|a| a.shape == [array.shape[bds[k]]]);
-        (a.as_ref().and_then(read_all_f64), a.and_then(|a| a.attrs["units"].as_str().map(str::to_string)))
+        crate::config::with_scope(options.clone(), || {
+            let a = coord(bds[k]).filter(|a| a.shape == [array.shape[bds[k]]]);
+            (a.as_ref().and_then(read_all_f64), a.and_then(|a| a.attrs["units"].as_str().map(str::to_string)))
+        })
     });
     let (values, units): (Vec<Option<Vec<f64>>>, Vec<Option<String>>) = first.iter().map(|&k| read[k].clone()).unzip();
     let mut out = vec![("DIM_EXTRA".to_string(), format!("{{{}}}", names.join(",")))];
