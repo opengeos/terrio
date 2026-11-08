@@ -100,6 +100,157 @@ fn serve(root: PathBuf) -> (String, Counter) {
     (url, counter)
 }
 
+/// A store whose objects the caller fetches (terrio-js, with `fetch`): opening and reads run
+/// again with the objects they missed, a round per level of metadata, index and chunks.
+#[test]
+fn stores_fetched_by_the_caller_are_read_in_rounds() {
+    use terrio::sparse::{ObjectRange, SparseObjects};
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("s.zarr");
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::write(store.join("zarr.json"), r#"{"zarr_format": 3, "node_type": "group", "attributes": {}}"#).unwrap();
+    let meta = serde_json::json!({
+        "zarr_format": 3, "node_type": "array", "shape": [64, 64], "data_type": "uint16",
+        "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [32, 32]}},
+        "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
+        "fill_value": 0, "dimension_names": ["y", "x"],
+        "attributes": {"spatial:transform": [10.0, 0.0, 500000.0, 0.0, -10.0, 4600000.0], "proj:code": "EPSG:32630"},
+        "codecs": [{"name": "sharding_indexed", "configuration": {
+            "chunk_shape": [8, 8], "codecs": [{"name": "bytes", "configuration": {"endian": "little"}}],
+            "index_codecs": [{"name": "bytes", "configuration": {"endian": "little"}}, {"name": "crc32c"}],
+            "index_location": "end"}}]
+    });
+    let value = |r: usize, c: usize| (r * 100 + c) as u16;
+    write_sharded(&store.join("a"), [64, 64], [32, 32], [8, 8], meta, |iy, ix| {
+        Some((iy * 8..iy * 8 + 8).flat_map(|r| (ix * 8..ix * 8 + 8).flat_map(move |c| value(r, c).to_le_bytes())).collect())
+    });
+    let objects = std::sync::Arc::new(SparseObjects::new());
+    let mut requests = 0;
+    let mut fetch = |objects: &SparseObjects| {
+        let missing = objects.missing();
+        assert!(!missing.is_empty(), "permanent error without missing objects");
+        for (key, range) in missing {
+            requests += 1;
+            let data = std::fs::read(store.join(&key)).ok().map(|b| match range {
+                ObjectRange::Whole => b,
+                ObjectRange::At(o, l) => b[o as usize..(o + l) as usize].to_vec(),
+                ObjectRange::Suffix(n) => b[b.len() - n as usize..].to_vec(),
+            });
+            objects.insert(&key, range, data);
+        }
+    };
+    let mut rounds = 0;
+    let mut r = loop {
+        rounds += 1;
+        assert!(rounds <= 32, "fetch loop did not converge");
+        match terrio::LazyRaster::from_zarr_objects(objects.clone(), "s.zarr", "a") {
+            Ok(r) if !objects.has_missing() => break r,
+            _ => fetch(&objects),
+        }
+    };
+    // The root's two documents at once, then the array's.
+    assert_eq!(rounds, 3);
+    assert_eq!((r.width(), r.height(), r.crs().epsg), (64, 64, Some(32630)));
+    // A window across two shards: their indexes, then their inner chunks.
+    let (window, mut rounds) = (Window::new(28, 10, 8, 4), 0);
+    let w = loop {
+        rounds += 1;
+        assert!(rounds <= 32, "fetch loop did not converge");
+        match r.read_window(window, &WindowOptions::default()) {
+            Ok(w) if !objects.has_missing() => break w,
+            _ => fetch(&objects),
+        }
+    };
+    assert_eq!(rounds, 3);
+    assert_eq!((w.raster.get(0, 0, 0), w.raster.get(0, 3, 7)), (value(10, 28) as f64, value(13, 35) as f64));
+    // Another window of those shards: their indexes are kept, the objects held are trimmed.
+    objects.trim(0);
+    rounds = 0;
+    loop {
+        rounds += 1;
+        assert!(rounds <= 32, "fetch loop did not converge");
+        match r.read_window(Window::new(40, 12, 2, 2), &WindowOptions::default()) {
+            Ok(w) if !objects.has_missing() => break assert_eq!(w.raster.get(0, 1, 1), value(13, 41) as f64),
+            _ => fetch(&objects),
+        }
+    }
+    assert_eq!(rounds, 2);
+    // A Zarr v2 array (without consolidated metadata: its documents looked for one by one).
+    let v2 = dir.path().join("v2.zarr");
+    std::fs::create_dir_all(v2.join("b")).unwrap();
+    std::fs::write(v2.join(".zgroup"), r#"{"zarr_format": 2}"#).unwrap();
+    let zarray = r#"{"zarr_format": 2, "shape": [4, 6], "chunks": [2, 3], "dtype": "<u2", "compressor": null,
+        "fill_value": 0, "order": "C", "filters": null}"#;
+    std::fs::write(v2.join("b/.zarray"), zarray).unwrap();
+    for (cy, cx) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+        let chunk: Vec<u8> = (0..2).flat_map(|r| (0..3).flat_map(move |c| value(cy * 2 + r, cx * 3 + c).to_le_bytes())).collect();
+        std::fs::write(v2.join(format!("b/{cy}.{cx}")), chunk).unwrap();
+    }
+    let objects = std::sync::Arc::new(SparseObjects::new());
+    let fetch_v2 = |objects: &SparseObjects| {
+        let missing = objects.missing();
+        assert!(!missing.is_empty(), "permanent error without missing objects");
+        for (key, range) in missing {
+            assert_eq!(range, ObjectRange::Whole);
+            objects.insert(&key, range, std::fs::read(v2.join(&key)).ok());
+        }
+    };
+    let mut rounds = 0;
+    let mut r = loop {
+        rounds += 1;
+        assert!(rounds <= 32);
+        match terrio::LazyRaster::from_zarr_objects(objects.clone(), "v2.zarr", "b") {
+            Ok(r) if !objects.has_missing() => break r,
+            _ => fetch_v2(&objects),
+        }
+    };
+    rounds = 0;
+    let w = loop {
+        rounds += 1;
+        assert!(rounds <= 32);
+        match r.read_window(Window::new(2, 1, 3, 2), &WindowOptions::default()) {
+            Ok(w) if !objects.has_missing() => break w,
+            _ => fetch_v2(&objects),
+        }
+    };
+    assert_eq!((w.raster.get(0, 0, 0), w.raster.get(0, 1, 2)), (value(1, 2) as f64, value(2, 4) as f64));
+    assert!(requests > 0);
+}
+
+/// Coordinate objects must arrive before the public constructor exposes a final transform.
+#[test]
+fn caller_fetched_coordinates_are_required_before_open_succeeds() {
+    use terrio::sparse::{ObjectRange, SparseObjects};
+    let objects = Arc::new(SparseObjects::new());
+    let array = |shape: &[usize]| {
+        serde_json::json!({
+            "zarr_format":2,"shape":shape,"chunks":shape,"dtype":"<f8",
+            "compressor":null,"fill_value":null,"order":"C","filters":null
+        })
+    };
+    let metadata = serde_json::json!({
+        ".zgroup":{"zarr_format":2}, ".zattrs":{},
+        "a/.zarray":array(&[2,3]),
+        "a/.zattrs":{"_ARRAY_DIMENSIONS":["y","x"]},
+        "x/.zarray":array(&[3]), "x/.zattrs":{"_ARRAY_DIMENSIONS":["x"],"axis":"X"},
+        "y/.zarray":array(&[2]), "y/.zattrs":{"_ARRAY_DIMENSIONS":["y"],"axis":"Y"}
+    });
+    objects.insert(".zmetadata", ObjectRange::Whole, Some(serde_json::to_vec(&serde_json::json!({"metadata":metadata})).unwrap()));
+    objects.insert("zarr.json", ObjectRange::Whole, None);
+    assert!(terrio::LazyRaster::from_zarr_objects(objects.clone(), "coordinates.zarr", "a").is_err());
+    assert!(objects.has_missing());
+    for (key, range) in objects.missing() {
+        let values: &[f64] = match key.as_str() {
+            "x/0" => &[105., 115., 125.],
+            "y/0" => &[195., 185.],
+            _ => panic!("unexpected {key}"),
+        };
+        objects.insert(&key, range, Some(values.iter().flat_map(|v| v.to_le_bytes()).collect()));
+    }
+    let raster = terrio::LazyRaster::from_zarr_objects(objects, "coordinates.zarr", "a").unwrap();
+    assert_eq!(raster.geo_transform(), [100., 10., 0., 200., 0., -10.]);
+}
+
 /// A UInt16 raster of `cols` x `rows` x `bands` with distinct values, in EPSG:32633.
 fn raster(cols: usize, rows: usize, bands: usize) -> RasterDataset {
     let cfg = RasterConfig {

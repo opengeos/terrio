@@ -2121,6 +2121,17 @@ pub(crate) fn open_lazy(name: &str) -> Option<Result<crate::LazyRaster>> {
     }))
 }
 
+/// Opens an array (or the single array of a group) of a store whose objects the caller fetches,
+/// read by window: see [`crate::LazyRaster::from_zarr_objects`].
+pub(crate) fn open_objects(objects: std::sync::Arc<crate::sparse::SparseObjects>, name: &str, key: &str) -> Result<crate::LazyRaster> {
+    let node = Node::sparse(objects.clone(), name, key)?;
+    let (header, source) = open_node(&node, true)?;
+    if objects.has_missing() {
+        return Err(bad("Zarr opening requires objects not fetched yet"));
+    }
+    Ok(crate::LazyRaster::from_source(header, Box::new(source)))
+}
+
 /// Reads a Zarr dataset whole, local or remote (see [`open_lazy`]). `None` when `name` is not a
 /// Zarr dataset name.
 pub(crate) fn open_named(name: &str) -> Option<Result<RasterDataset>> {
