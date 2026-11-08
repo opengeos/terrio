@@ -638,7 +638,10 @@ fn read_pages(mut doc: Value, mut cur: Request, max_items: usize, out: &mut Item
         // A search made with GET is not continued with a POST its page asks for, unless asked
         // (`TERRIO_STAC_ALLOW_POST=YES`); one made with POST (`method=POST`) is.
         if next.body.is_some() && cur.body.is_none() && !option_on("TERRIO_STAC_ALLOW_POST") {
-            crate::warnings::warn(format!("STAC: the next page of '{}' is a POST request: not followed", without_query(&cur.url)));
+            crate::warnings::warn(format!(
+                "STAC: the next page of '{}' is a POST request: not followed",
+                crate::vsi::listing::redact_url(without_query(&cur.url))
+            ));
             return Ok(());
         }
         doc = next.fetch(true)?;
@@ -1599,6 +1602,20 @@ mod tests {
         let _ = open(&format!("{base}/collection.json"));
         assert_eq!(seen.lock().unwrap().len(), 2, "a same-origin item link is followed");
         assert!(internal_seen.lock().unwrap().is_empty(), "another origin was requested: {:?}", internal_seen.lock().unwrap());
+    }
+
+    /// The warning that a POST next page is not followed names the search without its password.
+    #[cfg(remote)]
+    #[test]
+    fn a_post_next_page_warning_leaves_out_the_password() {
+        let same_origin_post = json!([{"rel": "next", "method": "POST", "href": "page2.json", "body": {"query": "x"}}]);
+        let (base, _seen) = crate::http::test_server(item_collection(same_origin_post));
+        let with_password = base.replacen("http://", "http://user:secret@", 1);
+        crate::warnings::take();
+        assert_eq!(open(&format!("{with_password}/items.geojson")).layers[0].features.len(), 1);
+        let warnings = crate::warnings::take();
+        let post = warnings.iter().find(|w| w.contains("is a POST request")).expect("a POST warning");
+        assert!(!post.contains("secret"), "{post}");
     }
 
     /// With cross-origin links allowed (`TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`), another origin
