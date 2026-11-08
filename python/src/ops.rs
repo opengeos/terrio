@@ -370,6 +370,7 @@ fn write_netcdf_groups(
     path: &str,
     options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<()> {
+    let o = terrio::RasterWriteOptions { creation_options: crate::raster::validated_creation_options(options)?, ..Default::default() };
     let pairs: Vec<(String, Bound<'_, PyAny>)> = match rasters.cast::<pyo3::types::PyDict>() {
         Ok(d) => d.iter().map(|(k, v)| Ok((k.extract::<String>()?, v))).collect::<PyResult<_>>()?,
         Err(_) => rasters.try_iter()?.map(|item| item?.extract::<(String, Bound<'_, PyAny>)>()).collect::<PyResult<_>>()?,
@@ -380,7 +381,6 @@ fn write_netcdf_groups(
         let ds = raster.with_dataset(|ds| Ok(ds.clone())).py()?;
         datasets.push((group, ds));
     }
-    let o = terrio::RasterWriteOptions { creation_options: crate::raster::validated_creation_options(options)?, ..Default::default() };
     let refs: Vec<(&str, &terrio::RasterDataset)> = datasets.iter().map(|(g, ds)| (g.as_str(), ds)).collect();
     py.detach_result(|| terrio::write_netcdf_groups(&refs, path, &o)).py()
 }
