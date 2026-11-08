@@ -403,8 +403,7 @@ without overviews holds one part's window at a time, and the budget applies to e
 window. A single output pixel cannot be split. A region remains whole when either half cannot
 be transformed, or when it has several bands with source and output nodata values; these
 exceptions can exceed `warp_mem_limit` or cause the sum budget to reject the read. A `sum` read
-of a `WarpedVRT`
-takes a source window in its own type when the VRT's `dtype` holds every value of it (uint16 or
+of a `WarpedVRT` takes a source window in its own type when the VRT's `dtype` holds every value of it (uint16 or
 float32 in float64), as its kernel reads each value as a float64 either way; a `dtype` that does
 not (float64 in float32, floats in an integer type) converts the window first, and counts it in
 both types, which the conversion holds at once. Part sizing deliberately uses the working type's

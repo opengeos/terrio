@@ -165,8 +165,9 @@ class WarpedVRT(DatasetReader):
     warped whole, as is a region one of whose halves cannot be transformed. These exceptions
     can exceed `warp_mem_limit` or be refused by the sum budget. A `sum` read one of whose
     windows would hold more than
-    `TERRIO_WARP_SUM_MAX_BYTES` (4 GiB by default) raises `ResourceLimitError` before any window
-    is read. A `sum` warps a window in the source's type when `dtype` holds every value of it
+    `TERRIO_WARP_SUM_MAX_BYTES` (4 GiB by default) raises `ResourceLimitError` before that
+    region's windows are read. A `sum` warps a window in the source's type when `dtype` holds
+    every value of it
     (uint16 or float32 in float64); otherwise the window is converted first and counts in both
     types.
     """
@@ -722,7 +723,9 @@ class WarpedVRT(DatasetReader):
         Returns:
             bool: Whether the window is warped as it is.
         """
-        return self.resampling == Resampling.sum and _holds(np.dtype(dtype), np.dtype(self._dtype))
+        return self.resampling == Resampling.sum and _dtype_holds_values(
+            np.dtype(dtype), np.dtype(self._dtype)
+        )
 
     def _source_mask(self, level: int | None, window: tuple[int, int, int, int]) -> Any:
         """The source's per-dataset mask in a window of a level.
@@ -781,7 +784,7 @@ class WarpedVRT(DatasetReader):
             parts = [(region, win)]
             if self.resampling == Resampling.sum:
                 parts = self._sum_parts(rw, region, win)
-                # Refused before any window is read when one would exceed the budget. Converted
+                # Refused before this region reads any window when one exceeds the budget. Converted
                 # to the working type (see `_sum_holds`), a window is held in both types at once.
                 src, work = np.dtype(self.src_dataset.dtypes[0]), np.dtype(self._dtype)
                 itemsize = src.itemsize + (0 if self._sum_holds(src) else work.itemsize)
@@ -807,6 +810,8 @@ class WarpedVRT(DatasetReader):
     ) -> list[tuple[tuple[int, int, int, int], tuple[int, int, int, int]]]:
         """The parts of a `sum` region to warp one at a time, each with its source window.
 
+        The working-memory estimate follows GDAL 3.13.3.
+
         A `sum` holds the whole source window it warps from, which grows with the region's
         footprint: a reduced read of a large source without overviews would hold most of it at
         once. A region whose window's working memory exceeds `warp_mem_limit` is halved along
@@ -824,11 +829,11 @@ class WarpedVRT(DatasetReader):
             win: The region's source window, not empty.
 
         Returns:
-            list: `(part, window)` pairs covering the region, but for parts whose window is
+            list: `(part, window)` pairs covering the region, except for parts whose window is
             empty (no source pixel reaches them).
         """
         x, y, w, h = region
-        # Splitting follows GDAL's working-type estimate, even when _sum_holds preserves a
+        # Splitting follows GDAL 3.13.3's working-type estimate, even when _sum_holds preserves a
         # narrower source type. The refusal budget below instead counts actual stored types.
         if (
             self._working_memory(win[2], win[3], w, h) <= self._warp_memory
@@ -1386,7 +1391,7 @@ _WINDOW_TYPES = frozenset(
 )
 
 
-def _holds(src: np.dtype, work: np.dtype) -> bool:
+def _dtype_holds_values(src: np.dtype, work: np.dtype) -> bool:
     """Whether every value of one data type is a value of another.
 
     Args:
