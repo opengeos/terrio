@@ -321,7 +321,7 @@ def test_virtual_outputs_reject_creation_options(
     tmp_path, inputs, operation, options, explicit_format
 ):
     """Virtual outputs refuse writer mappings without publishing an XML file."""
-    extension = "xml" if explicit_format and operation != "mosaic" else "vrt"
+    extension = "xml" if explicit_format else "vrt"
     path = tmp_path / f"output.{extension}"
     output = {"format": "VRT"} if explicit_format else {}
     with pytest.raises(ValueError, match="creation options do not apply to a VRT output"):
@@ -340,4 +340,17 @@ def test_virtual_outputs_reject_creation_options(
                 options=options,
                 **output,
             )
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("options", [{}, {"COMPRESS": "DEFLATE"}])
+@pytest.mark.parametrize("explicit_format", [False, True])
+def test_warp_init_virtual_output_rejects_creation_options(
+    tmp_path, inputs, options, explicit_format
+):
+    """Initial pixels cannot bypass the virtual-output writer-option guard."""
+    path = tmp_path / ("output.xml" if explicit_format else "output.vrt")
+    output = {"format": "VRT"} if explicit_format else {}
+    with pytest.raises(ValueError, match="creation options do not apply to a VRT output"):
+        terrio.warp(inputs["dem_path"], str(path), init=inputs["dem"], options=options, **output)
     assert not path.exists()
