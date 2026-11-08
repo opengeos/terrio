@@ -163,6 +163,10 @@ HTTP headers (including path-specific headers). Any custom header is treated as 
 authentication because API keys can use arbitrary names. Ordinary HTTP assets on the document's own
 origin retain their header authentication; cloud URI assets require consent even in the same
 bucket/account. Local documents retain credentialed access.
+For catalog-link traversal, the exemption uses each fetched document's origin. Following a
+cross-origin child requires `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES` and already sends configured
+headers to that child. Nested raster/asset-selected documents instead retain their selecting
+origin throughout the scoped asset read.
 
 Checks run while parsing the document, including assets that were not selected, so metadata listing
 also requires consent when such assets are declared. Deferred mosaic opens and concrete tile URLs

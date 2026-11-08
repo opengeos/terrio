@@ -1607,6 +1607,10 @@ fn footprint_dataset(doc: Value, path: &str, max_items: usize) -> Result<(Vector
 
 /// Opens a STAC dataset name or document. `None` when `path` is neither.
 pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
+    open_document(path, false)
+}
+
+fn open_document(path: &str, as_raster: bool) -> Option<Result<Dataset>> {
     if let Some(r) = crate::stacta::open_named_or_local(path) {
         return Some(r.and_then(|mut r| r.read()).map(Dataset::Raster));
     }
@@ -1620,6 +1624,10 @@ pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
         None => {}
     }
     Some(match probe(path)? {
+        Ok(Probe::Stac(_)) if as_raster && !local_backed(&crate::vfs::Location::parse(path)) => Err(Error::InvalidArgument(format!(
+            "'{}' is a vector, not a raster dataset; GDAL pointer fallback is disabled",
+            crate::vsi::listing::redact_url(path)
+        ))),
         Ok(Probe::Stac(doc)) => keep_remote_refusal(path, footprint_dataset(doc, path, DEFAULT_MAX_ITEMS).map(|(v, _)| Dataset::Vector(v))),
         Ok(Probe::Stacta(item)) => {
             keep_remote_refusal(path, crate::stacta::open_first(*item, None, None).and_then(|mut r| r.read()).map(Dataset::Raster))
@@ -1641,18 +1649,7 @@ pub(crate) fn open_raster(path: &str) -> Option<Result<Dataset>> {
     if let Some(e) = refused_as_raster(path) {
         return Some(Err(e));
     }
-    open(path).map(|result| {
-        result.and_then(|dataset| {
-            if matches!(dataset, Dataset::Vector(_)) && !local_backed(&crate::vfs::Location::parse(path)) {
-                Err(Error::InvalidArgument(format!(
-                    "'{}' is a vector, not a raster dataset; GDAL pointer fallback is disabled",
-                    crate::vsi::listing::redact_url(path)
-                )))
-            } else {
-                Ok(dataset)
-            }
-        })
-    })
+    open_document(path, true)
 }
 
 /// The refusal of a remote document (see [`open_raster`]) whose first bytes show no STAC document,
@@ -1863,6 +1860,9 @@ mod tests {
                 let dataset = crate::open(&format!("{server}/points.geojson")).unwrap();
                 let Dataset::Vector(vector) = dataset else { panic!("ordinary GeoJSON must remain a vector") };
                 assert_eq!(vector.layers[0].features.len(), 1);
+                let error = crate::open_raster(&format!("{server}/points.geojson")).unwrap_err();
+                assert!(matches!(error, Error::Unsupported(_)), "{error}");
+                assert!(!error.to_string().contains("pointer fallback"), "{error}");
             },
         );
     }
@@ -1879,11 +1879,11 @@ mod tests {
         assert!(message.contains("public.example"));
     }
 
-    /// An intermediate catalog cannot claim the original caller's cross-origin credentials
-    /// through a same-origin exemption of its own (reference GDAL 3.13.3 header behavior).
+    /// An asset-selected nested document cannot replace its selecting origin with a same-origin
+    /// exemption of its own (reference GDAL 3.13.3 header behavior). Catalog traversal is separate.
     #[cfg(remote)]
     #[test]
-    fn nested_documents_keep_the_original_catalog_origin() {
+    fn nested_asset_documents_keep_the_selecting_origin() {
         crate::config::with_options(&[("GDAL_HTTP_HEADERS", ""), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
             let result = with_asset_read("https://catalog.example/item.json", "https://other.example/nested.json", || {
                 crate::config::with_options(&[("GDAL_HTTP_HEADERS", "Authorization: test-secret")], || {
