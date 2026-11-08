@@ -448,7 +448,7 @@
   pixels are the same, bit for bit. A reduced read of the whole VRT over a large source without
   overviews held the source window of half its output at once, whatever `warp_mem_limit`; it now
   holds one part's: a 256 × 256 Float64 read of a 16384 × 16384 UInt16 band without overviews
-  peaked at 2,247 MiB of resident memory, and now at 271 MiB. `TERRIO_WARP_SUM_MAX_BYTES` bounds
+  peaked at 2,231 MiB of resident memory, and now at 259 MiB. `TERRIO_WARP_SUM_MAX_BYTES` bounds
   each part's window, refused before any is read: a part fits `warp_mem_limit` unless it cannot be
   split (one output pixel), so the budget no longer refuses a read for its footprint alone.
   Several bands with source and output nodata values are warped whole, as whether a sum stored on
@@ -458,7 +458,7 @@
   it to the VRT's: the kernel reads each value as a float64 either way, so the pixels are the same,
   bit for bit, and a uint16 window of a float64 VRT is held in 2 + 2 bytes per pixel (the window
   and the copy the warp takes) instead of 8 + 8 once converted: the 256 × 256 read above now peaks
-  at 222 MiB. `TERRIO_WARP_SUM_MAX_BYTES` counts such a window in the source's type only. A
+  at 226 MiB. `TERRIO_WARP_SUM_MAX_BYTES` counts such a window in the source's type only. A
   `dtype` that does not hold the values (float64 in float32, floats in an integer type) still
   converts the window first, and the budget counts both types.
 - With `GDAL_INGESTED_BYTES_AT_OPEN` (or `TERRIO_INGESTED_BYTES_AT_OPEN`) above a block (64 KiB
