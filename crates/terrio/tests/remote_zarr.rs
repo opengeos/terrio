@@ -427,10 +427,11 @@ fn translated_bands_sharing_a_chunk_fetch_it_once() {
         assert_eq!(out.raster.get(k, 4, 3), ((k + 4) * 10 + 7) as f64);
     }
     // Bands in another order: still the chunk once, the bands in the order asked.
-    let o = terrio::ops::translate::TranslateOptions { bands: vec![8, 5], ..o };
+    let o = terrio::ops::translate::TranslateOptions { bands: vec![8, 5, 8], ..o };
     let out = terrio::ops::translate::translate_lazy(&mut src, &o, terrio::ops::overview::OverviewSelection::Auto).unwrap();
     assert_eq!(counter.take().0, 1);
     assert_eq!((out.raster.get(0, 0, 0), out.raster.get(1, 0, 0)), ((7 * 10 + 3) as f64, (4 * 10 + 3) as f64));
+    assert_eq!(out.raster.get(2, 0, 0), (7 * 10 + 3) as f64);
 }
 
 #[test]

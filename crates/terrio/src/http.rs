@@ -1255,6 +1255,19 @@ impl ObjectFetcher {
     /// Fetches an object, or part of it. `None` when the object does not exist (status 404, or
     /// 403 as S3 answers anonymous requests for missing keys; a signed request's 403 is an error).
     pub(crate) fn get(&self, remote: &Remote, range: ByteRange) -> Result<Option<Vec<u8>>> {
+        // A blocking leaf: resolve endpoint and header options from the fetcher's creator,
+        // never from an unrelated task suspended on this pool worker.
+        let mut options = self.config.clone();
+        // Consent belongs to this read, while credentials and endpoints belong to the
+        // fetcher's creator. A redirect can make a previously exempt asset credentialed.
+        if crate::stac::AssetReadPolicy::current().is_some() {
+            let key = "TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS";
+            options.insert(key.into(), crate::config::get(key));
+        }
+        crate::config::with_thread_options(options, || self.get_with_options(remote, range))
+    }
+
+    fn get_with_options(&self, remote: &Remote, range: ByteRange) -> Result<Option<Vec<u8>>> {
         // A region already learned is the client's from the start (its URL is the regional one).
         let known = self.region.lock().ok().and_then(|r| r.clone());
         let auth = (self.auth.0.clone(), known.clone().or_else(|| self.auth.1.clone()));
@@ -2527,6 +2540,53 @@ pub(crate) fn test_routes_with(make_routes: impl FnOnce(&str) -> Vec<TestRoute>)
 mod tests {
     use super::*;
     use crate::vsi::listing::{xml_elements, xml_unescape};
+
+    #[test]
+    fn object_fetcher_uses_creation_options_without_inheriting_another_scope() {
+        const CHILD: &str = "TERRIO_TEST_OBJECT_CREATION_OPTIONS";
+        if std::env::var_os(CHILD).is_none() {
+            // Keep ambient credentials/proxies out of this loopback regression without
+            // changing the parent process's environment or exposing option values.
+            let module = module_path!().split_once("::").unwrap().1;
+            let name = format!("{module}::{}", stringify!(object_fetcher_uses_creation_options_without_inheriting_another_scope));
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command.args(["--exact", &name]).env(CHILD, "1").env("AWS_NO_SIGN_REQUEST", "YES");
+            for key in [
+                "GDAL_HTTP_HEADERS",
+                "TERRIO_HTTP_HEADERS",
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+            ] {
+                command.env_remove(key);
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success());
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        let (url, seen) = serve_recording_by(
+            |headers| {
+                if headers.iter().any(|(name, _)| name == "authorization") { b"unexpected header".to_vec() } else { b"isolated".to_vec() }
+            },
+            None,
+        );
+        let fetcher = ObjectFetcher::new();
+        let data = crate::config::with_options(&[("GDAL_HTTP_HEADERS", "Authorization: synthetic-other-scope")], || {
+            fetcher.get(&Remote::Url(format!("{url}/plain")), ByteRange::Whole).unwrap().unwrap()
+        });
+        assert_eq!(data, b"isolated");
+        let expected = format!("{url}/expected");
+        let other = format!("{url}/other");
+        let fetcher = crate::config::with_options(&[("AWS_S3_ENDPOINT", &expected), ("AWS_VIRTUAL_HOSTING", "NO")], ObjectFetcher::new);
+        crate::config::with_options(&[("AWS_S3_ENDPOINT", &other), ("AWS_VIRTUAL_HOSTING", "NO")], || {
+            fetcher.get(&Remote::S3(S3Object { bucket: "scope-test".into(), key: "key".into() }), ByteRange::Whole).unwrap();
+        });
+        assert!(seen.lock().unwrap().iter().any(|(request, _)| request.starts_with("GET /expected/scope-test/key ")));
+    }
 
     #[test]
     fn response_origin_changes_invalidate_all_cached_parts() {
