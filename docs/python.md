@@ -332,8 +332,8 @@ supplies the tile dimensions. These GeoTIFF/COG precedence rules also apply to `
 Other formats use their own writer rules; for example, netCDF's `options["COMPRESS"]`
 takes precedence over `compress`.
 In `calc`, `options` is an output keyword rather than a raster variable name.
-`pansharpen` rejects `options` for VRT destinations because those outputs describe a virtual
-operation rather than a driver's pixel storage. Treat creation options as trusted writer
+VRT outputs from `pansharpen`, `mosaic`, `warp` and color-relief reject `options` because they
+describe a virtual operation rather than a driver's pixel storage. Treat creation options as trusted writer
 configuration: internal `@`-prefixed keys can name local source files, as with `Raster.write`
 and CLI `--co`. Services accepting untrusted dictionaries should allowlist supported options.
 

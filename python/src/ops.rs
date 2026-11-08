@@ -1637,6 +1637,9 @@ fn warp(
         && (format.is_some_and(|f| f.eq_ignore_ascii_case("VRT"))
             || (format.is_none() && std::path::Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("vrt"))))
     {
+        if creation_options.is_some() {
+            return Err(invalid("creation options do not apply to a VRT output"));
+        }
         if geolocation.is_some() {
             return Err(terrio::Error::Unsupported("serialized geolocation transformer".into())).py();
         }
@@ -1792,6 +1795,9 @@ fn mosaic(
     };
     let inputs = input_rasters(py, srcs)?;
     if let Some(path) = dst.filter(|d| d.to_ascii_lowercase().ends_with(".vrt")) {
+        if options.is_some() {
+            return Err(invalid("creation options do not apply to a VRT output"));
+        }
         if inputs.iter().any(|(p, _)| p.starts_with(MEMORY_PREFIX)) {
             return Err(invalid("a .vrt mosaic references its sources: give them as paths"));
         }
