@@ -6,9 +6,7 @@
   in parallel, up to 8 at once, through the process-wide connection pool, as GDAL's default
   `GDAL_HTTP_MULTIRANGE=PARALLEL` does; `TERRIO_HTTP_MULTIRANGE=SERIAL` (or the GDAL name)
   requests them one after another. The requests carry the calling thread's options and STAC
-  asset policy. On a link of 0.18 s per request and 4 MB/s per connection, a 10-date, 5-band
-  Sentinel-2 cube read by window on 4 threads took 14.4 s instead of 23.5 s, with the same bytes
-  and requests. Peak memory can rise with many readers, from glibc's per-thread arenas
+  asset policy. Peak memory can rise with many readers, from glibc's per-thread arenas
   (`MALLOC_ARENA_MAX=2` bounds them).
 
 - A `sum` warp transforms the corners of each output pixel exactly, whatever the error threshold

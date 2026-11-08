@@ -31,7 +31,7 @@
 //! | `TERRIO_HTTP_BLOCK_SIZE` (bytes) | `CPL_VSIL_CURL_CHUNK_SIZE` | 65536 |
 //! | `TERRIO_HTTP_CACHE_SIZE` (bytes): the block cache of each open file, and the process-wide cache | `CPL_VSIL_CURL_CACHE_SIZE` | 67108864 |
 //! | `TERRIO_HTTP_USERAGENT` | `GDAL_HTTP_USERAGENT` | `terrio/VERSION` |
-//! | `TERRIO_HTTP_MULTIRANGE`: `PARALLEL` requests the byte runs of one read up to 8 at once; `SERIAL` (or `SINGLE_GET`) one after another; any other value is `PARALLEL` | `GDAL_HTTP_MULTIRANGE` | `PARALLEL` |
+//! | `TERRIO_HTTP_MULTIRANGE`: `PARALLEL` requests the byte runs of one read up to 8 at once; `SERIAL` one after another; `SINGLE_GET` (one multipart request in GDAL, not supported) as `SERIAL`; any other value is `PARALLEL` | `GDAL_HTTP_MULTIRANGE` | `PARALLEL` |
 //! | `TERRIO_HTTP_LOG=YES`: print each request, and each new process-wide connection pool, to standard error | `CPL_CURL_VERBOSE` | off |
 //! | `TERRIO_JSON_MAX_SIZE` (bytes, `K`, `M` or `G` suffixes): the largest JSON document fetched whole | `CPL_JSON_MAX_SIZE` | 100 MB |
 //!
@@ -175,8 +175,10 @@ impl HttpOptions {
                 .and_then(|v| v.parse::<u64>().ok())
                 .filter(|n| *n > 0)
                 .map(|n| n.min(64 << 20)),
-            // GDAL's SERIAL and SINGLE_GET both send one request at a time here; any other value
-            // is PARALLEL, as GDAL takes it (`cpl_vsil_curl.cpp`, `ReadMultiRange`).
+            // As GDAL v3.13.3 reads it (`VSICurlHandle::ReadMultiRange`, port/cpl_vsil_curl.cpp):
+            // SERIAL is one request at a time, any value but SINGLE_GET parallel. GDAL's SINGLE_GET
+            // asks for every range in one multipart request, which terrio does not parse: it is
+            // taken as SERIAL.
             parallel_ranges: var("TERRIO_HTTP_MULTIRANGE", "GDAL_HTTP_MULTIRANGE")
                 .is_none_or(|v| !matches!(v.to_ascii_uppercase().as_str(), "SERIAL" | "SINGLE_GET")),
         }
@@ -2327,8 +2329,8 @@ impl Shared {
                         let fetched = handle.map(|h| {
                             let (mut client, fetched) = match h {
                                 Ok(h) => h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)),
-                                // no thread to be had: the run fails as a request would
-                                Err(e) => (self.client.clone(), Err(e.into())),
+                                // no thread to be had: requested here, in order, as serially
+                                Err(_) => return self.client.fetch(Some((from, last))),
                             };
                             // what a request learned (a region, a redirect) is kept, as serially;
                             // a region an earlier run discovered stays when this copy predates it
