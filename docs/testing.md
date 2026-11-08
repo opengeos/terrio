@@ -9,6 +9,29 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Translate input-opening policy
+
+Translate input-opening policy is tested with `cargo test -p terrio --lib ops::translate::tests`
+and `cargo test -p terrio --features gdal --test gdal_backend translate_input_policy`.
+The latter reads the generated `translate_complex_half.tif` fixture: GDAL 3.12.1 wrote
+16 x 8 CFloat16 samples with real values 0..127 and imaginary values -real-1,
+EPSG:32613 and transform `[500000,30,0,4100000,0,-30]`. The native lazy reader refuses
+that sample type, so path and byte tests exercise a successful whole-read GDAL fallback,
+including `GDAL:` paths and destination writes. Explicit levels are refused before fallback.
+Default-feature tests cover lazy paths/bytes, streamed outputs, missing local files and the
+shared terminal-error classification. Existing Python and Node overview regressions exercise
+the same entry points through the bindings.
+
+`cargo test -p terrio --lib vfs::tests` covers the shared local-path versus GDAL-name
+classifier, including Windows drive, drive-relative, verbatim and UNC paths, URL schemes,
+subdataset names and colon-free `/vsi` names. The GDAL backend tests also keep a TIFF
+in GDAL's `/vsimem` under a `.grb` name: the native GRIB lazy opener returns `NotFound`,
+while GDAL identifies the TIFF content and the whole-read translation succeeds.
+The name deliberately exercises GRIB dispatch without requiring GDAL's optional GRIB
+plugin. Explicit overview levels still refuse the whole read. On Windows,
+`input_policy_keeps_missing_windows_paths_terminal` exercises `translate_path` with
+drive-relative and verbatim missing paths and `OverviewSelection::Level(0)`.
+
 ## Updating the ordinary CI GDAL reference
 
 `GDAL_REFERENCE_VERSION` in `.github/workflows/ci.yml` controls both micromamba GDAL
@@ -2568,3 +2591,12 @@ exact corners, by up to about 39 source pixels. RPC/DEM chunk comparisons retain
 complete 513-point batches; a bounded 64-entry cache reuses them across nearby
 chunks and regions (about 560 KiB of sample storage per transformer). Cache eviction
 only changes recomputation, never batch membership or pixels.
+
+Indicative local single-thread timings (optimized bindings, one warmup and medians of
+seven reads) for that synthetic 400 × 400 UTM source into a 256 × 256 Web Mercator
+tile were 26.7 ms with exact corners/bounds versus 5.3 ms before at threshold 0.125;
+at threshold 0, 26.4 versus 15.8 ms. A separate RPC/DEM probe using the Rust RPC
+regression's 100 × 100 image and 300 × 260 DEM, median of five reads after warmup,
+took 11.7 versus 7.5 ms at threshold 0.125, and 11.7 versus 11.7 ms at threshold 0.
+These small local probes are not throughput guarantees; source-window corner scans
+also add transformation work during chunk planning. The machine was not reserved.

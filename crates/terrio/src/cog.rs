@@ -176,6 +176,7 @@ pub struct LazyRaster {
     /// GDAL's external mask, the `.msk` sidecar of a local file without an internal mask: a TIFF
     /// whose first band is the per-dataset mask, with overviews of its own.
     sidecar_mask: Option<Box<LazyRaster>>,
+    asset_policy: Option<crate::stac::AssetReadPolicy>,
 }
 
 impl std::fmt::Debug for LazyRaster {
@@ -418,6 +419,10 @@ pub fn open_raster_lazy(path: &str) -> Result<LazyRaster> {
 }
 
 impl LazyRaster {
+    pub(crate) fn enter_asset_read(&self) -> Result<Option<crate::stac::AssetReadScope>> {
+        self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()
+    }
+
     /// Shares this raster without decoding pixels or copying loaded pixel buffers.
     /// Lazy handles serialize access to their existing reader and retain window/overview reads.
     /// Handles are read-only aliases: replacing one handle does not replace the others. Loaded
@@ -426,14 +431,14 @@ impl LazyRaster {
         if let Inner::Memory(ds) = &self.inner {
             let inner = Inner::Memory(ds.clone());
             let sidecar_mask = self.sidecar_mask.as_mut().map(|m| Box::new(m.shared()));
-            return Self { inner, sidecar_mask };
+            return Self { inner, sidecar_mask, asset_policy: self.asset_policy.clone() };
         }
         if let Inner::Source(header, source) = &self.inner
             && let Some(source) = source.shared_clone()
         {
             let inner = Inner::Source(header.clone(), source);
             let sidecar_mask = self.sidecar_mask.as_mut().map(|m| Box::new(m.shared()));
-            return Self { inner, sidecar_mask };
+            return Self { inner, sidecar_mask, asset_policy: self.asset_policy.clone() };
         }
         let mut header = self.header();
         if let Inner::Tiff(t) = &self.inner {
@@ -453,6 +458,7 @@ impl LazyRaster {
         let mask_overviews = self.mask_band_overviews();
         let mask_bits = self.mask_band_bits();
         let referenced = self.geotransform_present();
+        let policy = self.asset_policy.clone();
         let replacement = Self::from(header.clone());
         let original = std::mem::replace(self, replacement);
         let shared = SharedRaster {
@@ -469,7 +475,10 @@ impl LazyRaster {
             mask_bits,
         };
         *self = Self::from_source(header.clone(), Box::new(shared.clone()));
-        Self::from_source(header, Box::new(shared))
+        self.asset_policy = policy.clone();
+        let mut alias = Self::from_source(header, Box::new(shared));
+        alias.asset_policy = policy;
+        alias
     }
 
     pub(crate) fn geotransform_present(&self) -> bool {
@@ -481,6 +490,7 @@ impl LazyRaster {
     }
 
     pub(crate) fn input_paths(&self) -> Result<Vec<String>> {
+        let _scope = self.enter_asset_read()?;
         let mut paths = match &self.inner {
             Inner::Tiff(t) => {
                 let mut paths = t.file.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>();
@@ -526,10 +536,15 @@ impl LazyRaster {
     /// tiles, EHdr, ENVI, SAGA, ERS, Idrisi and Surfer 6 grids), JPEG 2000, GRIB and Zarr; other
     /// formats are read whole.
     pub fn open(path: &str) -> Result<Self> {
+        let policy = crate::stac::AssetReadPolicy::nested(path)?;
+        let _scope = policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
         crate::formats::check_allowed(path, Some(crate::formats::Kind::Raster))?;
         // A missing file, or a directory, is named in the error.
         let mut r = Self::open_without_sidecars(path).map_err(|e| e.naming_local_file(path))?;
         r.find_sidecar_mask(path);
+        if r.asset_policy.is_none() {
+            r.asset_policy = policy;
+        }
         Ok(r)
     }
 
@@ -587,10 +602,16 @@ impl LazyRaster {
             Some(r) => Ok(r),
             // A local VRT whatever its name, as GDAL's VRT driver identifies it by its content,
             // read as a `.vrt` is. An allow-list without VRT has refused it.
-            None if is_local_vrt(path) => {
-                crate::ops::vrt::read_vrt(path).map(|ds| Self { inner: Inner::Memory(Arc::new(ds)), sidecar_mask: None })
-            }
-            None => crate::open_raster(path).map(|ds| Self { inner: Inner::Memory(Arc::new(ds)), sidecar_mask: None }),
+            None if is_local_vrt(path) => crate::ops::vrt::read_vrt(path).map(|ds| Self {
+                inner: Inner::Memory(Arc::new(ds)),
+                sidecar_mask: None,
+                asset_policy: crate::stac::AssetReadPolicy::current(),
+            }),
+            None => crate::open_raster(path).map(|ds| Self {
+                inner: Inner::Memory(Arc::new(ds)),
+                sidecar_mask: None,
+                asset_policy: crate::stac::AssetReadPolicy::current(),
+            }),
         }
     }
 
@@ -655,7 +676,7 @@ impl LazyRaster {
             ovr.push(".ovr");
             t.attach_ovr(std::path::Path::new(&ovr));
         }
-        Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None }))
+        Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() }))
     }
 
     /// Opens a GeoTIFF held in memory, reading only its headers now. Returns `None` when the bytes
@@ -683,7 +704,7 @@ impl LazyRaster {
         crate::formats::check_driver_allowed("GTiff", "a GeoTIFF in memory", crate::formats::Kind::Raster)?;
         let t = TiffRaster::new(source, None, limits)?;
         t.tags.warn_unreadable("a GeoTIFF in memory");
-        Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None }))
+        Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() }))
     }
 
     /// Opens a remote GeoTIFF whose bytes the caller fetches (see [`crate::sparse`]), reading
@@ -707,7 +728,7 @@ impl LazyRaster {
         source.seek(SeekFrom::Start(0))?;
         let t = TiffRaster::new(source, None, limits)?;
         t.tags.warn_unreadable("a remote GeoTIFF");
-        Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None }))
+        Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() }))
     }
 
     /// Opens an archive of image tiles (PMTiles or MBTiles) for reading by window, zoom levels
@@ -813,14 +834,7 @@ impl LazyRaster {
     /// Uses the already open reader, including remote and sparse TIFFs.
     pub(crate) fn alpha_band(&mut self) -> Option<usize> {
         match &mut self.inner {
-            Inner::Tiff(t) => {
-                let ifd = t.levels[0].ifd;
-                if t.current_ifd != ifd {
-                    t.decoder.seek_to_image(ifd).ok()?;
-                    t.current_ifd = ifd;
-                }
-                t.decoder.get_tag_u16_vec(Tag::ExtraSamples).ok()?.last().is_some_and(|sample| matches!(*sample, 1 | 2)).then_some(t.bands)
-            }
+            Inner::Tiff(t) => t.alpha,
             Inner::Memory(ds) | Inner::Source(ds, _) if ds.driver == RasterDriver::PNG && matches!(ds.raster.bands, 2 | 4) => {
                 Some(ds.raster.bands)
             }
@@ -984,6 +998,7 @@ impl LazyRaster {
     /// The rows strips of the full-resolution image are best made of (a multiple of), so that each
     /// block of the files it reads is read once: a GeoTIFF's block height, or a VRT's sources'.
     pub(crate) fn row_alignment(&mut self) -> Option<usize> {
+        let _scope = self.enter_asset_read().ok()?;
         match &mut self.inner {
             Inner::Tiff(t) => Some(t.levels[0].block.1),
             Inner::Memory(_) => None,
@@ -1115,6 +1130,8 @@ impl LazyRaster {
     /// # Ok::<(), terrio::Error>(())
     /// ```
     pub fn write(&mut self, path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
+        let context = crate::stac::AssetReadContext::capture(self.asset_policy.clone());
+        context.check()?;
         let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
         self.refuse_masked_tile_archive(driver, options)?;
         let source_mask = options.mask.is_none() && self.has_mask() && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
@@ -1152,6 +1169,7 @@ impl LazyRaster {
                 |i| {
                     let y = i * rows;
                     let h = rows.min(height - y);
+                    let _scope = context.enter()?;
                     Ok((s.read_rows(Window::new(0, y, width, h), &all)?, h))
                 },
                 |_, (data, h)| out.write(data, h),
@@ -1214,7 +1232,15 @@ impl LazyRaster {
 
     /// Reads a window of some bands, at full resolution or from an overview, as a raster
     /// georeferenced to the window.
+    ///
+    /// Pixels are band-major, each band row-major from the top, regardless of the file's
+    /// interleave: `data[band * (height * width) + row * width + col]` (zero-based indices,
+    /// returned window dimensions). Planes follow the requested band order. This also applies
+    /// to internal and external overviews; no pixel reordering is needed before a warp.
+    /// The result does not retain the dataset mask. Read it separately with [`Self::read_mask`]
+    /// using the same window and overview selection when needed.
     pub fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {
+        let _scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
         let (lw, lh) = self.level_size(options.overview)?;
         window.check(lw, lh)?;
         let bands = read_bands(&options.bands, self.band_count())?;
@@ -1375,6 +1401,7 @@ impl LazyRaster {
     /// rather than a window spanning billions of columns); `None` for the others, whose callers
     /// read the window spanning the pixels.
     pub fn read_sampled(&mut self, cols: &[usize], rows: &[usize], options: &WindowOptions) -> Result<Option<RasterData>> {
+        let _scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
         let (lw, lh) = self.level_size(options.overview)?;
         if let Some(c) = cols.iter().find(|c| **c >= lw) {
             return Err(Error::InvalidArgument(format!("column {c} is outside the {lw}x{lh} image")));
@@ -1446,6 +1473,7 @@ impl LazyRaster {
     /// overview without a mask of its own, the full-resolution mask is sampled by nearest
     /// neighbour, as GDAL does).
     pub fn read_mask(&mut self, window: Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+        let _scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
         let (lw, lh) = self.level_size(overview)?;
         window.check(lw, lh)?;
         // An external overview is its own TIFF dataset. GDAL does not inherit
@@ -1480,6 +1508,7 @@ impl LazyRaster {
     /// [`LazyRaster::read_mask`], an overview without a mask of its own does not sample the
     /// full-resolution mask.
     pub fn read_level_mask(&mut self, window: Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+        let _scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
         let Some(i) = overview else { return self.read_mask(window, None) };
         let (lw, lh) = self.level_size(overview)?;
         window.check(lw, lh)?;
@@ -1607,6 +1636,7 @@ impl LazyRaster {
 
     /// A candidate overview's `RESAMPLING`, used by GDAL 3.13.3's best-overview selection.
     pub(crate) fn level_resampling(&mut self, overview: usize) -> Option<String> {
+        let _scope = self.enter_asset_read().ok()?;
         if let Inner::Source(_, source) = &mut self.inner {
             return source.level_resampling(overview);
         }
@@ -1639,7 +1669,7 @@ impl LazyRaster {
 
     /// A raster read by window by `source`, described by `header` (a dataset without pixels).
     pub(crate) fn from_source(header: RasterDataset, source: Box<dyn WindowSource>) -> Self {
-        Self { inner: Inner::Source(Arc::new(header), source), sidecar_mask: None }
+        Self { inner: Inner::Source(Arc::new(header), source), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() }
     }
 
     /// Wraps an archive of image tiles (PMTiles, MBTiles), its zoom levels as overviews.
@@ -1652,7 +1682,7 @@ impl LazyRaster {
 impl From<RasterDataset> for LazyRaster {
     /// Wraps a raster in memory, so that it is read by window like a lazy one.
     fn from(ds: RasterDataset) -> Self {
-        Self { inner: Inner::Memory(Arc::new(ds)), sidecar_mask: None }
+        Self { inner: Inner::Memory(Arc::new(ds)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() }
     }
 }
 
@@ -1911,6 +1941,7 @@ struct TiffRaster {
     bands: usize,
     /// The samples per pixel of the file's images.
     samples: usize,
+    alpha: Option<usize>,
     /// 8-bit CMYK, read as GDAL reads it: RGBA (see [`cmyk_to_rgba`]).
     cmyk: bool,
     /// The type of the samples, or of their parts when they are complex.
@@ -1991,6 +2022,12 @@ impl TiffRaster {
         let cmyk = reads_cmyk_as_rgba(&mut dec, samples, data_type)?;
         // A complex sample is two bands: its real and its imaginary parts.
         let bands = if cmyk { 4 } else { samples * if complex { 2 } else { 1 } };
+        let alpha = dec
+            .get_tag_u16_vec(Tag::ExtraSamples)
+            .ok()
+            .and_then(|samples| samples.last().copied())
+            .is_some_and(|sample| matches!(sample, 1 | 2))
+            .then_some(bands);
         let bits = dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
         let (cw, ch) = dec.chunk_dimensions();
         let mut levels = vec![Level {
@@ -2043,6 +2080,7 @@ impl TiffRaster {
             tags,
             bands,
             samples,
+            alpha,
             cmyk,
             data_type,
             complex,
@@ -2097,7 +2135,8 @@ impl TiffRaster {
         // Use the same sidecar-mask policy as a local base TIFF. This probes
         // `.ovr.msk` only when an external overview was actually opened.
         ovr.files.push(path.to_string_lossy().into_owned());
-        let mut view = LazyRaster { inner: Inner::Tiff(Box::new(ovr)), sidecar_mask: None };
+        let mut view =
+            LazyRaster { inner: Inner::Tiff(Box::new(ovr)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() };
         view.find_sidecar_mask(&path.to_string_lossy());
         let files = view.file_list().unwrap_or_else(|_| vec![path.to_string_lossy().into_owned()]);
         // Listed after the TIFF, as GDAL lists it.

@@ -1055,8 +1055,8 @@ share of its area inside the output pixel. The corners that outline those shares
 exactly, whatever `--et` is. Source windows include these exact corners as well as the
 sampled bounds: a 256 × 256
 tile reprojected from UTM to Web Mercator at the source's resolution totals the integral of the
-source over it within a relative error of 10⁻⁹. Transforming every corner takes time: such a tile took 35 ms on one
-thread, against 18 ms with interpolated corners.
+source over it within a relative error of 10⁻⁹. Transforming every corner and bounding its footprint takes additional work;
+see [validation and measured costs](testing.md#exact-sum-footprints).
 
 ### Warp source overviews
 

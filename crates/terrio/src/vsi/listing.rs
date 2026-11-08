@@ -17,19 +17,35 @@ use std::collections::HashMap;
 
 type EntryIndex = HashMap<(String, bool), usize>;
 
-/// Removes credentials from diagnostics and public names: the user information of a URL's
-/// authority (`https://user:password@host/`) and credential-bearing query strings. A password is
-/// removed when it is percent-encoded, as URLs require: an unencoded `/`, `?` or `#` in it ends the
-/// authority, so the rest is taken for the path (an `@` in a path is not user information).
+/// Removes credentials from diagnostics and public names: userinfo in every URL authority
+/// and credential-bearing query strings. Raw whitespace in malformed userinfo is retained
+/// through the `@` for conservative redaction, avoiding password fragments. An unencoded
+/// `/`, `?` or `#` ends the authority; percent-encode those characters in passwords. An `@`
+/// in a path is not userinfo.
 pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
-    let mut out = std::borrow::Cow::Borrowed(url);
-    if let Some(scheme) = url.find("://") {
+    let mut redacted = String::new();
+    let mut copied = 0;
+    // Diagnostics can contain several URLs (for example, a redirect's source and target).
+    // Work from the original offsets so stripping one authority cannot hide a later one.
+    for (scheme, _) in url.match_indices("://") {
         let authority = scheme + 3;
+        if authority < copied {
+            continue;
+        }
+        // Raw spaces can occur in malformed userinfo in an error; stopping there would
+        // retain password fragments. Prefer conservative redaction until a URL delimiter.
         let end = url[authority..].find(['/', '?', '#']).map_or(url.len(), |end| authority + end);
         if let Some(at) = url[authority..end].rfind('@') {
-            out = format!("{}{}", &url[..authority], &url[authority + at + 1..]).into();
+            redacted.push_str(&url[copied..authority]);
+            copied = authority + at + 1;
         }
     }
+    let out = if copied == 0 {
+        std::borrow::Cow::Borrowed(url)
+    } else {
+        redacted.push_str(&url[copied..]);
+        std::borrow::Cow::Owned(redacted)
+    };
     if let Some((base, query)) = out.split_once('?') {
         // Parameter names as a server reads them too: `%6Bey=` is `key=`.
         let lower = format!("{query}&{}", percent_decoded(query)).to_ascii_lowercase();
@@ -783,7 +799,17 @@ mod tests {
     fn url_passwords_and_key_parameters_are_redacted() {
         let redacted = super::redact_url("https://user:secret@example.com/f.tif?key=AIza123");
         assert_eq!(redacted, "https://example.com/f.tif?<redacted>");
+        assert_eq!(
+            super::redact_url("https://a.example/x?harmless=1 then https://u:secret@b.example/y"),
+            "https://a.example/x?harmless=1 then https://b.example/y"
+        );
         assert_eq!(super::redact_url("https://u:p@example.com"), "https://example.com");
+        assert_eq!(super::redact_url("https://user:my pass@host/x"), "https://host/x");
+        assert_eq!(
+            super::redact_url("https://a.example/x.tif redirected to https://user:secret@b.example/y then https://u:p@c.example"),
+            "https://a.example/x.tif redirected to https://b.example/y then https://c.example"
+        );
+        assert_eq!(super::redact_url("https://a.example\u{2003}https://u:p@b.example"), "https://a.example\u{2003}https://b.example");
         // An `@` after the authority is part of the path, not user information.
         assert_eq!(super::redact_url("https://example.com/a@b.tif"), "https://example.com/a@b.tif");
         assert_eq!(super::redact_url("/vsizip/local@archive.zip/x.tif"), "/vsizip/local@archive.zip/x.tif");

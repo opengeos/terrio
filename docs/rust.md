@@ -39,6 +39,42 @@ println!("{}", terrio::info::info(&ds, &Default::default()).to_text());
 nodata with `band_nodata(band)` (one-based) or `nodata()` (band 1). To replace it
 with one shared value, clear the per-band vector and update both shared fields.
 
+## Raster buffer layout
+
+`RasterData` buffers passed to `Raster::from_data_native` must contain complete bands
+one after another: `[band0_plane, band1_plane, ...]`. Within each band, pixels are
+row-major, from the top row, with columns varying fastest. For zero-based indices:
+
+```text
+index = band * (rows * cols) + row * cols + col
+```
+
+The constructor does not deinterleave pixel-interleaved RGB/RGBA input. Convert it
+before constructing the raster; see the runnable
+[RGBA conversion example](https://docs.rs/terrio/latest/terrio/#raster-buffer-layout)
+in the crate documentation.
+
+`LazyRaster::read_window` returns the same band-major layout for both pixel-interleaved
+and separate-plane files, at full resolution and at internal or external `.ovr`
+overview levels. Use the **returned window's** dimensions in the index formula; output
+planes follow the requested band order (band selectors are one-based).
+`read_window_f32` and `read_window_f64` also return band-major, row-major values.
+For one band, the index is simply `row * width + col`; there is no row/column transpose.
+`ops::warp::warp` borrows band-major source rasters and returns a band-major raster,
+so a window result can be passed directly as a source without reordering its pixels.
+`LazyRaster::read_window` does not retain the dataset mask, so masked-out sample
+values may be treated as valid by `warp`. Floating-point window reads apply the mask
+as NaN. When the mask is needed separately, use `LazyRaster::read_mask` with the same
+window and overview selection. This layout note does not describe a masked-warp workflow.
+
+The in-memory layout is independent of TIFF storage. The current native GTiff writer
+used by `write_raster_dataset` defaults to `INTERLEAVE=PIXEL`
+(`PlanarConfiguration=1`, chunky). Set
+`creation_options: vec![("INTERLEAVE".into(), "BAND".into())]` in `RasterWriteOptions`
+for separate planes in multiband rasters (`PlanarConfiguration=2`), or explicitly
+request `PIXEL`. Single-band output uses `PlanarConfiguration=1` with either option.
+Both choices take the same band-major input buffer; the writer packs it for the file.
+
 ## Writing
 
 ```rust,no_run

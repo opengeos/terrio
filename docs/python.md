@@ -320,6 +320,32 @@ data = open("dem.tif", "rb").read()
 raster = terrio.open_bytes(data, "dem.tif")  # from bytes; to bytes with raster.to_bytes("x.tif")
 ```
 
+Raster operations with `dst` and the standard output keywords accept `options={...}`, just
+like `Raster.write(options=...)` and CLI `--co`. This includes streamed terrain/warp outputs,
+mask-writing operations, palette operations and `create_raster`. The options apply to the
+destination write; they do not change an in-memory result when `dst` is omitted.
+Raster creation-option mappings (including `Raster.write`, grouped netCDF and streaming writers)
+reject duplicate names that differ only in case, such as `COMPRESS` and
+`compress`, so conflicting aliases cannot depend on a writer's precedence rules.
+`create_raster` requires `dst` whenever file-output options, including `options`, are supplied.
+For GeoTIFF/COG, `compress` overrides `options["COMPRESS"]`, and `bigtiff=True` forces BigTIFF
+even with `options={"BIGTIFF": "NO"}`. Explicit block-size creation options override `tile_size`:
+`BLOCKXSIZE`/`BLOCKYSIZE` for tiled GeoTIFF, or `BLOCKSIZE` for COG. Otherwise `tile_size`
+supplies the tile dimensions. These GeoTIFF/COG precedence rules also apply to `Raster.write`.
+Other formats use their own writer rules; for example, netCDF's `options["COMPRESS"]`
+takes precedence over `compress`.
+In `calc`, `options` is an output keyword rather than a raster variable name.
+VRT outputs from `pansharpen`, `mosaic`, `warp` and color-relief reject `options` because they
+describe a virtual operation rather than a driver's pixel storage. Treat creation options as trusted writer
+configuration: internal `@`-prefixed keys can name local source files, as with `Raster.write`
+and CLI `--co`. Services accepting untrusted dictionaries should allowlist supported options.
+
+```python
+terrio.dem("dem.tif", "slope", "slope.tif", options={"COMPRESS": "DEFLATE", "TILED": "YES"})
+terrio.translate("dem.tif", "terrain.nc", options={"FORMAT": "NC4", "COMPRESS": "DEFLATE"})
+terrio.translate("dem.tif", "terrain.zarr", options={"FORMAT": "ZARR_V3"})
+```
+
 `translate` reads rasters by window as `terrio translate` does: a path or a lazy `Raster` is read
 for the output alone (the tiles its window touches), from the stored resolution `overview` selects,
 as `gdal_translate -ovr`: `"AUTO"` (the default, the overview GDAL's RasterIO chooses for the output

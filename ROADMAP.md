@@ -504,6 +504,9 @@ Command-group progress:
 
 Python:
 
+- [x] Format-specific creation options on raster operations with standard output keywords
+      (`options=`, as with `Raster.write` and CLI `--co`), including streamed outputs,
+      mask-writing paths, palette operations and `create_raster` (#648, #660).
 - [x] A rasterio-compatible API, `terrio.rio` (`import terrio.rio as rasterio`): datasets opened for
       reading, writing and update with profiles, windowed and incremental writes, masks, `windows`,
       `transform`, `features`, `warp`, `merge`, `mask`, `WarpedVRT` and `MemoryFile`, checked against

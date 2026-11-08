@@ -269,6 +269,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
+      - name: Install checksum-pinned wasm-opt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/install_binaryen_ci.sh
       - uses: actions/setup-node@v7
         with:
           node-version: 22

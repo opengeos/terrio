@@ -8,8 +8,13 @@
   Interpolated within the threshold along runs of 512 corners, as before, they were off by up to
   0.09 source pixels on a 256 x 256 tile reprojected from UTM to Web Mercator at the source's
   resolution, and the tile's total was 5.2e-5 off the integral of the source over the tile;
-  it is now within 1e-9 of it. Exact corners cost about 17 ms per 256 x 256 tile on one thread
-  (35 ms instead of 18). The other resamplings are unchanged.
+  it is now within 1e-9 relative error. Source windows include every exact corner, including
+  extrema between edge samples. Exact corners and bounds require additional transformation work;
+  see `docs/testing.md` for measured costs and the intentional difference from GDAL's sum kernel.
+  The other resamplings are unchanged.
+
+- Python raster creation-option mappings reject conflicting names that differ only by case,
+  including `Raster.write`, grouped netCDF output and streaming GeoTIFF/COG writers.
 
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource
@@ -71,12 +76,44 @@
   including members of exclusive argument groups. A CI step requires a newer `schema_version`
   whenever the catalog digest changes relative to the pull request's base.
 
+- Python raster operations accept format-specific `options` dictionaries when writing a
+  destination, as `Raster.write` and CLI `--co` do. Creation options also reach streamed
+  terrain/warp/pansharpen outputs, mask-writing paths, palette operations and `create_raster`.
+  In `calc`, `options` is now the output-options keyword; rename any raster input called `options`.
+  Virtual VRT outputs reject creation-option mappings in warp, mosaic, color-relief and
+  pansharpen; direct XML outputs no longer silently discard them.
+
 - Calc disambiguates `-f` between the output format and a referenced `f` input, and preserves
   literal arguments and fixed-arity option values. Translate handles zero- or two-value
   `--scale` options before input/output paths without consuming the paths as scale values.
 
+- Translate's lazy-open and whole-read fallback policy now lives in the Rust core and is shared
+  by the CLI, Python path inputs and JavaScript byte inputs. Terminal opening errors and
+  overview refusals remain consistent; lazy destinations retain streaming writes.
+  Overview refusal diagnostics now use shared wording and quote the input name across the
+  CLI and bindings; callers should not match the previous surface-specific message text.
+  Whole-read fallback for bytes remains TIFF-only: GDAL-only non-TIFF files may translate
+  by path but fail from bytes.
+
 - `rio stack --co KEY=VALUE` now applies creation options to the output instead of silently
   discarding them.
+
+- Remote STAC, STACIT and STACTA documents require
+  `TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES` to select assets using configured cloud credentials
+  or cross-origin custom HTTP headers. Checks include declared assets during metadata reads and
+  concrete deferred tile opens, nested native sources and cached readers after settings change.
+  Export and overview reads enforce the same policy, including parallel tile workers. Asset
+  checks use the final response origin after redirects. Actual clients check resolved credentials
+  before requests; cached parts retain consistent provenance. Layer listing rejects raster pointers
+  from metadata, without reading their pixels or traversing catalog children.
+  Native public unsigned cloud reads remain supported, including S3 with
+  `AWS_NO_SIGN_REQUEST=YES`. GDAL asset reads selected by remote documents always require the
+  opt-in because GDAL can follow nested sources and use additional credentials. Named STAC,
+  STACIT and STACTA documents, local or remote, are not retried through GDAL after any native error.
+  STACTA also preserves invalid-argument and resource refusals instead of treating them as
+  missing tiles or metadata-only container fallbacks, including for local items. Remote STAC
+  errors that could otherwise trigger pointer fallback become `InvalidArgument` with the redacted
+  native cause. Malformed remote JSON containing a STAC marker is conservatively terminal.
 
 - Public `build_vrt` and same-CRS mosaic entry points reject unselected mixed band counts and
   target extents intersecting no source. These strict checks deliberately differ from GDAL
