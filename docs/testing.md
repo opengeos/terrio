@@ -2515,5 +2515,7 @@ through path and byte inputs, and check arithmetic overflow without allocating.
 chunks. Recreate it with h5py by creating `grid` with `shape=(2**20, 2**20)`, `dtype="f8"`,
 `chunks=(16, 16)` and `fillvalue=-9999`, without assigning any values. Its declared decoded
 size is 8 TiB. These are resource-limit checks, independent of GDAL's allocation policy.
-Tests that depend on a discoverable usable-memory limit skip those allocations where the
-limit is unavailable or would permit them. Scalar-text and overflow checks still run.
+The chunked fixture is refused using a 512 MiB combined pixel-buffer budget where memory
+discovery is unavailable, including WASM. It skips only if the discovered limit permits
+the fixture. Synthetic budget tests cover combined allocations, overflow and the fallback
+budget independently of the host's memory. Scalar-text checks also run on every host.
