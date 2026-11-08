@@ -843,7 +843,7 @@ impl PyRaster {
             }
             options_.mask = Some(m.as_array().iter().copied().collect());
         }
-        options_.creation_options = options.unwrap_or_default().into_iter().collect();
+        options_.creation_options = validated_creation_options(options)?;
         options_.band_metadata = band_metadata.unwrap_or_default().iter().map(parse_band_metadata).collect::<PyResult<_>>()?;
         options_.color_table = colormap.unwrap_or_default();
         options_.overviews = overviews.unwrap_or_default();
@@ -943,6 +943,32 @@ pub(crate) fn write_options(
 ) -> PyResult<RasterWriteOptions> {
     let driver = driver.map(|d| RasterDriver::from_name(d).ok_or_else(|| invalid(format!("unknown raster format '{d}'")))).transpose()?;
     Ok(RasterWriteOptions { driver, compression: compress, tile_size, bigtiff, ..Default::default() })
+}
+
+/// Output options shared by operations that write a raster destination.
+pub(crate) fn write_options_with_creation(
+    driver: Option<&str>,
+    compress: Option<String>,
+    tile_size: Option<u32>,
+    bigtiff: bool,
+    creation_options: Option<std::collections::BTreeMap<String, String>>,
+) -> PyResult<RasterWriteOptions> {
+    let mut options = write_options(driver, compress, tile_size, bigtiff)?;
+    options.creation_options = validated_creation_options(creation_options)?;
+    Ok(options)
+}
+
+/// Raster creation-option mappings have case-insensitive, unambiguous names across writers.
+pub(crate) fn validated_creation_options(mapping: Option<std::collections::BTreeMap<String, String>>) -> PyResult<Vec<(String, String)>> {
+    let mut keys = std::collections::HashSet::new();
+    let mut options = Vec::new();
+    for (key, value) in mapping.unwrap_or_default() {
+        if !keys.insert(key.to_ascii_uppercase()) {
+            return Err(invalid(format!("duplicate creation option '{key}' (names are case-insensitive)")));
+        }
+        options.push((key, value));
+    }
+    Ok(options)
 }
 
 /// `(key, value)` string pairs from a mapping or a sequence of pairs, in order.
@@ -1077,7 +1103,7 @@ impl PyGeoTiffWriter {
         let mut header = RasterDataset::new(raster, nodata.is_some());
         header.set_geo_transform(transform);
         let mut o = write_options(Some("GTiff"), compress, tile_size, bigtiff)?;
-        o.creation_options = options.unwrap_or_default().into_iter().collect();
+        o.creation_options = validated_creation_options(options)?;
         o.band_metadata = band_metadata.unwrap_or_default().iter().map(parse_band_metadata).collect::<PyResult<_>>()?;
         o.color_table = colormap.unwrap_or_default();
         o.gcps = parse_gcps(gcps);

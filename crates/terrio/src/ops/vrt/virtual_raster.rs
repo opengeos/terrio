@@ -387,6 +387,7 @@ impl Drop for SourceInventoryScope {
 /// XML reads; ordinary files, subdataset containers and archive files are listed directly.
 pub(crate) fn source_input_paths(path: &str) -> Result<Vec<String>> {
     let file = subdataset_parts(path)?.map_or(path, |(_, file, _)| file);
+    let _scope = crate::stac::AssetReadPolicy::enter_nested(file)?;
     let location = crate::vfs::Location::parse(file);
     fn local_files(location: &crate::vfs::Location, paths: &mut Vec<String>) {
         match location {

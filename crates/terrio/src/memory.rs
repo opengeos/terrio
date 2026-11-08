@@ -113,13 +113,8 @@ pub fn open_raster_lazy_bytes(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> 
     open_raster_bytes(bytes, name).map(LazyRaster::from)
 }
 
-/// A raster opened from bytes by [`open_raster_lazy_bytes_or_whole`].
-pub enum OpenedRasterBytes {
-    /// Read by window, as [`open_raster_lazy_bytes`] opens it.
-    Lazy(LazyRaster),
-    /// Decoded whole by [`open_raster_bytes`], after the lazy TIFF reader refused it.
-    Whole(Box<RasterDataset>),
-}
+/// Backwards-compatible name for the input opened by the shared translate policy.
+pub use crate::ops::translate::OpenedRaster as OpenedRasterBytes;
 
 /// [`open_raster_lazy_bytes`], falling back to [`open_raster_bytes`] for a TIFF the lazy reader
 /// refuses (as `terrio translate` falls back to reading a file whole), without copying the bytes:
@@ -131,20 +126,7 @@ pub enum OpenedRasterBytes {
 ///
 /// As [`open_raster_lazy_bytes`], or as [`open_raster_bytes`] after a fallback.
 pub fn open_raster_lazy_bytes_or_whole(bytes: Vec<u8>, name: &str) -> Result<OpenedRasterBytes> {
-    if crate::tiles::archive_kind(name).is_some() || !codec::is_tiff(&bytes) {
-        return open_raster_lazy_bytes(bytes, name).map(OpenedRasterBytes::Lazy);
-    }
-    crate::formats::check_allowed_bytes(name, &bytes, Some(Kind::Raster))?;
-    let shared = std::sync::Arc::new(bytes);
-    match LazyRaster::from_tiff_shared_bytes(shared.clone()) {
-        Ok(Some(r)) => return Ok(OpenedRasterBytes::Lazy(r)),
-        Err(e @ Error::InvalidArgument(_)) => return Err(e),
-        Err(e) if e.is_resource_refusal() => return Err(e),
-        Ok(None) | Err(_) => {}
-    }
-    // The failed reader is dropped: the bytes are the only reference left, taken back uncopied.
-    let bytes = std::sync::Arc::try_unwrap(shared).unwrap_or_else(|shared| (*shared).clone());
-    open_raster_bytes(bytes, name).map(|ds| OpenedRasterBytes::Whole(Box::new(ds)))
+    crate::ops::translate::open_bytes(bytes, name, crate::ops::overview::OverviewSelection::Auto)
 }
 
 /// Opens a Zarr store (or GeoZarr) from its files: `(path, bytes)` pairs, paths relative to the
