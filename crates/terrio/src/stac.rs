@@ -628,20 +628,18 @@ fn read_pages(mut doc: Value, mut cur: Request, max_items: usize, out: &mut Item
         if next == cur || pages > 10_000 {
             return Ok(());
         }
+        let location = || crate::vsi::listing::redact_url(without_query(&cur.url));
         if !may_follow(&cur.url, &next.url) {
             crate::warnings::warn(format!(
                 "STAC: the next page of '{}' is on another origin or names local files: not followed",
-                crate::vsi::listing::redact_url(without_query(&cur.url))
+                location()
             ));
             return Ok(());
         }
         // A search made with GET is not continued with a POST its page asks for, unless asked
         // (`TERRIO_STAC_ALLOW_POST=YES`); one made with POST (`method=POST`) is.
         if next.body.is_some() && cur.body.is_none() && !option_on("TERRIO_STAC_ALLOW_POST") {
-            crate::warnings::warn(format!(
-                "STAC: the next page of '{}' is a POST request: not followed",
-                crate::vsi::listing::redact_url(without_query(&cur.url))
-            ));
+            crate::warnings::warn(format!("STAC: the next page of '{}' is a POST request: not followed", location()));
             return Ok(());
         }
         doc = next.fetch(true)?;
