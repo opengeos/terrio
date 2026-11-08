@@ -218,8 +218,14 @@ opens it, a file with several opens the first and lists them all, with every gro
 dataset's attributes as metadata (`group_subgroup_attribute=value`). A three-dimensional
 dataset's first dimension is its bands; `_FillValue` is its nodata value. Files with a user
 block (JPSS products) are read too. The CF `grid_mapping` of a two-dimensional dataset gives its
-CRS, and NISAR's coordinates its geotransform, as GDAL 3.13 reads them. Product-specific
-georeferencing is read as GDAL's HDF5 driver reads it:
+CRS, and NISAR's coordinates its geotransform, as GDAL 3.13 reads them.
+
+HDF5 raster datasets are decoded whole. Before decoding, their declared raw and expanded
+pixel sizes must fit the address space and the process's usable-memory limit, when known.
+Resource refusals are terminal, including when the optional GDAL backend is enabled.
+HDF-EOS5 structure text is limited to 16 MiB before decoding.
+
+Product-specific georeferencing is read as GDAL's HDF5 driver reads it:
 
 - HDF-EOS5 grids (`HDFEOS INFORMATION/StructMetadata.0`): the geotransform of the grid's corners
   (in packed degrees, minutes and seconds for geographic grids) and the CRS of its GCTP projection

@@ -2505,3 +2505,13 @@ These error assertions cover the Rust decoders. With the `gdal` feature, public
 eager opens may fall back to GDAL after a Rust error; the fallback keeps GDAL's
 admission behavior. Native eager rejection is checked directly in unit tests,
 and streamed GPKG reads continue to use the Rust reader in that build.
+
+## HDF5 resource limits
+
+HDF5 allocation regressions run with `cargo test -p terrio --lib drivers::hdf5::tests`.
+They refuse fill-only datasets and oversized scalar HDF-EOS5 text before reading their values,
+through path and byte inputs, and check arithmetic overflow without allocating.
+`crates/terrio/tests/data/hdf5_fill_only.h5` is a generated 1,400-byte file with no allocated
+chunks. Recreate it with h5py by creating `grid` with `shape=(2**20, 2**20)`, `dtype="f8"`,
+`chunks=(16, 16)` and `fillvalue=-9999`, without assigning any values. Its declared decoded
+size is 8 TiB. These are resource-limit checks, independent of GDAL's allocation policy.
