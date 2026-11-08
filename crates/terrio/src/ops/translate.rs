@@ -93,14 +93,13 @@ fn terminal_open_error(error: &Error, name: &str) -> bool {
 }
 
 /// Whether a name carries a URL scheme or GDAL prefix (`s3://`, `gdal:`), as opposed to a
-/// plain path. A Windows drive letter (`C:\dir`, `C:/dir`) is part of a plain path.
+/// plain path. A Windows drive letter is part of a plain path, with or without a separator after
+/// it (`C:\dir`, `C:/dir`, drive-relative `C:file`) and behind a verbatim prefix (`\\?\C:\dir`,
+/// as `std::fs::canonicalize` returns). No scheme or GDAL prefix is a single letter.
 fn name_has_prefix(name: &str) -> bool {
+    let name = name.strip_prefix(r"\\?\").unwrap_or(name);
     let bytes = name.as_bytes();
-    let rest = if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'\\' | b'/') {
-        &name[2..]
-    } else {
-        name
-    };
+    let rest = if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' { &name[2..] } else { name };
     rest.contains(':')
 }
 
@@ -948,6 +947,8 @@ mod tests {
         let not_found = || Error::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
         assert!(terminal_open_error(&not_found(), r"C:\data\missing.tif"));
         assert!(terminal_open_error(&not_found(), "C:/data/missing.tif"));
+        assert!(terminal_open_error(&not_found(), "C:missing.tif"));
+        assert!(terminal_open_error(&not_found(), r"\\?\C:\data\missing.tif"));
         assert!(!terminal_open_error(&not_found(), "gdal:missing.tif"));
         assert!(!terminal_open_error(&not_found(), "/vsis3/bucket:key.tif"));
         assert!(!terminal_open_error(&not_found(), "s3://bucket/missing.tif"));
