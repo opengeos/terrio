@@ -696,7 +696,11 @@ class WarpedVRT(DatasetReader):
         if data.dtype != np.dtype(self._dtype):
             # The source is read in the working data type.
             data = gdal_cast(data, self._dtype)
-        return np.ascontiguousarray(data), mask
+        data = np.ascontiguousarray(data)
+        # The warp reads a read-only window where it is, without the GIL, and copies a writeable
+        # one first (`RegionWarp.warp`): the window is this read's own, nothing else writes it.
+        data.flags.writeable = False
+        return data, mask
 
     def _source_mask(self, level: int | None, window: tuple[int, int, int, int]) -> Any:
         """The source's per-dataset mask in a window of a level.

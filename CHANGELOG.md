@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A `WarpedVRT` read holds each source window it warps once: the warp reads the window where it
+  is, without the GIL, instead of copying it first (`RegionWarp::warp` takes the bands borrowed,
+  a `RasterDataRef`, which a `&RasterData` converts to). The copy doubled what a read held: a
+  256 x 256 `nearest` tile of a 16384 x 16384 UInt16 raster without overviews, whose blocks each
+  warp half the raster, peaked at 689 MiB and now peaks at 445 MiB (2,225 and 1,470 MiB read as
+  Float64, whose conversion still holds the window in both types). The pixels are the same. The
+  window a read warps from is read-only; arrays given to the private `RegionWarp.warp` binding
+  are read in place when C-contiguous and read-only, and copied first otherwise.
+
 - `warp -r sum` without `--te` rounds the suggested output extent's size up, as gdalwarp does
   for a sum (`GDAL_SWO_ROUND_UP_SIZE`), so that the output covers the whole source. Without
   `--ts` or `--tr` this sets the output size; with `--ts` alone, the pixel size spans the

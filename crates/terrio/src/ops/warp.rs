@@ -4304,6 +4304,96 @@ fn avoids_nodata(t: DataType, r: Resampling, dst_nodata: Option<f64>, bands: usi
 /// Marks the output values no source pixel reached (a NaN no warped value carries).
 const UNWRITTEN: u64 = 0x7ff4_7465_7272_696f;
 
+/// Pixels borrowed from their owner, in one of the types of [`RasterData`]: the bands of a source
+/// window that [`RegionWarp::warp`] reads where they are, `width * height` values per band, band
+/// after band. A `&RasterData` converts to it without a copy.
+#[derive(Clone, Copy, Debug)]
+pub enum RasterDataRef<'a> {
+    /// Unsigned 8-bit values.
+    U8(&'a [u8]),
+    /// Signed 8-bit values.
+    I8(&'a [i8]),
+    /// Unsigned 16-bit values.
+    U16(&'a [u16]),
+    /// Signed 16-bit values.
+    I16(&'a [i16]),
+    /// Unsigned 32-bit values.
+    U32(&'a [u32]),
+    /// Signed 32-bit values.
+    I32(&'a [i32]),
+    /// Unsigned 64-bit values.
+    U64(&'a [u64]),
+    /// Signed 64-bit values.
+    I64(&'a [i64]),
+    /// 32-bit floating-point values.
+    F32(&'a [f32]),
+    /// 64-bit floating-point values.
+    F64(&'a [f64]),
+}
+
+/// Runs `$body` with `$v` bound to the borrowed pixels, a slice of their own type.
+macro_rules! with_ref {
+    ($data:expr, $v:ident => $body:expr) => {
+        match $data {
+            RasterDataRef::U8($v) => $body,
+            RasterDataRef::I8($v) => $body,
+            RasterDataRef::U16($v) => $body,
+            RasterDataRef::I16($v) => $body,
+            RasterDataRef::U32($v) => $body,
+            RasterDataRef::I32($v) => $body,
+            RasterDataRef::U64($v) => $body,
+            RasterDataRef::I64($v) => $body,
+            RasterDataRef::F32($v) => $body,
+            RasterDataRef::F64($v) => $body,
+        }
+    };
+}
+
+impl<'a> From<&'a RasterData> for RasterDataRef<'a> {
+    fn from(data: &'a RasterData) -> Self {
+        match data {
+            RasterData::U8(v) => Self::U8(v),
+            RasterData::I8(v) => Self::I8(v),
+            RasterData::U16(v) => Self::U16(v),
+            RasterData::I16(v) => Self::I16(v),
+            RasterData::U32(v) => Self::U32(v),
+            RasterData::I32(v) => Self::I32(v),
+            RasterData::U64(v) => Self::U64(v),
+            RasterData::I64(v) => Self::I64(v),
+            RasterData::F32(v) => Self::F32(v),
+            RasterData::F64(v) => Self::F64(v),
+        }
+    }
+}
+
+impl RasterDataRef<'_> {
+    /// The number of values.
+    pub fn len(self) -> usize {
+        with_ref!(self, v => v.len())
+    }
+
+    /// Whether there are no values.
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    /// The type of the values.
+    pub fn data_type(self) -> DataType {
+        match self {
+            Self::U8(_) => DataType::U8,
+            Self::I8(_) => DataType::I8,
+            Self::U16(_) => DataType::U16,
+            Self::I16(_) => DataType::I16,
+            Self::U32(_) => DataType::U32,
+            Self::I32(_) => DataType::I32,
+            Self::U64(_) => DataType::U64,
+            Self::I64(_) => DataType::I64,
+            Self::F32(_) => DataType::F32,
+            Self::F64(_) => DataType::F64,
+        }
+    }
+}
+
 /// A source level (a raster or one of its overviews) warped into a grid one region at a time, as
 /// GDAL's warped VRT (`VRTWarpedDataset`) warps it: each region (a block, or a whole read) is one
 /// `GDALWarpOperation::WarpRegionToBuffer()`, from the source window
@@ -4505,16 +4595,20 @@ impl RegionWarp {
     /// progress arguments, so the warp sees no extra size. Block reads
     /// (`VRTWarpedDataset::ProcessBlock()`) compute the scale from the unpadded window.
     ///
+    /// `data` is read where it is, a `&RasterData` or pixels borrowed from another owner
+    /// ([`RasterDataRef`]), without a copy: the window is held once.
+    ///
     /// Returns the region's bands in the output type, and which of its pixels were warped.
-    pub fn warp(
+    pub fn warp<'a>(
         &self,
         region: (usize, usize, usize, usize),
         window: (usize, usize, usize, usize),
-        data: &RasterData,
+        data: impl Into<RasterDataRef<'a>>,
         mask: Option<&[bool]>,
         init: f64,
         padded_scale: bool,
     ) -> Result<(RasterData, Vec<bool>)> {
+        let data = data.into();
         if !(self.sum_scale.is_finite() && self.sum_scale > 0.0) {
             return Err(Error::InvalidArgument(format!("the sum scale must be a positive number, not {}", self.sum_scale)));
         }
@@ -4555,7 +4649,7 @@ impl RegionWarp {
             // The working type here is the output type, not the source's: nearest values of
             // another type are still rounded and clamped by `Sink::value`.
             sink.keeps_source_values &= data.data_type() == self.out_type;
-            crate::pixel::with_data!(data, v => {
+            with_ref!(data, v => {
                 let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
                 let src = SrcData { bands: &typed, valid: &valid, width: sw, origin: (sx, sy) };
                 ctx.warp_chunk(&chunk, &src, &sink, chunk_rows(&mut staged, dw, &Chunk { dx: 0, dy: 0, ..chunk }));
@@ -4582,12 +4676,12 @@ impl RegionWarp {
     /// with several bands, as rasterio sets `UNIFIED_SRC_NODATA=YES`, only the unified mask,
     /// valid where any band is (so a band valid everywhere makes every pixel valid, and a band's
     /// own nodata values are warped where another band is valid). Without nodata values, `mask`.
-    fn validity(&self, data: &RasterData, sn: usize, mask: Option<&[bool]>) -> (Vec<Option<Vec<bool>>>, bool) {
+    fn validity(&self, data: RasterDataRef<'_>, sn: usize, mask: Option<&[bool]>) -> (Vec<Option<Vec<bool>>>, bool) {
         let bands = self.src_nodata.len();
         if self.src_nodata.iter().all(Option::is_none) {
             return (vec![mask.map(<[bool]>::to_vec); bands], mask.is_some());
         }
-        let per_band: Vec<Option<Vec<bool>>> = crate::pixel::with_data!(data, v => {
+        let per_band: Vec<Option<Vec<bool>>> = with_ref!(data, v => {
             (0..bands)
                 .map(|b| {
                     let nd = self.src_nodata[b]?;

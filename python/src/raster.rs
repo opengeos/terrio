@@ -9,6 +9,7 @@ use terrio::crs::SpatialRef;
 use terrio::formats::RasterDriver;
 use terrio::ops::Resampling;
 use terrio::ops::overview::OverviewSelection;
+use terrio::ops::warp::RasterDataRef;
 use terrio::{DataType, LazyRaster, RasterDataset, RasterWriteOptions, ResampledReadOptions, Window, WindowOptions};
 use wbraster::raster::RasterData;
 
@@ -124,6 +125,32 @@ pub(crate) fn from_numpy(array: &Bound<'_, PyUntypedArray>) -> PyResult<RasterDa
         return Ok(RasterData::U8(a.as_array().iter().map(|b| *b as u8).collect()));
     }
     Err(invalid(format!("unsupported array dtype {dtype}: use an integer or float32/float64 array")))
+}
+
+/// Runs `f` on a NumPy array's values in C order, read where they are when the array is
+/// C-contiguous and not writeable, copied first (`from_numpy`) otherwise. `f` may release the
+/// GIL: a read-only array promises that its values do not change meanwhile, which a writeable
+/// array cannot promise, as other threads may write it.
+pub(crate) fn with_numpy<R>(array: &Bound<'_, PyUntypedArray>, f: impl FnOnce(RasterDataRef<'_>) -> PyResult<R>) -> PyResult<R> {
+    let py = array.py();
+    let writeable: bool = array.getattr("flags")?.getattr("writeable")?.extract()?;
+    if !writeable && array.is_c_contiguous() {
+        let dtype = array.dtype();
+        macro_rules! try_types {
+            ($($t:ty => $v:ident),*) => {
+                $(if dtype.is_equiv_to(&numpy::dtype::<$t>(py))
+                    && let Ok(a) = array.cast::<PyArrayDyn<$t>>()
+                    && let Ok(a) = a.try_readonly()
+                    && let Ok(values) = a.as_slice()
+                {
+                    return f(RasterDataRef::$v(values));
+                })*
+            };
+        }
+        try_types!(u8 => U8, i8 => I8, u16 => U16, i16 => I16, u32 => U32, i32 => I32, u64 => U64, i64 => I64, f32 => F32, f64 => F64);
+    }
+    let data = from_numpy(array)?;
+    f(RasterDataRef::from(&data))
 }
 
 /// Parses a `band` argument: `None` (all bands), an int, or a sequence of ints. Returns the bands

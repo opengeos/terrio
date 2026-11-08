@@ -1858,6 +1858,8 @@ impl PyRegionWarp {
     ///     region: `(x, y, width, height)` in the grid.
     ///     window: The region's source window, as `source_window` gives it.
     ///     data: The window's pixels, `(bands, height, width)`, in the source's dtype.
+    ///         Read in place, the GIL released, when C-contiguous and not writeable: it must not
+    ///         change until the call returns. Copied first otherwise.
     ///     mask: The window's per-dataset mask (non-zero where valid), used without nodata.
     ///     init: The value of pixels no valid source pixel reaches.
     ///     padded_scale: Compute the kernel's scale from the padded source window, as GDAL's
@@ -1878,7 +1880,6 @@ impl PyRegionWarp {
         init: f64,
         padded_scale: bool,
     ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
-        let data = crate::raster::from_numpy(data)?;
         let mask: Option<Vec<bool>> = match mask {
             None => None,
             Some(m) => Some(match crate::raster::from_numpy(m)? {
@@ -1887,7 +1888,9 @@ impl PyRegionWarp {
             }),
         };
         let inner = &self.inner;
-        let (out, written) = py.detach_result(|| inner.warp(region, window, &data, mask.as_deref(), init, padded_scale)).py()?;
+        let (out, written) = crate::raster::with_numpy(data, |data| {
+            py.detach_result(|| inner.warp(region, window, data, mask.as_deref(), init, padded_scale)).py()
+        })?;
         let (w, h) = (region.2, region.3);
         let bands = out.len() / (w * h).max(1);
         let arr = crate::raster::to_numpy(py, out, &[bands, h, w])?;
