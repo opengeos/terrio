@@ -1919,6 +1919,9 @@ impl PyRegionWarp {
     ///     region: `(x, y, width, height)` in the grid.
     ///     window: The region's source window, as `source_window` gives it.
     ///     data: The window's pixels, `(bands, height, width)`, in the source's dtype.
+    ///         Read in place with the GIL held when C-contiguous and not writeable. Callers must
+    ///         exclude native writers already running outside the GIL. Copied first otherwise,
+    ///         with the GIL released during the warp.
     ///     mask: The window's per-dataset mask (non-zero where valid), used without nodata.
     ///     init: The value of pixels no valid source pixel reaches.
     ///     padded_scale: Compute the kernel's scale from the padded source window, as GDAL's
@@ -1939,7 +1942,6 @@ impl PyRegionWarp {
         init: f64,
         padded_scale: bool,
     ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
-        let data = crate::raster::from_numpy(data)?;
         let mask: Option<Vec<bool>> = match mask {
             None => None,
             Some(m) => Some(match crate::raster::from_numpy(m)? {
@@ -1948,7 +1950,21 @@ impl PyRegionWarp {
             }),
         };
         let inner = &self.inner;
-        let (out, written) = py.detach_result(|| inner.warp(region, window, &data, mask.as_deref(), init, padded_scale)).py()?;
+        let result = crate::raster::with_numpy(data, |data, borrowed| {
+            let warp = || inner.warp(region, window, data, mask.as_deref(), init, padded_scale);
+            if borrowed {
+                // Preserve detach_result's panic conversion without releasing the GIL or
+                // invoking Python callbacks while the NumPy slice is borrowed.
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(warp)).unwrap_or_else(|p| Err(crate::panicked(p)))
+            } else {
+                py.detach_result(warp)
+            }
+        });
+        // The NumPy borrow has ended. Forward warnings on success and failure before converting
+        // errors or arrays, since Python loggers may reenter terrio or mutate aliases.
+        crate::pass_on_http_retries(py);
+        crate::pass_on_nodata_warnings(py);
+        let (out, written) = result?.py()?;
         let (w, h) = (region.2, region.3);
         let bands = out.len() / (w * h).max(1);
         let arr = crate::raster::to_numpy(py, out, &[bands, h, w])?;

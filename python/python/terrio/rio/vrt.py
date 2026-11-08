@@ -706,7 +706,12 @@ class WarpedVRT(DatasetReader):
         if data.dtype != np.dtype(self._dtype) and not self._sum_holds(data.dtype):
             # The source is read in the working data type, unless a `sum` takes it as it is.
             data = gdal_cast(data, self._dtype)
-        return np.ascontiguousarray(data), mask
+        data = np.ascontiguousarray(data).view()
+        # The warp reads a read-only window where it is, with the GIL held, and copies a writeable
+        # one first (`RegionWarp.warp`). _read_level returns fresh pixels (list band indexing
+        # for in-memory datasets); use a view so this flag never changes the source's array.
+        data.flags.writeable = False
+        return data, mask
 
     def _sum_holds(self, dtype: Any) -> bool:
         """Whether a `sum` warps a source window of a data type as it is, without converting it.

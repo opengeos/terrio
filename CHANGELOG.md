@@ -5,6 +5,15 @@
 - Python raster creation-option mappings reject conflicting names that differ only by case,
   including `Raster.write`, grouped netCDF output and streaming GeoTIFF/COG writers.
 
+- A `WarpedVRT` read holds each source window it warps once: the warp reads the window where it
+  is, with the GIL held, instead of copying it first (`RegionWarp::warp` takes the bands borrowed,
+  a `RasterDataRef`, which a `&RasterData` converts to). The copy doubled what a read held: a
+  256 x 256 `nearest` tile of a 16384 x 16384 UInt16 raster without overviews, whose blocks each
+  warp half the raster, peaked at 702 MiB and now peaks at 456 MiB (2,237 and 1,469 MiB read as
+  Float64, whose conversion still holds the window in both types). The pixels are the same. The
+  window a read warps from is read-only; arrays given to the private `RegionWarp.warp` binding
+  are read in place when C-contiguous and read-only, and copied first otherwise.
+
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource
   error. Coexisting pixel buffers are checked together; hosts without memory discovery use a
