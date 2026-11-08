@@ -153,7 +153,8 @@ A STAC document chooses where its links lead, so links are followed with limits:
 - a STAC document that is not on the local file system does not name local files: an asset href
   of a remote item that is a local path, a `file://` URL or a `/vsizip/` path into a local archive
   is an error for `STAC:` and is left out of a `STACIT:` mosaic (STACTA items are held to the same
-  rule).
+  rule), and a remote document's links never lead to local files, even with
+  `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`.
 
 A STAC item of tiled assets (GDAL's STACTA, see [Formats](formats.md#stac)) opens from its URL
 or as `STACTA:"item-url":asset`: the item is fetched, then the headers of the first tile when the

@@ -560,9 +560,11 @@ fn option_on(key: &str) -> bool {
 
 /// Whether a link to `url`, found in a document read from `from`, may be followed: a document
 /// chooses where its links lead, so only to its own origin, unless
-/// `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`.
+/// `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`; and never from a remote document to local files, the
+/// option notwithstanding.
 fn may_follow(from: &str, url: &str) -> bool {
-    crate::vfs::url_origin(url) == crate::vfs::url_origin(from) || option_on("TERRIO_STAC_FOLLOW_CROSS_ORIGIN")
+    !names_local_files(from, url)
+        && (crate::vfs::url_origin(url) == crate::vfs::url_origin(from) || option_on("TERRIO_STAC_FOLLOW_CROSS_ORIGIN"))
 }
 
 /// [`load_items`] of the response to a request (whose next pages may be `POST` requests too).
@@ -1475,6 +1477,25 @@ mod tests {
         let Some(Ok(Info::Vector(v))) = info(&path, &InfoOptions::default()) else { panic!("not a vector info") };
         let names: Vec<&str> = v.subdatasets.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, [format!("STAC:\"{path}\":remote")]);
+    }
+
+    /// A remote document's links never lead to local files, even where links to other origins
+    /// are allowed.
+    #[test]
+    fn links_from_a_remote_document_never_reach_local_files() {
+        crate::config::push_scope(std::collections::HashMap::from([(
+            "TERRIO_STAC_FOLLOW_CROSS_ORIGIN".to_string(),
+            Some("YES".to_string()),
+        )]));
+        let remote = "https://example.com/catalog.json";
+        let followed = [
+            may_follow(remote, "/vsizip//home/user/private.zip/item.json"),
+            may_follow(remote, "file:///home/user/item.json"),
+            may_follow(remote, "https://other.example/item.json"),
+            may_follow("/home/user/catalog.json", "/home/user/item.json"),
+        ];
+        crate::config::pop_scope();
+        assert_eq!(followed, [false, false, true, true]);
     }
 
     /// A mosaic of remote items leaves out the assets that name local files.
