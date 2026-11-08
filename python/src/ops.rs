@@ -1323,6 +1323,7 @@ fn translate(
 ///         GeoJSON.
 ///     crop_to_cutline: Set the output extent to the cutline's.
 ///     et: The maximum error of the approximate transformer, in pixels (0 for exact).
+///         A `sum` transforms its output pixels' corners exactly whatever it.
 ///     format: The output format's short name, for `dst`.
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.

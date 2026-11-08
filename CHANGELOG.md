@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A `sum` warp transforms the corners of each output pixel exactly, whatever the error threshold
+  (`--et`, `et`, or `tolerance` in `terrio.rio`), which still bounds how the source window a
+  chunk reads is found. The corners outline each source pixel's share of an output pixel.
+  Interpolated within the threshold along runs of 512 corners, as before, they were off by up to
+  0.09 source pixels on a 256 x 256 tile reprojected from UTM to Web Mercator at the source's
+  resolution, and the tile's total was 5.2e-5 off the integral of the source over the tile;
+  it is now within 1e-9 of it. Exact corners cost about 17 ms per 256 x 256 tile on one thread
+  (35 ms instead of 18). The other resamplings are unchanged.
+
 - `warp -r sum` without `--te` rounds the suggested output extent's size up, as gdalwarp does
   for a sum (`GDAL_SWO_ROUND_UP_SIZE`), so that the output covers the whole source. Without
   `--ts` or `--tr` this sets the output size; with `--ts` alone, the pixel size spans the

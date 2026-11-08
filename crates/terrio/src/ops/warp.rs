@@ -2982,9 +2982,9 @@ impl WarpContext<'_> {
         }
         if self.resampling == Resampling::Sum && !self.translation {
             // A `sum` takes every source pixel inside its output pixels' corners, which are
-            // interpolated to within the error threshold and lie between the points sampled
-            // here: a pixel more than the threshold around these bounds holds them. A threshold
-            // below zero interpolates nothing, and pads as one of zero does.
+            // transformed exactly and lie between the points sampled here, which are interpolated
+            // to within the error threshold: a pixel more than the threshold around these bounds
+            // holds them. A threshold below zero interpolates nothing, and pads as one of zero does.
             let pad = 1.0 + self.approx.max_error.max(0.0).ceil();
             (x0, y0, x1, y1) = (x0 - pad, y0 - pad, x1 + pad, y1 + pad);
         }
@@ -3414,10 +3414,14 @@ impl WarpContext<'_> {
     }
 
     /// The corners of a chunk's output pixels along its row `y` of corners (from its top edge), on
-    /// the source grid. Each is interpolated within its batch of the whole grid's corners, the
-    /// `SUM_CORNER_BATCH` columns from a multiple of that number, so that the chunks (or regions)
-    /// sharing a corner agree on it; of a batch, only the chunk's corners are computed. `scratch`
-    /// holds a batch's points, for the rows of corners of a group of rows to share.
+    /// the source grid. Each is transformed exactly: interpolated along the row, a corner would lie
+    /// on a chord of the curve the row follows on the source grid, by up to the error threshold
+    /// and on the same side along the whole row, which moves the footprints and the total. The
+    /// corners are taken in batches of the whole grid's, the `SUM_CORNER_BATCH` columns from a
+    /// multiple of that number, which a transformer that does not transform each point alone
+    /// transforms together, so that the chunks (or regions) sharing a corner agree on it; of a
+    /// batch, only the chunk's corners are computed otherwise. `scratch` holds a batch's points,
+    /// for the rows of corners of a group of rows to share.
     fn sum_corners(&self, c: &Chunk, y: usize, scratch: &mut CornerBatch) -> CornerRow {
         const BATCH: usize = SUM_CORNER_BATCH;
         let n = c.dw;
@@ -3431,7 +3435,8 @@ impl WarpContext<'_> {
             // The batch's corners that the chunk needs, short of the batch's last point: that is
             // the next batch's first, which the next batch computes.
             let need = c.dx.max(start) - start..(c.dx + n).min(start + BATCH - 1) - start + 1;
-            self.approx.transform_part(true, xs, ys, ok, need.clone());
+            let points = 0..xs.len();
+            self.approx.exact(true, xs, ys, ok, points, &need);
             row.x.extend_from_slice(&xs[need.clone()]);
             row.y.extend_from_slice(&ys[need.clone()]);
             row.ok.extend_from_slice(&ok[need]);
@@ -3557,9 +3562,9 @@ impl Default for CornerBatch {
     }
 }
 
-/// The batches of output pixel corners along a row that a `sum` interpolates corners within: the
-/// corners of columns `k * SUM_CORNER_BATCH` to `(k + 1) * SUM_CORNER_BATCH` of the whole output
-/// grid, whatever the chunk that needs them.
+/// The batches of output pixel corners along a row that a `sum` transforms together when its
+/// transformer does not transform each point alone: the corners of columns `k * SUM_CORNER_BATCH`
+/// to `(k + 1) * SUM_CORNER_BATCH` of the whole output grid, whatever the chunk that needs them.
 const SUM_CORNER_BATCH: usize = 512;
 
 /// The length of the interval `[lo, hi]` inside pixel `p`, `[p, p + 1]`.
@@ -5161,6 +5166,37 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(warp(&[&ds], &o).unwrap().raster.data.to_f64_vec(), [1.0 + 2.0 + 3.0 + 4.0]);
+    }
+
+    /// A `sum`'s corners are transformed exactly, whatever the error threshold. A Web Mercator tile
+    /// at z13 (13/4419/2617) over 10 m UTM 33N pixels, about 1.1 of them across an output pixel, of
+    /// values that rise along y: the default threshold gives the pixels of an exact
+    /// transformation, bit for bit. Interpolated across a 512-column batch, which a 256-column
+    /// tile only half fills, the corners followed a chord of each row's curve on the source grid,
+    /// off it by up to 0.09 pixels and on one side, which moved the footprints about 0.06 pixels
+    /// up and the total by -5.2e-5.
+    #[test]
+    fn a_sum_transforms_its_corners_exactly_whatever_the_threshold() {
+        let ds = raster(400, 400, [447090.0, 10.0, 0.0, 6022390.0, 0.0, -10.0], 32633, |_, r| 1000.0 + r as f64);
+        let px = 19.109257071294063;
+        let warped = |error_threshold: f64| {
+            let o = WarpOptions {
+                dst_srs: Some(SpatialRef::from_epsg(3857).unwrap()),
+                dst_transform: Some([1580106.248711165, px, 0.0, 7235223.349361643, 0.0, -px]),
+                size: Some((256, 256)),
+                resampling: Resampling::Sum,
+                output_type: Some(DataType::F64),
+                error_threshold,
+                ..Default::default()
+            };
+            warp(&[&ds], &o).unwrap().raster.data.to_f64_vec()
+        };
+        let (exact, default) = (warped(0.0), warped(0.125));
+        let total = |v: &[f64]| v.iter().sum::<f64>();
+        let relative = (total(&default) - total(&exact)) / total(&exact);
+        assert!(relative.abs() < 1e-12, "the default threshold's total is {relative:e} off the exact transformation's");
+        let differ = default.iter().zip(&exact).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+        assert_eq!(differ, 0, "{differ} pixels differ from the exact transformation's");
     }
 
     /// Where a change of CRS bends the output's rows across the source's grid, the corners of a

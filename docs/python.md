@@ -357,6 +357,9 @@ level (for the `terrio.rio` ones, a source opened with `overview_level=n`, whose
 the same way), and the `TERRIO_WARP_SUM_MAX_BYTES` environment variable, a positive integer
 byte count, changes the budget. A `WarpedVRT` whose `dtype` differs from its source's counts
 the window in both types, which its cast holds at once.
+A `sum` transforms the corners of each output pixel exactly, whatever the error threshold (`et`,
+or `tolerance` in `terrio.rio`), so that each source pixel counts for its share of the output
+pixel's area: see [warp](cli.md#warp).
 Calls with loaded inputs reuse their existing pixels, including repeated references.
 File GCPs/RPCs of the first path are retained in mixed path/`Raster` calls.
 
