@@ -1456,6 +1456,27 @@ mod tests {
         assert!(asset_href(&item_loc, "relative").unwrap().starts_with(&format!("{base}/data.tif")));
     }
 
+    /// The subdatasets of a remote item leave out the assets that name local files, which could
+    /// not be opened.
+    #[cfg(remote)]
+    #[test]
+    fn a_remote_items_subdatasets_leave_out_local_assets() {
+        let item = serde_json::to_vec(&json!({
+            "type": "Feature", "stac_version": "1.0.0", "id": "x", "properties": {"datetime": "2026-01-01T00:00:00Z"},
+            "geometry": {"type": "Point", "coordinates": [1, 2]}, "links": [],
+            "assets": {
+                "local": {"href": "file:///etc/hosts", "type": "image/tiff; application=geotiff", "roles": ["data"]},
+                "remote": {"href": "data.tif", "type": "image/tiff; application=geotiff", "roles": ["data"]},
+            },
+        }))
+        .unwrap();
+        let (base, _) = crate::http::test_server(item);
+        let path = format!("{base}/item.json");
+        let Some(Ok(Info::Vector(v))) = info(&path, &InfoOptions::default()) else { panic!("not a vector info") };
+        let names: Vec<&str> = v.subdatasets.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, [format!("STAC:\"{path}\":remote")]);
+    }
+
     /// A mosaic of remote items leaves out the assets that name local files.
     #[test]
     fn a_mosaic_of_remote_items_leaves_out_local_assets() {
