@@ -71,18 +71,18 @@ pub fn thread_options() -> HashMap<String, Option<String>> {
     })
 }
 
-/// Runs `f` with `options` as this thread's innermost scope, popped afterwards even when `f`
-/// panics: work handed to another thread runs with the options of the thread that handed it
-/// ([`thread_options`]).
-pub(crate) fn with_scope<T>(options: HashMap<String, Option<String>>, f: impl FnOnce() -> T) -> T {
-    struct Pop;
-    impl Drop for Pop {
+/// Runs `f` with the captured thread options, replacing any worker scopes for its duration.
+/// Nested pool work can suspend another task on this worker; its options must not leak into
+/// this snapshot. The previous stack is restored even when `f` panics.
+pub(crate) fn with_thread_options<T>(options: HashMap<String, Option<String>>, f: impl FnOnce() -> T) -> T {
+    struct Restore(Vec<HashMap<String, Option<String>>>);
+    impl Drop for Restore {
         fn drop(&mut self) {
-            pop_scope();
+            SCOPES.with(|s| *s.borrow_mut() = std::mem::take(&mut self.0));
         }
     }
-    push_scope(options);
-    let _pop = Pop;
+    let previous = SCOPES.with(|s| std::mem::replace(&mut *s.borrow_mut(), vec![options]));
+    let _restore = Restore(previous);
     f()
 }
 
@@ -90,7 +90,15 @@ pub(crate) fn with_scope<T>(options: HashMap<String, Option<String>>, f: impl Fn
 /// failing test cannot leave them to the next on the thread.
 #[cfg(test)]
 pub(crate) fn with_options<T>(options: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
-    with_scope(options.iter().map(|(k, v)| (k.to_string(), Some(v.to_string()))).collect(), f)
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            pop_scope();
+        }
+    }
+    push_scope(options.iter().map(|(k, v)| (k.to_string(), Some(v.to_string()))).collect());
+    let _pop = Pop;
+    f()
 }
 
 #[cfg(test)]
@@ -102,9 +110,34 @@ mod tests {
         let key = "TERRIO_CONFIG_TEST_HANDED";
         let seen = with_options(&[(key, "set")], || {
             let options = thread_options();
-            std::thread::spawn(move || (get(key), with_scope(options, || get(key)), get(key))).join().unwrap()
+            std::thread::spawn(move || (get(key), with_thread_options(options, || get(key)), get(key))).join().unwrap()
         });
         assert_eq!(seen, (None, Some("set".to_string()), None));
+    }
+
+    #[test]
+    fn captured_options_isolate_worker_scopes_and_restore_after_nested_work_and_panics() {
+        let key = "TERRIO_CONFIG_TEST_WORKER";
+        with_options(&[(key, "worker")], || {
+            with_thread_options(HashMap::new(), || {
+                assert_eq!(get(key), None);
+                with_thread_options(HashMap::from([(key.into(), Some("nested".into()))]), || {
+                    assert_eq!(get(key).as_deref(), Some("nested"));
+                });
+                assert_eq!(get(key), None);
+            });
+            assert_eq!(get(key).as_deref(), Some("worker"));
+            let result = std::panic::catch_unwind(|| {
+                with_thread_options(HashMap::from([(key.into(), None)]), || {
+                    assert_eq!(get(key), None);
+                    assert_eq!(thread_options().get(key), Some(&None));
+                    panic!("restore the worker snapshot");
+                });
+            });
+            assert!(result.is_err());
+            assert_eq!(get(key).as_deref(), Some("worker"));
+        });
+        assert_eq!(get(key), None);
     }
 
     #[test]
