@@ -862,6 +862,7 @@ def test_a_warp_of_a_raster_in_memory_releases_the_gil():
     thread.start()
     while thread.is_alive():
         seen.append(time.perf_counter())
+        time.sleep(0.0005)  # a bounded sample, and the GIL left to the warp between samples
     thread.join()
     start, end = span
     quarter = (end - start) / 4
