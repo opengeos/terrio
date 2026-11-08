@@ -81,7 +81,7 @@ pub struct RasterizeOptions {
     /// `-ot`: the output data type. Float64 by default.
     pub data_type: Option<DataType>,
     /// `-init`: the initial values, one per band (or one for all). The nodata value by default,
-    /// or 0 when none is set. This follows GDAL's GeoTIFF background for every output format.
+    /// or 0 when none is set. This follows GDAL 3.13.3's GeoTIFF background for every output format.
     pub init: Vec<f64>,
     /// `-a_nodata`: the nodata value of the output. 0 when not given, as `gdal_rasterize` sets.
     pub nodata: Option<f64>,
@@ -115,12 +115,17 @@ pub fn rasterize(layers: &[Layer], options: &RasterizeOptions) -> Result<RasterD
     };
     let bands = options.burn_values.len().max(1);
     let dtype = options.data_type.unwrap_or(DataType::F64);
-    if let Some(nodata) = options.nodata
-        && super::is_integer(dtype)
-    {
-        let (lo, hi) = super::type_range(dtype);
-        let upper_exclusive = matches!(dtype, DataType::U64 | DataType::I64);
-        if !nodata.is_finite() || nodata.fract() != 0.0 || nodata < lo || nodata > hi || (upper_exclusive && nodata == hi) {
+    if let Some(nodata) = options.nodata {
+        let invalid = match dtype {
+            DataType::F32 => nodata.is_finite() && !(f32::MIN as f64..=f32::MAX as f64).contains(&nodata),
+            DataType::F64 => false,
+            _ => {
+                let (lo, hi) = super::type_range(dtype);
+                let upper_exclusive = matches!(dtype, DataType::U64 | DataType::I64);
+                !nodata.is_finite() || nodata.fract() != 0.0 || nodata < lo || nodata > hi || (upper_exclusive && nodata == hi)
+            }
+        };
+        if invalid {
             return Err(Error::InvalidArgument(format!("nodata {nodata} is not representable in {}", super::data_type_name(dtype))));
         }
     }
@@ -940,9 +945,12 @@ mod tests {
     }
 
     #[test]
-    fn refuses_unrepresentable_integer_nodata() {
+    fn refuses_nodata_outside_the_output_type() {
         let layers = [layer(vec![Geometry::multi_point(vec![Coord::xy(1.5, 1.5)])])];
         for (dtype, nodata) in [
+            (DataType::F32, 1e39),
+            (DataType::F32, -1e39),
+            (DataType::F32, f32::MAX as f64 * (1.0 + f64::EPSILON)),
             (DataType::I16, f64::NAN),
             (DataType::U8, -1.0),
             (DataType::I16, 1.5),
@@ -959,7 +967,14 @@ mod tests {
             };
             assert!(matches!(rasterize(&layers, &options), Err(Error::InvalidArgument(message)) if message.contains("not representable")));
         }
-        for (dtype, nodata) in [(DataType::U8, 255.0), (DataType::I16, -32768.0), (DataType::I64, -2f64.powi(63))] {
+        for (dtype, nodata) in [
+            (DataType::U8, 255.0),
+            (DataType::I16, -32768.0),
+            (DataType::I64, -2f64.powi(63)),
+            (DataType::F32, f32::MAX as f64),
+            (DataType::F32, f64::INFINITY),
+            (DataType::F64, 1e39),
+        ] {
             let options = RasterizeOptions {
                 burn_values: vec![7.0],
                 grid: Some(grid(3, 2)),

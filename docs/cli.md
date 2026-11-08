@@ -3335,7 +3335,10 @@ background. Terrio uses this policy for all output formats and in-memory rasters
 initialization is driver-dependent (for example, its ENVI output defaults to 0).
 Additive burns (`--add`) start from this background: nodata -1 plus a burn of 7 yields 6.
 Use `--init 0` to accumulate from zero. Integer output types require a finite, integral
-nodata value within the type's range; unrepresentable nodata is refused.
+nodata value within the type's range; unrepresentable nodata is refused. Finite Float32 nodata
+outside the Float32 range is also refused, before it can overflow or lose its validity mask.
+With a saturating integer background or NaN nodata, additive burns can remain at nodata;
+use `--init 0` to accumulate from zero.
 
 ## vector-grid
 

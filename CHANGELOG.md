@@ -49,7 +49,9 @@
 - Rasterize initializes uncovered pixels to the specified nodata value unless explicit
   initialization values are given. This follows GDAL's GeoTIFF behavior for all Terrio
   output formats and in-memory rasters, so uncovered pixels remain invalid by default.
-  Integer nodata values must be representable in the output type. Additive burns start
+  This changes existing `--add --a-nodata` calls that omitted `--init`. Integer nodata values
+  must be representable in the output type; finite Float32 nodata must be within its range.
+  Additive burns start
   from the background (nodata -1 plus burn 7 yields 6); use explicit zero initialization
   to accumulate from zero.
   The CLI catalog is now version 0.1.2 to describe this initialization default accurately.
