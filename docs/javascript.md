@@ -181,10 +181,11 @@ camelCase options. So do `zonalStats`, `makeValid`, `checkGeometry`, `clipVector
 `pipeline`, `retile`, `planRetile`, `rasterIndex`, `vectorIndex`, `rpftocCreate` and `vsiStat`.
 `takeWarnings` returns the warnings collected so far.
 
-`translate` reads a GeoTIFF (a `Dataset` opened from its bytes, or the bytes) by window, for the
-output alone, from the stored resolution its `overview` option selects, as `warp`'s does and
+`translate` reads the rasters the lazy reader opens (GeoTIFFs, JPEG 2000, GRIB, tile archives, as
+a `Dataset` opened from bytes or the bytes) by window, for the output alone, from the stored
+resolution its `overview` option selects where the reader exposes overviews, as `warp`'s does and
 `gdal_translate -ovr`: `"AUTO"` (the default), `"AUTO-n"`, `"NONE"` or a level from 0. Rasters in
-memory and other formats are translated at full resolution.
+memory, and formats read whole (ASCII grids, for instance), are translated at full resolution.
 
 ### Raster management
 

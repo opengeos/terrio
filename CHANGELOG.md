@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Python and JavaScript `translate` read paths, lazy rasters and byte inputs by window and take an
+  `overview` option (`AUTO` by default, `AUTO-n`, `NONE` or a level), as `terrio translate` and
+  `gdal_translate -ovr` do. Resized outputs of rasters with overviews can therefore change: they
+  are read from the overview GDAL picks for the output size, not full resolution; pass
+  `overview="NONE"` for the previous result. Python `rasterize` and `vector_grid` take
+  `tile_size` and `bigtiff`.
+
 - The `--json-usage` catalog (`schema_version` 0.1.1) records whether each argument is
   `repeatable` (clap Append/Count) and lists its `conflicts_with` arguments in both directions,
   including members of exclusive argument groups. A CI step requires a newer `schema_version`
