@@ -17,10 +17,11 @@ use std::collections::HashMap;
 
 type EntryIndex = HashMap<(String, bool), usize>;
 
-/// Removes credentials from diagnostics and public names: the user information of a URL's
-/// authority (`https://user:password@host/`) and credential-bearing query strings. A password is
-/// removed when it is percent-encoded, as URLs require: an unencoded `/`, `?` or `#` in it ends the
-/// authority, so the rest is taken for the path (an `@` in a path is not user information).
+/// Removes credentials from diagnostics and public names: userinfo in every URL authority
+/// and credential-bearing query strings. Raw whitespace in malformed userinfo is retained
+/// through the `@` for conservative redaction, avoiding password fragments. An unencoded
+/// `/`, `?` or `#` ends the authority; percent-encode those characters in passwords. An `@`
+/// in a path is not userinfo.
 pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
     let mut redacted = String::new();
     let mut copied = 0;
@@ -31,8 +32,9 @@ pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
         if authority < copied {
             continue;
         }
-        let end =
-            url[authority..].find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace()).map_or(url.len(), |end| authority + end);
+        // Raw spaces can occur in malformed userinfo in an error; stopping there would
+        // retain password fragments. Prefer conservative redaction until a URL delimiter.
+        let end = url[authority..].find(['/', '?', '#']).map_or(url.len(), |end| authority + end);
         if let Some(at) = url[authority..end].rfind('@') {
             redacted.push_str(&url[copied..authority]);
             copied = authority + at + 1;
@@ -798,6 +800,7 @@ mod tests {
         let redacted = super::redact_url("https://user:secret@example.com/f.tif?key=AIza123");
         assert_eq!(redacted, "https://example.com/f.tif?<redacted>");
         assert_eq!(super::redact_url("https://u:p@example.com"), "https://example.com");
+        assert_eq!(super::redact_url("https://user:my pass@host/x"), "https://host/x");
         assert_eq!(
             super::redact_url("https://a.example/x.tif redirected to https://user:secret@b.example/y then https://u:p@c.example"),
             "https://a.example/x.tif redirected to https://b.example/y then https://c.example"
