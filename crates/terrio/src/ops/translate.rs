@@ -89,7 +89,18 @@ pub fn translate_bytes(bytes: Vec<u8>, name: &str, options: &TranslateOptions, o
 fn terminal_open_error(error: &Error, name: &str) -> bool {
     matches!(error, Error::InvalidArgument(_) | Error::Http(_))
         || error.is_resource_refusal()
-        || matches!(error, Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound && !name.contains(':'))
+        || matches!(error, Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound && !name_has_prefix(name))
+}
+
+/// Whether a name carries a URL scheme or GDAL prefix (`s3://`, `gdal:`), as opposed to a
+/// plain path. A Windows drive letter is part of a plain path, with or without a separator after
+/// it (`C:\dir`, `C:/dir`, drive-relative `C:file`) and behind a verbatim prefix (`\\?\C:\dir`,
+/// as `std::fs::canonicalize` returns). No scheme or GDAL prefix is a single letter.
+fn name_has_prefix(name: &str) -> bool {
+    let name = name.strip_prefix(r"\\?\").unwrap_or(name);
+    let bytes = name.as_bytes();
+    let rest = if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' { &name[2..] } else { name };
+    rest.contains(':')
 }
 
 /// Refuses a stored-level selector before allocating a whole raster.
@@ -933,6 +944,14 @@ mod tests {
             assert!(terminal_open_error(&error, "missing.tif"));
         }
         assert!(!terminal_open_error(&Error::Unsupported("codec".into()), "input.tif"));
+        let not_found = || Error::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert!(terminal_open_error(&not_found(), r"C:\data\missing.tif"));
+        assert!(terminal_open_error(&not_found(), "C:/data/missing.tif"));
+        assert!(terminal_open_error(&not_found(), "C:missing.tif"));
+        assert!(terminal_open_error(&not_found(), r"\\?\C:\data\missing.tif"));
+        assert!(!terminal_open_error(&not_found(), "gdal:missing.tif"));
+        assert!(!terminal_open_error(&not_found(), "/vsis3/bucket:key.tif"));
+        assert!(!terminal_open_error(&not_found(), "s3://bucket/missing.tif"));
         let missing = tempfile::tempdir().unwrap().path().join("missing.tif");
         let result = translate_path(missing.to_str().unwrap(), &TranslateOptions::default(), OverviewSelection::Level(0));
         assert!(matches!(result, Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound));
