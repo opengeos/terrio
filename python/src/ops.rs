@@ -1562,7 +1562,13 @@ fn warp(
                         let r = obj.bind(py).try_borrow().map_err(|e| terrio::Error::InvalidArgument(e.to_string()))?;
                         Ok::<_, terrio::Error>(r.inner.shared_dataset())
                     })?;
-                    Ok(shared.map(|ds| visit(&ds)).is_some())
+                    match shared {
+                        Some(ds) => {
+                            visit(&ds);
+                            Ok(true)
+                        }
+                        None => Ok(false),
+                    }
                 }
             }
         }

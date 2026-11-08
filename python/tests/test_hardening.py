@@ -850,11 +850,14 @@ def test_a_warp_of_a_raster_in_memory_releases_the_gil():
     No speed threshold decides, only whether the thread ran at all."""
     data = np.random.default_rng(0).random((3000, 3000), dtype="float32")
     src = terrio.Raster.from_array(data, (500000.0, 10.0, 0.0, 4000000.0, 0.0, -10.0), "EPSG:32631")
-    span = []
+    span, errors = [], []
 
     def warp():
         span.append(time.perf_counter())
-        terrio.warp(src, t_srs="EPSG:32632", resampling="bilinear")
+        try:
+            terrio.warp(src, t_srs="EPSG:32632", resampling="bilinear")
+        except Exception as e:  # a thread's exception is otherwise lost
+            errors.append(e)
         span.append(time.perf_counter())
 
     thread = threading.Thread(target=warp)
@@ -864,6 +867,7 @@ def test_a_warp_of_a_raster_in_memory_releases_the_gil():
         seen.append(time.perf_counter())
         time.sleep(0.0005)  # a bounded sample, and the GIL left to the warp between samples
     thread.join()
+    assert not errors, errors
     start, end = span
     quarter = (end - start) / 4
     assert any(start + quarter < t < end - quarter for t in seen), (end - start, len(seen))
