@@ -8,6 +8,14 @@ GDAL's sum multiplied by the exact source/overview pixel-area ratio, only at val
 NONE uses GDAL's full-resolution result directly. Includes a real USGS DEM crop.
 Each fixture has one overview and a coarse target, so AUTO checks level-0 selection;
 it does not exercise selection among multiple levels.
+
+Default-grid cases reproject without an extent, where gdalwarp rounds the suggested size up
+for a sum (GDAL_SWO_ROUND_UP_SIZE): with no size or resolution, with --ts alone (whose pixel
+size follows the rounded-up extent) and with --tr alone. They compare the size, type, nodata,
+CRS and geotransform. Without --tr, the output covers the source, and its total is compared
+with the source's and GDAL's; with --tr, which crops the rounded-up extent to whole pixels in
+both tools, only with GDAL's. Pixels are not compared: under a reprojection, terrio's areal
+shares differ from GDAL's per pixel.
 """
 
 import argparse
@@ -61,6 +69,83 @@ def fixtures(root, data):
     yield "USGS", path, extent, (16, 16), 1e-4
 
 
+def default_grid_fixtures(root, data):
+    """Sources reprojected on their suggested grid: a small UTM raster and real terrain."""
+    path = root / "utm.tif"
+    rows, cols = np.mgrid[:37, :41]
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(32615)
+    ds = gdal.GetDriverByName("GTiff").Create(str(path), 41, 37, 1, gdal.GDT_Float32)
+    ds.SetProjection(srs.ExportToWkt())
+    ds.SetGeoTransform((100, 10, 0, 500, 0, -10))
+    ds.GetRasterBand(1).SetNoDataValue(-9999)
+    ds.GetRasterBand(1).WriteArray(((cols * 7 + rows * 13) % 50 + 0.25).astype("float32"))
+    ds = None
+    for dst, ts, tr in (("EPSG:4326", (30, 30), (0.0005, 0.0005)), ("EPSG:32616", (50, 45), (7, 7)), ("EPSG:3857", (41, 38), (13, 11))):
+        yield f"UTM 41x37 to {dst}", path, dst, None, 1e-9
+        yield f"UTM 41x37 to {dst} ts {ts[0]} {ts[1]}", path, dst, ("ts", ts), 1e-9
+        yield f"UTM 41x37 to {dst} tr {tr[0]} {tr[1]}", path, dst, ("tr", tr), 5e-4
+    path = root / "terrain-default.tif"
+    ds = gdal.Translate(str(path), str(Path(data) / "usgs_dem.tif"), srcWin=[1000, 1000, 400, 400])
+    ds = None
+    yield "USGS 400x400 to EPSG:32613", path, "EPSG:32613", None, 1e-6
+    for dst, ts, tr in (("EPSG:32613", (200, 250), (50, 50)), ("EPSG:3857", (333, 401), (17, 23))):
+        yield f"USGS 400x400 to {dst} ts {ts[0]} {ts[1]}", path, dst, ("ts", ts), 1e-6
+        yield f"USGS 400x400 to {dst} tr {tr[0]} {tr[1]}", path, dst, ("tr", tr), 5e-4
+
+
+def total(path):
+    """The sum of a raster's valid pixels, in double precision."""
+    ds = gdal.Open(str(path))
+    band = ds.GetRasterBand(1)
+    values, valid = band.ReadAsArray().astype("float64"), band.GetMaskBand().ReadAsArray() != 0
+    return float(values[valid].sum())
+
+
+def default_grid_record(root, terrio, name, source, dst, grid, tol):
+    """Compares a sum on the suggested grid by size, georeferencing and totals.
+
+    ``grid`` is ``None``, ``("ts", (width, height))`` or ``("tr", (xres, yres))``.
+    """
+    reference, actual = root / "default-gdal.tif", root / "default-terrio.tif"
+    record = {"name": f"sum default grid {name}", "tol": tol, "gdal_version": gdal.VersionInfo("RELEASE_NAME")}
+    try:
+        kind, value = grid or (None, None)
+        options = {"ts": {"width": value[0], "height": value[1]}, "tr": {"xRes": value[0], "yRes": value[1]}}[kind] if kind else {}
+        gdal.Warp(str(reference), str(source), format="GTiff", dstSRS=dst, resampleAlg="sum",
+                  outputType=gdal.GDT_Float64, overviewLevel="NONE", **options)
+        command = [terrio, "warp", str(source), str(actual), "--t-srs", dst, "-r", "sum", "--ot", "Float64", "--overview", "NONE"]
+        if kind:
+            command += [f"--{kind}", *map(str, value)]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode:
+            raise RuntimeError(result.stderr.strip())
+        expected, got = gdal.Open(str(reference)), gdal.Open(str(actual))
+        record["size"] = f"{expected.RasterXSize}x{expected.RasterYSize}"
+        record["same_size"] = (expected.RasterXSize, expected.RasterYSize) == (got.RasterXSize, got.RasterYSize)
+        eb, tb = expected.GetRasterBand(1), got.GetRasterBand(1)
+        record["same_type"] = eb.DataType == tb.DataType
+        record["same_nodata"] = eb.GetNoDataValue() == tb.GetNoDataValue()
+        record["same_crs"] = bool(expected.GetSpatialRef().IsSame(got.GetSpatialRef()))
+        egt, tgt = expected.GetGeoTransform(), got.GetGeoTransform()
+        record["gt_diff_px"] = max(abs(a - b) for a, b in zip(egt, tgt, strict=True)) / abs(egt[1])
+        record["same_georeferencing"] = record["gt_diff_px"] <= 1e-8
+        expected = got = eb = tb = None
+        totals = {"source": total(source), "gdal": total(reference), "terrio": total(actual)}
+        record.update({f"{k}_total": v for k, v in totals.items()})
+        # Relative differences of terrio's total from the source's and from GDAL's (only GDAL's
+        # with --tr, whose output need not cover the source).
+        against = ("gdal",) if kind == "tr" else ("source", "gdal")
+        diff = max(abs(totals["terrio"] - totals[k]) / abs(totals[k]) for k in against)
+        record["max_diff"] = diff
+        record["differing"] = int(diff != 0)
+        record["exact"] = float(diff == 0)
+        record["within_tol"] = float(diff <= tol)
+    except Exception as error:
+        record["error"] = str(error)
+    return record
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data")
@@ -106,8 +191,10 @@ def main():
                     record["error"] = str(error)
                 records.append(record)
                 ds = expected = got = src = overview = band = None
+        for name, source, dst, grid, tol in default_grid_fixtures(root, args.data):
+            records.append(default_grid_record(root, args.terrio, name, source, dst, grid, tol))
     passed = ["error" not in r and r.get("same_size") and r.get("same_type") and r.get("same_nodata")
-              and r.get("gt_diff_px", 1) <= 1e-8 and r.get("within_tol", 0) == 1 for r in records]
+              and r.get("same_crs", True) and r.get("gt_diff_px", 1) <= 1e-8 and r.get("within_tol", 0) == 1 for r in records]
     if args.json:
         print(json.dumps(records, indent=2))
     else:

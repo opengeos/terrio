@@ -7,6 +7,7 @@
 //! values or the nodata value have decimals, then Float32 (Float64 for out-of-range nodata).
 
 use super::common;
+use crate::dataset::fallible;
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
 use std::fmt::Write as _;
@@ -71,12 +72,21 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
         data_type = DataType::F32;
     }
 
-    let n = cols * rows;
-    let mut tokens = body.split_ascii_whitespace();
+    // A resource refusal, which the GDAL fallback does not retry.
+    let n = cols
+        .checked_mul(rows)
+        .ok_or_else(|| Error::ResourceLimit(format!("{}: a grid of {cols} x {rows} cells is too large", path.display())))?;
     let short = || bad(&format!("expected {n} values"));
+    // Each value takes a character and a separator: a body too short to hold them all is refused
+    // at once; otherwise its values are counted. Only then are the buffers allocated, fallibly.
+    if n > body.len() / 2 + 1 || body.split_ascii_whitespace().take(n).count() < n {
+        return Err(short());
+    }
+    let mut tokens = body.split_ascii_whitespace();
     let data = match data_type {
         DataType::I32 => {
-            let mut v = Vec::with_capacity(n);
+            let mut v = Vec::new();
+            fallible::reserve(&mut v, n, "an Esri ASCII grid")?;
             for _ in 0..n {
                 let t = tokens.next().ok_or_else(short)?;
                 v.push(t.parse::<i32>().or_else(|_| t.parse::<f64>().map(|f| f as i32)).map_err(|_| bad(&format!("invalid value '{t}'")))?);
@@ -84,7 +94,8 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
             RasterData::I32(v)
         }
         DataType::F32 => {
-            let mut v = Vec::with_capacity(n);
+            let mut v = Vec::new();
+            fallible::reserve(&mut v, n, "an Esri ASCII grid")?;
             for _ in 0..n {
                 let t = tokens.next().ok_or_else(short)?;
                 let x = if t == "null" {
@@ -98,7 +109,8 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
             RasterData::F32(v)
         }
         _ => {
-            let mut v = Vec::with_capacity(n);
+            let mut v = Vec::new();
+            fallible::reserve(&mut v, n, "an Esri ASCII grid")?;
             for _ in 0..n {
                 let t = tokens.next().ok_or_else(short)?;
                 v.push(if t == "null" { -f64::MAX } else { common::parse_f64(t).ok_or_else(|| bad(&format!("invalid value '{t}'")))? });
@@ -198,5 +210,23 @@ mod tests {
         let ds = read(&p).unwrap();
         assert_eq!(ds.raster.data_f32().unwrap(), &[1.5, -f32::MAX]);
         assert!(!ds.has_nodata);
+    }
+
+    #[test]
+    fn a_header_declaring_more_cells_than_the_file_holds_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.asc");
+        // 2^31 cells (8 GB of Float32 values) declared, 3 given: an error before allocating.
+        std::fs::write(&p, "ncols 65536\nnrows 32768\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3\n").unwrap();
+        let e = read(&p).unwrap_err();
+        assert!(e.to_string().contains("expected 2147483648 values"), "{e}");
+        // A body long enough by its length, padded with spaces, holding 3 values of 2048.
+        std::fs::write(&p, format!("ncols 64\nnrows 32\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3{}\n", " ".repeat(5000))).unwrap();
+        let e = read(&p).unwrap_err();
+        assert!(e.to_string().contains("expected 2048 values"), "{e}");
+        // More cells than a count holds, whatever the pointer width: a resource refusal.
+        std::fs::write(&p, format!("ncols {}\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3\n", usize::MAX)).unwrap();
+        let e = read(&p).unwrap_err();
+        assert!(e.to_string().contains("too large") && e.is_resource_refusal(), "{e:?}");
     }
 }
