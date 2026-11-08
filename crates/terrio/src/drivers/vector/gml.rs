@@ -518,8 +518,13 @@ pub fn to_string(layer: &Layer, schema: &str) -> String {
     let name = element_name(&layer.name);
     let code = super::naming_epsg(layer);
     // The emitted EPSG URN declares authority order, even when source WKT omits axes or
-    // declares another order. Geometry coordinates are already in traditional GIS XY order.
-    let swap = code.and_then(|code| SpatialRef::from_epsg(code).ok()).is_some_and(|srs| srs.has_north_east_axis_order());
+    // declares another order. If the authority is unavailable, retain the layer's declared
+    // axes. Geometry coordinates are already in traditional GIS XY order.
+    let swap = code.is_some()
+        && code
+            .and_then(|code| SpatialRef::from_epsg(code).ok())
+            .unwrap_or_else(|| SpatialRef::from_layer(layer))
+            .has_north_east_axis_order();
     let srs = code.map(|c| format!(r#" srsName="urn:ogc:def:crs:EPSG::{c}""#)).unwrap_or_default();
     let fields = written_fields(layer);
     let mut s = String::new();
@@ -731,6 +736,19 @@ mod tests {
         assert!(text.contains(">43.56 12.24<"), "{text}");
         let restored = &parse(&xml::parse(&text).unwrap(), None).unwrap()[0];
         assert_eq!(restored.features[0].geometry, layer.features[0].geometry);
+    }
+
+    #[test]
+    fn gml_writer_retains_declared_axes_when_authority_is_unknown() {
+        let mut layer = Layer::new("places").with_epsg(999999);
+        assert!(SpatialRef::from_epsg(999999).is_err());
+        layer.set_crs_wkt(Some(
+            r#"GEOGCS["Custom geographic",DATUM["Custom",SPHEROID["Sphere",6371000,0]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","999999"]]"#.into(),
+        ));
+        layer.push(Feature { fid: 0, geometry: Some(Geometry::point(12.24, 43.56)), attributes: vec![] });
+        let text = to_string(&layer, "");
+        assert!(text.contains("urn:ogc:def:crs:EPSG::999999"), "{text}");
+        assert!(text.contains(">43.56 12.24<"), "{text}");
     }
 
     #[test]
