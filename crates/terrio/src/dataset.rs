@@ -913,6 +913,11 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
 #[cfg(feature = "gdal")]
 pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(&str) -> Result<T>) -> Result<T> {
     let Err(e) = result else { return result };
+    // A second pointer parser could bypass native STAC asset-consent and local-file policies.
+    // Individual raster assets can still use GDAL through their own ordinary opens.
+    if path.split_once(':').is_some_and(|(prefix, _)| ["STAC", "STACIT", "STACTA"].iter().any(|name| prefix.eq_ignore_ascii_case(name))) {
+        return Err(e);
+    }
     let retry = match &e {
         Error::InvalidArgument(_) | Error::Http(_) => false,
         e if e.is_resource_refusal() => false,
@@ -929,6 +934,16 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
 #[cfg(all(test, feature = "gdal"))]
 mod fallback_limits {
     use super::*;
+
+    #[test]
+    fn stac_pointer_refusals_are_not_reinterpreted_by_gdal() {
+        for name in ["STAC:item.json:data", "STACIT:item.json", "STACTA:item.json"] {
+            let result: Result<()> = gdal_fallback(name, Err(Error::InvalidData("invalid pointer metadata".into())), |_| {
+                panic!("STAC policy bypassed by a second pointer parser")
+            });
+            assert!(matches!(result, Err(Error::InvalidData(_))));
+        }
+    }
 
     #[test]
     fn resource_refusals_are_not_retried() {

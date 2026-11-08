@@ -101,12 +101,19 @@ fn link_redirects(link: bool) -> crate::http::Redirects {
 }
 
 fn fetch_json(loc: &str) -> Result<Value> {
-    serde_json::from_slice(&fetch(loc)?).map_err(|e| bad(format!("{loc}: {e}")))
+    parse_document(&fetch(loc)?, loc)
 }
 
 /// [`fetch_json`] of a link's target: see [`fetch_as`].
 fn fetch_link_json(loc: &str) -> Result<Value> {
-    serde_json::from_slice(&fetch_as(loc, true)?).map_err(|e| bad(format!("{loc}: {e}")))
+    parse_document(&fetch_as(loc, true)?, loc)
+}
+
+/// Checks declared asset credentials before any later metadata error can trigger a fallback.
+fn parse_document(bytes: &[u8], loc: &str) -> Result<Value> {
+    let doc = serde_json::from_slice(bytes).map_err(|e| bad(format!("{}: {e}", crate::vsi::listing::redact_url(loc))))?;
+    check_document_assets(&doc, loc)?;
+    Ok(doc)
 }
 
 /// A page of search results to request: a `GET` of a URL, or a `POST` of a JSON body.
@@ -135,7 +142,7 @@ impl Request {
             #[cfg(not(remote))]
             _ => return Err(bad(format!("{}: POST requests and request headers need the `remote` feature", self.url))),
         };
-        serde_json::from_slice(&bytes).map_err(|e| bad(format!("{}: {e}", self.url)))
+        parse_document(&bytes, &self.url)
     }
 }
 
@@ -303,6 +310,164 @@ fn local_backed(loc: &crate::vfs::Location) -> bool {
 pub(crate) fn names_local_files(doc_loc: &str, href: &str) -> bool {
     let parse = crate::vfs::Location::parse;
     !local_backed(&parse(doc_loc)) && local_backed(&parse(href))
+}
+
+/// Checks an asset chosen by a document before opening it. The opt-in concerns ambient user
+/// credentials, not a signature already present in the document's href or public PC signing.
+/// Local-file and credential refusals are terminal, including through the GDAL fallback.
+pub(crate) fn check_asset_access(doc_loc: &str, href: &str) -> Result<()> {
+    let redact = crate::vsi::listing::redact_url;
+    if names_local_files(doc_loc, href) {
+        return Err(Error::InvalidArgument(format!("STAC: the remote item '{}' names local files ({})", redact(doc_loc), redact(href))));
+    }
+    #[cfg(remote)]
+    if !local_backed(&crate::vfs::Location::parse(doc_loc))
+        && !option_on("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS")
+        && asset_uses_credentials(doc_loc, href)
+    {
+        return Err(Error::InvalidArgument(format!(
+            "STAC: remote document '{}' selects asset '{}' with configured credentials; \
+             set TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES to allow this read",
+            redact(doc_loc),
+            redact(href)
+        )));
+    }
+    Ok(())
+}
+
+/// Checks all declared assets, including unselected ones, before interpreting a remote STAC
+/// document. Metadata listing therefore requires the same credential consent as raster opens.
+/// Existing local-asset omission rules are kept; this preflight concerns ambient credentials.
+pub(crate) fn check_document_assets(doc: &Value, location: &str) -> Result<()> {
+    if local_backed(&crate::vfs::Location::parse(location)) {
+        return Ok(());
+    }
+    for key in ["assets", "asset_templates"] {
+        for asset in doc[key].as_object().into_iter().flatten().map(|(_, asset)| asset) {
+            if let Some(href) = asset["href"].as_str() {
+                let href = if key == "asset_templates" {
+                    href.strip_prefix("azure://").map_or_else(|| href.to_string(), |rest| format!("az://{rest}"))
+                } else {
+                    href.to_string()
+                };
+                let href = resolve_href(location, &href);
+                if !names_local_files(location, &href) {
+                    check_asset_access(location, &href)?;
+                }
+            }
+        }
+    }
+    for item in doc["features"].as_array().into_iter().flatten() {
+        check_document_assets(item, location)?;
+    }
+    Ok(())
+}
+
+/// A recognized remote STAC document must keep the native pointer policies when it fails,
+/// rather than be reinterpreted by GDAL after a metadata or pixel-reading error.
+pub(crate) fn keep_remote_refusal<T>(location: &str, result: Result<T>) -> Result<T> {
+    result.map_err(|error| {
+        if local_backed(&crate::vfs::Location::parse(location))
+            || matches!(error, Error::InvalidArgument(_) | Error::Http(_))
+            || error.is_resource_refusal()
+        {
+            error
+        } else {
+            let shown = crate::vsi::listing::redact_url(location);
+            let detail = error.to_string().replace(location, &shown);
+            Error::InvalidArgument(format!(
+                "STAC: native reader refused remote document '{shown}' ({detail}); GDAL pointer fallback is disabled"
+            ))
+        }
+    })
+}
+
+/// A backing object, including one inside nested zip archives, that would use ambient auth.
+#[cfg(remote)]
+fn asset_uses_credentials(doc_loc: &str, href: &str) -> bool {
+    use crate::vfs::Location;
+    fn backing(location: &Location) -> &Location {
+        match location {
+            Location::Zip { archive, .. } => backing(archive),
+            other => other,
+        }
+    }
+    let location = Location::parse(href);
+    let object = backing(&location);
+    // Preserve the provider spelling too: gs:// and az:// become ordinary URLs in Location.
+    let s3 = matches!(object, Location::S3 { .. });
+    let gs = href.contains("gs://") || href.contains("/vsigs/");
+    let az = href.contains("az://") || href.contains("/vsiaz/");
+    let cloud = s3 || gs || az;
+    let same_http_origin = match (backing(&Location::parse(doc_loc)), object) {
+        (Location::Url(from), Location::Url(to)) => crate::vfs::url_origin(from) == crate::vfs::url_origin(to),
+        _ => false,
+    };
+    let configured_headers_or_s3 = object.remote().is_some_and(|remote| crate::http::uses_configured_credentials(&remote));
+    // Same-origin ordinary HTTP assets keep their existing header authentication. Cloud URI
+    // assets require consent even when the document is held in the same bucket/account.
+    if configured_headers_or_s3 && (cloud || !same_http_origin) {
+        return true;
+    }
+    // az:// parsing appends the configured SAS, which is not an HTTP header. Native Azure
+    // currently uses it even if GDAL's AZURE_NO_SIGN_REQUEST option is set.
+    if az && crate::config::get("AZURE_STORAGE_SAS_TOKEN").is_some() {
+        return true;
+    }
+    #[cfg(feature = "gdal")]
+    if cloud && gdal_cloud_credentials(s3, gs, az) {
+        return true;
+    }
+    false
+}
+
+/// Explicit credential sources that the optional GDAL backend understands beyond native auth.
+/// This only inspects configuration and file existence, never a metadata service or an SDK.
+#[cfg(all(remote, feature = "gdal"))]
+fn gdal_cloud_credentials(s3: bool, gs: bool, az: bool) -> bool {
+    let any = |keys: &[&str]| keys.iter().any(|key| crate::config::get(key).is_some());
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from);
+    if any(&["GDAL_HTTP_HEADER_FILE"]) {
+        return true;
+    }
+    if s3 && !option_on("AWS_NO_SIGN_REQUEST") {
+        let configured = any(&[
+            "CPL_AWS_CREDENTIALS_FILE",
+            "AWS_SHARED_CREDENTIALS_FILE",
+            "AWS_CONFIG_FILE",
+            "AWS_ROLE_ARN",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        ]);
+        let profile = home.as_ref().is_some_and(|h| h.join(".aws/credentials").is_file() || h.join(".aws/config").is_file());
+        if configured || profile {
+            return true;
+        }
+    }
+    if gs
+        && !option_on("GS_NO_SIGN_REQUEST")
+        && (any(&[
+            "GS_SECRET_ACCESS_KEY",
+            "GS_ACCESS_KEY_ID",
+            "GS_OAUTH2_REFRESH_TOKEN",
+            "GS_OAUTH2_PRIVATE_KEY",
+            "GS_OAUTH2_PRIVATE_KEY_FILE",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "CPL_GS_CREDENTIALS_FILE",
+        ]) || home.as_ref().is_some_and(|h| h.join(".boto").is_file()))
+    {
+        return true;
+    }
+    az && !option_on("AZURE_NO_SIGN_REQUEST")
+        && any(&[
+            "AZURE_STORAGE_ACCESS_KEY",
+            "AZURE_STORAGE_ACCESS_TOKEN",
+            "TERRIO_AZURE_ACCESS_TOKEN",
+            "AZURE_STORAGE_CONNECTION_STRING",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_FEDERATED_TOKEN_FILE",
+        ])
 }
 
 /// An href resolved against the location of the document holding it.
@@ -805,9 +970,7 @@ fn asset_href(item_loc: &str, asset: &str) -> Result<String> {
         bad(format!("'{}' has no asset '{asset}' (assets: {})", crate::vsi::listing::redact_url(item_loc), names.join(", ")))
     })?;
     let href = resolve_href(item_loc, href);
-    if names_local_files(item_loc, &href) {
-        return Err(bad(format!("the remote item '{}' names local files (asset '{asset}')", crate::vsi::listing::redact_url(item_loc))));
-    }
+    check_asset_access(item_loc, &href)?;
     sign_href(href, &item, item_loc, SignMode::from_env())
 }
 
@@ -820,6 +983,8 @@ struct AssetItem {
     /// The href, unsigned: a signed one is made when the file is opened, so that its token is
     /// current.
     href: String,
+    /// The document that selected this href, retained for the check at each deferred open.
+    document: String,
     /// Whether the href is signed before it is opened.
     sign: bool,
     datetime: String,
@@ -831,6 +996,7 @@ struct AssetItem {
 impl AssetItem {
     /// Opens the item's file, its href signed now if it is to be signed.
     fn open(&self) -> Result<LazyRaster> {
+        check_asset_access(&self.document, &self.href)?;
         if self.sign { LazyRaster::open(&signed(self.href.clone())?) } else { LazyRaster::open(&self.href) }
     }
 }
@@ -963,6 +1129,7 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
                 by_crs: BTreeMap::new(),
             });
             entry.by_crs.entry(crs).or_default().push(AssetItem {
+                document: base.clone(),
                 sign: needs_signing(&href, item, base, sign),
                 href,
                 datetime: props["datetime"].as_str().unwrap_or_default().to_string(),
@@ -1111,6 +1278,9 @@ fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>, kept: &st
     let (_, assets) = groups.into_iter().next().ok_or_else(|| bad("no collection"))?;
     let (_, group) = assets.into_iter().next().ok_or_else(|| bad("no asset"))?;
     let (crs, mut items) = group.by_crs.into_iter().next().ok_or_else(|| bad("no CRS"))?;
+    for item in &items {
+        check_asset_access(&item.document, &item.href)?;
+    }
     let (mut xmin, mut ymin, mut xmax, mut ymax) = (f64::MAX, f64::MAX, -f64::MAX, -f64::MAX);
     let (mut rx, mut ry) = (0.0, 0.0);
     let strategy = resolution.unwrap_or("AVERAGE");
@@ -1225,11 +1395,26 @@ fn probe(path: &str) -> Option<Result<Probe>> {
         Ok(b) => b,
         Err(e) => return Some(Err(e)),
     };
-    match serde_json::from_slice::<Value>(&bytes) {
+    match parse_document(&bytes, path) {
         Ok(v) if crate::stacta::is_stacta(&v) && kind(&v) == Some(Kind::Item) => {
             crate::stacta::Item::parse(&bytes, path).map(|item| Ok(Probe::Stacta(Box::new(item))))
         }
         Ok(v) if kind(&v).is_some() => Some(Ok(Probe::Stac(v))),
+        Err(error) if matches!(error, Error::InvalidArgument(_)) || error.is_resource_refusal() => Some(Err(error)),
+        Err(error)
+            if !loc.is_local()
+                && (loc.file_name().to_ascii_lowercase().ends_with(".json")
+                    || loc.file_name().to_ascii_lowercase().ends_with(".geojson")
+                    || bytes
+                        .strip_prefix(b"\xef\xbb\xbf")
+                        .unwrap_or(&bytes)
+                        .iter()
+                        .copied()
+                        .find(|b| !b.is_ascii_whitespace())
+                        .is_some_and(|b| matches!(b, b'{' | b'[' | b'/'))) =>
+        {
+            Some(Err(Error::InvalidArgument(format!("STAC: invalid remote JSON document; GDAL pointer fallback is disabled ({error})"))))
+        }
         _ if loc.is_local() => None,
         _ => Some(crate::memory::open_bytes(bytes, &loc.file_name()).map(|ds| Probe::Other(Box::new(ds)))),
     }
@@ -1254,12 +1439,15 @@ pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
         Some(Name::Mosaic { .. }) => return Some(open_lazy(path)?.and_then(|mut r| r.read()).map(Dataset::Raster)),
         None => {}
     }
-    Some(match probe(path)? {
-        Ok(Probe::Stac(doc)) => footprint_dataset(doc, path, DEFAULT_MAX_ITEMS).map(|(v, _)| Dataset::Vector(v)),
-        Ok(Probe::Stacta(item)) => crate::stacta::open_first(*item, None, None).and_then(|mut r| r.read()).map(Dataset::Raster),
-        Ok(Probe::Other(ds)) => Ok(*ds),
-        Err(e) => Err(e),
-    })
+    Some(keep_remote_refusal(
+        path,
+        match probe(path)? {
+            Ok(Probe::Stac(doc)) => footprint_dataset(doc, path, DEFAULT_MAX_ITEMS).map(|(v, _)| Dataset::Vector(v)),
+            Ok(Probe::Stacta(item)) => crate::stacta::open_first(*item, None, None).and_then(|mut r| r.read()).map(Dataset::Raster),
+            Ok(Probe::Other(ds)) => Ok(*ds),
+            Err(e) => Err(e),
+        },
+    ))
 }
 
 /// [`open`] for a raster. A remote document that [`probe`] would fetch whole by range (one named
@@ -1274,7 +1462,18 @@ pub(crate) fn open_raster(path: &str) -> Option<Result<Dataset>> {
     if let Some(e) = refused_as_raster(path) {
         return Some(Err(e));
     }
-    open(path)
+    open(path).map(|result| {
+        result.and_then(|dataset| {
+            if matches!(dataset, Dataset::Vector(_)) && !local_backed(&crate::vfs::Location::parse(path)) {
+                Err(Error::InvalidArgument(format!(
+                    "'{}' is a vector, not a raster dataset; GDAL pointer fallback is disabled",
+                    crate::vsi::listing::redact_url(path)
+                )))
+            } else {
+                Ok(dataset)
+            }
+        })
+    })
 }
 
 /// The refusal of a remote document (see [`open_raster`]) whose first bytes show no STAC document,
@@ -1417,6 +1616,159 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Configured AWS credentials must not turn a remote document into a signed-store read.
+    #[cfg(remote)]
+    #[test]
+    fn credentialed_assets_need_consent_before_any_store_request() {
+        let pixels = include_bytes!("../tests/data/resampled_reads/rgb_mask.tif").to_vec();
+        let (store, seen) = crate::http::test_server(pixels.clone());
+        let doc = serde_json::to_vec(&json!({
+            "type": "Feature", "stac_version": "1.0.0", "id": "x", "collection": "c", "geometry": null, "links": [], "stac_extensions": ["proj"],
+            "properties": {"datetime": "2026-01-01T00:00:00Z", "proj:epsg": 32615, "proj:bbox": [0,0,64,48], "proj:shape": [48,64]},
+            "assets": {
+                "data": {"href": "s3://private/data.tif"},
+                "vsi": {"href": "/vsis3/private/data.tif"},
+                "zip": {"href": "/vsizip/{s3://private/data.zip}/data.tif"}
+            }
+        })).unwrap();
+        let (catalog, _) = crate::http::test_server(doc.clone());
+        let item = format!("{catalog}/item.json?token=document-secret");
+        crate::config::with_options(
+            &[
+                ("AWS_ACCESS_KEY_ID", "test-key"),
+                ("AWS_SECRET_ACCESS_KEY", "test-secret"),
+                ("AWS_REGION", "us-east-1"),
+                ("AWS_NO_SIGN_REQUEST", "NO"),
+                ("AWS_S3_ENDPOINT", &store),
+                ("AWS_VIRTUAL_HOSTING", "FALSE"),
+                ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO"),
+            ],
+            || {
+                for asset in ["data", "vsi", "zip"] {
+                    let name = format!("STAC:\"{item}\":{asset}");
+                    let results = [
+                        crate::open(&name).map(|_| ()),
+                        crate::open_raster(&name).map(|_| ()),
+                        LazyRaster::open(&name).map(|_| ()),
+                        crate::info::info_path(&name, &InfoOptions::default()).map(|_| ()),
+                    ];
+                    for result in results {
+                        let error = result.unwrap_err();
+                        assert!(matches!(error, Error::InvalidArgument(_)), "{error}");
+                        let message = error.to_string();
+                        assert!(message.contains("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES"), "{message}");
+                        assert!(!message.contains("document-secret") && !message.contains("test-secret"), "{message}");
+                    }
+                }
+                for result in [crate::open(&item).map(|_| ()), crate::open_raster(&item).map(|_| ())] {
+                    assert!(matches!(result, Err(Error::InvalidArgument(_))));
+                }
+                let mosaic = format!("STACIT:\"{item}\":asset=data");
+                let error = crate::open_raster(&mosaic).map(|_| ()).unwrap_err();
+                assert!(matches!(error, Error::InvalidArgument(ref message) if message.contains("configured credentials")), "{error}");
+                assert!(seen.lock().unwrap().is_empty(), "no HEAD, GET or range request may reach the store");
+                let mut invalid = b"// a JSONC comment must not select a second pointer parser\n".to_vec();
+                invalid.extend_from_slice(&doc);
+                let (bad_catalog, _) = crate::http::test_server(invalid);
+                let bad_result = crate::open(&format!("{bad_catalog}/item.json?token=document-secret"));
+                assert!(matches!(bad_result, Err(Error::InvalidArgument(ref message)) if !message.contains("document-secret")));
+                assert!(seen.lock().unwrap().is_empty());
+                crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "YES")], || {
+                    let actual = crate::open_raster(&format!("STAC:\"{item}\":data")).unwrap();
+                    let expected = crate::memory::open_raster_bytes(pixels, "input.tif").unwrap();
+                    assert_eq!(actual.raster.data.to_f64_vec(), expected.raster.data.to_f64_vec());
+                    assert_eq!(actual.geo_transform(), expected.geo_transform());
+                });
+                assert!(!seen.lock().unwrap().is_empty());
+                crate::config::with_options(&[("AWS_NO_SIGN_REQUEST", "YES")], || {
+                    assert!(asset_href(&item, "data").is_ok(), "unsigned public cloud hrefs remain usable");
+                });
+                let dir = tempfile::tempdir().unwrap();
+                let local = dir.path().join("item.json");
+                std::fs::write(&local, doc).unwrap();
+                assert!(asset_href(local.to_str().unwrap(), "data").is_ok(), "local documents keep credentialed access");
+            },
+        );
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn cloud_aliases_headers_and_azure_sas_obey_asset_consent() {
+        let doc = "https://catalog.example/item.json";
+        crate::config::with_options(
+            &[("GDAL_HTTP_HEADERS", "X-Api-Key: test-key"), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")],
+            || {
+                for href in ["gs://private/a.tif", "/vsigs/private/a.tif", "/vsizip/{gs://private/a.zip}/a.tif"] {
+                    assert!(matches!(check_asset_access(doc, href), Err(Error::InvalidArgument(_))), "{href}");
+                }
+                assert!(check_asset_access(doc, "https://catalog.example/a.tif").is_ok());
+                assert!(check_asset_access(doc, "https://other.example/a.tif").is_err());
+            },
+        );
+        for (key, value) in [("AZURE_STORAGE_SAS_TOKEN", "sig=test-secret"), ("AZURE_STORAGE_ACCESS_TOKEN", "test-secret")] {
+            crate::config::with_options(
+                &[(key, value), ("AZURE_STORAGE_ACCOUNT", "testaccount"), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")],
+                || {
+                    for href in ["az://private/a.tif", "/vsiaz/private/a.tif", "/vsizip/{az://private/a.zip}/a.tif"] {
+                        assert!(matches!(check_asset_access(doc, href), Err(Error::InvalidArgument(_))), "{href}");
+                        crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "YES")], || {
+                            assert!(check_asset_access(doc, href).is_ok());
+                            assert!(check_asset_access(doc, "file:///private/a.tif").is_err(), "consent never enables local files");
+                        });
+                    }
+                },
+            );
+        }
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn shared_aws_profiles_are_checked_before_asset_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials");
+        std::fs::write(&path, "[stac-test]\naws_access_key_id=test-key\naws_secret_access_key=test-secret\n").unwrap();
+        crate::config::with_options(
+            &[
+                ("AWS_ACCESS_KEY_ID", ""),
+                ("AWS_SECRET_ACCESS_KEY", ""),
+                ("AWS_SHARED_CREDENTIALS_FILE", path.to_str().unwrap()),
+                ("AWS_PROFILE", "stac-test"),
+                ("AWS_NO_SIGN_REQUEST", "NO"),
+                ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO"),
+            ],
+            || {
+                assert!(check_asset_access("https://catalog.example/item.json", "s3://private/a.tif").is_err());
+            },
+        );
+    }
+
+    #[cfg(all(remote, feature = "gdal"))]
+    #[test]
+    fn configured_gdal_cloud_credentials_need_consent_too() {
+        for (key, href) in [
+            ("GOOGLE_APPLICATION_CREDENTIALS", "gs://private/a.tif"),
+            ("GS_OAUTH2_REFRESH_TOKEN", "/vsigs/private/a.tif"),
+            ("AZURE_STORAGE_ACCESS_KEY", "az://testaccount/private/a.tif"),
+            ("AWS_WEB_IDENTITY_TOKEN_FILE", "s3://private/a.tif"),
+        ] {
+            crate::config::with_options(
+                &[
+                    (key, "test-credential"),
+                    ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO"),
+                    ("AWS_NO_SIGN_REQUEST", "NO"),
+                    ("GS_NO_SIGN_REQUEST", "NO"),
+                    ("AZURE_NO_SIGN_REQUEST", "NO"),
+                ],
+                || {
+                    assert!(
+                        matches!(check_asset_access("https://catalog.example/item.json", href), Err(Error::InvalidArgument(_))),
+                        "{key}"
+                    );
+                },
+            );
+        }
+    }
 
     /// An item collection whose links are `links` (a `next` link that POSTs to another origin
     /// with headers and a body the document chose).

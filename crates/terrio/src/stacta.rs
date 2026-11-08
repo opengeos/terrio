@@ -136,7 +136,9 @@ impl Item {
 
     fn load(loc: &str) -> Result<Self> {
         let bytes = crate::stac::fetch(loc)?;
-        Self::parse(&bytes, loc).ok_or_else(|| bad(format!("'{loc}' is not JSON")))
+        let item = Self::parse(&bytes, loc).ok_or_else(|| bad(format!("'{loc}' is not JSON")))?;
+        crate::stac::check_document_assets(&item.doc, loc)?;
+        Ok(item)
     }
 
     /// Whether the item is one of tiled assets.
@@ -261,6 +263,7 @@ pub(crate) fn info_item(item: Item, asset: Option<&str>, tms: Option<&str>, opti
         Opened::Raster(r) => *r,
         Opened::Container(subs) => match open_container_first(&item, subs.clone()) {
             Ok(r) => r,
+            Err(e) if matches!(e, Error::InvalidArgument(_)) || e.is_resource_refusal() => return Err(e),
             Err(_) => return Ok(Info::Raster(Box::new(container_info(subs)))),
         },
     };
@@ -399,6 +402,8 @@ struct Level {
 
 /// A STACTA raster read by window: the tiles a window touches are opened and read.
 struct Tiled {
+    /// The document that selected the tile template, checked for each concrete tile href too.
+    document: String,
     levels: Vec<Level>,
     data_type: DataType,
     band_types: Vec<DataType>,
@@ -445,10 +450,7 @@ fn href_template(item_loc: &str, href: &str, tms: &str) -> Result<String> {
             crate::stac::resolve_href(item_loc, href.strip_prefix("./").unwrap_or(&href))
         }
     };
-    if crate::stac::names_local_files(item_loc, &resolved) {
-        let redact = crate::vsi::listing::redact_url;
-        return Err(bad(format!("the remote item '{}' names local files ({})", redact(item_loc), redact(&href))));
-    }
+    crate::stac::check_asset_access(item_loc, &resolved)?;
     Ok(resolved)
 }
 
@@ -473,6 +475,11 @@ fn check_allowed() -> Result<()> {
 /// Opens an asset of an item at a tile matrix set (by default, the first of each), or lists the
 /// subdatasets of an item of several when neither is asked for. `extra` is metadata to add.
 fn open_item(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: Vec<(String, String)>) -> Result<Opened> {
+    crate::stac::keep_remote_refusal(&item.loc, open_item_native(item, asset, tms, extra))
+}
+
+fn open_item_native(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: Vec<(String, String)>) -> Result<Opened> {
+    crate::stac::check_document_assets(&item.doc, &item.loc)?;
     check_allowed()?;
     let doc = &item.doc;
     let props = doc["properties"].as_object().ok_or_else(|| bad("Missing properties"))?;
@@ -576,11 +583,13 @@ fn open_item(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: Vec<(St
         for m in &matrices {
             let (col, row) = limits.get(&m.id).map_or((0, 0), |l| (l.min_col, l.min_row));
             let url = tile_href(&url_template, &m.id, row, col);
+            crate::stac::check_asset_access(&item.loc, &url)?;
             match LazyRaster::open(&url) {
                 Ok(r) => {
                     proto = Some((url, r));
                     break;
                 }
+                Err(e) if matches!(e, Error::InvalidArgument(_)) || e.is_resource_refusal() => return Err(e),
                 Err(e) if !skip_missing => return Err(bad(format!("Cannot open {url}: {e}"))),
                 Err(_) => {}
             }
@@ -678,18 +687,29 @@ fn open_item(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: Vec<(St
     };
     let mut header = RasterDataset::with_driver(raster, RasterDriver::STACTA, nodata.is_some());
     header.band_nodata = nodatas;
-    let source = Tiled { levels, data_type, band_types: types, band_fills, skip_missing, block, tiles: Mutex::new(cache) };
+    let source = Tiled {
+        document: item.loc.clone(),
+        levels,
+        data_type,
+        band_types: types,
+        band_fills,
+        skip_missing,
+        block,
+        tiles: Mutex::new(cache),
+    };
     Ok(Opened::Raster(Box::new(LazyRaster::from_source(header, Box::new(source)))))
 }
 
 impl Tiled {
     /// Reads a window of a tile, or `None` when it is missing and missing tiles are skipped.
     fn read_tile(&self, href: &str, w: Window, bands: &[usize]) -> Result<Option<Vec<f64>>> {
+        crate::stac::check_asset_access(&self.document, href)?;
         let cached = self.tiles.lock().ok().and_then(|mut m| m.remove(href));
         let tile = match cached {
             Some(t) => t,
             None => match LazyRaster::open(href) {
                 Ok(r) => Some(r),
+                Err(e) if matches!(e, Error::InvalidArgument(_)) || e.is_resource_refusal() => return Err(e),
                 Err(_) if self.skip_missing => None,
                 Err(e) => {
                     return Err(bad(format!(
@@ -939,6 +959,33 @@ fn escape_jsonc(s: &str) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(remote)]
+    #[test]
+    fn concrete_tile_credentials_are_not_hidden_by_templates_or_skip_missing() {
+        let (base, seen) = crate::http::test_server(Vec::new());
+        let prefix = format!("{base}/tiles/0/");
+        crate::http::set_path_specific_option(&prefix, "GDAL_HTTP_HEADERS", Some("X-Api-Key: test-secret"));
+        crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+            let doc = "https://catalog.example/item.json";
+            let template = format!("{base}/tiles/{{TileMatrix}}/{{TileRow}}/{{TileCol}}.tif");
+            assert!(matches!(href_template(doc, &template, "WebMercatorQuad"), Err(Error::InvalidArgument(_))));
+            let source = Tiled {
+                document: doc.into(),
+                levels: Vec::new(),
+                data_type: DataType::U8,
+                band_types: vec![DataType::U8],
+                band_fills: vec![0.0],
+                skip_missing: true,
+                block: (1, 1),
+                tiles: Mutex::new(HashMap::new()),
+            };
+            let result = source.read_tile(&format!("{prefix}0/0.tif"), Window::full(1, 1), &[1]);
+            assert!(matches!(result, Err(Error::InvalidArgument(_))));
+        });
+        crate::http::clear_path_specific_options(Some(&prefix));
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn mixed_band_windows_keep_integer_nodata_comparisons_exact() {
         let raster = crate::Raster::from_data_native(
@@ -950,6 +997,7 @@ mod tests {
         let mut header = tile.clone();
         header.band_nodata = vec![Some(4_294_967_295.0), Some(1.5)];
         let source = Tiled {
+            document: String::new(),
             levels: vec![Level {
                 template: "tile".into(),
                 tile_w: 2,

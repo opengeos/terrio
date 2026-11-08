@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Remote STAC, STACIT and STACTA documents require
+  `TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES` to select assets using configured cloud credentials
+  or cross-origin custom HTTP headers. Checks include declared assets during metadata reads and
+  concrete deferred tile opens. Public unsigned cloud reads remain supported, including S3 with
+  `AWS_NO_SIGN_REQUEST=YES`. Native pointer-policy refusals are not retried through GDAL.
+
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource
   error. Coexisting pixel buffers are checked together; hosts without memory discovery use a

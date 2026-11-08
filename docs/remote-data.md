@@ -156,6 +156,30 @@ A STAC document chooses where its links lead, so links are followed with limits:
   rule), and a remote document's links never lead to local files, even with
   `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`.
 
+Remote STAC documents, STACIT mosaics and STACTA tile templates require
+`TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES` before their cloud assets can use configured
+credentials. This includes S3 keys and shared AWS profiles, Azure SAS/bearer tokens, and
+configured HTTP headers (including path-specific headers). Any custom header is treated as
+potential authentication because API keys can use arbitrary names. Ordinary HTTP assets on
+the document's own origin retain their header authentication; cloud URI assets require consent
+even in the same bucket/account. Local documents retain credentialed access.
+
+Checks run while parsing the document, including assets that were not selected, so metadata
+listing also requires consent when such assets are declared. Deferred mosaic opens and concrete
+tile URLs are checked too. Without credentials, public cloud hrefs remain usable. With AWS
+credentials configured, `AWS_NO_SIGN_REQUEST=YES` keeps public S3 reads unsigned and does not
+require the opt-in (custom authentication headers still need consent). A signature already in
+an href and public Planetary Computer signing are not ambient user credentials.
+
+Refusals are terminal. Named `STAC:`, `STACIT:` and `STACTA:` documents are not reinterpreted by
+GDAL after a native error, though individual raster assets can still use the GDAL backend.
+Recognized remote STAC reader errors and invalid remote JSON also do not select a second pointer
+parser. Explicit `GDAL:` opens delegate to GDAL's own policies. The optional backend additionally
+checks its explicitly configured cloud credential sources, conservatively treating credential
+configuration files as configured; it does not query an identity metadata service to discover
+credentials. See [GDAL's cloud authentication options](https://gdal.org/en/stable/user/virtual_file_systems.html).
+Consent never permits remote documents to name local files.
+
 A STAC item of tiled assets (GDAL's STACTA, see [Formats](formats.md#stac)) opens from its URL
 or as `STACTA:"item-url":asset`: the item is fetched, then the headers of the first tile when the
 item does not declare its bands, and a window read fetches only the tiles (and, for COG tiles, the

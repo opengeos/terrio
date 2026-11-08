@@ -889,6 +889,28 @@ impl Client {
     }
 }
 
+/// Whether an open would send configured headers or S3 credentials, without making a request.
+/// All custom headers are conservatively treated as credentials (API keys need not use a
+/// standard header name). This uses the same path-specific options and credential profiles as
+/// the actual client.
+pub(crate) fn uses_configured_credentials(remote: &Remote) -> bool {
+    let client = Client::new(remote, HttpOptions::from_env());
+    if !client.headers.is_empty() || client.s3.as_ref().is_some_and(|auth| auth.creds.is_some()) {
+        return true;
+    }
+    // A template cannot match a concrete path-specific prefix yet. Treat any overlapping
+    // fixed prefix as potentially credentialed, then check the concrete tile again at open.
+    client.path_names().iter().any(|name| {
+        name.split_once('{').is_some_and(|(fixed, _)| {
+            path_options_read().iter().any(|(prefix, options)| {
+                (fixed.starts_with(prefix) || prefix.starts_with(fixed))
+                    && (options.get("GDAL_HTTP_HEADERS").is_some_and(|v| !v.trim().is_empty())
+                        || (client.azure && options.get("AZURE_STORAGE_ACCESS_TOKEN").is_some_and(|v| !v.trim().is_empty())))
+            })
+        })
+    })
+}
+
 /// The error of a body over its cap.
 pub(crate) fn over_cap(url: &str, cap: u64) -> Error {
     Error::Http(format!("{}: the response is larger than the {cap} bytes allowed", redact(url)))
