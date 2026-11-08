@@ -10,6 +10,15 @@
   to accumulate from zero.
   The CLI catalog is now version 0.1.2 to describe this initialization default accurately.
 
+- `ui` and `view` open the browser through a private HTML redirect file, keeping the session
+  token out of process arguments. If a sandboxed browser cannot read the file, paste the
+  printed address manually or use `--no-open`.
+
+- `translate --overview AUTO-n` without `--outsize` or `--tr` keeps the full-resolution
+  output size while reading the selected overview, as `gdal_translate` does. A 400 x 300
+  source window now stays 400 x 300 instead of shrinking to the overview's resolution.
+  `AUTO-0` is treated as `AUTO` for selecting the source resolution.
+
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource
   error. Coexisting pixel buffers are checked together; hosts without memory discovery use a
