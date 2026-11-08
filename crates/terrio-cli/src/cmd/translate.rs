@@ -5,10 +5,10 @@
 
 //! `terrio translate`.
 
-use super::rasterout::{OutputArgs, open, srs};
+use super::rasterout::{OutputArgs, srs};
 use std::ffi::OsString;
 use terrio::ops::overview::OverviewSelection;
-use terrio::ops::translate::{Scale, Size, TranslateOptions, translate, translate_lazy_to_file};
+use terrio::ops::translate::{Scale, Size, TranslateOptions, translate_path_to_file};
 use terrio::ops::{Resampling, parse_data_type};
 
 fn flag_arity(s: &str) -> Option<usize> {
@@ -192,36 +192,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
         assign_srs: srs(&a.a_srs)?,
         assign_ullr: four(&a.a_ullr),
     };
-    // GeoTIFFs, Zarr stores and other rasters read by window are read for the output alone: the
-    // tiles or chunks its window touches, of its bands, from the overview it is read from. Rasters
-    // named `gdal:`, and those the lazy reader cannot read (GDAL may), are read whole, as `open`
-    // reads them, at full resolution. Errors GDAL's fallback does not retry either (invalid
-    // arguments, network failures, missing local files, resource refusals) are kept.
-    let gdal_named = a.input.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("gdal:"));
-    let lazy = if gdal_named {
-        None
-    } else {
-        match super::quiet(|| terrio::open_raster_lazy(&a.input)) {
-            Ok(src) => Some(src),
-            Err(e @ (terrio::Error::InvalidArgument(_) | terrio::Error::Http(_))) => return Err(e),
-            Err(e) if e.is_resource_refusal() => return Err(e),
-            Err(terrio::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound && !a.input.contains(':') => {
-                return Err(terrio::Error::Io(e));
-            }
-            Err(_) => None,
-        }
-    };
-    // A raster read by window is written as it is translated: a GeoTIFF or COG a strip at a time.
-    if let Some(mut src) = lazy {
-        return translate_lazy_to_file(&mut src, &o, overview, &a.output, &a.out.options()?);
-    }
-    if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(_)) {
-        return Err(terrio::Error::Unsupported(format!(
-            "--overview {} needs a raster read by window; {} is read whole",
-            a.overview, a.input
-        )));
-    }
-    a.out.write(&translate(&open(&a.input)?, &o)?, &a.output)
+    super::quiet(|| translate_path_to_file(&a.input, &o, overview, &a.output, &a.out.options()?))
 }
 
 #[cfg(test)]

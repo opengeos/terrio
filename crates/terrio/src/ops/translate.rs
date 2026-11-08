@@ -25,6 +25,123 @@ use crate::{Error, LazyRaster, RasterDataset, ResampledReadOptions, Result};
 use wbraster::DataType;
 use wbraster::raster::RasterData;
 
+/// An input opened by the translate policy, preserving lazy window reads where available.
+pub enum OpenedRaster {
+    /// A raster read by window.
+    Lazy(LazyRaster),
+    /// A raster decoded whole after the lazy reader refused it.
+    Whole(Box<RasterDataset>),
+}
+
+impl OpenedRaster {
+    fn translate(self, options: &TranslateOptions, overview: OverviewSelection) -> Result<RasterDataset> {
+        match self {
+            Self::Lazy(mut src) => translate_lazy(&mut src, options, overview),
+            Self::Whole(src) => translate(&src, options),
+        }
+    }
+}
+
+/// Translates a path using lazy window/overview reads, with a whole-read fallback when needed.
+/// Uses the shared policy of `terrio translate`. Invalid arguments, HTTP failures,
+/// resource refusals and missing local files are terminal. Explicit overview levels
+/// need a lazy reader and are refused before a whole-read fallback.
+///
+/// # Errors
+///
+/// Returns input-opening errors or errors from [`translate_lazy`] or [`translate`].
+pub fn translate_path(path: &str, options: &TranslateOptions, overview: OverviewSelection) -> Result<RasterDataset> {
+    open_path(path, overview)?.translate(options, overview)
+}
+
+/// [`translate_path`], streaming the destination when [`translate_lazy_to_file`] can do so.
+///
+/// # Errors
+///
+/// Returns input-opening, translation or destination-writing errors.
+pub fn translate_path_to_file(
+    source: &str,
+    options: &TranslateOptions,
+    overview: OverviewSelection,
+    destination: &str,
+    write_options: &crate::RasterWriteOptions,
+) -> Result<()> {
+    match open_path(source, overview)? {
+        OpenedRaster::Lazy(mut src) => translate_lazy_to_file(&mut src, options, overview, destination, write_options),
+        OpenedRaster::Whole(src) => crate::write_raster_dataset(&translate(&src, options)?, destination, write_options),
+    }
+}
+
+/// Translates owned input bytes, sharing them with the lazy reader without a second input copy.
+/// A TIFF the lazy reader refuses may be decoded whole. The same terminal-error and explicit
+/// overview policy as [`translate_path`] applies before that fallback.
+///
+/// # Errors
+///
+/// Returns input-opening errors or errors from [`translate_lazy`] or [`translate`].
+pub fn translate_bytes(bytes: Vec<u8>, name: &str, options: &TranslateOptions, overview: OverviewSelection) -> Result<RasterDataset> {
+    open_bytes(bytes, name, overview)?.translate(options, overview)
+}
+
+/// Whether a failed lazy open must not be retried as a whole read.
+fn terminal_open_error(error: &Error, name: &str) -> bool {
+    matches!(error, Error::InvalidArgument(_) | Error::Http(_))
+        || error.is_resource_refusal()
+        || matches!(error, Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound && !name.contains(':'))
+}
+
+/// Refuses a stored-level selector before allocating a whole raster.
+fn require_whole_read(overview: OverviewSelection, name: &str, cause: Option<&Error>) -> Result<()> {
+    if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(_)) {
+        let cause = cause.map(|e| format!(" ({e})")).unwrap_or_default();
+        return Err(Error::Unsupported(format!(
+            "overview needs a raster read by window; '{}' is read whole{cause}",
+            crate::vsi::listing::redact_url(name)
+        )));
+    }
+    Ok(())
+}
+
+fn open_path(path: &str, overview: OverviewSelection) -> Result<OpenedRaster> {
+    let cause = if path.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("gdal:")) {
+        None
+    } else {
+        match crate::open_raster_lazy(path) {
+            Ok(src) => return Ok(OpenedRaster::Lazy(src)),
+            Err(error) if terminal_open_error(&error, path) => return Err(error),
+            Err(error) => Some(error),
+        }
+    };
+    require_whole_read(overview, path, cause.as_ref())?;
+    crate::open_raster(path).map(|src| OpenedRaster::Whole(Box::new(src)))
+}
+
+/// Shared byte-opening policy, also used by the legacy memory entry point.
+pub(crate) fn open_bytes(bytes: Vec<u8>, name: &str, overview: OverviewSelection) -> Result<OpenedRaster> {
+    if crate::tiles::archive_kind(name).is_some() || !crate::memory::codec::is_tiff(&bytes) {
+        return match crate::memory::open_raster_lazy_bytes(bytes, name) {
+            Ok(src) => Ok(OpenedRaster::Lazy(src)),
+            Err(error) if terminal_open_error(&error, name) => Err(error),
+            Err(error) => {
+                require_whole_read(overview, name, Some(&error))?;
+                Err(error)
+            }
+        };
+    }
+    crate::formats::check_allowed_bytes(name, &bytes, Some(crate::formats::Kind::Raster))?;
+    let shared = std::sync::Arc::new(bytes);
+    let cause = match LazyRaster::from_tiff_shared_bytes(shared.clone()) {
+        Ok(Some(src)) => return Ok(OpenedRaster::Lazy(src)),
+        Err(error) if terminal_open_error(&error, name) => return Err(error),
+        Err(error) => Some(error),
+        Ok(None) => None,
+    };
+    require_whole_read(overview, name, cause.as_ref())?;
+    // The failed reader has dropped its reference; take back the original owned input.
+    let bytes = std::sync::Arc::unwrap_or_clone(shared);
+    crate::memory::open_raster_bytes(bytes, name).map(|src| OpenedRaster::Whole(Box::new(src)))
+}
+
 /// An output dimension: pixels or a percentage of the source window.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Size {
@@ -784,6 +901,84 @@ mod tests {
         let n = cols * rows;
         let data = (0..2 * n).map(|i| (i % n) as f64 + (i / n) as f64 * 1000.0).collect();
         RasterDataset::new(Raster::from_data(cfg, data).unwrap(), false)
+    }
+
+    #[test]
+    fn input_policy_keeps_terminal_errors() {
+        for error in [
+            Error::InvalidArgument("invalid option".into()),
+            Error::Http("request refused".into()),
+            Error::ResourceLimit("memory budget".into()),
+            Error::DecodedLimitExceeded { resource: "TIFF tag", limit: 1 },
+            Error::Io(std::io::Error::from(std::io::ErrorKind::OutOfMemory)),
+            Error::Io(std::io::Error::from(std::io::ErrorKind::NotFound)),
+        ] {
+            assert!(terminal_open_error(&error, "missing.tif"));
+        }
+        assert!(!terminal_open_error(&Error::Unsupported("codec".into()), "input.tif"));
+        let missing = tempfile::tempdir().unwrap().path().join("missing.tif");
+        let result = translate_path(missing.to_str().unwrap(), &TranslateOptions::default(), OverviewSelection::Level(0));
+        assert!(matches!(result, Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound));
+    }
+
+    #[test]
+    fn input_policy_refuses_levels_before_whole_reads() {
+        let broken = [b"II*\0".as_slice(), &[255; 60]].concat();
+        for overview in [OverviewSelection::Level(0), OverviewSelection::AutoOffset(1)] {
+            let result = translate_bytes(broken.clone(), "broken.tif", &TranslateOptions::default(), overview);
+            assert!(matches!(result, Err(Error::Unsupported(message)) if message.contains("is read whole (")));
+            let result = translate_path("gdal:does-not-exist.tif", &TranslateOptions::default(), overview);
+            assert!(matches!(result, Err(Error::Unsupported(message)) if message.contains("is read whole")));
+        }
+        let result = translate_bytes(broken, "broken.tif", &TranslateOptions::default(), OverviewSelection::Auto);
+        assert!(result.is_err());
+        assert!(!matches!(result, Err(Error::Unsupported(message)) if message.contains("is read whole")));
+    }
+
+    #[test]
+    fn input_policy_preserves_lazy_path_byte_and_streamed_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input.tif");
+        let output = dir.path().join("output.tif");
+        let mut source = ds(37, 29);
+        source.has_nodata = true;
+        if let RasterData::F32(values) = &mut source.raster.data {
+            values[37 * 29 + 3 * 37 + 4] = -1.0;
+        }
+        crate::write_raster_dataset(&source, input.to_str().unwrap(), &crate::RasterWriteOptions::default()).unwrap();
+        let options = TranslateOptions { src_win: Some((3.0, 2.0, 11.0, 9.0)), bands: vec![2], ..Default::default() };
+        let expected = translate(&source, &options).unwrap();
+        assert!(matches!(open_path(input.to_str().unwrap(), OverviewSelection::Auto), Ok(OpenedRaster::Lazy(_))));
+        let bytes = std::fs::read(&input).unwrap();
+        assert!(matches!(open_bytes(bytes.clone(), "input.tif", OverviewSelection::Auto), Ok(OpenedRaster::Lazy(_))));
+        let from_path = translate_path(input.to_str().unwrap(), &options, OverviewSelection::Auto).unwrap();
+        let from_bytes = translate_bytes(bytes, "input.tif", &options, OverviewSelection::Auto).unwrap();
+        translate_path_to_file(input.to_str().unwrap(), &options, OverviewSelection::Auto, output.to_str().unwrap(), &Default::default())
+            .unwrap();
+        for actual in [from_path, from_bytes, crate::open_raster(output.to_str().unwrap()).unwrap()] {
+            assert_eq!((actual.raster.cols, actual.raster.rows, actual.raster.bands), (11, 9, 1));
+            assert_eq!(actual.raster.data.to_f64_vec(), expected.raster.data.to_f64_vec());
+            assert_eq!(actual.geo_transform(), expected.geo_transform());
+            assert_eq!(actual.crs().epsg, expected.crs().epsg);
+            assert_eq!(actual.raster.data_type, expected.raster.data_type);
+            assert_eq!(actual.nodata(), expected.nodata());
+        }
+    }
+
+    #[cfg(feature = "netcdf-hdf5")]
+    #[test]
+    fn input_policy_keeps_resource_refusals_before_overview_fallback() {
+        if crate::usable_memory().is_some_and(|bytes| bytes >= 8 * (1u64 << 40)) {
+            eprintln!("skipping resource-refusal read: the known memory limit permits the 8 TiB fixture");
+            return; // This host permits the fixture's declared allocation.
+        }
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/hdf5_fill_only.h5");
+        let options = TranslateOptions::default();
+        let overview = OverviewSelection::Level(0);
+        let path_result = translate_path(path, &options, overview);
+        assert!(matches!(path_result, Err(error) if error.is_resource_refusal()));
+        let byte_result = translate_bytes(std::fs::read(path).unwrap(), "input.h5", &options, overview);
+        assert!(matches!(byte_result, Err(error) if error.is_resource_refusal()));
     }
 
     /// A translate written a few rows at a time writes the file the whole translate writes:
