@@ -2308,7 +2308,9 @@ impl Shared {
                     requested += usize::from(run.2 <= run.3);
                     group.push(run);
                 }
-                let fetched: Vec<Option<(Client, Result<Fetched>)>> = std::thread::scope(|scope| {
+                // Each run is stored, in order, as soon as its request is in: a group holds the
+                // responses not stored yet, at most the prefetch batch (half the cache).
+                let whole = std::thread::scope(|scope| -> io::Result<bool> {
                     let handles: Vec<_> = group
                         .iter()
                         .map(|&(_, _, from, last)| {
@@ -2321,32 +2323,32 @@ impl Shared {
                             })
                         })
                         .collect();
-                    handles
-                        .into_iter()
-                        .map(|h| {
-                            h.map(|h| match h {
+                    for ((start, held, from, last), handle) in group.into_iter().zip(handles) {
+                        let fetched = handle.map(|h| {
+                            let (mut client, fetched) = match h {
                                 Ok(h) => h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)),
                                 // no thread to be had: the run fails as a request would
                                 Err(e) => (self.client.clone(), Err(e.into())),
-                            })
-                        })
-                        .collect()
-                });
-                for ((start, held, from, last), fetched) in group.into_iter().zip(fetched) {
-                    // what a request learned (a region, a redirect) is kept, as serially; a region
-                    // an earlier run discovered stays when this run's copy predates it
-                    let fetched = fetched.map(|(mut client, fetched)| {
-                        let discovered = |c: &Client| c.s3.as_ref().is_some_and(|a| a.discovered);
-                        if discovered(&self.client) && !discovered(&client) {
-                            client.s3 = self.client.s3.clone();
-                            client.url = self.client.url.clone();
+                            };
+                            // what a request learned (a region, a redirect) is kept, as serially;
+                            // a region an earlier run discovered stays when this copy predates it
+                            let discovered = |c: &Client| c.s3.as_ref().is_some_and(|a| a.discovered);
+                            if discovered(&self.client) && !discovered(&client) {
+                                client.s3 = self.client.s3.clone();
+                                client.url = self.client.url.clone();
+                            }
+                            self.client = client;
+                            fetched
+                        });
+                        // the other requests end before the scope returns
+                        if self.store_run(start, held, from, last, fetched)? {
+                            return Ok(true);
                         }
-                        self.client = client;
-                        fetched
-                    });
-                    if self.store_run(start, held, from, last, fetched)? {
-                        return Ok(());
                     }
+                    Ok(false)
+                })?;
+                if whole {
+                    return Ok(());
                 }
             }
             return Ok(());
