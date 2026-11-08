@@ -2739,7 +2739,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parallel_coordinates_keep_the_callers_chunk_policy_without_allocating_large_chunks() {
+    fn parallel_coordinates_keep_the_callers_chunk_policy_for_absent_chunks() {
         let dir = tempfile::tempdir().unwrap();
         let main = dir.path().join("a");
         let coordinate = dir.path().join("coordinate");

@@ -1257,7 +1257,14 @@ impl ObjectFetcher {
     pub(crate) fn get(&self, remote: &Remote, range: ByteRange) -> Result<Option<Vec<u8>>> {
         // A blocking leaf: resolve endpoint and header options from the fetcher's creator,
         // never from an unrelated task suspended on this pool worker.
-        crate::config::with_thread_options(self.config.clone(), || self.get_with_options(remote, range))
+        let mut options = self.config.clone();
+        // Consent belongs to this read, while credentials and endpoints belong to the
+        // fetcher's creator. A redirect can make a previously exempt asset credentialed.
+        if crate::stac::AssetReadPolicy::current().is_some() {
+            let key = "TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS";
+            options.insert(key.into(), crate::config::get(key));
+        }
+        crate::config::with_thread_options(options, || self.get_with_options(remote, range))
     }
 
     fn get_with_options(&self, remote: &Remote, range: ByteRange) -> Result<Option<Vec<u8>>> {
@@ -2556,7 +2563,9 @@ mod tests {
             ] {
                 command.env_remove(key);
             }
-            assert!(command.status().unwrap().success());
+            let output = command.output().unwrap();
+            assert!(output.status.success());
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
             return;
         }
         let (url, seen) = serve_recording_by(
