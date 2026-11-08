@@ -7,6 +7,13 @@
   error. HDF-EOS5 structure text is limited to 16 MiB before decoding, including fill-only files.
   This metadata cap applies to every HDF5 open, even when selecting an unrelated subdataset.
 
+- Python and JavaScript `translate` read paths, lazy rasters and byte inputs by window and take an
+  `overview` option (`AUTO` by default, `AUTO-n`, `NONE` or a level), as `terrio translate` and
+  `gdal_translate -ovr` do. Resized outputs of rasters with overviews can therefore change: they
+  are read from the overview GDAL picks for the output size, not full resolution; pass
+  `overview="NONE"` for the previous result. Python `rasterize` and `vector_grid` take
+  `tile_size` and `bigtiff`.
+
 - `warp -r sum` without `--te` rounds the suggested output extent's size up, as gdalwarp does
   for a sum (`GDAL_SWO_ROUND_UP_SIZE`), so that the output covers the whole source. Without
   `--ts` or `--tr` this sets the output size; with `--ts` alone, the pixel size spans the
