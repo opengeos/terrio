@@ -527,6 +527,9 @@ EPSG:6708. Short `EPSG:` names and legacy `epsg.xml#` URLs retain XY order; east
 projected CRSs retain XY for every identifier form. Heights are preserved. The GML
 writer emits authority-order coordinates and envelopes for its EPSG URNs. WFS 1.1/2.0
 bounding boxes follow the advertised authority order; WFS 1.0 bounding boxes use XY.
+Standalone layers with conflicting coordinate-axis declarations, including nested geometry
+members, are refused. Unknown EPSG identifiers cannot reconstruct a custom CRS from their URN
+alone; such exports do not support a CRS-preserving local round trip.
 
 ### CityGML
 

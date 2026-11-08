@@ -214,6 +214,13 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
         if let Some(srs) = &srs {
             srs.apply_to_layer(&mut layer);
         }
+        // One layer uses one coordinate convention. Refuse conflicting declarations,
+        // including nested geometry members, before applying its shared XY normalization.
+        for raw in &raws {
+            if let Some(node) = raw.geometry {
+                check_geometry_axis_order(node, srs_name, swap)?;
+            }
+        }
         for (fid, raw) in raws.iter().enumerate() {
             let mut attributes = vec![FieldValue::Null; fields.len() + 1];
             attributes[0] = raw.id.map_or(FieldValue::Null, |id| FieldValue::Text(id.into()));
@@ -244,6 +251,20 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
         return Err(Error::InvalidData("GML: no features".into()));
     }
     Ok(layers)
+}
+
+fn check_geometry_axis_order(node: &Element, reference: Option<&str>, swap: bool) -> Result<()> {
+    if let Some(name) = node.attr("srsName")
+        && Some(name) != reference
+        && let Ok(srs) = parse_srs_name(name)
+        && (authority_axis_order(name) && srs.has_north_east_axis_order()) != swap
+    {
+        return Err(Error::Unsupported("GML: mixed coordinate axis conventions within a layer".into()));
+    }
+    for child in &node.children {
+        check_geometry_axis_order(child, reference, swap)?;
+    }
+    Ok(())
 }
 
 fn value(v: &str, t: FieldType) -> FieldValue {
@@ -749,6 +770,25 @@ mod tests {
         let text = to_string(&layer, "");
         assert!(text.contains("urn:ogc:def:crs:EPSG::999999"), "{text}");
         assert!(text.contains(">43.56 12.24<"), "{text}");
+    }
+
+    #[test]
+    fn mixed_geometry_axis_conventions_are_refused_including_nested_members() {
+        let collection = |body: &str| format!("<FeatureCollection>{body}</FeatureCollection>");
+        let point = |srs: &str, pos: &str| format!("<Point srsName=\"{srs}\"><pos>{pos}</pos></Point>");
+        let feature = |geometry: &str| format!("<featureMember><p><geom>{geometry}</geom></p></featureMember>");
+        let urn = point("urn:ogc:def:crs:EPSG::6708", "4823832.72 561996.39");
+        let short = point("EPSG:6708", "561996.39 4823832.72");
+        for body in [
+            format!("{}{}", feature(&urn), feature(&short)),
+            feature(&format!("<MultiPoint><pointMember>{urn}</pointMember><pointMember>{short}</pointMember></MultiPoint>")),
+        ] {
+            let result = parse(&xml::parse(&collection(&body)).unwrap(), None);
+            assert!(matches!(result, Err(Error::Unsupported(_))));
+        }
+        // Identifier styles can mix when both describe the same effective E/N convention.
+        let body = format!("{}{}", feature(&point("urn:ogc:def:crs:EPSG::7792", "1 2")), feature(&point("EPSG:7792", "3 4")));
+        assert_eq!(parse(&xml::parse(&collection(&body)).unwrap(), None).unwrap()[0].features.len(), 2);
     }
 
     #[test]

@@ -202,15 +202,19 @@ def compare_gml_axis_order(command, record):
                 )
                 try:
                     source_dataset = gdal.OpenEx(str(source), gdal.OF_VECTOR)
-                    expected = snapshot(source_dataset.GetLayer(0))
-                    source_dataset = None
-                except Exception as error:
+                    if source_dataset is None:
+                        raise RuntimeError("GDAL could not open the reference")
+                except RuntimeError as error:
                     record(
                         f"{name} reference",
                         "not compared",
                         f"GDAL {gdal.VersionInfo('RELEASE_NAME')}: {error}",
                     )
                     continue
+                try:
+                    expected = snapshot(source_dataset.GetLayer(0))
+                finally:
+                    source_dataset = None
                 for extension in ["gpkg", "shp", "gml"]:
                     output = root / f"{code}-{label}-out.{extension}"
                     try:
@@ -229,15 +233,20 @@ def compare_gml_axis_order(command, record):
                         raise RuntimeError("GDAL could not reproject the reference")
                     ref_dataset = None  # Close and flush output before reopening it.
                     ref_dataset = gdal.OpenEx(str(ref_json), gdal.OF_VECTOR)
-                    expected_reprojected = snapshot(ref_dataset.GetLayer(0))
+                    if ref_dataset is None:
+                        raise RuntimeError("GDAL could not reopen the reference")
+                except RuntimeError as error:
                     ref_dataset = None
-                except Exception as error:
                     record(
                         f"{name} to EPSG:4326 reference",
                         "not compared",
                         f"GDAL {gdal.VersionInfo('RELEASE_NAME')}: {error}",
                     )
                     continue
+                try:
+                    expected_reprojected = snapshot(ref_dataset.GetLayer(0))
+                finally:
+                    ref_dataset = None
                 output = root / f"{code}-{label}-out.geojson"
                 try:
                     command("convert", str(source), str(output), "--t-srs", "EPSG:4326")
