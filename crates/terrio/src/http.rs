@@ -2310,8 +2310,7 @@ impl Shared {
             // spawning ever shows next to a request's latency
             const PARALLEL_RUNS: usize = 8;
             // the caller's options and STAC policy, which a request reads while it is sent
-            let context = crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current());
-            let context = &context;
+            let context = Arc::new(crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current()));
             let mut runs = runs.into_iter();
             while runs.len() > 0 {
                 // PARALLEL_RUNS requests at a time; a run its held bytes cover sends none
@@ -2323,48 +2322,44 @@ impl Shared {
                     requested += usize::from(run.2 <= run.3);
                     group.push(run);
                 }
-                // Each run is stored, in order, as soon as its request is in: a group holds the
-                // responses not stored yet, at most the prefetch batch (half the cache).
-                let whole = std::thread::scope(|scope| -> io::Result<bool> {
-                    let handles: Vec<_> = group
-                        .iter()
-                        .map(|&(_, _, from, last)| {
-                            (from <= last).then(|| {
-                                let mut client = self.client.clone();
-                                std::thread::Builder::new().spawn_scoped(scope, move || {
-                                    let fetched = context.enter().and_then(|_scope| client.fetch(Some((from, last))));
-                                    (client, fetched)
-                                })
+                // Each request runs on a thread of its own, which owns what it needs, and each run
+                // is stored in order as soon as its request is in.
+                let handles: Vec<_> = group
+                    .iter()
+                    .map(|&(_, _, from, last)| {
+                        (from <= last).then(|| {
+                            let (mut client, context) = (self.client.clone(), Arc::clone(&context));
+                            std::thread::Builder::new().spawn(move || {
+                                let fetched = context.enter().and_then(|_scope| client.fetch(Some((from, last))));
+                                (client, fetched)
                             })
                         })
-                        .collect();
-                    for ((start, held, from, last), handle) in group.into_iter().zip(handles) {
-                        let fetched = handle.map(|h| {
-                            let (mut client, fetched) = match h {
-                                Ok(h) => h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)),
-                                // no thread to be had: requested here, in order, as serially
-                                Err(_) => return self.client.fetch(Some((from, last))),
-                            };
-                            // the client of the last run in order is kept, as serially (its
-                            // response URL); an S3 region an earlier run discovered stays when
-                            // this copy predates it
-                            let discovered = |c: &Client| c.s3.as_ref().is_some_and(|a| a.discovered);
-                            if discovered(&self.client) && !discovered(&client) {
-                                client.s3 = self.client.s3.clone();
-                                client.url = self.client.url.clone();
-                            }
-                            self.client = client;
-                            fetched
-                        });
-                        // the other requests end before the scope returns
-                        if self.store_run(start, held, from, last, fetched)? {
-                            return Ok(true);
+                    })
+                    .collect();
+                for ((start, held, from, last), handle) in group.into_iter().zip(handles) {
+                    let fetched = handle.map(|h| {
+                        let (mut client, fetched) = match h {
+                            Ok(h) => h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)),
+                            // no thread to be had: requested here, in order, as serially
+                            Err(_) => return self.client.fetch(Some((from, last))),
+                        };
+                        // the client of the last run in order is kept, as serially (its response
+                        // URL); an S3 region an earlier run discovered stays when this copy
+                        // predates it
+                        let discovered = |c: &Client| c.s3.as_ref().is_some_and(|a| a.discovered);
+                        if discovered(&self.client) && !discovered(&client) {
+                            client.s3 = self.client.s3.clone();
+                            client.url = self.client.url.clone();
                         }
+                        self.client = client;
+                        fetched
+                    });
+                    // A failed run (or a whole file) returns as soon as the runs before it are in,
+                    // as serially, without waiting for the later requests: they end on their own
+                    // threads, their responses dropped.
+                    if self.store_run(start, held, from, last, fetched)? {
+                        return Ok(());
                     }
-                    Ok(false)
-                })?;
-                if whole {
-                    return Ok(());
                 }
             }
             return Ok(());
@@ -2964,9 +2959,16 @@ mod tests {
         assert_eq!(r.read(&mut buf).unwrap(), 0);
     }
 
-    /// Serves `data` by range, a connection per thread and each answer `delay` late. Returns the
+    /// Serves `data` by range, a connection per thread, each answer `delay` late. Returns the
     /// URL and the most requests that were in flight at once.
     fn serve_slow(data: Vec<u8>, delay: Duration) -> (String, Arc<AtomicU64>) {
+        serve_slow_by(data, move |_| (delay, false))
+    }
+
+    /// [`serve_slow`], each range answered after `answer(first byte).0`, with status 416 rather
+    /// than the bytes when `answer(first byte).1`.
+    fn serve_slow_by(data: Vec<u8>, answer: impl Fn(usize) -> (Duration, bool) + Send + Sync + 'static) -> (String, Arc<AtomicU64>) {
+        let answer = Arc::new(answer);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/data", listener.local_addr().unwrap());
         let (inflight, most) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
@@ -2974,7 +2976,10 @@ mod tests {
         let data = Arc::new(data);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
-                let (Ok(mut stream), data, inflight, most) = (stream, data.clone(), inflight.clone(), most.clone()) else { continue };
+                let (Ok(mut stream), data, inflight, most, answer) = (stream, data.clone(), inflight.clone(), most.clone(), answer.clone())
+                else {
+                    continue;
+                };
                 std::thread::spawn(move || {
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
                     loop {
@@ -2995,9 +3000,17 @@ mod tests {
                         }
                         let now = inflight.fetch_add(1, Ordering::SeqCst) + 1;
                         most.fetch_max(now, Ordering::SeqCst);
+                        let (a, b) = range.unwrap_or((0, data.len() - 1));
+                        let (delay, fail) = answer(a);
                         std::thread::sleep(delay);
                         inflight.fetch_sub(1, Ordering::SeqCst);
-                        let (a, b) = range.unwrap_or((0, data.len() - 1));
+                        if fail {
+                            let refused = "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\n\r\n";
+                            if stream.write_all(refused.as_bytes()).is_err() {
+                                return;
+                            }
+                            continue;
+                        }
                         let head = format!(
                             "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {a}-{b}/{}\r\n\r\n",
                             b - a + 1,
@@ -3027,6 +3040,25 @@ mod tests {
             assert!(most.load(Ordering::SeqCst) >= 2, "requested in parallel");
             assert_eq!(read_range(&mut r, 30 * 4096, 100), data[30 * 4096..30 * 4096 + 100]);
         });
+    }
+
+    #[test]
+    fn a_failed_run_returns_without_waiting_for_a_later_stalled_request() {
+        // The first run fails at once, the second stalls: the error comes back as a serial read
+        // would return it (it would not have sent the second request), not once that one ends.
+        let data = test_data();
+        let (stalled, failed) = (30 * 4096, 10 * 4096);
+        let (url, _) =
+            serve_slow_by(
+                data,
+                move |first| {
+                    if first == stalled { (Duration::from_secs(20), false) } else { (Duration::ZERO, first == failed) }
+                },
+            );
+        let r = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+        let started = Instant::now();
+        assert!(r.prefetch(&[(failed as u64, 100), (stalled as u64, 100)]).is_err());
+        assert!(started.elapsed() < Duration::from_secs(10), "waited {:?} for the stalled request", started.elapsed());
     }
 
     #[test]
