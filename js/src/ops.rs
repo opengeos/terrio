@@ -455,7 +455,9 @@ struct TranslateArgs {
 /// -ovr`: `"AUTO"`, the default, `"AUTO-n"`, `"NONE"` or a level from 0). Inputs the lazy reader
 /// opens (GeoTIFFs, JPEG 2000, GRIB, tile archives...) are read by window, for the output alone,
 /// from that level where the reader exposes overviews; a TIFF it refuses is decoded whole, at
-/// full resolution, as are the formats it decodes whole.
+/// full resolution, as are the formats it decodes whole. A level or `"AUTO-n"` is refused for a
+/// TIFF decoded whole; on a raster without overviews it warns and reads full resolution, as
+/// `gdal_translate` and `terrio translate` do.
 #[wasm_bindgen]
 pub fn translate(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     let a: TranslateArgs = parse_options(&options)?;

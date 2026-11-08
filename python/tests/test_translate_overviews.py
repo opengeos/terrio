@@ -196,3 +196,12 @@ def test_a_level_is_refused_for_a_path_read_whole(tmp_path, mode):
     with pytest.raises(terrio.TerrioError) as e:
         terrio.translate(str(path), outsize=(8, 8))
     assert not isinstance(e.value, terrio.UnsupportedError)
+
+
+def test_a_level_of_a_raster_without_overviews_warns_and_reads_full_resolution(tmp_path):
+    # As gdal_translate -ovr 0 and terrio translate --overview 0 on a raster without overviews.
+    path = tmp_path / "grid.asc"
+    path.write_text("ncols 4\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3 4\n5 6 7 8\n")
+    with pytest.warns(UserWarning, match="cannot get overview level 0"):
+        out = terrio.translate(str(path), srcwin=(1, 0, 2, 2), overview=0)
+    np.testing.assert_array_equal(out.read(1), [[2, 3], [6, 7]])
