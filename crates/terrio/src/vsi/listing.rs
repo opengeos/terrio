@@ -17,15 +17,48 @@ use std::collections::HashMap;
 
 type EntryIndex = HashMap<(String, bool), usize>;
 
-/// Removes credential-bearing query strings from diagnostics and public names.
+/// Removes credentials from diagnostics and public names: the user information of a URL's
+/// authority (`https://user:password@host/`) and credential-bearing query strings. A password is
+/// removed when it is percent-encoded, as URLs require: an unencoded `/`, `?` or `#` in it ends the
+/// authority, so the rest is taken for the path (an `@` in a path is not user information).
 pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
-    if let Some((base, query)) = url.split_once('?') {
-        let lower = query.to_ascii_lowercase();
-        if ["sig", "token=", "credential=", "api_key=", "apikey=", "access_key="].iter().any(|key| lower.contains(key)) {
+    let mut out = std::borrow::Cow::Borrowed(url);
+    if let Some(scheme) = url.find("://") {
+        let authority = scheme + 3;
+        let end = url[authority..].find(['/', '?', '#']).map_or(url.len(), |end| authority + end);
+        if let Some(at) = url[authority..end].rfind('@') {
+            out = format!("{}{}", &url[..authority], &url[authority + at + 1..]).into();
+        }
+    }
+    if let Some((base, query)) = out.split_once('?') {
+        // Parameter names as a server reads them too: `%6Bey=` is `key=`.
+        let lower = format!("{query}&{}", percent_decoded(query)).to_ascii_lowercase();
+        const KEYS: [&str; 9] = ["sig", "token=", "credential=", "api_key=", "apikey=", "access_key=", "key=", "password=", "passwd="];
+        if KEYS.iter().any(|key| lower.contains(key)) {
             return format!("{base}?<redacted>").into();
         }
     }
-    url.into()
+    out
+}
+
+/// `text` with its `%XX` escapes decoded (invalid escapes and non-UTF-8 bytes kept as they are).
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && let (Some(h), Some(l)) = (bytes.get(i + 1).copied().and_then(hex), bytes.get(i + 2).copied().and_then(hex))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// An entry of a remote listing.
@@ -746,6 +779,18 @@ impl RemoteLister {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn url_passwords_and_key_parameters_are_redacted() {
+        let redacted = super::redact_url("https://user:secret@example.com/f.tif?key=AIza123");
+        assert_eq!(redacted, "https://example.com/f.tif?<redacted>");
+        assert_eq!(super::redact_url("https://u:p@example.com"), "https://example.com");
+        // An `@` after the authority is part of the path, not user information.
+        assert_eq!(super::redact_url("https://example.com/a@b.tif"), "https://example.com/a@b.tif");
+        assert_eq!(super::redact_url("/vsizip/local@archive.zip/x.tif"), "/vsizip/local@archive.zip/x.tif");
+        assert!(super::redact_url("https://example.com/f.tif?password=hunter2").ends_with("?<redacted>"));
+        assert!(super::redact_url("https://example.com/f.tif?%6Bey=AIza123").ends_with("?<redacted>"));
+    }
+
     #[test]
     fn url_prefixes_are_decoded_once_before_query_encoding() {
         for base in [

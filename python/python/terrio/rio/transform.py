@@ -195,7 +195,7 @@ def _gcps_to_geotransform(
             g1 = (x1 - x0) / (p1 - p0)
             g5 = (y2 - y1) / (l2 - l1)
             return True, [x0 - p0 * g1, g1, 0.0, y0 - l0 * g5, 0.0, g5]
-    ps, ls, xs, ys = (list(c) for c in zip(*gcps))
+    ps, ls, xs, ys = (list(c) for c in zip(*gcps, strict=False))
     span = [max(v) - min(v) for v in (ps, ls, xs, ys)]
     if any(abs(d) < 1e-12 for d in span):
         return False, None
@@ -221,13 +221,27 @@ def _gcps_to_geotransform(
     if div == 0.0:
         return False, None
     fit = [
-        (slon * (sxx * syy - sxy * sxy) + slonx * (sy * sxy - sx * syy) + slony * (sx * sxy - sy * sxx)) / div,
-        (slon * (sy * sxy - sx * syy) + slonx * (n * syy - sy * sy) + slony * (sx * sy - sxy * n)) / div,
-        (slon * (sx * sxy - sy * sxx) + slonx * (sx * sy - n * sxy) + slony * (n * sxx - sx * sx)) / div,
-        (slat * (sxx * syy - sxy * sxy) + slatx * (sy * sxy - sx * syy) + slaty * (sx * sxy - sy * sxx)) / div,
-        (slat * (sy * sxy - sx * syy) + slatx * (n * syy - sy * sy) + slaty * (sx * sy - sxy * n)) / div,
-        (slat * (sx * sxy - sy * sxx) + slatx * (sx * sy - n * sxy) + slaty * (n * sxx - sx * sx)) / div,
-    ]  # fmt: skip
+        (
+            slon * (sxx * syy - sxy * sxy)
+            + slonx * (sy * sxy - sx * syy)
+            + slony * (sx * sxy - sy * sxx)
+        )
+        / div,
+        (slon * (sy * sxy - sx * syy) + slonx * (n * syy - sy * sy) + slony * (sx * sy - sxy * n))
+        / div,
+        (slon * (sx * sxy - sy * sxx) + slonx * (sx * sy - n * sxy) + slony * (n * sxx - sx * sx))
+        / div,
+        (
+            slat * (sxx * syy - sxy * sxy)
+            + slatx * (sy * sxy - sx * syy)
+            + slaty * (sx * sxy - sy * sxx)
+        )
+        / div,
+        (slat * (sy * sxy - sx * syy) + slatx * (n * syy - sy * sy) + slaty * (sx * sy - sxy * n))
+        / div,
+        (slat * (sx * sxy - sy * sxx) + slatx * (sx * sy - n * sxy) + slaty * (n * sxx - sx * sx))
+        / div,
+    ]
     # `geo` has no rotation: GDALInvGeoTransform's exact special case.
     inv_geo = [-geo[0] / geo[1], 1.0 / geo[1], 0.0, -geo[3] / geo[5], 0.0, 1.0 / geo[5]]
     gt = _compose_gt(_compose_gt(pl, fit), inv_geo)

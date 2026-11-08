@@ -79,3 +79,13 @@ def test_sidecar_crs_overrides_geokeys(tmp_path):
         assert terrio.open_raster(path).crs == "EPSG:32614"
     (tmp_path / "sidecar_override.tif.aux.xml").unlink()
     assert terrio.open_raster(path).crs == "EPSG:32613"
+
+
+def test_translate_passes_on_the_warnings_of_opening_its_path(tmp_path):
+    """`translate` of a path warns as opening it does (here, of an unreadable projection)."""
+    data = (DATA / "tmerc.tif").read_bytes()
+    key = (3075).to_bytes(2, "little") + bytes([0, 0, 1, 0])
+    path = tmp_path / "laborde.tif"
+    path.write_bytes(data.replace(key + bytes([1, 0]), key + bytes([4, 0])))
+    with pytest.warns(UserWarning, match="projection method 4"):
+        assert terrio.translate(str(path), srcwin=(0, 0, 2, 2)).crs is None

@@ -1230,26 +1230,35 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
             };
             let xt: Vec<(usize, Vec<f64>)> = (0..ow).map(|c| taps(c, rx, fx, s.width)).collect();
             let negative_weights = matches!(method, Resampling::Cubic | Resampling::Lanczos);
+            // GDAL's work type is `float` for these types (`GDALGetOvrWorkDataType`), `double` else:
+            // the result is rounded to float for them. The sums themselves stay in f64.
+            let single = matches!(s.src_type, DataType::U8 | DataType::U16 | DataType::I8 | DataType::I16 | DataType::F32);
+            let work = |v: f64| if single { v as f32 as f64 } else { v };
             crate::par::chunks_mut(&mut res, ow, |r, line| {
                 let (y0, wys) = taps(r, ry, fy, s.height);
+                // GDAL's `GDALResampleChunk_ConvolutionT` filters rows first: each row is the
+                // average of its valid pixels by their horizontal weights, or invalid when it has
+                // none (or too few consecutive ones for a kernel with negative weights). The
+                // column of rows is then the average of its valid rows by their vertical weights,
+                // invalid by the same rules. With nodata, a pass keeps a total weight above 0.0,
+                // with no epsilon, as GDAL 3.13.3 does (`dfWeightSum > 0.0` in both passes of
+                // `GDALResampleChunk_ConvolutionT`, gcore/overview.cpp).
+                let mut rows: Vec<Option<f64>> = Vec::with_capacity(wys.len());
                 for c in 0..ow {
                     let (x0, wxs) = &xt[c];
-                    let (mut acc, mut wsum) = (0.0, 0.0);
-                    let mut nan = false;
-                    for (j, wy) in wys.iter().enumerate() {
+                    rows.clear();
+                    for j in 0..wys.len() {
                         let row = (y0 + j) * s.width;
-                        // GDAL filters rows first, adding `value * weight * mask` for every
-                        // pixel: an infinite nodata value (weight 0) makes the row NaN, and a
-                        // NaN row the result, unless the row has no valid pixel (or too few
-                        // consecutive ones for a kernel with negative weights) and is skipped.
-                        let (mut alpha, mut infinite) = (0.0, false);
+                        let (mut acc, mut wsum) = (0.0, 0.0);
+                        // An infinite nodata value (weight 0) makes the row NaN, as GDAL adds
+                        // `value * weight * mask` for every pixel.
+                        let mut infinite = false;
                         let (mut run, mut longest) = (0, 0);
                         for (i, wx) in wxs.iter().enumerate() {
                             let idx = row + x0 + i;
                             if is_valid(idx) {
-                                acc += s.values.get(idx) * wx * wy;
-                                wsum += wx * wy;
-                                alpha += wx;
+                                acc += s.values.get(idx) * wx;
+                                wsum += wx;
                                 run += 1;
                                 longest = longest.max(run);
                             } else {
@@ -1258,10 +1267,34 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
                             }
                         }
                         let skipped = negative_weights && longest < wxs.len() / 2;
-                        nan |= infinite && alpha > 0.0 && !skipped;
+                        rows.push(if skipped || (s.valid.is_some() && wsum <= 0.0) {
+                            None
+                        } else if infinite {
+                            Some(f64::NAN)
+                        } else if wsum != 0.0 {
+                            Some(acc / wsum)
+                        } else {
+                            Some(acc)
+                        });
                     }
-                    if wsum != 0.0 && (s.valid.is_none() || wsum > 1e-10) {
-                        line[c] = Some(if nan { f64::NAN } else { acc / wsum });
+                    let (mut acc, mut wsum) = (0.0, 0.0);
+                    let (mut run, mut longest) = (0, 0);
+                    for (h, wy) in rows.iter().zip(&wys) {
+                        if let Some(h) = h {
+                            acc += h * wy;
+                            wsum += wy;
+                            run += 1;
+                            longest = longest.max(run);
+                        } else {
+                            run = 0;
+                        }
+                    }
+                    if s.valid.is_some() {
+                        if !(negative_weights && longest < wys.len() / 2) && wsum > 0.0 {
+                            line[c] = Some(work(acc / wsum));
+                        }
+                    } else if wsum != 0.0 {
+                        line[c] = Some(work(acc / wsum));
                     }
                 }
             });
@@ -1521,6 +1554,55 @@ mod tests {
         let mut out = vec![-1.0; 4];
         r.read(2, 2, &mut out, |v| v);
         assert_eq!(out, vec![2.5, 4.5, 10.5, 12.5]);
+    }
+
+    /// Interpolating kernels weigh nodata pixels as GDAL does: each source row is averaged over
+    /// its valid pixels by their horizontal weights, then the rows over the valid ones by their
+    /// vertical weights, rather than all valid weights at once. The expected values are those of
+    /// `gdalbuildvrt -r <method> -tr 5 5` (GDAL 3.13.3) read with `gdal_translate`, for a 20 x 20
+    /// Float32 tile of 10 m pixels whose pixel (row 7, column 9) is nodata.
+    #[test]
+    fn kernels_average_each_row_of_a_source_with_nodata_over_its_valid_pixels() {
+        let mut values: Vec<f64> = (0..400).map(|k| ((k % 37) * 3 + k / 20) as f64).collect();
+        values[7 * 20 + 9] = -9999.0;
+        let valid: Vec<bool> = values.iter().map(|v| *v != -9999.0).collect();
+        let read = |resampling| {
+            let r = SourceRead {
+                values: crate::ops::BandView::F64(&values),
+                valid: Some(&valid),
+                width: 20,
+                height: 20,
+                src_type: DataType::F32,
+                src_rect: [0.0, 0.0, 20.0, 20.0],
+                dst_rect: [0.0, 0.0, 40.0, 40.0],
+                resampling,
+                working_float: false,
+                invalid_value: None,
+            };
+            let mut out = vec![f64::NAN; 1600];
+            r.read(40, 40, &mut out, |v| v);
+            out
+        };
+        // The 16 pixels whose bilinear kernel reaches the nodata pixel, rows 13 to 16 and
+        // columns 17 to 20. Weighing all valid weights at once gave 47.6 for the first and up to
+        // 20.3 more than GDAL at (row 15, column 18).
+        #[rustfmt::skip]
+        let bilinear = [
+            45.0625, 46.1875, 48.8125, 49.9375,
+            19.6875, 20.0625, 24.9375, 25.3125,
+            22.4375, 22.8125, 27.6875, 28.0625,
+            53.3125, 54.4375, 57.0625, 58.1875,
+        ];
+        let out = read(Resampling::Bilinear);
+        for (i, expected) in bilinear.iter().enumerate() {
+            let (row, col) = (13 + i / 4, 17 + i % 4);
+            assert_eq!(out[row * 40 + col], *expected, "bilinear ({row}, {col})");
+        }
+        let out = read(Resampling::Cubic);
+        for ((row, col), expected) in [((12, 16), 69.85305786132812), ((14, 18), -7.288028717041016), ((16, 20), 63.35245132446289)] {
+            let got = out[row * 40 + col];
+            assert!((got - expected).abs() <= 1e-5, "cubic ({row}, {col}): {got} vs {expected}");
+        }
     }
 
     /// A source resampled with `sum` gives each destination pixel the part of each source pixel
