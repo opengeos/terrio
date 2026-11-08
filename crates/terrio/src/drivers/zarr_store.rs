@@ -227,7 +227,7 @@ impl Store {
         if let Some(v) = self.cache.lock().ok().and_then(|c| c.get(key).cloned()) {
             return Ok(v);
         }
-        if self.v3 && [".zarray", ".zattrs", ".zgroup"].iter().any(|f| key == *f || key.ends_with(&format!("/{f}"))) {
+        if self.v3 && matches!(key.rsplit('/').next(), Some(".zarray" | ".zattrs" | ".zgroup")) {
             return Ok(None);
         }
         let v = match self.get(key, Range::Whole)? {
@@ -258,7 +258,11 @@ impl Store {
         let mut map = HashMap::new();
         // Both looked for at once: on a remote store, each is a round trip.
         let this = &*self;
-        let mut found = crate::par::map_range(2, |i| this.probe([".zmetadata", "zarr.json"][i])).into_iter();
+        let options = crate::config::thread_options();
+        let mut found = crate::par::map_range(2, |i| {
+            crate::config::with_thread_options(options.clone(), || this.probe([".zmetadata", "zarr.json"][i]))
+        })
+        .into_iter();
         let v2 = found.next().unwrap_or(Ok(None))?;
         // A v2 store's consolidated metadata stands alone: a failed read of the root's
         // `zarr.json` (a transient error, a 403) does not fail it.

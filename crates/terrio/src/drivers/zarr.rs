@@ -346,10 +346,10 @@ impl Array {
         {
             let size = count * std::mem::size_of::<Option<(u64, u64)>>();
             // Dropped all at once when full: an LRU would suit windows wandering over many shards.
-            if c.1 + size > SHARD_INDEX_CACHE_BYTES {
-                *c = Default::default();
-            }
             if size <= SHARD_INDEX_CACHE_BYTES {
+                if c.1 + size > SHARD_INDEX_CACHE_BYTES {
+                    *c = Default::default();
+                }
                 c.0.insert(key.to_string(), index.clone());
                 c.1 += size;
             }
@@ -1995,17 +1995,17 @@ fn band_dim_metadata(array: &Array, bds: &[usize], coord: impl Fn(usize) -> Opti
     }
     let names: Vec<String> =
         bds.iter().map(|&d| array.dims.get(d).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| format!("dim{d}"))).collect();
-    // Each dimension's coordinates at once (on a remote store, their reads are round trips),
-    // dimensions of the same name read once.
-    let first: Vec<usize> = (0..bds.len()).map(|k| names.iter().position(|n| *n == names[k]).unwrap_or(k)).collect();
-    let read: Vec<(Option<Vec<f64>>, Option<String>)> = crate::par::map_range(bds.len(), |k| {
-        if first[k] != k {
-            return (None, None);
-        }
-        let a = coord(bds[k]).filter(|a| a.shape == [array.shape[bds[k]]]);
-        (a.as_ref().and_then(read_all_f64), a.and_then(|a| a.attrs["units"].as_str().map(str::to_string)))
-    });
-    let (values, units): (Vec<Option<Vec<f64>>>, Vec<Option<String>>) = first.iter().map(|&k| read[k].clone()).unzip();
+    // Each dimension's coordinates at once, retaining its own shape check even when names
+    // repeat. Read with the caller's options, isolated from any suspended worker scope.
+    let options = crate::config::thread_options();
+    let (values, units): (Vec<Option<Vec<f64>>>, Vec<Option<String>>) = crate::par::map_range(bds.len(), |k| {
+        crate::config::with_thread_options(options.clone(), || {
+            let a = coord(bds[k]).filter(|a| a.shape == [array.shape[bds[k]]]);
+            (a.as_ref().and_then(read_all_f64), a.and_then(|a| a.attrs["units"].as_str().map(str::to_string)))
+        })
+    })
+    .into_iter()
+    .unzip();
     let mut out = vec![("DIM_EXTRA".to_string(), format!("{{{}}}", names.join(",")))];
     for b in 1..=bands {
         for (k, i) in band_index(&sizes, b).into_iter().enumerate() {
@@ -2737,6 +2737,26 @@ pub(crate) fn write_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_dimension_names_keep_each_dimensions_shape_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let array_dir = dir.path().join("a");
+        let coord_dir = dir.path().join("level");
+        for (path, shape) in [(&array_dir, vec![2, 3, 1, 1]), (&coord_dir, vec![2])] {
+            std::fs::create_dir_all(path).unwrap();
+            let meta = serde_json::json!({"zarr_format":2,"shape":shape,"chunks":shape,
+                "dtype":"<f8","compressor":null,"fill_value":null,"order":"C","filters":null});
+            std::fs::write(path.join(".zarray"), serde_json::to_vec(&meta).unwrap()).unwrap();
+        }
+        std::fs::write(array_dir.join(".zattrs"), r#"{"_ARRAY_DIMENSIONS":["level","level","y","x"]}"#).unwrap();
+        std::fs::write(coord_dir.join("0"), [10f64, 20.].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>()).unwrap();
+        let array = read_array(&Node::local(&array_dir)).unwrap();
+        let coordinate = Node::local(&coord_dir);
+        let metadata = band_dim_metadata(&array, &[0, 1], |_| read_array(&coordinate).ok());
+        // The shared coordinate has length two, so only the first dimension uses it.
+        assert_eq!(metadata.iter().filter(|(name, _)| name == "BAND_1_DIM_level_VALUE").count(), 1);
+    }
 
     #[test]
     fn numbers_bands_of_many_dimensions_as_gdal() {

@@ -806,8 +806,8 @@ fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelec
     // gdal_translate's virtual dataset reads its bands together when they are the source's
     // first ones in order (`VRTDataset::CheckCompatibleForDatasetIO`). A copy reads the same
     // values either way, so its bands are read together: a Zarr chunk holding many bands is then
-    // fetched and decoded once, not once per band. But for a VRT read whole, whose read of several
-    // bands holds them all as 8-byte values at once.
+    // fetched and decoded once, not once per band. A VRT read whole is the exception: reading
+    // several bands holds them all as 8-byte values at once, so its bands are read one by one.
     let whole_vrt = src.driver() == crate::formats::RasterDriver::VRT && !src.reads_by_window();
     let together = (copy && !whole_vrt) || bands.iter().enumerate().all(|(i, &b)| b == i + 1);
     // A level read alone (`--overview NONE` or a level) rounds each request's window to whole
@@ -1197,7 +1197,15 @@ mod tests {
             ),
         )
         .unwrap();
-        for (path, bands) in [(&rgb, vec![2, 3]), (&vrt, vec![2, 3, 4]), (&vrt, vec![4, 2])] {
+        for (path, bands) in [
+            (&rgb, vec![2, 3]),
+            (&rgb, vec![2, 2]),
+            (&rgb, vec![3, 2, 3]),
+            (&vrt, vec![2, 3, 4]),
+            (&vrt, vec![4, 2]),
+            (&vrt, vec![2, 2]),
+            (&vrt, vec![4, 2, 4]),
+        ] {
             let mut src = crate::open_raster_lazy(path).unwrap();
             let read = ResampledReadOptions {
                 bands: bands.clone(),
