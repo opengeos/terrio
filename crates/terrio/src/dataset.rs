@@ -1416,6 +1416,11 @@ pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -
 
 /// Writes a raster dataset, declaring a nodata value only when the dataset has one.
 ///
+/// Input pixels must be band-major, each band row-major. The native GTiff writer packs these
+/// into pixel-interleaved storage by default (`INTERLEAVE=PIXEL`, `PlanarConfiguration=1`).
+/// Set `INTERLEAVE=BAND` in [`RasterWriteOptions::creation_options`] for separate planes
+/// (`PlanarConfiguration=2`); this does not change the required input buffer layout.
+///
 /// ```no_run
 /// use terrio::formats::RasterDriver;
 ///

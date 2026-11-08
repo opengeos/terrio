@@ -1635,6 +1635,10 @@ fn check_sum_chunks(o: &WarpOptions, chunks: &[Chunk], bytes: usize) -> Result<(
 
 /// Reprojects and resamples one or more rasters into one output, as `gdalwarp` does. Later
 /// sources are drawn over earlier ones where they have valid pixels.
+///
+/// Input and output pixels are band-major, each band row-major from the top:
+/// `data[band * (rows * cols) + row * cols + col]` (zero-based indices). A
+/// [`crate::LazyRaster::read_window`] result needs no pixel reordering before use as a source.
 pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset> {
     warp_with(sources, o, None)
 }

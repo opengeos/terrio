@@ -127,6 +127,21 @@
 //! rather than depending on `wbraster` or `wbvector` directly, so that the versions always match.
 //! A breaking release of either crate that terrio adopts is a breaking release of terrio.
 //!
+//! ## Raster buffer layout
+//!
+//! [`Raster::from_data_native`] takes complete band planes in order, each row-major from the
+//! top: `data[band * (rows * cols) + row * cols + col]` for zero-based indices. Convert
+//! pixel-interleaved RGB/RGBA buffers to planes before passing them to the constructor.
+//! [`LazyRaster::read_window`] and floating-point window reads return the same layout, using
+//! the returned window's dimensions and requested band order, including at overview levels.
+//! [`ops::warp::warp`] consumes and returns band-major rasters; no reordering is needed between
+//! a window read and a warp. A single band uses `data[row * cols + col]`, without transposing.
+//!
+//! TIFF storage is independent of this buffer layout. The native GTiff writer defaults to
+//! pixel-interleaved storage (`INTERLEAVE=PIXEL`, `PlanarConfiguration=1`); request separate
+//! planes with `INTERLEAVE=BAND` (`PlanarConfiguration=2`) in
+//! [`RasterWriteOptions::creation_options`]. Both take band-major buffers.
+//!
 //! # Features
 //!
 //! Every driver is on by default. With `default-features = false`, terrio keeps its core: GeoTIFF

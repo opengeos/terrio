@@ -39,6 +39,58 @@ println!("{}", terrio::info::info(&ds, &Default::default()).to_text());
 nodata with `band_nodata(band)` (one-based) or `nodata()` (band 1). To replace it
 with one shared value, clear the per-band vector and update both shared fields.
 
+## Raster buffer layouts
+
+`RasterData` buffers passed to `Raster::from_data_native` must contain complete bands
+one after another: `[band0_plane, band1_plane, ...]`. Within each band, pixels are
+row-major, from the top row, with columns varying fastest. For zero-based indices:
+
+```text
+index = band * (rows * cols) + row * cols + col
+```
+
+The constructor does not deinterleave pixel-interleaved RGB/RGBA input. Convert it
+before constructing the raster. For example, this 2-column, 2-row RGBA image has a
+different value in every channel and row:
+
+```rust
+use terrio::{DataType, Raster, RasterConfig, RasterDataset, raster::RasterData};
+
+let (cols, rows, bands) = (2, 2, 4);
+let rgba: Vec<u8> = vec![
+    1, 11, 21, 31, 2, 12, 22, 32, // top row: two RGBA pixels
+    3, 13, 23, 33, 4, 14, 24, 34, // bottom row
+];
+let pixels = rows * cols;
+let mut planes = vec![0; pixels * bands];
+for pixel in 0..pixels {
+    for band in 0..bands {
+        planes[band * pixels + pixel] = rgba[pixel * bands + band];
+    }
+}
+assert_eq!(planes, vec![1, 2, 3, 4, 11, 12, 13, 14, 21, 22, 23, 24, 31, 32, 33, 34]);
+let config = RasterConfig { cols, rows, bands, data_type: DataType::U8, ..Default::default() };
+let raster = Raster::from_data_native(config, RasterData::U8(planes))?;
+let ds = RasterDataset::new(raster, false);
+# Ok::<(), terrio::Error>(())
+```
+
+`LazyRaster::read_window` returns the same band-major layout for both pixel-interleaved
+and separate-plane files, at full resolution and at internal or external `.ovr`
+overview levels. Use the **returned window's** dimensions in the index formula; output
+planes follow the requested band order (band selectors are one-based).
+`read_window_f32` and `read_window_f64` also return band-major, row-major values.
+For one band, the index is simply `row * width + col`; there is no row/column transpose.
+`ops::warp::warp` consumes and returns band-major rasters, so a window result can be
+passed directly as a source without reordering its pixels.
+
+The in-memory layout is independent of TIFF storage. The current native GTiff writer
+used by `write_raster_dataset` defaults to `INTERLEAVE=PIXEL`
+(`PlanarConfiguration=1`, chunky). Set
+`creation_options: vec![("INTERLEAVE".into(), "BAND".into())]` in `RasterWriteOptions`
+for separate planes (`PlanarConfiguration=2`), or explicitly request `PIXEL`.
+Both choices take the same band-major input buffer; the writer packs it for the file.
+
 ## Writing
 
 ```rust,no_run
