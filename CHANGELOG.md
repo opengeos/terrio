@@ -2,23 +2,6 @@
 
 ## Unreleased
 
-- Rasterize initializes uncovered pixels to the specified nodata value unless explicit
-  initialization values are given. This follows GDAL's GeoTIFF behavior for all Terrio
-  output formats and in-memory rasters, so uncovered pixels remain invalid by default.
-  Integer nodata values must be representable in the output type. Additive burns start
-  from the background (nodata -1 plus burn 7 yields 6); use explicit zero initialization
-  to accumulate from zero.
-  The CLI catalog is now version 0.1.2 to describe this initialization default accurately.
-
-- `ui` and `view` open the browser through a private HTML redirect file, keeping the session
-  token out of process arguments. If a sandboxed browser cannot read the file, paste the
-  printed address manually or use `--no-open`.
-
-- `translate --overview AUTO-n` without `--outsize` or `--tr` keeps the full-resolution
-  output size while reading the selected overview, as `gdal_translate` does. A 400 x 300
-  source window now stays 400 x 300 instead of shrinking to the overview's resolution.
-  `AUTO-0` is treated as `AUTO` for selecting the source resolution.
-
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource
   error. Coexisting pixel buffers are checked together; hosts without memory discovery use a
@@ -35,6 +18,11 @@
   `overview="NONE"` for the previous result. Python `rasterize` and `vector_grid` take
   `tile_size` and `bigtiff`.
 
+- `translate --overview AUTO-n` without `--outsize` or `--tr` keeps the full-resolution
+  output size while reading the selected overview, as `gdal_translate` does. A 400 x 300
+  source window now stays 400 x 300 instead of shrinking to the overview's resolution.
+  `AUTO-0` is treated as `AUTO` for selecting the source resolution.
+
 - `warp -r sum` without `--te` rounds the suggested output extent's size up, as gdalwarp does
   for a sum (`GDAL_SWO_ROUND_UP_SIZE`), so that the output covers the whole source. Without
   `--ts` or `--tr` this sets the output size; with `--ts` alone, the pixel size spans the
@@ -42,6 +30,10 @@
   nearest, a 41 x 37 UTM raster reprojected to EPSG:4326 lost its last row and 0.4 % of its
   total. Sizes and geotransforms match GDAL 3.13.3 in all three cases; per-pixel values of a
   reprojected sum still differ from GDAL's.
+
+- `ui` and `view` open the browser through a private HTML redirect file, keeping the session
+  token out of process arguments. If a sandboxed browser cannot read the file, paste the
+  printed address manually or use `--no-open`.
 
 - Bilinear, cubic, cubic spline and Lanczos reads of VRT and mosaic sources with nodata
   average each source row over its valid pixels, then the rows over the valid ones, as GDAL's
@@ -53,6 +45,14 @@
   cubic or Lanczos result clamped onto the nodata value is not moved off it as GDAL does, and a
   cubic or Lanczos mosaic written directly to a file at 2.8x upsampling differs from GDAL's VRT
   read next to some isolated nodata pixels (under 0.1 % of them).
+
+- Rasterize initializes uncovered pixels to the specified nodata value unless explicit
+  initialization values are given. This follows GDAL's GeoTIFF behavior for all Terrio
+  output formats and in-memory rasters, so uncovered pixels remain invalid by default.
+  Integer nodata values must be representable in the output type. Additive burns start
+  from the background (nodata -1 plus burn 7 yields 6); use explicit zero initialization
+  to accumulate from zero.
+  The CLI catalog is now version 0.1.2 to describe this initialization default accurately.
 
 - The `--json-usage` catalog (`schema_version` 0.1.1) records whether each argument is
   `repeatable` (clap Append/Count) and lists its `conflicts_with` arguments in both directions,
