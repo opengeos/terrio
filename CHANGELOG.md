@@ -21,7 +21,8 @@
 - `translate --overview AUTO-n` without `--outsize` or `--tr` keeps the full-resolution
   output size while reading the selected overview, as `gdal_translate` does. A 400 x 300
   source window now stays 400 x 300 instead of shrinking to the overview's resolution.
-  `AUTO-0` is treated as `AUTO` for selecting the source resolution.
+  `AUTO-0` is now equivalent to `AUTO` across all resampled reads, including Python and
+  JavaScript readers, VRTs and translate, and permits the same whole-read fallbacks.
 
 - `warp -r sum` without `--te` rounds the suggested output extent's size up, as gdalwarp does
   for a sum (`GDAL_SWO_ROUND_UP_SIZE`), so that the output covers the whole source. Without
