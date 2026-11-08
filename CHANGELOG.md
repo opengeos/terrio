@@ -107,6 +107,15 @@
   including members of exclusive argument groups. A CI step requires a newer `schema_version`
   whenever the catalog digest changes relative to the pull request's base.
 
+- JavaScript's `openUrl` reads remote Zarr stores (v2 and v3, sharded or not) by window, as
+  `terrio` reads them natively: `openUrl(store, { format: "Zarr", array: "embeddings" })` (or a
+  URL ending in `.zarr`) opens the array as a raster, fetching its metadata documents, and a
+  window fetches the shard indexes and chunks it needs. `LazyRaster::from_zarr_objects` and
+  `terrio::sparse::SparseObjects` read a store whose objects the caller fetches, as
+  `LazyRaster::from_sparse` and `SparseFile` read one file. 128 bands of a 192 x 192 window of the
+  TESSERA embeddings read in a median 3.9 s in Chrome from Europe (3 runs, 19 requests, 5 MB),
+  where the TESSERA Zarr Explorer (zarrita) took 9.0 s.
+
 - Python raster operations accept format-specific `options` dictionaries when writing a
   destination, as `Raster.write` and CLI `--co` do. Creation options also reach streamed
   terrain/warp/pansharpen outputs, mask-writing paths, palette operations and `create_raster`.
@@ -624,14 +633,6 @@
   entities they do not support with a warning instead of failing the drawing (#501).
 - A dataset with a single named layer accepts its file stem as the layer name too, through native
   readers, in-memory codecs and the GDAL backend, with one diagnostic for a missing layer (#529).
-- JavaScript's `openUrl` reads remote Zarr stores (v2 and v3, sharded or not) by window, as
-  `terrio` reads them natively: `openUrl(store, { format: "Zarr", array: "embeddings" })` (or a
-  URL ending in `.zarr`) opens the array as a raster, fetching its metadata documents, and a
-  window fetches the shard indexes and chunks it needs. `LazyRaster::from_zarr_objects` and
-  `terrio::sparse::SparseObjects` read a store whose objects the caller fetches, as
-  `LazyRaster::from_sparse` and `SparseFile` read one file. 128 bands of a 192 x 192 window of the
-  TESSERA embeddings read in a median 3.9 s in Chrome from Europe (3 runs, 19 requests, 5 MB),
-  where the TESSERA Zarr Explorer (zarrita) took 9.0 s.
 - The WebAssembly package can be built with a selection of scientific formats, such as NetCDF and
   HDF5, as a single module (#503).
 - `terrio-crs` 0.2.2 adds the two-point form of oblique Mercator, and
