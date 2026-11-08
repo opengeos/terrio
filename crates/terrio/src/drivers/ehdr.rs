@@ -205,11 +205,11 @@ mod tests {
 
     #[test]
     fn a_header_declaring_samples_past_any_count_is_refused() {
-        // 2^64 samples: too many to guess a sample size from the file's size.
-        let e = open_with("ncols 4294967296\nnrows 4294967296\n").map(|_| ()).unwrap_err();
+        // More samples than a count holds, whatever the pointer width: no sample size to guess.
+        let e = open_with(&format!("ncols {}\nnrows 2\n", usize::MAX)).map(|_| ()).unwrap_err();
         assert!(e.to_string().contains("too many"), "{e}");
-        // Rows of 2^62 Float32 samples: more bytes than a row length can count.
-        let e = open_with("ncols 4611686018427387904\nnrows 1\nnbits 32\npixeltype float\n").map(|_| ()).unwrap_err();
+        // Rows of usize::MAX / 2 Float32 samples: more bytes than a row length can count.
+        let e = open_with(&format!("ncols {}\nnrows 1\nnbits 32\npixeltype float\n", usize::MAX / 2)).map(|_| ()).unwrap_err();
         assert!(e.to_string().contains("too many"), "{e}");
         // The 4-byte file of one Float32 sample still opens.
         assert!(open_with("ncols 1\nnrows 1\n").is_ok());

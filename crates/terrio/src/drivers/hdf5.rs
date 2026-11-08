@@ -562,37 +562,40 @@ fn valid_layout(shape: &[usize], x: usize, y: Option<usize>, other: Option<usize
 
 /// Reorders the elements of an array into bands, rows and columns: `x`, `y` and `other` are the
 /// dimensions of the columns, rows and bands (rows of 1 without `y`, one band without `other`).
-/// `None` when they are not distinct dimensions of `shape` or `raw` is shorter than it.
-fn to_bsq(raw: &[u8], shape: &[usize], element: usize, x: usize, y: Option<usize>, other: Option<usize>) -> Option<Vec<u8>> {
+/// Refused (`InvalidData`) when they are not distinct dimensions of `shape` or `raw` is shorter
+/// than it, and an `OutOfMemory` error when the reordered elements cannot be allocated.
+fn to_bsq(raw: &[u8], shape: &[usize], element: usize, x: usize, y: Option<usize>, other: Option<usize>) -> Result<Vec<u8>> {
+    let short = || Error::InvalidData("dataset shorter than its shape".into());
     if !valid_layout(shape, x, y, other) {
-        return None;
+        return Err(Error::InvalidData("its dimensions do not name distinct columns, rows and bands".into()));
     }
     let nd = shape.len();
     let mut strides = vec![1usize; nd];
+    let too_large = || Error::ResourceLimit(format!("an array of shape {shape:?} has too many elements"));
     for d in (0..nd.saturating_sub(1)).rev() {
-        strides[d] = strides[d + 1].checked_mul(shape[d + 1])?;
+        strides[d] = strides[d + 1].checked_mul(shape[d + 1]).ok_or_else(too_large)?;
     }
-    if shape.iter().try_fold(element, |n, d| n.checked_mul(*d))? > raw.len() {
-        return None;
+    if shape.iter().try_fold(element, |n, d| n.checked_mul(*d)).ok_or_else(too_large)? > raw.len() {
+        return Err(short());
     }
     // Distinct dimensions: every element gathered lies within the shape, so within `raw`.
     let (cols, rows, bands) = (shape[x], y.map_or(1, |y| shape[y]), other.map_or(1, |o| shape[o]));
     let mut out = Vec::new();
-    out.try_reserve_exact(cols * rows * bands * element).ok()?;
+    fallible::reserve(&mut out, cols * rows * bands * element, "an HDF5 array reordered into bands")?;
     for b in 0..bands {
         for r in 0..rows {
             let base = other.map_or(0, |o| b * strides[o]) + y.map_or(0, |y| r * strides[y]);
             if strides[x] == 1 {
-                out.extend_from_slice(raw.get(base * element..(base + cols) * element)?);
+                out.extend_from_slice(raw.get(base * element..(base + cols) * element).ok_or_else(short)?);
             } else {
                 for c in 0..cols {
                     let i = (base + c * strides[x]) * element;
-                    out.extend_from_slice(raw.get(i..i + element)?);
+                    out.extend_from_slice(raw.get(i..i + element).ok_or_else(short)?);
                 }
             }
         }
     }
-    Some(out)
+    Ok(out)
 }
 
 /// Decodes elements of a numeric type laid out band by band.
@@ -686,7 +689,12 @@ fn read_dataset(
         // Columns, rows and bands are distinct dimensions: they hold at most the whole dataset.
         std::borrow::Cow::Borrowed(whole.get(..n * element).ok_or_else(|| err(path, "dataset shorter than its shape"))?)
     } else {
-        std::borrow::Cow::Owned(to_bsq(whole, &shape, element, x, y, other).ok_or_else(|| err(path, "dataset shorter than its shape"))?)
+        // Refusals of the data name the file; allocation and resource refusals stay as they are.
+        let ordered = to_bsq(whole, &shape, element, x, y, other).map_err(|failure| match failure {
+            Error::InvalidData(m) => err(path, format!("{}: {m}", e.path)),
+            failure => failure,
+        })?;
+        std::borrow::Cow::Owned(ordered)
     };
     let (data, raster_bands) = match t.complex {
         // Complex elements: each band becomes its real parts then its imaginary parts.
@@ -1023,10 +1031,30 @@ mod tests {
     fn gathers_only_distinct_dimensions_within_the_data() {
         let raw: Vec<u8> = (0..6).collect();
         // A 2 x 3 array transposed: columns on dimension 0, rows on dimension 1.
-        assert_eq!(to_bsq(&raw, &[2, 3], 1, 0, Some(1), None), Some(vec![0, 3, 1, 4, 2, 5]));
-        assert_eq!(to_bsq(&raw, &[2, 3], 1, 1, Some(1), None), None);
-        assert_eq!(to_bsq(&raw, &[2, 3], 1, 2, Some(1), None), None);
-        assert_eq!(to_bsq(&raw[..5], &[2, 3], 1, 0, Some(1), None), None);
+        assert_eq!(to_bsq(&raw, &[2, 3], 1, 0, Some(1), None).unwrap(), vec![0, 3, 1, 4, 2, 5]);
+        let message = |r: Result<Vec<u8>>| r.unwrap_err().to_string();
+        let layout = "its dimensions do not name distinct columns, rows and bands";
+        assert_eq!(message(to_bsq(&raw, &[2, 3], 1, 1, Some(1), None)), layout);
+        assert_eq!(message(to_bsq(&raw, &[2, 3], 1, 2, Some(1), None)), layout);
+        assert_eq!(message(to_bsq(&raw[..5], &[2, 3], 1, 0, Some(1), None)), "dataset shorter than its shape");
+        // A shape whose elements overflow a count: a resource refusal, not a short dataset.
+        assert!(to_bsq(&raw, &[usize::MAX, 2], 1, 0, Some(1), None).unwrap_err().is_resource_refusal());
+    }
+
+    /// A single-valued attribute: one element. A shape whose element count overflows (to 1, were
+    /// it wrapped) holds no single value.
+    #[test]
+    fn reads_only_single_valued_attributes() {
+        let attr = |shape: Vec<u64>| Attribute {
+            name: "_FillValue".into(),
+            datatype: Datatype::FixedPoint { size: 1, signed: false, byte_order: ByteOrder::LittleEndian },
+            shape,
+            raw_data: vec![7],
+            decoded_strings: None,
+        };
+        assert_eq!(attr_f64(&[attr(vec![1])], "_FillValue"), Some(7.0));
+        assert_eq!(attr_f64(&[attr(vec![u64::MAX, u64::MAX])], "_FillValue"), None);
+        assert_eq!(attr_f64(&[attr(vec![2])], "_FillValue"), None);
     }
 
     /// A NISAR-like file (GDAL's `fake_NISAR_L2_epsg_code.h5`): its CRS from the grid mapping's

@@ -214,8 +214,9 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     // allocated (the bands' Float64 values, then their converted copy).
     let n = fallible::len(&[cols, rows], "the Imagine raster")?;
     let total = fallible::len(&[n, layers.len()], "the Imagine raster")?;
-    fallible::check_usable(total.checked_mul(size_of::<f64>()), || format!("a raster of {cols} x {rows} x {}", layers.len()))
-        .map_err(bad)?;
+    // A resource refusal, which the GDAL fallback does not retry.
+    fallible::check_usable(total.checked_mul(size_of::<f64>()), || format!("Imagine: a raster of {cols} x {rows} x {}", layers.len()))
+        .map_err(Error::ResourceLimit)?;
     let mut values = Vec::new();
     let mut nodata = None;
     let mut map_info = None;
@@ -402,9 +403,14 @@ mod tests {
     #[test]
     fn a_raster_larger_than_memory_is_refused() {
         // 4294967295 x 4294967295 pixels in a 2 KB file: their count overflows the size of a
-        // buffer of Float64 values.
+        // buffer of Float64 values (of their count on 32-bit targets): a resource refusal either way.
         let e = read_bytes(&imagine(u32::MAX, u32::MAX, 1, 1, 1, &packed_block(0, &[7]))).unwrap_err();
-        assert_eq!(e.to_string(), "Imagine: a raster of 4294967295 x 4294967295 x 1: more bytes than the address space holds");
+        assert!(e.is_resource_refusal(), "{e:?}");
+        #[cfg(target_pointer_width = "64")]
+        assert!(
+            matches!(&e, Error::ResourceLimit(m) if m == "Imagine: a raster of 4294967295 x 4294967295 x 1: more bytes than the address space holds"),
+            "{e:?}"
+        );
         // 4096 x 4096 pixels in single-pixel blocks need 16777216 block entries, not 1: refused,
         // as GDAL 3.13.3 refuses a block index shorter than the raster's blocks.
         let e = read_bytes(&imagine(1 << 12, 1 << 12, 1, 1, 1, &packed_block(0, &[7]))).unwrap_err();
@@ -437,6 +443,21 @@ mod tests {
         }
         let ds = read_bytes(&b).unwrap();
         assert_eq!(ds.raster.data.to_f64_vec(), vec![1.0, 2.0, 1.0, 3.0, 4.0, 3.0, 1.0, 2.0, 1.0]);
+    }
+
+    #[test]
+    fn a_run_crossing_a_clipped_row_continues_on_the_next() {
+        // A 3 x 2 raster in one 4 x 2 block (its last column outside): a run of 5 values covers
+        // row 0 and the first pixel of row 1, then a run of 3 the rest.
+        let mut block = Vec::new();
+        block.extend(0i32.to_le_bytes());
+        block.extend(2i32.to_le_bytes());
+        block.extend(15i32.to_le_bytes());
+        block.push(8);
+        block.extend([5u8, 3]);
+        block.extend([1u8, 2]);
+        let ds = read_bytes(&imagine(3, 2, 4, 2, 1, &block)).unwrap();
+        assert_eq!(ds.raster.data.to_f64_vec(), vec![1.0, 1.0, 1.0, 1.0, 2.0, 2.0]);
     }
 
     #[test]

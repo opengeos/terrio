@@ -23,6 +23,17 @@ use wbraster::{DataType, Raster};
 const MAX_CELLS_PER_POINT: usize = 64;
 const MIN_MAX_CELLS: usize = 1 << 24;
 
+/// The most cells a grid of `points` points may have.
+fn max_cells(points: usize) -> usize {
+    points.saturating_mul(MAX_CELLS_PER_POINT).max(MIN_MAX_CELLS)
+}
+
+/// The columns and rows of a grid of `points` points, when both are known and their cells within
+/// [`max_cells`].
+fn grid_dims(cols: Option<usize>, rows: Option<usize>, points: usize) -> Option<(usize, usize)> {
+    cols.zip(rows).filter(|(c, r)| c.checked_mul(*r).is_some_and(|n| n <= max_cells(points)))
+}
+
 /// The number of cells `extent / step + 1` along an axis, `None` when it is out of range.
 fn cells(extent: f64, step: f64) -> Option<usize> {
     let n = (extent / step).round() + 1.0;
@@ -69,10 +80,10 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     // spacing would declare more cells than any file of points could fill. Missing cells are
     // allowed, up to MAX_CELLS_PER_POINT for each point given (and any grid of up to
     // MIN_MAX_CELLS cells), and no more than the memory can hold.
-    let most = pts.len().saturating_mul(MAX_CELLS_PER_POINT).max(MIN_MAX_CELLS);
-    let dims = cols.zip(rows).filter(|(c, r)| c.checked_mul(*r).is_some_and(|n| n <= most));
-    let (cols, rows) = dims.ok_or_else(|| {
-        Error::InvalidData(format!(
+    // Resource refusals, which the GDAL fallback does not retry.
+    let most = max_cells(pts.len());
+    let (cols, rows) = grid_dims(cols, rows, pts.len()).ok_or_else(|| {
+        Error::ResourceLimit(format!(
             "{}: {} points spread over a grid of more than {most} cells: not a regular grid",
             path.display(),
             pts.len()
@@ -80,7 +91,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     })?;
     let n = cols * rows;
     fallible::check_usable(n.checked_mul(size_of::<f64>()), || format!("XYZ: a grid of {cols} x {rows} cells"))
-        .map_err(|e| Error::InvalidData(format!("{}: {e}", path.display())))?;
+        .map_err(|e| Error::ResourceLimit(format!("{}: {e}", path.display())))?;
     let mut grid = fallible::filled(n, 0.0f64, "an XYZ grid")?;
     for (x, y, z) in &pts {
         let c = ((x - x0) / dx).round() as usize;
@@ -149,6 +160,19 @@ mod tests {
         // cells (just over 2^24) are refused before anything is allocated.
         let e = read_text("0 0 1\n1 1 1\n4100 4100 1\n").unwrap_err();
         assert!(e.to_string().contains("3 points spread over a grid of more than 16777216 cells"), "{e}");
+        assert!(e.is_resource_refusal(), "{e:?}");
+    }
+
+    #[test]
+    fn a_grid_may_have_64_cells_a_point_past_2_to_the_24() {
+        // 2^20 points: up to 2^26 cells, beyond the 2^24 any grid may have.
+        assert_eq!(grid_dims(Some(1 << 13), Some(1 << 13), 1 << 20), Some((1 << 13, 1 << 13)));
+        assert_eq!(grid_dims(Some(1 << 13), Some((1 << 13) + 1), 1 << 20), None);
+        // 3 points: 2^24 cells, no more.
+        assert_eq!(grid_dims(Some(1 << 12), Some(1 << 12), 3), Some((1 << 12, 1 << 12)));
+        assert_eq!(grid_dims(Some(1 << 13), Some(1 << 13), 3), None);
+        assert_eq!(grid_dims(Some(usize::MAX), Some(2), usize::MAX), None);
+        assert_eq!(grid_dims(None, Some(2), 3), None);
     }
 
     #[test]
