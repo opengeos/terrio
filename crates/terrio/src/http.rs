@@ -31,6 +31,7 @@
 //! | `TERRIO_HTTP_BLOCK_SIZE` (bytes) | `CPL_VSIL_CURL_CHUNK_SIZE` | 65536 |
 //! | `TERRIO_HTTP_CACHE_SIZE` (bytes): the block cache of each open file, and the process-wide cache | `CPL_VSIL_CURL_CACHE_SIZE` | 67108864 |
 //! | `TERRIO_HTTP_USERAGENT` | `GDAL_HTTP_USERAGENT` | `terrio/VERSION` |
+//! | `TERRIO_HTTP_MULTIRANGE=SERIAL`: fetch the byte runs of one read one after another rather than in parallel | `GDAL_HTTP_MULTIRANGE` | `PARALLEL` |
 //! | `TERRIO_HTTP_LOG=YES`: print each request, and each new process-wide connection pool, to standard error | `CPL_CURL_VERBOSE` | off |
 //! | `TERRIO_JSON_MAX_SIZE` (bytes, `K`, `M` or `G` suffixes): the largest JSON document fetched whole | `CPL_JSON_MAX_SIZE` | 100 MB |
 //!
@@ -127,6 +128,10 @@ pub struct HttpOptions {
     /// The bytes a remote file's first request fetches (`GDAL_INGESTED_BYTES_AT_OPEN`), when more
     /// than a block: enough for a whole GeoTIFF header in one request.
     pub ingested_bytes_at_open: Option<u64>,
+    /// Whether the separate byte runs of one prefetch (the tiles of a window) are fetched in
+    /// parallel, as `GDAL_HTTP_MULTIRANGE=PARALLEL` (GDAL's default) fetches a multi-range read;
+    /// otherwise one after another.
+    pub parallel_ranges: bool,
 }
 
 impl Default for HttpOptions {
@@ -141,6 +146,7 @@ impl Default for HttpOptions {
             user_agent: format!("terrio/{}", crate::VERSION),
             log: false,
             ingested_bytes_at_open: None,
+            parallel_ranges: true,
         }
     }
 }
@@ -169,6 +175,9 @@ impl HttpOptions {
                 .and_then(|v| v.parse::<u64>().ok())
                 .filter(|n| *n > 0)
                 .map(|n| n.min(64 << 20)),
+            // GDAL's SERIAL and SINGLE_GET both send one request at a time here.
+            parallel_ranges: var("TERRIO_HTTP_MULTIRANGE", "GDAL_HTTP_MULTIRANGE")
+                .is_none_or(|v| !matches!(v.to_ascii_uppercase().as_str(), "SERIAL" | "SINGLE_GET")),
         }
     }
 }
@@ -408,6 +417,7 @@ struct Fetched {
 }
 
 /// Makes requests for one remote file: signing, redirects, region discovery and retries.
+#[derive(Clone)]
 struct Client {
     agent: ureq::Agent,
     /// The process `agent` was made in (see [`agent_in`]).
@@ -478,6 +488,7 @@ fn redirect_refused(asked: &str, to: &str) -> Error {
     ))
 }
 
+#[derive(Clone)]
 struct S3Auth {
     creds: Option<Credentials>,
     region: Option<String>,
@@ -2251,9 +2262,13 @@ impl Shared {
 
     /// Fetches the given blocks (sorted, not cached), merging runs separated by at most `gap`
     /// blocks into one request. Blocks the process-wide cache holds are taken from it, and bytes
-    /// the first request returned are not asked again.
+    /// the first request returned are not asked again. Separate runs are requested in parallel
+    /// (see [`HttpOptions::parallel_ranges`]), each through a copy of the client and a connection
+    /// of the shared pool, and stored in order as if fetched one after another.
     fn fetch_blocks(&mut self, blocks: &[u64], gap: u64) -> io::Result<()> {
         let blocks: Vec<u64> = blocks.iter().copied().filter(|&b| !self.load_cached_block(b)).collect();
+        // (first block, held bytes, first byte to request, last byte) of each run
+        let mut runs = Vec::new();
         let mut i = 0;
         while i < blocks.len() {
             let start = blocks[i];
@@ -2266,33 +2281,79 @@ impl Shared {
             let first = start * self.block_size;
             let last = ((end + 1) * self.block_size).min(self.len) - 1;
             // The first bytes, already held, start the run when it starts the file.
-            let held: &[u8] = match &self.prefix {
-                Some(p) if (first as usize) < p.len() => &p[first as usize..p.len().min(last as usize + 1)],
-                _ => &[],
+            let held: Vec<u8> = match &self.prefix {
+                Some(p) if (first as usize) < p.len() => p[first as usize..p.len().min(last as usize + 1)].to_vec(),
+                _ => Vec::new(),
             };
             let from = first + held.len() as u64;
-            let mut data = held.to_vec();
-            if from <= last {
-                let fetched = self.client.fetch(Some((from, last))).map_err(io::Error::other)?;
-                self.observe_source();
-                match fetched.status {
-                    206 if fetched.data.len() as u64 == last - from + 1 => data.extend_from_slice(&fetched.data),
-                    200 if fetched.data.len() as u64 == self.len => {
-                        self.store_whole(fetched.data.into());
-                        return Ok(());
+            runs.push((start, held, from, last));
+        }
+        let requests = runs.iter().filter(|(_, _, from, last)| from <= last).count();
+        if requests > 1 && self.client.options.parallel_ranges {
+            // ponytail: a thread per run, PARALLEL_RUNS at a time; a pool of request threads if
+            // spawning ever shows next to a request's latency
+            const PARALLEL_RUNS: usize = 8;
+            for group in runs.chunks(PARALLEL_RUNS) {
+                let fetched: Vec<(Client, Option<Result<Fetched>>)> = std::thread::scope(|scope| {
+                    let handles: Vec<_> = group
+                        .iter()
+                        .map(|&(_, _, from, last)| {
+                            let mut client = self.client.clone();
+                            scope.spawn(move || {
+                                let fetched = (from <= last).then(|| client.fetch(Some((from, last))));
+                                (client, fetched)
+                            })
+                        })
+                        .collect();
+                    handles.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+                });
+                for ((start, held, from, last), (client, fetched)) in group.iter().zip(fetched) {
+                    // what a request learned (a region, a redirect) is kept, as serially
+                    if fetched.is_some() {
+                        self.client = client;
                     }
-                    status => {
-                        return Err(io::Error::other(format!(
-                            "{}: bytes {from}-{last}: unexpected response (status {status}, {} bytes)",
-                            redact(&self.client.url),
-                            fetched.data.len()
-                        )));
+                    if self.store_run(*start, held.clone(), *from, *last, fetched)? {
+                        return Ok(());
                     }
                 }
             }
-            self.store(start, data);
+            return Ok(());
+        }
+        for (start, held, from, last) in runs {
+            let fetched = (from <= last).then(|| self.client.fetch(Some((from, last))));
+            if self.store_run(start, held, from, last, fetched)? {
+                break;
+            }
         }
         Ok(())
+    }
+
+    /// Stores the run of blocks from `start`: the `held` bytes, then the response for bytes
+    /// `from..=last` (`None` when `held` covers them). Returns whether the server sent the whole
+    /// file instead, which is then stored and ends the fetch.
+    fn store_run(&mut self, start: u64, mut data: Vec<u8>, from: u64, last: u64, fetched: Option<Result<Fetched>>) -> io::Result<bool> {
+        if let Some(fetched) = fetched {
+            let fetched = fetched.map_err(io::Error::other)?;
+            self.observe_source();
+            match fetched.status {
+                // the response itself when nothing was held: one copy of the run less
+                206 if fetched.data.len() as u64 == last - from + 1 && data.is_empty() => data = fetched.data,
+                206 if fetched.data.len() as u64 == last - from + 1 => data.extend_from_slice(&fetched.data),
+                200 if fetched.data.len() as u64 == self.len => {
+                    self.store_whole(fetched.data.into());
+                    return Ok(true);
+                }
+                status => {
+                    return Err(io::Error::other(format!(
+                        "{}: bytes {from}-{last}: unexpected response (status {status}, {} bytes)",
+                        redact(&self.client.url),
+                        fetched.data.len()
+                    )));
+                }
+            }
+        }
+        self.store(start, data);
+        Ok(false)
     }
 
     /// Copies the bytes at `pos` into `buf`, fetching what is missing. Returns the count copied.
@@ -2804,6 +2865,70 @@ mod tests {
         assert_eq!(read_range(&mut r, data.len() as u64 - 10, 10), data[data.len() - 10..]);
         let mut buf = [0u8; 8];
         assert_eq!(r.read(&mut buf).unwrap(), 0);
+    }
+
+    /// Serves `data` by range, a connection per thread and each answer `delay` late. Returns the
+    /// URL and the most requests that were in flight at once.
+    fn serve_slow(data: Vec<u8>, delay: Duration) -> (String, Arc<AtomicU64>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/data", listener.local_addr().unwrap());
+        let (inflight, most) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+        let peak = most.clone();
+        let data = Arc::new(data);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let (Ok(mut stream), data, inflight, most) = (stream, data.clone(), inflight.clone(), most.clone()) else { continue };
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    loop {
+                        let mut range = None;
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        loop {
+                            line.clear();
+                            if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                                break;
+                            }
+                            if let Some(v) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
+                                let (a, b) = v.trim().split_once('-').unwrap();
+                                range = Some((a.parse::<usize>().unwrap(), b.parse::<usize>().unwrap().min(data.len() - 1)));
+                            }
+                        }
+                        let now = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+                        most.fetch_max(now, Ordering::SeqCst);
+                        std::thread::sleep(delay);
+                        inflight.fetch_sub(1, Ordering::SeqCst);
+                        let (a, b) = range.unwrap_or((0, data.len() - 1));
+                        let head = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {a}-{b}/{}\r\n\r\n",
+                            b - a + 1,
+                            data.len()
+                        );
+                        if stream.write_all(head.as_bytes()).and_then(|()| stream.write_all(&data[a..=b])).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (url, peak)
+    }
+
+    #[test]
+    fn prefetch_requests_separate_runs_in_parallel() {
+        let data = test_data();
+        for parallel in [true, false] {
+            let (url, most) = serve_slow(data.clone(), Duration::from_millis(100));
+            let opts = HttpOptions { parallel_ranges: parallel, ..options() };
+            let mut r = RangeReader::open_with(&Remote::Url(url), opts).unwrap();
+            // Three runs far apart: three requests, together unless serial.
+            r.prefetch(&[(10 * 4096, 100), (30 * 4096, 100), (60 * 4096, 5000)]).unwrap();
+            assert_eq!(most.load(Ordering::SeqCst) >= 2, parallel, "parallel_ranges={parallel}");
+            assert_eq!(read_range(&mut r, 60 * 4096, 5000), data[60 * 4096..60 * 4096 + 5000]);
+            assert_eq!(read_range(&mut r, 10 * 4096, 100), data[10 * 4096..10 * 4096 + 100]);
+        }
     }
 
     #[test]
