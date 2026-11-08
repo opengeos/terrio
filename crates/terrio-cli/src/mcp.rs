@@ -108,8 +108,8 @@ impl Server {
             // keeps reading (a cancel, a ping, the client's exit); the batch's replies go back
             // together once they are done.
             Value::Array(batch) => {
-                let mut calls = Vec::new();
-                let replies: Vec<Value> = batch.iter().filter_map(|m| self.handle_value(m, Some(&mut calls))).collect();
+                let (mut calls, mut ids) = (Vec::new(), std::collections::HashSet::new());
+                let replies: Vec<Value> = batch.iter().filter_map(|m| self.handle_value(m, Some((&mut calls, &mut ids)))).collect();
                 if !calls.is_empty() {
                     self.spawn_batch(replies, calls);
                     return None;
@@ -126,7 +126,7 @@ impl Server {
 
     /// The reply to `msg`; a tool call's runs on a thread of its own and is sent from there, or,
     /// in a batch, joins the batch's `calls`.
-    fn handle_value(&mut self, msg: &Value, calls: Option<&mut Vec<ToolCall>>) -> Option<Value> {
+    fn handle_value(&mut self, msg: &Value, calls: Option<(&mut Vec<ToolCall>, &mut std::collections::HashSet<String>)>) -> Option<Value> {
         let Some(obj) = msg.as_object() else {
             return Some(error(&Value::Null, INVALID_REQUEST, "expected a JSON-RPC object"));
         };
@@ -157,10 +157,12 @@ impl Server {
                     match calls {
                         // JSON-RPC ids are distinct within a batch; a repeated one would leave the
                         // first call out of reach of a cancel and of the shutdown.
-                        Some(calls) if calls.iter().any(|(other, _, _)| *other == id) => {
-                            return Some(error(&id, INVALID_REQUEST, "a request id repeated within a batch"));
+                        Some((calls, ids)) => {
+                            if !ids.insert(id.to_string()) {
+                                return Some(error(&id, INVALID_REQUEST, "a request id repeated within a batch"));
+                            }
+                            calls.push((id, name, args));
                         }
-                        Some(calls) => calls.push((id, name, args)),
                         None => self.spawn(id, name, args),
                     }
                     return None;
@@ -729,8 +731,8 @@ mod tests {
         assert!(peak <= BATCH_CONCURRENCY, "{peak} calls ran at once");
     }
 
-    /// A slow call holds back no other: with one call of three seconds and the bound's worth of
-    /// one-second calls, the free workers run the rest while the slow one runs.
+    /// A slow call holds back no other: with one call of five seconds and the bound's worth of
+    /// three-second calls, the free workers run the rest while the slow one runs.
     #[cfg(unix)]
     #[test]
     fn a_slow_batched_call_holds_back_no_other() {
