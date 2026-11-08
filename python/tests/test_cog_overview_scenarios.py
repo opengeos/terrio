@@ -17,7 +17,7 @@ import terrio.rio as trio
 import terrio.rio.shutil  # noqa: F401
 
 rasterio = pytest.importorskip("rasterio")
-import rasterio.shutil  # noqa: E402, F811
+import rasterio.shutil  # noqa: E402, F811 - importorskip assigned rasterio
 from rasterio.transform import from_origin  # noqa: E402
 
 COLS, ROWS = 65, 35
@@ -217,7 +217,7 @@ def test_cog_overview_scenarios_are_gdals(tmp_path, name):
     expected = _levels(_convert(rasterio, src, tmp_path / "gdal.tif", method))
     actual = _levels(_convert(trio, src, tmp_path / "terrio.tif", method))
     assert [x.shape for x, _ in actual] == [x.shape for x, _ in expected], "levels"
-    for i, ((ex, em), (ac, am)) in enumerate(zip(expected, actual, strict=False)):
+    for i, ((ex, em), (ac, am)) in enumerate(zip(expected, actual, strict=True)):
         assert _same(ex, ac).all(), f"level {i}: {(~_same(ex, ac)).sum()} pixels differ"
         if name in INT64_NODATA and i > 0:
             # GDAL's own overviews are unmasked, though they hold the nodata value.
@@ -237,7 +237,10 @@ def test_resamplings_gdal_refuses_are_refused(tmp_path, name):
     else:
         a, dtype, nodata, method, _ = SCENARIOS[name]
     src = _source(tmp_path / "src.tif", a, dtype, nodata, {})
-    with pytest.raises(Exception):  # noqa: B017 - GDAL exception types vary by version
+    with pytest.raises(Exception, match=r"(?i)(unsupported|unknown) resampling"):
         _convert(rasterio, src, tmp_path / "gdal.tif", method)
-    with pytest.raises(Exception, match="resampling"):
+    with pytest.raises(
+        Exception,
+        match=r"(?i)(overview resampling is not supported|(unsupported|unknown) resampling)",
+    ):
         _convert(trio, src, tmp_path / "terrio.tif", method)

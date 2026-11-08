@@ -287,6 +287,24 @@ fn post_request(source: &str) -> Request {
     Request { url: url.to_string(), body: Some(Value::Object(body)), headers: Vec::new() }
 }
 
+/// Whether a location is on the local file system: a local path, or a zip archive held in one.
+fn local_backed(loc: &crate::vfs::Location) -> bool {
+    match loc {
+        crate::vfs::Location::Local(_) => true,
+        crate::vfs::Location::Zip { archive, .. } => local_backed(archive),
+        _ => false,
+    }
+}
+
+/// Whether `href`, resolved from a document at `doc_loc`, names local files although the document
+/// itself is not on the local file system. A remote document is not trusted to read local files
+/// (`file://`, local paths, `/vsizip/` of a local archive), whose pixels and metadata would go
+/// back to whoever opened it.
+pub(crate) fn names_local_files(doc_loc: &str, href: &str) -> bool {
+    let parse = crate::vfs::Location::parse;
+    !local_backed(&parse(doc_loc)) && local_backed(&parse(href))
+}
+
 /// An href resolved against the location of the document holding it.
 pub(crate) fn resolve_href(base: &str, href: &str) -> String {
     if href.contains("://") || href.starts_with("/vsi") {
@@ -542,9 +560,11 @@ fn option_on(key: &str) -> bool {
 
 /// Whether a link to `url`, found in a document read from `from`, may be followed: a document
 /// chooses where its links lead, so only to its own origin, unless
-/// `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`.
+/// `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`; and never from a remote document to local files, the
+/// option notwithstanding.
 fn may_follow(from: &str, url: &str) -> bool {
-    crate::vfs::url_origin(url) == crate::vfs::url_origin(from) || option_on("TERRIO_STAC_FOLLOW_CROSS_ORIGIN")
+    !names_local_files(from, url)
+        && (crate::vfs::url_origin(url) == crate::vfs::url_origin(from) || option_on("TERRIO_STAC_FOLLOW_CROSS_ORIGIN"))
 }
 
 /// [`load_items`] of the response to a request (whose next pages may be `POST` requests too).
@@ -566,7 +586,10 @@ fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<It
                     let Some(href) = link["href"].as_str() else { continue };
                     let href = resolve_href(&base, href);
                     if matches!(link["rel"].as_str(), Some("item" | "items" | "child")) && !may_follow(&base, &href) {
-                        crate::warnings::warn(format!("STAC: a link of '{}' to another origin was not followed", without_query(&base)));
+                        crate::warnings::warn(format!(
+                            "STAC: a link of '{}' to another origin or to local files was not followed",
+                            crate::vsi::listing::redact_url(without_query(&base))
+                        ));
                         continue;
                     }
                     match link["rel"].as_str() {
@@ -606,7 +629,10 @@ fn read_pages(mut doc: Value, mut cur: Request, max_items: usize, out: &mut Item
             return Ok(());
         }
         if !may_follow(&cur.url, &next.url) {
-            crate::warnings::warn(format!("STAC: the next page of '{}' is on another origin: not followed", without_query(&cur.url)));
+            crate::warnings::warn(format!(
+                "STAC: the next page of '{}' is on another origin or names local files: not followed",
+                crate::vsi::listing::redact_url(without_query(&cur.url))
+            ));
             return Ok(());
         }
         // A search made with GET is not continued with a POST its page asks for, unless asked
@@ -770,15 +796,19 @@ fn asset_href(item_loc: &str, asset: &str) -> Result<String> {
     let doc = fetch_json(item_loc)?;
     let item = match kind(&doc) {
         Some(Kind::Item) => doc,
-        _ => return Err(bad(format!("'{item_loc}' is not a STAC item"))),
+        _ => return Err(bad(format!("'{}' is not a STAC item", crate::vsi::listing::redact_url(item_loc)))),
     };
     let a = &item["assets"][asset];
     let href = a["href"].as_str().ok_or_else(|| {
         let names: Vec<&String> = item["assets"].as_object().map(|o| o.keys().collect()).unwrap_or_default();
         let names: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-        bad(format!("'{item_loc}' has no asset '{asset}' (assets: {})", names.join(", ")))
+        bad(format!("'{}' has no asset '{asset}' (assets: {})", crate::vsi::listing::redact_url(item_loc), names.join(", ")))
     })?;
-    sign_href(resolve_href(item_loc, href), &item, item_loc, SignMode::from_env())
+    let href = resolve_href(item_loc, href);
+    if names_local_files(item_loc, &href) {
+        return Err(bad(format!("the remote item '{}' names local files (asset '{asset}')", crate::vsi::listing::redact_url(item_loc))));
+    }
+    sign_href(href, &item, item_loc, SignMode::from_env())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -918,11 +948,20 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
             if width <= 0 || height <= 0 {
                 continue;
             }
+            let href = resolve_href(base, href);
+            // A remote item does not name local files; such an asset is left out of the mosaic
+            // (before its group is made, so that no empty group is left).
+            if names_local_files(base, &href) {
+                crate::warnings::warn(format!(
+                    "STAC: asset '{name}' of '{}' names local files: left out of the mosaic",
+                    crate::vsi::listing::redact_url(base)
+                ));
+                continue;
+            }
             let entry = groups.entry(collection.clone()).or_default().entry(name.clone()).or_insert_with(|| AssetGroup {
                 bands: if asset["bands"].is_array() { asset["bands"].clone() } else { asset["eo:bands"].clone() },
                 by_crs: BTreeMap::new(),
             });
-            let href = resolve_href(base, href);
             entry.by_crs.entry(crs).or_default().push(AssetItem {
                 sign: needs_signing(&href, item, base, sign),
                 href,
@@ -1358,6 +1397,8 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
             assets
                 .iter()
                 .filter(|(_, a)| is_data_asset(a))
+                // The assets a remote item names on the local file system cannot be opened.
+                .filter(|(_, a)| a["href"].as_str().is_none_or(|h| !names_local_files(path, &resolve_href(path, h))))
                 .map(|(k, a)| Subdataset {
                     name: format!("STAC:\"{path}\":{k}"),
                     description: match a["title"].as_str() {
@@ -1399,6 +1440,104 @@ mod tests {
     /// The private document the review's second origin served: its features must never be read.
     #[cfg(remote)]
     const SENTINEL: &[u8] = br#"{"type":"FeatureCollection","features":[{"type":"Feature","stac_version":"1.0.0","id":"private","properties":{"datetime":"2026-01-01T00:00:00Z","name":"private-sentinel"},"geometry":{"type":"Point","coordinates":[3,4]},"links":[],"assets":{}}],"links":[]}"#;
+
+    /// An item served from `https://…` whose asset names a local file is refused: a remote document
+    /// must not read the files of whoever opens it. Remote and relative hrefs still resolve.
+    #[cfg(remote)]
+    #[test]
+    fn a_remote_items_asset_cannot_name_local_files() {
+        let item = serde_json::to_vec(&json!({
+            "type": "Feature", "stac_version": "1.0.0", "id": "x", "properties": {"datetime": "2026-01-01T00:00:00Z"},
+            "geometry": null, "links": [],
+            "assets": {
+                "zip": {"href": "/vsizip//home/user/private.zip/secret.tif"},
+                "file": {"href": "file:///etc/hosts"},
+                "remote": {"href": "https://example.com/data.tif"},
+                "relative": {"href": "data.tif"},
+            },
+        }))
+        .unwrap();
+        let (base, _) = crate::http::test_server(item);
+        let item_loc = format!("{base}/item.json?token=secret-value");
+        for asset in ["zip", "file"] {
+            let err = asset_href(&item_loc, asset).unwrap_err().to_string();
+            assert!(err.contains("names local files"), "{asset}: {err}");
+            assert!(!err.contains("secret-value"), "{asset}: {err}");
+        }
+        assert_eq!(asset_href(&item_loc, "remote").unwrap(), "https://example.com/data.tif");
+        assert!(asset_href(&item_loc, "relative").unwrap().starts_with(&format!("{base}/data.tif")));
+    }
+
+    /// The subdatasets of a remote item leave out the assets that name local files, which could
+    /// not be opened.
+    #[cfg(remote)]
+    #[test]
+    fn a_remote_items_subdatasets_leave_out_local_assets() {
+        let item = serde_json::to_vec(&json!({
+            "type": "Feature", "stac_version": "1.0.0", "id": "x", "properties": {"datetime": "2026-01-01T00:00:00Z"},
+            "geometry": {"type": "Point", "coordinates": [1, 2]}, "links": [],
+            "assets": {
+                "local": {"href": "file:///etc/hosts", "type": "image/tiff; application=geotiff", "roles": ["data"]},
+                "remote": {"href": "data.tif", "type": "image/tiff; application=geotiff", "roles": ["data"]},
+            },
+        }))
+        .unwrap();
+        let (base, _) = crate::http::test_server(item);
+        let path = format!("{base}/item.json");
+        let Some(Ok(Info::Vector(v))) = info(&path, &InfoOptions::default()) else { panic!("not a vector info") };
+        let names: Vec<&str> = v.subdatasets.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, [format!("STAC:\"{path}\":remote")]);
+    }
+
+    /// A remote document's links never lead to local files, even where links to other origins
+    /// are allowed.
+    #[test]
+    fn links_from_a_remote_document_never_reach_local_files() {
+        crate::config::push_scope(std::collections::HashMap::from([(
+            "TERRIO_STAC_FOLLOW_CROSS_ORIGIN".to_string(),
+            Some("YES".to_string()),
+        )]));
+        let remote = "https://example.com/catalog.json";
+        let followed = [
+            may_follow(remote, "/vsizip//home/user/private.zip/item.json"),
+            may_follow(remote, "file:///home/user/item.json"),
+            may_follow(remote, "https://other.example/item.json"),
+            may_follow("/home/user/catalog.json", "/home/user/item.json"),
+        ];
+        crate::config::pop_scope();
+        assert_eq!(followed, [false, false, true, true]);
+    }
+
+    /// A mosaic of remote items leaves out the assets that name local files.
+    #[test]
+    fn a_mosaic_of_remote_items_leaves_out_local_assets() {
+        let item = |href: &str| {
+            json!({
+                "type": "Feature", "stac_version": "1.0.0", "id": "x", "collection": "c",
+                "stac_extensions": ["proj"],
+                "properties": {"datetime": "2026-01-01T00:00:00Z", "proj:epsg": 32615, "proj:bbox": [0, 0, 10, 10], "proj:shape": [10, 10]},
+                "assets": {"data": {"href": href}},
+            })
+        };
+        let base = "https://example.com/items/item.json".to_string();
+        let count = |href: &str| -> usize {
+            let groups = group_assets(&[(item(href), base.clone())], &Filters::default());
+            groups.values().flat_map(|g| g.values()).flat_map(|g| g.by_crs.values()).map(Vec::len).sum()
+        };
+        assert_eq!(count("/vsizip//home/user/private.zip/secret.tif"), 0);
+        assert_eq!(count("file:///etc/hosts"), 0);
+        assert_eq!(count("data.tif"), 1);
+        // A local asset that sorts first leaves no empty group in front of a usable one.
+        let mut mixed = item("data.tif");
+        mixed["assets"] = json!({"a_local": {"href": "file:///home/user/x.tif"}, "b": {"href": "b.tif"}});
+        let groups = group_assets(&[(mixed, base.clone())], &Filters::default());
+        let names: Vec<&String> = groups.values().flat_map(|g| g.keys()).collect();
+        assert_eq!(names, ["b"]);
+        // A local item may name local files.
+        let local = std::env::temp_dir().join("item.json").to_string_lossy().into_owned();
+        let groups = group_assets(&[(item("/vsizip//home/user/archive.zip/a.tif"), local)], &Filters::default());
+        assert_eq!(groups.values().flat_map(|g| g.values()).flat_map(|g| g.by_crs.values()).map(Vec::len).sum::<usize>(), 1);
+    }
 
     #[cfg(remote)]
     fn open(url: &str) -> crate::VectorDataset {

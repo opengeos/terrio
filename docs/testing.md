@@ -2520,3 +2520,11 @@ through path and byte inputs, and check arithmetic overflow without allocating.
 chunks. Recreate it with h5py by creating `grid` with `shape=(2**20, 2**20)`, `dtype="f8"`,
 `chunks=(16, 16)` and `fillvalue=-9999`, without assigning any values. Its declared decoded
 size is 8 TiB. These are resource-limit checks, independent of GDAL's allocation policy.
+On 32-bit hosts, including wasm32, the 8 TiB fixture is refused by the address-space check
+before the fallback budget runs. On 64-bit hosts without memory discovery, the 512 MiB
+combined pixel-buffer budget refuses it. A host with a discovered limit permitting the
+fixture checks its declared-size arithmetic without attempting the read. Synthetic budget
+tests cover combined allocations, overflow and the fallback independently of the host's memory.
+Scalar-text checks require filesystem support. A separate public WASM check used a 1,400-byte
+fill-only file declaring 300 MiB of raw Float64 pixels: its 600 MiB combined raw/decoded
+buffers were refused by the 512 MiB fallback budget, below the wasm32 address-space bound.
