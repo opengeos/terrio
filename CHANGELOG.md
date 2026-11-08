@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
+  refusing buffers beyond the address space or known usable-memory limit with a terminal resource
+  error. Coexisting pixel buffers are checked together; hosts without memory discovery use a
+  512 MiB combined pixel-buffer budget. This intentionally refuses previously readable
+  datasets exceeding that budget on macOS, Windows and WASM; the refusal remains terminal
+  even with GDAL enabled, so a fallback cannot bypass the allocation limit. HDF-EOS5 structure text is limited to 16 MiB before
+  decoding, including fill-only files.
+  This metadata cap applies to every HDF5 open, even when selecting an unrelated subdataset.
+
 - Python and JavaScript `translate` read paths, lazy rasters and byte inputs by window and take an
   `overview` option (`AUTO` by default, `AUTO-n`, `NONE` or a level), as `terrio translate` and
   `gdal_translate -ovr` do. Resized outputs of rasters with overviews can therefore change: they

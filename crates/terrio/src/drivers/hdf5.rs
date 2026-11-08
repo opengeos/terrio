@@ -409,16 +409,26 @@ fn walk(f: &Hdf5File) -> Result<Walk> {
     Ok(w)
 }
 
+/// The largest HDF-EOS5 structure text read, in bytes (`docs/formats.md`).
+const EOS_STRUCT_MAX_BYTES: usize = 16 * 1024 * 1024;
+
 /// The HDF-EOS5 structure of a file (`HDFEOS INFORMATION/StructMetadata.0`), when it has one
 /// that describes grids or swaths.
-fn eos_structure(f: &Hdf5File) -> Option<Eos> {
-    let d = f.dataset("/HDFEOS INFORMATION/StructMetadata.0").ok()?;
-    if !matches!(d.dtype(), Datatype::String { size: StringSize::Fixed(_), .. }) || !d.shape().is_empty() {
-        return None;
+fn eos_structure(f: &Hdf5File, path: &Path) -> Result<Option<Eos>> {
+    let Ok(d) = f.dataset("/HDFEOS INFORMATION/StructMetadata.0") else { return Ok(None) };
+    let Datatype::String { size: StringSize::Fixed(size), .. } = d.dtype() else { return Ok(None) };
+    if !d.shape().is_empty() {
+        return Ok(None);
     }
-    let raw = d.read_raw_bytes().ok()?;
+    // Structure text is metadata, not raster data. Bound it even on systems where the
+    // physical-memory limit is unavailable, before the reader expands a fill-only string.
+    let within_limit = usize::try_from(*size).is_ok_and(|size| size <= EOS_STRUCT_MAX_BYTES);
+    if !within_limit {
+        return Err(Error::ResourceLimit(format!("{}: HDF-EOS5 structure text exceeds 16 MiB", path.display())));
+    }
+    let Ok(raw) = d.read_raw_bytes() else { return Ok(None) };
     let text = raw.split(|b| *b == 0).next().unwrap_or_default();
-    Eos::parse(&String::from_utf8_lossy(text))
+    Ok(Eos::parse(&String::from_utf8_lossy(text)))
 }
 
 /// The subdatasets of a file, `(name, description)`, as GDAL lists them: the datasets of two or
@@ -524,7 +534,7 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, subdataset: Option<&str>) -
 
 fn read_file(f: &Hdf5File, path: &Path, name: &str, subdataset: Option<&str>) -> Result<RasterDataset> {
     let w = walk(f)?;
-    let eos = eos_structure(f);
+    let eos = eos_structure(f, path)?;
     let subs = subdatasets(&w, name, eos.as_ref());
     let (entry, metadata) = match subdataset {
         Some(s) => {
@@ -633,7 +643,19 @@ fn read_dataset(
 ) -> Result<RasterDataset> {
     let t = e.num_type.ok_or_else(|| Error::Unsupported(format!("{}: {}: unsupported HDF5 data type", path.display(), e.path)))?;
     let ds = f.dataset(&e.path).map_err(|e| err(path, e))?;
-    let shape: Vec<usize> = e.shape.iter().map(|d| *d as usize).collect();
+    let element = t.element_size();
+    // This must precede read_raw_bytes: a tiny fill-only file can declare terabytes.
+    // Also bound the expanded output (Float16 and complex pixels can grow on decode).
+    let output_element = t.data_type.size_bytes().checked_mul(if t.complex.is_some() { 2 } else { 1 });
+    let dataset_name = format!("{}: {}", path.display(), e.path);
+    let shape: Vec<usize> = e
+        .shape
+        .iter()
+        .map(|d| usize::try_from(*d))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|_| Error::ResourceLimit(format!("{dataset_name}: dimensions exceed the address space")))?;
+    let whole_len = checked_dataset_bytes(&shape, Some(element), &dataset_name)?;
+    let output_len = checked_dataset_bytes(&shape, output_element, &dataset_name)?;
     let nd = shape.len();
     if nd == 0 {
         return Err(err(path, format!("{} is a scalar", e.path)));
@@ -677,14 +699,16 @@ fn read_dataset(
         return Err(err(path, format!("{}: its dimensions do not name distinct columns, rows and bands", e.path)));
     }
     let (cols, rows, bands) = (shape[x], y.map_or(1, |y| shape[y]), other.map_or(1, |o| shape[o]));
+    let standard = x == nd - 1 && y == nd.checked_sub(2) && (other.is_none() || other == Some(0));
+    // Bound every simultaneously live pixel buffer before the first whole read. Using the
+    // whole shape for the selected output conservatively covers omitted dimensions too.
+    let reordered = if standard { 0 } else { whole_len };
+    let parts = if t.complex.is_some() { checked_dataset_bytes(&shape, t.part_size().checked_mul(2), &dataset_name)? } else { 0 };
+    checked_peak_bytes(&[whole_len, reordered, parts, output_len], fallible::usable_memory(), &dataset_name)?;
     let raw = ds.read_raw_bytes().map_err(|e| err(path, e))?;
-    let element = t.element_size();
     // The whole dataset: a layout other than GDAL's is gathered with the strides of its shape.
-    let too_large = || err(path, format!("{} has too many elements", e.path));
-    let whole_len = shape.iter().try_fold(element, |n, d| n.checked_mul(*d)).ok_or_else(too_large)?;
     let whole = raw.get(..whole_len).ok_or_else(|| err(path, "dataset shorter than its shape"))?;
     let n = fallible::len(&[cols, rows, bands], "an HDF5 raster")?;
-    let standard = x == nd - 1 && y == nd.checked_sub(2) && (other.is_none() || other == Some(0));
     let ordered = if standard {
         // Columns, rows and bands are distinct dimensions: they hold at most the whole dataset.
         std::borrow::Cow::Borrowed(whole.get(..n * element).ok_or_else(|| err(path, "dataset shorter than its shape"))?)
@@ -762,6 +786,28 @@ fn read_dataset(
         pixel_center: true,
     });
     Ok(out)
+}
+
+/// Checks a whole raw or decoded pixel buffer before asking the HDF5 reader to allocate it.
+fn checked_dataset_bytes(shape: &[usize], element: Option<usize>, name: &str) -> Result<usize> {
+    let bytes = element.and_then(|element| shape.iter().try_fold(element, |n, d| n.checked_mul(*d)));
+    fallible::check_usable(bytes, || format!("HDF5 dataset {name}: pixel buffer is too large")).map_err(Error::ResourceLimit)
+}
+
+/// Limits coexisting pixel buffers; hosts without memory discovery use a 512 MiB budget.
+fn checked_peak_bytes(buffers: &[usize], usable: Option<u64>, name: &str) -> Result<()> {
+    const FALLBACK_BUDGET: u64 = 512 * 1024 * 1024;
+    let most = usable.unwrap_or(FALLBACK_BUDGET);
+    let peak = buffers.iter().try_fold(0usize, |sum, bytes| sum.checked_add(*bytes));
+    match peak {
+        Some(bytes) if (bytes as u64) <= most => Ok(()),
+        _ => {
+            let needed = peak.map_or_else(|| "more bytes than the address space holds".to_string(), |bytes| format!("{bytes} bytes"));
+            Err(Error::ResourceLimit(format!(
+                "HDF5 dataset {name}: peak pixel buffers need {needed}, exceeding the {most}-byte memory budget"
+            )))
+        }
+    }
 }
 
 /// Whether `s` starts with `prefix`, ignoring case.
@@ -921,6 +967,68 @@ fn georeferencing(f: &Hdf5File, w: &Walk, e: &Entry, attrs: &[Attribute], nd: us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refuses_fill_only_datasets_before_decoding() {
+        use super::super::hdf5_write::{Dataset, File, H5Type, Storage};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fill-only.h5");
+        for (name, dtype, shape) in [
+            ("grid", H5Type::Float { size: 8 }, Some(vec![1 << 30, 1 << 30])),
+            ("HDFEOS INFORMATION/StructMetadata.0", H5Type::Str { len: 32 * 1024 * 1024 }, None),
+        ] {
+            let file = File {
+                datasets: vec![Dataset {
+                    name: name.into(),
+                    dtype,
+                    shape,
+                    max_shape: None,
+                    data: vec![],
+                    fill: vec![],
+                    storage: Storage::default(),
+                    attrs: vec![],
+                }],
+                ..File::default()
+            };
+            let bytes = super::super::hdf5_write::encode(&file);
+            assert!(bytes.len() < 4096);
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(matches!(read(&path, "fill-only.h5", Some("//grid")), Err(Error::ResourceLimit(_))));
+            assert!(matches!(read_bytes(bytes, "fill-only.h5", Some("//grid")), Err(Error::ResourceLimit(_))));
+        }
+        assert!(matches!(checked_dataset_bytes(&[usize::MAX, 2], Some(8), "grid"), Err(Error::ResourceLimit(_))));
+    }
+
+    /// h5py-generated 1,400-byte file: 2^40 Float64 elements, 16 x 16 chunks, none allocated.
+    #[test]
+    fn refuses_unallocated_chunked_datasets_before_decoding() {
+        if fallible::usable_memory().is_some_and(|bytes| bytes >= 8 * (1u64 << 40)) {
+            // A host that can hold the fixture checks its declared address-space outcome
+            // without attempting the read. Unknown limits use the fallback budget below.
+            let declared = checked_dataset_bytes(&[1 << 20, 1 << 20], Some(8), "grid");
+            assert_eq!(declared.is_ok(), usize::BITS == 64);
+            return;
+        }
+        let bytes = include_bytes!("../../tests/data/hdf5_fill_only.h5");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fill-only.h5");
+        std::fs::write(&path, bytes).unwrap();
+        assert!(matches!(read(&path, "fill-only.h5", None), Err(Error::ResourceLimit(_))));
+        assert!(matches!(read_bytes(bytes.to_vec(), "fill-only.h5", None), Err(Error::ResourceLimit(_))));
+    }
+
+    #[test]
+    fn bounds_coexisting_pixel_buffers() {
+        assert!(checked_peak_bytes(&[6, 6, 6], Some(18), "grid").is_ok());
+        assert!(matches!(checked_peak_bytes(&[6, 6, 6], Some(17), "grid"), Err(Error::ResourceLimit(_))));
+        assert!(matches!(checked_peak_bytes(&[usize::MAX, 1], Some(u64::MAX), "grid"), Err(Error::ResourceLimit(_))));
+        assert!(matches!(checked_peak_bytes(&[300 * 1024 * 1024; 2], None, "grid"), Err(Error::ResourceLimit(_))));
+        assert!(checked_peak_bytes(&[1024], None, "grid").is_ok());
+        let error = checked_peak_bytes(&[6, 6, 6], Some(17), "grid").unwrap_err().to_string();
+        assert!(error.contains("need 18 bytes"), "{error}");
+        let error = checked_peak_bytes(&[usize::MAX, 1], Some(u64::MAX), "grid").unwrap_err().to_string();
+        assert!(error.contains("more bytes than the address space holds"), "{error}");
+    }
 
     #[test]
     fn parses_subdataset_names() {

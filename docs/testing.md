@@ -2505,3 +2505,21 @@ These error assertions cover the Rust decoders. With the `gdal` feature, public
 eager opens may fall back to GDAL after a Rust error; the fallback keeps GDAL's
 admission behavior. Native eager rejection is checked directly in unit tests,
 and streamed GPKG reads continue to use the Rust reader in that build.
+
+## HDF5 resource limits
+
+HDF5 allocation regressions run with `cargo test -p terrio --lib drivers::hdf5::tests`.
+They refuse fill-only datasets and oversized scalar HDF-EOS5 text before reading their values,
+through path and byte inputs, and check arithmetic overflow without allocating.
+`crates/terrio/tests/data/hdf5_fill_only.h5` is a generated 1,400-byte file with no allocated
+chunks. Recreate it with h5py by creating `grid` with `shape=(2**20, 2**20)`, `dtype="f8"`,
+`chunks=(16, 16)` and `fillvalue=-9999`, without assigning any values. Its declared decoded
+size is 8 TiB. These are resource-limit checks, independent of GDAL's allocation policy.
+On 32-bit hosts, including wasm32, the 8 TiB fixture is refused by the address-space check
+before the fallback budget runs. On 64-bit hosts without memory discovery, the 512 MiB
+combined pixel-buffer budget refuses it. A host with a discovered limit permitting the
+fixture checks its declared-size arithmetic without attempting the read. Synthetic budget
+tests cover combined allocations, overflow and the fallback independently of the host's memory.
+Scalar-text checks require filesystem support. A separate public WASM check used a 1,400-byte
+fill-only file declaring 300 MiB of raw Float64 pixels: its 600 MiB combined raw/decoded
+buffers were refused by the 512 MiB fallback budget, below the wasm32 address-space bound.
