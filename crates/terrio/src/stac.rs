@@ -111,7 +111,8 @@ fn fetch_link_json(loc: &str) -> Result<Value> {
 
 /// Checks declared asset credentials before any later metadata error can trigger a fallback.
 fn parse_document(bytes: &[u8], loc: &str) -> Result<Value> {
-    let doc = serde_json::from_slice(bytes).map_err(|e| bad(format!("{}: {e}", crate::vsi::listing::redact_url(loc))))?;
+    let doc = serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
+        .map_err(|e| bad(format!("{}: {e}", crate::vsi::listing::redact_url(loc))))?;
     check_document_assets(&doc, loc)?;
     Ok(doc)
 }
@@ -422,7 +423,7 @@ fn asset_uses_credentials(doc_loc: &str, href: &str) -> bool {
 }
 
 /// Explicit credential sources that the optional GDAL backend understands beyond native auth.
-/// This only inspects configuration and file existence, never a metadata service or an SDK.
+/// This only inspects configuration and credential profile contents, never a metadata service or an SDK.
 #[cfg(all(remote, feature = "gdal"))]
 fn gdal_cloud_credentials(s3: bool, gs: bool, az: bool) -> bool {
     let any = |keys: &[&str]| keys.iter().any(|key| crate::config::get(key).is_some());
@@ -431,16 +432,27 @@ fn gdal_cloud_credentials(s3: bool, gs: bool, az: bool) -> bool {
         return true;
     }
     if s3 && !option_on("AWS_NO_SIGN_REQUEST") {
-        let configured = any(&[
-            "CPL_AWS_CREDENTIALS_FILE",
-            "AWS_SHARED_CREDENTIALS_FILE",
-            "AWS_CONFIG_FILE",
-            "AWS_ROLE_ARN",
-            "AWS_WEB_IDENTITY_TOKEN_FILE",
-            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
-            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
-        ]);
-        let profile = home.as_ref().is_some_and(|h| h.join(".aws/credentials").is_file() || h.join(".aws/config").is_file());
+        let keys = [
+            "aws_access_key_id",
+            "aws_secret_access_key",
+            "aws_session_token",
+            "role_arn",
+            "web_identity_token_file",
+            "credential_process",
+        ];
+        let configured = ["CPL_AWS_CREDENTIALS_FILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE"]
+            .iter()
+            .filter_map(|key| crate::config::get(key))
+            .any(|path| profile_has_credentials(std::path::Path::new(&path), &keys))
+            || any(&[
+                "AWS_ROLE_ARN",
+                "AWS_WEB_IDENTITY_TOKEN_FILE",
+                "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+                "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+            ]);
+        let profile = home.as_ref().is_some_and(|h| {
+            profile_has_credentials(&h.join(".aws/credentials"), &keys) || profile_has_credentials(&h.join(".aws/config"), &keys)
+        });
         if configured || profile {
             return true;
         }
@@ -455,7 +467,12 @@ fn gdal_cloud_credentials(s3: bool, gs: bool, az: bool) -> bool {
             "GS_OAUTH2_PRIVATE_KEY_FILE",
             "GOOGLE_APPLICATION_CREDENTIALS",
             "CPL_GS_CREDENTIALS_FILE",
-        ]) || home.as_ref().is_some_and(|h| h.join(".boto").is_file()))
+        ]) || home.as_ref().is_some_and(|h| {
+            profile_has_credentials(
+                &h.join(".boto"),
+                &["gs_access_key_id", "gs_secret_access_key", "gs_oauth2_refresh_token", "gs_service_key_file"],
+            )
+        }))
     {
         return true;
     }
@@ -468,6 +485,22 @@ fn gdal_cloud_credentials(s3: bool, gs: bool, az: bool) -> bool {
             "AZURE_CLIENT_SECRET",
             "AZURE_FEDERATED_TOKEN_FILE",
         ])
+}
+
+/// Whether a profile file has credential-bearing settings, rather than only a region/project.
+#[cfg(all(remote, feature = "gdal"))]
+fn profile_has_credentials(path: &std::path::Path, keys: &[&str]) -> bool {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) => return error.kind() != std::io::ErrorKind::NotFound,
+    };
+    text.lines().any(|line| {
+        let line = line.trim();
+        !line.starts_with(['#', ';'])
+            && line.split_once('=').is_some_and(|(key, value)| {
+                !value.trim().is_empty() && keys.iter().any(|expected| key.trim().eq_ignore_ascii_case(expected))
+            })
+    })
 }
 
 /// An href resolved against the location of the document holding it.
@@ -1768,6 +1801,38 @@ mod tests {
                 },
             );
         }
+    }
+
+    /// Remote ordinary GeoJSON and STAC keep the native reader's UTF-8 BOM support.
+    #[cfg(remote)]
+    #[test]
+    fn remote_geojson_accepts_a_utf8_bom() {
+        let mut bytes = b"\xef\xbb\xbf".to_vec();
+        bytes.extend_from_slice(br#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{}}]}"#);
+        let (server, _) = crate::http::test_server(bytes);
+        let result = crate::open_vector(&format!("{server}/points.geojson"), &Default::default()).unwrap();
+        assert_eq!(result.layers[0].features.len(), 1);
+        let mut stac = b"\xef\xbb\xbf".to_vec();
+        stac.extend_from_slice(br#"{"type":"Feature","stac_version":"1.0.0","assets":{}}"#);
+        assert!(parse_document(&stac, "https://catalog.example/item.json").is_ok());
+    }
+
+    /// Region/project settings alone do not authorize cloud signing or bearer credentials.
+    #[cfg(all(remote, feature = "gdal"))]
+    #[test]
+    fn region_only_cloud_profiles_are_not_credentials() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = directory.path().join("config");
+        let keys = ["aws_access_key_id", "aws_secret_access_key"];
+        std::fs::write(&config, "[default]\nregion=us-east-1\n# aws_secret_access_key=example\n").unwrap();
+        assert!(!profile_has_credentials(&config, &keys));
+        std::fs::write(&config, "[default]\naws_access_key_id=test-id\naws_secret_access_key=test-secret\n").unwrap();
+        assert!(profile_has_credentials(&config, &keys));
+        let boto = directory.path().join(".boto");
+        std::fs::write(&boto, "[GSUtil]\ndefault_project_id=public-project\n").unwrap();
+        assert!(!profile_has_credentials(&boto, &["gs_secret_access_key"]));
+        std::fs::write(&boto, "[Credentials]\ngs_secret_access_key=test-secret\n").unwrap();
+        assert!(profile_has_credentials(&boto, &["gs_secret_access_key"]));
     }
 
     /// An item collection whose links are `links` (a `next` link that POSTs to another origin
