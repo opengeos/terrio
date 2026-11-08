@@ -470,7 +470,9 @@ def compare_rasterize(data: Path, work: Path, terrio: Path, only_nodata: bool = 
             expected, actual = gdal.Open(str(g_out)), gdal.Open(str(t_out))
             total *= expected.RasterCount
             diff = 0
-            if not expected.GetSpatialRef().IsSame(actual.GetSpatialRef()):
+            expected_crs, actual_crs = expected.GetSpatialRef(), actual.GetSpatialRef()
+            if (expected_crs is None) != (actual_crs is None) or (
+                    expected_crs is not None and not expected_crs.IsSame(actual_crs)):
                 problems.append("CRS differs")
             for band in range(1, expected.RasterCount + 1):
                 e, a = expected.GetRasterBand(band), actual.GetRasterBand(band)

@@ -3331,6 +3331,9 @@ Without `--init`, the background starts at `--a-nodata` when given, otherwise at
 Explicit `--init` values take precedence, including 0. This matches GDAL's new GeoTIFF
 background. Terrio uses this policy for all output formats and in-memory rasters; GDAL's
 initialization is driver-dependent (for example, its ENVI output defaults to 0).
+Additive burns (`--add`) start from this background: nodata -1 plus a burn of 7 yields 6.
+Use `--init 0` to accumulate from zero. Integer output types require a finite, integral
+nodata value within the type's range; unrepresentable nodata is refused.
 
 ## vector-grid
 
