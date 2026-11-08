@@ -148,3 +148,47 @@ fn is_not_in_the_catalog_and_a_metadata_request_does_not_start_it() {
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
 }
+
+/// Exercise both launch paths with an actual opener process, without starting a user's browser.
+#[cfg(target_os = "linux")]
+#[test]
+fn browser_launches_use_private_files_for_ui_and_view() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let opener = bin.join("xdg-open");
+    std::fs::write(&opener, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$TERRIO_TEST_BROWSER_ARGS\"\n").unwrap();
+    std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let points = dir.path().join("points.geojson");
+    std::fs::write(&points, POINTS).unwrap();
+    for map in [false, true] {
+        let record = dir.path().join(if map { "view-args" } else { "ui-args" });
+        let mut command = Command::new(env!("CARGO_BIN_EXE_terrio"));
+        command.arg(if map { "view" } else { "ui" });
+        if map {
+            command.arg(&points);
+        }
+        let mut child =
+            command.env("PATH", &bin).env("TERRIO_TEST_BROWSER_ARGS", &record).stdin(Stdio::null()).stdout(Stdio::piped()).spawn().unwrap();
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let url = line.trim().split_once(": ").unwrap().1;
+        let (address, token) = url.strip_prefix("http://").unwrap().split_once("#token=").unwrap();
+        let ui = Ui { child, addr: address.split('/').next().unwrap().into(), token: token.into() };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !record.exists() || std::fs::metadata(&record).unwrap().len() == 0 {
+            assert!(Instant::now() < deadline, "the browser launcher did not run");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let arguments = std::fs::read_to_string(&record).unwrap();
+        assert_eq!(arguments.lines().count(), 1);
+        assert!(!arguments.contains(token) && !arguments.contains("#token="));
+        let path = std::path::Path::new(arguments.trim_end());
+        assert!(std::fs::read_to_string(path).unwrap().contains(url));
+        assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(ui.send("GET", if map { "/map" } else { "/" }, "", "").0, 200);
+    }
+}

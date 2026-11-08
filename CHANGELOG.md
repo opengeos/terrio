@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `ui` and `view` open the browser through a private HTML redirect file, keeping the session
+  token out of process arguments. If a sandboxed browser cannot read the file, paste the
+  printed address manually or use `--no-open`.
+
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource
   error. HDF-EOS5 structure text is limited to 16 MiB before decoding, including fill-only files.
