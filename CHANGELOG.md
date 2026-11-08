@@ -5,6 +5,8 @@
 - Translate's lazy-open and whole-read fallback policy now lives in the Rust core and is shared
   by the CLI, Python path inputs and JavaScript byte inputs. Terminal opening errors and
   overview refusals remain consistent; lazy destinations retain streaming writes.
+  Whole-read fallback for bytes remains TIFF-only: GDAL-only non-TIFF files may translate
+  by path but fail from bytes.
 
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource

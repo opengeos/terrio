@@ -74,7 +74,9 @@ pub fn translate_path_to_file(
 
 /// Translates owned input bytes, sharing them with the lazy reader without a second input copy.
 /// A TIFF the lazy reader refuses may be decoded whole. The same terminal-error and explicit
-/// overview policy as [`translate_path`] applies before that fallback.
+/// overview policy as [`translate_path`] applies before that fallback. Non-TIFF bytes retain
+/// their lazy-opening error rather than retrying a whole read: a GDAL-only non-TIFF file may
+/// therefore translate by path but fail from bytes.
 ///
 /// # Errors
 ///
@@ -93,9 +95,9 @@ fn terminal_open_error(error: &Error, name: &str) -> bool {
 /// Refuses a stored-level selector before allocating a whole raster.
 fn require_whole_read(overview: OverviewSelection, name: &str, cause: Option<&Error>) -> Result<()> {
     if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(_)) {
-        let cause = cause.map(|e| format!(" ({e})")).unwrap_or_default();
+        let cause = cause.map(|e| format!(" ({})", crate::vsi::listing::redact_url(&e.to_string()))).unwrap_or_default();
         return Err(Error::Unsupported(format!(
-            "overview needs a raster read by window; '{}' is read whole{cause}",
+            "overview needs a raster read by window (`--overview`); '{}' is read whole{cause}",
             crate::vsi::listing::redact_url(name)
         )));
     }
@@ -901,6 +903,18 @@ mod tests {
         let n = cols * rows;
         let data = (0..2 * n).map(|i| (i % n) as f64 + (i / n) as f64 * 1000.0).collect();
         RasterDataset::new(Raster::from_data(cfg, data).unwrap(), false)
+    }
+
+    #[test]
+    fn whole_read_refusal_redacts_the_input_and_cause() {
+        let name = "https://user:secret@example.com/image.tif?token=private";
+        let cause = Error::Unsupported(format!("cannot read {name}"));
+        let error = super::require_whole_read(OverviewSelection::Level(0), name, Some(&cause)).unwrap_err().to_string();
+        assert!(error.contains("--overview"), "{error}");
+        assert!(error.contains("example.com/image.tif"), "{error}");
+        for credential in ["user", "secret", "private"] {
+            assert!(!error.contains(credential), "{error}");
+        }
     }
 
     #[test]

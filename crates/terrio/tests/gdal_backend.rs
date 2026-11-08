@@ -549,8 +549,8 @@ fn bytes_through_gdal() {
     // terrio's own formats still read with terrio's drivers.
     let tif = terrio::memory::write_raster_bytes(&sample(), "s.tif", &Default::default()).unwrap();
     assert_eq!(terrio::memory::open_raster_bytes(tif, "s.tif").unwrap().driver, RasterDriver::GTiff);
-    // Nothing is left in /vsimem/.
-    assert!(gdal::vsi::read_dir("/vsimem/", false).unwrap_or_default().iter().all(|p| !p.to_string_lossy().starts_with("terrio-")));
+    // Per-call /vsimem/ cleanup is checked in the backend unit test. Other tests may
+    // still be using their own directories here.
 }
 
 /// A misspelled layer name beside a valid one is refused through GDAL too, before any layer is
