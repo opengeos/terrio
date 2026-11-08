@@ -154,6 +154,11 @@ impl Server {
             return Some(match tool_call(&params) {
                 Err((code, message)) => error(&id, code, &message),
                 Ok((name, args)) => {
+                    // A call that took this id would leave the running one out of reach of a
+                    // cancel and of the shutdown (JSON-RPC ids of pending requests are distinct).
+                    if self.running.lock().unwrap().contains_key(&id.to_string()) {
+                        return Some(error(&id, INVALID_REQUEST, "a request id already in use by a running call"));
+                    }
                     match calls {
                         // JSON-RPC ids are distinct within a batch; a repeated one would leave the
                         // first call out of reach of a cancel and of the shutdown.
@@ -194,7 +199,8 @@ impl Server {
     /// those wait for the calls. A cancelled call gets no reply (one cancelled while queued is
     /// never started); a batch left without any gets none. The calls are registered once the
     /// whole batch is read, so a cancel inside the same batch finds nothing. A call whose id
-    /// repeats an earlier one of the batch is refused (JSON-RPC requires distinct ids).
+    /// repeats an earlier one of the batch, or that of a call still running, is refused
+    /// (JSON-RPC requires distinct ids).
     fn spawn_batch(&mut self, mut replies: Vec<Value>, calls: Vec<ToolCall>) {
         let runs: Vec<_> = calls.into_iter().map(|call| self.start(call)).collect();
         let send = self.send.clone();
@@ -230,7 +236,8 @@ impl Server {
     fn start(&mut self, (id, name, args): ToolCall) -> impl FnOnce() -> Option<Value> + Send + 'static + use<> {
         let key = id.to_string();
         let cancel = Arc::new(AtomicBool::new(false));
-        self.running.lock().unwrap().insert(key.clone(), cancel.clone());
+        let previous = self.running.lock().unwrap().insert(key.clone(), cancel.clone());
+        debug_assert!(previous.is_none(), "a running call's id was reused");
         let (terrio, running) = (self.terrio.clone(), self.running.clone());
         move || {
             // A call cancelled while it waited for a worker (or by a shutdown) is not started.
@@ -242,12 +249,8 @@ impl Server {
                     .map(|r| r.map(|r| json!({"jsonrpc": "2.0", "id": id, "result": r})))
                     .unwrap_or_else(|_| Some(error(&id, INTERNAL_ERROR, "the tool call failed unexpectedly")))
             };
-            // Unless a request reusing the id took the entry meanwhile.
-            let mut running = running.lock().unwrap_or_else(PoisonError::into_inner);
-            if running.get(&key).is_some_and(|c| Arc::ptr_eq(c, &cancel)) {
-                running.remove(&key);
-            }
-            drop(running);
+            // No other call holds the id while this one runs: `handle_value` refuses it.
+            running.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
             reply
         }
     }
@@ -768,6 +771,41 @@ mod tests {
         assert_eq!(reply.len(), 2);
         assert_eq!(reply.iter().filter(|r| r["error"]["code"] == INVALID_REQUEST).count(), 1, "{reply:?}");
         assert_eq!(reply.iter().filter(|r| r["result"].is_object()).count(), 1, "{reply:?}");
+    }
+
+    /// A call that reuses the id of one still running is refused, alone or in a batch, so that a
+    /// cancel and the shutdown still stop the first call.
+    #[cfg(unix)]
+    #[test]
+    fn a_running_calls_id_is_refused() {
+        let (send, replies) = std::sync::mpsc::channel();
+        let mut s = Server::new(vec!["sh".into(), "-c".into(), "sleep 30".into()], send);
+        let call = json!({"jsonrpc": "2.0", "id": "slow", "method": "tools/call", "params": {"name": "info", "arguments": {"args": []}}});
+        let refused = |s: &mut Server| {
+            let single: Value = serde_json::from_str(&handle_on_big_stack(s, &call.to_string()).expect("a refusal")).unwrap();
+            assert_eq!(single["error"]["code"], INVALID_REQUEST, "{single}");
+            let batch: Value = serde_json::from_str(&handle_on_big_stack(s, &json!([call]).to_string()).expect("a refusal")).unwrap();
+            assert_eq!(batch[0]["error"]["code"], INVALID_REQUEST, "{batch}");
+        };
+        let started = std::time::Instant::now();
+        assert!(handle_on_big_stack(&mut s, &call.to_string()).is_none());
+        refused(&mut s);
+        // The cancel reaches the first call.
+        handle_on_big_stack(
+            &mut s,
+            &json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "slow"}}).to_string(),
+        );
+        while !s.running.lock().unwrap().is_empty() {
+            assert!(started.elapsed() < Duration::from_secs(10), "the cancel missed the first call");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // Once it is done, the id is free again; a batched call's id is held as well, and the
+        // shutdown stops that call.
+        assert!(handle_on_big_stack(&mut s, &json!([call]).to_string()).is_none());
+        refused(&mut s);
+        s.shutdown();
+        assert!(started.elapsed() < Duration::from_secs(10), "the shutdown missed the first call");
+        assert!(replies.try_recv().is_err(), "a cancelled call got a reply");
     }
 
     /// A tool call that panics gets an internal-error reply, alone or in a batch, without losing
