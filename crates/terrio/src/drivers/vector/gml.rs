@@ -256,10 +256,11 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
 fn check_geometry_axis_order(node: &Element, reference: Option<&str>, swap: bool) -> Result<()> {
     if let Some(name) = node.attr("srsName")
         && Some(name) != reference
-        && let Ok(srs) = parse_srs_name(name)
-        && (authority_axis_order(name) && srs.has_north_east_axis_order()) != swap
     {
-        return Err(Error::Unsupported("GML: mixed coordinate axis conventions within a layer".into()));
+        let srs = parse_srs_name(name).map_err(|_| Error::Unsupported("GML: a differing geometry CRS cannot be resolved".into()))?;
+        if (authority_axis_order(name) && srs.has_north_east_axis_order()) != swap {
+            return Err(Error::Unsupported("GML: mixed coordinate axis conventions within a layer".into()));
+        }
     }
     for child in &node.children {
         check_geometry_axis_order(child, reference, swap)?;
@@ -786,8 +787,10 @@ mod tests {
         let feature = |geometry: &str| format!("<featureMember><p><geom>{geometry}</geom></p></featureMember>");
         let urn = point("urn:ogc:def:crs:EPSG::6708", "4823832.72 561996.39");
         let short = point("EPSG:6708", "561996.39 4823832.72");
+        let unknown = point("EPSG:999999", "561996.39 4823832.72");
         for body in [
             format!("{}{}", feature(&urn), feature(&short)),
+            feature(&format!("<MultiPoint><pointMember>{urn}</pointMember><pointMember>{unknown}</pointMember></MultiPoint>")),
             feature(&format!("<MultiPoint><pointMember>{urn}</pointMember><pointMember>{short}</pointMember></MultiPoint>")),
         ] {
             let result = parse(&xml::parse(&collection(&body)).unwrap(), None);

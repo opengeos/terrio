@@ -207,12 +207,15 @@ def compare_gml_axis_order(command, record):
                 except RuntimeError as error:
                     record(
                         f"{name} reference",
-                        "not compared",
+                        "not compared" if label == "legacy-url" else "differs",
                         f"GDAL {gdal.VersionInfo('RELEASE_NAME')}: {error}",
                     )
                     continue
                 try:
                     expected = snapshot(source_dataset.GetLayer(0))
+                except RuntimeError as error:
+                    record(f"{name} reference", "not compared" if label == "legacy-url" else "differs", str(error))
+                    continue
                 finally:
                     source_dataset = None
                 for extension in ["gpkg", "shp", "gml"]:
@@ -239,12 +242,15 @@ def compare_gml_axis_order(command, record):
                     ref_dataset = None
                     record(
                         f"{name} to EPSG:4326 reference",
-                        "not compared",
+                        "not compared" if label == "legacy-url" else "differs",
                         f"GDAL {gdal.VersionInfo('RELEASE_NAME')}: {error}",
                     )
                     continue
                 try:
                     expected_reprojected = snapshot(ref_dataset.GetLayer(0))
+                except RuntimeError as error:
+                    record(f"{name} to EPSG:4326 reference", "not compared" if label == "legacy-url" else "differs", str(error))
+                    continue
                 finally:
                     ref_dataset = None
                 output = root / f"{code}-{label}-out.geojson"
