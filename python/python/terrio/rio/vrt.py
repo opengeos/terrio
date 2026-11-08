@@ -172,6 +172,10 @@ class WarpedVRT(DatasetReader):
     types.
     """
 
+    # A private hook for tests: called with the level, the source window and whether the window
+    # is read and warped without leaving Rust (`_raster_window`), for each window a region reads.
+    _window_hook: Any = None
+
     def __init__(
         self,
         src_dataset: Any,
@@ -732,6 +736,54 @@ class WarpedVRT(DatasetReader):
             np.dtype(dtype), np.dtype(self._dtype)
         )
 
+    def _raster_window(self) -> dict[str, Any] | None:
+        """How `RegionWarp._warp_from` reads and warps a region's window from the source's Raster.
+
+        A window read so stays in Rust: no Python object refers to it, so the warp runs without
+        the GIL. Only for a source terrio reads itself, through its own
+        `DatasetReader._read_level`, overridden neither by its class nor on the dataset (by
+        another function or another dataset's method), in a type a window is read in (not
+        complex), whose window `_source_window` would take through steps `_warp_from` takes too:
+        the bands, an alpha band or the raster's own mask, and a `gdal_cast` conversion but
+        floats into an integer type whose limits the float type does not hold exactly.
+
+        Returns:
+            dict | None: The keyword arguments of `_warp_from` besides the window's, or None to
+            read the window into Python (`_source_window`) and warp it there (`RegionWarp.warp`).
+        """
+        ds = self.src_dataset
+        raster = getattr(ds, "_raster", None)
+        if not isinstance(raster, _terrio.Raster) or not ds.count:
+            return None
+        if ds.dtypes[0] not in _WINDOW_TYPES:
+            # Complex bands, which a read gives each from two of the raster's bands.
+            return None
+        if not _reads_its_raster(ds):
+            return None
+        src, work = np.dtype(ds.dtypes[0]), np.dtype(self._dtype)
+        convert = src != work and not self._sum_holds(src)
+        if convert and not _converts_in_rust(src, work):
+            return None
+        alpha, dataset_mask = None, False
+        if all(v is None for v in self._warp_src_nodata):
+            if self._src_alpha:
+                alpha = self._src_alpha
+            else:
+                flags = ds._mask_flags()[0]
+                if flags & MaskFlags.per_dataset.value and not flags & MaskFlags.alpha.value:
+                    # The flag the dataset took from the Raster at open: the Raster itself may be
+                    # held by a read on another thread.
+                    if not ds.structure.has_mask:
+                        # `_source_mask` reads this mask through `read_masks`.
+                        return None
+                    dataset_mask = True
+        return {
+            "bands": list(range(1, self._src_count + 1)),
+            "dtype": work.name if convert else None,
+            "alpha": alpha,
+            "dataset_mask": dataset_mask,
+        }
+
     def _source_mask(self, level: int | None, window: tuple[int, int, int, int]) -> Any:
         """The source's per-dataset mask in a window of a level.
 
@@ -795,9 +847,24 @@ class WarpedVRT(DatasetReader):
                 itemsize = src.itemsize + (0 if self._sum_holds(src) else work.itemsize)
                 largest = max((part_win[2] * part_win[3] for _, part_win in parts), default=0)
                 _terrio._check_sum_window(largest, itemsize * self._src_count)
+            from_raster = self._raster_window()
             for part, part_win in parts:
-                data, mask = self._source_window(grid.level, part_win)
-                warped, done = rw.warp(part, part_win, data, mask, self._init_value, direct)
+                if self._window_hook is not None:
+                    self._window_hook(grid.level, part_win, from_raster is not None)
+                if from_raster is not None:
+                    self.src_dataset._check_open()
+                    warped, done = rw._warp_from(
+                        self.src_dataset._raster,
+                        grid.level,
+                        part,
+                        part_win,
+                        init=self._init_value,
+                        padded_scale=direct,
+                        **from_raster,
+                    )
+                else:
+                    data, mask = self._source_window(grid.level, part_win)
+                    warped, done = rw.warp(part, part_win, data, mask, self._init_value, direct)
                 warped, done = np.asarray(warped), np.asarray(done)
                 px, py, pw, ph = part
                 rows, cols = slice(py - y, py - y + ph), slice(px - x, px - x + pw)
@@ -1394,6 +1461,47 @@ def _gdal(dtype: str) -> str:
 _WINDOW_TYPES = frozenset(
     ("uint8", "int8", "uint16", "int16", "uint32", "int32", "uint64", "int64", "float32", "float64")
 )
+
+
+def _reads_its_raster(ds: Any) -> bool:
+    """Whether a dataset reads its windows through its own `DatasetReader._read_level`.
+
+    Neither its class nor the dataset itself replaces it: a function set on the dataset, or
+    another dataset's method, would read the windows otherwise.
+
+    Args:
+        ds: A source dataset.
+
+    Returns:
+        bool: Whether `ds._read_level` is `DatasetReader._read_level`, bound to `ds`.
+    """
+    own, read = DatasetReader._read_level, ds._read_level
+    return (
+        type(ds)._read_level is own
+        and getattr(read, "__func__", None) is own
+        and getattr(read, "__self__", None) is ds
+    )
+
+
+def _converts_in_rust(src: np.dtype, work: np.dtype) -> bool:
+    """Whether `RegionWarp._warp_from` converts a window of one type to another as `gdal_cast`.
+
+    Not floats into an integer type whose limits the float type does not hold exactly (float32
+    into 32- and 64-bit integers, float64 into 64-bit ones): there `gdal_cast` clips to a rounded
+    limit beyond the type's, and NumPy's conversion of that value depends on the platform.
+
+    Args:
+        src: A source window's data type.
+        work: The working data type.
+
+    Returns:
+        bool: Whether the window may be converted in Rust.
+    """
+    if src.name not in _WINDOW_TYPES or work.name not in _WINDOW_TYPES:
+        return False
+    if src.kind == "f" and work.kind in "iu":
+        return work.itemsize < src.itemsize
+    return True
 
 
 def _dtype_holds_values(src: np.dtype, work: np.dtype) -> bool:

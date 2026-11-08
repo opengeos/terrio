@@ -36,6 +36,7 @@ mod vector;
 mod vector_dataset;
 mod vector_geom;
 mod vsi;
+mod warp_window;
 
 use pyo3::prelude::*;
 use pyo3::types::PyType;

@@ -1760,6 +1760,19 @@ class RegionWarp:
         init: float = 0.0,
         padded_scale: bool = False,
     ) -> tuple[NDArray[Any], NDArray[np.bool_]]: ...
+    def _warp_from(
+        self,
+        raster: Raster,
+        level: int | None,
+        region: _Window,
+        window: _Window,
+        bands: Sequence[int],
+        init: float = 0.0,
+        padded_scale: bool = False,
+        dtype: str | None = None,
+        alpha: int | None = None,
+        dataset_mask: bool = False,
+    ) -> tuple[NDArray[Any], NDArray[np.bool_]]: ...
 
 @final
 class RpcTransformer:

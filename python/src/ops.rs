@@ -21,6 +21,7 @@ use terrio::ops::translate::{Scale, Size, TranslateOptions};
 use terrio::ops::vector_filter::{GeometryConversion, VectorTranslateOptions, WriteMode};
 use terrio::ops::warp::{Cutline, Nodata, RegionWarp, WarpOptions};
 use terrio::{DataType, Dataset, RasterDataset, VectorOpenOptions, VectorWriteOptions, Window, WindowOptions};
+use wbraster::raster::RasterData;
 
 /// Registers the functions in the module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1971,6 +1972,119 @@ impl PyRegionWarp {
         let arr = crate::raster::to_numpy(py, out, &[bands, h, w])?;
         let written = PyArray1::from_vec(py, written).reshape([h, w])?.into_any();
         Ok((arr, written))
+    }
+
+    /// Reads a region's source window from a `Raster` and warps the region from it, the GIL
+    /// released for both: the window stays in Rust, so no Python object refers to it and nothing
+    /// can change it while it is warped. The window is read and made valid as
+    /// `terrio.rio.WarpedVRT._source_window` reads it; the `Raster` is borrowed for the read only.
+    ///
+    /// Args:
+    ///     raster: The source `Raster`.
+    ///     level: The overview to read the window from, or None for the full resolution.
+    ///     region: `(x, y, width, height)` in the grid.
+    ///     window: The region's source window, as `source_window` gives it, in `level`'s pixels.
+    ///     bands: The bands to read, numbered from 1.
+    ///     init: The value of pixels no valid source pixel reaches.
+    ///     padded_scale: As for `warp`.
+    ///     dtype: The working type the window is converted to first, as `gdal_cast` converts
+    ///         it, or None to warp it in the raster's own type. Not a float type into an integer
+    ///         type whose limits it does not hold exactly (float32 into 32- or 64-bit integers,
+    ///         float64 into 64-bit ones).
+    ///     alpha: The band, among `bands` and numbered from 1, whose zero values mark the pixels
+    ///         left out, or None.
+    ///     dataset_mask: Whether the raster's own mask of the window marks the valid pixels
+    ///         (non-zero), used without `alpha`.
+    ///
+    /// Returns:
+    ///     tuple: As for `warp`.
+    ///
+    /// Raises:
+    ///     RasterioIOError: If the window cannot be read, as `DatasetReader._read_level` raises it.
+    #[pyo3(name = "_warp_from", signature = (raster, level, region, window, bands, init=0.0, padded_scale=false, dtype=None, alpha=None, dataset_mask=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn warp_from<'py>(
+        &self,
+        py: Python<'py>,
+        raster: &Bound<'py, PyRaster>,
+        level: Option<usize>,
+        region: (usize, usize, usize, usize),
+        window: (usize, usize, usize, usize),
+        bands: Vec<usize>,
+        init: f64,
+        padded_scale: bool,
+        dtype: Option<&str>,
+        alpha: Option<usize>,
+        dataset_mask: bool,
+    ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+        let work = dtype.map(terrio::ops::parse_data_type).transpose().py()?;
+        if alpha.is_some_and(|a| a == 0 || a > bands.len()) {
+            return Err(invalid(format!("alpha must be one of the {} bands read", bands.len())));
+        }
+        let (x, y, w, h) = window;
+        let win = Window::new(x, y, w, h);
+        // The window and the per-dataset mask, read with the `Raster` borrowed.
+        let read = {
+            // Borrowed by a read on another thread: the error a read raises then.
+            let mut raster = raster.try_borrow_mut().map_err(|e| read_failed(py, e.into()))?;
+            let source = &mut raster.inner;
+            py.detach_value(|| -> Result<(RasterData, Option<Vec<u8>>), WindowWarpError> {
+                let options = WindowOptions { bands, overview: level };
+                let data = source.read_window(win, &options).map_err(WindowWarpError::Read)?.raster.data;
+                let mask =
+                    if dataset_mask && alpha.is_none() { source.read_mask(win, level).map_err(WindowWarpError::Other)? } else { None };
+                Ok((data, mask))
+            })?
+        };
+        let (mut data, mask) = match read {
+            Ok(read) => read,
+            Err(WindowWarpError::Read(e)) => return Err(read_failed(py, crate::to_py(e))),
+            Err(WindowWarpError::Other(e)) => return Err(crate::to_py(e)),
+        };
+        // The validity, the conversion and the warp, with the `Raster` free for other reads.
+        let inner = &self.inner;
+        let (out, written) = py
+            .detach_result(|| {
+                let mask: Option<Vec<bool>> = match alpha {
+                    Some(a) => Some(crate::warp_window::nonzero(&data, a - 1, w * h)),
+                    None => mask.map(|m| m.into_iter().map(|v| v != 0).collect()),
+                };
+                if let Some(t) = work
+                    && t != data.data_type()
+                {
+                    data = crate::warp_window::convert(&data, t).ok_or_else(|| {
+                        terrio::Error::InvalidArgument(format!("a {:?} window is not converted to {t:?} here", data.data_type()))
+                    })?;
+                }
+                inner.warp(region, window, &data, mask.as_deref(), init, padded_scale)
+            })
+            .py()?;
+        let (w, h) = (region.2, region.3);
+        let bands = out.len() / (w * h).max(1);
+        let arr = crate::raster::to_numpy(py, out, &[bands, h, w])?;
+        let written = PyArray1::from_vec(py, written).reshape([h, w])?.into_any();
+        Ok((arr, written))
+    }
+}
+
+/// Where `RegionWarp._warp_from` failed: reading the window, which raises a `RasterioIOError` as
+/// `DatasetReader._read_level` raises it, or another step, which raises its own error.
+enum WindowWarpError {
+    Read(terrio::Error),
+    Other(terrio::Error),
+}
+
+/// The `RasterioIOError("Read failed: ...")` that `DatasetReader._read_level` raises when a window
+/// cannot be read, `cause` (the read's own error) as its cause.
+fn read_failed(py: Python<'_>, cause: PyErr) -> PyErr {
+    let message = format!("Read failed: {}", cause.value(py));
+    match py.import("terrio.rio.errors").and_then(|m| m.getattr("RasterioIOError")).and_then(|class| class.call1((message,))) {
+        Ok(raised) => {
+            let err = PyErr::from_value(raised);
+            err.set_cause(py, Some(cause));
+            err
+        }
+        Err(err) => err,
     }
 }
 
