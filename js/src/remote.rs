@@ -45,7 +45,7 @@ struct OpenUrlOptions {
     format: Option<String>,
     /// Zarr: the array to read, its path within the store (or group) at the URL.
     array: Option<String>,
-    /// Opt in to 403 for anonymous version/existence probes; attributes remain strict.
+    /// Opt in to 403 for anonymous version/existence probes; v2 .zattrs stays strict.
     allow_missing_metadata403: bool,
 }
 
@@ -427,7 +427,7 @@ fn check_built(format: &str) -> Result<(), JsError> {
 /// `cacheSize` (256 MB kept between reads, not during one: a read holds all the bytes it needs),
 /// `format` (when the URL does not tell it), `array` (Zarr), `allowMissingMetadata403`
 /// (false: opt in only for anonymous stores that report absent metadata as forbidden;
-/// denied attribute documents, chunks and shards always fail).
+/// v2 .zattrs documents, chunks and shards always fail; zarr.json probes remain ambiguous).
 ///
 /// Servers must answer range requests; in browsers, cross-origin servers must allow the `Range`
 /// header and expose `Content-Range` (CORS).
