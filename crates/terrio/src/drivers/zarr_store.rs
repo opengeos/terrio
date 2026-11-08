@@ -55,8 +55,8 @@ pub(crate) struct Store {
     consolidated: Option<HashMap<String, Value>>,
     /// Metadata documents read so far (`None` for missing ones).
     cache: Mutex<HashMap<String, Option<Value>>>,
-    /// The root is a Zarr v3 node: v2 documents (`.zarray`, `.zattrs`, `.zgroup`) are missing
-    /// without being requested, as a store holds one version.
+    /// The root of a remote store is a Zarr v3 node: v2 documents (`.zarray`, `.zattrs`,
+    /// `.zgroup`) are missing without being requested, as a v3 hierarchy holds v3 nodes.
     v3: bool,
     /// The child names listed so far of remote keys.
     #[cfg(remote)]
@@ -261,8 +261,14 @@ impl Store {
         // Both looked for at once: on a remote store, each is a round trip.
         let this = &*self;
         let mut found = crate::par::map_range(2, |i| this.probe([".zmetadata", "zarr.json"][i])).into_iter();
-        let (v2, root) = (found.next().unwrap_or(Ok(None))?, found.next().unwrap_or(Ok(None))?);
-        self.v3 = root.as_ref().is_some_and(|r| r["zarr_format"] == 3);
+        let v2 = found.next().unwrap_or(Ok(None))?;
+        // A v2 store's consolidated metadata stands alone: a failed read of the root's
+        // `zarr.json` (a transient error, a 403) does not fail it.
+        let root = found.next().unwrap_or(Ok(None));
+        let root = if v2.as_ref().is_some_and(|m| m["metadata"].is_object()) { root.unwrap_or(None) } else { root? };
+        // Requests saved on a remote store only: a local one looks for every document, as it
+        // costs nothing.
+        self.v3 = !self.is_local() && root.as_ref().is_some_and(|r| r["zarr_format"] == 3);
         if let Some(m) = v2
             && let Some(meta) = m["metadata"].as_object()
         {
