@@ -5,6 +5,7 @@
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource
   error. HDF-EOS5 structure text is limited to 16 MiB before decoding, including fill-only files.
+  This metadata cap applies to every HDF5 open, even when selecting an unrelated subdataset.
 
 - `warp -r sum` without `--te` rounds the suggested output extent's size up, as gdalwarp does
   for a sum (`GDAL_SWO_ROUND_UP_SIZE`), so that the output covers the whole source. Without

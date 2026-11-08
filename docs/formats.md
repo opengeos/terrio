@@ -223,7 +223,8 @@ CRS, and NISAR's coordinates its geotransform, as GDAL 3.13 reads them.
 HDF5 raster datasets are decoded whole. Before decoding, their declared raw and expanded
 pixel sizes must fit the address space and the process's usable-memory limit, when known.
 Resource refusals are terminal, including when the optional GDAL backend is enabled.
-HDF-EOS5 structure text is limited to 16 MiB before decoding.
+HDF-EOS5 structure text is limited to 16 MiB before decoding on every HDF5 open, even
+when selecting a subdataset that would not use it.
 
 Product-specific georeferencing is read as GDAL's HDF5 driver reads it:
 

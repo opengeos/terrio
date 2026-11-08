@@ -411,7 +411,7 @@ fn walk(f: &Hdf5File) -> Result<Walk> {
 
 /// The HDF-EOS5 structure of a file (`HDFEOS INFORMATION/StructMetadata.0`), when it has one
 /// that describes grids or swaths.
-fn eos_structure(f: &Hdf5File) -> Result<Option<Eos>> {
+fn eos_structure(f: &Hdf5File, path: &Path) -> Result<Option<Eos>> {
     let Ok(d) = f.dataset("/HDFEOS INFORMATION/StructMetadata.0") else { return Ok(None) };
     let Datatype::String { size: StringSize::Fixed(size), .. } = d.dtype() else { return Ok(None) };
     if !d.shape().is_empty() {
@@ -420,7 +420,7 @@ fn eos_structure(f: &Hdf5File) -> Result<Option<Eos>> {
     // Structure text is metadata, not raster data. Bound it even on systems where the
     // physical-memory limit is unavailable, before the reader expands a fill-only string.
     if *size > 16 * 1024 * 1024 {
-        return Err(Error::ResourceLimit("HDF-EOS5 structure text exceeds 16 MiB".into()));
+        return Err(Error::ResourceLimit(format!("{}: HDF-EOS5 structure text exceeds 16 MiB", path.display())));
     }
     let Ok(raw) = d.read_raw_bytes() else { return Ok(None) };
     let text = raw.split(|b| *b == 0).next().unwrap_or_default();
@@ -530,7 +530,7 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, subdataset: Option<&str>) -
 
 fn read_file(f: &Hdf5File, path: &Path, name: &str, subdataset: Option<&str>) -> Result<RasterDataset> {
     let w = walk(f)?;
-    let eos = eos_structure(f)?;
+    let eos = eos_structure(f, path)?;
     let subs = subdatasets(&w, name, eos.as_ref());
     let (entry, metadata) = match subdataset {
         Some(s) => {
@@ -951,6 +951,11 @@ mod tests {
             ("grid", H5Type::Float { size: 8 }, Some(vec![1 << 30, 1 << 30])),
             ("HDFEOS INFORMATION/StructMetadata.0", H5Type::Str { len: 32 * 1024 * 1024 }, None),
         ] {
+            // Memory-limit discovery currently requires /proc. The scalar-text cap and
+            // overflow assertion below are independent of that platform-specific policy.
+            if shape.is_some() && fallible::usable_memory().is_none() {
+                continue;
+            }
             let file = File {
                 datasets: vec![Dataset {
                     name: name.into(),
@@ -976,6 +981,9 @@ mod tests {
     /// h5py-generated 1,400-byte file: 2^40 Float64 elements, 16 x 16 chunks, none allocated.
     #[test]
     fn refuses_unallocated_chunked_datasets_before_decoding() {
+        if fallible::usable_memory().is_none_or(|bytes| bytes >= 8 * (1u64 << 40)) {
+            return; // No known limit below this fixture's declared decoded size.
+        }
         let bytes = include_bytes!("../../tests/data/hdf5_fill_only.h5");
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fill-only.h5");
