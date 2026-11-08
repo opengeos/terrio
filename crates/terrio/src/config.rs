@@ -74,6 +74,7 @@ pub fn thread_options() -> HashMap<String, Option<String>> {
 /// Runs `f` with the captured thread options, replacing any worker scopes for its duration.
 /// Nested pool work can suspend another task on this worker; its options must not leak into
 /// this snapshot. The previous stack is restored even when `f` panics.
+#[cfg(any(test, feature = "zarr"))]
 pub(crate) fn with_thread_options<T>(options: HashMap<String, Option<String>>, f: impl FnOnce() -> T) -> T {
     struct Restore(Vec<HashMap<String, Option<String>>>);
     impl Drop for Restore {
