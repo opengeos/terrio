@@ -117,9 +117,8 @@ pub fn open_raster_lazy_bytes(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> 
 pub enum OpenedRasterBytes {
     /// Read by window, as [`open_raster_lazy_bytes`] opens it.
     Lazy(LazyRaster),
-    /// Decoded whole by [`open_raster_bytes`], after the lazy TIFF reader refused it with this
-    /// error.
-    Whole(Box<RasterDataset>, Error),
+    /// Decoded whole by [`open_raster_bytes`], after the lazy TIFF reader refused it.
+    Whole(Box<RasterDataset>),
 }
 
 /// [`open_raster_lazy_bytes`], falling back to [`open_raster_bytes`] for a TIFF the lazy reader
@@ -137,16 +136,15 @@ pub fn open_raster_lazy_bytes_or_whole(bytes: Vec<u8>, name: &str) -> Result<Ope
     }
     crate::formats::check_allowed_bytes(name, &bytes, Some(Kind::Raster))?;
     let shared = std::sync::Arc::new(bytes);
-    let error = match LazyRaster::from_tiff_shared_bytes(shared.clone()) {
+    match LazyRaster::from_tiff_shared_bytes(shared.clone()) {
         Ok(Some(r)) => return Ok(OpenedRasterBytes::Lazy(r)),
-        Ok(None) => Error::InvalidData(format!("'{name}' is not a valid TIFF")),
         Err(e @ Error::InvalidArgument(_)) => return Err(e),
         Err(e) if e.is_resource_refusal() => return Err(e),
-        Err(e) => e,
-    };
+        Ok(None) | Err(_) => {}
+    }
     // The failed reader is dropped: the bytes are the only reference left, taken back uncopied.
     let bytes = std::sync::Arc::try_unwrap(shared).unwrap_or_else(|shared| (*shared).clone());
-    open_raster_bytes(bytes, name).map(|ds| OpenedRasterBytes::Whole(Box::new(ds), error))
+    open_raster_bytes(bytes, name).map(|ds| OpenedRasterBytes::Whole(Box::new(ds)))
 }
 
 /// Opens a Zarr store (or GeoZarr) from its files: `(path, bytes)` pairs, paths relative to the

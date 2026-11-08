@@ -516,7 +516,7 @@ pub fn translate(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         }
         let out = match terrio::memory::open_raster_lazy_bytes_or_whole(bytes, &name).map_err(js_err)? {
             OpenedRasterBytes::Lazy(mut r) => terrio::ops::translate::translate_lazy(&mut r, &o, overview),
-            OpenedRasterBytes::Whole(ds, _) => terrio::ops::translate::translate(&ds, &o),
+            OpenedRasterBytes::Whole(ds) => terrio::ops::translate::translate(&ds, &o),
         };
         return Ok(Dataset::from_raster(out.map_err(js_err)?));
     }
