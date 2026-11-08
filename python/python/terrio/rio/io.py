@@ -114,10 +114,17 @@ def _listed_subdatasets(metadata: Sequence[tuple[str, str]]) -> list[str]:
     names: dict[int, str] = {}
     for key, value in metadata:
         n, _, kind = key.removeprefix("SUBDATASET_").partition("_")
-        if key.startswith("SUBDATASET_") and kind == "NAME" and n.isdigit() and value:
-            if 0 < int(n) <= 100_000:
-                names[int(n)] = value
-    return [names[n] for n in sorted(names)]
+        if not key.startswith("SUBDATASET_") or kind != "NAME":
+            continue
+        # Match Rust's fallible unsigned parser without Unicode coercion or Python's
+        # long-integer limit; leading zeroes do not make a small index overflow.
+        n = n.removeprefix("+")
+        if not n.isascii() or not n.isdigit():
+            continue
+        n = n.lstrip("0") or "0"
+        if len(n) <= 6 and 0 < (index := int(n)) <= 100_000:
+            names[index] = value
+    return [names[n] for n in sorted(names) if names[n]]
 
 
 def _in_memory_limit() -> int:

@@ -1086,3 +1086,32 @@ def test_subdatasets_listed_without_opening_again(tmp_path, monkeypatch):
             assert src.subdatasets == names
         with rio.open(names[0]) as sub:
             assert sub.subdatasets == []
+
+
+def test_subdataset_metadata_indices_are_fallible_and_bounded():
+    from terrio.rio.io import _listed_subdatasets
+
+    metadata = [
+        ("SUBDATASET_2_NAME", "two"),
+        ("SUBDATASET_+1_NAME", "one"),
+        ("SUBDATASET_²_NAME", "invalid"),
+        ("SUBDATASET_١_NAME", "invalid"),
+        ("SUBDATASET_" + "9" * 6000 + "_NAME", "invalid"),
+        ("SUBDATASET_" + "0" * 6000 + "3_NAME", "three"),
+        ("SUBDATASET_0_NAME", "invalid"),
+        ("SUBDATASET_100001_NAME", "invalid"),
+        ("SUBDATASET_1_DESC", "description"),
+    ]
+    assert _listed_subdatasets(metadata) == ["one", "two", "three"]
+
+
+def test_subdataset_metadata_empty_duplicates_remove_prior_names():
+    from terrio.rio.io import _listed_subdatasets
+
+    assert _listed_subdatasets(
+        [
+            ("SUBDATASET_1_NAME", "first"),
+            ("SUBDATASET_2_NAME", "two"),
+            ("SUBDATASET_1_NAME", ""),
+        ]
+    ) == ["two"]
