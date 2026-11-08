@@ -269,3 +269,46 @@ def test_a_borrowed_window_keeps_the_gil():
         sys.setswitchinterval(old_interval)
         start.set()
         thread.join()
+
+
+def test_a_borrowed_window_forwards_nodata_warnings():
+    gt = (0.0, 1.0, 0.0, 2.0, 0.0, -1.0)
+    rw = _terrio.RegionWarp(
+        (2, 2),
+        gt,
+        "EPSG:3857",
+        "EPSG:3857",
+        gt,
+        "nearest",
+        0.125,
+        "uint8",
+        [None],
+        255.0,
+    )
+    data = read_only(np.full((1, 2, 2), 255, dtype="uint8"))
+    messages = []
+    _terrio._set_warp_nodata_logger(messages.append)
+    try:
+        out, _ = rw.warp((0, 0, 2, 2), (0, 0, 2, 2), data, init=255.0)
+        assert len(messages) == 1
+        assert "255" in messages[0] and "254" in messages[0]
+        np.testing.assert_array_equal(np.asarray(out), 254)
+    finally:
+        _terrio._set_warp_nodata_logger(None)
+
+
+def test_a_source_window_preserves_the_sources_writeable_flag(tmp_path, monkeypatch):
+    import terrio.rio
+    from terrio.rio.vrt import WarpedVRT
+
+    path = str(tmp_path / "source.tif")
+    terrio.Raster.from_array(
+        np.ones((8, 8), dtype="uint16"), (0.0, 1.0, 0.0, 8.0, 0.0, -1.0), crs="EPSG:3857"
+    ).write(path)
+    with terrio.rio.open(path) as src, WarpedVRT(src) as vrt:
+        cached = src.read()
+        monkeypatch.setattr(src, "_read_level", lambda *args: cached)
+        window, _ = vrt._source_window(None, (0, 0, 8, 8))
+        assert cached.flags.writeable
+        assert not window.flags.writeable
+        assert np.shares_memory(window, cached)

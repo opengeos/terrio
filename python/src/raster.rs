@@ -131,8 +131,9 @@ pub(crate) fn from_numpy(array: &Bound<'_, PyUntypedArray>) -> PyResult<RasterDa
 /// C-contiguous and not writeable, copied first (`from_numpy`) otherwise. `f` may release the
 /// GIL only when `borrowed` is false. A read-only flag does not exclude writable aliases, so
 /// the borrowed path must keep Python threads from mutating those aliases. As with other NumPy
-/// borrows, callers must exclude native writers already running outside the GIL.
-pub(crate) fn with_numpy<R>(array: &Bound<'_, PyUntypedArray>, f: impl FnOnce(RasterDataRef<'_>, bool) -> PyResult<R>) -> PyResult<R> {
+/// borrows, callers must exclude native writers already running outside the GIL. While borrowed,
+/// `f` must not call Python (including warning callbacks or error conversion).
+pub(crate) fn with_numpy<R>(array: &Bound<'_, PyUntypedArray>, f: impl FnOnce(RasterDataRef<'_>, bool) -> R) -> PyResult<R> {
     let py = array.py();
     let writeable: bool = array.getattr("flags")?.getattr("writeable")?.extract()?;
     if !writeable && array.is_c_contiguous() {
@@ -144,14 +145,14 @@ pub(crate) fn with_numpy<R>(array: &Bound<'_, PyUntypedArray>, f: impl FnOnce(Ra
                     && let Ok(a) = a.try_readonly()
                     && let Ok(values) = a.as_slice()
                 {
-                    return f(RasterDataRef::$v(values), true);
+                    return Ok(f(RasterDataRef::$v(values), true));
                 })*
             };
         }
         try_types!(u8 => U8, i8 => I8, u16 => U16, i16 => I16, u32 => U32, i32 => I32, u64 => U64, i64 => I64, f32 => F32, f64 => F64);
     }
     let data = from_numpy(array)?;
-    f(RasterDataRef::from(&data), false)
+    Ok(f(RasterDataRef::from(&data), false))
 }
 
 /// Parses a `band` argument: `None` (all bands), an int, or a sequence of ints. Returns the bands

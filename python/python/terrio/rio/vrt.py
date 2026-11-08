@@ -696,9 +696,10 @@ class WarpedVRT(DatasetReader):
         if data.dtype != np.dtype(self._dtype):
             # The source is read in the working data type.
             data = gdal_cast(data, self._dtype)
-        data = np.ascontiguousarray(data)
+        data = np.ascontiguousarray(data).view()
         # The warp reads a read-only window where it is, with the GIL held, and copies a writeable
-        # one first (`RegionWarp.warp`): the window is this read's own, nothing else writes it.
+        # one first (`RegionWarp.warp`). _read_level returns fresh pixels (list band indexing
+        # for in-memory datasets); use a view so this flag never changes the source's array.
         data.flags.writeable = False
         return data, mask
 

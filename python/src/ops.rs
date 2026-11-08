@@ -1950,13 +1950,21 @@ impl PyRegionWarp {
             }),
         };
         let inner = &self.inner;
-        let (out, written) = crate::raster::with_numpy(data, |data, borrowed| {
+        let result = crate::raster::with_numpy(data, |data, borrowed| {
+            let warp = || inner.warp(region, window, data, mask.as_deref(), init, padded_scale);
             if borrowed {
-                inner.warp(region, window, data, mask.as_deref(), init, padded_scale).py()
+                // Preserve detach_result's panic conversion without releasing the GIL or
+                // invoking Python callbacks while the NumPy slice is borrowed.
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(warp)).unwrap_or_else(|p| Err(crate::panicked(p)))
             } else {
-                py.detach_result(|| inner.warp(region, window, data, mask.as_deref(), init, padded_scale)).py()
+                py.detach_result(warp)
             }
-        })?;
+        });
+        // The NumPy borrow has ended. Forward warnings on success and failure before converting
+        // errors or arrays, since Python loggers may reenter terrio or mutate aliases.
+        crate::pass_on_http_retries(py);
+        crate::pass_on_nodata_warnings(py);
+        let (out, written) = result?.py()?;
         let (w, h) = (region.2, region.3);
         let bands = out.len() / (w * h).max(1);
         let arr = crate::raster::to_numpy(py, out, &[bands, h, w])?;
