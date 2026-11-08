@@ -9,12 +9,16 @@ struct Ui {
     child: Child,
     addr: String,
     token: String,
+    redirect_dir: Option<std::path::PathBuf>,
 }
 
 impl Drop for Ui {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(path) = self.redirect_dir.take() {
+            let _ = std::fs::remove_dir_all(path);
+        }
     }
 }
 
@@ -32,7 +36,7 @@ fn start(cwd: &std::path::Path) -> Ui {
     let (addr, token) = url.split_once("/#token=").unwrap();
     assert!(addr.starts_with("127.0.0.1:"), "listens on the loopback interface only: {addr}");
     assert_eq!(token.len(), 32);
-    Ui { addr: addr.to_string(), token: token.to_string(), child }
+    Ui { addr: addr.to_string(), token: token.to_string(), child, redirect_dir: None }
 }
 
 impl Ui {
@@ -80,7 +84,7 @@ fn serves_the_page_without_the_token_and_the_api_only_with_it() {
     let (status, _, catalog) = ui.send("GET", "/api/catalog", &token, "");
     assert_eq!(status, 200);
     let catalog: Value = serde_json::from_str(&catalog).unwrap();
-    assert_eq!(catalog["catalog"]["schema_version"], "0.1.1");
+    assert_eq!(catalog["catalog"]["schema_version"], "0.1.2");
     let names: Vec<&str> =
         catalog["catalog"]["command"]["subcommands"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"warp") && names.contains(&"vsi"));
@@ -147,4 +151,59 @@ fn is_not_in_the_catalog_and_a_metadata_request_does_not_start_it() {
     let output = Command::new(env!("CARGO_BIN_EXE_terrio")).args(["ui", "--json-usage"]).stdin(Stdio::null()).output().unwrap();
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
+}
+
+/// Exercise both launch paths with an actual opener process, without starting a user's browser.
+#[cfg(target_os = "linux")]
+#[test]
+fn browser_launches_use_private_files_for_ui_and_view() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let opener = bin.join("xdg-open");
+    std::fs::write(&opener, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$TERRIO_TEST_BROWSER_ARGS\"\n").unwrap();
+    std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let points = dir.path().join("points.geojson");
+    std::fs::write(&points, POINTS).unwrap();
+    for map in [false, true] {
+        let record = dir.path().join(if map { "view-args" } else { "ui-args" });
+        let mut command = Command::new(env!("CARGO_BIN_EXE_terrio"));
+        command.arg(if map { "view" } else { "ui" });
+        if map {
+            command.arg(&points);
+        }
+        let mut child =
+            command.env("PATH", &bin).env("TERRIO_TEST_BROWSER_ARGS", &record).stdin(Stdio::null()).stdout(Stdio::piped()).spawn().unwrap();
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let url = line.trim().split_once(": ").unwrap().1;
+        let (address, token) = url.strip_prefix("http://").unwrap().split_once("#token=").unwrap();
+        let mut ui = Ui { child, addr: address.split('/').next().unwrap().into(), token: token.into(), redirect_dir: None };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let arguments = loop {
+            if let Ok(arguments) = std::fs::read_to_string(&record)
+                && arguments.ends_with('\n')
+            {
+                break arguments;
+            }
+            assert!(Instant::now() < deadline, "the browser launcher did not run");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let path = std::path::Path::new(arguments.trim_end());
+        let parent = path.parent().unwrap();
+        assert_eq!(parent.parent(), Some(std::env::temp_dir().as_path()));
+        assert!(parent.file_name().unwrap().to_string_lossy().starts_with("terrio-ui-"));
+        ui.redirect_dir = Some(parent.to_path_buf());
+        assert_eq!(arguments.lines().count(), 1);
+        assert!(!arguments.contains(token) && !arguments.contains("#token="));
+        assert!(std::fs::read_to_string(path).unwrap().contains(url));
+        assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(ui.send("GET", if map { "/map" } else { "/" }, "", "").0, 200);
+        // The child is killed without unwinding, so expire its token before removing its file.
+        drop(ui);
+        assert!(!parent.exists(), "the test server removes its redirect after shutdown");
+    }
 }

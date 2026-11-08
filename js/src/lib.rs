@@ -143,9 +143,21 @@ pub(crate) fn parse_options<T: serde::de::DeserializeOwned + Default>(options: &
 /// `"NONE"`.
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum OverviewArg {
+pub(crate) enum OverviewArg {
     Level(usize),
     Name(String),
+}
+
+impl OverviewArg {
+    /// The selection, `AUTO` when the option is not given.
+    pub(crate) fn selection(arg: Option<&Self>) -> terrio::Result<terrio::ops::overview::OverviewSelection> {
+        use terrio::ops::overview::OverviewSelection;
+        Ok(match arg {
+            None => OverviewSelection::Auto,
+            Some(Self::Level(i)) => OverviewSelection::Level(*i),
+            Some(Self::Name(n)) => OverviewSelection::parse(n)?,
+        })
+    }
 }
 
 /// Options of `readResampled` and `readResampledMasks`.
@@ -168,18 +180,13 @@ pub(crate) struct ResampledArgs {
 impl ResampledArgs {
     /// The read's options.
     pub(crate) fn options(&self) -> terrio::Result<terrio::ResampledReadOptions> {
-        use terrio::ops::overview::OverviewSelection;
         let [w, h] = self.size.ok_or_else(|| terrio::Error::InvalidArgument("size [width, height] is required".into()))?;
         Ok(terrio::ResampledReadOptions {
             bands: self.bands.clone().unwrap_or_default(),
             window: self.window.map(|[x, y, w, h]| (x, y, w, h)),
             size: (w, h),
             resampling: self.resampling.as_deref().map(terrio::ops::Resampling::parse).transpose()?.unwrap_or_default(),
-            overview: match &self.overview {
-                None => OverviewSelection::Auto,
-                Some(OverviewArg::Level(i)) => OverviewSelection::Level(*i),
-                Some(OverviewArg::Name(n)) => OverviewSelection::parse(n)?,
-            },
+            overview: OverviewArg::selection(self.overview.as_ref())?,
         })
     }
 }

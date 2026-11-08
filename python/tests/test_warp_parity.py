@@ -6,8 +6,6 @@ gives); and PROJ maps the poles to finite Web Mercator northings, which `GDALSug
 samples for a global grid. Exact comparisons; skipped without rasterio.
 """
 
-import re
-
 import numpy as np
 import pytest
 
