@@ -387,3 +387,33 @@ def test_independent_raster_writers_reject_conflicting_case_aliases(tmp_path, in
         else:
             getattr(_terrio, writer)(str(path), 40, 40, 1, "float32", TRANSFORM, options=options)
     assert not path.exists()
+
+
+@pytest.mark.parametrize("operation", ["translate", "Raster.write"])
+@pytest.mark.parametrize("format_name", ["GTiff", "COG"])
+def test_lowercase_creation_option_is_applied(tmp_path, inputs, gdal, operation, format_name):
+    """A single lowercase option remains valid after alias-conflict validation."""
+    path = tmp_path / "lowercase.tif"
+    write_operation(operation, inputs, path, format=format_name, options={"compress": "DEFLATE"})
+    written = gdal.Open(str(path))
+    assert written.GetMetadataItem("COMPRESSION", "IMAGE_STRUCTURE") == "DEFLATE"
+
+
+def test_grouped_option_validation_precedes_lazy_pixel_reads(tmp_path):
+    """Invalid output mappings cannot materialize an unreadable lazy source first."""
+    source = tmp_path / "source.tif"
+    terrio.Raster.from_array(np.zeros((512, 512), dtype="uint8"), TRANSFORM).write(
+        str(source), compress="NONE", tile_size=16
+    )
+    assert source.stat().st_size > 128 * 1024
+    lazy = terrio.open_raster(str(source), lazy=True)
+    probe = terrio.open_raster(str(source), lazy=True)
+    source.write_bytes(b"")
+    with pytest.raises(terrio.TerrioError):
+        probe.read(1)
+    output = tmp_path / "output.nc"
+    with pytest.raises(ValueError, match="duplicate creation option"):
+        terrio.write_netcdf_groups(
+            {"/data": lazy}, str(output), options={"COMPRESS": "DEFLATE", "compress": "LZW"}
+        )
+    assert not output.exists()
