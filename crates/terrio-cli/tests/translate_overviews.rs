@@ -104,9 +104,21 @@ fn gdal_named_inputs_are_translated_whole() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.tif");
     let input = format!("gdal:{}", fixture().display());
-    let result =
-        Command::new(env!("CARGO_BIN_EXE_terrio")).args(["translate", &input]).arg(&out).args(["--outsize", "32", "24"]).output().unwrap();
-    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
-    let out = terrio::open_raster(out.to_str().unwrap()).unwrap();
-    assert_eq!((out.raster.cols, out.raster.rows, out.raster.bands), (32, 24, 3));
+    let mut expected = None;
+    for overview in ["AUTO", "AUTO-0"] {
+        let result = Command::new(env!("CARGO_BIN_EXE_terrio"))
+            .args(["translate", &input])
+            .arg(&out)
+            .args(["--outsize", "32", "24", "--overview", overview])
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{overview}: {}", String::from_utf8_lossy(&result.stderr));
+        let raster = terrio::open_raster(out.to_str().unwrap()).unwrap();
+        assert_eq!((raster.raster.cols, raster.raster.rows, raster.raster.bands), (32, 24, 3));
+        if let Some(values) = &expected {
+            assert_eq!(&bytes(&raster.raster.data), values);
+        } else {
+            expected = Some(bytes(&raster.raster.data));
+        }
+    }
 }

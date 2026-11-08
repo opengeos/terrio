@@ -483,7 +483,9 @@ def compare_rasterize(data: Path, work: Path, terrio: Path, only_nodata: bool = 
                 if not np.array_equal(e.GetMaskBand().ReadAsArray(), a.GetMaskBand().ReadAsArray()):
                     problems.append(f"band {band} mask differs")
             expected = actual = None
-        burned = int((g != g.flat[0]).sum()) if g.size else 0
+        background = g.flat[0] if g.size else 0
+        is_background = (g == background) | (np.isnan(g) & np.isnan(background))
+        burned = int((~is_background).sum()) if g.size else 0
         status = "OK" if not problems and diff == 0 else "DIFF " + "; ".join(problems)
         lines.append(f"{label:<24} {gsize[0]}x{gsize[1]}, {diff} of {total} pixels differ ({burned} burned)  {status}")
     if only_nodata:

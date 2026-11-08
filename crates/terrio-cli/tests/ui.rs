@@ -9,12 +9,16 @@ struct Ui {
     child: Child,
     addr: String,
     token: String,
+    redirect_dir: Option<std::path::PathBuf>,
 }
 
 impl Drop for Ui {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(path) = self.redirect_dir.take() {
+            let _ = std::fs::remove_dir_all(path);
+        }
     }
 }
 
@@ -32,7 +36,7 @@ fn start(cwd: &std::path::Path) -> Ui {
     let (addr, token) = url.split_once("/#token=").unwrap();
     assert!(addr.starts_with("127.0.0.1:"), "listens on the loopback interface only: {addr}");
     assert_eq!(token.len(), 32);
-    Ui { addr: addr.to_string(), token: token.to_string(), child }
+    Ui { addr: addr.to_string(), token: token.to_string(), child, redirect_dir: None }
 }
 
 impl Ui {
@@ -176,22 +180,30 @@ fn browser_launches_use_private_files_for_ui_and_view() {
         BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
         let url = line.trim().split_once(": ").unwrap().1;
         let (address, token) = url.strip_prefix("http://").unwrap().split_once("#token=").unwrap();
-        let ui = Ui { child, addr: address.split('/').next().unwrap().into(), token: token.into() };
+        let mut ui = Ui { child, addr: address.split('/').next().unwrap().into(), token: token.into(), redirect_dir: None };
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !record.exists() || std::fs::metadata(&record).unwrap().len() == 0 {
+        let arguments = loop {
+            if let Ok(arguments) = std::fs::read_to_string(&record)
+                && arguments.ends_with('\n')
+            {
+                break arguments;
+            }
             assert!(Instant::now() < deadline, "the browser launcher did not run");
             std::thread::sleep(Duration::from_millis(10));
-        }
-        let arguments = std::fs::read_to_string(&record).unwrap();
+        };
+        let path = std::path::Path::new(arguments.trim_end());
+        let parent = path.parent().unwrap();
+        assert_eq!(parent.parent(), Some(std::env::temp_dir().as_path()));
+        assert!(parent.file_name().unwrap().to_string_lossy().starts_with("terrio-ui-"));
+        ui.redirect_dir = Some(parent.to_path_buf());
         assert_eq!(arguments.lines().count(), 1);
         assert!(!arguments.contains(token) && !arguments.contains("#token="));
-        let path = std::path::Path::new(arguments.trim_end());
         assert!(std::fs::read_to_string(path).unwrap().contains(url));
         assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
         assert_eq!(ui.send("GET", if map { "/map" } else { "/" }, "", "").0, 200);
         // The child is killed without unwinding, so expire its token before removing its file.
         drop(ui);
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        assert!(!parent.exists(), "the test server removes its redirect after shutdown");
     }
 }
