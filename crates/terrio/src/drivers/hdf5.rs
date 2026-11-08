@@ -22,6 +22,7 @@
 
 use super::common::{self, Interleave, Layout};
 use super::hdfeos::{Eos, FieldKind};
+use crate::dataset::fallible;
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
 use hdf5_reader::messages::datatype::{Datatype, StringSize, VarLenKind};
@@ -255,7 +256,7 @@ fn format_number(b: &[u8], t: NumType) -> String {
 /// A single-valued numeric attribute as a double (GDAL's `GH5_FetchAttribute()`).
 fn attr_f64(attrs: &[Attribute], name: &str) -> Option<f64> {
     let a = attrs.iter().find(|a| a.name == name)?;
-    if a.shape.iter().product::<u64>() != 1 {
+    if a.shape.iter().try_fold(1u64, |n, d| n.checked_mul(*d)) != Some(1) {
         return None;
     }
     value_f64(&a.raw_data, num_type(&a.datatype)?)
@@ -553,30 +554,48 @@ fn read_file(f: &Hdf5File, path: &Path, name: &str, subdataset: Option<&str>) ->
     read_dataset(f, path, name, &w, eos.as_ref(), entry, metadata)
 }
 
+/// Whether `x`, `y` and `other` name distinct dimensions of `shape` (columns, rows and bands).
+fn valid_layout(shape: &[usize], x: usize, y: Option<usize>, other: Option<usize>) -> bool {
+    let nd = shape.len();
+    x < nd && y.is_none_or(|y| y < nd && y != x) && other.is_none_or(|o| o < nd && o != x && Some(o) != y)
+}
+
 /// Reorders the elements of an array into bands, rows and columns: `x`, `y` and `other` are the
 /// dimensions of the columns, rows and bands (rows of 1 without `y`, one band without `other`).
-fn to_bsq(raw: &[u8], shape: &[usize], element: usize, x: usize, y: Option<usize>, other: Option<usize>) -> Vec<u8> {
+/// Refused (`InvalidData`) when they are not distinct dimensions of `shape` or `raw` is shorter
+/// than it, and an `OutOfMemory` error when the reordered elements cannot be allocated.
+fn to_bsq(raw: &[u8], shape: &[usize], element: usize, x: usize, y: Option<usize>, other: Option<usize>) -> Result<Vec<u8>> {
+    let short = || Error::InvalidData("dataset shorter than its shape".into());
+    if !valid_layout(shape, x, y, other) {
+        return Err(Error::InvalidData("its dimensions do not name distinct columns, rows and bands".into()));
+    }
     let nd = shape.len();
     let mut strides = vec![1usize; nd];
+    let too_large = || Error::ResourceLimit(format!("an array of shape {shape:?} has too many elements"));
     for d in (0..nd.saturating_sub(1)).rev() {
-        strides[d] = strides[d + 1] * shape[d + 1];
+        strides[d] = strides[d + 1].checked_mul(shape[d + 1]).ok_or_else(too_large)?;
     }
+    if shape.iter().try_fold(element, |n, d| n.checked_mul(*d)).ok_or_else(too_large)? > raw.len() {
+        return Err(short());
+    }
+    // Distinct dimensions: every element gathered lies within the shape, so within `raw`.
     let (cols, rows, bands) = (shape[x], y.map_or(1, |y| shape[y]), other.map_or(1, |o| shape[o]));
-    let mut out = Vec::with_capacity(cols * rows * bands * element);
+    let mut out = Vec::new();
+    fallible::reserve(&mut out, cols * rows * bands * element, "an HDF5 array reordered into bands")?;
     for b in 0..bands {
         for r in 0..rows {
             let base = other.map_or(0, |o| b * strides[o]) + y.map_or(0, |y| r * strides[y]);
             if strides[x] == 1 {
-                out.extend_from_slice(&raw[base * element..(base + cols) * element]);
+                out.extend_from_slice(raw.get(base * element..(base + cols) * element).ok_or_else(short)?);
             } else {
                 for c in 0..cols {
                     let i = (base + c * strides[x]) * element;
-                    out.extend_from_slice(&raw[i..i + element]);
+                    out.extend_from_slice(raw.get(i..i + element).ok_or_else(short)?);
                 }
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Decodes elements of a numeric type laid out band by band.
@@ -651,17 +670,31 @@ fn read_dataset(
     if field.is_none() && nd == 3 && csk.as_deref().is_some_and(|p| starts_with_ci(p, "SCS")) {
         (x, y, other) = (1, Some(0), Some(2));
     }
+    // A field whose dimension list leaves its columns, rows or bands on the same dimension (no
+    // `XDim`, say) is refused: its layout is unknown. GDAL 3.13.3 reports a `(Band, Foo, YDim)`
+    // field of 1 x 1 x 10 values as 10 x 10 and reads zeros.
+    if !valid_layout(&shape, x, y, other) {
+        return Err(err(path, format!("{}: its dimensions do not name distinct columns, rows and bands", e.path)));
+    }
     let (cols, rows, bands) = (shape[x], y.map_or(1, |y| shape[y]), other.map_or(1, |o| shape[o]));
     let raw = ds.read_raw_bytes().map_err(|e| err(path, e))?;
     let element = t.element_size();
-    let n = cols * rows * bands;
     // The whole dataset: a layout other than GDAL's is gathered with the strides of its shape.
-    let whole = raw.get(..shape.iter().product::<usize>() * element).ok_or_else(|| err(path, "dataset shorter than its shape"))?;
+    let too_large = || err(path, format!("{} has too many elements", e.path));
+    let whole_len = shape.iter().try_fold(element, |n, d| n.checked_mul(*d)).ok_or_else(too_large)?;
+    let whole = raw.get(..whole_len).ok_or_else(|| err(path, "dataset shorter than its shape"))?;
+    let n = fallible::len(&[cols, rows, bands], "an HDF5 raster")?;
     let standard = x == nd - 1 && y == nd.checked_sub(2) && (other.is_none() || other == Some(0));
     let ordered = if standard {
-        std::borrow::Cow::Borrowed(&whole[..n * element])
+        // Columns, rows and bands are distinct dimensions: they hold at most the whole dataset.
+        std::borrow::Cow::Borrowed(whole.get(..n * element).ok_or_else(|| err(path, "dataset shorter than its shape"))?)
     } else {
-        std::borrow::Cow::Owned(to_bsq(whole, &shape, element, x, y, other))
+        // Refusals of the data name the file; allocation and resource refusals stay as they are.
+        let ordered = to_bsq(whole, &shape, element, x, y, other).map_err(|failure| match failure {
+            Error::InvalidData(m) => err(path, format!("{}: {m}", e.path)),
+            failure => failure,
+        })?;
+        std::borrow::Cow::Owned(ordered)
     };
     let (data, raster_bands) = match t.complex {
         // Complex elements: each band becomes its real parts then its imaginary parts.
@@ -956,6 +989,72 @@ mod tests {
             assert!((a - b).abs() < 1e-4, "{gt:?} != {expected:?}");
         }
         assert!(r.crs().proj4.unwrap_or_default().contains("+proj=stere"));
+    }
+
+    /// An HDF-EOS5 grid field whose dimension list has no `XDim` (`Band`, `Foo`, `YDim`): its
+    /// columns and rows would both be its last dimension, gathering 10 x 10 values from a field
+    /// of 10. It is refused (GDAL 3.13.3 reports 10 x 10 zeros).
+    #[test]
+    fn a_grid_field_without_an_x_dimension_is_refused() {
+        use super::super::hdf5_write::{Dataset, File, H5Type, Storage};
+        let meta = "GROUP=SwathStructure\nEND_GROUP=SwathStructure\nGROUP=GridStructure\n\tGROUP=GRID_1\n\t\tGridName=\"G\"\n\t\tXDim=10\n\t\tYDim=1\n\t\tGROUP=Dimension\n\t\t\tOBJECT=Dimension_1\n\t\t\t\tDimensionName=\"Band\"\n\t\t\t\tSize=1\n\t\t\tEND_OBJECT=Dimension_1\n\t\t\tOBJECT=Dimension_2\n\t\t\t\tDimensionName=\"Foo\"\n\t\t\t\tSize=1\n\t\t\tEND_OBJECT=Dimension_2\n\t\t\tOBJECT=Dimension_3\n\t\t\t\tDimensionName=\"YDim\"\n\t\t\t\tSize=10\n\t\t\tEND_OBJECT=Dimension_3\n\t\tEND_GROUP=Dimension\n\t\tGROUP=DataField\n\t\t\tOBJECT=DataField_1\n\t\t\t\tDataFieldName=\"F\"\n\t\t\t\tDataType=H5T_NATIVE_FLOAT\n\t\t\t\tDimList=(\"Band\",\"Foo\",\"YDim\")\n\t\t\tEND_OBJECT=DataField_1\n\t\tEND_GROUP=DataField\n\tEND_GROUP=GRID_1\nEND_GROUP=GridStructure\nEND\n";
+        let ds = |name: &str, dtype: H5Type, shape: Option<Vec<u64>>, data: Vec<u8>| Dataset {
+            name: name.into(),
+            fill: vec![0; 4],
+            dtype,
+            shape,
+            max_shape: None,
+            data,
+            storage: Storage::default(),
+            attrs: vec![],
+        };
+        let mut text = meta.as_bytes().to_vec();
+        text.push(0);
+        let values: Vec<u8> = (0..10).flat_map(|v| (v as f32).to_le_bytes()).collect();
+        let f = File {
+            attrs: vec![],
+            group_attrs: Vec::new(),
+            datatypes: Vec::new(),
+            datasets: vec![
+                ds("HDFEOS INFORMATION/StructMetadata.0", H5Type::Str { len: text.len() as u32 }, None, text),
+                ds("HDFEOS/GRIDS/G/Data Fields/F", H5Type::Float { size: 4 }, Some(vec![1, 1, 10]), values),
+            ],
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("eos.h5");
+        std::fs::write(&p, super::super::hdf5_write::encode(&f)).unwrap();
+        let e = read(&p, "eos.h5", None).unwrap_err();
+        assert!(e.to_string().contains("do not name distinct columns, rows and bands"), "{e}");
+    }
+
+    #[test]
+    fn gathers_only_distinct_dimensions_within_the_data() {
+        let raw: Vec<u8> = (0..6).collect();
+        // A 2 x 3 array transposed: columns on dimension 0, rows on dimension 1.
+        assert_eq!(to_bsq(&raw, &[2, 3], 1, 0, Some(1), None).unwrap(), vec![0, 3, 1, 4, 2, 5]);
+        let message = |r: Result<Vec<u8>>| r.unwrap_err().to_string();
+        let layout = "its dimensions do not name distinct columns, rows and bands";
+        assert_eq!(message(to_bsq(&raw, &[2, 3], 1, 1, Some(1), None)), layout);
+        assert_eq!(message(to_bsq(&raw, &[2, 3], 1, 2, Some(1), None)), layout);
+        assert_eq!(message(to_bsq(&raw[..5], &[2, 3], 1, 0, Some(1), None)), "dataset shorter than its shape");
+        // A shape whose elements overflow a count: a resource refusal, not a short dataset.
+        assert!(to_bsq(&raw, &[usize::MAX, 2], 1, 0, Some(1), None).unwrap_err().is_resource_refusal());
+    }
+
+    /// A single-valued attribute: one element. A shape whose element count overflows (to 1, were
+    /// it wrapped) holds no single value.
+    #[test]
+    fn reads_only_single_valued_attributes() {
+        let attr = |shape: Vec<u64>| Attribute {
+            name: "_FillValue".into(),
+            datatype: Datatype::FixedPoint { size: 1, signed: false, byte_order: ByteOrder::LittleEndian },
+            shape,
+            raw_data: vec![7],
+            decoded_strings: None,
+        };
+        assert_eq!(attr_f64(&[attr(vec![1])], "_FillValue"), Some(7.0));
+        assert_eq!(attr_f64(&[attr(vec![u64::MAX, u64::MAX])], "_FillValue"), None);
+        assert_eq!(attr_f64(&[attr(vec![2])], "_FillValue"), None);
     }
 
     /// A NISAR-like file (GDAL's `fake_NISAR_L2_epsg_code.h5`): its CRS from the grid mapping's
