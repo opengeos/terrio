@@ -808,6 +808,7 @@ fn gdal_name(path: &str) -> String {
 }
 
 fn gdal_open(path: &str, flags: GdalOpenFlags) -> Result<GdalDataset> {
+    crate::stac::check_gdal_asset_read()?;
     // Every dataset GDAL opens (a `GDAL:` name, the fallback for what terrio's drivers cannot read,
     // bytes through `/vsimem/`) is opened by the GDAL backend, whose own drivers pick the format:
     // only if the process-wide allow-list of each kind asked for has the GDAL driver.

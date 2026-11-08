@@ -591,7 +591,7 @@ fn open_item_native(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: 
             let (col, row) = limits.get(&m.id).map_or((0, 0), |l| (l.min_col, l.min_row));
             let url = tile_href(&url_template, &m.id, row, col);
             crate::stac::check_asset_access(&item.loc, &url)?;
-            match LazyRaster::open(&url) {
+            match crate::stac::with_asset_read(&item.loc, &url, || LazyRaster::open(&url)) {
                 Ok(r) => {
                     proto = Some((url, r));
                     break;
@@ -718,7 +718,7 @@ impl Tiled {
         let cached = self.tiles.lock().ok().and_then(|mut m| m.remove(href));
         let tile = match cached {
             Some(t) => t,
-            None => match LazyRaster::open(href) {
+            None => match crate::stac::with_asset_read(&self.document, href, || LazyRaster::open(href)) {
                 Ok(r) => Some(r),
                 Err(e) if matches!(e, Error::InvalidArgument(_)) || e.is_resource_refusal() => {
                     return Err(e);

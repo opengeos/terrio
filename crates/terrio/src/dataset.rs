@@ -406,6 +406,7 @@ impl VectorOpenOptions {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open(path: &str) -> Result<Dataset> {
+    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     crate::formats::check_allowed(path, None)?;
     #[cfg(feature = "gdal")]
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
@@ -455,6 +456,7 @@ pub(crate) fn open_native(path: &str) -> Result<Dataset> {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open_raster(path: &str) -> Result<RasterDataset> {
+    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     crate::formats::check_allowed(path, Some(crate::formats::Kind::Raster))?;
     #[cfg(feature = "gdal")]
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
@@ -474,6 +476,7 @@ pub fn open_raster(path: &str) -> Result<RasterDataset> {
 /// decoder and parallel chunk decoders use the selected limit. This TIFF-specific
 /// entry point does not fall back to GDAL or dispatch to other raster formats.
 pub fn open_raster_with_tiff_limits(path: &str, limits: crate::TiffReadLimits) -> Result<RasterDataset> {
+    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     let local = vfs::resolve(path)?;
     crate::geotiff::check_tiff_allowed(local.path(), path)?;
     crate::geotiff::read_geotiff_with_limits(Path::new(local.as_str()), limits)
@@ -607,6 +610,7 @@ fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     options.oapif.validate_source(path)?;
     crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
     #[cfg(feature = "gdal")]

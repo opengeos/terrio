@@ -118,7 +118,7 @@ fn has_stac_marker(bytes: &[u8]) -> bool {
 fn parse_document(bytes: &[u8], loc: &str) -> Result<Value> {
     let doc = serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
         .map_err(|e| bad(format!("{}: {e}", crate::vsi::listing::redact_url(loc))))?;
-    if has_stac_marker(bytes) || crate::stacta::is_stacta(&doc) {
+    if has_stac_marker(bytes) || kind(&doc).is_some() || crate::stacta::is_stacta(&doc) {
         check_document_assets(&doc, loc)?;
     }
     Ok(doc)
@@ -322,6 +322,93 @@ pub(crate) fn names_local_files(doc_loc: &str, href: &str) -> bool {
     !local_backed(&parse(doc_loc)) && local_backed(&parse(href))
 }
 
+/// Remote-document provenance retained by deferred raster reads. The original credential
+/// decision survives configuration changes, because a cached HTTP client retains its auth.
+#[derive(Clone)]
+pub(crate) struct AssetReadPolicy {
+    document: String,
+    href: String,
+    credentialed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+thread_local! {
+    static ASSET_READ_POLICY: std::cell::RefCell<Option<AssetReadPolicy>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) struct AssetReadScope {
+    previous: Option<AssetReadPolicy>,
+    // A thread-local scope must be restored on the thread that entered it.
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl Drop for AssetReadScope {
+    fn drop(&mut self) {
+        ASSET_READ_POLICY.with(|p| *p.borrow_mut() = self.previous.take());
+    }
+}
+
+impl AssetReadPolicy {
+    pub(crate) fn current() -> Option<Self> {
+        ASSET_READ_POLICY.with(|p| p.borrow().clone())
+    }
+
+    fn for_asset(document: &str, href: &str) -> Result<Option<Self>> {
+        check_asset_access(document, href)?;
+        if local_backed(&crate::vfs::Location::parse(document)) {
+            return Ok(None);
+        }
+        #[cfg(remote)]
+        let credentialed = asset_uses_credentials(document, href);
+        #[cfg(not(remote))]
+        let credentialed = false;
+        Ok(Some(Self {
+            document: document.into(),
+            href: href.into(),
+            credentialed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(credentialed)),
+        }))
+    }
+
+    pub(crate) fn enter(&self) -> Result<AssetReadScope> {
+        check_asset_access(&self.document, &self.href)?;
+        if self.credentialed.load(std::sync::atomic::Ordering::Relaxed) && !option_on("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS") {
+            return Err(Error::InvalidArgument(
+                "STAC: cached credentialed asset requires TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES".into(),
+            ));
+        }
+        let previous = ASSET_READ_POLICY.with(|p| p.replace(Some(self.clone())));
+        Ok(AssetReadScope { previous, _thread: std::marker::PhantomData })
+    }
+
+    pub(crate) fn enter_nested(path: &str) -> Result<Option<AssetReadScope>> {
+        Self::nested(path)?.as_ref().map(Self::enter).transpose()
+    }
+
+    /// Checks a nested raster against the remote document, rather than its immediate parent.
+    pub(crate) fn nested(path: &str) -> Result<Option<Self>> {
+        Self::current().map_or(Ok(None), |p| Self::for_asset(&p.document, path))
+    }
+}
+
+pub(crate) fn with_asset_read<T>(document: &str, href: &str, read: impl FnOnce() -> Result<T>) -> Result<T> {
+    let policy = AssetReadPolicy::for_asset(document, href)?;
+    let _scope = policy.as_ref().map(AssetReadPolicy::enter).transpose()?;
+    read()
+}
+
+/// GDAL 3.13.3 may use auth sources or nested datasets that native readers cannot inspect.
+/// A remote STAC-selected read therefore needs explicit consent before entering GDAL.
+#[cfg(feature = "gdal")]
+pub(crate) fn check_gdal_asset_read() -> Result<()> {
+    if let Some(policy) = AssetReadPolicy::current() {
+        if !option_on("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS") {
+            return Err(Error::InvalidArgument("STAC: GDAL asset reads require TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES".into()));
+        }
+        // Cached GDAL-backed pixels still came from an opaque, explicitly consented read.
+        policy.credentialed.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
+}
+
 /// Checks an asset chosen by a document before opening it. The opt-in concerns ambient user
 /// credentials, not a signature already present in the document's href or public PC signing.
 /// Local-file and credential refusals are terminal, including through the GDAL fallback.
@@ -413,10 +500,10 @@ fn asset_uses_credentials(doc_loc: &str, href: &str) -> bool {
         (Location::Url(from), Location::Url(to)) => crate::vfs::url_origin(from) == crate::vfs::url_origin(to),
         _ => false,
     };
-    let configured_headers_or_s3 = object.remote().is_some_and(|remote| crate::http::uses_configured_credentials(&remote));
     // Same-origin ordinary HTTP assets keep their existing header authentication. Cloud URI
     // assets require consent even when the document is held in the same bucket/account.
-    if configured_headers_or_s3 && (cloud || !same_http_origin) {
+    // Do not resolve unrelated cloud profiles for same-origin ordinary HTTP assets.
+    if (cloud || !same_http_origin) && object.remote().is_some_and(|remote| crate::http::uses_configured_credentials(&remote)) {
         return true;
     }
     // az:// parsing appends the configured SAS, which is not an HTTP header. Native Azure
@@ -435,7 +522,7 @@ fn asset_uses_credentials(doc_loc: &str, href: &str) -> bool {
 /// This only inspects configuration and credential profile contents, never a metadata service or an SDK.
 #[cfg(all(remote, feature = "gdal"))]
 fn gdal_cloud_credentials(s3: bool, gs: bool, az: bool) -> bool {
-    let any = |keys: &[&str]| keys.iter().any(|key| crate::config::get(key).is_some());
+    let any = |keys: &[&str]| keys.iter().any(|key| crate::config::get(key).is_some_and(|v| !v.trim().is_empty()));
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from);
     if any(&["GDAL_HTTP_HEADER_FILE"]) {
         return true;
@@ -449,19 +536,22 @@ fn gdal_cloud_credentials(s3: bool, gs: bool, az: bool) -> bool {
             "web_identity_token_file",
             "credential_process",
         ];
-        let configured = ["CPL_AWS_CREDENTIALS_FILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE"]
-            .iter()
-            .filter_map(|key| crate::config::get(key))
-            .any(|path| profile_has_credentials(std::path::Path::new(&path), &keys))
-            || any(&[
-                "AWS_ROLE_ARN",
-                "AWS_WEB_IDENTITY_TOKEN_FILE",
-                "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
-                "AWS_CONTAINER_CREDENTIALS_FULL_URI",
-            ]);
-        let profile = home.as_ref().is_some_and(|h| {
-            profile_has_credentials(&h.join(".aws/credentials"), &keys) || profile_has_credentials(&h.join(".aws/config"), &keys)
-        });
+        let profile =
+            crate::config::get("AWS_PROFILE").or_else(|| crate::config::get("AWS_DEFAULT_PROFILE")).unwrap_or_else(|| "default".into());
+        let config_section = if profile == "default" { profile.clone() } else { format!("profile {profile}") };
+        let credential_file = crate::config::get("CPL_AWS_CREDENTIALS_FILE")
+            .map(std::path::PathBuf::from)
+            .or_else(|| home.as_ref().map(|h| h.join(".aws/credentials")));
+        let config_file =
+            crate::config::get("AWS_CONFIG_FILE").map(std::path::PathBuf::from).or_else(|| home.as_ref().map(|h| h.join(".aws/config")));
+        let configured = any(&[
+            "AWS_ROLE_ARN",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        ]);
+        let profile = credential_file.as_ref().is_some_and(|path| profile_section_has_credentials(path, Some(&profile), &keys))
+            || config_file.as_ref().is_some_and(|path| profile_section_has_credentials(path, Some(&config_section), &keys));
         if configured || profile {
             return true;
         }
@@ -499,13 +589,24 @@ fn gdal_cloud_credentials(s3: bool, gs: bool, az: bool) -> bool {
 /// Whether a profile file has credential-bearing settings, rather than only a region/project.
 #[cfg(all(remote, feature = "gdal"))]
 fn profile_has_credentials(path: &std::path::Path, keys: &[&str]) -> bool {
+    profile_section_has_credentials(path, None, keys)
+}
+
+#[cfg(all(remote, feature = "gdal"))]
+fn profile_section_has_credentials(path: &std::path::Path, section: Option<&str>, keys: &[&str]) -> bool {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) => return error.kind() != std::io::ErrorKind::NotFound,
     };
+    let mut selected = section.is_none();
     text.lines().any(|line| {
         let line = line.trim();
-        !line.starts_with(['#', ';'])
+        if let Some(name) = line.strip_prefix('[').and_then(|line| line.strip_suffix(']')) {
+            selected = section.is_none_or(|wanted| name.trim() == wanted);
+            return false;
+        }
+        selected
+            && !line.starts_with(['#', ';'])
             && line.split_once('=').is_some_and(|(key, value)| {
                 !value.trim().is_empty() && keys.iter().any(|expected| key.trim().eq_ignore_ascii_case(expected))
             })
@@ -1059,7 +1160,8 @@ impl AssetItem {
     /// Opens the item's file, its href signed now if it is to be signed.
     fn open(&self) -> Result<LazyRaster> {
         check_asset_access(&self.document, &self.href)?;
-        if self.sign { LazyRaster::open(&signed(self.href.clone())?) } else { LazyRaster::open(&self.href) }
+        let href = if self.sign { signed(self.href.clone())? } else { self.href.clone() };
+        with_asset_read(&self.document, &href, || LazyRaster::open(&href))
     }
 }
 
@@ -1494,7 +1596,7 @@ pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
     }
     match parse_name(path) {
         Some(Name::Asset { item, asset }) => {
-            return Some(asset_href(&item, &asset).and_then(|href| crate::open(&href)));
+            return Some(asset_href(&item, &asset).and_then(|href| with_asset_read(&item, &href, || crate::open(&href))));
         }
         Some(Name::Mosaic { .. }) => {
             return Some(open_lazy(path)?.and_then(|mut r| r.read()).map(Dataset::Raster));
@@ -1584,7 +1686,7 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
         return Some(r);
     }
     Some(match parse_name(path)? {
-        Name::Asset { item, asset } => asset_href(&item, &asset).and_then(|href| LazyRaster::open(&href)),
+        Name::Asset { item, asset } => asset_href(&item, &asset).and_then(|href| with_asset_read(&item, &href, || LazyRaster::open(&href))),
         Name::Mosaic { source, filters } => (|| {
             filters.check()?;
             let request = search_request(&source, &filters);
@@ -1611,7 +1713,9 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
     }
     match parse_name(path) {
         Some(Name::Asset { item, asset }) => {
-            return Some(asset_href(&item, &asset).and_then(|href| crate::info::info_path(&href, options)));
+            return Some(
+                asset_href(&item, &asset).and_then(|href| with_asset_read(&item, &href, || crate::info::info_path(&href, options))),
+            );
         }
         Some(Name::Mosaic { source, filters }) => {
             let several = (|| -> Result<Option<Info>> {
@@ -1680,6 +1784,95 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
 mod tests {
     use super::*;
 
+    /// Cached native clients retain credentials; changing current configuration cannot revoke
+    /// the consent check on their future windows (reference GDAL 3.13.3 credential lifetime).
+    #[cfg(remote)]
+    #[test]
+    fn cached_asset_clients_keep_the_original_consent_requirement() {
+        let (store, seen) = crate::http::test_server(include_bytes!("../tests/data/resampled_reads/rgb_mask.tif").to_vec());
+        crate::config::with_options(
+            &[
+                ("AWS_ACCESS_KEY_ID", "test-key"),
+                ("AWS_SECRET_ACCESS_KEY", "test-secret"),
+                ("AWS_REGION", "us-east-1"),
+                ("AWS_NO_SIGN_REQUEST", "NO"),
+                ("AWS_S3_ENDPOINT", &store),
+                ("AWS_VIRTUAL_HOSTING", "FALSE"),
+                ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "YES"),
+            ],
+            || {
+                let (document, href) = ("https://catalog.example/item.json", "s3://private/data.tif");
+                let mut raster = with_asset_read(document, href, || LazyRaster::open(href)).unwrap();
+                let window = Window::new(0, 0, 1, 1);
+                raster.read_window(window, &Default::default()).unwrap();
+                let mut shared = raster.shared();
+                let before = seen.lock().unwrap().len();
+                crate::config::with_options(&[("AWS_NO_SIGN_REQUEST", "YES"), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+                    assert!(check_asset_access(document, href).is_ok(), "current configuration permits an unsigned open");
+                    for reader in [&mut raster, &mut shared] {
+                        let error = reader.read_window(window, &Default::default()).unwrap_err();
+                        assert!(matches!(error, Error::InvalidArgument(ref text) if text.contains("cached credentialed asset")), "{error}");
+                        assert!(reader.read_mask(window, None).is_err());
+                    }
+                    assert_eq!(seen.lock().unwrap().len(), before, "no retained signed client may issue another request");
+                });
+            },
+        );
+    }
+
+    /// Remote VRT assets inherit the catalog's policy through deferred native source reads.
+    #[cfg(remote)]
+    #[test]
+    fn remote_virtual_assets_cannot_hide_private_nested_sources() {
+        let (store, seen) = crate::http::test_server(include_bytes!("../tests/data/resampled_reads/rgb_mask.tif").to_vec());
+        let vrt = br#"<VRTDataset rasterXSize="1" rasterYSize="1"><VRTRasterBand dataType="Byte" band="1"><SimpleSource><SourceFilename relativeToVRT="0">s3://private/data.tif</SourceFilename><SourceBand>1</SourceBand><SrcRect xOff="0" yOff="0" xSize="1" ySize="1"/><DstRect xOff="0" yOff="0" xSize="1" ySize="1"/></SimpleSource></VRTRasterBand></VRTDataset>"#;
+        let (server, _) = crate::http::test_server(vrt.to_vec());
+        let href = format!("{server}/public.vrt");
+        crate::config::with_options(
+            &[
+                ("AWS_ACCESS_KEY_ID", "test-key"),
+                ("AWS_SECRET_ACCESS_KEY", "test-secret"),
+                ("AWS_REGION", "us-east-1"),
+                ("AWS_NO_SIGN_REQUEST", "NO"),
+                ("AWS_S3_ENDPOINT", &store),
+                ("AWS_VIRTUAL_HOSTING", "FALSE"),
+                ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO"),
+            ],
+            || {
+                let result =
+                    with_asset_read("https://catalog.example/item.json", &href, || LazyRaster::open(&href).and_then(|mut r| r.read()));
+                assert!(
+                    matches!(result, Err(Error::InvalidArgument(ref text)) if text.contains("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS")),
+                    "{result:?}"
+                );
+                assert!(seen.lock().unwrap().is_empty(), "nested private store must never be contacted");
+                assert!(AssetReadPolicy::current().is_none(), "failed reads restore the caller's scope");
+            },
+        );
+    }
+
+    /// GDAL 3.13.3 can use auth sources opaque to the native reader, so all GDAL asset reads
+    /// need consent, including reads of bytes and cached results after that consent is revoked.
+    #[cfg(all(remote, feature = "gdal"))]
+    #[test]
+    fn opaque_gdal_asset_reads_require_and_retain_consent() {
+        let (server, seen) = crate::http::test_server(include_bytes!("../tests/data/resampled_reads/rgb_mask.tif").to_vec());
+        let href = format!("{server}/public.tif");
+        let document = format!("{server}/item.json");
+        crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+            let error = with_asset_read(&document, &href, || crate::gdal_backend::open_raster(&href)).unwrap_err();
+            assert!(matches!(error, Error::InvalidArgument(ref text) if text.contains("GDAL asset reads require")), "{error}");
+            assert!(seen.lock().unwrap().is_empty());
+        });
+        let mut raster = crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "YES")], || {
+            with_asset_read(&document, &href, || crate::gdal_backend::open_raster(&href).map(LazyRaster::from)).unwrap()
+        });
+        crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+            assert!(raster.read_window(Window::new(0, 0, 1, 1), &Default::default()).is_err());
+        });
+        assert!(AssetReadPolicy::current().is_none());
+    }
+
     /// Configured AWS credentials must not turn a remote document into a signed-store read.
     #[cfg(remote)]
     #[test]
@@ -1708,6 +1901,14 @@ mod tests {
                 ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO"),
             ],
             || {
+                for href in ["s3://private/data.tif", "/vsis3/private/data.tif", "/vsizip/{s3://private/data.zip}/data.tif"] {
+                    assert!(check_asset_access(&item, href).is_err(), "each alias must independently refuse credentials: {href}");
+                }
+                let mut escaped: Value = serde_json::from_slice(&doc).unwrap();
+                escaped["assets"]["public"] = json!({"href": format!("{catalog}/public.tif")});
+                let escaped = serde_json::to_string(&escaped).unwrap().replace("stac_version", "\\u0073tac_version");
+                assert!(!has_stac_marker(escaped.as_bytes()));
+                assert!(matches!(parse_document(escaped.as_bytes(), &item), Err(Error::InvalidArgument(_))));
                 for asset in ["data", "vsi", "zip"] {
                     let name = format!("STAC:\"{item}\":{asset}");
                     let results = [
@@ -1831,6 +2032,40 @@ mod tests {
                 },
             );
         }
+    }
+
+    /// Only the selected profile and the selected override files can authorize GDAL 3.13.3.
+    #[cfg(all(remote, feature = "gdal"))]
+    #[test]
+    fn gdal_cloud_profiles_ignore_inactive_sections_and_overridden_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = dir.path().join("credentials");
+        let config = dir.path().join("config");
+        std::fs::write(
+            &credentials,
+            "[other]\naws_access_key_id=test-key\naws_secret_access_key=test-secret\n[public]\nregion=us-east-1\n",
+        )
+        .unwrap();
+        std::fs::write(&config, "[profile other]\ncredential_process=test-process\n[profile public]\nregion=us-east-1\n").unwrap();
+        crate::config::with_options(
+            &[
+                ("AWS_PROFILE", "public"),
+                ("AWS_NO_SIGN_REQUEST", "NO"),
+                ("CPL_AWS_CREDENTIALS_FILE", credentials.to_str().unwrap()),
+                ("AWS_CONFIG_FILE", config.to_str().unwrap()),
+                ("AWS_ROLE_ARN", ""),
+                ("AWS_WEB_IDENTITY_TOKEN_FILE", ""),
+                ("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", ""),
+                ("AWS_CONTAINER_CREDENTIALS_FULL_URI", ""),
+                ("GDAL_HTTP_HEADER_FILE", ""),
+            ],
+            || {
+                assert!(!gdal_cloud_credentials(true, false, false));
+                crate::config::with_options(&[("AWS_PROFILE", "other")], || {
+                    assert!(gdal_cloud_credentials(true, false, false));
+                });
+            },
+        );
     }
 
     /// Remote ordinary GeoJSON and STAC keep the native reader's UTF-8 BOM support.

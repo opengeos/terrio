@@ -52,8 +52,11 @@
 - Remote STAC, STACIT and STACTA documents require
   `TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES` to select assets using configured cloud credentials
   or cross-origin custom HTTP headers. Checks include declared assets during metadata reads and
-  concrete deferred tile opens. Public unsigned cloud reads remain supported, including S3 with
-  `AWS_NO_SIGN_REQUEST=YES`. Native pointer-policy refusals are not retried through GDAL.
+  concrete deferred tile opens, nested native sources and cached readers after settings change.
+  Native public unsigned cloud reads remain supported, including S3 with
+  `AWS_NO_SIGN_REQUEST=YES`. GDAL asset reads selected by remote documents always require the
+  opt-in because GDAL can follow nested sources and use additional credentials. Named STAC,
+  STACIT and STACTA documents, local or remote, are not retried through GDAL after any native error.
 
 - Public `build_vrt` and same-CRS mosaic entry points reject unselected mixed band counts and
   target extents intersecting no source. These strict checks deliberately differ from GDAL
