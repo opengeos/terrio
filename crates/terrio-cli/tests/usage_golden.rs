@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 
 /// Expected schema version of the CLI catalog.
-const EXPECTED_SCHEMA_VERSION: &str = "0.1.1";
+const EXPECTED_SCHEMA_VERSION: &str = "0.1.2";
 
 /// Digest of the canonical catalog for the current `schema_version`.
-const CATALOG_SHA256: &str = "86313dd4bac35e08a933ab86d7be5d5cd2073a5bd2bca42dd43e4e5066896fb7";
+const CATALOG_SHA256: &str = "32bcd5192d7833dfb1ad366f219ca289e30415ae2ba6c230807b073e846e087a";
 
 /// Rebuilds every object with its keys sorted, so the digest does not depend on whether
 /// `serde_json`'s `preserve_order` feature is enabled by the crates built alongside this one.
@@ -50,7 +50,7 @@ fn usage_catalog_matches_recorded_digest() {
     let digest = catalog_digest(live);
     assert_eq!(
         digest, CATALOG_SHA256,
-        "the --json-usage catalog changed. Bump schema_version (patch, e.g. 0.1.1 -> 0.1.2) in \
+        "the --json-usage catalog changed. Bump schema_version (patch, e.g. 0.1.2 -> 0.1.3) in \
          usage.rs, the schema const and title in schemas/cli-usage-v0.1.schema.json, the version \
          expectations in tests/usage_golden.rs, tests/json_usage.rs, tests/ui.rs, and \
          python/tests/test_cli.py, then set CATALOG_SHA256 in \

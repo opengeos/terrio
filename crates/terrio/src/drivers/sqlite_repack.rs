@@ -865,7 +865,7 @@ mod validation_tests {
         }
         values.extend([Value::Int(0), Value::Int(1)]);
         let record = writer::record(&values);
-        assert_eq!(decode_record(&record, 1).unwrap(), super::super::sqlite::Db::record_values(&record));
+        assert_eq!(decode_record(&record, 1).unwrap(), super::super::sqlite::Db::record_values(&record).unwrap());
     }
     #[test]
     fn adjacent_fragments_require_an_exact_bounded_total() {

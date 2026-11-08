@@ -50,7 +50,7 @@ pub struct Args {
     /// Float64 (the default).
     #[arg(long, value_name = "TYPE")]
     ot: Option<String>,
-    /// The initial pixel values, one per band or one for all. 0 by default.
+    /// The initial pixel values, one per band or one for all. Defaults to nodata when set, otherwise 0.
     #[arg(long, value_name = "VALUE", allow_negative_numbers = true)]
     init: Vec<f64>,
     /// The nodata value of the output.

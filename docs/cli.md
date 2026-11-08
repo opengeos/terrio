@@ -988,7 +988,9 @@ A raster read by window (GeoTIFF/COG, Zarr, virtual rasters) is read for the out
 `gdal_translate` reads it: the tiles of its window, of its bands, and, resized, from the overview
 GDAL's `RasterIO` chooses for the output's size (`--overview AUTO`, the default), or from the level
 `--overview AUTO-n`, `NONE` or a level number reads alone, as `gdal_translate -ovr` does. Without
-`--outsize` or `--tr`, a level read alone sets the output's resolution. Rescaling (`--scale`,
+`--outsize` or `--tr`, an explicit level number sets the output's resolution; `AUTO-n` keeps
+the full-resolution output size, even when reading a coarser level. `AUTO-0` is equivalent
+to `AUTO`. Rescaling (`--scale`,
 `--exponent`), `--ot` with resampling other than nearest neighbour (which GDAL resamples in the
 output type) and windows past the raster's edges read the window from the whole raster at full
 resolution (or the level read alone).
@@ -3327,6 +3329,17 @@ terrio rasterize INPUT OUTPUT (--burn VALUE | -a FIELD) (--tr X Y | --ts W H | -
 `-l`, `--sql`, `--where`, `--te`, `--tap`, `--ot`, `--init`, `--a-nodata`, `--at` (all touched),
 `--add`, `--a-srs`. Points, lines and polygons are burned with GDAL's algorithms, pixel for pixel.
 
+Without `--init`, the background starts at `--a-nodata` when given, otherwise at 0.
+Explicit `--init` values take precedence, including 0. This matches GDAL's new GeoTIFF
+background. Terrio uses this policy for all output formats and in-memory rasters; GDAL's
+initialization is driver-dependent (for example, its ENVI output defaults to 0).
+Additive burns (`--add`) start from this background: nodata -1 plus a burn of 7 yields 6.
+Use `--init 0` to accumulate from zero. Integer output types require a finite, integral
+nodata value within the type's range; unrepresentable nodata is refused. Finite Float32 nodata
+outside the Float32 range is also refused, before it can overflow or lose its validity mask.
+With a saturating integer background or NaN nodata, additive burns can remain at nodata;
+use `--init 0` to accumulate from zero.
+
 ## vector-grid
 
 ```sh
@@ -3814,9 +3827,15 @@ button opens the dataset in a [map](#view) in a new tab, drawn with the form's `
 
 The server runs commands with your permissions, including those that overwrite or delete files, so
 it listens on the loopback interface only and each API request must carry a random token, which is
-part of the printed address: treat the address as a password. The token is briefly on the command
-line of the process that opens the browser, where other users of a shared computer could read it;
-use `--no-open` there and paste the address yourself. To use it on another computer, forward the
+part of the printed address: treat the address as a password. Browser launchers receive a private
+HTML redirect file's path, so the token stays out of process arguments. On Unix, the file has
+permissions 0600 inside a 0700 temporary directory. Sandboxed browsers, including some Snap
+packages, may be unable to read it; paste the printed address manually if automatic opening
+fails, or use `--no-open`. The same launch behavior applies to `terrio view`.
+The server runs until process termination and has no graceful shutdown. Each successful browser
+launch leaves a private `terrio-ui-*` directory in the system temporary directory when the server
+stops, including with Ctrl-C. Its token expires when the server stops; remove the directory afterward.
+To use it on another computer, forward the
 port (`ssh -L 8080:127.0.0.1:8080 host`, then `terrio ui --port 8080 --no-open` on the host).
 
 As with [MCP tools](#mcp), a run returns up to 100,000 bytes of output when the command ends, a
@@ -3931,7 +3950,7 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1.1"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.2"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,

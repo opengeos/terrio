@@ -135,6 +135,43 @@ pub(crate) fn varint(b: &[u8], i: usize) -> Option<(i64, usize)> {
     None
 }
 
+/// The pages of a database a b-tree walk has reached: one bit per page of the file, so that a
+/// walk of a large file costs an eighth of a byte per page, and a page reached twice (a cycle, or
+/// interior pages sharing children) is found.
+pub(crate) struct PageSet {
+    bits: Vec<u64>,
+    pages: u64,
+}
+
+impl PageSet {
+    /// An empty set for a file of `pages` pages.
+    pub(crate) fn new(pages: u64) -> Self {
+        // `pages` is bounded by a file's length or a `u32`, so its words fit in memory.
+        PageSet { bits: vec![0; usize::try_from(pages.div_ceil(64)).expect("page count fits in memory")], pages }
+    }
+
+    /// Adds page `n` (1-based). An error when it was there already, or is not a page of the file.
+    pub(crate) fn insert(&mut self, n: u32) -> Result<()> {
+        if n == 0 || u64::from(n) > self.pages {
+            return Err(bad("page out of range"));
+        }
+        let i = n as usize - 1;
+        let word = self.bits.get_mut(i / 64).ok_or_else(|| bad("page out of range"))?;
+        let bit = 1u64 << (i % 64);
+        if *word & bit != 0 {
+            return Err(bad("b-tree page reached twice"));
+        }
+        *word |= bit;
+        Ok(())
+    }
+}
+
+/// The cell offset stored at `p` in a page's cell pointer array.
+pub(crate) fn cell_pointer(page: &[u8], p: usize) -> Result<usize> {
+    let b = page.get(p..p + 2).ok_or_else(|| bad("cell pointer"))?;
+    Ok(u16::from_be_bytes([b[0], b[1]]) as usize)
+}
+
 impl Db {
     /// Opens a database from its bytes.
     pub(crate) fn new(data: Vec<u8>) -> Result<Self> {
@@ -164,22 +201,29 @@ impl Db {
         }
         let page_size = match u16::from_be_bytes([data[16], data[17]]) {
             1 => 65536,
-            p => p as usize,
+            p if p >= 512 && p.is_power_of_two() => p as usize,
+            _ => return Err(bad("invalid page size")),
         };
-        let usable = page_size - data[20] as usize;
+        // SQLite requires at least 480 usable bytes a page.
+        let usable = page_size.checked_sub(data[20] as usize).filter(|&u| u >= 480).ok_or_else(|| bad("invalid reserved space"))?;
         Ok(Self { data, page_size, usable })
     }
 
+    /// The number of whole pages in the file.
+    fn pages(&self) -> usize {
+        self.data.len() / self.page_size
+    }
+
     fn page(&self, n: u32) -> Result<&[u8]> {
-        let start = (n as usize).checked_sub(1).ok_or_else(|| bad("page 0"))? * self.page_size;
-        self.data.get(start..start + self.page_size).ok_or_else(|| bad("page out of range"))
+        let start = (n as usize).checked_sub(1).ok_or_else(|| bad("page 0"))?.checked_mul(self.page_size);
+        start.and_then(|start| self.data.get(start..start.checked_add(self.page_size)?)).ok_or_else(|| bad("page out of range"))
     }
 
     /// Every row of the b-tree rooted at `root`, as `(rowid, payload)`. The interior pages are
     /// walked first, then the leaf pages are decoded in parallel.
     fn scan(&self, root: u32, out: &mut Vec<(i64, Vec<u8>)>, depth: usize) -> Result<()> {
         let mut leaves = Vec::new();
-        let failure = self.leaves(root, &mut leaves, depth).err();
+        let failure = self.leaves(root, &mut leaves, &mut PageSet::new(self.pages() as u64), depth).err();
         let rows = crate::par::map_range(leaves.len(), |i| self.leaf_rows(leaves[i]));
         // The first error in page order, as a sequential scan would meet it.
         for r in rows {
@@ -189,10 +233,14 @@ impl Db {
     }
 
     /// The pages holding rows of the b-tree rooted at `root`, in order, until an error.
-    fn leaves(&self, root: u32, out: &mut Vec<u32>, depth: usize) -> Result<()> {
+    /// `visited` holds the pages already walked: a b-tree reaches each page once, so a page
+    /// reached twice is corrupt (a cycle, or interior pages sharing children, which would
+    /// otherwise visit exponentially many leaves).
+    fn leaves(&self, root: u32, out: &mut Vec<u32>, visited: &mut PageSet, depth: usize) -> Result<()> {
         if depth > 64 {
             return Err(bad("b-tree too deep"));
         }
+        visited.insert(root)?;
         let page = self.page(root)?;
         let h = if root == 1 { 100 } else { 0 };
         if page[h] != 0x05 {
@@ -202,13 +250,12 @@ impl Db {
         }
         let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
         for c in 0..cells {
-            let p = h + 12 + 2 * c;
-            let off = u16::from_be_bytes([page[p], page[p + 1]]) as usize;
-            let child = u32::from_be_bytes(page[off..off + 4].try_into().map_err(|_| bad("cell"))?);
-            self.leaves(child, out, depth + 1)?;
+            let off = cell_pointer(page, h + 12 + 2 * c)?;
+            let child = u32::from_be_bytes(page.get(off..off + 4).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("cell"))?);
+            self.leaves(child, out, visited, depth + 1)?;
         }
         let right = u32::from_be_bytes(page[h + 8..h + 12].try_into().map_err(|_| bad("page"))?);
-        self.leaves(right, out, depth + 1)
+        self.leaves(right, out, visited, depth + 1)
     }
 
     /// The first stored row of a table, descending only its leftmost b-tree branch.
@@ -245,11 +292,11 @@ impl Db {
         let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
         let mut out = Vec::with_capacity(cells);
         for c in 0..cells {
-            let p = h + 8 + 2 * c;
-            let off = u16::from_be_bytes([page[p], page[p + 1]]) as usize;
+            let off = cell_pointer(page, h + 8 + 2 * c)?;
             let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
             let (rowid, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
-            out.push((rowid, self.payload(page, off + n1 + n2, size as usize)?));
+            let size = usize::try_from(size).map_err(|_| bad("cell"))?;
+            out.push((rowid, self.payload(page, off + n1 + n2, size)?));
         }
         Ok(out)
     }
@@ -259,7 +306,12 @@ impl Db {
         let u = self.usable;
         let x = u - 35;
         if size <= x {
-            return page.get(start..start + size).map(<[u8]>::to_vec).ok_or_else(|| bad("payload"));
+            return start.checked_add(size).and_then(|end| page.get(start..end)).map(<[u8]>::to_vec).ok_or_else(|| bad("payload"));
+        }
+        // Each overflow page holds `u - 4` bytes; a chain longer than the file is corrupt, and
+        // its declared size must not size the allocation.
+        if size / (u - 4) > self.pages() {
+            return Err(bad("payload"));
         }
         let m = ((u - 12) * 32 / 255) - 23;
         let k = m + (size - m) % (u - 4);
@@ -273,55 +325,72 @@ impl Db {
             let take = (size - out.len()).min(u - 4);
             out.extend_from_slice(&p[4..4 + take]);
         }
+        if out.len() < size {
+            return Err(bad("payload"));
+        }
         Ok(out)
     }
 
-    /// Decodes a record (a row's payload).
-    pub(crate) fn record_values(payload: &[u8]) -> Vec<Value> {
-        Self::record(payload)
+    /// Decodes a record (a row's payload). A record whose values run past its end is an error.
+    pub(crate) fn record_values(payload: &[u8]) -> Result<Vec<Value>> {
+        let (types, mut pos) = Self::record_types(payload)?;
+        let mut out = Vec::with_capacity(types.len());
+        for t in types {
+            let (value, len) = Self::value(payload, t, pos)?;
+            pos += len;
+            out.push(value);
+        }
+        Ok(out)
     }
 
-    /// The serial types of a record's columns, and where its values start.
-    fn record_types(payload: &[u8]) -> (Vec<i64>, usize) {
-        let Some((header_len, n)) = varint(payload, 0) else { return (Vec::new(), 0) };
+    /// Checks a record's layout, as decoding it would, without decoding its values.
+    pub(crate) fn check_record(payload: &[u8]) -> Result<()> {
+        Self::record_types(payload).map(drop)
+    }
+
+    /// The serial types of a record's columns, and where its values start. An error when the
+    /// header is incomplete or runs past the record, or the values it declares do.
+    fn record_types(payload: &[u8]) -> Result<(Vec<i64>, usize)> {
+        if payload.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
+        let (header_len, n) = varint(payload, 0).ok_or_else(|| bad("record header"))?;
+        let header_len =
+            usize::try_from(header_len).ok().filter(|&len| len >= n && len <= payload.len()).ok_or_else(|| bad("record header"))?;
         let mut types = Vec::new();
-        let mut i = n;
-        while i < header_len as usize {
-            let Some((t, k)) = varint(payload, i) else { break };
+        let (mut i, mut end) = (n, header_len);
+        while i < header_len {
+            let (t, k) = varint(payload, i).filter(|&(_, k)| i + k <= header_len).ok_or_else(|| bad("record header"))?;
+            end = end.checked_add(Self::value_len(t)).filter(|&end| end <= payload.len()).ok_or_else(|| bad("truncated record"))?;
             types.push(t);
             i += k;
         }
-        (types, header_len as usize)
+        Ok((types, header_len))
     }
 
-    /// Decodes a value of serial type `t` at `pos`: the value and its length.
-    fn value(payload: &[u8], t: i64, pos: usize) -> (Value, usize) {
-        let int = |len: usize, pos: usize| -> i64 {
-            let b = &payload[pos..(pos + len).min(payload.len())];
+    /// Decodes a value of serial type `t` at `pos`: the value and its length. A value that runs
+    /// past the record is an error.
+    fn value(payload: &[u8], t: i64, pos: usize) -> Result<(Value, usize)> {
+        let len = Self::value_len(t);
+        let b = pos.checked_add(len).and_then(|end| payload.get(pos..end)).ok_or_else(|| bad("truncated record"))?;
+        let int = || -> i64 {
             let mut v: i64 = if b.first().is_some_and(|x| x & 0x80 != 0) { -1 } else { 0 };
             for x in b {
                 v = (v << 8) | *x as i64;
             }
             v
         };
-        match t {
-            0 => (Value::Null, 0),
-            1..=4 => (Value::Int(int(t as usize, pos)), t as usize),
-            5 => (Value::Int(int(6, pos)), 6),
-            6 => (Value::Int(int(8, pos)), 8),
-            7 => (Value::Real(f64::from_bits(int(8, pos) as u64)), 8),
-            8 => (Value::Int(0), 0),
-            9 => (Value::Int(1), 0),
-            t if t >= 12 && t % 2 == 0 => {
-                let l = (t as usize - 12) / 2;
-                (Value::Blob(payload.get(pos..pos + l).unwrap_or_default().to_vec()), l)
-            }
-            t if t >= 13 => {
-                let l = (t as usize - 13) / 2;
-                (Value::Text(String::from_utf8_lossy(payload.get(pos..pos + l).unwrap_or_default()).into_owned()), l)
-            }
-            _ => (Value::Null, 0),
-        }
+        let value = match t {
+            0 => Value::Null,
+            1..=6 => Value::Int(int()),
+            7 => Value::Real(f64::from_bits(int() as u64)),
+            8 => Value::Int(0),
+            9 => Value::Int(1),
+            t if t >= 12 && t % 2 == 0 => Value::Blob(b.to_vec()),
+            t if t >= 13 => Value::Text(String::from_utf8_lossy(b).into_owned()),
+            _ => Value::Null,
+        };
+        Ok((value, len))
     }
 
     /// The length of a value of serial type `t`.
@@ -330,32 +399,23 @@ impl Db {
             1..=4 => t as usize,
             5 => 6,
             6 | 7 => 8,
-            t if t >= 12 => (t as usize - 12) / 2,
+            // A length no address space holds saturates, and fails the bounds check.
+            t if t >= 12 => usize::try_from((t - 12) / 2).unwrap_or(usize::MAX),
             _ => 0,
         }
     }
 
-    /// Decodes a record.
-    fn record(payload: &[u8]) -> Vec<Value> {
-        let (types, mut pos) = Self::record_types(payload);
-        let mut out = Vec::with_capacity(types.len());
-        for t in types {
-            let (value, len) = Self::value(payload, t, pos);
-            pos += len;
-            out.push(value);
-        }
-        out
-    }
-
     /// Decodes one column of a record, as [`Db::table`] reads it (`Null` past the record's last
-    /// column; the rowid alias column is not filled in).
-    pub(crate) fn record_column(payload: &[u8], column: usize) -> Value {
-        let (types, mut pos) = Self::record_types(payload);
-        let Some(&t) = types.get(column) else { return Value::Null };
+    /// column; the rowid alias column is not filled in). A record whose header is incomplete, or
+    /// any of whose values runs past its end, is an error, whichever column is asked for.
+    pub(crate) fn record_column(payload: &[u8], column: usize) -> Result<Value> {
+        let (types, mut pos) = Self::record_types(payload)?;
+        let Some(&t) = types.get(column) else { return Ok(Value::Null) };
+        // `record_types` has checked that every value lies within the record.
         for &t in &types[..column] {
             pos += Self::value_len(t);
         }
-        Self::value(payload, t, pos).0
+        Ok(Self::value(payload, t, pos)?.0)
     }
 
     /// The schema: `(type, name, table, root page, sql)` of every table, index, view and trigger.
@@ -387,10 +447,7 @@ impl Db {
             let kind = page[h];
             let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
             let header_len = if kind == 0x05 { 12 } else { 8 };
-            let cell = |c: usize| -> Result<usize> {
-                let p = h + header_len + 2 * c;
-                Ok(u16::from_be_bytes([*page.get(p).ok_or_else(|| bad("cell"))?, *page.get(p + 1).ok_or_else(|| bad("cell"))?]) as usize)
-            };
+            let cell = |c: usize| cell_pointer(page, h + header_len + 2 * c);
             match kind {
                 // Interior: (left child, key) cells by increasing key; a child holds the rowids up to
                 // its key, the right-most pointer the larger ones.
@@ -422,7 +479,8 @@ impl Db {
                             std::cmp::Ordering::Equal => {
                                 let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
                                 let (_, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
-                                return self.payload(page, off + n1 + n2, size as usize).map(Some);
+                                let size = usize::try_from(size).map_err(|_| bad("cell"))?;
+                                return self.payload(page, off + n1 + n2, size).map(Some);
                             }
                         }
                     }
@@ -879,9 +937,175 @@ pub(crate) fn column_defaults(sql: &str) -> Vec<Option<Value>> {
         .collect()
 }
 
+/// Hostile SQLite page layouts shared by the readers' and the editor's tests.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    /// A database of `pages` zeroed 512-byte pages behind an SQLite header.
+    pub(crate) fn database(pages: usize) -> Vec<u8> {
+        let mut b = vec![0u8; 512 * pages];
+        b[..16].copy_from_slice(b"SQLite format 3\0");
+        b[16..18].copy_from_slice(&512u16.to_be_bytes());
+        (b[18], b[19], b[21], b[22], b[23]) = (1, 1, 64, 32, 32);
+        b[28..32].copy_from_slice(&(pages as u32).to_be_bytes());
+        b[44..48].copy_from_slice(&4u32.to_be_bytes());
+        b[56..60].copy_from_slice(&1u32.to_be_bytes());
+        b
+    }
+
+    /// Makes page `n` an interior table page whose one cell child and right-most pointer both
+    /// name `child`.
+    pub(crate) fn interior(b: &mut [u8], n: usize, child: u32) {
+        let (page, h) = ((n - 1) * 512, if n == 1 { 100 } else { 0 });
+        b[page + h] = 0x05;
+        b[page + h + 3..page + h + 5].copy_from_slice(&1u16.to_be_bytes());
+        b[page + h + 8..page + h + 12].copy_from_slice(&child.to_be_bytes());
+        b[page + h + 12..page + h + 14].copy_from_slice(&400u16.to_be_bytes());
+        b[page + 400..page + 404].copy_from_slice(&child.to_be_bytes());
+        b[page + 404] = 1;
+    }
+
+    /// A b-tree rooted at page 1 of `levels` interior pages, each page's cell and right-most
+    /// pointer both naming the next page, over an empty leaf: a walk that does not notice a
+    /// page reached twice visits the leaf 2^levels times.
+    pub(crate) fn shared_children(levels: usize) -> Vec<u8> {
+        let mut b = database(levels + 1);
+        for n in 1..=levels {
+            interior(&mut b, n, n as u32 + 1);
+        }
+        b[levels * 512] = 0x0d;
+        b
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::fixtures::{database, interior, shared_children};
     use super::*;
+
+    /// Makes page 1 a table leaf with one cell at offset 200 of rowid 1 and payload `size`,
+    /// returning where its local payload starts.
+    fn leaf_cell(b: &mut [u8], size: usize) -> usize {
+        b[100] = 0x0d;
+        b[103..105].copy_from_slice(&1u16.to_be_bytes());
+        b[108..110].copy_from_slice(&200u16.to_be_bytes());
+        let mut cell = Vec::new();
+        crate::drivers::vector::sqlite::varint(&mut cell, size as u64);
+        cell.push(1);
+        b[200..200 + cell.len()].copy_from_slice(&cell);
+        200 + cell.len()
+    }
+
+    /// Page sizes that are not a power of two from 512, and reserved space leaving fewer than
+    /// 480 usable bytes, are errors, not an arithmetic underflow or out-of-range page index.
+    #[test]
+    fn invalid_page_sizes_are_errors() {
+        for (size, reserved) in [(0u16, 0u8), (2, 0), (256, 0), (513, 0), (512, 40), (512, 255)] {
+            let mut b = database(2);
+            b[16..18].copy_from_slice(&size.to_be_bytes());
+            b[20] = reserved;
+            assert!(Db::new(b).is_err(), "page size {size}, reserved {reserved}");
+        }
+        let mut b = database(2);
+        b[20] = 32;
+        assert!(Db::new(b).is_ok());
+    }
+
+    /// An overflow chain cannot be longer than the file: a payload size implying more overflow
+    /// pages than it has is an error before anything is allocated for it (a 64 GiB payload over
+    /// a self-referencing page would allocate until out of memory), and a chain that ends short
+    /// of its payload is an error. A chain within the file's length that loops ends after the
+    /// payload's page count, so it is bounded without a page set.
+    #[test]
+    fn overflow_chains_longer_than_the_file_are_errors() {
+        // Ten pages of overflow over a page that names itself as the next one, rejected by the
+        // size check before the chain is walked.
+        let mut b = database(2);
+        let start = leaf_cell(&mut b, 10 * 508);
+        // The local part is 39 bytes for this size (`k` exceeds the 477-byte maximum, so it is
+        // the minimum `m`), then the first overflow page number.
+        b[start + 39..start + 43].copy_from_slice(&2u32.to_be_bytes());
+        b[512..516].copy_from_slice(&2u32.to_be_bytes());
+        assert!(Db::new(b).unwrap().leaf_rows(1).is_err());
+
+        // Two pages of overflow within the file's length, passing the size check, but the chain
+        // ends after one: the walk stops short of the payload. The local part is 92 bytes here
+        // (`k` is 39 + 1069 % 508).
+        let mut b = database(3);
+        let start = leaf_cell(&mut b, 92 + 2 * 508);
+        b[start + 92..start + 96].copy_from_slice(&2u32.to_be_bytes());
+        assert!(Db::new(b).unwrap().leaf_rows(1).is_err());
+
+        // The same, with the chain pointing past the file's last page.
+        let mut b = database(3);
+        let start = leaf_cell(&mut b, 92 + 2 * 508);
+        b[start + 92..start + 96].copy_from_slice(&2u32.to_be_bytes());
+        b[512..516].copy_from_slice(&9u32.to_be_bytes());
+        assert!(Db::new(b).unwrap().leaf_rows(1).is_err());
+
+        // A chain that holds the payload reads it.
+        let mut b = database(3);
+        let start = leaf_cell(&mut b, 92 + 2 * 508);
+        b[start + 92..start + 96].copy_from_slice(&2u32.to_be_bytes());
+        b[512..516].copy_from_slice(&3u32.to_be_bytes());
+        assert_eq!(Db::new(b).unwrap().leaf_rows(1).unwrap()[0].1.len(), 92 + 2 * 508);
+    }
+
+    /// Interior pages that share children (each page's cell and right-most pointer naming the
+    /// next page) are an error: walking them would visit 2^depth leaves, so that a 31 KB file
+    /// ran forever. Five levels here would visit the leaf 32 times.
+    #[test]
+    fn b_tree_pages_reached_twice_are_errors() {
+        let db = Db::new(shared_children(5)).unwrap();
+        let error = db.schema().unwrap_err();
+        assert!(error.to_string().contains("reached twice"), "{error}");
+        assert!(db.raw_rows("t").is_err());
+    }
+
+    /// Cell pointers and cell offsets past the end of a page are errors, not slice panics.
+    #[test]
+    fn cell_offsets_past_the_page_are_errors() {
+        // An interior cell at the page's last bytes.
+        let mut b = database(3);
+        interior(&mut b, 1, 2);
+        b[112..114].copy_from_slice(&510u16.to_be_bytes());
+        b[512] = 0x0d;
+        let db = Db::new(b).unwrap();
+        assert!(db.schema().is_err());
+        assert!(db.lookup(1, 1).is_err());
+        // A leaf with more cell pointers than its page holds.
+        let mut b = database(2);
+        b[100] = 0x0d;
+        b[103..105].copy_from_slice(&u16::MAX.to_be_bytes());
+        let db = Db::new(b).unwrap();
+        assert!(db.schema().is_err());
+        assert!(db.lookup(1, 1).is_err());
+    }
+
+    /// A record whose header declares values longer than the record is an error: an earlier
+    /// column's length once moved the next column's start past the record, a slice panic.
+    #[test]
+    fn records_running_past_their_end_are_errors() {
+        // A header of three bytes: a 57-byte BLOB, then a one-byte integer; seven value bytes.
+        let record = [3u8, 12 + 2 * 57, 1, 0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 7];
+        assert!(Db::record_column(&record, 1).is_err());
+        assert!(Db::record_column(&record, 0).is_err());
+        assert!(Db::record_values(&record).is_err());
+        // Serial types whose lengths would overflow a sum of them.
+        let mut record = vec![0u8];
+        for _ in 0..3 {
+            crate::drivers::vector::sqlite::varint(&mut record, i64::MAX as u64);
+        }
+        record[0] = record.len() as u8;
+        assert!(Db::record_column(&record, 2).is_err());
+        assert!(Db::record_values(&record).is_err());
+        // A header longer than the record.
+        assert!(Db::record_values(&[9, 1, 1]).is_err());
+        // A record that holds its values decodes.
+        let record = [3u8, 12 + 2 * 2, 1, 0xab, 0xcd, 7];
+        assert_eq!(Db::record_column(&record, 1).unwrap(), Value::Int(7));
+        assert_eq!(Db::record_values(&record).unwrap(), [Value::Blob(vec![0xab, 0xcd]), Value::Int(7)]);
+        assert_eq!(Db::record_column(&record, 2).unwrap(), Value::Null);
+    }
 
     #[test]
     fn display_reads_replace_invalid_text_but_rewrites_remain_strict() {

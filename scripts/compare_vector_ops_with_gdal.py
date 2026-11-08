@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 from collections import defaultdict
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -370,13 +371,14 @@ def raster_array(path: Path) -> tuple[np.ndarray, tuple, tuple, float | None]:
     return b.ReadAsArray(), ds.GetGeoTransform(), (ds.RasterXSize, ds.RasterYSize), b.GetNoDataValue()
 
 
-def compare_rasterize(data: Path, work: Path, terrio: Path) -> list[str]:
+def compare_rasterize(data: Path, work: Path, terrio: Path, only_nodata: bool = False) -> list[str]:
     """Compares ``terrio rasterize`` with ``gdal_rasterize``.
 
     Args:
         data: The test data directory.
         work: A scratch directory.
         terrio: The terrio executable.
+        only_nodata: Run only the background initialization comparisons.
 
     Returns:
         One report line per case.
@@ -409,14 +411,46 @@ def compare_rasterize(data: Path, work: Path, terrio: Path) -> list[str]:
         ("nyc buildings at", nyc, "-burn 1 -tr 0.00002 0.00002 -at -ot Byte", "--burn 1 --tr 0.00002 0.00002 --at --ot Byte"),
         ("nyc buildings add", nyc, "-burn 1 -tr 0.00005 0.00005 -add -at -ot Byte", "--burn 1 --tr 0.00005 0.00005 --add --at --ot Byte"),
     ]
+    nodata_cases = []
+    for driver in ["GTiff", "COG", "ENVI"]:
+        for label, dtype, nodata, burn, init, add in [
+            ("signed", "Int16", "-1", [7], None, False),
+            ("float", "Float32", "-9999", [7], None, False),
+            ("nan", "Float32", "nan", [7], None, False),
+            ("byte", "Byte", "255", [7], None, False),
+            ("init zero", "Int16", "-1", [7], "0", False),
+            ("bands", "Int16", "-1", [7, 9], None, False),
+            ("add", "Int16", "-1", [7], None, True),
+        ]:
+            common = f"-tr 7 7 -tap -ot {dtype} -a_nodata {nodata}"
+            g_opts = common + "".join(f" -burn {value}" for value in burn)
+            t_opts = common.replace("-tr", "--tr").replace("-tap", "--tap").replace("-ot", "--ot").replace("-a_nodata", "--a-nodata")
+            t_opts += f" -f {driver}" + "".join(f" --burn {value}" for value in burn)
+            if init is not None:
+                g_opts += f" -init {init}"
+                t_opts += f" --init {init}"
+            if driver == "ENVI":
+                # The common initialization policy is GeoTIFF's. Convert that reference
+                # to ENVI instead of relying on driver-dependent rasterization defaults.
+                label += " (GTiff oracle)"
+            # gdal_rasterize cannot create a COG directly: GTiff supplies its pixel oracle.
+            if add:
+                g_opts += " -add"
+                t_opts += " --add"
+            nodata_cases.append((f"nodata {driver} {label}", countries, g_opts, t_opts))
+    cases = nodata_cases if only_nodata else cases + nodata_cases
     lines = []
-    for label, src, g_opts, t_opts in cases:
+    for case_index, (label, src, g_opts, t_opts) in enumerate(cases):
         g_out, t_out = work / "g.tif", work / "t.tif"
         for p in (g_out, t_out):
             p.unlink(missing_ok=True)
         try:
             run(["gdal_rasterize", "-q", *g_opts.split(), src, g_out])
             run([terrio, "rasterize", src, t_out, *t_opts.split()])
+            if label.startswith("nodata ENVI "):
+                converted = work / f"g-envi-{case_index}.dat"
+                run(["gdal_translate", "-q", "-of", "ENVI", g_out, converted])
+                g_out = converted
         except RuntimeError as e:
             lines.append(f"{label:<24} ERROR {e}")
             continue
@@ -430,10 +464,32 @@ def compare_rasterize(data: Path, work: Path, terrio: Path) -> list[str]:
             problems.append(f"geotransform {tgt} != {ggt}")
         if not (gnd == tnd or (gnd is not None and tnd is not None and math.isnan(gnd) and math.isnan(tnd))):
             problems.append(f"nodata {tnd} != {gnd}")
-        diff = int((g != t).sum())
-        burned = int((g != g.flat[0]).sum()) if g.size else 0
+        diff = int((~((g == t) | (np.isnan(g) & np.isnan(t)))).sum())
+        total = g.size
+        if label.startswith("nodata "):
+            expected, actual = gdal.Open(str(g_out)), gdal.Open(str(t_out))
+            total *= expected.RasterCount
+            diff = 0
+            expected_crs, actual_crs = expected.GetSpatialRef(), actual.GetSpatialRef()
+            if (expected_crs is None) != (actual_crs is None) or (
+                    expected_crs is not None and not expected_crs.IsSame(actual_crs)):
+                problems.append("CRS differs")
+            for band in range(1, expected.RasterCount + 1):
+                e, a = expected.GetRasterBand(band), actual.GetRasterBand(band)
+                ev, av = e.ReadAsArray(), a.ReadAsArray()
+                diff += int((~((ev == av) | (np.isnan(ev) & np.isnan(av)))).sum())
+                if e.DataType != a.DataType:
+                    problems.append(f"band {band} type differs")
+                if not np.array_equal(e.GetMaskBand().ReadAsArray(), a.GetMaskBand().ReadAsArray()):
+                    problems.append(f"band {band} mask differs")
+            expected = actual = None
+        background = g.flat[0] if g.size else 0
+        is_background = (g == background) | (np.isnan(g) & np.isnan(background))
+        burned = int((~is_background).sum()) if g.size else 0
         status = "OK" if not problems and diff == 0 else "DIFF " + "; ".join(problems)
-        lines.append(f"{label:<24} {gsize[0]}x{gsize[1]}, {diff} of {g.size} pixels differ ({burned} burned)  {status}")
+        lines.append(f"{label:<24} {gsize[0]}x{gsize[1]}, {diff} of {total} pixels differ ({burned} burned)  {status}")
+    if only_nodata:
+        return lines
     # Burning into the grid of an existing raster, reprojecting the vectors. terrio does not read
     # the user-defined Albers CRS of the NLCD file: label the grid as NAD83 / Conus Albers.
     like, g_out, t_out = work / "like.tif", work / "g.tif", work / "t.tif"
@@ -572,6 +628,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("data", type=Path, help="the test data directory")
     parser.add_argument("--terrio", type=Path, default=Path(__file__).resolve().parents[1] / "target/release/terrio")
+    parser.add_argument("--only", choices=["rasterize-nodata"], help="run only the nodata initialization comparisons")
     args = parser.parse_args()
     lines = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -583,6 +640,8 @@ def main() -> int:
             ("rasterize vs gdal_rasterize", compare_rasterize),
             ("polygonize vs gdal_polygonize", compare_polygonize),
         ]
+        if args.only == "rasterize-nodata":
+            sections = [("rasterize nodata vs gdal_rasterize", partial(compare_rasterize, only_nodata=True))]
         for title, fn in sections:
             print(f"## {title}")
             for line in fn(args.data, work, args.terrio):

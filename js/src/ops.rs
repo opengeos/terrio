@@ -7,7 +7,7 @@
 //! string). Outputs are `Dataset`s, written to bytes with `toBytes`. Options are objects with
 //! camelCase names after the command-line options (`tSrs`, `srcNodata`, `cropToCutline`...).
 
-use crate::{Dataset, Inner, js_err, parse_options};
+use crate::{Dataset, Inner, OverviewArg, js_err, parse_options};
 use serde::Deserialize;
 use terrio::crs::SpatialRef;
 use terrio::formats::VectorDriver;
@@ -263,7 +263,7 @@ struct WarpArgs {
     ts: Option<[usize; 2]>,
     tap: bool,
     resampling: Option<String>,
-    overview: Option<SizeArg>,
+    overview: Option<OverviewArg>,
     src_nodata: Option<NumberOrList>,
     dst_nodata: Option<NumberOrList>,
     ot: Option<String>,
@@ -308,11 +308,7 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         size: a.ts.map(|[w, h]| (w, h)),
         target_aligned_pixels: a.tap,
         resampling: Resampling::parse(a.resampling.as_deref().unwrap_or("near")).map_err(js_err)?,
-        overview: match a.overview {
-            None => terrio::ops::overview::OverviewSelection::Auto,
-            Some(SizeArg::Pixels(n)) => terrio::ops::overview::OverviewSelection::Level(n),
-            Some(SizeArg::Text(s)) => terrio::ops::overview::OverviewSelection::parse(&s).map_err(js_err)?,
-        },
+        overview: overview_arg(a.overview)?,
         src_nodata: nodata_arg(a.src_nodata)?,
         dst_nodata: nodata_arg(a.dst_nodata)?,
         output_type: a.ot.as_deref().map(parse_data_type).transpose().map_err(js_err)?,
@@ -414,6 +410,12 @@ impl SizeArg {
     }
 }
 
+/// The stored resolution an operation reads from (`-ovr`): `"AUTO"` (the default), `"AUTO-n"`,
+/// `"NONE"` or a level from 0, as `readResampled` takes it.
+fn overview_arg(v: Option<OverviewArg>) -> Result<terrio::ops::overview::OverviewSelection, JsError> {
+    OverviewArg::selection(v.as_ref()).map_err(js_err)
+}
+
 /// `true`, or a list of 2 or 4 numbers.
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -439,6 +441,7 @@ struct TranslateArgs {
     a_nodata: Option<NumberOrList>,
     a_srs: Option<String>,
     a_ullr: Option<[f64; 4]>,
+    overview: Option<OverviewArg>,
 }
 
 /// Subsets, resizes, rescales or converts a raster, as `terrio translate` (GDAL's
@@ -448,7 +451,13 @@ struct TranslateArgs {
 /// `projwin` (`[ulx, uly, lrx, lry]`), `projwinSrs`, `outsize` (`[width, height]`, pixels or
 /// percentages such as `"50%"`; 0 keeps the aspect ratio), `tr`, `resampling`, `scale` (`true`,
 /// `[srcMin, srcMax]` or `[srcMin, srcMax, dstMin, dstMax]`), `exponent`, `aNodata` (a number or
-/// `"none"`), `aSrs`, `aUllr`.
+/// `"none"`), `aSrs`, `aUllr`, `overview` (the stored resolution to read, as `gdal_translate
+/// -ovr`: `"AUTO"`, the default, `"AUTO-n"`, `"NONE"` or a level from 0). Inputs the lazy reader
+/// opens (GeoTIFFs, JPEG 2000, GRIB, tile archives...) are read by window, for the output alone,
+/// from that level where the reader exposes overviews; a TIFF it refuses is decoded whole, at
+/// full resolution, as are the formats it decodes whole. A level or `"AUTO-n"` is refused, before
+/// any whole decode, for bytes the lazy reader cannot open; on a raster without overviews it warns
+/// and reads full resolution, as `gdal_translate` and `terrio translate` do.
 #[wasm_bindgen]
 pub fn translate(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     let a: TranslateArgs = parse_options(&options)?;
@@ -483,8 +492,36 @@ pub fn translate(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         assign_srs: srs(a.a_srs.as_deref())?,
         assign_ullr: tuple4(a.a_ullr),
     };
-    let ds = input_raster(&src)?;
-    Ok(Dataset::from_raster(terrio::ops::translate::translate(&ds, &o).map_err(js_err)?))
+    let overview = overview_arg(a.overview)?;
+    // As Python's `translate` and `terrio translate`: a TIFF the lazy reader cannot read is
+    // decoded whole, as before, and translated at full resolution.
+    if Dataset::lookup(&src).is_none()
+        && let Some((bytes, name)) = file_bytes(&src)
+    {
+        use terrio::memory::OpenedRasterBytes;
+        use terrio::ops::overview::OverviewSelection;
+        // A level needs the bytes read by window: refused before any whole decode.
+        if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(1..)) {
+            let mut r = match terrio::memory::open_raster_lazy_bytes(bytes, &name) {
+                Ok(r) => r,
+                Err(e @ terrio::Error::InvalidArgument(_)) => return Err(js_err(e)),
+                Err(e) if e.is_resource_refusal() => return Err(js_err(e)),
+                Err(e) => {
+                    return Err(js_err(terrio::Error::Unsupported(format!(
+                        "overview needs a raster read by window; '{name}' is read whole ({e})"
+                    ))));
+                }
+            };
+            return Ok(Dataset::from_raster(terrio::ops::translate::translate_lazy(&mut r, &o, overview).map_err(js_err)?));
+        }
+        let out = match terrio::memory::open_raster_lazy_bytes_or_whole(bytes, &name).map_err(js_err)? {
+            OpenedRasterBytes::Lazy(mut r) => terrio::ops::translate::translate_lazy(&mut r, &o, overview),
+            OpenedRasterBytes::Whole(ds) => terrio::ops::translate::translate(&ds, &o),
+        };
+        return Ok(Dataset::from_raster(out.map_err(js_err)?));
+    }
+    let mut src = input_lazy_raster(&src)?;
+    Ok(Dataset::from_raster(terrio::ops::translate::translate_lazy(&mut src, &o, overview).map_err(js_err)?))
 }
 
 /// Options of [`rasterize`].
@@ -513,6 +550,7 @@ struct RasterizeArgs {
 /// `src`: vector data (a `Dataset`, bytes or GeoJSON). Options: `burn` (a value, or one per
 /// band) or `attribute`, `layers`, `sql`, `where`, `tr`, `ts`, `te`, `tap`, `like` (a raster
 /// whose grid to use), `ot`, `init`, `nodata`, `allTouched`, `add`, `aSrs`.
+/// Without `init`, uncovered pixels start at `nodata` when set, otherwise 0, for every format.
 #[wasm_bindgen]
 pub fn rasterize(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     let (rest, taken) = split_options(&options, &["like"])?;
