@@ -64,7 +64,8 @@ pub struct ResampledReadOptions {
     /// chooses the first overview of an external `.ovr`, it chooses again, as for that level,
     /// among the `.ovr`'s other images, as GDAL's band of that level has them as overviews.
     /// `AutoOffset(n)` reads, alone, the level `n` finer than the first overview no wider than
-    /// the output (`Auto` past full resolution), `None` full resolution and `Level(i)` overview
+    /// the output (`Auto` past full resolution, and `AutoOffset(0)` is `Auto`), `None` full
+    /// resolution and `Level(i)` overview
     /// `i` (the last one when there are fewer). A level read alone is read with the window scaled
     /// to it as `gdal_translate`'s source requests it: values within 0.001 of a whole pixel are
     /// rounded to it, and sizes are rounded rather than truncated.
@@ -927,7 +928,8 @@ fn overview_request(base: Request, level: usize, (ow, oh): (usize, usize)) -> Re
 pub(crate) fn fixed_level(selection: OverviewSelection, overviews: &[(usize, usize)], buf_width: usize) -> Option<Option<usize>> {
     let n = overviews.len();
     match selection {
-        OverviewSelection::Auto => None,
+        // GDAL parses AUTO-0 as AUTO, including its automatic per-read overview selection.
+        OverviewSelection::Auto | OverviewSelection::AutoOffset(0) => None,
         OverviewSelection::None => Some(None),
         OverviewSelection::Level(i) if i < n => Some(Some(i)),
         OverviewSelection::Level(i) if n > 0 => {
@@ -1297,11 +1299,12 @@ mod tests {
         assert_eq!(fixed_level(OverviewSelection::Level(9), &ovr, 20), Some(Some(2)));
         assert_eq!(fixed_level(OverviewSelection::Level(0), &[], 20), None);
         // AUTO-n: the first overview no wider than the output (16 for 20), n levels finer, or
-        // RasterIO's choice past full resolution.
+        // RasterIO's choice past full resolution. AUTO-0 is AUTO, not that overview.
         assert_eq!(fixed_level(OverviewSelection::AutoOffset(1), &ovr, 20), Some(Some(0)));
         assert_eq!(fixed_level(OverviewSelection::AutoOffset(2), &ovr, 20), None);
         assert_eq!(fixed_level(OverviewSelection::AutoOffset(1), &ovr, 4), Some(Some(1)));
-        assert_eq!(fixed_level(OverviewSelection::AutoOffset(0), &ovr, 100), Some(Some(0)));
+        assert_eq!(fixed_level(OverviewSelection::AutoOffset(0), &ovr, 100), None);
+        assert_eq!(fixed_level(OverviewSelection::AutoOffset(0), &ovr, 20), fixed_level(OverviewSelection::Auto, &ovr, 20));
     }
 
     /// A level read alone takes the window as `gdal_translate`'s source requests it.

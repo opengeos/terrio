@@ -225,9 +225,10 @@ def remote_cases(data, tmp, terrio):
         finally:
             server.shutdown()
             worker.join()
-    full, auto = records[:2]
-    if not (0 < auto["http_bytes"] < full["http_bytes"] / 2):
-        auto["error"] = f"AUTO did not reduce network transfer: {auto['http_bytes']} vs {full['http_bytes']} bytes"
+    full, auto, window_full, window_auto = records
+    for small, large in [(auto, full), (window_auto, window_full)]:
+        if not (0 < small["http_bytes"] < large["http_bytes"] / 2):
+            small["error"] = f"{small['name']} did not reduce network transfer: {small['http_bytes']} vs {large['http_bytes']} bytes"
     return records
 
 

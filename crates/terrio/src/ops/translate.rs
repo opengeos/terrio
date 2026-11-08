@@ -533,8 +533,6 @@ impl LazyRead {
 
 /// Plans [`translate_lazy`]: the output translated from the source read whole, or its read.
 fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelection) -> Result<Planned> {
-    // GDAL parses AUTO-0 as AUTO, including its automatic per-read overview selection.
-    let overview = if overview == OverviewSelection::AutoOffset(0) { OverviewSelection::Auto } else { overview };
     let header = src.header();
     let full = geometry(&header, o)?;
     let count = header.raster.bands;
