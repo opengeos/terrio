@@ -116,9 +116,9 @@ fn has_stac_marker(bytes: &[u8]) -> bool {
 
 /// Checks declared asset credentials before any later metadata error can trigger a fallback.
 fn parse_document(bytes: &[u8], loc: &str) -> Result<Value> {
-    let doc = serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
+    let doc: Value = serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
         .map_err(|e| bad(format!("{}: {e}", crate::vsi::listing::redact_url(loc))))?;
-    if has_stac_marker(bytes) || kind(&doc).is_some() || crate::stacta::is_stacta(&doc) {
+    if doc.get("stac_version").is_some() || kind(&doc).is_some() || crate::stacta::is_stacta(&doc) {
         check_document_assets(&doc, loc)?;
     }
     Ok(doc)
@@ -327,10 +327,12 @@ pub(crate) fn names_local_files(doc_loc: &str, href: &str) -> bool {
 #[derive(Clone)]
 pub(crate) struct AssetReadPolicy {
     document: String,
-    href: String,
     credentialed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+// This scopes synchronous nested opens. Deferred rasters capture the policy and install it
+// on their reading thread, including workers. A future task that opens new sources directly
+// on another thread must carry the policy explicitly; copying config alone is insufficient.
 thread_local! {
     static ASSET_READ_POLICY: std::cell::RefCell<Option<AssetReadPolicy>> = const { std::cell::RefCell::new(None) };
 }
@@ -372,11 +374,12 @@ impl AssetReadPolicy {
         if credentialed {
             required.store(true, std::sync::atomic::Ordering::Relaxed);
         }
-        Ok(Some(Self { document, href: href.into(), credentialed: required }))
+        Ok(Some(Self { document, credentialed: required }))
     }
 
     pub(crate) fn enter(&self) -> Result<AssetReadScope> {
-        check_asset_access(&self.document, &self.href)?;
+        // Existing clients retain their original auth. New nested opens resolve current
+        // credentials in for_asset; cached reads need only the captured requirement.
         if self.credentialed.load(std::sync::atomic::Ordering::Relaxed) && !option_on("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS") {
             return Err(Error::InvalidArgument(
                 "STAC: cached credentialed asset requires TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES".into(),
@@ -446,6 +449,12 @@ pub(crate) fn check_document_assets(doc: &Value, location: &str) -> Result<()> {
     if local_backed(&crate::vfs::Location::parse(location)) {
         return Ok(());
     }
+    check_declared_assets(doc, location, &mut std::collections::HashSet::new())
+}
+
+/// Deduplicates exact hrefs within this document only: path-specific credentials mean
+/// different paths on one origin cannot safely share a credential decision.
+fn check_declared_assets(doc: &Value, location: &str, checked: &mut std::collections::HashSet<String>) -> Result<()> {
     for key in ["assets", "asset_templates"] {
         for asset in doc[key].as_object().into_iter().flatten().map(|(_, asset)| asset) {
             if let Some(href) = asset["href"].as_str() {
@@ -455,14 +464,14 @@ pub(crate) fn check_document_assets(doc: &Value, location: &str) -> Result<()> {
                     href.to_string()
                 };
                 let href = resolve_href(location, &href);
-                if !names_local_files(location, &href) {
+                if !names_local_files(location, &href) && checked.insert(href.clone()) {
                     check_asset_access(location, &href)?;
                 }
             }
         }
     }
     for item in doc["features"].as_array().into_iter().flatten() {
-        check_document_assets(item, location)?;
+        check_declared_assets(item, location, checked)?;
     }
     Ok(())
 }
@@ -478,7 +487,7 @@ pub(crate) fn keep_remote_refusal<T>(location: &str, result: Result<T>) -> Resul
             error
         } else {
             let shown = crate::vsi::listing::redact_url(location);
-            let detail = error.to_string().replace(location, &shown);
+            let detail = crate::vsi::listing::redact_url(&error.to_string().replace(location, &shown)).into_owned();
             Error::InvalidArgument(format!(
                 "STAC: native reader refused remote document '{shown}' ({detail}); GDAL pointer fallback is disabled"
             ))
@@ -1576,7 +1585,7 @@ fn probe(path: &str) -> Option<Result<Probe>> {
         }
         Ok(v) if kind(&v).is_some() => Some(Ok(Probe::Stac(v))),
         Err(error) if matches!(error, Error::InvalidArgument(_)) || error.is_resource_refusal() => Some(Err(error)),
-        Ok(_) if !loc.is_local() && has_stac_marker(&bytes) => {
+        Ok(v) if !loc.is_local() && (v.get("stac_version").is_some() || crate::stacta::is_stacta(&v)) => {
             Some(Err(Error::InvalidArgument("STAC: unsupported remote document; GDAL pointer fallback is disabled".into())))
         }
         Err(error) if !loc.is_local() && has_stac_marker(&bytes) => {
@@ -1821,10 +1830,53 @@ mod tests {
                         assert!(matches!(error, Error::InvalidArgument(ref text) if text.contains("cached credentialed asset")), "{error}");
                         assert!(reader.read_mask(window, None).is_err());
                     }
+                    let mut worker_reader = shared.shared();
+                    let error = std::thread::spawn(move || {
+                        crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+                            worker_reader.read_window(window, &Default::default())
+                        })
+                    })
+                    .join()
+                    .unwrap()
+                    .unwrap_err();
+                    assert!(matches!(error, Error::InvalidArgument(_)), "deferred worker reads retain policy: {error}");
                     assert_eq!(seen.lock().unwrap().len(), before, "no retained signed client may issue another request");
                 });
             },
         );
+    }
+
+    /// Ordinary GeoJSON property names do not identify a STAC pointer document.
+    #[cfg(remote)]
+    #[test]
+    fn stac_named_properties_keep_ordinary_geojson_behavior() {
+        let doc = serde_json::to_vec(&json!({"type":"FeatureCollection","features":[{
+            "type":"Feature", "geometry":{"type":"Point","coordinates":[1,2]},
+            "properties":{"stac_version":"ordinary attribute"},
+            "assets":{"data":{"href":"s3://private/data.tif"}}
+        }]}))
+        .unwrap();
+        let (server, _) = crate::http::test_server(doc);
+        crate::config::with_options(
+            &[("AWS_ACCESS_KEY_ID", "test-key"), ("AWS_SECRET_ACCESS_KEY", "test-secret"), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")],
+            || {
+                let dataset = crate::open(&format!("{server}/points.geojson")).unwrap();
+                let Dataset::Vector(vector) = dataset else { panic!("ordinary GeoJSON must remain a vector") };
+                assert_eq!(vector.layers[0].features.len(), 1);
+            },
+        );
+    }
+
+    #[test]
+    fn remote_refusal_redacts_signed_asset_diagnostics() {
+        let error =
+            Error::InvalidData("https://public.example/a redirected to https://user:secret@private.example/b?token=private-token".into());
+        let result: Result<()> = keep_remote_refusal("https://catalog.example/item.json", Err(error));
+        let message = result.unwrap_err().to_string();
+        for secret in ["user:secret", "private-token"] {
+            assert!(!message.contains(secret), "{message}");
+        }
+        assert!(message.contains("public.example"));
     }
 
     /// An intermediate catalog cannot claim the original caller's cross-origin credentials

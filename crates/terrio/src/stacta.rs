@@ -712,9 +712,8 @@ fn open_item_native(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: 
 impl Tiled {
     /// Reads a window of a tile, or `None` when it is missing and missing tiles are skipped.
     fn read_tile(&self, href: &str, w: Window, bands: &[usize]) -> Result<Option<Vec<f64>>> {
-        // Recheck before cache hits too: consent and path-specific credentials can change
-        // between window reads, while cached lazy tiles may still issue range requests.
-        crate::stac::check_asset_access(&self.document, href)?;
+        // Cached rasters enforce their captured consent requirement; a new open below
+        // resolves current credentials, including path-specific settings.
         let cached = self.tiles.lock().ok().and_then(|mut m| m.remove(href));
         let tile = match cached {
             Some(t) => t,

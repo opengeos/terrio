@@ -158,35 +158,37 @@ A STAC document chooses where its links lead, so links are followed with limits:
 
 Remote STAC documents, STACIT mosaics and STACTA tile templates require
 `TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES` before their cloud assets can use configured
-credentials. This includes S3 keys and shared AWS profiles, Azure SAS/bearer tokens, and
-configured HTTP headers (including path-specific headers). Any custom header is treated as
-potential authentication because API keys can use arbitrary names. Ordinary HTTP assets on
-the document's own origin retain their header authentication; cloud URI assets require consent
-even in the same bucket/account. Local documents retain credentialed access.
+credentials. This includes S3 keys and shared AWS profiles, Azure SAS/bearer tokens, and configured
+HTTP headers (including path-specific headers). Any custom header is treated as potential
+authentication because API keys can use arbitrary names. Ordinary HTTP assets on the document's own
+origin retain their header authentication; cloud URI assets require consent even in the same
+bucket/account. Local documents retain credentialed access.
 
-Checks run while parsing the document, including assets that were not selected, so metadata
-listing also requires consent when such assets are declared. Deferred mosaic opens and concrete
-tile URLs and nested native raster sources are checked too. Cached readers retain the original
-consent requirement, even after credentials are removed or unsigned reads are enabled. Without credentials, public cloud hrefs remain usable. With AWS
-credentials configured, `AWS_NO_SIGN_REQUEST=YES` keeps public S3 reads unsigned and does not
-require the opt-in (custom authentication headers still need consent). A signature already in
-an href and public Planetary Computer signing are not ambient user credentials.
+Checks run while parsing the document, including assets that were not selected, so metadata listing
+also requires consent when such assets are declared. Deferred mosaic opens and concrete tile URLs
+and nested native raster sources are checked too. Cached readers retain the original consent
+requirement, even after credentials are removed or unsigned reads are enabled. Without credentials,
+public cloud hrefs remain usable. With AWS credentials configured, `AWS_NO_SIGN_REQUEST=YES` keeps
+public S3 reads unsigned and does not require the opt-in (custom authentication headers still need
+consent). A signature already in an href and public Planetary Computer signing are not ambient user
+credentials.
 
 Refusals are terminal. Named `STAC:`, `STACIT:` and `STACTA:` documents are not reinterpreted by
 GDAL after a native error, for local and remote document locations alike; individual raster assets
-can use the GDAL backend with explicit credential consent when selected by a remote document.
-Every such GDAL asset read requires the opt-in, even for an apparently public URL: GDAL can
-follow nested sources or use credentials unknown to the native reader. Public formats handled
-by native readers retain unsigned access without the opt-in. Recognized remote STAC reader errors, including malformed JSON
-that identifies STAC metadata, also do not select a second pointer parser. Ordinary non-STAC
-remote documents retain their existing fallback behavior. Explicit `GDAL:` opens delegate to GDAL's own policies. The optional backend additionally
-checks its explicitly configured cloud credential sources and credential-bearing keys in the
-selected AWS profile and selected credential/configuration files.
-Existing credential files that cannot be read are treated conservatively as configured; the
-check does not query an identity metadata service to discover credentials. See [GDAL's cloud authentication options](https://gdal.org/en/stable/user/virtual_file_systems.html).
-The opt-in never permits an asset href pointing directly at a local file. Consenting to a
-GDAL asset read also trusts the nested sources GDAL follows; native per-source checks cannot
-run inside GDAL.
+can use the GDAL backend with explicit credential consent when selected by a remote document. Every
+such GDAL asset read requires the opt-in, even for an apparently public URL: GDAL can follow nested
+sources or use credentials unknown to the native reader. Public formats handled by native readers
+retain unsigned access without the opt-in. Recognized remote STAC reader errors, including malformed
+JSON that identifies STAC metadata, also do not select a second pointer parser. Ordinary non-STAC
+remote documents retain their existing fallback behavior. Explicit `GDAL:` opens delegate to GDAL's
+own policies. The optional backend additionally checks its explicitly configured cloud credential
+sources and credential-bearing keys in the selected AWS profile and selected
+credential/configuration files. Existing credential files that cannot be read are treated
+conservatively as configured; the check does not query an identity metadata service to discover
+credentials. See [GDAL's cloud authentication
+options](https://gdal.org/en/stable/user/virtual_file_systems.html). The opt-in never permits an
+asset href pointing directly at a local file. Consenting to a GDAL asset read also trusts the nested
+sources GDAL follows; native per-source checks cannot run inside GDAL.
 
 A STAC item of tiled assets (GDAL's STACTA, see [Formats](formats.md#stac)) opens from its URL
 or as `STACTA:"item-url":asset`: the item is fetched, then the headers of the first tile when the
