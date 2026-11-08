@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `translate --overview AUTO-n` without `--outsize` or `--tr` keeps the full-resolution
+  output size while reading the selected overview, as `gdal_translate` does. A 400 x 300
+  source window now stays 400 x 300 instead of shrinking to the overview's resolution.
+  `AUTO-0` is treated as `AUTO` for selecting the source resolution.
+
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource
   error. HDF-EOS5 structure text is limited to 16 MiB before decoding, including fill-only files.

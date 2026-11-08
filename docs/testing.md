@@ -1314,6 +1314,11 @@ The `translate-overviews` conformance suite (`scripts/compare_translate_overview
 compares `terrio translate` with `gdal_translate -outsize`, `-tr` and `-ovr` on levels holding
 markers, real USGS terrain (Float32, nodata) and Landsat RGB (Byte, internal mask): pixels, types,
 nodata and geotransforms, and the HTTP bytes of a real COG resized with `AUTO` and `NONE`.
+Default-size source and georeferenced windows check that `AUTO-n` keeps the full-resolution
+output size while explicit level numbers reduce it, including real terrain with nodata.
+These default-size cases also compare equivalent CRSs and exact validity masks.
+The HTTP comparison records bytes and request counts for a 400 x 300 source window
+with `NONE` and `AUTO-1`, checking the actual pixels at the unchanged output size.
 `gdal_translate` reads its output in swaths of 128 rows (into a GeoTIFF of default layout), and in
 blocks of 128 x 128 pixels when its bands are not the source's first ones in order, each a
 `RasterIO` request of its own: at a swath's first row or a block's first column, an average, RMS

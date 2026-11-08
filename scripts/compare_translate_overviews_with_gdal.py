@@ -57,6 +57,17 @@ def cases(data, tmp):
                        ["-outsize", str(width), str(height), "-r", resampling, "-ovr", choice])
         yield (f"translate markers {choice} window", levels, ["-srcwin", "7", "5", "150", "120", "-outsize", "40", "30", "-ovr", choice])
         yield (f"translate markers {choice} level", levels, ["-ovr", choice])
+    # Without an output size, AUTO-n keeps the window's full-resolution size even when
+    # the selected level is coarser. Explicit numbers instead use that level's size.
+    for choice in ["AUTO", "AUTO-0", "AUTO-1", "AUTO-2", "NONE", "0", "1"]:
+        for resampling in ["near", "bilinear", "average"]:
+            for window, flags in [
+                ("whole", []),
+                ("srcwin", ["-srcwin", "7", "5", "70", "50"]),
+                ("projwin", ["-projwin", "7", "155", "77", "105"]),
+            ]:
+                yield (f"translate markers {choice} {window} default size {resampling}", levels,
+                       [*flags, "-r", resampling, "-ovr", choice])
     # The same levels in an external `.ovr`: GDAL's band of its image has the file's other images
     # as overviews, and AUTO chooses again among them. 60 x 50 by nearest neighbour and 50 x 42
     # otherwise read the second level (200) where one choice reads the first (100).
@@ -106,6 +117,8 @@ def cases(data, tmp):
         yield f"translate USGS {resampling} upsampled", dem, ["-srcwin", "100.3", "100.2", "40.4", "30.1", "-outsize", "120", "90", "-r", resampling]
     for choice in ["NONE", "0", "1", "AUTO-1"]:
         yield f"translate USGS -ovr {choice}", dem, ["-outsize", "97", "81", "-r", "bilinear", "-ovr", choice]
+    for choice in ["AUTO-0", "AUTO-1", "AUTO-2", "0", "1"]:
+        yield f"translate USGS default size {choice}", dem, ["-srcwin", "37", "11", "400", "300", "-ovr", choice]
     gt = gdal.Open(dem).GetGeoTransform()
     x0, y0 = gt[0] + 55.3 * gt[1], gt[3] + 21.7 * gt[5]
     projwin = [str(v) for v in (x0, y0, x0 + 420.6 * gt[1], y0 + 300.2 * gt[5])]
@@ -192,8 +205,12 @@ def remote_cases(data, tmp, terrio):
         worker.start()
         try:
             url = f"http://127.0.0.1:{server.server_port}/dem.tif"
-            for choice in ["NONE", "AUTO"]:
-                args = ["-outsize", "64", "64", "-r", "average", "-ovr", choice]
+            for choice, args in [
+                ("NONE", ["-outsize", "64", "64", "-r", "average", "-ovr", "NONE"]),
+                ("AUTO", ["-outsize", "64", "64", "-r", "average", "-ovr", "AUTO"]),
+                ("window-NONE", ["-srcwin", "256", "128", "400", "300", "-ovr", "NONE"]),
+                ("window-AUTO-1", ["-srcwin", "256", "128", "400", "300", "-ovr", "AUTO-1"]),
+            ]:
                 reference, actual = str(tmp / f"remote-gdal-{choice}.tif"), str(tmp / f"remote-terrio-{choice}.tif")
                 gdal.Translate(reference, str(cog), options=args)
                 with lock:
@@ -208,7 +225,7 @@ def remote_cases(data, tmp, terrio):
         finally:
             server.shutdown()
             worker.join()
-    full, auto = records
+    full, auto = records[:2]
     if not (0 < auto["http_bytes"] < full["http_bytes"] / 2):
         auto["error"] = f"AUTO did not reduce network transfer: {auto['http_bytes']} vs {full['http_bytes']} bytes"
     return records
@@ -236,6 +253,17 @@ def main():
                 if result.returncode:
                     raise RuntimeError(result.stderr.strip())
                 record = compare(reference, actual, 1.0)
+                if "default size" in name and record["same_size"]:
+                    expected, got = gdal.Open(reference), gdal.Open(actual)
+                    record["same_crs"] = bool(expected.GetSpatialRef().IsSame(got.GetSpatialRef()))
+                    record["same_masks"] = all(
+                        np.array_equal(expected.GetRasterBand(b).GetMaskBand().ReadAsArray(),
+                                       got.GetRasterBand(b).GetMaskBand().ReadAsArray())
+                        for b in range(1, expected.RasterCount + 1)
+                    )
+                    if not record["same_crs"] or not record["same_masks"]:
+                        record["error"] = "default-size output CRS or masks differ"
+                    expected = got = None
             except Exception as error:  # report every case, including CLI errors
                 record = {"error": str(error)}
             record["name"] = name
