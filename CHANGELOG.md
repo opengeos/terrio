@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Reads of a remote Zarr store keep up to 32 requests in flight, whatever the number of cores.
+  Its chunks were fetched on terrio's thread pool, one blocked thread per request, so a read
+  had as many requests in flight as the machine has cores. A 512 x 512 window of the 128 bands of
+  one year of the OlmoEarth v1.3 embeddings store on source.coop (18 inner chunks, 66 MB, a server
+  answering in about 0.8 s) took 6.6 to 7.2 s on 12 cores and 9.2 to 10.7 s on 4; it now takes
+  5.3 to 5.7 s and 4.5 to 5.9 s. Local stores and WebAssembly are read as before.
 - `terrio translate` reads the bands of a window it copies pixel for pixel together, whichever
   bands they are. It used to read bands that are not the source's first ones in order one by one,
   as `gdal_translate`'s virtual dataset does, and without GDAL's block cache a Zarr chunk holding
