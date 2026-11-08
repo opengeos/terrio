@@ -1889,10 +1889,19 @@ struct Level {
     /// How the image's chunks are decoded, settled by the level's first window read that gets to
     /// decoding: `Some(None)` when the `tiff` crate decodes them itself.
     codec: Option<Option<crate::tiff_codecs::ChunkCodec>>,
-    /// Whether the image is planar and its compression code, read by the level's first window read.
-    storage: Option<(bool, u16)>,
+    /// How the image's chunks are stored, read by the level's first window read.
+    storage: Option<Storage>,
     /// Cached GDAL RESAMPLING metadata, including absence, for repeated selection.
     resampling: Option<Option<String>>,
+}
+
+/// How an image's chunks are stored: its PlanarConfiguration and Compression tags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Storage {
+    /// Band-interleaved (PlanarConfiguration 2) rather than pixel-interleaved.
+    planar: bool,
+    /// The TIFF compression code (1 when the tag is absent).
+    compression: u16,
 }
 
 struct TiffRaster {
@@ -2143,13 +2152,15 @@ impl TiffRaster {
             self.current_ifd = ifd;
         }
         let (lw, lh) = (self.levels[level].width, self.levels[level].height);
-        let (planar, compression) = match self.levels[level].storage {
+        let Storage { planar, compression } = match self.levels[level].storage {
             Some(storage) => storage,
             None => {
-                let planar = dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).map_err(tiff_err)? == Some(2);
-                let compression = dec.find_tag_unsigned::<u16>(Tag::Compression).map_err(tiff_err)?.unwrap_or(1);
-                self.levels[level].storage = Some((planar, compression));
-                (planar, compression)
+                let storage = Storage {
+                    planar: dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).map_err(tiff_err)? == Some(2),
+                    compression: dec.find_tag_unsigned::<u16>(Tag::Compression).map_err(tiff_err)?.unwrap_or(1),
+                };
+                self.levels[level].storage = Some(storage);
+                storage
             }
         };
         let (cw, ch) = dec.chunk_dimensions();
@@ -3168,11 +3179,11 @@ mod tests {
         let stored = |path: &std::path::Path| {
             let mut dec = Decoder::new(BufReader::new(std::fs::File::open(path).unwrap())).unwrap();
             let planar = dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).unwrap() == Some(2);
-            (planar, dec.find_tag_unsigned::<u16>(Tag::Compression).unwrap().unwrap())
+            Storage { planar, compression: dec.find_tag_unsigned::<u16>(Tag::Compression).unwrap().unwrap() }
         };
         let (full_storage, small_storage) = (stored(&tif), stored(&ovr));
-        assert_eq!(full_storage, (false, 5), "LZW tiles, pixel-interleaved");
-        assert!(small_storage.0 && small_storage.1 != 5, "Deflate tiles, band-interleaved: {small_storage:?}");
+        assert_eq!(full_storage, Storage { planar: false, compression: 5 }, "LZW tiles, pixel-interleaved");
+        assert!(small_storage.planar && small_storage.compression != 5, "Deflate tiles, band-interleaved: {small_storage:?}");
 
         let mut r = LazyRaster::open(tif.to_str().unwrap()).unwrap();
         assert_eq!(r.overviews(), [(32, 24)]);
@@ -3197,8 +3208,9 @@ mod tests {
 
     /// Float16 samples of a pixel-interleaved image under the floating-point predictor, stored in
     /// strips that the windows cross, read lazily as the values written. The strips are built here
-    /// with the predictor undone by hand (byte planes of each row, differenced by sample), apart
-    /// from terrio's decoding of it.
+    /// with the predictor applied by hand (byte planes of each row, differenced by sample), apart
+    /// from terrio's decoding of it, compressed with Deflate (left to the `tiff` crate) and with
+    /// Zstandard (decoded by terrio's own chunk codec).
     #[test]
     fn pixel_interleaved_float16_multiband_windows_undo_the_floating_point_predictor() {
         use std::io::Write;
@@ -3207,80 +3219,90 @@ mod tests {
         let values: Vec<half::f16> = (0..width * height * spp)
             .map(|i| half::f16::from_f32((i as f32 * 0.37 - 20.0) * if i % 4 == 0 { -1.0 } else { 1.0 }))
             .collect();
-        let mut strips: Vec<Vec<u8>> = Vec::new();
-        for strip in values.chunks(rows_per_strip * width * spp) {
-            let mut stored = Vec::new();
-            for row in strip.chunks(width * spp) {
-                // Most significant bytes of every sample first, then the next ones; then each byte
-                // less the one a pixel's samples before it.
-                let planes: Vec<u8> = (0..2).flat_map(|b| row.iter().map(move |v| v.to_be_bytes()[b])).collect();
-                stored.extend((0..planes.len()).map(|i| if i < spp { planes[i] } else { planes[i].wrapping_sub(planes[i - spp]) }));
+        // Deflate strips are decoded by the `tiff` crate, Zstandard ones by terrio's `ChunkCodec`.
+        for compression in [8u16, 50000] {
+            let mut strips: Vec<Vec<u8>> = Vec::new();
+            for strip in values.chunks(rows_per_strip * width * spp) {
+                let mut stored = Vec::new();
+                for row in strip.chunks(width * spp) {
+                    // Most significant bytes of every sample first, then the next ones; then each byte
+                    // less the one a pixel's samples before it.
+                    let planes: Vec<u8> = (0..2).flat_map(|b| row.iter().map(move |v| v.to_be_bytes()[b])).collect();
+                    stored.extend((0..planes.len()).map(|i| if i < spp { planes[i] } else { planes[i].wrapping_sub(planes[i - spp]) }));
+                }
+                strips.push(if compression == 8 {
+                    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+                    z.write_all(&stored).unwrap();
+                    z.finish().unwrap()
+                } else {
+                    crate::zstandard::compress(&stored, 9).unwrap()
+                });
             }
-            let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-            z.write_all(&stored).unwrap();
-            strips.push(z.finish().unwrap());
-        }
-        // A classic little-endian TIFF: the directory, the arrays it points to, then the strips.
-        let n = strips.len();
-        let entries: u32 = 12;
-        let arrays = 8 + 2 + entries * 12 + 4;
-        let (bits_at, format_at, offsets_at, counts_at) = (arrays, arrays + 6, arrays + 12, arrays + 12 + 4 * n as u32);
-        let mut at = counts_at + 4 * n as u32;
-        let offsets: Vec<u32> = strips
-            .iter()
-            .map(|s| {
-                at += s.len() as u32;
-                at - s.len() as u32
-            })
-            .collect();
-        let shorts = |v: u32| (3u16, 1u32, v);
-        let tags: [(u16, (u16, u32, u32)); 12] = [
-            (256, shorts(width as u32)),
-            (257, shorts(height as u32)),
-            (258, (3, 3, bits_at)),
-            (259, shorts(8)),
-            (262, shorts(2)),
-            (273, (4, n as u32, offsets_at)),
-            (277, shorts(spp as u32)),
-            (278, shorts(rows_per_strip as u32)),
-            (279, (4, n as u32, counts_at)),
-            (284, shorts(1)),
-            (317, shorts(3)),
-            (339, (3, 3, format_at)),
-        ];
-        let mut b = b"II*\0".to_vec();
-        b.extend(8u32.to_le_bytes());
-        b.extend((tags.len() as u16).to_le_bytes());
-        for (tag, (typ, count, value)) in tags {
-            b.extend(tag.to_le_bytes());
-            b.extend(typ.to_le_bytes());
-            b.extend(count.to_le_bytes());
-            b.extend(value.to_le_bytes());
-        }
-        b.extend(0u32.to_le_bytes());
-        b.extend([16u16, 16, 16, 3, 3, 3].iter().flat_map(|v| v.to_le_bytes()));
-        b.extend(offsets.iter().flat_map(|v| v.to_le_bytes()));
-        b.extend(strips.iter().flat_map(|s| (s.len() as u32).to_le_bytes()));
-        for s in &strips {
-            b.extend(s);
-        }
-        let mut r = LazyRaster::from_tiff_bytes(b).unwrap().unwrap();
-        assert_eq!((r.data_type(), r.band_count()), (DataType::F32, 3));
-        let expected = |w: Window, bands: &[usize]| -> Vec<f64> {
-            bands
+            // A classic little-endian TIFF: the directory, the arrays it points to, then the strips.
+            let n = strips.len();
+            let entries: u32 = 12;
+            let arrays = 8 + 2 + entries * 12 + 4;
+            let (bits_at, format_at, offsets_at, counts_at) = (arrays, arrays + 6, arrays + 12, arrays + 12 + 4 * n as u32);
+            let mut at = counts_at + 4 * n as u32;
+            let offsets: Vec<u32> = strips
                 .iter()
-                .flat_map(|&b| (w.y..w.y + w.height).flat_map(move |y| (w.x..w.x + w.width).map(move |x| (b, y, x))))
-                .map(|(b, y, x)| f64::from(values[(y * width + x) * spp + b - 1].to_f32()))
-                .collect()
-        };
-        // Windows inside a strip, across strips, and of single bands.
-        for (w, bands) in [
-            (Window::full(width, height), vec![1, 2, 3]),
-            (Window::new(1, 1, 4, 3), vec![1, 2, 3]),
-            (Window::new(2, 0, 3, 5), vec![3, 1]),
-            (Window::new(0, 4, 6, 1), vec![2]),
-        ] {
-            assert_eq!(read_f64(&mut r, w, &bands, None), expected(w, &bands), "{w:?} bands {bands:?}");
+                .map(|s| {
+                    at += s.len() as u32;
+                    at - s.len() as u32
+                })
+                .collect();
+            let shorts = |v: u32| (3u16, 1u32, v);
+            let tags: [(u16, (u16, u32, u32)); 12] = [
+                (256, shorts(width as u32)),
+                (257, shorts(height as u32)),
+                (258, (3, 3, bits_at)),
+                (259, shorts(u32::from(compression))),
+                (262, shorts(2)),
+                (273, (4, n as u32, offsets_at)),
+                (277, shorts(spp as u32)),
+                (278, shorts(rows_per_strip as u32)),
+                (279, (4, n as u32, counts_at)),
+                (284, shorts(1)),
+                (317, shorts(3)),
+                (339, (3, 3, format_at)),
+            ];
+            let mut b = b"II*\0".to_vec();
+            b.extend(8u32.to_le_bytes());
+            b.extend((tags.len() as u16).to_le_bytes());
+            for (tag, (typ, count, value)) in tags {
+                b.extend(tag.to_le_bytes());
+                b.extend(typ.to_le_bytes());
+                b.extend(count.to_le_bytes());
+                b.extend(value.to_le_bytes());
+            }
+            b.extend(0u32.to_le_bytes());
+            b.extend([16u16, 16, 16, 3, 3, 3].iter().flat_map(|v| v.to_le_bytes()));
+            b.extend(offsets.iter().flat_map(|v| v.to_le_bytes()));
+            b.extend(strips.iter().flat_map(|s| (s.len() as u32).to_le_bytes()));
+            for s in &strips {
+                b.extend(s);
+            }
+            let mut r = LazyRaster::from_tiff_bytes(b).unwrap().unwrap();
+            assert_eq!((r.data_type(), r.band_count()), (DataType::F32, 3));
+            let expected = |w: Window, bands: &[usize]| -> Vec<f64> {
+                bands
+                    .iter()
+                    .flat_map(|&b| (w.y..w.y + w.height).flat_map(move |y| (w.x..w.x + w.width).map(move |x| (b, y, x))))
+                    .map(|(b, y, x)| f64::from(values[(y * width + x) * spp + b - 1].to_f32()))
+                    .collect()
+            };
+            // Windows inside a strip, across strips, and of single bands.
+            for (w, bands) in [
+                (Window::full(width, height), vec![1, 2, 3]),
+                (Window::new(1, 1, 4, 3), vec![1, 2, 3]),
+                (Window::new(2, 0, 3, 5), vec![3, 1]),
+                (Window::new(0, 4, 6, 1), vec![2]),
+            ] {
+                assert_eq!(read_f64(&mut r, w, &bands, None), expected(w, &bands), "compression {compression}, {w:?} bands {bands:?}");
+            }
+            // Whose decoder read them: terrio's for Zstandard, the `tiff` crate's for Deflate.
+            let Inner::Tiff(tiff) = &r.inner else { panic!("not a TIFF reader") };
+            assert_eq!(tiff.levels[0].codec.as_ref().map(Option::is_some), Some(compression != 8), "compression {compression}");
         }
     }
 }
