@@ -808,6 +808,7 @@ fn gdal_name(path: &str) -> String {
 }
 
 fn gdal_open(path: &str, flags: GdalOpenFlags) -> Result<GdalDataset> {
+    crate::stac::check_gdal_asset_read()?;
     // Every dataset GDAL opens (a `GDAL:` name, the fallback for what terrio's drivers cannot read,
     // bytes through `/vsimem/`) is opened by the GDAL backend, whose own drivers pick the format:
     // only if the process-wide allow-list of each kind asked for has the GDAL driver.
@@ -1385,5 +1386,30 @@ mod crs_tests {
         let actual = super::srs_to_crs(&srs).unwrap();
         assert_eq!(actual.epsg, Some(4979));
         assert_eq!(actual.wkt, Some(expected));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn memory_file_cleanup_removes_only_the_calls_directory() {
+        // Keep another directory alive so a failed or empty root listing cannot pass vacuously.
+        super::with_mem_file(vec![9], "sentinel.bin", |sentinel| {
+            for fail in [false, true] {
+                let mut directory = String::new();
+                let result = super::with_mem_file(vec![1, 2, 3], "input.bin", |path| {
+                    directory = path.rsplit_once('/').unwrap().0.to_string();
+                    gdal::vsi::create_mem_file(format!("{path}.aux.xml"), vec![4, 5]).unwrap();
+                    if fail { Err(crate::Error::InvalidArgument("test refusal".into())) } else { Ok(()) }
+                });
+                assert_eq!(result.is_err(), fail);
+                let name = directory.rsplit_once('/').unwrap().1;
+                assert!(gdal::vsi::read_dir("/vsimem/", false).unwrap().iter().all(|p| p.to_string_lossy() != name));
+                let parent = sentinel.rsplit_once('/').unwrap().0;
+                assert!(gdal::vsi::read_dir(parent, false).unwrap().iter().any(|p| p.to_string_lossy() == "sentinel.bin"));
+            }
+            Ok(())
+        })
+        .unwrap();
     }
 }

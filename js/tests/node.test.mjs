@@ -1294,7 +1294,7 @@ test("translate reads the overview -ovr selects", () => {
   for (const overview of [0, "AUTO-1"]) {
     assert.throws(
       () => terrio.translate({ bytes: new Uint8Array([73, 73, 42, 0, 0, 0, 0, 0]), filename: "bad.tif" }, { overview }),
-      /needs a raster read by window; 'bad.tif' is read whole \(/,
+      /needs a raster read by window; 'bad\.tif' is read whole \(/,
     );
   }
 });

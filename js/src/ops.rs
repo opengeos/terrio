@@ -498,26 +498,7 @@ pub fn translate(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     if Dataset::lookup(&src).is_none()
         && let Some((bytes, name)) = file_bytes(&src)
     {
-        use terrio::memory::OpenedRasterBytes;
-        use terrio::ops::overview::OverviewSelection;
-        // A level needs the bytes read by window: refused before any whole decode.
-        if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(1..)) {
-            let mut r = match terrio::memory::open_raster_lazy_bytes(bytes, &name) {
-                Ok(r) => r,
-                Err(e @ terrio::Error::InvalidArgument(_)) => return Err(js_err(e)),
-                Err(e) if e.is_resource_refusal() => return Err(js_err(e)),
-                Err(e) => {
-                    return Err(js_err(terrio::Error::Unsupported(format!(
-                        "overview needs a raster read by window; '{name}' is read whole ({e})"
-                    ))));
-                }
-            };
-            return Ok(Dataset::from_raster(terrio::ops::translate::translate_lazy(&mut r, &o, overview).map_err(js_err)?));
-        }
-        let out = match terrio::memory::open_raster_lazy_bytes_or_whole(bytes, &name).map_err(js_err)? {
-            OpenedRasterBytes::Lazy(mut r) => terrio::ops::translate::translate_lazy(&mut r, &o, overview),
-            OpenedRasterBytes::Whole(ds) => terrio::ops::translate::translate(&ds, &o),
-        };
+        let out = terrio::ops::translate::translate_bytes(bytes, &name, &o, overview);
         return Ok(Dataset::from_raster(out.map_err(js_err)?));
     }
     let mut src = input_lazy_raster(&src)?;
