@@ -96,6 +96,36 @@ fn gdal_driver_listed() {
     assert_eq!(terrio::gdal_backend::strip_prefix("x.hdf"), None);
 }
 
+/// GDAL 3.12.1 identifies TIFF content under a /vsimem GRIB name without its optional GRIB driver.
+/// The GRIB name sends the native lazy opener to the filesystem, where it returns NotFound.
+#[cfg(feature = "grib")]
+#[test]
+fn translate_input_policy_reads_vsimem_through_gdal() {
+    use terrio::ops::overview::OverviewSelection;
+    use terrio::ops::translate::{TranslateOptions, translate, translate_path};
+
+    let mut bytes = include_bytes!("data/translate_complex_half.tif").to_vec();
+    let path = "/vsimem/terrio_translate_input_policy.grb";
+    let _file = gdal::vsi::create_mem_file_from_ref(path, &mut bytes).unwrap();
+    let Err(error) = terrio::open_raster_lazy(path) else {
+        panic!("VSI input must need a whole-read fallback");
+    };
+    assert!(matches!(&error, terrio::Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound), "{error}");
+    let original = terrio::gdal_backend::open_raster(path).unwrap();
+    let options = TranslateOptions::default();
+    let expected = translate(&original, &options).unwrap();
+    for overview in [OverviewSelection::Auto, OverviewSelection::AutoOffset(0), OverviewSelection::None] {
+        let actual = translate_path(path, &options, overview).unwrap();
+        assert_same_raster(&actual, &expected, "VSI whole translation");
+        assert_eq!(actual.complex, expected.complex);
+    }
+    for overview in [OverviewSelection::Level(0), OverviewSelection::AutoOffset(1)] {
+        assert!(
+            matches!(translate_path(path, &options, overview), Err(terrio::Error::Unsupported(message)) if message.contains("is read whole"))
+        );
+    }
+}
+
 /// Formats terrio cannot read or write itself: written with GDAL's drivers, then read back
 /// through the fallback of `terrio::open_raster`, without a prefix.
 #[test]

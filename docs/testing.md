@@ -22,6 +22,16 @@ Default-feature tests cover lazy paths/bytes, streamed outputs, missing local fi
 shared terminal-error classification. Existing Python and Node overview regressions exercise
 the same entry points through the bindings.
 
+`cargo test -p terrio --lib vfs::tests` covers the shared local-path versus GDAL-name
+classifier, including Windows drive, drive-relative, verbatim and UNC paths, URL schemes,
+subdataset names and colon-free `/vsi` names. The GDAL backend tests also keep a TIFF
+in GDAL's `/vsimem` under a `.grb` name: the native GRIB lazy opener returns `NotFound`,
+while GDAL identifies the TIFF content and the whole-read translation succeeds.
+The name deliberately exercises GRIB dispatch without requiring GDAL's optional GRIB
+plugin. Explicit overview levels still refuse the whole read. On Windows,
+`input_policy_keeps_missing_windows_paths_terminal` exercises `translate_path` with
+drive-relative and verbatim missing paths and `OverviewSelection::Level(0)`.
+
 ## Updating the ordinary CI GDAL reference
 
 `GDAL_REFERENCE_VERSION` in `.github/workflows/ci.yml` controls both micromamba GDAL
