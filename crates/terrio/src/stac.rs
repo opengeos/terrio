@@ -548,6 +548,15 @@ fn own_items(doc: Value, loc: &str) -> Items {
     Items { items, truncated: false }
 }
 
+/// A pagination diagnostic location: local paths unchanged, remote URLs without credentials.
+fn pagination_location(location: &str) -> std::borrow::Cow<'_, str> {
+    if crate::vfs::Location::parse(location).is_local() {
+        std::borrow::Cow::Borrowed(location)
+    } else {
+        crate::vsi::listing::redact_url(without_query(location))
+    }
+}
+
 /// A URL without its query (where a SAS token or signature would be), for messages.
 fn without_query(url: &str) -> &str {
     url.split(['?', '#']).next().unwrap_or(url)
@@ -628,17 +637,18 @@ fn read_pages(mut doc: Value, mut cur: Request, max_items: usize, out: &mut Item
         if next == cur || pages > 10_000 {
             return Ok(());
         }
+        let location = || pagination_location(&cur.url);
         if !may_follow(&cur.url, &next.url) {
             crate::warnings::warn(format!(
                 "STAC: the next page of '{}' is on another origin or names local files: not followed",
-                crate::vsi::listing::redact_url(without_query(&cur.url))
+                location()
             ));
             return Ok(());
         }
         // A search made with GET is not continued with a POST its page asks for, unless asked
         // (`TERRIO_STAC_ALLOW_POST=YES`); one made with POST (`method=POST`) is.
         if next.body.is_some() && cur.body.is_none() && !option_on("TERRIO_STAC_ALLOW_POST") {
-            crate::warnings::warn(format!("STAC: the next page of '{}' is a POST request: not followed", without_query(&cur.url)));
+            crate::warnings::warn(format!("STAC: the next page of '{}' is a POST request: not followed", location()));
             return Ok(());
         }
         doc = next.fetch(true)?;
@@ -1599,6 +1609,38 @@ mod tests {
         let _ = open(&format!("{base}/collection.json"));
         assert_eq!(seen.lock().unwrap().len(), 2, "a same-origin item link is followed");
         assert!(internal_seen.lock().unwrap().is_empty(), "another origin was requested: {:?}", internal_seen.lock().unwrap());
+    }
+
+    /// Both rejected pagination paths name the host without credentials or queries.
+    #[cfg(remote)]
+    #[test]
+    fn pagination_warnings_redact_credentials_and_queries() {
+        for (links, warning) in [
+            (json!([{"rel": "next", "method": "POST", "href": "page2.json", "body": {"query": "x"}}]), "is a POST request"),
+            (json!([{"rel": "next", "href": "https://other.example/page2.json"}]), "on another origin"),
+        ] {
+            let (base, seen) = crate::http::test_server(item_collection(links));
+            let with_password = base.replacen("http://", "http://user:secret@", 1);
+            crate::warnings::take();
+            crate::config::with_options(&[("TERRIO_STAC_ALLOW_POST", "NO"), ("TERRIO_STAC_FOLLOW_CROSS_ORIGIN", "NO")], || {
+                assert_eq!(open(&format!("{with_password}/items.geojson?session=private")).layers[0].features.len(), 1);
+            });
+            let warnings = crate::warnings::take();
+            let message = warnings.iter().find(|w| w.contains(warning)).expect("a rejected pagination warning");
+            assert!(message.contains("127.0.0.1"), "{message}");
+            for secret in ["user", "secret", "private", "?"] {
+                assert!(!message.contains(secret), "{message}");
+            }
+            assert_eq!(seen.lock().unwrap().len(), 1);
+        }
+    }
+
+    /// URL-looking text is legal inside a local filename and must not be altered.
+    #[test]
+    fn pagination_locations_preserve_local_paths() {
+        let path = "/data/a://team@host/items.json?part=one";
+        assert_eq!(pagination_location(path), path);
+        assert_eq!(pagination_location("https://user:secret@example.com/items.json?session=private"), "https://example.com/items.json");
     }
 
     /// With cross-origin links allowed (`TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`), another origin
