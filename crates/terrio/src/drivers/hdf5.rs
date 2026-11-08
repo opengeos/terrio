@@ -643,14 +643,15 @@ fn read_dataset(
     // This must precede read_raw_bytes: a tiny fill-only file can declare terabytes.
     // Also bound the expanded output (Float16 and complex pixels can grow on decode).
     let output_element = t.data_type.size_bytes().checked_mul(if t.complex.is_some() { 2 } else { 1 });
-    let whole_len = checked_decoded_size(&e.shape, Some(element), &e.path)?;
-    checked_decoded_size(&e.shape, output_element, &e.path)?;
+    let dataset_name = format!("{}: {}", path.display(), e.path);
+    let whole_len = checked_dataset_bytes(&e.shape, Some(element), &dataset_name)?;
+    checked_dataset_bytes(&e.shape, output_element, &dataset_name)?;
     let shape: Vec<usize> = e
         .shape
         .iter()
         .map(|d| usize::try_from(*d))
         .collect::<std::result::Result<_, _>>()
-        .map_err(|_| Error::ResourceLimit(format!("{}: dimensions exceed the address space", e.path)))?;
+        .map_err(|_| Error::ResourceLimit(format!("{dataset_name}: dimensions exceed the address space")))?;
     let nd = shape.len();
     if nd == 0 {
         return Err(err(path, format!("{} is a scalar", e.path)));
@@ -779,7 +780,7 @@ fn read_dataset(
 }
 
 /// Checks the whole decoded buffer before asking the HDF5 reader to allocate it.
-fn checked_decoded_size(shape: &[u64], element: Option<usize>, name: &str) -> Result<usize> {
+fn checked_dataset_bytes(shape: &[u64], element: Option<usize>, name: &str) -> Result<usize> {
     let bytes = element.and_then(|element| shape.iter().try_fold(element, |n, d| n.checked_mul(usize::try_from(*d).ok()?)));
     fallible::check_usable(bytes, || format!("HDF5 dataset {name}: decoded buffer is too large")).map_err(Error::ResourceLimit)
 }
@@ -954,6 +955,7 @@ mod tests {
             // Memory-limit discovery currently requires /proc. The scalar-text cap and
             // overflow assertion below are independent of that platform-specific policy.
             if shape.is_some() && fallible::usable_memory().is_none() {
+                eprintln!("skipping fill-only grid allocation check: usable-memory limit is unavailable");
                 continue;
             }
             let file = File {
@@ -975,13 +977,14 @@ mod tests {
             assert!(matches!(read(&path, "fill-only.h5", Some("//grid")), Err(Error::ResourceLimit(_))));
             assert!(matches!(read_bytes(bytes, "fill-only.h5", Some("//grid")), Err(Error::ResourceLimit(_))));
         }
-        assert!(matches!(checked_decoded_size(&[u64::MAX, 2], Some(8), "grid"), Err(Error::ResourceLimit(_))));
+        assert!(matches!(checked_dataset_bytes(&[u64::MAX, 2], Some(8), "grid"), Err(Error::ResourceLimit(_))));
     }
 
     /// h5py-generated 1,400-byte file: 2^40 Float64 elements, 16 x 16 chunks, none allocated.
     #[test]
     fn refuses_unallocated_chunked_datasets_before_decoding() {
         if fallible::usable_memory().is_none_or(|bytes| bytes >= 8 * (1u64 << 40)) {
+            eprintln!("skipping unallocated chunked dataset check: no usable-memory limit below 8 TiB");
             return; // No known limit below this fixture's declared decoded size.
         }
         let bytes = include_bytes!("../../tests/data/hdf5_fill_only.h5");
