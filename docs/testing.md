@@ -2516,4 +2516,7 @@ chunks. Recreate it with h5py by creating `grid` with `shape=(2**20, 2**20)`, `d
 `chunks=(16, 16)` and `fillvalue=-9999`, without assigning any values. Its declared decoded
 size is 8 TiB. These are resource-limit checks, independent of GDAL's allocation policy.
 Tests that depend on a discoverable usable-memory limit skip those allocations where the
-limit is unavailable or would permit them. Scalar-text and overflow checks still run.
+limit is unavailable or would permit them. Where the limit is unavailable, the unallocated-chunk
+test checks only the address-space bound on the declared size, without reading the file: it
+expects acceptance on 64-bit hosts and refusal on 32-bit ones. Scalar-text and overflow checks
+still run.

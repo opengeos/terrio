@@ -409,6 +409,9 @@ fn walk(f: &Hdf5File) -> Result<Walk> {
     Ok(w)
 }
 
+/// The largest HDF-EOS5 structure text read, in bytes (`docs/formats.md`).
+const EOS_STRUCT_MAX_BYTES: usize = 16 * 1024 * 1024;
+
 /// The HDF-EOS5 structure of a file (`HDFEOS INFORMATION/StructMetadata.0`), when it has one
 /// that describes grids or swaths.
 fn eos_structure(f: &Hdf5File, path: &Path) -> Result<Option<Eos>> {
@@ -419,7 +422,8 @@ fn eos_structure(f: &Hdf5File, path: &Path) -> Result<Option<Eos>> {
     }
     // Structure text is metadata, not raster data. Bound it even on systems where the
     // physical-memory limit is unavailable, before the reader expands a fill-only string.
-    if *size > 16 * 1024 * 1024 {
+    let within_limit = usize::try_from(*size).is_ok_and(|size| size <= EOS_STRUCT_MAX_BYTES);
+    if !within_limit {
         return Err(Error::ResourceLimit(format!("{}: HDF-EOS5 structure text exceeds 16 MiB", path.display())));
     }
     let Ok(raw) = d.read_raw_bytes() else { return Ok(None) };
@@ -644,14 +648,14 @@ fn read_dataset(
     // Also bound the expanded output (Float16 and complex pixels can grow on decode).
     let output_element = t.data_type.size_bytes().checked_mul(if t.complex.is_some() { 2 } else { 1 });
     let dataset_name = format!("{}: {}", path.display(), e.path);
-    let whole_len = checked_dataset_bytes(&e.shape, Some(element), &dataset_name)?;
-    checked_dataset_bytes(&e.shape, output_element, &dataset_name)?;
     let shape: Vec<usize> = e
         .shape
         .iter()
         .map(|d| usize::try_from(*d))
         .collect::<std::result::Result<_, _>>()
         .map_err(|_| Error::ResourceLimit(format!("{dataset_name}: dimensions exceed the address space")))?;
+    let whole_len = checked_dataset_bytes(&shape, Some(element), &dataset_name)?;
+    checked_dataset_bytes(&shape, output_element, &dataset_name)?;
     let nd = shape.len();
     if nd == 0 {
         return Err(err(path, format!("{} is a scalar", e.path)));
@@ -780,8 +784,8 @@ fn read_dataset(
 }
 
 /// Checks the whole decoded buffer before asking the HDF5 reader to allocate it.
-fn checked_dataset_bytes(shape: &[u64], element: Option<usize>, name: &str) -> Result<usize> {
-    let bytes = element.and_then(|element| shape.iter().try_fold(element, |n, d| n.checked_mul(usize::try_from(*d).ok()?)));
+fn checked_dataset_bytes(shape: &[usize], element: Option<usize>, name: &str) -> Result<usize> {
+    let bytes = element.and_then(|element| shape.iter().try_fold(element, |n, d| n.checked_mul(*d)));
     fallible::check_usable(bytes, || format!("HDF5 dataset {name}: decoded buffer is too large")).map_err(Error::ResourceLimit)
 }
 
@@ -977,15 +981,19 @@ mod tests {
             assert!(matches!(read(&path, "fill-only.h5", Some("//grid")), Err(Error::ResourceLimit(_))));
             assert!(matches!(read_bytes(bytes, "fill-only.h5", Some("//grid")), Err(Error::ResourceLimit(_))));
         }
-        assert!(matches!(checked_dataset_bytes(&[u64::MAX, 2], Some(8), "grid"), Err(Error::ResourceLimit(_))));
+        assert!(matches!(checked_dataset_bytes(&[usize::MAX, 2], Some(8), "grid"), Err(Error::ResourceLimit(_))));
     }
 
     /// h5py-generated 1,400-byte file: 2^40 Float64 elements, 16 x 16 chunks, none allocated.
     #[test]
     fn refuses_unallocated_chunked_datasets_before_decoding() {
-        if fallible::usable_memory().is_none_or(|bytes| bytes >= 8 * (1u64 << 40)) {
-            eprintln!("skipping unallocated chunked dataset check: no usable-memory limit below 8 TiB");
-            return; // No known limit below this fixture's declared decoded size.
+        if fallible::usable_memory().is_none_or(|limit| limit >= 8 * (1u64 << 40)) {
+            // No limit below the fixture's 8 TiB is known, so only the address space bounds it, and
+            // the read is not attempted (it would allocate 8 TiB). A 64-bit address space holds the
+            // fixture's declared size, so it is accepted; wasm32 and other 32-bit hosts refuse it.
+            let declared = checked_dataset_bytes(&[1 << 20, 1 << 20], Some(8), "grid");
+            assert_eq!(declared.is_ok(), usize::BITS == 64);
+            return;
         }
         let bytes = include_bytes!("../../tests/data/hdf5_fill_only.h5");
         let dir = tempfile::tempdir().unwrap();
