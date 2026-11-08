@@ -4228,7 +4228,10 @@ mod tests {
         cache.bytes -= dropped;
         drop(cache);
         let mut r = RangeReader::open_with(&Remote::Url(url), ingest).unwrap();
-        assert_eq!(header_values(&seen, "range")[2..], ["bytes=16384-65535", "bytes=131072-196607"]);
+        // the two runs are requested in parallel, so in either order
+        let mut asked = header_values(&seen, "range")[2..].to_vec();
+        asked.sort();
+        assert_eq!(asked, ["bytes=131072-196607", "bytes=16384-65535"]);
         assert_eq!(read_range(&mut r, 0, 196_608), data[..196_608]);
         assert_eq!(seen.lock().unwrap().len(), 4);
     }
