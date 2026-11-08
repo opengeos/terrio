@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 
 import numpy as np
 import pytest
@@ -226,3 +227,45 @@ with terrio.rio.open(sys.argv[1]) as src:
     window = n[0] * n[1] * 2
     assert read >= window, read
     assert warped[1] < read + window / 2, (read, warped)
+
+
+def test_a_borrowed_window_keeps_the_gil():
+    # A read-only view may have writable aliases. No other Python thread may run while
+    # RegionWarp holds a Rust slice of it. The worker deliberately never writes the data.
+    ready, start, ran = threading.Event(), threading.Event(), threading.Event()
+
+    def worker():
+        ready.set()
+        start.wait()
+        ran.set()
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    ready.wait()
+    old_interval = sys.getswitchinterval()
+    try:
+        sys.setswitchinterval(100.0)
+        n = 1024
+        base = np.ones((1, n, n), dtype="float64")
+        window = base.view()
+        window.flags.writeable = False
+        gt = (0.0, 1.0, 0.0, float(n), 0.0, -1.0)
+        rw = _terrio.RegionWarp(
+            (n, n),
+            gt,
+            "EPSG:3857",
+            "EPSG:3857",
+            gt,
+            "nearest",
+            0.125,
+            "float64",
+            [None],
+        )
+        start.set()
+        out, _ = rw.warp((0, 0, n, n), (0, 0, n, n), window)
+        assert not ran.is_set(), "borrowed NumPy storage was exposed without the GIL"
+        np.testing.assert_array_equal(np.asarray(out), base)
+    finally:
+        sys.setswitchinterval(old_interval)
+        start.set()
+        thread.join()

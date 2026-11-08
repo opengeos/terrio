@@ -697,7 +697,7 @@ class WarpedVRT(DatasetReader):
             # The source is read in the working data type.
             data = gdal_cast(data, self._dtype)
         data = np.ascontiguousarray(data)
-        # The warp reads a read-only window where it is, without the GIL, and copies a writeable
+        # The warp reads a read-only window where it is, with the GIL held, and copies a writeable
         # one first (`RegionWarp.warp`): the window is this read's own, nothing else writes it.
         data.flags.writeable = False
         return data, mask
