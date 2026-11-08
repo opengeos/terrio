@@ -896,11 +896,8 @@ pub fn list_layers(path: &str) -> Result<Vec<String>> {
 }
 
 fn list_layers_native(path: &str) -> Result<Vec<String>> {
-    if let Some(result) = crate::stac::open(path) {
-        return result.and_then(|dataset| match dataset {
-            Dataset::Vector(vector) => Ok(vector.layers.into_iter().map(|layer| layer.name).collect()),
-            Dataset::Raster(_) => Err(Error::Unsupported("a raster has no vector layers".into())),
-        });
+    if let Some(result) = crate::stac::list_layers(path) {
+        return result;
     }
     if is_tile_archive(path) {
         #[cfg(feature = "tiles")]

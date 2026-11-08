@@ -272,6 +272,7 @@ impl LazyRaster {
     /// GDAL's virtual datasets read bands that are not the dataset's first ones in order: never
     /// resampled together.
     pub(crate) fn read_resampled_by_band(&mut self, options: &ResampledReadOptions) -> Result<RasterDataset> {
+        let _scope = self.enter_asset_read()?;
         let read = self.check_resampled(options)?;
         let kinds = self.mask_kinds(&read.bands);
         let n = read.buf.0 * read.buf.1;

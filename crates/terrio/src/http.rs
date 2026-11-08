@@ -384,6 +384,12 @@ fn origin(url: &str) -> &str {
     &url[..end]
 }
 
+/// Origin equality with a cheap exact fast path and URL-normalized host/default ports.
+fn same_response_origin(left: &str, right: &str) -> bool {
+    origin(left) == origin(right)
+        || (crate::vfs::url_origin(left).is_some() && crate::vfs::url_origin(left) == crate::vfs::url_origin(right))
+}
+
 /// The host (and port) of a URL.
 fn host_of(url: &str) -> &str {
     let o = origin(url);
@@ -412,6 +418,7 @@ struct Client {
     url: String,
     /// The final response location, kept separately so redirect auth stays tied to `url`.
     response_url: String,
+    asset_policy: Option<crate::stac::AssetReadPolicy>,
     /// A query added to an S3 object's URL (`?list-type=2&...` for a listing), or empty.
     query: String,
     s3: Option<S3Auth>,
@@ -516,6 +523,7 @@ impl Client {
             options,
             remote: remote.clone(),
             response_url: url.clone(),
+            asset_policy: crate::stac::AssetReadPolicy::current(),
             url,
             query: String::new(),
             s3,
@@ -532,6 +540,32 @@ impl Client {
         client.on_azure_endpoint = client.azure && client.resolve_on_azure_endpoint();
         client.headers = client.resolve_headers();
         client
+    }
+
+    fn check_asset_request(&mut self, url: &str) -> Result<()> {
+        if self.asset_policy.is_none() {
+            self.asset_policy = crate::stac::AssetReadPolicy::current();
+        }
+        if let Some(policy) = &self.asset_policy {
+            let headers = origin(url) == origin(&self.url) && !self.headers.is_empty();
+            let signed = url == self.url && self.s3.as_ref().is_some_and(|auth| auth.creds.is_some());
+            let query = url == self.url && policy.has_ambient_query(url);
+            policy.check_client(url, headers || signed || query, matches!(self.remote, Remote::S3(_)) || self.azure)?;
+        }
+        Ok(())
+    }
+
+    fn check_cached_consent(&mut self) -> Result<()> {
+        if self.asset_policy.is_none() {
+            self.check_asset_request(&self.url.clone())?;
+        }
+        self.asset_policy.as_ref().map_or(Ok(()), crate::stac::AssetReadPolicy::check_consent)
+    }
+
+    fn observe_response(&self, response: &str) {
+        if let Some(policy) = &self.asset_policy {
+            policy.observe_response(&self.url, response);
+        }
     }
 
     /// The first of `keys` set for this file's requests: by the creating thread's options, else by
@@ -645,6 +679,7 @@ impl Client {
         let mut redirects = 0;
         let mut attempt = 0;
         loop {
+            self.check_asset_request(&url)?;
             let mut req = agent_in(self.pid, &self.agent, || own_agent(&self.options)).get(&url);
             if let Some(r) = &range_header {
                 req = req.header("Range", r);
@@ -732,9 +767,11 @@ impl Client {
                 if !self.redirects.allow(&self.url, &to) {
                     return Err(redirect_refused(&self.url, &to));
                 }
+                self.observe_response(&to);
                 url = to;
                 continue;
             }
+            self.observe_response(&url);
             self.response_url = url.clone();
             match status {
                 200 | 206 | 416 => return Ok(response),
@@ -1508,8 +1545,13 @@ pub(crate) fn get_file_response(remote: &Remote, redirects: Redirects) -> Result
     if s.len > cap {
         return Err(over_cap(&s.client.url, cap));
     }
+    let refuse_mixed = |mixed| {
+        if mixed { Err(Error::InvalidArgument("remote document bytes came from different response origins".into())) } else { Ok(()) }
+    };
+    refuse_mixed(s.mixed_origins)?;
     let mut out = Vec::new();
     s.copy_to(&mut out)?;
+    refuse_mixed(s.mixed_origins)?;
     Ok(JsonResponse { body: out, url: s.client.response_url.clone() })
 }
 
@@ -1839,12 +1881,24 @@ impl FileCache {
         Self { files: BTreeMap::new(), order: VecDeque::new(), bytes: 0 }
     }
 
+    fn forget(&mut self, key: &str) {
+        if let Some(old) = self.files.remove(key) {
+            let bytes = old.whole.iter().chain(old.prefix.iter()).map(|data| data.len() as u64).sum::<u64>()
+                + old.blocks.values().map(|data| data.len() as u64).sum::<u64>();
+            self.bytes = self.bytes.saturating_sub(bytes);
+        }
+        self.order.retain(|(old, _)| old != key);
+    }
+
     /// Stores bytes with their cache key and effective response URL, then drops parts beyond
     /// `budget` bytes. A part larger than the budget is not kept.
     fn store(&mut self, source: (&str, &str), len: u64, slot: Slot, data: Arc<[u8]>, budget: u64) {
         let (key, response_url) = source;
         if data.len() as u64 > budget {
             return;
+        }
+        if self.files.get(key).is_some_and(|file| !same_response_origin(&file.response_url, response_url)) {
+            self.forget(key);
         }
         let file = self.files.entry(key.to_string()).or_default();
         file.len = len;
@@ -1916,6 +1970,8 @@ struct Shared {
     /// ([`Shared::fetch_planned`]), the next batch when a read reaches one not cached. A deque, so
     /// that taking batches from its front does not shift the rest.
     plan: VecDeque<u64>,
+    response_origin: Option<String>,
+    mixed_origins: bool,
 }
 
 impl RangeReader {
@@ -1942,6 +1998,7 @@ impl RangeReader {
             options.ingested_bytes_at_open.map_or(FIRST_READ.min(block_size), |n| n.max(block_size).div_ceil(block_size) * block_size);
         let mut client = Client::new(remote, options);
         client.redirects = redirects;
+        client.check_asset_request(&client.url.clone())?;
         let key = client.cache_key();
         let mut shared = Shared {
             client,
@@ -1955,6 +2012,8 @@ impl RangeReader {
             whole: None,
             prefix: None,
             plan: VecDeque::new(),
+            response_origin: None,
+            mixed_origins: false,
         };
         if let Some(missing) = shared.load_cached(first_len) {
             // The blocks of the first bytes that the process-wide cache no longer holds, each run
@@ -1962,6 +2021,7 @@ impl RangeReader {
             shared.fetch_blocks(&missing, 0)?;
         } else {
             let first = shared.client.fetch(Some((0, first_len - 1)))?;
+            shared.observe_source();
             match first.status {
                 206 => {
                     shared.len = first.total_len.ok_or_else(|| {
@@ -2068,9 +2128,13 @@ impl Shared {
             return None;
         }
         self.len = file.len;
-        self.client.response_url = file.response_url.clone();
         self.whole = file.whole.clone();
         self.prefix = file.prefix.clone();
+        if self.whole.is_some() || self.prefix.is_some() {
+            self.client.response_url = file.response_url.clone();
+            self.response_origin = Some(origin(&file.response_url).to_string());
+            self.client.observe_response(&file.response_url);
+        }
         if self.whole.is_some() || end <= prefix {
             return Some(Vec::new());
         }
@@ -2085,12 +2149,30 @@ impl Shared {
                 None => missing.push(b),
             }
         }
+        if !self.blocks.is_empty() {
+            self.client.response_url = file.response_url.clone();
+            self.response_origin = Some(origin(&file.response_url).to_string());
+            self.client.observe_response(&file.response_url);
+        }
         Some(missing)
+    }
+
+    fn observe_source(&mut self) {
+        let received = origin(&self.client.response_url);
+        if self.response_origin.as_deref().is_some_and(|expected| !same_response_origin(expected, received)) {
+            self.mixed_origins = true;
+            file_cache().forget(&self.key);
+        }
+        self.response_origin.get_or_insert_with(|| received.to_string());
     }
 
     /// Takes block `b` from the process-wide cache. Returns whether it held it.
     fn load_cached_block(&mut self, b: u64) -> bool {
-        let data = file_cache().files.get(&self.key).and_then(|f| f.blocks.get(&(self.block_size, b)).cloned());
+        let data = file_cache()
+            .files
+            .get(&self.key)
+            .filter(|file| self.response_origin.as_deref().is_none_or(|expected| same_response_origin(expected, &file.response_url)))
+            .and_then(|f| f.blocks.get(&(self.block_size, b)).cloned());
         match data {
             Some(d) => {
                 if self.blocks.insert(b, d).is_none() {
@@ -2103,12 +2185,16 @@ impl Shared {
     }
 
     fn store_whole(&mut self, data: Arc<[u8]>) {
-        file_cache().store((&self.key, &self.client.response_url), self.len, Slot::Whole, data.clone(), self.shared_budget);
+        if !self.mixed_origins {
+            file_cache().store((&self.key, &self.client.response_url), self.len, Slot::Whole, data.clone(), self.shared_budget);
+        }
         self.whole = Some(data);
     }
 
     fn store_prefix(&mut self, data: Arc<[u8]>) {
-        file_cache().store((&self.key, &self.client.response_url), self.len, Slot::Prefix, data.clone(), self.shared_budget);
+        if !self.mixed_origins {
+            file_cache().store((&self.key, &self.client.response_url), self.len, Slot::Prefix, data.clone(), self.shared_budget);
+        }
         self.prefix = Some(data);
     }
 
@@ -2148,13 +2234,15 @@ impl Shared {
         for (i, chunk) in data.chunks(bs).enumerate() {
             let b = first_block + i as u64;
             let chunk: Arc<[u8]> = chunk.into();
-            cache.store(
-                (&self.key, &self.client.response_url),
-                self.len,
-                Slot::Block(self.block_size, b),
-                chunk.clone(),
-                self.shared_budget,
-            );
+            if !self.mixed_origins {
+                cache.store(
+                    (&self.key, &self.client.response_url),
+                    self.len,
+                    Slot::Block(self.block_size, b),
+                    chunk.clone(),
+                    self.shared_budget,
+                );
+            }
             if self.blocks.insert(b, chunk).is_none() {
                 self.order.push_back(b);
             }
@@ -2186,6 +2274,7 @@ impl Shared {
             let mut data = held.to_vec();
             if from <= last {
                 let fetched = self.client.fetch(Some((from, last))).map_err(io::Error::other)?;
+                self.observe_source();
                 match fetched.status {
                     206 if fetched.data.len() as u64 == last - from + 1 => data.extend_from_slice(&fetched.data),
                     200 if fetched.data.len() as u64 == self.len => {
@@ -2208,6 +2297,7 @@ impl Shared {
 
     /// Copies the bytes at `pos` into `buf`, fetching what is missing. Returns the count copied.
     fn read_at(&mut self, pos: u64, buf: &mut [u8]) -> io::Result<usize> {
+        self.client.check_cached_consent().map_err(io::Error::other)?;
         if pos >= self.len || buf.is_empty() {
             return Ok(0);
         }
@@ -2282,6 +2372,7 @@ impl Shared {
     /// Writes the whole file to `out`: the bytes held from its start, then the rest in one
     /// request (see [`Client::stream_range`]).
     fn copy_to(&mut self, out: &mut dyn io::Write) -> Result<()> {
+        self.client.check_cached_consent()?;
         if let Some(whole) = &self.whole {
             out.write_all(whole)?;
             return Ok(());
@@ -2304,6 +2395,7 @@ impl Shared {
         }
         if at < self.len {
             self.client.stream_range(at, self.len - 1, out)?;
+            self.observe_source();
         }
         Ok(())
     }
@@ -2435,6 +2527,39 @@ pub(crate) fn test_routes_with(make_routes: impl FnOnce(&str) -> Vec<TestRoute>)
 mod tests {
     use super::*;
     use crate::vsi::listing::{xml_elements, xml_unescape};
+
+    #[test]
+    fn response_origin_changes_invalidate_all_cached_parts() {
+        let mut cache = FileCache::new();
+        cache.store(("source", "https://b.example/item.json"), 128, Slot::Block(64, 0), Arc::from(&b"bbbb"[..]), 1024);
+        cache.store(("source", "https://a.example/item.json"), 128, Slot::Block(32, 0), Arc::from(&b"aaaa"[..]), 1024);
+        let file = cache.files.get("source").unwrap();
+        assert!(!file.blocks.contains_key(&(64, 0)));
+        assert_eq!(file.blocks[&(32, 0)].as_ref(), b"aaaa");
+        assert_eq!(cache.bytes, 4);
+        cache.store(("source", "https://A.example:443/other.json"), 128, Slot::Block(64, 1), Arc::from(&b"same"[..]), 1024);
+        assert!(cache.files["source"].blocks.contains_key(&(32, 0)), "equivalent normalized origins keep their parts");
+        assert_eq!(cache.bytes, 8);
+    }
+
+    #[test]
+    fn document_fetch_refuses_a_cached_prefix_from_another_origin() {
+        let _serial = cache_test_guard();
+        let (base, _) = test_server(vec![b'a'; 64 * 1024]);
+        let remote = Remote::Url(format!("{base}/item.json"));
+        let key = Client::new(&remote, HttpOptions::from_env()).cache_key();
+        file_cache().store(
+            (&key, "https://other.example/item.json"),
+            64 * 1024,
+            Slot::Prefix,
+            Arc::from(vec![b'b'; FIRST_READ as usize]),
+            1 << 20,
+        );
+        let error = get_file_response(&remote, Redirects::Any).err().unwrap();
+        assert!(matches!(error, Error::InvalidArgument(ref message) if message.contains("different response origins")), "{error}");
+        let fresh = get_file_response(&remote, Redirects::Any).unwrap();
+        assert!(fresh.body.iter().all(|byte| *byte == b'a'), "mixed cached parts were discarded");
+    }
 
     #[test]
     fn reads_retry_after() {

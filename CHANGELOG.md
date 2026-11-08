@@ -92,7 +92,9 @@
   or cross-origin custom HTTP headers. Checks include declared assets during metadata reads and
   concrete deferred tile opens, nested native sources and cached readers after settings change.
   Export and overview reads enforce the same policy, including parallel tile workers. Asset
-  checks use the final response origin after redirects.
+  checks use the final response origin after redirects. Actual clients check resolved credentials
+  before requests; cached parts retain consistent provenance. Layer listing rejects raster pointers
+  from metadata, without reading their pixels or traversing catalog children.
   Native public unsigned cloud reads remain supported, including S3 with
   `AWS_NO_SIGN_REQUEST=YES`. GDAL asset reads selected by remote documents always require the
   opt-in because GDAL can follow nested sources and use additional credentials. Named STAC,

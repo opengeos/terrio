@@ -86,13 +86,38 @@ fn fetch_as(loc: &str, link: bool) -> Result<(Vec<u8>, String)> {
             } else {
                 crate::http::get_capped_response(&remote, crate::http::json_max_size(), link_redirects(link))
             }
-            .map(|response| (response.body, if matches!(l, Location::S3 { .. }) { loc.to_string() } else { response.url }))
+            .map(|response| {
+                let location = if matches!(l, Location::S3 { .. }) {
+                    loc.to_string()
+                } else {
+                    azure_document_location(loc, &remote, &response.url).unwrap_or(response.url)
+                };
+                (response.body, location)
+            })
         }
         _ => {
             let local = crate::vfs::resolve(loc)?;
             Ok((std::fs::read(local.path())?, loc.to_string()))
         }
     }
+}
+
+/// Preserve provider authentication for relative Azure targets, only while the wire origin
+/// remains the configured store. Rebase same-origin path redirects within that endpoint.
+#[cfg(remote)]
+fn azure_document_location(location: &str, remote: &crate::http::Remote, response: &str) -> Option<String> {
+    let rest = location.strip_prefix("az://").or_else(|| location.strip_prefix("/vsiaz/"))?;
+    let crate::http::Remote::Url(asked) = remote else { return None };
+    let asked = asked.strip_prefix(crate::http::azure_bearer_prefix()).unwrap_or(asked);
+    if crate::vfs::url_origin(asked) != crate::vfs::url_origin(response) {
+        return None;
+    }
+    let path = if crate::config::get("AZURE_STORAGE_ACCOUNT").is_some() { rest } else { rest.split_once('/')?.1 };
+    let path = path.split(['?', '#']).next()?;
+    let endpoint = asked.split(['?', '#']).next()?.strip_suffix(path)?;
+    let redirected = response.split(['?', '#']).next()?.strip_prefix(endpoint)?;
+    let logical = location.split(['?', '#']).next()?.strip_suffix(path)?;
+    Some(format!("{logical}{redirected}"))
 }
 
 /// How the requests of a link a document chose follow redirects: to the origin [`may_follow`]
@@ -343,7 +368,9 @@ pub(crate) fn names_local_files(doc_loc: &str, href: &str) -> bool {
 #[derive(Clone)]
 pub(crate) struct AssetReadPolicy {
     document: String,
-    same_origin_allowed: bool,
+    same_origin_allowed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(remote)]
+    source: String,
     credentialed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -382,7 +409,8 @@ impl AssetReadPolicy {
         // A nested document must not replace the original catalog's origin and thereby turn
         // a cross-origin authenticated read into a same-origin exemption.
         let document = inherited.as_ref().map_or(document, |p| p.document.as_str());
-        let same_origin_allowed = inherited.as_ref().is_none_or(|policy| policy.same_origin_allowed);
+        let same_origin_allowed =
+            inherited.as_ref().is_none_or(|policy| policy.same_origin_allowed.load(std::sync::atomic::Ordering::Relaxed));
         check_asset_access_with_origin(document, href, same_origin_allowed)?;
         if local_backed(&crate::vfs::Location::parse(document)) {
             return Ok(None);
@@ -393,27 +421,65 @@ impl AssetReadPolicy {
         let credentialed = false;
         // Nested eager opens can finish before their pixels become a lazy memory raster.
         // Share the requirement so an inner GDAL/authenticated read marks its parent too.
-        let same_origin_allowed = same_origin_allowed
-            && crate::vfs::url_origin(document).is_some()
-            && crate::vfs::url_origin(document) == crate::vfs::url_origin(href);
+        let same_origin_allowed =
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(same_origin_allowed && same_http_asset_origin(document, href)));
         let document = document.to_string();
         let required = inherited.map(|p| p.credentialed).unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
         if credentialed {
             required.store(true, std::sync::atomic::Ordering::Relaxed);
         }
-        Ok(Some(Self { document, same_origin_allowed, credentialed: required }))
+        Ok(Some(Self {
+            document,
+            same_origin_allowed,
+            #[cfg(remote)]
+            source: href.to_string(),
+            credentialed: required,
+        }))
     }
 
-    pub(crate) fn enter(&self) -> Result<AssetReadScope> {
-        // Existing clients retain their original auth. New nested opens resolve current
-        // credentials in for_asset; cached reads need only the captured requirement.
+    pub(crate) fn check_consent(&self) -> Result<()> {
         if self.credentialed.load(std::sync::atomic::Ordering::Relaxed) && !option_on("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS") {
             return Err(Error::InvalidArgument(
                 "STAC: cached credentialed asset requires TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES".into(),
             ));
         }
+        Ok(())
+    }
+
+    pub(crate) fn enter(&self) -> Result<AssetReadScope> {
+        self.check_consent()?;
         let previous = ASSET_READ_POLICY.with(|p| p.replace(Some(self.clone())));
         Ok(AssetReadScope { previous, _thread: std::marker::PhantomData })
+    }
+
+    #[cfg(remote)]
+    pub(crate) fn check_client(&self, url: &str, authenticated: bool, native_cloud: bool) -> Result<()> {
+        let cloud = cloud_aliases(&self.source);
+        let exempt = self.same_origin_allowed.load(std::sync::atomic::Ordering::Relaxed)
+            && !native_cloud
+            && !cloud.0
+            && !cloud.1
+            && !cloud.2
+            && same_http_asset_origin(&self.document, url);
+        if authenticated && !exempt {
+            self.credentialed.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.check_consent()
+    }
+
+    #[cfg(remote)]
+    pub(crate) fn has_ambient_query(&self, url: &str) -> bool {
+        let Some((_, query)) = url.split_once('?') else { return false };
+        // A signed archive href can have a member suffix after its query. Credentials already
+        // present in that href belong to the document, rather than the caller's configuration.
+        cloud_aliases(&self.source).2 && !self.source.contains(&format!("?{query}"))
+    }
+
+    #[cfg(remote)]
+    pub(crate) fn observe_response(&self, requested: &str, response: &str) {
+        if crate::vfs::url_origin(requested) != crate::vfs::url_origin(response) {
+            self.same_origin_allowed.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     pub(crate) fn enter_nested(path: &str) -> Result<Option<AssetReadScope>> {
@@ -485,7 +551,7 @@ pub(crate) fn check_gdal_asset_read() -> Result<()> {
 /// credentials, not a signature already present in the document's href or public PC signing.
 /// Local-file and credential refusals are terminal, including through the GDAL fallback.
 pub(crate) fn check_asset_access(doc_loc: &str, href: &str) -> Result<()> {
-    let allowed = AssetReadPolicy::current().is_none_or(|policy| policy.same_origin_allowed);
+    let allowed = AssetReadPolicy::current().is_none_or(|policy| policy.same_origin_allowed.load(std::sync::atomic::Ordering::Relaxed));
     check_asset_access_with_origin(doc_loc, href, allowed)
 }
 
@@ -564,6 +630,47 @@ pub(crate) fn keep_remote_refusal<T>(location: &str, result: Result<T>) -> Resul
     })
 }
 
+fn same_http_asset_origin(document: &str, href: &str) -> bool {
+    let cloud = cloud_aliases(document);
+    if cloud.0 || cloud.1 || cloud.2 {
+        return false;
+    }
+    fn backing(location: &crate::vfs::Location) -> &crate::vfs::Location {
+        match location {
+            crate::vfs::Location::Zip { archive, .. } => backing(archive),
+            other => other,
+        }
+    }
+    let (document, asset) = (crate::vfs::Location::parse(document), crate::vfs::Location::parse(href));
+    match (backing(&document), backing(&asset)) {
+        (crate::vfs::Location::Url(from), crate::vfs::Location::Url(to)) => {
+            #[cfg(remote)]
+            let (from, to) = (
+                from.strip_prefix(crate::http::azure_bearer_prefix()).unwrap_or(from),
+                to.strip_prefix(crate::http::azure_bearer_prefix()).unwrap_or(to),
+            );
+            crate::vfs::url_origin(from).is_some() && crate::vfs::url_origin(from) == crate::vfs::url_origin(to)
+        }
+        _ => false,
+    }
+}
+
+fn cloud_aliases(href: &str) -> (bool, bool, bool) {
+    let mut provider = href;
+    while let Some(rest) = provider.strip_prefix("/vsizip/") {
+        provider = rest.strip_prefix('{').unwrap_or(rest);
+    }
+    #[cfg(remote)]
+    let marked_azure = provider.starts_with(crate::http::azure_bearer_prefix());
+    #[cfg(not(remote))]
+    let marked_azure = false;
+    (
+        provider.starts_with("s3://") || provider.starts_with("/vsis3/"),
+        provider.starts_with("gs://") || provider.starts_with("/vsigs/"),
+        provider.starts_with("az://") || provider.starts_with("azure://") || provider.starts_with("/vsiaz/") || marked_azure,
+    )
+}
+
 /// A backing object, including one inside nested zip archives, that would use ambient auth.
 #[cfg(remote)]
 fn asset_uses_credentials_with_origin(doc_loc: &str, href: &str, same_origin_allowed: bool) -> bool {
@@ -576,19 +683,11 @@ fn asset_uses_credentials_with_origin(doc_loc: &str, href: &str, same_origin_all
     }
     let location = Location::parse(href);
     let object = backing(&location);
-    // Preserve the provider spelling too: gs:// and az:// become ordinary URLs in Location.
-    let s3 = matches!(object, Location::S3 { .. });
-    let mut provider = href;
-    while let Some(rest) = provider.strip_prefix("/vsizip/") {
-        provider = rest.strip_prefix('{').unwrap_or(rest);
-    }
-    let gs = provider.starts_with("gs://") || provider.starts_with("/vsigs/");
-    let az = provider.starts_with("az://") || provider.starts_with("azure://") || provider.starts_with("/vsiaz/");
+    let aliases = cloud_aliases(href);
+    let s3 = matches!(object, Location::S3 { .. }) || aliases.0;
+    let (gs, az) = (aliases.1, aliases.2);
     let cloud = s3 || gs || az;
-    let same_http_origin = match (backing(&Location::parse(doc_loc)), object) {
-        (Location::Url(from), Location::Url(to)) => crate::vfs::url_origin(from) == crate::vfs::url_origin(to),
-        _ => false,
-    };
+    let same_http_origin = same_http_asset_origin(doc_loc, href);
     // Same-origin ordinary HTTP assets keep their existing header authentication. Cloud URI
     // assets require consent even when the document is held in the same bucket/account.
     // Do not resolve unrelated cloud profiles for same-origin ordinary HTTP assets.
@@ -1692,6 +1791,48 @@ fn footprint_dataset(doc: Value, path: &str, max_items: usize) -> Result<(Vector
     Ok((crate::dataset::finish_vector(vec![layer], path, VectorDriver::GeoJSON), groups))
 }
 
+/// Lists pointer metadata without opening raster assets or traversing a catalog's children.
+pub(crate) fn list_layers(path: &str) -> Option<Result<Vec<String>>> {
+    let raster = || Error::Unsupported("a raster has no vector layers".into());
+    match parse_name(path) {
+        Some(Name::Asset { item, asset }) => {
+            return Some(asset_target(&item, &asset).and_then(|(href, item)| {
+                with_asset_read(&item, &href, || {
+                    // A bounded header rejects known raster-only assets before vector listing
+                    // could materialize them. Vector containers keep their fast layer queries.
+                    #[cfg(fs)]
+                    if crate::inspection::identify_unjudged(&href, false)?
+                        .is_some_and(|found| !found.kinds.contains(&crate::formats::Kind::Vector))
+                    {
+                        return Err(raster());
+                    }
+                    crate::list_layers(&href)
+                })
+            }));
+        }
+        Some(Name::Mosaic { source, filters }) => {
+            return Some((|| {
+                filters.check()?;
+                search_request(&source, &filters).fetch(false)?;
+                Err(raster())
+            })());
+        }
+        None => {}
+    }
+    if let Some(location) = crate::stacta::document_location(path) {
+        return Some(location.and_then(|location| fetch_json(&location)).and_then(|_| Err(raster())));
+    }
+    Some(match probe(path)? {
+        Ok(Probe::Stac(doc, location)) => Ok(vec![layer_name(&doc, &location)]),
+        Ok(Probe::Stacta(_)) => keep_remote_refusal(path, Err(raster())),
+        Ok(Probe::Other(dataset)) => match *dataset {
+            Dataset::Vector(vector) => Ok(vector.layers.into_iter().map(|layer| layer.name).collect()),
+            Dataset::Raster(_) => Err(raster()),
+        },
+        Err(error) => Err(error),
+    })
+}
+
 /// Opens a STAC dataset name or document. `None` when `path` is neither.
 pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
     open_document(path, false)
@@ -1922,6 +2063,11 @@ mod tests {
                         assert!(reader.read_mask(window, None).is_err());
                         assert!(reader.read_resampled(&crate::ResampledReadOptions { size: (1, 1), ..Default::default() }).is_err());
                         assert!(reader.overview_resampling().is_none());
+                        assert!(
+                            reader
+                                .read_resampled_by_band(&crate::ResampledReadOptions { size: (1, 1), bands: vec![1], ..Default::default() })
+                                .is_err()
+                        );
                         let output = tempfile::tempdir().unwrap();
                         let path = output.path().join("revoked.tif");
                         assert!(reader.write(path.to_str().unwrap(), &Default::default()).is_err());
@@ -2044,6 +2190,267 @@ mod tests {
             ],
             || check_asset_access("https://catalog.example/item.json", "az://public/data.tif").unwrap(),
         );
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn layer_listing_reads_pointer_metadata_without_raster_assets_or_catalog_children() {
+        let (asset, seen) = crate::http::test_server(include_bytes!("../tests/data/resampled_reads/rgb_mask.tif").to_vec());
+        let item = json!({"type":"Feature", "stac_version":"1.0.0", "id":"x", "collection":"c", "geometry":null,
+            "properties":{"datetime":"2026-01-01T00:00:00Z", "proj:epsg":32615,"proj:bbox":[0,0,64,48],"proj:shape":[48,64]},
+            "assets":{"data":{"href":format!("{asset}/data.tif")}}});
+        let tiled = json!({"type":"Feature", "stac_version":"1.0.0", "stac_extensions":["tiled-assets"],
+            "properties":{"tiles:tile_matrix_sets":{"Quad":{}}},
+            "asset_templates":{"data":{"href":format!("{asset}/{{TileMatrix}}/{{TileRow}}/{{TileCol}}.tif")}}});
+        let catalog = json!({"type":"Catalog","stac_version":"1.0.0","id":"catalog","links":[{"rel":"item","href":"item.json"}]});
+        let (base, documents) = crate::http::test_routes(vec![
+            ("/item.json".into(), 200, Vec::new(), serde_json::to_vec(&item).unwrap()),
+            ("/tiled.json".into(), 200, Vec::new(), serde_json::to_vec(&tiled).unwrap()),
+            ("/catalog.json".into(), 200, Vec::new(), serde_json::to_vec(&catalog).unwrap()),
+        ]);
+        for path in
+            [format!("STACIT:\"{base}/item.json\":asset=data"), format!("STACTA:\"{base}/tiled.json\""), format!("{base}/tiled.json")]
+        {
+            assert!(crate::list_layers(&path).is_err());
+        }
+        assert!(seen.lock().unwrap().is_empty(), "listing raster pointers must never open their assets");
+        let before = documents.lock().unwrap().iter().filter(|(request, _)| request.contains("/item.json")).count();
+        assert_eq!(crate::list_layers(&format!("{base}/catalog.json")).unwrap(), ["catalog"]);
+        assert_eq!(
+            documents.lock().unwrap().iter().filter(|(request, _)| request.contains("/item.json")).count(),
+            before,
+            "layer names do not need catalog children"
+        );
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn actual_client_headers_are_checked_after_the_preflight_snapshot() {
+        use std::io::Read;
+        let (base, seen) = crate::http::test_server(vec![7; 1024]);
+        let href = format!("{base}/private.bin");
+        crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+            let policy = AssetReadPolicy::for_asset("https://catalog.example/item.json", &href).unwrap().unwrap();
+            let _scope = policy.enter().unwrap();
+            crate::http::set_path_specific_option(&href, "GDAL_HTTP_HEADERS", Some("X-Key: synthetic-secret"));
+            let error = crate::http::RangeReader::open(&crate::http::Remote::Url(href.clone())).unwrap_err();
+            assert!(matches!(error, Error::InvalidArgument(_)), "{error}");
+            assert!(seen.lock().unwrap().is_empty());
+            let mut reader = crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "YES")], || {
+                crate::http::RangeReader::open(&crate::http::Remote::Url(href.clone())).unwrap()
+            });
+            crate::http::clear_path_specific_options(Some(&href));
+            let before = seen.lock().unwrap().len();
+            assert!(reader.read_exact(&mut [0; 1]).is_err(), "actual client auth remains tracked after removal");
+            assert_eq!(seen.lock().unwrap().len(), before);
+        });
+        crate::http::clear_path_specific_options(Some(&href));
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn redirected_virtual_assets_keep_crossing_state_for_cached_downloads() {
+        let (base, requests) = crate::http::test_routes_with(|base| {
+            let vrt = format!(
+                r#"<VRTDataset rasterXSize="1" rasterYSize="1"><VRTRasterBand dataType="Byte" band="1"><SimpleSource><SourceFilename relativeToVRT="0">{base}/private.tif</SourceFilename><SourceBand>1</SourceBand><SrcRect xOff="0" yOff="0" xSize="1" ySize="1"/><DstRect xOff="0" yOff="0" xSize="1" ySize="1"/></SimpleSource></VRTRasterBand></VRTDataset>"#
+            );
+            let (other, _) = crate::http::test_routes(vec![("/public.vrt".into(), 200, Vec::new(), vrt.into_bytes())]);
+            vec![("/moved.vrt".into(), 302, vec![("Location".into(), format!("{other}/public.vrt"))], Vec::new())]
+        });
+        let private = format!("{base}/private.tif");
+        crate::http::set_path_specific_option(&private, "GDAL_HTTP_HEADERS", Some("X-Key: synthetic-secret"));
+        crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+            for _ in 0..2 {
+                let mut reader = with_asset_read(&format!("{base}/item.json"), &format!("{base}/moved.vrt"), || {
+                    LazyRaster::open(&format!("{base}/moved.vrt"))
+                })
+                .unwrap();
+                assert!(AssetReadPolicy::current().is_none());
+                assert!(reader.read().is_err());
+            }
+        });
+        assert!(requests.lock().unwrap().iter().all(|(request, _)| !request.contains("/private.tif")));
+        crate::http::clear_path_specific_options(Some(&private));
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn virtual_export_planning_cannot_cache_a_local_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let private = dir.path().join("private.tif");
+        std::fs::write(&private, include_bytes!("../tests/data/resampled_reads/rgb_mask.tif")).unwrap();
+        let vrt = format!(
+            r#"<VRTDataset rasterXSize="1" rasterYSize="1"><VRTRasterBand dataType="Byte" band="1"><SimpleSource><SourceFilename relativeToVRT="0">{}</SourceFilename><SourceBand>1</SourceBand><SrcRect xOff="0" yOff="0" xSize="1" ySize="1"/><DstRect xOff="0" yOff="0" xSize="1" ySize="1"/></SimpleSource></VRTRasterBand></VRTDataset>"#,
+            private.display()
+        );
+        let (base, _) = crate::http::test_server(vrt.into_bytes());
+        let href = format!("{base}/public.vrt");
+        let mut reader = with_asset_read("https://catalog.example/item.json", &href, || LazyRaster::open(&href)).unwrap();
+        let output = dir.path().join("output.tif");
+        assert!(reader.write(output.to_str().unwrap(), &Default::default()).is_err());
+        assert!(reader.read().is_err(), "planning must not retain a trusted local handle");
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn azure_relative_targets_keep_authentication_after_path_redirects() {
+        let item = serde_json::to_vec(&json!({"type":"Feature", "stac_version":"1.0.0", "id":"x", "geometry":null,
+            "properties":{}, "assets":{"data":{"href":"./data.tif"}}}))
+        .unwrap();
+        let (base, requests) = crate::http::test_routes(vec![
+            ("/container/item.json".into(), 302, vec![("Location".into(), "/container/new/item.json".into())], Vec::new()),
+            ("/container/new/item.json".into(), 200, Vec::new(), item),
+            ("/container/new/data.tif".into(), 200, Vec::new(), include_bytes!("../tests/data/resampled_reads/rgb_mask.tif").to_vec()),
+        ]);
+        for (sas, bearer) in [("sig=synthetic-sas", ""), ("", "synthetic-bearer")] {
+            crate::config::with_options(
+                &[
+                    ("AZURE_STORAGE_ACCOUNT", "synthetic"),
+                    ("CPL_AZURE_ENDPOINT", &base),
+                    ("AZURE_STORAGE_CONNECTION_STRING", ""),
+                    ("AZURE_STORAGE_SAS_TOKEN", sas),
+                    ("TERRIO_AZURE_ACCESS_TOKEN", bearer),
+                    ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "YES"),
+                ],
+                || {
+                    let (href, document) = asset_target("az://container/item.json", "data").unwrap();
+                    assert_eq!(document, "az://container/new/item.json");
+                    assert_eq!(href, "az://container/new/data.tif");
+                    with_asset_read(&document, &href, || LazyRaster::open(&href))
+                        .unwrap()
+                        .read_window(Window::full(1, 1), &Default::default())
+                        .unwrap();
+                },
+            );
+        }
+        let reached = requests.lock().unwrap();
+        assert!(reached.iter().any(|(line, _)| line.contains("/container/new/data.tif?sig=synthetic-sas")));
+        assert!(reached.iter().any(|(line, headers)| line.contains("/container/new/data.tif")
+            && headers.iter().any(|(name, value)| name == "authorization" && value == "Bearer synthetic-bearer")));
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn sharing_after_an_overview_uses_owned_alpha_metadata_without_io() {
+        let (base, seen) = crate::http::test_server(include_bytes!("../tests/data/resampled_reads/rgba.tif").to_vec());
+        crate::config::with_options(
+            &[
+                ("AWS_ACCESS_KEY_ID", "synthetic-key"),
+                ("AWS_SECRET_ACCESS_KEY", "synthetic-secret"),
+                ("AWS_REGION", "us-east-1"),
+                ("AWS_NO_SIGN_REQUEST", "NO"),
+                ("AWS_S3_ENDPOINT", &base),
+                ("AWS_VIRTUAL_HOSTING", "FALSE"),
+                ("TERRIO_HTTP_BLOCK_SIZE", "64"),
+                ("TERRIO_HTTP_CACHE_SIZE", "1024"),
+                ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "YES"),
+            ],
+            || {
+                let href = "s3://private/rgba.tif";
+                let mut reader = with_asset_read("https://catalog.example/item.json", href, || LazyRaster::open(href)).unwrap();
+                assert!(!reader.overviews().is_empty());
+                reader.read_window(Window::full(1, 1), &WindowOptions { overview: Some(0), ..Default::default() }).unwrap();
+                let before = seen.lock().unwrap().len();
+                crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+                    let mut alias = reader.shared();
+                    assert_eq!(alias.alpha_band(), Some(4));
+                    assert!(alias.read_window(Window::full(1, 1), &Default::default()).is_err());
+                    assert!(
+                        reader
+                            .read_resampled_by_band(&crate::ResampledReadOptions { size: (1, 1), bands: vec![1], ..Default::default() })
+                            .is_err()
+                    );
+                });
+                assert_eq!(seen.lock().unwrap().len(), before, "sharing and refused metadata reads issue no requests");
+            },
+        );
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn signed_azure_archive_hrefs_do_not_become_ambient_credentials() {
+        use std::io::Read;
+        let (base, _) = crate::http::test_server(vec![7]);
+        let options = [
+            ("AZURE_STORAGE_ACCOUNT", Some("synthetic".to_string())),
+            ("CPL_AZURE_ENDPOINT", Some(base.clone())),
+            ("AZURE_STORAGE_CONNECTION_STRING", None),
+            ("AZURE_STORAGE_SAS_TOKEN", None),
+            ("TERRIO_AZURE_ACCESS_TOKEN", None),
+            ("AZURE_STORAGE_ACCESS_TOKEN", None),
+            ("AZURE_NO_SIGN_REQUEST", Some("YES".to_string())),
+            ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", Some("NO".to_string())),
+        ];
+        crate::config::push_scope(options.into_iter().map(|(key, value)| (key.to_string(), value)).collect());
+        struct Pop;
+        impl Drop for Pop {
+            fn drop(&mut self) {
+                crate::config::pop_scope();
+            }
+        }
+        let _scope = Pop;
+        let archive = "az://container/archive.zip?sig=document-sas";
+        let location = crate::vfs::Location::parse(archive);
+        let remote = match &location {
+            crate::vfs::Location::Zip { archive, .. } => archive.remote().unwrap(),
+            other => other.remote().unwrap(),
+        };
+        let href = format!("/vsizip/{{{archive}}}/data.tif");
+        with_asset_read("https://catalog.example/item.json", &href, || {
+            let mut reader = crate::http::RangeReader::open(&remote)?;
+            let mut byte = [0];
+            reader.read_exact(&mut byte)?;
+            assert_eq!(byte, [7]);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn actual_s3_credentials_do_not_use_an_http_origin_exemption() {
+        let (base, seen) = crate::http::test_server(vec![7]);
+        crate::config::with_options(
+            &[
+                ("AWS_ACCESS_KEY_ID", "synthetic-key"),
+                ("AWS_SECRET_ACCESS_KEY", "synthetic-secret"),
+                ("AWS_REGION", "us-east-1"),
+                ("AWS_NO_SIGN_REQUEST", "NO"),
+                ("AWS_S3_ENDPOINT", &base),
+                ("AWS_VIRTUAL_HOSTING", "FALSE"),
+                ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO"),
+            ],
+            || {
+                with_asset_read(&format!("{base}/item.json"), &format!("{base}/public.vrt"), || {
+                    let remote = crate::vfs::Location::parse("s3://private/data.tif").remote().unwrap();
+                    let error = crate::http::RangeReader::open(&remote).unwrap_err();
+                    assert!(matches!(error, Error::InvalidArgument(_)), "{error}");
+                    Ok(())
+                })
+                .unwrap();
+            },
+        );
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn azure_bearer_marker_is_a_cloud_alias_during_document_preflight() {
+        let (base, seen) = crate::http::test_server(Vec::new());
+        crate::config::with_options(
+            &[
+                ("CPL_AZURE_ENDPOINT", &base),
+                ("AZURE_STORAGE_CONNECTION_STRING", ""),
+                ("TERRIO_AZURE_ACCESS_TOKEN", "synthetic-bearer"),
+                ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO"),
+            ],
+            || {
+                let href = format!("{}{base}/private.tif", crate::http::azure_bearer_prefix());
+                let doc = json!({"type":"Feature","stac_version":"1.0.0","assets":{"data":{"href":href}}});
+                assert!(matches!(check_document_assets(&doc, &format!("{base}/item.json")), Err(Error::InvalidArgument(_))));
+            },
+        );
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     /// Ordinary GeoJSON property names do not identify a STAC pointer document.

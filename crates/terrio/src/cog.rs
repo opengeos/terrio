@@ -490,6 +490,7 @@ impl LazyRaster {
     }
 
     pub(crate) fn input_paths(&self) -> Result<Vec<String>> {
+        let _scope = self.enter_asset_read()?;
         let mut paths = match &self.inner {
             Inner::Tiff(t) => {
                 let mut paths = t.file.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>();
@@ -833,14 +834,7 @@ impl LazyRaster {
     /// Uses the already open reader, including remote and sparse TIFFs.
     pub(crate) fn alpha_band(&mut self) -> Option<usize> {
         match &mut self.inner {
-            Inner::Tiff(t) => {
-                let ifd = t.levels[0].ifd;
-                if t.current_ifd != ifd {
-                    t.decoder.seek_to_image(ifd).ok()?;
-                    t.current_ifd = ifd;
-                }
-                t.decoder.get_tag_u16_vec(Tag::ExtraSamples).ok()?.last().is_some_and(|sample| matches!(*sample, 1 | 2)).then_some(t.bands)
-            }
+            Inner::Tiff(t) => t.alpha,
             Inner::Memory(ds) | Inner::Source(ds, _) if ds.driver == RasterDriver::PNG && matches!(ds.raster.bands, 2 | 4) => {
                 Some(ds.raster.bands)
             }
@@ -1004,6 +998,7 @@ impl LazyRaster {
     /// The rows strips of the full-resolution image are best made of (a multiple of), so that each
     /// block of the files it reads is read once: a GeoTIFF's block height, or a VRT's sources'.
     pub(crate) fn row_alignment(&mut self) -> Option<usize> {
+        let _scope = self.enter_asset_read().ok()?;
         match &mut self.inner {
             Inner::Tiff(t) => Some(t.levels[0].block.1),
             Inner::Memory(_) => None,
@@ -1939,6 +1934,7 @@ struct TiffRaster {
     bands: usize,
     /// The samples per pixel of the file's images.
     samples: usize,
+    alpha: Option<usize>,
     /// 8-bit CMYK, read as GDAL reads it: RGBA (see [`cmyk_to_rgba`]).
     cmyk: bool,
     /// The type of the samples, or of their parts when they are complex.
@@ -2019,6 +2015,12 @@ impl TiffRaster {
         let cmyk = reads_cmyk_as_rgba(&mut dec, samples, data_type)?;
         // A complex sample is two bands: its real and its imaginary parts.
         let bands = if cmyk { 4 } else { samples * if complex { 2 } else { 1 } };
+        let alpha = dec
+            .get_tag_u16_vec(Tag::ExtraSamples)
+            .ok()
+            .and_then(|samples| samples.last().copied())
+            .is_some_and(|sample| matches!(sample, 1 | 2))
+            .then_some(bands);
         let bits = dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
         let (cw, ch) = dec.chunk_dimensions();
         let mut levels = vec![Level {
@@ -2071,6 +2073,7 @@ impl TiffRaster {
             tags,
             bands,
             samples,
+            alpha,
             cmyk,
             data_type,
             complex,

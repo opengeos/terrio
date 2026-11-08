@@ -160,15 +160,20 @@ Remote STAC documents, STACIT mosaics and STACTA tile templates require
 `TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES` before their cloud assets can use configured
 credentials. This includes S3 keys and shared AWS profiles, Azure SAS/bearer tokens, and configured
 HTTP headers (including path-specific headers). Any custom header is treated as potential
-authentication because API keys can use arbitrary names. Ordinary HTTP assets on the document's own
-origin retain their header authentication; cloud URI assets require consent even in the same
-bucket/account. Local documents retain credentialed access.
+authentication because API keys can use arbitrary names. Ordinary HTTP document/asset chains on
+the same origin retain their header authentication; cloud URI assets require consent even in the same
+bucket/account. Cloud URI document chains also require consent for configured HTTP headers.
+Local documents retain credentialed access.
 For catalog-link traversal, the exemption uses each fetched document's final response origin,
 including after redirects. Subdataset names keep the caller's requested location, so a redirect
-does not add a server-issued signed URL to those names. Following a
+does not add a server-issued signed URL to those names. These names are live references; reopening
+can observe changed server results. Following a
 cross-origin child requires `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES` and already sends configured
 headers to that child. Nested raster/asset-selected documents instead retain their selecting
-origin throughout the scoped asset read. Once that asset chain crosses origins, nested sources
+origin throughout the scoped asset read. Actual clients check the credentials they resolved before
+sending each request. Redirect crossings remain attached to deferred readers and cached downloads.
+A cache origin change discards older parts, and document reads reject mixed-origin bytes.
+Once that asset chain crosses origins, nested sources
 require consent for configured headers even if they point back to the original origin.
 
 Checks run while parsing the document, including assets that were not selected, so metadata listing
@@ -176,7 +181,9 @@ also requires consent when such assets are declared. Deferred mosaic opens and c
 and nested native raster sources are checked too. Cached readers retain the original consent
 requirement, even after credentials are removed or unsigned reads are enabled. Export, overview
 metadata and resampled reads enforce it before source I/O; parallel readers carry the policy and
-the options in effect when the read starts. Without credentials,
+the options in effect when the read starts. Sharing uses owned alpha metadata rather than seeking
+the TIFF again. Azure URI documents retain provider authentication for relative targets within the
+configured endpoint, including after a same-origin path redirect. Without credentials,
 public cloud hrefs remain usable. With AWS credentials configured, `AWS_NO_SIGN_REQUEST=YES` keeps
 public S3 reads unsigned and does not require the opt-in (custom authentication headers still need
 consent). A signature already in an href and public Planetary Computer signing are not ambient user
