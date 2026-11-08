@@ -1555,10 +1555,15 @@ fn warp(
         fn with_dataset(&self, visit: &mut dyn FnMut(&RasterDataset)) -> terrio::Result<bool> {
             match self {
                 Self::File(r) => terrio::ops::warp::WarpSource::with_dataset(r.as_ref(), visit),
-                Self::Python(obj) => Python::attach(|py| {
-                    let r = obj.bind(py).try_borrow().map_err(|e| terrio::Error::InvalidArgument(e.to_string()))?;
-                    terrio::ops::warp::WarpSource::with_dataset(&r.inner, visit)
-                }),
+                // The pixels are shared, not copied, and visited (the whole warp, for a raster in
+                // memory) without the GIL, so that warps run in parallel from Python threads.
+                Self::Python(obj) => {
+                    let shared = Python::attach(|py| {
+                        let r = obj.bind(py).try_borrow().map_err(|e| terrio::Error::InvalidArgument(e.to_string()))?;
+                        Ok::<_, terrio::Error>(r.inner.shared_dataset())
+                    })?;
+                    Ok(shared.map(|ds| visit(&ds)).is_some())
+                }
             }
         }
         fn info(&mut self) -> terrio::Result<terrio::ops::warp::WarpSourceInfo> {

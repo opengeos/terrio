@@ -18,6 +18,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 import zipfile
 import zlib
 from pathlib import Path
@@ -839,6 +840,32 @@ def test_dem_path_to_path_releases_the_gil_through_the_guard(tmp_path):
     green = [[0, 100, 50], [100, 0, 100]]
     blue = [[0, 50, 25], [50, 0, 50]]
     assert json.loads(p.stdout) == [red, green, blue]
+
+
+def test_a_warp_of_a_raster_in_memory_releases_the_gil():
+    """`warp` of a `Raster` in memory visits its pixels without the GIL (the warp runs in the
+    guard's release), so Python threads warping arrays run in parallel. While one thread warps,
+    this one keeps running: it records times in the middle half of the warp, which it could not
+    with the GIL held for the whole warp (it would get the GIL back only once the warp returned).
+    No speed threshold decides, only whether the thread ran at all."""
+    data = np.random.default_rng(0).random((3000, 3000), dtype="float32")
+    src = terrio.Raster.from_array(data, (500000.0, 10.0, 0.0, 4000000.0, 0.0, -10.0), "EPSG:32631")
+    span = []
+
+    def warp():
+        span.append(time.perf_counter())
+        terrio.warp(src, t_srs="EPSG:32632", resampling="bilinear")
+        span.append(time.perf_counter())
+
+    thread = threading.Thread(target=warp)
+    seen = []
+    thread.start()
+    while thread.is_alive():
+        seen.append(time.perf_counter())
+    thread.join()
+    start, end = span
+    quarter = (end - start) / 4
+    assert any(start + quarter < t < end - quarter for t in seen), (end - start, len(seen))
 
 
 # Half the width of the Web Mercator world, in meters (EPSG:3857).
