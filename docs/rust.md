@@ -64,7 +64,8 @@ For one band, the index is simply `row * width + col`; there is no row/column tr
 so a window result can be passed directly as a source without reordering its pixels.
 `LazyRaster::read_window` does not retain the dataset mask, so masked-out sample
 values may be treated as valid by `warp`. Floating-point window reads apply the mask
-as NaN. Use `ops::warp::warp_lazy` when dataset masks must affect validity.
+as NaN. When the mask is needed separately, use `LazyRaster::read_mask` with the same
+window and overview selection. This layout note does not describe a masked-warp workflow.
 
 The in-memory layout is independent of TIFF storage. The current native GTiff writer
 used by `write_raster_dataset` defaults to `INTERLEAVE=PIXEL`

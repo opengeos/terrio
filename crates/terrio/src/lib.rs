@@ -136,7 +136,7 @@
 //! the returned window's dimensions and requested band order, including at overview levels.
 //! [`ops::warp::warp`] borrows band-major source rasters and returns a band-major raster; no
 //! reordering is needed between a window read and a warp. [`LazyRaster::read_window`] does not
-//! retain the dataset mask; use [`ops::warp::warp_lazy`] when dataset masks must affect validity.
+//! retain the dataset mask; read it separately with [`LazyRaster::read_mask`] when needed.
 //! Floating-point window reads apply the mask as NaN. A single band uses
 //! `data[row * cols + col]`, without transposing.
 //!
@@ -158,6 +158,8 @@
 //! assert_eq!(planes, vec![1, 2, 3, 4, 11, 12, 13, 14, 21, 22, 23, 24, 31, 32, 33, 34]);
 //! let config = RasterConfig { cols, rows, bands, data_type: DataType::U8, ..Default::default() };
 //! let raster = Raster::from_data_native(config, RasterData::U8(planes))?;
+//! let RasterData::U8(values) = &raster.data else { panic!("expected U8 pixels") };
+//! assert_eq!(values.as_slice(), &[1, 2, 3, 4, 11, 12, 13, 14, 21, 22, 23, 24, 31, 32, 33, 34]);
 //! let ds = RasterDataset::new(raster, false);
 //! # Ok::<(), terrio::Error>(())
 //! ```
