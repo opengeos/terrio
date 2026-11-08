@@ -1778,9 +1778,9 @@ pub struct WarpSourceInfo {
 /// A source whose metadata and selected-resolution windows can be read independently.
 /// Readers are called on the caller's thread; rendering their returned pixels may
 /// run in parallel. This permits bindings to borrow a shared dataset only during
-/// each read, including when it occurs more than once in a mosaic, or, for pixels in memory,
-/// to hand [`WarpSource::with_dataset`] a shared reference to them (an `Arc`) that outlives
-/// any borrow of the binding's object.
+/// each read, including when it occurs more than once in a mosaic. A source may also share
+/// its already-loaded pixels (for example, an `Arc` the binding keeps), so that
+/// [`WarpSource::with_dataset`] can visit them after the binding's object is released.
 pub trait WarpSource {
     /// Visits already-loaded pixels without copying them. Returns false for lazy sources.
     /// The callback runs while any shared-reader borrow remains alive; implementations
