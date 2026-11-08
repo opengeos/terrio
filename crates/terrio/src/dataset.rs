@@ -406,6 +406,7 @@ impl VectorOpenOptions {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open(path: &str) -> Result<Dataset> {
+    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     crate::formats::check_allowed(path, None)?;
     #[cfg(feature = "gdal")]
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
@@ -455,6 +456,7 @@ pub(crate) fn open_native(path: &str) -> Result<Dataset> {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open_raster(path: &str) -> Result<RasterDataset> {
+    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     crate::formats::check_allowed(path, Some(crate::formats::Kind::Raster))?;
     #[cfg(feature = "gdal")]
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
@@ -474,6 +476,7 @@ pub fn open_raster(path: &str) -> Result<RasterDataset> {
 /// decoder and parallel chunk decoders use the selected limit. This TIFF-specific
 /// entry point does not fall back to GDAL or dispatch to other raster formats.
 pub fn open_raster_with_tiff_limits(path: &str, limits: crate::TiffReadLimits) -> Result<RasterDataset> {
+    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     let local = vfs::resolve(path)?;
     crate::geotiff::check_tiff_allowed(local.path(), path)?;
     crate::geotiff::read_geotiff_with_limits(Path::new(local.as_str()), limits)
@@ -607,6 +610,7 @@ fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     options.oapif.validate_source(path)?;
     crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
     #[cfg(feature = "gdal")]
@@ -858,6 +862,7 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
 
 /// The layer names of a vector dataset, without reading the features when the format allows it.
 pub fn list_layers(path: &str) -> Result<Vec<String>> {
+    let _scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
     if let Some(target) = crate::drivers::vector::oapif::service_target(path) {
         #[cfg(remote)]
@@ -891,6 +896,9 @@ pub fn list_layers(path: &str) -> Result<Vec<String>> {
 }
 
 fn list_layers_native(path: &str) -> Result<Vec<String>> {
+    if let Some(result) = crate::stac::list_layers(path) {
+        return result;
+    }
     if is_tile_archive(path) {
         #[cfg(feature = "tiles")]
         return crate::tiles::layer_names(path);
@@ -913,6 +921,11 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
 #[cfg(feature = "gdal")]
 pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(&str) -> Result<T>) -> Result<T> {
     let Err(e) = result else { return result };
+    // A second pointer parser could bypass native STAC asset-consent and local-file policies.
+    // Individual raster assets can still use GDAL through their own ordinary opens.
+    if path.split_once(':').is_some_and(|(prefix, _)| ["STAC", "STACIT", "STACTA"].iter().any(|name| prefix.eq_ignore_ascii_case(name))) {
+        return Err(e);
+    }
     let retry = match &e {
         Error::InvalidArgument(_) | Error::Http(_) => false,
         e if e.is_resource_refusal() => false,
@@ -923,12 +936,25 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     if !retry {
         return Err(e);
     }
+    // Keep an asset-policy refusal terminal and visible, rather than replacing it with the
+    // native format error when a remote STAC-selected raster needs the optional backend.
+    crate::stac::check_gdal_asset_read()?;
     gdal(path).map_err(|gdal_error| if gdal_error.is_resource_refusal() { gdal_error } else { e })
 }
 
 #[cfg(all(test, feature = "gdal"))]
 mod fallback_limits {
     use super::*;
+
+    #[test]
+    fn stac_pointer_refusals_are_not_reinterpreted_by_gdal() {
+        for name in ["STAC:item.json:data", "STACIT:item.json", "STACTA:item.json"] {
+            let result: Result<()> = gdal_fallback(name, Err(Error::InvalidData("invalid pointer metadata".into())), |_| {
+                panic!("STAC policy bypassed by a second pointer parser")
+            });
+            assert!(matches!(result, Err(Error::InvalidData(_))));
+        }
+    }
 
     #[test]
     fn resource_refusals_are_not_retried() {

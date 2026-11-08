@@ -799,6 +799,10 @@ mod tests {
     fn url_passwords_and_key_parameters_are_redacted() {
         let redacted = super::redact_url("https://user:secret@example.com/f.tif?key=AIza123");
         assert_eq!(redacted, "https://example.com/f.tif?<redacted>");
+        assert_eq!(
+            super::redact_url("https://a.example/x?harmless=1 then https://u:secret@b.example/y"),
+            "https://a.example/x?harmless=1 then https://b.example/y"
+        );
         assert_eq!(super::redact_url("https://u:p@example.com"), "https://example.com");
         assert_eq!(super::redact_url("https://user:my pass@host/x"), "https://host/x");
         assert_eq!(

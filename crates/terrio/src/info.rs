@@ -424,6 +424,7 @@ fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
+    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     // Judged as `crate::open` judges a dataset of either kind, by its name and first bytes; a point
     // cloud against the allow-list of its kind (`TERRIO_ALLOWED_DRIVERS` alone), as its reader is.
     #[cfg(feature = "pointcloud")]
