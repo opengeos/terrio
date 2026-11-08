@@ -416,14 +416,16 @@ impl Editor {
                 0x0d => {
                     let (sz, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
                     let (_, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
-                    let local = self.local_len(kind, sz as usize);
-                    n1 + n2 + local + if local < sz as usize { 4 } else { 0 }
+                    let sz = self.payload_size(sz)?;
+                    let local = self.local_len(kind, sz);
+                    n1 + n2 + local + if local < sz { 4 } else { 0 }
                 }
                 _ => {
                     let start = if kind == 0x02 { off + 4 } else { off };
                     let (sz, n1) = varint(page, start).ok_or_else(|| bad("cell"))?;
-                    let local = self.local_len(kind, sz as usize);
-                    (start - off) + n1 + local + if local < sz as usize { 4 } else { 0 }
+                    let sz = self.payload_size(sz)?;
+                    let local = self.local_len(kind, sz);
+                    (start - off) + n1 + local + if local < sz { 4 } else { 0 }
                 }
             };
             cells.push(page.get(off..off + len).ok_or_else(|| bad("cell"))?.to_vec());
@@ -454,12 +456,23 @@ impl Editor {
         if kind == 0x0d {
             at += varint(cell, at).ok_or_else(|| bad("cell"))?.1;
         }
-        let local = self.local_len(kind, sz as usize);
-        let overflow = (local < sz as usize).then(|| {
+        let sz = self.payload_size(sz)?;
+        let local = self.local_len(kind, sz);
+        let overflow = (local < sz).then(|| {
             let o = cell.len() - 4;
             u32::from_be_bytes([cell[o], cell[o + 1], cell[o + 2], cell[o + 3]])
         });
-        Ok((sz as usize, at, overflow))
+        Ok((sz, at, overflow))
+    }
+
+    /// A cell's declared payload size: an error when negative, or when it needs more overflow
+    /// pages than the database has, as the reader reports it, so that no chain is followed (and
+    /// its pages freed) for a size no file holds.
+    fn payload_size(&self, sz: i64) -> Result<usize> {
+        usize::try_from(sz)
+            .ok()
+            .filter(|&sz| (sz / (self.page_size - 4)) as u64 <= u64::from(self.n_pages))
+            .ok_or_else(|| bad("cell payload size"))
     }
 
     /// The payload of a leaf or index cell, following overflow pages.
@@ -626,8 +639,9 @@ impl Editor {
                     let off = cell(lo)?;
                     let (sz, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
                     let (_, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
-                    let local = self.local_len(0x0d, sz as usize);
-                    let len = n1 + n2 + local + if local < sz as usize { 4 } else { 0 };
+                    let sz = self.payload_size(sz)?;
+                    let local = self.local_len(0x0d, sz);
+                    let len = n1 + n2 + local + if local < sz { 4 } else { 0 };
                     let c = page.get(off..off + len).ok_or_else(|| bad("cell"))?.to_vec();
                     return self.cell_payload(0x0d, &c).map(Some);
                 }
@@ -1432,6 +1446,29 @@ mod tests {
         std::fs::write(&path, b).unwrap();
         let error = Editor::open(&path).err().expect("an error");
         assert!(error.to_string().contains("page count"), "{error}");
+    }
+
+    /// A negative cell payload size (a varint with the high bit set), or one needing more
+    /// overflow pages than the database has, is an error for the editor as for the reader,
+    /// rather than a chain followed and freed for a size no file holds.
+    #[test]
+    fn payload_sizes_beyond_the_file_are_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("size.db");
+        for size in [u64::MAX, 10 * 508] {
+            let mut b = crate::drivers::sqlite::fixtures::database(3);
+            b[100] = 0x0d;
+            b[103..105].copy_from_slice(&1u16.to_be_bytes());
+            b[108..110].copy_from_slice(&200u16.to_be_bytes());
+            let mut cell = Vec::new();
+            w::varint(&mut cell, size);
+            cell.push(1);
+            b[200..200 + cell.len()].copy_from_slice(&cell);
+            std::fs::write(&path, b).unwrap();
+            let mut editor = Editor::open(&path).unwrap().unwrap_or_else(|e| panic!("{}", e.0));
+            let error = editor.tree_pages(1, &mut Vec::new()).unwrap_err();
+            assert!(error.to_string().contains("payload size"), "{size}: {error}");
+        }
     }
 
     /// An overflow page owned twice, here a chain that names its own page as the next one, is

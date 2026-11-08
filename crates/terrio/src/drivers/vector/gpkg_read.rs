@@ -699,8 +699,9 @@ fn summarize_layer(db: &Db, c: &Content, path: &str) -> Result<LayerSummary> {
     let rows = db.raw_rows(&c.name)?;
 
     // Each geometry's type, Z flag and bounds.
-    // A record whose values run past its end is an error, as reading the layer reports it:
-    // every record's layout is checked, with or without a geometry column.
+    // A record whose header is incomplete or whose values run past its end is an error: every
+    // record's layout is checked, with or without a geometry column. Bytes after the last value
+    // are not checked here, though reading the layer reports them.
     let geometries = crate::par::map_range(rows.len(), |i| -> Result<Option<GeometrySummary>> {
         let Some(geom_col) = geom_col else { return Db::check_record(&rows[i].1).map(|()| None) };
         let Value::Blob(b) = Db::record_column(&rows[i].1, geom_col)? else { return Ok(None) };
