@@ -406,28 +406,6 @@ fn host_of(url: &str) -> &str {
     o.find("://").map_or(o, |i| &o[i + 3..])
 }
 
-/// The calling thread's options ([`crate::config`]) and STAC asset policy, for requests a worker
-/// thread sends on its behalf: what a request reads of them while it is sent (consent, an S3
-/// endpoint) is then the caller's, as when the caller sends it.
-#[derive(Clone)]
-struct CallerContext {
-    options: HashMap<String, Option<String>>,
-    policy: Option<crate::stac::AssetReadPolicy>,
-}
-
-impl CallerContext {
-    fn capture() -> Self {
-        Self { options: crate::config::thread_options(), policy: crate::stac::AssetReadPolicy::current() }
-    }
-
-    /// Sets the caller's options on this thread, for as long as it lives (a worker's lifetime),
-    /// and enters its policy, which checks its consent again, until the scope returned is dropped.
-    fn enter(self) -> Result<Option<crate::stac::AssetReadScope>> {
-        crate::config::push_scope(self.options);
-        self.policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()
-    }
-}
-
 /// A response that returned data.
 struct Fetched {
     /// The HTTP status: 200 (the whole file), 206 (a range) or 416 (the range starts past the end).
@@ -2316,7 +2294,9 @@ impl Shared {
             // ponytail: a thread per run, PARALLEL_RUNS at a time; a pool of request threads if
             // spawning ever shows next to a request's latency
             const PARALLEL_RUNS: usize = 8;
-            let context = CallerContext::capture();
+            // the caller's options and STAC policy, which a request reads while it is sent
+            let context = crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current());
+            let context = &context;
             let mut runs = runs.into_iter().peekable();
             while runs.peek().is_some() {
                 // PARALLEL_RUNS requests at a time; a run its held bytes cover sends none
@@ -2333,19 +2313,34 @@ impl Shared {
                         .iter()
                         .map(|&(_, _, from, last)| {
                             (from <= last).then(|| {
-                                let (mut client, context) = (self.client.clone(), context.clone());
-                                scope.spawn(move || {
-                                    let fetched = context.enter().and_then(|_policy| client.fetch(Some((from, last))));
+                                let mut client = self.client.clone();
+                                std::thread::Builder::new().spawn_scoped(scope, move || {
+                                    let fetched = context.enter().and_then(|_scope| client.fetch(Some((from, last))));
                                     (client, fetched)
                                 })
                             })
                         })
                         .collect();
-                    handles.into_iter().map(|h| h.map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))).collect()
+                    handles
+                        .into_iter()
+                        .map(|h| {
+                            h.map(|h| match h {
+                                Ok(h) => h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)),
+                                // no thread to be had: the run fails as a request would
+                                Err(e) => (self.client.clone(), Err(e.into())),
+                            })
+                        })
+                        .collect()
                 });
                 for ((start, held, from, last), fetched) in group.into_iter().zip(fetched) {
-                    // what a request learned (a region, a redirect) is kept, as serially
-                    let fetched = fetched.map(|(client, fetched)| {
+                    // what a request learned (a region, a redirect) is kept, as serially; a region
+                    // an earlier run discovered stays when this run's copy predates it
+                    let fetched = fetched.map(|(mut client, fetched)| {
+                        let discovered = |c: &Client| c.s3.as_ref().is_some_and(|a| a.discovered);
+                        if discovered(&self.client) && !discovered(&client) {
+                            client.s3 = self.client.s3.clone();
+                            client.url = self.client.url.clone();
+                        }
                         self.client = client;
                         fetched
                     });
@@ -2954,29 +2949,19 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_requests_with_the_callers_options_and_asset_policy() {
-        // A credentialed asset's policy: entered only where the options give consent, which the
-        // caller's scope does and the environment does not.
-        let allowed = [("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "YES"), ("TERRIO_TEST_CALLER_OPTION", "one")];
-        let (option, policy) = crate::config::with_options(&allowed, || {
-            let policy = crate::stac::AssetReadPolicy::for_tests("https://example.com/item.json", true);
+    fn parallel_range_requests_check_consent_with_the_callers_options() {
+        // A credentialed asset's file: each request checks consent, which the caller's scope
+        // gives and the environment of a request thread would not.
+        let data = test_data();
+        let (url, most) = serve_slow(data.clone(), Duration::from_millis(50));
+        crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "YES")], || {
+            let policy = crate::stac::AssetReadPolicy::for_tests(&url, true);
             let _entered = policy.enter().expect("the caller's scope gives consent");
-            let context = CallerContext::capture();
-            std::thread::spawn(move || {
-                let entered = context.enter().map(|scope| scope.is_some());
-                (crate::config::get("TERRIO_TEST_CALLER_OPTION"), entered)
-            })
-            .join()
-            .unwrap()
+            let mut r = RangeReader::open_with(&Remote::Url(url.clone()), options()).unwrap();
+            r.prefetch(&[(10 * 4096, 100), (30 * 4096, 100), (60 * 4096, 5000)]).expect("consent given by the caller");
+            assert!(most.load(Ordering::SeqCst) >= 2, "requested in parallel");
+            assert_eq!(read_range(&mut r, 30 * 4096, 100), data[30 * 4096..30 * 4096 + 100]);
         });
-        assert_eq!(option.as_deref(), Some("one"));
-        assert!(matches!(policy, Ok(true)), "the policy is entered with the caller's consent");
-        // Without the caller's scope, the worker sees the environment: no consent, refused.
-        let context = CallerContext {
-            options: HashMap::new(),
-            policy: Some(crate::stac::AssetReadPolicy::for_tests("https://example.com/item.json", true)),
-        };
-        assert!(std::thread::spawn(move || context.enter().is_err()).join().unwrap());
     }
 
     #[test]
