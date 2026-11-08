@@ -976,6 +976,13 @@ impl LazyRaster {
         }
     }
 
+    /// The subdatasets declared in this raster's metadata, without opening the source again.
+    /// Uses the same listing rules as `info` (reference GDAL 3.13.3). Driver-specific
+    /// container listings such as GeoPackage tables still require `info_path`.
+    pub fn subdatasets(&self) -> Vec<crate::info::Subdataset> {
+        crate::info::subdatasets_from_metadata(&self.metadata())
+    }
+
     /// The sizes `(width, height)` of the overviews, largest first.
     pub fn overviews(&self) -> Vec<(usize, usize)> {
         match &self.inner {

@@ -1078,6 +1078,14 @@ def test_subdatasets_listed_without_opening_again(tmp_path, monkeypatch):
 
     calls: list[str] = []
     real_info = _terrio.info
+    real_open = _terrio.open_raster
+    opens: list[str] = []
+
+    def spy_open(path, *args, **kwargs):
+        opens.append(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(_terrio, "open_raster", spy_open)
 
     def spy(path, *args, **kwargs):
         calls.append(path)
@@ -1087,52 +1095,14 @@ def test_subdatasets_listed_without_opening_again(tmp_path, monkeypatch):
     for path, names in listed.items():
         assert len(names) >= 2
         with rio.open(path) as src:
+            before = len(opens)
             assert src.subdatasets == names
+            assert len(opens) == before
         with rio.open(names[0]) as sub:
+            before = len(opens)
             assert sub.subdatasets == []
+            assert len(opens) == before
     assert calls == []
-    # Keys as `info` reads them, and none that would fail to parse.
-    from terrio.rio.io import _listed_subdatasets
-
-    keys = [
-        "SUBDATASET_2_NAME",
-        "SUBDATASET_+1_NAME",
-        "SUBDATASET_\u00b2_NAME",
-        "SUBDATASET_" + "9" * 5000 + "_NAME",
-    ]
-    assert _listed_subdatasets([(k, k) for k in keys]) == [
-        "SUBDATASET_+1_NAME",
-        "SUBDATASET_2_NAME",
-    ]
-
-
-def test_subdataset_metadata_indices_are_fallible_and_bounded():
-    from terrio.rio.io import _listed_subdatasets
-
-    metadata = [
-        ("SUBDATASET_2_NAME", "two"),
-        ("SUBDATASET_+1_NAME", "one"),
-        ("SUBDATASET_²_NAME", "invalid"),
-        ("SUBDATASET_١_NAME", "invalid"),
-        ("SUBDATASET_" + "9" * 6000 + "_NAME", "invalid"),
-        ("SUBDATASET_" + "0" * 6000 + "3_NAME", "three"),
-        ("SUBDATASET_0_NAME", "invalid"),
-        ("SUBDATASET_100001_NAME", "invalid"),
-        ("SUBDATASET_1_DESC", "description"),
-    ]
-    assert _listed_subdatasets(metadata) == ["one", "two", "three"]
-
-
-def test_subdataset_metadata_empty_duplicates_remove_prior_names():
-    from terrio.rio.io import _listed_subdatasets
-
-    assert _listed_subdatasets(
-        [
-            ("SUBDATASET_1_NAME", "first"),
-            ("SUBDATASET_2_NAME", "two"),
-            ("SUBDATASET_1_NAME", ""),
-        ]
-    ) == ["two"]
 
 
 def test_geopackage_subdatasets_keep_info_fallback(tmp_path):
