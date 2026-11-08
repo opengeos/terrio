@@ -1,6 +1,6 @@
 //! Raster creation, overview management and in-place update bindings.
 use crate::ops::raster_path;
-use crate::raster::{PyRaster, write_options};
+use crate::raster::PyRaster;
 use crate::{PyResultExt, invalid, with_warnings};
 use pyo3::prelude::*;
 use terrio::ops::{Resampling, create, edit, overview, update};
@@ -77,8 +77,11 @@ fn source(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<terrio::LazyRaster
 /// Creates a filled raster, optionally writing a file a strip at a time.
 /// `like` supplies header defaults; explicit options override them. File outputs
 /// can copy template overview levels and remain lazy in the returned Raster.
+///
+/// Args:
+///     options: Format-specific creation options, as with `Raster.write(options=...)`.
 #[pyfunction]
-#[pyo3(signature = (dst=None, *, like=None, size=None, band_count=None, ot=None, crs=None, bbox=None, nodata=None, unset_nodata=false, burn=None, metadata=None, copy_metadata=false, copy_overviews=false, overwrite=false, format=None, compress=None, tile_size=None, bigtiff=false))]
+#[pyo3(signature = (dst=None, *, like=None, size=None, band_count=None, ot=None, crs=None, bbox=None, nodata=None, unset_nodata=false, burn=None, metadata=None, copy_metadata=false, copy_overviews=false, overwrite=false, format=None, compress=None, tile_size=None, bigtiff=false, options=None))]
 #[allow(clippy::too_many_arguments)]
 fn create_raster(
     py: Python<'_>,
@@ -100,8 +103,11 @@ fn create_raster(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    options: Option<std::collections::BTreeMap<String, String>>,
 ) -> PyResult<PyRaster> {
-    if dst.is_none() && (copy_overviews || overwrite || format.is_some() || compress.is_some() || tile_size.is_some() || bigtiff) {
+    if dst.is_none()
+        && (copy_overviews || overwrite || format.is_some() || compress.is_some() || tile_size.is_some() || bigtiff || options.is_some())
+    {
         return Err(invalid("file-output options require dst"));
     }
     let template = like.map(|src| source(py, src)).transpose()?;
@@ -120,7 +126,7 @@ fn create_raster(
         overwrite,
     };
     if let Some(path) = dst {
-        let write = write_options(format, compress, tile_size, bigtiff)?;
+        let write = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, options)?;
         with_warnings(py, || create::create_raster_file_from_template(path, template.as_ref(), &o, &write))?;
         return Ok(PyRaster { inner: with_warnings(py, || terrio::open_raster_lazy(path))? });
     }
@@ -128,8 +134,13 @@ fn create_raster(
 }
 
 /// Adds internal or external GeoTIFF overview levels. Returns their pixel sizes.
+///
+/// `progress`, when given, is called with the fraction done, a float from 0 to 1 that never
+/// decreases (1 once every overview is computed and encoded, before the file is published).
+/// A falsy return value other than `None` cancels, as in GDAL: `terrio.errors.CancelledError`
+/// is raised and no file is changed. An exception it raises cancels too, and is raised again.
 #[pyfunction]
-#[pyo3(signature = (path, levels=None, *, min_size=256, resampling="nearest", external=false, compression=None, ignore_cog_layout_break=false))]
+#[pyo3(signature = (path, levels=None, *, min_size=256, resampling="nearest", external=false, compression=None, ignore_cog_layout_break=false, progress=None))]
 #[allow(clippy::too_many_arguments)]
 fn add_overviews(
     py: Python<'_>,
@@ -140,6 +151,7 @@ fn add_overviews(
     external: bool,
     compression: Option<String>,
     ignore_cog_layout_break: bool,
+    progress: Option<Py<PyAny>>,
 ) -> PyResult<Vec<(usize, usize)>> {
     let o = overview::OverviewOptions {
         levels: levels.unwrap_or_default(),
@@ -149,7 +161,29 @@ fn add_overviews(
         compression,
         ignore_cog_layout_break,
     };
-    with_warnings(py, || overview::add_overviews(path, &o))
+    let Some(progress) = progress else {
+        return with_warnings(py, || overview::add_overviews(path, &o));
+    };
+    // The exception the callback raised, raised again in place of the cancellation.
+    let mut raised: Option<PyErr> = None;
+    let out = with_warnings(py, || {
+        overview::add_overviews_with_progress(path, &o, &mut |fraction| {
+            Python::attach(|py| {
+                let go_on = progress.call1(py, (fraction,)).and_then(|v| {
+                    let v = v.into_bound(py);
+                    Ok(v.is_none() || v.is_truthy()?)
+                });
+                go_on.unwrap_or_else(|e| {
+                    raised = Some(e);
+                    false
+                })
+            })
+        })
+    });
+    match raised {
+        Some(e) => Err(e),
+        None => out,
+    }
 }
 
 /// Deletes internal overview links or a validated external overview sidecar.

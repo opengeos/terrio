@@ -116,7 +116,9 @@ def test_resampled_float64_reads_drop_values_about_the_nodata_value_as_gdal(tmp_
             np.testing.assert_array_equal(t.read_masks(**kw), g.read_masks(**kw), err_msg=r.name)
 
 
-@pytest.mark.parametrize(("dtype", "nodata"), [("uint64", 2**63), ("int64", -(2**63)), ("uint64", 2**53 + 1)])
+@pytest.mark.parametrize(
+    ("dtype", "nodata"), [("uint64", 2**63), ("int64", -(2**63)), ("uint64", 2**53 + 1)]
+)
 def test_64_bit_integer_nodata_is_gdals(tmp_path, dtype, nodata):
     # GDAL writes rasterio's nodata (a double) as `%.17g` text, `9.2233720368547758e+18`, and reads
     # the tag of 64-bit integer bands with `strtoull`/`strtoll`: 9 (and -9). terrio writes the
@@ -127,8 +129,16 @@ def test_64_bit_integer_nodata_is_gdals(tmp_path, dtype, nodata):
     for name, lib in (("gdal", rasterio), ("terrio", terrio.rio)):
         path = tmp_path / f"{name}.tif"
         with lib.open(
-            path, "w", driver="GTiff", width=32, height=32, count=1, dtype=dtype, nodata=nodata,
-            crs="EPSG:4326", transform=from_origin(0, 1, 0.01, 0.01),
+            path,
+            "w",
+            driver="GTiff",
+            width=32,
+            height=32,
+            count=1,
+            dtype=dtype,
+            nodata=nodata,
+            crs="EPSG:4326",
+            transform=from_origin(0, 1, 0.01, 0.01),
         ) as dst:
             dst.write(data)
         with rasterio.open(path) as g, terrio.rio.open(path) as t:

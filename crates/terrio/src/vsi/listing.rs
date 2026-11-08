@@ -17,15 +17,64 @@ use std::collections::HashMap;
 
 type EntryIndex = HashMap<(String, bool), usize>;
 
-/// Removes credential-bearing query strings from diagnostics and public names.
+/// Removes credentials from diagnostics and public names: userinfo in every URL authority
+/// and credential-bearing query strings. Raw whitespace in malformed userinfo is retained
+/// through the `@` for conservative redaction, avoiding password fragments. An unencoded
+/// `/`, `?` or `#` ends the authority; percent-encode those characters in passwords. An `@`
+/// in a path is not userinfo.
 pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
-    if let Some((base, query)) = url.split_once('?') {
-        let lower = query.to_ascii_lowercase();
-        if ["sig", "token=", "credential=", "api_key=", "apikey=", "access_key="].iter().any(|key| lower.contains(key)) {
+    let mut redacted = String::new();
+    let mut copied = 0;
+    // Diagnostics can contain several URLs (for example, a redirect's source and target).
+    // Work from the original offsets so stripping one authority cannot hide a later one.
+    for (scheme, _) in url.match_indices("://") {
+        let authority = scheme + 3;
+        if authority < copied {
+            continue;
+        }
+        // Raw spaces can occur in malformed userinfo in an error; stopping there would
+        // retain password fragments. Prefer conservative redaction until a URL delimiter.
+        let end = url[authority..].find(['/', '?', '#']).map_or(url.len(), |end| authority + end);
+        if let Some(at) = url[authority..end].rfind('@') {
+            redacted.push_str(&url[copied..authority]);
+            copied = authority + at + 1;
+        }
+    }
+    let out = if copied == 0 {
+        std::borrow::Cow::Borrowed(url)
+    } else {
+        redacted.push_str(&url[copied..]);
+        std::borrow::Cow::Owned(redacted)
+    };
+    if let Some((base, query)) = out.split_once('?') {
+        // Parameter names as a server reads them too: `%6Bey=` is `key=`.
+        let lower = format!("{query}&{}", percent_decoded(query)).to_ascii_lowercase();
+        const KEYS: [&str; 9] = ["sig", "token=", "credential=", "api_key=", "apikey=", "access_key=", "key=", "password=", "passwd="];
+        if KEYS.iter().any(|key| lower.contains(key)) {
             return format!("{base}?<redacted>").into();
         }
     }
-    url.into()
+    out
+}
+
+/// `text` with its `%XX` escapes decoded (invalid escapes and non-UTF-8 bytes kept as they are).
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && let (Some(h), Some(l)) = (bytes.get(i + 1).copied().and_then(hex), bytes.get(i + 2).copied().and_then(hex))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// An entry of a remote listing.
@@ -746,6 +795,28 @@ impl RemoteLister {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn url_passwords_and_key_parameters_are_redacted() {
+        let redacted = super::redact_url("https://user:secret@example.com/f.tif?key=AIza123");
+        assert_eq!(redacted, "https://example.com/f.tif?<redacted>");
+        assert_eq!(
+            super::redact_url("https://a.example/x?harmless=1 then https://u:secret@b.example/y"),
+            "https://a.example/x?harmless=1 then https://b.example/y"
+        );
+        assert_eq!(super::redact_url("https://u:p@example.com"), "https://example.com");
+        assert_eq!(super::redact_url("https://user:my pass@host/x"), "https://host/x");
+        assert_eq!(
+            super::redact_url("https://a.example/x.tif redirected to https://user:secret@b.example/y then https://u:p@c.example"),
+            "https://a.example/x.tif redirected to https://b.example/y then https://c.example"
+        );
+        assert_eq!(super::redact_url("https://a.example\u{2003}https://u:p@b.example"), "https://a.example\u{2003}https://b.example");
+        // An `@` after the authority is part of the path, not user information.
+        assert_eq!(super::redact_url("https://example.com/a@b.tif"), "https://example.com/a@b.tif");
+        assert_eq!(super::redact_url("/vsizip/local@archive.zip/x.tif"), "/vsizip/local@archive.zip/x.tif");
+        assert!(super::redact_url("https://example.com/f.tif?password=hunter2").ends_with("?<redacted>"));
+        assert!(super::redact_url("https://example.com/f.tif?%6Bey=AIza123").ends_with("?<redacted>"));
+    }
+
     #[test]
     fn url_prefixes_are_decoded_once_before_query_encoding() {
         for base in [

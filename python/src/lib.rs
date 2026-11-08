@@ -51,6 +51,7 @@ pub(crate) fn to_py(e: terrio::Error) -> PyErr {
         terrio::Error::InvalidArgument(_) => "InvalidArgumentError",
         terrio::Error::Unsupported(_) => "UnsupportedError",
         terrio::Error::Raster(_) | terrio::Error::Vector(_) | terrio::Error::InvalidData(_) => "InvalidDataError",
+        terrio::Error::Cancelled => "CancelledError",
         _ => "TerrioError",
     };
     let message = e.to_string();

@@ -39,6 +39,42 @@ println!("{}", terrio::info::info(&ds, &Default::default()).to_text());
 nodata with `band_nodata(band)` (one-based) or `nodata()` (band 1). To replace it
 with one shared value, clear the per-band vector and update both shared fields.
 
+## Raster buffer layout
+
+`RasterData` buffers passed to `Raster::from_data_native` must contain complete bands
+one after another: `[band0_plane, band1_plane, ...]`. Within each band, pixels are
+row-major, from the top row, with columns varying fastest. For zero-based indices:
+
+```text
+index = band * (rows * cols) + row * cols + col
+```
+
+The constructor does not deinterleave pixel-interleaved RGB/RGBA input. Convert it
+before constructing the raster; see the runnable
+[RGBA conversion example](https://docs.rs/terrio/latest/terrio/#raster-buffer-layout)
+in the crate documentation.
+
+`LazyRaster::read_window` returns the same band-major layout for both pixel-interleaved
+and separate-plane files, at full resolution and at internal or external `.ovr`
+overview levels. Use the **returned window's** dimensions in the index formula; output
+planes follow the requested band order (band selectors are one-based).
+`read_window_f32` and `read_window_f64` also return band-major, row-major values.
+For one band, the index is simply `row * width + col`; there is no row/column transpose.
+`ops::warp::warp` borrows band-major source rasters and returns a band-major raster,
+so a window result can be passed directly as a source without reordering its pixels.
+`LazyRaster::read_window` does not retain the dataset mask, so masked-out sample
+values may be treated as valid by `warp`. Floating-point window reads apply the mask
+as NaN. When the mask is needed separately, use `LazyRaster::read_mask` with the same
+window and overview selection. This layout note does not describe a masked-warp workflow.
+
+The in-memory layout is independent of TIFF storage. The current native GTiff writer
+used by `write_raster_dataset` defaults to `INTERLEAVE=PIXEL`
+(`PlanarConfiguration=1`, chunky). Set
+`creation_options: vec![("INTERLEAVE".into(), "BAND".into())]` in `RasterWriteOptions`
+for separate planes in multiband rasters (`PlanarConfiguration=2`), or explicitly
+request `PIXEL`. Single-band output uses `PlanarConfiguration=1` with either option.
+Both choices take the same band-major input buffer; the writer packs it for the file.
+
 ## Writing
 
 ```rust,no_run
@@ -276,7 +312,13 @@ let small = cog.read_resampled(&options)?; // the 512 x 512 overview's tiles, ge
   output is smaller than the window, the least reduced axis sets the desired reduction, and full
   resolution then each overview is a candidate below that times 1.2 for nearest neighbour or 1.0
   otherwise (`GDAL_OVERVIEW_OVERSAMPLING_THRESHOLD`), plus 0.1, the search stopping within 0.1 of
-  it. `AutoOffset(n)`, `None` and `Level(i)` read a level alone, as `gdal_translate -ovr` does.
+  it. Candidates marked `AVERAGE_BIT2*` are excluded individually, for both internal and
+  external overviews, following GDAL 3.13.3. Unmarked levels remain eligible. When that is the
+  first image of an external `.ovr`, it chooses again among the file's other images, as GDAL's
+  band of that image has them as overviews. `AutoOffset(0)` is `Auto` in every resampled read;
+  positive `AutoOffset(n)`, `None` and `Level(i)` read a level alone, as `gdal_translate -ovr` does.
+  A positive offset beyond the available finer levels, or on an image without overviews,
+  falls back to `Auto`.
 - Invalid pixels carry no weight: those the level's mask band masks (the dataset's mask, an
   overview's own; an overview without one is all valid, as in GDAL), their band's nodata value
   (NaN for NaN, nothing outside the type's range) or the alpha band of a two- or four-band raster.

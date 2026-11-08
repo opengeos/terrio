@@ -218,8 +218,23 @@ opens it, a file with several opens the first and lists them all, with every gro
 dataset's attributes as metadata (`group_subgroup_attribute=value`). A three-dimensional
 dataset's first dimension is its bands; `_FillValue` is its nodata value. Files with a user
 block (JPSS products) are read too. The CF `grid_mapping` of a two-dimensional dataset gives its
-CRS, and NISAR's coordinates its geotransform, as GDAL 3.13 reads them. Product-specific
-georeferencing is read as GDAL's HDF5 driver reads it:
+CRS, and NISAR's coordinates its geotransform, as GDAL 3.13 reads them.
+
+HDF5 raster datasets are decoded whole. Before decoding, the declared raw and expanded
+pixel buffers are each checked against the address space and the process's usable-memory
+limit, when known. Their combined peak (raw, reordered, complex-component and decoded
+pixel buffers) is also checked before decoding. Hosts without memory discovery use a
+512 MiB combined pixel-buffer budget, including WASM, macOS and Windows (memory discovery
+currently reads Linux `/proc` files). This intentionally refuses larger desktop HDF5
+reads too, even with the GDAL backend enabled. This budget excludes metadata,
+input bytes and decoder scratch allocations; it is not a process-wide memory guarantee.
+For ordinary standard-layout pixels, raw and decoded buffers coexist, so a 512 MiB combined
+budget permits about 256 MiB of raw pixels. Reordering and complex components can add buffers.
+Resource refusals are terminal, including when the optional GDAL backend is enabled.
+HDF-EOS5 structure text is limited to 16 MiB before decoding on every HDF5 open, even
+when selecting a subdataset that would not use it.
+
+Product-specific georeferencing is read as GDAL's HDF5 driver reads it:
 
 - HDF-EOS5 grids (`HDFEOS INFORMATION/StructMetadata.0`): the geotransform of the grid's corners
   (in packed degrees, minutes and seconds for geographic grids) and the CRS of its GCTP projection
@@ -873,6 +888,11 @@ reads it.
   1,000 points to a 2-million-point file takes about as long as `ogr2ogr -append`. Files in
   write-ahead-log mode with a pending log, with auto-vacuum, or with triggers on the layer other
   than GDAL's are rewritten whole instead.
+- **Native FlatGeobuf validation** rejects incomplete record framing, truncated indexes and
+  payloads, mismatches with nonzero declared feature counts, and invalid declared coordinate
+  dimensions or out-of-bounds/decreasing part ends. In builds with the optional GDAL backend,
+  eager opens can retry a native refusal through GDAL and retain GDAL's admission behavior.
+  Range-backed and streaming FlatGeobuf reads use the native checks in either build.
 - **Streaming**: GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq and CSV
   layers are read a chunk of features at a time (GeoPackages a leaf page of the table at a time,
   through the R-tree with `--spat`; GeoParquet a record batch at a time), and FlatGeobuf,
@@ -920,8 +940,11 @@ reads it.
 - **KMZ archives are read within limits**, whether opened from a file or from memory: the zip
   archive limits of `/vsizip/` (`TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO`,
   `TERRIO_ZIP_MAX_SIZE`), and 512 MiB of decompressed text for the main document and the layer
-  documents it links to together. Set `TERRIO_KMZ_MAX_SIZE` to a byte count to change that
-  budget; reading a KML document takes at least twice its size in memory, so in WebAssembly, whose
+  documents it links to together. Repeated links to a document read it once and emit its layers once.
+  Existing document and folder names are preserved; the first link supplies the default name
+  for an unnamed root, or the member stem when that link is unnamed. Set `TERRIO_KMZ_MAX_SIZE`
+  to a byte count to change that budget;
+  reading a KML document takes at least twice its size in memory, so in WebAssembly, whose
   memory is at most 4 GiB, a lower budget leaves room for the parsed layers. An archive past
   a limit is refused with a resource-limit error, which is not retried with GDAL. Zip archives
   opened from memory (Python and JavaScript byte reads) read their members within the same

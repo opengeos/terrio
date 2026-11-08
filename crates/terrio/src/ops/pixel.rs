@@ -552,12 +552,30 @@ pub fn mapping_from_file_text(text: &str) -> Result<String> {
 }
 
 /// Reads a UTF-8 mapping file with the same 10 MB raw-input limit on native surfaces.
+/// Accepts regular files only; FIFOs and pipe-based process substitution are not supported.
 pub fn read_mapping_file(path: &str) -> Result<String> {
     use std::io::Read;
+    let meta = std::fs::metadata(path).map_err(|e| Error::InvalidArgument(format!("cannot read {path}: {e}")))?;
+    if !meta.is_file() {
+        return Err(Error::InvalidArgument(format!("cannot read {path}: not a regular file")));
+    }
+    if meta.len() > 10_000_000 {
+        return Err(Error::InvalidArgument("the mapping file is too large (maximum 10 MB)".into()));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // A path swapped for a FIFO after the metadata check must not block the open.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(|e| Error::InvalidArgument(format!("cannot read {path}: {e}")))?;
+    if !file.metadata()?.is_file() {
+        return Err(Error::InvalidArgument(format!("cannot read {path}: not a regular file")));
+    }
     let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .and_then(|file| file.take(10_000_001).read_to_end(&mut bytes))
-        .map_err(|e| Error::InvalidArgument(format!("cannot read {path}: {e}")))?;
+    file.take(10_000_001).read_to_end(&mut bytes).map_err(|e| Error::InvalidArgument(format!("cannot read {path}: {e}")))?;
     if bytes.len() > 10_000_000 {
         return Err(Error::InvalidArgument("the mapping file is too large (maximum 10 MB)".into()));
     }
@@ -844,5 +862,12 @@ mod tests {
         assert_eq!(output.raster.data.to_f64_vec(), vec![0., 2., 1., 0.]);
         let error = reclassify(&src, &ReclassifyOptions { mapping: "9=1".into(), output_type: None }).unwrap_err();
         assert!(error.to_string().contains("encountered value 1 with no specified mapping"));
+    }
+
+    #[test]
+    fn read_mapping_file_rejects_non_regular_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = read_mapping_file(dir.path().to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("not a regular file"), "{err}");
     }
 }

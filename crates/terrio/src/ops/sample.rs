@@ -118,7 +118,7 @@ pub fn sample_with_options(points: &Layer, inputs: &[SampleInput<'_>], options: 
                             .raster
                             .data
                             .get_f64((input.band - 1) * ds.raster.rows * ds.raster.cols + row as usize * ds.raster.cols + col as usize);
-                        if v.is_finite() && crate::histogram::is_valid(v, ds.nodata(), ds.raster.data_type) {
+                        if v.is_finite() && crate::histogram::is_valid(v, ds.band_nodata(input.band), ds.raster.data_type) {
                             FieldValue::Float(v)
                         } else {
                             FieldValue::Null

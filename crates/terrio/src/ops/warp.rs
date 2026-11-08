@@ -245,7 +245,9 @@ pub struct WarpOptions {
     pub target_aligned_pixels: bool,
     /// The resampling method (`-r`).
     pub resampling: Resampling,
-    /// Which stored source resolution to read (`-ovr`), automatic by default.
+    /// Which stored source resolution to read (`-ovr`), automatic by default. A `sum` that reads
+    /// an overview counts each of its pixels for the source pixels it stands for (see
+    /// [`SUM_AUTO_OVERVIEW`]).
     pub overview: OverviewSelection,
     /// Source nodata (`-srcnodata`).
     pub src_nodata: Nodata,
@@ -292,6 +294,12 @@ pub struct WarpOptions {
     /// new GeoTIFF (`SKIP_NOSOURCE=YES`, `AdjustOutputExtentForRPC`), so that pixels the RPCs
     /// map back into the image from beyond its footprint stay empty.
     pub rpc_output_window: bool,
+    /// The full-resolution pixels each pixel of the sources stands for when they are themselves
+    /// an overview, read whole (a dataset opened at an overview level): a `sum` counts each
+    /// source value that many times, as it counts the pixels of an overview it reads itself, on
+    /// top of which this applies. 1 by default; a positive finite number.
+    #[doc(hidden)]
+    pub sum_scale: f64,
 }
 
 impl Default for WarpOptions {
@@ -329,6 +337,7 @@ impl Default for WarpOptions {
             source_extra: None,
             sample_steps_all: false,
             rpc_output_window: false,
+            sum_scale: 1.0,
         }
     }
 }
@@ -645,7 +654,7 @@ impl Approx<'_> {
 pub(crate) fn suggested_output(ds: &RasterDataset, dst: &SpatialRef) -> Result<([f64; 6], usize, usize, [f64; 4])> {
     let src = ds.crs();
     let t = GenImgProj::new(ds.geo_transform(), &src, dst)?;
-    suggested_warp_output(&t, ds.raster.cols, ds.raster.rows, &src, dst)
+    suggested_warp_output(&t, ds.raster.cols, ds.raster.rows, &src, dst, false)
 }
 
 /// The output grid GDAL suggests (`GDALSuggestedWarpOutput2()`) for a raster of `width` x
@@ -665,7 +674,7 @@ pub fn suggested_grid(width: usize, height: usize, gt: [f64; 6], src: &SpatialRe
         return Err(Error::InvalidArgument("the source raster is empty".into()));
     }
     let t = GenImgProj::new(gt, src, dst)?;
-    let (gt, w, h, _) = suggested_warp_output(&t, width, height, src, dst)?;
+    let (gt, w, h, _) = suggested_warp_output(&t, width, height, src, dst, false)?;
     Ok((gt, w, h))
 }
 
@@ -686,7 +695,7 @@ pub fn suggested_grid_gcps(
     }
     let g = super::gcp::GcpTransformer::new(gcps, method, order)?;
     let t = GenImgProj::with_gcps(src, dst, g)?;
-    let (gt, w, h, _) = suggested_warp_output(&t, width, height, src, dst)?;
+    let (gt, w, h, _) = suggested_warp_output(&t, width, height, src, dst, false)?;
     Ok((gt, w, h))
 }
 
@@ -709,19 +718,24 @@ pub fn suggested_grid_rpc(
     let r = super::rpc::RpcTransformer::new(rpc, options)?;
     let src = SpatialRef::from_epsg(4326)?;
     let t = GenImgProj::with_georef(&src, dst, Georef::Rpc(std::sync::Arc::new(r)))?;
-    let (gt, w, h, _) = suggested_warp_output(&t, width, height, &src, dst)?;
+    let (gt, w, h, _) = suggested_warp_output(&t, width, height, &src, dst, false)?;
     Ok((gt, w, h))
 }
 
 /// GDAL's `GDALSuggestedWarpOutput2()`: the extent of the transformed source and a square pixel
 /// size that keeps the number of pixels along the diagonal. Returns the geotransform, the size and
 /// the extent `[min_x, min_y, max_x, max_y]`.
+///
+/// `round_up` is GDAL's `GDAL_SWO_ROUND_UP_SIZE`, which `gdalwarp -r sum` passes so that the
+/// output covers every source pixel: the size is `ceil(n - 1e-5)` rather than `n` rounded to the
+/// nearest (GDAL 3.13.0).
 fn suggested_warp_output(
     t: &GenImgProj,
     w: usize,
     h: usize,
     src_srs: &SpatialRef,
     dst_srs: &SpatialRef,
+    round_up: bool,
 ) -> Result<([f64; 6], usize, usize, [f64; 4])> {
     let (wf, hf) = (w as f64, h as f64);
     if t.ct.is_none() && t.src_gt[2] == 0.0 && t.src_gt[4] == 0.0 && t.src_gcp.is_none() && t.dst_gt == IDENTITY {
@@ -896,8 +910,9 @@ fn suggested_warp_output(
     }
     let diagonal = (ddx * ddx + ddy * ddy).sqrt();
     let pixel = diagonal / (wf * wf + hf * hf).sqrt();
-    let pixels = ((maxx - minx) / pixel + 0.5) as usize;
-    let lines = ((maxy - miny) / pixel + 0.5) as usize;
+    let size = |n: f64| if round_up { (n - 1e-5).ceil() as usize } else { (n + 0.5) as usize };
+    let pixels = size((maxx - minx) / pixel);
+    let lines = size((maxy - miny) / pixel);
     if pixels == 0 || lines == 0 {
         return Err(Error::InvalidData("the computed output size is empty".into()));
     }
@@ -958,6 +973,9 @@ struct Source<'a> {
     /// GCPs or RPCs georeferencing the source in place of its geotransform.
     gcp: Option<Georef>,
     pixel_scale: (f64, f64),
+    /// The full-resolution pixels each pixel of the level read stands for, which a `sum` counts it
+    /// for: [`WarpOptions::sum_scale`], times `pixel_scale.0 * pixel_scale.1` for an overview.
+    sum_scale: f64,
 }
 
 impl Source<'_> {
@@ -1008,7 +1026,7 @@ fn output_grid(sources: &[Source], dst_srs: &SpatialRef, o: &WarpOptions, te: Op
         }
         let (mut gt, mut ext) = ([0.0; 6], [0.0; 4]);
         if needs_suggested {
-            let (g, _, _, e) = suggested_warp_output(&t, s.grid.width, s.grid.height, &s.srs, dst_srs)?;
+            let (g, _, _, e) = suggested_warp_output(&t, s.grid.width, s.grid.height, &s.srs, dst_srs, o.resampling == Resampling::Sum)?;
             (gt, ext) = (g, e);
         }
         let sgt = s.grid.geo_transform;
@@ -1271,6 +1289,9 @@ impl<'a> Plan<'a> {
     /// Reads only the sources' metadata.
     fn new(sources: &[&'a RasterDataset], o: &WarpOptions) -> Result<Self> {
         let first = sources.first().ok_or_else(|| Error::InvalidArgument("no source rasters".into()))?;
+        if !(o.sum_scale.is_finite() && o.sum_scale > 0.0) {
+            return Err(Error::InvalidArgument(format!("the sum scale must be a positive number, not {}", o.sum_scale)));
+        }
         let mut srcs: Vec<Source> = sources
             .iter()
             .map(|ds| Source {
@@ -1284,6 +1305,7 @@ impl<'a> Plan<'a> {
                 srs: o.src_srs.clone().unwrap_or_else(|| ds.crs()),
                 gcp: None,
                 pixel_scale: (1.0, 1.0),
+                sum_scale: o.sum_scale,
             })
             .collect();
         if (o.geoloc || o.geolocation.is_some())
@@ -1390,9 +1412,9 @@ impl<'a> Plan<'a> {
     }
 
     /// Select the input resolution after computing the target grid at full resolution. A `sum`
-    /// takes no overview by itself (`AUTO`, `AUTO-n`): an overview has one pixel per block of the
-    /// source's pixels, so its sum is a fraction of the source's total. It reads a level when
-    /// given one.
+    /// takes part in the automatic choice (`AUTO`, `AUTO-n`) when [`SUM_AUTO_OVERVIEW`] says so,
+    /// and reads a level when given one; the pixels of an overview it reads count for the source
+    /// pixels they stand for (see `Source::sum_scale`).
     fn select_overview(&mut self, k: usize, levels: &[(usize, usize)], o: &WarpOptions) -> Result<Option<usize>> {
         let full = self.srcs[k].grid;
         let explicit = matches!(o.overview, OverviewSelection::Level(_));
@@ -1401,8 +1423,7 @@ impl<'a> Plan<'a> {
         if levels.is_empty() && !explicit {
             return Ok(None);
         }
-        // A `sum` takes no overview by itself: it reads the full resolution unless given a level.
-        if o.resampling == Resampling::Sum && !explicit {
+        if o.resampling == Resampling::Sum && !explicit && !SUM_AUTO_OVERVIEW {
             return Ok(None);
         }
         let ratio = if matches!(o.overview, OverviewSelection::Auto | OverviewSelection::AutoOffset(_)) {
@@ -1426,7 +1447,8 @@ impl<'a> Plan<'a> {
                 ((maxx - minx) / self.grid.width as f64).min((maxy - miny) / self.grid.height as f64)
             } else {
                 let source = &self.srcs[k];
-                let (natural, _, _, _) = suggested_warp_output(&t, source.grid.width, source.grid.height, &source.srs, &self.dst_srs)?;
+                let (natural, _, _, _) =
+                    suggested_warp_output(&t, source.grid.width, source.grid.height, &source.srs, &self.dst_srs, false)?;
                 1.0 / natural[1].abs()
             }
         } else {
@@ -1438,6 +1460,9 @@ impl<'a> Plan<'a> {
             let source = &mut self.srcs[k];
             source.pixel_scale = (full.width as f64 / width as f64, full.height as f64 / height as f64);
             let (sx, sy) = source.pixel_scale;
+            // Each pixel of the overview stands for `sx` by `sy` source pixels: exact ratios, also
+            // where the factor does not divide the source's size.
+            source.sum_scale = o.sum_scale * sx * sy;
             let gt = full.geo_transform;
             source.grid = Grid { width, height, geo_transform: [gt[0], gt[1] * sx, gt[2] * sy, gt[3], gt[4] * sx, gt[5] * sy] };
         }
@@ -1472,7 +1497,7 @@ impl<'a> Plan<'a> {
         if !o.rpc_output_window || k != 0 {
             return Some((0, 0, w as usize, h as usize));
         }
-        let Ok((_, _, _, e)) = suggested_warp_output(t, s.grid.width, s.grid.height, &s.srs, &self.dst_srs) else {
+        let Ok((_, _, _, e)) = suggested_warp_output(t, s.grid.width, s.grid.height, &s.srs, &self.dst_srs, false) else {
             return Some((0, 0, w as usize, h as usize));
         };
         let limit = i32::MAX as f64 / 2.0;
@@ -1518,6 +1543,7 @@ impl<'a> Plan<'a> {
             source_extra: o.source_extra,
             sample_all: o.sample_steps_all,
             src_grid: std::sync::OnceLock::new(),
+            sum_scale: s.sum_scale,
         };
         let mut chunks = Vec::new();
         if let Some((x, y, w, h)) = self.rpc_window(k, t, o) {
@@ -1553,6 +1579,16 @@ fn src_nodata(s: &Source, o: &WarpOptions, band: usize) -> Option<f64> {
         v => v.value(band),
     }
 }
+
+/// Whether a `sum` takes part in the automatic overview choice (`AUTO`, `AUTO-n`) as the other
+/// resamplings do. An overview has one pixel per block of the source's pixels, which a `sum`
+/// counts for the source pixels it stands for, so that it estimates the source's total at the
+/// overview's cost: exactly, up to rounding, when the footprint covers complete overview cells
+/// holding floating-point means without nodata. Cropping through overview cells can make even
+/// the total approximate. With `false`, a `sum` reads the full resolution unless it is given a
+/// level. Either way, `NONE` reads the full resolution, and a given level is read and counted the
+/// same way. `terrio.rio`'s `WarpedVRT` follows it for a reduced read of the whole VRT.
+pub const SUM_AUTO_OVERVIEW: bool = true;
 
 /// The default of `TERRIO_WARP_SUM_MAX_BYTES`: 4 GiB.
 const SUM_MAX_BYTES: u64 = 4 << 30;
@@ -1599,6 +1635,12 @@ fn check_sum_chunks(o: &WarpOptions, chunks: &[Chunk], bytes: usize) -> Result<(
 
 /// Reprojects and resamples one or more rasters into one output, as `gdalwarp` does. Later
 /// sources are drawn over earlier ones where they have valid pixels.
+///
+/// Input and output pixels are band-major, each band row-major from the top:
+/// `data[band * (rows * cols) + row * cols + col]` (zero-based indices). A
+/// [`crate::LazyRaster::read_window`] result needs no pixel reordering before use as a source.
+/// A window read does not retain the dataset mask, so masked-out sample values may be treated
+/// as valid; [`crate::LazyRaster::read_mask`] reads that mask separately.
 pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset> {
     warp_with(sources, o, None)
 }
@@ -1811,12 +1853,15 @@ fn warp_reader_selected(
     }
     let info = src.info()?;
     let mut header = info.raster;
+    // The source pixels a pixel of a serialized source's overview stands for.
+    let mut level_scale = 1.0;
     if let Some(level) = source_overview {
         let &(width, height) = info
             .overviews
             .get(level)
             .ok_or_else(|| Error::InvalidArgument(format!("serialized source overview {level} is unavailable")))?;
         let (sx, sy) = (header.raster.cols as f64 / width as f64, header.raster.rows as f64 / height as f64);
+        level_scale = sx * sy;
         let gt = header.geo_transform();
         header.raster.cols = width;
         header.raster.rows = height;
@@ -1839,6 +1884,7 @@ fn warp_reader_selected(
         header.raster.data = RasterData::new_filled(dtype, 0, 0.);
     }
     let mut p = Plan::new(&[&header], o)?;
+    p.srcs[0].sum_scale *= level_scale;
     // A serialized VRT's source view is already selected in OpenOptions and its
     // transformer. Selecting again would double-scale its source coordinates.
     let overview = if working.is_some() { source_overview } else { p.select_overview(0, &info.overviews, o)? };
@@ -2445,6 +2491,9 @@ struct WarpContext<'a> {
     /// A grid of source points and where they land in the output (computed once).
     #[allow(clippy::type_complexity)]
     src_grid: std::sync::OnceLock<(Vec<(f64, f64)>, Vec<(f64, f64)>, Vec<bool>)>,
+    /// The full-resolution pixels each source pixel stands for, which a `sum` counts it for: more
+    /// than 1 when the source is an overview.
+    sum_scale: f64,
 }
 
 /// A source's pixels, or a window of them: `width` columns from the source's pixel `origin`.
@@ -3402,9 +3451,9 @@ impl WarpContext<'_> {
     /// output pixels tile the source and, where they cover it whole, keep its total up to
     /// rounding: floating-point rounding in a floating-point output, and in an integer one the
     /// rounding of each pixel to a whole number and its clamping to the type's range. The source
-    /// is the full resolution unless the warp is given a level; the total is then the sum of that
-    /// level's pixels (a `sum` takes no overview by itself). A pixel that overlaps no valid source
-    /// pixel is left as it is.
+    /// is the level the warp reads; a pixel of an overview counts for the full-resolution pixels
+    /// it stands for (`sum_scale`), so that the total is an estimate of the full resolution's. A
+    /// pixel that overlaps no valid source pixel is left as it is.
     fn warp_sum_row<T: crate::pixel::Pixel>(
         &self,
         c: &Chunk,
@@ -3482,7 +3531,7 @@ impl WarpContext<'_> {
                     }
                 }
                 if any {
-                    o[i] = sink.value(sum, b);
+                    o[i] = sink.value(sum * self.sum_scale, b);
                     found = true;
                 }
             }
@@ -4261,6 +4310,96 @@ fn avoids_nodata(t: DataType, r: Resampling, dst_nodata: Option<f64>, bands: usi
 /// Marks the output values no source pixel reached (a NaN no warped value carries).
 const UNWRITTEN: u64 = 0x7ff4_7465_7272_696f;
 
+/// Pixels borrowed from their owner, in one of the types of [`RasterData`]: the bands of a source
+/// window that [`RegionWarp::warp`] reads where they are, `width * height` values per band, band
+/// after band. A `&RasterData` converts to it without a copy.
+#[derive(Clone, Copy, Debug)]
+pub enum RasterDataRef<'a> {
+    /// Unsigned 8-bit values.
+    U8(&'a [u8]),
+    /// Signed 8-bit values.
+    I8(&'a [i8]),
+    /// Unsigned 16-bit values.
+    U16(&'a [u16]),
+    /// Signed 16-bit values.
+    I16(&'a [i16]),
+    /// Unsigned 32-bit values.
+    U32(&'a [u32]),
+    /// Signed 32-bit values.
+    I32(&'a [i32]),
+    /// Unsigned 64-bit values.
+    U64(&'a [u64]),
+    /// Signed 64-bit values.
+    I64(&'a [i64]),
+    /// 32-bit floating-point values.
+    F32(&'a [f32]),
+    /// 64-bit floating-point values.
+    F64(&'a [f64]),
+}
+
+/// Runs `$body` with `$v` bound to the borrowed pixels, a slice of their own type.
+macro_rules! with_ref {
+    ($data:expr, $v:ident => $body:expr) => {
+        match $data {
+            RasterDataRef::U8($v) => $body,
+            RasterDataRef::I8($v) => $body,
+            RasterDataRef::U16($v) => $body,
+            RasterDataRef::I16($v) => $body,
+            RasterDataRef::U32($v) => $body,
+            RasterDataRef::I32($v) => $body,
+            RasterDataRef::U64($v) => $body,
+            RasterDataRef::I64($v) => $body,
+            RasterDataRef::F32($v) => $body,
+            RasterDataRef::F64($v) => $body,
+        }
+    };
+}
+
+impl<'a> From<&'a RasterData> for RasterDataRef<'a> {
+    fn from(data: &'a RasterData) -> Self {
+        match data {
+            RasterData::U8(v) => Self::U8(v),
+            RasterData::I8(v) => Self::I8(v),
+            RasterData::U16(v) => Self::U16(v),
+            RasterData::I16(v) => Self::I16(v),
+            RasterData::U32(v) => Self::U32(v),
+            RasterData::I32(v) => Self::I32(v),
+            RasterData::U64(v) => Self::U64(v),
+            RasterData::I64(v) => Self::I64(v),
+            RasterData::F32(v) => Self::F32(v),
+            RasterData::F64(v) => Self::F64(v),
+        }
+    }
+}
+
+impl RasterDataRef<'_> {
+    /// The number of values.
+    pub fn len(self) -> usize {
+        with_ref!(self, v => v.len())
+    }
+
+    /// Whether there are no values.
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    /// The type of the values.
+    pub fn data_type(self) -> DataType {
+        match self {
+            Self::U8(_) => DataType::U8,
+            Self::I8(_) => DataType::I8,
+            Self::U16(_) => DataType::U16,
+            Self::I16(_) => DataType::I16,
+            Self::U32(_) => DataType::U32,
+            Self::I32(_) => DataType::I32,
+            Self::U64(_) => DataType::U64,
+            Self::I64(_) => DataType::I64,
+            Self::F32(_) => DataType::F32,
+            Self::F64(_) => DataType::F64,
+        }
+    }
+}
+
 /// A source level (a raster or one of its overviews) warped into a grid one region at a time, as
 /// GDAL's warped VRT (`VRTWarpedDataset`) warps it: each region (a block, or a whole read) is one
 /// `GDALWarpOperation::WarpRegionToBuffer()`, from the source window
@@ -4282,6 +4421,7 @@ pub struct RegionWarp {
     dst_nodata: Option<f64>,
     translation: bool,
     kernel_version: KernelVersion,
+    sum_scale: f64,
 }
 
 impl RegionWarp {
@@ -4289,6 +4429,15 @@ impl RegionWarp {
     /// [`KernelVersion::configured`], read when the warp is created).
     pub fn with_kernel_version(mut self, kernel_version: KernelVersion) -> Self {
         self.kernel_version = kernel_version;
+        self
+    }
+
+    /// Counts each source pixel of a `sum` for `scale` pixels of the full resolution: the source
+    /// pixels a pixel of the level warped stands for, `(W / w) * (H / h)` for a `w` x `h` overview
+    /// of a `W` x `H` raster. 1 by default. Must be positive and finite; [`Self::warp`]
+    /// rejects invalid scales before allocating the output.
+    pub fn with_sum_scale(mut self, scale: f64) -> Self {
+        self.sum_scale = scale;
         self
     }
 
@@ -4325,6 +4474,7 @@ impl RegionWarp {
             dst_nodata,
             translation,
             kernel_version: KernelVersion::configured(),
+            sum_scale: 1.0,
         })
     }
 
@@ -4359,6 +4509,7 @@ impl RegionWarp {
             dst_nodata,
             translation: false,
             kernel_version: KernelVersion::configured(),
+            sum_scale: 1.0,
         })
     }
 
@@ -4396,6 +4547,7 @@ impl RegionWarp {
             dst_nodata,
             translation: false,
             kernel_version: KernelVersion::configured(),
+            sum_scale: 1.0,
         })
     }
 
@@ -4422,6 +4574,7 @@ impl RegionWarp {
             source_extra: None,
             sample_all: false,
             src_grid: std::sync::OnceLock::new(),
+            sum_scale: self.sum_scale,
         }
     }
 
@@ -4448,16 +4601,23 @@ impl RegionWarp {
     /// progress arguments, so the warp sees no extra size. Block reads
     /// (`VRTWarpedDataset::ProcessBlock()`) compute the scale from the unpadded window.
     ///
+    /// `data` is read where it is, a `&RasterData` or pixels borrowed from another owner
+    /// ([`RasterDataRef`]), without a copy: the window is held once.
+    ///
     /// Returns the region's bands in the output type, and which of its pixels were warped.
-    pub fn warp(
+    pub fn warp<'a>(
         &self,
         region: (usize, usize, usize, usize),
         window: (usize, usize, usize, usize),
-        data: &RasterData,
+        data: impl Into<RasterDataRef<'a>>,
         mask: Option<&[bool]>,
         init: f64,
         padded_scale: bool,
     ) -> Result<(RasterData, Vec<bool>)> {
+        let data = data.into();
+        if !(self.sum_scale.is_finite() && self.sum_scale > 0.0) {
+            return Err(Error::InvalidArgument(format!("the sum scale must be a positive number, not {}", self.sum_scale)));
+        }
         let (dx, dy, dw, dh) = region;
         let bands = self.src_nodata.len();
         let n = dw * dh;
@@ -4495,7 +4655,7 @@ impl RegionWarp {
             // The working type here is the output type, not the source's: nearest values of
             // another type are still rounded and clamped by `Sink::value`.
             sink.keeps_source_values &= data.data_type() == self.out_type;
-            crate::pixel::with_data!(data, v => {
+            with_ref!(data, v => {
                 let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
                 let src = SrcData { bands: &typed, valid: &valid, width: sw, origin: (sx, sy) };
                 ctx.warp_chunk(&chunk, &src, &sink, chunk_rows(&mut staged, dw, &Chunk { dx: 0, dy: 0, ..chunk }));
@@ -4522,12 +4682,12 @@ impl RegionWarp {
     /// with several bands, as rasterio sets `UNIFIED_SRC_NODATA=YES`, only the unified mask,
     /// valid where any band is (so a band valid everywhere makes every pixel valid, and a band's
     /// own nodata values are warped where another band is valid). Without nodata values, `mask`.
-    fn validity(&self, data: &RasterData, sn: usize, mask: Option<&[bool]>) -> (Vec<Option<Vec<bool>>>, bool) {
+    fn validity(&self, data: RasterDataRef<'_>, sn: usize, mask: Option<&[bool]>) -> (Vec<Option<Vec<bool>>>, bool) {
         let bands = self.src_nodata.len();
         if self.src_nodata.iter().all(Option::is_none) {
             return (vec![mask.map(<[bool]>::to_vec); bands], mask.is_some());
         }
-        let per_band: Vec<Option<Vec<bool>>> = crate::pixel::with_data!(data, v => {
+        let per_band: Vec<Option<Vec<bool>>> = with_ref!(data, v => {
             (0..bands)
                 .map(|b| {
                     let nd = self.src_nodata[b]?;
@@ -5029,6 +5189,36 @@ mod tests {
         }
     }
 
+    /// Without a size, a resolution or an extent, `sum` rounds the suggested output's size up, as
+    /// `gdalwarp -r sum` asks `GDALSuggestedWarpOutput2()` to (`GDAL_SWO_ROUND_UP_SIZE`): the
+    /// output covers the whole source and keeps its total. Rounded to the nearest, the last row
+    /// (and column) of these outputs was missing, and with them part of the total. Sizes and
+    /// totals are those of GDAL 3.13.3 for the same 41 x 37 Float32 UTM 15N raster.
+    #[test]
+    fn sum_rounds_the_suggested_size_up_to_cover_the_whole_source() {
+        let ds = raster(41, 37, [100.0, 10.0, 0.0, 500.0, 0.0, -10.0], 32615, |c, r| ((c * 7 + r * 13) % 50) as f64 + 0.25);
+        let total = 37537.25;
+        assert_eq!(ds.raster.data.to_f64_vec().iter().sum::<f64>(), total);
+        for (epsg, sum_size, near_size, origin) in [
+            (4326, (41, 38), (41, 37), (-97.48784799800276, 0.004509716313918138)),
+            (32616, (42, 38), (41, 37), (-673652.1899873905, 506.9841153833499)),
+            (3857, (41, 38), (41, 37), (-10852297.59766972, 502.0193242058349)),
+        ] {
+            let dst = SpatialRef::from_epsg(epsg).unwrap();
+            for (resampling, size) in [(Resampling::Sum, sum_size), (Resampling::Nearest, near_size)] {
+                let o = WarpOptions { dst_srs: Some(dst.clone()), resampling, output_type: Some(DataType::F64), ..Default::default() };
+                let out = warp(&[&ds], &o).unwrap();
+                assert_eq!((out.raster.cols, out.raster.rows), size, "EPSG:{epsg} {resampling:?}");
+                let gt = out.geo_transform();
+                assert!((gt[0] - origin.0).abs() <= 1e-9 * origin.0.abs() && (gt[3] - origin.1).abs() <= 1e-9, "EPSG:{epsg}: {gt:?}");
+                if resampling == Resampling::Sum {
+                    let sum: f64 = out.raster.data.to_f64_vec().iter().filter(|v| **v != -9999.0).sum();
+                    assert!(((sum - total) / total).abs() < 1e-9, "EPSG:{epsg}: {sum}, not {total}");
+                }
+            }
+        }
+    }
+
     /// An output pixel much larger than the source holds the part of the source inside it, however
     /// far its corners lie beyond the source: one source pixel inside it, and a few source pixels
     /// across the line between two output pixels.
@@ -5152,47 +5342,211 @@ mod tests {
         }
     }
 
-    /// A `sum` reads the full resolution of a source with overviews unless a level is given, in a
-    /// lazy warp, a warp of several sources, a streamed warp and a serialized warped VRT: an
-    /// overview has one pixel per block of the source's pixels, so its sum is a fraction of the
-    /// source's total. `average` still reads the overview the automatic choice gives.
+    /// Writes `n` x `m` pixels of `f` to `dir/name`, with overviews at the factors `levels`
+    /// resampled by `resampling`, and returns the path.
+    fn write_with_overviews(
+        dir: &std::path::Path,
+        name: &str,
+        (n, m): (usize, usize),
+        levels: Vec<usize>,
+        resampling: &str,
+        f: impl Fn(usize, usize) -> f64,
+    ) -> String {
+        let path = dir.join(name).to_str().unwrap().to_string();
+        let ds = raster(n, m, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, f);
+        let o = crate::RasterWriteOptions { overviews: levels, overview_resampling: Some(resampling.into()), ..Default::default() };
+        crate::write_raster_dataset(&ds, &path, &o).unwrap();
+        path
+    }
+
+    /// The 2 x 2 output of the raster at `path`, as Float64, the same through every path that reads
+    /// the source by window: a lazy warp, a warp of several sources, a streamed warp, and a
+    /// serialized warped VRT (written to `dir`), which reads its source at the level it records.
+    fn warped_every_way(dir: &std::path::Path, path: &str, resampling: Resampling, overview: OverviewSelection) -> Vec<f64> {
+        let o = WarpOptions { size: Some((2, 2)), resampling, overview, output_type: Some(DataType::F64), ..Default::default() };
+        let lazy = warp_lazy(&mut crate::open_raster_lazy(path).unwrap(), &o).unwrap().raster.data.to_f64_vec();
+        let many = warp_paths(&[path.into(), path.into()], &o).unwrap().raster.data.to_f64_vec();
+        assert_eq!(many, lazy, "{path}, {resampling:?}, {overview:?}: several sources");
+        for name in ["streamed.tif", "serialized.vrt"] {
+            let out = dir.join(name).to_str().unwrap().to_string();
+            warp_to_path(&[path.into()], &o, &out, &Default::default()).unwrap();
+            let read = crate::open_raster_lazy(&out).unwrap().read().unwrap().raster.data.to_f64_vec();
+            assert_eq!(read, lazy, "{path}, {resampling:?}, {overview:?}: {name}");
+        }
+        lazy
+    }
+
+    /// A `sum` that reads an overview counts each of its pixels for the source pixels it stands
+    /// for, `(W / w) * (H / h)` for a `w` x `h` overview of a `W` x `H` source, so that it
+    /// estimates the source's total: whether the automatic choice gives the overview or a level is
+    /// given, in a lazy warp, a warp of several sources, a streamed warp and a serialized warped
+    /// VRT. `NONE` sums the full resolution.
     #[test]
-    fn sum_reads_the_full_resolution_of_a_source_with_overviews_unless_a_level_is_given() {
+    fn a_sum_counts_each_overview_pixel_for_the_source_pixels_it_stands_for() {
         let dir = tempfile::tempdir().unwrap();
-        // `n` x `n` pixels of `f`, with overviews at the factors `levels`.
-        let write = |name: &str, n: usize, levels: Vec<usize>, resampling: &str, f: fn(usize, usize) -> f64| {
-            let path = dir.path().join(name).to_str().unwrap().to_string();
-            let ds = raster(n, n, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, f);
-            let o = crate::RasterWriteOptions { overviews: levels, overview_resampling: Some(resampling.into()), ..Default::default() };
-            crate::write_raster_dataset(&ds, &path, &o).unwrap();
-            path
-        };
-        let ones = write("ones.tif", 4, vec![2], "average", |_, _| 1.0);
-        let deep = write("deep.tif", 8, vec![2, 4], "average", |_, _| 1.0);
-        let ramp = write("ramp.tif", 4, vec![2], "nearest", |c, r| (c + 4 * r) as f64);
-        // The 2 x 2 output, the same through every path that reads the source by window.
-        let warped = |path: &str, resampling: Resampling, overview: OverviewSelection| -> Vec<f64> {
-            let o = WarpOptions { size: Some((2, 2)), resampling, overview, output_type: Some(DataType::F64), ..Default::default() };
-            let lazy = warp_lazy(&mut crate::open_raster_lazy(path).unwrap(), &o).unwrap().raster.data.to_f64_vec();
-            let many = warp_paths(&[path.into(), path.into()], &o).unwrap().raster.data.to_f64_vec();
-            assert_eq!(many, lazy, "{path}, {resampling:?}, {overview:?}: several sources");
-            for name in ["streamed.tif", "serialized.vrt"] {
-                let out = dir.path().join(name).to_str().unwrap().to_string();
-                warp_to_path(&[path.into()], &o, &out, &Default::default()).unwrap();
-                let read = crate::open_raster_lazy(&out).unwrap().read().unwrap().raster.data.to_f64_vec();
-                assert_eq!(read, lazy, "{path}, {resampling:?}, {overview:?}: {name}");
-            }
-            lazy
-        };
+        let d = dir.path();
+        let ones = write_with_overviews(d, "ones.tif", (4, 4), vec![2], "average", |_, _| 1.0);
+        let deep = write_with_overviews(d, "deep.tif", (8, 8), vec![2, 4], "average", |_, _| 1.0);
+        // 10 x 10 pixels and an overview of 3 x 3: each overview pixel stands for 10/3 x 10/3.
+        let odd = write_with_overviews(d, "odd.tif", (10, 10), vec![4], "average", |_, _| 1.0);
+        let ramp = write_with_overviews(d, "ramp.tif", (4, 4), vec![2], "nearest", |c, r| (c + 4 * r) as f64);
+        let warped = |path: &str, resampling: Resampling, overview: OverviewSelection| warped_every_way(d, path, resampling, overview);
         let total = |path: &str, overview| warped(path, Resampling::Sum, overview).iter().sum::<f64>();
         assert_eq!(total(&ones, OverviewSelection::Auto), 16.0);
         assert_eq!(total(&ones, OverviewSelection::None), 16.0);
-        assert_eq!(total(&ones, OverviewSelection::Level(0)), 4.0);
+        assert_eq!(total(&ones, OverviewSelection::Level(0)), 16.0);
         assert_eq!(total(&deep, OverviewSelection::AutoOffset(1)), 64.0);
-        assert_eq!(total(&deep, OverviewSelection::Level(0)), 16.0);
+        assert_eq!(total(&deep, OverviewSelection::Level(0)), 64.0);
+        assert_eq!(total(&deep, OverviewSelection::Level(1)), 64.0);
+        // The ratios are exact: 9 pixels of 100 / 9 source pixels each, not of 3 x 3.
+        let odd_total = total(&odd, OverviewSelection::Level(0));
+        assert!((odd_total - 100.0).abs() < 1e-12, "{odd_total}");
+        // The overview of the ramp holds one source pixel of each 2 x 2 block: the automatic choice
+        // sums those four pixels, each counted for its block, and `NONE` the 16 pixels.
+        let level = crate::open_raster_lazy(&ramp)
+            .unwrap()
+            .read_window(crate::Window::full(2, 2), &crate::WindowOptions { overview: Some(0), bands: Vec::new() })
+            .unwrap();
+        let sampled: f64 = level.raster.data.to_f64_vec().iter().sum();
+        assert_eq!(total(&ramp, OverviewSelection::Auto), 4.0 * sampled);
+        assert_eq!(warped(&ramp, Resampling::Sum, OverviewSelection::Auto), warped(&ramp, Resampling::Sum, OverviewSelection::Level(0)));
+        assert_eq!(total(&ramp, OverviewSelection::None), 120.0);
+        assert_ne!(4.0 * sampled, 120.0);
         let average = |overview| warped(&ramp, Resampling::Average, overview);
         assert_eq!(average(OverviewSelection::Auto), average(OverviewSelection::Level(0)));
         assert_ne!(average(OverviewSelection::Auto), average(OverviewSelection::None));
+    }
+
+    /// Each axis of an overview has its own ratio, and a `sum` counts each overview pixel for their
+    /// product: a 9 x 5 source has an overview of 5 x 3 at 2, whose pixels stand for 9/5 by 5/3
+    /// source pixels, 3 in all, where the ratio of one axis squared would give 3.24 or 2.78. The
+    /// total is the source's, up to the rounding of the overview's Float32 means, through every
+    /// path that reads the source by window, whether a level is given or the automatic choice
+    /// gives it.
+    #[test]
+    fn a_sum_counts_each_axis_of_an_overview_by_its_own_ratio() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = |c: usize, r: usize| ((c * 3 + r * 7) % 11) as f64 + 0.5;
+        let path = write_with_overviews(dir.path(), "oblong.tif", (9, 5), vec![2], "average", f);
+        assert_eq!(crate::open_raster_lazy(&path).unwrap().overviews(), [(5, 3)]);
+        let exact: f64 = (0..5).flat_map(|r| (0..9).map(move |c| f(c, r))).sum();
+        let level = warped_every_way(dir.path(), &path, Resampling::Sum, OverviewSelection::Level(0));
+        assert_eq!(warped_every_way(dir.path(), &path, Resampling::Sum, OverviewSelection::Auto), level);
+        let total: f64 = level.iter().sum();
+        assert!(((total - exact) / exact).abs() < 1e-6, "{total}, not {exact}");
+    }
+
+    /// A source that records the level and the number of pixels of each window read from it.
+    struct Counted<'a> {
+        raster: &'a mut crate::LazyRaster,
+        reads: Vec<(Option<usize>, usize)>,
+    }
+
+    impl WarpSource for Counted<'_> {
+        fn info(&mut self) -> Result<WarpSourceInfo> {
+            WarpSource::info(&mut *self.raster)
+        }
+        fn has_mask(&mut self) -> Result<bool> {
+            WarpSource::has_mask(&mut *self.raster)
+        }
+        fn read_mask(&mut self, window: crate::Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+            WarpSource::read_mask(&mut *self.raster, window, overview)
+        }
+        fn read_window(&mut self, window: crate::Window, options: &crate::WindowOptions) -> Result<RasterDataset> {
+            self.reads.push((options.overview, window.width * window.height));
+            WarpSource::read_window(&mut *self.raster, window, options)
+        }
+    }
+
+    /// A coarse `sum` with the automatic choice reads only the overview that choice gives, 64 times
+    /// fewer pixels than the full resolution here, and its total is the source's, up to rounding
+    /// (under 1e-12 of it), on an output grid whose pixels straddle the overview's.
+    #[test]
+    fn an_automatic_sum_reads_the_chosen_overview_and_estimates_the_total() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = |c: usize, r: usize| ((c * 7 + r * 13) % 50) as f64 + 0.25;
+        let path = write_with_overviews(dir.path(), "src.tif", (64, 64), vec![2, 4, 8], "average", f);
+        let exact: f64 = (0..64).flat_map(|r| (0..64).map(move |c| f(c, r))).sum();
+        // 7 x 7 output pixels of 64/7 source pixels: the automatic choice is the overview at 8.
+        let run = |overview: OverviewSelection| {
+            let mut lazy = crate::open_raster_lazy(&path).unwrap();
+            let mut source = Counted { raster: &mut lazy, reads: Vec::new() };
+            let o = WarpOptions {
+                size: Some((7, 7)),
+                resampling: Resampling::Sum,
+                overview,
+                output_type: Some(DataType::F64),
+                ..Default::default()
+            };
+            let out = warp_sources(&mut [&mut source as &mut dyn WarpSource], &o).unwrap().raster.data.to_f64_vec();
+            let levels: std::collections::BTreeSet<Option<usize>> = source.reads.iter().map(|r| r.0).collect();
+            (out, levels, source.reads.iter().map(|r| r.1).sum::<usize>())
+        };
+        let (auto, auto_levels, auto_pixels) = run(OverviewSelection::Auto);
+        let (full, full_levels, full_pixels) = run(OverviewSelection::None);
+        let (finer, finer_levels, _) = run(OverviewSelection::AutoOffset(1));
+        assert_eq!(auto_levels, std::collections::BTreeSet::from([Some(2)]), "the automatic choice reads the overview at 8");
+        assert_eq!(finer_levels, std::collections::BTreeSet::from([Some(1)]), "AUTO-1 reads the overview at 4");
+        assert_eq!(full_levels, std::collections::BTreeSet::from([None]), "NONE reads the full resolution");
+        assert_eq!((auto_pixels, full_pixels), (64, 4096));
+        for (name, out) in [("AUTO", &auto), ("AUTO-1", &finer), ("NONE", &full)] {
+            let total: f64 = out.iter().sum();
+            assert!(((total - exact) / exact).abs() < 1e-12, "{name}: {total}, not {exact}");
+        }
+        // An estimate: the output pixels are not those of the full resolution.
+        assert_ne!(auto, full);
+    }
+
+    /// An average overview pixel is the mean of the valid pixels of its block, and a `sum` counts
+    /// it for the whole block: a block partly nodata counts as if its nodata pixels held that
+    /// mean, and a block wholly nodata stays nodata. `NONE` sums the valid pixels alone.
+    #[test]
+    fn a_sum_counts_the_overview_pixel_of_a_partly_nodata_block_for_the_whole_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("holes.tif").to_str().unwrap().to_string();
+        // 2 x 2 blocks: 2s with one nodata pixel, 1s, nodata, and 3s.
+        let mut ds = raster(4, 4, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| match (c / 2, r / 2) {
+            (0, 0) if (c, r) == (1, 1) => -9999.0,
+            (0, 0) => 2.0,
+            (1, 0) => 1.0,
+            (0, 1) => -9999.0,
+            _ => 3.0,
+        });
+        ds.has_nodata = true;
+        let o = crate::RasterWriteOptions { overviews: vec![2], overview_resampling: Some("average".into()), ..Default::default() };
+        crate::write_raster_dataset(&ds, &path, &o).unwrap();
+        let warped = |overview| {
+            let o = WarpOptions {
+                size: Some((2, 2)),
+                resampling: Resampling::Sum,
+                overview,
+                output_type: Some(DataType::F64),
+                ..Default::default()
+            };
+            warp_lazy(&mut crate::open_raster_lazy(&path).unwrap(), &o).unwrap().raster.data.to_f64_vec()
+        };
+        assert_eq!(warped(OverviewSelection::Auto), [8.0, 4.0, -9999.0, 12.0]);
+        assert_eq!(warped(OverviewSelection::Level(0)), [8.0, 4.0, -9999.0, 12.0]);
+        assert_eq!(warped(OverviewSelection::None), [6.0, 4.0, -9999.0, 12.0]);
+    }
+
+    /// Sources that are themselves an overview, warped from memory, count each pixel for the
+    /// source pixels [`WarpOptions::sum_scale`] says it stands for; the other resamplings ignore it,
+    /// and a scale that is not a positive number is refused.
+    #[test]
+    fn a_sum_of_sources_given_a_scale_counts_each_pixel_that_many_times() {
+        let ds = raster(4, 4, [0.0, 1.0, 0.0, 4.0, 0.0, -1.0], 32610, |c, r| (1 + c + 4 * r) as f64);
+        let warped = |resampling, sum_scale| {
+            let o = WarpOptions { size: Some((2, 2)), resampling, sum_scale, output_type: Some(DataType::F64), ..Default::default() };
+            warp(&[&ds], &o).map(|out| out.raster.data.to_f64_vec())
+        };
+        let once = warped(Resampling::Sum, 1.0).unwrap();
+        assert_eq!(once.iter().sum::<f64>(), 136.0);
+        assert_eq!(warped(Resampling::Sum, 2.5).unwrap(), once.iter().map(|v| v * 2.5).collect::<Vec<_>>());
+        assert_eq!(warped(Resampling::Average, 2.5).unwrap(), warped(Resampling::Average, 1.0).unwrap());
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(matches!(warped(Resampling::Sum, bad), Err(Error::InvalidArgument(_))), "{bad}");
+        }
     }
 
     #[test]
@@ -5360,6 +5714,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn region_sum_rejects_invalid_pixel_scales() {
+        let srs = SpatialRef::from_epsg(3857).unwrap();
+        let gt = [0., 1., 0., 2., 0., -1.];
+        let data = RasterData::F64(vec![1.; 4]);
+        let region = || RegionWarp::new((2, 2), gt, &srs, &srs, gt, Resampling::Sum, 0., DataType::F64, vec![None], None).unwrap();
+        for scale in [0., -1., f64::NAN, f64::INFINITY] {
+            let result = region().with_sum_scale(scale).warp((0, 0, 2, 2), (0, 0, 2, 2), &data, None, 0., false);
+            assert!(matches!(result, Err(Error::InvalidArgument(_))), "scale {scale}: {result:?}");
+        }
+        let (actual, _) = region().with_sum_scale(2.).warp((0, 0, 2, 2), (0, 0, 2, 2), &data, None, 0., false).unwrap();
+        assert_eq!(actual.to_f64_vec(), vec![2.; 4]);
     }
 
     /// The same warps' values, pinned: checksums of terrio's results in one chunk and in many

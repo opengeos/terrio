@@ -112,6 +112,10 @@ def rasters(tmp: Path) -> terrio.Raster:
     info: dict[str, Any] = terrio.info(str(path), stats=True)
     drivers: list[dict[str, Any]] = terrio.drivers()
     print(info["driver"], len(drivers))
+    albers = terrio.list_crs("albers", authority="EPSG", kind=["projected"])
+    picked: str = f"{albers[0]['authority']}:{albers[0]['code']}"
+    bounds = albers[0]["bounds"]
+    print(picked, albers[0]["name"], albers[0]["deprecated"], bounds[0] if bounds else None)
     xs, ys = terrio.transform_points(
         [500000.0],
         [4100000.0],

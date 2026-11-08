@@ -49,7 +49,9 @@ def test_esripbf_from_a_path_and_from_bytes(tmp_path):
     feature = _message(
         15, _message(1, _message(1, b"Lake")) + _message(2, _message(3, bytes([2, 4])))
     )
-    scale = bytes([1 << 3 | 1]) + struct.pack("<d", 1.0) + bytes([2 << 3 | 1]) + struct.pack("<d", 1.0)
+    scale = (
+        bytes([1 << 3 | 1]) + struct.pack("<d", 1.0) + bytes([2 << 3 | 1]) + struct.pack("<d", 1.0)
+    )
     transform = _message(12, _message(2, scale))
     data = _message(2, _message(1, field + transform + feature))
     path = tmp_path / "lakes.pbf"

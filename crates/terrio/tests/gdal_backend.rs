@@ -46,6 +46,44 @@ fn assert_same_raster(a: &RasterDataset, b: &RasterDataset, what: &str) {
     assert_eq!(differing, 0, "{what}: {differing} pixels differ");
 }
 
+/// GDAL 3.12.1 CFloat16 TIFF: native lazy decoding refuses it; GDAL reads its two components.
+/// Generated with GTiff.Create(16, 8, 1, GDT_CFloat16), real=0..127, imag=-real-1,
+/// transform=[500000,30,0,4100000,0,-30], EPSG:32613. All values fit Float16 exactly.
+#[test]
+fn translate_input_policy_falls_back_to_whole_gdal_reads() {
+    use terrio::ops::overview::OverviewSelection;
+    use terrio::ops::translate::{TranslateOptions, translate, translate_bytes, translate_path, translate_path_to_file};
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/translate_complex_half.tif");
+    assert!(terrio::open_raster_lazy(path).is_err(), "fixture must exercise the whole-read fallback");
+    let original = terrio::gdal_backend::open_raster(path).unwrap();
+    assert!(original.complex);
+    let options = TranslateOptions { src_win: Some((2.0, 1.0, 5.0, 4.0)), ..Default::default() };
+    let expected = translate(&original, &options).unwrap();
+    for overview in [OverviewSelection::Auto, OverviewSelection::AutoOffset(0), OverviewSelection::None] {
+        for source in [path.to_string(), format!("GDAL:{path}")] {
+            let actual = translate_path(&source, &options, overview).unwrap();
+            assert_same_raster(&actual, &expected, "whole path translation");
+            assert_eq!(actual.complex, expected.complex);
+        }
+        let actual = translate_bytes(std::fs::read(path).unwrap(), "input.tif", &options, overview).unwrap();
+        assert_same_raster(&actual, &expected, "whole byte translation");
+        assert_eq!(actual.complex, expected.complex);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("output.tif");
+    translate_path_to_file(path, &options, OverviewSelection::Auto, output.to_str().unwrap(), &Default::default()).unwrap();
+    assert_same_raster(&terrio::open_raster(output.to_str().unwrap()).unwrap(), &expected, "whole translation written to file");
+    for overview in [OverviewSelection::Level(0), OverviewSelection::AutoOffset(1)] {
+        let result = translate_path(path, &options, overview);
+        assert!(matches!(result, Err(terrio::Error::Unsupported(message)) if message.contains("is read whole")));
+        let result = translate_bytes(std::fs::read(path).unwrap(), "input.tif", &options, overview);
+        assert!(matches!(result, Err(terrio::Error::Unsupported(message)) if message.contains("is read whole")));
+    }
+    // The original public type and function remain compatible after policy consolidation.
+    let legacy = terrio::memory::open_raster_lazy_bytes_or_whole(std::fs::read(path).unwrap(), "input.tif").unwrap();
+    assert!(matches!(legacy, terrio::memory::OpenedRasterBytes::Whole(_)));
+}
+
 #[test]
 fn gdal_driver_listed() {
     assert_eq!(RasterDriver::from_name("gdal"), Some(RasterDriver::Gdal));
@@ -56,6 +94,36 @@ fn gdal_driver_listed() {
     assert!(!terrio::gdal_backend::has_driver("NoSuchDriver"));
     assert_eq!(terrio::gdal_backend::strip_prefix("gdal:x.hdf"), Some("x.hdf"));
     assert_eq!(terrio::gdal_backend::strip_prefix("x.hdf"), None);
+}
+
+/// GDAL 3.12.1 identifies TIFF content under a /vsimem GRIB name without its optional GRIB driver.
+/// The GRIB name sends the native lazy opener to the filesystem, where it returns NotFound.
+#[cfg(feature = "grib")]
+#[test]
+fn translate_input_policy_reads_vsimem_through_gdal() {
+    use terrio::ops::overview::OverviewSelection;
+    use terrio::ops::translate::{TranslateOptions, translate, translate_path};
+
+    let mut bytes = include_bytes!("data/translate_complex_half.tif").to_vec();
+    let path = "/vsimem/terrio_translate_input_policy.grb";
+    let _file = gdal::vsi::create_mem_file_from_ref(path, &mut bytes).unwrap();
+    let Err(error) = terrio::open_raster_lazy(path) else {
+        panic!("VSI input must need a whole-read fallback");
+    };
+    assert!(matches!(&error, terrio::Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound), "{error}");
+    let original = terrio::gdal_backend::open_raster(path).unwrap();
+    let options = TranslateOptions::default();
+    let expected = translate(&original, &options).unwrap();
+    for overview in [OverviewSelection::Auto, OverviewSelection::AutoOffset(0), OverviewSelection::None] {
+        let actual = translate_path(path, &options, overview).unwrap();
+        assert_same_raster(&actual, &expected, "VSI whole translation");
+        assert_eq!(actual.complex, expected.complex);
+    }
+    for overview in [OverviewSelection::Level(0), OverviewSelection::AutoOffset(1)] {
+        assert!(
+            matches!(translate_path(path, &options, overview), Err(terrio::Error::Unsupported(message)) if message.contains("is read whole"))
+        );
+    }
 }
 
 /// Formats terrio cannot read or write itself: written with GDAL's drivers, then read back
@@ -511,8 +579,8 @@ fn bytes_through_gdal() {
     // terrio's own formats still read with terrio's drivers.
     let tif = terrio::memory::write_raster_bytes(&sample(), "s.tif", &Default::default()).unwrap();
     assert_eq!(terrio::memory::open_raster_bytes(tif, "s.tif").unwrap().driver, RasterDriver::GTiff);
-    // Nothing is left in /vsimem/.
-    assert!(gdal::vsi::read_dir("/vsimem/", false).unwrap_or_default().iter().all(|p| !p.to_string_lossy().starts_with("terrio-")));
+    // Per-call /vsimem/ cleanup is checked in the backend unit test. Other tests may
+    // still be using their own directories here.
 }
 
 /// A misspelled layer name beside a valid one is refused through GDAL too, before any layer is

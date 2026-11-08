@@ -22,6 +22,7 @@
 
 use super::common::{self, Interleave, Layout};
 use super::hdfeos::{Eos, FieldKind};
+use crate::dataset::fallible;
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
 use hdf5_reader::messages::datatype::{Datatype, StringSize, VarLenKind};
@@ -255,7 +256,7 @@ fn format_number(b: &[u8], t: NumType) -> String {
 /// A single-valued numeric attribute as a double (GDAL's `GH5_FetchAttribute()`).
 fn attr_f64(attrs: &[Attribute], name: &str) -> Option<f64> {
     let a = attrs.iter().find(|a| a.name == name)?;
-    if a.shape.iter().product::<u64>() != 1 {
+    if a.shape.iter().try_fold(1u64, |n, d| n.checked_mul(*d)) != Some(1) {
         return None;
     }
     value_f64(&a.raw_data, num_type(&a.datatype)?)
@@ -408,16 +409,26 @@ fn walk(f: &Hdf5File) -> Result<Walk> {
     Ok(w)
 }
 
+/// The largest HDF-EOS5 structure text read, in bytes (`docs/formats.md`).
+const EOS_STRUCT_MAX_BYTES: usize = 16 * 1024 * 1024;
+
 /// The HDF-EOS5 structure of a file (`HDFEOS INFORMATION/StructMetadata.0`), when it has one
 /// that describes grids or swaths.
-fn eos_structure(f: &Hdf5File) -> Option<Eos> {
-    let d = f.dataset("/HDFEOS INFORMATION/StructMetadata.0").ok()?;
-    if !matches!(d.dtype(), Datatype::String { size: StringSize::Fixed(_), .. }) || !d.shape().is_empty() {
-        return None;
+fn eos_structure(f: &Hdf5File, path: &Path) -> Result<Option<Eos>> {
+    let Ok(d) = f.dataset("/HDFEOS INFORMATION/StructMetadata.0") else { return Ok(None) };
+    let Datatype::String { size: StringSize::Fixed(size), .. } = d.dtype() else { return Ok(None) };
+    if !d.shape().is_empty() {
+        return Ok(None);
     }
-    let raw = d.read_raw_bytes().ok()?;
+    // Structure text is metadata, not raster data. Bound it even on systems where the
+    // physical-memory limit is unavailable, before the reader expands a fill-only string.
+    let within_limit = usize::try_from(*size).is_ok_and(|size| size <= EOS_STRUCT_MAX_BYTES);
+    if !within_limit {
+        return Err(Error::ResourceLimit(format!("{}: HDF-EOS5 structure text exceeds 16 MiB", path.display())));
+    }
+    let Ok(raw) = d.read_raw_bytes() else { return Ok(None) };
     let text = raw.split(|b| *b == 0).next().unwrap_or_default();
-    Eos::parse(&String::from_utf8_lossy(text))
+    Ok(Eos::parse(&String::from_utf8_lossy(text)))
 }
 
 /// The subdatasets of a file, `(name, description)`, as GDAL lists them: the datasets of two or
@@ -523,7 +534,7 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, subdataset: Option<&str>) -
 
 fn read_file(f: &Hdf5File, path: &Path, name: &str, subdataset: Option<&str>) -> Result<RasterDataset> {
     let w = walk(f)?;
-    let eos = eos_structure(f);
+    let eos = eos_structure(f, path)?;
     let subs = subdatasets(&w, name, eos.as_ref());
     let (entry, metadata) = match subdataset {
         Some(s) => {
@@ -553,30 +564,48 @@ fn read_file(f: &Hdf5File, path: &Path, name: &str, subdataset: Option<&str>) ->
     read_dataset(f, path, name, &w, eos.as_ref(), entry, metadata)
 }
 
+/// Whether `x`, `y` and `other` name distinct dimensions of `shape` (columns, rows and bands).
+fn valid_layout(shape: &[usize], x: usize, y: Option<usize>, other: Option<usize>) -> bool {
+    let nd = shape.len();
+    x < nd && y.is_none_or(|y| y < nd && y != x) && other.is_none_or(|o| o < nd && o != x && Some(o) != y)
+}
+
 /// Reorders the elements of an array into bands, rows and columns: `x`, `y` and `other` are the
 /// dimensions of the columns, rows and bands (rows of 1 without `y`, one band without `other`).
-fn to_bsq(raw: &[u8], shape: &[usize], element: usize, x: usize, y: Option<usize>, other: Option<usize>) -> Vec<u8> {
+/// Refused (`InvalidData`) when they are not distinct dimensions of `shape` or `raw` is shorter
+/// than it, and an `OutOfMemory` error when the reordered elements cannot be allocated.
+fn to_bsq(raw: &[u8], shape: &[usize], element: usize, x: usize, y: Option<usize>, other: Option<usize>) -> Result<Vec<u8>> {
+    let short = || Error::InvalidData("dataset shorter than its shape".into());
+    if !valid_layout(shape, x, y, other) {
+        return Err(Error::InvalidData("its dimensions do not name distinct columns, rows and bands".into()));
+    }
     let nd = shape.len();
     let mut strides = vec![1usize; nd];
+    let too_large = || Error::ResourceLimit(format!("an array of shape {shape:?} has too many elements"));
     for d in (0..nd.saturating_sub(1)).rev() {
-        strides[d] = strides[d + 1] * shape[d + 1];
+        strides[d] = strides[d + 1].checked_mul(shape[d + 1]).ok_or_else(too_large)?;
     }
+    if shape.iter().try_fold(element, |n, d| n.checked_mul(*d)).ok_or_else(too_large)? > raw.len() {
+        return Err(short());
+    }
+    // Distinct dimensions: every element gathered lies within the shape, so within `raw`.
     let (cols, rows, bands) = (shape[x], y.map_or(1, |y| shape[y]), other.map_or(1, |o| shape[o]));
-    let mut out = Vec::with_capacity(cols * rows * bands * element);
+    let mut out = Vec::new();
+    fallible::reserve(&mut out, cols * rows * bands * element, "an HDF5 array reordered into bands")?;
     for b in 0..bands {
         for r in 0..rows {
             let base = other.map_or(0, |o| b * strides[o]) + y.map_or(0, |y| r * strides[y]);
             if strides[x] == 1 {
-                out.extend_from_slice(&raw[base * element..(base + cols) * element]);
+                out.extend_from_slice(raw.get(base * element..(base + cols) * element).ok_or_else(short)?);
             } else {
                 for c in 0..cols {
                     let i = (base + c * strides[x]) * element;
-                    out.extend_from_slice(&raw[i..i + element]);
+                    out.extend_from_slice(raw.get(i..i + element).ok_or_else(short)?);
                 }
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Decodes elements of a numeric type laid out band by band.
@@ -614,7 +643,19 @@ fn read_dataset(
 ) -> Result<RasterDataset> {
     let t = e.num_type.ok_or_else(|| Error::Unsupported(format!("{}: {}: unsupported HDF5 data type", path.display(), e.path)))?;
     let ds = f.dataset(&e.path).map_err(|e| err(path, e))?;
-    let shape: Vec<usize> = e.shape.iter().map(|d| *d as usize).collect();
+    let element = t.element_size();
+    // This must precede read_raw_bytes: a tiny fill-only file can declare terabytes.
+    // Also bound the expanded output (Float16 and complex pixels can grow on decode).
+    let output_element = t.data_type.size_bytes().checked_mul(if t.complex.is_some() { 2 } else { 1 });
+    let dataset_name = format!("{}: {}", path.display(), e.path);
+    let shape: Vec<usize> = e
+        .shape
+        .iter()
+        .map(|d| usize::try_from(*d))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|_| Error::ResourceLimit(format!("{dataset_name}: dimensions exceed the address space")))?;
+    let whole_len = checked_dataset_bytes(&shape, Some(element), &dataset_name)?;
+    let output_len = checked_dataset_bytes(&shape, output_element, &dataset_name)?;
     let nd = shape.len();
     if nd == 0 {
         return Err(err(path, format!("{} is a scalar", e.path)));
@@ -651,17 +692,33 @@ fn read_dataset(
     if field.is_none() && nd == 3 && csk.as_deref().is_some_and(|p| starts_with_ci(p, "SCS")) {
         (x, y, other) = (1, Some(0), Some(2));
     }
+    // A field whose dimension list leaves its columns, rows or bands on the same dimension (no
+    // `XDim`, say) is refused: its layout is unknown. GDAL 3.13.3 reports a `(Band, Foo, YDim)`
+    // field of 1 x 1 x 10 values as 10 x 10 and reads zeros.
+    if !valid_layout(&shape, x, y, other) {
+        return Err(err(path, format!("{}: its dimensions do not name distinct columns, rows and bands", e.path)));
+    }
     let (cols, rows, bands) = (shape[x], y.map_or(1, |y| shape[y]), other.map_or(1, |o| shape[o]));
-    let raw = ds.read_raw_bytes().map_err(|e| err(path, e))?;
-    let element = t.element_size();
-    let n = cols * rows * bands;
-    // The whole dataset: a layout other than GDAL's is gathered with the strides of its shape.
-    let whole = raw.get(..shape.iter().product::<usize>() * element).ok_or_else(|| err(path, "dataset shorter than its shape"))?;
     let standard = x == nd - 1 && y == nd.checked_sub(2) && (other.is_none() || other == Some(0));
+    // Bound every simultaneously live pixel buffer before the first whole read. Using the
+    // whole shape for the selected output conservatively covers omitted dimensions too.
+    let reordered = if standard { 0 } else { whole_len };
+    let parts = if t.complex.is_some() { checked_dataset_bytes(&shape, t.part_size().checked_mul(2), &dataset_name)? } else { 0 };
+    checked_peak_bytes(&[whole_len, reordered, parts, output_len], fallible::usable_memory(), &dataset_name)?;
+    let raw = ds.read_raw_bytes().map_err(|e| err(path, e))?;
+    // The whole dataset: a layout other than GDAL's is gathered with the strides of its shape.
+    let whole = raw.get(..whole_len).ok_or_else(|| err(path, "dataset shorter than its shape"))?;
+    let n = fallible::len(&[cols, rows, bands], "an HDF5 raster")?;
     let ordered = if standard {
-        std::borrow::Cow::Borrowed(&whole[..n * element])
+        // Columns, rows and bands are distinct dimensions: they hold at most the whole dataset.
+        std::borrow::Cow::Borrowed(whole.get(..n * element).ok_or_else(|| err(path, "dataset shorter than its shape"))?)
     } else {
-        std::borrow::Cow::Owned(to_bsq(whole, &shape, element, x, y, other))
+        // Refusals of the data name the file; allocation and resource refusals stay as they are.
+        let ordered = to_bsq(whole, &shape, element, x, y, other).map_err(|failure| match failure {
+            Error::InvalidData(m) => err(path, format!("{}: {m}", e.path)),
+            failure => failure,
+        })?;
+        std::borrow::Cow::Owned(ordered)
     };
     let (data, raster_bands) = match t.complex {
         // Complex elements: each band becomes its real parts then its imaginary parts.
@@ -731,6 +788,28 @@ fn read_dataset(
     Ok(out)
 }
 
+/// Checks a whole raw or decoded pixel buffer before asking the HDF5 reader to allocate it.
+fn checked_dataset_bytes(shape: &[usize], element: Option<usize>, name: &str) -> Result<usize> {
+    let bytes = element.and_then(|element| shape.iter().try_fold(element, |n, d| n.checked_mul(*d)));
+    fallible::check_usable(bytes, || format!("HDF5 dataset {name}: pixel buffer is too large")).map_err(Error::ResourceLimit)
+}
+
+/// Limits coexisting pixel buffers; hosts without memory discovery use a 512 MiB budget.
+fn checked_peak_bytes(buffers: &[usize], usable: Option<u64>, name: &str) -> Result<()> {
+    const FALLBACK_BUDGET: u64 = 512 * 1024 * 1024;
+    let most = usable.unwrap_or(FALLBACK_BUDGET);
+    let peak = buffers.iter().try_fold(0usize, |sum, bytes| sum.checked_add(*bytes));
+    match peak {
+        Some(bytes) if (bytes as u64) <= most => Ok(()),
+        _ => {
+            let needed = peak.map_or_else(|| "more bytes than the address space holds".to_string(), |bytes| format!("{bytes} bytes"));
+            Err(Error::ResourceLimit(format!(
+                "HDF5 dataset {name}: peak pixel buffers need {needed}, exceeding the {most}-byte memory budget"
+            )))
+        }
+    }
+}
+
 /// Whether `s` starts with `prefix`, ignoring case.
 fn starts_with_ci(s: &str, prefix: &str) -> bool {
     s.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(prefix))
@@ -763,7 +842,7 @@ fn attr_f64s(attrs: &[Attribute], name: &str) -> Option<Vec<f64>> {
 /// `Column Spacing`, and the UTM or UPS projection of the root's `Map Projection` attributes;
 /// WGS 84 for the others (whose corners GDAL gives as GCPs, which terrio does not model).
 fn csk_georeferencing(f: &Hdf5File, w: &Walk, attrs: &[Attribute], level: &str) -> (Option<[f64; 6]>, Option<wbraster::CrsInfo>) {
-    let wgs84 = wbraster::CrsInfo::from_epsg(4326);
+    let wgs84 = crate::crs::epsg_crs_info(4326);
     if !(starts_with_ci(level, "GEC") || starts_with_ci(level, "GTC")) {
         return (None, Some(wgs84));
     }
@@ -791,7 +870,7 @@ fn csk_georeferencing(f: &Hdf5File, w: &Walk, attrs: &[Attribute], level: &str) 
                 && (1.0..=60.0).contains(&zone)
                 && (zone * 6.0 - 183.0 - c[1]).abs() < 1e-9;
             if id.eq_ignore_ascii_case("UTM") && utm {
-                return (gt, Some(wbraster::CrsInfo::from_epsg(if y0 == 0.0 { 32600 } else { 32700 } + zone as u32)));
+                return (gt, Some(crate::crs::epsg_crs_info(if y0 == 0.0 { 32600 } else { 32700 } + zone as u32)));
             }
             let proj = if id.eq_ignore_ascii_case("UTM") {
                 Some(format!("+proj=tmerc +lat_0={} +lon_0={} +k={} +x_0={x0} +y_0={y0} +datum=WGS84 +units=m +no_defs", c[0], c[1], k[0]))
@@ -849,7 +928,7 @@ fn georeferencing(f: &Hdf5File, w: &Walk, e: &Entry, attrs: &[Attribute], nd: us
         let gattrs = g.attributes();
         let epsg = string_attr(&gattrs, "epsg_code").and_then(|s| s.trim().parse::<u32>().ok()).filter(|c| *c > 0);
         crs = match epsg {
-            Some(code) => Some(wbraster::CrsInfo::from_epsg(code)),
+            Some(code) => Some(crate::crs::epsg_crs_info(code)),
             None => super::cf::cf_crs(
                 |k| string_attr(&gattrs, k),
                 |k| {
@@ -888,6 +967,68 @@ fn georeferencing(f: &Hdf5File, w: &Walk, e: &Entry, attrs: &[Attribute], nd: us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refuses_fill_only_datasets_before_decoding() {
+        use super::super::hdf5_write::{Dataset, File, H5Type, Storage};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fill-only.h5");
+        for (name, dtype, shape) in [
+            ("grid", H5Type::Float { size: 8 }, Some(vec![1 << 30, 1 << 30])),
+            ("HDFEOS INFORMATION/StructMetadata.0", H5Type::Str { len: 32 * 1024 * 1024 }, None),
+        ] {
+            let file = File {
+                datasets: vec![Dataset {
+                    name: name.into(),
+                    dtype,
+                    shape,
+                    max_shape: None,
+                    data: vec![],
+                    fill: vec![],
+                    storage: Storage::default(),
+                    attrs: vec![],
+                }],
+                ..File::default()
+            };
+            let bytes = super::super::hdf5_write::encode(&file);
+            assert!(bytes.len() < 4096);
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(matches!(read(&path, "fill-only.h5", Some("//grid")), Err(Error::ResourceLimit(_))));
+            assert!(matches!(read_bytes(bytes, "fill-only.h5", Some("//grid")), Err(Error::ResourceLimit(_))));
+        }
+        assert!(matches!(checked_dataset_bytes(&[usize::MAX, 2], Some(8), "grid"), Err(Error::ResourceLimit(_))));
+    }
+
+    /// h5py-generated 1,400-byte file: 2^40 Float64 elements, 16 x 16 chunks, none allocated.
+    #[test]
+    fn refuses_unallocated_chunked_datasets_before_decoding() {
+        if fallible::usable_memory().is_some_and(|bytes| bytes >= 8 * (1u64 << 40)) {
+            // A host that can hold the fixture checks its declared address-space outcome
+            // without attempting the read. Unknown limits use the fallback budget below.
+            let declared = checked_dataset_bytes(&[1 << 20, 1 << 20], Some(8), "grid");
+            assert_eq!(declared.is_ok(), usize::BITS == 64);
+            return;
+        }
+        let bytes = include_bytes!("../../tests/data/hdf5_fill_only.h5");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fill-only.h5");
+        std::fs::write(&path, bytes).unwrap();
+        assert!(matches!(read(&path, "fill-only.h5", None), Err(Error::ResourceLimit(_))));
+        assert!(matches!(read_bytes(bytes.to_vec(), "fill-only.h5", None), Err(Error::ResourceLimit(_))));
+    }
+
+    #[test]
+    fn bounds_coexisting_pixel_buffers() {
+        assert!(checked_peak_bytes(&[6, 6, 6], Some(18), "grid").is_ok());
+        assert!(matches!(checked_peak_bytes(&[6, 6, 6], Some(17), "grid"), Err(Error::ResourceLimit(_))));
+        assert!(matches!(checked_peak_bytes(&[usize::MAX, 1], Some(u64::MAX), "grid"), Err(Error::ResourceLimit(_))));
+        assert!(matches!(checked_peak_bytes(&[300 * 1024 * 1024; 2], None, "grid"), Err(Error::ResourceLimit(_))));
+        assert!(checked_peak_bytes(&[1024], None, "grid").is_ok());
+        let error = checked_peak_bytes(&[6, 6, 6], Some(17), "grid").unwrap_err().to_string();
+        assert!(error.contains("need 18 bytes"), "{error}");
+        let error = checked_peak_bytes(&[usize::MAX, 1], Some(u64::MAX), "grid").unwrap_err().to_string();
+        assert!(error.contains("more bytes than the address space holds"), "{error}");
+    }
 
     #[test]
     fn parses_subdataset_names() {
@@ -956,6 +1097,72 @@ mod tests {
             assert!((a - b).abs() < 1e-4, "{gt:?} != {expected:?}");
         }
         assert!(r.crs().proj4.unwrap_or_default().contains("+proj=stere"));
+    }
+
+    /// An HDF-EOS5 grid field whose dimension list has no `XDim` (`Band`, `Foo`, `YDim`): its
+    /// columns and rows would both be its last dimension, gathering 10 x 10 values from a field
+    /// of 10. It is refused (GDAL 3.13.3 reports 10 x 10 zeros).
+    #[test]
+    fn a_grid_field_without_an_x_dimension_is_refused() {
+        use super::super::hdf5_write::{Dataset, File, H5Type, Storage};
+        let meta = "GROUP=SwathStructure\nEND_GROUP=SwathStructure\nGROUP=GridStructure\n\tGROUP=GRID_1\n\t\tGridName=\"G\"\n\t\tXDim=10\n\t\tYDim=1\n\t\tGROUP=Dimension\n\t\t\tOBJECT=Dimension_1\n\t\t\t\tDimensionName=\"Band\"\n\t\t\t\tSize=1\n\t\t\tEND_OBJECT=Dimension_1\n\t\t\tOBJECT=Dimension_2\n\t\t\t\tDimensionName=\"Foo\"\n\t\t\t\tSize=1\n\t\t\tEND_OBJECT=Dimension_2\n\t\t\tOBJECT=Dimension_3\n\t\t\t\tDimensionName=\"YDim\"\n\t\t\t\tSize=10\n\t\t\tEND_OBJECT=Dimension_3\n\t\tEND_GROUP=Dimension\n\t\tGROUP=DataField\n\t\t\tOBJECT=DataField_1\n\t\t\t\tDataFieldName=\"F\"\n\t\t\t\tDataType=H5T_NATIVE_FLOAT\n\t\t\t\tDimList=(\"Band\",\"Foo\",\"YDim\")\n\t\t\tEND_OBJECT=DataField_1\n\t\tEND_GROUP=DataField\n\tEND_GROUP=GRID_1\nEND_GROUP=GridStructure\nEND\n";
+        let ds = |name: &str, dtype: H5Type, shape: Option<Vec<u64>>, data: Vec<u8>| Dataset {
+            name: name.into(),
+            fill: vec![0; 4],
+            dtype,
+            shape,
+            max_shape: None,
+            data,
+            storage: Storage::default(),
+            attrs: vec![],
+        };
+        let mut text = meta.as_bytes().to_vec();
+        text.push(0);
+        let values: Vec<u8> = (0..10).flat_map(|v| (v as f32).to_le_bytes()).collect();
+        let f = File {
+            attrs: vec![],
+            group_attrs: Vec::new(),
+            datatypes: Vec::new(),
+            datasets: vec![
+                ds("HDFEOS INFORMATION/StructMetadata.0", H5Type::Str { len: text.len() as u32 }, None, text),
+                ds("HDFEOS/GRIDS/G/Data Fields/F", H5Type::Float { size: 4 }, Some(vec![1, 1, 10]), values),
+            ],
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("eos.h5");
+        std::fs::write(&p, super::super::hdf5_write::encode(&f)).unwrap();
+        let e = read(&p, "eos.h5", None).unwrap_err();
+        assert!(e.to_string().contains("do not name distinct columns, rows and bands"), "{e}");
+    }
+
+    #[test]
+    fn gathers_only_distinct_dimensions_within_the_data() {
+        let raw: Vec<u8> = (0..6).collect();
+        // A 2 x 3 array transposed: columns on dimension 0, rows on dimension 1.
+        assert_eq!(to_bsq(&raw, &[2, 3], 1, 0, Some(1), None).unwrap(), vec![0, 3, 1, 4, 2, 5]);
+        let message = |r: Result<Vec<u8>>| r.unwrap_err().to_string();
+        let layout = "its dimensions do not name distinct columns, rows and bands";
+        assert_eq!(message(to_bsq(&raw, &[2, 3], 1, 1, Some(1), None)), layout);
+        assert_eq!(message(to_bsq(&raw, &[2, 3], 1, 2, Some(1), None)), layout);
+        assert_eq!(message(to_bsq(&raw[..5], &[2, 3], 1, 0, Some(1), None)), "dataset shorter than its shape");
+        // A shape whose elements overflow a count: a resource refusal, not a short dataset.
+        assert!(to_bsq(&raw, &[usize::MAX, 2], 1, 0, Some(1), None).unwrap_err().is_resource_refusal());
+    }
+
+    /// A single-valued attribute: one element. A shape whose element count overflows (to 1, were
+    /// it wrapped) holds no single value.
+    #[test]
+    fn reads_only_single_valued_attributes() {
+        let attr = |shape: Vec<u64>| Attribute {
+            name: "_FillValue".into(),
+            datatype: Datatype::FixedPoint { size: 1, signed: false, byte_order: ByteOrder::LittleEndian },
+            shape,
+            raw_data: vec![7],
+            decoded_strings: None,
+        };
+        assert_eq!(attr_f64(&[attr(vec![1])], "_FillValue"), Some(7.0));
+        assert_eq!(attr_f64(&[attr(vec![u64::MAX, u64::MAX])], "_FillValue"), None);
+        assert_eq!(attr_f64(&[attr(vec![2])], "_FillValue"), None);
     }
 
     /// A NISAR-like file (GDAL's `fake_NISAR_L2_epsg_code.h5`): its CRS from the grid mapping's

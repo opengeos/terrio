@@ -293,6 +293,7 @@ terrio.info("dem.tif", stats=True)  # the same dict as `terrio info --json`
 terrio.convert("countries.shp", "europe.gpkg", where="CONTINENT = 'Europe'", select=["NAME"])
 terrio.convert("https://example.com/cog.tif", "window.tif", srcwin=(0, 0, 512, 512))
 terrio.translate("dem.tif", "small.tif", outsize=("25%", "25%"), resampling="average")
+terrio.translate("cog.tif", "full.tif", outsize=(512, 512), resampling="average", overview="NONE")
 terrio.warp("dem.tif", "dem_4326.tif", t_srs="EPSG:4326", resampling="bilinear")
 terrio.mosaic(["n40w106.tif", "n40w107.tif"], "mosaic.tif")
 terrio.rasterize("counties.gpkg", "pop.tif", attribute="POPULATION", tr=(0.01, 0.01), ot="Int32")
@@ -313,10 +314,51 @@ xs, ys = terrio.transform_points([699960], [3900000], "EPSG:32610", "EPSG:4326")
 xs, ys, hs = terrio.transform_points([-100], [40], "EPSG:4979", "EPSG:4326+5773", [100])  # EGM96
 xs, ys, hs = terrio.transform_points([135], [-25], "EPSG:7912", "EPSG:7843", [0], s_coord_epoch=2010.0)
 terrio.set_grid_search_paths(["/data/proj-grids"])  # where datum shift grids are looked up
+albers = terrio.list_crs("albers", authority="EPSG", kind="projected")  # registry CRSs, for a CRS picker
 
 data = open("dem.tif", "rb").read()
 raster = terrio.open_bytes(data, "dem.tif")  # from bytes; to bytes with raster.to_bytes("x.tif")
 ```
+
+Raster operations with `dst` and the standard output keywords accept `options={...}`, just
+like `Raster.write(options=...)` and CLI `--co`. This includes streamed terrain/warp outputs,
+mask-writing operations, palette operations and `create_raster`. The options apply to the
+destination write; they do not change an in-memory result when `dst` is omitted.
+Raster creation-option mappings (including `Raster.write`, grouped netCDF and streaming writers)
+reject duplicate names that differ only in case, such as `COMPRESS` and
+`compress`, so conflicting aliases cannot depend on a writer's precedence rules.
+`create_raster` requires `dst` whenever file-output options, including `options`, are supplied.
+For GeoTIFF/COG, `compress` overrides `options["COMPRESS"]`, and `bigtiff=True` forces BigTIFF
+even with `options={"BIGTIFF": "NO"}`. Explicit block-size creation options override `tile_size`:
+`BLOCKXSIZE`/`BLOCKYSIZE` for tiled GeoTIFF, or `BLOCKSIZE` for COG. Otherwise `tile_size`
+supplies the tile dimensions. These GeoTIFF/COG precedence rules also apply to `Raster.write`.
+Other formats use their own writer rules; for example, netCDF's `options["COMPRESS"]`
+takes precedence over `compress`.
+In `calc`, `options` is an output keyword rather than a raster variable name.
+VRT outputs from `pansharpen`, `mosaic`, `warp` and color-relief reject `options` because they
+describe a virtual operation rather than a driver's pixel storage. Treat creation options as trusted writer
+configuration: internal `@`-prefixed keys can name local source files, as with `Raster.write`
+and CLI `--co`. Services accepting untrusted dictionaries should allowlist supported options.
+
+```python
+terrio.dem("dem.tif", "slope", "slope.tif", options={"COMPRESS": "DEFLATE", "TILED": "YES"})
+terrio.translate("dem.tif", "terrain.nc", options={"FORMAT": "NC4", "COMPRESS": "DEFLATE"})
+terrio.translate("dem.tif", "terrain.zarr", options={"FORMAT": "ZARR_V3"})
+```
+
+`translate` reads rasters by window as `terrio translate` does: a path or a lazy `Raster` is read
+for the output alone (the tiles its window touches), from the stored resolution `overview` selects,
+as `gdal_translate -ovr`: `"AUTO"` (the default, the overview GDAL's RasterIO chooses for the output
+size), `"AUTO-n"`, `"NONE"` (full resolution) or a level from 0. A `Raster` in memory is
+translated at full resolution: open it with `terrio.open_raster(path, lazy=True)` for its
+overviews to be used, since `open_raster(path)` reads it into memory without them.
+With `"AUTO-n"` and no `outsize` or `tr`, the output keeps the full-resolution window size,
+matching GDAL 3.13.3; explicit level numbers use the selected level's resolution.
+`"AUTO-0"` is `"AUTO"` in translate and all other resampled readers, including whole-read
+fallbacks where `"AUTO"` is accepted. A full-resolution output can use more memory than the
+previous overview-sized output; specify `outsize` or `tr` to limit it.
+With `dst`, the output is translated whole in memory and then written, where `terrio translate`
+writes a GeoTIFF or COG a strip at a time: use the command for outputs larger than memory.
 
 `clean_collar` and `nearblack` return a Byte `Raster`; a mask (`add_mask`, or an input's mask
 kept by `clean_collar`) needs `dst`, which holds it, and the returned `Raster` is then read from
@@ -339,17 +381,39 @@ Paths, lazy `Raster` objects, and mixed/repeated inputs in mosaics retain their
 stored overviews. Selection precedes pixel reads and does not alter the output grid
 computed from the original metadata. Only the source resolution changes. Loaded rasters
 have no stored overviews: a requested numeric level warns and uses full resolution.
-With `resampling="sum"`, `"AUTO"` and `"AUTO-n"` choose no overview, as an overview
-has one pixel per block of the source's pixels and its sum is a fraction of the total:
-the full resolution is read, which costs more for a remote raster. A level
-(`overview=1`) is read as asked. A `sum` whose source window, estimated with 8 bytes
-per pixel for the pixels' shares, would hold more than 4 GiB raises `ResourceLimitError`
-(a `MemoryError`) before it is read, and so do a `sum` read of a `WarpedVRT` and a `sum`
-`terrio.rio.warp.reproject` of a band or dataset: `overview=n` sums a level (for the
-`terrio.rio` ones, a source opened with `overview_level=n`), and the
-`TERRIO_WARP_SUM_MAX_BYTES` environment variable, a positive integer byte count, changes
-the budget. A `WarpedVRT` whose `dtype` differs from its source's counts the window in
-both types, which its cast holds at once.
+With `resampling="sum"`, an overview has one pixel per block of the source's pixels, which
+counts for the source pixels it stands for, `(W / w) * (H / h)` for a `w` x `h` overview of a
+`W` x `H` source, so that the sum estimates the source's total at the overview's cost:
+`"AUTO"`, `"AUTO-n"` and a level (`overview=1`) read an overview so, and `"NONE"` sums the
+full resolution exactly. The estimate's accuracy is described under
+[Warp source overviews](cli.md#warp-source-overviews): exact up to rounding for an `average`
+overview of floating-point data without nodata when the footprint covers complete overview
+cells. Cropping through those cells makes even the total approximate; rounded integer means,
+partly nodata blocks and other overview resamplings also introduce approximation. Give a coarse `sum` a floating-point `ot`: a
+`"UInt16"` output stores 65535 for any larger sum. A `sum` whose source window, estimated
+with 8 bytes per pixel for the pixels' shares, would hold more than 4 GiB raises
+`ResourceLimitError` (a `MemoryError`) before it is read, and so do a `sum` read of a
+`WarpedVRT` and a `sum` `terrio.rio.warp.reproject` of a band or dataset: `overview=n` sums a
+level (for the `terrio.rio` ones, a source opened with `overview_level=n`, whose pixels count
+the same way), and the `TERRIO_WARP_SUM_MAX_BYTES` environment variable, a positive integer
+byte count, changes the budget. A `sum` read of a `WarpedVRT` warps a region whose source
+window's working memory exceeds its `warp_mem_limit` (64 MB by default) a part at a time, each
+part from its own window, with the same pixels, bit for bit: a reduced read of a large source
+without overviews holds one part's window at a time, and the budget applies to each part's
+window. A single output pixel cannot be split. A region remains whole when either half cannot
+be transformed, or when it has several bands with source and output nodata values; these
+exceptions can exceed `warp_mem_limit` or cause the sum budget to reject the read. A `sum` read
+of a `WarpedVRT` takes a source window in its own type when the VRT's `dtype` holds every value of it (uint16 or
+float32 in float64), as its kernel reads each value as a float64 either way; a `dtype` that does
+not (float64 in float32, floats in an integer type) converts the window first, and counts it in
+both types, which the conversion holds at once. Part sizing deliberately uses the working type's
+width, following GDAL's working-memory estimate even when the source type is narrower.
+Splitting can read overlapping source tiles repeatedly. The decoded-tile cache normally reuses
+them, but a tile larger than its capacity is decoded for each part that needs it. For example,
+a 4096 × 4096 Float32 tile exceeds the default 64 MiB cache once entry overhead is included.
+Set `TERRIO_CACHEMAX` before opening the source (for example, `128M`) to retain such tiles,
+with that additional memory cost, or use a source with smaller tiles or overviews. The warp
+memory limit bounds part windows, not codec buffers or the separate decoded-tile cache.
 Calls with loaded inputs reuse their existing pixels, including repeated references.
 File GCPs/RPCs of the first path are retained in mixed path/`Raster` calls.
 
@@ -495,7 +559,25 @@ into an existing file and returns its changed window, or None for no overlap.
 Their keyword options follow the CLI, including compression, partial refresh,
 clipping geometry and overview updates. Local writable little-endian GeoTIFFs
 are required for in-place changes; external overview updates can fail after the
-base update commits.
+base update commits. External overviews (`external=True`) write only the `.ovr`
+sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`. Overviews are
+managed for GeoTIFFs only.
+
+`add_overviews(..., progress=callback)` calls `callback(fraction)` as the
+overviews are computed, with a fraction from 0 to 1 that never decreases (1 once
+every overview is computed, before they are written). A falsy return value other
+than `None` cancels, as with GDAL's Python callbacks, raising
+`terrio.errors.CancelledError`; an exception the callback raises cancels too and
+propagates. A cancellation changes no file: an existing `.ovr` stays as it was.
+
+```python
+def report(fraction):
+    print(f"{fraction:.0%}")
+    return not stop_requested()
+
+terrio.add_overviews("dem.tif", resampling="average", external=True,
+                     compression="DEFLATE", progress=report)
+```
 
 COG validation also accepts uploaded TIFF `bytes`. Use
 `terrio.validate_cog(data, profile="gdal", full_check=True)` for GDAL 3.13

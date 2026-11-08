@@ -1,7 +1,7 @@
 """Type stubs for the `terrio._terrio` extension module."""
 
 import os
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Any, Literal, Protocol, TypeAlias, TypedDict, final, overload
 
 import numpy as np
@@ -64,6 +64,7 @@ __all__ = [
     "transform_points",
     "set_grid_search_paths",
     "set_network_enabled",
+    "list_crs",
     "translate",
     "warp",
     "mosaic",
@@ -173,6 +174,7 @@ __all__ = [
     "_set_warp_nodata_logger",
     "RegionWarp",
     "_check_sum_window",
+    "_SUM_AUTO_OVERVIEW",
     "config_push",
     "config_pop",
     "config_get",
@@ -197,6 +199,7 @@ __all__ = [
 ]
 
 __version__: str
+_SUM_AUTO_OVERVIEW: bool
 
 class _SupportsToDictRecords(Protocol):
     # A pandas DataFrame of labelled rows, read as `to_dict("records")`.
@@ -348,6 +351,11 @@ class Raster:
         cols: Sequence[int],
         rows: Sequence[int],
         overview: int | None = None,
+    ) -> NDArray[Any] | None: ...
+    def _overview_has_mask(self, overview: int) -> bool: ...
+    def _overview_nodata(self, overview: int) -> list[float | None]: ...
+    def _read_level_mask(
+        self, window: _Window, overview: int | None = None
     ) -> NDArray[Any] | None: ...
     def read_mask(
         self, window: _Window | None = None, overview: int | None = None
@@ -906,6 +914,7 @@ def write_raster(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> None: ...
 def write_netcdf_groups(
     rasters: Sequence[tuple[str, Raster]] | Mapping[str, Raster],
@@ -1026,6 +1035,9 @@ def rasterize(
     a_srs: str | None = None,
     format: str | None = None,
     compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster: ...
 def polygonize(
     src: _RasterSource,
@@ -1094,6 +1106,27 @@ def clear_block_cache() -> None: ...
 def config_options() -> dict[str, str | None]: ...
 def set_grid_search_paths(paths: Sequence[str | os.PathLike[str]] | None) -> None: ...
 def set_network_enabled(enabled: bool | None) -> None: ...
+
+class _CrsEntry(TypedDict):
+    authority: Literal["EPSG", "ESRI", "IAU_2015"]
+    code: int
+    name: str
+    kind: Literal[
+        "geographic_2d", "geographic_3d", "geocentric", "projected", "vertical", "compound", "other"
+    ]
+    deprecated: bool
+    area_name: str | None
+    bounds: list[float] | None
+    projection_method: str | None
+    celestial_body: str | None
+
+def list_crs(
+    text: str | None = None,
+    *,
+    authority: str | Sequence[str] | None = None,
+    kind: str | Sequence[str] | None = None,
+    include_deprecated: bool = False,
+) -> list[_CrsEntry]: ...
 def translate(
     src: _RasterSource,
     dst: str | None = None,
@@ -1111,10 +1144,12 @@ def translate(
     a_nodata: float | str | None = None,
     a_srs: str | None = None,
     a_ullr: _Bounds | None = None,
+    overview: int | str | None = None,
     format: str | None = None,
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster: ...
 def warp(
     src: _RasterSource | Sequence[_RasterSource],
@@ -1140,6 +1175,7 @@ def warp(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
     gcps: Sequence[tuple[float, float, float, float, float]] | None = None,
     order: int = 0,
     gcp_method: str = "auto",
@@ -1150,6 +1186,7 @@ def warp(
     geolocation: Mapping[str, Any] | None = None,
     kernel_version: str | None = None,
     init: Raster | None = None,
+    _sum_scale: float = 1.0,
 ) -> Raster: ...
 def mosaic(
     srcs: _RasterSource | Sequence[_RasterSource],
@@ -1170,6 +1207,7 @@ def mosaic(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster | None: ...
 
 # Terrain analysis and raster algebra.
@@ -1202,6 +1240,7 @@ def dem(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
     kernel_version: str = "3.12",
     max_memory_mib: float | None = None,
 ) -> Raster:
@@ -1223,6 +1262,7 @@ def calc(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
     **inputs: _RasterSource | int,
 ) -> Raster: ...
 def vector_grid(
@@ -1255,6 +1295,9 @@ def vector_grid(
     nodata: float | None = None,
     format: str | None = None,
     compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster:
     """Grid scattered vector points into a raster, as gdal_grid."""
     ...
@@ -1320,6 +1363,7 @@ def viewshed(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster:
     """Single-observer or cumulative visibility, or minimum visible height on a projected DEM."""
     ...
@@ -1393,6 +1437,7 @@ def proximity(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster: ...
 def fill_nodata(
     src: _RasterSource | os.PathLike[str],
@@ -1407,6 +1452,7 @@ def fill_nodata(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster: ...
 def sieve(
     src: _RasterSource,
@@ -1420,6 +1466,7 @@ def sieve(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster: ...
 def unscale(
     src: _RasterSource,
@@ -1430,6 +1477,7 @@ def unscale(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster:
     """Applies band scales and offsets (GDAL's ``gdal raster unscale``)."""
     ...
@@ -1443,6 +1491,7 @@ def nodata_to_alpha(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster:
     """Replaces nodata values with an alpha band (GDAL's ``gdal raster nodata-to-alpha``)."""
     ...
@@ -1457,6 +1506,7 @@ def reclassify(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster:
     """Maps values or ranges to new values (GDAL's ``gdal raster reclassify``)."""
     ...
@@ -1492,6 +1542,7 @@ def neighbors(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster: ...
 def nearblack(
     src: _RasterSource,
@@ -1508,6 +1559,7 @@ def nearblack(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster: ...
 def clean_collar(
     src: _RasterSource,
@@ -1524,6 +1576,7 @@ def clean_collar(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster: ...
 def enhance(
     src: _RasterSource,
@@ -1538,6 +1591,7 @@ def enhance(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster: ...
 def enhance_luts(src: _RasterSource, *, config: str | None = None, lut_bins: int = 256) -> str: ...
 
@@ -1692,6 +1746,7 @@ class RegionWarp:
         rpc: Mapping[str, str] | None = None,
         rpc_options: Mapping[str, str] | None = None,
         kernel_version: str | None = None,
+        sum_scale: float = 1.0,
     ) -> RegionWarp: ...
     def source_window(self, region: _Window) -> _Window | None: ...
     def warp(
@@ -1790,6 +1845,7 @@ def pansharpen(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster:
     """Weighted Brovey pansharpening; persistent inputs and a .vrt destination create a lazy VRT."""
     ...
@@ -2059,6 +2115,7 @@ def create_raster(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster: ...
 def add_overviews(
     path: str,
@@ -2069,6 +2126,7 @@ def add_overviews(
     external: bool = False,
     compression: str | None = None,
     ignore_cog_layout_break: bool = False,
+    progress: Callable[[float], object] | None = None,
 ) -> list[tuple[int, int]]: ...
 def delete_overviews(
     path: str,
@@ -2184,6 +2242,7 @@ def blend(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
 ) -> Raster:
     """Blends equal-sized Byte images, with GDAL operators and opacity 0..100."""
     ...
@@ -2214,6 +2273,7 @@ def rgb_to_palette(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
     overwrite: bool = False,
 ) -> Raster: ...
 def palette_to_rgb(
@@ -2225,6 +2285,7 @@ def palette_to_rgb(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
     overwrite: bool = False,
 ) -> Raster: ...
 def attach_palette(
@@ -2236,6 +2297,7 @@ def attach_palette(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    options: dict[str, str] | None = None,
     overwrite: bool = False,
 ) -> Raster: ...
 def identify(

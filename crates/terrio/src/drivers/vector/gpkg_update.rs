@@ -770,6 +770,43 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_guard_uses_effective_header_encoding() {
+        use crate::drivers::sqlite as reader;
+        mod fixtures {
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/sqlite_encodings/fixtures.rs"));
+        }
+        for (name, bytes) in fixtures::DATABASES.iter().filter(|(name, _)| ["UTF-8", "UTF-16le", "UTF-16be"].contains(name)) {
+            let native = match *name {
+                "UTF-8" => 1u32,
+                "UTF-16le" => 2,
+                _ => 3,
+            };
+            let fields = if native == 1 { vec![0, 1, 4, 5, 8, 256, 257] } else { vec![native, native + 4, native + 256] };
+            for raw in fields {
+                let mut bytes = bytes.to_vec();
+                bytes[56..60].copy_from_slice(&raw.to_be_bytes());
+                let db = reader::Db::new(bytes).unwrap();
+                let result = Database::load(&db);
+                if native == 1 {
+                    assert!(result.is_ok(), "{name} header {raw}");
+                } else {
+                    assert!(result.err().unwrap().to_string().contains("UTF-16 databases cannot be rewritten"), "{name} header {raw}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rewrite_now_rejects_invalid_utf8_instead_of_reencoding_replacement_text() {
+        mod fixtures {
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/sqlite_encodings/fixtures.rs"));
+        }
+        let (_, bytes) = fixtures::DATABASES.iter().find(|(name, _)| *name == "UTF-8-invalid").unwrap();
+        let db = crate::drivers::sqlite::Db::new(bytes.to_vec()).unwrap();
+        assert!(Database::load(&db).err().unwrap().to_string().contains("invalid UTF-8 record text"));
+    }
+
+    #[test]
     fn append_promotes_measure_flags_without_changing_existing_geometry_types() {
         let point = |m| Some(wbvector::Geometry::Point(wbvector::Coord { m, ..wbvector::Coord::xy(1., 2.) }));
         for (first, second, expected) in

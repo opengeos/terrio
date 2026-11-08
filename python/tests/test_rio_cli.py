@@ -254,3 +254,14 @@ def test_shapes_sampling(raster):
     assert extent(full) == extent(half) == (500000.0, 4098200.0, 502400.0, 4100000.0)
     with rio.open(raster) as src, pytest.raises(ValueError):
         list(rio.features.dataset_features(src, 3))
+
+
+def test_stack_honors_creation_options(raster, tmp_path):
+    output = tmp_path / "stacked.tif"
+    result = run("stack", raster, raster, "-o", output, "--co", "COMPRESS=LZW")
+    assert result.returncode == 0, result.stderr
+    with rio.open(raster) as source, rio.open(output) as stacked:
+        assert stacked.compression.name == "lzw"
+        np.testing.assert_array_equal(
+            stacked.read(), np.concatenate([source.read(), source.read()])
+        )

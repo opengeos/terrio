@@ -2104,12 +2104,12 @@ pub(crate) fn open_named(name: &str) -> Option<Result<RasterDataset>> {
 /// The CRS of a GDAL `_CRS` attribute: its URL, PROJJSON identifier or WKT.
 fn crs_attribute(v: &Value) -> Option<CrsInfo> {
     if let Some(code) = v["url"].as_str().and_then(|u| u.rsplit('/').next()).and_then(|c| c.parse::<u32>().ok()) {
-        return Some(CrsInfo::from_epsg(code));
+        return Some(crate::crs::epsg_crs_info(code));
     }
     if v["projjson"]["id"]["authority"].as_str() == Some("EPSG")
         && let Some(code) = v["projjson"]["id"]["code"].as_u64()
     {
-        return Some(CrsInfo::from_epsg(code as u32));
+        return Some(crate::crs::epsg_crs_info(code as u32));
     }
     v["wkt"].as_str().and_then(common::crs_from_text)
 }

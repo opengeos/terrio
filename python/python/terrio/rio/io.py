@@ -372,6 +372,11 @@ class _OverviewRaster:
             raise RasterioIOError(f"Cannot open overview level {level} of {name}")
         return cls(raster, n)
 
+    @property
+    def has_mask(self) -> bool:
+        """Whether the selected overview has its own native per-dataset mask."""
+        return bool(self._base._overview_has_mask(self._level))
+
     def _ovr(self, overview: int | None) -> int:
         return self._level if overview is None else self._level + 1 + overview
 
@@ -404,6 +409,26 @@ class _OverviewRaster:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._base, name)
+
+
+def _sum_scale(ds: Any, width: int, height: int) -> float:
+    """The full-resolution pixels a pixel of a `width` x `height` level of a dataset stands for.
+
+    A `sum` counts each pixel of an overview for them, `(W / width) * (H / height)` for a `W` x `H`
+    raster, so that it estimates the raster's total. The full resolution is the raster's: a dataset
+    opened at an overview level (`overview_level`) is one of its overviews.
+
+    Args:
+        ds: The dataset.
+        width: The level's width.
+        height: The level's height.
+
+    Returns:
+        float: The ratio of the areas of a pixel of the level and of the full resolution.
+    """
+    raster = getattr(ds, "_raster", None)
+    full = raster._base if isinstance(raster, _OverviewRaster) else ds
+    return (full.width / width) * (full.height / height)
 
 
 class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
@@ -1350,7 +1375,9 @@ class DatasetReader(DatasetBase):
         # A per-dataset mask, internal or in a `.msk` sidecar (read by the raster, when the file
         # has no internal one).
         structure.mask_in_sidecar = bool(raster.has_mask) and not structure.has_mask
-        structure.has_mask = structure.has_mask or bool(raster.has_mask)
+        # Native discovery is authoritative for full-resolution TIFFs too: inferred tags
+        # must not advertise a mask the native reader cannot actually read.
+        structure.has_mask = bool(raster.has_mask)
         # Bands a PAM sidecar doesn't list keep the file's own nodata, not band 1's PAM value.
         file_nodata = self._nodata
         if structure.nodata_override is not None:

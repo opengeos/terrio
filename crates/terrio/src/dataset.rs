@@ -313,12 +313,15 @@ pub struct VectorOpenOptions {
     pub spatial_filter: Option<(f64, f64, f64, f64)>,
     /// How to read tile archives (PMTiles, MBTiles, MVT): the zoom level, clipping.
     pub tiles: crate::tiles::TileOpenOptions,
-    /// Features to skip at the start of each layer, in file order (pyogrio's `skip_features`,
-    /// GDAL's `SetNextByIndex`). The Shapefile driver reads past them without decoding them;
+    /// Live features to skip at the start of each layer, in file order. Deleted Shapefile
+    /// slots are excluded while FIDs still identify physical slots. On files without deleted
+    /// rows this matches pyogrio's `skip_features` and GDAL's `SetNextByIndex`; their Shapefile
+    /// fast-seek paths can count physical slots when records are deleted instead.
+    /// The Shapefile driver reads deletion flags without skipped geometry/attributes;
     /// the other local drivers read every feature and keep the range.
     pub skip_features: usize,
-    /// At most this many features per layer after the skipped ones (pyogrio's
-    /// `max_features`); `None` reads to the end.
+    /// At most this many live features per layer after the skipped ones; `None` reads to the end.
+    /// Unlike pyogrio, `Some(0)` returns no features rather than treating zero as unlimited.
     pub max_features: Option<usize>,
     /// Whether to read a feature-service query's following pages (`FEATURE_SERVER_PAGING`, as in
     /// GDAL's ESRIJSON driver). By default, unless its URL gives a `resultOffset`.
@@ -403,6 +406,7 @@ impl VectorOpenOptions {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open(path: &str) -> Result<Dataset> {
+    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     crate::formats::check_allowed(path, None)?;
     #[cfg(feature = "gdal")]
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
@@ -452,6 +456,7 @@ pub(crate) fn open_native(path: &str) -> Result<Dataset> {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open_raster(path: &str) -> Result<RasterDataset> {
+    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     crate::formats::check_allowed(path, Some(crate::formats::Kind::Raster))?;
     #[cfg(feature = "gdal")]
     if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
@@ -471,6 +476,7 @@ pub fn open_raster(path: &str) -> Result<RasterDataset> {
 /// decoder and parallel chunk decoders use the selected limit. This TIFF-specific
 /// entry point does not fall back to GDAL or dispatch to other raster formats.
 pub fn open_raster_with_tiff_limits(path: &str, limits: crate::TiffReadLimits) -> Result<RasterDataset> {
+    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     let local = vfs::resolve(path)?;
     crate::geotiff::check_tiff_allowed(local.path(), path)?;
     crate::geotiff::read_geotiff_with_limits(Path::new(local.as_str()), limits)
@@ -604,6 +610,7 @@ fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     options.oapif.validate_source(path)?;
     crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
     #[cfg(feature = "gdal")]
@@ -855,6 +862,7 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
 
 /// The layer names of a vector dataset, without reading the features when the format allows it.
 pub fn list_layers(path: &str) -> Result<Vec<String>> {
+    let _scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
     if let Some(target) = crate::drivers::vector::oapif::service_target(path) {
         #[cfg(remote)]
@@ -888,6 +896,9 @@ pub fn list_layers(path: &str) -> Result<Vec<String>> {
 }
 
 fn list_layers_native(path: &str) -> Result<Vec<String>> {
+    if let Some(result) = crate::stac::list_layers(path) {
+        return result;
+    }
     if is_tile_archive(path) {
         #[cfg(feature = "tiles")]
         return crate::tiles::layer_names(path);
@@ -910,22 +921,67 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
 #[cfg(feature = "gdal")]
 pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(&str) -> Result<T>) -> Result<T> {
     let Err(e) = result else { return result };
+    // A second pointer parser could bypass native STAC asset-consent and local-file policies.
+    // Individual raster assets can still use GDAL through their own ordinary opens.
+    if path.split_once(':').is_some_and(|(prefix, _)| ["STAC", "STACIT", "STACTA"].iter().any(|name| prefix.eq_ignore_ascii_case(name))) {
+        return Err(e);
+    }
     let retry = match &e {
         Error::InvalidArgument(_) | Error::Http(_) => false,
         e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
-        Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => path.contains(':') || path.starts_with("/vsi"),
+        Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => vfs::is_gdal_name(path),
         _ => true,
     };
     if !retry {
         return Err(e);
     }
+    // Keep an asset-policy refusal terminal and visible, rather than replacing it with the
+    // native format error when a remote STAC-selected raster needs the optional backend.
+    crate::stac::check_gdal_asset_read()?;
     gdal(path).map_err(|gdal_error| if gdal_error.is_resource_refusal() { gdal_error } else { e })
 }
 
 #[cfg(all(test, feature = "gdal"))]
-mod fallback_limits {
+mod fallback_tests {
     use super::*;
+
+    #[test]
+    fn missing_windows_files_are_not_retried() {
+        for path in [r"C:\data\missing.tif", "C:/data/missing.tif", "C:missing.tif", r"\\?\C:\data\missing.tif"] {
+            let result: Result<()> = gdal_fallback(path, Err(std::io::Error::from(std::io::ErrorKind::NotFound).into()), |_| {
+                panic!("missing local file retried through GDAL: {path}")
+            });
+            assert!(matches!(result, Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound));
+        }
+    }
+
+    #[test]
+    fn missing_gdal_names_are_retried() {
+        for path in [
+            "/vsimem/example.grb",
+            "/vsizip/archive.zip/input.tif",
+            "gdal:input.tif",
+            "HDF5:\"input.h5\"://dataset",
+            "s3://bucket/input.tif",
+        ] {
+            let result = gdal_fallback(path, Err(std::io::Error::from(std::io::ErrorKind::NotFound).into()), |name| {
+                assert_eq!(name, path);
+                Ok(())
+            });
+            assert!(result.is_ok(), "{path}");
+        }
+    }
+
+    #[test]
+    fn stac_pointer_refusals_are_not_reinterpreted_by_gdal() {
+        for name in ["STAC:item.json:data", "STACIT:item.json", "STACTA:item.json"] {
+            let result: Result<()> = gdal_fallback(name, Err(Error::InvalidData("invalid pointer metadata".into())), |_| {
+                panic!("STAC policy bypassed by a second pointer parser")
+            });
+            assert!(matches!(result, Err(Error::InvalidData(_))));
+        }
+    }
 
     #[test]
     fn resource_refusals_are_not_retried() {
@@ -1386,6 +1442,12 @@ pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -
 }
 
 /// Writes a raster dataset, declaring a nodata value only when the dataset has one.
+///
+/// Input pixels must be band-major, each band row-major. The native GTiff writer packs these
+/// into pixel-interleaved storage by default (`INTERLEAVE=PIXEL`, `PlanarConfiguration=1`).
+/// Set `INTERLEAVE=BAND` in [`RasterWriteOptions::creation_options`] for separate planes in
+/// multiband rasters (`PlanarConfiguration=2`); single-band output uses `PlanarConfiguration=1`
+/// with either option. This does not change the required input buffer layout.
 ///
 /// ```no_run
 /// use terrio::formats::RasterDriver;
@@ -2396,6 +2458,44 @@ mod content_allow_list_tests {
             assert_eq!(summary(&by_fallback), (VectorDriver::KMZ, layers), "{options:?}");
             assert_eq!(features(&by_fallback), features(&by_driver), "{options:?}");
         }
+    }
+
+    /// With `TERRIO_WBVECTOR_FALLBACK=YES`, a KMZ archive named for no driver gives the layers the
+    /// same archive named `.kmz` gives: one for each document its `doc.kml` links to, however many
+    /// links name it, and none for a link to `doc.kml` itself or to a member the archive lacks.
+    #[cfg(not(feature = "gdal"))]
+    #[test]
+    fn the_wbvector_fallback_reads_each_document_a_kmz_links_to_once() {
+        use std::io::Write as _;
+        let link = |name: &str, href: &str| format!("<NetworkLink><name>{name}</name><Link><href>{href}</href></Link></NetworkLink>");
+        let kml = |body: &str| format!(r#"<kml xmlns="http://www.opengis.net/kml/2.2"><Document>{body}</Document></kml>"#);
+        let points = |n: usize| kml(&"<Placemark><Point><coordinates>1,2</coordinates></Point></Placemark>".repeat(n));
+        let links = [
+            link("points", "layers/points.kml"),
+            link("again", "./layers/points.kml"),
+            link("self", "doc.kml"),
+            link("missing", "layers/missing.kml"),
+            link("more", "layers/more.kml"),
+            link("more again", "layers/more.kml"),
+        ];
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (member, text) in [("doc.kml", kml(&links.concat())), ("layers/points.kml", points(2)), ("layers/more.kml", points(1))] {
+            zip.start_file(member, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(text.as_bytes()).unwrap();
+        }
+        let bytes = zip.finish().unwrap().into_inner();
+        let dir = tempfile::tempdir().unwrap();
+        let (kmz, payload) = (dir.path().join("linked.kmz"), dir.path().join("linked.payload"));
+        for path in [&kmz, &payload] {
+            std::fs::write(path, &bytes).unwrap();
+        }
+        let read = |path: &Path| match with(&[("TERRIO_WBVECTOR_FALLBACK", "YES")], || open(path.to_str().unwrap())) {
+            Ok(Dataset::Vector(v)) => (v.driver, v.layers.iter().map(|l| (l.name.clone(), l.features.len())).collect::<Vec<_>>()),
+            other => panic!("{path:?} not read as a vector dataset: {other:?}"),
+        };
+        let expected = (VectorDriver::KMZ, vec![("points".to_string(), 2), ("more".to_string(), 1)]);
+        assert_eq!(read(&payload), expected);
+        assert_eq!(read(&kmz), expected);
     }
 
     /// A member of [`raw_zip`]: its name, its bytes and its general purpose flags.

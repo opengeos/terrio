@@ -9,6 +9,29 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Translate input-opening policy
+
+Translate input-opening policy is tested with `cargo test -p terrio --lib ops::translate::tests`
+and `cargo test -p terrio --features gdal --test gdal_backend translate_input_policy`.
+The latter reads the generated `translate_complex_half.tif` fixture: GDAL 3.12.1 wrote
+16 x 8 CFloat16 samples with real values 0..127 and imaginary values -real-1,
+EPSG:32613 and transform `[500000,30,0,4100000,0,-30]`. The native lazy reader refuses
+that sample type, so path and byte tests exercise a successful whole-read GDAL fallback,
+including `GDAL:` paths and destination writes. Explicit levels are refused before fallback.
+Default-feature tests cover lazy paths/bytes, streamed outputs, missing local files and the
+shared terminal-error classification. Existing Python and Node overview regressions exercise
+the same entry points through the bindings.
+
+`cargo test -p terrio --lib vfs::tests` covers the shared local-path versus GDAL-name
+classifier, including Windows drive, drive-relative, verbatim and UNC paths, URL schemes,
+subdataset names and colon-free `/vsi` names. The GDAL backend tests also keep a TIFF
+in GDAL's `/vsimem` under a `.grb` name: the native GRIB lazy opener returns `NotFound`,
+while GDAL identifies the TIFF content and the whole-read translation succeeds.
+The name deliberately exercises GRIB dispatch without requiring GDAL's optional GRIB
+plugin. Explicit overview levels still refuse the whole read. On Windows,
+`input_policy_keeps_missing_windows_paths_terminal` exercises `translate_path` with
+drive-relative and verbatim missing paths and `OverviewSelection::Level(0)`.
+
 ## Updating the ordinary CI GDAL reference
 
 `GDAL_REFERENCE_VERSION` in `.github/workflows/ci.yml` controls both micromamba GDAL
@@ -21,10 +44,15 @@ bundles its own GDAL: changing the environment variable does not replace that li
 When upgrading, select and validate a compatible wheel; the assertion intentionally
 fails if its bundled GDAL differs, including a development-version suffix.
 
-Coordinate upgrades with the independent pins and matching cache key in
-`.github/workflows/ci-extended.yml`, the PROJ reference, and any regenerated reference
-data. Keep historical GDAL version annotations attached to the results they describe;
-update current-reference documentation and tests only after validating the new oracle.
+The dataset cache keys in `ci.yml` and `ci-extended.yml` currently resolve to the same
+value: both use GDAL 3.12.2, PROJ 9.8.1, and the same three hashed input files. This lets
+the workflows share cached datasets within GitHub Actions cache access rules. Update
+both workflows' reference pins and cache keys together when moving the reference;
+a `ci.yml`-only version bump would make their keys diverge.
+
+Coordinate upgrades with the PROJ reference and any regenerated reference data. Keep
+historical GDAL version annotations attached to the results they describe; update
+current-reference documentation and tests only after validating the new oracle.
 
 ## Test data
 
@@ -198,6 +226,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Histograms | `scripts/compare_hist_with_gdal.py` | `terrio info --hist` vs `gdalinfo -hist` and `-json -hist`, byte for byte, with `-stats` and with histograms stored in `.aux.xml` sidecars, on every data type |
 | Raster round trips | `scripts/raster_roundtrip.py` | GDAL writes → terrio reads; terrio writes → GDAL reads, pixel for pixel; COGs pass GDAL's validator |
 | Window and overview reads | `scripts/compare_windows_with_gdal.py` | every overview level of every GeoTIFF, local and remote over `/vsicurl/` |
+| Overview sum estimates | `scripts/compare_warp_sum_overviews.py` (`sum-overviews`) | GDAL 3.13.3 full-resolution NONE sums and overview sums multiplied explicitly by the exact source/overview pixel-area ratio. Controlled TIFFs and a real USGS DEM crop; values within 1e-8 / 1e-4 absolute, respectively; masks, nodata, type, CRS and geotransform match. Cropped cells, integer means and partly nodata blocks remain estimates of full-resolution totals. |
 | Translations resized from overviews | `scripts/compare_translate_overviews_with_gdal.py` (`translate-overviews`) | `gdal_translate -outsize`, `-tr` and `-ovr` (AUTO, AUTO-n, NONE, levels) on level markers, real USGS terrain and Landsat RGB with an internal mask, every resampling: pixels, types, nodata, geotransforms; HTTP bytes of a real COG resized with AUTO against NONE |
 | Indexed raster catalogs | `scripts/compare_catalogs_with_gdal.py` | Real DEM mosaics in GeoPackage/FlatGeobuf indexes: z-order, nodata, masks, partial alpha, mixed CRS and Terrio-written indexes read by GDAL GTI; an 8x8 HTTP query from 1,002 features checks opens/cache bounds and actual bytes for both implementations |
 | Raster operations | `scripts/compare_ops_with_gdal.py` | translate, warp (all resampling methods), mosaic and VRT against `gdal_translate`, `gdalwarp`, `gdalbuildvrt`, `gdal_merge.py` |
@@ -1308,6 +1337,11 @@ The `translate-overviews` conformance suite (`scripts/compare_translate_overview
 compares `terrio translate` with `gdal_translate -outsize`, `-tr` and `-ovr` on levels holding
 markers, real USGS terrain (Float32, nodata) and Landsat RGB (Byte, internal mask): pixels, types,
 nodata and geotransforms, and the HTTP bytes of a real COG resized with `AUTO` and `NONE`.
+Default-size source and georeferenced windows check that `AUTO-n` keeps the full-resolution
+output size while explicit level numbers reduce it, including real terrain with nodata.
+These default-size cases also compare equivalent CRSs and exact validity masks.
+The HTTP comparison records bytes and request counts for a 400 x 300 source window
+with `NONE` and `AUTO-1`, checking the actual pixels at the unchanged output size.
 `gdal_translate` reads its output in swaths of 128 rows (into a GeoTIFF of default layout), and in
 blocks of 128 x 128 pixels when its bands are not the source's first ones in order, each a
 `RasterIO` request of its own: at a swath's first row or a block's first column, an average, RMS
@@ -2448,3 +2482,89 @@ cargo test -p terrio --features gdal --test gdal_backend
 pytest python/tests/test_layer_selection.py
 node --test --test-name-pattern='single named layer' js/tests/node.test.mjs
 ```
+
+### Deleted Shapefile records
+
+The `shapefile-deleted` suite generates small OGR Shapefiles and marks DBF slots
+deleted without repacking. It compares whole reads, streaming reads and live-feature pages against
+OGR, retaining physical FIDs, exact scalar attributes/nulls and ISO WKB bytes.
+Null geometry still counts as a live feature; both indexed and unindexed reads
+are checked. Build the bridge in the same profile as the CLI:
+
+```sh
+cargo build --release -p terrio --example shapefile_rows
+python scripts/conformance.py ../terrio-data --only shapefile-deleted --strict
+```
+
+The GDAL/OGR Python bindings (`osgeo`) are required; Terrio Python bindings and
+downloaded data are not. The positional data-directory argument is required by the
+conformance runner, but this suite generates its fixtures in a temporary directory.
+
+### GeoPackage text encodings
+
+`cargo test -p terrio --test sqlite_encodings` reads the small SQLite-generated
+snapshots in `crates/terrio/tests/data/sqlite_encodings`; it needs no Python
+executable. The directory contains the generator and SHA-256 manifest for
+regeneration. Tests cover non-ASCII schema names, UTF-8/UTF-16LE/UTF-16BE,
+whole and R-tree-filtered eager/streamed reads, and malformed records. Unit tests
+also exercise `IndexedLayer` and malformed R-tree child records.
+
+The Rust vector/raster display readers return Unicode strings and replace invalid
+text with U+FFFD, retaining the previous UTF-8 replacement policy and applying it
+to UTF-16. This is not raw-byte text preservation or a guarantee about SQLite's
+conversion of invalid text. Malformed CRS, geometry-column, layer-count and extent records propagate
+errors instead of being treated as absent metadata. Genuinely absent optional
+tables retain their fallback. This includes the optional raster metadata,
+metadata-reference and per-tile ancillary tables. Metadata tables are decoded
+whole: one malformed record can therefore fail an open even when it belongs to
+an unrelated layer.
+
+Validation decoding stays strict. Stored-row rewrite decoding is **now strict**:
+rewriting a UTF-8 database with invalid text or malformed records fails rather
+than silently re-encoding replacement text. Display reads remain lossy for
+invalid Unicode. Record payload bytes not described by the header are rejected;
+host sqlite3 3.54.0 rejects the tested surplus-byte records too.
+
+Header encodings use SQLite's low two bits, with zero meaning UTF-8, consistently
+across reads, inspection, validation expression evaluation and compaction.
+Regression tests cover high-bit aliases and preserve UTF-16 rewrite refusal.
+
+These error assertions cover the Rust decoders. With the `gdal` feature, public
+eager opens may fall back to GDAL after a Rust error; the fallback keeps GDAL's
+admission behavior. Native eager rejection is checked directly in unit tests,
+and streamed GPKG reads continue to use the Rust reader in that build.
+
+## HDF5 resource limits
+
+HDF5 allocation regressions run with `cargo test -p terrio --lib drivers::hdf5::tests`.
+They refuse fill-only datasets and oversized scalar HDF-EOS5 text before reading their values,
+through path and byte inputs, and check arithmetic overflow without allocating.
+`crates/terrio/tests/data/hdf5_fill_only.h5` is a generated 1,400-byte file with no allocated
+chunks. Recreate it with h5py by creating `grid` with `shape=(2**20, 2**20)`, `dtype="f8"`,
+`chunks=(16, 16)` and `fillvalue=-9999`, without assigning any values. Its declared decoded
+size is 8 TiB. These are resource-limit checks, independent of GDAL's allocation policy.
+On 32-bit hosts, including wasm32, the 8 TiB fixture is refused by the address-space check
+before the fallback budget runs. On 64-bit hosts without memory discovery, the 512 MiB
+combined pixel-buffer budget refuses it. A host with a discovered limit permitting the
+fixture checks its declared-size arithmetic without attempting the read. Synthetic budget
+tests cover combined allocations, overflow and the fallback independently of the host's memory.
+Scalar-text checks require filesystem support. A separate public WASM check used a 1,400-byte
+fill-only file declaring 300 MiB of raw Float64 pixels: its 600 MiB combined raw/decoded
+buffers were refused by the 512 MiB fallback budget, below the wasm32 address-space bound.
+
+## Rasterize background initialization
+
+The `vector-ops` conformance suite includes 21 Natural Earth country comparisons for
+nodata backgrounds, explicit zero initialization, multiple bands, additive burns and NaN,
+with Int16, Float32 and Byte outputs. Run those cases alone with:
+
+```sh
+python scripts/compare_vector_ops_with_gdal.py ../terrio-data --only rasterize-nodata
+```
+
+Pixel values (NaNs equal), validity masks and types are exact; CRSs are equivalent and
+geotransforms agree within 1e-12 source units. GeoTIFF is the GDAL pixel reference for COG
+outputs because `gdal_rasterize` cannot create COGs directly. ENVI cases are labelled
+`GTiff oracle`: GDAL converts the GeoTIFF rasterization to ENVI before comparison.
+This checks Terrio's consistent background policy rather than GDAL's driver-dependent
+ENVI initialization.

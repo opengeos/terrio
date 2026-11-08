@@ -59,7 +59,7 @@ from terrio.rio.crs import CRS
 from terrio.rio.dtypes import dtype_fwd, typename_rev
 from terrio.rio.enums import ColorInterp, MaskFlags, Resampling
 from terrio.rio.errors import WarpedVRTError, WarpOptionsError
-from terrio.rio.io import DatasetReader
+from terrio.rio.io import DatasetReader, _sum_scale
 from terrio.rio.warp import (
     _WARP_NAMES,
     _crs_text,
@@ -96,9 +96,10 @@ class _Grid:
         height: The height.
         ovr: The implicit overview it is (an index), None for the VRT itself or a rescaled grid.
         full: Whether it is the VRT itself (the only grid with overviews).
+        scale: With `sum`, the full-resolution pixels each source pixel warped counts for.
     """
 
-    __slots__ = ("level", "gt", "width", "height", "ovr", "full", "bx", "by")
+    __slots__ = ("level", "gt", "width", "height", "ovr", "full", "scale", "bx", "by")
 
     def __init__(
         self,
@@ -108,9 +109,10 @@ class _Grid:
         height: int,
         ovr: int | None = None,
         full: bool = False,
+        scale: float = 1.0,
     ) -> None:
         self.level, self.gt, self.width, self.height = level, tuple(gt), width, height
-        self.ovr, self.full = ovr, full
+        self.ovr, self.full, self.scale = ovr, full, scale
         # The VRTWarpedDataset constructor's default block size.
         self.bx, self.by = min(width, 512), min(height, 128)
 
@@ -118,9 +120,9 @@ class _Grid:
         """What identifies the grid's warped pixels.
 
         Returns:
-            tuple: The source level, geotransform and size.
+            tuple: The source level, geotransform, size and scale.
         """
-        return (self.level, self.gt, self.width, self.height)
+        return (self.level, self.gt, self.width, self.height, self.scale)
 
     def rescaled(self, width: int, height: int) -> _Grid:
         """The same warp at another size (`RescaleDstGeoTransform()`).
@@ -139,7 +141,7 @@ class _Grid:
         g[2] *= fx
         g[4] *= fy
         g[5] *= fy
-        return _Grid(self.level, tuple(g), width, height)
+        return _Grid(self.level, tuple(g), width, height, scale=self.scale)
 
 
 class WarpedVRT(DatasetReader):
@@ -149,12 +151,25 @@ class WarpedVRT(DatasetReader):
     Reduced reads with `sum` resampling are an exception, described below.
     Pixels are warped when they are read, region by region, from the windows of the source (or
     of its overviews) each region needs. With `sum` resampling, a reduced read of the whole VRT,
-    of any of its bands, is warped from the source's full resolution rather than from an implicit
-    overview. A reduced read of a window can take an implicit overview or resample the VRT's
-    pixels, so its sum is not the source's: for a full-resolution total, read the window at full
-    size, or the whole VRT at the reduced size. A `sum` read whose source window would hold more
-    than `TERRIO_WARP_SUM_MAX_BYTES` (4 GiB by default) raises `ResourceLimitError` before the
-    window is read. When `dtype` differs from the source's, the window counts in both types.
+    of any of its bands, is warped straight into a grid of the buffer's size from the source's
+    overview that the read's implicit overview is warped from (or from the full resolution when it
+    takes none), each of whose pixels counts for the source pixels it stands for, so that the sum
+    estimates the source's total. A source opened at an overview level (`overview_level`) counts
+    its pixels the same way. A reduced read of a window can take an implicit overview, whose
+    pixels are comparable with the VRT's, or resample the VRT's pixels, so its sum is not the
+    source's: read the window at full size for its total. A `sum` holds the source window it
+    warps from: a region whose window's working memory exceeds `warp_mem_limit` (64 MB by
+    default) is warped a part at a time, each part from its own window, halved until each fits,
+    with the same pixels, bit for bit, so that a reduced read of a large source without overviews
+    holds one part's window at a time. Several bands with source and output nodata values are
+    warped whole, as is a region one of whose halves cannot be transformed. These exceptions
+    can exceed `warp_mem_limit` or be refused by the sum budget. A `sum` read one of whose
+    windows would hold more than
+    `TERRIO_WARP_SUM_MAX_BYTES` (4 GiB by default) raises `ResourceLimitError` before that
+    region's windows are read. A `sum` warps a window in the source's type when `dtype` holds
+    every value of it
+    (uint16 or float32 in float64); otherwise the window is converted first and counts in both
+    types.
     """
 
     def __init__(
@@ -230,7 +245,11 @@ class WarpedVRT(DatasetReader):
         # A source georeferenced by GCPs alone: rasterio takes their CRS when none is given.
         src_gcps, gcp_crs = src_dataset.gcps
         gcp_only = bool(src_gcps) and src_dataset.transform.almost_equals(Affine.identity())
-        if self.src_crs is None and gcp_only and self.src_transform.almost_equals(Affine.identity()):
+        if (
+            self.src_crs is None
+            and gcp_only
+            and self.src_transform.almost_equals(Affine.identity())
+        ):
             self.src_crs = gcp_crs
         self.src_nodata = src_dataset.nodata if src_nodata is _DEFAULT else src_nodata
         self.dst_nodata = self.src_nodata if nodata is _DEFAULT else nodata
@@ -302,11 +321,18 @@ class WarpedVRT(DatasetReader):
             # GDALAutoCreateWarpedVRTEx() on a dataset with GCPs and no geotransform: its
             # transformer, and so the grid, uses the GCPs (src_transform plays no part).
             options = {
-                k: v for k, v in self.warp_extras.items() if k.upper() in ("MAX_GCP_ORDER", "SRC_METHOD")
+                k: v
+                for k, v in self.warp_extras.items()
+                if k.upper() in ("MAX_GCP_ORDER", "SRC_METHOD")
             }
             self._warp_gcps = _gcp_args(src_gcps, options)
             t, w, h = calculate_default_transform(
-                self.src_crs, self.dst_crs, src_dataset.width, src_dataset.height, gcps=src_gcps, **options
+                self.src_crs,
+                self.dst_crs,
+                src_dataset.width,
+                src_dataset.height,
+                gcps=src_gcps,
+                **options,
             )
         elif transform is None and (not width or not height):
             # GDALAutoCreateWarpedVRTEx(): GDALSuggestedWarpOutput() around the source, whose
@@ -459,7 +485,12 @@ class WarpedVRT(DatasetReader):
         self._overview_sizes = sizes
         self._src_ratios = ratios
         self._src_levels = src_ovr
-        self._grid = _Grid(None, tuple(t.to_gdal()), self.width, self.height, full=True)
+        # A source opened at an overview level: with `sum`, each of its pixels counts for the
+        # pixels of the full resolution it stands for.
+        scale = _sum_scale(src_dataset, src_dataset.width, src_dataset.height)
+        self._grid = _Grid(
+            None, tuple(t.to_gdal()), self.width, self.height, full=True, scale=scale
+        )
         self._ovr_grids: dict[int, _Grid] = {}
         self._warpers: dict[tuple[Any, ...], Any] = {}
         self._blocks: OrderedDict[tuple[Any, ...], np.ndarray] = OrderedDict()
@@ -508,7 +539,9 @@ class WarpedVRT(DatasetReader):
         if g is None:
             ow, oh = self._overview_sizes[i]
             r = self._grid.rescaled(ow, oh)
-            g = _Grid(i, r.gt, ow, oh, ovr=i)
+            # An overview of the VRT: its pixels are comparable with the VRT's, unscaled by the
+            # level's ratios.
+            g = _Grid(i, r.gt, ow, oh, ovr=i, scale=r.scale)
             self._ovr_grids[i] = g
         return g
 
@@ -577,10 +610,15 @@ class WarpedVRT(DatasetReader):
                 _gdal(self._dtype),
                 list(self._warp_src_nodata),
                 self._warp_dst_nodata,
+                sum_scale=grid.scale,
                 **(
                     {}
                     if gcps is None
-                    else {"gcps": gcps["gcps"], "gcp_order": gcps["order"], "gcp_method": gcps["gcp_method"]}
+                    else {
+                        "gcps": gcps["gcps"],
+                        "gcp_order": gcps["order"],
+                        "gcp_method": gcps["gcp_method"],
+                    }
                 ),
             )
             if len(self._warpers) > 32:
@@ -631,6 +669,7 @@ class WarpedVRT(DatasetReader):
             self._warp_dst_nodata,
             rpc=rpc,
             rpc_options=options,
+            sum_scale=grid.scale,
         )
         if len(self._warpers) > 32:
             self._warpers.clear()
@@ -647,8 +686,9 @@ class WarpedVRT(DatasetReader):
             window: `(x, y, w, h)`.
 
         Returns:
-            tuple: The source bands `(count, h, w)` in the working data type, and the per-dataset
-            mask (or alpha) the warper uses without nodata values, or None.
+            tuple: The source bands `(count, h, w)` in the working data type (in their own for a
+            `sum` whose working type holds them, see `_sum_holds`), and the per-dataset mask (or
+            alpha) the warper uses without nodata values, or None.
         """
         ds = self.src_dataset
         bands = list(range(1, self._src_count + 1))
@@ -663,10 +703,34 @@ class WarpedVRT(DatasetReader):
                 if flags & MaskFlags.per_dataset.value and not flags & MaskFlags.alpha.value:
                     # GDALWarpSrcMaskMasker(): the source's per-dataset mask.
                     mask = self._source_mask(level, window)
-        if data.dtype != np.dtype(self._dtype):
-            # The source is read in the working data type.
+        if data.dtype != np.dtype(self._dtype) and not self._sum_holds(data.dtype):
+            # The source is read in the working data type, unless a `sum` takes it as it is.
             data = gdal_cast(data, self._dtype)
-        return np.ascontiguousarray(data), mask
+        data = np.ascontiguousarray(data).view()
+        # The warp reads a read-only window where it is, with the GIL held, and copies a writeable
+        # one first (`RegionWarp.warp`). _read_level returns fresh pixels (list band indexing
+        # for in-memory datasets); use a view so this flag never changes the source's array.
+        data.flags.writeable = False
+        return data, mask
+
+    def _sum_holds(self, dtype: Any) -> bool:
+        """Whether a `sum` warps a source window of a data type as it is, without converting it.
+
+        The `sum` kernel reads each source value as a float64 and adds it in float64, so that a
+        working type holding every value of the window's type would change none of them: such
+        a window is warped in its own type, and not held in both. A window whose values the
+        working type does not all hold (float64 into float32, floats into an integer type) is
+        converted first, as for the other resamplings.
+
+        Args:
+            dtype: The source window's data type.
+
+        Returns:
+            bool: Whether the window is warped as it is.
+        """
+        return self.resampling == Resampling.sum and _dtype_holds_values(
+            np.dtype(dtype), np.dtype(self._dtype)
+        )
 
     def _source_mask(self, level: int | None, window: tuple[int, int, int, int]) -> Any:
         """The source's per-dataset mask in a window of a level.
@@ -699,6 +763,8 @@ class WarpedVRT(DatasetReader):
     ) -> np.ndarray:
         """Warps a region of a grid (`GDALWarpOperation::WarpRegionToBuffer()`), all bands.
 
+        A `sum` region is warped a part at a time, each part from its own window (`_sum_parts`).
+
         Args:
             grid: The grid.
             region: `(x, y, w, h)` in the grid.
@@ -720,23 +786,85 @@ class WarpedVRT(DatasetReader):
             out[b] = self._init[b] if b < self._src_count else 0
         written = np.zeros((h, w), bool)
         if win is not None and win[2] > 0 and win[3] > 0:
+            parts = [(region, win)]
             if self.resampling == Resampling.sum:
-                # Refused before the window is read when its memory would exceed the budget. Cast
-                # to another working type, the window is held in both types at once.
+                parts = self._sum_parts(rw, region, win)
+                # Refused before this region reads any window when one exceeds the budget. Converted
+                # to the working type (see `_sum_holds`), a window is held in both types at once.
                 src, work = np.dtype(self.src_dataset.dtypes[0]), np.dtype(self._dtype)
-                itemsize = src.itemsize + (work.itemsize if work != src else 0)
-                _terrio._check_sum_window(win[2] * win[3], itemsize * self._src_count)
-            data, mask = self._source_window(grid.level, win)
-            warped, written = rw.warp(region, win, data, mask, self._init_value, direct)
-            warped = np.asarray(warped)
-            written = np.asarray(written)
-            for b in range(self._src_count):
-                out[b] = np.where(written, warped[b], out[b])
+                itemsize = src.itemsize + (0 if self._sum_holds(src) else work.itemsize)
+                largest = max((part_win[2] * part_win[3] for _, part_win in parts), default=0)
+                _terrio._check_sum_window(largest, itemsize * self._src_count)
+            for part, part_win in parts:
+                data, mask = self._source_window(grid.level, part_win)
+                warped, done = rw.warp(part, part_win, data, mask, self._init_value, direct)
+                warped, done = np.asarray(warped), np.asarray(done)
+                px, py, pw, ph = part
+                rows, cols = slice(py - y, py - y + ph), slice(px - x, px - x + pw)
+                written[rows, cols] = done
+                for b in range(self._src_count):
+                    out[b, rows, cols] = np.where(done, warped[b], out[b, rows, cols])
         if self._dst_alpha:
             # GDALWarpDstAlphaMasker(): the density of warped pixels, scaled to DST_ALPHA_MAX.
             amax = {"int16": 32767, "uint16": 65535}.get(dtype.name, 255)
             out[self._dst_alpha - 1] = np.where(written, amax, 0).astype(dtype)
         return out
+
+    def _sum_parts(
+        self, rw: Any, region: tuple[int, int, int, int], win: tuple[int, int, int, int]
+    ) -> list[tuple[tuple[int, int, int, int], tuple[int, int, int, int]]]:
+        """The parts of a `sum` region to warp one at a time, each with its source window.
+
+        The working-memory estimate follows GDAL 3.13.3.
+
+        A `sum` holds the whole source window it warps from, which grows with the region's
+        footprint: a reduced read of a large source without overviews would hold most of it at
+        once. A region whose window's working memory exceeds `warp_mem_limit` is halved along
+        its longer side until each part's fits, down to single pixels, and each part is warped
+        from its own window. A `sum` pixel does not depend on the window it is warped from, so
+        the parts give the region's pixels, bit for bit. Two kinds of region are kept whole:
+        with several bands that have source and output nodata values, whether a sum stored on
+        the output nodata value is moved off it depends on whether the window holds a nodata
+        pixel; and a region one of whose halves cannot be transformed may reach pixels there
+        that the half would not.
+
+        Args:
+            rw: The region's warper.
+            region: `(x, y, w, h)` in the grid.
+            win: The region's source window, not empty.
+
+        Returns:
+            list: `(part, window)` pairs covering the region, except for parts whose window is
+            empty (no source pixel reaches them).
+        """
+        x, y, w, h = region
+        # Splitting follows GDAL 3.13.3's working-type estimate, even when _sum_holds preserves a
+        # narrower source type. The refusal budget below instead counts actual stored types.
+        if (
+            self._working_memory(win[2], win[3], w, h) <= self._warp_memory
+            or w * h == 1
+            or (
+                self._src_count > 1
+                and self._warp_dst_nodata is not None
+                and any(v is not None for v in self._warp_src_nodata)
+            )
+        ):
+            return [(region, win)]
+        if w >= h:
+            half = w // 2
+            halves = [(x, y, half, h), (x + half, y, w - half, h)]
+        else:
+            half = h // 2
+            halves = [(x, y, w, half), (x, y + half, w, h - half)]
+        wins = [rw.source_window(p) for p in halves]
+        if any(v is None for v in wins):
+            return [(region, win)]
+        return [
+            part
+            for p, v in zip(halves, wins, strict=True)
+            if v[2] > 0 and v[3] > 0
+            for part in self._sum_parts(rw, p, v)
+        ]
 
     def _working_memory(self, sw: int, sh: int, dw: int, dh: int) -> float:
         """`GDALWarpOperation::GetWorkingMemoryForWindow()`.
@@ -908,11 +1036,21 @@ class WarpedVRT(DatasetReader):
         bh, bw = buf
         whole = iw == (0, 0, grid.width, grid.height)
         if self.resampling == Resampling.sum and whole and grid.full and (bw < nxs or bh < nys):
-            # A reduced read of the whole `sum` VRT, of any of its bands, is warped from the full
-            # resolution into a grid of the buffer's size, as below: an implicit overview has one
-            # pixel per block of the VRT's pixels, so its sum would be a fraction of the total.
+            # A reduced read of the whole `sum` VRT, of any of its bands, is warped into a grid of
+            # the buffer's size, as below, from the source level of the implicit overview the read
+            # takes (`_terrio._SUM_AUTO_OVERVIEW` says whether a `sum` takes one), each of whose
+            # pixels counts for the source pixels it stands for: an overview has one pixel per
+            # block of the source's pixels.
+            level = None
+            if _terrio._SUM_AUTO_OVERVIEW and self._overview_sizes:
+                moved = self._to_overview(grid, iw, fw, buf, rs, True)
+                level = None if moved is None else moved[0]
+            ds = self.src_dataset
+            size = (ds.width, ds.height) if level is None else self._src_levels[level]
+            gt = grid.rescaled(bw, bh).gt
+            target = _Grid(level, gt, bw, bh, scale=_sum_scale(ds, size[0], size[1]))
             full = (0, 0, bw, bh)
-            return self._dataset_io(grid.rescaled(bw, bh), idx, full, full, buf, rs, False)
+            return self._dataset_io(target, idx, full, full, buf, rs, False)
         if (not whole and (bw <= grid.bx or bh <= grid.by)) or len(idx) < self._count:
             # Small requests and band subsets go through the cached blocks.
             return self._fallback_io(grid, idx, iw, fw, buf, rs, routed)
@@ -1250,6 +1388,35 @@ def _gdal(dtype: str) -> str:
     from terrio.rio.dtypes import _gdal_typename
 
     return _gdal_typename(dtype)
+
+
+# The data types a source window is read in, which a warp takes as they are.
+_WINDOW_TYPES = frozenset(
+    ("uint8", "int8", "uint16", "int16", "uint32", "int32", "uint64", "int64", "float32", "float64")
+)
+
+
+def _dtype_holds_values(src: np.dtype, work: np.dtype) -> bool:
+    """Whether every value of one data type is a value of another.
+
+    Args:
+        src: A source window's data type.
+        work: A working data type.
+
+    Returns:
+        bool: True for the same type, an integer type into one holding its range, an integer
+        type of at most 24 bits into float32 or of at most 53 into float64, and float32 into
+        float64; False for anything else, and for types a window is not read in.
+    """
+    if src.name not in _WINDOW_TYPES or work.name not in _WINDOW_TYPES:
+        return False
+    if src == work:
+        return True
+    if work.kind == "f":
+        if src.kind == "f":
+            return work.itemsize > src.itemsize
+        return np.iinfo(src).bits <= np.finfo(work).nmant + 1
+    return src.kind != "f" and bool(np.can_cast(src, work, "safe"))
 
 
 __all__ = ["WarpedVRT"]

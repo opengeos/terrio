@@ -1,7 +1,7 @@
 //! A read-only SQLite reader that reads pages from the file as it needs them, so that the
 //! feature tables of GeoPackages larger than memory are read a leaf page at a time.
 
-use crate::drivers::sqlite::{self, Db, SchemaEntry, Table, Value, bad, varint};
+use crate::drivers::sqlite::{self, PageSet, SchemaEntry, Table, Value, bad, cell_pointer, varint};
 use crate::drivers::vector::gpkg_read::Tables;
 use crate::{Error, Result};
 use std::io::{Read, Seek, SeekFrom};
@@ -13,6 +13,7 @@ pub(crate) struct FileDb {
     page_size: usize,
     usable: usize,
     pages: u64,
+    encoding: u32,
     schema: Vec<SchemaEntry>,
 }
 
@@ -38,12 +39,19 @@ impl FileDb {
         // SQLite requires at least 480 usable bytes a page.
         let usable = page_size.checked_sub(h[20] as usize).filter(|&u| u >= 480).ok_or_else(|| bad("invalid reserved space"))?;
         let len = file.metadata()?.len();
-        let mut db = Self { file: Mutex::new(file), page_size, usable, pages: len / page_size as u64, schema: Vec::new() };
+        let mut db = Self {
+            file: Mutex::new(file),
+            page_size,
+            usable,
+            pages: len / page_size as u64,
+            encoding: sqlite::text_encoding(u32::from_be_bytes([h[56], h[57], h[58], h[59]])),
+            schema: Vec::new(),
+        };
         let mut entries = Vec::new();
         let mut cursor = db.cursor(1);
         while let Some(rows) = cursor.next_leaf(&db)? {
             for (_, payload) in rows {
-                let r = Db::record_values(&payload);
+                let r = db.decode_record(&payload)?;
                 let text = |i: usize| r.get(i).and_then(Value::as_str).unwrap_or_default().to_string();
                 entries.push((text(0), text(1), text(2), r.get(3).and_then(Value::as_i64).unwrap_or(0) as u32, text(4)));
             }
@@ -94,7 +102,12 @@ impl FileDb {
 
     /// A cursor over the rows of the table b-tree rooted at `root`, in rowid order.
     pub(crate) fn cursor(&self, root: u32) -> Cursor {
-        Cursor { stack: vec![vec![root].into_iter()] }
+        Cursor { stack: vec![vec![root].into_iter()], visited: PageSet::new(self.pages) }
+    }
+
+    /// Decodes a record for reading, as [`crate::drivers::sqlite::Db::decode_record`] does.
+    pub(crate) fn decode_record(&self, payload: &[u8]) -> Result<Vec<Value>> {
+        crate::drivers::sqlite_repack::decode_record_lossy(payload, self.encoding)
     }
 
     /// The root page and `CREATE TABLE` statement of a rowid table.
@@ -115,12 +128,6 @@ impl FileDb {
     }
 }
 
-/// The cell offset stored at `p` in a page's cell pointer array.
-fn cell_pointer(page: &[u8], p: usize) -> Result<usize> {
-    let b = page.get(p..p + 2).ok_or_else(|| bad("cell pointer"))?;
-    Ok(u16::from_be_bytes([b[0], b[1]]) as usize)
-}
-
 /// Rows `(rowid, payload)`.
 pub(crate) type Rows = Vec<(i64, Vec<u8>)>;
 
@@ -128,6 +135,10 @@ pub(crate) type Rows = Vec<(i64, Vec<u8>)>;
 /// (each interior page is read once).
 pub(crate) struct Cursor {
     stack: Vec<std::vec::IntoIter<u32>>,
+    /// The pages visited: a b-tree reaches each page once, so a page reached twice is corrupt
+    /// (a cycle, or interior pages sharing children, which would otherwise visit exponentially
+    /// many leaves).
+    visited: PageSet,
 }
 
 impl Cursor {
@@ -141,6 +152,7 @@ impl Cursor {
             if self.stack.len() > 64 {
                 return Err(bad("b-tree too deep"));
             }
+            self.visited.insert(n)?;
             let page = db.page(n)?;
             let h = if n == 1 { 100 } else { 0 };
             let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
@@ -187,7 +199,7 @@ impl Tables for FileDb {
         let mut cursor = self.cursor(root);
         while let Some(leaf) = cursor.next_leaf(self)? {
             for (rowid, payload) in leaf {
-                rows.push(row_values(&payload, rowid, columns.len(), rowid_col));
+                rows.push(row_values(self, &payload, rowid, columns.len(), rowid_col)?);
             }
         }
         Ok(Table { columns, rows })
@@ -242,15 +254,32 @@ impl Tables for FileDb {
     }
 }
 
-/// A row's values from its record, as [`Db::table`] gives them: padded to the table's columns,
+/// A row's values from its record, as [`crate::drivers::sqlite::Db::table`] gives them: padded to the table's columns,
 /// the rowid alias column filled in.
-pub(crate) fn row_values(payload: &[u8], rowid: i64, columns: usize, rowid_col: Option<usize>) -> Vec<Value> {
-    let mut v = Db::record_values(payload);
+pub(crate) fn row_values(db: &FileDb, payload: &[u8], rowid: i64, columns: usize, rowid_col: Option<usize>) -> Result<Vec<Value>> {
+    let mut v = db.decode_record(payload)?;
     v.resize(columns.max(v.len()), Value::Null);
     if let Some(c) = rowid_col
         && v[c] == Value::Null
     {
         v[c] = Value::Int(rowid);
     }
-    v
+    Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Interior pages that share children (each page's cell and right-most pointer naming the
+    /// next page) are an error, as in the in-memory reader: a cursor over them would visit
+    /// 2^depth leaves. Five levels here would visit the leaf 32 times.
+    #[test]
+    fn b_tree_pages_reached_twice_are_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dag.gpkg");
+        std::fs::write(&path, crate::drivers::sqlite::fixtures::shared_children(5)).unwrap();
+        let error = FileDb::open(path.to_str().unwrap()).err().expect("an error");
+        assert!(error.to_string().contains("reached twice"), "{error}");
+    }
 }

@@ -359,6 +359,31 @@ test("PMTiles and MBTiles: rasters by window, vector tiles as layers", () => {
   }
 });
 
+test("listCrs lists the registry CRSs", () => {
+  for (const text of ["Albers", "3577", "EPSG:3577", "gda94 albers"]) {
+    assert.ok(terrio.listCrs(text).some((e) => e.authority === "EPSG" && e.code === 3577), text);
+  }
+  const [albers] = terrio.listCrs("EPSG:3577");
+  assert.equal(albers.name, "GDA94 / Australian Albers");
+  assert.equal(albers.kind, "projected");
+  assert.equal(albers.deprecated, false);
+  assert.deepEqual(albers.bounds, [112.85, -43.7, 153.69, -9.86]);
+  assert.equal(albers.projection_method, "Albers Equal Area");
+  assert.match(albers.area_name, /^Australia - Australian Capital Territory/);
+  const geographic = terrio.listCrs(undefined, { authority: "EPSG", kind: ["geographic_2d"] });
+  assert.ok(geographic.length > 600 && geographic.every((e) => e.kind === "geographic_2d" && !e.deprecated));
+  assert.deepEqual(terrio.listCrs("EPSG:3785"), []);
+  assert.equal(terrio.listCrs("EPSG:3785", { includeDeprecated: true })[0].deprecated, true);
+  const both = terrio.listCrs("albers", { authority: ["epsg", "ESRI"] });
+  assert.deepEqual([...new Set(both.map((e) => e.authority))].sort(), ["EPSG", "ESRI"]);
+  assert.ok(terrio.listCrs(undefined, { authority: "IAU_2015" }).every((e) => e.authority === "IAU_2015"));
+  assert.throws(() => terrio.listCrs(undefined, { authority: "OGC" }), /unknown CRS authority/);
+  assert.throws(() => terrio.listCrs(undefined, { kind: "geographic" }), /unknown CRS kind/);
+  assert.throws(() => terrio.listCrs(undefined, { authorty: "EPSG" }), /unknown field/);
+  assert.throws(() => terrio.listCrs(undefined, { includeDeprecated: "yes" }), /invalid type/);
+  assert.equal(terrio.describeCrs(`${albers.authority}:${albers.code}`).epsg, 3577);
+});
+
 test("CRS transforms", () => {
   const [xs, ys] = terrio.transformPoints([0, 180], [0, 0], "EPSG:4326", "EPSG:3857");
   assert.ok(xs instanceof Float64Array);
@@ -884,6 +909,10 @@ test("operations on in-memory rasters and layers", () => {
     assert.deepEqual([r.width, r.height], [30, 10]);
     assert.equal(r.readBand(1)[0], 3);
     assert.equal(r.readBand(1)[29], 7);
+    const withNodata = terrio.rasterize(src, { burn: 7, tr: [1, 1], te: [0, 0, 30, 10], ot: "Byte", nodata: 255 });
+    assert.deepEqual(new Set(withNodata.readBand(1)), new Set([7, 255]));
+    const initialized = terrio.rasterize(src, { burn: 7, tr: [1, 1], te: [0, 0, 30, 10], ot: "Byte", nodata: 255, init: 0 });
+    assert.deepEqual(new Set(initialized.readBand(1)), new Set([7, 0]));
   }
   const like = terrio.rasterize(SQUARES, { burn: [5], like: terrio.rasterize(SQUARES, { burn: 1, ts: [60, 20] }) });
   assert.deepEqual([like.width, like.height], [60, 20]);
@@ -1228,6 +1257,64 @@ test("remote files read with range requests", async () => {
     server.close();
     rmSync(dir, { recursive: true });
   }
+});
+
+test("translate reads the overview -ovr selects", () => {
+  // A Float32 COG with overviews, as bytes and opened: an output of an overview's size reads that
+  // overview by default (AUTO), as gdal_translate does, and full resolution with NONE.
+  const [w, h] = [1024, 1024];
+  const data = new Float32Array(w * h).map((_, i) => (i * 7919) % 1000);
+  const mem = terrio.rasterFromArray(data, w, h, [0, 1, 0, 1024, 0, -1], "EPSG:3857");
+  const bytes = mem.toBytes("pyramid.tif", { format: "COG", compress: "DEFLATE" });
+  const opened = terrio.open(bytes, "pyramid.tif");
+  const ovr = opened.overviews;
+  assert.ok(ovr.length >= 1, JSON.stringify(ovr));
+  const [ow, oh] = ovr[0];
+  const level = [...opened.readBand(1, undefined, 0)];
+  for (const src of [opened, bytes, { bytes, filename: "pyramid.tif" }]) {
+    for (const overview of [undefined, "AUTO", "AUTO-0", 0, "0"]) {
+      const out = terrio.translate(src, { outsize: [ow, oh], resampling: "average", overview });
+      assert.deepEqual([out.width, out.height], [ow, oh]);
+      assert.deepEqual([...out.readBand(1)], level, `overview ${overview}`);
+    }
+    const full = terrio.translate(src, { outsize: [ow, oh], resampling: "average", overview: "NONE" });
+    assert.notDeepEqual([...full.readBand(1)], level);
+    assert.deepEqual([...full.readBand(1)], [...terrio.translate(mem, { outsize: [ow, oh], resampling: "average" }).readBand(1)]);
+    // A window, from a level named, at that level's resolution.
+    const win = terrio.translate(src, { srcwin: [100, 60, 400, 300], overview: 0 });
+    assert.deepEqual([win.width, win.height], [200, 150]);
+  }
+  assert.throws(() => terrio.translate(opened, { overview: "invalid" }), /overview/i);
+  // Bytes of a format decoded whole are translated at full resolution, as before.
+  const asc = new TextEncoder().encode("ncols 4\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3 4\n5 6 7 8\n");
+  const small = terrio.translate({ bytes: asc, filename: "grid.asc" }, { srcwin: [1, 0, 2, 2] });
+  assert.deepEqual([...small.readBand(1)], [2, 3, 6, 7]);
+  // Bytes that are not a raster are still refused.
+  assert.throws(() => terrio.translate({ bytes: new Uint8Array([73, 73, 42, 0, 0, 0, 0, 0]), filename: "bad.tif" }, {}));
+  // A level is refused, before any whole decode, for bytes the lazy reader cannot open.
+  for (const overview of [0, "AUTO-1"]) {
+    assert.throws(
+      () => terrio.translate({ bytes: new Uint8Array([73, 73, 42, 0, 0, 0, 0, 0]), filename: "bad.tif" }, { overview }),
+      /needs a raster read by window; 'bad\.tif' is read whole \(/,
+    );
+  }
+});
+
+test("translate AUTO-0 keeps the whole-read byte fallback", () => {
+  const asc = new TextEncoder().encode("ncols 4\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3 4\n5 6 7 8\n");
+  for (const overview of ["AUTO", "AUTO-0"]) {
+    const out = terrio.translate({ bytes: asc, filename: "grid.asc" }, { srcwin: [1, 0, 2, 2], overview });
+    assert.deepEqual([...out.readBand(1)], [2, 3, 6, 7]);
+  }
+  const invalid = { bytes: new Uint8Array([73, 73, 42, 0, 0, 0, 0, 0]), filename: "bad.tif" };
+  let autoError;
+  try {
+    terrio.translate(invalid, { overview: "AUTO" });
+  } catch (error) {
+    autoError = error.message;
+  }
+  assert.ok(autoError, "invalid TIFF bytes must fail in the whole-read backend");
+  assert.throws(() => terrio.translate(invalid, { overview: "AUTO-0" }), { message: autoError });
 });
 
 test("resampled reads from overviews, local and remote", async () => {
@@ -4092,4 +4179,16 @@ test("ZonalReducer and ZonalStream reject bad input", () => {
   }
   // The zones have a CRS and the grid has none.
   assert.throws(() => new terrio.ZonalReducer(a, 300, 200, transform, undefined), /both declare a CRS/);
+});
+
+
+test("vsi: listUrl refuses invalid depth before fetching", async () => {
+  for (const depth of ["2", Infinity, NaN, -1, 0.5]) {
+    let fetched = false;
+    await assert.rejects(terrio.listUrl("s3://bucket/dir", {
+      depth,
+      fetch: async () => { fetched = true; throw new Error("unexpected fetch"); },
+    }), /depth must be a non-negative integer/);
+    assert.equal(fetched, false);
+  }
 });

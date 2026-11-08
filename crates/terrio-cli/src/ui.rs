@@ -10,6 +10,7 @@
 //! in a header, which a cross-site page cannot send without a preflight this server never grants;
 //! and the `Host` and `Origin` headers must name this server, which stops DNS rebinding. The token
 //! travels in the URL's fragment, which browsers do not send to servers or in `Referer` headers.
+//! Browser launchers receive a private redirect file's path, never the token URL.
 
 use crate::cmd::preview::Style;
 use crate::mcp;
@@ -131,9 +132,7 @@ pub fn view(args: ViewArgs) -> terrio::Result<()> {
     let mut out = std::io::stdout();
     let _ = writeln!(out, "terrio view: {url}\nPress Ctrl-C to stop.");
     let _ = out.flush();
-    if !args.no_open {
-        open_browser(&url);
-    }
+    let _redirect = if args.no_open { None } else { open_browser(&url) };
     accept(&listener, &Arc::new(session));
     Ok(())
 }
@@ -151,9 +150,7 @@ pub fn serve(args: Args, terrio: Vec<OsString>) -> std::io::Result<()> {
     let mut out = std::io::stdout();
     let _ = writeln!(out, "terrio ui: {url}\nPress Ctrl-C to stop.");
     let _ = out.flush();
-    if !args.no_open {
-        open_browser(&url);
-    }
+    let _redirect = if args.no_open { None } else { open_browser(&url) };
     accept(&listener, &Arc::new(session));
     Ok(())
 }
@@ -212,21 +209,72 @@ impl Drop for Closed {
     }
 }
 
-/// Opens `url` in the default browser. Failing is fine: the address has been printed.
-fn open_browser(url: &str) {
+/// A private HTML file that redirects to the session URL. Kept alive for the server's lifetime
+/// because launchers can return before the browser has read it. The server's accept loop
+/// has no graceful return, so successful launches leave the directory behind after process
+/// termination, containing an expired session token.
+fn browser_redirect(url: &str) -> std::io::Result<tempfile::TempDir> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("terrio-ui-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    let directory = builder.tempdir()?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(directory.path().join("open.html"))?;
+    let escaped = url.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;");
+    write!(
+        file,
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Terrio</title>\
+        <meta http-equiv=\"refresh\" content=\"0;url={escaped}\"></head>\
+        <body><a href=\"{escaped}\">Open Terrio</a></body></html>"
+    )?;
+    Ok(directory)
+}
+
+/// The browser launcher, with a file path rather than a secret in its arguments.
+fn browser_command(path: &Path) -> Command {
     let mut command = if cfg!(target_os = "macos") {
         Command::new("open")
     } else if cfg!(windows) {
-        // Not `cmd /c start`, whose parser would reinterpret the address.
+        // Not `cmd /c start`, whose parser would reinterpret the path.
         let mut c = Command::new("rundll32");
         c.arg("url.dll,FileProtocolHandler");
         c
     } else {
         Command::new("xdg-open")
     };
-    let spawned = command.arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
-    if let Ok(mut child) = spawned {
-        std::thread::spawn(move || child.wait());
+    command.arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    command
+}
+
+/// Opens a private redirect file in the default browser. On failure the printed address is
+/// available to paste manually; never fall back to putting its token in process arguments.
+fn open_browser(url: &str) -> Option<tempfile::TempDir> {
+    let directory = match browser_redirect(url) {
+        Ok(directory) => directory,
+        Err(error) => {
+            eprintln!("Could not prepare the browser launch: {error}. Open the printed address manually.");
+            return None;
+        }
+    };
+    match browser_command(&directory.path().join("open.html")).spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || child.wait());
+            Some(directory)
+        }
+        Err(error) => {
+            eprintln!("Could not launch the browser: {error}. Open the printed address manually.");
+            None
+        }
     }
 }
 
@@ -608,6 +656,27 @@ fn respond_bytes(stream: &mut TcpStream, (status, content_type): (u16, &str), bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_launch_arguments_do_not_contain_the_token() {
+        let token = "browser-launch-secret";
+        let url = format!("http://127.0.0.1:1234/map#token={token}");
+        let directory = browser_redirect(&url).unwrap();
+        let path = directory.path().join("open.html");
+        let html = std::fs::read_to_string(&path).unwrap();
+        assert!(html.contains(&format!("content=\"0;url={url}\"")));
+        let command = browser_command(&path);
+        assert_eq!(command.get_args().last(), Some(path.as_os_str()));
+        assert!(command.get_args().all(|arg| !arg.to_string_lossy().contains(token)));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(directory.path()).unwrap().permissions().mode() & 0o777, 0o700);
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        drop(directory);
+        assert!(!path.exists());
+    }
 
     /// Serves a session on a free port, with `terrio` as its command line.
     #[cfg(unix)]
