@@ -814,6 +814,10 @@ impl Editor {
             return Err(Error::InvalidArgument("rows not sorted by rowid".into()));
         }
         let mut rows = rows.into_iter().peekable();
+        // The overflow pages of the rows replaced, made on the first one with overflow and shared
+        // by the call: the replaced rows' chains are disjoint in a valid database, so a page
+        // named twice, by one chain or two, is an error rather than a page freed twice.
+        let mut owned: Option<PageSet> = None;
         while let Some(&(first, _)) = rows.peek() {
             // Down to the leaf holding `first`, with the largest key it may hold.
             let mut path = Vec::new();
@@ -846,11 +850,10 @@ impl Editor {
                 let cell = w::table_cell(self, rowid, &rec)?;
                 if keys.get(i) == Some(&rowid) {
                     let mut freed = Vec::new();
-                    // A chain naming a page twice is an error, not a page freed twice. Only a cell
-                    // with overflow pages needs the set, which costs a page-count-sized allocation.
                     if self.cell_payload_parts(0x0d, &cells[i])?.2.is_some() {
-                        let mut owned = PageSet::new(u64::from(self.n_pages));
-                        self.overflow_pages(0x0d, &cells[i], &mut freed, &mut owned)?;
+                        let pages = u64::from(self.n_pages);
+                        let owned = owned.get_or_insert_with(|| PageSet::new(pages));
+                        self.overflow_pages(0x0d, &cells[i], &mut freed, owned)?;
                     }
                     for p in freed {
                         self.free(p)?;

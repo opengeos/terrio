@@ -547,8 +547,10 @@ impl<'a> MapFile<'a> {
         let n = usize::try_from(n).map_err(|_| bad("section count"))?;
         let section_size: usize = if version >= 450 { 28 } else { 24 };
         // The headers are stored in the file: a count whose headers need more bytes than it has
-        // is corrupt, and is rejected before it sizes an allocation. A header as stored is its
-        // vertex and hole counts, two points (4 bytes each compressed) and the data offset.
+        // is corrupt, and is rejected before it sizes an allocation. The bound is the bytes the
+        // header fields read take (vertex and hole counts, two points of 4 bytes compressed or
+        // 8 otherwise, the data offset), a lower bound of the logical `section_size` (26 bytes
+        // for uncompressed V450 against 28), so that no valid file is rejected.
         let counts: usize = if version >= 450 { 4 } else { 2 };
         let holes: usize = if version >= 800 { 4 } else { 2 };
         let stored = counts + holes + 2 * (if compressed { 4 } else { 8 }) + 4;
