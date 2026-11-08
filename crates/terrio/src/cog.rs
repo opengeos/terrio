@@ -1232,6 +1232,13 @@ impl LazyRaster {
 
     /// Reads a window of some bands, at full resolution or from an overview, as a raster
     /// georeferenced to the window.
+    ///
+    /// Pixels are band-major, each band row-major from the top, regardless of the file's
+    /// interleave: `data[band * (height * width) + row * width + col]` (zero-based indices,
+    /// returned window dimensions). Planes follow the requested band order. This also applies
+    /// to internal and external overviews; no pixel reordering is needed before a warp.
+    /// The result does not retain the dataset mask. Read it separately with [`Self::read_mask`]
+    /// using the same window and overview selection when needed.
     pub fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {
         let _scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
         let (lw, lh) = self.level_size(options.overview)?;

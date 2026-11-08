@@ -117,6 +117,10 @@ impl LazyRaster {
     /// cols)`), NaN where pixels are invalid: the values of GDAL's `ReadAsArray` into a `Float32`
     /// buffer, with the pixels its `GetMaskBand` masks set to NaN (as GDAL 3.13 reads them).
     ///
+    /// Index with `band * (window.height * window.width) + row * window.width + col`,
+    /// using zero-based indices and the requested band order. For one band this is simply
+    /// `row * window.width + col`, without a row/column transpose.
+    ///
     /// Which pixels are invalid is decided as GDAL's mask band decides it, alpha bands aside:
     ///
     /// - The per-dataset mask of the level read, when it has one ([`LazyRaster::read_mask`]: a
