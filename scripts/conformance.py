@@ -979,7 +979,9 @@ def suite_sum_overviews(ctx):
         "GDAL's rounded-up size, type, nodata, CRS and geotransform. Without --tr, terrio's total "
         "must be within 1e-9 (UTM fixture) or 1e-6 (USGS) relative of both the source's and GDAL's; "
         "with --tr, whose grid need not cover the source, within 5e-4 relative of GDAL's. Their "
-        "pixels are not compared.",
+        "pixels are not compared. Fixed-grid USGS sums at thresholds 0, 0.125 and 4 also check "
+        "metadata, masks, total tolerances and bitwise threshold independence; per-pixel differences "
+        "from GDAL are recorded as an intentional area-kernel difference.",
         2,
     )
 
