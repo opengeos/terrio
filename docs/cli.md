@@ -988,7 +988,9 @@ A raster read by window (GeoTIFF/COG, Zarr, virtual rasters) is read for the out
 `gdal_translate` reads it: the tiles of its window, of its bands, and, resized, from the overview
 GDAL's `RasterIO` chooses for the output's size (`--overview AUTO`, the default), or from the level
 `--overview AUTO-n`, `NONE` or a level number reads alone, as `gdal_translate -ovr` does. Without
-`--outsize` or `--tr`, a level read alone sets the output's resolution. Rescaling (`--scale`,
+`--outsize` or `--tr`, an explicit level number sets the output's resolution; `AUTO-n` keeps
+the full-resolution output size, even when reading a coarser level. `AUTO-0` is equivalent
+to `AUTO`. Rescaling (`--scale`,
 `--exponent`), `--ot` with resampling other than nearest neighbour (which GDAL resamples in the
 output type) and windows past the raster's edges read the window from the whole raster at full
 resolution (or the level read alone).

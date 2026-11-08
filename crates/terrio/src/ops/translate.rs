@@ -548,7 +548,8 @@ fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelec
         None => (OverviewSelection::Auto, None),
     };
     // A level read alone (`-ovr`): the window scaled to it, the output's geotransform from its
-    // own, and, without an output size, the output at its resolution.
+    // own, and, without an output size, explicit level numbers use its resolution.
+    // AUTO-n keeps the full-resolution output size, as GDAL 3.13.3 does.
     let (level_header, level_options) = match level {
         Some(i) => {
             let (lw, lh) = overviews[i];
@@ -560,7 +561,7 @@ fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelec
             for g in &mut lh_ds.gcps {
                 (g.pixel, g.line) = (g.pixel * lw as f64 / w, g.line * lh as f64 / h);
             }
-            let (ow, oh) = if o.out_size.is_some() || o.resolution.is_some() {
+            let (ow, oh) = if o.out_size.is_some() || o.resolution.is_some() || matches!(overview, OverviewSelection::AutoOffset(_)) {
                 full.size
             } else {
                 let at = |n: usize, r: f64| ((n as f64 / r - 0.001).ceil() as usize).max(1);
@@ -784,6 +785,30 @@ mod tests {
         let n = cols * rows;
         let data = (0..2 * n).map(|i| (i % n) as f64 + (i / n) as f64 * 1000.0).collect();
         RasterDataset::new(Raster::from_data(cfg, data).unwrap(), false)
+    }
+
+    /// GDAL 3.13.3 keeps a window's full-resolution size for AUTO-n without -outsize/-tr.
+    #[test]
+    fn automatic_overview_offsets_keep_the_window_size() {
+        use crate::ops::overview::{OverviewOptions, add_overviews};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.tif");
+        let path = path.to_str().unwrap();
+        crate::write_raster_dataset(&ds(64, 48), path, &Default::default()).unwrap();
+        add_overviews(path, &OverviewOptions { levels: vec![2, 4, 8], ..Default::default() }).unwrap();
+        let mut src = crate::open_raster_lazy(path).unwrap();
+        let options = TranslateOptions { src_win: Some((4.0, 2.0, 20.0, 12.0)), ..Default::default() };
+        for offset in [0, 1, 2, 8] {
+            let out = translate_lazy(&mut src, &options, OverviewSelection::AutoOffset(offset)).unwrap();
+            assert_eq!((out.raster.cols, out.raster.rows), (20, 12), "AUTO-{offset}");
+            assert_eq!(out.geo_transform(), [140.0, 10.0, 0.0, 180.0, 0.0, -10.0]);
+        }
+        let auto = translate_lazy(&mut src, &options, OverviewSelection::Auto).unwrap();
+        let zero = translate_lazy(&mut src, &options, OverviewSelection::AutoOffset(0)).unwrap();
+        assert_eq!(auto.raster.data.to_f64_vec(), zero.raster.data.to_f64_vec());
+        let explicit = translate_lazy(&mut src, &options, OverviewSelection::Level(0)).unwrap();
+        assert_eq!((explicit.raster.cols, explicit.raster.rows), (10, 6));
+        assert_eq!(explicit.geo_transform(), [140.0, 20.0, 0.0, 180.0, 0.0, -20.0]);
     }
 
     /// A translate written a few rows at a time writes the file the whole translate writes:

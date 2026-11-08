@@ -228,6 +228,8 @@ pixel buffers) is also checked before decoding. Hosts without memory discovery u
 currently reads Linux `/proc` files). This intentionally refuses larger desktop HDF5
 reads too, even with the GDAL backend enabled. This budget excludes metadata,
 input bytes and decoder scratch allocations; it is not a process-wide memory guarantee.
+For ordinary standard-layout pixels, raw and decoded buffers coexist, so a 512 MiB combined
+budget permits about 256 MiB of raw pixels. Reordering and complex components can add buffers.
 Resource refusals are terminal, including when the optional GDAL backend is enabled.
 HDF-EOS5 structure text is limited to 16 MiB before decoding on every HDF5 open, even
 when selecting a subdataset that would not use it.
