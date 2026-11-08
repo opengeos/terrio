@@ -1195,7 +1195,7 @@ def test_allow_list_finds_grib_after_a_header(tmp_path):
     path = tmp_path / "bulletin"
     path.write_bytes(b"\x01\r\r\n001 \r\r\nYTXA98 KWBC 170600\r\r\n" + open(src, "rb").read())
     terrio.check_drivers(str(path), ["GRIB"])
-    with pytest.raises(Exception):  # noqa: B017 - only refusal matters here
+    with pytest.raises(Exception, match="holds GRIB data, and the GRIB driver is not allowed"):
         terrio.check_drivers(str(path), ["GTiff"])
     assert_same(str(path))
 
