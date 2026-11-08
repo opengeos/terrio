@@ -100,6 +100,26 @@ _IN_MEMORY_LIMIT = 512 * 1024 * 1024
 _SUBDATASET_DRIVERS = frozenset({"netCDF", "HDF5", "HDF4", "Zarr", "STACIT", "STACTA", "GPKG"})
 
 
+def _listed_subdatasets(metadata: Sequence[tuple[str, str]]) -> list[str]:
+    """The subdatasets a driver listed as GDAL's `SUBDATASET_<n>_NAME` metadata, in order of `n`.
+
+    As terrio's `info` reads them: indices from 1 to 100,000, empty names left out.
+
+    Args:
+        metadata: The raster's `(key, value)` metadata items.
+
+    Returns:
+        list: The subdatasets' names.
+    """
+    names: dict[int, str] = {}
+    for key, value in metadata:
+        n, _, kind = key.removeprefix("SUBDATASET_").partition("_")
+        if key.startswith("SUBDATASET_") and kind == "NAME" and n.isdigit() and value:
+            if 0 < int(n) <= 100_000:
+                names[int(n)] = value
+    return [names[n] for n in sorted(names)]
+
+
 def _in_memory_limit() -> int:
     """The size above which writers keep their pixels on disk.
 
@@ -1239,6 +1259,10 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
         """
         if self.driver not in _SUBDATASET_DRIVERS or not self.name:
             return []
+        if self._subdatasets is None and self.driver != "GPKG" and self._raster is not None:
+            # The open raster lists them, as `info` reads them: no second open of the file (a
+            # remote store's metadata fetched again). A GeoPackage's raster tables are listed apart.
+            self._subdatasets = _listed_subdatasets(self._raster.metadata)
         if self._subdatasets is None:
             # A failure (a remote file unreachable) is not remembered: the next call tries again.
             try:

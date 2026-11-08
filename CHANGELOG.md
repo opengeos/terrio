@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `terrio.rio`'s `subdatasets`, and so `terrio.xarray`'s open, list a file's subdatasets from the
+  raster already open instead of opening the file again. A remote store's metadata was fetched
+  twice: opening a UTM zone of the OlmoEarth v1.3 embeddings Zarr store on source.coop with
+  `xr.open_dataarray(..., engine="terrio")` took 5.2 to 6.0 s in 6 requests, and now takes
+  3.2 s in 3. GeoPackage raster tables are still listed by `info`.
 - `terrio translate` reads the bands of a window it copies pixel for pixel together, whichever
   bands they are. It used to read bands that are not the source's first ones in order one by one,
   as `gdal_translate`'s virtual dataset does, and without GDAL's block cache a Zarr chunk holding
