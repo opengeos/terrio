@@ -2225,6 +2225,35 @@ mod tests {
 
     #[cfg(remote)]
     #[test]
+    fn object_fetchers_use_read_time_consent_after_a_cross_origin_response() {
+        for (creator, reader, allowed) in [("NO", "YES", true), ("YES", "NO", false)] {
+            let (base, seen) = crate::http::test_server(vec![7; 16]);
+            let href = format!("{base}/chunk");
+            let (policy, fetcher) = crate::config::with_options(
+                &[("GDAL_HTTP_HEADERS", "X-Key: synthetic-key"), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", creator)],
+                || {
+                    let policy = AssetReadPolicy::for_asset(&format!("{base}/item.json"), &href).unwrap().unwrap();
+                    let _scope = policy.enter().unwrap();
+                    (policy.clone(), crate::http::ObjectFetcher::new())
+                },
+            );
+            crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", reader)], || {
+                let _scope = policy.enter().unwrap();
+                policy.observe_response(&href, "https://other.example/chunk");
+                let result = fetcher.get(&crate::http::Remote::Url(href.clone()), crate::http::ByteRange::Whole);
+                if allowed {
+                    assert_eq!(result.unwrap().unwrap(), vec![7; 16]);
+                    assert!(!seen.lock().unwrap().is_empty());
+                } else {
+                    assert!(matches!(result, Err(Error::InvalidArgument(_))));
+                    assert!(seen.lock().unwrap().is_empty());
+                }
+            });
+        }
+    }
+
+    #[cfg(remote)]
+    #[test]
     fn actual_client_headers_are_checked_after_the_preflight_snapshot() {
         use std::io::Read;
         let (base, seen) = crate::http::test_server(vec![7; 1024]);
