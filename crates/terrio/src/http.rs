@@ -1991,9 +1991,10 @@ impl RangeReader {
             .filter(|b| !s.blocks.contains_key(b));
         // A prefetch only saves requests; the plan stays bounded whatever the ranges and the
         // file's length (a byte count past a huge file's end would list every block to its end).
-        // Distinct blocks count toward the bound, so overlapping ranges do not use it up; blocks
-        // past it are fetched as reads reach them. The blocks walked are bounded too (a few times
-        // the bound), so that many ranges over the same bytes cannot stall the reader.
+        // Distinct blocks count toward the bound; blocks past it are fetched as reads reach them.
+        // The walk over the ranges is bounded too, duplicates included (four times the bound), so
+        // that many ranges over the same bytes cannot stall the reader; past it they only lose
+        // the prefetch, not data.
         let mut planned = std::collections::BTreeSet::new();
         for b in blocks.take(4 * Self::MAX_PLANNED_BLOCKS) {
             if planned.len() >= Self::MAX_PLANNED_BLOCKS {
