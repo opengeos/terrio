@@ -325,10 +325,12 @@ for the output alone (the tiles its window touches), from the stored resolution 
 as `gdal_translate -ovr`: `"AUTO"` (the default, the overview GDAL's RasterIO chooses for the output
 size), `"AUTO-n"`, `"NONE"` (full resolution) or a level from 0. A `Raster` in memory is
 translated at full resolution: open it with `terrio.open_raster(path, lazy=True)` for its
-overviews to be used, since `open_raster(path)` reads it into memory without them. One known
-difference from `gdal_translate`, shared with `terrio translate`: with `"AUTO-n"` and no
-`outsize` or `tr`, the output has the selected level's size (200 x 150 for a 400 x 300 `srcwin`
-read from overview 0), where `gdal_translate` keeps the window's full-resolution size.
+overviews to be used, since `open_raster(path)` reads it into memory without them.
+With `"AUTO-n"` and no `outsize` or `tr`, the output keeps the full-resolution window size,
+matching GDAL 3.13.3; explicit level numbers use the selected level's resolution.
+`"AUTO-0"` is `"AUTO"` in translate and all other resampled readers, including whole-read
+fallbacks where `"AUTO"` is accepted. A full-resolution output can use more memory than the
+previous overview-sized output; specify `outsize` or `tr` to limit it.
 With `dst`, the output is translated whole in memory and then written, where `terrio translate`
 writes a GeoTIFF or COG a strip at a time: use the command for outputs larger than memory.
 
