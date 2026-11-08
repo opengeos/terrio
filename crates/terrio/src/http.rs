@@ -2299,8 +2299,8 @@ impl Shared {
             // the caller's options and STAC policy, which a request reads while it is sent
             let context = crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current());
             let context = &context;
-            let mut runs = runs.into_iter().peekable();
-            while runs.peek().is_some() {
+            let mut runs = runs.into_iter();
+            while runs.len() > 0 {
                 // PARALLEL_RUNS requests at a time; a run its held bytes cover sends none
                 let mut group = Vec::new();
                 let mut requested = 0;
@@ -2332,8 +2332,9 @@ impl Shared {
                                 // no thread to be had: requested here, in order, as serially
                                 Err(_) => return self.client.fetch(Some((from, last))),
                             };
-                            // what a request learned (a region, a redirect) is kept, as serially;
-                            // a region an earlier run discovered stays when this copy predates it
+                            // the client of the last run in order is kept, as serially (its
+                            // response URL); an S3 region an earlier run discovered stays when
+                            // this copy predates it
                             let discovered = |c: &Client| c.s3.as_ref().is_some_and(|a| a.discovered);
                             if discovered(&self.client) && !discovered(&client) {
                                 client.s3 = self.client.s3.clone();
