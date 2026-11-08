@@ -1348,7 +1348,7 @@ fn translate(
             match lazy {
                 Ok(out) => out,
                 Err(error) => {
-                    if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(_)) {
+                    if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(1..)) {
                         let cause = error.map(|e| format!(" ({e})")).unwrap_or_default();
                         return Err(terrio::Error::Unsupported(format!(
                             "overview needs a raster read by window; {path} is read whole{cause}"

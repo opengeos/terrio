@@ -255,16 +255,21 @@ def main():
                     raise RuntimeError(result.stderr.strip())
                 record = compare(reference, actual, 1.0)
                 if "default size" in name and record["same_size"]:
-                    expected, got = gdal.Open(reference), gdal.Open(actual)
-                    record["same_crs"] = bool(expected.GetSpatialRef().IsSame(got.GetSpatialRef()))
-                    record["same_masks"] = all(
-                        np.array_equal(expected.GetRasterBand(b).GetMaskBand().ReadAsArray(),
-                                       got.GetRasterBand(b).GetMaskBand().ReadAsArray())
-                        for b in range(1, expected.RasterCount + 1)
-                    )
-                    if not record["same_crs"] or not record["same_masks"]:
-                        record["error"] = "default-size output CRS or masks differ"
                     expected = got = None
+                    try:
+                        expected, got = gdal.Open(reference), gdal.Open(actual)
+                        expected_crs, actual_crs = expected.GetSpatialRef(), got.GetSpatialRef()
+                        record["same_crs"] = (expected_crs is None and actual_crs is None) or (
+                            expected_crs is not None and actual_crs is not None and bool(expected_crs.IsSame(actual_crs)))
+                        record["same_masks"] = all(
+                            np.array_equal(expected.GetRasterBand(b).GetMaskBand().ReadAsArray(),
+                                           got.GetRasterBand(b).GetMaskBand().ReadAsArray())
+                            for b in range(1, expected.RasterCount + 1)
+                        )
+                        if not record["same_crs"] or not record["same_masks"]:
+                            record["error"] = "default-size output CRS or masks differ"
+                    finally:
+                        expected = got = None
             except Exception as error:  # report every case, including CLI errors
                 record = {"error": str(error)}
             record["name"] = name

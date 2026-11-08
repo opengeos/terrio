@@ -215,7 +215,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
     if let Some(mut src) = lazy {
         return translate_lazy_to_file(&mut src, &o, overview, &a.output, &a.out.options()?);
     }
-    if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(_)) {
+    if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(1..)) {
         return Err(terrio::Error::Unsupported(format!(
             "--overview {} needs a raster read by window; {} is read whole",
             a.overview, a.input

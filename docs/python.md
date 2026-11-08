@@ -328,8 +328,14 @@ destination write; they do not change an in-memory result when `dst` is omitted.
 For GeoTIFF/COG, `compress` overrides `options["COMPRESS"]`, and `bigtiff=True` forces BigTIFF
 even with `options={"BIGTIFF": "NO"}`. Explicit block-size creation options override `tile_size`:
 `BLOCKXSIZE`/`BLOCKYSIZE` for tiled GeoTIFF, or `BLOCKSIZE` for COG. Otherwise `tile_size`
-supplies the tile dimensions. The same rules apply to `Raster.write`.
+supplies the tile dimensions. These GeoTIFF/COG precedence rules also apply to `Raster.write`.
+Other formats use their own writer rules; for example, netCDF's `options["COMPRESS"]`
+takes precedence over `compress`.
 In `calc`, `options` is an output keyword rather than a raster variable name.
+`pansharpen` rejects `options` for VRT destinations because those outputs describe a virtual
+operation rather than a driver's pixel storage. Treat creation options as trusted writer
+configuration: internal `@`-prefixed keys can name local source files, as with `Raster.write`
+and CLI `--co`. Services accepting untrusted dictionaries should allowlist supported options.
 
 ```python
 terrio.dem("dem.tif", "slope", "slope.tif", options={"COMPRESS": "DEFLATE", "TILED": "YES"})
@@ -342,10 +348,12 @@ for the output alone (the tiles its window touches), from the stored resolution 
 as `gdal_translate -ovr`: `"AUTO"` (the default, the overview GDAL's RasterIO chooses for the output
 size), `"AUTO-n"`, `"NONE"` (full resolution) or a level from 0. A `Raster` in memory is
 translated at full resolution: open it with `terrio.open_raster(path, lazy=True)` for its
-overviews to be used, since `open_raster(path)` reads it into memory without them. One known
-difference from `gdal_translate`, shared with `terrio translate`: with `"AUTO-n"` and no
-`outsize` or `tr`, the output has the selected level's size (200 x 150 for a 400 x 300 `srcwin`
-read from overview 0), where `gdal_translate` keeps the window's full-resolution size.
+overviews to be used, since `open_raster(path)` reads it into memory without them.
+With `"AUTO-n"` and no `outsize` or `tr`, the output keeps the full-resolution window size,
+matching GDAL 3.13.3; explicit level numbers use the selected level's resolution.
+`"AUTO-0"` is `"AUTO"` in translate and all other resampled readers, including whole-read
+fallbacks where `"AUTO"` is accepted. A full-resolution output can use more memory than the
+previous overview-sized output; specify `outsize` or `tr` to limit it.
 With `dst`, the output is translated whole in memory and then written, where `terrio translate`
 writes a GeoTIFF or COG a strip at a time: use the command for outputs larger than memory.
 

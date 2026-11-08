@@ -1,6 +1,8 @@
 """Creation options reach raster writers without changing the operation's result.
 
-Storage and metadata readback was validated with GDAL 3.13.3.
+Local storage and metadata readback was validated with GDAL 3.13.3. In CI, GDAL
+readback tests run in the real-data job with GDAL_REFERENCE_VERSION from ci.yml.
+These readback tests skip when osgeo is unavailable, including in the default Python job.
 """
 
 import numpy as np
@@ -127,6 +129,10 @@ def write_operation(name, sources, destination, **output):
     """
     dem, category, rgb = (sources[key] for key in ("dem", "cat", "rgb"))
     path = str(destination)
+    if name in ("Raster.write", "write_raster") and "format" in output:
+        output["driver"] = output.pop("format")
+    if name == "Raster.write":
+        return dem.write(path, **output)
     if name == "write_raster":
         return terrio.write_raster(dem, path, **output)
     if name == "create_raster":
@@ -246,10 +252,63 @@ def test_create_raster_creation_options_require_destination(options):
         terrio.create_raster(size=(2, 2), options=options)
 
 
-@pytest.mark.parametrize("operation", ["translate", "write_raster", "create_raster"])
-def test_compression_keyword_overrides_creation_option(tmp_path, inputs, operation, gdal):
+@pytest.mark.parametrize(
+    "operation", ["translate", "write_raster", "create_raster", "Raster.write"]
+)
+@pytest.mark.parametrize("format_name", ["GTiff", "COG"])
+def test_compression_keyword_overrides_creation_option(
+    tmp_path, inputs, operation, format_name, gdal
+):
     """Read the actual storage selected when the two compression inputs conflict."""
     path = tmp_path / "compression.tif"
-    write_operation(operation, inputs, path, compress="LZW", options={"COMPRESS": "DEFLATE"})
+    write_operation(
+        operation, inputs, path, format=format_name, compress="LZW", options={"COMPRESS": "DEFLATE"}
+    )
     result = gdal.Open(str(path))
     assert result.GetMetadata("IMAGE_STRUCTURE")["COMPRESSION"] == "LZW"
+
+
+@pytest.mark.parametrize(
+    "operation", ["translate", "write_raster", "create_raster", "Raster.write"]
+)
+@pytest.mark.parametrize("format_name", ["GTiff", "COG"])
+def test_bigtiff_keyword_overrides_creation_option(tmp_path, inputs, operation, format_name):
+    """Check the on-disk TIFF version when the keyword and creation option conflict."""
+    path = tmp_path / "large-offsets.tif"
+    write_operation(
+        operation, inputs, path, format=format_name, bigtiff=True, options={"BIGTIFF": "NO"}
+    )
+    assert path.read_bytes()[:4] in (b"II+\x00", b"MM\x00+")
+
+
+@pytest.mark.parametrize(
+    "operation", ["translate", "write_raster", "create_raster", "Raster.write"]
+)
+@pytest.mark.parametrize(
+    ("format_name", "options", "block_size"),
+    [
+        ("GTiff", {"TILED": "YES", "BLOCKXSIZE": "16", "BLOCKYSIZE": "32"}, [16, 32]),
+        ("COG", {"BLOCKSIZE": "32"}, [32, 32]),
+    ],
+)
+def test_creation_block_sizes_override_tile_size(
+    tmp_path, inputs, operation, format_name, options, block_size, gdal
+):
+    """Read actual tile dimensions when explicit creation options override tile_size."""
+    path = tmp_path / "blocks.tif"
+    write_operation(operation, inputs, path, format=format_name, tile_size=64, options=options)
+    result = gdal.Open(str(path))
+    assert result.GetRasterBand(1).GetBlockSize() == block_size
+
+
+@pytest.mark.parametrize("options", [{}, {"COMPRESS": "DEFLATE"}])
+@pytest.mark.parametrize("explicit_format", [False, True])
+def test_pansharpen_vrt_rejects_creation_options(tmp_path, inputs, options, explicit_format):
+    """Reject VRT creation options before publishing an output instead of ignoring them."""
+    path = tmp_path / ("output.xml" if explicit_format else "output.vrt")
+    output = {"format": "VRT"} if explicit_format else {}
+    with pytest.raises(ValueError, match="creation options do not apply to a VRT output"):
+        terrio.pansharpen(
+            inputs["dem_path"], inputs["rgb_path"], str(path), options=options, **output
+        )
+    assert not path.exists()

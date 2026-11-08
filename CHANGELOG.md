@@ -21,7 +21,8 @@
 - `translate --overview AUTO-n` without `--outsize` or `--tr` keeps the full-resolution
   output size while reading the selected overview, as `gdal_translate` does. A 400 x 300
   source window now stays 400 x 300 instead of shrinking to the overview's resolution.
-  `AUTO-0` is treated as `AUTO` for selecting the source resolution.
+  `AUTO-0` is now equivalent to `AUTO` across all resampled reads, including Python and
+  JavaScript readers, VRTs and translate, and permits the same whole-read fallbacks.
 
 - `warp -r sum` without `--te` rounds the suggested output extent's size up, as gdalwarp does
   for a sum (`GDAL_SWO_ROUND_UP_SIZE`), so that the output covers the whole source. Without
@@ -49,7 +50,9 @@
 - Rasterize initializes uncovered pixels to the specified nodata value unless explicit
   initialization values are given. This follows GDAL's GeoTIFF behavior for all Terrio
   output formats and in-memory rasters, so uncovered pixels remain invalid by default.
-  Integer nodata values must be representable in the output type. Additive burns start
+  This changes existing `--add --a-nodata` calls that omitted `--init`. Integer nodata values
+  must be representable in the output type; finite Float32 nodata must be within its range.
+  Additive burns start
   from the background (nodata -1 plus burn 7 yields 6); use explicit zero initialization
   to accumulate from zero.
   The CLI catalog is now version 0.1.2 to describe this initialization default accurately.
@@ -63,6 +66,7 @@
   destination, as `Raster.write` and CLI `--co` do. Creation options also reach streamed
   terrain/warp/pansharpen outputs, mask-writing paths, palette operations and `create_raster`.
   In `calc`, `options` is now the output-options keyword; rename any raster input called `options`.
+  Pansharpen refuses creation options for virtual VRT outputs instead of silently ignoring them.
 
 - Calc disambiguates `-f` between the output format and a referenced `f` input, and preserves
   literal arguments and fixed-arity option values. Translate handles zero- or two-value

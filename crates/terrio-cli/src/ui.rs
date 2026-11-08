@@ -210,8 +210,9 @@ impl Drop for Closed {
 }
 
 /// A private HTML file that redirects to the session URL. Kept alive for the server's lifetime
-/// because launchers can return before the browser has read it. Normal drop removes it;
-/// signal termination can leave a private directory containing an expired session token.
+/// because launchers can return before the browser has read it. The server's accept loop
+/// has no graceful return, so successful launches leave the directory behind after process
+/// termination, containing an expired session token.
 fn browser_redirect(url: &str) -> std::io::Result<tempfile::TempDir> {
     let mut builder = tempfile::Builder::new();
     builder.prefix("terrio-ui-");

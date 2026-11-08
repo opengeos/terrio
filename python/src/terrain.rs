@@ -657,6 +657,9 @@ fn pansharpen(
     };
     let virtual_output = format.is_some_and(|v| v.eq_ignore_ascii_case("VRT"))
         || (format.is_none() && dst.is_some_and(|v| std::path::Path::new(v).extension().is_some_and(|e| e.eq_ignore_ascii_case("vrt"))));
+    if virtual_output && creation_options.is_some() {
+        return Err(invalid("creation options do not apply to a VRT output"));
+    }
     let pan_path = crate::ops::raster_path(pan)?;
     let items = if spectral.extract::<std::path::PathBuf>().is_ok() || spectral.cast::<PyRaster>().is_ok() {
         vec![spectral.clone()]
