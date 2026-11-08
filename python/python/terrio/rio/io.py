@@ -1259,10 +1259,12 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
         """
         if self.driver not in _SUBDATASET_DRIVERS or not self.name:
             return []
-        if self._subdatasets is None and self.driver != "GPKG" and self._raster is not None:
+        # Set by the readers that open a terrio raster (`_load`), not by every dataset.
+        raster = getattr(self, "_raster", None)
+        if self._subdatasets is None and self.driver != "GPKG" and raster is not None:
             # The open raster lists them, as `info` reads them: no second open of the file (a
             # remote store's metadata fetched again). A GeoPackage's raster tables are listed apart.
-            self._subdatasets = _listed_subdatasets(self._raster.metadata)
+            self._subdatasets = _listed_subdatasets(raster.metadata)
         if self._subdatasets is None:
             # A failure (a remote file unreachable) is not remembered: the next call tries again.
             try:
