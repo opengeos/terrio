@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Python raster creation-option mappings reject conflicting names that differ only by case,
+  including `Raster.write`, grouped netCDF output and streaming GeoTIFF/COG writers.
+
 - HDF5 raster reads check declared raw and expanded pixel sizes before decoding whole datasets,
   refusing buffers beyond the address space or known usable-memory limit with a terminal resource
   error. Coexisting pixel buffers are checked together; hosts without memory discovery use a

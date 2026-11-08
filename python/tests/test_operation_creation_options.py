@@ -356,7 +356,9 @@ def test_warp_init_virtual_output_rejects_creation_options(
     assert not path.exists()
 
 
-@pytest.mark.parametrize("operation", ["translate", "create_raster"])
+@pytest.mark.parametrize(
+    "operation", ["translate", "create_raster", "rasterize", "vector_grid", "Raster.write"]
+)
 @pytest.mark.parametrize("format_name", ["GTiff", "netCDF"])
 def test_creation_options_reject_conflicting_case_aliases(tmp_path, inputs, operation, format_name):
     """A mapping cannot leave contradictory aliases for individual writers to resolve."""
@@ -369,4 +371,19 @@ def test_creation_options_reject_conflicting_case_aliases(tmp_path, inputs, oper
             format=format_name,
             options={"COMPRESS": "DEFLATE", "compress": "LZW"},
         )
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("writer", ["groups", "GeoTiffWriter", "CogWriter"])
+def test_independent_raster_writers_reject_conflicting_case_aliases(tmp_path, inputs, writer):
+    """Grouped and streaming writers apply the same mapping validation as operations."""
+    from terrio import _terrio
+
+    path = tmp_path / "output.tif"
+    options = {"COMPRESS": "DEFLATE", "compress": "LZW"}
+    with pytest.raises(ValueError, match="duplicate creation option"):
+        if writer == "groups":
+            terrio.write_netcdf_groups({"/data": inputs["dem"]}, str(path), options=options)
+        else:
+            getattr(_terrio, writer)(str(path), 40, 40, 1, "float32", TRANSFORM, options=options)
     assert not path.exists()
