@@ -2280,6 +2280,25 @@ python scripts/conformance.py ../terrio-data --only omerc-two-point --strict
 
 ### WFS services
 
+GML axis-order regressions cover EPSG:6708 (N-E), EPSG:7792 (E-N) and EPSG:4326
+with modern/legacy URNs, modern URLs, legacy dictionary URLs and short EPSG names.
+Rust, Python and Node tests check reads and GML writes, including Z preservation.
+The standalone CRS tests also cover compound/3D geographic CRSs and south-west/polar
+axis controls. Run the local GDAL export/reprojection comparisons without contacting
+public services:
+
+```sh
+cargo test -p terrio --lib drivers::vector::gml::tests
+python -m pytest python/tests/test_gml_axis_order.py
+node --test --test-name-pattern='GML projected' js/tests/node.test.mjs
+python scripts/compare_wfs_with_gdal.py --terrio target/release/terrio
+```
+
+These generated controls compare GeoPackage, Shapefile and GML exports, plus
+reprojection to EPSG:4326. They are also registered in the `wfs` conformance suite.
+GDAL 3.12.1 cannot resolve legacy `epsg.xml#` dictionary URLs offline; these reference
+reads are reported as not compared, while native unit/binding tests cover their XY behavior.
+
 `cargo test -p terrio --test wfs_service --test remote_vector_response` exercises
 HTTP request counts, WFS 1.0/1.1/2.0, empty schemas, axis order, paging, exceptions,
 allowlists and allocation refusals. Linux also checks a sparse page under an

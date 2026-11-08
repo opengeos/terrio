@@ -326,6 +326,12 @@ impl PyRaster {
         self.inner.metadata()
     }
 
+    /// Names of subdatasets declared in the open raster's metadata, without reopening it.
+    #[getter]
+    fn subdatasets(&self) -> Vec<String> {
+        self.inner.subdatasets().into_iter().map(|s| s.name).collect()
+    }
+
     /// The nodata value, or `None` when the raster declares none.
     #[getter]
     fn nodata(&self) -> Option<f64> {

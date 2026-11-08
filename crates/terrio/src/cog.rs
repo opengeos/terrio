@@ -714,6 +714,17 @@ impl LazyRaster {
         Self::from_sparse_with_limits(file, TiffReadLimits::default())
     }
 
+    /// Opens the array at `key` (`""` for the store's root: a group's single array) of a Zarr
+    /// store whose objects the caller fetches (see [`crate::sparse::SparseObjects`]), named
+    /// `name` in messages, read by window as a remote store is. A group requires consolidated
+    /// metadata to discover its arrays; otherwise pass the array's key explicitly. Opening and
+    /// reads fail until the objects they need are fetched, and are then run again.
+    #[cfg(feature = "zarr")]
+    pub fn from_zarr_objects(objects: std::sync::Arc<crate::sparse::SparseObjects>, name: &str, key: &str) -> Result<Self> {
+        crate::formats::check_driver_allowed("Zarr", "a Zarr store", crate::formats::Kind::Raster)?;
+        crate::drivers::zarr::open_objects(objects, name, key)
+    }
+
     /// [`LazyRaster::from_sparse`] with other decoding limits than the defaults.
     pub fn from_sparse_with_limits(file: crate::sparse::SparseFile, limits: TiffReadLimits) -> Result<Option<Self>> {
         let mut source = Source::Sparse(file);
@@ -974,6 +985,13 @@ impl LazyRaster {
             Inner::Tiff(t) => t.tags.metadata.clone(),
             Inner::Memory(ds) | Inner::Source(ds, _) => ds.raster.metadata.clone(),
         }
+    }
+
+    /// The subdatasets declared in this raster's metadata, without opening the source again.
+    /// Uses the same listing rules as `info` (reference GDAL 3.13.3). Driver-specific
+    /// container listings such as GeoPackage tables still require `info_path`.
+    pub fn subdatasets(&self) -> Vec<crate::info::Subdataset> {
+        crate::info::subdatasets_from_metadata(&self.metadata())
     }
 
     /// The sizes `(width, height)` of the overviews, largest first.
