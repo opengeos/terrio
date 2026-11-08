@@ -586,7 +586,10 @@ fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<It
                     let Some(href) = link["href"].as_str() else { continue };
                     let href = resolve_href(&base, href);
                     if matches!(link["rel"].as_str(), Some("item" | "items" | "child")) && !may_follow(&base, &href) {
-                        crate::warnings::warn(format!("STAC: a link of '{}' to another origin was not followed", without_query(&base)));
+                        crate::warnings::warn(format!(
+                            "STAC: a link of '{}' to another origin or to local files was not followed",
+                            crate::vsi::listing::redact_url(without_query(&base))
+                        ));
                         continue;
                     }
                     match link["rel"].as_str() {
@@ -626,7 +629,10 @@ fn read_pages(mut doc: Value, mut cur: Request, max_items: usize, out: &mut Item
             return Ok(());
         }
         if !may_follow(&cur.url, &next.url) {
-            crate::warnings::warn(format!("STAC: the next page of '{}' is on another origin: not followed", without_query(&cur.url)));
+            crate::warnings::warn(format!(
+                "STAC: the next page of '{}' is on another origin or names local files: not followed",
+                crate::vsi::listing::redact_url(without_query(&cur.url))
+            ));
             return Ok(());
         }
         // A search made with GET is not continued with a POST its page asks for, unless asked
@@ -790,13 +796,13 @@ fn asset_href(item_loc: &str, asset: &str) -> Result<String> {
     let doc = fetch_json(item_loc)?;
     let item = match kind(&doc) {
         Some(Kind::Item) => doc,
-        _ => return Err(bad(format!("'{item_loc}' is not a STAC item"))),
+        _ => return Err(bad(format!("'{}' is not a STAC item", crate::vsi::listing::redact_url(item_loc)))),
     };
     let a = &item["assets"][asset];
     let href = a["href"].as_str().ok_or_else(|| {
         let names: Vec<&String> = item["assets"].as_object().map(|o| o.keys().collect()).unwrap_or_default();
         let names: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-        bad(format!("'{item_loc}' has no asset '{asset}' (assets: {})", names.join(", ")))
+        bad(format!("'{}' has no asset '{asset}' (assets: {})", crate::vsi::listing::redact_url(item_loc), names.join(", ")))
     })?;
     let href = resolve_href(item_loc, href);
     if names_local_files(item_loc, &href) {
@@ -946,6 +952,10 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
             // A remote item does not name local files; such an asset is left out of the mosaic
             // (before its group is made, so that no empty group is left).
             if names_local_files(base, &href) {
+                crate::warnings::warn(format!(
+                    "STAC: asset '{name}' of '{}' names local files: left out of the mosaic",
+                    crate::vsi::listing::redact_url(base)
+                ));
                 continue;
             }
             let entry = groups.entry(collection.clone()).or_default().entry(name.clone()).or_insert_with(|| AssetGroup {

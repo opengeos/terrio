@@ -1966,8 +1966,10 @@ impl RangeReader {
         self.lock().map(|s| s.client.url.clone()).unwrap_or_default()
     }
 
-    /// The most blocks a prefetch plans (8 MiB of block indices; 64 GiB of the default 64 KiB
-    /// blocks).
+    /// The most blocks a prefetch plans (64 GiB of the default 64 KiB blocks; the ordered set
+    /// holding them takes a few times their 8 MiB of indices). Past it, the plan keeps the first
+    /// distinct blocks in the order of the ranges given, and the others are fetched as reads
+    /// reach them.
     const MAX_PLANNED_BLOCKS: usize = 1 << 20;
 
     /// Fetches the blocks covering the byte ranges `(offset, length)` that are not cached yet, in as
