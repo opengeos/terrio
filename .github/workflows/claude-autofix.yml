@@ -352,9 +352,10 @@ jobs:
             echo "aside=$(/usr/bin/bash -p "$RUNNER_TEMP/instructions.sh" aside-sum)"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master; toolchain set by input
         if: (steps.merge.outputs.conflicts != '0' || steps.threads.outputs.count != '0') && env.FORK != 'true'
         with:
+          toolchain: stable
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: (steps.merge.outputs.conflicts != '0' || steps.threads.outputs.count != '0') && env.FORK != 'true'
