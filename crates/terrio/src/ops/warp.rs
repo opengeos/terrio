@@ -1639,6 +1639,8 @@ fn check_sum_chunks(o: &WarpOptions, chunks: &[Chunk], bytes: usize) -> Result<(
 /// Input and output pixels are band-major, each band row-major from the top:
 /// `data[band * (rows * cols) + row * cols + col]` (zero-based indices). A
 /// [`crate::LazyRaster::read_window`] result needs no pixel reordering before use as a source.
+/// A window read does not retain the dataset mask, so masked-out sample values may be treated
+/// as valid. Use [`warp_lazy`] when dataset masks must affect validity.
 pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset> {
     warp_with(sources, o, None)
 }

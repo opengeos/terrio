@@ -135,7 +135,31 @@
 //! [`LazyRaster::read_window`] and floating-point window reads return the same layout, using
 //! the returned window's dimensions and requested band order, including at overview levels.
 //! [`ops::warp::warp`] consumes and returns band-major rasters; no reordering is needed between
-//! a window read and a warp. A single band uses `data[row * cols + col]`, without transposing.
+//! a window read and a warp. Window reads do not retain the dataset mask; use
+//! [`ops::warp::warp_lazy`] when dataset masks must affect validity. A single band uses
+//! `data[row * cols + col]`, without transposing.
+//!
+//! ```rust
+//! use terrio::{DataType, Raster, RasterConfig, RasterDataset, raster::RasterData};
+//!
+//! let (cols, rows, bands) = (2, 2, 4);
+//! let rgba: Vec<u8> = vec![
+//!     1, 11, 21, 31, 2, 12, 22, 32, // top row: two RGBA pixels
+//!     3, 13, 23, 33, 4, 14, 24, 34, // bottom row
+//! ];
+//! let pixels = rows * cols;
+//! let mut planes = vec![0; pixels * bands];
+//! for pixel in 0..pixels {
+//!     for band in 0..bands {
+//!         planes[band * pixels + pixel] = rgba[pixel * bands + band];
+//!     }
+//! }
+//! assert_eq!(planes, vec![1, 2, 3, 4, 11, 12, 13, 14, 21, 22, 23, 24, 31, 32, 33, 34]);
+//! let config = RasterConfig { cols, rows, bands, data_type: DataType::U8, ..Default::default() };
+//! let raster = Raster::from_data_native(config, RasterData::U8(planes))?;
+//! let ds = RasterDataset::new(raster, false);
+//! # Ok::<(), terrio::Error>(())
+//! ```
 //!
 //! TIFF storage is independent of this buffer layout. The native GTiff writer defaults to
 //! pixel-interleaved storage (`INTERLEAVE=PIXEL`, `PlanarConfiguration=1`); request separate

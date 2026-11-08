@@ -1236,7 +1236,9 @@ impl LazyRaster {
     /// Pixels are band-major, each band row-major from the top, regardless of the file's
     /// interleave: `data[band * (height * width) + row * width + col]` (zero-based indices,
     /// returned window dimensions). Planes follow the requested band order. This also applies
-    /// to internal and external overviews; the result can be passed directly to a warp.
+    /// to internal and external overviews; no pixel reordering is needed before a warp.
+    /// The result does not retain the dataset mask; use [`crate::ops::warp::warp_lazy`] when
+    /// dataset masks must affect validity.
     pub fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {
         let _scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
         let (lw, lh) = self.level_size(options.overview)?;
