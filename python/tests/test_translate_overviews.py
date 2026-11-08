@@ -10,7 +10,8 @@ GT = (0.0, 1.0, 0.0, 1024.0, 0.0, -1.0)
 
 @pytest.fixture(scope="module")
 def pyramid(tmp_path_factory, gdal):
-    """A 1024 x 1024 Float32 GeoTIFF with nearest-neighbour overviews (factors 2, 4), by GDAL.
+    """A 1024 x 1024 two-band Float32 GeoTIFF (EPSG:3857, nodata -9999) with nearest-neighbour
+    overviews (factors 2, 4), made by GDAL.
 
     Args:
         tmp_path_factory: pytest's temporary directory factory.
@@ -21,9 +22,14 @@ def pyramid(tmp_path_factory, gdal):
     """
     path = str(tmp_path_factory.mktemp("translate") / "pyramid.tif")
     values = np.random.default_rng(7).uniform(0, 1000, (1024, 1024)).astype("float32")
-    ds = gdal.GetDriverByName("GTiff").Create(path, 1024, 1024, 1, gdal.GDT_Float32, ["TILED=YES"])
+    ds = gdal.GetDriverByName("GTiff").Create(path, 1024, 1024, 2, gdal.GDT_Float32, ["TILED=YES"])
     ds.SetGeoTransform(GT)
-    ds.GetRasterBand(1).WriteArray(values)
+    srs = gdal.osr.SpatialReference()
+    srs.ImportFromEPSG(3857)
+    ds.SetProjection(srs.ExportToWkt())
+    for band, data in [(1, values), (2, values * 2)]:
+        ds.GetRasterBand(band).WriteArray(data)
+        ds.GetRasterBand(band).SetNoDataValue(-9999)
     ds.BuildOverviews("NEAREST", [2, 4])
     ds = None
     return path
@@ -38,10 +44,25 @@ def gdal_translate(gdal, path, options):
         options: The `gdal_translate` arguments, as a list.
 
     Returns:
-        tuple: The band's values and the output's geotransform.
+        tuple: The band's values, the output's geotransform and the output dataset.
     """
     ds = gdal.Translate("", path, options=["-of", "MEM", *options])
-    return ds.GetRasterBand(1).ReadAsArray(), ds.GetGeoTransform()
+    return ds.GetRasterBand(1).ReadAsArray(), ds.GetGeoTransform(), ds
+
+
+def assert_same_header(gdal, out, ds):
+    """Asserts that a translated raster has the data type, nodata, CRS and bands of GDAL's.
+
+    Args:
+        gdal: GDAL's Python bindings.
+        out: terrio's output.
+        ds: gdal_translate's output.
+    """
+    assert out.count == ds.RasterCount
+    assert out.dtype == gdal.GetDataTypeName(ds.GetRasterBand(1).DataType).lower()
+    assert out.nodata == ds.GetRasterBand(1).GetNoDataValue()
+    srs = gdal.osr.SpatialReference(wkt=ds.GetProjection())
+    assert out.crs == f"EPSG:{srs.GetAuthorityCode(None)}"
 
 
 @pytest.mark.parametrize("lazy", [False, True])
@@ -50,9 +71,13 @@ def test_an_average_to_a_quarter_size_matches_gdal_translate(gdal, pyramid, lazy
     # average of the full-resolution pixels differs from its (nearest-neighbour) values by hundreds.
     src = terrio.open_raster(pyramid, lazy=True) if lazy else pyramid
     out = terrio.translate(src, outsize=("25%", "25%"), resampling="average")
-    expected, transform = gdal_translate(gdal, pyramid, ["-outsize", "25%", "25%", "-r", "average"])
+    expected, transform, ds = gdal_translate(
+        gdal, pyramid, ["-outsize", "25%", "25%", "-r", "average"]
+    )
     np.testing.assert_array_equal(out.read(1), expected)
+    np.testing.assert_array_equal(out.read(2), ds.GetRasterBand(2).ReadAsArray())
     assert out.transform == pytest.approx(transform)
+    assert_same_header(gdal, out, ds)
 
 
 @pytest.mark.parametrize(
@@ -83,9 +108,10 @@ def test_overview_selects_the_level_as_gdal_translate_ovr(gdal, pyramid, lazy, m
         )
         out = terrio.translate(src, overview=mode, **kwargs)
         extra = [] if ovr is None else ["-ovr", ovr]
-        expected, transform = gdal_translate(gdal, pyramid, options + extra)
+        expected, transform, ds = gdal_translate(gdal, pyramid, options + extra)
         np.testing.assert_allclose(out.read(1), expected, rtol=0, atol=1e-3)
         assert out.transform == pytest.approx(transform)
+        assert_same_header(gdal, out, ds)
 
 
 def test_a_written_output_is_the_one_returned(pyramid, tmp_path):
@@ -156,3 +182,17 @@ def test_a_raster_is_not_borrowed_while_it_is_translated(pyramid, lazy):
     done.set()
     watcher.join()
     assert not errors, errors
+
+
+@pytest.mark.parametrize("mode", [0, "AUTO-1"])
+def test_a_level_is_refused_for_a_path_read_whole(tmp_path, mode):
+    # A file the lazy reader refuses is read whole, at full resolution, where no level can be
+    # chosen: refused, with the lazy reader's error, as `terrio translate --overview` refuses it.
+    path = tmp_path / "broken.tif"
+    path.write_bytes(b"II*\x00" + b"\xff" * 60)
+    with pytest.raises(terrio.UnsupportedError, match=r"is read whole \(.+\)"):
+        terrio.translate(str(path), outsize=(8, 8), overview=mode)
+    # Without a level, the whole read's own error.
+    with pytest.raises(terrio.TerrioError) as e:
+        terrio.translate(str(path), outsize=(8, 8))
+    assert not isinstance(e.value, terrio.UnsupportedError)

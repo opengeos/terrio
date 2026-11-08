@@ -329,6 +329,8 @@ overviews to be used, since `open_raster(path)` reads it into memory without the
 difference from `gdal_translate`, shared with `terrio translate`: with `"AUTO-n"` and no
 `outsize` or `tr`, the output has the selected level's size (200 x 150 for a 400 x 300 `srcwin`
 read from overview 0), where `gdal_translate` keeps the window's full-resolution size.
+With `dst`, the output is translated whole in memory and then written, where `terrio translate`
+writes a GeoTIFF or COG a strip at a time: use the command for outputs larger than memory.
 
 `clean_collar` and `nearblack` return a Byte `Raster`; a mask (`add_mask`, or an input's mask
 kept by `clean_collar`) needs `dst`, which holds it, and the returned `Raster` is then read from

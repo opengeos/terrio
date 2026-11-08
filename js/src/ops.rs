@@ -7,7 +7,7 @@
 //! string). Outputs are `Dataset`s, written to bytes with `toBytes`. Options are objects with
 //! camelCase names after the command-line options (`tSrs`, `srcNodata`, `cropToCutline`...).
 
-use crate::{Dataset, Inner, js_err, parse_options};
+use crate::{Dataset, Inner, OverviewArg, js_err, parse_options};
 use serde::Deserialize;
 use terrio::crs::SpatialRef;
 use terrio::formats::VectorDriver;
@@ -263,7 +263,7 @@ struct WarpArgs {
     ts: Option<[usize; 2]>,
     tap: bool,
     resampling: Option<String>,
-    overview: Option<SizeArg>,
+    overview: Option<OverviewArg>,
     src_nodata: Option<NumberOrList>,
     dst_nodata: Option<NumberOrList>,
     ot: Option<String>,
@@ -411,14 +411,9 @@ impl SizeArg {
 }
 
 /// The stored resolution an operation reads from (`-ovr`): `"AUTO"` (the default), `"AUTO-n"`,
-/// `"NONE"` or a level from 0.
-fn overview_arg(v: Option<SizeArg>) -> Result<terrio::ops::overview::OverviewSelection, JsError> {
-    use terrio::ops::overview::OverviewSelection;
-    match v {
-        None => Ok(OverviewSelection::Auto),
-        Some(SizeArg::Pixels(n)) => Ok(OverviewSelection::Level(n)),
-        Some(SizeArg::Text(s)) => OverviewSelection::parse(&s).map_err(js_err),
-    }
+/// `"NONE"` or a level from 0, as `readResampled` takes it.
+fn overview_arg(v: Option<OverviewArg>) -> Result<terrio::ops::overview::OverviewSelection, JsError> {
+    OverviewArg::selection(v.as_ref()).map_err(js_err)
 }
 
 /// `true`, or a list of 2 or 4 numbers.
@@ -446,7 +441,7 @@ struct TranslateArgs {
     a_nodata: Option<NumberOrList>,
     a_srs: Option<String>,
     a_ullr: Option<[f64; 4]>,
-    overview: Option<SizeArg>,
+    overview: Option<OverviewArg>,
 }
 
 /// Subsets, resizes, rescales or converts a raster, as `terrio translate` (GDAL's
@@ -457,8 +452,10 @@ struct TranslateArgs {
 /// percentages such as `"50%"`; 0 keeps the aspect ratio), `tr`, `resampling`, `scale` (`true`,
 /// `[srcMin, srcMax]` or `[srcMin, srcMax, dstMin, dstMax]`), `exponent`, `aNodata` (a number or
 /// `"none"`), `aSrs`, `aUllr`, `overview` (the stored resolution to read, as `gdal_translate
-/// -ovr`: `"AUTO"`, the default, `"AUTO-n"`, `"NONE"` or a level from 0). GeoTIFFs are read by
-/// window, for the output alone, from that level; other rasters are read whole.
+/// -ovr`: `"AUTO"`, the default, `"AUTO-n"`, `"NONE"` or a level from 0). Inputs the lazy reader
+/// opens (GeoTIFFs, JPEG 2000, GRIB, tile archives...) are read by window, for the output alone,
+/// from that level where the reader exposes overviews; a TIFF it refuses is decoded whole, at
+/// full resolution, as are the formats it decodes whole.
 #[wasm_bindgen]
 pub fn translate(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     let a: TranslateArgs = parse_options(&options)?;
@@ -494,27 +491,24 @@ pub fn translate(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         assign_ullr: tuple4(a.a_ullr),
     };
     let overview = overview_arg(a.overview)?;
-    // As Python's `translate` and `terrio translate`: bytes the lazy reader cannot read are
+    // As Python's `translate` and `terrio translate`: a TIFF the lazy reader cannot read is
     // decoded whole, as before, and translated at full resolution.
     if Dataset::lookup(&src).is_none()
         && let Some((bytes, name)) = file_bytes(&src)
     {
-        let lazy = match terrio::memory::open_raster_lazy_bytes(bytes.clone(), &name) {
-            Ok(r) => Some(r),
-            Err(e @ terrio::Error::InvalidArgument(_)) => return Err(js_err(e)),
-            Err(e) if e.is_resource_refusal() => return Err(js_err(e)),
-            Err(_) => None,
-        };
-        let out = match lazy {
-            Some(mut r) => terrio::ops::translate::translate_lazy(&mut r, &o, overview),
-            None => {
+        use terrio::memory::OpenedRasterBytes;
+        let out = match terrio::memory::open_raster_lazy_bytes_or_whole(bytes, &name).map_err(js_err)? {
+            OpenedRasterBytes::Lazy(mut r) => terrio::ops::translate::translate_lazy(&mut r, &o, overview),
+            OpenedRasterBytes::Whole(ds, error) => {
                 if matches!(
                     overview,
                     terrio::ops::overview::OverviewSelection::Level(_) | terrio::ops::overview::OverviewSelection::AutoOffset(_)
                 ) {
-                    return Err(invalid(format!("overview needs a raster read by window; '{name}' is read whole")));
+                    return Err(js_err(terrio::Error::Unsupported(format!(
+                        "overview needs a raster read by window; '{name}' is read whole ({error})"
+                    ))));
                 }
-                terrio::memory::open_raster_bytes(bytes, &name).and_then(|ds| terrio::ops::translate::translate(&ds, &o))
+                terrio::ops::translate::translate(&ds, &o)
             }
         };
         return Ok(Dataset::from_raster(out.map_err(js_err)?));
