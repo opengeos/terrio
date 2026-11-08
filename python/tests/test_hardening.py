@@ -852,9 +852,11 @@ def test_a_warp_of_a_raster_in_memory_releases_the_gil():
     src = terrio.Raster.from_array(data, (500000.0, 10.0, 0.0, 4000000.0, 0.0, -10.0), "EPSG:32631")
     reference = terrio.warp(src, t_srs="EPSG:32632", resampling="bilinear")
     span, errors, out = [], [], []
+    started = threading.Event()
 
     def warp():
         span.append(time.perf_counter())
+        started.set()  # the times are taken from here, so the warp cannot end before them
         try:
             out.append(terrio.warp(src, t_srs="EPSG:32632", resampling="bilinear"))
         except Exception as e:  # a thread's exception is otherwise lost
@@ -864,6 +866,7 @@ def test_a_warp_of_a_raster_in_memory_releases_the_gil():
     thread = threading.Thread(target=warp)
     seen = []
     thread.start()
+    started.wait()
     while thread.is_alive():
         seen.append(time.perf_counter())
         time.sleep(0.0005)  # a bounded sample, and the GIL left to the warp between samples
