@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A remote read of a long range through the block cache, such as a GeoParquet row group or a run
+  of COG tiles, is fetched as up to 8 parallel requests of at least 1 MiB each instead of one at
+  the pace of a single connection (#741). `TERRIO_HTTP_MULTIRANGE=SERIAL` keeps one request.
 - A build with the `gdal` feature and without the default features
   (`--no-default-features --features gdal`) compiles. The GDAL backend formats the date-time
   fields it reads with chrono, whose formatting needs its `alloc` feature, and only the
