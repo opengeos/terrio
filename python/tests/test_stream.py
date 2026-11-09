@@ -77,7 +77,7 @@ def test_arrow_stream_matches_table(path):
         assert table.schema.field("i").type == pa.int32()
         # each exported field has the type the file stores, so the cast below hides no change
         pq = pytest.importorskip("pyarrow.parquet")
-        file_schema = pq.read_table(path).schema
+        file_schema = pq.read_schema(path)
         for field in table.schema:
             assert field.type == file_schema.field(field.name).type, field.name
         whole = whole.cast(table.schema)
