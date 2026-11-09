@@ -9,6 +9,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -372,37 +373,37 @@ def test_a_read_while_another_thread_reads_the_source_raises_as_a_read_does(tmp_
     # Another thread reads the source's Raster, which a read holds, without the GIL, until it
     # returns: a WarpedVRT read that needs the Raster meanwhile raises the RasterioIOError a read
     # raises then, "Read failed: Already borrowed", with the RuntimeError as its cause; with an
-    # internal mask as well, whose presence the read does not ask the Raster.
-    mask = np.full((1024, 1024), 255, "uint8") if masked else None
-    path = write(
-        tmp_path / "src.tif", values("float32", 1, 1024, 1024), mask=mask, compress="deflate"
-    )
-    stop, raised = threading.Event(), []
-    with terrio.rio.open(path) as src:
+    # internal mask as well, whose presence the read does not ask the Raster. The WarpedVRT reads
+    # once the other thread holds the Raster, which then refuses even its width.
+    n = 2048
+    mask = np.full((n, n), 255, "uint8") if masked else None
+    path = write(tmp_path / "src.tif", values("float32", 1, n, n), mask=mask, compress="deflate")
+    stop = threading.Event()
+    with terrio.rio.open(path) as src, WarpedVRT(src, crs="EPSG:3857") as vrt:
 
         def reader():
             while not stop.is_set():
-                try:
-                    src._raster.read()
-                except RuntimeError:
-                    pass
+                src._raster.read()
 
         thread = threading.Thread(target=reader)
         thread.start()
         try:
-            for _ in range(1000):
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
                 try:
-                    with WarpedVRT(src, crs="EPSG:3857") as vrt:
-                        vrt.read()
-                except RasterioIOError as err:
-                    raised.append(err)
+                    _ = src._raster.width
+                except RuntimeError:
                     break
+                time.sleep(0.0005)
+            else:
+                raise AssertionError("the other thread never held the Raster")
+            with pytest.raises(RasterioIOError) as raised:
+                vrt.read(1, out_shape=(64, 64))
         finally:
             stop.set()
             thread.join()
-    assert raised, "no read met the other thread's"
-    assert str(raised[0]) == "Read failed: Already borrowed", raised[0]
-    assert isinstance(raised[0].__cause__, RuntimeError), raised[0].__cause__
+    assert str(raised.value) == "Read failed: Already borrowed", raised.value
+    assert isinstance(raised.value.__cause__, RuntimeError), raised.value.__cause__
 
 
 def run(code, *args, env=None):
@@ -417,6 +418,53 @@ def run(code, *args, env=None):
     return json.loads(out.stdout.splitlines()[-1])
 
 
+def cpus():
+    """The CPUs this process may run on."""
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0))
+    return os.cpu_count() or 1
+
+
+# A WarpedVRT read (of argv[1], with the resampling argv[2]) while another Python thread counts;
+# then, for as long, that thread counting while this one hashes without the GIL (hashlib releases
+# it for large inputs), so that in both a thread other than the counting one keeps a CPU busy.
+# Prints both rates, in a fresh interpreter.
+COUNTING = """
+import hashlib, json, sys, threading, time
+import terrio.rio
+from terrio.rio.enums import Resampling
+from terrio.rio.vrt import WarpedVRT
+
+count, stop, started = [0], threading.Event(), threading.Event()
+
+def counting():
+    started.set()
+    while not stop.is_set():
+        count[0] += 1
+
+payload = bytes(1 << 22)
+with terrio.rio.open(sys.argv[1]) as src:
+    with WarpedVRT(src, crs="EPSG:4326", resampling=Resampling[sys.argv[2]]) as vrt:
+        paths = []
+        vrt._window_hook = lambda level, window, rust: paths.append(rust)
+        thread = threading.Thread(target=counting)
+        thread.start()
+        started.wait()
+        first, start = count[0], time.perf_counter()
+        vrt.read(1)
+        read, took = count[0], time.perf_counter() - start
+        start = time.perf_counter()
+        while time.perf_counter() - start < took:
+            hashlib.sha256(payload).digest()
+        hashed, spent = count[0], time.perf_counter() - start
+        stop.set()
+        thread.join()
+print(json.dumps({"read": took, "during": (read - first) / took,
+                  "alone": (hashed - read) / spent, "paths": paths}))
+"""
+
+
+@pytest.mark.skipif(cpus() < 2, reason="the warp and the counting thread need a CPU each")
 @pytest.mark.parametrize(
     ("method", "compress"),
     [pytest.param("cubic", None, id="warp"), pytest.param("nearest", "deflate", id="read")],
@@ -425,48 +473,15 @@ def test_a_warped_vrt_lets_other_threads_run_while_it_warps(tmp_path, method, co
     # A 2048 x 2048 float32 raster in 16 x 16 tiles, warped by a WarpedVRT into WGS 84 and read
     # whole, on one thread of the warp's pool: with cubic resampling from uncompressed tiles the
     # warp takes most of the read, with nearest from DEFLATE tiles reading the window does.
-    # Meanwhile another Python thread counts, and the longest it went without the GIL is its
-    # longest gap: with the GIL released while the window is read and warped, a few
-    # milliseconds; held through either, about that step's length. A read of at least 0.1 s
-    # makes a quarter of it far longer than the interpreter's switch interval (5 ms).
+    # Meanwhile another Python thread counts, then counts for as long while the reading thread
+    # hashes without the GIL: with the GIL released while the window is read and warped, it
+    # counts about as fast during the read as during the hashing, and at least half as fast;
+    # held through either step, a third as fast or less. Both rates come from one process, one
+    # after the other, each with one other thread busy, so a busy machine slows both alike.
     n = 2048
     data = (np.arange(n * n, dtype="float64") % 997).astype("float32").reshape(1, n, n)
     path = write(tmp_path / "big.tif", data, compress=compress)
-    out = run(
-        """
-        import json, sys, threading, time
-        import terrio.rio
-        from terrio.rio.enums import Resampling
-        from terrio.rio.vrt import WarpedVRT
-
-        gap, stop, started = [0.0], threading.Event(), threading.Event()
-
-        def count():
-            started.set()
-            last = time.perf_counter()
-            while not stop.is_set():
-                now = time.perf_counter()
-                gap[0] = max(gap[0], now - last)
-                last = now
-
-        with terrio.rio.open(sys.argv[1]) as src:
-            with WarpedVRT(src, crs="EPSG:4326", resampling=Resampling[sys.argv[2]]) as vrt:
-                paths = []
-                vrt._window_hook = lambda level, window, rust: paths.append(rust)
-                thread = threading.Thread(target=count)
-                thread.start()
-                started.wait()
-                start = time.perf_counter()
-                vrt.read(1)
-                took = time.perf_counter() - start
-                stop.set()
-                thread.join()
-        print(json.dumps({"read": took, "gap": gap[0], "paths": paths}))
-        """,
-        path,
-        method,
-        env={**os.environ, "RAYON_NUM_THREADS": "1"},
-    )
+    out = run(COUNTING, path, method, env={**os.environ, "RAYON_NUM_THREADS": "1"})
     assert out["read"] > 0.1, out
-    assert out["gap"] < out["read"] / 4, out
+    assert out["during"] > out["alone"] / 2, out
     assert out["paths"] and all(out["paths"]), out
