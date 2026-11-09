@@ -1262,7 +1262,7 @@ test("remote files read with range requests", async () => {
       assert.deepEqual(ids.map((f) => f.properties.id).sort((a, b) => a - b), expected);
       const shapes = (await pq.read({ columns: [] })).toGeoJSON().features;
       assert.equal(shapes.length, 1500);
-      assert.deepEqual(shapes[0].properties, {});
+      assert.equal(shapes[0].properties, null); // no fields
       assert.ok(shapes[0].geometry);
       await assert.rejects(pq.read({ columns: ["nope"] }), /nope/);
     }
