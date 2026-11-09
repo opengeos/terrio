@@ -22,8 +22,10 @@
   `GDAL_HTTP_MULTIRANGE=PARALLEL` does; `TERRIO_HTTP_MULTIRANGE=SERIAL` (or the GDAL name)
   requests them one after another. The requests carry the calling thread's options and STAC
   asset policy. A new request starts as each run is stored, so at most 8 responses are held at
-  once, and one read's runs stay within half the block cache. A failed run ends the read once the
-  requests in flight end; none is retried or sent after it. Peak memory can rise with many
+  once, and one read's runs stay within half the block cache. A failed run ends the read as a
+  serial read would: a request in flight waiting for its response is abandoned within 50 ms, even
+  when the response has stalled (a connection being opened still waits for its connect timeout),
+  and none is retried or sent after it. Peak memory can rise with many
   readers, from glibc's per-thread arenas (`MALLOC_ARENA_MAX=2` bounds them).
 
 ## 0.8.0 (2026-11-08)
