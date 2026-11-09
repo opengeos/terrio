@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 //! OSM-binary storage and primitive blocks. Uses the parent driver's protobuf reader.
-//! Schema: https://github.com/openstreetmap/OSM-binary/tree/master/osmpbf
+//! Schema: <https://github.com/openstreetmap/OSM-binary/tree/master/osmpbf>
 //! Metadata, header bbox and dates are not exposed by terrio's OSM layers.
+//! Written from the format specification using terrio's protobuf reader; no decoder code
+//! is adapted from osmpbfreader, whose outputs serve as a compatibility reference.
 
 use super::{Member, Pb, Relation, pb_fields, pb_varint, unzigzag};
 use crate::{Error, Result};
@@ -161,6 +163,10 @@ fn integer(bytes: &[u8], field: u64) -> Result<Option<u64>> {
         .last())
 }
 
+fn positive_i32(value: u64) -> Result<i32> {
+    i32::try_from(value).ok().filter(|&n| n > 0).ok_or_else(bad)
+}
+
 fn deltas(v: Vec<u64>) -> Result<Vec<i64>> {
     let mut sum = 0i64;
     v.into_iter()
@@ -282,9 +288,21 @@ fn primitives(bytes: &[u8], emit: &mut dyn FnMut(Object) -> Result<()>) -> Resul
                     }
                 }
             }
-            (17, Pb::Int(g)) => c.granularity = i64::from(g as i32),
-            (19, Pb::Int(o)) => c.lat_offset = o as i64,
-            (20, Pb::Int(o)) => c.lon_offset = o as i64,
+            (17, Pb::Int(g)) => c.granularity = i64::from(positive_i32(g)?),
+            (18, Pb::Int(g)) => {
+                // Dates are not exposed, but their scale must still be valid.
+                positive_i32(g)?;
+            }
+            (19 | 20, Pb::Int(o)) => {
+                // Protobuf int64 uses two's-complement varints: the high bit
+                // denotes a negative offset, not an out-of-range positive value.
+                let offset = i64::from_le_bytes(o.to_le_bytes());
+                if field == 19 {
+                    c.lat_offset = offset;
+                } else {
+                    c.lon_offset = offset;
+                }
+            }
             _ => {}
         }
     }

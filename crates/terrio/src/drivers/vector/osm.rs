@@ -23,6 +23,8 @@
 
 use crate::ops::simplify::open_ring;
 use crate::{Error, Result};
+// Keep the decoder beside this driver while sharing its private protobuf reader
+// (Pb/pb_fields/unzigzag) and OSM member/relation model.
 #[path = "osm_pbf.rs"]
 mod pbf;
 use pbf::{Object as OsmObj, Tags};
@@ -850,7 +852,7 @@ fn blob_spans(r: &mut dyn PbfInput) -> Result<(Vec<std::ops::Range<u64>>, bool)>
             }
             b"OSMHeader" => {
                 let mut blob = vec![0u8; size as usize];
-                r.read_exact(&mut blob)?;
+                r.read_exact(&mut blob).map_err(|_| bad())?;
                 sorted = pbf::header_sorted(&blob)?;
             }
             _ => r.seek_relative(size as i64)?,
@@ -1836,6 +1838,62 @@ mod tests {
         let framing = blob_spans(&mut std::io::Cursor::new(&mut truncated)).unwrap_err();
         let payload = decoded(&file).err().unwrap();
         assert_eq!(framing.to_string(), payload.to_string());
+    }
+
+    #[test]
+    fn rejects_nonpositive_and_out_of_range_block_scales() {
+        for field in [17, 18] {
+            for value in [0, u64::MAX, i32::MAX as u64 + 1, (1u64 << 32) + 37] {
+                let block = primitive(Msg::default()).int(field, value);
+                let error = decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).err().unwrap();
+                assert_eq!(error.to_string(), pbf::bad().to_string(), "field {field}, value {value}");
+            }
+            for value in [1, i32::MAX as u64] {
+                let block = primitive(Msg::default()).int(field, value);
+                assert!(decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn negative_coordinates_truncate_toward_zero_with_nondefault_scale_and_offsets() {
+        let node = Msg::default().int(1, zz(1)).int(8, zz(-3)).int(9, zz(-5));
+        let zero = Msg::default().int(1, zz(2)).int(8, 0).int(9, 0);
+        let block = primitive(Msg::default().bytes(1, &node.0).bytes(1, &zero.0))
+            .int(17, 37)
+            .int(18, 500)
+            .int(19, (-1i64) as u64)
+            .int(20, (-2i64) as u64);
+        let objects = decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).unwrap();
+        let OsmObj::Node(node) = &objects[0] else { panic!() };
+        // (-1 + 37 * -3) / 100 = -1; (-2 + 37 * -5) / 100 = -1.
+        // Signed integer division truncates toward zero, not toward minus infinity.
+        assert_eq!((node.decimicro_lat, node.decimicro_lon), (-1, -1));
+        let OsmObj::Node(zero) = &objects[1] else { panic!() };
+        assert_eq!((zero.decimicro_lat, zero.decimicro_lon), (0, 0));
+    }
+
+    #[test]
+    fn truncated_informational_blob_uses_the_framing_error() {
+        struct CutPayload {
+            bytes: std::io::Cursor<Vec<u8>>,
+            cut: usize,
+        }
+        impl std::io::Read for CutPayload {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                let n = out.len().min(self.cut.saturating_sub(self.bytes.position() as usize));
+                std::io::Read::read(&mut self.bytes, &mut out[..n])
+            }
+        }
+        impl std::io::Seek for CutPayload {
+            fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+                std::io::Seek::seek(&mut self.bytes, position)
+            }
+        }
+        let file = fileblock("OSMHeader", &Msg::default().bytes(1, &[]).0);
+        let cut = file.len() - 1;
+        let mut input = CutPayload { bytes: std::io::Cursor::new(file), cut };
+        assert_eq!(blob_spans(&mut input).unwrap_err().to_string(), pbf::bad().to_string());
     }
 
     #[test]
