@@ -6,8 +6,10 @@
   in parallel, up to 8 at once, through the process-wide connection pool, as GDAL's default
   `GDAL_HTTP_MULTIRANGE=PARALLEL` does; `TERRIO_HTTP_MULTIRANGE=SERIAL` (or the GDAL name)
   requests them one after another. The requests carry the calling thread's options and STAC
-  asset policy. Peak memory can rise with many readers, from glibc's per-thread arenas
-  (`MALLOC_ARENA_MAX=2` bounds them).
+  asset policy. A new request starts as each run is stored, so at most 8 responses are held at
+  once, and one read's runs stay within half the block cache. A failed run ends the read once the
+  requests in flight end; none is retried or sent after it. Peak memory can rise with many
+  readers, from glibc's per-thread arenas (`MALLOC_ARENA_MAX=2` bounds them).
 
 - `terrio.rio`'s `subdatasets`, and so `terrio.xarray`'s open, list a file's subdatasets from the
   raster already open instead of opening the file again. A remote store's metadata was fetched
