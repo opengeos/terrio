@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A local GeoJSON or GML file whose name points to no driver (`data`, `data.txt`, a GML saved as
+  `.xml`) is read by its content, as a remote response under such a name is. Its content was
+  already identified, and an allow-list already judged it, but `open_vector`, `open`,
+  `list_layers`, `info`, `convert`, `terrio.open_vector` and `terrio.pyogrio` then failed with
+  "format not recognized". JSON without a GeoJSON root `type` is still not recognized, and content
+  an allow-list leaves out is refused with the same message as before. Builds with the `gdal`
+  feature, which read such a file through their fallback, now read it with the GeoJSON or GML
+  driver.
 - `terrio.rio` keeps a PixelIsPoint raster (`AREA_OR_POINT=Point`) PixelIsPoint when it writes a
   GeoTIFF or COG. `shutil.copy`, a writer given `update_tags(AREA_OR_POINT="Point")`, an `r+`
   update of a PixelIsPoint GeoTIFF and `terrio.xarray`'s `to_raster` wrote it as PixelIsArea in

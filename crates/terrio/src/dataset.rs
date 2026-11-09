@@ -1055,9 +1055,11 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
-    // City-model documents, ESRI JSON and protocol buffers with no recognized extension (a downloaded
-    // query result) use a bounded root probe, as does `.pbf`, which a query's protocol buffer shares
-    // with OpenStreetMap.
+    // City-model, GeoJSON and GML documents, ESRI JSON and protocol buffers with no recognized
+    // extension (a downloaded query result, a file stored under an opaque name) use a bounded root
+    // probe, as a remote response under such a name does (`open_remote_vector_response`), and as
+    // does `.pbf`, which a query's protocol buffer shares with OpenStreetMap. The probe sees only
+    // the drivers the allow-list allows.
     #[cfg(not(target_family = "wasm"))]
     let pbf =
         VectorDriver::for_extension(path) == Some(VectorDriver::OSM) && ext == "pbf" && !path.to_ascii_lowercase().ends_with(".osm.pbf");
@@ -1071,6 +1073,8 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
             // Its first bytes show ESRI JSON, but a root `type` further on can say GeoJSON: the JSON
             // reader decides on the whole document.
             "ESRIJSON" => Some(VectorDriver::GeoJSON),
+            "GeoJSON" => Some(VectorDriver::GeoJSON),
+            "GML" => Some(VectorDriver::GML),
             _ => None,
         });
         if let Some(driver) = driver {

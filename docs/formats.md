@@ -400,6 +400,14 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | MBTiles | MBTiles vector tiles (MVT) | ✓ | ✓ | mbtiles |
 | MVT | Mapbox Vector Tiles: a tile, or a directory of tiles | ✓ | ✓ | mvt, z/x/y.pbf |
 
+A local vector file whose name points to no driver (`data`, `data.txt`, `data.xml`) is identified
+by its first 16 KiB. A JSON root `type` of `FeatureCollection`, `Feature` or a geometry type is
+read as GeoJSON, and an XML root element `FeatureCollection` as GML, as a remote response under
+such a name is; CityJSON, CityGML, ESRI JSON and ESRI protocol buffers are read by their drivers.
+Other content under such a name, such as JSON without a GeoJSON root `type`, is not recognized.
+An allow-list judges the format the file holds: content whose driver it leaves out is refused,
+naming that format.
+
 ### CityJSON
 
 The pure-Rust `CityJSON` reader accepts versions 1.1 and 2.0, including quantized XYZ
