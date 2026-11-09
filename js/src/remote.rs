@@ -656,6 +656,10 @@ struct ReadArgs {
     bbox: Option<[f64; 4]>,
     /// GeoParquet: the row groups, from 0.
     row_groups: Option<Vec<usize>>,
+    /// GeoParquet: the fields to read (all by default), matched without case; a struct column's
+    /// name keeps its `name.member` fields. Only their column chunks and the geometry's are
+    /// fetched.
+    columns: Option<Vec<String>>,
     /// Vector tiles: the zoom level (the highest by default).
     zoom: Option<u8>,
     /// Vector tiles: the layers.
@@ -910,7 +914,8 @@ impl RemoteDataset {
     /// - COPC: the options of `readPoints` (`bounds`, `zRange`, `classes`, `returns`,
     ///   `maxLevel`, `resolution`, `maxPoints`), fetching only the octree nodes needed;
     /// - FlatGeobuf: `bbox`, finding the features with the spatial index;
-    /// - GeoParquet: `rowGroups`, `bbox` (skipping row groups by their statistics).
+    /// - GeoParquet: `rowGroups`, `bbox` (skipping row groups by their statistics), `columns`
+    ///   (fetching only the column chunks of those fields and the geometry).
     ///
     /// With `bbox`, the features are those that intersect it, as `ogr2ogr -spat` keeps them.
     pub fn read(&self, options: JsValue) -> js_sys::Promise {
@@ -960,7 +965,8 @@ impl RemoteDataset {
                         #[cfg(feature = "parquet")]
                         Some(Reader::Parquet(_)) => {
                             let bbox = a.bbox.map(|[a, b, c, d]| (a, b, c, d));
-                            let layer = terrio::vector::read_geoparquet_sparse(&file, &name, a.row_groups.as_deref(), bbox)?;
+                            let layer =
+                                terrio::vector::read_geoparquet_sparse(&file, &name, a.row_groups.as_deref(), bbox, a.columns.as_deref())?;
                             Ok(Dataset::from_layers(spatial_filter(&[layer], a.bbox)?, VectorDriver::Parquet))
                         }
                         _ => Err(terrio::Error::InvalidArgument("not open".into())),
