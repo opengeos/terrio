@@ -2,9 +2,11 @@
 
 ## Unreleased
 
-- netCDF: netCDF-4 variables and groups are listed in definition order, the creation order of their
-  HDF5 links, as GDAL lists them. They were ordered by object header address, which a variable
-  written with netCDF's default fill value moves out of definition order.
+- netCDF: netCDF-4 variables and groups are listed as GDAL lists them: in definition order (the
+  creation order of their HDF5 links), or by name in a group that does not track creation order, as
+  h5py writes by default. They were ordered by object header address, which a variable written with
+  netCDF's default fill value moves out of definition order. A netCDF-4 file is no longer opened a
+  second time for it, except to read a group of several variables or groups.
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000

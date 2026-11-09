@@ -10,7 +10,7 @@
 //! `tests/data/netcdf_bands` (`scripts/make_netcdf_bands_fixtures.py`), the `_Unsigned` ones in
 //! `tests/data/netcdf_unsigned` and `tests/data/netcdf_int64_unsigned`
 //! (`scripts/make_netcdf_unsigned_fixtures.py`, `scripts/make_netcdf_int64_unsigned_fixtures.py`),
-//! the definition order one in `tests/data/netcdf_order` (`scripts/make_netcdf_order_fixtures.py`).
+//! the variable order ones in `tests/data/netcdf_order` (`scripts/make_netcdf_order_fixtures.py`).
 
 // Geotransforms as `gdalinfo` prints them, digit for digit.
 #![allow(clippy::excessive_precision)]
@@ -243,18 +243,24 @@ fn netcdf_trailing_bands() {
     }
 }
 
-/// A netCDF-4 file whose variables and groups are defined in reverse name order, with
-/// object headers out of that order (`scripts/make_netcdf_order_fixtures.py`): the subdatasets in
-/// definition order, as GDAL 3.12.2 lists them.
+/// netCDF-4 variables and groups (`scripts/make_netcdf_order_fixtures.py`): defined in reverse
+/// name order with object headers out of that order, listed in definition order; written without
+/// link creation order, listed in name order. The subdatasets as GDAL 3.12.2 lists them, in
+/// `expected.json`.
 #[test]
-fn netcdf4_definition_order() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_order/definition_order.nc");
-    let path = path.to_string_lossy();
-    let terrio::info::Info::Raster(info) = terrio::info::info_path(&path, &Default::default()).unwrap() else { panic!("not a raster") };
-    let names: Vec<&str> = info.subdatasets.iter().map(|s| s.name.rsplit(':').next().unwrap()).collect();
-    let vars = ["zulu", "yankee", "xray", "whiskey", "victor"];
-    let gdal: Vec<String> = ["", "/sierra/", "/romeo/"].iter().flat_map(|g| vars.iter().map(move |v| format!("{g}{v}"))).collect();
-    assert_eq!(names, gdal);
+fn netcdf4_variable_order() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_order");
+    let text = std::fs::read_to_string(dir.join("expected.json")).unwrap();
+    let expected: serde_json::Value = serde_json::from_str(&text).unwrap();
+    for (file, gdal) in expected.as_object().unwrap() {
+        let path = dir.join(file).to_string_lossy().into_owned();
+        let terrio::info::Info::Raster(info) = terrio::info::info_path(&path, &Default::default()).unwrap() else {
+            panic!("{file}: not a raster")
+        };
+        let names: Vec<&str> = info.subdatasets.iter().map(|s| s.name.rsplit(':').next().unwrap()).collect();
+        let gdal: Vec<&str> = gdal.as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(names, gdal, "{file}");
+    }
 }
 
 /// `Short` variables flagged `_Unsigned` whose `valid_range`, or `valid_min` and `valid_max`, hold

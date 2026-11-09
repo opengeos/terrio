@@ -21,6 +21,8 @@
 use super::common;
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
+use hdf5_reader::messages::HdfMessage;
+use hdf5_reader::object_header::ObjectHeader;
 use netcdf_reader::{NcAttrValue, NcAttribute, NcFile, NcFormat, NcGroup, NcType, NcVariable};
 use std::path::Path;
 use wbraster::CrsInfo;
@@ -261,45 +263,45 @@ impl VarRef<'_> {
 }
 
 /// Every variable, in GDAL's order: the root group's in definition order, then each subgroup's
-/// (in definition order, recursively).
+/// (in definition order, recursively). A group that does not track creation order is listed by name.
 fn all_variables<'a>(f: &'a NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf5File>) -> Result<Vec<VarRef<'a>>> {
     let root = f.root_group().map_err(|e| err(path, e))?;
     let classic = matches!(f.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5);
-    // NetCDF-4 groups and variables come back in name order. GDAL lists them in definition order
-    // (netCDF's ids): the creation order of the HDF5 links, which netCDF-4 groups track.
-    let h5 = if classic { None } else { hdf5() };
-    // A group's child group names and dataset names, in creation order.
-    let members = |group_path: &str| -> Option<(Vec<String>, Vec<String>)> {
-        let mut g = h5.as_ref()?.root_group().ok()?;
-        for part in group_path.split('/').filter(|p| !p.is_empty()) {
-            g = g.group(part).ok()?;
-        }
-        g.member_names().ok()
+    // NetCDF-4 groups and variables come in the creation order of their HDF5 links when the group
+    // tracks it, as netCDF-4 groups do: their definition order. netCDF lists the links of a group
+    // that does not track it by name. The file is opened again, once, to tell.
+    let h5 = std::cell::OnceCell::new();
+    let by_name = |group_path: &str| -> bool {
+        let header = || {
+            let h = h5.get_or_init(|| if classic { None } else { hdf5() }).as_ref()?;
+            let mut g = h.root_group().ok()?;
+            for part in group_path.split('/').filter(|p| !p.is_empty()) {
+                g = g.group(part).ok()?;
+            }
+            ObjectHeader::parse_at_storage(g.storage(), g.address(), g.offset_size(), g.length_size()).ok()
+        };
+        header().is_some_and(|h| !h.messages.iter().any(|m| matches!(m, HdfMessage::LinkInfo(li) if li.creation_order_tracked)))
     };
-    type Members<'m> = dyn Fn(&str) -> Option<(Vec<String>, Vec<String>)> + 'm;
-    fn visit<'a>(chain: Vec<&'a NcGroup>, prefix: &str, classic: bool, members: &Members, out: &mut Vec<VarRef<'a>>) {
+    fn visit<'a>(chain: Vec<&'a NcGroup>, prefix: &str, by_name: &dyn Fn(&str) -> bool, out: &mut Vec<VarRef<'a>>) {
         let g = *chain.last().unwrap_or(&chain[0]);
-        let (group_order, var_order) = if classic { Default::default() } else { members(prefix).unwrap_or_default() };
-        let rank = |order: &[String], name: &str| order.iter().position(|n| n == name).unwrap_or(usize::MAX);
         let mut vars: Vec<&NcVariable> = g.variables.iter().collect();
-        if !classic {
-            // Then by object header address, allocated mostly in definition order.
-            vars.sort_by_key(|v| (rank(&var_order, &v.name), v.data_offset));
+        let mut groups: Vec<&NcGroup> = g.groups.iter().collect();
+        if (vars.len() > 1 || groups.len() > 1) && by_name(prefix) {
+            vars.sort_by(|a, b| a.name.cmp(&b.name));
+            groups.sort_by(|a, b| a.name.cmp(&b.name));
         }
         for v in vars {
             let full = if prefix.is_empty() { v.name.clone() } else { format!("{prefix}/{}", v.name) };
             out.push(VarRef { groups: chain.clone(), v, full });
         }
-        let mut children: Vec<(&NcGroup, String)> = g.groups.iter().map(|c| (c, format!("{prefix}/{}", c.name))).collect();
-        children.sort_by_key(|(c, _)| rank(&group_order, &c.name));
-        for (c, p) in children {
+        for c in groups {
             let mut next = chain.clone();
             next.push(c);
-            visit(next, &p, classic, members, out);
+            visit(next, &format!("{prefix}/{}", c.name), by_name, out);
         }
     }
     let mut out = Vec::new();
-    visit(vec![root], "", classic, &members, &mut out);
+    visit(vec![root], "", &by_name, &mut out);
     Ok(out)
 }
 
