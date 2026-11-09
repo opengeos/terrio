@@ -1783,8 +1783,9 @@ pub struct WarpSourceInfo {
 /// [`WarpSource::with_dataset`] can visit them after the binding's object is released.
 pub trait WarpSource {
     /// Visits already-loaded pixels without copying them. Returns false for lazy sources.
-    /// The callback runs while the source keeps the visited pixels alive (a borrow, or an `Arc` it hands out); implementations
-    /// must invoke it exactly once when returning true and must not load pixels here.
+    /// The callback runs while the source keeps the visited pixels alive (a borrow, or an
+    /// `Arc` it hands out). Implementations must invoke it exactly once when returning true
+    /// and must not load pixels here.
     fn with_dataset(&self, _visit: &mut dyn FnMut(&RasterDataset)) -> Result<bool> {
         Ok(false)
     }

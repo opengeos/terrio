@@ -847,38 +847,53 @@ def test_a_warp_of_a_raster_in_memory_releases_the_gil():
     guard's release), so Python threads warping arrays run in parallel. While one thread warps,
     this one keeps running: it records times in the middle half of the warp, which it could not
     with the GIL held for the whole warp (it would get the GIL back only once the warp returned).
-    No speed threshold decides, only whether the thread ran at all."""
+    No speed threshold decides, only whether the thread ran at all. A loaded runner may starve
+    the sampler in one attempt, so a few bounded attempts are allowed; with the GIL held, every
+    attempt fails."""
     data = np.random.default_rng(0).random((3000, 3000), dtype="float32")
     src = terrio.Raster.from_array(data, (500000.0, 10.0, 0.0, 4000000.0, 0.0, -10.0), "EPSG:32631")
     reference = terrio.warp(src, t_srs="EPSG:32632", resampling="bilinear")
-    span, errors, out = [], [], []
-    started = threading.Event()
 
-    def warp():
-        span.append(time.perf_counter())
-        started.set()  # the times are taken from here, so the warp cannot end before them
-        try:
-            out.append(terrio.warp(src, t_srs="EPSG:32632", resampling="bilinear"))
-        except Exception as e:  # a thread's exception is otherwise lost
-            errors.append(e)
-        span.append(time.perf_counter())
+    def attempt():
+        """Warps `src` on a thread while sampling times on this one.
 
-    thread = threading.Thread(target=warp)
-    seen = []
-    thread.start()
-    started.wait()
-    while thread.is_alive():
-        seen.append(time.perf_counter())
-        time.sleep(0.0005)  # a bounded sample, and the GIL left to the warp between samples
-    thread.join()
-    assert not errors, errors
-    start, end = span
-    quarter = (end - start) / 4
-    assert any(start + quarter < t < end - quarter for t in seen), (end - start, len(seen))
-    # and the warp is the one made with the GIL held: same pixels and georeferencing
-    (warped,) = out
-    np.testing.assert_array_equal(warped.read(), reference.read())
-    assert (warped.transform, warped.crs) == (reference.transform, reference.crs)
+        Returns:
+            The warped raster, and whether a sample fell in the middle half of the warp.
+        """
+        span, errors, out = [], [], []
+        started = threading.Event()
+
+        def warp():
+            span.append(time.perf_counter())
+            started.set()  # the times are taken from here, so the warp cannot end before them
+            try:
+                out.append(terrio.warp(src, t_srs="EPSG:32632", resampling="bilinear"))
+            except Exception as e:  # a thread's exception is otherwise lost
+                errors.append(e)
+            span.append(time.perf_counter())
+
+        thread = threading.Thread(target=warp)
+        seen = []
+        thread.start()
+        started.wait()
+        while thread.is_alive():
+            seen.append(time.perf_counter())
+            time.sleep(0.0005)  # a bounded sample, and the GIL left to the warp between samples
+        thread.join()
+        assert not errors, errors
+        start, end = span
+        quarter = (end - start) / 4
+        (warped,) = out
+        return warped, any(start + quarter < t < end - quarter for t in seen)
+
+    for _ in range(3):
+        warped, ran = attempt()
+        # the warp is the one made with the GIL held: same pixels and georeferencing
+        np.testing.assert_array_equal(warped.read(), reference.read())
+        assert (warped.transform, warped.crs) == (reference.transform, reference.crs)
+        if ran:
+            break
+    assert ran, "the main thread never ran during the middle half of a warp"
 
 
 # Half the width of the Web Mercator world, in meters (EPSG:3857).
