@@ -1221,7 +1221,10 @@ terrio mosaic @filelist.txt OUTPUT [options]    # inputs listed in a file, one p
 
 `--resolution highest|lowest|average|user`, `--tr`, `--te`, `--tap`, `--separate`, `-b`,
 `--nodata`, `--srcnodata`, `--dstnodata`, `-r`, `--t-srs`. A `.vrt` output writes a GDAL VRT that
-references the inputs; other outputs hold the mosaicked pixels.
+references the inputs; other outputs hold the mosaicked pixels. Each input is its whole raster
+(`SrcRect`), placed where it falls on the mosaic's grid (`DstRect`), past the mosaic's edges where
+the input extends past them, so that a resampling kernel at the edges of a `--te` extent still reads
+the input's pixels beyond it.
 
 ## Serialized virtual rasters
 
@@ -1280,6 +1283,18 @@ can be larger odd squares, matching GDAL. Their work per pixel grows with the
 number of coefficients. Explicit dataset masks, `SourceBand mask,N`
 and `ComplexSource` with `UseMaskBand` are read lazily.
 
+A source reads only the pixels that meet its `SrcRect` and writes only inside its `DstRect`,
+whatever their offsets. Its window is copied one for one only at the same scale and on whole-pixel
+offsets; otherwise it is resampled by the source's method, `nearest` taking the pixel nearest each
+output pixel's centre (`terrio mosaic` writes fractional offsets when its grid is a fraction of a
+pixel off a source's). A method sampling a point (`nearest`, `bilinear`, `cubic`, `cubicspline`,
+`lanczos`) writes an output pixel only if its centre is inside the `DstRect`, its kernel weighted
+over the pixels that meet the `SrcRect`, as at the source's edge. An area method (`average`, `rms`,
+`mode`, `min`, `max`, `med`, `q1`, `q3`, `sum`) gives an output pixel partly inside the `DstRect`
+the part of the source inside it, so a `sum` source adds its `SrcRect`'s total, a pixel cut by its
+edges counted for its part inside. A `KernelFilteredSource` filters its band before the window is
+taken: its kernel reads the pixels around the `SrcRect`.
+
 Mixed native band types use a common numeric buffer selected with GDAL-style
 `DataTypeUnion` promotion, preserving Float64 precision. Plain and derived bands
 round to their declared type before entering that buffer. A selected lazy band
@@ -1330,7 +1345,9 @@ sampled blocks rather than every pixel, and `--hist` stores histograms.
 Overview methods are nearest, average, min, max and mode. Without factors or `--levels`, automatic
 levels stop at the first overview that fits in `--min-size` pixels (256). Existing unrequested
 levels are retained. `--external` manages the supplied filename's `.ovr` sidecar,
-including when that filename is a symlink. Explicit compression applies to
+including when that filename is a symlink, and reads that `.ovr` under
+`TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` too, where other opens do not (the `.msk`, `.aux.xml`
+and `.ovr.msk` beside the GeoTIFF still follow the option). Explicit compression applies to
 requested rebuilt levels. Updates retain destination pixels outside valid source
 coverage and refresh affected overviews unless `--no-update-overviews` is set.
 Georeferencing moves change the affine transform and CRS without resampling;

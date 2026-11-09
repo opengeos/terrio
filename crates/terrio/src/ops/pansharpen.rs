@@ -435,6 +435,7 @@ fn process_aligned(
             resampling: o.resampling,
             working_float: false,
             invalid_value: source_nodata,
+            within_rects: false,
         };
         match method {
             Resampling::Nearest => {

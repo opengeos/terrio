@@ -1,8 +1,9 @@
 //! External overviews: the images of a GDAL `.ovr` file next to a GeoTIFF without overviews of
 //! its own are its overviews, as GDAL reads them.
 
+use std::collections::HashMap;
 use terrio::raster::RasterData;
-use terrio::{DataType, RasterConfig, RasterDataset, RasterWriteOptions, Window, WindowOptions};
+use terrio::{DataType, RasterConfig, RasterDataset, RasterWriteOptions, ResampledReadOptions, Window, WindowOptions};
 
 fn write(path: &std::path::Path, cols: usize, rows: usize, value: impl Fn(usize) -> u8, overviews: Vec<usize>) {
     let cfg = RasterConfig { cols, rows, bands: 1, data_type: DataType::U8, ..Default::default() };
@@ -141,4 +142,31 @@ fn external_mask_policy_is_independent_of_the_base_tiff() {
         r.file_list().unwrap(),
         ["img.tif", "img.tif.ovr", "img.tif.ovr.msk"].map(|name| dir.path().join(name).to_string_lossy().into_owned())
     );
+}
+
+/// Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, or `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`,
+/// nothing beside the GeoTIFF is read: its `.ovr` gives it no overviews, a reduced read takes the
+/// GeoTIFF's own pixels, and the GeoTIFF is the only file listed.
+#[test]
+fn an_ovr_is_not_read_under_empty_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let tif = dir.path().join("img.tif");
+    write(&tif, 70, 50, |_| 1, Vec::new());
+    write(&dir.path().join("ovr.tif"), 35, 25, |_| 2, Vec::new());
+    std::fs::rename(dir.path().join("ovr.tif"), dir.path().join("img.tif.ovr")).unwrap();
+    let name = tif.to_str().unwrap();
+    let reduced = ResampledReadOptions { size: (7, 5), ..Default::default() };
+    // Without the option, the `.ovr` is the GeoTIFF's overview and serves the reduced read.
+    let mut r = terrio::open_raster_lazy(name).unwrap();
+    assert_eq!(r.overviews(), [(35, 25)]);
+    assert_eq!(r.read_resampled(&reduced).unwrap().raster.data.to_f64_vec(), [2.0; 35]);
+    for key in ["TERRIO_DISABLE_READDIR_ON_OPEN", "GDAL_DISABLE_READDIR_ON_OPEN"] {
+        terrio::config::push_scope(HashMap::from([(key.to_string(), Some("EMPTY_DIR".to_string()))]));
+        let read = terrio::open_raster_lazy(name).and_then(|mut r| Ok((r.overviews(), r.file_list()?, r.read_resampled(&reduced)?)));
+        terrio::config::pop_scope();
+        let (overviews, files, small) = read.unwrap();
+        assert!(overviews.is_empty(), "{key}: {overviews:?}");
+        assert_eq!(files, [name], "{key}");
+        assert_eq!(small.raster.data.to_f64_vec(), [1.0; 35], "{key}");
+    }
 }

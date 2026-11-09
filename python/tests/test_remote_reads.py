@@ -396,6 +396,97 @@ def test_a_stac_looking_geojson_reaches_no_host_its_links_choose(tmp_path, serve
     assert len(server.log) == 1, server.log
 
 
+QUERY_CHILD = r"""
+import json, sys
+import terrio
+for kind, allowed in json.loads(sys.argv[1]):
+    terrio.set_allowed_drivers(allowed, kind=kind)
+outcomes = []
+for url in sys.argv[2:]:
+    for call in (terrio.open_vector, terrio.list_layers, terrio.open, terrio.info):
+        before = terrio.network_stats()["request_count"]
+        try:
+            call(url)
+            outcome = "opened"
+        except Exception as error:
+            outcome = f"{type(error).__name__}: {error}"
+        outcomes.append([call.__name__, terrio.network_stats()["request_count"] - before, outcome])
+print(json.dumps(outcomes))
+"""
+
+
+def query_outcomes(lists, urls):
+    """`[call, requests, outcome]` of `open_vector`, `list_layers`, `open` and `info` on each URL,
+    in a child process whose allowed drivers are `lists` (`[kind, drivers]` pairs)."""
+    child = subprocess.run(
+        [sys.executable, "-c", QUERY_CHILD, json.dumps(lists), *urls],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert child.returncode == 0, child.stderr
+    return json.loads(child.stdout)
+
+
+@pytest.mark.parametrize(
+    "lists",
+    [
+        [["vector", []]],
+        [["vector", []], ["raster", []]],
+        [["vector", ["ESRIJSON"]]],
+        [["raster", ["GTiff"]]],
+    ],
+)
+def test_a_query_no_allowed_driver_could_read_is_not_requested(tmp_path, serve, lists):
+    """A feature-service query (`f=json`) and a WFS GetFeature request are answered for the
+    ESRIJSON, ESRIPBF, GeoJSON or GML driver. With none of them allowed, `open_vector` and
+    `list_layers` refuse both without a request, and so do `open` and `info` once no raster driver
+    is allowed either, as they read a raster answer as a raster. With ESRI JSON allowed, or a list
+    of raster drivers only, the query is read."""
+    page = {
+        "geometryType": "esriGeometryPoint",
+        "fields": [{"name": "A", "type": "esriFieldTypeString"}],
+        "features": [{"attributes": {"A": "x"}, "geometry": {"x": 1, "y": 2}}],
+    }
+    (tmp_path / "FeatureServer" / "0").mkdir(parents=True)
+    (tmp_path / "FeatureServer" / "0" / "query").write_text(json.dumps(page))
+    (tmp_path / "wfs").write_text(json.dumps(page))
+    server = serve()
+    urls = [
+        f"{server.url}/FeatureServer/0/query?where=1%3D1&f=json",
+        f"{server.url}/wfs?service=WFS&request=GetFeature&typeNames=x",
+    ]
+    outcomes = query_outcomes(lists, urls)
+    allowed = dict(lists)
+    if allowed.get("vector") == []:
+        for call, requests, outcome in outcomes:
+            assert outcome.startswith("UnsupportedError") and "not allowed" in outcome, outcome
+            unrequested = call in ("open_vector", "list_layers") or allowed.get("raster") == []
+            assert (requests == 0) == unrequested, (call, requests, outcome)
+        assert (server.log == []) == (allowed.get("raster") == []), server.log
+    else:
+        assert [outcome for _, _, outcome in outcomes[:4]] == ["opened"] * 4, outcomes
+        assert server.log
+
+
+def test_info_reads_a_raster_answer_to_a_query_url_with_no_vector_driver_allowed(tmp_path, serve):
+    """A URL with the signs of a feature-service query may answer a raster, which `info` reads as
+    one: with no vector driver allowed, `info` still requests and reads it, while `open_vector` and
+    `list_layers` refuse it without a request."""
+    (tmp_path / "FeatureServer" / "0").mkdir(parents=True)
+    write_cog(tmp_path / "FeatureServer" / "0" / "query", size=64, tile=32)
+    server = serve()
+    url = f"{server.url}/FeatureServer/0/query?where=1%3D1&f=json"
+    outcomes = {
+        call: (requests, outcome)
+        for call, requests, outcome in query_outcomes([["vector", []]], [url])
+    }
+    assert outcomes["info"][1] == "opened", outcomes
+    for call in ("open_vector", "list_layers"):
+        requests, outcome = outcomes[call]
+        assert requests == 0 and "not allowed" in outcome, (call, requests, outcome)
+
+
 def test_a_remote_json_opened_as_a_raster_is_refused_after_its_first_bytes(tmp_path, serve):
     """Without an allow-list, a remote GeoJSON document opened as a raster was fetched whole
     (49,999,930 bytes of a 50,000,000-byte one); GDAL refuses it after 49,152. Its first bytes
