@@ -616,6 +616,16 @@ mod tests {
             crate::stream::open_layers(&url, &options, 40).unwrap().remove(0).read_all().unwrap()
         });
         assert_eq!(ids(&streamed), ids(&layer));
+
+        // A stream opened and not read fetches the footer, not the data.
+        let url = format!("{base}/points_unread.parquet");
+        let before = fetched(&seen.lock().unwrap());
+        let unread = crate::config::with_options(&[("TERRIO_HTTP_BLOCK_SIZE", "4096")], || {
+            crate::stream::open_layers(&url, &crate::VectorOpenOptions::default(), 40).unwrap()
+        });
+        let at_open = fetched(&seen.lock().unwrap()) - before;
+        assert!(at_open * 5 < data.len(), "{at_open} of {} bytes fetched by an open", data.len());
+        drop(unread);
     }
 
     #[test]

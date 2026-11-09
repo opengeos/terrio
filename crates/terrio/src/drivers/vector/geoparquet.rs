@@ -267,7 +267,16 @@ pub(crate) fn open_remote(path: &str, bbox: Option<(f64, f64, f64, f64)>, batch_
     let budget = (options.cache_size / 2).max(1);
     let file = crate::http::RangeReader::open_with(&remote, options)?;
     let name = std::path::Path::new(&file_name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer").to_string();
-    let prefetch = |ranges: &[(u64, u64)]| -> Result<()> { Ok(file.prefetch(ranges)?) };
+    // The covering column of the row groups a filter keeps is fetched at once, when the stream
+    // opens; their data chunks are announced a window at a time (`with_prefetcher`), not all at
+    // the open, which would fetch up to half the cache before a batch is asked for.
+    let covering_pass = std::cell::Cell::new(bbox.is_some());
+    let prefetch = |ranges: &[(u64, u64)]| -> Result<()> {
+        if covering_pass.replace(false) {
+            file.prefetch(ranges)?;
+        }
+        Ok(())
+    };
     let stream = ParquetStream::open(|| Ok(file.clone()), &name, None, bbox, batch_size, Some(&prefetch))?;
     let prefetcher = file.clone();
     Ok(Some(stream.with_prefetcher((Box::new(move |ranges: &[(u64, u64)]| Ok(prefetcher.prefetch(ranges)?)), budget))))
