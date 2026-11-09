@@ -414,10 +414,12 @@ full resolution exactly. The estimate's accuracy is described under
 overview of floating-point data without nodata when the footprint covers complete overview
 cells. Cropping through those cells makes even the total approximate; rounded integer means,
 partly nodata blocks and other overview resamplings also introduce approximation. Give a coarse `sum` a floating-point `ot`: a
-`"UInt16"` output stores 65535 for any larger sum. A `sum` whose source window, estimated
-with 8 bytes per pixel for the pixels' shares, would hold more than 4 GiB raises
-`ResourceLimitError` (a `MemoryError`) before it is read, and so do a `sum` read of a
-`WarpedVRT` and a `sum` `terrio.rio.warp.reproject` of a band or dataset: `overview=n` sums a
+`"UInt16"` output stores 65535 for any larger sum. A `sum` of one source without a cutline
+reads the window of an output too coarse to be split into chunks a strip of rows at a time, as
+`terrio warp` does (see [Warp source overviews](cli.md#warp-source-overviews)). A `sum` whose
+source pixels held at once would exceed 4 GiB, as several sources or a cutline hold every source
+whole, raises `ResourceLimitError` (a `MemoryError`) before they are read, and so do a `sum` read
+of a `WarpedVRT` and a `sum` `terrio.rio.warp.reproject` of a band or dataset: `overview=n` sums a
 level (for the `terrio.rio` ones, a source opened with `overview_level=n`, whose pixels count
 the same way), and the `TERRIO_WARP_SUM_MAX_BYTES` environment variable, a positive integer
 byte count, changes the budget. A `sum` read of a `WarpedVRT` warps a region whose source

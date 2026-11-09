@@ -1611,14 +1611,12 @@ pub const SUM_AUTO_OVERVIEW: bool = true;
 const SUM_MAX_BYTES: u64 = 4 << 30;
 
 /// The memory a `sum` holds for a source window of `pixels` pixels of `bytes` bytes (all its
-/// bands, and the copies a conversion to another working type holds at once): the window, and 8
-/// bytes per pixel for the shares of an output pixel's footprint, which can be the whole window.
-/// An estimate: one Float32 band gives 12 bytes per pixel, the peak measured in the same CRS; a
-/// reprojected `sum` held up to about 20, and a `WarpedVRT` read 16 in float32 and 24 in float64,
-/// as it copies the window to warp it.
+/// bands, and the copies a conversion to another working type holds at once) that it holds whole:
+/// the window itself. The shares of an output pixel's footprint take a few of its rows at a time
+/// ([`SUM_SHARE_BYTES`]), whatever the window.
 #[doc(hidden)]
 pub fn sum_estimate(pixels: u64, bytes: usize) -> u64 {
-    pixels.saturating_mul(bytes as u64 + 8)
+    pixels.saturating_mul(bytes as u64)
 }
 
 /// Refuses a `sum` whose estimated memory `need` exceeds `TERRIO_WARP_SUM_MAX_BYTES` (a positive
@@ -1633,7 +1631,7 @@ pub fn check_sum_budget(need: u64) -> Result<()> {
     .ok_or_else(|| Error::InvalidArgument("TERRIO_WARP_SUM_MAX_BYTES must be a positive integer".into()))?;
     if need > limit {
         return Err(Error::ResourceLimit(format!(
-            "a `sum` would hold about {need} bytes of source pixels and their shares, more than \
+            "a `sum` would hold about {need} bytes of source pixels at once, more than \
              TERRIO_WARP_SUM_MAX_BYTES={limit}: sum an overview level instead, with `--overview n` \
              (`overview=n` for `terrio.warp`, or a source opened with `overview_level=n` in `terrio.rio`), \
              or raise TERRIO_WARP_SUM_MAX_BYTES"
@@ -1642,12 +1640,13 @@ pub fn check_sum_budget(need: u64) -> Result<()> {
     Ok(())
 }
 
-/// [`check_sum_budget`] for the largest source window of a `sum`'s chunks, `bytes` per pixel.
-fn check_sum_chunks(o: &WarpOptions, chunks: &[Chunk], bytes: usize) -> Result<()> {
-    if o.resampling != Resampling::Sum {
+/// [`check_sum_budget`] for the most source pixels a `sum`'s chunks hold at once, `bytes` per
+/// pixel: a chunk's window, or the strip of it read at a time ([`WarpContext::sum_strip_rows`]).
+fn check_sum_chunks(ctx: &WarpContext, chunks: &[Chunk], bytes: usize) -> Result<()> {
+    if ctx.resampling != Resampling::Sum {
         return Ok(());
     }
-    check_sum_budget(sum_estimate(chunks.iter().map(|c| c.sw as u64 * c.sh as u64).max().unwrap_or(0), bytes))
+    check_sum_budget(sum_estimate(chunks.iter().map(|c| c.sw as u64 * ctx.sum_strip_rows(c) as u64).max().unwrap_or(0), bytes))
 }
 
 /// Reprojects and resamples one or more rasters into one output, as `gdalwarp` does. Later
@@ -1913,7 +1912,7 @@ fn warp_reader_selected(
     let n = grid.width * grid.height;
     let t = p.transformer(0)?;
     let (mut ctx, chunks, mut storage) = p.context(0, &t, o);
-    check_sum_chunks(o, &chunks, src_bytes)?;
+    check_sum_chunks(&ctx, &chunks, src_bytes)?;
     let nodata = p.src_nodata(0, o);
     if working.is_some() && nodata.iter().any(Option::is_some) {
         storage.avoid_nodata = Some(bands == 1 || !unified_sink);
@@ -1925,22 +1924,52 @@ fn warp_reader_selected(
     if n != 0 {
         crate::pixel::with_data!(&mut out, v => v.chunks_mut(n).zip(&fill).for_each(|(band,fill)|band.iter_mut().for_each(|x|*x=*fill as _)));
     }
-    for c in &chunks {
-        let mut window = src.read_window(crate::Window::new(c.sx, c.sy, c.sw, c.sh), &read_options)?;
+    // A window of the source in the working type, the validity of its pixels, and whether the
+    // source has a mask.
+    let mut read = |window: crate::Window| {
+        let mut data = src.read_window(window, &read_options)?;
         if let Some(dtype) = working
-            && window.raster.data_type != dtype
+            && data.raster.data_type != dtype
         {
-            let values = window.raster.data.to_f64_vec().into_iter().map(|v| super::convert_value(v, dtype)).collect();
-            window.raster.data = RasterData::from_f64_vec(dtype, values);
-            window.raster.data_type = dtype;
+            let values = data.raster.data.to_f64_vec().into_iter().map(|v| super::convert_value(v, dtype)).collect();
+            data.raster.data = RasterData::from_f64_vec(dtype, values);
+            data.raster.data_type = dtype;
         }
-        let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
-        let mask = source_mask(src, crate::Window::new(c.sx, c.sy, c.sw, c.sh), read_options.overview)?;
-        if mask.is_some() {
+        let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&data.raster, b)).collect();
+        let mask = source_mask(src, window, read_options.overview)?;
+        let masked = mask.is_some();
+        let valid = validity(&src_bands, &nodata, unified, mask);
+        Ok::<_, Error>((data, valid, masked))
+    };
+    for c in &chunks {
+        let strip = ctx.sum_strip_rows(c);
+        if strip < c.sh {
+            // A `sum` chunk whose source window's working memory exceeds the limit: the window is
+            // read and summed a strip of rows at a time.
+            let mut sums = ctx.sum_strips(c);
+            for r0 in (0..c.sh).step_by(strip) {
+                let window = crate::Window::new(c.sx, c.sy + r0, c.sw, strip.min(c.sh - r0));
+                let (data, valid, masked) = read(window)?;
+                if masked {
+                    ctx.global_validity = true;
+                    storage.src_masked = true;
+                }
+                let sn = window.width * window.height;
+                crate::pixel::with_data!(&data.raster.data, v => {
+                    let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
+                    let part = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy + r0) };
+                    ctx.add_sum_strip(c, &part, (r0, r0 + window.height), &mut sums);
+                });
+            }
+            let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: true };
+            warp_chunks(std::slice::from_ref(c), bands, &storage, target, |c, sink, rows| ctx.store_sum_strips(c, &sums, sink, rows));
+            continue;
+        }
+        let (window, valid, masked) = read(crate::Window::new(c.sx, c.sy, c.sw, c.sh))?;
+        if masked {
             ctx.global_validity = true;
             storage.src_masked = true;
         }
-        let valid = validity(&src_bands, &nodata, unified, mask);
         let sn = c.sw * c.sh;
         // The chunks partition the output: each finds it at its initial value.
         let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: true };
@@ -2020,16 +2049,12 @@ pub fn warp_sources(sources: &mut [&mut dyn WarpSource], o: &WarpOptions) -> Res
     let mut p = Plan::new(&refs, o)?;
     let overviews = (0..sources.len()).map(|k| p.select_overview(k, &info[k].overviews, o)).collect::<Result<Vec<_>>>()?;
     if o.resampling == Resampling::Sum {
-        // Every source is read whole, and an output pixel's shares can cover a chunk's window.
-        let (mut need, mut window) = (0u64, 0);
-        for (k, s) in info.iter().enumerate() {
+        // Every source is read whole.
+        let need = info.iter().enumerate().fold(0u64, |need, (k, s)| {
             let (grid, raster) = (p.srcs[k].grid, &s.raster.raster);
-            let pixels = grid.width as u64 * grid.height as u64;
-            need = need.saturating_add(pixels.saturating_mul((raster.data_type.size_bytes() * raster.bands) as u64));
-            let t = p.transformer(k)?;
-            window = window.max(p.context(k, &t, o).1.iter().map(|c| c.sw as u64 * c.sh as u64).max().unwrap_or(0));
-        }
-        check_sum_budget(need.saturating_add(sum_estimate(window, 0)))?;
+            need.saturating_add(sum_estimate(grid.width as u64 * grid.height as u64, raster.data_type.size_bytes() * raster.bands))
+        });
+        check_sum_budget(need)?;
     }
     let mut data = Vec::with_capacity(sources.len());
     let mut masks = Vec::with_capacity(sources.len());
@@ -2147,7 +2172,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     let w = grid.width;
     let t = p.transformer(0)?;
     let (mut ctx, chunks, mut storage) = p.context(0, &t, o);
-    check_sum_chunks(o, &chunks, header.raster.data_type.size_bytes() * header.raster.bands)?;
+    check_sum_chunks(&ctx, &chunks, header.raster.data_type.size_bytes() * header.raster.bands)?;
     if src.has_mask() {
         ctx.global_validity = true;
         storage.src_masked = true;
@@ -2205,28 +2230,59 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     if chunks.is_empty() {
         write_done(&mut rows, &mut base, grid.height)?;
     }
+    // What is read for a chunk: its source window and the window's mask, or, for a `sum` whose
+    // window's working memory exceeds the limit, the chunk summed from its window a strip of rows
+    // at a time.
+    enum ChunkRead {
+        Window(Box<RasterDataset>, Option<Vec<bool>>),
+        Summed(SumStrips),
+    }
     super::strips::pipelined(
         chunks.len(),
         |i| {
             let c = &chunks[i];
+            let options = crate::WindowOptions { overview, bands: Vec::new() };
+            let strip = ctx.sum_strip_rows(c);
+            if strip < c.sh {
+                let mut sums = ctx.sum_strips(c);
+                for r0 in (0..c.sh).step_by(strip) {
+                    let window = crate::Window::new(c.sx, c.sy + r0, c.sw, strip.min(c.sh - r0));
+                    let data = src.read_window(window, &options)?;
+                    let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&data.raster, b)).collect();
+                    let valid = validity(&src_bands, &nodata, unified, source_mask(&mut src, window, overview)?);
+                    let sn = window.width * window.height;
+                    crate::pixel::with_data!(&data.raster.data, v => {
+                        let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
+                        let part = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy + r0) };
+                        ctx.add_sum_strip(c, &part, (r0, r0 + window.height), &mut sums);
+                    });
+                }
+                return Ok(ChunkRead::Summed(sums));
+            }
             let window = crate::Window::new(c.sx, c.sy, c.sw, c.sh);
-            Ok((src.read_window(window, &crate::WindowOptions { overview, bands: Vec::new() })?, source_mask(&mut src, window, overview)?))
+            Ok(ChunkRead::Window(Box::new(src.read_window(window, &options)?), source_mask(&mut src, window, overview)?))
         },
-        |i, (window, mask)| {
+        |i, read| {
             let c = &chunks[i];
             // The chunk's part of the output, as `f64`: the output's initial value (the chunks of
             // a source don't overlap), warped.
             let mut staged: Vec<Vec<f64>> = fill.iter().map(|fill| vec![*fill; c.dw * c.dh]).collect();
-            let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
-            let valid = validity(&src_bands, &nodata, unified, mask);
-            let sn = c.sw * c.sh;
-            crate::pixel::with_data!(&window.raster.data, v => {
-                let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
-                let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
-                let sink = storage.sink(storage.first_nodata().is_some_and(|nd| is_nodata(warp_round(nd, storage.work_type), nd)));
-                ctx.warp_chunk(c, &data, &sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c }));
-                sink.finish();
-            });
+            let sink = storage.sink(storage.first_nodata().is_some_and(|nd| is_nodata(warp_round(nd, storage.work_type), nd)));
+            let part = chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c });
+            match read {
+                ChunkRead::Summed(sums) => ctx.store_sum_strips(c, &sums, &sink, part),
+                ChunkRead::Window(window, mask) => {
+                    let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
+                    let valid = validity(&src_bands, &nodata, unified, mask);
+                    let sn = c.sw * c.sh;
+                    crate::pixel::with_data!(&window.raster.data, v => {
+                        let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
+                        let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
+                        ctx.warp_chunk(c, &data, &sink, part);
+                    });
+                }
+            }
+            sink.finish();
             // Stored in the pending rows, rounded to the output type.
             grow(&mut rows, base, c.dy + c.dh);
             let total = rows.len() / bands;
@@ -2541,7 +2597,11 @@ struct Target<'a> {
 /// stored back. The chunks of a source partition the output (`collect_chunks`), and the values
 /// stored are already rounded to the output type (`Sink::value`), so storing them back is exact.
 fn warp_source<T: crate::pixel::Pixel>(ctx: &WarpContext, chunks: &[Chunk], data: &SrcData<T>, storage: &Storage, t: Target) {
-    let bands = data.bands.len();
+    warp_chunks(chunks, data.bands.len(), storage, t, |c, sink, rows| ctx.warp_chunk(c, data, sink, rows));
+}
+
+/// [`warp_source`], each chunk's part of the output (its rows, `bands` bands) warped by `warp`.
+fn warp_chunks(chunks: &[Chunk], bands: usize, storage: &Storage, t: Target, warp: impl Fn(&Chunk, &Sink, Vec<RowOut>)) {
     let (w, n) = (t.width, t.n);
     let mut staged: Vec<Vec<f64>> = vec![Vec::new(); bands];
     for c in chunks {
@@ -2568,7 +2628,7 @@ fn warp_source<T: crate::pixel::Pixel>(ctx: &WarpContext, chunks: &[Chunk], data
             None => false,
         };
         let sink = storage.sink(holds_nodata);
-        ctx.warp_chunk(c, data, &sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c }));
+        warp(c, &sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c }));
         sink.finish();
         for (b, part) in staged.iter().enumerate() {
             crate::pixel::with_data!(&mut *t.out, v => {
@@ -3535,67 +3595,217 @@ impl WarpContext<'_> {
         (top, bottom): (&CornerRow, &CornerRow),
         out: &mut [&mut [f64]],
     ) {
-        let n = c.dw;
-        // The corners of the row's pixels, along its top edge and along its bottom edge.
-        let (top_x, top_y, top_ok) = (&top.x, &top.y, &top.ok);
-        let (bottom_x, bottom_y, bottom_ok) = (&bottom.x, &bottom.y, &bottom.ok);
-        let (sxo, syo, sw, sh) = (c.sx as f64, c.sy as f64, c.sw as f64, c.sh as f64);
-        let (mut areas, mut carry) = (Vec::new(), Vec::new());
-        for i in 0..n {
-            if !(top_ok[i] && top_ok[i + 1] && bottom_ok[i + 1] && bottom_ok[i]) {
+        let (mut areas, mut sums) = (Vec::new(), vec![(0.0, false); out.len()]);
+        for i in 0..c.dw {
+            let Some(footprint) = self.sum_footprint(c, (top, bottom), i) else {
                 continue;
+            };
+            sums.fill((0.0, false));
+            footprint.add(k, footprint.rows, &mut areas, &mut sums);
+            self.store_sums(sink, &sums, out, i);
+        }
+    }
+
+    /// The footprint on a chunk's source window of pixel `i` of a row of the chunk, whose corners
+    /// are along `top` and `bottom` ([`Self::sum_corners`]); None for a pixel left alone.
+    fn sum_footprint(&self, c: &Chunk, (top, bottom): (&CornerRow, &CornerRow), i: usize) -> Option<SumFootprint> {
+        if !(top.ok[i] && top.ok[i + 1] && bottom.ok[i + 1] && bottom.ok[i]) {
+            return None;
+        }
+        let (sxo, syo) = (c.sx as f64, c.sy as f64);
+        // The quadrilateral, corner after corner, in the pixels of the chunk's source window.
+        let q = [
+            (top.x[i] - sxo, top.y[i] - syo),
+            (top.x[i + 1] - sxo, top.y[i + 1] - syo),
+            (bottom.x[i + 1] - sxo, bottom.y[i + 1] - syo),
+            (bottom.x[i] - sxo, bottom.y[i] - syo),
+        ];
+        // A corner that is not a finite number leaves the pixel alone. The others may lie far
+        // beyond the window, as those of a pixel much larger than the source do: only the
+        // window's pixels within the quadrilateral's bounds are visited.
+        if !q.iter().all(|&(x, y)| x.is_finite() && y.is_finite()) {
+            return None;
+        }
+        SumFootprint::new(q, c.sw, c.sh)
+    }
+
+    /// Stores the sums of pixel `i` of a row, one per band, each with whether a valid source pixel
+    /// was added ([`SumFootprint::add`]): a pixel none was added to is left as it is.
+    fn store_sums(&self, sink: &Sink, sums: &[(f64, bool)], out: &mut [&mut [f64]], i: usize) {
+        let mut found = false;
+        for (b, (o, &(sum, any))) in out.iter_mut().zip(sums).enumerate() {
+            if any {
+                o[i] = sink.value(sum * self.sum_scale, b);
+                found = true;
             }
-            // The quadrilateral, corner after corner, in the pixels of the chunk's source window.
-            let q = [
-                (top_x[i] - sxo, top_y[i] - syo),
-                (top_x[i + 1] - sxo, top_y[i + 1] - syo),
-                (bottom_x[i + 1] - sxo, bottom_y[i + 1] - syo),
-                (bottom_x[i] - sxo, bottom_y[i] - syo),
-            ];
-            // A corner that is not a finite number leaves the pixel alone. The others may lie far
-            // beyond the window, as those of a pixel much larger than the source do: only the
-            // window's pixels within the quadrilateral's bounds are visited.
-            if !q.iter().all(|&(x, y)| x.is_finite() && y.is_finite()) {
-                continue;
+        }
+        if found {
+            sink.avoid_all(out, i);
+        }
+    }
+
+    /// The rows of a `sum` chunk's source window that a read holds at once: the whole window when
+    /// its working memory ([`Self::working_memory`]) fits the limit, else a strip of as many rows
+    /// as fit, at least one. Only a chunk of at most 2 x 2 pixels, which [`Self::collect_chunks`]
+    /// does not split, can exceed the limit.
+    fn sum_strip_rows(&self, c: &Chunk) -> usize {
+        if self.resampling != Resampling::Sum || self.working_memory(c.sw, c.sh, c.dw, c.dh) <= self.memory_limit {
+            return c.sh;
+        }
+        let rows = (self.memory_limit - self.working_memory(0, 0, c.dw, c.dh)) / self.working_memory(c.sw, 1, 0, 0);
+        (rows.floor() as usize).clamp(1, c.sh)
+    }
+
+    /// A `sum` chunk to sum a strip of its source window at a time ([`Self::add_sum_strip`]).
+    fn sum_strips(&self, c: &Chunk) -> SumStrips {
+        let mut batch = CornerBatch::default();
+        let mut top = self.sum_corners(c, 0, &mut batch);
+        let mut footprints = Vec::with_capacity(c.dw * c.dh);
+        for y in 0..c.dh {
+            let bottom = self.sum_corners(c, y + 1, &mut batch);
+            footprints.extend((0..c.dw).map(|i| self.sum_footprint(c, (&top, &bottom), i)));
+            top = bottom;
+        }
+        SumStrips { sums: vec![(0.0, false); footprints.len() * self.bands], footprints }
+    }
+
+    /// Adds the rows `rows` of a `sum` chunk's source window, whose pixels `src` holds, to the
+    /// sums of the chunk's pixels: each pixel's sums get the rows of its footprint in the same
+    /// order as from the whole window, so that summed a strip at a time, they are the same.
+    fn add_sum_strip<T: crate::pixel::Pixel>(&self, c: &Chunk, src: &SrcData<T>, rows: (usize, usize), strips: &mut SumStrips) {
+        let k = Kernel::new(src, *c, 1.0, 1.0, self.resampling);
+        let pixels: Vec<_> = strips.footprints.iter().zip(strips.sums.chunks_mut(self.bands)).collect();
+        crate::par::for_each_owned(pixels, |_, (footprint, sums)| {
+            if let Some(f) = footprint {
+                let rows = (f.rows.0.max(rows.0), f.rows.1.min(rows.1));
+                if rows.0 < rows.1 {
+                    f.add(&k, rows, &mut Vec::new(), sums);
+                }
             }
-            let (x0, x1) = q.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p.0), hi.max(p.0)));
-            let (y0, y1) = q.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
-            // The window's pixels within the quadrilateral's bounds.
-            let cols = (floor_i(x0.clamp(0.0, sw)) as usize, (ceil_i(x1.clamp(0.0, sw)) as usize).min(c.sw));
-            let rows = (floor_i(y0.clamp(0.0, sh)) as usize, (ceil_i(y1.clamp(0.0, sh)) as usize).min(c.sh));
-            if cols.0 >= cols.1 || rows.0 >= rows.1 {
-                continue;
+        });
+    }
+
+    /// Stores the sums of a `sum` chunk summed a strip at a time in the chunk's rows.
+    fn store_sum_strips(&self, c: &Chunk, strips: &SumStrips, sink: &Sink, rows: Vec<RowOut>) {
+        for (y, mut out) in rows.into_iter().enumerate() {
+            for i in 0..c.dw {
+                let p = y * c.dw + i;
+                self.store_sums(sink, &strips.sums[p * self.bands..(p + 1) * self.bands], &mut out, i);
             }
-            let nx = cols.1 - cols.0;
-            let rectangle = (q[0].1 == q[1].1 && q[2].1 == q[3].1 && q[0].0 == q[3].0 && q[1].0 == q[2].0)
-                || (q[0].0 == q[1].0 && q[2].0 == q[3].0 && q[0].1 == q[3].1 && q[1].1 == q[2].1);
-            // The paths of a quadrilateral inside the window: a pixel turned by a few degrees, as a
-            // change of CRS turns it, and one within 2 x 2 source pixels. All the paths are exact.
-            let inside = x0 >= 0.0 && y0 >= 0.0 && x1 <= sw && y1 <= sh;
-            if rectangle {
-                // An axis-aligned rectangle: each share is the product of the overlaps along the axes.
-                areas.clear();
+        }
+    }
+}
+
+/// A `sum` chunk summed a strip of its source window at a time: the footprint of each of its
+/// pixels, row after row, and their sums, band by band, with whether a valid source pixel was
+/// added.
+struct SumStrips {
+    footprints: Vec<Option<SumFootprint>>,
+    sums: Vec<(f64, bool)>,
+}
+
+/// The shares of the source pixels a `sum` adds at once, at most: of an output pixel's footprint,
+/// as many of its rows as this many bytes hold, at least one.
+const SUM_SHARE_BYTES: usize = 8 << 20;
+
+/// An output pixel's footprint on a chunk's source window, for a `sum`: the window's pixels within
+/// the bounds of its quadrilateral, and how the share of each inside the quadrilateral is computed.
+/// All the paths are exact, and compute each pixel's share alone, whichever of its rows they are
+/// asked for.
+struct SumFootprint {
+    /// The quadrilateral's bounds, along x and along y, in the window's pixels.
+    x: (f64, f64),
+    y: (f64, f64),
+    /// The window's pixels within the bounds.
+    cols: (usize, usize),
+    rows: (usize, usize),
+    shares: Shares,
+}
+
+/// How the shares of a [`SumFootprint`]'s pixels are computed.
+enum Shares {
+    /// An axis-aligned rectangle: each share is the product of the overlaps along the axes.
+    Rectangle,
+    /// A pixel turned by a few degrees, as a change of CRS turns it, inside the window.
+    Clean(CleanBlock),
+    /// A quadrilateral within 2 x 2 source pixels, inside the window: the shares, row after row.
+    Block([f64; 4]),
+    /// Any other quadrilateral.
+    General(QuadEdges),
+}
+
+impl SumFootprint {
+    /// The footprint of the quadrilateral `q`, whose corners are finite, on a window of `sw` x `sh`
+    /// pixels; None when its bounds hold none of the window's pixels.
+    fn new(q: [(f64, f64); 4], sw: usize, sh: usize) -> Option<Self> {
+        let (x0, x1) = q.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p.0), hi.max(p.0)));
+        let (y0, y1) = q.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
+        let (swf, shf) = (sw as f64, sh as f64);
+        // The window's pixels within the quadrilateral's bounds.
+        let cols = (floor_i(x0.clamp(0.0, swf)) as usize, (ceil_i(x1.clamp(0.0, swf)) as usize).min(sw));
+        let rows = (floor_i(y0.clamp(0.0, shf)) as usize, (ceil_i(y1.clamp(0.0, shf)) as usize).min(sh));
+        if cols.0 >= cols.1 || rows.0 >= rows.1 {
+            return None;
+        }
+        let (nx, ny) = (cols.1 - cols.0, rows.1 - rows.0);
+        let rectangle = (q[0].1 == q[1].1 && q[2].1 == q[3].1 && q[0].0 == q[3].0 && q[1].0 == q[2].0)
+            || (q[0].0 == q[1].0 && q[2].0 == q[3].0 && q[0].1 == q[3].1 && q[1].1 == q[2].1);
+        // The paths of a quadrilateral inside the window: a pixel turned by a few degrees, as a
+        // change of CRS turns it, and one within 2 x 2 source pixels.
+        let inside = x0 >= 0.0 && y0 >= 0.0 && x1 <= swf && y1 <= shf;
+        let shares = if rectangle {
+            Shares::Rectangle
+        } else if let Some(clean) = inside.then(|| CleanBlock::new(&q, cols, rows)).flatten() {
+            Shares::Clean(clean)
+        } else if inside && nx <= 2 && ny <= 2 {
+            Shares::Block(block_areas(&q, cols, rows))
+        } else {
+            // In the block's own coordinates, as the other paths compute: the same in every
+            // chunk, whichever source pixel the chunk's window starts at.
+            Shares::General(QuadEdges::new(&q.map(|(x, y)| (x - cols.0 as f64, y - rows.0 as f64)), nx, ny))
+        };
+        Some(Self { x: (x0, x1), y: (y0, y1), cols, rows, shares })
+    }
+
+    /// The shares of the footprint's pixels in the window's rows `rows.0..rows.1`, which are
+    /// among its own, row after row in `areas`.
+    fn shares(&self, rows: (usize, usize), areas: &mut Vec<f64>) {
+        let (cols, nx) = (self.cols, self.cols.1 - self.cols.0);
+        // The rows in the footprint's own.
+        let block = (rows.0 - self.rows.0, rows.1 - self.rows.0);
+        areas.clear();
+        match &self.shares {
+            Shares::Rectangle => {
+                let ((x0, x1), (y0, y1)) = (self.x, self.y);
                 for y in rows.0..rows.1 {
                     let wy = overlap(y0, y1, y);
                     areas.extend((cols.0..cols.1).map(|x| wy * overlap(x0, x1, x)));
                 }
-            } else if !(inside && clean_block_areas(&q, cols, rows, &mut areas)) {
-                if inside && cols.1 - cols.0 <= 2 && rows.1 - rows.0 <= 2 {
-                    block_areas(&q, cols, rows, &mut areas);
-                } else {
-                    // In the block's own coordinates, as the other paths compute: the same in every
-                    // chunk, whichever source pixel the chunk's window starts at.
-                    let block = q.map(|(x, y)| (x - cols.0 as f64, y - rows.0 as f64));
-                    quad_cell_areas(&block, (0, nx), (0, rows.1 - rows.0), &mut areas, &mut carry);
-                }
             }
-            let mut found = false;
-            for (b, o) in out.iter_mut().enumerate() {
+            Shares::Clean(clean) => clean.areas(block, areas),
+            Shares::Block(shares) => areas.extend_from_slice(&shares[block.0 * nx..block.1 * nx]),
+            Shares::General(edges) => edges.areas(block, areas),
+        }
+    }
+
+    /// Adds each valid source pixel of the footprint in the window's rows `rows.0..rows.1` (which
+    /// `k` holds), times its share, to its band's sum in `sums`, recording that one was added:
+    /// row after row, from the left, as many rows at a time as [`SUM_SHARE_BYTES`] holds the
+    /// shares of. `areas` is scratch space.
+    fn add<T: crate::pixel::Pixel>(&self, k: &Kernel<T>, rows: (usize, usize), areas: &mut Vec<f64>, sums: &mut [(f64, bool)]) {
+        let (x, nx) = (self.cols.0, self.cols.1 - self.cols.0);
+        let step = (SUM_SHARE_BYTES / (8 * nx)).max(1);
+        let mut y0 = rows.0;
+        while y0 < rows.1 {
+            let y1 = rows.1.min(y0 + step);
+            self.shares((y0, y1), areas);
+            for (b, band) in sums.iter_mut().enumerate() {
                 let (values, valid) = (k.src.bands[b], k.src.valid[b].as_deref());
-                let (mut sum, mut any) = (0.0, false);
-                for (j, y) in (rows.0..rows.1).enumerate() {
+                // Summed here and stored once: the sums of a chunk's pixels lie side by side.
+                let (mut sum, mut any) = *band;
+                for (j, y) in (y0..y1).enumerate() {
                     // The row's pixels in the window, which hold its columns side by side.
-                    let start = k.index(cols.0, y);
+                    let start = k.index(x, y);
                     for (at, (w, v)) in (start..).zip(areas[j * nx..(j + 1) * nx].iter().zip(&values[start..start + nx])) {
                         if *w > 0.0 && valid.is_none_or(|m| m[at]) {
                             sum += crate::pixel::Pixel::to_f64(*v) * w;
@@ -3603,14 +3813,9 @@ impl WarpContext<'_> {
                         }
                     }
                 }
-                if any {
-                    o[i] = sink.value(sum * self.sum_scale, b);
-                    found = true;
-                }
+                *band = (sum, any);
             }
-            if found {
-                sink.avoid_all(out, i);
-            }
+            y0 = y1;
         }
     }
 }
@@ -3666,13 +3871,13 @@ fn ceil_i(x: f64) -> i64 {
 const INTEGER_LIMIT: f64 = (1u64 << 62) as f64;
 
 /// The area of the quadrilateral `q` inside each pixel of a block of at most 2 × 2 pixels
-/// (`cols` × `rows`) that holds it whole, row after row in `areas`: from the areas of the
-/// quadrilateral, of its part left of the block's middle column line, of its part above the
-/// block's middle row line, and of its part in both, the top left pixel holds the last, the top
-/// right and the bottom left the differences, the bottom right the rest. Each of those areas is
-/// `∮ y dx` along the boundary of the part (`∮ min(y, 1) dx` for a part above `y = 1`), to which
-/// the stretch along the middle column line adds nothing.
-fn block_areas(q: &[(f64, f64); 4], cols: (usize, usize), rows: (usize, usize), areas: &mut Vec<f64>) {
+/// (`cols` × `rows`) that holds it whole, row after row (the first `cols × rows` values): from the
+/// areas of the quadrilateral, of its part left of the block's middle column line, of its part
+/// above the block's middle row line, and of its part in both, the top left pixel holds the last,
+/// the top right and the bottom left the differences, the bottom right the rest. Each of those
+/// areas is `∮ y dx` along the boundary of the part (`∮ min(y, 1) dx` for a part above `y = 1`), to
+/// which the stretch along the middle column line adds nothing.
+fn block_areas(q: &[(f64, f64); 4], cols: (usize, usize), rows: (usize, usize)) -> [f64; 4] {
     // `∫ min(y, 1) dx` along the segment from `a` to `b`.
     let below_one = |a: (f64, f64), b: (f64, f64)| match (a.1 <= 1.0, b.1 <= 1.0) {
         (true, true) => 0.5 * (b.0 - a.0) * (a.1 + b.1),
@@ -3701,137 +3906,208 @@ fn block_areas(q: &[(f64, f64); 4], cols: (usize, usize), rows: (usize, usize), 
     }
     let sign = if whole < 0.0 { -1.0 } else { 1.0 };
     let (whole, top, left, corner) = (sign * whole, sign * top, sign * left, sign * corner);
-    areas.clear();
-    match (cols.1 - cols.0, rows.1 - rows.0) {
-        (1, 1) => areas.push(whole),
-        (2, 1) => areas.extend([left, whole - left]),
-        (1, 2) => areas.extend([top, whole - top]),
-        _ => areas.extend([corner, top - corner, left - corner, whole - left - top + corner]),
+    let areas = match (cols.1 - cols.0, rows.1 - rows.0) {
+        (1, 1) => [whole, 0.0, 0.0, 0.0],
+        (2, 1) => [left, whole - left, 0.0, 0.0],
+        (1, 2) => [top, whole - top, 0.0, 0.0],
+        _ => [corner, top - corner, left - corner, whole - left - top + corner],
+    };
+    areas.map(|area| area.clamp(0.0, 1.0))
+}
+
+/// A quadrilateral `[tl, tr, br, bl]` in a block of pixels `cols` × `rows` (at least 2 × 2,
+/// holding it whole) each of whose corners lies in the corner pixel of the block it names, and
+/// whose sides run within 45 degrees of the axes: a pixel turned by a few degrees, each of whose
+/// sides stays within one row or one column of the block's border. The pixels inside the border
+/// are covered whole; along the border, a side cuts each pixel straight across, so that its
+/// covered area is its height (or width) at its middle; in a corner, the covered part is the
+/// quadrilateral that the corner of the shape and the pixel's inner sides make.
+struct CleanBlock {
+    /// The corners, in the block's coordinates, where the inner sides of its last column and row
+    /// are x = w and y = h.
+    corners: [(f64, f64); 4],
+    nx: usize,
+    ny: usize,
+    /// The slopes of the sides as lines: y at x for the top and the bottom, x at y for the left
+    /// and the right.
+    slopes: [f64; 4],
+}
+
+impl CleanBlock {
+    /// The block of `q`, or None for any other quadrilateral.
+    fn new(q: &[(f64, f64); 4], cols: (usize, usize), rows: (usize, usize)) -> Option<Self> {
+        let (nx, ny) = (cols.1 - cols.0, rows.1 - rows.0);
+        if nx < 2 || ny < 2 {
+            return None;
+        }
+        let [tl, tr, br, bl] = q.map(|(x, y)| (x - cols.0 as f64, y - rows.0 as f64));
+        let (w, h) = ((nx - 1) as f64, (ny - 1) as f64);
+        let across = |a: (f64, f64), b: (f64, f64)| b.0 - a.0 > (b.1 - a.1).abs();
+        let down = |a: (f64, f64), b: (f64, f64)| b.1 - a.1 > (b.0 - a.0).abs();
+        if !(tl.0 < 1.0
+            && tl.1 < 1.0
+            && tr.0 >= w
+            && tr.1 < 1.0
+            && br.0 >= w
+            && br.1 >= h
+            && bl.0 < 1.0
+            && bl.1 >= h
+            && across(tl, tr)
+            && across(bl, br)
+            && down(tl, bl)
+            && down(tr, br))
+        {
+            return None;
+        }
+        let slopes =
+            [(tr.1 - tl.1) / (tr.0 - tl.0), (br.1 - bl.1) / (br.0 - bl.0), (bl.0 - tl.0) / (bl.1 - tl.1), (br.0 - tr.0) / (br.1 - tr.1)];
+        Some(Self { corners: [tl, tr, br, bl], nx, ny, slopes })
     }
-    for area in areas.iter_mut() {
-        *area = area.clamp(0.0, 1.0);
+
+    /// The area of the quadrilateral inside each pixel of the block's rows `rows.0..rows.1`, row
+    /// after row, after those already in `areas`.
+    fn areas(&self, rows: (usize, usize), areas: &mut Vec<f64>) {
+        let ([tl, tr, br, bl], (nx, ny)) = (self.corners, (self.nx, self.ny));
+        let (w, h) = ((nx - 1) as f64, (ny - 1) as f64);
+        let [top_slope, bottom_slope, left_slope, right_slope] = self.slopes;
+        let top = |x: f64| tl.1 + (x - tl.0) * top_slope;
+        let bottom = |x: f64| bl.1 + (x - bl.0) * bottom_slope;
+        let left = |y: f64| tl.0 + (y - tl.1) * left_slope;
+        let right = |y: f64| tr.0 + (y - tr.1) * right_slope;
+        let quad = |a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)| {
+            0.5 * ((a.0 - c.0) * (b.1 - d.1) - (b.0 - d.0) * (a.1 - c.1)).abs()
+        };
+        for y in rows.0..rows.1 {
+            let start = areas.len();
+            areas.resize(start + nx, 1.0);
+            let row = &mut areas[start..];
+            if y == 0 {
+                row[0] = quad(tl, (1.0, top(1.0)), (1.0, 1.0), (left(1.0), 1.0));
+                row[nx - 1] = quad((w, top(w)), tr, (right(1.0), 1.0), (w, 1.0));
+                for (area, x) in row[1..nx - 1].iter_mut().zip(1usize..) {
+                    *area = 1.0 - top(x as f64 + 0.5);
+                }
+            } else if y == ny - 1 {
+                row[0] = quad((left(h), h), (1.0, h), (1.0, bottom(1.0)), bl);
+                row[nx - 1] = quad((w, h), (right(h), h), br, (w, bottom(w)));
+                for (area, x) in row[1..nx - 1].iter_mut().zip(1usize..) {
+                    *area = bottom(x as f64 + 0.5) - h;
+                }
+            } else {
+                let middle = y as f64 + 0.5;
+                row[0] = 1.0 - left(middle);
+                row[nx - 1] = right(middle) - w;
+            }
+        }
     }
 }
 
-/// The area of the quadrilateral `[tl, tr, br, bl]` inside each pixel of the block of pixels
-/// `cols` × `rows` (at least 2 × 2, holding it whole), row after row in `areas`, when each of its
-/// corners lies in the corner pixel of the block it names and its sides run within 45 degrees of
-/// the axes: a pixel turned by a few degrees, each of whose sides stays within one row or one
-/// column of the block's border. The pixels inside the border are covered whole; along the border,
-/// a side cuts each pixel straight across, so that its covered area is its height (or width) at
-/// its middle; in a corner, the covered part is the quadrilateral that the corner of the shape and
-/// the pixel's inner sides make. Returns false, computing nothing, for any other quadrilateral.
-fn clean_block_areas(q: &[(f64, f64); 4], cols: (usize, usize), rows: (usize, usize), areas: &mut Vec<f64>) -> bool {
-    let (nx, ny) = (cols.1 - cols.0, rows.1 - rows.0);
-    if nx < 2 || ny < 2 {
-        return false;
-    }
-    // In the block's coordinates, where the inner sides of its last column and row are x = w and
-    // y = h.
-    let [tl, tr, br, bl] = q.map(|(x, y)| (x - cols.0 as f64, y - rows.0 as f64));
-    let (w, h) = ((nx - 1) as f64, (ny - 1) as f64);
-    let across = |a: (f64, f64), b: (f64, f64)| b.0 - a.0 > (b.1 - a.1).abs();
-    let down = |a: (f64, f64), b: (f64, f64)| b.1 - a.1 > (b.0 - a.0).abs();
-    if !(tl.0 < 1.0
-        && tl.1 < 1.0
-        && tr.0 >= w
-        && tr.1 < 1.0
-        && br.0 >= w
-        && br.1 >= h
-        && bl.0 < 1.0
-        && bl.1 >= h
-        && across(tl, tr)
-        && across(bl, br)
-        && down(tl, bl)
-        && down(tr, br))
-    {
-        return false;
-    }
-    // The sides as lines: y at x for the top and the bottom, x at y for the left and the right.
-    let (top_slope, bottom_slope) = ((tr.1 - tl.1) / (tr.0 - tl.0), (br.1 - bl.1) / (br.0 - bl.0));
-    let (left_slope, right_slope) = ((bl.0 - tl.0) / (bl.1 - tl.1), (br.0 - tr.0) / (br.1 - tr.1));
-    let top = |x: f64| tl.1 + (x - tl.0) * top_slope;
-    let bottom = |x: f64| bl.1 + (x - bl.0) * bottom_slope;
-    let left = |y: f64| tl.0 + (y - tl.1) * left_slope;
-    let right = |y: f64| tr.0 + (y - tr.1) * right_slope;
-    let quad =
-        |a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)| 0.5 * ((a.0 - c.0) * (b.1 - d.1) - (b.0 - d.0) * (a.1 - c.1)).abs();
-    areas.clear();
-    areas.resize(nx * ny, 1.0);
-    areas[0] = quad(tl, (1.0, top(1.0)), (1.0, 1.0), (left(1.0), 1.0));
-    areas[nx - 1] = quad((w, top(w)), tr, (right(1.0), 1.0), (w, 1.0));
-    areas[(ny - 1) * nx] = quad((left(h), h), (1.0, h), (1.0, bottom(1.0)), bl);
-    areas[ny * nx - 1] = quad((w, h), (right(h), h), br, (w, bottom(w)));
-    for x in 1..nx - 1 {
-        let middle = x as f64 + 0.5;
-        areas[x] = 1.0 - top(middle);
-        areas[(ny - 1) * nx + x] = bottom(middle) - h;
-    }
-    for y in 1..ny - 1 {
-        let middle = y as f64 + 0.5;
-        areas[y * nx] = 1.0 - left(middle);
-        areas[y * nx + nx - 1] = right(middle) - w;
-    }
-    true
-}
-
-/// The area of the quadrilateral `q` (its corners in order, in pixel coordinates) inside each
-/// pixel `[x, x + 1] × [y, y + 1]` of the columns `cols.0..cols.1` and the rows `rows.0..rows.1`,
-/// row after row in `areas`. `carry` is scratch space.
+/// The edges of a quadrilateral (its corners in order, in pixel coordinates) over a block of
+/// `nx` × `ny` pixels `[x, x + 1] × [y, y + 1]` from (0, 0), which holds the part of the
+/// quadrilateral the area of which inside each pixel [`QuadEdges::areas`] computes, any of the
+/// block's rows at a time.
 ///
 /// By Green's theorem, the area of a polygon inside a pixel is the sum, over the polygon's edges,
 /// of the integral along the part of the edge over the pixel's column of how far the edge is below
 /// the pixel's top, `clamp(y - top, 0, 1)`, signed by the direction the edge runs in `x`. A piece
 /// of an edge counts whole in the rows above it, in part in those it crosses and not at all in
-/// those below it: the whole counts are carried up each column once all edges are summed.
-fn quad_cell_areas(q: &[(f64, f64); 4], cols: (usize, usize), rows: (usize, usize), areas: &mut Vec<f64>, carry: &mut Vec<f64>) {
-    let (nx, ny) = (cols.1 - cols.0, rows.1 - rows.0);
-    areas.clear();
-    areas.resize(nx * ny, 0.0);
-    // `carry[col * (ny + 1) + r]` counts in every row of the column above row `r`.
-    carry.clear();
-    carry.resize(nx * (ny + 1), 0.0);
-    let row_index = |y: i64| y.clamp(rows.0 as i64, rows.1 as i64) as usize - rows.0;
-    // Twice the signed area: its sign is the sign of the sums.
-    let mut orientation = 0.0;
-    for e in 0..4 {
-        let ((ax, ay), (bx, by)) = (q[e], q[(e + 1) % 4]);
-        orientation += (bx - ax) * (ay + by);
-        if ax == bx {
-            continue;
+/// those below it: the whole counts are carried up each column once its pieces are summed.
+struct QuadEdges {
+    nx: usize,
+    ny: usize,
+    /// The edges that run in `x` over the block's columns.
+    edges: [Option<Edge>; 4],
+    /// The sign of the sums: that of the quadrilateral's area.
+    sign: f64,
+}
+
+/// An edge of a quadrilateral that runs in `x` over a block's columns: its left end and its slope,
+/// 1 or -1 as it runs right or left, and its part over the block's columns, from `x = lo` to
+/// `x = hi`.
+#[derive(Clone, Copy)]
+struct Edge {
+    left: (f64, f64),
+    slope: f64,
+    sign: f64,
+    lo: f64,
+    hi: f64,
+}
+
+impl QuadEdges {
+    /// The edges of the quadrilateral `q` over a block of `nx` × `ny` pixels.
+    fn new(q: &[(f64, f64); 4], nx: usize, ny: usize) -> Self {
+        let mut edges = [None; 4];
+        // Twice the signed area: its sign is the sign of the sums.
+        let mut orientation = 0.0;
+        for (e, edge) in edges.iter_mut().enumerate() {
+            let ((ax, ay), (bx, by)) = (q[e], q[(e + 1) % 4]);
+            orientation += (bx - ax) * (ay + by);
+            if ax == bx {
+                continue;
+            }
+            let sign = if bx > ax { 1.0 } else { -1.0 };
+            let ((lx, ly), (rx, ry)) = if ax < bx { ((ax, ay), (bx, by)) } else { ((bx, by), (ax, ay)) };
+            let (lo, hi) = (lx.max(0.0), rx.min(nx as f64));
+            if lo < hi {
+                *edge = Some(Edge { left: (lx, ly), slope: (ry - ly) / (rx - lx), sign, lo, hi });
+            }
         }
-        let sign = if bx > ax { 1.0 } else { -1.0 };
-        let ((lx, ly), (rx, ry)) = if ax < bx { ((ax, ay), (bx, by)) } else { ((bx, by), (ax, ay)) };
-        let (lo, hi) = (lx.max(cols.0 as f64), rx.min(cols.1 as f64));
-        if lo >= hi {
-            continue;
-        }
-        let slope = (ry - ly) / (rx - lx);
-        let mut x = lo as usize;
-        while (x as f64) < hi {
-            // The piece of the edge over column `x`.
-            let (xa, xb) = (lo.max(x as f64), hi.min((x + 1) as f64));
-            if xa < xb {
-                let (ya, yb) = (ly + slope * (xa - lx), ly + slope * (xb - lx));
-                let length = sign * (xb - xa);
-                let col = x - cols.0;
+        Self { nx, ny, edges, sign: if orientation < 0.0 { -1.0 } else { 1.0 } }
+    }
+
+    /// The area of the quadrilateral inside each pixel of the block's rows `rows.0..rows.1`, row
+    /// after row in `areas`, the same, bit for bit, whichever rows are asked for. In each column,
+    /// the pieces of the edges over it are taken edge after edge, each adding its part to the rows
+    /// it crosses; the whole counts are then carried up from the bottom of the block, those of the
+    /// pieces starting in the same row summed first, so that the rows below those asked for count
+    /// as they do when the whole block is.
+    fn areas(&self, rows: (usize, usize), areas: &mut Vec<f64>) {
+        let (nx, ny) = (self.nx, self.ny);
+        let row_index = |y: i64| y.clamp(0, ny as i64) as usize;
+        areas.clear();
+        areas.resize(nx * (rows.1 - rows.0), 0.0);
+        for col in 0..nx {
+            // The whole counts of the column's pieces, by the row each starts in: they count in the
+            // rows above it.
+            let (mut counts, mut n) = ([(0, 0.0); 4], 0);
+            for edge in self.edges.iter().flatten() {
+                if col < edge.lo as usize || col as f64 >= edge.hi {
+                    continue;
+                }
+                // The piece of the edge over the column.
+                let (xa, xb) = (edge.lo.max(col as f64), edge.hi.min((col + 1) as f64));
+                if xa >= xb {
+                    continue;
+                }
+                let (lx, ly) = edge.left;
+                let (ya, yb) = (ly + edge.slope * (xa - lx), ly + edge.slope * (xb - lx));
+                let length = edge.sign * (xb - xa);
                 let first = row_index(floor_i(ya.min(yb)));
-                carry[col * (ny + 1) + first] += length;
-                for r in first..row_index(ceil_i(ya.max(yb))) {
-                    let top = (rows.0 + r) as f64;
-                    areas[r * nx + col] += length * ramp_mean(ya - top, yb - top);
+                for r in first.max(rows.0)..row_index(ceil_i(ya.max(yb))).min(rows.1) {
+                    let top = r as f64;
+                    areas[(r - rows.0) * nx + col] += length * ramp_mean(ya - top, yb - top);
+                }
+                if first > rows.0 {
+                    match counts[..n].iter_mut().find(|(row, _)| *row == first) {
+                        Some((_, count)) => *count += length,
+                        None => {
+                            counts[n] = (first, length);
+                            n += 1;
+                        }
+                    }
                 }
             }
-            x += 1;
-        }
-    }
-    let sign = if orientation < 0.0 { -1.0 } else { 1.0 };
-    for col in 0..nx {
-        let mut carried = 0.0;
-        for r in (0..ny).rev() {
-            carried += carry[col * (ny + 1) + r + 1];
-            let area = &mut areas[r * nx + col];
-            *area = (sign * (*area + carried)).clamp(0.0, 1.0);
+            // From the bottom up: a row gets the counts of the pieces starting below it.
+            counts[..n].sort_unstable_by_key(|(row, _)| std::cmp::Reverse(*row));
+            let (mut carried, mut next) = (0.0, 0);
+            for r in (rows.0..rows.1).rev() {
+                while next < n && counts[next].0 > r {
+                    carried += counts[next].1;
+                    next += 1;
+                }
+                let area = &mut areas[(r - rows.0) * nx + col];
+                *area = (self.sign * (*area + carried)).clamp(0.0, 1.0);
+            }
         }
     }
 }
@@ -5542,6 +5818,156 @@ mod tests {
             for memory_limit in [40000.0, 6000.0] {
                 let differ = whole.iter().zip(&warped(memory_limit)).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
                 assert_eq!(differ, 0, "error threshold {error_threshold}, {memory_limit} bytes");
+            }
+        }
+    }
+
+    /// The shares of a `sum` footprint's pixels, computed a few rows at a time, are the same, bit
+    /// for bit, whichever rows are computed together: one at a time, or the footprint split in two
+    /// anywhere. Footprints on every path: axis-aligned rectangles, pixels turned by a few degrees
+    /// inside the window, quadrilaterals within 2 x 2 pixels, and others (turned further, with
+    /// their corners moved, or running past the window).
+    #[test]
+    fn sum_shares_are_the_same_whatever_rows_are_computed_together() {
+        // xorshift: a fixed sequence of numbers in [0, 1).
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut random = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let (sw, sh) = (24, 20);
+        let mut paths = [0; 4];
+        for case in 0..800 {
+            // A pixel of side `s` turned by `degrees` around `(cx, cy)`, its corners moved by up to
+            // half of `moved` along each axis: half of them smaller than 1.5 source pixels.
+            let (cx, cy) = (random() * 34.0 - 5.0, random() * 30.0 - 5.0);
+            let s = if case % 2 == 0 { 0.2 + random() * 1.3 } else { 0.3 + random() * 12.0 };
+            let degrees = match case % 3 {
+                0 => 0.0,
+                1 => random() * 4.0 - 2.0,
+                _ => random() * 360.0,
+            };
+            let moved = if case % 4 == 3 { random() * 2.0 } else { 0.0 };
+            let (sin, cos) = f64::to_radians(degrees).sin_cos();
+            let q = [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)].map(|(u, v)| {
+                (cx + s * (u * cos - v * sin) + moved * (random() - 0.5), cy + s * (u * sin + v * cos) + moved * (random() - 0.5))
+            });
+            let Some(f) = SumFootprint::new(q, sw, sh) else {
+                continue;
+            };
+            paths[match f.shares {
+                Shares::Rectangle => 0,
+                Shares::Clean(_) => 1,
+                Shares::Block(_) => 2,
+                Shares::General(_) => 3,
+            }] += 1;
+            let nx = f.cols.1 - f.cols.0;
+            let (mut whole, mut part) = (Vec::new(), Vec::new());
+            f.shares(f.rows, &mut whole);
+            assert_eq!(whole.len(), nx * (f.rows.1 - f.rows.0), "{q:?}");
+            let rows = f.rows.0..f.rows.1;
+            let together = rows.clone().map(|r| (r, r + 1)).chain(rows.flat_map(|r| [(f.rows.0, r + 1), (r, f.rows.1)]));
+            for (r0, r1) in together {
+                f.shares((r0, r1), &mut part);
+                let want = &whole[(r0 - f.rows.0) * nx..(r1 - f.rows.0) * nx];
+                let same = part.len() == want.len() && part.iter().zip(want).all(|(a, b)| a.to_bits() == b.to_bits());
+                assert!(same, "{q:?}, rows {r0}..{r1}: {part:?}, not {want:?}");
+            }
+        }
+        assert!(paths.iter().all(|n| *n >= 20), "footprints on each path: {paths:?}");
+    }
+
+    /// A `sum` chunk whose source window's working memory exceeds the limit (an output of 2 x 2
+    /// pixels or fewer, which is not split into smaller chunks) reads and sums its window a strip
+    /// of rows at a time, as many rows as fit the limit, and its pixels are the same, bit for bit,
+    /// as from the whole window, whatever the strips' height: in the source's CRS and across a
+    /// change of CRS, with output pixels turned on the source's grid, for two bands with nodata
+    /// pixels and for a source with its own mask; read lazily, and, for north-up outputs, streamed
+    /// to a file and through a serialized warped VRT.
+    #[test]
+    fn a_coarse_sum_reads_its_source_a_strip_at_a_time_with_the_same_pixels() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cols, rows, gt) = (300, 200, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0]);
+        let value = |b: usize, c: usize, r: usize| {
+            if (c + 3 * r + b).is_multiple_of(97) { -9999.0 } else { ((c * 7 + r * 13 + b * 5) % 50) as f64 + 0.25 }
+        };
+        let cfg = RasterConfig {
+            cols,
+            rows,
+            bands: 2,
+            x_min: gt[0],
+            y_min: gt[3] + gt[5] * rows as f64,
+            cell_size: gt[1],
+            cell_size_y: Some(-gt[5]),
+            nodata: -9999.0,
+            data_type: DataType::F32,
+            crs: wbraster::CrsInfo::from_epsg(32610),
+            metadata: vec![],
+        };
+        let data = (0..2).flat_map(|b| (0..rows).flat_map(move |r| (0..cols).map(move |c| value(b, c, r)))).collect();
+        let mut ds = RasterDataset::new(Raster::from_data(cfg, data).unwrap(), false);
+        ds.has_nodata = true;
+        let nodata = dir.path().join("nodata.tif").to_str().unwrap().to_string();
+        crate::write_raster_dataset(&ds, &nodata, &Default::default()).unwrap();
+        // The same pixels without a nodata value, every 89th left out by the source's own mask.
+        let mut unmasked = ds.clone();
+        unmasked.has_nodata = false;
+        let mask = (0..cols * rows).map(|i| if i % 89 == 0 { 0 } else { 255 }).collect();
+        let masked = dir.path().join("masked.tif").to_str().unwrap().to_string();
+        crate::write_raster_dataset(&unmasked, &masked, &crate::RasterWriteOptions { mask: Some(mask), ..Default::default() }).unwrap();
+        let geographic = SpatialRef::from_epsg(4326).unwrap();
+        // 2 x 2 output pixels of 2500 m inside the source, turned by 0.2 degrees (less than a source
+        // pixel along each side) and by 20 degrees.
+        let turned = |degrees: f64| {
+            let (s, c) = degrees.to_radians().sin_cos();
+            [501000.0, 2500.0 * c, 2500.0 * s, 3999500.0, 2500.0 * s, -2500.0 * c]
+        };
+        let grids = [
+            ("1 x 1", WarpOptions { size: Some((1, 1)), ..Default::default() }),
+            ("2 x 2", WarpOptions { size: Some((2, 2)), ..Default::default() }),
+            ("2 x 2 turned by 0.2 degrees", WarpOptions { dst_transform: Some(turned(0.2)), size: Some((2, 2)), ..Default::default() }),
+            ("2 x 2 turned by 20 degrees", WarpOptions { dst_transform: Some(turned(20.0)), size: Some((2, 2)), ..Default::default() }),
+            ("1 x 1 in EPSG:4326", WarpOptions { dst_srs: Some(geographic.clone()), size: Some((1, 1)), ..Default::default() }),
+            ("2 x 2 in EPSG:4326", WarpOptions { dst_srs: Some(geographic.clone()), size: Some((2, 2)), ..Default::default() }),
+        ];
+        let bits = |ds: RasterDataset| ds.raster.data.to_f64_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        for (path, source) in [(&nodata, "nodata values"), (&masked, "a mask")] {
+            for (grid, base) in &grids {
+                let o = |memory_limit| WarpOptions {
+                    resampling: Resampling::Sum,
+                    output_type: Some(DataType::F64),
+                    memory_limit,
+                    ..base.clone()
+                };
+                // The output, and the pixels of each window read.
+                let warped = |memory_limit| {
+                    let mut lazy = crate::open_raster_lazy(path).unwrap();
+                    let mut counted = Counted { raster: &mut lazy, reads: Vec::new() };
+                    let out = warp_sources(&mut [&mut counted], &o(memory_limit)).unwrap();
+                    (bits(out), counted.reads.iter().map(|(_, pixels)| *pixels).collect::<Vec<_>>())
+                };
+                let (whole, reads) = warped(64.0 * 1024.0 * 1024.0);
+                assert_eq!(reads.len(), 1, "{source}, {grid}: the whole window at once");
+                if path == &nodata {
+                    assert_eq!(bits(warp(&[&ds], &o(64.0 * 1024.0 * 1024.0)).unwrap()), whole, "{grid}: in memory");
+                }
+                for memory_limit in [100_000.0, 20_000.0, 5_000.0] {
+                    let (strips, strip_reads) = warped(memory_limit);
+                    // Two bands of 8 bytes in the working type: each strip's pixels within the limit,
+                    // and each pixel of the window read once.
+                    let fits = strip_reads.iter().all(|pixels| (16 * pixels) as f64 <= memory_limit);
+                    assert!(strip_reads.len() > 1 && fits, "{source}, {grid}, {memory_limit} bytes: {strip_reads:?}");
+                    assert_eq!(strip_reads.iter().sum::<usize>(), reads[0], "{source}, {grid}, {memory_limit} bytes");
+                    assert_eq!(strips, whole, "{source}, {grid}, {memory_limit} bytes");
+                    for name in ["streamed.tif", "serialized.vrt"].into_iter().filter(|_| base.dst_transform.is_none()) {
+                        let out = dir.path().join(name).to_str().unwrap().to_string();
+                        warp_to_path(std::slice::from_ref(path), &o(memory_limit), &out, &Default::default()).unwrap();
+                        let read = crate::open_raster_lazy(&out).unwrap().read().unwrap();
+                        assert_eq!(bits(read), whole, "{source}, {grid}, {memory_limit} bytes: {name}");
+                    }
+                }
             }
         }
     }
