@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- A remote read of a long range through the block cache, such as a GeoParquet row group or a run
+  of COG tiles, is fetched as up to 8 parallel requests of at least 1 MiB each instead of one at
+  the pace of a single connection (#741). `TERRIO_HTTP_MULTIRANGE=SERIAL` keeps one request.
+- A build with the `gdal` feature and without the default features
+  (`--no-default-features --features gdal`) compiles. The GDAL backend formats the date-time
+  fields it reads with chrono, whose formatting needs its `alloc` feature, and only the
+  `parquet` feature turned it on (through arrow-array); the `gdal` feature now enables it. CI
+  checks that build in the GDAL backend job (#732).
+- A selection of GeoParquet fields decodes only their columns and the geometry, and fetches only
+  their column chunks from a URL: `open_stream(columns=...)`, `terrio convert --select` (without
+  `--where` or `--sql`, which may name other fields), and JavaScript's `openUrl(...).read()`,
+  which takes `columns` too.
+  Breaking (Rust): `terrio::vector::read_geoparquet_sparse` takes a fifth argument, `columns`;
+  pass `None` to read every field, as before.
+- `terrio.pyogrio` reads GeoParquet files: `read_arrow` and `open_arrow` hand out their Arrow
+  record batches as pyogrio does through GDAL's Arrow stream, with GDAL 3.13.3's `meta` (the
+  fields as OGR has them, structs flattened, the declared geometry type, `EPSG:4326` for a file
+  without a CRS), and `read_dataframe(..., use_arrow=True)` builds its GeoDataFrame from them, as
+  `geopandas.read_file(path, engine="pyogrio", use_arrow=True)` asks. Unlike GDAL, whose
+  `skip_features` skips the file's rows before `bbox` filters them, the range is taken from the
+  rows the rectangle keeps, as `read_dataframe` takes it. Arrow reads of other formats still
+  raise `NotImplementedError`.
 - GeoParquet reads decode row groups in parallel, a window of as many as there are threads at a
   time, and read remote files in place: `open_vector` and `open_stream` on a URL fetch the footer,
   then only the column chunks of the row groups the filter keeps, by range requests, instead of

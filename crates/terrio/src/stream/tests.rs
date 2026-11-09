@@ -228,6 +228,37 @@ fn converts_as_streams_like_whole_conversions() {
     }
 }
 
+/// A conversion of GeoParquet with `-select` reads only the selected columns, and writes what a
+/// whole conversion writes: fields in the selection's order (into a GeoParquet output too, whose
+/// writer profiles the values), and `-where` on a field left out still filters.
+#[test]
+fn geoparquet_selections_convert_like_whole_conversions() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src.parquet").to_string_lossy().into_owned();
+    crate::write_vector(&[sample(300)], &src, &Default::default()).unwrap();
+    let selections = [
+        VectorTranslateOptions { select: Some(vec!["d".into(), "I".into()]), ..Default::default() },
+        VectorTranslateOptions { select: Some(vec!["d".into()]), where_clause: Some("i > 100".into()), ..Default::default() },
+    ];
+    for translate in selections {
+        for ext in ["parquet", "geojson"] {
+            let streamed = dir.path().join(format!("s.{ext}")).to_string_lossy().into_owned();
+            let whole = dir.path().join(format!("w.{ext}")).to_string_lossy().into_owned();
+            let options = ConvertOptions { translate: translate.clone(), chunk_size: 16, ..Default::default() };
+            convert(&src, &streamed, &options).unwrap();
+            let layers =
+                crate::ops::vector_filter::translate(&crate::open_vector(&src, &Default::default()).unwrap().layers, &translate).unwrap();
+            crate::write_vector(&layers, &whole, &Default::default()).unwrap();
+            let a = crate::open_vector(&whole, &Default::default()).unwrap().layers.remove(0);
+            let b = crate::open_vector(&streamed, &Default::default()).unwrap().layers.remove(0);
+            let names = |l: &Layer| l.schema.fields().iter().map(|f| f.name.clone()).collect::<Vec<_>>();
+            assert_eq!(names(&b), names(&a), "{ext} {:?}", translate.select);
+            assert!(!a.features.is_empty() && a.features.len() <= 300, "{ext}");
+            same_content(&a, &b);
+        }
+    }
+}
+
 /// Shapefiles read as streams (a batch of records read, then decoded in parallel) are those read
 /// whole: past a batch, and with fewer shapes than records or fewer records than shapes.
 #[test]

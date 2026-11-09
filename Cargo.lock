@@ -2672,6 +2672,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "bytes",
+ "chrono",
  "delaunator",
  "e57",
  "encoding_rs",

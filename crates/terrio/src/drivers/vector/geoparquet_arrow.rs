@@ -97,27 +97,44 @@ impl GroupWindows {
         mask: &ProjectionMask,
         prefetch: Option<Prefetcher>,
     ) -> Self {
-        let read =
-            |rg: &parquet::file::metadata::RowGroupMetaData| (0..rg.num_columns()).filter(|&i| mask.leaf_included(i)).collect::<Vec<_>>();
-        let ranges = meta.row_groups().iter().map(|rg| read(rg).into_iter().map(|i| rg.column(i).byte_range()).collect()).collect();
-        let decoded =
-            meta.row_groups().iter().map(|rg| read(rg).into_iter().map(|i| rg.column(i).uncompressed_size().max(0) as u64).sum()).collect();
-        Self {
+        let mut windows = Self {
             groups: groups.into_iter().collect(),
             ready: VecDeque::new(),
             decode,
-            ranges,
-            decoded,
+            ranges: Vec::new(),
+            decoded: Vec::new(),
             prefetch,
             context: crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current()),
             window: crate::par::threads().max(1),
             failed: false,
+        };
+        windows.set_mask(meta, mask);
+        windows
+    }
+
+    /// Takes the row groups to read the columns of `mask` from now on, as their decoder does:
+    /// the ranges announced and the decoded bytes of a window. `false`, changing nothing, when
+    /// batches decoded with the earlier columns are held.
+    pub(crate) fn set_mask(&mut self, meta: &parquet::file::metadata::ParquetMetaData, mask: &ProjectionMask) -> bool {
+        if !self.ready.is_empty() {
+            return false;
         }
+        let read =
+            |rg: &parquet::file::metadata::RowGroupMetaData| (0..rg.num_columns()).filter(|&i| mask.leaf_included(i)).collect::<Vec<_>>();
+        self.ranges = meta.row_groups().iter().map(|rg| read(rg).into_iter().map(|i| rg.column(i).byte_range()).collect()).collect();
+        self.decoded =
+            meta.row_groups().iter().map(|rg| read(rg).into_iter().map(|i| rg.column(i).uncompressed_size().max(0) as u64).sum()).collect();
+        true
     }
 
     /// Announces the column chunks of each window to `prefetch` from now on.
     pub(crate) fn set_prefetcher(&mut self, prefetch: Prefetcher) {
         self.prefetch = Some(prefetch);
+    }
+
+    /// The byte ranges of the column chunks read in the row groups left.
+    pub(crate) fn ranges_left(&self) -> Vec<(u64, u64)> {
+        self.groups.iter().flat_map(|(g, _)| self.ranges[*g].iter().copied()).collect()
     }
 
     /// The next batch, decoding the next window of row groups when the batches held are out. After
