@@ -2681,7 +2681,6 @@ dependencies = [
  "gdal",
  "gdal-sys",
  "geo",
- "geographiclib-rs",
  "half",
  "hdf5-reader",
  "hmac",
@@ -2755,7 +2754,6 @@ name = "terrio-crs"
 version = "0.2.3"
 dependencies = [
  "geographiclib-rs",
- "rayon",
  "ruzstd 0.9.1",
  "serde",
  "serde_json",
