@@ -261,6 +261,36 @@ def test_a_failed_read_raises_its_own_error_when_rasterioioerror_cannot_be_built
     assert str(raised.value) == str(cause)
 
 
+@pytest.mark.parametrize("closing", [False, True], ids=["closed", "closing"])
+def test_a_source_closed_during_a_read_raises_as_on_the_python_path(tmp_path, closing):
+    # The source closed on another thread once the read has chosen its path (here by the hook,
+    # before the window is read). `close()` releases the Raster before it marks the dataset
+    # closed: closed, both paths raise "Dataset is closed"; in between, "Read failed: ...".
+    path = write(tmp_path / "src.tif", values("float32", 1, 29, 37))
+    raised = []
+    for python_path in (False, True):
+        with terrio.rio.open(path) as src:
+            if python_path:
+                own = src._read_level
+                src._read_level = lambda bands, window, level, own=own: own(bands, window, level)
+
+            def close(level, window, rust, src=src):
+                if closing:
+                    src._raster = None
+                else:
+                    src.close()
+
+            with WarpedVRT(src, crs="EPSG:3857") as vrt:
+                vrt._window_hook = close
+                with pytest.raises(RasterioIOError) as error:
+                    vrt.read()
+            raised.append(str(error.value))
+    if closing:
+        assert all(e.startswith("Read failed: ") for e in raised), raised
+    else:
+        assert raised == ["Dataset is closed"] * 2, raised
+
+
 def test_a_window_read_by_another_datasets_method_comes_from_that_dataset(tmp_path):
     # A source whose `_read_level` is another dataset's: its windows come from that dataset, as
     # the Python path reads them, not from the source's own Raster.

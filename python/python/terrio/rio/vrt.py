@@ -58,7 +58,7 @@ from terrio.rio._tiff import Structure
 from terrio.rio.crs import CRS
 from terrio.rio.dtypes import dtype_fwd, typename_rev
 from terrio.rio.enums import ColorInterp, MaskFlags, Resampling
-from terrio.rio.errors import WarpedVRTError, WarpOptionsError
+from terrio.rio.errors import RasterioIOError, WarpedVRTError, WarpOptionsError
 from terrio.rio.io import _READER_READ_LEVEL, DatasetReader, _sum_scale
 from terrio.rio.warp import (
     _WARP_NAMES,
@@ -784,6 +784,24 @@ class WarpedVRT(DatasetReader):
             "dataset_mask": dataset_mask,
         }
 
+    def _source_raster(self) -> Any:
+        """The source's Raster to read a window from in Rust, looked up once, as a read does.
+
+        Returns:
+            Raster: The source's Raster.
+
+        Raises:
+            RasterioIOError: If the source is closed ("Dataset is closed"), or being closed on
+                another thread, its Raster already released ("Read failed: ..."), as a read of
+                the dataset raises then.
+        """
+        ds = self.src_dataset
+        ds._check_open()
+        raster = ds._raster
+        if not isinstance(raster, _terrio.Raster):
+            raise RasterioIOError("Read failed: the dataset is being closed")
+        return raster
+
     def _source_mask(self, level: int | None, window: tuple[int, int, int, int]) -> Any:
         """The source's per-dataset mask in a window of a level.
 
@@ -852,9 +870,8 @@ class WarpedVRT(DatasetReader):
                 if self._window_hook is not None:
                     self._window_hook(grid.level, part_win, from_raster is not None)
                 if from_raster is not None:
-                    self.src_dataset._check_open()
                     warped, done = rw._warp_from(
-                        self.src_dataset._raster,
+                        self._source_raster(),
                         grid.level,
                         part,
                         part_win,
