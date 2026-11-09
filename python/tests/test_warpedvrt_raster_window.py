@@ -464,14 +464,16 @@ def test_a_read_while_another_thread_reads_the_source_raises_as_a_read_does(tmp_
     assert isinstance(raised.value.__cause__, RuntimeError), raised.value.__cause__
 
 
-def run(code, *args, env=None):
-    """Runs `code` in a new interpreter, and returns what it prints as JSON."""
+def run(code, *args, env=None, timeout=300):
+    """Runs `code` in a new interpreter, for at most `timeout` seconds, and returns what it prints
+    as JSON."""
     out = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code), *map(str, args)],
         capture_output=True,
         text=True,
         check=True,
         env=env,
+        timeout=timeout,
     )
     return json.loads(out.stdout.splitlines()[-1])
 
@@ -507,19 +509,29 @@ with terrio.rio.open(sys.argv[1]) as src:
         vrt._window_hook = lambda level, window, rust: paths.append(rust)
         thread = threading.Thread(target=counting)
         thread.start()
-        started.wait()
-        first, start = count[0], time.perf_counter()
-        vrt.read(1)
-        read, took = count[0], time.perf_counter() - start
-        start = time.perf_counter()
-        while time.perf_counter() - start < took:
-            hashlib.sha256(payload).digest()
-        hashed, spent = count[0], time.perf_counter() - start
-        stop.set()
-        thread.join()
+        try:
+            started.wait()
+            first, start = count[0], time.perf_counter()
+            vrt.read(1)
+            read, took = count[0], time.perf_counter() - start
+            start = time.perf_counter()
+            while time.perf_counter() - start < took:
+                hashlib.sha256(payload).digest()
+            hashed, spent = count[0], time.perf_counter() - start
+        finally:
+            stop.set()
+            thread.join()
 print(json.dumps({"read": took, "during": (read - first) / took,
                   "alone": (hashed - read) / spent, "paths": paths}))
 """
+
+
+def test_the_counting_interpreter_ends_when_its_read_fails(tmp_path):
+    # The counting thread stops whatever the read does: a read that fails ends the interpreter
+    # with the read's error, rather than leaving it waiting for that thread until the timeout.
+    with pytest.raises(subprocess.CalledProcessError) as failed:
+        run(COUNTING, cut_short(tmp_path), "nearest", timeout=60)
+    assert "RasterioIOError: Read failed: " in failed.value.stderr, failed.value.stderr
 
 
 @pytest.mark.skipif(cpus() < 2, reason="the warp and the counting thread need a CPU each")
