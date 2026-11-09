@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- MBTiles archives are read in place (#693). Opening one reads its schema and metadata from the
+  file, mapped into memory on native builds, and each tile is read when asked for, by a lookup in
+  the index on `(zoom_level, tile_column, tile_row)` that MBTiles writers create (or, for the
+  `map` and `images` layout, in `map`'s index and `images`' `tile_id` index). An archive was read
+  whole and every tile copied again, so peak memory was several times the file's size. `terrio
+  info` of a 2 GB archive of 10,240 tiles took 10 s and peaked at 7.8 GB of memory; it now takes
+  0.17 s and 83 MB, and a 600 x 600 window read takes 0.29 s and 98 MB instead of 4.6 s and
+  7.8 GB. An archive without such an index has the rowids of its tiles listed on opening, read
+  from their key columns only, never from tile bytes. Opening an MBTiles archive from memory
+  keeps the bytes but no longer copies the tiles. Listing a zoom level's tiles now lists the
+  rows of the tiles table, including a row whose `tile_data` is not a blob (reading it gives no
+  tile).
 - `warp` of a `Raster` in memory releases the GIL for the whole warp: it takes the raster's
   shared pixels (no copy) and warps them after releasing it, so warps from Python threads
   (rioxarray-style `reproject` of xarray arrays on a thread pool) overlap. 96 nearest-neighbour

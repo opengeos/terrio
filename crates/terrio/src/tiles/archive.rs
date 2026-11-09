@@ -5,7 +5,7 @@ use source::ByteSource;
 
 enum Inner {
     Pm(Box<pmtiles::Reader>),
-    Mb(mbtiles::MbTiles),
+    Mb(Box<mbtiles::MbTiles>),
 }
 
 /// Per-payload decoded-byte limits for PMTiles. `None` preserves unlimited decoding.
@@ -55,7 +55,8 @@ fn check_archive_driver(driver: &str, shown: &str, kinds: &[crate::formats::Kind
 
 impl TileArchive {
     /// Opens an archive: a local path, or a URL, `s3://`, `gs://` or `az://` object. PMTiles are
-    /// read in place (only the header and root directory now); MBTiles are read whole. Under a
+    /// read in place (only the header and root directory now); MBTiles are read in place too
+    /// (their schema and metadata now, each tile by an index lookup when it is asked for). Under a
     /// process-wide allow-list, the archive's driver (by its name, or its content for other names)
     /// must be allowed for both kinds of dataset, whose tiles it may hold.
     pub fn open(path: &str) -> Result<Self> {
@@ -77,8 +78,7 @@ impl TileArchive {
             Some(ArchiveKind::MBTiles) => {
                 check_archive_driver("MBTiles", path, kinds.unwrap_or_default())?;
                 let local = crate::vfs::resolve(path)?;
-                let bytes = std::fs::read(local.path())?;
-                Ok(Self { inner: Inner::Mb(mbtiles::MbTiles::from_bytes(bytes)?), _local: None })
+                Ok(Self { inner: Inner::Mb(Box::new(mbtiles::MbTiles::open(local.path())?)), _local: Some(local) })
             }
             _ => {
                 let (mut source, local) = ByteSource::open(path)?;
@@ -89,7 +89,7 @@ impl TileArchive {
                     // the MBTiles driver is allowed, by the list of each kind it serves.
                     check_archive_driver("MBTiles", path, kinds.unwrap_or(&EITHER_KIND))?;
                     let local = crate::vfs::resolve(path)?;
-                    return Ok(Self { inner: Inner::Mb(mbtiles::MbTiles::from_bytes(std::fs::read(local.path())?)?), _local: None });
+                    return Ok(Self { inner: Inner::Mb(Box::new(mbtiles::MbTiles::open(local.path())?)), _local: Some(local) });
                 }
                 check_archive_driver("PMTiles", path, kinds.unwrap_or_default())?;
                 Ok(Self { inner: Inner::Pm(Box::new(pmtiles::Reader::open(source)?)), _local: local })
@@ -108,7 +108,7 @@ impl TileArchive {
     pub(crate) fn from_bytes_judged(bytes: Vec<u8>, kinds: &[crate::formats::Kind]) -> Result<Self> {
         if bytes.starts_with(b"SQLite format 3\0") {
             check_archive_driver("MBTiles", "an archive in memory", kinds)?;
-            return Ok(Self { inner: Inner::Mb(mbtiles::MbTiles::from_bytes(bytes)?), _local: None });
+            return Ok(Self { inner: Inner::Mb(Box::new(mbtiles::MbTiles::from_bytes(bytes)?)), _local: None });
         }
         check_archive_driver("PMTiles", "an archive in memory", kinds)?;
         Ok(Self { inner: Inner::Pm(Box::new(pmtiles::Reader::open(ByteSource::Memory(bytes))?)), _local: None })
@@ -169,7 +169,7 @@ impl TileArchive {
             },
             Inner::Mb(m) => match m.item("format").map(TileFormat::from_mbtiles) {
                 Some(f) if f != TileFormat::Unknown => f,
-                _ => m.zoom_range().and_then(|(_, z)| m.any_tile(z)).map(TileFormat::sniff).unwrap_or(TileFormat::Unknown),
+                _ => m.zoom_range().and_then(|(_, z)| m.any_tile(z)).as_deref().map(TileFormat::sniff).unwrap_or(TileFormat::Unknown),
             },
         }
     }
@@ -249,7 +249,7 @@ impl TileArchive {
     pub fn tile(&mut self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
         match &mut self.inner {
             Inner::Pm(r) => r.tile(z, x, y),
-            Inner::Mb(m) => Ok(m.tile(z, x, y).map(|b| b.to_vec())),
+            Inner::Mb(m) => m.tile(z, x, y),
         }
     }
 
@@ -257,7 +257,7 @@ impl TileArchive {
     pub(crate) fn tiles(&mut self, wanted: &[(u8, u32, u32)]) -> Result<Vec<Option<Vec<u8>>>> {
         match &mut self.inner {
             Inner::Pm(r) => r.tiles(wanted),
-            Inner::Mb(m) => Ok(wanted.iter().map(|&(z, x, y)| m.tile(z, x, y).map(|b| b.to_vec())).collect()),
+            Inner::Mb(m) => wanted.iter().map(|&(z, x, y)| m.tile(z, x, y)).collect(),
         }
     }
 
@@ -265,7 +265,7 @@ impl TileArchive {
     pub fn tiles_at_zoom(&mut self, z: u8) -> Result<Vec<(u32, u32)>> {
         match &mut self.inner {
             Inner::Pm(r) => r.tiles_at_zoom(z),
-            Inner::Mb(m) => Ok(m.tiles_at_zoom(z)),
+            Inner::Mb(m) => m.tiles_at_zoom(z),
         }
     }
 

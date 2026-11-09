@@ -166,6 +166,59 @@ impl PageSet {
     }
 }
 
+/// Orders two values as SQLite's BINARY collation does: NULL, then numbers, text and blobs.
+pub(crate) fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
+    let rank = |v: &Value| match v {
+        Value::Null => 0,
+        Value::Int(_) | Value::Real(_) => 1,
+        Value::Text(_) => 2,
+        Value::Blob(_) => 3,
+    };
+    match (a, b) {
+        (Value::Int(p), Value::Int(q)) => p.cmp(q),
+        (Value::Real(p), Value::Real(q)) => p.total_cmp(q),
+        (Value::Int(p), Value::Real(q)) => (*p as f64).total_cmp(q),
+        (Value::Real(p), Value::Int(q)) => p.total_cmp(&(*q as f64)),
+        (Value::Text(p), Value::Text(q)) => p.as_bytes().cmp(q.as_bytes()),
+        (Value::Blob(p), Value::Blob(q)) => p.cmp(q),
+        _ => rank(a).cmp(&rank(b)),
+    }
+}
+
+/// Orders an index record's leading values against `prefix`.
+fn compare_prefix(record: &[Value], prefix: &[Value]) -> std::cmp::Ordering {
+    prefix
+        .iter()
+        .enumerate()
+        .map(|(i, p)| compare_values(record.get(i).unwrap_or(&Value::Null), p))
+        .find(|o| o.is_ne())
+        .unwrap_or(std::cmp::Ordering::Equal)
+}
+
+/// The values of `columns` decoded from the part of a record kept on its page, `None` when the
+/// header or one of them lies past it (or is text, when the database's text is not UTF-8).
+fn local_columns(local: &[u8], columns: &[usize], utf8: bool) -> Option<Vec<Value>> {
+    let (header_len, n) = varint(local, 0)?;
+    let header_len = usize::try_from(header_len).ok().filter(|&len| len >= n && len <= local.len())?;
+    let (mut types, mut i) = (Vec::new(), n);
+    while i < header_len {
+        let (t, k) = varint(local, i).filter(|&(_, k)| i + k <= header_len)?;
+        types.push(t);
+        i += k;
+    }
+    columns
+        .iter()
+        .map(|&c| {
+            let Some(&t) = types.get(c) else { return Some(Value::Null) };
+            if !utf8 && t >= 13 && t % 2 == 1 {
+                return None;
+            }
+            let pos = types[..c].iter().try_fold(header_len, |pos, &t| pos.checked_add(Db::value_len(t)))?;
+            Db::value(local, t, pos).ok().map(|(v, _)| v)
+        })
+        .collect()
+}
+
 /// The cell offset stored at `p` in a page's cell pointer array.
 pub(crate) fn cell_pointer(page: &[u8], p: usize) -> Result<usize> {
     let b = page.get(p..p + 2).ok_or_else(|| bad("cell pointer"))?;
@@ -301,10 +354,26 @@ impl Db {
         Ok(out)
     }
 
-    /// A cell's payload, following overflow pages.
+    /// A table cell's payload, following overflow pages.
     fn payload(&self, page: &[u8], start: usize, size: usize) -> Result<Vec<u8>> {
+        self.payload_within(page, start, size, self.usable - 35)
+    }
+
+    /// How many bytes of a payload of `size` bytes a cell keeps on its page, when the most a cell
+    /// keeps is `x` (`usable - 35` in table leaves, less in indexes).
+    fn local_size(&self, size: usize, x: usize) -> usize {
         let u = self.usable;
-        let x = u - 35;
+        if size <= x {
+            return size;
+        }
+        let m = ((u - 12) * 32 / 255) - 23;
+        let k = m + (size - m) % (u - 4);
+        if k <= x { k } else { m }
+    }
+
+    /// A cell's payload, following overflow pages, when the most a cell keeps on its page is `x`.
+    fn payload_within(&self, page: &[u8], start: usize, size: usize, x: usize) -> Result<Vec<u8>> {
+        let u = self.usable;
         if size <= x {
             return start.checked_add(size).and_then(|end| page.get(start..end)).map(<[u8]>::to_vec).ok_or_else(|| bad("payload"));
         }
@@ -313,9 +382,7 @@ impl Db {
         if size / (u - 4) > self.pages() {
             return Err(bad("payload"));
         }
-        let m = ((u - 12) * 32 / 255) - 23;
-        let k = m + (size - m) % (u - 4);
-        let local = if k <= x { k } else { m };
+        let local = self.local_size(size, x);
         let mut out = page.get(start..start + local).ok_or_else(|| bad("payload"))?.to_vec();
         let mut next =
             u32::from_be_bytes(page.get(start + local..start + local + 4).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("overflow"))?);
@@ -493,7 +560,7 @@ impl Db {
     }
 
     /// The root page and `CREATE TABLE` statement of a rowid table.
-    fn table_root(&self, name: &str) -> Result<(u32, String)> {
+    pub(crate) fn table_root(&self, name: &str) -> Result<(u32, String)> {
         for (kind, table, _, root, sql) in self.schema()? {
             if kind != "table" || !table.eq_ignore_ascii_case(name) {
                 continue;
@@ -507,6 +574,115 @@ impl Db {
             return Ok((root, sql));
         }
         Err(bad(&format!("no table '{name}'")))
+    }
+
+    /// Visits in order the records of the index b-tree rooted at `root` whose leading values equal
+    /// `prefix` (a record holds the indexed columns, then the rowid), until `visit` returns
+    /// `false`. Only the branches that can hold such records are read: finding one row of a large
+    /// table reads a page per level of its index.
+    pub(crate) fn index_prefix(&self, root: u32, prefix: &[Value], visit: &mut dyn FnMut(Vec<Value>) -> bool) -> Result<()> {
+        self.index_walk(root, prefix, visit, &mut std::collections::HashSet::new(), 0).map(drop)
+    }
+
+    /// The decoded record of the index cell at `off`.
+    fn index_cell(&self, page: &[u8], off: usize, interior: bool) -> Result<Vec<Value>> {
+        let start = if interior { off + 4 } else { off };
+        let (size, n) = varint(page, start).ok_or_else(|| bad("cell"))?;
+        let size = usize::try_from(size).map_err(|_| bad("cell"))?;
+        let x = (self.usable - 12) * 64 / 255 - 23;
+        self.decode_record(&self.payload_within(page, start + n, size, x)?)
+    }
+
+    /// [`Db::index_prefix`] from page `n`: `false` once the walk is over (past the prefix, or
+    /// stopped by `visit`). `visited` holds the pages already read: a page reached twice is corrupt.
+    fn index_walk(
+        &self,
+        n: u32,
+        prefix: &[Value],
+        visit: &mut dyn FnMut(Vec<Value>) -> bool,
+        visited: &mut std::collections::HashSet<u32>,
+        depth: usize,
+    ) -> Result<bool> {
+        use std::cmp::Ordering;
+        if depth > 64 {
+            return Err(bad("b-tree too deep"));
+        }
+        if !visited.insert(n) {
+            return Err(bad("b-tree page reached twice"));
+        }
+        let page = self.page(n)?;
+        let h = if n == 1 { 100 } else { 0 };
+        let interior = match page[h] {
+            0x02 => true,
+            0x0a => false,
+            _ => return Err(bad("unsupported page type")),
+        };
+        let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
+        let header = if interior { 12 } else { 8 };
+        let offset = |c: usize| cell_pointer(page, h + header + 2 * c);
+        // The first cell not ordered before the prefix: the children left of it hold smaller keys.
+        let (mut lo, mut hi) = (0, cells);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if compare_prefix(&self.index_cell(page, offset(mid)?, interior)?, prefix) == Ordering::Less {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        for c in lo..cells {
+            let off = offset(c)?;
+            if interior {
+                let child = u32::from_be_bytes(page.get(off..off + 4).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("cell"))?);
+                if !self.index_walk(child, prefix, visit, visited, depth + 1)? {
+                    return Ok(false);
+                }
+            }
+            let record = self.index_cell(page, off, interior)?;
+            if compare_prefix(&record, prefix) != Ordering::Equal || !visit(record) {
+                return Ok(false);
+            }
+        }
+        if interior {
+            let right = u32::from_be_bytes(page[h + 8..h + 12].try_into().map_err(|_| bad("page"))?);
+            return self.index_walk(right, prefix, visit, visited, depth + 1);
+        }
+        Ok(true)
+    }
+
+    /// Calls `f` with the rowid and the values of `columns` of each row of the table b-tree rooted
+    /// at `root`, in rowid order. A row's overflow pages are read only when the columns do not all
+    /// lie in the part of the row kept on its leaf page, so the leading key columns of a table of
+    /// large blobs are read without the blobs.
+    pub(crate) fn scan_columns(&self, root: u32, columns: &[usize], f: &mut dyn FnMut(i64, Vec<Value>)) -> Result<()> {
+        let mut leaves = Vec::new();
+        self.leaves(root, &mut leaves, &mut PageSet::new(self.pages() as u64), 0)?;
+        let utf8 = self.text_encoding() == 1;
+        for n in leaves {
+            let page = self.page(n)?;
+            let h = if n == 1 { 100 } else { 0 };
+            if page[h] != 0x0d {
+                return Err(bad("unsupported page type"));
+            }
+            let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
+            for c in 0..cells {
+                let off = cell_pointer(page, h + 8 + 2 * c)?;
+                let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
+                let (rowid, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
+                let size = usize::try_from(size).map_err(|_| bad("cell"))?;
+                let start = off + n1 + n2;
+                let local = start.checked_add(self.local_size(size, self.usable - 35)).and_then(|end| page.get(start..end));
+                let values = match local.and_then(|l| local_columns(l, columns, utf8)) {
+                    Some(values) => values,
+                    None => {
+                        let mut all = self.decode_record(&self.payload(page, start, size)?)?;
+                        columns.iter().map(|&c| all.get_mut(c).map(|v| std::mem::replace(v, Value::Null)).unwrap_or(Value::Null)).collect()
+                    }
+                };
+                f(rowid, values);
+            }
+        }
+        Ok(())
     }
 
     /// The rows of a table with the given rowids (in that order; missing rowids are skipped),
