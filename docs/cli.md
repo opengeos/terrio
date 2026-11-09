@@ -1221,7 +1221,10 @@ terrio mosaic @filelist.txt OUTPUT [options]    # inputs listed in a file, one p
 
 `--resolution highest|lowest|average|user`, `--tr`, `--te`, `--tap`, `--separate`, `-b`,
 `--nodata`, `--srcnodata`, `--dstnodata`, `-r`, `--t-srs`. A `.vrt` output writes a GDAL VRT that
-references the inputs; other outputs hold the mosaicked pixels.
+references the inputs; other outputs hold the mosaicked pixels. Each input is its whole raster
+(`SrcRect`), placed where it falls on the mosaic's grid (`DstRect`), past the mosaic's edges where
+the input extends past them, so that a resampling kernel at the edges of a `--te` extent still reads
+the input's pixels beyond it.
 
 ## Serialized virtual rasters
 

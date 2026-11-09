@@ -205,7 +205,7 @@ fn build_vrt_impl(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&
         }
     }
     for s in sources {
-        let Some((src_rect, dst_rect)) = src_dst_window(s.ds, we, ns, (min_x, min_y, max_x, max_y), width, height) else { continue };
+        let Some((src_rect, dst_rect)) = src_dst_window(s.ds, we, ns, (min_x, min_y, max_x, max_y)) else { continue };
         let (path, relative) = source_path(&s.path, vrt_dir);
         for (k, &b) in band_list(s.ds).iter().enumerate() {
             if b == 0 || b > s.ds.raster.bands {
@@ -247,30 +247,20 @@ fn build_vrt_impl(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&
     Ok(VrtDataset { width, height, geo_transform: Some([min_x, we, 0.0, max_y, 0.0, ns]), srs, bands })
 }
 
-/// `gdalbuildvrt`'s `GetSrcDstWin()`: where a source falls in the mosaic.
-fn src_dst_window(ds: &RasterDataset, we: f64, ns: f64, ext: (f64, f64, f64, f64), tw: usize, th: usize) -> Option<([f64; 4], [f64; 4])> {
+/// Where a source falls in the mosaic, after `gdalbuildvrt`'s `GetSrcDstWin()` but without its
+/// cropping to the extent: its whole window, and the output pixels it covers, which can run past
+/// the mosaic's edges (a read clips them). Cropping the window to the extent would leave a
+/// resampling kernel at the mosaic's edges without the source's pixels past them.
+fn src_dst_window(ds: &RasterDataset, we: f64, ns: f64, ext: (f64, f64, f64, f64)) -> Option<([f64; 4], [f64; 4])> {
     let gt = ds.geo_transform();
     let (w, h) = (ds.raster.cols as f64, ds.raster.rows as f64);
     let (min_x, min_y, max_x, max_y) = ext;
     if gt[0] + w * gt[1] <= min_x || gt[0] >= max_x || gt[3] + h * gt[5] >= max_y || gt[3] <= min_y {
         return None;
     }
-    let (sxo, dxo) = if gt[0] < min_x { ((min_x - gt[0]) / gt[1], 0.0) } else { (0.0, (gt[0] - min_x) / we) };
-    let (syo, dyo) = if max_y < gt[3] { ((gt[3] - max_y) / -gt[5], 0.0) } else { (0.0, (max_y - gt[3]) / -ns) };
-    let mut sxs = w - sxo.max(0.0);
-    let mut sys = h - syo.max(0.0);
     let (rx, ry) = (gt[1] / we, gt[5] / ns);
-    let mut dxs = sxs * rx;
-    let mut dys = sys * ry;
-    if dxo + dxs > tw as f64 {
-        dxs = tw as f64 - dxo;
-        sxs = dxs / rx;
-    }
-    if dyo + dys > th as f64 {
-        dys = th as f64 - dyo;
-        sys = dys / ry;
-    }
-    (sxs > 0.0 && dxs > 0.0 && sys > 0.0 && dys > 0.0).then_some(([sxo, syo, sxs, sys], [dxo, dyo, dxs, dys]))
+    let dst_rect = [(gt[0] - min_x) / we, (max_y - gt[3]) / -ns, w * rx, h * ry];
+    (dst_rect[2] > 0.0 && dst_rect[3] > 0.0).then_some(([0.0, 0.0, w, h], dst_rect))
 }
 
 /// The path to write in a VRT, relative to the VRT's directory when inside it.
@@ -744,6 +734,57 @@ mod tests {
             for name in [&written, &vrt] {
                 assert_eq!(crate::open_raster(name).unwrap().raster.data.to_f64_vec(), rows, "{resampling:?} {name}");
             }
+        }
+    }
+
+    /// A mosaic whose extent cuts through a source keeps the source's pixels past the extent
+    /// within reach of a resampling kernel at its edges. Onto 0.5 m pixels from x = 2 to 6 of the
+    /// 1 m ramp `0, 10, ..., 70`, `bilinear` and `cubic` give the row `warp` gives onto the same
+    /// grid, `17.5, 22.5, ..., 52.5`, within 1e-4: in the mosaic, the mosaic written a strip at a
+    /// time, and the VRT written, read whole and by windows of one pixel. The VRT places the whole
+    /// source from x = -4 output pixels.
+    #[test]
+    fn a_kernel_at_an_edge_of_the_extent_reads_the_source_past_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let grid = Grid { width: 8, height: 4, geo_transform: [0.0, 1.0, 0.0, 4.0, 0.0, -1.0] };
+        let ramp = (0..32).map(|i| f64::from(i % 8) * 10.0).collect();
+        let ds = super::super::build_raster(grid, vec![ramp], DataType::F32, None, &SpatialRef::default(), |x, _| x).unwrap();
+        let path = dir.path().join("a.tif").to_string_lossy().into_owned();
+        crate::write_raster_dataset(&ds, &path, &Default::default()).unwrap();
+        let sources = [MosaicSource { path: path.clone(), ds: &ds }];
+        let row: Vec<f64> = (0..8).map(|c| 17.5 + 5.0 * f64::from(c)).collect();
+        let near =
+            |got: &[f64], expected: &[f64]| got.len() == expected.len() && got.iter().zip(expected).all(|(a, b)| (a - b).abs() <= 1e-4);
+        for resampling in [Resampling::Bilinear, Resampling::Cubic] {
+            let (extent, resolution) = ((2.0, 0.0, 6.0, 4.0), (0.5, 0.5));
+            let warped =
+                warp(&[&ds], &WarpOptions { extent: Some(extent), resolution: Some(resolution), resampling, ..Default::default() })
+                    .unwrap()
+                    .raster
+                    .data
+                    .to_f64_vec();
+            assert!(near(&warped, &row.repeat(8)), "{resampling:?} warp: {warped:?}");
+            let o =
+                MosaicOptions { extent: Some(extent), resolution: ResolutionStrategy::User(0.5, 0.5), resampling, ..Default::default() };
+            let built = build_vrt(&sources, &o, Some(dir.path())).unwrap();
+            let [written, vrt] = ["m.tif", "m.vrt"].map(|name| dir.path().join(name).to_string_lossy().into_owned());
+            mosaic_to_path(std::slice::from_ref(&path), &o, &written, &Default::default()).unwrap();
+            built.write(&vrt).unwrap();
+            assert_eq!(VrtDataset::from_xml(&std::fs::read_to_string(&vrt).unwrap()).unwrap().bands, built.bands);
+            let mut lazy = crate::open_raster_lazy(&vrt).unwrap();
+            let by_pixel: Vec<f64> = (0..64)
+                .map(|i| lazy.read_window(crate::Window::new(i % 8, i / 8, 1, 1), &Default::default()).unwrap().raster.data.to_f64_vec()[0])
+                .collect();
+            for (how, got) in [
+                ("mosaic", mosaic(&sources, &o).unwrap().raster.data.to_f64_vec()),
+                ("written", crate::open_raster(&written).unwrap().raster.data.to_f64_vec()),
+                ("VRT", crate::open_raster(&vrt).unwrap().raster.data.to_f64_vec()),
+                ("VRT by windows", by_pixel),
+            ] {
+                assert!(near(&got, &warped), "{resampling:?} {how}: {got:?}");
+            }
+            let source = &built.bands[0].sources[0];
+            assert_eq!((source.src_rect, source.dst_rect), ([0.0, 0.0, 8.0, 4.0], [-4.0, 0.0, 16.0, 8.0]));
         }
     }
 }
