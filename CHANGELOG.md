@@ -10,8 +10,9 @@
   10,000 km of 10 km EPSG:3413 pixels centred on the North Pole into 1° pixels from 80° N to
   90° N, none of the 360 pixels along the pole was written, and the grid held 36,675.8 of the
   37,044.5 it now holds (1% less). The longitude and latitude grid suggested for a raster that
-  covers its pole now reaches the pole, over every longitude: for the same raster, it spanned
-  30.5° N to 46.0° N, and now 30.4° N to 90° N.
+  covers its pole now reaches the North Pole exactly, over every longitude, and reaches the South
+  Pole to within one pixel, as its height rounds down: for the same raster, it spanned 30.5° N to
+  46.0° N, and now 30.4° N to 90° N.
 - A remote read of a long range through the block cache, such as a GeoParquet row group or a run
   of COG tiles, is fetched as up to 8 parallel requests of at least 1 MiB each instead of one at
   the pace of a single connection (#741). `TERRIO_HTTP_MULTIRANGE=SERIAL` keeps one request.

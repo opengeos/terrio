@@ -154,14 +154,18 @@ fn polar_stereographic_projects_its_pole_to_the_false_origin() {
 }
 
 /// The pole opposite the one a CRS is centred on lies at infinity: it fails to project, from any
-/// longitude, rather than giving coordinates.
+/// longitude, rather than giving coordinates. So does a point 1e-7° short of it, which lies within
+/// the same tolerance (1e-8 rad) as the pole itself.
 #[test]
 fn polar_stereographic_refuses_the_pole_opposite_its_centre() {
     for c in cases() {
         let fwd = Transformer::new(&c.geographic, &c.crs).unwrap();
+        let near = -c.pole + c.pole.signum() * 1e-7;
         for lon in LONGITUDES {
-            let r = fwd.transform(lon, -c.pole);
-            assert!(r.is_err(), "{}: the opposite pole ({lon}, {}) went to {r:?}", c.name, -c.pole);
+            for lat in [-c.pole, near] {
+                let r = fwd.transform(lon, lat);
+                assert!(r.is_err(), "{}: the opposite pole ({lon}, {lat}) went to {r:?}", c.name);
+            }
         }
     }
 }

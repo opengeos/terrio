@@ -5454,6 +5454,8 @@ mod tests {
             let (gt, w, h) = suggested_grid(1000, 1000, gt, &src, &geographic).unwrap();
             let (left, right, top, bottom) = (gt[0], gt[0] + w as f64 * gt[1], gt[3], gt[3] + h as f64 * gt[5]);
             let (pole_edge, far_edge) = if pole > 0.0 { (top, bottom) } else { (bottom, top) };
+            // The North Pole edge lands on the pole exactly. The South Pole edge can fall short of
+            // it by up to a pixel, as the grid's height is rounded from the top edge.
             assert!(
                 (pole_edge - pole).abs() < -gt[5]
                     && (far_edge - far).abs() < -gt[5]
