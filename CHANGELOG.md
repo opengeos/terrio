@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `terrio.rio` writes JPEG 2000 to a `.jp2` path opened for writing without a driver:
+  `driver_from_extension` names the driver `JP2OpenJPEG`, which `open(..., "w")`,
+  `shutil.copy` and `terrio.xarray`'s `to_raster` refused in 0.8.0 (`DriverCapabilityError`,
+  `DriverRegistrationError`). Their driver names are now read as the driver allow-list reads
+  them, so `JP2OpenJPEG`, `JPEG2000`, `JP2KAK`, `JP2ECW` and `JP2MrSID` write terrio's JP2, as
+  `MemoryFile` already did with `JP2OpenJPEG`; the file reads back with `driver == "JP2"`. The
+  other writers (`-f` on the command line, `Raster.write(driver=...)`) read names the same way:
+  `JP2MrSID`, the one of these names they refused, now selects JP2.
 - A `WarpedVRT` over a dataset terrio opened for reading now reads and warps each source window
   in one call that releases the GIL, so reads on several Python threads, such as a server
   answering tile requests on threads, no longer wait for each other's warps as in 0.8.0. The

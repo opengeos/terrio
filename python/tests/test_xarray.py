@@ -400,6 +400,20 @@ def test_to_raster_round_trips(files, tmp_path):
         assert src.count == 3 and src.descriptions == ("red", "green", "blue")
 
 
+def test_to_raster_writes_jpeg_2000_by_extension(files, tmp_path):
+    """`to_raster` to a `.jp2` path takes the driver from its extension, `JP2OpenJPEG`, and writes
+    JPEG 2000: it raised DriverCapabilityError."""
+    rgb = txr.open_rasterio(files["rgb"])
+    path = str(tmp_path / "rgb.jp2")
+    rgb.terrio.to_raster(path)
+    back = txr.open_rasterio(path)
+    np.testing.assert_array_equal(back.values, rgb.values)
+    assert back.terrio.crs == rgb.terrio.crs
+    assert back.terrio.transform() == rgb.terrio.transform()
+    with rio.open(path) as src:
+        assert src.driver == "JP2"
+
+
 @pytest.mark.parametrize("source_nodata", [None, -32768])
 @pytest.mark.parametrize("mode", ["eager", "windowed", "delayed"])
 def test_masked_integer_warp_export(tmp_path, source_nodata, mode):

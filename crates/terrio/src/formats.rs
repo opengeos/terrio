@@ -308,12 +308,14 @@ impl RasterDriver {
         self.info().name
     }
 
-    /// The driver with a short name (case-insensitive), accepting GDAL's aliases.
+    /// The driver with a short name (case-insensitive), accepting GDAL's aliases. The name is read
+    /// as [`canonical_driver_name`] reads it for [`check_drivers`] and the allow-list, so that the
+    /// writers take the same names: the names of JPEG 2000 drivers (`JP2OpenJPEG`...) select
+    /// [`RasterDriver::JP2`].
     pub fn from_name(name: &str) -> Option<Self> {
-        let n = name.to_ascii_lowercase();
+        let n = canonical_driver_name(name).to_ascii_lowercase();
         let alias = match n.as_str() {
             "geotiff" | "tif" | "tiff" => Some(Self::GTiff),
-            "jpeg2000" | "jp2openjpeg" | "jp2kak" | "jp2ecw" => Some(Self::JP2),
             "gs7bg" | "gsag" | "surfer" => Some(Self::GSBG),
             "hgt" | "srtm" => Some(Self::SRTMHGT),
             "imagine" | "erdas" => Some(Self::HFA),
@@ -324,7 +326,7 @@ impl RasterDriver {
             "grib2" | "grb" | "grb2" => Some(Self::GRIB),
             _ => None,
         };
-        alias.or_else(|| Self::ALL.iter().copied().find(|d| d.name().eq_ignore_ascii_case(name)))
+        alias.or_else(|| Self::ALL.iter().copied().find(|d| d.name().eq_ignore_ascii_case(&n)))
     }
 
     /// The driver for an output path's extension.
@@ -1558,7 +1560,41 @@ mod allow_list_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{RasterDriver, sniff};
+    use super::{RasterDriver, canonical_driver_name, sniff};
+
+    /// Each name of a JPEG 2000 driver that the allow-list and `driver=` of a read take as `JP2`
+    /// names the `JP2` driver for writing too (`--format`, `Raster.write(driver=...)`), read as the
+    /// allow-list reads it: in any case, and without the spaces around it.
+    #[test]
+    fn jpeg_2000_driver_names_select_the_jp2_writer() {
+        for name in ["JP2", "jp2", "JP2OpenJPEG", " jp2openjpeg ", "JPEG2000", "JP2KAK", "JP2ECW", "JP2MrSID"] {
+            assert_eq!(canonical_driver_name(name), "JP2", "{name}");
+            assert_eq!(RasterDriver::from_name(name), Some(RasterDriver::JP2), "{name}");
+        }
+    }
+
+    /// The other names select the drivers they selected: terrio's names in any case and the
+    /// aliases; a name of no raster driver selects none.
+    #[test]
+    fn raster_driver_names_and_aliases_select_their_drivers() {
+        for (name, driver) in [
+            ("GTiff", RasterDriver::GTiff),
+            ("geotiff", RasterDriver::GTiff),
+            ("TIF", RasterDriver::GTiff),
+            ("cog", RasterDriver::Cog),
+            ("netCDF", RasterDriver::NetCDF),
+            ("nc", RasterDriver::NetCDF),
+            ("Surfer", RasterDriver::GSBG),
+            ("jpg", RasterDriver::JPEG),
+            ("GRIB2", RasterDriver::GRIB),
+            ("Zarr", RasterDriver::Zarr),
+        ] {
+            assert_eq!(RasterDriver::from_name(name), Some(driver), "{name}");
+        }
+        for name in ["ESRI Shapefile", "JP2X", "OpenJPEG", ""] {
+            assert_eq!(RasterDriver::from_name(name), None, "{name}");
+        }
+    }
 
     /// Only Zarr is read with `wbraster`'s Zarr reader, and GRIB, netCDF, HDF5, WebP and SRTM tiles
     /// have no `wbraster` format: terrio reads them itself (the GDAL backend reads GRIB in builds
