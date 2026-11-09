@@ -2671,6 +2671,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "bytes",
+ "chrono",
  "delaunator",
  "e57",
  "encoding_rs",

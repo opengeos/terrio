@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A build with the `gdal` feature and without the default features
+  (`--no-default-features --features gdal`) compiles. The GDAL backend formats the date-time
+  fields it reads with chrono, whose formatting needs its `alloc` feature, and only the
+  `parquet` feature turned it on (through arrow-array); the `gdal` feature now enables it (#732).
 - A `WarpedVRT` over a dataset terrio opened for reading now reads and warps each source window
   in one call that releases the GIL, so reads on several Python threads, such as a server
   answering tile requests on threads, no longer wait for each other's warps as in 0.8.0. The

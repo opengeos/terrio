@@ -87,6 +87,9 @@ rust-aec = { version = "0.1.1", optional = true }
 # (3.4 or later) installed, found with pkg-config or GDAL_HOME.
 gdal = { workspace = true, optional = true }
 gdal-sys = { workspace = true, optional = true }
+# The backend formats the date-time fields it reads as ISO 8601 text with chrono, whose formatting
+# needs `alloc`: gdal builds chrono without it.
+chrono = { version = "0.4", default-features = false, features = ["alloc"], optional = true }
 # Array views of raster pixels and owned transfers between rasters and arrays (the `ndarray`
 # feature), without copying the pixels.
 ndarray = { workspace = true, optional = true }
@@ -147,7 +150,7 @@ sqlite = []
 ## grids, which terrio-crs reads with the crate, are not read (PROJ's are DEFLATE-compressed).
 libzstd = ["dep:zstd"]
 ## Open any format GDAL reads, through the same data model, when terrio has no driver for it.
-gdal = ["dep:gdal", "dep:gdal-sys"]
+gdal = ["dep:gdal", "dep:gdal-sys", "dep:chrono"]
 ## Raster pixels as `ndarray` arrays without copying them: borrowed and mutable views, owned
 ## transfers between rasters and arrays, and lazy reads' masks as arrays; floating-point windows
 ## (NaN where pixels are invalid) as owned arrays, bands first or last. Re-exports the crate as
