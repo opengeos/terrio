@@ -31,6 +31,7 @@
 //! | `TERRIO_HTTP_BLOCK_SIZE` (bytes) | `CPL_VSIL_CURL_CHUNK_SIZE` | 65536 |
 //! | `TERRIO_HTTP_CACHE_SIZE` (bytes): the block cache of each open file, and the process-wide cache | `CPL_VSIL_CURL_CACHE_SIZE` | 67108864 |
 //! | `TERRIO_HTTP_USERAGENT` | `GDAL_HTTP_USERAGENT` | `terrio/VERSION` |
+//! | `TERRIO_HTTP_MULTIRANGE`: `PARALLEL` requests the byte runs of one read up to 8 at once; `SERIAL` one after another; `SINGLE_GET` (one multipart request in GDAL, not supported) as `SERIAL`; any other value is `PARALLEL` | `GDAL_HTTP_MULTIRANGE` | `PARALLEL` |
 //! | `TERRIO_HTTP_LOG=YES`: print each request, and each new process-wide connection pool, to standard error | `CPL_CURL_VERBOSE` | off |
 //! | `TERRIO_JSON_MAX_SIZE` (bytes, `K`, `M` or `G` suffixes): the largest JSON document fetched whole | `CPL_JSON_MAX_SIZE` | 100 MB |
 //!
@@ -43,7 +44,7 @@ use crate::s3::{self, Credentials, S3Object};
 use crate::{Error, Result};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{self, Read, Seek, SeekFrom};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use ureq::unversioned::resolver::DefaultResolver;
@@ -127,6 +128,10 @@ pub struct HttpOptions {
     /// The bytes a remote file's first request fetches (`GDAL_INGESTED_BYTES_AT_OPEN`), when more
     /// than a block: enough for a whole GeoTIFF header in one request.
     pub ingested_bytes_at_open: Option<u64>,
+    /// Whether the separate byte runs of one prefetch (the tiles of a window) are fetched in
+    /// parallel, as `GDAL_HTTP_MULTIRANGE=PARALLEL` (GDAL's default) fetches a multi-range read;
+    /// otherwise one after another.
+    pub parallel_ranges: bool,
 }
 
 impl Default for HttpOptions {
@@ -141,6 +146,7 @@ impl Default for HttpOptions {
             user_agent: format!("terrio/{}", crate::VERSION),
             log: false,
             ingested_bytes_at_open: None,
+            parallel_ranges: true,
         }
     }
 }
@@ -169,6 +175,12 @@ impl HttpOptions {
                 .and_then(|v| v.parse::<u64>().ok())
                 .filter(|n| *n > 0)
                 .map(|n| n.min(64 << 20)),
+            // As GDAL v3.13.3 reads it (`VSICurlHandle::ReadMultiRange`, port/cpl_vsil_curl.cpp):
+            // SERIAL is one request at a time, any value but SINGLE_GET parallel. GDAL's SINGLE_GET
+            // asks for every range in one multipart request, which terrio does not parse: it is
+            // taken as SERIAL.
+            parallel_ranges: var("TERRIO_HTTP_MULTIRANGE", "GDAL_HTTP_MULTIRANGE")
+                .is_none_or(|v| !matches!(v.to_ascii_uppercase().as_str(), "SERIAL" | "SINGLE_GET")),
         }
     }
 }
@@ -408,6 +420,7 @@ struct Fetched {
 }
 
 /// Makes requests for one remote file: signing, redirects, region discovery and retries.
+#[derive(Clone)]
 struct Client {
     agent: ureq::Agent,
     /// The process `agent` was made in (see [`agent_in`]).
@@ -446,6 +459,9 @@ struct Client {
     on_azure_endpoint: bool,
     /// Where the requests' redirects may lead.
     redirects: Redirects,
+    /// Set when the requests of this copy of the client are no longer wanted (a parallel
+    /// prefetch's other run failed): no further request or retry is sent, and a retry's wait ends.
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 /// Where a request's redirects may lead.
@@ -478,6 +494,7 @@ fn redirect_refused(asked: &str, to: &str) -> Error {
     ))
 }
 
+#[derive(Clone)]
 struct S3Auth {
     creds: Option<Credentials>,
     region: Option<String>,
@@ -536,6 +553,7 @@ impl Client {
             headers: Vec::new(),
             on_azure_endpoint: false,
             redirects: Redirects::Any,
+            cancel: None,
         };
         client.on_azure_endpoint = client.azure && client.resolve_on_azure_endpoint();
         client.headers = client.resolve_headers();
@@ -679,6 +697,7 @@ impl Client {
         let mut redirects = 0;
         let mut attempt = 0;
         loop {
+            self.check_cancelled()?;
             self.check_asset_request(&url)?;
             let mut req = agent_in(self.pid, &self.agent, || own_agent(&self.options)).get(&url);
             if let Some(r) = &range_header {
@@ -725,7 +744,7 @@ impl Client {
                 Ok(r) => r,
                 Err(e) if attempt < self.options.max_retry && transient(&e) => {
                     retry_warning(0, &self.url, self.options.retry_delay, attempt);
-                    self.backoff(&mut attempt);
+                    self.backoff(&mut attempt)?;
                     continue;
                 }
                 Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&url)))),
@@ -784,7 +803,7 @@ impl Client {
                 429 | 500 | 502 | 503 | 504 if attempt < self.options.max_retry => {
                     record_discarded(&self.url, &self.stats_name(), response);
                     retry_warning(status, &self.url, self.options.retry_delay, attempt);
-                    self.backoff(&mut attempt)
+                    self.backoff(&mut attempt)?
                 }
                 400..=599 if self.service_errors => return Ok(response),
                 _ => {
@@ -801,9 +820,47 @@ impl Client {
         }
     }
 
-    fn backoff(&self, attempt: &mut u32) {
-        std::thread::sleep(self.options.retry_delay.saturating_mul(1 << (*attempt).min(16)));
+    /// Waits before a retry, for longer at each `attempt`. The wait ends early, with an error,
+    /// when the client's requests are cancelled (see [`Client::cancel`]).
+    fn backoff(&self, attempt: &mut u32) -> Result<()> {
+        let delay = self.options.retry_delay.saturating_mul(1 << (*attempt).min(16));
+        match &self.cancel {
+            None => std::thread::sleep(delay),
+            Some(cancel) => {
+                let until = Instant::now() + delay;
+                while let Some(left) = until.checked_duration_since(Instant::now()).filter(|left| !left.is_zero()) {
+                    if cancel.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    std::thread::sleep(left.min(Duration::from_millis(20)));
+                }
+            }
+        }
+        self.check_cancelled()?;
         *attempt += 1;
+        Ok(())
+    }
+
+    /// An error once the client's requests are cancelled (see [`Client::cancel`]).
+    fn check_cancelled(&self) -> Result<()> {
+        match &self.cancel {
+            Some(cancel) if cancel.load(Ordering::SeqCst) => Err(Error::Http(format!("{}: request cancelled", redact(&self.url)))),
+            _ => Ok(()),
+        }
+    }
+
+    /// Takes the state `copy`, a copy of this client, has after its requests: its response URL
+    /// and what it learned. An S3 region this client discovered after the copy was made stays,
+    /// with the URL it gives (the region is part of the host), as the copy's requests did not
+    /// discover it.
+    fn adopt(&mut self, mut copy: Client) {
+        let discovered = |c: &Client| c.s3.as_ref().is_some_and(|a| a.discovered);
+        if discovered(self) && !discovered(&copy) {
+            copy.s3 = self.s3.clone();
+            copy.url = self.url.clone();
+        }
+        copy.cancel = None;
+        *self = copy;
     }
 
     /// Fetches the inclusive byte range `range` (or the whole file), retrying when the transfer
@@ -873,7 +930,7 @@ impl Client {
                 Ok(_) => {}
                 Err(_) if attempt < self.options.max_retry => {
                     retry_warning(status, &self.url, self.options.retry_delay, attempt);
-                    self.backoff(&mut attempt);
+                    self.backoff(&mut attempt)?;
                     continue;
                 }
                 Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&self.url)))),
@@ -1963,6 +2020,103 @@ impl std::fmt::Debug for RangeReader {
     }
 }
 
+/// The most requests a parallel fetch has in flight (and responses it holds) at once.
+// ponytail: a thread per request slot, spawned per fetch; a pool of request threads if spawning
+// ever shows next to a request's latency
+const PARALLEL_RUNS: usize = 8;
+
+/// A run of consecutive blocks that one request fetches (see [`Shared::fetch_blocks`]).
+struct Run {
+    /// The run's first block.
+    start: u64,
+    /// How many of the run's first bytes the file's first bytes (`Shared::prefix`) hold: copied
+    /// from there when the run is stored, so that no run holds a copy before.
+    held: usize,
+    /// The first byte to request, past `last` when `held` covers the run.
+    from: u64,
+    /// The run's last byte.
+    last: u64,
+}
+
+impl Run {
+    /// Whether the run needs a request: its held bytes do not cover it.
+    fn requests(&self) -> bool {
+        self.from <= self.last
+    }
+}
+
+/// The requests of a parallel fetch the threads take in order, at most `free` more than the
+/// runs stored so far, until the fetch stops them (see [`Shared::fetch_runs_in_parallel`]).
+struct RequestWindow {
+    state: Mutex<WindowState>,
+    changed: std::sync::Condvar,
+    /// Set when the fetch stops: no request is taken, and the clients' retries end.
+    cancel: Arc<AtomicBool>,
+}
+
+/// Where a [`RequestWindow`] is.
+struct WindowState {
+    /// The index of the next request to take.
+    next: usize,
+    /// How many more requests may be taken before a run is stored.
+    places: usize,
+}
+
+/// Stops a [`RequestWindow`] when the thread holding it panics.
+struct StopOnPanic<'a>(&'a RequestWindow);
+
+impl Drop for StopOnPanic<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.stop();
+        }
+    }
+}
+
+impl RequestWindow {
+    fn new(places: usize) -> Self {
+        Self {
+            state: Mutex::new(WindowState { next: 0, places }),
+            changed: std::sync::Condvar::new(),
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// The next of `requests` once the window has a place for it, or `None` when they are all
+    /// taken or the fetch stopped.
+    fn take<T: Copy>(&self, requests: &[T]) -> Option<T> {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if self.cancel.load(Ordering::SeqCst) || state.next >= requests.len() {
+                return None;
+            }
+            if state.places > 0 {
+                state.places -= 1;
+                state.next += 1;
+                return Some(requests[state.next - 1]);
+            }
+            state = self.changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// Gives back the place of a request whose run is stored.
+    fn release(&self) {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).places += 1;
+        self.changed.notify_one();
+    }
+
+    /// Stops the fetch: no other request is taken, and the retries of those in flight end.
+    fn stop(&self) {
+        let _state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.cancel.store(true, Ordering::SeqCst);
+        self.changed.notify_all();
+    }
+
+    fn stop_on_panic(&self) -> StopOnPanic<'_> {
+        StopOnPanic(self)
+    }
+}
+
 struct Shared {
     client: Client,
     /// The file's key in the process-wide cache.
@@ -2264,9 +2418,12 @@ impl Shared {
 
     /// Fetches the given blocks (sorted, not cached), merging runs separated by at most `gap`
     /// blocks into one request. Blocks the process-wide cache holds are taken from it, and bytes
-    /// the first request returned are not asked again.
+    /// the first request returned are not asked again. Separate runs are requested in parallel
+    /// (see [`HttpOptions::parallel_ranges`] and [`Shared::fetch_runs_in_parallel`]), and stored
+    /// in order as if fetched one after another.
     fn fetch_blocks(&mut self, blocks: &[u64], gap: u64) -> io::Result<()> {
         let blocks: Vec<u64> = blocks.iter().copied().filter(|&b| !self.load_cached_block(b)).collect();
+        let mut runs = Vec::new();
         let mut i = 0;
         while i < blocks.len() {
             let start = blocks[i];
@@ -2279,33 +2436,150 @@ impl Shared {
             let first = start * self.block_size;
             let last = ((end + 1) * self.block_size).min(self.len) - 1;
             // The first bytes, already held, start the run when it starts the file.
-            let held: &[u8] = match &self.prefix {
-                Some(p) if (first as usize) < p.len() => &p[first as usize..p.len().min(last as usize + 1)],
-                _ => &[],
+            let held = match &self.prefix {
+                Some(p) if (first as usize) < p.len() => p.len().min(last as usize + 1) - first as usize,
+                _ => 0,
             };
-            let from = first + held.len() as u64;
-            let mut data = held.to_vec();
-            if from <= last {
-                let fetched = self.client.fetch(Some((from, last))).map_err(io::Error::other)?;
-                self.observe_source();
-                match fetched.status {
-                    206 if fetched.data.len() as u64 == last - from + 1 => data.extend_from_slice(&fetched.data),
-                    200 if fetched.data.len() as u64 == self.len => {
-                        self.store_whole(fetched.data.into());
-                        return Ok(());
-                    }
-                    status => {
-                        return Err(io::Error::other(format!(
-                            "{}: bytes {from}-{last}: unexpected response (status {status}, {} bytes)",
-                            redact(&self.client.url),
-                            fetched.data.len()
-                        )));
-                    }
-                }
+            let from = first + held as u64;
+            runs.push(Run { start, held, from, last });
+        }
+        if runs.iter().filter(|run| run.requests()).count() > 1 && self.client.options.parallel_ranges {
+            return self.fetch_runs_in_parallel(runs);
+        }
+        self.fetch_runs_serially(runs)
+    }
+
+    /// Fetches and stores `runs` one after another.
+    fn fetch_runs_serially(&mut self, runs: Vec<Run>) -> io::Result<()> {
+        for run in runs {
+            let fetched = run.requests().then(|| self.client.fetch(Some((run.from, run.last))));
+            if self.store_run(run, fetched)? {
+                break;
             }
-            self.store(start, data);
         }
         Ok(())
+    }
+
+    /// Fetches `runs` with up to [`PARALLEL_RUNS`] requests in flight, each sent by a thread of
+    /// its own through a copy of the client (and a connection of the shared pool), with the
+    /// caller's options and STAC asset policy. The runs are stored in order, each as soon as it
+    /// and the runs before it are in, and a new request starts only when a run is stored: at most
+    /// [`PARALLEL_RUNS`] responses are held at once, outside the cache. A fetch's runs span at
+    /// most half the cache's blocks ([`Shared::fetch_planned`]), so they are within the cache's
+    /// size together.
+    ///
+    /// A failed run (or a whole file a server sent instead) ends the fetch as the serial one
+    /// would, once the requests in flight end: no request starts after it, the retries of those
+    /// in flight are cancelled, and their responses are dropped. No request outlives the fetch.
+    fn fetch_runs_in_parallel(&mut self, runs: Vec<Run>) -> io::Result<()> {
+        // (index of the run, first byte, last byte) of each request
+        let requests: Vec<(usize, u64, u64)> =
+            runs.iter().enumerate().filter(|(_, run)| run.requests()).map(|(i, run)| (i, run.from, run.last)).collect();
+        let context = crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current());
+        let window = RequestWindow::new(PARALLEL_RUNS);
+        let (sender, responses) = std::sync::mpsc::channel::<(usize, Client, Result<Fetched>)>();
+        std::thread::scope(|scope| {
+            let mut threads = 0;
+            for _ in 0..PARALLEL_RUNS.min(requests.len()) {
+                let (sender, window, context, requests) = (sender.clone(), &window, &context, &requests);
+                let mut client = self.client.clone();
+                client.cancel = Some(window.cancel.clone());
+                let spawned = std::thread::Builder::new().name("terrio-range".into()).spawn_scoped(scope, move || {
+                    // A panicking request stops the others, so that the fetch ends.
+                    let _stop = window.stop_on_panic();
+                    while let Some((run, from, last)) = window.take(requests) {
+                        let fetched = context.enter().and_then(|_scope| client.fetch(Some((from, last))));
+                        // A copy of the client for the storing thread to take back (its URLs and
+                        // S3 state): a small cost next to the request's.
+                        if sender.send((run, client.clone(), fetched)).is_err() {
+                            break;
+                        }
+                    }
+                });
+                // A thread that cannot be had: the others send the requests.
+                threads += usize::from(spawned.is_ok());
+            }
+            drop(sender);
+            if threads == 0 {
+                return self.fetch_runs_serially(runs);
+            }
+            // A panic here stops the threads too, which would otherwise wait for a place.
+            let _stop = window.stop_on_panic();
+            let result = self.store_runs_in_order(runs, &responses, &window);
+            // Threads still sending a request take no other and end with it, joined here.
+            window.stop();
+            result
+        })
+    }
+
+    /// Stores `runs` in order as their `responses` come in, giving `window` back a request's place
+    /// as each run is stored. See [`Shared::fetch_runs_in_parallel`].
+    fn store_runs_in_order(
+        &mut self,
+        runs: Vec<Run>,
+        responses: &std::sync::mpsc::Receiver<(usize, Client, Result<Fetched>)>,
+        window: &RequestWindow,
+    ) -> io::Result<()> {
+        let mut arrived = HashMap::new();
+        for (i, run) in runs.into_iter().enumerate() {
+            let fetched = if run.requests() {
+                let (client, fetched) = loop {
+                    if let Some(response) = arrived.remove(&i) {
+                        break response;
+                    }
+                    let (at, client, fetched) =
+                        responses.recv().map_err(|_| io::Error::other(format!("{}: a request thread ended", redact(&self.client.url))))?;
+                    arrived.insert(at, (client, fetched));
+                };
+                // the client of the last run in order is kept, as serially (its response URL)
+                self.client.adopt(client);
+                Some(fetched)
+            } else {
+                None
+            };
+            let requested = run.requests();
+            if self.store_run(run, fetched)? {
+                return Ok(());
+            }
+            if requested {
+                window.release();
+            }
+        }
+        Ok(())
+    }
+
+    /// Stores `run`: its held bytes, then the response for the rest (`None` when the held bytes
+    /// cover it). Returns whether the server sent the whole file instead, which is then stored and
+    /// ends the fetch.
+    fn store_run(&mut self, run: Run, fetched: Option<Result<Fetched>>) -> io::Result<bool> {
+        let Run { start, held, from, last } = run;
+        let first = (start * self.block_size) as usize;
+        let mut data = match &self.prefix {
+            Some(p) if held > 0 => p[first..first + held].to_vec(),
+            _ => Vec::new(),
+        };
+        if let Some(fetched) = fetched {
+            let fetched = fetched.map_err(io::Error::other)?;
+            self.observe_source();
+            match fetched.status {
+                // the response itself when nothing was held: one copy of the run less
+                206 if fetched.data.len() as u64 == last - from + 1 && data.is_empty() => data = fetched.data,
+                206 if fetched.data.len() as u64 == last - from + 1 => data.extend_from_slice(&fetched.data),
+                200 if fetched.data.len() as u64 == self.len => {
+                    self.store_whole(fetched.data.into());
+                    return Ok(true);
+                }
+                status => {
+                    return Err(io::Error::other(format!(
+                        "{}: bytes {from}-{last}: unexpected response (status {status}, {} bytes)",
+                        redact(&self.client.url),
+                        fetched.data.len()
+                    )));
+                }
+            }
+        }
+        self.store(start, data);
+        Ok(false)
     }
 
     /// Copies the bytes at `pos` into `buf`, fetching what is missing. Returns the count copied.
@@ -2864,6 +3138,235 @@ mod tests {
         assert_eq!(read_range(&mut r, data.len() as u64 - 10, 10), data[data.len() - 10..]);
         let mut buf = [0u8; 8];
         assert_eq!(r.read(&mut buf).unwrap(), 0);
+    }
+
+    /// What a [`serve_gated`] server has seen.
+    #[derive(Default)]
+    struct Traffic {
+        /// The requests being answered.
+        in_flight: usize,
+        /// The most requests answered at once.
+        most: usize,
+        /// The first byte of each request received, in order.
+        firsts: Vec<usize>,
+    }
+
+    /// The requests a [`serve_gated`] server has seen, which its answers can wait on.
+    #[derive(Default)]
+    struct Gate {
+        seen: Mutex<Traffic>,
+        changed: std::sync::Condvar,
+    }
+
+    impl Gate {
+        /// Waits until `done` holds of what the server has seen, at most `timeout`. What `done`
+        /// reads should only grow (`most`, not `in_flight`): another request may be answered, and
+        /// out of flight, before this one wakes.
+        fn wait_until(&self, done: impl Fn(&Traffic) -> bool, timeout: Duration) {
+            let seen = self.seen.lock().unwrap();
+            drop(self.changed.wait_timeout_while(seen, timeout, |seen| !done(seen)).unwrap());
+        }
+
+        fn in_flight(&self) -> usize {
+            self.seen.lock().unwrap().in_flight
+        }
+
+        fn most(&self) -> usize {
+            self.seen.lock().unwrap().most
+        }
+
+        /// The first bytes of the requests received, those of the open's first request (byte 0)
+        /// left out.
+        fn ranges_asked(&self) -> Vec<usize> {
+            self.seen.lock().unwrap().firsts.iter().copied().filter(|&first| first > 0).collect()
+        }
+    }
+
+    /// Serves `data` by range, a connection per thread. Each request is answered with the status
+    /// `answer(its first byte, the gate)` returns, once it returns: 206 with the bytes asked,
+    /// another status without a body.
+    fn serve_gated(data: Vec<u8>, answer: impl Fn(usize, &Gate) -> u16 + Send + Sync + 'static) -> (String, Arc<Gate>) {
+        let answer = Arc::new(answer);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/data", listener.local_addr().unwrap());
+        let gate = Arc::new(Gate::default());
+        let server_gate = gate.clone();
+        let data = Arc::new(data);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let (Ok(mut stream), data, gate, answer) = (stream, data.clone(), server_gate.clone(), answer.clone()) else {
+                    continue;
+                };
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    loop {
+                        let mut range = None;
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        loop {
+                            line.clear();
+                            if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                                break;
+                            }
+                            if let Some(v) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
+                                let (a, b) = v.trim().split_once('-').unwrap();
+                                range = Some((a.parse::<usize>().unwrap(), b.parse::<usize>().unwrap().min(data.len() - 1)));
+                            }
+                        }
+                        let (a, b) = range.unwrap_or((0, data.len() - 1));
+                        {
+                            let mut seen = gate.seen.lock().unwrap();
+                            seen.in_flight += 1;
+                            seen.most = seen.most.max(seen.in_flight);
+                            seen.firsts.push(a);
+                        }
+                        gate.changed.notify_all();
+                        let status = answer(a, &gate);
+                        // Out of flight before the answer is sent, so that a client holding the
+                        // answer sees it out.
+                        gate.seen.lock().unwrap().in_flight -= 1;
+                        gate.changed.notify_all();
+                        let sent = if status == 206 {
+                            let head = format!(
+                                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {a}-{b}/{}\r\n\r\n",
+                                b - a + 1,
+                                data.len()
+                            );
+                            stream.write_all(head.as_bytes()).and_then(|()| stream.write_all(&data[a..=b]))
+                        } else {
+                            stream.write_all(format!("HTTP/1.1 {status} Refused\r\nContent-Length: 0\r\n\r\n").as_bytes())
+                        };
+                        if sent.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (url, gate)
+    }
+
+    /// The prefetch ranges of `n` runs of blocks far apart (none at the start of the file).
+    fn separate_runs(n: u64) -> Vec<(u64, u64)> {
+        (0..n).map(|i| ((4 + 8 * i) * 4096, 100)).collect()
+    }
+
+    #[test]
+    fn parallel_range_requests_check_consent_with_the_callers_options() {
+        // A credentialed asset's file: each request checks consent, which the caller's scope
+        // gives and the environment of a request thread would not.
+        let data = test_data();
+        let (url, gate) = serve_gated(data.clone(), |first, gate| {
+            if first > 0 {
+                gate.wait_until(|seen| seen.most >= 2, Duration::from_secs(10));
+            }
+            206
+        });
+        crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "YES")], || {
+            let policy = crate::stac::AssetReadPolicy::for_tests(&url, true);
+            let _entered = policy.enter().expect("the caller's scope gives consent");
+            let mut r = RangeReader::open_with(&Remote::Url(url.clone()), options()).unwrap();
+            r.prefetch(&separate_runs(2)).expect("consent given by the caller");
+            assert_eq!(gate.most(), 2, "requested in parallel");
+            assert_eq!(read_range(&mut r, 12 * 4096, 100), data[12 * 4096..12 * 4096 + 100]);
+        });
+    }
+
+    #[test]
+    fn parallel_range_requests_take_the_policy_the_caller_entered_after_the_open() {
+        // A file opened with an authorization header, then read under a STAC asset policy without
+        // consent: the request threads check the caller's policy, and send nothing.
+        let (url, gate) = serve_gated(test_data(), |_, _| 206);
+        let r = crate::config::with_options(&[("GDAL_HTTP_HEADERS", "Authorization: synthetic")], || {
+            RangeReader::open_with(&Remote::Url(url.clone()), options()).unwrap()
+        });
+        let policy = crate::stac::AssetReadPolicy::for_tests(&url, false);
+        let _entered = policy.enter().expect("no credentials seen yet");
+        let error = r.prefetch(&separate_runs(2)).unwrap_err().to_string();
+        assert!(error.contains("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS"), "{error}");
+        assert_eq!(gate.ranges_asked(), Vec::<usize>::new(), "no request sent without consent");
+    }
+
+    #[test]
+    fn a_failed_run_ends_the_prefetch_with_no_request_left() {
+        // The first of nine runs fails at once; the others sent answer a retryable 503 a little
+        // later, and the ninth waits for a place. The error comes back once the requests in flight
+        // end: none of them is retried, and the ninth is never sent.
+        let data = test_data();
+        let runs = separate_runs(9);
+        let failed = runs[0].0 as usize;
+        let (url, gate) = serve_gated(data, move |first, _| match first {
+            0 => 206,
+            first if first == failed => 416,
+            _ => {
+                std::thread::sleep(Duration::from_millis(200));
+                503
+            }
+        });
+        let opts = HttpOptions { max_retry: 5, retry_delay: Duration::from_millis(50), ..options() };
+        let r = RangeReader::open_with(&Remote::Url(url), opts).unwrap();
+        assert!(r.prefetch(&runs).is_err());
+        assert_eq!(gate.in_flight(), 0, "the requests in flight ended before the error came back");
+        // Longer than the retries would wait.
+        std::thread::sleep(Duration::from_millis(500));
+        // The threads that had not taken a request when the run failed take none (the eight
+        // places are not all taken on a loaded machine).
+        let asked = gate.ranges_asked();
+        let mut once = asked.clone();
+        once.sort_unstable();
+        once.dedup();
+        assert_eq!(once.len(), asked.len(), "no request retried: {asked:?}");
+        assert!(asked.contains(&failed), "{asked:?}");
+        let first_eight: Vec<usize> = runs[..8].iter().map(|&(off, _)| off as usize).collect();
+        assert!(asked.iter().all(|first| first_eight.contains(first)), "none sent after the failure: {asked:?}");
+    }
+
+    #[test]
+    fn prefetch_requests_separate_runs_in_parallel() {
+        let data = test_data();
+        for parallel in [true, false] {
+            // Each request waits for three in flight: the three runs together, unless serial.
+            let wait = if parallel { Duration::from_secs(10) } else { Duration::from_millis(100) };
+            let (url, gate) = serve_gated(data.clone(), move |first, gate| {
+                if first > 0 {
+                    gate.wait_until(|seen| seen.most >= 3, wait);
+                }
+                206
+            });
+            let opts = HttpOptions { parallel_ranges: parallel, ..options() };
+            let mut r = RangeReader::open_with(&Remote::Url(url), opts).unwrap();
+            r.prefetch(&[(10 * 4096, 100), (30 * 4096, 100), (60 * 4096, 5000)]).unwrap();
+            assert_eq!(gate.most(), if parallel { 3 } else { 1 }, "parallel_ranges={parallel}");
+            assert_eq!(gate.ranges_asked().len(), 3);
+            assert_eq!(read_range(&mut r, 60 * 4096, 5000), data[60 * 4096..60 * 4096 + 5000]);
+            assert_eq!(read_range(&mut r, 10 * 4096, 100), data[10 * 4096..10 * 4096 + 100]);
+        }
+    }
+
+    #[test]
+    fn prefetch_has_at_most_eight_requests_in_flight() {
+        // Nine runs: each request is held until eight are in flight, then until the ninth is sent
+        // (the open's request and nine others), for a further 300 ms at most. The ninth is sent
+        // only once a run is in, after the wait, with eight in flight until then.
+        let data = test_data();
+        let (url, gate) = serve_gated(data.clone(), |first, gate| {
+            if first > 0 {
+                gate.wait_until(|seen| seen.most >= 8 || seen.firsts.len() >= 10, Duration::from_secs(10));
+                gate.wait_until(|seen| seen.firsts.len() >= 10, Duration::from_millis(300));
+            }
+            206
+        });
+        let mut r = RangeReader::open_with(&Remote::Url(url), options()).unwrap();
+        let runs = separate_runs(9);
+        r.prefetch(&runs).unwrap();
+        assert_eq!(gate.most(), PARALLEL_RUNS);
+        assert_eq!(gate.ranges_asked().len(), 9);
+        for (off, len) in runs {
+            assert_eq!(read_range(&mut r, off, len as usize), data[off as usize..(off + len) as usize]);
+        }
+        assert_eq!(gate.ranges_asked().len(), 9, "the runs were all prefetched");
     }
 
     #[test]
@@ -4111,7 +4614,10 @@ mod tests {
         cache.bytes -= dropped;
         drop(cache);
         let mut r = RangeReader::open_with(&Remote::Url(url), ingest).unwrap();
-        assert_eq!(header_values(&seen, "range")[2..], ["bytes=16384-65535", "bytes=131072-196607"]);
+        // the two runs are requested in parallel, so in either order
+        let mut asked = header_values(&seen, "range")[2..].to_vec();
+        asked.sort();
+        assert_eq!(asked, ["bytes=131072-196607", "bytes=16384-65535"]);
         assert_eq!(read_range(&mut r, 0, 196_608), data[..196_608]);
         assert_eq!(seen.lock().unwrap().len(), 4);
     }

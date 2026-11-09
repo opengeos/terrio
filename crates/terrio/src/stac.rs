@@ -398,6 +398,18 @@ impl AssetReadPolicy {
         ASSET_READ_POLICY.with(|p| p.borrow().clone())
     }
 
+    /// A policy for the asset document `document`, credentials already seen as `credentialed`.
+    #[cfg(test)]
+    pub(crate) fn for_tests(document: &str, credentialed: bool) -> Self {
+        Self {
+            document: document.to_string(),
+            same_origin_allowed: Default::default(),
+            #[cfg(remote)]
+            source: document.to_string(),
+            credentialed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(credentialed)),
+        }
+    }
+
     fn for_asset(document: &str, href: &str) -> Result<Option<Self>> {
         let selected = match parse_name(href) {
             Some(Name::Asset { item, .. }) => Some(item),

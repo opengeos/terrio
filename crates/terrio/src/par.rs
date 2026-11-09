@@ -502,10 +502,10 @@ pub(crate) fn map_range_coarse<R: Send>(n: usize, f: impl Fn(usize) -> R + Sync 
     map_range_on::<true, R>(n, f)
 }
 
-/// Maps `f` over `0..n`, keeping the order, with up to `at_once` calls at a time on threads of
-/// their own (native builds), for work that mostly waits on a server: on the pool, as many
-/// requests would be in flight as the machine has cores. The first error (by index) is returned,
-/// and once a call has failed, no worker starts another.
+/// Maps `f` over `0..n`, keeping the order, with up to `at_once` calls at a time on the calling
+/// thread and threads of their own (native builds), for work that mostly waits on a server: on
+/// the pool, as many requests would be in flight as the machine has cores. The first error (by
+/// index) is returned, and once a call has failed, no worker starts another.
 ///
 /// The threads see the caller's scoped options and STAC asset read policy
 /// ([`crate::stac::AssetReadContext`]), which a new thread would not have. They count as
@@ -528,36 +528,42 @@ pub(crate) fn map_waiting<R: Send>(n: usize, at_once: usize, f: impl Fn(usize) -
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         let context = crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current());
         let (next, failed) = (AtomicUsize::new(0), AtomicBool::new(false));
-        // Joined when the scope ends, before `_running` lets a fork go on.
+        // A worker's loop: items claimed until none is left or one has failed. The calling thread
+        // runs one too, already in its own context.
+        let work = |enter: bool| {
+            let mut mine = Vec::new();
+            let _scope = match enter.then(|| context.enter()).transpose() {
+                Ok(scope) => scope,
+                Err(e) => {
+                    failed.store(true, Ordering::Relaxed);
+                    mine.push((0, Err(e)));
+                    return mine;
+                }
+            };
+            while !failed.load(Ordering::Relaxed) {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                if i >= n {
+                    break;
+                }
+                let r = f(i);
+                if r.is_err() {
+                    failed.store(true, Ordering::Relaxed);
+                }
+                mine.push((i, r));
+            }
+            mine
+        };
+        // Joined when the scope ends, before `_running` lets a fork go on. A thread the OS
+        // refuses leaves its share to the others and the calling thread.
         let mut done: Vec<(usize, crate::Result<R>)> = std::thread::scope(|s| {
-            let workers: Vec<_> = (0..at_once.min(n))
-                .map(|_| {
-                    s.spawn(|| {
-                        let mut mine = Vec::new();
-                        let _scope = match context.enter() {
-                            Ok(scope) => scope,
-                            Err(e) => {
-                                failed.store(true, Ordering::Relaxed);
-                                mine.push((0, Err(e)));
-                                return mine;
-                            }
-                        };
-                        while !failed.load(Ordering::Relaxed) {
-                            let i = next.fetch_add(1, Ordering::Relaxed);
-                            if i >= n {
-                                break;
-                            }
-                            let r = f(i);
-                            if r.is_err() {
-                                failed.store(true, Ordering::Relaxed);
-                            }
-                            mine.push((i, r));
-                        }
-                        mine
-                    })
-                })
+            let workers: Vec<_> = (1..at_once.min(n))
+                .map_while(|_| std::thread::Builder::new().name("terrio-wait".into()).spawn_scoped(s, || work(true)).ok())
                 .collect();
-            workers.into_iter().flat_map(|w| w.join().unwrap_or_else(|p| std::panic::resume_unwind(p))).collect()
+            let mut done = work(false);
+            for w in workers {
+                done.extend(w.join().unwrap_or_else(|p| std::panic::resume_unwind(p)));
+            }
+            done
         });
         done.sort_by_key(|(i, _)| *i);
         // After a failure some indices are missing, but an error is among the results.

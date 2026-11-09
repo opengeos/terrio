@@ -10,6 +10,14 @@
   5.3 to 5.7 s and 4.5 to 5.9 s. The bands and chunks of a read share one budget of requests,
   smaller when large chunks would take more than half the memory the process can use, and no
   chunk is requested once one has failed. Local stores and WebAssembly are read as before.
+- A remote read requests the separate byte runs of a window (a COG window over several tiles)
+  in parallel, up to 8 at once, through the process-wide connection pool, as GDAL's default
+  `GDAL_HTTP_MULTIRANGE=PARALLEL` does; `TERRIO_HTTP_MULTIRANGE=SERIAL` (or the GDAL name)
+  requests them one after another. The requests carry the calling thread's options and STAC
+  asset policy. A new request starts as each run is stored, so at most 8 responses are held at
+  once, and one read's runs stay within half the block cache. A failed run ends the read once the
+  requests in flight end; none is retried or sent after it. Peak memory can rise with many
+  readers, from glibc's per-thread arenas (`MALLOC_ARENA_MAX=2` bounds them).
 
 ## 0.8.0 (2026-11-08)
 
