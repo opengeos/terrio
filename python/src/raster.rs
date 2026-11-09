@@ -34,16 +34,57 @@ pub struct PyRaster {
 /// More readers of a raster opened lazily from `path`, kept in its `_readers` attribute: a read
 /// that overlaps one in progress (which holds the raster's own reader) takes one of them, or
 /// opens one, and leaves it for the next. Opening again reads the headers from the process-wide
-/// caches; each reader keeps its own decoded chunks.
+/// caches. Each reader has its own file handle; their decoded chunks share the process-wide block
+/// cache, under its one byte cap, without being shared between readers.
 #[pyclass(frozen)]
 pub(crate) struct Readers {
     path: String,
+    /// The options of the thread that opened the raster (an `Env`, which is thread-local), so
+    /// that a reader opened on another thread sees the dataset as the raster does: its sidecars,
+    /// such as a `.msk` mask, ignored under `EMPTY_DIR` as they were at the open.
+    options: std::collections::HashMap<String, Option<String>>,
     spare: std::sync::Mutex<Vec<LazyRaster>>,
 }
 
+/// The most spare readers a raster keeps between reads. Each holds an open file for as long as
+/// the raster lives, so a burst of many threads must not leave one
+/// per thread; a reader past the bound is dropped, and reopening one later costs little because
+/// its headers come from the process-wide caches. Four covers a small thread pool reading one
+/// raster.
+const MAX_SPARE_READERS: usize = 4;
+
 impl Readers {
+    /// Readers of `path`. A relative local path is made absolute now, so that a reader opened
+    /// after the working directory changes opens the same file; URLs, `/vsi` paths, archive
+    /// members and other selectors are kept as given.
     pub(crate) fn new(path: &str) -> Self {
-        Self { path: path.to_owned(), spare: Default::default() }
+        let absolute = match terrio::vfs::Location::parse(path) {
+            terrio::vfs::Location::Local(p) if p.is_relative() && p.exists() => std::path::absolute(p).ok(),
+            _ => None,
+        };
+        let path = absolute.as_deref().and_then(std::path::Path::to_str).unwrap_or(path);
+        Self { path: path.to_owned(), options: terrio::config::thread_options(), spare: Default::default() }
+    }
+
+    /// Opens another reader with the options the raster was opened with, on whatever thread.
+    fn open(&self) -> terrio::Result<LazyRaster> {
+        struct Scope;
+        impl Drop for Scope {
+            fn drop(&mut self) {
+                terrio::config::pop_scope();
+            }
+        }
+        terrio::config::push_scope(self.options.clone());
+        let _scope = Scope;
+        terrio::open_raster_lazy(&self.path)
+    }
+}
+
+#[pymethods]
+impl Readers {
+    /// The number of spare readers kept.
+    fn __len__(&self) -> usize {
+        self.spare.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
     }
 }
 
@@ -63,10 +104,13 @@ impl PyRaster {
         let spare = lock().pop();
         let mut reader = match spare {
             Some(r) => r,
-            None => py.detach_result(|| terrio::open_raster_lazy(&readers.path)).py()?,
+            None => py.detach_result(|| readers.open()).py()?,
         };
         let out = read(&mut reader);
-        lock().push(reader);
+        let mut spare = lock();
+        if spare.len() < MAX_SPARE_READERS {
+            spare.push(reader);
+        }
         out
     }
 
