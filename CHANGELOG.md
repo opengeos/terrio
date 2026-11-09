@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, or its other name
+  `GDAL_DISABLE_READDIR_ON_OPEN`, a local GeoTIFF no longer takes overviews from an `.ovr` beside
+  it. They served its reduced reads (`terrio translate --outsize`, a `terrio.rio` read with a
+  smaller `out_shape`), so a file placed next to the dataset changed the pixels read (#720).
+  `terrio.rio` follows both names of the option: under the `TERRIO_` name it still applied an
+  `.aux.xml` sidecar's tags, band descriptions, scales, offsets, units, color interpretations and
+  nodata, and read RPC sidecars. Under the option, its `files` no longer lists the `.aux.xml`,
+  `.ovr`, `.msk`, world and RPC files, which are not read.
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000

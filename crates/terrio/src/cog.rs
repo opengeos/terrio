@@ -2126,7 +2126,9 @@ impl TiffRaster {
     /// Takes the images of a GDAL `.ovr` file as overviews, as GDAL does when the TIFF has none
     /// of its own, when they have the TIFF's bands and type.
     fn attach_ovr(&mut self, path: &std::path::Path) {
-        if self.levels.len() > 1 || !path.is_file() {
+        // `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` asks that nothing next to the file be read:
+        // no `.ovr` either.
+        if self.levels.len() > 1 || crate::config::sidecars_disabled() || !path.is_file() {
             return;
         }
         let Ok(file) = std::fs::File::open(path) else { return };

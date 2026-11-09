@@ -10,6 +10,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(config_push, m)?)?;
     m.add_function(wrap_pyfunction!(config_pop, m)?)?;
     m.add_function(wrap_pyfunction!(config_get, m)?)?;
+    m.add_function(wrap_pyfunction!(sidecars_disabled, m)?)?;
     m.add_function(wrap_pyfunction!(set_path_specific_option, m)?)?;
     m.add_function(wrap_pyfunction!(clear_path_specific_options, m)?)?;
     m.add_function(wrap_pyfunction!(get_path_specific_option, m)?)?;
@@ -43,6 +44,13 @@ fn config_pop() -> bool {
 #[pyfunction]
 fn config_get(key: &str) -> Option<String> {
     terrio::config::get(key)
+}
+
+/// Whether `TERRIO_DISABLE_READDIR_ON_OPEN` (or its other name, `GDAL_DISABLE_READDIR_ON_OPEN`)
+/// is `EMPTY_DIR` for the calling thread, which asks that nothing next to a local dataset be read.
+#[pyfunction]
+fn sidecars_disabled() -> bool {
+    terrio::config::sidecars_disabled()
 }
 
 /// Binds an option to the files whose names start with `prefix` (GDAL's

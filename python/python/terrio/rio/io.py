@@ -272,7 +272,8 @@ def _sidecars_allowed(path: str) -> bool:
     """Whether to read sidecar files (`.aux.xml`, `_RPC.TXT`, `.RPB`) next to a dataset.
 
     Never for remote datasets, whose sidecars terrio does not request, and not when
-    `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` tells GDAL to treat the dataset's directory as empty.
+    `TERRIO_DISABLE_READDIR_ON_OPEN`, or its other name `GDAL_DISABLE_READDIR_ON_OPEN`, is
+    `EMPTY_DIR` for the calling thread: the decision the core takes for its own sidecars.
     (A true value only stops GDAL listing the directory; it still probes each sidecar.)
 
     Args:
@@ -283,7 +284,7 @@ def _sidecars_allowed(path: str) -> bool:
     """
     if _is_remote(path):
         return False
-    return _option("GDAL_DISABLE_READDIR_ON_OPEN") != "EMPTY_DIR"
+    return not _terrio.sidecars_disabled()
 
 
 def _check_driver(path: str, name: str, driver: Any) -> None:
@@ -1202,6 +1203,10 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
     def files(self) -> list[str]:
         """The files of the dataset.
 
+        Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` (or `GDAL_DISABLE_READDIR_ON_OPEN`),
+        which keeps them from being read, its `.aux.xml`, `.ovr`, `.msk`, world and RPC files are
+        not listed.
+
         Returns:
             list: The paths.
         """
@@ -1210,18 +1215,22 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
         out = [self.name]
         stem, ext = os.path.splitext(self.name)
         world = "." + ext[1:2] + ext[-1:] + "w" if len(ext) > 2 else ".wld"
-        sidecars = [
-            self.name + ".aux.xml",
-            self.name + ".ovr",
-            self.name + ".msk",
-            stem + world,
-            stem + ".wld",
-            stem + "_rpc.txt",
-            stem + "_RPC.TXT",
-            stem + ".RPB",
-            stem + ".rpb",
-            stem + ".hdr",
-        ]
+        sidecars = (
+            [
+                self.name + ".aux.xml",
+                self.name + ".ovr",
+                self.name + ".msk",
+                stem + world,
+                stem + ".wld",
+                stem + "_rpc.txt",
+                stem + "_RPC.TXT",
+                stem + ".RPB",
+                stem + ".rpb",
+            ]
+            if _sidecars_allowed(self.name)
+            else []
+        )
+        sidecars.append(stem + ".hdr")
         for f in sidecars:
             if f not in out and os.path.isfile(f):
                 out.append(f)
