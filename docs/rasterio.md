@@ -71,6 +71,12 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   Optimized GeoTIFF whose overviews are GDAL's COG driver's, pixel for pixel: the same levels
   (`overview_count`), and the same resampling (`overview_resampling` or `resampling`, by default
   `cubic`, `nearest` for paletted rasters).
+- **Raster type.** A GeoTIFF's raster type is read as the `AREA_OR_POINT` tag and written back:
+  a PixelIsPoint raster (`AREA_OR_POINT=Point`, read from a file or set with `update_tags`) stays
+  PixelIsPoint in every GeoTIFF and COG write, `shutil.copy` and `r+` update, its tie point the
+  centre of pixel (0, 0) and its transform unchanged. The raster type needs a CRS, the dataset's
+  or its GCPs': without one, the raster is written PixelIsArea, with a `UserWarning`. Other
+  formats store no raster type.
 - **Nodata.** Each band's nodata value is read, from the file or an `.aux.xml` sidecar (where GDAL
   keeps per-band values); GeoTIFFs hold one value for all bands, so a writer given different
   values writes the last band's, with GDAL's warning.

@@ -30,7 +30,6 @@ Requires xarray (and dask for `chunks`). The API follows rioxarray (Apache-2.0, 
 from __future__ import annotations
 
 import sys
-import warnings
 
 try:
     import xarray as _xarray
@@ -39,13 +38,11 @@ except ImportError:  # pragma: no cover
         "terrio.xarray needs xarray: pip install 'terrio[xarray]' (or pip install xarray)"
     ) from None
 
-from terrio.xarray._accessor import TerrioArray, TerrioDataset, XRasterBase
+from terrio.xarray._accessor import TerrioArray, TerrioDataset, XRasterBase, _StateCachedAccessor
 
-with warnings.catch_warnings():
-    # Registering again (on reload) replaces the accessor: that is intended.
-    warnings.simplefilter("ignore", _xarray.core.extensions.AccessorRegistrationWarning)
-    _xarray.register_dataarray_accessor("terrio")(TerrioArray)  # type: ignore[no-untyped-call]
-    _xarray.register_dataset_accessor("terrio")(TerrioDataset)  # type: ignore[no-untyped-call]
+# Registering again (on reload) replaces the accessor: that is intended.
+_xarray.DataArray.terrio = _StateCachedAccessor("terrio", TerrioArray)  # type: ignore[attr-defined]
+_xarray.Dataset.terrio = _StateCachedAccessor("terrio", TerrioDataset)  # type: ignore[attr-defined]
 
 from terrio.xarray import exceptions  # noqa: E402
 from terrio.xarray._crs import crs_from_user_input, crs_to_cf  # noqa: E402
@@ -67,24 +64,10 @@ def register_rio_accessor(force: bool = False) -> bool:
     """
     if "rioxarray" in sys.modules and not force:
         return False
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", _xarray.core.extensions.AccessorRegistrationWarning)
-        _xarray.register_dataarray_accessor("rio")(_shared_accessor)  # type: ignore[no-untyped-call]
-        _xarray.register_dataset_accessor("rio")(_shared_accessor)  # type: ignore[no-untyped-call]
+    # `.rio` shares the state of `.terrio`: both see the same
+    _xarray.DataArray.rio = _StateCachedAccessor("terrio", TerrioArray)  # type: ignore[attr-defined]
+    _xarray.Dataset.rio = _StateCachedAccessor("terrio", TerrioDataset)  # type: ignore[attr-defined]
     return True
-
-
-def _shared_accessor(obj: _xarray.DataArray | _xarray.Dataset) -> TerrioArray | TerrioDataset:
-    """The `.terrio` accessor of an object, shared with `.rio` so that both see the same state.
-
-    Args:
-        obj: The DataArray or Dataset.
-
-    Returns:
-        TerrioArray | TerrioDataset: Its accessor.
-    """
-    acc: TerrioArray | TerrioDataset = obj.terrio
-    return acc
 
 
 __all__ = [
