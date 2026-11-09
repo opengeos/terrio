@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- `terrio.open_arrow` (Python) and `terrio::arrow::open_geoparquet` (Rust) read a GeoParquet file
+  as the Arrow record batches it holds, without converting them to features: the columns keep
+  their Arrow types (structs and lists included, as GDAL's Arrow stream hands them out), the
+  geometry columns are tagged as GeoArrow extension types with their CRS (OGC:CRS84 when the file
+  names none, as geopandas reads it, where GDAL names it EPSG:4326), and the bounding-box covering
+  column is left out unless asked for. `columns` reads a subset; `bbox` skips row groups by their
+  statistics, then rows by the covering column (read first, alone) or, without one, by their
+  geometries' bounding boxes. Row groups are decoded in parallel, as many at a time as there are
+  threads, as the consumer asks for batches, so a file is never held whole. A URL is read by range
+  requests: the footer, then the column chunks of each window of row groups, fetched in parallel.
+  On 12 cores, the 664,000 polygons of fiboa's es-nc file (Brotli, 27 row groups) read into a
+  pyarrow table in 0.72 s and 683 MB, against 2.18 s and 991 MB through GDAL 3.13's Arrow stream
+  (pyogrio) and 2.33 s and 2.0 GB with `open_vector`; the 875 buildings in a small rectangle of a
+  530 MB Overture buildings file on S3 read in 2.8 s and 4.9 MB (GDAL's `/vsicurl/`: 7.5 s).
 - `warp` of a `Raster` in memory releases the GIL for the whole warp: it takes the raster's
   shared pixels (no copy) and warps them after releasing it, so warps from Python threads
   (rioxarray-style `reproject` of xarray arrays on a thread pool) overlap. 96 nearest-neighbour

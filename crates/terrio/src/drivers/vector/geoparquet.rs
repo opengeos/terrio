@@ -70,8 +70,8 @@ pub(crate) fn open_file(path: &str) -> Result<LocalFile> {
     Ok(file)
 }
 
-/// The reader of local Parquet files on WASI (tested natively too).
-#[cfg(any(target_os = "wasi", test))]
+/// A local Parquet file whose readers share one handle: on WASI (no `dup`), and for the threads
+/// that decode row groups in parallel (a `File`'s clones share its position).
 mod shared_file {
     use crate::Result;
     use std::sync::Arc;
@@ -149,7 +149,6 @@ mod shared_file {
         }
     }
 }
-#[cfg(any(target_os = "wasi", test))]
 pub(crate) use shared_file::SharedFile;
 
 /// Parses a GeoParquet (or plain Parquet) file held in memory. `name` names the layer.
@@ -174,41 +173,59 @@ pub struct RowGroupInfo {
 
 /// The row groups of a GeoParquet file, from its footer.
 pub(crate) fn row_groups<R: parquet::file::reader::ChunkReader + 'static>(input: R) -> Result<Vec<RowGroupInfo>> {
-    use parquet::file::statistics::Statistics as S;
-    let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("Parquet: {e}"));
-    let builder = ParquetRecordBatchReaderBuilder::try_new(input).map_err(|e| err(&e))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(input).map_err(|e| perr(&e))?;
     let meta = builder.metadata().clone();
-    let descr = meta.file_metadata().schema_descr();
-    let geo: Value = meta
-        .file_metadata()
+    let bboxes = group_bboxes(&meta, covering_leaves(&meta, &file_geo(&meta)));
+    let mut out = Vec::new();
+    let mut first_row = 0u64;
+    for (rg, bbox) in meta.row_groups().iter().zip(bboxes) {
+        let bytes = rg.columns().iter().map(|c| c.byte_range().1).sum();
+        out.push(RowGroupInfo { rows: rg.num_rows() as u64, first_row, bbox, bytes });
+        first_row += rg.num_rows() as u64;
+    }
+    Ok(out)
+}
+
+/// The file's `geo` metadata, `null` without one.
+pub(super) fn file_geo(meta: &parquet::file::metadata::ParquetMetaData) -> Value {
+    meta.file_metadata()
         .key_value_metadata()
         .and_then(|kv| kv.iter().find(|k| k.key == "geo"))
         .and_then(|k| k.value.as_deref())
         .and_then(|v| serde_json::from_str(v).ok())
-        .unwrap_or(Value::Null);
+        .unwrap_or(Value::Null)
+}
+
+/// The leaf (Parquet column) indices of the `[xmin, ymin, xmax, ymax]` members of the primary
+/// geometry's bounding-box covering column.
+pub(super) fn covering_leaves(meta: &parquet::file::metadata::ParquetMetaData, geo: &Value) -> Option<[usize; 4]> {
+    let descr = meta.file_metadata().schema_descr();
     let primary = geo["primary_column"].as_str().unwrap_or("geometry");
     let cov = &geo["columns"][primary]["covering"]["bbox"];
     let leaf = |k: &str| -> Option<usize> {
         let p: Vec<&str> = cov.get(k)?.as_array()?.iter().filter_map(Value::as_str).collect();
         (0..descr.num_columns()).find(|&i| descr.column(i).path().parts() == p.as_slice())
     };
-    let leaves = (|| Some([leaf("xmin")?, leaf("ymin")?, leaf("xmax")?, leaf("ymax")?]))();
-    let mut out = Vec::new();
-    let mut first_row = 0u64;
-    for rg in meta.row_groups() {
-        let stat = |leaf: usize, max: bool| -> Option<f64> {
-            match rg.column(leaf).statistics()? {
-                S::Double(s) => if max { s.max_opt() } else { s.min_opt() }.copied(),
-                S::Float(s) => if max { s.max_opt() } else { s.min_opt() }.map(|v| *v as f64),
-                _ => None,
-            }
-        };
-        let bbox = leaves.and_then(|l| Some([stat(l[0], false)?, stat(l[1], false)?, stat(l[2], true)?, stat(l[3], true)?]));
-        let bytes = rg.columns().iter().map(|c| c.byte_range().1).sum();
-        out.push(RowGroupInfo { rows: rg.num_rows() as u64, first_row, bbox, bytes });
-        first_row += rg.num_rows() as u64;
-    }
-    Ok(out)
+    Some([leaf("xmin")?, leaf("ymin")?, leaf("xmax")?, leaf("ymax")?])
+}
+
+/// The bounding box `[min_x, min_y, max_x, max_y]` of each row group, from the statistics of the
+/// covering column's `leaves`, when it has them.
+pub(super) fn group_bboxes(meta: &parquet::file::metadata::ParquetMetaData, leaves: Option<[usize; 4]>) -> Vec<Option<[f64; 4]>> {
+    use parquet::file::statistics::Statistics as S;
+    meta.row_groups()
+        .iter()
+        .map(|rg| {
+            let stat = |leaf: usize, max: bool| -> Option<f64> {
+                match rg.column(leaf).statistics()? {
+                    S::Double(s) => if max { s.max_opt() } else { s.min_opt() }.copied(),
+                    S::Float(s) => if max { s.max_opt() } else { s.min_opt() }.map(|v| *v as f64),
+                    _ => None,
+                }
+            };
+            leaves.and_then(|l| Some([stat(l[0], false)?, stat(l[1], false)?, stat(l[2], true)?, stat(l[3], true)?]))
+        })
+        .collect()
 }
 
 /// Reads a file whose bytes the caller fetches: the rows of some row groups whose bounding box
@@ -698,7 +715,7 @@ fn list_json(a: &dyn Array) -> Value {
     Value::Array((0..a.len()).map(|i| json_value(a, i)).collect())
 }
 
-fn geometry(a: &dyn Array, row: usize, encoding: &str) -> Option<Geometry> {
+pub(super) fn geometry(a: &dyn Array, row: usize, encoding: &str) -> Option<Geometry> {
     if a.is_null(row) {
         return None;
     }
@@ -834,7 +851,7 @@ pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-fn perr(e: &dyn std::fmt::Display) -> Error {
+pub(super) fn perr(e: &dyn std::fmt::Display) -> Error {
     Error::InvalidData(format!("Parquet: {e}"))
 }
 

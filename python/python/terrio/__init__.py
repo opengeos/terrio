@@ -26,6 +26,7 @@ from collections.abc import Iterator as _Iterator
 from typing import Any as _Any
 
 from terrio._terrio import (
+    ArrowStream,
     ArrowTable,
     DatasetIndex,
     FeatureStream,
@@ -115,6 +116,7 @@ from terrio._terrio import (
     network_stats,
     nodata_to_alpha,
     open,
+    open_arrow,
     open_bytes,
     open_catalog,
     open_multidim,
@@ -214,6 +216,7 @@ __all__ = [
     "ArrowTable",
     "CRSError",
     "DatasetIndex",
+    "ArrowStream",
     "FeatureStream",
     "GeoTiffWriter",
     "InternalError",
@@ -299,6 +302,7 @@ __all__ = [
     "open_multidim",
     "mosaic_multidim",
     "open_vrt",
+    "open_arrow",
     "open_stream",
     "open_vector",
     "pansharpen",

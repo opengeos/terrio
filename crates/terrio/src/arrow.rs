@@ -684,6 +684,41 @@ pub fn from_ipc(bytes: &[u8], name: &str) -> Result<Layer> {
     layer_from_arrow(&schema, &batches, name)
 }
 
+pub use crate::drivers::vector::geoparquet_arrow::{GeoParquetBatches, GeoParquetReadOptions};
+
+/// Opens a GeoParquet file (a path, or a URL read by range requests) as a stream of the Arrow record batches it holds, read as they
+/// are asked for: the attribute columns keep their Arrow types, the geometry columns their
+/// encoding (tagged as GeoArrow extension types with their CRS), and the bounding-box covering
+/// column is left out unless asked for. Row groups are decoded in parallel, a window at a time.
+///
+/// ```no_run
+/// use terrio::arrow::{open_geoparquet, GeoParquetReadOptions};
+/// let options = GeoParquetReadOptions { columns: Some(vec!["name".into()]), bbox: Some((5.0, 45.0, 6.0, 46.0)), ..Default::default() };
+/// for batch in open_geoparquet("places.parquet", &options)? {
+///     println!("{} rows", batch?.num_rows());
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn open_geoparquet(path: &str, options: &GeoParquetReadOptions) -> Result<GeoParquetBatches> {
+    crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
+    crate::formats::check_driver_allowed("Parquet", path, crate::formats::Kind::Vector)?;
+    #[cfg(remote)]
+    if let Some(remote) = crate::vfs::Location::parse(path).remote() {
+        let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
+        // The footer, then the column chunks of each window of row groups, in parallel requests
+        // through the block cache, a window of at most half the cache at a time.
+        let options_http = crate::http::HttpOptions::from_env();
+        let budget = (options_http.cache_size / 2).max(1);
+        let file = crate::http::RangeReader::open_with(&remote, options_http)?;
+        let prefetcher = file.clone();
+        let prefetch: crate::drivers::vector::geoparquet_arrow::Prefetcher =
+            (Box::new(move |ranges: &[(u64, u64)]| Ok(prefetcher.prefetch(ranges)?)), budget);
+        return GeoParquetBatches::open(file, options, Some(prefetch));
+    }
+    let file = crate::drivers::vector::geoparquet::SharedFile::new(std::fs::File::open(path)?)?;
+    GeoParquetBatches::open(file, options, None)
+}
+
 // ---------------------------------------------------------------------------------------------
 // Reading
 // ---------------------------------------------------------------------------------------------

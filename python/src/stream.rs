@@ -14,7 +14,9 @@ use terrio::stream::{ArrowStream, FeatureReader};
 /// Registers the functions and classes in the module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFeatureStream>()?;
+    m.add_class::<PyArrowStream>()?;
     m.add_function(wrap_pyfunction!(open_stream, m)?)?;
+    m.add_function(wrap_pyfunction!(open_arrow, m)?)?;
     Ok(())
 }
 
@@ -194,6 +196,97 @@ impl PyFeatureStream {
             })
             .py()?;
         let ffi = FFI_ArrowArrayStream::new(Box::new(stream));
+        PyCapsule::new_with_value(py, ffi, c"arrow_array_stream")
+    }
+}
+
+/// A GeoParquet file read as the Arrow record batches it holds, through the Arrow PyCapsule
+/// interface (`__arrow_c_stream__`): `pyarrow.RecordBatchReader.from_stream(s)`,
+/// `geopandas.GeoDataFrame.from_arrow(s)`, `polars.DataFrame(s)` or DuckDB read it, and the row
+/// groups are decoded as the consumer asks for batches, so the file is not held whole in memory.
+#[pyclass(module = "terrio", name = "ArrowStream")]
+pub struct PyArrowStream {
+    reader: Mutex<Option<terrio::arrow::GeoParquetBatches>>,
+    schema: terrio::arrow::arrow_schema::SchemaRef,
+}
+
+/// Opens a GeoParquet file as a stream of Arrow record batches, without converting them to
+/// features: the attribute columns keep their Arrow types (structs and lists included), the
+/// geometry columns their encoding (WKB or GeoArrow native, tagged as GeoArrow extension types
+/// with their CRS), and the bounding-box covering column is left out unless asked for. Row groups
+/// are decoded in parallel, a window at a time, as the consumer asks for batches.
+///
+/// Args:
+///     path: The path of a GeoParquet file, or its URL (`https://`, `s3://`...), read by range
+///         requests: the footer, then the column chunks of the row groups the filter keeps.
+///     columns: The attribute columns to read, by name (the geometry columns are always read).
+///         By default all of them.
+///     bbox: Only the rows whose bounding box intersects this rectangle
+///         `(min_x, min_y, max_x, max_y)`, in the file's CRS: row groups are skipped by their
+///         statistics, and rows by the bounding-box covering column (or by their geometries).
+///     batch_size: The most rows in a batch.
+///
+/// Returns:
+///     ArrowStream: The stream, read once.
+///
+/// Raises:
+///     InvalidArgumentError: If a column is not in the file.
+#[pyfunction]
+#[pyo3(signature = (path, *, columns=None, bbox=None, batch_size=65536))]
+fn open_arrow(
+    py: Python<'_>,
+    path: &str,
+    columns: Option<Vec<String>>,
+    bbox: Option<(f64, f64, f64, f64)>,
+    batch_size: usize,
+) -> PyResult<PyArrowStream> {
+    if batch_size == 0 {
+        return Err(invalid("batch_size must be positive"));
+    }
+    let options = terrio::arrow::GeoParquetReadOptions { columns, bbox, batch_size };
+    let reader = py.detach_result(|| terrio::arrow::open_geoparquet(path, &options)).py()?;
+    let schema = arrow_array::RecordBatchReader::schema(&reader);
+    Ok(PyArrowStream { reader: Mutex::new(Some(reader)), schema })
+}
+
+#[pymethods]
+impl PyArrowStream {
+    /// The column names, the geometry columns included.
+    #[getter]
+    fn columns(&self) -> Vec<String> {
+        self.schema.fields().iter().map(|f| f.name().clone()).collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("<terrio.ArrowStream ({} columns)>", self.schema.fields().len())
+    }
+
+    /// Exports the schema (the Arrow PyCapsule interface).
+    fn __arrow_c_schema__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyCapsule>> {
+        crate::arrow::schema_capsule(py, &self.schema)
+    }
+
+    /// Exports the stream as an Arrow C stream of record batches (the Arrow PyCapsule
+    /// interface), decoded as the consumer asks for them. The stream is consumed.
+    ///
+    /// Args:
+    ///     requested_schema: A schema capsule the consumer would like. Ignored.
+    ///
+    /// Returns:
+    ///     PyCapsule: An `arrow_array_stream` capsule.
+    ///
+    /// Raises:
+    ///     InvalidArgumentError: If the stream has already been exported.
+    #[pyo3(signature = (requested_schema=None))]
+    fn __arrow_c_stream__<'py>(&self, py: Python<'py>, requested_schema: Option<Bound<'py, PyAny>>) -> PyResult<Bound<'py, PyCapsule>> {
+        let _ = requested_schema;
+        let reader = self
+            .reader
+            .lock()
+            .map_err(|_| invalid("the stream is in use"))?
+            .take()
+            .ok_or_else(|| invalid("the stream has been consumed: open it again"))?;
+        let ffi = FFI_ArrowArrayStream::new(Box::new(reader));
         PyCapsule::new_with_value(py, ffi, c"arrow_array_stream")
     }
 }

@@ -88,6 +88,54 @@ def test_bbox_and_errors(tmp_path):
         stream.__arrow_c_stream__()
 
 
+def test_open_arrow_reads_the_batches_of_a_geoparquet_file(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    p = str(tmp_path / "s.parquet")
+    squares(1000).write(p)
+    stream = terrio.open_arrow(p, batch_size=300)
+    # the bounding-box covering column is left out
+    assert stream.columns == ["i", "v", "name", "day", "geometry"]
+    batches = list(pa.RecordBatchReader.from_stream(stream))
+    assert [b.num_rows for b in batches] == [300, 300, 300, 100]
+    table = pa.Table.from_batches(batches)
+    plain = pq.read_table(p)
+    for name in stream.columns:
+        assert table[name].to_pylist() == plain[name].to_pylist()
+    geometry = table.schema.field("geometry")
+    assert geometry.metadata[b"ARROW:extension:name"] == b"geoarrow.wkb"
+    assert b"crs" in geometry.metadata[b"ARROW:extension:metadata"]
+    with pytest.raises(terrio.InvalidArgumentError):
+        stream.__arrow_c_stream__()
+
+
+def test_open_arrow_selects_columns_and_rows(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    p = str(tmp_path / "s.parquet")
+    squares(1000).write(p)
+    box = (-100.0, -80.0, -90.0, -70.0)
+    inside = pa.table(terrio.open_arrow(p, columns=["i"], bbox=box))
+    assert inside.column_names == ["i", "geometry"]
+    whole = terrio.open_vector(p, bbox=box)[0].__geo_interface__["features"]
+    assert 0 < len(whole) < 1000
+    assert inside["i"].to_pylist() == [f["properties"]["i"] for f in whole]
+    with pytest.raises(terrio.InvalidArgumentError):
+        terrio.open_arrow(p, columns=["nope"])
+    with pytest.raises(terrio.InvalidArgumentError):
+        terrio.open_arrow(p, batch_size=0)
+
+
+def test_open_arrow_gives_a_geodataframe_in_crs84(tmp_path):
+    gpd = pytest.importorskip("geopandas")
+    p = str(tmp_path / "s.parquet")
+    squares(1000).write(p)
+    gdf = gpd.GeoDataFrame.from_arrow(terrio.open_arrow(p))
+    assert len(gdf) == 1000
+    # GeoParquet without a `crs` means OGC:CRS84, as geopandas reads it (GDAL names it EPSG:4326)
+    assert gdf.crs.equals("OGC:CRS84")
+    assert gdf.geometry.iloc[0].equals(terrio.open_vector(p)[0].to_geopandas().geometry.iloc[0])
+
+
 @pytest.mark.parametrize("ext", ["fgb", "parquet", "shp", "geojsonl", "csv", "geojson"])
 def test_streamed_convert_matches_layers(tmp_path, ext):
     src = str(tmp_path / "src.gpkg")

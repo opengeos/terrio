@@ -165,6 +165,23 @@ terrio.convert("buildings.gpkg", "buildings.parquet", where="height > 10")  # in
 GeoParquet file's bounding boxes find. The Arrow stream has the schema `Layer.to_arrow()` gives
 (WKB geometries); a layer with date fields is read twice, once to choose their Arrow types.
 
+GeoParquet files are read faster, and in less memory, as the Arrow record batches they hold with
+`terrio.open_arrow`, which does not convert them to features. Row groups are decoded in parallel
+as the consumer asks for batches, a window at a time, and a URL is read by range requests: the
+footer, then only the column chunks of the row groups the filter keeps.
+
+```python
+stream = terrio.open_arrow("buildings.parquet", columns=["height"], bbox=(5.0, 45.0, 6.0, 46.0))
+gdf = geopandas.GeoDataFrame.from_arrow(stream)          # or pyarrow, Polars, DuckDB
+for batch in pa.RecordBatchReader.from_stream(terrio.open_arrow("https://host/buildings.parquet")):
+    ...
+```
+
+The columns keep the file's Arrow types (structs and lists included), as GDAL's Arrow stream
+hands them out; the geometry columns are tagged as GeoArrow extension types (`geoarrow.wkb`, or
+the file's native encoding) with their CRS, and the bounding-box covering column is left out
+unless `columns` names it.
+
 ### Arrow
 
 Layers convert to and from [Apache Arrow](https://arrow.apache.org) through the
