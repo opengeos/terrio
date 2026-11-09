@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- A VRT source with fractional `SrcRect` or `DstRect` offsets is read within its rectangles (#702).
+  A window with as many source pixels as output pixels was copied one for one whatever its offsets,
+  so `bilinear`, `cubic` and `average` returned the source pixels a fraction of a pixel from where
+  the rectangles place them, as in the mosaics `terrio mosaic` writes onto a grid a fraction of a
+  pixel off a source's: it is now copied only at the same scale on whole-pixel offsets, and
+  otherwise resampled by the source's method (`nearest` takes the nearest pixels). A fractional
+  window was also widened to whole output pixels, and its source window with it, so pixels outside
+  the `SrcRect` reached the output for every method. A source now reads only the pixels that meet
+  its `SrcRect`; a method sampling a point writes only the output pixels whose centres are inside
+  the `DstRect`, and an area method gives an output pixel partly inside it the part of the source
+  inside it. A ramp `0, 10, …, 70` mosaicked a quarter pixel east with `bilinear` or `average` gives
+  `2.5, 12.5, …, 62.5` instead of `0, 10, …, 60`, and the pixels `[10, 20]` of `[10, 20, 30]` placed
+  a quarter pixel east sum to `[7.5, 17.5, 5]` instead of `[7.5, 17.5, 27.5]`. Reads of such a VRT
+  by windows now give the pixels of a whole read: a window of one pixel at the source's resolution
+  was copied whatever its offsets. The VRT `terrio mosaic` writes now gives each source its whole
+  raster as `SrcRect`, with a `DstRect` that runs past the mosaic's edges where the source does, so
+  that a kernel at the edges of a `--te` extent still reads the source's pixels past them.
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000
