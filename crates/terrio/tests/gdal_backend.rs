@@ -628,9 +628,9 @@ fn a_named_layer_answers_to_the_file_stem_through_gdal() {
 
 /// Date-time fields read through the backend become ISO 8601 text: with their offset when it is
 /// not zero, and without a zone when they have none. The `gdal` feature alone formats them too
-/// (`--no-default-features --features gdal`).
+/// (`--no-default-features --features gdal`). Checked with GDAL 3.12.2.
 #[test]
-fn date_time_fields_read_as_iso_8601_keep_a_non_zero_offset() {
+fn date_time_fields_read_as_iso_8601_with_their_zone_or_none() {
     let geojson = r#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},
         "properties":{"plain":"2024-03-15T10:30:05","east":"2024-03-15T10:30:05+02:00","west":"1999-12-31T23:59:59-03:30"}}]}"#;
     let ds = terrio::gdal_backend::open_vector_bytes(geojson.as_bytes().to_vec(), "times.geojson", &Default::default()).unwrap();

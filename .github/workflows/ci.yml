@@ -177,8 +177,9 @@ jobs:
       - run: pkg-config --modversion gdal
       - run: cargo clippy -p terrio -p terrio-cli --all-targets --features gdal -- -D warnings
       # The `gdal` feature without the default features: the features job checks each of the
-      # others on its own, and has no GDAL.
+      # others on its own, and has no GDAL. The backend's tests run in that build too.
       - run: cargo clippy -p terrio --no-default-features --features gdal -- -D warnings
+      - run: cargo test -p terrio --no-default-features --features gdal --test gdal_backend
       - run: cargo test -p terrio -p terrio-cli --features gdal
 
   msrv:
