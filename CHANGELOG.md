@@ -11,6 +11,8 @@
   requests in flight end; none is retried or sent after it. Peak memory can rise with many
   readers, from glibc's per-thread arenas (`MALLOC_ARENA_MAX=2` bounds them).
 
+## 0.8.0 (2026-11-08)
+
 - `terrio.rio`'s `subdatasets`, and so `terrio.xarray`'s open, list a file's subdatasets from the
   raster already open instead of opening the file again. A remote store's metadata was fetched
   twice: opening a UTM zone of the OlmoEarth v1.3 embeddings Zarr store on source.coop with
@@ -632,6 +634,15 @@
 - Fractional zonal coverage clips each ring to rows and boundary cells (axis-aligned
   Sutherland–Hodgman and shoelace areas) instead of general polygon overlays: about ten times
   less coverage time, with the same exact cell areas within floating-point roundoff.
+
+- terrio Web runs the terrio command line in the browser at https://terrio.dev/web/: the CLI
+  compiled to `wasm32-wasip1` runs in a Web Worker on an in-memory workspace, with forms built
+  from `terrio --json-usage` as in `terrio ui`, and reads `https://` URLs (and public `s3://`
+  and `gs://` objects) by range (#576).
+- Typing in the `terrio ui` file browser, or the terrio Web workspace picker, jumps to the next
+  entry whose name starts with the typed text; the arrow keys, Home and End move between
+  entries (#600).
+- `terrio-crs` 0.2.3 adds `list_crs`, the registry CRS listing above, and hardens grid parsing.
 
 ## 0.7.0 (2026-11-03)
 
