@@ -26,12 +26,17 @@ restricts every terrio open; bytes and file objects are first written to a priva
 file, as pyogrio writes them to GDAL's `/vsimem/`.
 
 Not provided (they raise `NotImplementedError`): `where`, `sql`, `fids`, `encoding` (set the
-`SHAPE_ENCODING` option instead), dataset open options, `use_arrow=True` results (the regular
-path is used), and writing any driver but GeoJSON.
+`SHAPE_ENCODING` option instead), dataset open options, and writing any driver but GeoJSON.
+
+GeoParquet files are read too. `read_arrow` and `open_arrow` hand out their Arrow record batches
+as pyogrio does through GDAL's Arrow stream (decoded in parallel, read by range requests from a
+URL), and `read_dataframe(..., use_arrow=True)` builds its GeoDataFrame from them. Arrow reads
+of other formats are not provided, and `use_arrow=True` reads them by the regular path.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import warnings
@@ -53,7 +58,7 @@ __gdal_version_string__ = "3.12.4"
 __gdal_geos_version__ = None
 __terrio_version__ = _terrio.__version__
 
-_DRIVERS = {"GeoJSON": "rw", "ESRI Shapefile": "r"}
+_DRIVERS = {"GeoJSON": "rw", "ESRI Shapefile": "r", "Parquet": "r"}
 _EXTENSIONS = {
     ".geojson": "GeoJSON",
     ".json": "GeoJSON",
@@ -192,6 +197,18 @@ def read_dataframe(
         raise ValueError("cannot set both 'bbox' and 'mask'")
     if hasattr(path_or_buffer, "__fspath__") and not hasattr(path_or_buffer, "read"):
         path_or_buffer = os.fspath(path_or_buffer)
+    if use_arrow and _is_geoparquet(path_or_buffer) and mask is None and not fid_as_index:
+        return _read_geoparquet_dataframe(
+            path_or_buffer,
+            layer=layer,
+            columns=columns,
+            read_geometry=read_geometry,
+            force_2d=force_2d,
+            skip_features=skip_features,
+            max_features=max_features,
+            bbox=bbox,
+            arrow_to_pandas_kwargs=arrow_to_pandas_kwargs,
+        )
     spatial = bbox is not None or mask is not None
     with _scope():
         meta, index, geometry, field_data = _read(
@@ -241,6 +258,56 @@ def read_dataframe(
     if force_2d:
         geometry = shapely.force_2d(geometry)
     return gp.GeoDataFrame(df, geometry=geometry, crs=meta["crs"])
+
+
+def _read_geoparquet_dataframe(
+    path,
+    *,
+    layer,
+    columns,
+    read_geometry,
+    force_2d,
+    skip_features,
+    max_features,
+    bbox,
+    arrow_to_pandas_kwargs,
+):
+    """A GeoParquet file as `read_dataframe(..., use_arrow=True)` reads it.
+
+    Built from the Arrow table `read_arrow` gives, the geometry column last, with the CRS GDAL
+    names.
+    """
+    import geopandas as gp  # type: ignore[import-untyped, import-not-found, unused-ignore]
+    import pyarrow as pa  # type: ignore[import-untyped, import-not-found, unused-ignore]
+    import shapely  # type: ignore[import-untyped, import-not-found, unused-ignore]
+
+    meta, table = read_arrow(
+        path,
+        layer=layer,
+        columns=columns,
+        read_geometry=read_geometry,
+        skip_features=skip_features,
+        max_features=max_features,
+        bbox=bbox,
+    )
+    kwargs = arrow_to_pandas_kwargs or {}
+    name = meta["geometry_name"]
+    if not read_geometry or not name:
+        return table.to_pandas(**kwargs)
+    storage = table.schema.field(name).type
+    if pa.types.is_binary(storage) or pa.types.is_large_binary(storage):
+        geometry = shapely.from_wkb(table[name].to_numpy(zero_copy_only=False))
+        df = table.drop_columns([name]).to_pandas(**kwargs)
+        gdf = gp.GeoDataFrame(
+            df, geometry=gp.GeoSeries(geometry, index=df.index, name=name), crs=meta["crs"]
+        )
+    else:
+        gdf = gp.GeoDataFrame.from_arrow(table, to_pandas_kwargs=kwargs).set_crs(
+            meta["crs"], allow_override=True
+        )
+    if force_2d:
+        gdf[name] = shapely.force_2d(gdf[name].values)
+    return gdf
 
 
 def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
@@ -428,14 +495,131 @@ def vsi_curl_clear_cache(*args, **kwargs):
     return None
 
 
-def read_arrow(*args, **kwargs):
-    """Not provided."""
-    raise NotImplementedError("terrio.pyogrio does not support Arrow reads")
+def _is_geoparquet(path) -> bool:
+    """Whether `path` names a GeoParquet file, by its extension."""
+    if not isinstance(path, (str, os.PathLike)):
+        return False
+    return os.fspath(path).split("?", 1)[0].lower().endswith((".parquet", ".geoparquet"))
 
 
-def open_arrow(*args, **kwargs):
-    """Not provided."""
-    raise NotImplementedError("terrio.pyogrio does not support Arrow reads")
+@contextlib.contextmanager
+def open_arrow(
+    path_or_buffer,
+    /,
+    layer=None,
+    encoding=None,
+    columns=None,
+    read_geometry=True,
+    force_2d=False,
+    skip_features=0,
+    max_features=None,
+    where=None,
+    bbox=None,
+    mask=None,
+    fids=None,
+    sql=None,
+    sql_dialect=None,
+    return_fids=False,
+    batch_size=65536,
+    use_pyarrow=False,
+    **kwargs,
+):
+    """A GeoParquet file's Arrow stream, as pyogrio's `open_arrow` gives GDAL's.
+
+    A context manager of `(meta, reader)`, the batches decoded as they are asked for (see
+    `terrio.open_stream`). The columns keep the file's Arrow types, the covering column is left
+    out, and `meta` is GDAL 3.13's: the fields as OGR has them (structs flattened into
+    `name.member`), the declared geometry type and the CRS. Other formats are not provided.
+    """
+    import pyarrow as pa
+
+    if not _is_geoparquet(path_or_buffer):
+        raise NotImplementedError("terrio.pyogrio reads Arrow streams from GeoParquet files only")
+    _unsupported(
+        encoding=encoding,
+        where=where,
+        mask=mask,
+        fids=fids,
+        sql=sql,
+        sql_dialect=sql_dialect,
+        force_2d=force_2d,
+        return_fids=return_fids,
+        **kwargs,
+    )
+    if skip_features or max_features:
+        raise ValueError("specifying 'max_features' is not supported for Arrow")
+    with _scope():
+        stream = _terrio.open_stream(
+            os.fspath(path_or_buffer), layer, batch_size=batch_size, bbox=bbox, columns=columns
+        )
+        meta = {
+            "crs": stream.crs,
+            "encoding": "UTF-8",
+            "fields": np.array(list(stream.fields), dtype=object),
+            "geometry_type": stream.geometry_type,
+            "geometry_name": "",
+            "fid_column": "OGC_FID",
+        }
+        reader = pa.RecordBatchReader.from_stream(stream)
+    geometry = [
+        f.name
+        for f in reader.schema
+        if (f.metadata or {}).get(b"ARROW:extension:name", b"").startswith(b"geoarrow.")
+    ]
+    meta["geometry_name"] = geometry[0] if geometry else ""
+    if not read_geometry and geometry:
+        schema = pa.schema(
+            [f for f in reader.schema if f.name not in geometry], reader.schema.metadata
+        )
+        batches = (b.drop_columns(geometry) for b in reader)
+        reader = pa.RecordBatchReader.from_batches(schema, batches)
+    yield meta, reader
+
+
+def read_arrow(
+    path_or_buffer,
+    /,
+    layer=None,
+    encoding=None,
+    columns=None,
+    read_geometry=True,
+    force_2d=False,
+    skip_features=0,
+    max_features=None,
+    where=None,
+    bbox=None,
+    mask=None,
+    fids=None,
+    sql=None,
+    sql_dialect=None,
+    return_fids=False,
+    **kwargs,
+):
+    """A GeoParquet file as pyogrio's `read_arrow` reads it through GDAL's Arrow stream.
+
+    Returns `(meta, pyarrow.Table)` (see `open_arrow`), `skip_features` and `max_features`
+    applied after `bbox`. Other formats are not provided.
+    """
+    with open_arrow(
+        path_or_buffer,
+        layer=layer,
+        encoding=encoding,
+        columns=columns,
+        read_geometry=read_geometry,
+        force_2d=force_2d,
+        where=where,
+        bbox=bbox,
+        mask=mask,
+        fids=fids,
+        sql=sql,
+        sql_dialect=sql_dialect,
+        return_fids=return_fids,
+        **kwargs,
+    ) as (meta, reader):
+        table = reader.read_all()
+    if skip_features or max_features is not None:
+        table = table.slice(skip_features, max_features)
+    return meta, table
 
 
 def write_arrow(*args, **kwargs):

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `terrio.pyogrio` reads GeoParquet files: `read_arrow` and `open_arrow` hand out their Arrow
+  record batches as pyogrio does through GDAL's Arrow stream, with GDAL 3.13.3's `meta` (the
+  fields as OGR has them, structs flattened, the declared geometry type, `EPSG:4326` for a file
+  without a CRS), and `read_dataframe(..., use_arrow=True)` builds its GeoDataFrame from them, as
+  `geopandas.read_file(path, engine="pyogrio", use_arrow=True)` asks. Unlike GDAL, whose
+  `skip_features` skips the file's rows before `bbox` filters them, the range is taken from the
+  rows the rectangle keeps, as `read_dataframe` takes it. Arrow reads of other formats still
+  raise `NotImplementedError`.
 - GeoParquet reads decode row groups in parallel, a window of as many as there are threads at a
   time, and read remote files in place: `open_vector` and `open_stream` on a URL fetch the footer,
   then only the column chunks of the row groups the filter keeps, by range requests, instead of
