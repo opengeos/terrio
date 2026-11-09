@@ -142,3 +142,23 @@ def test_sum_window_planning_uses_bounded_scratch():
     growth, window = json.loads(result.stdout.splitlines()[-1])
     assert window is not None and window[2] > 0 and window[3] > 0
     assert growth < 8 * 1024 * 1024, (growth, window)
+
+
+@pytest.mark.parametrize(("crs", "top", "row"), [("EPSG:3413", 90.0, 0), ("EPSG:3031", -80.0, -1)])
+def test_a_sum_into_a_grid_whose_edge_is_a_pole_writes_the_row_along_it(crs, top, row):
+    # A polar stereographic CRS projects the pole it is centred on to its origin, so the pixels
+    # along a grid edge at that pole, which have two corners on it, are written: 1,000 km of
+    # 10 km pixels of ones centred on the pole, into 1-degree pixels from the pole to 80 degrees.
+    ones = terrio.Raster.from_array(np.ones((100, 100)), (-5e5, 1e4, 0.0, 5e5, 0.0, -1e4), crs=crs)
+    out = terrio.warp(
+        ones,
+        t_srs="EPSG:4326",
+        te=(-180.0, top - 10.0, 180.0, top),
+        ts=(360, 10),
+        resampling="sum",
+        ot="Float64",
+        dstnodata=-1.0,
+    )
+    a = np.asarray(out.read(1))
+    assert int((a[row] >= 0).sum()) == 360
+    assert float(a[a >= 0].sum()) == pytest.approx(10_000.0, rel=1e-9)
