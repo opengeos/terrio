@@ -1014,7 +1014,8 @@ impl NodeStore {
         }
         let (last_id, last_lon, last_lat) = self.last;
         let b = &mut self.bytes.buf;
-        put_varint(b, id.checked_sub(last_id).ok_or_else(|| Error::InvalidData("OSM PBF: node id delta overflow".into()))? as u64);
+        // An increasing signed id pair can have a difference as large as u64::MAX.
+        put_varint(b, (id as u64).wrapping_sub(last_id as u64));
         put_varint(b, zigzag(i64::from(lon) - i64::from(last_lon)));
         put_varint(b, zigzag(i64::from(lat) - i64::from(last_lat)));
         self.last = (id, lon, lat);
@@ -1038,8 +1039,8 @@ impl NodeStore {
             if i >= end {
                 return None;
             }
-            let d = pb_varint(data, &mut i)? as i64;
-            nid = if k == 0 { nid } else { nid.checked_add(d)? };
+            let d = pb_varint(data, &mut i)?;
+            nid = if k == 0 { nid } else { (nid as u64).wrapping_add(d) as i64 };
             lon += unzigzag(pb_varint(data, &mut i)?);
             lat += unzigzag(pb_varint(data, &mut i)?);
             if nid == id {
@@ -1525,6 +1526,36 @@ mod tests {
     }
 
     #[test]
+    fn empty_informational_headers_remain_unsorted() {
+        assert!(!pbf::header_sorted(&[]).unwrap());
+        let file = fileblock("OSMHeader", &[]);
+        assert!(!is_sorted_pbf(&mut std::io::Cursor::new(&file)));
+        assert_eq!(parse(file).unwrap().iter().map(Layer::len).collect::<Vec<_>>(), [0; 5]);
+        assert!(decoded(&fileblock("OSMData", &[])).is_err());
+    }
+
+    #[test]
+    fn unknown_members_are_skipped_after_accumulating_their_id_delta() {
+        let relation = Msg::default().int(1, 1).packed(8, &[999, 2]).packed(9, &[zz(5), zz(2)]).packed(10, &[99, 1]);
+        let block = primitive(Msg::default().bytes(4, &relation.0));
+        let objects = decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).unwrap();
+        let OsmObj::Relation(relation) = &objects[0] else { panic!() };
+        assert_eq!(relation.members.len(), 1);
+        assert!(relation.members[0].0 == Member::Way(7));
+        assert_eq!(relation.members[0].1.as_ref(), "city");
+    }
+
+    #[test]
+    fn stored_node_ids_span_the_full_signed_range() {
+        let mut store = NodeStore::default();
+        assert!(store.push(i64::MIN, 10, -10).unwrap());
+        assert!(store.push(i64::MAX, 20, -20).unwrap());
+        assert_eq!(store.get_raw(i64::MIN), Some([10, -10]));
+        assert_eq!(store.get_raw(i64::MAX), Some([20, -20]));
+        assert_eq!(store.get_raw(0), None);
+    }
+
+    #[test]
     fn sorted_feature_is_a_complete_header_field() {
         let header = Msg::default().bytes(5, b"prefix-Sort.Type_then_ID-suffix");
         assert_eq!(header_says_sorted(&Msg::default().bytes(1, &header.0).0), Some(false));
@@ -1747,7 +1778,6 @@ mod tests {
             Msg::default().bytes(2, &Msg::default().packed(1, &[0]).packed(8, &[0]).packed(9, &[0]).packed(10, &[1]).0),
             Msg::default().bytes(3, &Msg::default().int(1, 1).packed(8, &[zz(i64::MIN), zz(-1)]).0),
             Msg::default().bytes(4, &Msg::default().int(1, 1).packed(8, &[0]).0),
-            Msg::default().bytes(4, &Msg::default().int(1, 1).packed(8, &[0]).packed(9, &[0]).packed(10, &[3]).0),
         ];
         for group in groups {
             let block = primitive(group);

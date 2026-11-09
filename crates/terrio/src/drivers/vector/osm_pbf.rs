@@ -35,7 +35,7 @@ fn bad() -> Error {
 
 /// Raw and zlib were the only encodings supported by the previous reader too.
 /// Never trust raw_size to allocate; stop inflation at the specification's limit.
-pub(super) fn payload(blob: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>> {
+pub(super) fn payload(blob: &[u8]) -> Result<Option<std::borrow::Cow<'_, [u8]>>> {
     use std::io::Read;
     let mut data = None;
     let mut size = None;
@@ -56,7 +56,7 @@ pub(super) fn payload(blob: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>> {
     if blob.len() > MAX_BLOB || size.is_some_and(|n| n > MAX_BLOB) {
         return Err(bad());
     }
-    let (encoding, bytes) = data.ok_or_else(bad)?;
+    let Some((encoding, bytes)) = data else { return Ok(None) };
     let decoded = if encoding == 1 {
         std::borrow::Cow::Borrowed(bytes)
     } else {
@@ -67,11 +67,11 @@ pub(super) fn payload(blob: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>> {
     if decoded.len() > MAX_BLOB || size.is_some_and(|n| n != decoded.len()) {
         return Err(bad());
     }
-    Ok(decoded)
+    Ok(Some(decoded))
 }
 
 pub(super) fn header_sorted(blob: &[u8]) -> Result<bool> {
-    let bytes = payload(blob)?;
+    let Some(bytes) = payload(blob)? else { return Ok(false) };
     let mut sorted = false;
     for (field, value) in pb_fields(&bytes).ok_or_else(bad)? {
         match (field, value) {
@@ -109,7 +109,7 @@ pub(super) fn decode(span: &[u8], emit: &mut dyn FnMut(Object) -> Result<()>) ->
     if kind != Some(b"OSMData".as_slice()) || end.checked_add(size) != Some(span.len()) {
         return Err(bad());
     }
-    let bytes = payload(span.get(end..).ok_or_else(bad)?)?;
+    let bytes = payload(span.get(end..).ok_or_else(bad)?)?.ok_or_else(bad)?;
     primitives(&bytes, emit)
 }
 
@@ -235,20 +235,16 @@ impl Context {
                 if roles.len() != ids.len() || ids.len() != types.len() {
                     return Err(bad());
                 }
-                let members = ids
-                    .into_iter()
-                    .zip(types)
-                    .zip(roles)
-                    .map(|((id, kind), role)| {
-                        let member = match kind {
-                            0 => Member::Node(id),
-                            1 => Member::Way(id),
-                            2 => Member::Relation(id),
-                            _ => return Err(bad()),
-                        };
-                        Ok((member, self.string(role)?))
-                    })
-                    .collect::<Result<_>>()?;
+                let mut members = Vec::new();
+                for ((id, kind), role) in ids.into_iter().zip(types).zip(roles) {
+                    let member = match kind {
+                        0 => Member::Node(id),
+                        1 => Member::Way(id),
+                        2 => Member::Relation(id),
+                        _ => continue,
+                    };
+                    members.push((member, self.string(role)?));
+                }
                 Ok(Object::Relation(Relation { id: id as i64, members, tags: tags.into_iter().collect() }))
             }
             _ => Err(bad()),

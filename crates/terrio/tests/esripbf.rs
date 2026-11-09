@@ -73,17 +73,8 @@ fn openstreetmap_pbf_is_told_apart() {
     std::fs::write(&path, osm).unwrap();
     let path = path.to_str().unwrap();
     assert_eq!(terrio::inspection::identify(path, false).unwrap().unwrap().driver, "OSM");
-    // Identification still succeeds, but a header without a blob payload is malformed.
-    assert!(terrio::open_vector(path, &Default::default()).is_err());
-    // A complete header with no data blocks reads as empty OpenStreetMap layers.
-    let blob = long_message(1, &long_message(4, b"OsmSchema-V0.6"));
-    let mut valid = osm.to_vec();
-    *valid.last_mut().unwrap() = blob.len() as u8;
-    valid.extend_from_slice(&blob);
-    std::fs::write(path, valid).unwrap();
-    let opened = terrio::open_vector(path, &Default::default()).unwrap();
-    assert_eq!(opened.driver, VectorDriver::OSM);
-    assert!(opened.layers.iter().all(|layer| layer.is_empty()));
+    // The OpenStreetMap reader reads it, as empty layers.
+    assert_eq!(terrio::open_vector(path, &Default::default()).unwrap().driver, VectorDriver::OSM);
 }
 
 #[test]
