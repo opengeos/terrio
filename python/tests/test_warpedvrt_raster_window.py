@@ -112,6 +112,13 @@ def write(path, data, nodata=None, mask=None, compress=None, gt=GT):
     return str(path)
 
 
+def force_python_path(src):
+    """Replaces the source's `_read_level` by a function calling it, so that its WarpedVRT reads
+    take the Python path."""
+    own = src._read_level
+    src._read_level = lambda bands, window, level: own(bands, window, level)
+
+
 def read(path, python_path, **kw):
     """A full and a reduced read of the WarpedVRT of `path`, and for each whether its windows
     were read and warped in Rust (one flag per window). On the Python path, the source's
@@ -120,8 +127,7 @@ def read(path, python_path, **kw):
     for reduced in (False, True):
         with terrio.rio.open(path) as src:
             if python_path:
-                own = src._read_level
-                src._read_level = lambda bands, window, level, own=own: own(bands, window, level)
+                force_python_path(src)
             with WarpedVRT(src, crs="EPSG:3857", **kw) as vrt:
                 windows = []
                 vrt._window_hook = lambda level, window, rust, seen=windows: seen.append(
@@ -241,13 +247,6 @@ def test_the_rust_path_gives_the_python_paths_pixels(tmp_path, c):
             assert any(level is not None for level, _ in rust[1][1]), rust[1][1]
 
 
-def force_python_path(src):
-    """Replaces the source's `_read_level` by a function calling it, so that its WarpedVRT reads
-    take the Python path."""
-    own = src._read_level
-    src._read_level = lambda bands, window, level: own(bands, window, level)
-
-
 @pytest.mark.parametrize("on_python_path", [False, True], ids=["rust", "python"])
 def test_an_alpha_the_working_type_rounds_to_zero_leaves_its_pixels_in(tmp_path, on_python_path):
     # A float32 source whose alpha band is 0 on its left third and 0.1 elsewhere, warped in uint8,
@@ -347,8 +346,7 @@ def test_a_source_closed_during_a_read_raises_as_on_the_python_path(tmp_path, cl
     for python_path in (False, True):
         with terrio.rio.open(path) as src:
             if python_path:
-                own = src._read_level
-                src._read_level = lambda bands, window, level, own=own: own(bands, window, level)
+                force_python_path(src)
 
             def close(level, window, rust, src=src):
                 if closing:
