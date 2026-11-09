@@ -2,7 +2,7 @@
 
 ```toml
 [dependencies]
-terrio = "0.7"
+terrio = "0.8"
 ```
 
 The API reference, with an example on each entry point, is on [docs.rs](https://docs.rs/terrio);
@@ -687,7 +687,7 @@ features off and names the ones it uses, for a smaller dependency tree, faster b
 smaller WebAssembly module. A COG writer, say:
 
 ```toml
-terrio = { version = "0.7", default-features = false, features = ["geotiff"] }
+terrio = { version = "0.8", default-features = false, features = ["geotiff"] }
 ```
 
 The core, always built, is GeoTIFF and COG (deflate, LZW, PackBits, ZSTD, WebP, JPEG and JPEG

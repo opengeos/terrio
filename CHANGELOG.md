@@ -8,6 +8,16 @@
   warps of 3000 x 3000 on 12 threads of a 12-core machine took 2.36 s instead of 3.8 to 4.4 s.
   Other Python threads now run during the warp and may use the raster; the warp reads the
   pixels it was called with.
+- A remote read requests the separate byte runs of a window (a COG window over several tiles)
+  in parallel, up to 8 at once, through the process-wide connection pool, as GDAL's default
+  `GDAL_HTTP_MULTIRANGE=PARALLEL` does; `TERRIO_HTTP_MULTIRANGE=SERIAL` (or the GDAL name)
+  requests them one after another. The requests carry the calling thread's options and STAC
+  asset policy. A new request starts as each run is stored, so at most 8 responses are held at
+  once, and one read's runs stay within half the block cache. A failed run ends the read once the
+  requests in flight end; none is retried or sent after it. Peak memory can rise with many
+  readers, from glibc's per-thread arenas (`MALLOC_ARENA_MAX=2` bounds them).
+
+## 0.8.0 (2026-11-08)
 
 - `terrio.rio`'s `subdatasets`, and so `terrio.xarray`'s open, list a file's subdatasets from the
   raster already open instead of opening the file again. A remote store's metadata was fetched
@@ -630,6 +640,15 @@
 - Fractional zonal coverage clips each ring to rows and boundary cells (axis-aligned
   Sutherland–Hodgman and shoelace areas) instead of general polygon overlays: about ten times
   less coverage time, with the same exact cell areas within floating-point roundoff.
+
+- terrio Web runs the terrio command line in the browser at https://terrio.dev/web/: the CLI
+  compiled to `wasm32-wasip1` runs in a Web Worker on an in-memory workspace, with forms built
+  from `terrio --json-usage` as in `terrio ui`, and reads `https://` URLs (and public `s3://`
+  and `gs://` objects) by range (#576).
+- Typing in the `terrio ui` file browser, or the terrio Web workspace picker, jumps to the next
+  entry whose name starts with the typed text; the arrow keys, Home and End move between
+  entries (#600).
+- `terrio-crs` 0.2.3 adds `list_crs`, the registry CRS listing above, and hardens grid parsing.
 
 ## 0.7.0 (2026-11-03)
 
