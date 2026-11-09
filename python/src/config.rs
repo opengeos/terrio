@@ -6,16 +6,19 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::HashMap;
 
+/// Registers the functions in the module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(config_push, m)?)?;
     m.add_function(wrap_pyfunction!(config_pop, m)?)?;
     m.add_function(wrap_pyfunction!(config_get, m)?)?;
+    m.add_function(wrap_pyfunction!(sidecars_disabled, m)?)?;
     m.add_function(wrap_pyfunction!(set_path_specific_option, m)?)?;
     m.add_function(wrap_pyfunction!(clear_path_specific_options, m)?)?;
     m.add_function(wrap_pyfunction!(get_path_specific_option, m)?)?;
     m.add_function(wrap_pyfunction!(set_allowed_drivers, m)?)?;
     m.add_function(wrap_pyfunction!(allowed_drivers, m)?)?;
     m.add_function(wrap_pyfunction!(check_drivers, m)?)?;
+    m.add_function(wrap_pyfunction!(canonical_driver_name, m)?)?;
     m.add_function(wrap_pyfunction!(identify_drivers, m)?)?;
     m.add_function(wrap_pyfunction!(network_stats, m)?)?;
     m.add_function(wrap_pyfunction!(reset_network_stats, m)?)?;
@@ -43,6 +46,13 @@ fn config_pop() -> bool {
 #[pyfunction]
 fn config_get(key: &str) -> Option<String> {
     terrio::config::get(key)
+}
+
+/// Whether `TERRIO_DISABLE_READDIR_ON_OPEN` (or its other name, `GDAL_DISABLE_READDIR_ON_OPEN`)
+/// is `EMPTY_DIR` for the calling thread, which asks that nothing next to a local dataset be read.
+#[pyfunction]
+fn sidecars_disabled() -> bool {
+    terrio::config::sidecars_disabled()
 }
 
 /// Binds an option to the files whose names start with `prefix` (GDAL's
@@ -117,6 +127,14 @@ fn allowed_drivers(kind: Option<&str>) -> PyResult<Option<Vec<String>>> {
 #[pyfunction]
 fn check_drivers(py: Python<'_>, path: &str, drivers: Vec<String>) -> PyResult<()> {
     py.detach_result(|| terrio::formats::check_drivers(path, &drivers)).py()
+}
+
+/// A driver name as the allow-list, `check_drivers` and the raster writers read it: in upper case,
+/// without the whitespace around it, and with the names of JPEG 2000 drivers (`JP2OpenJPEG`,
+/// `JPEG2000`...) as `JP2`.
+#[pyfunction]
+fn canonical_driver_name(name: &str) -> String {
+    terrio::formats::canonical_driver_name(name)
 }
 
 /// What a dataset's name and first bytes say its format is, as the allow-list judges it:
