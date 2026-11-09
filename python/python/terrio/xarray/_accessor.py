@@ -233,7 +233,7 @@ def _ensure_nodata_dtype(original_nodata: Any, new_dtype: Any) -> Any:
 class XRasterBase:
     """What the DataArray and Dataset accessors share: dimensions, CRS, transform, bounds."""
 
-    # The object is a slot: the instance dict is the state that `_Accessor` keeps on the object.
+    # The object is a slot: the instance dict is the state `_StateCachedAccessor` caches on it.
     __slots__ = ("__dict__", "_obj")
 
     def __init__(self, xarray_obj: XarrayObject) -> None:
@@ -2220,7 +2220,7 @@ class TerrioDataset(XRasterBase):
 __all__ = ["TerrioArray", "TerrioDataset", "XRasterBase"]
 
 
-class _Accessor:
+class _StateCachedAccessor:
     """Registers an accessor as xarray's `register_*_accessor` do, without a reference cycle.
 
     xarray caches the accessor on its object, and the accessor refers to the object: a cycle,
@@ -2232,10 +2232,25 @@ class _Accessor:
     """
 
     def __init__(self, name: str, accessor: type[XRasterBase]) -> None:
+        """Registers `accessor`, its state cached under `name`.
+
+        Args:
+            name: The key of the state in the object's cache.
+            accessor: The accessor class.
+        """
         self._name = name
         self._accessor = accessor
 
     def __get__(self, obj: Any, cls: Any) -> Any:
+        """The accessor of `obj` over its cached state, or the accessor class.
+
+        Args:
+            obj: The DataArray or Dataset, or None on the class.
+            cls: The class.
+
+        Returns:
+            XRasterBase | type[XRasterBase]: The accessor.
+        """
         if obj is None:  # the class's attribute, as xarray's
             return self._accessor
         try:

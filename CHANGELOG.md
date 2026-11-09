@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `terrio.xarray`: an object whose `.terrio` (or `.rio`) accessor was used is freed as soon as it
+  is dropped. xarray's accessor registration keeps a reference cycle (the object caches its
+  accessor, which refers to the object) that only the cyclic garbage collector frees, and that
+  held the pixels of every object `.terrio` touched, including views of each variable that
+  `write_crs` reads internally, so that a loop loading arrays could keep gigabytes. The object now
+  caches only the accessor's state, and each access returns a new accessor over it, so
+  `da.terrio is da.terrio` is False.
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000

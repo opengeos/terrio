@@ -38,11 +38,11 @@ except ImportError:  # pragma: no cover
         "terrio.xarray needs xarray: pip install 'terrio[xarray]' (or pip install xarray)"
     ) from None
 
-from terrio.xarray._accessor import TerrioArray, TerrioDataset, XRasterBase, _Accessor
+from terrio.xarray._accessor import TerrioArray, TerrioDataset, XRasterBase, _StateCachedAccessor
 
 # Registering again (on reload) replaces the accessor: that is intended.
-_xarray.DataArray.terrio = _Accessor("terrio", TerrioArray)  # type: ignore[attr-defined]
-_xarray.Dataset.terrio = _Accessor("terrio", TerrioDataset)  # type: ignore[attr-defined]
+_xarray.DataArray.terrio = _StateCachedAccessor("terrio", TerrioArray)  # type: ignore[attr-defined]
+_xarray.Dataset.terrio = _StateCachedAccessor("terrio", TerrioDataset)  # type: ignore[attr-defined]
 
 from terrio.xarray import exceptions  # noqa: E402
 from terrio.xarray._crs import crs_from_user_input, crs_to_cf  # noqa: E402
@@ -64,9 +64,9 @@ def register_rio_accessor(force: bool = False) -> bool:
     """
     if "rioxarray" in sys.modules and not force:
         return False
-    # sharing the state of `.terrio`, so that both see the same
-    _xarray.DataArray.rio = _Accessor("terrio", TerrioArray)  # type: ignore[attr-defined]
-    _xarray.Dataset.rio = _Accessor("terrio", TerrioDataset)  # type: ignore[attr-defined]
+    # `.rio` shares the state of `.terrio`: both see the same
+    _xarray.DataArray.rio = _StateCachedAccessor("terrio", TerrioArray)  # type: ignore[attr-defined]
+    _xarray.Dataset.rio = _StateCachedAccessor("terrio", TerrioDataset)  # type: ignore[attr-defined]
     return True
 
 
