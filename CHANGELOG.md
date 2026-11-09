@@ -11,6 +11,20 @@
   `gray, undefined, undefined` as RGB. These bands are still red, green and blue by default, and
   a COG writer, or one in YCbCr, now reports that before the file is written. Other GeoTIFFs and
   COGs are written as before.
+- `terrio.rio` keeps a PixelIsPoint raster (`AREA_OR_POINT=Point`) PixelIsPoint when it writes a
+  GeoTIFF or COG. `shutil.copy`, a writer given `update_tags(AREA_OR_POINT="Point")`, an `r+`
+  update of a PixelIsPoint GeoTIFF and `terrio.xarray`'s `to_raster` wrote it as PixelIsArea in
+  0.8.0, whole or in rows. The tag now reaches the GeoTIFF writer, which writes the raster type
+  with the tie point at the centre of pixel (0, 0); the transform is unchanged. The raster type
+  needs a CRS, the dataset's or its GCPs': without one, the raster is still written PixelIsArea,
+  now with a `UserWarning` saying so.
+- `terrio.xarray`: an object whose `.terrio` (or `.rio`) accessor was used is freed as soon as it
+  is dropped. xarray's accessor registration keeps a reference cycle (the object caches its
+  accessor, which refers to the object) that only the cyclic garbage collector frees, and that
+  held the pixels of every object `.terrio` touched, including views of each variable that
+  `write_crs` reads internally, so that a loop loading arrays could keep gigabytes. The object now
+  caches only the accessor's state, and each access returns a new accessor over it, so
+  `da.terrio is da.terrio` is False.
 - A remote read of a long range through the block cache, such as a GeoParquet row group or a run
   of COG tiles, is fetched as up to 8 parallel requests of at least 1 MiB each instead of one at
   the pace of a single connection (#741). `TERRIO_HTTP_MULTIRANGE=SERIAL` keeps one request.
