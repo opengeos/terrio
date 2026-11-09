@@ -270,7 +270,11 @@ Signatures and SAS tokens are hidden in logs and error messages.
 
 The first request of a remote file asks for its first 16,384 bytes, as GDAL's `/vsicurl/` does:
 a file that is not what its name says (64 MiB of noise named `.tif`, say) is refused after them,
-not downloaded. A remote `.json` or `.geojson` document opened as a raster is identified by its
+not downloaded. A feature-service query (`f=json`, `f=pjson`, `f=pbf` or `resultRecordCount=`)
+or a WFS `GetFeature` URL is not requested at all when no allowed driver could read its answer:
+for a vector open, when the list leaves out the ESRIJSON, ESRIPBF, GeoJSON and GML drivers (and
+GDAL, with the `gdal` feature), and for `open` and `info`, every raster driver too. A remote
+`.json` or `.geojson` document opened as a raster is identified by its
 first 32,768 bytes, as GDAL's STACTA and STACIT drivers identify one: unless they show a STAC
 document, it is refused after them rather than fetched whole to be read as GeoJSON. A remote file
 opened as a raster whose name points to no raster driver (`x`, `x.bin`, `dir.json/x`, a vector

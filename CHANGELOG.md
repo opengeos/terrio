@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A feature-service query URL (`f=json`, `f=pjson`, `f=pbf` or `resultRecordCount=`) or a WFS
+  `GetFeature` URL whose name points to no driver is refused before any request when no allowed
+  driver (`set_allowed_drivers`, `TERRIO_ALLOWED_DRIVERS`) could read its answer: for `open_vector`
+  and `list_layers`, none of the ESRIJSON, ESRIPBF, GeoJSON and GML drivers (nor GDAL, with the
+  `gdal` feature); for `open` and `info`, which read a raster answer as a raster, no raster driver
+  either. They requested it and read the start of its answer (6,000 bytes for a feature-service
+  query) before refusing it (#722). Otherwise the answer is requested and checked against what it
+  holds, as before.
 - `terrio.rio` keeps a color interpretation other than red, green and blue on three Byte bands,
   or four compressed with WebP, where its GeoTIFF writer makes them RGB unless told otherwise:
   in a COG, set on the dataset or copied by `shutil.copy(..., driver="COG")` (#717); in an
