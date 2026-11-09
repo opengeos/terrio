@@ -127,6 +127,49 @@
 //! rather than depending on `wbraster` or `wbvector` directly, so that the versions always match.
 //! A breaking release of either crate that terrio adopts is a breaking release of terrio.
 //!
+//! ## Raster buffer layout
+//!
+//! [`Raster::from_data_native`] takes complete band planes in order, each row-major from the
+//! top: `data[band * (rows * cols) + row * cols + col]` for zero-based indices. Convert
+//! pixel-interleaved RGB/RGBA buffers to planes before passing them to the constructor.
+//! [`LazyRaster::read_window`] and floating-point window reads return the same layout, using
+//! the returned window's dimensions and requested band order, including at overview levels.
+//! [`ops::warp::warp`] borrows band-major source rasters and returns a band-major raster; no
+//! reordering is needed between a window read and a warp. [`LazyRaster::read_window`] does not
+//! retain the dataset mask; read it separately with [`LazyRaster::read_mask`] when needed.
+//! Floating-point window reads apply the mask as NaN. A single band uses
+//! `data[row * cols + col]`, without transposing.
+//!
+//! ```rust
+//! use terrio::{DataType, Raster, RasterConfig, RasterDataset, raster::RasterData};
+//!
+//! let (cols, rows, bands) = (2, 2, 4);
+//! let rgba: Vec<u8> = vec![
+//!     1, 11, 21, 31, 2, 12, 22, 32, // top row: two RGBA pixels
+//!     3, 13, 23, 33, 4, 14, 24, 34, // bottom row
+//! ];
+//! let pixels = rows * cols;
+//! let mut planes = vec![0; pixels * bands];
+//! for pixel in 0..pixels {
+//!     for band in 0..bands {
+//!         planes[band * pixels + pixel] = rgba[pixel * bands + band];
+//!     }
+//! }
+//! assert_eq!(planes, vec![1, 2, 3, 4, 11, 12, 13, 14, 21, 22, 23, 24, 31, 32, 33, 34]);
+//! let config = RasterConfig { cols, rows, bands, data_type: DataType::U8, ..Default::default() };
+//! let raster = Raster::from_data_native(config, RasterData::U8(planes))?;
+//! let RasterData::U8(values) = &raster.data else { panic!("expected U8 pixels") };
+//! assert_eq!(values.as_slice(), &[1, 2, 3, 4, 11, 12, 13, 14, 21, 22, 23, 24, 31, 32, 33, 34]);
+//! let ds = RasterDataset::new(raster, false);
+//! # Ok::<(), terrio::Error>(())
+//! ```
+//!
+//! TIFF storage is independent of this buffer layout. The native GTiff writer defaults to
+//! pixel-interleaved storage (`INTERLEAVE=PIXEL`, `PlanarConfiguration=1`); request separate
+//! planes for multiband rasters with `INTERLEAVE=BAND` (`PlanarConfiguration=2`) in
+//! [`RasterWriteOptions::creation_options`]. Single-band output uses `PlanarConfiguration=1`
+//! with either option. Both take band-major buffers.
+//!
 //! # Features
 //!
 //! Every driver is on by default. With `default-features = false`, terrio keeps its core: GeoTIFF
@@ -199,6 +242,7 @@
 pub mod arrow;
 #[cfg(feature = "avif")]
 mod avif;
+pub mod block_cache;
 mod civil_time;
 mod cog;
 mod cog_validate;
@@ -206,6 +250,7 @@ pub mod config;
 pub mod crs;
 mod dataset;
 pub mod dataset_files;
+mod deflate_compress;
 mod drivers;
 #[cfg(test)]
 mod entry_allow_list_tests;
@@ -312,6 +357,8 @@ pub use ndarray_ext::{ArrayError, BandLayout, FloatElement, RasterArrayExt, Rast
 
 /// The raster type: pixels, georeferencing and CRS, in memory.
 pub use wbraster::{DataType, Raster, RasterConfig};
+// Building a `Raster` from its pixels without a nodata fill.
+pub use pixel::raster_from_data;
 /// The vector types: layers of features with geometries and attributes.
 pub use wbvector::{Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
 
@@ -368,3 +415,16 @@ pub use par::set_thread_pool;
 /// Portable OGC API Features reader and native open options.
 pub use drivers::vector::oapif;
 pub use drivers::vector::oapif::OapifOpenOptions;
+
+/// This process's id, for naming temporary files. 0 on WASI, which has no process ids
+/// (`std::process::id` panics there): the browser build of the command line runs one program at a
+/// time, so no other terrio process writes the same names. Most callers also add a counter or
+/// create the file only if new; a name that does neither (netCDF's `.nc.tmp-0`) replaces a file
+/// already called that.
+#[cfg_attr(not(fs), allow(dead_code))]
+pub(crate) fn process_id() -> u32 {
+    #[cfg(target_os = "wasi")]
+    return 0;
+    #[cfg(not(target_os = "wasi"))]
+    std::process::id()
+}

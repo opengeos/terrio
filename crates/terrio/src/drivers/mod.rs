@@ -49,7 +49,7 @@ pub(crate) mod sqlite_edit;
 #[cfg(feature = "sqlite")]
 pub(crate) mod sqlite_repack;
 pub(crate) mod vector;
-mod webp;
+pub(crate) mod webp;
 pub(crate) mod wkt;
 mod xyz;
 #[cfg(feature = "zarr")]
@@ -318,7 +318,7 @@ pub(crate) fn open_subdataset(path: &str) -> Option<Result<RasterDataset>> {
 /// Writes rasters into one netCDF-4 file, each in its group (see `netcdf_write::groups_to_bytes`).
 #[cfg(feature = "netcdf-hdf5")]
 pub(crate) fn write_netcdf_groups(rasters: &[(&str, &RasterDataset)], path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
-    std::fs::write(path, netcdf_groups_to_bytes(rasters, options)?)?;
+    common::write_replacing(path, netcdf_groups_to_bytes(rasters, options)?)?;
     Ok(())
 }
 
@@ -414,7 +414,7 @@ pub(crate) fn write(
                     let bytes = netcdf_groups_to_bytes(&all, options)?;
                     // Written beside the file, then renamed over it: an interrupted write leaves the
                     // original as it was.
-                    let tmp = p.with_extension(format!("nc.tmp-{}", std::process::id()));
+                    let tmp = p.with_extension(format!("nc.tmp-{}", crate::process_id()));
                     std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, p)).inspect_err(|_| {
                         let _ = std::fs::remove_file(&tmp);
                     })?;
@@ -433,7 +433,8 @@ pub(crate) fn write(
         }
         // Formats without a CRS of their own: GDAL's sidecar holds it.
         RasterDriver::PCRaster | RasterDriver::GRASSASCIIGrid => {
-            r.write(path, driver.to_wb()).map_err(Into::into).and_then(|()| common::write_pam(p, &r.crs))
+            let format = driver.to_wb().ok_or_else(|| crate::Error::Unsupported(format!("the {} driver cannot write", driver.name())));
+            format.and_then(|format| r.write(path, format).map_err(Into::into)).and_then(|()| common::write_pam(p, &r.crs))
         }
         _ => return None,
     })

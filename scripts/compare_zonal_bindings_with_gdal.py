@@ -12,6 +12,7 @@ from osgeo import gdal, ogr, osr
 from shapely import from_geojson, from_wkb, hausdorff_distance
 
 from compare_raster_analysis_with_gdal import (
+    ZONAL_STATS,
     expected_statistics,
     traditional,
     write_zones,
@@ -53,7 +54,7 @@ def compare(result, expected, source, options):
             raise AssertionError("attribute schema differs")
         for key, value in wanted.items():
             got = fields[key]
-            if key in original["properties"] or value is None or key.endswith("_count"):
+            if key in original["properties"] or value is None or key.endswith(("_count", "_variety", "_mode", "_minority")):
                 if got != value or isinstance(got, bool) != isinstance(value, bool):
                     raise AssertionError(f"attribute/count/null differs: {key}")
             else:
@@ -125,7 +126,7 @@ def compare(result, expected, source, options):
                 for distance in distances
             ):
                 raise AssertionError("output geometry differs")
-    return "GDAL masks + NumPy: counts/nulls/source attributes exact; seven statistics relative 1e-10 / absolute 1e-9; geometry XY 1e-12 source degrees or 1e-5 projected metres; Z presence exact and values absolute 1e-9 source units"
+    return "GDAL masks + NumPy: counts/nulls, variety, mode, minority and source attributes exact; other statistics relative 1e-10 / absolute 1e-9; geometry XY 1e-12 source degrees or 1e-5 projected metres; Z presence exact and values absolute 1e-9 source units"
 
 
 def prepare(data, work):
@@ -187,7 +188,7 @@ def prepare(data, work):
         options = dict(
             bands=bands,
             prefixes=[f"r{i}" for i in range(len(rasters))],
-            stats=["count", "min", "max", "mean", "sum", "stddev", "median"],
+            stats=ZONAL_STATS,
             all_touched=touched,
         )
         if target:

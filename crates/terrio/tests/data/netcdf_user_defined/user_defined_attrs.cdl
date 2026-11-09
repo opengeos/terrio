@@ -1,0 +1,36 @@
+// A NetCDF-4 grid whose attributes use user-defined types: compounds (one with a 2-D array
+// field, one with enum, ubyte and char fields), an enum and an int vlen.
+// Regenerate it and `expected.json` with `python scripts/make_netcdf_user_defined_fixture.py`.
+netcdf user_defined_attrs {
+types:
+  compound station_t {
+    int id ;
+    double elevation ;
+  } ;
+  compound grid_t {
+    int vals(2, 3) ;
+  } ;
+  byte enum flag_t {clear = 0, cloud = 1} ;
+  compound sample_t {
+    flag_t state ;
+    ubyte level ;
+    char code ;
+  } ;
+  int(*) ivlen_t ;
+dimensions:
+  y = 2 ;
+  x = 3 ;
+variables:
+  float z(y, x) ;
+    z:units = "m" ;
+    station_t z:station = {7, 12.5} ;
+    flag_t z:flag = cloud ;
+    ivlen_t z:counts = {1, 2, 3} ;
+    grid_t z:grid = {{1, 2, 3, 4, 5, 6}} ;
+    sample_t z:sample = {cloud, 200, "Q"} ;
+// global attributes:
+    :title = "user-defined attributes" ;
+    station_t :origin = {1, -3.25} ;
+data:
+  z = 1, 2, 3, 4, 5, 6 ;
+}

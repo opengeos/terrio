@@ -118,7 +118,7 @@ pub fn sample_with_options(points: &Layer, inputs: &[SampleInput<'_>], options: 
                             .raster
                             .data
                             .get_f64((input.band - 1) * ds.raster.rows * ds.raster.cols + row as usize * ds.raster.cols + col as usize);
-                        if v.is_finite() && crate::histogram::is_valid(v, ds.nodata(), ds.raster.data_type) {
+                        if v.is_finite() && crate::histogram::is_valid(v, ds.band_nodata(input.band), ds.raster.data_type) {
                             FieldValue::Float(v)
                         } else {
                             FieldValue::Null
@@ -193,13 +193,27 @@ pub(crate) fn check_raster(ds: &RasterDataset) -> Result<()> {
     if ds.complex || ds.geolocation.is_some() {
         return Err(Error::Unsupported("this operation needs real-valued raster bands with affine georeferencing".into()));
     }
-    let gt = ds.geo_transform();
-    let det = gt[1] * gt[5] - gt[2] * gt[4];
-    if gt.iter().any(|v| !v.is_finite()) || det == 0.0 || !det.is_finite() {
-        return Err(Error::InvalidArgument("the raster geotransform must be finite and invertible".into()));
-    }
+    check_geo_transform(&ds.geo_transform(), "raster")?;
     if ds.raster.cols == 0 || ds.raster.rows == 0 || ds.band_count() == 0 {
         return Err(Error::InvalidArgument("the raster must have pixels and at least one band".into()));
+    }
+    Ok(())
+}
+
+/// A finite, invertible geotransform and a grid with pixels.
+pub(crate) fn check_grid(gt: &[f64; 6], cols: usize, rows: usize) -> Result<()> {
+    check_geo_transform(gt, "grid")?;
+    if cols == 0 || rows == 0 {
+        return Err(Error::InvalidArgument("the grid must have pixels".into()));
+    }
+    Ok(())
+}
+
+/// A finite, invertible geotransform of the `what` (raster or grid) named in the error.
+fn check_geo_transform(gt: &[f64; 6], what: &str) -> Result<()> {
+    let det = gt[1] * gt[5] - gt[2] * gt[4];
+    if gt.iter().any(|v| !v.is_finite()) || det == 0.0 || !det.is_finite() {
+        return Err(Error::InvalidArgument(format!("the {what} geotransform must be finite and invertible")));
     }
     Ok(())
 }

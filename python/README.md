@@ -75,6 +75,12 @@ cog = terrio.open_raster("https://example.com/cog.tif", lazy=True)
 cog.overviews  # [(width, height), ...] of the overviews, largest first
 tile = cog.read(1, window=(1024, 1024, 512, 512))  # (col_off, row_off, width, height)
 thumb = cog.read(overview=2)
+# An output of another size, as GDAL's RasterIO (gdal_translate -outsize, rasterio's out_shape)
+# reads it: from the overview it chooses, so only that overview's tiles are fetched.
+small = cog.read_resampled((512, 512), resampling="average")  # size is (width, height)
+masks = cog.read_resampled_masks((512, 512), resampling="average")  # 0 invalid, 255 valid
+pixels, valid = cog.read_resampled_with_masks((512, 512), resampling="average")  # both at once
+part = cog.read_resampled((256, 256), band=1, window=(100.5, 200.25, 4096, 4096), overview="AUTO-1")
 # PMTiles and MBTiles raster tiles too: zoom levels are overviews (PMTiles read in place).
 tiles = terrio.open_raster("https://example.com/tiles.pmtiles", lazy=True)
 
@@ -153,6 +159,7 @@ dist = terrio.proximity("roads.tif", values=[1], distunits="GEO")
 clean = terrio.sieve("landcover.tif", threshold=10, connectedness=8)
 png = terrio.render("dem.tif", colormap="terrain", max_size=512)  # PNG bytes; Rasters also render in Jupyter
 xs, ys = terrio.transform_points([699960], [3900000], "EPSG:32610", "EPSG:4326")
+albers = terrio.list_crs("albers", authority="EPSG", kind="projected")  # registry CRSs, for a CRS picker
 
 data = open("dem.tif", "rb").read()
 raster = terrio.open_bytes(data, "dem.tif")  # from bytes; to bytes with raster.to_bytes("x.tif")

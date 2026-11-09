@@ -295,7 +295,7 @@ fn subdataset_index(key: &str) -> Option<(usize, bool)> {
 }
 
 /// The subdatasets a driver listed as GDAL's `SUBDATASET_N_NAME`/`SUBDATASET_N_DESC` metadata.
-fn subdatasets_from_metadata(metadata: &[(String, String)]) -> Vec<Subdataset> {
+pub(crate) fn subdatasets_from_metadata(metadata: &[(String, String)]) -> Vec<Subdataset> {
     let mut out: Vec<Subdataset> = Vec::new();
     for (k, v) in metadata {
         let Some((n, is_name)) = subdataset_index(k) else { continue };
@@ -424,6 +424,7 @@ fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
+    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     // Judged as `crate::open` judges a dataset of either kind, by its name and first bytes; a point
     // cloud against the allow-list of its kind (`TERRIO_ALLOWED_DRIVERS` alone), as its reader is.
     #[cfg(feature = "pointcloud")]
@@ -863,4 +864,36 @@ fn write_subdatasets(s: &mut String, subdatasets: &[Subdataset]) {
 
 fn fmt_box(b: &[f64; 4]) -> String {
     format!("({}, {}) - ({}, {})", b[0], b[1], b[2], b[3])
+}
+
+#[cfg(test)]
+mod subdataset_tests {
+    use super::*;
+
+    /// Reference GDAL 3.13.3: malformed metadata indices are ignored, and names are ordered.
+    #[test]
+    fn metadata_subdataset_indices_are_fallible_and_bounded() {
+        let metadata = vec![
+            ("SUBDATASET_2_NAME".into(), "two".into()),
+            ("SUBDATASET_+1_NAME".into(), "one".into()),
+            ("SUBDATASET_²_NAME".into(), "invalid".into()),
+            ("SUBDATASET_١_NAME".into(), "invalid".into()),
+            (format!("SUBDATASET_{}_NAME", "9".repeat(6000)), "invalid".into()),
+            (format!("SUBDATASET_{}3_NAME", "0".repeat(6000)), "three".into()),
+            ("SUBDATASET_0_NAME".into(), "invalid".into()),
+            ("SUBDATASET_100000_NAME".into(), "last".into()),
+            ("SUBDATASET_100001_NAME".into(), "invalid".into()),
+            ("SUBDATASET_1_DESC".into(), "description".into()),
+        ];
+        let listed = subdatasets_from_metadata(&metadata);
+        assert_eq!(listed.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["one", "two", "three", "last"]);
+        assert_eq!(listed[0].description, "description");
+    }
+
+    #[test]
+    fn empty_duplicate_subdataset_names_remove_prior_names() {
+        let metadata = [("SUBDATASET_1_NAME", "first"), ("SUBDATASET_2_NAME", "two"), ("SUBDATASET_1_NAME", "")]
+            .map(|(key, value)| (key.into(), value.into()));
+        assert_eq!(subdatasets_from_metadata(&metadata).iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["two"]);
+    }
 }

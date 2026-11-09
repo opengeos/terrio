@@ -30,7 +30,7 @@ pub(crate) fn cf_crs(text: impl Fn(&str) -> Option<String>, numbers: impl Fn(&st
         "latitude_longitude" => {
             let wgs84 = (a - 6378137.0).abs() < 1e-6 && p("inverse_flattening").is_none_or(|rf| (rf - 298.257223563).abs() < 1e-6);
             if wgs84 {
-                return Some(CrsInfo::from_epsg(4326));
+                return Some(crate::crs::epsg_crs_info(4326));
             }
             format!("+proj=longlat {ellps}")
         }

@@ -53,9 +53,11 @@ pub(crate) fn open(path: &Path) -> Result<RawRaster> {
     // The data type, inferred as GDAL does when the header leaves it out.
     let mut pixel = get("pixeltype").and_then(|p| p.chars().next()).map(|c| c.to_ascii_uppercase()).unwrap_or('N');
     let mut bits = int("nbits");
-    if bits.is_none() && pixel == 'N' {
-        let size = std::fs::metadata(path)?.len() as usize;
-        let per_pixel = size / (cols * rows * bands).max(1);
+    // Samples too many to count hold less than a byte each in any file: no size to guess.
+    let samples = cols.checked_mul(rows).and_then(|n| n.checked_mul(bands));
+    if let (None, 'N', Some(samples)) = (bits, pixel, samples) {
+        let size = std::fs::metadata(path)?.len();
+        let per_pixel = usize::try_from(size / samples.max(1) as u64).unwrap_or(usize::MAX);
         if per_pixel > 0 && per_pixel != 3 && per_pixel <= 8 {
             bits = Some(per_pixel * 8);
         }
@@ -86,9 +88,11 @@ pub(crate) fn open(path: &Path) -> Result<RawRaster> {
         Some("BSQ") => Interleave::Bsq,
         _ => Interleave::Bil,
     };
-    let row_bytes = cols * data_type.size_bytes();
+    let too_large = || Error::InvalidData(format!("{}: {cols} x {rows} x {bands} samples are too many", hdr.display()));
+    let row_bytes = cols.checked_mul(data_type.size_bytes()).ok_or_else(too_large)?;
+    let total_row_bytes = row_bytes.checked_mul(bands).ok_or_else(too_large)?;
     let standard = int("bandrowbytes").is_none_or(|b| b == row_bytes)
-        && int("totalrowbytes").is_none_or(|t| t == row_bytes * bands || interleave == Interleave::Bsq)
+        && int("totalrowbytes").is_none_or(|t| t == total_row_bytes || interleave == Interleave::Bsq)
         && int("bandgapbytes").is_none_or(|g| g == 0);
     if !standard {
         return Err(Error::Unsupported(format!("{}: padded rows are not supported", hdr.display())));
@@ -158,7 +162,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
         offset: 0,
         bottom_up: false,
     };
-    std::fs::write(path, common::encode(r, &layout))?;
+    common::write_headerless(path, path.with_extension("hdr"), common::encode(r, &layout))?;
     let pixel_type = match r.data_type {
         DataType::F32 => "FLOAT",
         DataType::I8 | DataType::I16 | DataType::I32 => "SIGNEDINT",
@@ -182,6 +186,32 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
     if let Some(nd) = nodata {
         h.push_str(&format!("NODATA         {}\n", common::format_value(nd, r.data_type)));
     }
-    std::fs::write(path.with_extension("hdr"), h)?;
+    common::write_replacing(path.with_extension("hdr"), h)?;
     common::write_prj(path, &r.crs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Opens a 4-byte `.bil` with the header `hdr`.
+    fn open_with(hdr: &str) -> Result<RawRaster> {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("e.bil");
+        std::fs::write(&p, [0u8; 4]).unwrap();
+        std::fs::write(dir.path().join("e.hdr"), hdr).unwrap();
+        open(&p)
+    }
+
+    #[test]
+    fn a_header_declaring_samples_past_any_count_is_refused() {
+        // More samples than a count holds, whatever the pointer width: no sample size to guess.
+        let e = open_with(&format!("ncols {}\nnrows 2\n", usize::MAX)).map(|_| ()).unwrap_err();
+        assert!(e.to_string().contains("too many"), "{e}");
+        // Rows of usize::MAX / 2 Float32 samples: more bytes than a row length can count.
+        let e = open_with(&format!("ncols {}\nnrows 1\nnbits 32\npixeltype float\n", usize::MAX / 2)).map(|_| ()).unwrap_err();
+        assert!(e.to_string().contains("too many"), "{e}");
+        // The 4-byte file of one Float32 sample still opens.
+        assert!(open_with("ncols 1\nnrows 1\n").is_ok());
+    }
 }

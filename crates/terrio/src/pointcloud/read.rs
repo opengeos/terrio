@@ -272,6 +272,20 @@ fn format_of(path: &str) -> &'static str {
 /// read; other remote files are downloaded first.
 pub fn open_points(path: &str) -> Result<PointCloudReader> {
     let location = crate::vfs::Location::parse(path);
+    // A folder reaching File::open looks like a permission failure on Windows.
+    // Validate before format dispatch so every point-cloud reader reports the
+    // same actionable error, while remote range reads stay unchanged.
+    let local = match &location {
+        crate::vfs::Location::Local(file) => Some(file),
+        crate::vfs::Location::Zip { archive, inner: None } => match archive.as_ref() {
+            crate::vfs::Location::Local(file) => Some(file),
+            _ => None,
+        },
+        _ => None,
+    };
+    if !path.starts_with("ept://") && local.is_some_and(|file| file.is_dir()) {
+        return Err(Error::InvalidArgument(format!("'{path}' is a directory; select a point-cloud file (for EPT, select ept.json)")));
+    }
     let name = location.file_name();
     let inner: Box<dyn FormatReader> = match format_of(path) {
         "EPT" => Box::new(super::ept::EptReader::open(path)?),
@@ -825,4 +839,28 @@ pub(crate) fn made_up_header(
     }
     h.point_record_length = super::las::standard_record_length(h.point_format) as u16;
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::open_points;
+
+    #[test]
+    fn directory_inputs_report_that_a_point_cloud_file_is_required() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in ["Downloads", "directory.las", "directory.laz", "directory.copc.laz", "directory.ply", "directory.e57", "directory.zip"]
+        {
+            let path = temp.path().join(name);
+            std::fs::create_dir(&path).unwrap();
+            let error = open_points(path.to_str().unwrap()).unwrap_err();
+            assert!(matches!(error, crate::Error::InvalidArgument(_)), "{name}: {error:?}");
+            let message = error.to_string();
+            assert!(message.contains("directory") && message.contains("point-cloud file"), "{name}: {message}");
+            assert!(message.contains(path.to_str().unwrap()), "{name}: {message}");
+            assert!(!message.contains("denied") && !message.contains("os error"), "{name}: {message}");
+        }
+        let missing = temp.path().join("missing.las");
+        let error = open_points(missing.to_str().unwrap()).unwrap_err();
+        assert!(matches!(error, crate::Error::Io(ref e) if e.kind() == std::io::ErrorKind::NotFound), "{error:?}");
+    }
 }

@@ -14,7 +14,7 @@ WebAssembly for browsers and Node.js. Datasets are opened from bytes, with a fil
 format, and written back to bytes.
 
 ```js
-import init, { open, fromGeoJSON, fromArrowIPC, rasterFromArray, registerGrid, transformPoints, describeCrs, openPoints, pointsFromArrays } from "terrio-js";
+import init, { open, fromGeoJSON, fromArrowIPC, rasterFromArray, registerGrid, transformPoints, describeCrs, listCrs, openPoints, pointsFromArrays } from "terrio-js";
 
 await init(); // in Node.js: await init({ module_or_path: fs.readFileSync(wasmPath) })
 
@@ -24,6 +24,11 @@ dem.info();                       // the summary `terrio info --json` prints
 dem.width, dem.height, dem.count, dem.dtype, dem.crs, dem.transform, dem.nodata
 const band = dem.readBand(1);     // Float32Array, Uint8Array... row after row
 const tile = dem.readBand(1, [0, 0, 256, 256]);   // a window [col_off, row_off, width, height]
+// An output of another size, as GDAL's RasterIO reads it (gdal_translate -outsize), from the
+// overview it chooses: bands one after another. Also on remote datasets (openUrl), as promises.
+const small = dem.readResampled({ size: [256, 256], resampling: "average" });
+const masks = dem.readResampledMasks({ size: [256, 256], resampling: "average" }); // Uint8Array
+const { data, masks: valid } = dem.readResampledWithMasks({ size: [256, 256] }); // both at once
 const cog = dem.toBytes("dem_cog.tif", { format: "COG", compress: "DEFLATE" });
 
 const roads = open(geojsonBytes, "roads.geojson");
@@ -35,6 +40,7 @@ const back = fromArrowIPC(ipc, "roads");
 const [xs, ys] = transformPoints([-122.4], [37.8], "EPSG:4326", "EPSG:32610");
 registerGrid("us_nga_egm96_15.tif", gridBytes);  // datum shift and geoid grids, from bytes
 const [lon, lat, h] = transformPoints([-100], [40], "EPSG:4979", "EPSG:4326+5773", [100]);
+const albers = listCrs("albers", { authority: "EPSG", kind: "projected" }); // registry CRSs, for a CRS picker
 
 // Point clouds: LAS, LAZ, COPC, PLY and E57.
 const lidar = openPoints(lazBytes, "tile.laz");
@@ -51,7 +57,7 @@ In WebAssembly, these formats are read from and written to memory:
 
 | | Read | Write |
 |---|---|---|
-| Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), GRIB 1 and 2 (read band by band), netCDF, HDF5, Zarr and GeoZarr (zipped, or with `openZarr`), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
+| Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), GRIB 1 and 2 (read band by band), netCDF, HDF5, Zarr and GeoZarr (zipped, with `openZarr`, or remote by window with `openUrl`), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
 | Vector | GeoJSON, TopoJSON, ESRIJSON, ESRIPBF, FlatGeobuf\*, GeoPackage, GeoParquet, CSV, XLSX, CityJSON, CityGML, KML, KMZ, GML, GPX, DWG and DXF (full module), OSM (PBF and XML), PMTiles, MBTiles, MVT tiles, zip archives of these, Shapefile and MapInfo (MIF and TAB) in zip archives, HEC-RAS (full module) | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, GeoParquet, CSV, XLSX, CityJSON, CityGML, Shapefile (`.shp.zip`), KML, KMZ, GML, GPX, PMTiles, MBTiles, DWG and DXF (full module) |
 | Point cloud | LAS, LAZ, COPC, PLY, E57 | LAS, LAZ, COPC, PLY, E57 |
 
@@ -62,6 +68,30 @@ file's size for lines and five for polygons (3.2 GB and 5.4 GB in native builds)
 polygons runs out of memory, but in the memory64 module (see below). `openUrl` reads files with a
 spatial index by bounding box, decoding only the features found; a file without one is still read
 whole. `openOapif(url, options)` reads OGC API Features services over `fetch`.
+
+Remote Zarr requests fail on HTTP 403 by default, including metadata. For anonymous object
+stores that return 403 for absent metadata keys, explicitly set `allowMissingMetadata403: true`.
+This accepts version/existence-probe ambiguity; use it only for known public stores.
+Denied v2 `.zattrs` documents, chunks and shards always fail, including with this option.
+The opt-in still treats `zarr.json` 403 responses as absent version probes, so callers accept
+that ambiguity for v3 metadata, including any attributes embedded in it. This strict default
+is specific to the JavaScript fetch backend; native anonymous S3 reads retain their existing
+missing-object 403 policy.
+
+A remote Zarr store (v2 or v3, sharded or not) opens with `openUrl` too: the store or group at
+the URL (`.zarr`, or `format: "Zarr"`) and the array `array` within it, read as a raster by
+window. Opening fetches its metadata documents, and a window the shard indexes and chunks it
+needs, nearby inner chunks coalesced with a 1 MiB target (a single larger chunk is fetched
+whole), the indexes kept for later windows. A year of the TESSERA embeddings (128 bands of a
+192 x 192 window, 5 MB) reads in about 4 seconds after opening in Chrome from Europe.
+Opening plus reading takes about 5–6 seconds in that measurement. The TESSERA Zarr Explorer,
+which reads it with zarrita, takes about 9 seconds for the window:
+
+```js
+const store = "https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/tessera/tessera/zarr/v1.1-dclimate/utm30";
+const emb = await openUrl(store, { format: "Zarr", array: "embeddings", allowMissingMetadata403: true }); // (time, band, y, x): 1152 bands
+const year2025 = await emb.read({ window: [45184, 360000, 192, 192], bands: Array.from({ length: 128 }, (_, i) => 1025 + i) });
+```
 
 JPEG 2000 files decode with the codec of GDAL's JP2OpenJPEG driver (a Rust port of OpenJPEG), with
 their GeoJP2 or GMLJP2 georeferencing: a Sentinel-2 band (`T10SEG_..._B04.jp2`, 10980 x 10980)

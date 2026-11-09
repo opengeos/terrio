@@ -28,8 +28,20 @@ pub(crate) fn small_strip_rows(width: usize, bands: usize, value_size: usize, bl
     rows_of(SMALL_STRIP_BYTES, width, bands, value_size, block)
 }
 
+/// At most this many bytes of values in a row of the input's blocks that strips are aligned to: a
+/// taller row of blocks (4096-row blocks of a wide raster) is read in strips of about the usual
+/// size, decoding again the blocks a strip edge splits, rather than a whole row of blocks at a time.
+const MAX_ALIGNED_STRIP_BYTES: usize = 2 << 30;
+
+/// The block height `block` strips of a raster of `width` pixels and `bands` bands of `value_size`
+/// bytes are aligned to, when a row of such blocks holds at most 2 GB of values; `None` otherwise.
+pub(crate) fn bounded_alignment(width: usize, bands: usize, value_size: usize, block: Option<usize>) -> Option<usize> {
+    let row = width.saturating_mul(bands.max(1)).saturating_mul(value_size);
+    block.filter(|&h| h.saturating_mul(row) <= MAX_ALIGNED_STRIP_BYTES)
+}
+
 fn rows_of(bytes: usize, width: usize, bands: usize, value_size: usize, block: Option<usize>) -> usize {
-    let row = (width * bands.max(1) * value_size).max(1);
+    let row = width.saturating_mul(bands.max(1)).saturating_mul(value_size).max(1);
     let block = block.unwrap_or(1).max(1);
     (bytes / row / block).max(1) * block
 }
@@ -98,6 +110,8 @@ impl StripWriter {
 
     /// A source mask is supplied with each strip instead of held in `options.mask`.
     pub fn create_masked(header: &RasterDataset, path: &str, options: &RasterWriteOptions, source_mask: bool) -> Result<Self> {
+        let derived = crate::dataset::color_options(header, path, options);
+        let options = derived.as_ref().unwrap_or(options);
         let mut inherited = options.inherited_from(header, options.driver.or_else(|| RasterDriver::for_extension(path)));
         if source_mask {
             inherited.mask = Some(Vec::new());
@@ -345,18 +359,37 @@ pub(crate) fn pipelined<R: Send>(
 
 /// How many strips [`read_ahead`] reads at once, ahead of the one worked on.
 #[cfg(not(target_family = "wasm"))]
-const READ_AHEAD: usize = 4;
+pub(crate) const READ_AHEAD: usize = 4;
 
 /// Runs `work` on `n` strips in order, `read` reading each: up to [`READ_AHEAD`] strips are read
 /// at once on other threads, ahead of the one worked on, so that a strip slow to read does not
-/// hold up the next ones (in turn on WebAssembly).
+/// hold up the next ones (in turn on WebAssembly). The caller waits for those threads without
+/// running pool work, so natively it should not be a thread of terrio's pool: `read` may need the
+/// pool (`par::install` in JPEG XL decoding), and callers waiting on every thread of it would
+/// leave it none.
 pub(crate) fn read_ahead<R: Send>(
+    n: usize,
+    read: impl Fn(usize) -> Result<R> + Sync,
+    work: impl FnMut(usize, R) -> Result<()>,
+) -> Result<()> {
+    #[cfg(not(target_family = "wasm"))]
+    let ahead = READ_AHEAD;
+    #[cfg(target_family = "wasm")]
+    let ahead = 1;
+    read_ahead_by(ahead, n, read, work)
+}
+
+/// [`read_ahead`] with at most `ahead` strips read and not yet worked on (at least one): callers
+/// running many at once read fewer ahead each, as each strip held ahead is memory.
+pub(crate) fn read_ahead_by<R: Send>(
+    ahead: usize,
     n: usize,
     read: impl Fn(usize) -> Result<R> + Sync,
     mut work: impl FnMut(usize, R) -> Result<()>,
 ) -> Result<()> {
     #[cfg(target_family = "wasm")]
     {
+        let _ = ahead;
         for i in 0..n {
             work(i, read(i)?)?;
         }
@@ -366,7 +399,7 @@ pub(crate) fn read_ahead<R: Send>(
     {
         use std::collections::BTreeMap;
         use std::sync::{Condvar, Mutex};
-        let ahead = READ_AHEAD;
+        let ahead = ahead.max(1);
         /// The next strip to read, the strips worked on, and whether to stop.
         struct State {
             next: usize,
@@ -443,6 +476,17 @@ mod tests {
     use wbraster::DataType;
 
     #[test]
+    fn strips_align_to_rows_of_blocks_of_at_most_2_gb() {
+        // 512 rows of a 98304-wide RGB mosaic of 64-bit values are 1.2 GB: kept.
+        assert_eq!(bounded_alignment(98304, 3, 8, Some(512)), Some(512));
+        assert_eq!(strip_rows(98304, 3, 8, bounded_alignment(98304, 3, 8, Some(512))), 512);
+        // 4096 rows are 9.7 GB: split into strips of about 64 MB.
+        assert_eq!(bounded_alignment(98304, 3, 8, Some(4096)), None);
+        assert_eq!(strip_rows(98304, 3, 8, bounded_alignment(98304, 3, 8, Some(4096))), 28);
+        assert_eq!(bounded_alignment(1024, 1, 1, None), None);
+    }
+
+    #[test]
     fn overwrite_guard_includes_directory_store_members() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("source.zarr");
@@ -475,6 +519,128 @@ mod tests {
     fn header(data_type: DataType) -> RasterDataset {
         let grid = Grid { width: 4, height: 6, geo_transform: [0.0, 1.0, 0.0, 6.0, 0.0, -1.0] };
         raster_header(grid, data_type, 1, None, &SpatialRef::parse("EPSG:4326").unwrap()).unwrap()
+    }
+
+    /// Streamed writes retain source colors and honor explicit TIFF color overrides.
+    #[test]
+    fn streamed_color_tags_match_whole_writes_and_respect_options() {
+        let dir = tempfile::tempdir().unwrap();
+        for dtype in [DataType::U8, DataType::U16] {
+            for bands in [3, 4] {
+                let cfg = wbraster::RasterConfig { cols: 40, rows: 30, bands, data_type: dtype, ..Default::default() };
+                let raster = wbraster::Raster::from_data_native(cfg, RasterData::new_filled(dtype, 40 * 30 * bands, 17.0)).unwrap();
+                let mut ds = RasterDataset::with_driver(raster, RasterDriver::GTiff, false);
+                ds.set_geo_transform([10., 2., 0., 70., 0., -2.]);
+                ds.band_metadata = ["Red", "Green", "Blue", "Alpha"][..bands]
+                    .iter()
+                    .map(|c| crate::BandMetadata { color_interp: Some((*c).into()), ..Default::default() })
+                    .collect();
+                for driver in [RasterDriver::GTiff, RasterDriver::Cog] {
+                    for override_color in [false, true] {
+                        let mut options = RasterWriteOptions { driver: Some(driver), ..Default::default() };
+                        if override_color {
+                            options.creation_options = vec![("PHOTOMETRIC".into(), "MINISBLACK".into()), ("ALPHA".into(), "NO".into())];
+                        }
+                        let whole = dir.path().join("whole.tif");
+                        let streamed = dir.path().join("streamed.tif");
+                        crate::write_raster_dataset(&ds, whole.to_str().unwrap(), &options).unwrap();
+                        let mut writer = StripWriter::create(&ds, streamed.to_str().unwrap(), &options).unwrap();
+                        for y in (0..30).step_by(10) {
+                            writer
+                                .write(crate::cog::cut(&ds.raster, crate::Window::new(0, y, 40, 10), &(1..=bands).collect::<Vec<_>>()), 10)
+                                .unwrap();
+                        }
+                        writer.finish().unwrap();
+                        let tags = |path: &std::path::Path| {
+                            let mut dec = tiff::decoder::Decoder::new(std::fs::File::open(path).unwrap()).unwrap();
+                            (
+                                dec.find_tag_unsigned::<u16>(tiff::tags::Tag::PhotometricInterpretation).unwrap(),
+                                dec.find_tag_unsigned_vec::<u16>(tiff::tags::Tag::ExtraSamples).unwrap(),
+                            )
+                        };
+                        assert_eq!(tags(&streamed), tags(&whole));
+                        assert_eq!(tags(&streamed).0, Some(if override_color { 1 } else { 2 }));
+                        if override_color {
+                            assert_eq!(tags(&streamed).1, Some(vec![0; bands - 1]));
+                        }
+                        if bands == 4 && !override_color {
+                            assert_eq!(tags(&streamed).1, Some(vec![2]));
+                        }
+                        let read = crate::open_raster_lazy(streamed.to_str().unwrap()).unwrap().read().unwrap();
+                        assert_eq!(read.raster.data.to_f64_vec(), ds.raster.data.to_f64_vec());
+                        assert_eq!(read.geo_transform(), ds.geo_transform());
+                    }
+                }
+            }
+        }
+    }
+
+    /// RGB overviews exclude transparent pixels when alpha is enabled and average all pixels
+    /// when it is disabled. Compare every level with whole writes and independent expected values.
+    #[test]
+    fn streamed_cog_overviews_respect_alpha_interpretation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (width, height, bands) = (128, 64, 4);
+        let data = (0..width * height * bands)
+            .map(|i| match (i / (width * height), i % 2) {
+                (3, 0) => 0,
+                (3, _) => 255,
+                (_, 0) => 200,
+                _ => 20,
+            })
+            .collect();
+        let cfg = wbraster::RasterConfig { cols: width, rows: height, bands, data_type: DataType::U8, ..Default::default() };
+        let raster = wbraster::Raster::from_data_native(cfg, RasterData::U8(data)).unwrap();
+        let mut ds = RasterDataset::with_driver(raster, RasterDriver::GTiff, false);
+        ds.band_metadata = ["Red", "Green", "Blue", "Alpha"]
+            .iter()
+            .map(|c| crate::BandMetadata { color_interp: Some((*c).into()), ..Default::default() })
+            .collect();
+        for use_alpha in [false, true] {
+            ds.band_metadata[3].color_interp = use_alpha.then(|| "Alpha".into());
+            let mut options = RasterWriteOptions {
+                driver: Some(RasterDriver::Cog),
+                tile_size: Some(16),
+                overview_resampling: Some("average".into()),
+                ..Default::default()
+            };
+            if !use_alpha {
+                options.creation_options.push(("ALPHA".into(), "NO".into()));
+            }
+            let suffix = if use_alpha { "alpha" } else { "no-alpha" };
+            let whole = dir.path().join(format!("whole-{suffix}.tif"));
+            let streamed = dir.path().join(format!("streamed-{suffix}.tif"));
+            crate::write_raster_dataset(&ds, whole.to_str().unwrap(), &options).unwrap();
+            let mut writer = StripWriter::create(&ds, streamed.to_str().unwrap(), &options).unwrap();
+            for y in (0..height).step_by(8) {
+                writer.write(crate::cog::cut(&ds.raster, crate::Window::new(0, y, width, 8), &[1, 2, 3, 4]), 8).unwrap();
+            }
+            writer.finish().unwrap();
+            for path in [&whole, &streamed] {
+                let mut decoder = tiff::decoder::Decoder::new(std::fs::File::open(path).unwrap()).unwrap();
+                assert_eq!(
+                    decoder.find_tag_unsigned_vec::<u16>(tiff::tags::Tag::ExtraSamples).unwrap(),
+                    Some(vec![if use_alpha { 2 } else { 0 }])
+                );
+            }
+            let mut whole = crate::open_raster_lazy(whole.to_str().unwrap()).unwrap();
+            let mut streamed = crate::open_raster_lazy(streamed.to_str().unwrap()).unwrap();
+            let sizes = whole.overviews();
+            assert!(sizes.len() >= 2, "exercise successive overview levels");
+            assert_eq!(sizes, streamed.overviews());
+            for (level, (cols, rows)) in sizes.into_iter().enumerate() {
+                let opts = crate::WindowOptions { bands: vec![], overview: Some(level) };
+                let window = crate::Window::new(0, 0, cols, rows);
+                let expected = whole.read_window(window, &opts).unwrap();
+                let actual = streamed.read_window(window, &opts).unwrap();
+                let values = actual.raster.data.to_f64_vec();
+                assert_eq!(values, expected.raster.data.to_f64_vec(), "overview {level}");
+                assert!(
+                    values[..cols * rows * 3].iter().all(|v| *v == if use_alpha { 20.0 } else { 110.0 }),
+                    "visible RGB mismatch at overview {level} (alpha weighting: {use_alpha})"
+                );
+            }
+        }
     }
 
     /// A GeoTIFF dropped before it is finished (its operation failing) is removed; a finished one

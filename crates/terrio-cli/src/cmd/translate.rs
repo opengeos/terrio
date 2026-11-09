@@ -5,10 +5,104 @@
 
 //! `terrio translate`.
 
-use super::rasterout::{OutputArgs, open, srs};
+use super::rasterout::{OutputArgs, srs};
+use std::ffi::OsString;
 use terrio::ops::overview::OverviewSelection;
-use terrio::ops::translate::{Scale, Size, TranslateOptions, translate, translate_lazy};
+use terrio::ops::translate::{Scale, Size, TranslateOptions, translate_path_to_file};
 use terrio::ops::{Resampling, parse_data_type};
+
+fn flag_arity(s: &str) -> Option<usize> {
+    match s {
+        "-b" | "--band" | "--ot" | "--projwin-srs" | "-r" | "--resampling" | "--overview" | "--ovr" | "--exponent" | "--a-nodata"
+        | "--a-srs" | "-f" | "--format" | "--of" | "--compress" | "--tile-size" | "--co" => Some(1),
+        "--outsize" | "--tr" => Some(2),
+        "--srcwin" | "--projwin" | "--a-ullr" => Some(4),
+        "--bigtiff" | "--json-usage" | "-h" | "--help" | "-V" | "--version" => Some(0),
+        _ => None,
+    }
+}
+
+/// Rewrites `terrio translate ... --scale [s0 s1] <input> <output>` so that positional
+/// `<input>` and `<output>` arguments following a 0- or 2-argument `--scale` are not
+/// consumed by clap as scale numbers.
+pub fn rewrite_args(args: Vec<OsString>) -> Vec<OsString> {
+    // Leading UTF-8 command words retain their original argument indices.
+    let words: Vec<(usize, &str)> =
+        args.iter().enumerate().skip(1).filter_map(|(idx, a)| a.to_str().filter(|&s| s != "--json-usage").map(|s| (idx, s))).collect();
+    let sub_idx = match words.as_slice() {
+        [(idx, "translate"), ..] | [(_, "raster"), (idx, "translate"), ..] => *idx,
+        _ => return args,
+    };
+    let mut out = Vec::with_capacity(args.len());
+    out.extend_from_slice(&args[..=sub_idx]);
+    let mut pos_before = 0usize;
+    let mut i = sub_idx + 1;
+    while i < args.len() {
+        let s = args[i].to_str();
+        if s == Some("--") {
+            out.extend_from_slice(&args[i..]);
+            break;
+        }
+        if let Some(arity) = s.and_then(flag_arity) {
+            let end = (i + 1 + arity).min(args.len());
+            out.extend_from_slice(&args[i..end]);
+            i = end;
+            continue;
+        }
+        if s == Some("--scale") {
+            let mut k = 0usize;
+            while k < 4 && i + 1 + k < args.len() && args[i + 1 + k].to_str().is_some_and(|t| t.parse::<f64>().is_ok()) {
+                k += 1;
+            }
+            let mut m = k;
+            while i + 1 + m < args.len() && args[i + 1 + m].to_str().is_some_and(|t| !t.starts_with('-')) {
+                m += 1;
+            }
+            // Count positional arguments after this `--scale` span.
+            let mut pos_after = 0usize;
+            let mut j = i + 1 + m;
+            while j < args.len() {
+                let sj = args[j].to_str();
+                if sj == Some("--") {
+                    pos_after += args.len() - (j + 1);
+                    break;
+                }
+                if let Some(arity) = sj.and_then(flag_arity) {
+                    j += 1 + arity;
+                } else if sj.is_some_and(|t| t.starts_with('-')) {
+                    j += 1;
+                } else {
+                    pos_after += 1;
+                    j += 1;
+                }
+            }
+            let need = 2usize.saturating_sub(pos_before + pos_after);
+            let scale_len = if need > 0 && m >= need && matches!(m - need, 0 | 2 | 4) && m - need <= k {
+                Some(m - need)
+            } else if matches!(k, 0 | 2) && (1..=2).contains(&(m - k)) {
+                Some(k)
+            } else {
+                None
+            };
+            if let Some(s_len) = scale_len
+                && s_len < m
+                && s_len < 4
+            {
+                out.extend_from_slice(&args[i + 1 + s_len..i + 1 + m]);
+                out.extend_from_slice(&args[i..i + 1 + s_len]);
+                pos_before += m - s_len;
+                i += 1 + m;
+                continue;
+            }
+        }
+        if s.is_some_and(|t| !t.starts_with('-')) {
+            pos_before += 1;
+        }
+        out.push(args[i].clone());
+        i += 1;
+    }
+    out
+}
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -98,36 +192,79 @@ pub fn run(a: Args) -> terrio::Result<()> {
         assign_srs: srs(&a.a_srs)?,
         assign_ullr: four(&a.a_ullr),
     };
-    // GeoTIFFs, Zarr stores and other rasters read by window are read for the output alone: the
-    // tiles or chunks its window touches, of its bands, from the overview it is read from. Rasters
-    // named `gdal:`, and those the lazy reader cannot read (GDAL may), are read whole, as `open`
-    // reads them, at full resolution. Errors GDAL's fallback does not retry either (invalid
-    // arguments, network failures, missing local files, resource refusals) are kept.
-    let gdal_named = a.input.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("gdal:"));
-    let lazy = if gdal_named {
-        None
-    } else {
-        match super::quiet(|| terrio::open_raster_lazy(&a.input)) {
-            Ok(src) => Some(src),
-            Err(e @ (terrio::Error::InvalidArgument(_) | terrio::Error::Http(_))) => return Err(e),
-            Err(e) if e.is_resource_refusal() => return Err(e),
-            Err(terrio::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound && !a.input.contains(':') => {
-                return Err(terrio::Error::Io(e));
+    super::quiet(|| translate_path_to_file(&a.input, &o, overview, &a.output, &a.out.options()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rewrite_args;
+
+    /// Rewriting must consume exactly the values the independently defined clap parser accepts.
+    #[test]
+    fn rewrite_arities_match_parser_options() {
+        let command = <super::Args as clap::Args>::augment_args(clap::Command::new("translate"));
+        for argument in command.get_arguments() {
+            if argument.get_id() == "scale" || !argument.get_action().takes_values() {
+                continue;
             }
-            Err(_) => None,
-        }
-    };
-    let out = match lazy {
-        Some(mut src) => translate_lazy(&mut src, &o, overview)?,
-        None => {
-            if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(_)) {
-                return Err(terrio::Error::Unsupported(format!(
-                    "--overview {} needs a raster read by window; {} is read whole",
-                    a.overview, a.input
-                )));
+            if argument.get_long().is_none() && argument.get_short().is_none() {
+                continue;
             }
-            translate(&open(&a.input)?, &o)?
+            let arity = argument.get_num_args().map_or(1, |range| {
+                assert_eq!(range.min_values(), range.max_values(), "{} has variable arity", argument.get_id());
+                range.max_values()
+            });
+            let longs = argument.get_long().into_iter().chain(argument.get_all_aliases().unwrap_or_default());
+            for flag in longs {
+                assert_eq!(super::flag_arity(&format!("--{flag}")), Some(arity), "--{flag}");
+            }
+            let shorts = argument.get_short().into_iter().chain(argument.get_all_short_aliases().unwrap_or_default());
+            for flag in shorts {
+                assert_eq!(super::flag_arity(&format!("-{flag}")), Some(arity), "-{flag}");
+            }
         }
-    };
-    a.out.write(&out, &a.output)
+    }
+
+    #[test]
+    fn rewrites_scale_before_positional_paths() {
+        for (input, expected) in [
+            (
+                vec!["terrio", "raster", "translate", "--scale", "in.tif", "out.tif"],
+                vec!["terrio", "raster", "translate", "in.tif", "out.tif", "--scale"],
+            ),
+            (
+                vec!["terrio", "translate", "--scale", "--", "in.tif", "out.tif"],
+                vec!["terrio", "translate", "--scale", "--", "in.tif", "out.tif"],
+            ),
+            (
+                vec!["terrio", "translate", "--ot", "Byte", "--scale", "in.tif", "out.tif"],
+                vec!["terrio", "translate", "--ot", "Byte", "in.tif", "out.tif", "--scale"],
+            ),
+            (
+                vec!["terrio", "translate", "--scale", "0", "1000", "in.tif", "out.tif"],
+                vec!["terrio", "translate", "in.tif", "out.tif", "--scale", "0", "1000"],
+            ),
+            (
+                vec!["terrio", "translate", "--scale", "0", "1000", "0", "255", "in.tif", "out.tif"],
+                vec!["terrio", "translate", "--scale", "0", "1000", "0", "255", "in.tif", "out.tif"],
+            ),
+            (vec!["terrio", "translate", "--scale", "1e3", "out.tif"], vec!["terrio", "translate", "1e3", "out.tif", "--scale"]),
+            (
+                vec!["terrio", "translate", "--scale", "0", "1000", "1e3", "out.tif"],
+                vec!["terrio", "translate", "1e3", "out.tif", "--scale", "0", "1000"],
+            ),
+            (
+                vec!["terrio", "translate", "in.tif", "--a-nodata", "--scale", "none", "out.tif"],
+                vec!["terrio", "translate", "in.tif", "--a-nodata", "--scale", "none", "out.tif"],
+            ),
+            (
+                vec!["terrio", "info", "translate", "--scale", "0", "1000", "in.tif"],
+                vec!["terrio", "info", "translate", "--scale", "0", "1000", "in.tif"],
+            ),
+        ] {
+            let out: Vec<String> =
+                rewrite_args(input.into_iter().map(Into::into).collect()).into_iter().map(|s| s.into_string().unwrap()).collect();
+            assert_eq!(out, expected);
+        }
+    }
 }

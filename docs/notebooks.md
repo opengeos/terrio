@@ -55,3 +55,26 @@ A tour of terrio in Python:
 - a Landsat image through xarray's backend, `xr.open_dataset(url, engine="terrio")`;
 - writing a COG and GeoZarr with `to_raster`, and xarray's `to_zarr` keeping the georeferencing;
 - `register_rio_accessor()`, for code written for rioxarray.
+
+## Comparison notebook
+
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/opengeos/terrio/blob/main/docs/notebooks/comparison.ipynb)
+[View on GitHub](https://github.com/opengeos/terrio/blob/main/docs/notebooks/comparison.ipynb) ·
+[Download](notebooks/comparison.ipynb)
+
+The quickstart's workflow written with terrio, GDAL's Python bindings, rasterio and rioxarray,
+with GeoPandas and pyproj for the vector and coordinate steps. Each step checks that the
+libraries agree and times them:
+
+- the elevation COG's header, an overview and a window, read over HTTP: the same pixels from all
+  four;
+- hillshade and slope: terrio and `gdal.DEMProcessing` agree pixel for pixel, and a NumPy slope
+  for rasterio agrees within 0.001°;
+- reprojection to UTM: terrio and `gdal.Warp` produce the same grid and pixels, while rasterio's
+  `calculate_default_transform` chooses a grid one column wider;
+- NDVI, filtering and reprojecting the countries to GeoPackage, rasterizing them, and
+  transforming a coordinate.
+
+It needs the GDAL Python bindings, which Google Colab includes; locally, install GDAL with conda
+(`conda install -c conda-forge gdal`), then `pip install terrio rasterio rioxarray geopandas
+matplotlib`.

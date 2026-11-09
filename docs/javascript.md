@@ -5,7 +5,7 @@ WebAssembly for browsers and Node.js. Datasets are opened from bytes, with a fil
 format, and written back to bytes. Try it without installing anything on the [Playground](playground.md).
 
 ```js
-import init, { open, fromGeoJSON, fromArrowIPC, rasterFromArray, registerGrid, transformPoints, describeCrs } from "terrio-js";
+import init, { open, fromGeoJSON, fromArrowIPC, rasterFromArray, registerGrid, transformPoints, describeCrs, listCrs } from "terrio-js";
 import { tableFromIPC, tableToIPC } from "apache-arrow";
 
 await init(); // in Node.js: await init({ module_or_path: fs.readFileSync(wasmPath) })
@@ -16,6 +16,11 @@ dem.info();                       // the summary `terrio info --json` prints
 dem.width, dem.height, dem.count, dem.dtype, dem.crs, dem.transform, dem.nodata
 const band = dem.readBand(1);     // Float32Array, Uint8Array... row after row
 const tile = dem.readBand(1, [0, 0, 256, 256]);   // a window [col_off, row_off, width, height]
+// An output of another size, as GDAL's RasterIO reads it (gdal_translate -outsize), from the
+// overview it chooses: bands one after another. Also on remote datasets (openUrl), as promises.
+const small = dem.readResampled({ size: [256, 256], resampling: "average" });
+const masks = dem.readResampledMasks({ size: [256, 256], resampling: "average" }); // Uint8Array
+const { data, masks: valid } = dem.readResampledWithMasks({ size: [256, 256] }); // both at once
 const cog = dem.toBytes("dem_cog.tif", { format: "COG", compress: "DEFLATE" });
 
 const roads = open(geojsonBytes, "roads.geojson");
@@ -30,13 +35,15 @@ const [xs, ys] = transformPoints([-122.4], [37.8], "EPSG:4326", "EPSG:32610");
 registerGrid("us_nga_egm96_15.tif", new Uint8Array(await (await fetch(gridUrl)).arrayBuffer()));
 const [lon, lat, h] = transformPoints([-100], [40], "EPSG:4979", "EPSG:4326+5773", [100]);
 transformPoints([135], [-25], "EPSG:7912", "EPSG:7843", [0], { sCoordEpoch: 2010.0 });
+// The registry CRSs, for a CRS picker: [{ authority, code, name, kind, deprecated, area_name, bounds, ... }].
+const albers = listCrs("albers", { authority: "EPSG", kind: "projected" });
 ```
 
 In WebAssembly, these formats are read from and written to memory:
 
 | | Read | Write |
 |---|---|---|
-| Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), GRIB 1 and 2 (read band by band), netCDF, HDF5, Zarr and GeoZarr (zipped, or with `openZarr`), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
+| Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), GRIB 1 and 2 (read band by band), netCDF, HDF5, Zarr and GeoZarr (zipped, with `openZarr`, or remote by window with `openUrl`), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
 | Vector | GeoJSON, TopoJSON, ESRIJSON, ESRIPBF, FlatGeobuf\*, GeoPackage, CSV, XLSX, GeoParquet, CityJSON, CityGML, KML, KMZ, GML, GPX, OSM (PBF and XML), PMTiles, MBTiles, MVT tiles, zip archives of these, and Shapefile and MapInfo (MIF and TAB) in zip archives, DWG and DXF (full module), HEC-RAS (full module) | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, CSV, XLSX, GeoParquet, CityJSON (`cityjsonVersion`: `"1.1"` or `"2.0"`), CityGML (`citygmlVersion`: `"2.0"` or `"3.0"`, `citygmlLod0Surface`: `"footprint"` or `"roof-edge"`), DWG and DXF (full module), Shapefile (`.shp.zip`), KML, KMZ (`kmzResources` packs icon images), GML, GPX, PMTiles, MBTiles (`minzoom`, `maxzoom` options) |
 
 \* FlatGeobuf files are read by terrio's own driver, with 64-bit offsets. `open` decodes a layer
@@ -46,6 +53,28 @@ file's size for lines and five for polygons (3.2 GB and 5.4 GB in native builds)
 polygons runs out of memory, but in the memory64 module (see below). `openUrl` reads files with a
 spatial index by bounding box, decoding only the features found; a file without one is still read
 whole. `openOapif(url, options)` reads OGC API Features services over `fetch`.
+
+HTTP 403 fails by default. For anonymous stores returning 403 for absent metadata, explicitly
+set `allowMissingMetadata403: true`; this accepts ambiguous version/existence probes. Denied
+v2 `.zattrs` documents, chunks and shards always fail. A `zarr.json` 403 remains an
+ambiguous absent-version probe, including its embedded v3 attributes. This strict default
+is specific to the JavaScript fetch backend; native anonymous S3 reads retain their existing
+missing-object 403 policy.
+
+A remote Zarr store (v2 or v3, sharded or not) opens with `openUrl` too: the store or group at
+the URL (`.zarr`, or `format: "Zarr"`) and the array `array` within it, read as a raster by
+window. Opening fetches its metadata documents, and a window the shard indexes and chunks it
+needs, nearby inner chunks coalesced with a 1 MiB target (a single larger chunk is fetched
+whole), the indexes kept for later windows. A year of the TESSERA embeddings (128 bands of a
+192 x 192 window, 5 MB) reads in about 4 seconds after opening in Chrome from Europe.
+Opening plus reading takes about 5–6 seconds in that measurement. The TESSERA Zarr Explorer,
+which reads it with zarrita, takes about 9 seconds for the window:
+
+```js
+const store = "https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/tessera/tessera/zarr/v1.1-dclimate/utm30";
+const emb = await openUrl(store, { format: "Zarr", array: "embeddings", allowMissingMetadata403: true }); // (time, band, y, x): 1152 bands
+const year2025 = await emb.read({ window: [45184, 360000, 192, 192], bands: Array.from({ length: 128 }, (_, i) => 1025 + i) });
+```
 
 HEC-RAS geometry and plan HDF files (the full module) open as vector layers with `open`, and with
 `openVector(bytes, filename, { layers, openOptions })` to join the results HEC-RAS stored
@@ -122,6 +151,13 @@ Work on vector features (parsing and writing GeoJSON, FlatGeobuf, GeoPackage...)
 calling thread in WebAssembly: its many small allocations contend on WebAssembly's allocator, one
 lock for all threads, and ran several times slower on more threads.
 
+## The block cache
+
+`blockCacheMax()` returns the most bytes of decoded GeoTIFF/COG chunks the cache keeps (64 MiB by
+default, as WebAssembly reads no environment variables; GDAL's `GDALGetCacheMax64`),
+`setBlockCacheMax(bytes)` sets it (0 turns the cache off; it throws for a negative or non-integer
+value) and `clearBlockCache()` empties it.
+
 ## Datasets larger than 4 GB: `terrio-js/memory64`
 
 WebAssembly modules have 32-bit memories, at most 4 GB. The `terrio-js/memory64` module (every
@@ -166,6 +202,12 @@ camelCase options. So do `zonalStats`, `makeValid`, `checkGeometry`, `clipVector
 `checkCoverage`, `simplifyCoverage`, `cleanCoverage`, `blend`, `identify`, `checkDataset`,
 `pipeline`, `retile`, `planRetile`, `rasterIndex`, `vectorIndex`, `rpftocCreate` and `vsiStat`.
 `takeWarnings` returns the warnings collected so far.
+
+`translate` reads the rasters the lazy reader opens (GeoTIFFs, JPEG 2000, GRIB, tile archives, as
+a `Dataset` opened from bytes or the bytes) by window, for the output alone, from the stored
+resolution its `overview` option selects where the reader exposes overviews, as `warp`'s does and
+`gdal_translate -ovr`: `"AUTO"` (the default), `"AUTO-n"`, `"NONE"` or a level from 0. Rasters in
+memory, and formats read whole (ASCII grids, for instance), are translated at full resolution.
 
 ### Raster management
 
@@ -468,10 +510,40 @@ const simple = simplify(counties, 0.01);
 const sorted = sort(simple, { method: "hilbert" });
 ```
 
-`zonalStats` accepts `fractional: true`, `weights` as a dataset/upload, and optional
+`zonalStats` also takes labelled objects `{raster, time, label, band}` among its rasters (fields
+`TIME_LABEL_STATISTIC`, or `TIME_LABEL_bN_STATISTIC` for a label over several `bands`; a `time`
+or `label` is a string, a number or a `Date`, written in ISO 8601), and the statistics of the [command](cli.md#zonal-stats), quantiles and
+mode included. It accepts `fractional: true`, `weights` as a dataset/upload, and optional
 `weightBand` (default 1). Select `weighted_mean`, `weighted_sum` or `weighted_stddev`
 in `stats` for a second aligned weighting raster; see the
 [formulas and limits](cli.md#fractional-coverage-and-weighting-rasters).
+
+`ZonalReducer` gives the results of `zonalStats` for arrays you compute yourself, a strip at a
+time, without building a raster first. Zones are computed once for the grid; `windows()` lists
+the `[x, y, width, height]` strips that hold zone pixels (`stripRows` rows each: by default
+terrio's strip size for one float64 band of this width; give a tiled source's block height to
+read each block once), and `stream()`
+reduces one band fed those strips in order, as typed arrays of `width * height` pixels, row after
+row:
+
+```js
+const reducer = new ZonalReducer(fields, width, height, transform, "EPSG:32631", { stats: ["mean", "median"] });
+const stream = reducer.stream();
+reducer.windows().forEach(([x, y, w, h], i) => {
+  const [red, nir] = readStrip(x, y, w, h); // Float64Arrays of w * h pixels
+  stream.add(i, nir.map((n, j) => (n - red[j]) / (n + red[j]))); // 0/0 is NaN, left out
+});
+const ndvi = stream.finish(); // { mean: Float64Array, median: Float64Array }, one value per field
+```
+
+`finish()` returns an object of one `Float64Array` per statistic, keyed by its name, NaN where a
+zone has no valid pixels (`count` and `variety` are then 0). Statistics that keep values (median,
+quantiles, mode, minority, variety) hold each open zone's values in each stream, 8 bytes per pixel
+(16 with `fractional`): feed streams one at a time to bound them. In a stream fed arrays of one 8-
+or 16-bit integer type, a zone of at least 256 or 65,536 pixels counts them in a histogram of 2 or
+512 KiB instead. It also takes `allTouched`, `fractional`, `layer` and `stripRows`; weighted
+statistics need `zonalStats`, and `tSrs` and `decimalPlaces` are not supported: the results are
+unrounded arrays, without geometries.
 
 ## Native multidimensional arrays
 
@@ -529,7 +601,8 @@ it, and `listUrl` provides remote listings. WebAssembly has no local file system
 and no request signing: tar archives, local files, signed S3 requests and writes to object stores
 are available in the native CLI, Rust and Python only. `/vsimem/` files carry no dates, so
 `vsiSync` compares content when an in-memory endpoint lacks a timestamp. In browsers, a store must allow the
-page's origin (CORS) for `listUrl`.
+page's origin (CORS) for `listUrl`. Its optional `depth` must be a finite, non-negative
+integer; omit it (or pass `null`) for unlimited depth. Strings and `Infinity` are rejected.
 
 HTML index responses use a readable byte stream, a 4 KiB sniff prefix and a 4 MiB body
 limit, matching the native path. Binary/ordinary web content is refused; custom `fetch`

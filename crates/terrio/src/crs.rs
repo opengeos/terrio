@@ -217,6 +217,10 @@ impl SpatialRef {
     pub fn is_geographic(&self) -> bool {
         self.as_core().is_geographic()
     }
+    /// Whether horizontal axes are declared north then east, requiring a GML XY swap.
+    pub(crate) fn has_north_east_axis_order(&self) -> bool {
+        self.as_core().has_north_east_axis_order()
+    }
     /// Whether the CRS has geocentric Cartesian X/Y/Z coordinates.
     pub fn is_geocentric(&self) -> bool {
         self.as_core().is_geocentric()
@@ -268,7 +272,7 @@ impl SpatialRef {
         self.as_core().to_wbp().map_err(Into::into)
     }
     pub(crate) fn from_raster_crs(c: &wbraster::CrsInfo) -> Self {
-        let mut s = Self { epsg: c.epsg, wkt: c.wkt.clone(), proj4: c.proj4.clone(), esri: None };
+        let mut s = Self { epsg: c.epsg, wkt: raster_crs_wkt(c), proj4: c.proj4.clone(), esri: None };
         // A WKT made from a PROJ string is not identified: it can describe less than the PROJ
         // string (the registry's loose matches took a Robinson on another meridian for ESRI's).
         if s.epsg.is_none()
@@ -306,6 +310,27 @@ impl SpatialRef {
         layer.set_crs_epsg(self.epsg);
         layer.set_crs_wkt(self.to_wkt());
     }
+}
+
+/// A raster CRS known only by its EPSG code, as the raster model stores it: the code and the WKT
+/// of terrio's EPSG registry, which GDAL 3.13 writes for the code. Drivers use it in place of
+/// `wbraster::CrsInfo::from_epsg`, whose generated WKT describes some codes otherwise (MGA zones
+/// without their false northing, US-foot State Plane CRSs in metres, Web Mercator on the
+/// ellipsoid) and drops the EPSG authority and datum names. A code the registry does not know
+/// has no WKT, as with wbraster's constructor. The enabled `wbprojection-fallback` retains codes known only to
+/// wbprojection. Like wbraster 0.2.1's constructor, `proj4` is absent for a code-only CRS.
+pub(crate) fn epsg_crs_info(code: u32) -> wbraster::CrsInfo {
+    wbraster::CrsInfo { epsg: Some(code), wkt: SpatialRef::from_epsg(code).ok().and_then(|s| s.wkt), proj4: None }
+}
+
+/// The WKT of a raster CRS: the registry's (see [`epsg_crs_info`]) in place of the WKT
+/// `wbraster::CrsInfo::from_epsg` generates for its EPSG code, as wbraster's readers and callers
+/// building rasters store it, otherwise the stored WKT (which a file holds) unchanged.
+pub(crate) fn raster_crs_wkt(c: &wbraster::CrsInfo) -> Option<String> {
+    let (Some(code), Some(wkt)) = (c.epsg, c.wkt.as_deref()) else { return c.wkt.clone() };
+    let Some(registry) = epsg_crs_info(code).wkt else { return c.wkt.clone() };
+    let same = registry == wkt || wbprojection::to_ogc_wkt(code).is_ok_and(|generated| generated == wkt);
+    if same { Some(registry) } else { c.wkt.clone() }
 }
 
 /// Options of a [`Transformer`].
@@ -360,6 +385,24 @@ impl TransformOptions {
 }
 
 pub use terrio_crs::CoordinateOperation;
+pub use terrio_crs::{AUTHORITIES, CrsEntry, CrsKind, CrsQuery, EPSG_VERSION, check_authorities};
+
+/// The CRSs of the registries terrio carries (EPSG [`EPSG_VERSION`], ESRI and IAU_2015) that a
+/// query selects, for searchable CRS pickers, as GDAL's `OSRGetCRSInfoListFromDatabase` describes
+/// them: name, kind, deprecation, area of use, projection method and celestial body. Needs no
+/// network and no PROJ installation; [`SpatialRef::parse`] resolves each one's
+/// [`CrsEntry::authority_code`] (see the standalone engine's `list_crs`).
+///
+/// ```
+/// use terrio::crs::{CrsKind, CrsQuery, list_crs};
+///
+/// let query = CrsQuery { kinds: vec![CrsKind::Projected], text: Some("Albers".into()), ..Default::default() };
+/// assert!(list_crs(&query).iter().any(|e| e.authority_code() == "EPSG:3577"));
+/// ```
+pub fn list_crs(query: &CrsQuery) -> Vec<CrsEntry> {
+    initialize();
+    terrio_crs::list_crs(query)
+}
 
 /// A coordinate transformer backed by the shared standalone engine.
 pub struct Transformer(terrio_crs::Transformer);

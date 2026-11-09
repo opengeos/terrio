@@ -7,7 +7,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 use terrio::crs::SpatialRef;
 use terrio::formats::RasterDriver;
-use terrio::{DataType, LazyRaster, RasterDataset, RasterWriteOptions, Window, WindowOptions};
+use terrio::ops::Resampling;
+use terrio::ops::overview::OverviewSelection;
+use terrio::ops::warp::RasterDataRef;
+use terrio::{DataType, LazyRaster, RasterDataset, RasterWriteOptions, ResampledReadOptions, Window, WindowOptions};
 use wbraster::raster::RasterData;
 
 /// A metadata domain as Python gets it: the band (from 1, 0 for the dataset), the domain, its items.
@@ -37,6 +40,19 @@ impl PyRaster {
             Some(ds) => f(ds),
             None => f(&self.inner.read()?),
         }
+    }
+
+    /// Writes the raster to `path` with `options`, streaming tile archives by tile row when lazy
+    /// and falling back to a whole read when the source inventory is unavailable.
+    pub(crate) fn write_with_options(&mut self, py: Python<'_>, path: &str, mut options: RasterWriteOptions) -> PyResult<()> {
+        py.detach_result(|| {
+            self.inner.prepare_output_mask(path, &mut options, Window::full(self.inner.width(), self.inner.height()), None)?;
+            if self.inner.can_stream_tile_archive(path, &options) {
+                return self.inner.write(path, &options);
+            }
+            self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))
+        })
+        .py()
     }
 
     fn crs_ref(&self) -> SpatialRef {
@@ -88,8 +104,18 @@ pub(crate) fn from_numpy(array: &Bound<'_, PyUntypedArray>) -> PyResult<RasterDa
     macro_rules! try_types {
         ($($t:ty => $v:ident),*) => {
             $(if dtype.is_equiv_to(&numpy::dtype::<$t>(py)) {
-                let a = array.cast::<PyArrayDyn<$t>>()?.readonly();
-                return Ok(RasterData::$v(a.as_array().iter().copied().collect()));
+                // A slice copy, numpy making strided arrays contiguous first: walking the array
+                // element by element cost a bounds-checked iterator step per value, where a
+                // slice copy is one memcpy.
+                // Only C-contiguous arrays are read in place: `as_slice` on a Fortran-ordered
+                // array returns its memory order, not C order, so other layouts go through numpy.
+                let a = array.cast::<PyArrayDyn<$t>>()?;
+                if a.is_c_contiguous() && let Ok(values) = a.readonly().as_slice() {
+                    return Ok(RasterData::$v(values.to_vec()));
+                }
+                let c = py.import("numpy")?.call_method1("ascontiguousarray", (a,))?;
+                let c = c.cast::<PyArrayDyn<$t>>()?.readonly();
+                return Ok(RasterData::$v(c.as_slice().map_err(|e| invalid(e.to_string()))?.to_vec()));
             })*
         };
     }
@@ -101,6 +127,34 @@ pub(crate) fn from_numpy(array: &Bound<'_, PyUntypedArray>) -> PyResult<RasterDa
     Err(invalid(format!("unsupported array dtype {dtype}: use an integer or float32/float64 array")))
 }
 
+/// Runs `f` on a NumPy array's values in C order, read where they are when the array is
+/// C-contiguous and not writeable, copied first (`from_numpy`) otherwise. `f` may release the
+/// GIL only when `borrowed` is false. A read-only flag does not exclude writable aliases, so
+/// the borrowed path must keep Python threads from mutating those aliases. As with other NumPy
+/// borrows, callers must exclude native writers already running outside the GIL. While borrowed,
+/// `f` must not call Python (including warning callbacks or error conversion).
+pub(crate) fn with_numpy<R>(array: &Bound<'_, PyUntypedArray>, f: impl FnOnce(RasterDataRef<'_>, bool) -> R) -> PyResult<R> {
+    let py = array.py();
+    let writeable: bool = array.getattr("flags")?.getattr("writeable")?.extract()?;
+    if !writeable && array.is_c_contiguous() {
+        let dtype = array.dtype();
+        macro_rules! try_types {
+            ($($t:ty => $v:ident),*) => {
+                $(if dtype.is_equiv_to(&numpy::dtype::<$t>(py))
+                    && let Ok(a) = array.cast::<PyArrayDyn<$t>>()
+                    && let Ok(a) = a.try_readonly()
+                    && let Ok(values) = a.as_slice()
+                {
+                    return Ok(f(RasterDataRef::$v(values), true));
+                })*
+            };
+        }
+        try_types!(u8 => U8, i8 => I8, u16 => U16, i16 => I16, u32 => U32, i32 => I32, u64 => U64, i64 => I64, f32 => F32, f64 => F64);
+    }
+    let data = from_numpy(array)?;
+    Ok(f(RasterDataRef::from(&data), false))
+}
+
 /// Parses a `band` argument: `None` (all bands), an int, or a sequence of ints. Returns the bands
 /// and whether a single band was asked for.
 fn parse_bands(band: Option<&Bound<'_, PyAny>>) -> PyResult<(Vec<usize>, bool)> {
@@ -110,6 +164,57 @@ fn parse_bands(band: Option<&Bound<'_, PyAny>>) -> PyResult<(Vec<usize>, bool)> 
             Ok(i) => Ok((vec![i], true)),
             Err(_) => Ok((b.extract::<Vec<usize>>().map_err(|_| invalid("band must be an int or a sequence of ints"))?, false)),
         },
+    }
+}
+
+/// Parses the `overview` argument of a resampled read: `"AUTO"`, `"AUTO-n"`, `"NONE"`, an
+/// overview number (an int or its digits), or `None` for `"AUTO"`.
+fn parse_overview_selection(overview: Option<&Bound<'_, PyAny>>) -> PyResult<OverviewSelection> {
+    match overview {
+        None => Ok(OverviewSelection::Auto),
+        Some(o) => match o.extract::<usize>() {
+            Ok(i) => Ok(OverviewSelection::Level(i)),
+            Err(_) => {
+                let text =
+                    o.extract::<String>().map_err(|_| invalid("overview must be \"AUTO\", \"AUTO-n\", \"NONE\" or an overview number"))?;
+                OverviewSelection::parse(&text).py()
+            }
+        },
+    }
+}
+
+impl PyRaster {
+    /// The options of a resampled read, from the arguments `read_resampled` takes, with the bands
+    /// as the raster numbers them (a complex band's real and imaginary parts), and whether a
+    /// single band was asked for.
+    fn resampled_options(
+        &self,
+        size: (usize, usize),
+        band: Option<&Bound<'_, PyAny>>,
+        window: Option<(f64, f64, f64, f64)>,
+        resampling: &str,
+        overview: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<(ResampledReadOptions, bool)> {
+        let (mut bands, single) = parse_bands(band)?;
+        if self.is_complex() {
+            if bands.is_empty() {
+                bands = (1..=self.inner.band_count()).collect();
+            } else {
+                let count = self.inner.band_count() / 2;
+                if let Some(b) = bands.iter().find(|b| **b == 0 || **b > count) {
+                    return Err(invalid(format!("no band {b}: the raster has {count} band(s)")));
+                }
+                bands = bands.iter().flat_map(|b| [2 * b - 1, 2 * b]).collect();
+            }
+        }
+        let options = ResampledReadOptions {
+            bands,
+            window,
+            size,
+            resampling: Resampling::parse(resampling).py()?,
+            overview: parse_overview_selection(overview)?,
+        };
+        Ok((options, single))
     }
 }
 
@@ -219,6 +324,12 @@ impl PyRaster {
     #[getter]
     fn metadata(&self) -> Vec<(String, String)> {
         self.inner.metadata()
+    }
+
+    /// Names of subdatasets declared in the open raster's metadata, without reopening it.
+    #[getter]
+    fn subdatasets(&self) -> Vec<String> {
+        self.inner.subdatasets().into_iter().map(|s| s.name).collect()
     }
 
     /// The nodata value, or `None` when the raster declares none.
@@ -391,6 +502,147 @@ impl PyRaster {
         data.map(|d| to_numpy(py, d, &[count, rows.len(), cols.len()])).transpose()
     }
 
+    /// Reads a window into an output of another size, as GDAL's `RasterIO` reads it
+    /// (`gdal_translate -outsize`, rasterio's `read(window=..., out_shape=..., resampling=...)`).
+    ///
+    /// The stored resolution is the overview `RasterIO` would choose (or the one `overview`
+    /// names), so a small output of a large raster reads only an overview's blocks, and for a
+    /// remote COG fetches only its tiles. Invalid pixels (masked out, nodata, or transparent in an
+    /// alpha band) carry no weight in the kernels.
+    ///
+    /// Args:
+    ///     size: The output `(width, height)`.
+    ///     band: The band to read (an int, numbered from 1), a sequence of bands, or `None` for
+    ///         all bands.
+    ///     window: The source window `(col_off, row_off, width, height)` in full-resolution
+    ///         pixels, possibly fractional, within the raster; `None` for the whole raster.
+    ///     resampling: `"nearest"` (the default), `"bilinear"`, `"cubic"`, `"cubicspline"`,
+    ///         `"lanczos"`, `"average"`, `"rms"` or `"mode"`.
+    ///     overview: The stored resolution read, as `gdal_translate -ovr` takes it: `"AUTO"` (the
+    ///         default, `RasterIO`'s choice), `"AUTO-n"`, `"NONE"` (full resolution) or an
+    ///         overview number (0 is the largest). The window stays in full-resolution pixels.
+    ///
+    /// Returns:
+    ///     numpy.ndarray: The pixels in the raster's own dtype, `(height, width)` when `band` is
+    ///     an int, otherwise `(bands, height, width)`.
+    ///
+    /// Raises:
+    ///     InvalidArgumentError: If a band does not exist, the output or the window is empty,
+    ///         the window is not within the raster, or the method is not a known name.
+    ///     UnsupportedError: If the method applies to warps only (`min`, `max`, `med`, `q1`,
+    ///         `q3`, `sum`).
+    #[pyo3(signature = (size, band=None, window=None, resampling="nearest", overview=None))]
+    fn read_resampled<'py>(
+        &mut self,
+        py: Python<'py>,
+        size: (usize, usize),
+        band: Option<&Bound<'py, PyAny>>,
+        window: Option<(f64, f64, f64, f64)>,
+        resampling: &str,
+        overview: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let (options, single) = self.resampled_options(size, band, window, resampling, overview)?;
+        let complex = self.is_complex();
+        let inner = &mut self.inner;
+        let r = py.detach_result(|| inner.read_resampled(&options)).py()?.raster;
+        let bands = if complex { r.bands / 2 } else { r.bands };
+        let shape = if single { vec![r.rows, r.cols] } else { vec![bands, r.rows, r.cols] };
+        if complex {
+            return complex_to_numpy(py, r.data, r.rows * r.cols, &shape);
+        }
+        to_numpy(py, r.data, &shape)
+    }
+
+    /// Reads the mask bands of the bands `read_resampled` reads, with the same arguments, as
+    /// GDAL's `GetMaskBand()->RasterIO()` reads them.
+    ///
+    /// A per-dataset mask is resampled from its own overviews; a nodata value masks the pixels
+    /// `read_resampled` reads that are that value; an alpha band is the other bands' mask; bands
+    /// without one are all valid. Bands with a nodata value are read for their masks:
+    /// `read_resampled_with_masks` reads pixels and masks without reading them twice.
+    ///
+    /// Args:
+    ///     size: The output `(width, height)`.
+    ///     band: The band (an int, numbered from 1), a sequence of bands, or `None` for all.
+    ///     window: The source window, as for `read_resampled`.
+    ///     resampling: The method, as for `read_resampled`.
+    ///     overview: The stored resolution, as for `read_resampled`.
+    ///
+    /// Returns:
+    ///     numpy.ndarray: uint8, 0 for invalid pixels and 255 for valid ones (or values between
+    ///     where a kernel resampled the mask), `(height, width)` when `band` is an int, otherwise
+    ///     `(bands, height, width)`.
+    ///
+    /// Raises:
+    ///     InvalidArgumentError: As `read_resampled`.
+    #[pyo3(signature = (size, band=None, window=None, resampling="nearest", overview=None))]
+    fn read_resampled_masks<'py>(
+        &mut self,
+        py: Python<'py>,
+        size: (usize, usize),
+        band: Option<&Bound<'py, PyAny>>,
+        window: Option<(f64, f64, f64, f64)>,
+        resampling: &str,
+        overview: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let (options, single) = self.resampled_options(size, band, window, resampling, overview)?;
+        let complex = self.is_complex();
+        let inner = &mut self.inner;
+        let mut masks = py.detach_result(|| inner.read_resampled_masks(&options)).py()?;
+        let (w, h) = size;
+        let plane = w * h;
+        if complex {
+            // A complex band's mask is its real part's.
+            masks = masks.chunks(plane).step_by(2).flatten().copied().collect();
+        }
+        let bands = masks.len() / plane.max(1);
+        let shape = if single { vec![h, w] } else { vec![bands, h, w] };
+        to_numpy(py, RasterData::U8(masks), &shape)
+    }
+
+    /// Reads what `read_resampled` and `read_resampled_masks` read, at once: nodata masks are
+    /// computed from the pixels read, rather than from a second read of their bands.
+    ///
+    /// Args:
+    ///     size: The output `(width, height)`.
+    ///     band: The band (an int, numbered from 1), a sequence of bands, or `None` for all.
+    ///     window: The source window, as for `read_resampled`.
+    ///     resampling: The method, as for `read_resampled`.
+    ///     overview: The stored resolution, as for `read_resampled`.
+    ///
+    /// Returns:
+    ///     tuple[numpy.ndarray, numpy.ndarray]: The pixels, as `read_resampled` returns them, and
+    ///     the uint8 masks, as `read_resampled_masks` returns them.
+    ///
+    /// Raises:
+    ///     InvalidArgumentError: As `read_resampled`.
+    #[pyo3(signature = (size, band=None, window=None, resampling="nearest", overview=None))]
+    fn read_resampled_with_masks<'py>(
+        &mut self,
+        py: Python<'py>,
+        size: (usize, usize),
+        band: Option<&Bound<'py, PyAny>>,
+        window: Option<(f64, f64, f64, f64)>,
+        resampling: &str,
+        overview: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+        let (options, single) = self.resampled_options(size, band, window, resampling, overview)?;
+        let complex = self.is_complex();
+        let inner = &mut self.inner;
+        let (ds, mut masks) = py.detach_result(|| inner.read_resampled_with_masks(&options)).py()?;
+        let r = ds.raster;
+        let plane = r.rows * r.cols;
+        let bands = if complex { r.bands / 2 } else { r.bands };
+        let shape = if single { vec![r.rows, r.cols] } else { vec![bands, r.rows, r.cols] };
+        if complex {
+            // A complex band's mask is its real part's.
+            masks = masks.chunks(plane).step_by(2).flatten().copied().collect();
+        }
+        let masks = to_numpy(py, RasterData::U8(masks), &shape)?;
+        let pixels = if complex { complex_to_numpy(py, r.data, plane, &shape)? } else { to_numpy(py, r.data, &shape)? };
+        Ok((pixels, masks))
+    }
+
     /// Whether the raster has a per-dataset mask (a GeoTIFF's internal mask, GDAL's
     /// `GMF_PER_DATASET`).
     #[getter]
@@ -437,6 +689,35 @@ impl PyRaster {
         let inner = &mut self.inner;
         let mask = py.detach_result(|| inner.read_mask(window, overview)).py()?;
         mask.map(|m| to_numpy(py, RasterData::U8(m), &[window.height, window.width])).transpose()
+    }
+
+    /// Internal overview metadata from the native mask discovery, without reading pixels.
+    fn _overview_has_mask(&self, overview: usize) -> PyResult<bool> {
+        self.inner.overviews().get(overview).ok_or_else(|| invalid(format!("no overview {overview}")))?;
+        Ok(self.inner.level_has_own_mask(overview))
+    }
+
+    /// Internal xarray metadata for a selected overview's own nodata values.
+    fn _overview_nodata(&self, overview: usize) -> PyResult<Vec<Option<f64>>> {
+        self.inner.overviews().get(overview).ok_or_else(|| invalid(format!("no overview {overview}")))?;
+        let bands: Vec<usize> = (1..=self.inner.band_count()).collect();
+        Ok(self.inner.level_band_nodata(&bands, Some(overview)))
+    }
+
+    /// Internal xarray mask read: only the selected level's own dataset mask, without
+    /// sampling the full-resolution mask when an overview has none (GDAL 3.13.3).
+    #[pyo3(signature = (window, overview=None))]
+    fn _read_level_mask<'py>(
+        &mut self,
+        py: Python<'py>,
+        window: (usize, usize, usize, usize),
+        overview: Option<usize>,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let (x, y, width, height) = window;
+        let window = Window::new(x, y, width, height);
+        let inner = &mut self.inner;
+        let mask = py.detach_result(|| inner.read_level_mask(window, overview)).py()?;
+        mask.map(|m| to_numpy(py, RasterData::U8(m), &[height, width])).transpose()
     }
 
     /// Creates a raster from a NumPy array.
@@ -492,7 +773,7 @@ impl PyRaster {
             metadata,
             ..Default::default()
         };
-        let raster = terrio::Raster::from_data_native(cfg, data).map_err(terrio::Error::from).py()?;
+        let raster = terrio::raster_from_data(cfg, data).py()?;
         let mut ds = RasterDataset::new(raster, nodata.is_some());
         ds.set_geo_transform(g);
         Ok(Self::from_dataset(ds))
@@ -569,23 +850,12 @@ impl PyRaster {
             }
             options_.mask = Some(m.as_array().iter().copied().collect());
         }
-        options_.creation_options = options.unwrap_or_default().into_iter().collect();
+        options_.creation_options = validated_creation_options(options)?;
         options_.band_metadata = band_metadata.unwrap_or_default().iter().map(parse_band_metadata).collect::<PyResult<_>>()?;
         options_.color_table = colormap.unwrap_or_default();
         options_.overviews = overviews.unwrap_or_default();
         options_.overview_resampling = overview_resampling;
-        let mut options = options_;
-        // A raster read by window is written as a tile archive a tile row at a time.
-        let driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(path));
-        let tile_archive = matches!(driver, Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles));
-        py.detach_result(|| {
-            self.inner.prepare_output_mask(path, &mut options, Window::full(self.inner.width(), self.inner.height()), None)
-        })
-        .py()?;
-        if self.inner.dataset().is_none() && tile_archive {
-            return py.detach_result(|| self.inner.write(path, &options)).py();
-        }
-        py.detach_result(|| self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
+        self.write_with_options(py, path, options_)
     }
 
     /// Encodes the raster in a file format, in memory, preserving its dataset mask for GeoTIFF/COG.
@@ -680,6 +950,32 @@ pub(crate) fn write_options(
 ) -> PyResult<RasterWriteOptions> {
     let driver = driver.map(|d| RasterDriver::from_name(d).ok_or_else(|| invalid(format!("unknown raster format '{d}'")))).transpose()?;
     Ok(RasterWriteOptions { driver, compression: compress, tile_size, bigtiff, ..Default::default() })
+}
+
+/// Output options shared by operations that write a raster destination.
+pub(crate) fn write_options_with_creation(
+    driver: Option<&str>,
+    compress: Option<String>,
+    tile_size: Option<u32>,
+    bigtiff: bool,
+    creation_options: Option<std::collections::BTreeMap<String, String>>,
+) -> PyResult<RasterWriteOptions> {
+    let mut options = write_options(driver, compress, tile_size, bigtiff)?;
+    options.creation_options = validated_creation_options(creation_options)?;
+    Ok(options)
+}
+
+/// Raster creation-option mappings have case-insensitive, unambiguous names across writers.
+pub(crate) fn validated_creation_options(mapping: Option<std::collections::BTreeMap<String, String>>) -> PyResult<Vec<(String, String)>> {
+    let mut keys = std::collections::HashSet::new();
+    let mut options = Vec::new();
+    for (key, value) in mapping.unwrap_or_default() {
+        if !keys.insert(key.to_ascii_uppercase()) {
+            return Err(invalid(format!("duplicate creation option '{key}' (names are case-insensitive)")));
+        }
+        options.push((key, value));
+    }
+    Ok(options)
 }
 
 /// `(key, value)` string pairs from a mapping or a sequence of pairs, in order.
@@ -814,7 +1110,7 @@ impl PyGeoTiffWriter {
         let mut header = RasterDataset::new(raster, nodata.is_some());
         header.set_geo_transform(transform);
         let mut o = write_options(Some("GTiff"), compress, tile_size, bigtiff)?;
-        o.creation_options = options.unwrap_or_default().into_iter().collect();
+        o.creation_options = validated_creation_options(options)?;
         o.band_metadata = band_metadata.unwrap_or_default().iter().map(parse_band_metadata).collect::<PyResult<_>>()?;
         o.color_table = colormap.unwrap_or_default();
         o.gcps = parse_gcps(gcps);

@@ -98,6 +98,7 @@ pub mod vector_schema;
 pub mod viewshed;
 pub mod vrt;
 pub mod warp;
+pub(crate) mod window;
 pub mod xyz;
 pub mod zonal;
 
@@ -136,7 +137,8 @@ pub enum Resampling {
     Q1,
     /// Third quartile of the contributing pixels.
     Q3,
-    /// Sum of the contributing pixels, weighted by their coverage.
+    /// Sum of the contributing pixels, each weighted by the share of its area inside the output
+    /// pixel.
     Sum,
 }
 
@@ -421,10 +423,8 @@ pub(crate) fn apply_gt(gt: &[f64; 6], x: f64, y: f64) -> (f64, f64) {
 pub(crate) fn crs_info(srs: &SpatialRef) -> CrsInfo {
     match srs.epsg {
         Some(code) => {
-            let mut c = CrsInfo::from_epsg(code);
-            if c.wkt.is_none() {
-                c.wkt = srs.to_wkt();
-            }
+            let mut c = crate::crs::epsg_crs_info(code);
+            c.wkt = crate::crs::raster_crs_wkt(&srs.to_crs_info()).or(c.wkt);
             c
         }
         None => CrsInfo { epsg: None, wkt: srs.to_wkt(), proj4: srs.proj4.clone() },

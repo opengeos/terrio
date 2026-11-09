@@ -23,6 +23,7 @@ Suites:
                       (compare_catalogs_with_gdal.py)
     vrt               serialized warped/derived/kernel VRTs, masks and lazy windows
     overviews         source overview selection and HTTP COG bytes vs gdalwarp -ovr
+    sum-overviews     extensive sum estimates and exact NONE controls vs GDAL
     translate-overviews  resized reads from overviews and HTTP COG bytes vs gdal_translate
                       -outsize/-ovr (compare_translate_overviews_with_gdal.py)
     dem-calc          dem, calc, proximity, sieve vs GDAL's tools (compare_dem_calc_with_gdal.py)
@@ -59,6 +60,8 @@ Suites:
     crs               every EPSG CRS's transformations vs GDAL's (tests/epsg_accuracy.rs)
     crs-grids         the same with datum shift grids, then grids, geoid models and coordinate
                       epochs (tests/epsg_accuracy_grids.rs, compare_crs_grids_with_gdal.py)
+    crs-list          ``terrio list-crs`` vs GDAL's GetCRSInfoListFromDatabase, field by field, for
+                      the EPSG, ESRI and IAU_2015 CRSs (compare_crs_list_with_gdal.py)
 
 Usage:
     python scripts/conformance.py ../terrio-data [--output docs/conformance.md] [--json FILE]
@@ -254,18 +257,23 @@ def suite_subdatasets(ctx):
         "GDAL's netCDF and HDF5 drivers",
         "Every netCDF and HDF5 file of the test data (netCDF-4 groups, HDF5 products, GDAL's "
         "HDF-EOS5, complex, COSMO-SkyMed and netCDF geolocation test files, NASA HDF-EOS5 grids and "
-        "swaths when fetched): the subdataset list (names and descriptions) and, for HDF5, the "
-        "metadata as GDAL reports them, then each subdataset's summary (geolocation arrays "
-        "included) and every pixel.",
+        "swaths when fetched, the repository's `_Unsigned` and user-defined attribute fixtures): the subdataset list (names "
+        "and descriptions) and, for HDF5, the metadata as GDAL reports them, then each "
+        "subdataset's summary (geolocation arrays included) and every pixel.",
     )
     out, err = "", ""
-    for sub in ("", "gdal_hdf5", "gdal_netcdf", "hdfeos5"):
-        d = os.path.join(ctx.data, sub)
+    # The test data's directories, then the repository's fixtures.
+    dirs = [(sub, os.path.join(ctx.data, sub)) for sub in ("", "gdal_hdf5", "gdal_netcdf", "hdfeos5")]
+    dirs += [(sub, str(ROOT / "crates/terrio/tests/data" / sub)) for sub in ("netcdf_unsigned", "netcdf_int64_unsigned", "netcdf_user_defined")]
+    for sub, d in dirs:
         if not os.path.isdir(d):
             continue
-        _code, o, e = run([sys.executable, str(SCRIPTS / "compare_with_gdal.py"), "--subdatasets", d], {"TERRIO_BIN": ctx.terrio})
+        code, o, e = run([sys.executable, str(SCRIPTS / "compare_with_gdal.py"), "--subdatasets", d], {"TERRIO_BIN": ctx.terrio})
         out += o
         err += e
+        # It exits 1 on a difference; otherwise a nonzero exit is a failed run.
+        if code and not re.search(r"^DIFF", o, re.M):
+            s.error = tail(e or o)
         for line in o.splitlines():
             m = re.match(r"^(OK|DIFF)\s+(\S+) (.+?)(?::\s+(.*))?$", line)
             if m:
@@ -550,7 +558,8 @@ def suite_indexes(ctx):
 def suite_raster_manage(ctx):
     """Real DEM raster management, cross-read and compared by GDAL."""
     suite = Suite("raster-manage", "Raster management", "GDAL 3.13.3",
-                  "Creation types/bands, metadata escaping, nodata, internal/external overview add/delete, "
+                  "Creation types/bands, metadata escaping, nodata, internal overview add/delete and external "
+                  "overview add/delete beside read-only GeoTIFFs (left unchanged), "
                   "exact Landsat Byte/UInt16/Float32 mode on uneven levels, "
                   "internal mask overviews added, refreshed (whole and over an extent) and added again over "
                   "gdaladdo's, and real DEM subset updates: masks, mask blocks, type, nodata, CRS and "
@@ -601,6 +610,31 @@ def suite_vsi(ctx):
         return suite
     for result in results:
         suite.cases.append(Case("vsi", result["name"], result["status"], result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out) or f"exit {code}"
+    return suite
+
+
+def suite_shapefile_deleted(ctx):
+    """Deleted DBF slots, physical FIDs and live-feature paging against OGR."""
+    suite = Suite("shapefile-deleted", "Shapefile deleted records", "GDAL/OGR 3.13.3",
+                  "90 generated-file cases: whole/streamed reads, FIDs, exact scalar attributes/nulls and ISO WKB; "
+                  "live-feature skip/max with and without SHX, including null geometry.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    probe = Path(ctx.terrio).parent / "examples" / ("shapefile_rows.exe" if os.name == "nt" else "shapefile_rows")
+    if not probe.is_file():
+        suite.error = "needs cargo build -p terrio --example shapefile_rows in the CLI's build profile"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_shapefile_deleted.py"), "--probe", str(probe), "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("Shapefile deleted records", result["name"], result["status"], result["detail"]))
     if code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out) or f"exit {code}"
     return suite
@@ -932,12 +966,33 @@ def suite_overviews(ctx):
     )
 
 
+def suite_sum_overviews(ctx):
+    """Extensive overview estimates and exact full-resolution sum controls."""
+    return suite_json_ops(
+        ctx, "sum-overviews", "compare_warp_sum_overviews.py", "Overview sum estimates",
+        "GDAL 3.13.3 full-resolution sums and explicitly area-scaled overview sums",
+        "NONE matches GDAL directly; overview estimates match its sum times the exact pixel-area "
+        "ratio, preserving masks, nodata, type, CRS and geotransform. Absolute tolerance 1e-8 "
+        "on controlled TIFFs and 1e-4 on real USGS terrain. Cropped cells, integer means and "
+        "partly nodata blocks are estimates, not claims of equality to full-resolution totals. "
+        "Default-grid cases (no extent; no size or resolution, --ts alone or --tr alone) must match "
+        "GDAL's rounded-up size, type, nodata, CRS and geotransform. Without --tr, terrio's total "
+        "must be within 1e-9 (UTM fixture) or 1e-6 (USGS) relative of both the source's and GDAL's; "
+        "with --tr, whose grid need not cover the source, within 5e-4 relative of GDAL's. Their "
+        "pixels are not compared. Fixed-grid USGS sums at thresholds 0, 0.125 and 4 also check "
+        "metadata, masks, total tolerances and bitwise threshold independence; per-pixel differences "
+        "from GDAL are recorded as an intentional area-kernel difference.",
+        2,
+    )
+
+
 def suite_translate_overviews(ctx):
     """Resized translations read from overviews against gdal_translate -outsize/-ovr."""
     return suite_json_ops(
         ctx, "translate-overviews", "compare_translate_overviews_with_gdal.py", "Translate source overviews",
         "`gdal_translate -outsize/-ovr`",
-        "Level markers check the stored resolution of AUTO, AUTO-n, NONE and forced levels; real USGS "
+        "Level markers, internal and in an external `.ovr`, check the stored resolution of AUTO, AUTO-n, "
+        "NONE and forced levels; real USGS "
         "terrain (Float32, nodata) and Landsat RGB (Byte, internal mask) check every resampling. Pixels, "
         "types, nodata and geotransforms must match; differences of one value are reported within "
         "tolerance (arm64 GDAL builds round fused multiply-adds). A real COG served over HTTP must "
@@ -1450,7 +1505,7 @@ def suite_tile_publication(ctx):
 def suite_raster_tiles(ctx):
     """Folder tile pixels, filenames, masks and grids on real imagery/elevation."""
     suite = Suite("raster-tiles", "Separate-file raster tiles", "GDAL 3.13.3 raster tile / alpha warp",
-                  "Real Landsat and USGS derivatives; XYZ/TMS, raster/global grids, Byte PNG alpha/nodata/masks and typed GeoTIFF tiles. Exact nearest-neighbor samples, names, masks, types and TIFF georeferencing; independent GDAL alpha warps check masked UInt16/Float32 outputs, and two remote COG probes measure payload reads. Lower zooms resample directly from source. Generated-pyramid and no-alpha blank-tile differences are independently checked and reported; interpolating-kernel agreement is not asserted.")
+                  "Real Landsat and USGS derivatives; XYZ/TMS, raster/global grids, Byte PNG alpha/nodata/masks and typed GeoTIFF tiles. Exact nearest-neighbor samples, names, masks, types and TIFF georeferencing; independent GDAL alpha warps check masked UInt16/Float32 outputs, and two remote COG probes measure payload reads. Lower zooms built from child tiles match GDAL's generated pyramids (raster and WebMercatorQuad); direct-source lower zooms match independent GDAL warps. The no-alpha blank-tile difference is independently checked and reported; interpolating-kernel agreement is not asserted.")
     if missing_modules("osgeo", "numpy") or shutil.which("gdal") is None:
         suite.skipped = "needs GDAL 3.13 commands/bindings and NumPy"
         return suite
@@ -1580,7 +1635,8 @@ def suite_vector_ops(ctx):
         "Vector operations",
         "`ogr2ogr`, `gdal_rasterize`, `gdal_polygonize.py`",
         "Conversions with `ogr2ogr`'s options (where, spat, select, sql, nlt...) compared feature "
-        "by feature; rasterized pixels compared exactly; polygons compared by count, holes and "
+        "by feature; rasterized pixels compared exactly, including nodata backgrounds, masks, "
+        "types and CRSs (ENVI uses a GDAL-converted GeoTIFF reference); polygons compared by count, holes and "
         "validity, and by rasterizing them back.",
     )
     _code, out, err = run([sys.executable, str(SCRIPTS / "compare_vector_ops_with_gdal.py"), ctx.data, "--terrio", ctx.terrio])
@@ -1738,6 +1794,27 @@ def suite_iau(ctx):
         return suite
     for case in cases:
         suite.cases.append(Case("IAU_2015", case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
+def suite_crs_list(ctx):
+    """The registry CRSs ``terrio list-crs`` lists against GDAL's CRS info list."""
+    suite = Suite("crs-list", "Registry CRS listing", "GDAL/PROJ",
+                  "Every EPSG, ESRI and IAU_2015 CRS terrio lists vs osr.GetCRSInfoListFromDatabase: name, "
+                  "kind, deprecation, area of use and its bounds, projection method and celestial body.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_crs_list_with_gdal.py"), "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case("list-crs", case["name"], case["status"], case["detail"]))
     if code and not any(c.status == DIFFERS for c in suite.cases):
         suite.error = tail(err or out)
     return suite
@@ -3114,8 +3191,9 @@ def suite_coverage_clean(ctx):
 
 
 def suite_wfs(ctx):
-    """Native WFS catalogs and complete public feature reads versus GDAL."""
+    """Local GML axis-order controls and public WFS feature reads versus GDAL."""
     suite = Suite("wfs", "WFS services and extensionless responses", "GDAL WFS/GML/GeoJSON",
+                  "Local GML northing-first/easting-first/geographic controls with URN/URL/legacy names, exports and reprojection. "
                   "Public WFS 1.0/1.1/2.0 catalogs; selected complete layers and opaque GetFeature URLs. "
                   "Exact field names, attributes, source IDs and CRS; field types checked, with direct GML integer inference differences reported. "
                   "Every linear geometry vertex within 1e-8 CRS units. Unavailable reference services are not compared. Generated numeric FIDs are ignored.")
@@ -3189,6 +3267,7 @@ SUITES = OrderedDict(
         ("shapefile-archives", suite_shapefile_archives),
         ("vsi", suite_vsi),
         ("shapefile-rings", suite_shapefile_rings),
+        ("shapefile-deleted", suite_shapefile_deleted),
         ("raster-roundtrip", suite_raster_roundtrip),
         ("windows", suite_windows),
         ("ops", suite_ops),
@@ -3199,6 +3278,7 @@ SUITES = OrderedDict(
         ("catalogs", suite_catalogs),
         ("vrt", suite_vrt),
         ("overviews", suite_overviews),
+        ("sum-overviews", suite_sum_overviews),
         ("translate-overviews", suite_translate_overviews),
         ("raster-manage", suite_raster_manage),
         ("indexes", suite_indexes),
@@ -3270,6 +3350,7 @@ SUITES = OrderedDict(
         ("projjson", suite_projjson),
         ("projjson-export", suite_projjson_export),
         ("iau", suite_iau),
+        ("crs-list", suite_crs_list),
         ("crs-grids", suite_crs_grids),
     ]
 )

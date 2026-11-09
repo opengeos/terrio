@@ -29,7 +29,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use super::sqlite::varint;
+use super::sqlite::{PageSet, cell_pointer, varint};
 use super::vector::sqlite::{self as w, PageStore};
 use crate::{Error, Result};
 
@@ -265,6 +265,10 @@ impl Editor {
         let file_pages = (file.metadata()?.len() / page_size as u64) as u32;
         // The in-header size is valid when the version-valid-for number matches the change counter.
         let n_pages = if be(28) > 0 && be(92) == be(24) { be(28) } else { file_pages };
+        // As SQLite: a database larger than its file is corrupt. Page sets are sized by it.
+        if n_pages > file_pages {
+            return Err(bad("the header's page count exceeds the file"));
+        }
         Ok(Ok(Self {
             file,
             path: path.to_path_buf(),
@@ -403,8 +407,7 @@ impl Editor {
         let right = interior.then(|| u32::from_be_bytes([page[h + 8], page[h + 9], page[h + 10], page[h + 11]]));
         let mut cells = Vec::with_capacity(count);
         for c in 0..count {
-            let p = h + header + 2 * c;
-            let off = u16::from_be_bytes([page[p], page[p + 1]]) as usize;
+            let off = cell_pointer(page, h + header + 2 * c)?;
             if off >= size {
                 return Err(bad("cell offset"));
             }
@@ -413,14 +416,16 @@ impl Editor {
                 0x0d => {
                     let (sz, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
                     let (_, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
-                    let local = self.local_len(kind, sz as usize);
-                    n1 + n2 + local + if local < sz as usize { 4 } else { 0 }
+                    let sz = self.payload_size(sz)?;
+                    let local = self.local_len(kind, sz);
+                    n1 + n2 + local + if local < sz { 4 } else { 0 }
                 }
                 _ => {
                     let start = if kind == 0x02 { off + 4 } else { off };
                     let (sz, n1) = varint(page, start).ok_or_else(|| bad("cell"))?;
-                    let local = self.local_len(kind, sz as usize);
-                    (start - off) + n1 + local + if local < sz as usize { 4 } else { 0 }
+                    let sz = self.payload_size(sz)?;
+                    let local = self.local_len(kind, sz);
+                    (start - off) + n1 + local + if local < sz { 4 } else { 0 }
                 }
             };
             cells.push(page.get(off..off + len).ok_or_else(|| bad("cell"))?.to_vec());
@@ -451,12 +456,23 @@ impl Editor {
         if kind == 0x0d {
             at += varint(cell, at).ok_or_else(|| bad("cell"))?.1;
         }
-        let local = self.local_len(kind, sz as usize);
-        let overflow = (local < sz as usize).then(|| {
+        let sz = self.payload_size(sz)?;
+        let local = self.local_len(kind, sz);
+        let overflow = (local < sz).then(|| {
             let o = cell.len() - 4;
             u32::from_be_bytes([cell[o], cell[o + 1], cell[o + 2], cell[o + 3]])
         });
-        Ok((sz as usize, at, overflow))
+        Ok((sz, at, overflow))
+    }
+
+    /// A cell's declared payload size: an error when negative, or when it needs more overflow
+    /// pages than the database has, as the reader reports it, so that no chain is followed (and
+    /// its pages freed) for a size no file holds.
+    fn payload_size(&self, sz: i64) -> Result<usize> {
+        usize::try_from(sz)
+            .ok()
+            .filter(|&sz| (sz / (self.page_size - 4)) as u64 <= u64::from(self.n_pages))
+            .ok_or_else(|| bad("cell payload size"))
     }
 
     /// The payload of a leaf or index cell, following overflow pages.
@@ -484,13 +500,15 @@ impl Editor {
         Ok(out)
     }
 
-    /// The overflow pages of a cell.
-    fn overflow_pages(&mut self, kind: u8, cell: &[u8], out: &mut Vec<u32>) -> Result<()> {
+    /// The overflow pages of a cell, each added to `visited`: a page owned twice (a looping
+    /// chain, or cells sharing an overflow page) is an error, so that it is not freed twice.
+    fn overflow_pages(&mut self, kind: u8, cell: &[u8], out: &mut Vec<u32>, visited: &mut PageSet) -> Result<()> {
         let (size, _, overflow) = self.cell_payload_parts(kind, cell)?;
         let mut next = overflow.unwrap_or(0);
         let local = self.local_len(kind, size);
         let mut left = size - local;
         while next != 0 && left > 0 {
+            visited.insert(next)?;
             out.push(next);
             let p = self.page(next)?;
             next = u32::from_be_bytes([p[0], p[1], p[2], p[3]]);
@@ -500,12 +518,17 @@ impl Editor {
     }
 
     /// Every page of the b-tree rooted at `root`: its nodes and overflow pages.
+    /// A page reached twice (a cycle, interior pages sharing children, or an overflow page
+    /// owned twice) is an error, before a page could be freed twice or a walk visit
+    /// exponentially many nodes.
     pub(crate) fn tree_pages(&mut self, root: u32, out: &mut Vec<u32>) -> Result<()> {
         let mut stack = vec![(root, 0usize)];
+        let mut visited = PageSet::new(u64::from(self.n_pages));
         while let Some((n, depth)) = stack.pop() {
             if depth > 64 {
                 return Err(bad("b-tree too deep"));
             }
+            visited.insert(n)?;
             out.push(n);
             let node = self.node(n)?;
             for c in &node.cells {
@@ -513,7 +536,7 @@ impl Editor {
                     stack.push((Self::child(c), depth + 1));
                 }
                 if node.kind != 0x05 {
-                    self.overflow_pages(node.kind, c, out)?;
+                    self.overflow_pages(node.kind, c, out, &mut visited)?;
                 }
             }
             if let Some(r) = node.right {
@@ -535,14 +558,17 @@ impl Editor {
         Ok(())
     }
 
-    /// Every row of a table b-tree: `(rowid, payload)`.
+    /// Every row of a table b-tree: `(rowid, payload)`. A page reached twice is an error, as in
+    /// the reader's scan.
     pub(crate) fn scan(&mut self, root: u32) -> Result<Vec<(i64, Vec<u8>)>> {
         let mut out = Vec::new();
         let mut stack = vec![(root, 0usize)];
+        let mut visited = PageSet::new(u64::from(self.n_pages));
         while let Some((n, depth)) = stack.pop() {
             if depth > 64 {
                 return Err(bad("b-tree too deep"));
             }
+            visited.insert(n)?;
             let node = self.node(n)?;
             match node.kind {
                 0x05 => {
@@ -576,8 +602,7 @@ impl Editor {
             let count = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
             let header = if kind == 0x05 { 12 } else { 8 };
             let cell = |c: usize| -> Result<usize> {
-                let p = h + header + 2 * c;
-                let off = u16::from_be_bytes([page[p], page[p + 1]]) as usize;
+                let off = cell_pointer(page, h + header + 2 * c)?;
                 if off >= page.len() { Err(bad("cell offset")) } else { Ok(off) }
             };
             // A binary search of the cells' keys, read in place.
@@ -602,7 +627,7 @@ impl Editor {
                 0x05 => {
                     n = if lo < count {
                         let off = cell(lo)?;
-                        Self::child(&page[off..off + 4])
+                        Self::child(page.get(off..off + 4).ok_or_else(|| bad("cell"))?)
                     } else {
                         u32::from_be_bytes([page[h + 8], page[h + 9], page[h + 10], page[h + 11]])
                     };
@@ -614,8 +639,9 @@ impl Editor {
                     let off = cell(lo)?;
                     let (sz, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
                     let (_, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
-                    let local = self.local_len(0x0d, sz as usize);
-                    let len = n1 + n2 + local + if local < sz as usize { 4 } else { 0 };
+                    let sz = self.payload_size(sz)?;
+                    let local = self.local_len(0x0d, sz);
+                    let len = n1 + n2 + local + if local < sz { 4 } else { 0 };
                     let c = page.get(off..off + len).ok_or_else(|| bad("cell"))?.to_vec();
                     return self.cell_payload(0x0d, &c).map(Some);
                 }
@@ -650,10 +676,12 @@ impl Editor {
     pub(crate) fn count_rows(&mut self, root: u32) -> Result<u64> {
         let mut total = 0u64;
         let mut stack = vec![(root, 0usize)];
+        let mut visited = PageSet::new(u64::from(self.n_pages));
         while let Some((n, depth)) = stack.pop() {
             if depth > 64 {
                 return Err(bad("b-tree too deep"));
             }
+            visited.insert(n)?;
             let h = Self::header_offset(n);
             let page = self.page(n)?;
             let count = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
@@ -663,9 +691,8 @@ impl Editor {
                     let right = u32::from_be_bytes([page[h + 8], page[h + 9], page[h + 10], page[h + 11]]);
                     let mut kids = Vec::with_capacity(count + 1);
                     for c in 0..count {
-                        let p = h + 12 + 2 * c;
-                        let off = u16::from_be_bytes([page[p], page[p + 1]]) as usize;
-                        kids.push(Self::child(&page[off..off + 4]));
+                        let off = cell_pointer(page, h + 12 + 2 * c)?;
+                        kids.push(Self::child(page.get(off..off + 4).ok_or_else(|| bad("cell"))?));
                     }
                     kids.push(right);
                     stack.extend(kids.into_iter().map(|k| (k, depth + 1)));
@@ -801,6 +828,10 @@ impl Editor {
             return Err(Error::InvalidArgument("rows not sorted by rowid".into()));
         }
         let mut rows = rows.into_iter().peekable();
+        // The overflow pages of the rows replaced, made on the first one with overflow and shared
+        // by the call: the replaced rows' chains are disjoint in a valid database, so a page
+        // named twice, by one chain or two, is an error rather than a page freed twice.
+        let mut owned: Option<PageSet> = None;
         while let Some(&(first, _)) = rows.peek() {
             // Down to the leaf holding `first`, with the largest key it may hold.
             let mut path = Vec::new();
@@ -833,7 +864,11 @@ impl Editor {
                 let cell = w::table_cell(self, rowid, &rec)?;
                 if keys.get(i) == Some(&rowid) {
                     let mut freed = Vec::new();
-                    self.overflow_pages(0x0d, &cells[i], &mut freed)?;
+                    if self.cell_payload_parts(0x0d, &cells[i])?.2.is_some() {
+                        let pages = u64::from(self.n_pages);
+                        let owned = owned.get_or_insert_with(|| PageSet::new(pages));
+                        self.overflow_pages(0x0d, &cells[i], &mut freed, owned)?;
+                    }
                     for p in freed {
                         self.free(p)?;
                     }
@@ -1082,7 +1117,7 @@ fn checksum(nonce: u32, data: &[u8]) -> u32 {
 
 fn nonce() -> u32 {
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    (t as u32) ^ ((t >> 32) as u32) ^ std::process::id()
+    (t as u32) ^ ((t >> 32) as u32) ^ crate::process_id()
 }
 
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -1380,6 +1415,84 @@ mod tests {
     fn root_of(path: &Path) -> u32 {
         let db = Db::new(std::fs::read(path).unwrap()).unwrap();
         db.schema().unwrap().into_iter().find(|e| e.1 == "t").unwrap().3
+    }
+
+    /// Interior pages that share children are an error for the editor's walks too: scanning
+    /// a table or listing its pages to free them would otherwise visit 2^depth nodes, so an
+    /// in-place update of a hostile GeoPackage would hang. Five levels here would visit the
+    /// leaf 32 times.
+    #[test]
+    fn b_tree_pages_reached_twice_are_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dag.db");
+        std::fs::write(&path, crate::drivers::sqlite::fixtures::shared_children(5)).unwrap();
+        let mut editor = Editor::open(&path).unwrap().unwrap_or_else(|e| panic!("{}", e.0));
+        let error = editor.scan(1).unwrap_err();
+        assert!(error.to_string().contains("reached twice"), "{error}");
+        let error = editor.tree_pages(1, &mut Vec::new()).unwrap_err();
+        assert!(error.to_string().contains("reached twice"), "{error}");
+        let error = editor.count_rows(1).unwrap_err();
+        assert!(error.to_string().contains("reached twice"), "{error}");
+    }
+
+    /// A header declaring more pages than the file has is an error, before it sizes a walk's
+    /// page set (`u32::MAX` pages would be 512 MiB of bits).
+    #[test]
+    fn page_counts_beyond_the_file_are_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pages.db");
+        let mut b = crate::drivers::sqlite::fixtures::shared_children(1);
+        b[28..32].copy_from_slice(&u32::MAX.to_be_bytes());
+        std::fs::write(&path, b).unwrap();
+        let error = Editor::open(&path).err().expect("an error");
+        assert!(error.to_string().contains("page count"), "{error}");
+    }
+
+    /// A negative cell payload size (a varint with the high bit set), or one needing more
+    /// overflow pages than the database has, is an error for the editor as for the reader,
+    /// rather than a chain followed and freed for a size no file holds.
+    #[test]
+    fn payload_sizes_beyond_the_file_are_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("size.db");
+        for size in [u64::MAX, 10 * 508] {
+            let mut b = crate::drivers::sqlite::fixtures::database(3);
+            b[100] = 0x0d;
+            b[103..105].copy_from_slice(&1u16.to_be_bytes());
+            b[108..110].copy_from_slice(&200u16.to_be_bytes());
+            let mut cell = Vec::new();
+            w::varint(&mut cell, size);
+            cell.push(1);
+            b[200..200 + cell.len()].copy_from_slice(&cell);
+            std::fs::write(&path, b).unwrap();
+            let mut editor = Editor::open(&path).unwrap().unwrap_or_else(|e| panic!("{}", e.0));
+            let error = editor.tree_pages(1, &mut Vec::new()).unwrap_err();
+            assert!(error.to_string().contains("payload size"), "{size}: {error}");
+        }
+    }
+
+    /// An overflow page owned twice, here a chain that names its own page as the next one, is
+    /// an error when listing a tree's pages to free them, not a page freed twice.
+    #[test]
+    fn overflow_pages_owned_twice_are_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("overflow.db");
+        let mut b = crate::drivers::sqlite::fixtures::database(3);
+        // A table leaf at page 1 with one cell of rowid 1 and a payload of two overflow pages;
+        // its local part is 92 bytes, then the first overflow page number.
+        b[100] = 0x0d;
+        b[103..105].copy_from_slice(&1u16.to_be_bytes());
+        b[108..110].copy_from_slice(&200u16.to_be_bytes());
+        let size = 92 + 2 * 508u16;
+        b[200] = 0x80 | (size >> 7) as u8;
+        b[201] = (size & 0x7f) as u8;
+        b[202] = 1;
+        b[203 + 92..203 + 96].copy_from_slice(&2u32.to_be_bytes());
+        b[512..516].copy_from_slice(&2u32.to_be_bytes());
+        std::fs::write(&path, b).unwrap();
+        let mut editor = Editor::open(&path).unwrap().unwrap_or_else(|e| panic!("{}", e.0));
+        let error = editor.tree_pages(1, &mut Vec::new()).unwrap_err();
+        assert!(error.to_string().contains("reached twice"), "{error}");
     }
 
     #[test]

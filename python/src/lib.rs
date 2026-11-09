@@ -11,6 +11,8 @@ mod dataset_files;
 mod focal;
 mod gpkg_maintenance;
 mod grid;
+#[cfg(target_os = "linux")]
+mod hugepage_alloc;
 mod inspection;
 mod manage;
 mod multidim;
@@ -49,6 +51,7 @@ pub(crate) fn to_py(e: terrio::Error) -> PyErr {
         terrio::Error::InvalidArgument(_) => "InvalidArgumentError",
         terrio::Error::Unsupported(_) => "UnsupportedError",
         terrio::Error::Raster(_) | terrio::Error::Vector(_) | terrio::Error::InvalidData(_) => "InvalidDataError",
+        terrio::Error::Cancelled => "CancelledError",
         _ => "TerrioError",
     };
     let message = e.to_string();

@@ -1,5 +1,7 @@
 //! Reads into outputs of other sizes (`LazyRaster::read_resampled` and its masks) of the rasters
 //! of `tests/data/resampled_reads`, against what GDAL 3.13.2 reads of them
+//! (the RGB external, mixed-metadata internal/external and masked external cases use GDAL 3.13.3;
+//! each case records `gdal_version`)
 //! (`scripts/make_resampled_reads_fixtures.py`): pixels through `RasterIO` (the dataset's for
 //! several bands, as rasterio reads them, the band's for one) and masks through `GetMaskBand()`,
 //! or, for a level read alone, the pixels `gdal_translate -ovr` writes. Values are compared bit
@@ -133,11 +135,13 @@ fn difference(read: &[f64], expected: &[f64], float: bool, case: &Case) -> Optio
     (rounded > (read.len() / 100).max(1)).then(|| format!("{rounded} of {} values rounded otherwise (first {first:?})", read.len()))
 }
 
-/// Every case, against GDAL 3.13.2's reads.
+/// Every case against its recorded reference: original cases 3.13.2, added cases 3.13.3,
+/// with GDAL 3.13 behavior selected (masked convolution chunks skip NaN values).
 #[test]
 fn resampled_reads_are_gdal_reads() {
+    terrio::config::push_scope([("TERRIO_GDAL_COMPAT".to_string(), Some("3.13".to_string()))].into());
     let cases = cases();
-    assert_eq!(cases.len(), 238);
+    assert_eq!(cases.len(), 258);
     let mut failures = Vec::new();
     for case in &cases {
         let mut raster = terrio::open_raster_lazy(&case.path()).unwrap();
@@ -163,6 +167,7 @@ fn resampled_reads_are_gdal_reads() {
             }
         }
     }
+    terrio::config::pop_scope();
     assert!(failures.is_empty(), "{} of {} cases differ from GDAL:\n{}", failures.len(), cases.len(), failures.join("\n"));
 }
 
@@ -297,6 +302,26 @@ fn shared_handles_weight_overviews_by_their_own_masks() {
     }
 }
 
+/// A shared handle chooses again among an external `.ovr`'s other images when `RasterIO`
+/// chooses that file's image, as the reader it shares does: the reads GDAL makes from the
+/// `.ovr`'s second image.
+#[test]
+fn shared_handles_choose_among_external_overviews_twice() {
+    for file in ["rgb_external_overviews.tif", "mixed_external_overviews.tif", "masked_external_overviews.tif"] {
+        let path = dir().join(file);
+        let mut direct = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        let mut shared = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap().shared();
+        let expected: Vec<Case> = cases().into_iter().filter(|c| c.file == file).collect();
+        assert!(!expected.is_empty());
+        for case in &expected {
+            let a = read_values(&direct.read_resampled(&case.options).unwrap().raster.data);
+            let b = read_values(&shared.read_resampled(&case.options).unwrap().raster.data);
+            assert_eq!(a, b, "{}", case.name());
+            assert_eq!(difference(&b, &values(&case.data, &case.dtype), false, case), None, "{}", case.name());
+        }
+    }
+}
+
 /// An overview read alone at the raster's size is not the full-resolution image: its band
 /// statistics, which describe full resolution, are dropped.
 #[test]
@@ -321,4 +346,29 @@ fn overview_reads_drop_full_resolution_statistics() {
     assert!(stats(&raster.read_resampled(&full).unwrap()));
     let level = ResampledReadOptions { overview: OverviewSelection::Level(0), ..full };
     assert!(!stats(&raster.read_resampled(&level).unwrap()));
+}
+
+/// GDAL 3.12 (the default) sums the NaN values of a masked floating-point chunk, so an output
+/// pixel whose footprint holds one is NaN; GDAL 3.13 (`TERRIO_GDAL_COMPAT=3.13`) skips them.
+#[test]
+fn masked_nan_follows_the_gdal_compat_version() {
+    let path = format!("{}/tests/data/resampled_reads/f32_nan.tif", env!("CARGO_MANIFEST_DIR"));
+    let options = ResampledReadOptions { size: (23, 17), resampling: Resampling::Bilinear, ..Default::default() };
+    let read = || read_values(&terrio::open_raster_lazy(&path).unwrap().read_resampled(&options).unwrap().raster.data);
+    let nans = |v: &[f64]| v.iter().filter(|x| x.is_nan()).count();
+    // The default, whatever `TERRIO_GDAL_COMPAT` the process has: a scoped `None` unsets it.
+    terrio::config::push_scope([("TERRIO_GDAL_COMPAT".to_string(), None)].into());
+    let default = read();
+    terrio::config::pop_scope();
+    terrio::config::push_scope([("TERRIO_GDAL_COMPAT".to_string(), Some("3.12".to_string()))].into());
+    let gdal312 = read();
+    terrio::config::pop_scope();
+    terrio::config::push_scope([("TERRIO_GDAL_COMPAT".to_string(), Some("3.13".to_string()))].into());
+    let gdal313 = read();
+    terrio::config::pop_scope();
+    let bits = |v: &[f64]| v.iter().map(|x| if x.is_nan() { u64::MAX } else { x.to_bits() }).collect::<Vec<_>>();
+    assert_eq!(bits(&default), bits(&gdal312));
+    assert!(nans(&gdal312) > nans(&gdal313), "{} NaN with 3.12, {} with 3.13", nans(&gdal312), nans(&gdal313));
+    // Where 3.13 skips the NaN values, 3.12's pixel is NaN.
+    assert!(gdal313.iter().zip(&gdal312).any(|(a, b)| a.is_finite() && b.is_nan()));
 }

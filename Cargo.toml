@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "python", "js"]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.90"
@@ -14,15 +14,16 @@ authors = ["Qiusheng Wu <giswqs@gmail.com>"]
 [workspace.dependencies]
 # Memory-mapped reads of SQLite files (GeoPackage, MBTiles), native builds only.
 memmap2 = "0.9"
-terrio = { path = "crates/terrio", version = "0.7.0" }
-terrio-crs = { path = "crates/terrio-crs", version = "0.2.2", default-features = false }
+terrio = { path = "crates/terrio", version = "0.8.0" }
+terrio-crs = { path = "crates/terrio-crs", version = "0.2.3", default-features = false }
 # For the Python package (not published to crates.io), so without a version to keep in step.
 terrio-cli = { path = "crates/terrio-cli" }
 
 # Format drivers, coordinate reference systems
 wbraster = "0.2.1"
-# KMZ always; GeoParquet and OSM PBF with terrio's `parquet` and `osm` features.
-wbvector = { version = "0.1.6", features = ["kmz"] }
+# Without its optional readers (KMZ, with its zip 0.6; GeoParquet; OSM PBF): terrio's own drivers
+# read those formats.
+wbvector = "0.1.6"
 wbprojection = "0.3.3"
 # Karney's geodesics, for the ellipsoidal gnomonic projection (pure Rust).
 geographiclib-rs = { version = "0.2.7", default-features = false }
@@ -53,26 +54,28 @@ quick-xml = "0.42"
 # Multi-byte DBF code pages (CP932, CP936, CP949, CP950) of shapefiles, with the differences of
 # GDAL's iconv recoding applied on top (drivers/vector/shapefile_cjk.rs).
 encoding_rs = "0.8.35"
-# OpenStreetMap PBF decoding, the version wbvector uses.
+# OpenStreetMap PBF decoding (drivers/vector/osm.rs).
 osmpbfreader = "0.19"
 # Its Zstandard (zstd 0.13, a C library) is enabled by terrio-crs's `libzstd` feature only, for
 # terrio-crs built on its own: terrio decodes GeoTIFF Zstandard itself (zstd 0.14 or `ruzstd`).
 tiff = { version = "0.11", features = ["webp"] }
 half = "2"
 flate2 = "1"
+fdeflate = "0.3"
 weezl = "0.2"
 png = "0.18"
 lz4_flex = { version = "0.14", default-features = false, features = ["alloc", "safe-decode", "checked-decode"] }
 ruzstd = "0.9"
 # 0.10 reads HDF5 files written in the earliest format with version 1/2 compound datatypes
 # (every HEC-RAS geometry and plan file, among others) and old fill value messages
-# (roteiro-gis/netcdf-rust#95). The HEC-RAS engine uses the same hdf5-reader 0.10.1, so a build
-# compiles one HDF5 reader.
-netcdf-reader = { version = "0.10.1", default-features = false, features = ["netcdf4"] }
-hdf5-reader = { version = "0.10.1", default-features = false }
+# (roteiro-gis/netcdf-rust#95). netcdf-reader, hdf5-reader and the HEC-RAS engine move together
+# (netcdf-reader 0.12 and ras-commander-fast-hdf 0.4 use hdf5-reader 0.12), so a build compiles
+# one HDF5 reader.
+netcdf-reader = { version = "0.12.1", default-features = false, features = ["netcdf4"] }
+hdf5-reader = { version = "0.12.1", default-features = false }
 # HEC-RAS geometry and plan HDF files (the `hecras` feature): the read-only engine behind
 # ras-commander. It owns every HEC-RAS rule; terrio's driver only translates its values.
-ras-commander-fast-hdf = { version = "0.3.0", default-features = false, features = ["hdf", "mesh", "results"] }
+ras-commander-fast-hdf = { version = "0.4.0", default-features = false, features = ["hdf", "mesh", "results"] }
 # The portable decoder: the same pixels on every platform, closer to libjpeg's than its SIMD paths.
 jpeg-decoder = { version = "0.3", default-features = false, features = ["platform_independent"] }
 # GeoPackage JPEG tiles; the version wbraster already uses.

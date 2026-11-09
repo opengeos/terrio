@@ -47,7 +47,7 @@ fn crs_from_erm(projection: &str, datum: &str) -> Option<CrsInfo> {
     let p = projection.to_ascii_uppercase();
     let d = datum.to_ascii_uppercase();
     if let Some(code) = p.strip_prefix("EPSG:").and_then(|c| c.parse().ok()) {
-        return Some(CrsInfo::from_epsg(code));
+        return Some(crate::crs::epsg_crs_info(code));
     }
     if p == "GEODETIC" {
         let code = match d.as_str() {
@@ -56,20 +56,20 @@ fn crs_from_erm(projection: &str, datum: &str) -> Option<CrsInfo> {
             "NAD27" => 4267,
             "GDA94" => 4283,
             "WGS72DOD" => 4322,
-            _ => return d.strip_prefix("EPSG:").and_then(|c| c.parse().ok()).map(CrsInfo::from_epsg),
+            _ => return d.strip_prefix("EPSG:").and_then(|c| c.parse().ok()).map(crate::crs::epsg_crs_info),
         };
-        return Some(CrsInfo::from_epsg(code));
+        return Some(crate::crs::epsg_crs_info(code));
     }
     let utm = |prefix: &str| p.strip_prefix(prefix).and_then(|z| z.parse::<u32>().ok()).filter(|z| (1..=60).contains(z));
     if let Some(z) = utm("NUTM") {
-        return Some(CrsInfo::from_epsg(match d.as_str() {
+        return Some(crate::crs::epsg_crs_info(match d.as_str() {
             "NAD83" => 26900 + z,
             "NAD27" => 26700 + z,
             _ => 32600 + z,
         }));
     }
     if let Some(z) = utm("SUTM") {
-        return Some(CrsInfo::from_epsg(32700 + z));
+        return Some(crate::crs::epsg_crs_info(32700 + z));
     }
     None
 }
@@ -160,7 +160,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
         bottom_up: false,
     };
     let header = path.with_extension("ers");
-    std::fs::write(data_path(&header), common::encode(r, &layout))?;
+    common::write_headerless(data_path(&header), &header, common::encode(r, &layout))?;
     let crs = super::common::spatial_ref(&r.crs);
     let (projection, datum) = match crs.epsg {
         Some(4326) => ("GEODETIC".to_string(), "WGS84".to_string()),
@@ -189,7 +189,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
         h.push_str(&format!("\t\tNullCellValue\t= {}\n", common::format_value(nd, r.data_type)));
     }
     h.push_str("\tRasterInfo End\nDatasetHeader End\n");
-    std::fs::write(&header, h)?;
+    common::write_replacing(&header, h)?;
     // A CRS that ER Mapper cannot name goes to a GDAL sidecar, as GDAL does.
     if projection == "RAW" {
         common::write_pam(&header, &r.crs)?;

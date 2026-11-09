@@ -7,8 +7,10 @@
 //! The files come from `scripts/fetch_test_data.sh` (GDAL's test files in `gdal_hdf5` and
 //! `gdal_netcdf`; NASA products in `hdfeos5`, fetched only with Earthdata Login credentials). The
 //! tests skip themselves without `TERRIO_TEST_DATA` or the files. The trailing `bands` files are in
-//! `tests/data/netcdf_bands` (`scripts/make_netcdf_bands_fixtures.py`), the definition order one in
-//! `tests/data/netcdf_order` (`scripts/make_netcdf_order_fixtures.py`).
+//! `tests/data/netcdf_bands` (`scripts/make_netcdf_bands_fixtures.py`), the `_Unsigned` ones in
+//! `tests/data/netcdf_unsigned` and `tests/data/netcdf_int64_unsigned`
+//! (`scripts/make_netcdf_unsigned_fixtures.py`, `scripts/make_netcdf_int64_unsigned_fixtures.py`),
+//! the definition order one in `tests/data/netcdf_order` (`scripts/make_netcdf_order_fixtures.py`).
 
 // Geotransforms as `gdalinfo` prints them, digit for digit.
 #![allow(clippy::excessive_precision)]
@@ -253,6 +255,53 @@ fn netcdf4_definition_order() {
     let vars = ["zulu", "yankee", "xray", "whiskey", "victor"];
     let gdal: Vec<String> = ["", "/sierra/", "/romeo/"].iter().flat_map(|g| vars.iter().map(move |v| format!("{g}{v}"))).collect();
     assert_eq!(names, gdal);
+}
+
+/// `Short` variables flagged `_Unsigned` whose `valid_range`, or `valid_min` and `valid_max`, hold
+/// `[9200, -9536]` in the variable's signed type, as GOES ABI L2 products do
+/// (`scripts/make_netcdf_unsigned_fixtures.py`): the bounds are read as unsigned too (9200 to
+/// 56000), so only the pixels outside them are nodata, as GDAL 3.12.2 reads them. The expected
+/// pixels, the bottom row first as for any file without a geotransform, are in `expected.json`,
+/// which the script writes.
+#[test]
+fn netcdf_unsigned_valid_range() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_unsigned");
+    let text = std::fs::read_to_string(dir.join("expected.json")).unwrap();
+    let expected: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let path = dir.join("valid_range.nc");
+    for var in ["valid_range", "valid_min_max"] {
+        let ds = open(&format!("NETCDF:\"{}\":{var}", path.display()));
+        assert_eq!(ds.data_type_name(), "UInt16", "{var}");
+        assert_eq!(ds.nodata(), Some(65535.0), "{var}");
+        let gdal: Vec<f64> = expected[var].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        assert_eq!(ds.raster.data.to_f64_vec(), gdal, "{var}");
+    }
+}
+
+/// `Int64` variables flagged `_Unsigned`, which GDAL reads as `Int64` (with netCDF's default
+/// nodata without `_FillValue`), and `Short` variables whose
+/// `valid_range`, or `valid_min` and `valid_max`, are inverted (`[10, -10]`, or `[-100, 100]` read
+/// as unsigned), which GDAL ignores (`scripts/make_netcdf_int64_unsigned_fixtures.py`): the pixels
+/// and nodata GDAL 3.12.2 reads.
+#[test]
+fn netcdf_int64_unsigned_and_inverted_ranges() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_int64_unsigned/ranges.nc");
+    // GDAL's pixels, the bottom row first as for any file without a geotransform: none masked.
+    let signed = [-9.0, -2.0, -1.0, 30000.0, 5.0, 10.0, 1000.0, -10.0];
+    let unsigned = [65527.0, 65534.0, 65535.0, 30000.0, 5.0, 10.0, 1000.0, 65526.0];
+    for (var, data_type, nodata, gdal) in [
+        ("int64_unsigned", "Int64", -1.0, signed),
+        ("int64_unsigned_inverted_range", "Int64", -1.0, signed),
+        ("short_inverted_range", "Int16", -1.0, signed),
+        ("short_inverted_min_max", "Int16", -1.0, signed),
+        ("short_unsigned_straddling_range", "UInt16", 65535.0, unsigned),
+        ("int64_unsigned_default_fill", "Int64", -9223372036854775806.0, signed),
+    ] {
+        let ds = open(&format!("NETCDF:\"{}\":{var}", path.display()));
+        assert_eq!(ds.data_type_name(), data_type, "{var}");
+        assert_eq!(ds.nodata(), Some(nodata), "{var}");
+        assert_eq!(ds.raster.data.to_f64_vec(), gdal, "{var}");
+    }
 }
 
 /// NASA HDF-EOS5 products (fetched with Earthdata Login credentials only): the georeferencing GDAL

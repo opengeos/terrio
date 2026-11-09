@@ -5,7 +5,6 @@ overview a read chooses and the warp of each read are GDAL's own. Skipped withou
 """
 
 import math
-import re
 
 import numpy as np
 import pytest

@@ -11,12 +11,12 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 ## Overview
 
 - Apache License 2.0 (266)
-- MIT License (72)
+- MIT License (69)
 - ISC License (20)
-- BSD 3-Clause "New" or "Revised" License (14)
+- BSD 3-Clause "New" or "Revised" License (15)
 - BSD 2-Clause "Simplified" License (8)
 - Mozilla Public License 2.0 (5)
-- Do What The F*ck You Want To Public License (4)
+- Do What The F*ck You Want To Public License (3)
 - Creative Commons Zero v1.0 Universal (2)
 - Independent JPEG Group License (2)
 - zlib License (2)
@@ -269,7 +269,7 @@ Used by:
 - [arrow-schema 58.4.1](https://github.com/apache/arrow-rs)
 - [arrow-select 58.4.1](https://github.com/apache/arrow-rs)
 - [cmov 0.5.4](https://github.com/RustCrypto/utils)
-- [ctutils 0.4.3](https://github.com/RustCrypto/utils)
+- [ctutils 0.4.8](https://github.com/RustCrypto/utils)
 - [encoding_rs 0.8.44](https://github.com/hsivonen/encoding_rs)
 - [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op)
 - [parquet 58.4.1](https://github.com/apache/arrow-rs)
@@ -6596,8 +6596,8 @@ Used by:
 - [geozero 0.15.1](https://github.com/georust/geozero)
 - [graviola 0.4.2](https://github.com/ctz/graviola/)
 - [half 2.7.1](https://github.com/VoidStarKat/half-rs)
-- [hdf5-core 0.10.1](https://github.com/roteiro-gis/netcdf-rust)
-- [hdf5-reader 0.10.1](https://github.com/roteiro-gis/netcdf-rust)
+- [hdf5-core 0.12.1](https://github.com/roteiro-gis/netcdf-rust)
+- [hdf5-reader 0.12.1](https://github.com/roteiro-gis/netcdf-rust)
 - [i_overlay 4.5.2](https://github.com/iShape-Rust/iOverlay)
 - [image-webp 0.2.4](https://github.com/image-rs/image-webp)
 - [itoa 1.0.18](https://github.com/dtolnay/itoa)
@@ -6621,8 +6621,8 @@ Used by:
 - [libc 0.2.191](https://github.com/rust-lang/libc)
 - [miniz_oxide 0.8.9](https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide)
 - [miniz_oxide 0.9.1](https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide)
-- [netcdf-core 0.10.1](https://github.com/roteiro-gis/netcdf-rust)
-- [netcdf-reader 0.10.1](https://github.com/roteiro-gis/netcdf-rust)
+- [netcdf-core 0.12.1](https://github.com/roteiro-gis/netcdf-rust)
+- [netcdf-reader 0.12.1](https://github.com/roteiro-gis/netcdf-rust)
 - [paste 1.0.15](https://github.com/dtolnay/paste)
 - [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite)
 - [portable-atomic-util 0.2.8](https://github.com/taiki-e/portable-atomic-util)
@@ -7380,9 +7380,10 @@ pub(crate) static GB18030_2022_OVERRIDE_BYTES: [[u8; 2]; 18] = [
 
 Used by:
 
-- [zstd-safe 7.3.0](https://github.com/gyscos/zstd-rs)
+- [zstd-safe 7.4.0](https://github.com/gyscos/zstd-rs)
 - [zstd-safe 8.2.0](https://github.com/gyscos/zstd-rs)
 - [zstd-sys 2.1.2+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
+- [zstd 0.13.4](https://github.com/gyscos/zstd-rs)
 - [zstd 0.14.3](https://github.com/gyscos/zstd-rs)
 
 ```text
@@ -8541,7 +8542,7 @@ THIS SOFTWARE.
 
 Used by:
 
-- [ras-commander-fast-hdf 0.3.0](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
+- [ras-commander-fast-hdf 0.4.0](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
 
 ```text
 Supercluster 8.0.1: ISC License
@@ -8570,7 +8571,7 @@ THIS SOFTWARE.
 
 Used by:
 
-- [ras-commander-fast-hdf 0.3.0](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
+- [ras-commander-fast-hdf 0.4.0](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
 
 ```text
 # MIT License
@@ -8820,34 +8821,6 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
-```
-
-## MIT License
-
-Used by:
-
-- [protobuf 2.28.0](https://github.com/stepancheg/rust-protobuf/)
-
-```text
-Copyright (c) 2019 Stepan Koltsov
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
-OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ## MIT License
@@ -9323,7 +9296,7 @@ SOFTWARE.
 
 Used by:
 
-- [ras-commander-fast-hdf 0.3.0](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
+- [ras-commander-fast-hdf 0.4.0](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
 
 ```text
 MIT License
@@ -9557,7 +9530,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- [ras-commander-fast-hdf 0.3.0](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
+- [ras-commander-fast-hdf 0.4.0](https://github.com/gpt-cmdr/ras-commander-fast-hdf)
 
 ```text
 MIT License
@@ -9683,36 +9656,6 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
-```
-
-## MIT License
-
-Used by:
-
-- [zip 0.6.6](https://github.com/zip-rs/zip.git)
-
-```text
-The MIT License (MIT)
-
-Copyright (c) 2014 Mathijs van de Nes
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 ```
 
 ## MIT License
@@ -10128,24 +10071,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-```
-
-## MIT License
-
-Used by:
-
-- [zstd 0.13.3](https://github.com/gyscos/zstd-rs)
-
-```text
-The MIT License (MIT)
-Copyright (c) 2016 Alexandre Bury
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ```
 
@@ -11337,7 +11262,6 @@ authorization of the copyright holder.
 
 Used by:
 
-- [osmpbfreader 0.16.1](https://github.com/TeXitoi/osmpbfreader-rs)
 - [osmpbfreader 0.19.1](https://github.com/TeXitoi/osmpbfreader-rs)
 - [par-map 0.1.4](https://github.com/TeXitoi/par-map)
 - [pub-iterator-type 0.1.1](https://github.com/TeXitoi/par-iterator-type)

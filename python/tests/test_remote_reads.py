@@ -250,6 +250,33 @@ def test_clear_http_cache_requests_a_file_again(tmp_path, serve):
     assert len(server.log) == 2 * first, server.log
 
 
+def test_block_cache_size_and_repeated_window_reads(tmp_path):
+    """The block cache's size is set, read back and cleared, and a window read twice returns
+    the same pixels with the cache on and off."""
+    pixels = write_cog(tmp_path / "cog.tif", size=512)
+    original = terrio.block_cache_max()
+    try:
+        terrio.set_block_cache_max(8 << 20)
+        assert terrio.block_cache_max() == 8 << 20
+        with pytest.raises(ValueError):
+            terrio.set_block_cache_max(-1)
+        assert terrio.block_cache_max() == 8 << 20
+        raster = terrio.open_raster(str(tmp_path / "cog.tif"), lazy=True)
+        cached = [raster.read(1, window=(100, 100, 300, 200)) for _ in range(2)]
+        terrio.clear_block_cache()
+        terrio.set_block_cache_max(0)
+        assert terrio.block_cache_max() == 0
+        raster = terrio.open_raster(str(tmp_path / "cog.tif"), lazy=True)
+        uncached = [raster.read(1, window=(100, 100, 300, 200)) for _ in range(2)]
+    finally:
+        terrio.set_block_cache_max(original)
+        terrio.clear_block_cache()
+    expected = pixels[0, 100:300, 100:400]
+    for window in cached + uncached:
+        np.testing.assert_array_equal(window, expected)
+    assert terrio.block_cache_max() == original
+
+
 def test_an_azure_token_never_reaches_a_host_a_dataset_name_chooses(tmp_path, serve):
     """``az://<host>?x=/container/blob`` and ``azure+<url>`` never choose the host the Azure
     token goes to: they fail before any request."""
@@ -551,7 +578,9 @@ def test_a_remote_srtm_tile_is_known_by_its_name_and_size(tmp_path, serve):
     terrio.clear_http_cache()
     server = serve(root=tmp_path / "tile")
     url = f"{server.url}/N37W120.img"
-    with pytest.raises(Exception, match="holds SRTMHGT data, and the SRTMHGT driver is not allowed"):
+    with pytest.raises(
+        Exception, match="holds SRTMHGT data, and the SRTMHGT driver is not allowed"
+    ):
         rio.open(url, driver="HFA")
     assert len(server.log) == 1, server.log
     with rio.open(url) as ds:
@@ -596,4 +625,37 @@ def test_a_remote_file_under_a_tile_extension_not_named_as_a_tile_is_refused(tmp
                 server = serve()
                 with pytest.raises(Exception, match="not recognized as being in a supported"):
                     open_as_raster(f"{server.url}/{kind}/{name}")
-                assert server.bytes_sent() <= 16384 and len(server.log) == 1, (kind, name, server.log)
+                assert server.bytes_sent() <= 16384 and len(server.log) == 1, (
+                    kind,
+                    name,
+                    server.log,
+                )
+
+
+def test_translate_reads_a_remote_window_by_range(tmp_path, serve):
+    """`translate` of a remote COG's 256 x 256 `srcwin` fetches the header and the one tile it
+    covers, not the whole file (as before, when the path was read whole)."""
+    rng = np.random.default_rng(3)
+    pixels = rng.integers(0, 65535, (1, 2048, 2048), dtype="uint16")
+    profile = dict(
+        driver="GTiff",
+        width=2048,
+        height=2048,
+        count=1,
+        dtype="uint16",
+        crs="EPSG:32631",
+        tiled=True,
+        blockxsize=256,
+        blockysize=256,
+        compress="deflate",
+        transform=rio.transform.from_origin(500000, 4600000, 10, 10),
+    )
+    with rio.open(tmp_path / "cog.tif", "w", **profile) as dst:
+        dst.write(pixels)
+    size = (tmp_path / "cog.tif").stat().st_size
+    server = serve()
+    out = terrio.translate(f"{server.url}/cog.tif", srcwin=(512, 256, 256, 256))
+    np.testing.assert_array_equal(out.read(1), pixels[0, 256:512, 512:768])
+    assert out.transform == pytest.approx((505120.0, 10.0, 0.0, 4597440.0, 0.0, -10.0))
+    # About 8.4 MB of noise; the window's tile is 1/64 of it, read in blocks of 16 KiB or more.
+    assert server.bytes_sent() < size / 16, (server.bytes_sent(), size, server.log)

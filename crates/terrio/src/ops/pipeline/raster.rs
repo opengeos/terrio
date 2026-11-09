@@ -23,6 +23,8 @@ struct View {
     crop: Window,
     full_size: (usize, usize),
     overviews: Vec<(usize, usize)>,
+    /// Per overview, the overviews of the source's band of it (see `level_band_overviews`).
+    level_overviews: Vec<Vec<usize>>,
     block: Option<(usize, usize)>,
     mask: bool,
     alpha: Option<usize>,
@@ -116,6 +118,12 @@ impl WindowSource for View {
     fn overviews(&self) -> Vec<(usize, usize)> {
         self.overviews.clone()
     }
+    fn level_band_overviews(&self, level: usize) -> Vec<usize> {
+        level.checked_sub(1).and_then(|i| self.level_overviews.get(i).cloned()).unwrap_or_default()
+    }
+    fn level_resampling(&mut self, overview: usize) -> Option<String> {
+        self.lock().ok()?.level_resampling(overview)
+    }
     fn block_size(&self) -> Option<(usize, usize)> {
         self.block
     }
@@ -127,6 +135,9 @@ impl WindowSource for View {
     }
     fn streamed(&self) -> Option<&dyn StreamedSource> {
         Some(self)
+    }
+    fn reads_by_window(&self) -> bool {
+        self.lock().is_ok_and(|source| source.reads_by_window())
     }
     fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
         self.read_data(level, window, bands)
@@ -255,7 +266,11 @@ fn view_inner(mut source: LazyRaster, bands: Vec<usize>, crop: Option<Window>, r
             )
         })
         .collect();
-    let reader = View { referenced, source: Mutex::new(source), bands, crop, full_size, overviews, block, mask, alpha, band_types };
+    // The view keeps each overview's nested overviews (an external `.ovr`'s images): the same
+    // overviews, numbered the same, as the source's.
+    let level_overviews: Vec<Vec<usize>> = (0..source.overviews().len()).map(|i| source.level_overviews(Some(i))).collect();
+    let reader =
+        View { referenced, source: Mutex::new(source), bands, crop, full_size, overviews, level_overviews, block, mask, alpha, band_types };
     Ok(LazyRaster::from_source(header, Box::new(reader)))
 }
 
@@ -344,5 +359,36 @@ fn warp_inner(source: &mut LazyRaster, options: &WarpOptions, mask_pixels: bool)
         preserve_reference(LazyRaster::from_masked_dataset(output, mask)?, referenced)
     } else {
         preserve_reference(LazyRaster::from(output), referenced)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A source with two overviews, whose band of the first has the second as its own overview,
+    /// as an external `.ovr`'s first image does.
+    struct NestedSource;
+    impl WindowSource for NestedSource {
+        fn overviews(&self) -> Vec<(usize, usize)> {
+            vec![(512, 512), (256, 256)]
+        }
+        fn level_band_overviews(&self, level: usize) -> Vec<usize> {
+            if level == 1 { vec![1] } else { Vec::new() }
+        }
+        fn read(&mut self, _level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
+            Ok(RasterData::U8(vec![0; window.width * window.height * bands.len()]))
+        }
+    }
+
+    #[test]
+    fn pipeline_view_keeps_nested_overviews_of_its_source() {
+        let cfg = wbraster::RasterConfig { cols: 1024, rows: 1024, bands: 2, data_type: DataType::U8, ..Default::default() };
+        let ds = RasterDataset::new(wbraster::Raster::from_data_native(cfg, RasterData::U8(vec![7; 2 * 1024 * 1024])).unwrap(), false);
+        let memory = LazyRaster::from(ds);
+        let source = LazyRaster::from_source(memory.header(), Box::new(NestedSource));
+        let pipeline = view(source, vec![1], None).unwrap();
+        assert_eq!(pipeline.level_overviews(Some(0)), vec![1]);
+        assert!(pipeline.level_overviews(Some(1)).is_empty());
     }
 }

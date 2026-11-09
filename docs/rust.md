@@ -2,7 +2,7 @@
 
 ```toml
 [dependencies]
-terrio = "0.7"
+terrio = "0.8"
 ```
 
 The API reference, with an example on each entry point, is on [docs.rs](https://docs.rs/terrio);
@@ -29,13 +29,51 @@ println!("{}", terrio::info::info(&ds, &Default::default()).to_text());
 - `terrio::open_vector(path, &VectorOpenOptions)` returns a `VectorDataset` of `wbvector::Layer`s.
 - `terrio::list_layers(path)` lists layers without reading features where the format allows.
 - `terrio::open_raster_lazy(path)` opens a GeoTIFF or COG by its header; `read_window` decodes only
-  the tiles a window touches, from full resolution or an overview.
+  the tiles a window touches, from full resolution or an overview. The decoded tiles are cached
+  process-wide (64 MiB by default; `TERRIO_CACHEMAX` or `terrio::block_cache::set_max_bytes`), so
+  a window read again decodes only the tiles no longer in the cache.
 - `terrio::memory` opens datasets from bytes and writes them to bytes.
 
 `RasterDataset::band_nodata`, when nonempty, overrides the shared
 `has_nodata` / `raster.nodata` fields, including explicit `None` entries. Read
 nodata with `band_nodata(band)` (one-based) or `nodata()` (band 1). To replace it
 with one shared value, clear the per-band vector and update both shared fields.
+
+## Raster buffer layout
+
+`RasterData` buffers passed to `Raster::from_data_native` must contain complete bands
+one after another: `[band0_plane, band1_plane, ...]`. Within each band, pixels are
+row-major, from the top row, with columns varying fastest. For zero-based indices:
+
+```text
+index = band * (rows * cols) + row * cols + col
+```
+
+The constructor does not deinterleave pixel-interleaved RGB/RGBA input. Convert it
+before constructing the raster; see the runnable
+[RGBA conversion example](https://docs.rs/terrio/latest/terrio/#raster-buffer-layout)
+in the crate documentation.
+
+`LazyRaster::read_window` returns the same band-major layout for both pixel-interleaved
+and separate-plane files, at full resolution and at internal or external `.ovr`
+overview levels. Use the **returned window's** dimensions in the index formula; output
+planes follow the requested band order (band selectors are one-based).
+`read_window_f32` and `read_window_f64` also return band-major, row-major values.
+For one band, the index is simply `row * width + col`; there is no row/column transpose.
+`ops::warp::warp` borrows band-major source rasters and returns a band-major raster,
+so a window result can be passed directly as a source without reordering its pixels.
+`LazyRaster::read_window` does not retain the dataset mask, so masked-out sample
+values may be treated as valid by `warp`. Floating-point window reads apply the mask
+as NaN. When the mask is needed separately, use `LazyRaster::read_mask` with the same
+window and overview selection. This layout note does not describe a masked-warp workflow.
+
+The in-memory layout is independent of TIFF storage. The current native GTiff writer
+used by `write_raster_dataset` defaults to `INTERLEAVE=PIXEL`
+(`PlanarConfiguration=1`, chunky). Set
+`creation_options: vec![("INTERLEAVE".into(), "BAND".into())]` in `RasterWriteOptions`
+for separate planes in multiband rasters (`PlanarConfiguration=2`), or explicitly
+request `PIXEL`. Single-band output uses `PlanarConfiguration=1` with either option.
+Both choices take the same band-major input buffer; the writer packs it for the file.
 
 ## Writing
 
@@ -274,7 +312,13 @@ let small = cog.read_resampled(&options)?; // the 512 x 512 overview's tiles, ge
   output is smaller than the window, the least reduced axis sets the desired reduction, and full
   resolution then each overview is a candidate below that times 1.2 for nearest neighbour or 1.0
   otherwise (`GDAL_OVERVIEW_OVERSAMPLING_THRESHOLD`), plus 0.1, the search stopping within 0.1 of
-  it. `AutoOffset(n)`, `None` and `Level(i)` read a level alone, as `gdal_translate -ovr` does.
+  it. Candidates marked `AVERAGE_BIT2*` are excluded individually, for both internal and
+  external overviews, following GDAL 3.13.3. Unmarked levels remain eligible. When that is the
+  first image of an external `.ovr`, it chooses again among the file's other images, as GDAL's
+  band of that image has them as overviews. `AutoOffset(0)` is `Auto` in every resampled read;
+  positive `AutoOffset(n)`, `None` and `Level(i)` read a level alone, as `gdal_translate -ovr` does.
+  A positive offset beyond the available finer levels, or on an image without overviews,
+  falls back to `Auto`.
 - Invalid pixels carry no weight: those the level's mask band masks (the dataset's mask, an
   overview's own; an overview without one is all valid, as in GDAL), their band's nodata value
   (NaN for NaN, nothing outside the type's range) or the alpha band of a two- or four-band raster.
@@ -346,16 +390,19 @@ available in the core crate, including WebAssembly builds, without additional fe
 
 `ops::contour::contour` accepts a raster and `ContourOptions` (interval/fixed levels, band,
 nodata override and optional Z coordinates), returning a line layer with IDs and elevations.
-`ops::zonal::zonal_stats` accepts a polygon layer, `ZonalInput` raster bands and `ZonalOptions`
-(statistics, pixel inclusion, optional `dst_srs` and `decimal_places`); the result retains the
+`ops::zonal::zonal_stats` accepts a polygon layer, `ZonalSource`s (a `ZonalRaster` and its
+`ZonalBand`s) and `ZonalOptions`. A `ZonalRaster` is an open `LazyRaster` or a path
+(`ZonalRaster::Path`) opened only while it is read, so thousands of files stay within the
+open-file limit. `ZonalOptions` holds the statistics, pixel inclusion, and optional `dst_srs`
+and `decimal_places`. The result retains the
 source features and adds statistic fields. Output reprojection occurs after analysis, and
 rounding (0–15 decimal places, ties away from zero after binary64 scaling) leaves source
 attributes and integer counts intact. `ZonalOptions::fractional` enables coverage fractions;
-`ZonalOptions::weights` accepts a `ZonalWeight` with a shared `Arc<RasterDataset>` and band for weighted statistics.
+`ZonalOptions::weights` accepts a `ZonalWeight` (`ZonalWeight::new(lazy_raster, band)`) for weighted statistics.
 Weight grids must match every value raster. Fractional counts are Real and are rounded
 when requested. See [the formulas and scope](cli.md#fractional-coverage-and-weighting-rasters).
-Zonal statistics reuse a cropped membership mask across
-bands of the same raster.
+Zones are computed once per distinct grid and shared by every source on it; rasters are read
+lazily in strips of block rows, skipping strips without zones.
 `ops::sql::query` runs the [documented SQL subset](sql.md), including computed columns,
 DISTINCT, grouped summaries, attribute joins and the documented spatial functions,
 with strict input-layer lookup. These operations
@@ -640,7 +687,7 @@ features off and names the ones it uses, for a smaller dependency tree, faster b
 smaller WebAssembly module. A COG writer, say:
 
 ```toml
-terrio = { version = "0.7", default-features = false, features = ["geotiff"] }
+terrio = { version = "0.8", default-features = false, features = ["geotiff"] }
 ```
 
 The core, always built, is GeoTIFF and COG (deflate, LZW, PackBits, ZSTD, WebP, JPEG and JPEG

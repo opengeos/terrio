@@ -185,8 +185,30 @@ impl TileRaster {
             return Err(Error::InvalidArgument(format!("invalid zoom level {zoom}: the archive has zoom levels {min_z} to {max_z}")));
         }
         let present = archive.tiles_at_zoom(zoom)?;
-        let &(fx, fy) = present.first().ok_or_else(|| Error::InvalidData(format!("the archive has no tiles at zoom level {zoom}")))?;
-        let first = archive.tile(zoom, fx, fy)?.ok_or_else(|| Error::InvalidData("missing tile".into()))?;
+        if present.is_empty() {
+            return Err(Error::InvalidData(format!("the archive has no tiles at zoom level {zoom}")));
+        }
+        // The first listed tile that has bytes: an MBTiles row may hold none (a NULL tile_data),
+        // and a damaged tile is passed over; if no tile has bytes, the first error is reported.
+        let mut first = None;
+        let mut error = None;
+        for &(x, y) in &present {
+            match archive.tile(zoom, x, y) {
+                Ok(Some(t)) => {
+                    first = Some(t);
+                    break;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    error.get_or_insert(e);
+                }
+            }
+        }
+        let first = match (first, error) {
+            (Some(t), _) => t,
+            (None, Some(e)) => return Err(e),
+            (None, None) => return Err(Error::InvalidData("missing tile".into())),
+        };
         let img = decode_image(&first)?;
         let tile_size = img.w.max(1);
         let res = resolution(zoom, tile_size);
@@ -683,6 +705,9 @@ fn warp_plan<'a>(ds: &'a RasterDataset, o: &TileWriteOptions, grid: Option<Grid>
                 }
             }
         }
+    }
+    if o.min_zoom.is_some_and(|z| z > 30) || o.max_zoom.is_some_and(|z| z > 30) {
+        return Err(Error::InvalidArgument("zoom levels must be at most 30".into()));
     }
     if let Some(z) = o.max_zoom {
         zoom = z;
@@ -1276,6 +1301,33 @@ mod tests {
             tiles.extend(cut_tiles(&level, z, sx, sy, format, o.quality)?);
         }
         Ok(RasterTiles { tiles, bounds, min_zoom, max_zoom: zoom, format })
+    }
+
+    /// An MBTiles row with no tile bytes (a NULL `tile_data`) listed first at the zoom level is
+    /// passed over: the raster is opened from the next tile that has bytes.
+    #[test]
+    fn rows_without_tile_bytes_are_passed_over() {
+        use crate::drivers::vector::sqlite::{self as writer, Value as W};
+        let png = encode_png(256, 256, 4, &[200u8; 256 * 256 * 4]).unwrap();
+        let tile = |id: i64, x: i64, data: W| (id, vec![W::Int(1), W::Int(x), W::Int(1), data]);
+        let tables = [
+            writer::Table {
+                name: "metadata".into(),
+                sql: "CREATE TABLE metadata (name TEXT, value TEXT)".into(),
+                rows: vec![(1, vec![W::Text("format".into()), W::Text("png".into())])],
+                autoindexes: vec![],
+            },
+            writer::Table {
+                name: "tiles".into(),
+                sql: "CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB, UNIQUE (zoom_level, tile_column, tile_row))".into(),
+                rows: vec![tile(1, 0, W::Null), tile(2, 1, W::Blob(png))],
+                autoindexes: vec![vec![0, 1, 2]],
+            },
+        ];
+        let mut archive = TileArchive::from_bytes(writer::write_database(&tables, &[], 0, 0).unwrap()).unwrap();
+        assert_eq!(archive.tiles_at_zoom(1).unwrap(), vec![(0, 0), (1, 0)]);
+        let raster = TileRaster::new(archive, Some(1)).unwrap();
+        assert_eq!(raster.tile_size, 256);
     }
 
     #[test]

@@ -103,7 +103,19 @@ mod native {
         register();
         let forks = FORKS.load(Ordering::Acquire);
         // rayon's defaults, as its global pool has: `RAYON_NUM_THREADS` threads, else one a core.
-        let pool = rayon::ThreadPoolBuilder::new().thread_name(|i| format!("terrio-par-{i}")).build().expect("terrio's thread pool starts");
+        // A job spawned on the pool that panics stops there, the panic hook having reported it:
+        // without a handler, rayon aborts the process (rayon-core 1.13). This covers `spawn` and a
+        // `rayon::spawn` by a dependency inside `install`; `join`, `scope` and parallel iterators
+        // still give the panic to their caller. A job's result reaches its caller through a
+        // channel or a lazily initialized value, so the caller sees a closed channel (an error) or
+        // an uninitialized value (computed again on its own thread). Under memory pressure, a
+        // decoder that panics on a failed allocation (`ruzstd`'s ring buffer, in the EPSG table
+        // `crs::prefetch` loads) thus no longer aborts a process that would answer.
+        let pool = rayon::ThreadPoolBuilder::new()
+            .thread_name(|i| format!("terrio-par-{i}"))
+            .panic_handler(|_| {})
+            .build()
+            .expect("terrio's thread pool starts");
         // Each thread of the pool runs a first job before the pool is used, so that none of them is
         // still starting, nor making a one-time initialization, when the call that started the
         // pool returns: a child forked then would inherit what the thread held, and wait for it
@@ -214,12 +226,13 @@ mod native {
         }
     }
 
-    /// A background job running, counted in [`GATE`] while it lives.
-    struct Running;
+    /// A background job running, counted in [`GATE`] while it lives (also the threads of a
+    /// [`super::map_waiting`]).
+    pub(super) struct Running;
 
     impl Running {
         /// Counts a job as running, unless a fork is in progress.
-        fn enter() -> Option<Self> {
+        pub(super) fn enter() -> Option<Self> {
             let mut g = GATE.load(Ordering::SeqCst);
             loop {
                 if g >= FORK {
@@ -321,12 +334,14 @@ mod native {
     }
 }
 
-/// Takes the process-wide locks of terrio's modules, for a fork (`native::prepare`): the remote
-/// files' cache, the request statistics, path options and retry warnings, the STAC tokens, the
-/// allow-list, the files in memory, the grids' caches and the warper's nodata warnings. Each is
-/// held for map operations only, never while another is taken, so any order is free of deadlocks.
+/// Takes the process-wide locks of terrio's modules, for a fork (`native::prepare`): the decoded
+/// chunks' cache, the remote files' cache, the request statistics, path options and retry
+/// warnings, the process's HTTP agent, the STAC tokens, the allow-list, the files in memory, the
+/// grids' caches and the warper's nodata warnings. Each is held for map operations (the agent
+/// while one is built) only, never while another is taken, so any order is free of deadlocks.
 #[cfg(all(unix, not(target_family = "wasm")))]
 fn hold_locks(held: &mut Vec<Box<dyn std::any::Any>>) {
+    crate::block_cache::hold_for_fork(held);
     crate::formats::hold_for_fork(held);
     crate::memfs::hold_for_fork(held);
     crate::crs::hold_for_fork(held);
@@ -424,7 +439,8 @@ pub(crate) fn install<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 
 /// Runs `f` in the background on terrio's thread pool (native builds). A fork waits for the
 /// background work running to finish (see the module's documentation), so `f` must be short, and
-/// must not wait for other background work.
+/// must not wait for other background work. A panic in `f` stops `f` alone, never the process:
+/// the panic hook reports it, and a channel `f` would answer through is closed.
 #[cfg(not(target_family = "wasm"))]
 pub(crate) fn spawn(f: impl FnOnce() + Send + 'static) {
     native::spawn(f);
@@ -484,6 +500,87 @@ pub(crate) fn map_range<R: Send>(n: usize, f: impl Fn(usize) -> R + Sync + Send)
 /// [`map_range`] for coarse work, in parallel in WebAssembly with threads too.
 pub(crate) fn map_range_coarse<R: Send>(n: usize, f: impl Fn(usize) -> R + Sync + Send) -> Vec<R> {
     map_range_on::<true, R>(n, f)
+}
+
+/// Maps `f` over `0..n`, keeping the order, with up to `at_once` calls at a time on the calling
+/// thread and threads of their own (native builds), for work that mostly waits on a server: on
+/// the pool, as many requests would be in flight as the machine has cores. The first error (by
+/// index) is returned, and once a call has failed, no worker starts another.
+///
+/// The threads see the caller's scoped options and STAC asset read policy
+/// ([`crate::stac::AssetReadContext`]), which a new thread would not have. They count as
+/// background work for the fork protocol (see the module's documentation) from before the first
+/// starts until the last has ended (joined): a fork waits for them, so that a child never copies a
+/// thread starting, ending or half way through an initialization. When a fork is already in
+/// progress, the calls run one after another on the calling thread instead of waiting for it,
+/// so that a call nested in work the fork waits for cannot deadlock. One call at a time, and in
+/// WebAssembly, on the calling thread.
+pub(crate) fn map_waiting<R: Send>(n: usize, at_once: usize, f: impl Fn(usize) -> crate::Result<R> + Sync) -> crate::Result<Vec<R>> {
+    // The fork handlers, registered before the threads are counted: the pool may not be started.
+    #[cfg(all(unix, not(target_family = "wasm")))]
+    if at_once.min(n) > 1 {
+        native::register();
+    }
+    #[cfg(not(target_family = "wasm"))]
+    if at_once.min(n) > 1
+        && let Some(_running) = native::Running::enter()
+    {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let context = crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current());
+        let (next, failed) = (AtomicUsize::new(0), AtomicBool::new(false));
+        // A worker that cannot enter the context (consent revoked since the read began) claims no
+        // item; its error is the call's, unless an item failed.
+        let refused = std::sync::Mutex::new(None);
+        // A worker's loop: items claimed until none is left or one has failed. The calling thread
+        // runs one too, already in its own context.
+        let work = |enter: bool| {
+            let mut mine = Vec::new();
+            let _scope = match enter.then(|| context.enter()).transpose() {
+                Ok(scope) => scope,
+                Err(e) => {
+                    failed.store(true, Ordering::Relaxed);
+                    if let Ok(mut r) = refused.lock() {
+                        r.get_or_insert(e);
+                    }
+                    return mine;
+                }
+            };
+            while !failed.load(Ordering::Relaxed) {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                if i >= n {
+                    break;
+                }
+                let r = f(i);
+                if r.is_err() {
+                    failed.store(true, Ordering::Relaxed);
+                }
+                mine.push((i, r));
+            }
+            mine
+        };
+        // Joined when the scope ends, before `_running` lets a fork go on. A thread the OS
+        // refuses leaves its share to the others and the calling thread.
+        let mut done: Vec<(usize, crate::Result<R>)> = std::thread::scope(|s| {
+            let workers: Vec<_> = (1..at_once.min(n))
+                .map_while(|_| std::thread::Builder::new().name("terrio-wait".into()).spawn_scoped(s, || work(true)).ok())
+                .collect();
+            let mut done = work(false);
+            for w in workers {
+                done.extend(w.join().unwrap_or_else(|p| std::panic::resume_unwind(p)));
+            }
+            done
+        });
+        done.sort_by_key(|(i, _)| *i);
+        // After a failure some indices are missing, but an error is among the results or refused.
+        let results = done.into_iter().map(|(_, r)| r).collect::<crate::Result<Vec<R>>>()?;
+        return match refused.into_inner().ok().flatten() {
+            Some(e) => Err(e),
+            None => Ok(results),
+        };
+    }
+    #[cfg(target_family = "wasm")]
+    let _ = at_once;
+    (0..n).map(f).collect()
 }
 
 /// Calls `f` on each item of an owned list with its index, in parallel (fine-grained work).
@@ -689,6 +786,22 @@ mod tests {
         });
     }
 
+    /// A background job that panics (as `ruzstd` does when an allocation fails) stops alone: the
+    /// process goes on, and the pool runs later jobs.
+    #[test]
+    fn a_background_job_that_panics_does_not_abort_the_process() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        spawn(move || {
+            let _keep = tx;
+            panic!("a background job panics");
+        });
+        // The job's sender is dropped as it unwinds: its caller sees the channel closed.
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(30)), Err(std::sync::mpsc::RecvTimeoutError::Disconnected));
+        let (tx, rx) = std::sync::mpsc::channel();
+        spawn(move || tx.send(7).unwrap());
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(30)), Ok(7));
+    }
+
     #[test]
     fn install_runs_on_terrios_pool() {
         let name = install(|| std::thread::current().name().map(str::to_string));
@@ -804,6 +917,100 @@ mod tests {
             }
             assert_eq!(ran.load(Ordering::Acquire), jobs);
             true
+        });
+    }
+
+    /// The calls of a `map_waiting` run at once on threads of their own, results in order; once a
+    /// call fails, no worker starts another and the first error (by index) is returned. The
+    /// calls on the calling thread (one at a time) stop at the first error as well.
+    #[test]
+    fn map_waiting_runs_at_once_and_stops_after_a_failure() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let arrived = AtomicUsize::new(0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        // Each call waits for the others: one at a time, each would wait out the deadline.
+        let together = map_waiting(4, 4, |i| {
+            arrived.fetch_add(1, Ordering::SeqCst);
+            while arrived.load(Ordering::SeqCst) < 4 && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Ok((i, arrived.load(Ordering::SeqCst)))
+        })
+        .unwrap();
+        assert_eq!(together, (0..4).map(|i| (i, 4)).collect::<Vec<_>>());
+        assert_eq!(map_waiting(100, 8, |i| Ok(i * 2)).unwrap(), (0..100).map(|i| i * 2).collect::<Vec<_>>());
+        for at_once in [1, 4] {
+            let calls = AtomicUsize::new(0);
+            let r: crate::Result<Vec<usize>> = map_waiting(1000, at_once, |i| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                if i < 3 { Ok(i) } else { Err(crate::Error::InvalidArgument(format!("call {i}"))) }
+            });
+            assert!(matches!(&r, Err(crate::Error::InvalidArgument(m)) if m == "call 3"), "{:?}", r.err());
+            // The 3 that succeed, and at most one failing call a worker.
+            let calls = calls.load(Ordering::SeqCst);
+            assert!(calls <= 3 + at_once, "{calls} calls, {at_once} at once");
+        }
+    }
+
+    /// The threads of a `map_waiting` see the caller's scoped options, which a new thread would
+    /// not: a read's chunk policy (`TERRIO_ZARR_ALLOW_BIG_TILE_SIZE`) and its HTTP options.
+    #[test]
+    fn map_waiting_threads_see_the_callers_options() {
+        let key = "TERRIO_TEST_MAP_WAITING_OPTION";
+        let seen = crate::config::with_options(&[(key, "scoped")], || map_waiting(8, 8, |_| Ok(crate::config::get(key)))).unwrap();
+        assert!(seen.iter().all(|v| v.as_deref() == Some("scoped")), "{seen:?}");
+        assert!(map_waiting(8, 8, |_| Ok(crate::config::get(key))).unwrap().iter().all(Option::is_none));
+    }
+
+    /// The threads of a `map_waiting` count as background work for a fork: a fork asked for while
+    /// they wait (on a server) waits for them to end, so that the child copies none of them
+    /// starting, ending or half way through; the child then runs a `map_waiting` of its own. In a
+    /// process of its own (`alone`), so that a fork that never ends stops only that process.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_fork_waits_for_the_threads_of_map_waiting() {
+        alone(60, || {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+            use std::time::{Duration, Instant};
+            let (live, done, release) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
+            let reader = {
+                let (live, done, release) = (live.clone(), done.clone(), release.clone());
+                std::thread::spawn(move || {
+                    map_waiting(4, 4, |i| {
+                        live.fetch_add(1, Ordering::SeqCst);
+                        while !release.load(Ordering::SeqCst) {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        done.fetch_add(1, Ordering::SeqCst);
+                        Ok(i)
+                    })
+                })
+            };
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while live.load(Ordering::SeqCst) < 4 {
+                assert!(Instant::now() < deadline, "the waiting threads did not start");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            // The fork, from another thread, while the 4 threads wait.
+            let (forked, fork_result) = std::sync::mpsc::channel();
+            let in_fork = done.clone();
+            std::thread::spawn(move || {
+                let _ = forked.send(in_child(30, move || {
+                    // Copied once the threads had all ended; the child's own threads start.
+                    in_fork.load(Ordering::SeqCst) == 4 && map_waiting(8, 4, Ok).is_ok_and(|v| v == (0..8).collect::<Vec<_>>())
+                }));
+            });
+            while !native::fork_in_progress() {
+                assert!(Instant::now() < deadline, "the fork did not start");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            let waited = fork_result.try_recv().is_err() && done.load(Ordering::SeqCst) == 0;
+            release.store(true, Ordering::SeqCst);
+            let exit = fork_result.recv_timeout(Duration::from_secs(60));
+            let read = reader.join().unwrap();
+            waited && exit == Ok(Some(0)) && read.is_ok_and(|v| v == [0, 1, 2, 3])
         });
     }
 

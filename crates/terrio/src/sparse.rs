@@ -36,7 +36,7 @@
 //! assert_eq!(bytes, data[150_000..150_100]);
 //! ```
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -416,5 +416,134 @@ mod tests {
         assert_eq!(fetches, 2);
         f.trim(4096);
         assert!(f.lock().blocks.len() <= 4);
+    }
+}
+
+/// A part of an object of a store: the whole object, `length` bytes from `offset`, or its last `n`
+/// bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ObjectRange {
+    /// The whole object.
+    Whole,
+    /// `length` bytes from `offset`.
+    At(u64, u64),
+    /// The last `n` bytes.
+    Suffix(u64),
+}
+
+/// A part of an object: its key and range.
+type Part = (String, ObjectRange);
+
+/// The parts fetched (`None`: no such object), and the bytes they hold.
+type Held = (HashMap<Part, Option<Vec<u8>>>, u64);
+
+/// The objects of a store (a Zarr store's metadata documents, chunks and shard parts) fetched by
+/// the caller, as a [`SparseFile`] holds the blocks of one file: a read of a part not fetched
+/// yet fails, and the part is recorded. The caller fetches the parts [`SparseObjects::missing`]
+/// lists, hands them over with [`SparseObjects::insert`] (`None` for a missing object) and runs
+/// the read again.
+///
+/// ```
+/// use terrio::sparse::{ObjectRange, SparseObjects};
+///
+/// let objects = SparseObjects::new();
+/// assert!(objects.get("a/zarr.json", ObjectRange::Whole).is_err());
+/// assert_eq!(objects.missing(), [("a/zarr.json".to_string(), ObjectRange::Whole)]);
+/// objects.insert("a/zarr.json", ObjectRange::Whole, Some(b"{}".to_vec()));
+/// objects.insert("a/.zarray", ObjectRange::Whole, None);
+/// assert_eq!(objects.get("a/zarr.json", ObjectRange::Whole).unwrap(), Some(b"{}".to_vec()));
+/// assert_eq!(objects.get("a/.zarray", ObjectRange::Whole).unwrap(), None);
+/// assert!(!objects.has_missing());
+/// ```
+#[derive(Debug, Default)]
+pub struct SparseObjects {
+    held: Mutex<Held>,
+    missing: Mutex<(Vec<Part>, HashSet<Part>)>,
+}
+
+impl SparseObjects {
+    /// No object fetched yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A part of an object: `None` when the object does not exist, an error recording the part
+    /// when it is not fetched yet.
+    pub fn get(&self, key: &str, range: ObjectRange) -> io::Result<Option<Vec<u8>>> {
+        if let Some(held) = lock(&self.held).0.get(&(key.to_string(), range)) {
+            return Ok(held.clone());
+        }
+        let mut missing = lock(&self.missing);
+        let part = (key.to_string(), range);
+        if missing.1.insert(part.clone()) {
+            missing.0.push(part);
+        }
+        Err(io::Error::other(format!("{key} ({range:?}) is not fetched yet")))
+    }
+
+    /// Whether a read missed parts not fetched since.
+    pub fn has_missing(&self) -> bool {
+        !lock(&self.missing).0.is_empty()
+    }
+
+    /// The parts reads missed, in the order they were asked for, forgotten once listed.
+    pub fn missing(&self) -> Vec<(String, ObjectRange)> {
+        std::mem::take(&mut *lock(&self.missing)).0
+    }
+
+    /// Hands over a part fetched: its bytes, or `None` when the object does not exist.
+    pub fn insert(&self, key: &str, range: ObjectRange, data: Option<Vec<u8>>) {
+        let mut held = lock(&self.held);
+        let overhead = key.len() as u64 + std::mem::size_of::<(Part, Option<Vec<u8>>)>() as u64;
+        held.1 += overhead + data.as_ref().map_or(0, |d| d.len() as u64);
+        if let Some(old) = held.0.insert((key.to_string(), range), data) {
+            held.1 -= overhead + old.map_or(0, |d| d.len() as u64);
+        }
+    }
+
+    /// Forgets every part held once they take more than `max_bytes`; parts a read needs again are
+    /// then fetched again. Readers keep what they parsed from them (metadata, shard indexes).
+    pub fn trim(&self, max_bytes: u64) {
+        let mut held = lock(&self.held);
+        if held.1 > max_bytes {
+            *held = Default::default();
+        }
+    }
+}
+
+/// A lock, also after a panic elsewhere poisoned it.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+mod object_tests {
+    use super::*;
+
+    #[test]
+    fn missing_parts_are_ordered_unique_and_can_be_requested_again() {
+        let objects = SparseObjects::new();
+        for _ in 0..2 {
+            for i in 0..1000 {
+                assert!(objects.get(&i.to_string(), ObjectRange::Whole).is_err());
+                assert!(objects.get(&i.to_string(), ObjectRange::Whole).is_err());
+            }
+            let missing = objects.missing();
+            assert_eq!(missing.len(), 1000);
+            assert_eq!(missing[0].0, "0");
+            assert_eq!(missing[999].0, "999");
+        }
+    }
+
+    #[test]
+    fn absent_objects_count_toward_cache_budget() {
+        let objects = SparseObjects::new();
+        objects.insert("missing", ObjectRange::Whole, None);
+        objects.trim(0);
+        assert!(objects.get("missing", ObjectRange::Whole).is_err());
+        objects.insert("missing", ObjectRange::Whole, None);
+        objects.insert("missing", ObjectRange::Whole, None);
+        let held = lock(&objects.held);
+        assert_eq!(held.1, 7 + std::mem::size_of::<(Part, Option<Vec<u8>>)>() as u64);
     }
 }

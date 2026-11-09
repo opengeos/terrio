@@ -21,9 +21,18 @@ from exactextract.raster import NumPyRasterSource
 
 from compare_raster_analysis_with_gdal import rows
 
-STATS = ["count", "min", "max", "mean", "sum", "stddev", "median"]
+STATS = ["count", "min", "max", "mean", "sum", "stddev", "median",
+         "quantile_25", "quantile_75", "mode", "minority", "variety", "variance", "cv"]
 WEIGHTED = ["weighted_mean", "weighted_sum", "weighted_stddev"]
-ORACLE_NAMES = {"stddev": "stdev", "weighted_stddev": "weighted_stdev"}
+ORACLE_NAMES = {"stddev": "stdev", "weighted_stddev": "weighted_stdev", "cv": "coefficient_of_variation"}
+# Statistics taken from exactextract alone (GDAL 3.13.3 rejects median; the others are compared
+# with exactextract 0.3.0 on the same Float64 samples), and their exactextract requests.
+EXACT_ONLY = {"median": "median", "quantile_25": "quantile(q=0.25)", "quantile_75": "quantile(q=0.75)",
+              "mode": "mode", "minority": "minority", "variety": "variety", "variance": "variance",
+              "cv": "coefficient_of_variation"}
+# Values of the zone itself, compared exactly.
+EXACT_VALUES = {"mode", "minority", "variety"}
+INTEGER = {"variety"}
 RTOL, ATOL = 2e-7, 1e-7
 
 gdal.UseExceptions()
@@ -95,20 +104,20 @@ def expected(value, weights, zones, work, label, stats):
     if weights:
         args += ["--weights", weights]
     # GDAL 3.13.3 advertises median but rejects it; exactextract supplies that oracle.
-    for name in names:
-        if name != "median":
-            args += ["--stat", name]
+    for stat in stats:
+        if stat not in EXACT_ONLY:
+            args += ["--stat", ORACLE_NAMES.get(stat, stat)]
     run(args)
     reference = []
     for feature in rows(output):
         fields = {feature.GetFieldDefnRef(i).GetName(): feature.GetField(i) for i in range(feature.GetFieldCount())}
         for stat in stats:
-            if stat != "median":
+            if stat not in EXACT_ONLY:
                 index = feature.GetFieldIndex(ORACLE_NAMES.get(stat, stat))
                 if feature.GetFieldDefnRef(index).GetType() != ogr.OFTReal:
                     raise AssertionError(f"GDAL {stat} is not a Real field")
         # Single input bands receive the statistic's name in GDAL's schema.
-        reference.append({s: fields[ORACLE_NAMES.get(s, s)] for s in stats if s != "median"})
+        reference.append({s: fields[ORACLE_NAMES.get(s, s)] for s in stats if s not in EXACT_ONLY})
     ds = gdal.Open(str(value))
     gt = ds.GetGeoTransform()
     # Exactextract casts quantiles to the source type. Use the same stored samples
@@ -117,14 +126,32 @@ def expected(value, weights, zones, work, label, stats):
         xmin=gt[0], ymin=gt[3] + ds.RasterYSize * gt[5],
         xmax=gt[0] + ds.RasterXSize * gt[1], ymax=gt[3],
         nodata=ds.GetRasterBand(1).GetNoDataValue(), srs_wkt=ds.GetProjection())
-    exact = exact_extract(source, str(zones), names, weights=str(weights) if weights else None)
+    requests = [EXACT_ONLY.get(s, ORACLE_NAMES.get(s, s)) for s in stats] + ["values", "coverage"]
+    exact = exact_extract(source, str(zones), requests, weights=str(weights) if weights else None)
     for got, ref in zip(exact, reference, strict=True):
+        ref["candidates"] = candidates(got["properties"])
         for stat in stats:
-            if stat == "median":
-                ref[stat] = got["properties"].get(stat)
+            if stat in EXACT_ONLY:
+                ref[stat] = got["properties"].get(ORACLE_NAMES.get(stat, stat))
             else:
                 check_number(got["properties"].get(ORACLE_NAMES.get(stat, stat)), ref[stat], f"oracle {label} {stat}")
     return reference
+
+
+def candidates(properties):
+    """Mode and minority candidates: values whose total coverage is within the coverage
+    tolerance of the winner's. Coverages differ between terrio (binary64) and exactextract
+    (Float32) by up to about 1e-7, so near-ties on continuous data may resolve either way."""
+    values, coverage = properties.get("values"), properties.get("coverage")
+    if values is None or len(values) == 0:
+        return {}
+    totals = {}
+    for v, c in zip(values, coverage):
+        totals[float(v)] = totals.get(float(v), 0.0) + float(c)
+    high, low = max(totals.values()), min(totals.values())
+    near = lambda a, b: math.isclose(a, b, rel_tol=RTOL, abs_tol=ATOL)
+    return {"mode": {v for v, t in totals.items() if near(t, high)},
+            "minority": {v for v, t in totals.items() if near(t, low)}}
 
 
 def missing(v):
@@ -151,10 +178,12 @@ def compare(path, zones, expected_rows, stats):
         raise AssertionError("source CRS changed")
     for stat in stats:
         field = actual.GetLayerDefn().GetFieldDefn(actual.GetLayerDefn().GetFieldIndex(f"v_b1_{stat}"))
-        if field.GetType() != ogr.OFTReal:
-            raise AssertionError(f"fractional {stat} field is not Real")
+        expected_type = ogr.OFTInteger64 if stat in INTEGER else ogr.OFTReal
+        if field.GetType() not in (expected_type, ogr.OFTInteger if stat in INTEGER else ogr.OFTReal):
+            raise AssertionError(f"fractional {stat} field has type {field.GetType()}")
     maximum = 0.
     normalized_empty_sums = False
+    near_ties = 0
     for got, src, ref in zip(actual, source, expected_rows, strict=True):
         if got.GetFID() != src.GetFID():
             raise AssertionError("source feature IDs changed")
@@ -169,8 +198,18 @@ def compare(path, zones, expected_rows, stats):
             if stat in ("sum", "weighted_sum") and ref["count"] == 0 and value is None and ref[stat] == 0:
                 normalized_empty_sums = True  # native null versus reference zero is documented
                 continue
+            if stat == "variety" and ref["count"] == 0 and value == 0 and missing(ref[stat]):
+                continue  # native 0 distinct values for an empty zone
+            if stat in EXACT_VALUES and not missing(ref[stat]):
+                tied = ref["candidates"].get(stat, set())
+                if value != ref[stat]:
+                    if len(tied) > 1 and value in tied:
+                        near_ties += 1  # a near-tie within the coverage tolerance
+                        continue
+                    raise AssertionError(f"{stat}: {value} != {ref[stat]}")
+                continue
             maximum = max(maximum, check_number(value, ref[stat], stat))
-    return maximum, normalized_empty_sums
+    return maximum, normalized_empty_sums, near_ties
 
 
 def main():
@@ -215,8 +254,10 @@ const out = t.zonalStats({bytes:fs.readFileSync(process.argv[2]),filename:'zones
 fs.writeFileSync(process.argv[4], out.toBytes('result.gpkg'));
 """, args.node_package.resolve(), zones, value, output,
                                  json.dumps(dict(prefixes=["v"], stats=stats, fractional=True)), str(weight) if weight else ""])
-                        maximum, empty_sums = compare(output, zones, reference, stats)
-                        results.append(dict(name=f"{label} {api}", status="tolerance" if maximum or empty_sums else "identical", detail=("documented empty-zone sums: native null versus reference zero; " if empty_sums else "") + f"max absolute statistic error {maximum:.9g}; relative {RTOL}, absolute {ATOL}; exact source geometry/attributes/CRS and Real fields"))
+                        maximum, empty_sums, near_ties = compare(output, zones, reference, stats)
+                        notes = ("documented empty-zone sums: native null versus reference zero; " if empty_sums else "")
+                        notes += (f"{near_ties} mode/minority near-ties (coverages within tolerance) resolved to another tied value; " if near_ties else "")
+                        results.append(dict(name=f"{label} {api}", status="tolerance" if maximum or empty_sums or near_ties else "identical", detail=notes + f"max absolute statistic error {maximum:.9g}; relative {RTOL}, absolute {ATOL}; mode/minority/variety exact otherwise; exact source geometry/attributes/CRS and Real fields"))
                     except Exception as error:
                         results.append(dict(name=f"{label} {api}", status="differs", detail=str(error)))
     print(json.dumps(results, indent=2) if args.json else "\n".join(str(r) for r in results))

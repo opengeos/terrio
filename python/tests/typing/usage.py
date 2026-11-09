@@ -112,6 +112,10 @@ def rasters(tmp: Path) -> terrio.Raster:
     info: dict[str, Any] = terrio.info(str(path), stats=True)
     drivers: list[dict[str, Any]] = terrio.drivers()
     print(info["driver"], len(drivers))
+    albers = terrio.list_crs("albers", authority="EPSG", kind=["projected"])
+    picked: str = f"{albers[0]['authority']}:{albers[0]['code']}"
+    bounds = albers[0]["bounds"]
+    print(picked, albers[0]["name"], albers[0]["deprecated"], bounds[0] if bounds else None)
     xs, ys = terrio.transform_points(
         [500000.0],
         [4100000.0],
@@ -456,6 +460,12 @@ def analysis_adapters(
         zones, [raster], stats=["count", "median"], all_touched=True, decimal_places=2
     )
     parts: terrio.Layer = terrio.singlepart(zones)
+    reducer = terrio.ZonalReducer(zones, 2, 2, (0, 1, 0, 2, 0, -1), "EPSG:4326", stats=["mean"])
+    stream = reducer.stream(nodata=0)
+    for i, (x, y, w, h) in enumerate(reducer.windows()):
+        stream.add(i, np.zeros((2, 2))[y : y + h, x : x + w])
+    means: NDArray[Any] = stream.finish()["mean"]
+    print(means, reducer.feature_count, reducer.stats)
     return zonal, parts
 
 

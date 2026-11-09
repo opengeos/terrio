@@ -139,6 +139,58 @@ pub(crate) fn parse_options<T: serde::de::DeserializeOwned + Default>(options: &
     serde_json::from_str(&text).map_err(|e| JsError::new(&format!("options: {e}")))
 }
 
+/// The `overview` option of a resampled read: an overview number or `"AUTO"`, `"AUTO-n"`,
+/// `"NONE"`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub(crate) enum OverviewArg {
+    Level(usize),
+    Name(String),
+}
+
+impl OverviewArg {
+    /// The selection, `AUTO` when the option is not given.
+    pub(crate) fn selection(arg: Option<&Self>) -> terrio::Result<terrio::ops::overview::OverviewSelection> {
+        use terrio::ops::overview::OverviewSelection;
+        Ok(match arg {
+            None => OverviewSelection::Auto,
+            Some(Self::Level(i)) => OverviewSelection::Level(*i),
+            Some(Self::Name(n)) => OverviewSelection::parse(n)?,
+        })
+    }
+}
+
+/// Options of `readResampled` and `readResampledMasks`.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+pub(crate) struct ResampledArgs {
+    /// The bands, from 1 (all by default).
+    bands: Option<Vec<usize>>,
+    /// The source window `[colOff, rowOff, width, height]` in full-resolution pixels, possibly
+    /// fractional (the whole raster by default).
+    window: Option<[f64; 4]>,
+    /// The output `[width, height]`.
+    size: Option<[usize; 2]>,
+    /// The resampling method (nearest by default).
+    resampling: Option<String>,
+    /// The stored resolution read.
+    overview: Option<OverviewArg>,
+}
+
+impl ResampledArgs {
+    /// The read's options.
+    pub(crate) fn options(&self) -> terrio::Result<terrio::ResampledReadOptions> {
+        let [w, h] = self.size.ok_or_else(|| terrio::Error::InvalidArgument("size [width, height] is required".into()))?;
+        Ok(terrio::ResampledReadOptions {
+            bands: self.bands.clone().unwrap_or_default(),
+            window: self.window.map(|[x, y, w, h]| (x, y, w, h)),
+            size: (w, h),
+            resampling: self.resampling.as_deref().map(terrio::ops::Resampling::parse).transpose()?.unwrap_or_default(),
+            overview: OverviewArg::selection(self.overview.as_ref())?,
+        })
+    }
+}
+
 /// A shallow copy of an options object without `key`, whose value is not read (the value itself
 /// when it is not an object).
 fn without_key(options: &JsValue, key: &str) -> Result<JsValue, JsError> {
@@ -197,8 +249,16 @@ fn typed_array(data: RasterData) -> JsValue {
     }
 }
 
+/// `{ data, masks }`: pixels as a typed array of their type, masks as a `Uint8Array`.
+pub(crate) fn data_and_masks(data: RasterData, masks: &[u8]) -> JsValue {
+    let out = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&out, &"data".into(), &typed_array(data));
+    let _ = js_sys::Reflect::set(&out, &"masks".into(), &js_sys::Uint8Array::from(masks));
+    out.into()
+}
+
 /// Pixels from a typed array.
-fn raster_data(array: &JsValue) -> Result<RasterData, JsError> {
+pub(crate) fn raster_data(array: &JsValue) -> Result<RasterData, JsError> {
     macro_rules! try_types {
         ($($t:ident => $v:ident),*) => {
             $(if let Some(a) = array.dyn_ref::<js_sys::$t>() {
@@ -535,7 +595,7 @@ pub fn raster_from_array(
         crs: crs.to_crs_info(),
         ..Default::default()
     };
-    let mut raster = terrio::Raster::from_data_native(cfg, data).map_err(|e| js_err(e.into()))?;
+    let mut raster = terrio::raster_from_data(cfg, data).map_err(js_err)?;
     raster.x_min = g[0];
     raster.cell_size_x = g[1];
     raster.cell_size_y = -g[5];
@@ -706,6 +766,44 @@ impl Dataset {
         };
         let ds = r.read_window(window, &WindowOptions { bands: vec![band], overview }).map_err(js_err)?;
         Ok(typed_array(ds.raster.data))
+    }
+
+    /// Reads a window into an output of another size, as GDAL's `RasterIO` reads it
+    /// (`gdal_translate -outsize`): from the overview it would choose, resampled with its kernels,
+    /// invalid pixels (masked, nodata, transparent) carrying no weight. Returns a typed array of
+    /// the raster's own type, band after band, row after row.
+    ///
+    /// Options: `size` (`[width, height]`, required), `bands` (from 1, all by default), `window`
+    /// (`[colOff, rowOff, width, height]` in full-resolution pixels, possibly fractional; the
+    /// whole raster by default), `resampling` (`nearest`, the default, `bilinear`, `cubic`,
+    /// `cubicspline`, `lanczos`, `average`, `rms`, `mode`) and `overview` (`"AUTO"`, the
+    /// default, `"AUTO-n"`, `"NONE"` or an overview number, as `gdal_translate -ovr`).
+    #[wasm_bindgen(js_name = readResampled)]
+    pub fn read_resampled(&self, options: JsValue) -> Result<JsValue, JsError> {
+        let o = parse_options::<ResampledArgs>(&options)?.options().map_err(js_err)?;
+        let ds = self.raster()?.read_resampled(&o).map_err(js_err)?;
+        Ok(typed_array(ds.raster.data))
+    }
+
+    /// Reads the mask bands of the bands `readResampled` reads, with the same options, as GDAL's
+    /// `GetMaskBand()->RasterIO()`: a `Uint8Array`, band after band, 0 for invalid pixels and 255
+    /// for valid ones (or values between where a kernel resampled the mask). Bands with a nodata
+    /// value are read for their masks: `readResampledWithMasks` reads both without reading twice.
+    #[wasm_bindgen(js_name = readResampledMasks)]
+    pub fn read_resampled_masks(&self, options: JsValue) -> Result<js_sys::Uint8Array, JsError> {
+        let o = parse_options::<ResampledArgs>(&options)?.options().map_err(js_err)?;
+        let masks = self.raster()?.read_resampled_masks(&o).map_err(js_err)?;
+        Ok(js_sys::Uint8Array::from(&masks[..]))
+    }
+
+    /// Reads what `readResampled` and `readResampledMasks` read, at once (same options):
+    /// `{ data, masks }`. Nodata masks are computed from the pixels read, rather than from a
+    /// second read of their bands.
+    #[wasm_bindgen(js_name = readResampledWithMasks)]
+    pub fn read_resampled_with_masks(&self, options: JsValue) -> Result<JsValue, JsError> {
+        let o = parse_options::<ResampledArgs>(&options)?.options().map_err(js_err)?;
+        let (ds, masks) = self.raster()?.read_resampled_with_masks(&o).map_err(js_err)?;
+        Ok(data_and_masks(ds.raster.data, &masks))
     }
 
     /// The vector layer names.
@@ -1057,6 +1155,57 @@ pub fn describe_crs(crs: &str) -> Result<JsValue, JsError> {
     }))
 }
 
+/// One string, or an array of them.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            OneOrMany::One(s) => vec![s],
+            OneOrMany::Many(v) => v,
+        }
+    }
+}
+
+/// Options for [`list_crs`], as a JavaScript object.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct ListCrsOptions {
+    /// An authority (`"EPSG"`, `"ESRI"`, `"IAU_2015"`) or an array of them.
+    authority: Option<OneOrMany>,
+    /// A kind or an array of kinds.
+    kind: Option<OneOrMany>,
+    include_deprecated: bool,
+}
+
+/// The CRSs of the registries terrio carries (EPSG, ESRI and IAU_2015), for searchable CRS
+/// pickers, as GDAL's `OSRGetCRSInfoListFromDatabase` describes them (PROJ 9.8.1's database, EPSG
+/// v12.029): `[{ authority, code, name, kind, deprecated, area_name, bounds, projection_method,
+/// celestial_body }]`, in order of authority and code, `bounds` being `[west, south, east, north]`
+/// in degrees. `` `${authority}:${code}` `` is a CRS the other functions take.
+///
+/// `text`: words each CRS must match, whatever their case: in the name, or beginning the code or
+/// `AUTHORITY:CODE` (`"Albers"`, `"3577"`, `"EPSG:3577"`); every CRS when `undefined`. Options:
+/// `authority` (`"EPSG"`, `"ESRI"`, `"IAU_2015"`, or an array), `kind` (`"geographic_2d"`,
+/// `"geographic_3d"`, `"geocentric"`, `"projected"`, `"vertical"`, `"compound"`, `"other"`, or an
+/// array) and `includeDeprecated`.
+#[wasm_bindgen(js_name = listCrs)]
+pub fn list_crs(text: Option<String>, options: JsValue) -> Result<JsValue, JsError> {
+    let o: ListCrsOptions = parse_options(&options)?;
+    let kinds = o.kind.map(OneOrMany::into_vec).unwrap_or_default();
+    let kinds =
+        kinds.iter().map(|k| k.parse::<terrio::crs::CrsKind>()).collect::<Result<Vec<_>, _>>().map_err(|e| JsError::new(&e.to_string()))?;
+    let authorities = o.authority.map(OneOrMany::into_vec).unwrap_or_default();
+    terrio::crs::check_authorities(&authorities).map_err(|e| JsError::new(&e.to_string()))?;
+    let query = terrio::crs::CrsQuery { authorities, kinds, include_deprecated: o.include_deprecated, text };
+    to_js(&terrio::crs::list_crs(&query))
+}
+
 /// The PROJJSON v0.7 of a CRS; throws for a CRS it would describe wrongly.
 #[wasm_bindgen(js_name = crsToProjjson)]
 pub fn crs_to_projjson(crs: &str) -> Result<String, JsError> {
@@ -1095,6 +1244,30 @@ pub fn features() -> Result<JsValue, JsError> {
         .and_then(|n| n.as_f64())
         .unwrap_or(0.0);
     to_js(&serde_json::json!({ "build": BUILD, "features": built, "threads": threads, "memory": memory }))
+}
+
+/// The most bytes of decoded GeoTIFF/COG chunks the block cache keeps (GDAL's `GDALGetCacheMax64`):
+/// 64 MiB, since a module reads no environment variables; 0 means the cache is off.
+#[wasm_bindgen(js_name = blockCacheMax)]
+pub fn block_cache_max() -> f64 {
+    terrio::block_cache::max_bytes() as f64
+}
+
+/// Sets the most bytes the block cache keeps (GDAL's `GDALSetCacheMax64`); 0 turns it off. `bytes`
+/// must be an integer from 0 to `Number.MAX_SAFE_INTEGER`.
+#[wasm_bindgen(js_name = setBlockCacheMax)]
+pub fn set_block_cache_max(bytes: f64) -> Result<(), JsError> {
+    if !bytes.is_finite() || bytes < 0.0 || bytes.fract() != 0.0 || bytes > 9_007_199_254_740_991.0 {
+        return Err(JsError::new(&format!("setBlockCacheMax: bytes must be an integer from 0 to Number.MAX_SAFE_INTEGER, not {bytes}")));
+    }
+    terrio::block_cache::set_max_bytes(bytes as u64);
+    Ok(())
+}
+
+/// Empties the block cache of decoded GeoTIFF/COG chunks, giving its memory back.
+#[wasm_bindgen(js_name = clearBlockCache)]
+pub fn clear_block_cache() {
+    terrio::block_cache::clear();
 }
 
 /// Point clouds, which this build leaves out: the functions say so.

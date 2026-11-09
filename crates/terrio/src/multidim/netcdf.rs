@@ -1,6 +1,8 @@
 //! Metadata and typed hyperslabs shared by netCDF classic, netCDF-4 and numeric HDF5.
 use super::*;
-use netcdf_reader::{NcAttrValue, NcAttribute, NcFile, NcGroup, NcMetadataMode, NcOpenOptions, NcSliceInfo, NcSliceInfoElem, NcType};
+use netcdf_reader::{
+    NcAttrValue, NcAttribute, NcFile, NcGroup, NcIntegerValue, NcMetadataMode, NcOpenOptions, NcSliceInfo, NcSliceInfoElem, NcType, NcValue,
+};
 
 fn error(e: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("multidim: {e}"))
@@ -31,9 +33,59 @@ fn floating(value: f64) -> Value {
         serde_json::json!(value)
     }
 }
+/// A user-defined attribute value as JSON, as GDAL 3.13's `gdalmdiminfo` prints it: a compound
+/// as an object of its fields and an enum as its integer. `None` for the fixed-size array, opaque
+/// and vlen values GDAL does not support, at any depth: GDAL then prints the whole attribute as
+/// `null`. A char is its code, as GDAL reads it; `t` is the value's declared type.
+fn user_value(v: &NcValue, t: &NcType) -> Option<Value> {
+    Some(match v {
+        NcValue::Byte(x) => serde_json::json!(x),
+        NcValue::Char(x) | NcValue::UByte(x) => serde_json::json!(x),
+        NcValue::Short(x) => serde_json::json!(x),
+        NcValue::UShort(x) => serde_json::json!(x),
+        NcValue::Int(x) => serde_json::json!(x),
+        NcValue::UInt(x) => serde_json::json!(x),
+        NcValue::Int64(x) => serde_json::json!(x),
+        NcValue::UInt64(x) => serde_json::json!(x),
+        NcValue::Float(x) => floating(f64::from(*x)),
+        NcValue::Double(x) => floating(*x),
+        NcValue::String(x) if matches!(t, NcType::Char) && x.len() <= 1 => serde_json::json!(x.bytes().next().unwrap_or(0)),
+        NcValue::String(x) => Value::String(x.clone()),
+        NcValue::Enum(e) => match e.value {
+            NcIntegerValue::I8(x) => serde_json::json!(x),
+            NcIntegerValue::U8(x) => serde_json::json!(x),
+            NcIntegerValue::I16(x) => serde_json::json!(x),
+            NcIntegerValue::U16(x) => serde_json::json!(x),
+            NcIntegerValue::I32(x) => serde_json::json!(x),
+            NcIntegerValue::U32(x) => serde_json::json!(x),
+            NcIntegerValue::I64(x) => serde_json::json!(x),
+            NcIntegerValue::U64(x) => serde_json::json!(x),
+        },
+        NcValue::Compound(fields) => {
+            let declared = match t {
+                NcType::Compound { fields: declared, .. } => declared.as_slice(),
+                _ => &[],
+            };
+            // A field missing from the declared type makes the attribute `null`, not mis-typed.
+            let mut object = serde_json::Map::new();
+            for f in fields {
+                let ty = declared.iter().find(|d| d.name == f.name).map(|d| &d.dtype)?;
+                object.insert(f.name.clone(), user_value(&f.value, ty)?);
+            }
+            Value::Object(object)
+        }
+        NcValue::Array(_) | NcValue::Opaque(_) | NcValue::VLen(_) => return None,
+    })
+}
 fn attribute(a: &NcAttrValue) -> Value {
+    // A zero-length numeric, enum or compound attribute is `null` and a zero-length string attribute
+    // `[]`, as GDAL 3.13.3's `gdalmdiminfo` prints them.
     fn one(v: Vec<Value>) -> Value {
-        if v.len() == 1 { v.into_iter().next().unwrap() } else { Value::Array(v) }
+        match v.len() {
+            0 => Value::Null,
+            1 => v.into_iter().next().unwrap(),
+            _ => Value::Array(v),
+        }
     }
     macro_rules! values {
         ($v:expr) => {
@@ -52,37 +104,192 @@ fn attribute(a: &NcAttrValue) -> Value {
         NcAttrValue::Floats(v) => one(v.iter().map(|&x| floating(x as f64)).collect()),
         NcAttrValue::Doubles(v) => one(v.iter().map(|&x| floating(x)).collect()),
         NcAttrValue::Chars(s) => Value::String(s.clone()),
+        NcAttrValue::Strings(v) if v.is_empty() => Value::Array(Vec::new()),
         NcAttrValue::Strings(v) => one(v.iter().cloned().map(Value::String).collect()),
+        NcAttrValue::UserDefined { dtype, values } => {
+            values.iter().map(|v| user_value(v, dtype)).collect::<Option<Vec<_>>>().map_or(Value::Null, one)
+        }
     }
 }
 fn attributes(attrs: &[NcAttribute]) -> Value {
     Value::Object(attrs.iter().map(|a| (a.name.clone(), attribute(&a.value))).collect())
 }
-fn attribute_types(attrs: &[NcAttribute]) -> AttributeTypes {
-    attrs
-        .iter()
-        .filter_map(|a| {
-            let dtype = match &a.value {
-                NcAttrValue::Bytes(_) => DataType::I8,
-                NcAttrValue::UBytes(_) => DataType::U8,
-                NcAttrValue::Shorts(_) => DataType::I16,
-                NcAttrValue::UShorts(_) => DataType::U16,
-                NcAttrValue::Ints(_) => DataType::I32,
-                NcAttrValue::UInts(_) => DataType::U32,
-                NcAttrValue::Int64s(_) => DataType::I64,
-                NcAttrValue::UInt64s(_) => DataType::U64,
-                NcAttrValue::Floats(_) => DataType::F32,
-                NcAttrValue::Doubles(_) => DataType::F64,
-                NcAttrValue::Chars(_) | NcAttrValue::Strings(_) => return None,
+/// The named HDF5 datatypes a netCDF-4 group defines, with its ancestors' after its own: the
+/// user-defined types in scope there, as netCDF-C finds them.
+type NamedTypes = Vec<(String, hdf5_reader::Datatype)>;
+fn named_types(hdf: &hdf5_reader::Hdf5File, p: &str) -> NamedTypes {
+    let parts: Vec<_> = p.split('/').filter(|n| !n.is_empty()).collect();
+    let mut out = Vec::new();
+    for depth in (0..=parts.len()).rev() {
+        let group = hdf.root_group().and_then(|root| parts[..depth].iter().try_fold(root, |g, name| g.group(name)));
+        if let Ok(group) = group {
+            out.extend(group_named_types(hdf, &group).unwrap_or_default());
+        }
+    }
+    out
+}
+/// The named datatypes linked from one HDF5 group, from its compact or dense link storage.
+fn group_named_types(hdf: &hdf5_reader::Hdf5File, group: &hdf5_reader::group::Group) -> hdf5_reader::error::Result<NamedTypes> {
+    use hdf5_reader::messages::{HdfMessage, link::LinkTarget};
+    let (storage, offset_size, length_size) = (group.storage(), group.offset_size(), group.length_size());
+    let mut links = Vec::new();
+    for message in &hdf.get_or_parse_header(group.address())?.messages {
+        match message {
+            HdfMessage::Link(link) => links.push(link.clone()),
+            HdfMessage::LinkInfo(info) if !hdf5_reader::io::Cursor::is_undefined_offset(info.fractal_heap_address, offset_size) => {
+                let heap =
+                    hdf5_reader::fractal_heap::FractalHeap::parse_at_storage(storage, info.fractal_heap_address, offset_size, length_size)?;
+                let index = hdf5_reader::btree_v2::BTreeV2Header::parse_at_storage(
+                    storage,
+                    info.btree_name_index_address,
+                    offset_size,
+                    length_size,
+                )?;
+                for record in
+                    hdf5_reader::btree_v2::collect_btree_v2_records_storage(storage, &index, offset_size, length_size, None, &[], None)?
+                {
+                    if let hdf5_reader::btree_v2::BTreeV2Record::LinkNameHash { heap_id, .. } = record {
+                        let bytes = heap.get_object_storage(&heap_id, storage, offset_size, length_size)?;
+                        links.push(hdf5_reader::messages::link::parse(
+                            &mut hdf5_reader::io::Cursor::new(&bytes),
+                            offset_size,
+                            length_size,
+                            bytes.len(),
+                        )?);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for link in links {
+        let LinkTarget::Hard { address } = link.target else { continue };
+        // A link whose target cannot be parsed is skipped, keeping the scope's other types.
+        let Ok(header) = hdf.get_or_parse_header(address) else { continue };
+        // A named datatype's object header holds a datatype but, unlike a dataset, no dataspace.
+        if header.messages.iter().any(|m| matches!(m, HdfMessage::Dataspace(_))) {
+            continue;
+        }
+        if let Some(datatype) = header.messages.iter().find_map(|m| match m {
+            HdfMessage::Datatype(d) => Some(d.datatype.clone()),
+            _ => None,
+        }) {
+            out.push((link.name, datatype));
+        }
+    }
+    Ok(out)
+}
+/// Whether an HDF5 datatype is the one netCDF-C reads as `t`.
+fn same_type(t: &NcType, h: &hdf5_reader::Datatype) -> bool {
+    use hdf5_reader::Datatype as H;
+    match (t, h) {
+        (NcType::Compound { size, fields }, H::Compound { size: hsize, fields: hfields }) => {
+            size == hsize
+                && fields.len() == hfields.len()
+                && fields
+                    .iter()
+                    .zip(hfields)
+                    .all(|(f, h)| f.name == h.name && f.offset == u64::from(h.byte_offset) && same_type(&f.dtype, &h.datatype))
+        }
+        (NcType::Enum { base, members }, H::Enum { base: hbase, members: hmembers }) => {
+            same_type(base, hbase)
+                && members.len() == hmembers.len()
+                && members.iter().zip(hmembers).all(|(m, h)| m.name == h.name && m.value.as_i128() == enum_value(&h.value, hbase))
+        }
+        (NcType::Array { base, dims }, H::Array { base: hbase, dims: hdims }) => dims == hdims && same_type(base, hbase),
+        (NcType::Char, H::String { .. }) => true,
+        (NcType::Float, H::FloatingPoint { size: 4, .. }) | (NcType::Double, H::FloatingPoint { size: 8, .. }) => true,
+        (t, H::FixedPoint { size, signed, .. }) => numeric_type(t).is_some_and(|d| {
+            let (int, is_signed) = match d {
+                DataType::I8 | DataType::I16 | DataType::I32 | DataType::I64 => (true, true),
+                DataType::U8 | DataType::U16 | DataType::U32 | DataType::U64 => (true, false),
+                _ => (false, false),
             };
-            Some((a.name.clone(), dtype))
+            int && d.size_bytes() == usize::from(*size) && is_signed == *signed
+        }),
+        _ => false,
+    }
+}
+/// The value of an HDF5 enum member, stored in its integer `base` type.
+fn enum_value(bytes: &[u8], base: &hdf5_reader::Datatype) -> Option<i128> {
+    let hdf5_reader::Datatype::FixedPoint { signed, byte_order, .. } = base else { return None };
+    if bytes.len() > 16 {
+        return None;
+    }
+    let mut le = bytes.to_vec();
+    if matches!(byte_order, hdf5_reader::error::ByteOrder::BigEndian) {
+        le.reverse();
+    }
+    let negative = *signed && le.last().is_some_and(|b| b & 0x80 != 0);
+    let mut out = [if negative { 0xff } else { 0 }; 16];
+    out[..le.len()].copy_from_slice(&le);
+    Some(i128::from_le_bytes(out))
+}
+/// A netCDF-4 compound type as a snapshot writes it, as GDAL 3.13.3 does: enum fields as their
+/// base type and char fields as unsigned bytes. `None` when a field, at any depth, is of a type
+/// GDAL does not carry (fixed-size arrays, vlens, opaques and strings). The type is named as its
+/// group, or an ancestor, names it (`named`), else `fallback`.
+fn compound_type(t: &NcType, named: &NamedTypes, fallback: &str) -> Option<CompoundType> {
+    let NcType::Compound { size, fields } = t else { return None };
+    let fields = fields
+        .iter()
+        .map(|f| {
+            let dtype = match &f.dtype {
+                NcType::Char => FieldType::Number(DataType::U8),
+                NcType::Enum { base, .. } => FieldType::Number(numeric_type(base)?),
+                nested @ NcType::Compound { .. } => FieldType::Compound(compound_type(nested, named, &format!("{}_t", f.name))?),
+                other => FieldType::Number(numeric_type(other)?),
+            };
+            Some(CompoundField { name: f.name.clone(), offset: usize::try_from(f.offset).ok()?, dtype })
         })
-        .collect()
+        .collect::<Option<Vec<_>>>()?;
+    let name = named.iter().find(|(_, h)| same_type(t, h)).map_or_else(|| fallback.to_owned(), |(name, _)| name.clone());
+    Some(CompoundType { name, size: *size as usize, fields })
+}
+/// The source types of attributes; `named` gives the named types in scope, read only when a
+/// compound attribute needs one.
+fn attribute_types<'a>(attrs: &[NcAttribute], named: &dyn Fn() -> &'a NamedTypes) -> AttributeTypes {
+    let mut types = AttributeTypes::new();
+    for a in attrs {
+        let dtype = match &a.value {
+            NcAttrValue::Bytes(_) => DataType::I8,
+            NcAttrValue::UBytes(_) => DataType::U8,
+            NcAttrValue::Shorts(_) => DataType::I16,
+            NcAttrValue::UShorts(_) => DataType::U16,
+            NcAttrValue::Ints(_) => DataType::I32,
+            NcAttrValue::UInts(_) => DataType::U32,
+            NcAttrValue::Int64s(_) => DataType::I64,
+            NcAttrValue::UInt64s(_) => DataType::U64,
+            NcAttrValue::Floats(_) => DataType::F32,
+            NcAttrValue::Doubles(_) => DataType::F64,
+            // An enum is written as its base integer type, as GDAL 3.13.3 copies it.
+            NcAttrValue::UserDefined { dtype: NcType::Enum { base, .. }, .. } => match numeric_type(base) {
+                Some(dtype) => dtype,
+                None => continue,
+            },
+            // A compound that reads as a value (not `null`) keeps its type.
+            NcAttrValue::UserDefined { dtype: dtype @ NcType::Compound { .. }, .. } => {
+                if !attribute(&a.value).is_null()
+                    && let Some(compound) = compound_type(dtype, named(), &format!("{}_t", a.name))
+                {
+                    types.compound.insert(a.name.clone(), compound);
+                }
+                continue;
+            }
+            NcAttrValue::Chars(_) | NcAttrValue::Strings(_) | NcAttrValue::UserDefined { .. } => continue,
+        };
+        types.numeric.insert(a.name.clone(), dtype);
+    }
+    types
 }
 fn group(g: &NcGroup, p: &str, file: &Arc<NcFile>, hdf: Option<&hdf5_reader::Hdf5File>, inherited: &[Dimension]) -> Result<Group> {
     let mut out = Group::new(p);
     out.attributes = attributes(&g.attributes);
-    out.attribute_types = attribute_types(&g.attributes);
+    // The named types in scope, read once per group and only when a compound attribute needs them.
+    let scope = std::cell::OnceCell::new();
+    let named = || scope.get_or_init(|| hdf.map(|h| named_types(h, p)).unwrap_or_default());
+    out.attribute_types = attribute_types(&g.attributes, &named);
     let mut visible = inherited.to_vec();
     for d in &g.dimensions {
         let full = path(p, &d.name);
@@ -145,7 +352,7 @@ fn group(g: &NcGroup, p: &str, file: &Arc<NcFile>, hdf: Option<&hdf5_reader::Hdf
                 coordinates,
             },
             source: Source::Netcdf(Arc::clone(file)),
-            attribute_types: attribute_types(&v.attributes),
+            attribute_types: attribute_types(&v.attributes, &named),
         });
     }
     // Lossy netCDF reconstruction can omit HDF5-specific datatypes. Report those
@@ -235,16 +442,27 @@ pub(super) fn open_bytes(bytes: &[u8]) -> Result<Dataset> {
     let driver = if bytes.starts_with(b"CDF") { "netCDF" } else { "HDF5" };
     crate::formats::check_driver_allowed(driver, "a file in memory", crate::formats::Kind::Raster)?;
     let body = crate::drivers::hdf5::signature_offset_in(bytes).map(|offset| &bytes[offset..]).unwrap_or(bytes);
-    // Both metadata readers retain the same owned input buffer. Array payloads
-    // remain lazy, and HDF5 userblock bytes need not be retained.
-    let storage: hdf5_reader::storage::DynStorage = Arc::new(hdf5_reader::storage::BytesStorage::new(body.to_vec()));
+    open_bytes_owned(body.to_vec())
+}
+fn owned_storage(bytes: Vec<u8>) -> hdf5_reader::storage::DynStorage {
+    let offset = crate::drivers::hdf5::signature_offset_in(&bytes).unwrap_or(0);
+    let storage: hdf5_reader::storage::DynStorage = Arc::new(hdf5_reader::storage::BytesStorage::new(bytes));
+    if offset == 0 { storage } else { Arc::new(OffsetStorage { inner: storage, offset: offset as u64 }) }
+}
+pub(super) fn open_bytes_owned(bytes: Vec<u8>) -> Result<Dataset> {
+    let classic = bytes.starts_with(b"CDF");
+    let driver = if classic { "netCDF" } else { "HDF5" };
+    crate::formats::check_driver_allowed(driver, "a file in memory", crate::formats::Kind::Raster)?;
+    // Both metadata readers share retained storage, including any userblock.
+    // BytesStorage retains the Vec without copying it; avoid an extra input clone here.
+    let storage = owned_storage(bytes);
     let file = NcFile::from_storage_with_options(
         Arc::clone(&storage),
         NcOpenOptions { metadata_mode: NcMetadataMode::Lossy, ..Default::default() },
     )
     .map_err(error)?;
-    let hdf = (!bytes.starts_with(b"CDF")).then(|| hdf5_reader::Hdf5File::from_storage(storage).ok()).flatten();
-    dataset(file, hdf, if bytes.starts_with(b"CDF") { "netCDF" } else { "netCDF/HDF5" })
+    let hdf = (!classic).then(|| hdf5_reader::Hdf5File::from_storage(storage).ok()).flatten();
+    dataset(file, hdf, if classic { "netCDF" } else { "netCDF/HDF5" })
 }
 pub(super) fn read(file: &NcFile, name: &str, t: DataType, selections: &[Selection]) -> Result<Vec<u8>> {
     let variable = file.variable(name.trim_start_matches('/')).map_err(error)?;
@@ -286,6 +504,91 @@ mod tests {
     use super::*;
     use hdf5_reader::storage::{BytesStorage, Storage, StorageBuffer};
     use std::sync::atomic::{AtomicU64, Ordering};
+    fn classic_fixture() -> Vec<u8> {
+        let mut bytes = b"CDF\x01".to_vec();
+        // CDF-1: one dimension, no attributes, one packed Int16 variable.
+        for word in [0u32, 10, 1, 1, 0x78000000, 3, 0, 0, 11, 1, 1, 0x76000000, 1, 0, 0, 0, 3, 8, 80] {
+            bytes.extend_from_slice(&word.to_be_bytes());
+        }
+        assert_eq!(bytes.len(), 80);
+        for value in [-7i16, 0, 42, 0] {
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
+        bytes
+    }
+    #[test]
+    fn owned_classic_preserves_values_and_retained_views() {
+        let bytes = classic_fixture();
+        let borrowed = super::open_bytes(&bytes).unwrap();
+        let owned = crate::multidim::open_bytes_owned(bytes).unwrap();
+        let array = owned.array("v").unwrap();
+        assert_eq!(serde_json::to_value(&array.info).unwrap(), serde_json::to_value(&borrowed.array("v").unwrap().info).unwrap());
+        let view = array.view();
+        drop(array);
+        drop(owned);
+        assert_eq!(view.read().unwrap().values().unwrap(), serde_json::json!([-7, 0, 42]));
+    }
+    #[test]
+    fn owned_hdf_userblocks_share_retained_storage_and_retain_views() {
+        use crate::drivers::hdf5_write::{self, H5Type};
+        let raw = hdf5_write::encode(&hdf5_write::File {
+            datasets: vec![hdf5_write::Dataset {
+                name: "sample".into(),
+                dtype: H5Type::Int { size: 2, signed: true },
+                shape: Some(vec![3]),
+                max_shape: None,
+                data: [-7i16, 0, 42].into_iter().flat_map(i16::to_le_bytes).collect(),
+                fill: vec![0; 2],
+                storage: Default::default(),
+                attrs: vec![],
+            }],
+            ..Default::default()
+        });
+        for offset in [0, 512, 1024, 4096] {
+            let mut bytes = vec![0; offset];
+            bytes.extend_from_slice(&raw);
+            let storage = owned_storage(bytes.clone());
+            assert_eq!(storage.len() as usize, raw.len());
+            assert!(storage.read_range(u64::MAX, 8).is_err());
+            assert!(storage.read_range(raw.len() as u64, 1).is_err());
+            let storage = owned_storage(bytes);
+            let header = storage.read_range(0, 8).unwrap();
+            let again = storage.read_range(0, 8).unwrap();
+            assert_eq!(header.as_ptr(), again.as_ptr());
+            assert_eq!(header.as_ref(), &raw[..8]);
+            let mut bytes = vec![0; offset];
+            bytes.extend_from_slice(&raw);
+            let borrowed = super::open_bytes(&bytes).unwrap();
+            let owned = crate::multidim::open_bytes_owned(bytes).unwrap();
+            let array = owned.array("sample").unwrap();
+            assert_eq!(serde_json::to_value(&array.info).unwrap(), serde_json::to_value(&borrowed.array("sample").unwrap().info).unwrap());
+            let view = array.view();
+            drop(array);
+            drop(owned);
+            assert_eq!(view.read().unwrap().values().unwrap(), serde_json::json!([-7, 0, 42]));
+        }
+    }
+    #[test]
+    fn owned_producer_written_hdf_userblock() {
+        // h5py.File(path, 'w', userblock_size=512), create_dataset('sample',
+        // data=[-7, 0, 42], dtype='<i2'): the producer writes real base addresses.
+        let bytes = include_bytes!("../../tests/data/multidim-userblock.h5");
+        assert_eq!(crate::drivers::hdf5::signature_offset_in(bytes), Some(512));
+        for ds in [super::open_bytes(bytes).unwrap(), crate::multidim::open_bytes_owned(bytes.to_vec()).unwrap()] {
+            let view = ds.array("sample").unwrap().view();
+            drop(ds);
+            assert_eq!(view.read().unwrap().values().unwrap(), serde_json::json!([-7, 0, 42]));
+        }
+    }
+    #[test]
+    fn owned_malformed_inputs_return_errors() {
+        for bytes in [vec![], b"CDF".to_vec(), b"not scientific data".to_vec(), b"\x89HDF\r\n\x1a\n".to_vec(), vec![0; 1024]] {
+            assert!(crate::multidim::open_bytes_owned(bytes).is_err());
+        }
+        let mut bytes = classic_fixture();
+        bytes.truncate(24);
+        assert!(crate::multidim::open_bytes_owned(bytes).is_err());
+    }
     struct CountingStorage {
         inner: BytesStorage,
         bytes: Arc<AtomicU64>,
@@ -404,5 +707,88 @@ mod attribute_tests {
             assert!(zarr.root.attributes.get("_terrio_attribute_types").is_none());
             check(&crate::multidim::open_bytes(&zarr.to_netcdf_bytes().unwrap()).unwrap());
         }
+    }
+
+    /// A snapshot commits the compound types GDAL 3.13.3's `gdalmdimtranslate -of netCDF` copy
+    /// commits, with the same names, offsets and member types (an enum member as its base type, a
+    /// char as an unsigned byte), and its attributes have the types of the copy's: what `ncdump -h`
+    /// prints of the types and attributes then matches. `netcdf_copy_types` in `expected.json`
+    /// describes GDAL's copies, as this test describes terrio's. `nested_compound_attrs.nc` keeps
+    /// its root group's links, the named types among them, in dense storage.
+    #[test]
+    fn snapshot_compound_types_match_gdal_copy() {
+        use hdf5_reader::Datatype as H;
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_user_defined");
+        let expected: Value = serde_json::from_slice(&std::fs::read(dir.join("expected.json")).unwrap()).unwrap();
+        fn describe(t: &H, named: &NamedTypes) -> Value {
+            Value::String(match t {
+                H::FixedPoint { size, signed, .. } => format!("{}int{}", if *signed { "" } else { "u" }, u32::from(*size) * 8),
+                H::FloatingPoint { size, .. } => format!("float{}", u32::from(*size) * 8),
+                H::Compound { .. } => named.iter().find(|(_, n)| n == t).map_or_else(|| "anonymous".into(), |(name, _)| name.clone()),
+                other => format!("{other:?}"),
+            })
+        }
+        let bookkeeping = ["CLASS", "NAME", "REFERENCE_LIST", "DIMENSION_LIST", "_Netcdf4Coordinates", "_Netcdf4Dimid", "_NCProperties"];
+        // The copy of a copy commits the same types as the first copy.
+        let copies = expected["netcdf_copy_types"].as_object().unwrap().iter().flat_map(|(fixture, gdal)| {
+            let first = super::write::netcdf_bytes(&open(dir.join(fixture).to_str().unwrap()).unwrap()).unwrap();
+            let second = super::write::netcdf_bytes(&crate::multidim::open_bytes(&first).unwrap()).unwrap();
+            [(fixture.to_string(), first, gdal), (format!("{fixture} (copy of the copy)"), second, gdal)]
+        });
+        for (fixture, bytes, gdal) in copies {
+            let hdf = hdf5_reader::Hdf5File::from_vec(bytes).unwrap();
+            let root = hdf.root_group().unwrap();
+            let named = group_named_types(&hdf, &root).unwrap();
+            let types: serde_json::Map<_, _> = named
+                .iter()
+                .map(|(name, t)| {
+                    let H::Compound { size, fields } = t else { panic!("{name} is not a compound") };
+                    let fields: Vec<_> =
+                        fields.iter().map(|f| serde_json::json!([f.name, f.byte_offset, describe(&f.datatype, &named)])).collect();
+                    (name.clone(), serde_json::json!({"size": size, "fields": fields}))
+                })
+                .collect();
+            assert_eq!(Value::Object(types), gdal["types"], "{fixture}");
+            let mut attributes = serde_json::Map::new();
+            let objects = std::iter::once(("/".to_owned(), root.attributes().unwrap()))
+                .chain(root.datasets().unwrap().into_iter().map(|d| (format!("/{}", d.name().trim_start_matches('/')), d.attributes())));
+            for (path, attrs) in objects {
+                let found: serde_json::Map<_, _> = attrs
+                    .iter()
+                    .filter(|a| !bookkeeping.contains(&a.name.as_str()) && !matches!(a.datatype, H::String { .. } | H::VarLen { .. }))
+                    .map(|a| (a.name.clone(), describe(&a.datatype, &named)))
+                    .collect();
+                if !found.is_empty() {
+                    attributes.insert(path, Value::Object(found));
+                }
+            }
+            assert_eq!(Value::Object(attributes), gdal["attributes"], "{fixture}");
+        }
+    }
+
+    /// A compound declaration matches an attribute's type only when its fields' numeric classes
+    /// agree: a `float` field is not a 32-bit unsigned integer, nor is an enum one with other members.
+    #[test]
+    fn named_compound_matches_numeric_class_and_enum_members() {
+        use hdf5_reader::Datatype as H;
+        use netcdf_reader::{NcCompoundField, NcEnumMember, NcIntegerValue};
+        let le = hdf5_reader::error::ByteOrder::LittleEndian;
+        let compound = |dtype: NcType| NcType::Compound { size: 4, fields: vec![NcCompoundField { name: "a".into(), offset: 0, dtype }] };
+        let declared =
+            |datatype: H| H::Compound { size: 4, fields: vec![hdf5_reader::CompoundField { name: "a".into(), byte_offset: 0, datatype }] };
+        let uint32 = H::FixedPoint { size: 4, signed: false, byte_order: le };
+        assert!(same_type(&compound(NcType::UInt), &declared(uint32.clone())));
+        assert!(!same_type(&compound(NcType::Float), &declared(uint32.clone())));
+        assert!(!same_type(&compound(NcType::Int), &declared(uint32.clone())));
+        let member = |name: &str, value: i32| NcEnumMember { name: name.into(), value: NcIntegerValue::I32(value) };
+        let enumeration = |members| NcType::Enum { base: Box::new(NcType::Int), members };
+        let int32 = H::FixedPoint { size: 4, signed: true, byte_order: le };
+        let declared_enum = declared(H::Enum {
+            base: Box::new(int32),
+            members: vec![hdf5_reader::EnumMember { name: "low".into(), value: (-1i32).to_le_bytes().to_vec() }],
+        });
+        assert!(same_type(&compound(enumeration(vec![member("low", -1)])), &declared_enum));
+        assert!(!same_type(&compound(enumeration(vec![member("low", 1)])), &declared_enum));
+        assert!(!same_type(&compound(enumeration(vec![member("high", -1)])), &declared_enum));
     }
 }

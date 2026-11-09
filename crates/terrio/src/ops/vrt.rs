@@ -337,7 +337,7 @@ impl VrtDataset {
     }
 
     /// Writes the VRT file.
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(fs)]
     pub fn write(&self, path: &str) -> Result<()> {
         Ok(std::fs::write(path, self.to_xml())?)
     }
@@ -533,6 +533,7 @@ pub(crate) struct SourceRead<'a> {
     /// The source's height.
     pub height: usize,
     /// The source's data type (resampled values are rounded to it, as GDAL does).
+    /// A `sum` is not: its value goes to the output's type as it is.
     pub src_type: DataType,
     /// The source window.
     pub src_rect: [f64; 4],
@@ -563,7 +564,7 @@ impl SourceRead<'_> {
         let end = ((w.out_off.1 + oh) * dw).min(out.len());
         let rows = &mut out[start..end];
         let x0 = w.out_off.0;
-        if w.req_size.0 == ow && w.req_size.1 == oh {
+        if self.copies(&w) {
             crate::par::chunks_mut(rows, dw, |r, line| {
                 let sy = w.req_off.1 + r;
                 if sy >= self.height {
@@ -606,10 +607,13 @@ impl SourceRead<'_> {
         } else {
             resample_window(self, (fx, fy, fw, fh), (ow, oh))
         };
+        // A `sum` adds shares of source pixels, which neither the source type's precision nor its
+        // range holds: it is passed on as it is, for `f` to store in the output's type.
+        let keep = self.working_float || self.resampling == Resampling::Sum;
         crate::par::chunks_mut(rows, dw, |r, line| {
             for c in 0..ow {
                 match res[r * ow + c] {
-                    Some(v) => line[x0 + c] = f(if self.working_float { v } else { convert_value(v, self.src_type) }),
+                    Some(v) => line[x0 + c] = f(if keep { v } else { convert_value(v, self.src_type) }),
                     None => {
                         if let Some(v) = self.invalid_value {
                             line[x0 + c] = f(v);
@@ -629,7 +633,7 @@ impl SourceRead<'_> {
         if ow == 0 || oh == 0 {
             return Ok(None);
         }
-        if w.req_size != w.out_size {
+        if !self.copies(&w) {
             return Err(());
         }
         // Source pixels past the source's edges, and rows past the destination's, are not read.
@@ -639,6 +643,20 @@ impl SourceRead<'_> {
             return Ok(None);
         }
         Ok(Some(PlainCopy { src: w.req_off, dst_x: w.out_off.0, cols, dst_rows: w.out_off.1..w.out_off.1 + rows }))
+    }
+
+    /// Whether a read through `w` copies source pixels one for one: when it requests as many
+    /// source pixels as it writes, except that a `sum` copies only a window of whole source
+    /// pixels and otherwise shares each source pixel by the area inside each destination pixel.
+    fn copies(&self, w: &Window) -> bool {
+        const EPSILON: f64 = 1e-10;
+        let whole = |f: f64, i: usize| (f - i as f64).abs() <= EPSILON;
+        w.req_size == w.out_size
+            && (self.resampling != Resampling::Sum
+                || whole(w.dreq_off.0, w.req_off.0)
+                    && whole(w.dreq_off.1, w.req_off.1)
+                    && whole(w.dreq_size.0, w.out_size.0)
+                    && whole(w.dreq_size.1, w.out_size.1))
     }
 
     /// `VRTSimpleSource::GetSrcDstWindow()` for a request covering the whole destination.
@@ -1147,7 +1165,8 @@ pub(crate) fn gdal_average_with_origin(
 
 /// Resamples a floating-point source window to `out` pixels as GDAL's overview code does
 /// (`GDALRasterIOResampled()`): separable convolution kernels stretched when downsampling,
-/// coverage-weighted averages, or the most frequent value.
+/// coverage-weighted averages, or the most frequent value. A `sum` adds each valid source pixel
+/// times the share of its area inside the destination pixel.
 fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize)) -> Vec<Option<f64>> {
     let (fx, fy, fw, fh) = win;
     let (ow, oh) = out;
@@ -1187,7 +1206,8 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
                                 continue;
                             }
                             let wx = (x1.min(x as f64 + 1.0) - x0.max(x as f64)).max(0.0);
-                            let weight = if s.resampling == Resampling::Average || s.resampling == Resampling::Rms { wx * wy } else { 1.0 };
+                            let weight =
+                                if matches!(s.resampling, Resampling::Average | Resampling::Rms | Resampling::Sum) { wx * wy } else { 1.0 };
                             if weight > 0.0 {
                                 vals.push((s.values.get(i), weight));
                             }
@@ -1210,26 +1230,35 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
             };
             let xt: Vec<(usize, Vec<f64>)> = (0..ow).map(|c| taps(c, rx, fx, s.width)).collect();
             let negative_weights = matches!(method, Resampling::Cubic | Resampling::Lanczos);
+            // GDAL's work type is `float` for these types (`GDALGetOvrWorkDataType`), `double` else:
+            // the result is rounded to float for them. The sums themselves stay in f64.
+            let single = matches!(s.src_type, DataType::U8 | DataType::U16 | DataType::I8 | DataType::I16 | DataType::F32);
+            let work = |v: f64| if single { v as f32 as f64 } else { v };
             crate::par::chunks_mut(&mut res, ow, |r, line| {
                 let (y0, wys) = taps(r, ry, fy, s.height);
+                // GDAL's `GDALResampleChunk_ConvolutionT` filters rows first: each row is the
+                // average of its valid pixels by their horizontal weights, or invalid when it has
+                // none (or too few consecutive ones for a kernel with negative weights). The
+                // column of rows is then the average of its valid rows by their vertical weights,
+                // invalid by the same rules. With nodata, a pass keeps a total weight above 0.0,
+                // with no epsilon, as GDAL 3.13.3 does (`dfWeightSum > 0.0` in both passes of
+                // `GDALResampleChunk_ConvolutionT`, gcore/overview.cpp).
+                let mut rows: Vec<Option<f64>> = Vec::with_capacity(wys.len());
                 for c in 0..ow {
                     let (x0, wxs) = &xt[c];
-                    let (mut acc, mut wsum) = (0.0, 0.0);
-                    let mut nan = false;
-                    for (j, wy) in wys.iter().enumerate() {
+                    rows.clear();
+                    for j in 0..wys.len() {
                         let row = (y0 + j) * s.width;
-                        // GDAL filters rows first, adding `value * weight * mask` for every
-                        // pixel: an infinite nodata value (weight 0) makes the row NaN, and a
-                        // NaN row the result, unless the row has no valid pixel (or too few
-                        // consecutive ones for a kernel with negative weights) and is skipped.
-                        let (mut alpha, mut infinite) = (0.0, false);
+                        let (mut acc, mut wsum) = (0.0, 0.0);
+                        // An infinite nodata value (weight 0) makes the row NaN, as GDAL adds
+                        // `value * weight * mask` for every pixel.
+                        let mut infinite = false;
                         let (mut run, mut longest) = (0, 0);
                         for (i, wx) in wxs.iter().enumerate() {
                             let idx = row + x0 + i;
                             if is_valid(idx) {
-                                acc += s.values.get(idx) * wx * wy;
-                                wsum += wx * wy;
-                                alpha += wx;
+                                acc += s.values.get(idx) * wx;
+                                wsum += wx;
                                 run += 1;
                                 longest = longest.max(run);
                             } else {
@@ -1238,10 +1267,34 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
                             }
                         }
                         let skipped = negative_weights && longest < wxs.len() / 2;
-                        nan |= infinite && alpha > 0.0 && !skipped;
+                        rows.push(if skipped || (s.valid.is_some() && wsum <= 0.0) {
+                            None
+                        } else if infinite {
+                            Some(f64::NAN)
+                        } else if wsum != 0.0 {
+                            Some(acc / wsum)
+                        } else {
+                            Some(acc)
+                        });
                     }
-                    if wsum != 0.0 && (s.valid.is_none() || wsum > 1e-10) {
-                        line[c] = Some(if nan { f64::NAN } else { acc / wsum });
+                    let (mut acc, mut wsum) = (0.0, 0.0);
+                    let (mut run, mut longest) = (0, 0);
+                    for (h, wy) in rows.iter().zip(&wys) {
+                        if let Some(h) = h {
+                            acc += h * wy;
+                            wsum += wy;
+                            run += 1;
+                            longest = longest.max(run);
+                        } else {
+                            run = 0;
+                        }
+                    }
+                    if s.valid.is_some() {
+                        if !(negative_weights && longest < wys.len() / 2) && wsum > 0.0 {
+                            line[c] = Some(work(acc / wsum));
+                        }
+                    } else if wsum != 0.0 {
+                        line[c] = Some(work(acc / wsum));
                     }
                 }
             });
@@ -1501,5 +1554,177 @@ mod tests {
         let mut out = vec![-1.0; 4];
         r.read(2, 2, &mut out, |v| v);
         assert_eq!(out, vec![2.5, 4.5, 10.5, 12.5]);
+    }
+
+    /// Interpolating kernels weigh nodata pixels as GDAL does: each source row is averaged over
+    /// its valid pixels by their horizontal weights, then the rows over the valid ones by their
+    /// vertical weights, rather than all valid weights at once. The expected values are those of
+    /// `gdalbuildvrt -r <method> -tr 5 5` (GDAL 3.13.3) read with `gdal_translate`, for a 20 x 20
+    /// Float32 tile of 10 m pixels whose pixel (row 7, column 9) is nodata.
+    #[test]
+    fn kernels_average_each_row_of_a_source_with_nodata_over_its_valid_pixels() {
+        let mut values: Vec<f64> = (0..400).map(|k| ((k % 37) * 3 + k / 20) as f64).collect();
+        values[7 * 20 + 9] = -9999.0;
+        let valid: Vec<bool> = values.iter().map(|v| *v != -9999.0).collect();
+        let read = |resampling| {
+            let r = SourceRead {
+                values: crate::ops::BandView::F64(&values),
+                valid: Some(&valid),
+                width: 20,
+                height: 20,
+                src_type: DataType::F32,
+                src_rect: [0.0, 0.0, 20.0, 20.0],
+                dst_rect: [0.0, 0.0, 40.0, 40.0],
+                resampling,
+                working_float: false,
+                invalid_value: None,
+            };
+            let mut out = vec![f64::NAN; 1600];
+            r.read(40, 40, &mut out, |v| v);
+            out
+        };
+        // The 16 pixels whose bilinear kernel reaches the nodata pixel, rows 13 to 16 and
+        // columns 17 to 20. Weighing all valid weights at once gave 47.6 for the first and up to
+        // 20.3 more than GDAL at (row 15, column 18).
+        #[rustfmt::skip]
+        let bilinear = [
+            45.0625, 46.1875, 48.8125, 49.9375,
+            19.6875, 20.0625, 24.9375, 25.3125,
+            22.4375, 22.8125, 27.6875, 28.0625,
+            53.3125, 54.4375, 57.0625, 58.1875,
+        ];
+        let out = read(Resampling::Bilinear);
+        for (i, expected) in bilinear.iter().enumerate() {
+            let (row, col) = (13 + i / 4, 17 + i % 4);
+            assert_eq!(out[row * 40 + col], *expected, "bilinear ({row}, {col})");
+        }
+        let out = read(Resampling::Cubic);
+        for ((row, col), expected) in [((12, 16), 69.85305786132812), ((14, 18), -7.288028717041016), ((16, 20), 63.35245132446289)] {
+            let got = out[row * 40 + col];
+            assert!((got - expected).abs() <= 1e-5, "cubic ({row}, {col}): {got} vs {expected}");
+        }
+    }
+
+    /// A source resampled with `sum` gives each destination pixel the part of each source pixel
+    /// that lies inside it.
+    #[test]
+    fn sum_resampling_shares_each_source_pixel_by_the_area_inside_each_destination_pixel() {
+        let values: Vec<f64> = (1..=9).map(f64::from).collect();
+        // 2 × 2 pixels into 4 × 4: a quarter of a source pixel in each.
+        let r = SourceRead {
+            values: crate::ops::BandView::F64(&values[..4]),
+            valid: None,
+            width: 2,
+            height: 2,
+            src_type: DataType::F32,
+            src_rect: [0.0, 0.0, 2.0, 2.0],
+            dst_rect: [0.0, 0.0, 4.0, 4.0],
+            resampling: Resampling::Sum,
+            working_float: false,
+            invalid_value: None,
+        };
+        let mut out = vec![-1.0; 16];
+        r.read(4, 4, &mut out, |v| v);
+        let quarters: Vec<f64> =
+            [1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 3.0, 3.0, 4.0, 4.0].iter().map(|v| v / 4.0).collect();
+        assert_eq!(out, quarters);
+        // 3 × 3 pixels into 2 × 2: a source pixel whole, halves of two and a quarter of one in each.
+        let r = SourceRead {
+            values: crate::ops::BandView::F64(&values),
+            width: 3,
+            height: 3,
+            src_rect: [0.0, 0.0, 3.0, 3.0],
+            dst_rect: [0.0, 0.0, 2.0, 2.0],
+            ..r
+        };
+        let mut out = vec![-1.0; 4];
+        r.read(2, 2, &mut out, |v| v);
+        assert_eq!(out, vec![5.25, 8.25, 14.25, 17.25]);
+    }
+
+    /// A `sum` read of a source window that starts a fraction of a pixel in, or spans a fraction
+    /// of a pixel more than the destination, gives each destination pixel the share of each source
+    /// pixel inside it. Only a window of whole pixels, one per destination pixel, is copied.
+    #[test]
+    fn sum_resampling_shares_source_pixels_of_a_window_with_fractional_edges() {
+        let values: Vec<f64> = (1..=9).map(|v| f64::from(v) * 10.0).collect();
+        // What a destination pixel covering `[x0, x1] × [y0, y1]` of the 3 × 3 source holds.
+        let share = |x0: f64, x1: f64, y0: f64, y1: f64| -> f64 {
+            let mut total = 0.0;
+            for (i, v) in values.iter().enumerate() {
+                let (x, y) = ((i % 3) as f64, (i / 3) as f64);
+                total += v * (x1.min(x + 1.0) - x0.max(x)).max(0.0) * (y1.min(y + 1.0) - y0.max(y)).max(0.0);
+            }
+            total
+        };
+        let base = SourceRead {
+            values: crate::ops::BandView::F64(&values),
+            valid: None,
+            width: 3,
+            height: 3,
+            src_type: DataType::F64,
+            src_rect: [0.0, 0.0, 2.0, 2.0],
+            dst_rect: [0.0, 0.0, 2.0, 2.0],
+            resampling: Resampling::Sum,
+            working_float: false,
+            invalid_value: None,
+        };
+        for src_rect in [[0.25, 0.0, 2.0, 2.0], [0.0, 0.25, 2.0, 2.0], [0.0, 0.0, 2.25, 2.0], [0.0, 0.0, 2.0, 2.25]] {
+            let r = SourceRead { src_rect, ..base };
+            let mut out = vec![-1.0; 4];
+            r.read(2, 2, &mut out, |v| v);
+            let [x, y, w, h] = src_rect;
+            let (sx, sy) = (w / 2.0, h / 2.0);
+            let expected: Vec<f64> = (0..4)
+                .map(|i| {
+                    let (c, r) = ((i % 2) as f64, (i / 2) as f64);
+                    share(x + c * sx, x + (c + 1.0) * sx, y + r * sy, y + (r + 1.0) * sy)
+                })
+                .collect();
+            assert_eq!(out, expected, "{src_rect:?}");
+            assert_eq!(r.plain_copy(2, 2), Err(()), "{src_rect:?}");
+        }
+        // `[10, 20, 30]` read from x = 0.25.
+        let r = SourceRead { src_rect: [0.25, 0.0, 2.0, 2.0], ..base };
+        let mut out = vec![-1.0; 4];
+        r.read(2, 2, &mut out, |v| v);
+        assert_eq!(out[..2], [12.5, 22.5]);
+        let r = SourceRead { src_rect: [1.0, 1.0, 2.0, 2.0], ..base };
+        assert_eq!(r.plain_copy(2, 2), Ok(Some(PlainCopy { src: (1, 1), dst_x: 0, cols: 2, dst_rows: 0..2 })));
+    }
+
+    /// A `sum` read is not rounded to the source's type: its fractions, and sums beyond that
+    /// type's range, reach the caller, which stores them in the output's type. A Byte pixel of 1
+    /// upsampled to 2 × 2 gives four 0.25 in a floating-point output, and four Byte pixels of 200
+    /// summed into one give 800 in a UInt16 output.
+    #[test]
+    fn sum_resampling_is_not_rounded_to_the_source_type() {
+        let one = [1.0];
+        let r = SourceRead {
+            values: crate::ops::BandView::F64(&one),
+            valid: None,
+            width: 1,
+            height: 1,
+            src_type: DataType::U8,
+            src_rect: [0.0, 0.0, 1.0, 1.0],
+            dst_rect: [0.0, 0.0, 2.0, 2.0],
+            resampling: Resampling::Sum,
+            working_float: false,
+            invalid_value: None,
+        };
+        let mut quarters = vec![-1.0; 4];
+        r.read(2, 2, &mut quarters, |v| v);
+        let two_hundreds = [200.0; 4];
+        let r = SourceRead {
+            values: crate::ops::BandView::F64(&two_hundreds),
+            width: 2,
+            height: 2,
+            src_rect: [0.0, 0.0, 2.0, 2.0],
+            dst_rect: [0.0, 0.0, 1.0, 1.0],
+            ..r
+        };
+        let mut total = vec![-1.0; 1];
+        r.read(1, 1, &mut total, |v| convert_value(v, DataType::U16));
+        assert_eq!((quarters, total), (vec![0.25; 4], vec![800.0]));
     }
 }

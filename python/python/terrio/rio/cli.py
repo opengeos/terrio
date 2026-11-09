@@ -2378,7 +2378,7 @@ def cmd_stack(args: argparse.Namespace, env: Any) -> None:
 
     bounds = parse_bounds(args.bounds)
     nodata = parse_nodata(args.nodata)
-    key_val(args.creation_options)
+    dst_kwds: dict[str, Any] = key_val(args.creation_options)
     files = [file_in(f) for f in args.files[:-1]] + args.files[-1:]
     output, inputs = resolve_inout(files=files, output=args.output, overwrite=args.overwrite)
     output_count = 0
@@ -2397,7 +2397,6 @@ def cmd_stack(args: argparse.Namespace, env: Any) -> None:
             parts = [int(x) for x in item.split(",")]
             indexes.append(parts[0] if len(parts) == 1 else parts)
             output_count += len(parts)
-    dst_kwds: dict[str, Any] = {}
     if args.driver:
         dst_kwds["driver"] = args.driver
     if args.photometric:

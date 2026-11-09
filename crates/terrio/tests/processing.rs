@@ -164,6 +164,15 @@ fn sampling_reprojects_and_inverts_rotated_grids() {
     }
     let bad = layer(vec![Some(G::MultiPoint(vec![Coord::xy(x, y)]))]);
     assert!(sample(&bad, &sample_inputs(&r)).is_err());
+    // Rasters without an invertible geotransform, or without pixels, are named as rasters.
+    let mut flat = r.clone();
+    flat.set_geo_transform([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    let e = sample(&l, &sample_inputs(&flat)).unwrap_err();
+    assert_eq!(e.to_string(), "the raster geotransform must be finite and invertible");
+    let mut empty = r.clone();
+    empty.raster.cols = 0;
+    let e = sample(&l, &sample_inputs(&empty)).unwrap_err();
+    assert_eq!(e.to_string(), "the raster must have pixels and at least one band");
 }
 
 #[test]

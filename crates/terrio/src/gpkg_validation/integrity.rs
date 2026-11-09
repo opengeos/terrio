@@ -170,7 +170,7 @@ fn decimal_digits(value: f64) -> (Vec<u8>, i32) {
 
 /// SQLite 3.54's %!.17g rendering, including its round-trip shortening.
 /// The digit rounding/shortening follows sqlite3FpDecode (see NOTICE).
-pub(super) fn real_text(real: f64) -> String {
+pub(crate) fn real_text(real: f64) -> String {
     if real == 0.0 {
         return "0.0".into();
     }
@@ -393,8 +393,7 @@ impl Checker {
             }
         }
         if !plans.is_empty() {
-            let encoding =
-                u32::from_be_bytes(bytes.get(56..60).and_then(|v| v.try_into().ok()).ok_or_else(|| bad("truncated SQLite header"))?);
+            let encoding = crate::drivers::sqlite::header_text_encoding(bytes)?;
             // First collect only non-NULL referenced keys. Any NULL component
             // satisfies a SQLite foreign key, including composite keys.
             sqlite_repack::inspect(bytes, |entry, rowid, record| {

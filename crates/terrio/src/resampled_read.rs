@@ -60,10 +60,13 @@ pub struct ResampledReadOptions {
     /// The stored resolution read, as `gdal_translate -ovr` takes it. `Auto`, the default, is
     /// `RasterIO`'s choice when the output is smaller than the window: the overview whose
     /// reduction is the largest below the least reduced axis' times a threshold, 1.2 for nearest
-    /// neighbour and 1.0 otherwise (or `GDAL_OVERVIEW_OVERSAMPLING_THRESHOLD`), plus 0.1.
+    /// neighbour and 1.0 otherwise (or `GDAL_OVERVIEW_OVERSAMPLING_THRESHOLD`), plus 0.1. When it
+    /// chooses the first overview of an external `.ovr`, it chooses again, as for that level,
+    /// among the `.ovr`'s other images, as GDAL's band of that level has them as overviews.
     /// `AutoOffset(n)` reads, alone, the level `n` finer than the first overview no wider than
-    /// the output (`Auto` past full resolution), `None` full resolution and `Level(i)` overview
-    /// `i` (the last one when there are fewer). A level read alone is read with the window scaled
+    /// the output (`Auto` past full resolution; `AutoOffset(0)` is `Auto`), `None` full
+    /// resolution and `Level(i)` overview `i` (the last one when there are fewer). A level read
+    /// alone is read with the window scaled
     /// to it as `gdal_translate`'s source requests it: values within 0.001 of a whole pixel are
     /// rounded to it, and sizes are rounded rather than truncated.
     pub overview: OverviewSelection,
@@ -208,6 +211,7 @@ impl LazyRaster {
     /// # Ok::<(), terrio::Error>(())
     /// ```
     pub fn read_resampled(&mut self, options: &ResampledReadOptions) -> Result<RasterDataset> {
+        let _scope = self.enter_asset_read()?;
         let read = self.check_resampled(options)?;
         let kinds = self.mask_kinds(&read.bands);
         let data = self.resample_bands(&read, &kinds)?;
@@ -232,6 +236,7 @@ impl LazyRaster {
     ///
     /// As [`LazyRaster::read_resampled`].
     pub fn read_resampled_masks(&mut self, options: &ResampledReadOptions) -> Result<Vec<u8>> {
+        let _scope = self.enter_asset_read()?;
         let read = self.check_resampled(options)?;
         let kinds = self.read_mask_kinds(&read);
         // A nodata mask band reads its band band by band, as a read of that band alone does.
@@ -253,6 +258,7 @@ impl LazyRaster {
     ///
     /// As [`LazyRaster::read_resampled`].
     pub fn read_resampled_with_masks(&mut self, options: &ResampledReadOptions) -> Result<(RasterDataset, Vec<u8>)> {
+        let _scope = self.enter_asset_read()?;
         let read = self.check_resampled(options)?;
         let kinds = self.read_mask_kinds(&read);
         let data = self.resample_bands(&read, &kinds)?;
@@ -266,12 +272,18 @@ impl LazyRaster {
     /// GDAL's virtual datasets read bands that are not the dataset's first ones in order: never
     /// resampled together.
     pub(crate) fn read_resampled_by_band(&mut self, options: &ResampledReadOptions) -> Result<RasterDataset> {
+        let _scope = self.enter_asset_read()?;
         let read = self.check_resampled(options)?;
         let kinds = self.mask_kinds(&read.bands);
         let n = read.buf.0 * read.buf.1;
         let mut data: Option<RasterData> = None;
         for (k, &b) in read.bands.iter().enumerate() {
             let band = self.resample_bands(&Read { bands: vec![b], ..read.clone() }, &kinds[k..k + 1])?;
+            // The band of a read of one band is the read: kept rather than copied.
+            if data.is_none() && band.len() == read.bands.len() * n {
+                data = Some(band);
+                continue;
+            }
             let data = data.get_or_insert_with(|| RasterData::new_filled(band.data_type(), read.bands.len() * n, 0.0));
             place(data, &band, k * n);
         }
@@ -372,6 +384,11 @@ impl LazyRaster {
         let mut out: Option<RasterData> = None;
         for part in &parts {
             let mut data = self.read_part(read, kinds, part)?;
+            // A part of every band is the read: kept rather than copied.
+            if out.is_none() && data.len() == read.bands.len() * n {
+                out = Some(data);
+                continue;
+            }
             let out = out.get_or_insert_with(|| RasterData::new_filled(data.data_type(), read.bands.len() * n, 0.0));
             if data.data_type() != out.data_type() {
                 // Bands of several types: in the type of the first read.
@@ -402,11 +419,10 @@ impl LazyRaster {
     /// band by band or together.
     fn plan(&mut self, read: &Read, kinds: &[MaskKind]) -> Vec<Part> {
         let all = 0..read.bands.len();
-        let overviews = self.overviews();
         // `GDALDataset::IRasterIO` resamples bands together with these kernels only.
         let together = read.bands.len() > 1 && interpolates(read.resampling);
         if let Some(level) = read.fixed {
-            let size = level.map_or(read.full.size, |i| overviews[i]);
+            let size = level.map_or(read.full.size, |i| self.overviews()[i]);
             let request = fixed_request(read.full, level, size);
             if fixed_is_empty(read.full, size) {
                 return vec![Part { bands: all, request, how: How::Fill }];
@@ -416,19 +432,36 @@ impl LazyRaster {
         if read.full.is_copy(read.buf) {
             return vec![Part { bands: all, request: read.full, how: How::Copy }];
         }
-        let request = self.auto_request(read, &overviews);
-        if together && !overviews.is_empty() && read.full.reduces(read.buf) {
-            // The dataset reads an overview when the buffer is smaller on both axes; otherwise,
-            // or when it keeps full resolution, its bands (which have overviews) are read band by
-            // band, each choosing its level as `GDALRasterBand::IRasterIO` does.
-            if read.full.reduces_both(read.buf) && request.level.is_some() {
-                return self.at_level(read, kinds, all, request, true);
+        let levels = self.level_overviews(None);
+        self.plan_from(read, kinds, read.full, &levels)
+    }
+
+    /// How GDAL 3.13.3's `GDALDataset::IRasterIO` reads the bands of a read from the dataset of a level, of
+    /// request `base`, whose band has overviews `levels` (see [`LazyRaster::level_overviews`]).
+    fn plan_from(&mut self, read: &Read, kinds: &[MaskKind], base: Request, levels: &[usize]) -> Vec<Part> {
+        let all = 0..read.bands.len();
+        // `GDALDataset::IRasterIO` resamples bands together with these kernels only.
+        let together = read.bands.len() > 1 && interpolates(read.resampling);
+        if together && !levels.is_empty() && base.reduces(read.buf) {
+            // The dataset reads an overview's dataset when the buffer is smaller on both axes,
+            // which reads its own overviews in turn; otherwise, or when it keeps its level, its
+            // bands (which have overviews) are read band by band, each choosing its level as
+            // `GDALRasterBand::IRasterIO` does.
+            let chosen = self.overview_of(read, base, levels);
+            if base.reduces_both(read.buf)
+                && let Some(request) = chosen
+            {
+                let levels = self.level_overviews(request.level);
+                return self.plan_from(read, kinds, request, &levels);
             }
+            let request = self.auto_request(read, base, chosen);
             return vec![Part { bands: all, request, how: self.band_how(read, request) }];
         }
         if together {
-            return self.at_level(read, kinds, all, read.full, true);
+            return self.at_level(read, kinds, all, base, true);
         }
+        let chosen = self.overview_of(read, base, levels);
+        let request = self.auto_request(read, base, chosen);
         vec![Part { bands: all, request, how: self.band_how(read, request) }]
     }
 
@@ -530,22 +563,36 @@ impl LazyRaster {
         }
     }
 
-    /// The request `GDALRasterBand::IRasterIO` makes of a read: of the overview
-    /// `GDALBandGetBestOverviewLevel2` chooses when the buffer is smaller than the window on
-    /// either axis, else of full resolution.
-    fn auto_request(&mut self, read: &Read, overviews: &[(usize, usize)]) -> Request {
-        if overviews.is_empty() || !read.full.reduces(read.buf) {
-            return read.full;
+    /// The request `GDALRasterBand::IRasterIO` makes of a read from the band of a level, of
+    /// request `base` in GDAL 3.13.3: of the overview it chooses, `chosen` (the
+    /// result of [`LazyRaster::overview_of`] for `base`), whose band chooses among its own
+    /// overviews in turn (an external `.ovr`'s first level), else of `base`.
+    fn auto_request(&mut self, read: &Read, base: Request, chosen: Option<Request>) -> Request {
+        let mut request = base;
+        let mut next = chosen;
+        while let Some(found) = next {
+            request = found;
+            let levels = self.level_overviews(found.level);
+            next = self.overview_of(read, request, &levels);
         }
-        // GDAL ignores overviews of AVERAGE_BIT2GRAYSCALE resampling, as GeoTIFFs record it.
-        if self.overview_resampling().is_some_and(|r| r.to_ascii_uppercase().starts_with("AVERAGE_BIT2")) {
-            return read.full;
+        request
+    }
+
+    /// The request of the overview among `levels` that GDAL 3.13.3's `GDALBandGetBestOverviewLevel2` chooses
+    /// for a request `base` of a band when the buffer is smaller than the window on either axis;
+    /// `None` when it reads `base`.
+    fn overview_of(&mut self, read: &Read, base: Request, levels: &[usize]) -> Option<Request> {
+        if levels.is_empty() || !base.reduces(read.buf) {
+            return None;
         }
+        let overviews = self.overviews();
+        let sizes: Vec<(usize, usize)> = levels.iter().map(|&i| overviews[i]).collect();
         let threshold = oversampling_threshold(read.resampling);
-        match best_overview(read.full.size, overviews, read.full.window, read.buf, threshold) {
-            Some(i) => overview_request(read.full, i, overviews[i]),
-            None => read.full,
-        }
+        // As GDAL 3.13.3 does, inspect metadata only when a candidate could improve the choice.
+        let k = best_overview_filtered(base.size, &sizes, base.window, read.buf, threshold, |k| {
+            !self.level_resampling(levels[k]).is_some_and(|r| r.to_ascii_uppercase().starts_with("AVERAGE_BIT2"))
+        })?;
+        Some(overview_request(base, levels[k], sizes[k]))
     }
 
     /// Reads a part of a read.
@@ -773,7 +820,9 @@ fn resampled_read(read: &Read, request: Request, dataset: bool, block_width: usi
         block_width,
         dataset,
         max,
-        nan_aware: true,
+        // GDAL 3.13 skips NaN values in masked chunks; GDAL 3.12, the default, sums them as NaN.
+        // `TERRIO_GDAL_COMPAT=3.13` selects 3.13, as for the other `RasterIO` kernels.
+        nan_aware: crate::ops::warp::KernelVersion::configured() == crate::ops::warp::KernelVersion::Gdal313,
     }
 }
 
@@ -819,6 +868,19 @@ pub(crate) fn best_overview(
     (bw, bh): (usize, usize),
     threshold: f64,
 ) -> Option<usize> {
+    best_overview_filtered((w, h), overviews, window, (bw, bh), threshold, |_| true)
+}
+
+/// The same size rule as `best_overview`, with eligibility checked only for improving
+/// candidates. The callback receives a zero-based index into `overviews`, not a level number.
+fn best_overview_filtered(
+    (w, h): (usize, usize),
+    overviews: &[(usize, usize)],
+    window: (usize, usize, usize, usize),
+    (bw, bh): (usize, usize),
+    threshold: f64,
+    mut eligible: impl FnMut(usize) -> bool,
+) -> Option<usize> {
     const EPSILON: f64 = 0.1;
     let (xr, yr) = (window.2 as f64 / bw as f64, window.3 as f64 / bh as f64);
     let desired = if xr < yr || bh == 1 { xr } else { yr };
@@ -835,6 +897,11 @@ pub(crate) fn best_overview(
         if ratio >= desired * threshold + EPSILON || ratio <= best_ratio {
             continue;
         }
+        if let Some(index) = level
+            && !eligible(index)
+        {
+            continue;
+        }
         best = level;
         best_ratio = ratio;
         if (desired - ratio).abs() < EPSILON {
@@ -844,17 +911,18 @@ pub(crate) fn best_overview(
     best
 }
 
-/// The request `GDALBandGetBestOverviewLevel2` makes of overview `level` of size `(ow, oh)`: the
-/// integer window rounded to it and clamped, the floating-point window scaled.
-fn overview_request(full: Request, level: usize, (ow, oh): (usize, usize)) -> Request {
-    let (w, h) = full.size;
+/// The request `GDALBandGetBestOverviewLevel2` makes of overview `level` of size `(ow, oh)` for a
+/// request `base` of another level: the integer window rounded to it and clamped, the
+/// floating-point window scaled.
+fn overview_request(base: Request, level: usize, (ow, oh): (usize, usize)) -> Request {
+    let (w, h) = base.size;
     let (xf, yf) = (w as f64 / ow as f64, h as f64 / oh as f64);
-    let (x, y, xs, ys) = full.window;
+    let (x, y, xs, ys) = base.window;
     let ox = ((x as f64 / xf + 0.5) as usize).min(ow - 1);
     let oy = ((y as f64 / yf + 0.5) as usize).min(oh - 1);
     let oxs = ((xs as f64 / xf + 0.5) as usize).max(1).min(ow - ox);
     let oys = ((ys as f64 / yf + 0.5) as usize).max(1).min(oh - oy);
-    let (fx, fy, fxs, fys) = full.fwindow;
+    let (fx, fy, fxs, fys) = base.fwindow;
     Request { level: Some(level), size: (ow, oh), window: (ox, oy, oxs, oys), fwindow: (fx / xf, fy / yf, fxs / xf, fys / yf) }
 }
 
@@ -864,7 +932,8 @@ fn overview_request(full: Request, level: usize, (ow, oh): (usize, usize)) -> Re
 pub(crate) fn fixed_level(selection: OverviewSelection, overviews: &[(usize, usize)], buf_width: usize) -> Option<Option<usize>> {
     let n = overviews.len();
     match selection {
-        OverviewSelection::Auto => None,
+        // GDAL parses AUTO-0 as AUTO, including its automatic per-read overview selection.
+        OverviewSelection::Auto | OverviewSelection::AutoOffset(0) => None,
         OverviewSelection::None => Some(None),
         OverviewSelection::Level(i) if i < n => Some(Some(i)),
         OverviewSelection::Level(i) if n > 0 => {
@@ -1201,6 +1270,28 @@ mod tests {
         assert_eq!(best_overview((997, 613), &ovr, window, (403, 235), 2.0), Some(1));
     }
 
+    #[test]
+    fn overview_metadata_only_reads_improving_candidates() {
+        let sizes = [(500, 400), (250, 200), (125, 100)];
+        let mut looked_up = Vec::new();
+        let selected = best_overview_filtered((1000, 800), &sizes, (0, 0, 1000, 800), (500, 400), 1.2, |index| {
+            looked_up.push(index);
+            false
+        });
+        assert_eq!(selected, None);
+        assert_eq!(looked_up, [0]); // Larger reductions cannot win, so their tags are not read.
+    }
+
+    #[test]
+    fn nonreducing_overviews_are_not_selected() {
+        let full = (0, 0, 1000, 800);
+        // Custom WindowSource graphs may point at the same or a larger level. They cannot
+        // advance selection, so neither a self-edge nor an edge back to a parent can loop.
+        for sizes in [&[(1000, 800)][..], &[(2000, 1600)][..], &[(1000, 400)][..]] {
+            assert_eq!(best_overview((1000, 800), sizes, full, (100, 80), 1.2), None);
+        }
+    }
+
     /// The levels `gdal_translate -ovr` reads alone.
     #[test]
     fn fixed_levels_are_gdal_translates() {
@@ -1212,11 +1303,12 @@ mod tests {
         assert_eq!(fixed_level(OverviewSelection::Level(9), &ovr, 20), Some(Some(2)));
         assert_eq!(fixed_level(OverviewSelection::Level(0), &[], 20), None);
         // AUTO-n: the first overview no wider than the output (16 for 20), n levels finer, or
-        // RasterIO's choice past full resolution.
+        // RasterIO's choice past full resolution. AUTO-0 is AUTO, not that overview.
         assert_eq!(fixed_level(OverviewSelection::AutoOffset(1), &ovr, 20), Some(Some(0)));
         assert_eq!(fixed_level(OverviewSelection::AutoOffset(2), &ovr, 20), None);
         assert_eq!(fixed_level(OverviewSelection::AutoOffset(1), &ovr, 4), Some(Some(1)));
-        assert_eq!(fixed_level(OverviewSelection::AutoOffset(0), &ovr, 100), Some(Some(0)));
+        assert_eq!(fixed_level(OverviewSelection::AutoOffset(0), &ovr, 100), None);
+        assert_eq!(fixed_level(OverviewSelection::AutoOffset(0), &ovr, 20), fixed_level(OverviewSelection::Auto, &ovr, 20));
     }
 
     /// A level read alone takes the window as `gdal_translate`'s source requests it.

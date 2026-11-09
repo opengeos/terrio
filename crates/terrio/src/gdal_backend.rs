@@ -808,6 +808,7 @@ fn gdal_name(path: &str) -> String {
 }
 
 fn gdal_open(path: &str, flags: GdalOpenFlags) -> Result<GdalDataset> {
+    crate::stac::check_gdal_asset_read()?;
     // Every dataset GDAL opens (a `GDAL:` name, the fallback for what terrio's drivers cannot read,
     // bytes through `/vsimem/`) is opened by the GDAL backend, whose own drivers pick the format:
     // only if the process-wide allow-list of each kind asked for has the GDAL driver.
@@ -974,11 +975,8 @@ fn srs_to_crs(srs: &gdal::spatial_ref::SpatialRef) -> Option<wbraster::CrsInfo> 
     };
     Some(match code {
         Some(code) => {
-            let mut info = wbraster::CrsInfo::from_epsg(code);
-            if info.wkt.is_none() {
-                info.wkt = Some(wkt);
-            }
-            info
+            let stored = wbraster::CrsInfo { epsg: Some(code), wkt: Some(wkt), proj4: None };
+            wbraster::CrsInfo { wkt: crate::crs::raster_crs_wkt(&stored), ..stored }
         }
         None => common::crs_from_text(&wkt).unwrap_or_else(|| wbraster::CrsInfo { wkt: Some(wkt), ..Default::default() }),
     })
@@ -1372,5 +1370,46 @@ mod limits_tests {
         let mut budget = VectorBudget { remaining: 16_384, limit: 16_384 };
         assert!(layer_from(&mut layer, "first", &mut budget).is_ok());
         assert!(matches!(layer_from(&mut layer, "second", &mut budget), Err(Error::ResourceLimit(_))));
+    }
+}
+
+#[cfg(test)]
+mod crs_tests {
+    /// GDAL 3.13.3 preserves explicit WKT even when its root identifies a known EPSG code.
+    #[test]
+    fn supplied_definition_is_kept_with_identified_code() {
+        let registry = crate::crs::SpatialRef::from_epsg(4979).unwrap().to_wkt().unwrap();
+        let custom = registry.replacen("WGS 84", "Custom WGS 84", 1);
+        let srs = gdal::spatial_ref::SpatialRef::from_wkt(&custom).unwrap();
+        let expected = srs.to_wkt().unwrap();
+        assert!(expected.contains("Custom WGS 84"));
+        let actual = super::srs_to_crs(&srs).unwrap();
+        assert_eq!(actual.epsg, Some(4979));
+        assert_eq!(actual.wkt, Some(expected));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn memory_file_cleanup_removes_only_the_calls_directory() {
+        // Keep another directory alive so a failed or empty root listing cannot pass vacuously.
+        super::with_mem_file(vec![9], "sentinel.bin", |sentinel| {
+            for fail in [false, true] {
+                let mut directory = String::new();
+                let result = super::with_mem_file(vec![1, 2, 3], "input.bin", |path| {
+                    directory = path.rsplit_once('/').unwrap().0.to_string();
+                    gdal::vsi::create_mem_file(format!("{path}.aux.xml"), vec![4, 5]).unwrap();
+                    if fail { Err(crate::Error::InvalidArgument("test refusal".into())) } else { Ok(()) }
+                });
+                assert_eq!(result.is_err(), fail);
+                let name = directory.rsplit_once('/').unwrap().1;
+                assert!(gdal::vsi::read_dir("/vsimem/", false).unwrap().iter().all(|p| p.to_string_lossy() != name));
+                let parent = sentinel.rsplit_once('/').unwrap().0;
+                assert!(gdal::vsi::read_dir(parent, false).unwrap().iter().any(|p| p.to_string_lossy() == "sentinel.bin"));
+            }
+            Ok(())
+        })
+        .unwrap();
     }
 }

@@ -13,6 +13,8 @@ permissions:
   contents: read
 
 env:
+  # Keep the sidecar rasterio wheel compatible with this reference; see docs/testing.md.
+  GDAL_REFERENCE_VERSION: "3.12.2"
   CARGO_TERM_COLOR: always
   # CI restores dependencies; per-checkout incremental state is larger and not reused.
   CARGO_INCREMENTAL: 0
@@ -67,6 +69,38 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: fsfe/reuse-action@v6
+
+  # Known vulnerabilities (RustSec advisories) in the crates Cargo.lock pins, on every pull request
+  # and push: advisories are published without the code changing. Unmaintained and unsound crates
+  # are listed without failing it. It compiles nothing and fetches the advisory database on each
+  # run, so it has no cache.
+  audit:
+    name: RustSec advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      # The latest release: an older one can fail to read newer advisories.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      # With .cargo/audit.toml, which ignores five advisories of wbraster's dependencies.
+      - run: cargo audit
+      # cargo audit ignores an advisory by its ID, in every version of the crate. Without the
+      # config (read from the working directory), the only vulnerabilities may be those five, in
+      # zip 8.6.0 and ruzstd 0.8.3: another crate or version, or a new advisory for these two, fails.
+      - name: The ignored advisories are only wbraster's
+        working-directory: ${{ runner.temp }}
+        run: |
+          cargo audit --no-fetch --json --file "$GITHUB_WORKSPACE/Cargo.lock" > audit.json || true
+          jq -e '.vulnerabilities.list' audit.json > /dev/null
+          found=$(jq -r '.vulnerabilities.list[] | "\(.package.name)@\(.package.version) \(.advisory.id)"' audit.json)
+          echo "$found"
+          unexpected=$(echo "$found" | grep -vxE 'zip@8\.6\.0 RUSTSEC-2026-0(367|368|369|429)|ruzstd@0\.8\.3 RUSTSEC-2026-0344' || true)
+          if [ -n "$unexpected" ]; then
+            echo "::error::Vulnerabilities other than wbraster's five (zip 8.6.0, ruzstd 0.8.3): ${unexpected//$'\n'/, }"
+            exit 1
+          fi
 
   # Linux only: macOS and Windows run in ci-platforms.yml, on every push to main and, for pull
   # requests, by hand or with the label ci:macos, ci:windows or ci:all.
@@ -129,7 +163,7 @@ jobs:
         with:
           environment-name: gdal-backend
           # The GDAL the real-data job compares with, and the drivers the tests use.
-          create-args: libgdal-core=3.12.2 proj=9.8.1 libgdal-hdf4 libgdal-hdf5 libgdal-netcdf libgdal-kea
+          create-args: libgdal-core=${{ env.GDAL_REFERENCE_VERSION }} proj=9.8.1 libgdal-hdf4 libgdal-hdf5 libgdal-netcdf libgdal-kea
           cache-environment: true
       - name: Point the build at GDAL
         run: |
@@ -164,6 +198,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Catalog changes bump the version relative to the protected base
+        if: github.event_name == 'pull_request'
+        env:
+          CLI_CATALOG_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$CLI_CATALOG_BASE_SHA"
+          python3 -m unittest discover -s scripts/tests -p test_cli_catalog_version.py
+          python3 scripts/check_cli_catalog_version.py --base "$CLI_CATALOG_BASE_SHA"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Documentation builds without warnings (missing docs included)
@@ -221,15 +263,26 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown,wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p terrio --target wasm32-unknown-unknown
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
+      - name: Install checksum-pinned wasm-opt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/install_binaryen_ci.sh
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+      # terrio.dev/web: the command line on WASI, run in Node.js on the page's WASI runtime.
+      - name: Test the command line in the browser build (WASI)
+        env:
+          RUSTFLAGS: -C link-arg=-zstack-size=8388608
+        run: |
+          cargo build -p terrio-cli --bin terrio --target wasm32-wasip1
+          TERRIO_WASM=target/wasm32-wasip1/debug/terrio.wasm node --test web/tests/runtime.test.mjs web/tests/paths.test.mjs
       - name: Build and test the npm package (Node.js)
         run: |
           node --test js/tests/build.test.mjs
@@ -358,6 +411,28 @@ jobs:
           name: wheel-${{ matrix.os }}
           path: python/dist/*.whl
 
+  cog-sidecar-parity:
+    name: external COG overview parity
+    needs: python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: wheel-ubuntu-latest
+          path: dist
+      # This wheel bundles its own GDAL; changing GDAL_REFERENCE_VERSION does not change it.
+      - name: Install the wheel and reference implementations
+        run: python -m pip install pytest rasterio==1.5.2 rio-cogeo==7.0.4 dist/*.whl
+      - name: Compare external overviews with the reference
+        working-directory: python
+        run: |
+          python -c "import os, rasterio, rio_cogeo.cogeo; print('Reference GDAL:', rasterio.__gdal_version__); assert rasterio.__gdal_version__ == os.environ['GDAL_REFERENCE_VERSION'], rasterio.__gdal_version__"
+          python -m pytest -v tests/test_cog_validate.py::test_external_overviews_agree_with_rio_cogeo
+
   # The Rust and Python tests on real data. The comparison scripts (point clouds, conformance) are
   # in ci-extended.yml, with the same GDAL environment and data; this job saves the data cache.
   real-data:
@@ -383,7 +458,7 @@ jobs:
           # The reference: the EPSG table and test points come from GDAL 3.12.2 and PROJ 9.8.1, and
           # newer EPSG databases change some transformations. rasterio comes from pip (with its
           # bundled GDAL), as conda-forge has none for GDAL 3.12.2 with PROJ 9.8.
-          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.8.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 libgdal-grib numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely
+          create-args: gdal=${{ env.GDAL_REFERENCE_VERSION }} libgdal-core=${{ env.GDAL_REFERENCE_VERSION }} proj=9.8.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 libgdal-grib numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely
           cache-environment: true
       - name: Benchmark harness regression tests
         shell: micromamba-shell {0}
@@ -392,7 +467,7 @@ jobs:
         with:
           path: terrio-data
           # Holds the datum shift and geoid grids of scripts/proj_grids.txt too (230 MB).
-          key: terrio-data-gdal3.12.2-proj9.8.1-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
+          key: terrio-data-gdal${{ env.GDAL_REFERENCE_VERSION }}-proj9.8.1-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
       - name: Fetch test data
         shell: micromamba-shell {0}
         run: scripts/fetch_test_data.sh terrio-data

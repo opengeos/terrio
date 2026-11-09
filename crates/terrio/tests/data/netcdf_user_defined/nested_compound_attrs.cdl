@@ -1,0 +1,30 @@
+// A NetCDF-4 grid with nested compound attributes, and ten variables, so that HDF5 keeps the root
+// group's links (the named types among them) in dense storage.
+// Regenerate it and `expected.json` with `python scripts/make_netcdf_user_defined_fixture.py`.
+netcdf nested_compound_attrs {
+types:
+  compound point_t {
+    double x ;
+    double y ;
+  } ;
+  compound site_t {
+    int id ;
+    point_t where ;
+  } ;
+dimensions:
+  n = 2 ;
+variables:
+  float v0(n) ;
+    site_t v0:site = {3, {1.5, -2.5}} ;
+  float v1(n) ;
+  float v2(n) ;
+  float v3(n) ;
+  float v4(n) ;
+  float v5(n) ;
+  float v6(n) ;
+  float v7(n) ;
+  float v8(n) ;
+  float v9(n) ;
+// global attributes:
+    point_t :centre = {0.5, 0.25} ;
+}

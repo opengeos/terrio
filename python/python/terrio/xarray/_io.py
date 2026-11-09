@@ -287,6 +287,7 @@ class _Source:
         """
         out: np.ndarray | None = None
         alpha: np.ndarray | None = None
+        ds_mask: np.ndarray | None = None
         for k, b in enumerate(bands):
             flags = self.mask_flags[b - 1]
             bad: np.ndarray | None = None
@@ -305,6 +306,22 @@ class _Source:
                     a = self.read([self.alpha_band], window)[0]
                     alpha = a == 0 if a.dtype == np.uint8 or a.dtype.kind in "iu" else a < 1
                 bad = alpha
+            elif flags & MaskFlags.per_dataset.value:
+                if ds_mask is None:
+                    (r0, r1), (c0, c1) = window
+                    with self.pool.acquire() as raster:
+                        # GDAL 3.13.3's opened overview dataset uses its own mask only.
+                        # Nodata and alpha are selected separately in mask_flags below.
+                        m = raster._read_level_mask(
+                            window=(c0, r0, c1 - c0, r1 - r0), overview=self.overview
+                        )
+                    if m is None:
+                        if self.overview is None:
+                            raise RioXarrayError(f"cannot read dataset mask of {self.name}")
+                        ds_mask = np.zeros(data.shape[1:], dtype=bool)
+                    else:
+                        ds_mask = np.asarray(m) == 0
+                bad = ds_mask
             if bad is None or not bad.any():
                 continue
             if out is None:
@@ -403,7 +420,7 @@ def _open_source(
         namespaces = {}
         if riods.driver == "ENVI":
             namespaces["ENVI"] = riods.tags(ns="ENVI")
-        alpha = riods.structure.alpha_band() if riods.count else None
+        alpha = riods._mask_alpha() if riods.count else None
         band_meta: dict[str, Any] = {
             "scales": tuple(riods.scales),
             "offsets": tuple(riods.offsets),
@@ -411,8 +428,24 @@ def _open_source(
             "units": tuple(riods.units),
             "band_tags": [dict(riods.tags(b)) for b in riods.indexes],
         }
+        mask_flags = tuple(int(sum(f.value for f in fl)) for fl in riods.mask_flag_enums)
+        nodatavals = tuple(riods.nodatavals)
         if overview_level is not None:
             band_meta = _overview_band_metadata(riods, first, overview_level)
+            nodatavals = tuple(first._overview_nodata(overview_level))
+            if width > 0 and height > 0:
+                own_mask = first._overview_has_mask(overview_level)
+                if own_mask:
+                    mask_flags = tuple(MaskFlags.per_dataset.value for _ in range(riods.count))
+                else:
+                    mask_flags = tuple(
+                        MaskFlags.nodata.value
+                        if nodatavals[b - 1] is not None
+                        else MaskFlags.per_dataset.value | MaskFlags.alpha.value
+                        if alpha is not None and b != alpha
+                        else MaskFlags.all_valid.value
+                        for b in riods.indexes
+                    )
         src = _Source(
             name=riods.name,
             path=_terrio_path(riods.name),
@@ -421,7 +454,7 @@ def _open_source(
             height=height,
             count=riods.count,
             dtypes=tuple(riods.dtypes),
-            nodatavals=tuple(riods.nodatavals),
+            nodatavals=nodatavals,
             scales=band_meta["scales"],
             offsets=band_meta["offsets"],
             descriptions=band_meta["descriptions"],
@@ -432,7 +465,7 @@ def _open_source(
             transform=transform,
             crs=riods.crs,
             block_shapes=block_shapes,
-            mask_flags=tuple(int(sum(f.value for f in fl)) for fl in riods.mask_flag_enums),
+            mask_flags=mask_flags,
             alpha_band=alpha,
             profile=dict(riods.profile),
             overview=overview_level,
@@ -608,12 +641,18 @@ class TerrioArrayWrapper(BackendArray):
             if self._unsigned_dtype is not None:
                 out = out.astype(self._unsigned_dtype)
             if self.masked:
-                out = out.astype(self.dtype)
+                out = out.astype(self.dtype, copy=False)
                 if invalid is not None:
-                    out[invalid] = self.fill_value
+                    np.copyto(out, self.fill_value, where=invalid)
             if self.mask_and_scale:
                 for i, b in enumerate(bands):
-                    out[i] = out[i] * self.source.scales[b - 1] + self.source.offsets[b - 1]
+                    scale, offset = self.source.scales[b - 1], self.source.offsets[b - 1]
+                    # In place, and not at all when it changes nothing: a pass over a chunk
+                    # costs more than reading it.
+                    if scale != 1:
+                        np.multiply(out[i], scale, out=out[i])
+                    if offset != 0:
+                        np.add(out[i], offset, out=out[i])
         if not isinstance(band_key, list):
             out = out[0]
         if squeeze_axis:

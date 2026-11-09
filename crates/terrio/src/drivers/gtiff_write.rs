@@ -19,6 +19,7 @@
 //! layout: the IFDs first, then the image data from the smallest overview to the full resolution,
 //! with GDAL's structural metadata, block leaders and trailers.
 
+use super::common::{Rewrite, create_replacing};
 use super::gdal_overview::{self, Method};
 use crate::pixel::{Pixel, map_data, with_data};
 use crate::{Error, Result};
@@ -157,10 +158,9 @@ fn lerc_encode(_data: &[u8], _c: &ChunkInfo, _max_z_error: f64) -> Result<Vec<u8
     Err(Error::disabled("lerc"))
 }
 
+/// A Deflate chunk as GDAL 3.12 built with libdeflate writes it: libdeflate's level 6, the same bytes.
 fn deflate(data: &[u8]) -> Result<Vec<u8>> {
-    let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
-    enc.write_all(data)?;
-    Ok(enc.finish()?)
+    Ok(crate::deflate_compress::zlib_compress(data))
 }
 
 /// Encodes a chunk (little-endian samples, interleaved) as a LERC blob of `spp` values per pixel,
@@ -821,9 +821,10 @@ pub(crate) struct Image {
 /// Writes a raster as a GeoTIFF or COG.
 pub(crate) fn write(raster: &Raster, path: &str, opts: &TiffOptions) -> Result<()> {
     let images = prepare(raster, opts)?;
-    let mut file = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+    let mut file = std::io::BufWriter::with_capacity(1 << 20, create_replacing(path)?);
     images.write_to(&mut file)?;
     file.flush()?;
+    file.get_mut().finish()?;
     Ok(())
 }
 
@@ -1902,7 +1903,7 @@ enum RowWriter {
 
 /// A GeoTIFF written block row by block row (see [`GeoTiffWriter`]).
 struct TiffRows {
-    file: std::io::BufWriter<std::fs::File>,
+    file: std::io::BufWriter<Rewrite>,
     pos: u64,
     big: bool,
     cols: usize,
@@ -1923,6 +1924,9 @@ struct TiffRows {
     pending_mask: Vec<u8>,
     pending_rows: usize,
     rows_done: usize,
+    /// Whether a block row failed to be written: the file is incomplete, and nothing more is
+    /// written to it.
+    failed: bool,
     tags: Vec<(u16, Value)>,
     /// The internal mask's compressed chunks, written after the image data.
     mask: Option<Vec<Vec<u8>>>,
@@ -1971,8 +1975,11 @@ impl GeoTiffWriter {
     /// type), and of the mask (0 for invalid pixels) when the file has one.
     ///
     /// # Errors
-    /// When the data does not hold `rows` rows of every band, rows go past the raster's height,
-    /// a mask is given for a file without one, or the file cannot be written.
+    /// When the data is not of the raster's data type or does not hold `rows` rows of every band,
+    /// rows go past the raster's height, the file has a mask and `mask` does not hold its rows, a
+    /// mask is given for a COG without one, or the file cannot be written. A GeoTIFF other than a
+    /// COG refuses any call once a block row failed to be written, and otherwise checks only the
+    /// data type when `rows` is zero.
     pub fn write_rows(&mut self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
         match &mut self.inner {
             RowWriter::Tiff(t) => t.write_rows(data, rows, mask),
@@ -1987,7 +1994,8 @@ impl GeoTiffWriter {
     /// Writes the directories (and the COG's levels) and closes the file.
     ///
     /// # Errors
-    /// When rows are missing, or the file cannot be written.
+    /// When rows are missing, a block row of a GeoTIFF other than a COG failed to be written, or
+    /// the file cannot be written.
     pub fn finish(self) -> Result<()> {
         match self.inner {
             RowWriter::Tiff(t) => (*t).finish(),
@@ -2067,7 +2075,7 @@ impl TiffRows {
         if let Some(cm) = plan.color_map {
             tags.push((320, cm));
         }
-        let mut file = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+        let mut file = std::io::BufWriter::with_capacity(1 << 20, create_replacing(path)?);
         let head: Vec<u8> = if big {
             [b"II".as_slice(), &43u16.to_le_bytes(), &8u16.to_le_bytes(), &0u16.to_le_bytes(), &0u64.to_le_bytes()].concat()
         } else {
@@ -2095,6 +2103,7 @@ impl TiffRows {
             pending_mask: Vec::new(),
             pending_rows: 0,
             rows_done: 0,
+            failed: false,
             tags,
             mask: with_mask.then(Vec::new),
         })
@@ -2109,9 +2118,16 @@ impl TiffRows {
     /// type), and of the mask (0 for invalid pixels) when the file has one.
     ///
     /// # Errors
-    /// When the data does not hold `rows` rows of every band, rows go past the raster's height,
-    /// or the file cannot be written.
+    /// When a block row failed to be written, or the data is not of the raster's data type; with
+    /// `rows` not zero, when it does not hold `rows` rows of every band, rows go past the raster's
+    /// height, the file has a mask and `mask` does not hold its rows, or the file cannot be written.
     pub fn write_rows(&mut self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
+        if self.failed {
+            return Err(Error::InvalidData("a block row of the GeoTIFF failed to be written".into()));
+        }
+        if data.data_type() != self.data_type {
+            return Err(Error::InvalidArgument("the rows are not of the raster's data type".into()));
+        }
         if rows == 0 {
             return Ok(());
         }
@@ -2127,81 +2143,69 @@ impl TiffRows {
                 self.cols
             )));
         }
-        if self.mask.is_some() {
-            let m = mask.ok_or_else(|| Error::InvalidArgument("the file has a mask: give its rows".into()))?;
-            if m.len() != n {
+        let mask = match (&self.mask, mask) {
+            (None, _) => None,
+            (Some(_), None) => return Err(Error::InvalidArgument("the file has a mask: give its rows".into())),
+            (Some(_), Some(m)) if m.len() != n => {
                 return Err(Error::InvalidArgument(format!("{} mask values for {rows} rows of {} columns", m.len(), self.cols)));
             }
-            self.pending_mask.extend_from_slice(m);
-        }
-        // Pending rows are kept band after band, in the raster's type.
+            (Some(_), m) => m,
+        };
+        // Pending rows are kept band after band, in the raster's type; these rows follow them, or
+        // are read where they are when none is pending.
         let old = self.pending_rows;
         let (cols, bands) = (self.cols, self.bands);
-        macro_rules! merge {
-            ($($v:ident),*) => {
-                match (&mut self.pending, data) {
-                    $((RasterData::$v(p), RasterData::$v(d)) => {
-                        let mut merged = Vec::with_capacity(cols * (old + rows) * bands);
-                        for b in 0..bands {
-                            merged.extend_from_slice(&p[b * cols * old..(b + 1) * cols * old]);
-                            merged.extend_from_slice(&d[b * n..(b + 1) * n]);
-                        }
-                        *p = merged;
-                    })*
-                    _ => return Err(Error::InvalidArgument("the rows are not of the raster's data type".into())),
-                }
-            };
+        let data_type = self.data_type;
+        let empty = || RasterData::new_filled(data_type, 0, 0.0);
+        let all = if old > 0 {
+            let joined = append_rows(&self.pending, old, data, rows, cols, bands)?;
+            // Freed once copied.
+            self.pending = empty();
+            std::borrow::Cow::Owned(joined)
+        } else {
+            std::borrow::Cow::Borrowed(data)
+        };
+        if let Some(m) = mask {
+            self.pending_mask.extend_from_slice(m);
         }
-        merge!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
-        self.pending_rows = old + rows;
         // The complete block rows (and the last rows of the raster), compressed together, then
         // the rows left over, kept for the next call.
-        let total = self.pending_rows;
+        let total = old + rows;
         let start = if self.rows_done + total == self.rows { total } else { total / self.block_rows * self.block_rows };
-        if start > 0 {
-            self.flush_block_rows(start, total)?;
-            macro_rules! keep {
-                ($($v:ident),*) => {
-                    match &mut self.pending {
-                        $(RasterData::$v(p) => {
-                            let mut rest = Vec::with_capacity(cols * (total - start) * bands);
-                            for b in 0..bands {
-                                rest.extend_from_slice(&p[(b * total + start) * cols..(b + 1) * total * cols]);
-                            }
-                            *p = rest;
-                        })*
-                    }
-                };
-            }
-            keep!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
-            if self.mask.is_some() {
-                self.pending_mask.drain(..start * cols);
-            }
-            self.pending_rows = total - start;
+        let written = if start == 0 {
+            Ok(())
+        } else if start == total {
+            self.flush_block_rows(&all, start)
+        } else {
+            // Freed before the rows left over are copied.
+            let slab = slice_rows(&all, total, 0..start, cols, bands);
+            self.flush_block_rows(&slab, start)
+        };
+        if let Err(e) = written {
+            // Every row given so far stays pending, as before the write, and nothing more is
+            // written: the file may hold part of the block row.
+            self.pending = all.into_owned();
+            self.pending_rows = total;
+            self.failed = true;
+            return Err(e);
         }
+        self.pending = match start {
+            0 => all.into_owned(),
+            _ if start == total => empty(),
+            _ => slice_rows(&all, total, start..total, cols, bands),
+        };
+        if self.mask.is_some() {
+            self.pending_mask.drain(..start * cols);
+        }
+        self.pending_rows = total - start;
         Ok(())
     }
 
-    /// Compresses (in parallel) and writes the first `h` pending rows (of `total`): whole block
-    /// rows, or the raster's last rows.
-    fn flush_block_rows(&mut self, h: usize, total: usize) -> Result<()> {
+    /// Compresses (in parallel) and writes `h` rows `data` (band after band): whole block rows, or
+    /// the raster's last rows.
+    fn flush_block_rows(&mut self, data: &RasterData, h: usize) -> Result<()> {
         let (cols, bands) = (self.cols, self.bands);
-        macro_rules! slab {
-            ($($v:ident),*) => {
-                match &self.pending {
-                    $(RasterData::$v(p) => {
-                        let mut slab = Vec::with_capacity(cols * h * bands);
-                        for b in 0..bands {
-                            let src = b * total * cols;
-                            slab.extend_from_slice(&p[src..src + cols * h]);
-                        }
-                        RasterData::$v(slab)
-                    })*
-                }
-            };
-        }
-        let data = slab!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
-        let level = Level { cols, rows: h, bands, data: std::borrow::Cow::Owned(data) };
+        let level = Level { cols, rows: h, bands, data: std::borrow::Cow::Borrowed(data) };
         // Tiles are padded to full height.
         let layout = Layout { rows_per_strip: Some(self.block_rows as u32), extra: self.layout.extra.clone(), ..self.layout };
         let img = level.image(self.data_type, self.compression, &self.codec, &layout)?;
@@ -2242,8 +2246,11 @@ impl TiffRows {
     /// Writes the image's directory (and the mask's) and closes the file.
     ///
     /// # Errors
-    /// When rows are missing, or the file cannot be written.
+    /// When rows are missing, a block row failed to be written, or the file cannot be written.
     pub fn finish(mut self) -> Result<()> {
+        if self.failed {
+            return Err(Error::InvalidData("a block row of the GeoTIFF failed to be written".into()));
+        }
         if self.rows_written() != self.rows {
             return Err(Error::InvalidArgument(format!("{} rows written of {}", self.rows_written(), self.rows)));
         }
@@ -2303,9 +2310,11 @@ impl TiffRows {
             }
             self.file.write_all(&encode_ifd(&mt, second, 0, self.big))?;
         }
-        // The first directory's offset, in the header.
+        // The first directory's offset, in the header, which `finish` writes last: until then
+        // the file is no TIFF.
         let mut file = self.file.into_inner().map_err(|e| Error::Io(e.into_error()))?;
         use std::io::{Seek, SeekFrom};
+        let end = file.stream_position()?;
         if self.big {
             file.seek(SeekFrom::Start(8))?;
             file.write_all(&first.to_le_bytes())?;
@@ -2313,7 +2322,8 @@ impl TiffRows {
             file.seek(SeekFrom::Start(4))?;
             file.write_all(&(first as u32).to_le_bytes())?;
         }
-        file.flush()?;
+        file.seek(SeekFrom::Start(end))?;
+        file.finish()?;
         Ok(())
     }
 }
@@ -2413,7 +2423,7 @@ struct CogBuild {
 /// [`write`] lays it out: the IFDs, then the levels' tiles from the smallest overview, copied from
 /// the temporary files. The file is byte for byte the same.
 pub(crate) struct CogWriter {
-    file: std::io::BufWriter<std::fs::File>,
+    file: std::io::BufWriter<Rewrite>,
     bands: usize,
     data_type: DataType,
     encoding: std::sync::Arc<(Compression, CodecParams, Layout)>,
@@ -2482,7 +2492,7 @@ impl CogWriter {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let file = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+        let file = std::io::BufWriter::with_capacity(1 << 20, create_replacing(path)?);
         Ok(Self {
             file,
             bands: raster.bands,
@@ -2774,6 +2784,7 @@ impl CogWriter {
             self.levels[i].spools.clear();
         }
         self.file.flush()?;
+        self.file.get_mut().finish()?;
         Ok(())
     }
 }
@@ -2971,6 +2982,43 @@ fn directories(mut images: Vec<Directory>, big: bool, cog: bool) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    /// Writing over a larger file gives the file a fresh write gives, through every writer, and
+    /// keeps the file itself (a hard link to it sees the new content).
+    #[test]
+    fn rewriting_a_larger_file_leaves_only_the_new_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let raster = |n: usize| {
+            let cfg = wbraster::RasterConfig { cols: n, rows: n, bands: 1, data_type: wbraster::DataType::F32, ..Default::default() };
+            let data = wbraster::raster::RasterData::F32((0..n * n).map(|v| v as f32).collect());
+            crate::RasterDataset::with_driver(Raster::from_data_native(cfg, data).unwrap(), crate::formats::RasterDriver::GTiff, false)
+        };
+        let small = dir.path().join("small.tif");
+        crate::write_raster_dataset(&raster(20), small.to_str().unwrap(), &Default::default()).unwrap();
+        for driver in [crate::formats::RasterDriver::GTiff, crate::formats::RasterDriver::Cog] {
+            let options = crate::RasterWriteOptions { driver: Some(driver), ..Default::default() };
+            for streamed in [false, true] {
+                let write = |path: &std::path::Path| {
+                    if streamed {
+                        crate::open_raster_lazy(small.to_str().unwrap()).unwrap().write(path.to_str().unwrap(), &options).unwrap();
+                    } else {
+                        crate::write_raster_dataset(&raster(20), path.to_str().unwrap(), &options).unwrap();
+                    }
+                };
+                let (path, link, fresh) = (dir.path().join("out.tif"), dir.path().join("link.tif"), dir.path().join("fresh.tif"));
+                for p in [&path, &link, &fresh] {
+                    let _ = std::fs::remove_file(p);
+                }
+                crate::write_raster_dataset(&raster(300), path.to_str().unwrap(), &options).unwrap();
+                std::fs::hard_link(&path, &link).unwrap();
+                write(&path);
+                write(&fresh);
+                let expected = std::fs::read(&fresh).unwrap();
+                assert_eq!(std::fs::read(&path).unwrap(), expected, "{driver:?}, streamed {streamed}");
+                assert_eq!(std::fs::read(&link).unwrap(), expected, "{driver:?}, streamed {streamed}");
+            }
+        }
+    }
+
     #[test]
     fn pixel_is_point_roundtrip_preserves_corners() {
         let r = Raster::from_data(
@@ -3064,6 +3112,36 @@ mod tests {
             assert_eq!(ds.crs().epsg, Some(32610));
             assert_eq!(ds.geo_transform(), [500000.0, 10.0, 0.0, 4000500.0, 0.0, -10.0]);
         }
+    }
+
+    /// A GeoTIFF row write that fails keeps every row given so far pending, and the writer then
+    /// refuses more rows and to finish, whose file would miss the block row.
+    #[test]
+    fn failed_row_writes_stop_the_writer() {
+        let raster = overview_fixture(1, DataType::U8, RasterData::U8((0..65 * 35).map(|i| (i % 251) as u8).collect()));
+        let mut header = crate::RasterDataset::new(raster.clone(), false);
+        header.raster.data = RasterData::U8(Vec::new());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("failed.tif");
+        let options = crate::RasterWriteOptions { creation_options: vec![("BLOCKYSIZE".into(), "16".into())], ..Default::default() };
+        let mut w = TiffRows::create(path.to_str().unwrap(), &header, &options).unwrap();
+        w.write_rows(&slice_rows(&raster.data, 35, 0..10, 65, 1), 10, None).unwrap();
+        // Past what a classic TIFF addresses: the block row is refused once written.
+        let pos = std::mem::replace(&mut w.pos, u64::from(u32::MAX));
+        assert!(w.write_rows(&slice_rows(&raster.data, 35, 10..20, 65, 1), 10, None).is_err());
+        assert_eq!((w.rows_written(), w.pending_rows, w.pending.len()), (20, 20, 65 * 20));
+        // Within the limit again, the writer still refuses: the file may hold part of the row.
+        w.pos = pos;
+        assert!(w.write_rows(&slice_rows(&raster.data, 35, 20..35, 65, 1), 15, None).is_err());
+        assert_eq!(w.rows_written(), 20);
+        drop(w);
+        // A last block row that fails: its rows are all given, yet the file would miss them.
+        let mut w = TiffRows::create(path.to_str().unwrap(), &header, &options).unwrap();
+        w.write_rows(&slice_rows(&raster.data, 35, 0..16, 65, 1), 16, None).unwrap();
+        w.pos = u64::from(u32::MAX);
+        assert!(w.write_rows(&slice_rows(&raster.data, 35, 16..35, 65, 1), 19, None).is_err());
+        assert_eq!(w.rows_written(), 35);
+        assert!(w.finish().is_err());
     }
 
     /// Invalid slabs must fail before consuming rows or changing the native overview state.

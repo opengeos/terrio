@@ -113,6 +113,22 @@ pub fn open_raster_lazy_bytes(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> 
     open_raster_bytes(bytes, name).map(LazyRaster::from)
 }
 
+/// Backwards-compatible name for the input opened by the shared translate policy.
+pub use crate::ops::translate::OpenedRaster as OpenedRasterBytes;
+
+/// [`open_raster_lazy_bytes`], falling back to [`open_raster_bytes`] for a TIFF the lazy reader
+/// refuses (as `terrio translate` falls back to reading a file whole), without copying the bytes:
+/// the lazy reader shares them, and they are taken back from it when it fails. Invalid arguments
+/// and resource refusals of the lazy reader are kept, as are the errors of other formats, which
+/// the whole decode would read with the same decoder.
+///
+/// # Errors
+///
+/// As [`open_raster_lazy_bytes`], or as [`open_raster_bytes`] after a fallback.
+pub fn open_raster_lazy_bytes_or_whole(bytes: Vec<u8>, name: &str) -> Result<OpenedRasterBytes> {
+    crate::ops::translate::open_bytes(bytes, name, crate::ops::overview::OverviewSelection::Auto)
+}
+
 /// Opens a Zarr store (or GeoZarr) from its files: `(path, bytes)` pairs, paths relative to the
 /// store's directory or its parent (`.zgroup`, `dem/.zarray`, `dem/0.0`...), as a key-value store
 /// holds them.
@@ -301,7 +317,7 @@ mod native {
 #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
 pub(crate) mod codec {
     use super::*;
-    use std::io::{Cursor, Read};
+    use std::io::Cursor;
 
     /// Whether the bytes start with a TIFF or BigTIFF signature.
     pub(crate) fn is_tiff(b: &[u8]) -> bool {
@@ -487,23 +503,26 @@ pub(crate) mod codec {
     }
 
     /// Opens the main dataset of a zip archive held in memory.
+    ///
+    /// Its members are read within the archive limits (`crate::vfs::ZipLimits`), as `/vsizip/`
+    /// reads the same archive on disk.
     fn open_zip(bytes: &[u8], name: &str, options: &VectorOpenOptions) -> Result<Dataset> {
-        let mut zip = zip::ZipArchive::new(Cursor::new(bytes))?;
+        let mut zip = crate::vfs::LimitedZip::open(Cursor::new(bytes))?;
         let mut names = Vec::new();
-        for i in 0..zip.len() {
-            let f = zip.by_index(i)?;
-            if f.is_file() {
-                names.push(f.name()?.to_string());
+        for i in 0..zip.archive().len() {
+            let (member, _, is_file) = zip.entry(i)?;
+            if is_file {
+                names.push(member);
             }
         }
         names.sort();
         // A Zarr store: its files, read under a directory in memory.
         if let Some(root) = zarr_root(&names) {
+            // Only the store's files: other members do not count toward the limits.
+            let prefix = format!("{root}/");
             let mut files = Vec::with_capacity(names.len());
-            for n in &names {
-                let mut b = Vec::new();
-                zip.by_name(n)?.read_to_end(&mut b)?;
-                files.push((n.clone(), b));
+            for n in names.iter().filter(|n| root.is_empty() || n.trim_start_matches("./").starts_with(&prefix)) {
+                files.push((n.clone(), zip.read_name(n, u64::MAX)?));
             }
             return open_zarr_store(files, &root).map(Dataset::Raster);
         }
@@ -512,33 +531,43 @@ pub(crate) mod codec {
             .find_map(|ext| names.iter().find(|n| extension(n.as_str()).as_deref() == Some(*ext)))
             .cloned()
             .ok_or_else(|| Error::Unsupported(format!("no dataset found in '{name}'")))?;
-        let mut member = Vec::new();
-        zip.by_name(&main)?.read_to_end(&mut member)?;
+        let member = zip.read_name(&main, u64::MAX)?;
         let driver = VectorDriver::for_extension(&main);
         if let Some(driver @ (VectorDriver::Shapefile | VectorDriver::MapInfo)) = driver {
             // The sidecars: the members named as the main file, with another extension.
             let base = &main[..main.len() - extension(&main).map_or(0, |e| e.len() + 1)];
             let zip = std::cell::RefCell::new(zip);
+            // A sidecar past the archive limits refuses the dataset, rather than opening it without.
+            let refused = std::cell::RefCell::new(None);
             let sidecar = |ext: &str| -> Option<Vec<u8>> {
                 let member = names.iter().find(|n| {
                     n.len() == base.len() + ext.len() + 1 && n.starts_with(base) && extension(n.as_str()).as_deref() == Some(ext)
                 })?;
-                let mut out = Vec::new();
-                zip.borrow_mut().by_name(member).ok()?.read_to_end(&mut out).ok()?;
-                Some(out)
+                match zip.borrow_mut().read_name(member, u64::MAX) {
+                    Ok(bytes) => Some(bytes),
+                    Err(e) if e.is_resource_refusal() => {
+                        refused.borrow_mut().get_or_insert(e);
+                        None
+                    }
+                    Err(_) => None,
+                }
             };
-            let layers = crate::drivers::vector::read_parts(&member, &main, driver, &sidecar, options)?;
+            let layers = crate::drivers::vector::read_parts(&member, &main, driver, &sidecar, options);
+            if let Some(e) = refused.into_inner() {
+                return Err(e);
+            }
+            let layers = layers?;
             let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, &main, driver)).collect();
             return finish_vector(layers, &main, driver, options);
         }
-        let mut ds = open(member, &main, options)?;
+        // An archive in the member shares what is left of this one's limits.
+        let mut ds = zip.nested(|| open(member, &main, options))?;
         // A raster's `.aux.xml` sidecar (a JPEG 2000's nodata value).
         let aux = format!("{main}.aux.xml");
         if let Dataset::Raster(r) = &mut ds
             && names.contains(&aux)
         {
-            let mut xml = String::new();
-            zip.by_name(&aux)?.read_to_string(&mut xml)?;
+            let xml = String::from_utf8(zip.read_name(&aux, u64::MAX)?).map_err(|_| Error::InvalidData(format!("'{aux}' is not UTF-8")))?;
             crate::drivers::nodata::apply(crate::drivers::common::parse_pam(&xml), r);
         }
         Ok(ds)
@@ -1296,6 +1325,20 @@ mod tests {
     }
 
     #[test]
+    fn tiff_bytes_open_lazily_or_whole() {
+        let ds = raster(2, DataType::I32);
+        let bytes = write_raster_bytes(&ds, "a.tif", &Default::default()).unwrap();
+        let Ok(OpenedRasterBytes::Lazy(mut r)) = open_raster_lazy_bytes_or_whole(bytes, "a.tif") else { panic!() };
+        assert_eq!(r.read().unwrap().raster.data.to_f64_vec(), ds.raster.data.to_f64_vec());
+        // Bytes neither reader reads are refused; other formats open as the lazy opener opens them.
+        let mut broken = b"II*\0".to_vec();
+        broken.extend([0xff; 60]);
+        assert!(open_raster_lazy_bytes_or_whole(broken, "b.tif").is_err());
+        let asc = b"ncols 2\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n".to_vec();
+        assert!(matches!(open_raster_lazy_bytes_or_whole(asc, "c.asc"), Ok(OpenedRasterBytes::Lazy(_))));
+    }
+
+    #[test]
     #[cfg(not(target_family = "wasm"))]
     fn native_bytes_round_trip() {
         let ds = raster(2, DataType::I32);
@@ -1333,5 +1376,122 @@ mod tests {
                 assert_eq!(l.features[0].attributes[i], wbvector::FieldValue::Text("Zürich".into()), "{name}");
             }
         }
+    }
+
+    /// A zip archive opened from memory reads its members within the archive limits, as
+    /// `/vsizip/` reads the same archive on disk.
+    #[test]
+    fn zip_bytes_are_read_within_the_zip_limits() {
+        let gj = format!(
+            r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{}},"geometry":{{"type":"Point","coordinates":[1,2]}}}}]}}{}"#,
+            " ".repeat(1 << 20)
+        );
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(&mut buf);
+        writer.start_file("p.geojson", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut writer, gj.as_bytes()).unwrap();
+        writer.finish().unwrap();
+        let zip = buf.into_inner();
+        let scoped = |key: &str, value: &str| {
+            crate::config::with_options(&[(key, value)], || codec::open(zip.clone(), "p.zip", &Default::default()))
+        };
+        let Dataset::Vector(v) = codec::open(zip.clone(), "p.zip", &Default::default()).unwrap() else { panic!() };
+        assert_eq!(v.layers[0].features.len(), 1);
+        for (key, value) in [("TERRIO_ZIP_MAX_SIZE", "1000"), ("TERRIO_ZIP_MAX_RATIO", "10"), ("TERRIO_ZIP_MAX_ENTRIES", "0")] {
+            let refused = scoped(key, value);
+            assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains(key)), "{key}: {:?}", refused.err());
+        }
+    }
+
+    /// A shapefile sidecar past the archive limits refuses the dataset, rather than it opening
+    /// without the sidecar's attributes.
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn zip_bytes_refuse_a_sidecar_past_the_zip_limits() {
+        let gj = r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"id":7},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
+        let v = open_vector_bytes(gj.as_bytes().to_vec(), "p.geojson", &Default::default()).unwrap();
+        let zip = write_vector_bytes(&v.layers, "p.shp.zip", &Default::default()).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip.clone())).unwrap();
+        let shp = (0..archive.len())
+            .map(|i| archive.by_index_raw(i).map(|f| (f.name().unwrap().to_string(), f.size())).unwrap())
+            .find(|(name, _)| name.ends_with(".shp"))
+            .unwrap()
+            .1;
+        let Dataset::Vector(back) = codec::open(zip.clone(), "p.zip", &Default::default()).unwrap() else { panic!() };
+        assert_eq!(back.layers[0].features.len(), 1);
+        // Room for the .shp, not for its sidecars too.
+        let refused =
+            crate::config::with_options(&[("TERRIO_ZIP_MAX_SIZE", &shp.to_string())], || codec::open(zip, "p.zip", &Default::default()));
+        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("TERRIO_ZIP_MAX_SIZE")), "{:?}", refused.err());
+    }
+
+    /// A zip archive inside a zip archive shares the outer one's `TERRIO_ZIP_MAX_SIZE`, so nesting
+    /// cannot multiply it.
+    #[test]
+    fn nested_zip_bytes_share_the_zip_size_limit() {
+        let zip_of = |name: &str, bytes: &[u8]| {
+            let mut buf = std::io::Cursor::new(Vec::new());
+            let mut writer = zip::ZipWriter::new(&mut buf);
+            writer.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut writer, bytes).unwrap();
+            writer.finish().unwrap();
+            buf.into_inner()
+        };
+        let gj = format!(
+            r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{}},"geometry":{{"type":"Point","coordinates":[1,2]}}}}]}}{}"#,
+            " ".repeat(4000)
+        );
+        let inner = zip_of("p.geojson", gj.as_bytes());
+        let outer = zip_of("inner.geojson", &inner);
+        let Dataset::Vector(v) = codec::open(outer.clone(), "p.zip", &Default::default()).unwrap() else { panic!() };
+        assert_eq!(v.layers[0].features.len(), 1);
+        // Room for either member alone, not for both.
+        let limit = (gj.len().max(inner.len()) + 10).to_string();
+        let refused = crate::config::with_options(&[("TERRIO_ZIP_MAX_SIZE", &limit)], || codec::open(outer, "p.zip", &Default::default()));
+        // The message names the configured limit, not what was left of it.
+        let expected = format!("more than the {limit} bytes allowed (TERRIO_ZIP_MAX_SIZE), shared with the archives it is in");
+        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.ends_with(&expected)), "{:?}", refused.err());
+        // Archives nest at most 8 deep.
+        let mut nested = zip_of("p.geojson", gj.as_bytes());
+        for _ in 0..8 {
+            nested = zip_of("inner.geojson", &nested);
+        }
+        let refused = codec::open(nested, "p.zip", &Default::default());
+        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("nest more than 8 deep")), "{:?}", refused.err());
+    }
+
+    /// What an archive nested in a member reads counts toward the outer archive's later reads, and
+    /// the outer budget is restored when the nested open panics.
+    #[test]
+    fn nested_zip_reads_are_charged_to_the_outer_archive() {
+        use crate::vfs::LimitedZip;
+        let zip_of = |members: &[(&str, &[u8])]| {
+            let mut buf = std::io::Cursor::new(Vec::new());
+            let mut writer = zip::ZipWriter::new(&mut buf);
+            for (name, bytes) in members {
+                writer.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+                std::io::Write::write_all(&mut writer, bytes).unwrap();
+            }
+            writer.finish().unwrap();
+            buf.into_inner()
+        };
+        let inner = zip_of(&[("a", &[b'x'; 600])]);
+        let outer = zip_of(&[("inner.zip", &inner), ("b", &[b'y'; 300])]);
+        let (refused, panicked) = crate::config::with_options(&[("TERRIO_ZIP_MAX_SIZE", "1000")], || {
+            let mut zip = LimitedZip::open(std::io::Cursor::new(outer)).unwrap();
+            let member = zip.read_name("inner.zip", u64::MAX).unwrap();
+            let read =
+                zip.nested(|| LimitedZip::open(std::io::Cursor::new(member.clone())).unwrap().read_name("a", u64::MAX).map(|b| b.len()));
+            assert_eq!(read.unwrap(), 600);
+            // inner.zip, then its 600 bytes, then 300 more: past the 1,000 allowed.
+            let refused = zip.read_name("b", u64::MAX);
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| zip.nested(|| panic!("nested open"))));
+            (refused, panicked)
+        });
+        assert!(matches!(&refused, Err(Error::ResourceLimit(m)) if m.contains("TERRIO_ZIP_MAX_SIZE")), "{refused:?}");
+        assert!(panicked.is_err());
+        // No budget is left behind for later, unrelated archives.
+        let fresh = zip_of(&[("c", &[b'z'; 2000])]);
+        assert_eq!(LimitedZip::open(std::io::Cursor::new(fresh)).unwrap().read_name("c", u64::MAX).unwrap().len(), 2000);
     }
 }

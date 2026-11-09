@@ -11,15 +11,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// A part of an object: the whole object, `length` bytes from `offset`, or the last `n` bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Range {
-    Whole,
-    At(u64, u64),
-    Suffix(u64),
-}
+pub(crate) use crate::sparse::ObjectRange as Range;
 
 enum Backend {
     Local(PathBuf),
+    /// Objects fetched by the caller (terrio-js, with `fetch`): see [`crate::sparse::SparseObjects`].
+    Sparse(Arc<crate::sparse::SparseObjects>),
     #[cfg(remote)]
     Remote {
         base: RemoteBase,
@@ -55,6 +52,9 @@ pub(crate) struct Store {
     consolidated: Option<HashMap<String, Value>>,
     /// Metadata documents read so far (`None` for missing ones).
     cache: Mutex<HashMap<String, Option<Value>>>,
+    /// The root of a remote store is a Zarr v3 node: v2 documents (`.zarray`, `.zattrs`,
+    /// `.zgroup`) are missing without being requested, as a v3 hierarchy holds v3 nodes.
+    v3: bool,
     /// The child names listed so far of remote keys.
     #[cfg(remote)]
     listings: Mutex<HashMap<String, Vec<String>>>,
@@ -105,6 +105,7 @@ impl Store {
             name,
             consolidated: None,
             cache: Mutex::new(HashMap::new()),
+            v3: false,
             #[cfg(remote)]
             listings: Mutex::new(HashMap::new()),
         }
@@ -150,6 +151,7 @@ impl Store {
                 }
                 Ok(Some(out))
             }
+            Backend::Sparse(objects) => Ok(objects.get(key, range)?),
             #[cfg(remote)]
             Backend::Remote { base, fetcher } => {
                 use crate::http::{ByteRange, Remote};
@@ -209,6 +211,16 @@ impl Store {
         matches!(self.backend, Backend::Local(_))
     }
 
+    /// Whether objects are requested from a server (not a local directory, nor objects the
+    /// caller fetches into memory).
+    fn is_served(&self) -> bool {
+        #[cfg(remote)]
+        let served = matches!(self.backend, Backend::Remote { .. });
+        #[cfg(not(remote))]
+        let served = false;
+        served
+    }
+
     /// A metadata document (JSON), from the consolidated metadata or read and cached. A read
     /// that fails (a network error) or a document that is not JSON is an error, and is not
     /// cached: only missing documents are.
@@ -224,6 +236,9 @@ impl Store {
         }
         if let Some(v) = self.cache.lock().ok().and_then(|c| c.get(key).cloned()) {
             return Ok(v);
+        }
+        if self.v3 && matches!(key.rsplit('/').next(), Some(".zarray" | ".zattrs" | ".zgroup")) {
+            return Ok(None);
         }
         let v = match self.get(key, Range::Whole)? {
             Some(b) => Some(
@@ -251,13 +266,28 @@ impl Store {
     /// `consolidated_metadata` of a v3 root group.
     fn load_consolidated(&mut self) -> Result<()> {
         let mut map = HashMap::new();
-        if let Some(m) = self.probe(".zmetadata")?
+        // Both looked for at once: on a remote store, each is a round trip.
+        let this = &*self;
+        let options = crate::config::thread_options();
+        let mut found = crate::par::map_range(2, |i| {
+            crate::config::with_thread_options(options.clone(), || this.probe([".zmetadata", "zarr.json"][i]))
+        })
+        .into_iter();
+        let v2 = found.next().unwrap_or(Ok(None))?;
+        // A v2 store's consolidated metadata stands alone: a failed read of the root's
+        // `zarr.json` (a transient error, a 403) does not fail it.
+        let root = found.next().unwrap_or(Ok(None));
+        let root = if v2.as_ref().is_some_and(|m| m["metadata"].is_object()) { root.unwrap_or(None) } else { root? };
+        // Requests saved on a remote store only: a local one looks for every document, as it
+        // costs nothing.
+        self.v3 = !self.is_local() && root.as_ref().is_some_and(|r| r["zarr_format"] == 3);
+        if let Some(m) = v2
             && let Some(meta) = m["metadata"].as_object()
         {
             for (k, v) in meta {
                 map.insert(k.trim_start_matches('/').to_string(), v.clone());
             }
-        } else if let Some(root) = self.probe("zarr.json")?
+        } else if let Some(root) = root
             && let Some(meta) = root["consolidated_metadata"]["metadata"].as_object()
             && !meta.is_empty()
         {
@@ -347,6 +377,26 @@ impl Node {
         Ok(node)
     }
 
+    /// Opens a store whose objects the caller fetches (see [`crate::sparse::SparseObjects`]),
+    /// named `name` in messages: its root, or the node at `key`. Fails until the metadata it
+    /// reads is fetched.
+    pub(crate) fn sparse(objects: Arc<crate::sparse::SparseObjects>, name: &str, key: &str) -> Result<Node> {
+        let mut store = Store::new(Backend::Sparse(objects), name.to_string());
+        store.load_consolidated()?;
+        let node = Node { store: Arc::new(store), key: key.trim_matches('/').to_string() };
+        let mut found = node.store.consolidated.is_some();
+        for f in METADATA_FILES {
+            if found {
+                break;
+            }
+            found = node.store.probe(&join_key(&node.key, f))?.is_some();
+        }
+        if !found {
+            return Err(crate::Error::InvalidData(format!("Zarr: no Zarr metadata at {}", node.display())));
+        }
+        Ok(node)
+    }
+
     /// The node at a path relative to this one (`..` going up; a leading `/` from the root).
     pub(crate) fn join(&self, rel: &str) -> Node {
         Node { store: self.store.clone(), key: join_key(&self.key, rel) }
@@ -409,8 +459,6 @@ impl Node {
         {
             out.extend(self.store.list(base, &self.key));
         }
-        // Irrefutable in WebAssembly builds, which read local stores only.
-        #[allow(irrefutable_let_patterns)]
         if let Backend::Local(root) = &self.store.backend {
             let dir = if self.key.is_empty() { root.clone() } else { root.join(&self.key) };
             for (n, _) in crate::memfs::subdirs(&dir) {
@@ -426,6 +474,11 @@ impl Node {
     /// Whether the store is remote.
     pub(crate) fn is_remote(&self) -> bool {
         !self.store.is_local()
+    }
+
+    /// Whether the store's objects are requested from a server, each request waiting on it.
+    pub(crate) fn is_served(&self) -> bool {
+        self.store.is_served()
     }
 }
 

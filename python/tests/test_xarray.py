@@ -119,6 +119,20 @@ def test_masked_and_scaled(files):
     assert np.isnan(rgb.values[:, 20, 30]).all()
 
 
+def test_scale_only_and_offset_only(tmp_path):
+    raw = np.arange(12, dtype="int16").reshape(2, 2, 3)
+    p = str(tmp_path / "so.tif")
+    profile = dict(driver="GTiff", width=3, height=2, count=2, dtype="int16", crs="EPSG:32611")
+    with rio.open(p, "w", transform=TRANSFORM, **profile) as dst:
+        dst.write(raw)
+        dst.scales = [2.0, 1.0]
+        dst.offsets = [0.0, 10.0]
+    with pytest.warns(UserWarning, match="differ across bands"):
+        got = txr.open_rasterio(p, mask_and_scale=True).values
+    np.testing.assert_array_equal(got[0], raw[0] * 2.0)
+    np.testing.assert_array_equal(got[1], raw[1] + 10.0)
+
+
 def test_reads_only_the_window(files, monkeypatch):
     windows = []
     read = _io._Source.read
@@ -213,6 +227,56 @@ def test_band_as_variable_and_engine(files):
 
     assert TerrioBackendEntrypoint().guess_can_open("a/b.TIF")
     assert not TerrioBackendEntrypoint().guess_can_open("a/b.nc")
+
+
+def test_clip_takes_a_layer(files):
+    """A Layer clips as its GeoJSON does, from its own CRS, without contradicting `crs=`."""
+    from terrio.rio.features import geometry_mask
+
+    da = txr.open_rasterio(files["dem"], masked=True)
+    polys = [
+        {
+            "type": "Polygon",
+            "coordinates": [
+                [(503000, 4093000), (506000, 4093000), (503000, 4096000), (503000, 4093000)]
+            ],
+        },
+        {
+            "type": "Polygon",
+            "coordinates": [
+                [(507000, 4094000), (508000, 4094000), (508000, 4095000), (507000, 4094000)]
+            ],
+        },
+    ]
+    features = [{"type": "Feature", "properties": {}, "geometry": p} for p in polys]
+    layer = terrio.Layer.from_geojson(
+        {"type": "FeatureCollection", "features": features}, crs=da.terrio.crs.to_wkt()
+    )
+    for kw in ({}, {"all_touched": True}, {"drop": False, "invert": True}):
+        xr.testing.assert_identical(da.terrio.clip(layer, **kw), da.terrio.clip(polys, **kw))
+    lon_lat = layer.to_crs("EPSG:4326")
+    lon_lat_polys = [f["geometry"] for f in lon_lat.to_geojson()["features"]]
+    xr.testing.assert_identical(
+        da.terrio.clip(lon_lat), da.terrio.clip(lon_lat_polys, crs="EPSG:4326")
+    )
+    ds = xr.Dataset({"a": da, "b": da * 2})
+    xr.testing.assert_identical(ds.terrio.clip(layer), ds.terrio.clip(polys))
+    with pytest.raises(ValueError, match="Layer's own CRS"):
+        da.terrio.clip(layer, crs="EPSG:4326")
+    with pytest.raises(ValueError, match="must be 2D"):
+        geometry_mask(layer, (2, 400, 400), da.terrio.transform())
+    # A Layer without a CRS of its own takes `crs=`.
+    pa = pytest.importorskip("pyarrow")
+    bare = terrio.Layer.from_arrow(pa.table({"geometry": pa.array(lon_lat.to_wkb())}))
+    assert bare.crs is None
+    xr.testing.assert_identical(
+        da.terrio.clip(bare, crs="EPSG:4326"), da.terrio.clip(lon_lat_polys, crs="EPSG:4326")
+    )
+    # A grid terrio does not burn on directly (south-up) goes through GeoJSON.
+    south_up = Affine(30.0, 0.0, 500000.0, 0.0, 30.0, 4090000.0)
+    np.testing.assert_array_equal(
+        geometry_mask(layer, (400, 400), south_up), geometry_mask(polys, (400, 400), south_up)
+    )
 
 
 def test_clip_reproject_pad(files):
@@ -616,3 +680,326 @@ def test_to_raster_lazy_and_options(files, tmp_path, monkeypatch):
     txr.open_rasterio(files["rgb"]).terrio.to_raster(str(tmp_path / "x.zarr"))
     assert opened[-1]["driver"] == "Zarr"
     assert "blockxsize" not in opened[-1] and "tiled" not in opened[-1]
+
+
+def test_per_dataset_mask_and_backend_close(tmp_path):
+    masked_path = tmp_path / "masked.tif"
+    pixels = np.array([[10, 20], [30, 40]], dtype="uint8")
+    mask = np.array([[255, 0], [0, 255]], dtype="uint8")
+    with rio.open(
+        masked_path,
+        "w",
+        driver="GTiff",
+        width=2,
+        height=2,
+        count=1,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=Affine(1.0, 0.0, 0.0, 0.0, -1.0, 2.0),
+    ) as dst:
+        dst.write(pixels, 1)
+        dst.write_mask(mask)
+        dst.build_overviews([2])
+
+    da = txr.open_rasterio(str(masked_path), masked=True, cache=False)
+    expected = np.array([[[10.0, np.nan], [np.nan, 40.0]]], dtype="float32")
+    np.testing.assert_allclose(da[:, :1, :].values, expected[:, :1, :], equal_nan=True)
+    np.testing.assert_allclose(da.values, expected, equal_nan=True)
+
+    da_ovr = txr.open_rasterio(str(masked_path), masked=True, overview_level=0)
+    assert da_ovr.shape == (1, 1, 1)
+    assert da_ovr.values[0, 0, 0] == 10.0
+    da_ovr.close()
+    masked_ovr_path = tmp_path / "masked_ovr_4x4.tif"
+    with rio.open(
+        masked_ovr_path,
+        "w",
+        driver="GTiff",
+        width=4,
+        height=4,
+        count=1,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=Affine(1.0, 0.0, 0.0, 0.0, -1.0, 4.0),
+    ) as dst:
+        dst.write(np.arange(1, 17, dtype="uint8").reshape(4, 4), 1)
+        dst.write_mask(
+            np.array(
+                [[255, 255, 0, 0], [255, 255, 0, 0], [0, 0, 255, 255], [0, 0, 255, 255]],
+                dtype="uint8",
+            )
+        )
+        dst.build_overviews([2])
+    da_ovr4 = txr.open_rasterio(str(masked_ovr_path), masked=True, overview_level=0)
+    assert da_ovr4.shape == (1, 2, 2)
+    assert np.isfinite(da_ovr4.values[0, 0, 0]) and np.isnan(da_ovr4.values[0, 0, 1])
+    assert np.isnan(da_ovr4.values[0, 1, 0]) and np.isfinite(da_ovr4.values[0, 1, 1])
+    da_ovr4.close()
+
+    from terrio.xarray._backend import TerrioBackendEntrypoint
+
+    def unwrap_pool(data_array):
+        arr = data_array.variable._data
+        while hasattr(arr, "array"):
+            arr = arr.array
+        return arr.source.pool
+
+    ep = TerrioBackendEntrypoint()
+    ds1 = ep.open_dataset(str(masked_path))
+    assert ds1._close is not None
+    pool1 = unwrap_pool(ds1["band_data"])
+    assert pool1._free or pool1._shared is not None
+    ds1.close()
+    assert pool1._shared is None and not pool1._free
+
+    rgb_path = tmp_path / "rgb_drop.tif"
+    with rio.open(
+        rgb_path,
+        "w",
+        driver="GTiff",
+        width=2,
+        height=2,
+        count=2,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=Affine(1.0, 0.0, 0.0, 0.0, -1.0, 2.0),
+    ) as dst:
+        dst.write(pixels, 1)
+        dst.write(pixels, 2)
+    ds2 = ep.open_dataset(str(rgb_path), band_as_variable=True, drop_variables=("band_1",))
+    assert "band_1" not in ds2.data_vars and "band_2" in ds2.data_vars
+    assert ds2._close is not None
+    pool2 = unwrap_pool(ds2["band_2"])
+    assert pool2._free or pool2._shared is not None
+    ds2.close()
+    assert pool2._shared is None and not pool2._free
+
+    ds_no_nodata = txr.open_rasterio(str(rgb_path), band_as_variable=True)
+    assert ds_no_nodata["band_1"].terrio.nodata is None
+    out_no_nodata = tmp_path / "rgb_no_nodata_out.tif"
+    ds_no_nodata.terrio.to_raster(str(out_no_nodata))
+    with rio.open(out_no_nodata) as check_ds:
+        assert check_ds.nodata is None and check_ds.count == 2
+    ds_no_nodata.close()
+    ds_nan_nodata = txr.open_rasterio(str(rgb_path), band_as_variable=True).astype("float32")
+    ds_nan_nodata["band_1"].terrio.write_nodata(np.float32("nan"), inplace=True)
+    ds_nan_nodata["band_2"].terrio.write_nodata(float("nan"), inplace=True)
+    out_nan_nodata = tmp_path / "rgb_nan_nodata_out.tif"
+    ds_nan_nodata.terrio.to_raster(str(out_nan_nodata))
+    with rio.open(out_nan_nodata) as check_nan_ds:
+        assert check_nan_ds.nodata is not None and np.isnan(check_nan_ds.nodata)
+        assert check_nan_ds.count == 2
+    ds_nan_nodata.close()
+
+
+def test_dataset_export_requires_matching_nodata(tmp_path):
+    """None and NaN are distinct declarations; encoded errors report the compared values."""
+    from terrio.xarray.exceptions import RioXarrayError
+
+    base = xr.DataArray(
+        np.array([[np.nan, 1], [2, 3]], dtype="float32"),
+        dims=("y", "x"),
+        coords={"x": [0.5, 1.5], "y": [1.5, 0.5]},
+    ).terrio.write_crs("EPSG:4326")
+    second = base.terrio.write_nodata(np.nan)
+    dataset = xr.Dataset({"first": base, "second": second})
+    output = str(tmp_path / "mismatched.tif")
+    with pytest.raises(RioXarrayError, match="All nodata values must be the same"):
+        dataset.terrio.to_raster(output)
+    for name, value in [("first", -1), ("second", -2)]:
+        dataset[name].terrio.write_nodata(value, encoded=True, inplace=True)
+    with pytest.raises(RioXarrayError, match=r"Current values:.*-1.*-2"):
+        dataset.terrio.to_raster(output)
+
+
+@pytest.mark.parametrize(
+    "mask_before_overviews,external", [(False, False), (True, False), (True, True)]
+)
+@pytest.mark.parametrize("has_nodata", [False, True])
+def test_overview_masks_match_opened_gdal_dataset(
+    tmp_path, mask_before_overviews, external, has_nodata, monkeypatch
+):
+    """Match GDAL 3.13.3 overview masks, including absent masks and valid nodata pixels."""
+    gdal = pytest.importorskip("osgeo.gdal")
+    path = str(tmp_path / "overview_mask.tif")
+    pixels = np.full((8, 8), 10, dtype="float32")
+    pixels[4:, 4:] = -9999
+    ds = gdal.GetDriverByName("GTiff").Create(path, 8, 8, 2, gdal.GDT_Float32)
+    ds.SetGeoTransform([0, 1, 0, 8, 0, -1])
+    for band in (1, 2):
+        ds.GetRasterBand(band).WriteArray(pixels)
+        if has_nodata:
+            ds.GetRasterBand(band).SetNoDataValue(-9999)
+    if not mask_before_overviews:
+        ds.BuildOverviews("NEAREST", [2])
+    # Force an internal mask independently of the process's GDAL configuration.
+    with gdal.config_option("GDAL_TIFF_INTERNAL_MASK", "YES"):
+        ds.CreateMaskBand(gdal.GMF_PER_DATASET)
+    mask = np.full((8, 8), 255, dtype="uint8")
+    mask[:4, :4] = 0
+    ds.GetRasterBand(1).GetMaskBand().WriteArray(mask)
+    if mask_before_overviews and not external:
+        ds.BuildOverviews("NEAREST", [2])
+    ds = None
+    if external:
+        ds = gdal.Open(path)
+        ds.BuildOverviews("NEAREST", [2])
+        ds = None
+    if external and has_nodata:
+        # An external overview is a separate dataset: its nodata can differ from the base.
+        ds = gdal.Open(path + ".ovr", gdal.GA_Update)
+        for band in (1, 2):
+            data = ds.GetRasterBand(band).ReadAsArray()
+            data[data == -9999] = -8888
+            ds.GetRasterBand(band).WriteArray(data)
+            ds.GetRasterBand(band).SetNoDataValue(-8888)
+        ds = None
+    reference = gdal.OpenEx(path, open_options=["OVERVIEW_LEVEL=0"])
+    expected = []
+    for band in (1, 2):
+        overview = reference.GetRasterBand(band)
+        data = overview.ReadAsArray().astype("float32")
+        data[overview.GetMaskBand().ReadAsArray() == 0] = np.nan
+        expected.append(data)
+    mask_reads = []
+    read_mask = terrio.Raster._read_level_mask
+
+    def counted_mask_read(self, *args, **kwargs):
+        mask_reads.append(kwargs)
+        return read_mask(self, *args, **kwargs)
+
+    monkeypatch.setattr(terrio.Raster, "_read_level_mask", counted_mask_read)
+    with txr.open_rasterio(path, masked=True, overview_level=0, cache=False) as opened:
+        assert mask_reads == [], "opening overview metadata must not decode mask payload"
+        np.testing.assert_allclose(
+            opened[:, :2, :].values, np.stack(expected)[:, :2, :], equal_nan=True
+        )
+        np.testing.assert_allclose(opened.values, np.stack(expected), equal_nan=True)
+
+
+@pytest.mark.parametrize("fallback", ["all_valid", "nodata", "alpha"])
+def test_reduced_mask_at_full_size_uses_validity_fallback(tmp_path, fallback):
+    """A reduced-resolution mask IFD is not a full-resolution dataset mask."""
+    import struct
+
+    from terrio.rio.enums import ColorInterp
+
+    path = tmp_path / "reduced-mask.tif"
+    values = np.array([[10, 20], [30, 40]], dtype="uint8")
+    count = 4 if fallback == "alpha" else 1
+    with rio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=2,
+        height=2,
+        count=count,
+        dtype="uint8",
+        nodata=20 if fallback == "nodata" else None,
+        transform=TRANSFORM,
+    ) as dst:
+        for band in range(1, count + 1):
+            dst.write(values if band != 4 else np.array([[255, 0], [0, 255]], dtype="uint8"), band)
+        if fallback == "alpha":
+            dst.colorinterp = (
+                ColorInterp.red,
+                ColorInterp.green,
+                ColorInterp.blue,
+                ColorInterp.alpha,
+            )
+        dst.write_mask(np.array([[0, 255], [255, 0]], dtype="uint8"))
+    # Set only the mask IFD's reduced-resolution bit, keeping its dimensions unchanged.
+    raw = bytearray(path.read_bytes())
+    assert raw[:4] == b"II*\x00"
+    offset = struct.unpack_from("<I", raw, 4)[0]
+    changed = False
+    while offset:
+        size = struct.unpack_from("<H", raw, offset)[0]
+        for index in range(size):
+            entry = offset + 2 + 12 * index
+            tag, kind, length, value = struct.unpack_from("<HHII", raw, entry)
+            if tag == 254 and kind == 4 and length == 1 and value & 4:
+                struct.pack_into("<I", raw, entry + 8, value | 1)
+                changed = True
+        offset = struct.unpack_from("<I", raw, offset + 2 + 12 * size)[0]
+    assert changed
+    path.write_bytes(raw)
+    expected = values.astype("float32")
+    if fallback == "nodata":
+        expected[values == 20] = np.nan
+    elif fallback == "alpha":
+        expected[0, 1] = expected[1, 0] = np.nan
+    da = txr.open_rasterio(str(path), masked=True, cache=False)
+    try:
+        np.testing.assert_allclose(da[:1, :1, :].values[0], expected[:1], equal_nan=True)
+        np.testing.assert_allclose(da.values[0], expected, equal_nan=True)
+    finally:
+        da.close()
+
+
+def test_rio_opened_overview_uses_overview_only_mask(tmp_path):
+    """Opened overview flags and pixels use the same native mask discovery."""
+    import struct
+
+    from terrio.rio.enums import MaskFlags, Resampling
+
+    path = tmp_path / "overview-only-mask.tif"
+    values = np.arange(1, 17, dtype="uint8").reshape(4, 4)
+    mask = np.full((4, 4), 255, dtype="uint8")
+    mask[:, :2] = 0
+    with rio.open(
+        path, "w", driver="GTiff", width=4, height=4, count=1, dtype="uint8", transform=TRANSFORM
+    ) as dst:
+        dst.write(values, 1)
+        dst.write_mask(mask)
+        dst.build_overviews([2], Resampling.nearest)
+    # Unlink the full-resolution mask IFD, preserving the overview's type-5 mask.
+    raw = bytearray(path.read_bytes())
+    assert raw[:4] == b"II*\x00"
+    link = 4
+    removed = False
+    while offset := struct.unpack_from("<I", raw, link)[0]:
+        size = struct.unpack_from("<H", raw, offset)[0]
+        tags = {
+            struct.unpack_from("<H", raw, offset + 2 + 12 * i)[0]: struct.unpack_from(
+                "<I", raw, offset + 10 + 12 * i
+            )[0]
+            for i in range(size)
+        }
+        next_link = offset + 2 + 12 * size
+        if tags.get(254, 0) == 4:
+            struct.pack_into("<I", raw, link, struct.unpack_from("<I", raw, next_link)[0])
+            removed = True
+        else:
+            link = next_link
+    assert removed
+    path.write_bytes(raw)
+    with rio.open(path) as src:
+        assert src.mask_flag_enums == ([MaskFlags.all_valid],)
+    with rio.open(path, overview_level=0) as src:
+        assert src.mask_flag_enums == ([MaskFlags.per_dataset],)
+        actual = src.read(1, masked=True)
+        np.testing.assert_array_equal(actual.mask, [[True, False], [True, False]])
+        np.testing.assert_array_equal(actual[:, 1], [3, 11])
+
+
+def test_sidecar_only_mask_flags_and_uncached_reads_agree(tmp_path):
+    """GDAL 3.13.3 sidecar masks use the same native discovery as full-resolution reads."""
+    gdal = pytest.importorskip("osgeo.gdal")
+    path = tmp_path / "sidecar-mask.tif"
+    pixels = np.array([[10, 20], [30, 40]], dtype="uint8")
+    with gdal.config_option("GDAL_TIFF_INTERNAL_MASK", "NO"):
+        dst = gdal.GetDriverByName("GTiff").Create(str(path), 2, 2, 1, gdal.GDT_Byte)
+        dst.GetRasterBand(1).WriteArray(pixels)
+        dst.CreateMaskBand(gdal.GMF_PER_DATASET)
+        dst.GetRasterBand(1).GetMaskBand().WriteArray(np.array([[255, 0], [0, 255]], dtype="uint8"))
+        dst = None
+    assert path.with_suffix(".tif.msk").is_file()
+    with rio.open(path) as src:
+        from terrio.rio.enums import MaskFlags
+
+        assert src.mask_flag_enums == ([MaskFlags.per_dataset],)
+    expected = np.array([[[10, np.nan], [np.nan, 40]]], dtype="float32")
+    with txr.open_rasterio(str(path), masked=True, cache=False) as opened:
+        np.testing.assert_allclose(opened[:, :1, :].values, expected[:, :1, :], equal_nan=True)
+        np.testing.assert_allclose(opened.values, expected, equal_nan=True)

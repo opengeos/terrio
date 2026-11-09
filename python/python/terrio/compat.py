@@ -183,7 +183,9 @@ class _AliasImporter(importlib.abc.MetaPathFinder, importlib.abc.Loader):
                 setter(_log_warp_nodata)
         with self._lock:
             self._specs[fullname] = module.__spec__
-        return importlib.util.spec_from_loader(fullname, self, is_package=hasattr(module, "__path__"))
+        return importlib.util.spec_from_loader(
+            fullname, self, is_package=hasattr(module, "__path__")
+        )
 
     def create_module(self, spec: importlib.machinery.ModuleSpec) -> ModuleType:
         """Gives the import system terrio's module itself.
@@ -252,8 +254,10 @@ def install(rasterio: bool = True, rioxarray: bool = True, pyogrio: bool = True)
     )
     if real:
         raise AlreadyImportedError(
-            f"{', '.join(real)} imported before terrio.compat.install(): the real library and terrio "
-            "would both be in use. Install terrio.compat first (its .pth file does at interpreter start)."
+            f"{', '.join(real)} imported before terrio.compat.install(): "
+            "the real library and terrio "
+            "would both be in use. Install terrio.compat first "
+            "(its .pth file does at interpreter start)."
         )
     for name in wanted:
         _IMPORTER.targets[name] = TARGETS[name]

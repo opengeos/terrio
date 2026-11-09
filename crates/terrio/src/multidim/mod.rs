@@ -29,10 +29,55 @@ fn serialize_type<S: serde::Serializer>(t: &DataType, s: S) -> std::result::Resu
     s.serialize_str(crate::info::gdal_type_name(*t))
 }
 
-pub(crate) type AttributeTypes = std::collections::BTreeMap<String, DataType>;
+/// The source types of attributes, by attribute name, so that a snapshot writes them as the source
+/// stored them rather than as their JSON values' types.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct AttributeTypes {
+    /// The native type of numeric and enum attributes (an enum as its base integer type).
+    pub(crate) numeric: std::collections::BTreeMap<String, DataType>,
+    /// The type of compound attributes.
+    pub(crate) compound: std::collections::BTreeMap<String, CompoundType>,
+}
+impl AttributeTypes {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+    /// Whether the source type of this attribute is known.
+    #[cfg(feature = "netcdf-hdf5")]
+    pub(crate) fn contains(&self, name: &str) -> bool {
+        self.numeric.contains_key(name) || self.compound.contains_key(name)
+    }
+}
+/// A compound (struct) attribute type, such as netCDF-4's `compound station_t {int id; double
+/// elevation;}`, as GDAL 3.13.3's netCDF driver carries one through `gdalmdimtranslate`: an enum
+/// field becomes its base integer type and a char field an unsigned byte.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CompoundType {
+    /// The source's type name.
+    pub(crate) name: String,
+    /// Bytes per value, including padding.
+    pub(crate) size: usize,
+    pub(crate) fields: Vec<CompoundField>,
+}
+/// A field of a [`CompoundType`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CompoundField {
+    pub(crate) name: String,
+    /// Byte offset within the compound.
+    pub(crate) offset: usize,
+    pub(crate) dtype: FieldType,
+}
+/// The type of a [`CompoundField`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum FieldType {
+    Number(DataType),
+    Compound(CompoundType),
+}
 #[cfg(feature = "zarr")]
 pub(crate) fn attribute_type_metadata(types: &AttributeTypes) -> Value {
-    Value::Object(types.iter().map(|(name, dtype)| (name.clone(), Value::String(crate::info::gdal_type_name(*dtype).into()))).collect())
+    Value::Object(
+        types.numeric.iter().map(|(name, dtype)| (name.clone(), Value::String(crate::info::gdal_type_name(*dtype).into()))).collect(),
+    )
 }
 #[cfg(feature = "zarr")]
 pub(crate) fn take_attribute_types(attributes: &mut Value) -> Result<AttributeTypes> {
@@ -42,10 +87,11 @@ pub(crate) fn take_attribute_types(attributes: &mut Value) -> Result<AttributeTy
     let Some(saved) = saved.as_object() else {
         return Err(bad("invalid numeric attribute type metadata"));
     };
-    saved
+    let numeric = saved
         .iter()
         .map(|(name, dtype)| Ok((name.clone(), crate::ops::parse_data_type(dtype.as_str().ok_or_else(|| bad("invalid attribute type"))?)?)))
-        .collect()
+        .collect::<Result<_>>()?;
+    Ok(AttributeTypes { numeric, compound: Default::default() })
 }
 
 /// A named dimension, scoped by its defining group.
@@ -128,7 +174,7 @@ impl Group {
     }
     /// Original numeric type of a source attribute, when known.
     pub fn attribute_type(&self, name: &str) -> Option<DataType> {
-        self.attribute_types.get(name).copied()
+        self.attribute_types.numeric.get(name).copied()
     }
     fn find(&self, p: &str) -> Option<&Array> {
         self.arrays.iter().find(|a| a.info.path == p).or_else(|| self.groups.iter().find_map(|g| g.find(p)))
@@ -238,7 +284,7 @@ impl Array {
     }
     /// Original numeric type of a source attribute, when known.
     pub fn attribute_type(&self, name: &str) -> Option<DataType> {
-        self.attribute_types.get(name).copied()
+        self.attribute_types.numeric.get(name).copied()
     }
     /// The full array's shape.
     pub fn shape(&self) -> Vec<usize> {
@@ -521,6 +567,21 @@ pub fn open_bytes(bytes: &[u8]) -> Result<Dataset> {
     #[cfg(feature = "netcdf-hdf5")]
     {
         netcdf::open_bytes(bytes)
+    }
+    #[cfg(not(feature = "netcdf-hdf5"))]
+    {
+        let _ = bytes;
+        Err(Error::disabled("netcdf-hdf5"))
+    }
+}
+/// Opens owned netCDF/HDF5 bytes without an intermediate input-buffer clone.
+/// The storage backend retains the input Vec; decoding array values may allocate.
+/// Lazy arrays and views retain the storage, including any HDF5 userblock,
+/// until their last handle is dropped. Numeric reads preserve raw packed values.
+pub fn open_bytes_owned(bytes: Vec<u8>) -> Result<Dataset> {
+    #[cfg(feature = "netcdf-hdf5")]
+    {
+        netcdf::open_bytes_owned(bytes)
     }
     #[cfg(not(feature = "netcdf-hdf5"))]
     {

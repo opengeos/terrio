@@ -18,6 +18,16 @@ let (x, y) = transformer.transform(-100.0, 40.0)?;
 # Ok::<(), terrio_crs::Error>(())
 ```
 
+`list_crs` lists the EPSG (v12.029), ESRI and IAU_2015 CRSs the crate resolves, with their
+names, kinds, deprecation, areas of use and projection methods, for searchable CRS pickers:
+
+```rust
+use terrio_crs::{CrsQuery, list_crs};
+
+let found = list_crs(&CrsQuery { text: Some("australian albers".into()), ..Default::default() });
+assert_eq!(found[0].authority_code(), "EPSG:3577");
+```
+
 ## Features and supported scope
 
 The default configuration works offline and uses the native projection engine.

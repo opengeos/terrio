@@ -1,0 +1,139 @@
+{
+  "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
+  "multidim": {
+    "/": {
+      "title": "user-defined attributes",
+      "origin": {
+        "id": 1,
+        "elevation": -3.25
+      }
+    },
+    "/z": {
+      "station": {
+        "id": 7,
+        "elevation": 12.5
+      },
+      "flag": 1,
+      "counts": null,
+      "grid": null,
+      "sample": {
+        "state": 1,
+        "level": 200,
+        "code": 81
+      }
+    }
+  },
+  "metadata": {
+    "NC_GLOBAL#origin": "",
+    "NC_GLOBAL#title": "user-defined attributes",
+    "z#counts": "",
+    "z#flag": "",
+    "z#grid": "",
+    "z#sample": "",
+    "z#station": "",
+    "z#units": "m"
+  },
+  "zero_length": {
+    "ints": null,
+    "empty": null,
+    "shorts": null,
+    "floats": null,
+    "doubles": null,
+    "strings": [],
+    "states": null
+  },
+  "zero_length_netcdf_copy": {},
+  "netcdf_copy_types": {
+    "user_defined_attrs.nc": {
+      "types": {
+        "station_t": {
+          "size": 16,
+          "fields": [
+            [
+              "id",
+              0,
+              "int32"
+            ],
+            [
+              "elevation",
+              8,
+              "float64"
+            ]
+          ]
+        },
+        "sample_t": {
+          "size": 3,
+          "fields": [
+            [
+              "state",
+              0,
+              "int8"
+            ],
+            [
+              "level",
+              1,
+              "uint8"
+            ],
+            [
+              "code",
+              2,
+              "uint8"
+            ]
+          ]
+        }
+      },
+      "attributes": {
+        "/": {
+          "origin": "station_t"
+        },
+        "/z": {
+          "station": "station_t",
+          "flag": "int8",
+          "sample": "sample_t"
+        }
+      }
+    },
+    "nested_compound_attrs.nc": {
+      "types": {
+        "point_t": {
+          "size": 16,
+          "fields": [
+            [
+              "x",
+              0,
+              "float64"
+            ],
+            [
+              "y",
+              8,
+              "float64"
+            ]
+          ]
+        },
+        "site_t": {
+          "size": 24,
+          "fields": [
+            [
+              "id",
+              0,
+              "int32"
+            ],
+            [
+              "where",
+              8,
+              "point_t"
+            ]
+          ]
+        }
+      },
+      "attributes": {
+        "/": {
+          "centre": "point_t"
+        },
+        "/v0": {
+          "site": "site_t"
+        }
+      }
+    }
+  }
+}

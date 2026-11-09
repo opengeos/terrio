@@ -53,10 +53,13 @@ terrio convert --oo ZOOM_LEVEL=5 https://.../zcta.pmtiles zcta_z5.gpkg
 Zarr stores (v2 and v3, GeoZarr included) are read in place over HTTP(S), S3, Google Cloud
 Storage and Azure: opening reads the metadata (all of it in one request when the store has
 consolidated metadata, v2's `.zmetadata` or the `consolidated_metadata` of a v3 root group), and a
-window reads only the chunks it touches, in parallel. In a sharded v3 array, a window reads each
-shard's index, then the inner chunks it needs, nearby ones in one range request. Missing chunks
-read as the fill value. A store is recognized by a path component ending in `.zarr`, or named as
-GDAL names it: `ZARR:"store"` or `ZARR:"store":/group/array`, the store a URL, an `s3://`, `gs://`
+window reads only the chunks it touches, in parallel: up to 32 requests in flight a read,
+whatever the number of cores (natively; in WebAssembly, as many as the thread pool runs), fewer
+when their chunks would take more than half the memory the process can use, and none more once
+one fails. Reads running at once (threads of a Python program, a tile server) each have their
+own. In a sharded v3 array, a window reads each shard's index, then the inner chunks it needs,
+nearby ones in one range request. Missing chunks read as the fill value. A store is recognized by
+a path component ending in `.zarr`, or named as GDAL names it: `ZARR:"store"` or `ZARR:"store":/group/array`, the store a URL, an `s3://`, `gs://`
 or `az://` object or a `/vsicurl/`, `/vsis3/`, `/vsigs/` or `/vsiaz/` name. A path may also name
 an array or a group inside the store (`.../S2A_....zarr/measurements/reflectance/r10m/b02`); the
 coordinate arrays and the GeoZarr attributes of the groups above it are found as GDAL finds them.
@@ -149,7 +152,68 @@ A STAC document chooses where its links lead, so links are followed with limits:
   followed, for ranged reads, requests with headers and `POST` requests alike), and a redirect to
   another origin is an error unless `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`;
 - a search made with `GET` is not continued with a `POST` its page asks for
-  (`TERRIO_STAC_ALLOW_POST=YES` allows it); one made with `method=POST` is.
+  (`TERRIO_STAC_ALLOW_POST=YES` allows it); one made with `method=POST` is;
+- a STAC document that is not on the local file system does not name local files: an asset href
+  of a remote item that is a local path, a `file://` URL or a `/vsizip/` path into a local archive
+  is an error for `STAC:` and is left out of a `STACIT:` mosaic (STACTA items are held to the same
+  rule), and a remote document's links never lead to local files, even with
+  `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`.
+
+Remote STAC documents, STACIT mosaics and STACTA tile templates require
+`TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS=YES` before their cloud assets can use configured
+credentials. This includes S3 keys and shared AWS profiles, Azure SAS/bearer tokens, and configured
+HTTP headers (including path-specific headers). Any custom header is treated as potential
+authentication because API keys can use arbitrary names. Ordinary HTTP document/asset chains on
+the same origin retain their header authentication; cloud URI assets require consent even in the same
+bucket/account. Cloud URI document chains also require consent for configured HTTP headers.
+Local documents retain credentialed access.
+For catalog-link traversal, the exemption uses each fetched document's final response origin,
+including after redirects. Subdataset names keep the caller's requested location, so a redirect
+does not add a server-issued signed URL to those names. These names are live references; reopening
+can observe changed server results. Following a
+cross-origin child requires `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES` and already sends configured
+headers to that child. Nested raster/asset-selected documents instead retain their selecting
+origin throughout the scoped asset read. Actual clients check the credentials they resolved before
+sending each request. Redirect crossings remain attached to deferred readers and cached downloads.
+A cache origin change discards older parts, and document reads reject mixed-origin bytes.
+Once that asset chain crosses origins, nested sources
+require consent for configured headers even if they point back to the original origin.
+
+Checks run while parsing the document, including assets that were not selected, so metadata listing
+also requires consent when such assets are declared. Deferred mosaic opens and concrete tile URLs
+and nested native raster sources are checked too. Cached readers retain the original consent
+requirement, even after credentials are removed or unsigned reads are enabled. Export, overview
+metadata and resampled reads enforce it before source I/O; parallel readers carry the policy and
+the options in effect when the read starts. Native object fetchers keep the headers, credentials
+and endpoints captured when they are created; a later `terrio.Env` scope does not replace those
+request settings. STAC credential consent remains a read-time decision: an active read's
+`TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS` setting can grant or revoke permission without changing
+the captured credentials. Sharing uses owned alpha metadata rather than seeking the TIFF again. Azure URI documents retain provider authentication for relative targets within the
+configured endpoint, including after a same-origin path redirect. Without credentials,
+public cloud hrefs remain usable. With AWS credentials configured, `AWS_NO_SIGN_REQUEST=YES` keeps
+public S3 reads unsigned and does not require the opt-in (custom authentication headers still need
+consent). A signature already in an href and public Planetary Computer signing are not ambient user
+credentials.
+
+Refusals are terminal. Named `STAC:`, `STACIT:` and `STACTA:` documents are not reinterpreted by
+GDAL after a native error, for local and remote document locations alike; individual raster assets
+can use the GDAL backend with explicit credential consent when selected by a remote document. Every
+such GDAL asset read requires the opt-in, even for an apparently public URL: GDAL can follow nested
+sources or use credentials unknown to the native reader. Public formats handled by native readers
+retain unsigned access without the opt-in. Recognized remote STAC reader errors, including malformed
+JSON that identifies STAC metadata, also do not select a second pointer parser. Ordinary non-STAC
+remote documents retain their existing fallback behavior. Remote STAC reader errors that would
+otherwise permit pointer fallback are reported as `InvalidArgument`, preserving the redacted
+native cause. Malformed JSON containing a STAC marker is conservatively treated as a pointer
+document, even when that marker cannot be verified as a top-level field. Explicit `GDAL:` opens delegate to GDAL's
+own policies. The optional backend additionally checks its explicitly configured cloud credential
+sources and credential-bearing keys in the selected AWS profile and selected
+credential/configuration files. Existing credential files that cannot be read are treated
+conservatively as configured; the check does not query an identity metadata service to discover
+credentials. See [GDAL's cloud authentication
+options](https://gdal.org/en/stable/user/virtual_file_systems.html). The opt-in never permits an
+asset href pointing directly at a local file. Consenting to a GDAL asset read also trusts the nested
+sources GDAL follows; native per-source checks cannot run inside GDAL.
 
 A STAC item of tiled assets (GDAL's STACTA, see [Formats](formats.md#stac)) opens from its URL
 or as `STACTA:"item-url":asset`: the item is fetched, then the headers of the first tile when the
@@ -197,6 +261,7 @@ The GDAL variable is read when the terrio one is not set.
 | `TERRIO_HTTP_BLOCK_SIZE` (bytes) | `CPL_VSIL_CURL_CHUNK_SIZE` | 65536 |
 | `TERRIO_HTTP_CACHE_SIZE` (bytes): the block cache of each open file, and the process-wide cache | `CPL_VSIL_CURL_CACHE_SIZE` | 67108864 |
 | `TERRIO_HTTP_USERAGENT` | `GDAL_HTTP_USERAGENT` | `terrio/VERSION` |
+| `TERRIO_HTTP_MULTIRANGE`: `PARALLEL` requests the byte runs of one read up to 8 at once; `SERIAL` one after another; `SINGLE_GET` (one multipart request in GDAL, not supported) as `SERIAL`; any other value is `PARALLEL` | `GDAL_HTTP_MULTIRANGE` | `PARALLEL` |
 | `TERRIO_HTTP_LOG=YES` (log each request) | `CPL_CURL_VERBOSE` | off |
 | `TERRIO_JSON_MAX_SIZE` (bytes; `K`, `M`, `G` suffixes): the largest JSON document fetched whole | `CPL_JSON_MAX_SIZE` | 100 MB |
 
@@ -232,6 +297,29 @@ option changed while a file is open applies to the next open, not to the open fi
 
 Bodies fetched whole are capped: a JSON document at `CPL_JSON_MAX_SIZE` (GDAL's 100 MB), a page of
 an object store's listing (remote Zarr groups) at 64 MiB, a STAC signing token response at 64 KiB.
+
+## Decoded block cache
+
+The decoded tiles and strips of lazy GeoTIFF and COG reads, remote or local, are kept in memory
+process-wide, as GDAL's block cache keeps the blocks it decodes. A window read again decodes only
+the chunks no longer in the cache: the least recently used are dropped first when the cache is
+full, a chunk larger than the cache is never kept, and a size of 0 keeps none.
+
+| Variable | GDAL equivalent | Default |
+|---|---|---|
+| `TERRIO_CACHEMAX` (bytes; `K`, `M`, `G` suffixes; 0 turns the cache off) | `GDAL_CACHEMAX` (a plain integer below 100000 is megabytes; a `%` value is ignored) | 64 MiB |
+
+The size is read from the process environment at first use. Options set for one thread (Python's
+`terrio.Env`) do not change it.
+
+`terrio::block_cache::set_max_bytes` and `clear` change the size and empty the cache at run time.
+The chunks belong to the open reader that decoded them. When another file is renamed over a local
+file's path, an open reader goes on reading the original and a reader opened afterwards reads the
+replacement. A file changed in place is not snapshotted: a read may combine cached chunks of the
+old pixels with chunks decoded from the new ones, so close its readers before changing it in place
+and open them again afterwards. A remote file
+opened again decodes its chunks anew, but from the bytes the HTTP cache above may still hold for its
+URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops them.
 
 ## Managing files
 

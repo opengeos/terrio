@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from typing import Any
 
 import numpy as np
@@ -132,6 +132,11 @@ def _pixel_geometry(geom: dict[str, Any], inv: Affine) -> dict[str, Any]:
     return out
 
 
+def _north_up(transform: Affine) -> bool:
+    """Whether terrio can burn on `transform` itself (else, in pixel space)."""
+    return transform.b == 0 and transform.d == 0 and transform.a > 0 and transform.e < 0
+
+
 def _burn(
     geoms: list[dict[str, Any]],
     values: list[Any],
@@ -139,6 +144,7 @@ def _burn(
     transform: Affine,
     all_touched: bool,
     add: bool,
+    ot: str = "Int64",
 ) -> np.ndarray:
     """Burns geometries with terrio, in pixel space.
 
@@ -149,13 +155,13 @@ def _burn(
         transform: The grid's transform.
         all_touched: Burn every pixel a geometry touches.
         add: Add values instead of replacing them.
+        ot: The burnt type without `add`: `"Int64"` for feature numbers, `"Byte"` for coverage.
 
     Returns:
-        numpy.ndarray: The burnt values, float64 (for `add`) or int64.
+        numpy.ndarray: The burnt values, float64 (for `add`) or of type `ot`.
     """
     h, w = shape
-    north_up = transform.b == 0 and transform.d == 0 and transform.a > 0 and transform.e < 0
-    if north_up:
+    if _north_up(transform):
         # Map coordinates on the exact grid of the transform.
         grid = transform.to_gdal()
         feats = [
@@ -175,12 +181,41 @@ def _burn(
         {"type": "FeatureCollection", "features": feats},
         attribute="v",
         like=like,
-        ot="Float64" if add else "Int64",
+        ot="Float64" if add else ot,
         init=0,
         all_touched=all_touched,
         add=add,
     )
     return np.asarray(r.read(1))
+
+
+def _burn_values(values: Sequence[Any], dtype: np.dtype) -> np.ndarray:
+    """Burn values in `dtype`, as rasterio 1.5.2 (GDAL 3.12.2) burns them but integers exact.
+
+    Into a float dtype, values go through float64 (floats overflow to infinity). Into an integer
+    dtype, integers are kept exact and clamped to its range; other values are rounded half away
+    from zero by adding 0.5 in float64 and clamped, NaN as 0, as GDAL burns them. Differences
+    from rasterio: integers above 2**52, which GDAL rounds through float64, stay exact, and those
+    of 2**64 and above into uint64 burn its maximum where GDAL burns 0.
+    """
+    if dtype.kind not in "iu":
+        with np.errstate(over="ignore"):
+            return np.array([float(v) for v in values], dtype=np.float64).astype(dtype)
+    info = np.iinfo(dtype)
+    burnt = []
+    for v in values:
+        if isinstance(v, (int, np.integer)):
+            n = int(v)
+        else:
+            f = float(v)
+            if math.isnan(f):
+                n = 0
+            elif math.isinf(f):
+                n = info.max if f > 0 else info.min
+            else:
+                n = math.floor(f + 0.5) if f >= 0 else math.ceil(f - 0.5)
+        burnt.append(min(max(n, info.min), info.max))
+    return np.array(burnt, dtype=dtype)
 
 
 def rasterize(
@@ -203,7 +238,9 @@ def rasterize(
 
     Args:
         shapes: Geometries, or `(geometry, value)` pairs. Geometries are GeoJSON-like mappings
-            or objects with `__geo_interface__`.
+            or objects with `__geo_interface__`. Into an integer `dtype`, integer values are
+            burnt exactly (IDs of any size it holds) and clamped to its range; other values are
+            rounded half away from zero and clamped, NaN as 0, as rasterio (GDAL) burns them.
         out_shape: The output shape `(rows, cols)`, when `out` is not given.
         fill: The value of pixels no geometry covers.
         nodata: The nodata value of a written dataset, and the masked value with `masked`.
@@ -285,21 +322,26 @@ def rasterize(
         shape = (out.shape[-2], out.shape[-1])
         if merge_alg == MergeAlg.add:
             sums = _burn(geoms, [float(v) for v in values], shape, transform, all_touched, True)
-            touched = (
-                _burn(geoms, list(range(1, len(geoms) + 1)), shape, transform, all_touched, False)
-                > 0
-            )
+            ones = [1] * len(geoms)
+            touched = _burn(geoms, ones, shape, transform, all_touched, False, ot="Byte") > 0
             out[touched] = (out[touched].astype(np.float64) + sums[touched]).astype(out.dtype)
         else:
-            idx = _burn(geoms, list(range(1, len(geoms) + 1)), shape, transform, all_touched, False)
-            hit = idx > 0
-            vals = np.array(values, dtype=object if out.dtype.kind in "iu" else np.float64)
-            burnt = (
-                np.array([vals[i - 1] for i in idx[hit]], dtype=np.float64)
-                if out.dtype.kind == "f"
-                else np.array([vals[i - 1] for i in idx[hit]])
-            )
-            out[hit] = burnt.astype(out.dtype) if burnt.size else burnt
+            burnt = _burn_values(values, out.dtype)
+            # Compared as bytes, so -0.0 and 0.0 differ and one NaN equals itself (object values
+            # are the floats _burn_values made).
+            exact = burnt.astype(np.float64) if burnt.dtype.kind == "O" else burnt
+            bits = exact.view(np.uint8).reshape(len(exact), -1)
+            if (bits == bits[0]).all():
+                # One value (masks, `default_value`): burn the coverage as bytes, not as feature
+                # numbers (a raster 8 times smaller) gathered back into values.
+                ones = [1] * len(geoms)
+                hit = _burn(geoms, ones, shape, transform, all_touched, False, ot="Byte") > 0
+                out[hit] = burnt[0]
+            else:
+                numbers = list(range(1, len(geoms) + 1))
+                idx = _burn(geoms, numbers, shape, transform, all_touched, False)
+                hit = idx > 0
+                out[hit] = burnt[idx[hit] - 1]
     if writer is not None:
         writer.write(out, 1)
         if not isinstance(dst_path, type(writer)) or dst_path is not writer:
@@ -320,7 +362,8 @@ def geometry_mask(
     """A mask of geometries.
 
     Args:
-        geometries: GeoJSON-like geometries.
+        geometries: GeoJSON-like geometries, or a terrio `Layer` in the grid's CRS, which burns
+            without a round trip through GeoJSON on north-up grids.
         out_shape: The mask's shape `(rows, cols)`.
         transform: The grid's transform.
         all_touched: Include every pixel a geometry touches.
@@ -328,7 +371,25 @@ def geometry_mask(
 
     Returns:
         numpy.ndarray: The boolean mask.
+
+    Raises:
+        ValueError: If the shape is empty.
     """
+    if isinstance(geometries, _terrio.Layer):
+        if len(out_shape) != 2:
+            raise ValueError("Invalid out_shape, must be 2D")
+        transform = guard_transform(transform)
+        if not _north_up(transform):
+            geometries = [f["geometry"] for f in geometries.to_geojson()["features"]]
+        elif min(out_shape) == 0:
+            raise ValueError("width and height must be > 0")
+        else:
+            like = _terrio.Raster.from_array(np.zeros(out_shape, np.uint8), transform.to_gdal())
+            burnt = _terrio.rasterize(
+                geometries, like=like, burn=1, init=0, ot="Byte", all_touched=all_touched
+            )
+            inside: np.ndarray = np.asarray(burnt.read(1)) > 0
+            return inside if invert else ~inside
     fill, value = (0, 1) if invert else (1, 0)
     arr = rasterize(
         geometries,
