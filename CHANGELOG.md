@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `warp` of a `Raster` in memory releases the GIL for the whole warp: it takes the raster's
+  shared pixels (no copy) and warps them after releasing it, so warps from Python threads
+  (rioxarray-style `reproject` of xarray arrays on a thread pool) overlap. 96 nearest-neighbour
+  warps of 3000 x 3000 on 12 threads of a 12-core machine took 2.36 s instead of 3.8 to 4.4 s.
+  Other Python threads now run during the warp and may use the raster; the warp reads the
+  pixels it was called with.
 - Reads of a remote Zarr store keep up to 32 requests in flight, whatever the number of cores.
   Its chunks were fetched on terrio's thread pool, one blocked thread per request, so a read
   had as many requests in flight as the machine has cores. A 512 x 512 window of the 128 bands of
