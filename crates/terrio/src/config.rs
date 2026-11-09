@@ -30,18 +30,20 @@ thread_local! {
 /// The value of the option `key`: the innermost scope of the calling thread that sets (or unsets)
 /// it, else the environment variable. Empty values count as unset.
 pub fn get(key: &str) -> Option<String> {
-    get_including_empty(key).filter(|v| !v.trim().is_empty())
+    scoped(key).unwrap_or_else(|| std::env::var(key).ok()).filter(|v| !v.trim().is_empty())
 }
 
 /// The value of the option `key`, found as [`get`] finds it, but with an empty or blank value
 /// counting as set: for an option whose empty value says something (an allow-list that allows
-/// nothing).
+/// nothing). An environment value that is not UTF-8 is set too, read lossily.
 pub(crate) fn get_including_empty(key: &str) -> Option<String> {
-    let scoped = SCOPES.with(|s| s.borrow().iter().rev().find_map(|scope| scope.get(key).cloned()));
-    match scoped {
-        Some(v) => v,
-        None => std::env::var(key).ok(),
-    }
+    scoped(key).unwrap_or_else(|| std::env::var_os(key).map(|v| v.to_string_lossy().into_owned()))
+}
+
+/// The value the innermost scope of the calling thread that sets or unsets `key` gives it:
+/// `Some(None)` when that scope unsets it, `None` when no scope does.
+fn scoped(key: &str) -> Option<Option<String>> {
+    SCOPES.with(|s| s.borrow().iter().rev().find_map(|scope| scope.get(key).cloned()))
 }
 
 /// Whether `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` asks that nothing next to a dataset be read:

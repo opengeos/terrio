@@ -331,7 +331,7 @@ URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops the
 
 - **Value.** A comma-separated list of driver names, in any case (`GTiff`, `gtiff`), where
   `JP2OpenJPEG`, `JPEG2000`, `JP2KAK`, `JP2ECW` and `JP2MRSID` all name `JP2`. Unset, it restricts
-  nothing. Set but empty or blank, it allows no driver.
+  nothing. Set but empty or blank, or to bytes that are not UTF-8, it allows no driver.
 - **Scope.** It applies to every kind of dataset, rasters, vectors and point clouds alike.
 - **With `set_allowed_drivers`.** When a list is also set with
   `terrio::formats::set_allowed_drivers` (Python: `terrio.set_allowed_drivers`), a driver must be
