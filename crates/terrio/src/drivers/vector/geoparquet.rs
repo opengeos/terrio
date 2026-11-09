@@ -42,6 +42,7 @@ use std::sync::Arc;
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer, Ring};
 
 /// An attribute column: the path from a top-level column through struct members.
+#[derive(Clone)]
 pub(crate) struct Column {
     pub(crate) path: Vec<usize>,
     pub(crate) field_type: FieldType,
@@ -224,15 +225,17 @@ pub(super) fn group_bboxes(meta: &parquet::file::metadata::ParquetMetaData, leav
 }
 
 /// Reads a file whose bytes the caller fetches: the rows of some row groups whose bounding box
-/// intersects `bbox`, fetching only the column chunks needed.
+/// intersects `bbox`, with the fields `columns` names (all by default; see
+/// [`crate::stream::FeatureReader::select_fields`]), fetching only the column chunks needed.
 pub(crate) fn read_sparse(
     file: &crate::sparse::SparseFile,
     name: &str,
     row_groups: Option<&[usize]>,
     bbox: Option<(f64, f64, f64, f64)>,
+    columns: Option<&[String]>,
 ) -> Result<Layer> {
     let prefetch = |ranges: &[(u64, u64)]| -> Result<()> { Ok(file.prefetch(ranges)?) };
-    parse_source(|| Ok(file.clone()), name, row_groups, bbox, Some(&prefetch))
+    ParquetStream::open(|| Ok(file.clone()), name, row_groups, bbox, 65536, Some(&prefetch), columns)?.read_all()
 }
 
 /// Announces the byte ranges about to be read, to readers whose bytes the caller fetches.
@@ -247,7 +250,7 @@ fn parse_source<R: parquet::file::reader::ChunkReader + 'static>(
     bbox: Option<(f64, f64, f64, f64)>,
     prefetch: Prefetch<'_>,
 ) -> Result<Layer> {
-    ParquetStream::open(open, name, row_groups, bbox, 65536, prefetch)?.read_all()
+    ParquetStream::open(open, name, row_groups, bbox, 65536, prefetch, None)?.read_all()
 }
 
 /// A remote GeoParquet file (a URL whose file name ends in `.parquet` or `.geoparquet`) opened to
@@ -277,7 +280,7 @@ pub(crate) fn open_remote(path: &str, bbox: Option<(f64, f64, f64, f64)>, batch_
         }
         Ok(())
     };
-    let stream = ParquetStream::open(|| Ok(file.clone()), &name, None, bbox, batch_size, Some(&prefetch))?;
+    let stream = ParquetStream::open(|| Ok(file.clone()), &name, None, bbox, batch_size, Some(&prefetch), None)?;
     let prefetcher = file.clone();
     Ok(Some(stream.with_prefetcher((Box::new(move |ranges: &[(u64, u64)]| Ok(prefetcher.prefetch(ranges)?)), budget))))
 }
@@ -293,12 +296,18 @@ pub(crate) struct ParquetStream {
     encoding: String,
     fids: Option<Vec<u64>>,
     fid: u64,
+    meta: Arc<parquet::file::metadata::ParquetMetaData>,
+    /// The columns decoded (all by default; see [`Self::select_columns`]), and the file's
+    /// top-level columns a decoded batch holds, in order, when not all.
+    mask: Arc<std::sync::Mutex<ProjectionMask>>,
+    roots: Option<Vec<usize>>,
 }
 
 impl ParquetStream {
     /// Opens a file whose bytes `open` gives (once, or twice with a filter), to read the rows of
-    /// `row_groups` (all by default) that intersect `bbox` in batches of `batch_size` rows.
-    /// `prefetch`, when given, is told the byte ranges about to be read.
+    /// `row_groups` (all by default) that intersect `bbox` in batches of `batch_size` rows, with
+    /// the fields `columns` names (all by default; see [`Self::select_columns`]). `prefetch`,
+    /// when given, is told the byte ranges about to be read.
     pub(crate) fn open<R: parquet::file::reader::ChunkReader + 'static>(
         open: impl Fn() -> Result<R>,
         name: &str,
@@ -306,6 +315,7 @@ impl ParquetStream {
         bbox: Option<(f64, f64, f64, f64)>,
         batch_size: usize,
         prefetch: Prefetch<'_>,
+        columns: Option<&[String]>,
     ) -> Result<Self> {
         let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("Parquet: {e}"));
         let input = SharedInput(Arc::new(open()?));
@@ -335,10 +345,10 @@ impl ParquetStream {
         let geom_index = schema.fields().iter().position(|f| f.name() == &primary && !geo.is_null());
 
         let mut layer = Layer::new(name);
-        let mut columns = Vec::new();
+        let mut fields = Vec::new();
         for (i, f) in schema.fields().iter().enumerate() {
             if !hidden.contains(f.name()) {
-                add_columns(&mut layer, &mut columns, vec![i], f.name().clone(), f.data_type());
+                add_columns(&mut layer, &mut fields, vec![i], f.name().clone(), f.data_type());
             }
         }
 
@@ -384,23 +394,22 @@ impl ParquetStream {
             }
             fids = Some(groups.iter().flat_map(|&g| first[g]..first[g] + meta.row_group(g).num_rows() as u64).collect());
         }
-        if let Some(p) = prefetch {
-            let ranges: Vec<(u64, u64)> = groups.iter().flat_map(|&g| meta.row_group(g).columns().iter().map(|c| c.byte_range())).collect();
-            p(&ranges)?;
-        }
         // Each row group with its rows of the selection, which runs over the groups kept.
         let mut selection = row_selection;
         let queue: Vec<_> =
             groups.iter().map(|&g| (g, selection.as_mut().map(|s| s.split_off(meta.row_group(g).num_rows() as usize)))).collect();
         let arrow_meta = ArrowReaderMetadata::try_new(meta.clone(), Default::default()).map_err(|e| err(&e))?;
         let (file_schema, batch_size) = (schema.clone(), batch_size.max(1));
-        let window_meta = meta.clone();
+        let (window_meta, mask) = (meta.clone(), Arc::new(std::sync::Mutex::new(ProjectionMask::all())));
+        let decode_mask = mask.clone();
         let decode: DecodeGroup = Box::new(move |g, selection| {
-            let reader = if geoparquet_zstd::has_zstd(&meta, &[g], &ProjectionMask::all()) {
-                geoparquet_zstd::reader(input.clone(), &meta, &file_schema, ProjectionMask::all(), vec![g], selection, batch_size)
+            let mask = decode_mask.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            let reader = if geoparquet_zstd::has_zstd(&meta, &[g], &mask) {
+                geoparquet_zstd::reader(input.clone(), &meta, &file_schema, mask, vec![g], selection, batch_size)
             } else {
                 let mut b = ParquetRecordBatchReaderBuilder::new_with_metadata(input.clone(), arrow_meta.clone())
                     .with_row_groups(vec![g])
+                    .with_projection(mask)
                     .with_batch_size(batch_size);
                 if let Some(selection) = selection {
                     b = b.with_row_selection(selection);
@@ -422,7 +431,38 @@ impl ParquetStream {
                 types.iter().filter_map(Value::as_str).map(|t| t.trim_end_matches(" Z").trim_end_matches(" M")).collect();
             layer.geom_type = declared_type(&types);
         }
-        Ok(Self { layer, windows, columns, geom_index, encoding, fids, fid: 0 })
+        let mut stream = Self { layer, windows, columns: fields, geom_index, encoding, fids, fid: 0, meta: window_meta, mask, roots: None };
+        if let Some(names) = columns {
+            stream.select_columns(&crate::stream::field_indices(&stream.layer.schema, names)?)?;
+        }
+        if let Some(p) = prefetch {
+            p(&stream.windows.ranges_left())?;
+        }
+        Ok(stream)
+    }
+
+    /// Reads only the fields `keep` (indices into the layer's fields, in the order kept) and the
+    /// geometry: the columns that hold them are the only ones fetched and decoded. `false`,
+    /// changing nothing, when batches decoded with other columns are held.
+    pub(crate) fn select_columns(&mut self, keep: &[usize]) -> Result<bool> {
+        let mut roots: Vec<usize> = keep.iter().map(|&i| self.columns[i].path[0]).chain(self.geom_index).collect();
+        roots.sort_unstable();
+        roots.dedup();
+        // Without a geometry or a field to read, the columns read stay as they are, none kept.
+        if !roots.is_empty() {
+            let mask = ProjectionMask::roots(self.meta.file_metadata().schema_descr(), roots.iter().copied());
+            if !self.windows.set_mask(&self.meta, &mask) {
+                return Ok(false);
+            }
+            *self.mask.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = mask;
+            self.roots = Some(roots);
+        }
+        self.columns = keep.iter().map(|&i| self.columns[i].clone()).collect();
+        let fields = std::mem::replace(&mut self.layer.schema, wbvector::Schema::new());
+        for &i in keep {
+            self.layer.schema.add_field(fields.fields()[i].clone());
+        }
+        Ok(true)
     }
 
     /// The layer with all its features.
@@ -444,8 +484,18 @@ impl ParquetStream {
     /// The features of the next record batch, decoded in parallel; `None` at the end.
     pub(crate) fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
         let Some(batch) = self.windows.next()? else { return Ok(None) };
-        let geoms = self.geom_index.map(|i| batch.column(i).clone());
-        let arrays: Vec<ArrayRef> = self.columns.iter().map(|c| nested(&batch, &c.path)).collect();
+        // the position in the batch of a top-level column of the file
+        let at = |root: usize| self.roots.as_ref().map_or(root, |r| r.binary_search(&root).unwrap_or_default());
+        let geoms = self.geom_index.map(|i| batch.column(at(i)).clone());
+        let arrays: Vec<ArrayRef> = self
+            .columns
+            .iter()
+            .map(|c| {
+                let mut path = c.path.clone();
+                path[0] = at(path[0]);
+                nested(&batch, &path)
+            })
+            .collect();
         let (columns, encoding, fids, first) = (&self.columns, self.encoding.as_str(), &self.fids, self.fid);
         let features = crate::par::map_range(batch.num_rows(), |row| {
             let geometry = geoms.as_ref().and_then(|g| geometry(g.as_ref(), row, encoding));
@@ -1288,6 +1338,50 @@ mod tests {
         assert_eq!(back.features[0].attributes, [FieldValue::Integer(1), FieldValue::Date("2020-01-02".into())]);
         assert_eq!(back.features[0].geometry, Some(Geometry::point(500000.0, 0.0)));
         assert_eq!(back.features[1].geometry, None);
+    }
+
+    /// A selection of fields reads the column chunks of those fields and of the geometry only,
+    /// and their values land in the fields kept, with or without a filter.
+    #[test]
+    fn selected_columns_read_only_their_chunks() {
+        let mut l = Layer::new("t").with_epsg(4326);
+        for name in ["a", "b", "c", "d"] {
+            l.add_field(FieldDef::new(name, FieldType::Integer));
+        }
+        for i in 0..20 {
+            let attributes = (0..4).map(|k| FieldValue::Integer(i * 10 + k)).collect();
+            l.push(Feature { fid: i as u64, geometry: Some(Geometry::point(i as f64, 0.0)), attributes });
+        }
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+        write(&l, path).unwrap();
+        let meta = ParquetRecordBatchReaderBuilder::try_new(open_file(path).unwrap()).unwrap().metadata().clone();
+        let roots = |names: &[&str]| -> Vec<(u64, u64)> {
+            let mut r: Vec<_> = meta.row_groups()[0]
+                .columns()
+                .iter()
+                .filter(|c| names.contains(&c.column_descr().path().parts()[0].as_str()))
+                .map(|c| c.byte_range())
+                .collect();
+            r.sort_unstable();
+            r
+        };
+        for bbox in [None, Some((4.5, -1.0, 7.5, 1.0))] {
+            let mut s = ParquetStream::open(|| open_file(path), "t", None, bbox, 64, None, None).unwrap();
+            assert!(s.select_columns(&[2, 0]).unwrap());
+            let announced = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = announced.clone();
+            let mut s = s.with_prefetcher((Box::new(move |r: &[(u64, u64)]| Ok(seen.lock().unwrap().extend_from_slice(r))), u64::MAX));
+            let features = s.next_batch().unwrap().unwrap();
+            assert_eq!(*announced.lock().unwrap(), roots(&["a", "c", "geometry"]), "bbox {bbox:?}");
+            let ids: Vec<i64> = if bbox.is_some() { (5..8).collect() } else { (0..20).collect() };
+            assert_eq!(features.len(), ids.len());
+            for (f, i) in features.iter().zip(ids) {
+                assert_eq!(f.attributes, [FieldValue::Integer(i * 10 + 2), FieldValue::Integer(i * 10)]);
+                assert_eq!(f.geometry, Some(Geometry::point(i as f64, 0.0)));
+            }
+            assert_eq!(s.layer.schema.fields().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["c", "a"]);
+        }
     }
 
     /// The reader WASI uses, as it has no `File::try_clone`, reads what a `File` does.

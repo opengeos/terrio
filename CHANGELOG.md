@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A selection of GeoParquet fields decodes only their columns and the geometry, and fetches only
+  their column chunks from a URL: `open_stream(columns=...)`, `terrio convert --select` (without
+  `--where` or `--sql`, which may name other fields), and JavaScript's `openUrl(...).read()`,
+  which takes `columns` too.
 - GeoParquet reads decode row groups in parallel, a window of as many as there are threads at a
   time, and read remote files in place: `open_vector` and `open_stream` on a URL fetch the footer,
   then only the column chunks of the row groups the filter keeps, by range requests, instead of

@@ -1258,6 +1258,13 @@ test("remote files read with range requests", async () => {
       assert.equal(last.toGeoJSON().features.length, groups.at(-1).rows);
       const inBox = (await pq.read({ bbox: [0, 0, 10, 10] })).toGeoJSON().features;
       assert.deepEqual(inBox.map((f) => f.properties.id).sort((a, b) => a - b), expected);
+      const ids = (await pq.read({ columns: ["ID"], bbox: [0, 0, 10, 10] })).toGeoJSON().features;
+      assert.deepEqual(ids.map((f) => f.properties.id).sort((a, b) => a - b), expected);
+      const shapes = (await pq.read({ columns: [] })).toGeoJSON().features;
+      assert.equal(shapes.length, 1500);
+      assert.deepEqual(shapes[0].properties, {});
+      assert.ok(shapes[0].geometry);
+      await assert.rejects(pq.read({ columns: ["nope"] }), /nope/);
     }
 
     const tiles = await terrio.openUrl(server.url + "cells.pmtiles");
