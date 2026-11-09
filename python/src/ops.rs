@@ -1987,11 +1987,7 @@ impl PyRegionWarp {
         crate::pass_on_http_retries(py);
         crate::pass_on_nodata_warnings(py);
         let (out, written) = result?.py()?;
-        let (w, h) = (region.2, region.3);
-        let bands = out.len() / (w * h).max(1);
-        let arr = crate::raster::to_numpy(py, out, &[bands, h, w])?;
-        let written = PyArray1::from_vec(py, written).reshape([h, w])?.into_any();
-        Ok((arr, written))
+        region_arrays(py, region, out, written)
     }
 
     /// Reads a region's source window from a `Raster` and warps the region from it, the GIL
@@ -2077,12 +2073,23 @@ impl PyRegionWarp {
                 inner.warp(region, window, &data, mask.as_deref(), init, padded_scale)
             })
             .py()?;
-        let (w, h) = (region.2, region.3);
-        let bands = out.len() / (w * h).max(1);
-        let arr = crate::raster::to_numpy(py, out, &[bands, h, w])?;
-        let written = PyArray1::from_vec(py, written).reshape([h, w])?.into_any();
-        Ok((arr, written))
+        region_arrays(py, region, out, written)
     }
+}
+
+/// A warped region as `RegionWarp.warp` and `RegionWarp._warp_from` return it: its pixels
+/// `(bands, height, width)` and a bool array `(height, width)` of the pixels warped.
+fn region_arrays<'py>(
+    py: Python<'py>,
+    region: (usize, usize, usize, usize),
+    out: RasterData,
+    written: Vec<bool>,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+    let (w, h) = (region.2, region.3);
+    let bands = out.len() / (w * h).max(1);
+    let arr = crate::raster::to_numpy(py, out, &[bands, h, w])?;
+    let written = PyArray1::from_vec(py, written).reshape([h, w])?.into_any();
+    Ok((arr, written))
 }
 
 /// Where `RegionWarp._warp_from` failed: reading the window, which raises a `RasterioIOError` as
