@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A build with the `gdal` feature and without the default features
+  (`--no-default-features --features gdal`) compiles. The GDAL backend formats the date-time
+  fields it reads with chrono, whose formatting needs its `alloc` feature, and only the
+  `parquet` feature turned it on (through arrow-array); the `gdal` feature now enables it. CI
+  checks that build in the GDAL backend job (#732).
 - A selection of GeoParquet fields decodes only their columns and the geometry, and fetches only
   their column chunks from a URL: `open_stream(columns=...)`, `terrio convert --select` (without
   `--where` or `--sql`, which may name other fields), and JavaScript's `openUrl(...).read()`,
