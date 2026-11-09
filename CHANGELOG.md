@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A polar stereographic CRS on an ellipsoid projects the pole it is centred on to its false
+  origin, and refuses the opposite pole. In 0.8.0 its own pole failed to project, and the opposite
+  pole, which no coordinates represent, came out about 10²³ m away: EPSG:3413, 3031, 32661 and the
+  other ellipsoidal polar stereographic CRSs, of variants A and B (spherical ones were right). A
+  `sum` into a longitude and latitude grid whose edge is the pole now writes the row along it: of
+  1° pixels from 80° N to 90° N, none of the 360 along the pole was written from 10 km EPSG:3413
+  pixels, 1% of the total. The longitude and latitude grid suggested for a raster that covers its
+  pole now reaches the pole, over every longitude: for 10,000 km of EPSG:3413 centred on the North
+  Pole, it spanned 30.5° N to 46.0° N, and now 30.4° N to 90° N.
 - A `WarpedVRT` over a dataset terrio opened for reading now reads and warps each source window
   in one call that releases the GIL, so reads on several Python threads, such as a server
   answering tile requests on threads, no longer wait for each other's warps as in 0.8.0. The
