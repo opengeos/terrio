@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `TERRIO_ALLOWED_DRIVERS` set but empty or blank allows no driver: it allowed every driver, as the
+  option unset does. A thread's scope (`terrio.rio.Env`, `config::push_scope`) now only narrows the
+  list outside it. A scope that set the option to an empty value or to other drivers, or unset it,
+  lifted or replaced the environment's list on its thread: a process limited to `GTiff` opened an
+  Esri ASCII grid there (#721). The option is documented in `docs/remote-data.md` and
+  `docs/python.md`.
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000

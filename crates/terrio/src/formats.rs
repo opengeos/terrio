@@ -707,11 +707,36 @@ fn narrow_allow_lists(lists: &mut AllowLists, drivers: Option<&[&str]>, kind: Op
     Ok(())
 }
 
+/// The option that restricts the drivers of every kind (see [`allowed_drivers`]).
+pub(crate) const ALLOWED_DRIVERS_OPTION: &str = "TERRIO_ALLOWED_DRIVERS";
+
+/// The drivers a value of `TERRIO_ALLOWED_DRIVERS` names, canonical: none for an empty or blank
+/// value, which allows no driver.
+fn option_drivers(value: &str) -> Vec<String> {
+    value.split(',').map(canonical_driver_name).filter(|n| !n.is_empty()).collect()
+}
+
+/// The value a scope of options gives `TERRIO_ALLOWED_DRIVERS` (see [`crate::config::push_scope`]),
+/// which only narrows the value outside the scope, `outer`: the drivers of `value` that `outer`
+/// allows too, and `outer` itself for a scope that unsets the option.
+pub(crate) fn scoped_allowed_drivers(outer: Option<&str>, value: Option<&str>) -> Option<String> {
+    match (outer, value) {
+        (outer, None) => outer.map(str::to_string),
+        (None, value) => value.map(str::to_string),
+        (Some(outer), Some(value)) => {
+            let outer = option_drivers(outer);
+            Some(option_drivers(value).into_iter().filter(|d| outer.contains(d)).collect::<Vec<_>>().join(","))
+        }
+    }
+}
+
 /// The drivers datasets of `kind` may be opened with: its list from [`set_allowed_drivers`] and the
 /// comma-separated `TERRIO_ALLOWED_DRIVERS` option (see [`crate::config`]), which applies to every
-/// kind; when both are set, a driver must be in both. For `None` (a dataset whose kind is not
-/// known before it is opened), a driver must be allowed by each kind it belongs to. `None` when
-/// nothing restricts them.
+/// kind; when both are set, a driver must be in both. The option, set but empty or blank, allows
+/// no driver; a thread's scope can only narrow it (see [`crate::config::push_scope`]), and the
+/// environment's value applies too, should it have been set after the scope. For `None` (a dataset
+/// whose kind is not known before it is opened), a driver must be allowed by each kind it belongs
+/// to. `None` when nothing restricts them.
 pub fn allowed_drivers(kind: Option<Kind>) -> Option<Vec<String>> {
     crate::par::fork_safe();
     let lists = ALLOWED.read().unwrap_or_else(|e| e.into_inner()).clone();
@@ -721,8 +746,11 @@ pub fn allowed_drivers(kind: Option<Kind>) -> Option<Vec<String>> {
         Some(_) => None,
         None => allowed_by_every_kind(&lists),
     };
-    let option = crate::config::get("TERRIO_ALLOWED_DRIVERS")
-        .map(|v| v.split(',').map(canonical_driver_name).filter(|n| !n.is_empty()).collect::<Vec<_>>());
+    let option = [crate::config::get_set(ALLOWED_DRIVERS_OPTION), std::env::var(ALLOWED_DRIVERS_OPTION).ok()]
+        .into_iter()
+        .flatten()
+        .map(|v| option_drivers(&v))
+        .reduce(|a, b| a.into_iter().filter(|d| b.contains(d)).collect());
     match (set, option) {
         (Some(a), Some(b)) => Some(a.into_iter().filter(|d| b.contains(d)).collect()),
         (a, b) => a.or(b),
@@ -1499,6 +1527,59 @@ mod allow_list_tests {
         assert!(check_allowed(&vrt, Some(Kind::Raster)).is_err());
         crate::config::pop_scope();
         assert!(check_allowed(&vrt, Some(Kind::Raster)).is_ok(), "no restriction without the option");
+    }
+
+    /// The option's drivers on the calling thread, scoped to `value` (unset for `None`).
+    fn scoped(value: Option<&str>) -> Option<Vec<String>> {
+        crate::config::push_scope(std::collections::HashMap::from([(ALLOWED_DRIVERS_OPTION.to_string(), value.map(str::to_string))]));
+        let allowed = allowed_drivers(None);
+        crate::config::pop_scope();
+        allowed
+    }
+
+    #[test]
+    fn the_option_set_but_empty_allows_no_driver() {
+        let (_d, tif) = temp("a.tif", b"II*\0\x08\0\0\0");
+        for value in ["", " ", ",", " , "] {
+            assert_eq!(scoped(Some(value)), Some(Vec::new()), "{value:?}");
+            let refused = crate::config::with_options(&[(ALLOWED_DRIVERS_OPTION, value)], || check_allowed(&tif, Some(Kind::Raster)));
+            assert!(refused.is_err_and(|e| e.to_string().contains("not allowed")), "{value:?}");
+        }
+        assert_eq!(scoped(None), None, "unset, it restricts nothing");
+    }
+
+    #[test]
+    fn a_scope_only_narrows_the_option_outside_it() {
+        let names = |n: &[&str]| Some(n.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        crate::config::with_options(&[(ALLOWED_DRIVERS_OPTION, "GTiff, png")], || {
+            assert_eq!(allowed_drivers(None), names(&["GTIFF", "PNG"]));
+            for (value, allowed) in [
+                (Some("PNG, AAIGrid"), names(&["PNG"])),
+                (Some("AAIGrid"), names(&[])),
+                (Some(""), names(&[])),
+                (Some(" "), names(&[])),
+                (None, names(&["GTIFF", "PNG"])),
+            ] {
+                assert_eq!(scoped(value), allowed, "{value:?}");
+            }
+            // A scope inside a narrower one cannot regain what that one left out.
+            let nested = crate::config::with_options(&[(ALLOWED_DRIVERS_OPTION, "PNG,AAIGrid")], || scoped(Some("GTiff,AAIGrid,PNG")));
+            assert_eq!(nested, names(&["PNG"]));
+            assert_eq!(allowed_drivers(None), names(&["GTIFF", "PNG"]), "the list outside the scopes is as it was");
+        });
+    }
+
+    #[test]
+    fn a_narrowed_option_follows_work_handed_to_another_thread() {
+        let (here, there) = crate::config::with_options(&[(ALLOWED_DRIVERS_OPTION, "GTiff,PNG")], || {
+            crate::config::with_options(&[(ALLOWED_DRIVERS_OPTION, "PNG,AAIGrid")], || {
+                let options = crate::config::thread_options();
+                let there = std::thread::spawn(move || crate::config::with_thread_options(options, || allowed_drivers(None)));
+                (allowed_drivers(None), there.join().unwrap())
+            })
+        });
+        assert_eq!(here, Some(vec!["PNG".to_string()]));
+        assert_eq!(there, here);
     }
 
     // The process-wide lists last for the process, so these tests run the narrowing on lists of

@@ -881,6 +881,12 @@ terrio.allowed_drivers("raster")  # ["GTIFF"]
 prefix, never to another host a redirect leads to. See [Remote Data](remote-data.md) for the
 options themselves.
 
+The `TERRIO_ALLOWED_DRIVERS` option limits the drivers too, in the environment or in an `Env`. A
+driver must then be in both lists, and `allowed_drivers()` gives the drivers both allow. The
+option's value is a comma-separated list of driver names in any case. Set but empty, it allows no
+driver. In an `Env` it only narrows the list outside, and unset there, it leaves that list in
+force. See [Allowed drivers](remote-data.md#allowed-drivers).
+
 ## Typing
 
 The package ships type stubs (`py.typed`), checked with `mypy --strict` and `stubtest`:

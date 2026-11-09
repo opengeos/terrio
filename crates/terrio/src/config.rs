@@ -30,12 +30,18 @@ thread_local! {
 /// The value of the option `key`: the innermost scope of the calling thread that sets (or unsets)
 /// it, else the environment variable. Empty values count as unset.
 pub fn get(key: &str) -> Option<String> {
+    get_set(key).filter(|v| !v.trim().is_empty())
+}
+
+/// The value of the option `key`, found as [`get`] finds it, but with an empty or blank value
+/// counting as set: for an option whose empty value says something (an allow-list that allows
+/// nothing).
+pub fn get_set(key: &str) -> Option<String> {
     let scoped = SCOPES.with(|s| s.borrow().iter().rev().find_map(|scope| scope.get(key).cloned()));
-    let value = match scoped {
+    match scoped {
         Some(v) => v,
         None => std::env::var(key).ok(),
-    };
-    value.filter(|v| !v.trim().is_empty())
+    }
 }
 
 /// Whether `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` asks that nothing next to a dataset be read:
@@ -50,8 +56,13 @@ pub fn get_any(keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|k| get(k))
 }
 
-/// Pushes a scope of options for the calling thread; `None` unsets an option in it.
-pub fn push_scope(options: HashMap<String, Option<String>>) {
+/// Pushes a scope of options for the calling thread; `None` unsets an option in it. The driver
+/// allow-list (`TERRIO_ALLOWED_DRIVERS`) only narrows: the scope keeps the drivers its value names
+/// that the value outside it allows too, and unsetting it keeps the value outside.
+pub fn push_scope(mut options: HashMap<String, Option<String>>) {
+    if let Some(value) = options.get_mut(crate::formats::ALLOWED_DRIVERS_OPTION) {
+        *value = crate::formats::scoped_allowed_drivers(get_set(crate::formats::ALLOWED_DRIVERS_OPTION).as_deref(), value.as_deref());
+    }
     SCOPES.with(|s| s.borrow_mut().push(options));
 }
 

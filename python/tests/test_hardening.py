@@ -1211,3 +1211,60 @@ def test_content_checks_of_uploads_release_the_gil_through_the_guard(tmp_path):
         sys.setswitchinterval(interval)
     assert summary["raster_samples"] == 8192 * 8192, summary
     assert during > 0, during
+
+
+OPTION_CHILD = r"""
+import json, sys, threading
+import terrio, terrio.rio as rio
+grid = sys.argv[1]
+outcomes = {}
+
+
+def attempt(label, scope):
+    def run():
+        with rio.Env(**scope):
+            try:
+                with rio.open(grid):
+                    opened = True
+            except Exception:
+                opened = False
+            outcomes[label] = [terrio.allowed_drivers(), opened]
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join()
+
+
+attempt("no scope", {})
+for value in ["", " ", "AAIGrid", None, "AAIGrid, GTiff"]:
+    attempt(repr(value), {"TERRIO_ALLOWED_DRIVERS": value})
+print(json.dumps(outcomes))
+"""
+
+
+@pytest.mark.parametrize("environment", ["GTiff", "", " "])
+def test_the_allowed_drivers_option_fails_closed_and_scopes_only_narrow_it(tmp_path, environment):
+    """`TERRIO_ALLOWED_DRIVERS` set but empty or blank allows no driver, and an `Env` scope on a
+    thread only narrows the list the environment sets: an empty or blank value, other drivers, or
+    unsetting the option, open nothing that list refuses. In a child process with the option in
+    its environment."""
+    grid = tmp_path / "grid.asc"
+    grid.write_text("ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n3 4\n")
+    p = subprocess.run(
+        [sys.executable, "-c", OPTION_CHILD, str(grid)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=dict(os.environ, TERRIO_ALLOWED_DRIVERS=environment),
+    )
+    assert p.returncode == 0, p.stderr[-600:]
+    outcomes = json.loads(p.stdout)
+    listed = ["GTIFF"] if environment == "GTiff" else []
+    assert outcomes == {
+        "no scope": [listed, False],
+        "''": [[], False],
+        "' '": [[], False],
+        "'AAIGrid'": [[], False],
+        "None": [listed, False],
+        "'AAIGrid, GTiff'": [listed, False],
+    }

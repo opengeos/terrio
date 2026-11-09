@@ -321,6 +321,25 @@ and open them again afterwards. A remote file
 opened again decodes its chunks anew, but from the bytes the HTTP cache above may still hold for its
 URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops them.
 
+## Allowed drivers
+
+`TERRIO_ALLOWED_DRIVERS` limits the drivers datasets may be opened with, for files you do not trust:
+
+- **Value.** A comma-separated list of driver names, in any case (`GTiff`, `gtiff`), where
+  `JP2OpenJPEG`, `JPEG2000`, `JP2KAK`, `JP2ECW` and `JP2MRSID` all name `JP2`. Unset, it restricts
+  nothing. Set but empty or blank, it allows no driver.
+- **Scope.** It applies to every kind of dataset, rasters, vectors and point clouds alike.
+- **With `set_allowed_drivers`.** When a list is also set with
+  `terrio::formats::set_allowed_drivers` (Python: `terrio.set_allowed_drivers`), a driver must be
+  in both.
+- **Set for one thread** (Python's `terrio.rio.Env`, `terrio::config::push_scope`), it only narrows
+  the list outside the scope, the environment's and an outer scope's: the scope allows the drivers
+  both name. A scope that unsets the option leaves the list outside in force. The environment's
+  list applies even when it is set after the scope.
+
+`terrio::formats::allowed_drivers` (Python: `terrio.allowed_drivers()`) gives the drivers allowed on
+the calling thread.
+
 ## Managing files
 
 `terrio vsi` lists, copies, synchronizes, moves and deletes files on these locations and in
