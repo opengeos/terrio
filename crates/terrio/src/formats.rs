@@ -635,8 +635,8 @@ static ALLOWED: std::sync::RwLock<AllowLists> = std::sync::RwLock::new([None, No
 /// An allow-list per kind of driver: rasters, then vectors.
 type AllowLists = [Option<Vec<String>>; 2];
 
-/// A driver name as terrio names it, in upper case. GDAL's names for formats terrio names
-/// differently are accepted (`JP2OpenJPEG` is `JP2`).
+/// A driver name as terrio names it, in upper case. Whitespace around the name is ignored, and
+/// GDAL's names for formats terrio names differently are accepted (`JP2OpenJPEG` is `JP2`).
 pub fn canonical_driver_name(name: &str) -> String {
     let upper = name.trim().to_ascii_uppercase();
     match upper.as_str() {

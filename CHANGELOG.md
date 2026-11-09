@@ -7,9 +7,10 @@
   `shutil.copy` and `terrio.xarray`'s `to_raster` refused in 0.8.0 (`DriverCapabilityError`,
   `DriverRegistrationError`). Their driver names are now read as the driver allow-list reads
   them, so `JP2OpenJPEG`, `JPEG2000`, `JP2KAK`, `JP2ECW` and `JP2MrSID` write terrio's JP2, as
-  `MemoryFile` already did with `JP2OpenJPEG`; the file reads back with `driver == "JP2"`. The
-  other writers (`-f` on the command line, `Raster.write(driver=...)`) read names the same way:
-  `JP2MrSID`, the one of these names they refused, now selects JP2.
+  `MemoryFile` already did with `JP2OpenJPEG`; the file reads back with `driver == "JP2"`.
+  `terrio.rio`'s writers still refuse a name with whitespace around it. The other writers (`-f`
+  on the command line, `Raster.write(driver=...)`) read names the same way, without the
+  whitespace around them: `JP2MrSID`, the one of these names they refused, now selects JP2.
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000

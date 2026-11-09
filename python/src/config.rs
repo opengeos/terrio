@@ -6,6 +6,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::HashMap;
 
+/// Registers the functions in the module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(config_push, m)?)?;
     m.add_function(wrap_pyfunction!(config_pop, m)?)?;
@@ -121,7 +122,7 @@ fn check_drivers(py: Python<'_>, path: &str, drivers: Vec<String>) -> PyResult<(
 }
 
 /// A driver name as the allow-list, `check_drivers` and the raster writers read it: in upper case,
-/// without the spaces around it, and with the names of JPEG 2000 drivers (`JP2OpenJPEG`,
+/// without the whitespace around it, and with the names of JPEG 2000 drivers (`JP2OpenJPEG`,
 /// `JPEG2000`...) as `JP2`.
 #[pyfunction]
 fn canonical_driver_name(name: &str) -> String {

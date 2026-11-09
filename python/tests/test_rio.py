@@ -236,6 +236,7 @@ JP2_PROFILE = dict(width=64, height=48, count=1, dtype="uint8", crs="EPSG:32611"
 
 
 def _assert_written_as_jp2(path):
+    """Asserts that `path` reads back as terrio's JP2, with `JP2_PIXELS`, its CRS and transform."""
     with rio.open(path) as ds:
         assert ds.driver == "JP2"
         assert np.array_equal(ds.read(), JP2_PIXELS)
@@ -294,6 +295,35 @@ def test_a_name_no_raster_driver_writes_is_refused_before_writing(tmp_path, driv
         rio.open(str(out), "w", driver=driver, **JP2_PROFILE)
     with pytest.raises(DriverRegistrationError, match=f"Unrecognized driver: {driver}"):
         rio_shutil.copy(src, str(out), driver=driver)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["src.tif"]
+
+
+@pytest.mark.parametrize("driver", [" GTiff ", "GTiff ", " JP2OpenJPEG ", "\tCOG"])
+def test_a_driver_name_with_whitespace_around_it_is_refused_before_writing(tmp_path, driver):
+    """A writer keeps the driver name it is given and compares it with `GTiff` and `COG` as
+    written, so a name with whitespace around it, which the driver allow-list reads without it,
+    is refused before anything is written: by `get_writer_for_driver`, `open(..., "w")`,
+    `MemoryFile.open`, `DatasetWriter` and `shutil.copy`."""
+    src = str(tmp_path / "src.tif")
+    with rio.open(src, "w", driver="GTiff", **JP2_PROFILE) as dst:
+        dst.write(JP2_PIXELS)
+    out = str(tmp_path / "out.tif")
+    message = f"Writer does not exist for driver: {driver}"
+    with pytest.raises(DriverCapabilityError) as refused:
+        get_writer_for_driver(driver)
+    assert str(refused.value) == message
+    with pytest.raises(DriverCapabilityError) as refused:
+        rio.open(out, "w", driver=driver, **JP2_PROFILE)
+    assert str(refused.value) == message
+    with rio.MemoryFile(ext=".tif") as memfile, pytest.raises(DriverCapabilityError) as refused:
+        memfile.open(driver=driver, **JP2_PROFILE)
+    assert str(refused.value) == message
+    with pytest.raises(DriverCapabilityError) as refused:
+        DatasetWriter(out, "w", driver=driver, **JP2_PROFILE)
+    assert str(refused.value) == message
+    with pytest.raises(DriverRegistrationError) as unrecognized:
+        rio_shutil.copy(src, out, driver=driver)
+    assert str(unrecognized.value) == f"Unrecognized driver: {driver}"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["src.tif"]
 
 
