@@ -74,7 +74,7 @@ enum Ids {
     /// The rowids by `tile_id` (as [`id_key`] spells it), read on opening. When `tile_id` follows
     /// `tile_data` in the table (mbutil's column order), reaching it reads each image's overflow
     /// pages, so opening such an archive without an index on `tile_id` reads its image bytes.
-    Scanned(HashMap<String, i64>),
+    Scanned(HashMap<IdKey, i64>),
 }
 
 fn bad(msg: impl std::fmt::Display) -> Error {
@@ -105,10 +105,11 @@ fn find_index(schema: &[SchemaEntry], table: &str, table_sql: &str, want: &[usiz
     if want.iter().any(|&c| reader::column_has_collation(table_sql, c)) {
         return None;
     }
-    // Nor an automatic index of a constraint with a descending column, whose direction
-    // `autoindex_columns` does not report.
-    let descending = table_sql.to_ascii_uppercase().split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|w| w == "DESC");
-    let automatic = if descending { Vec::new() } else { reader::autoindex_columns(table_sql) };
+    // Nor an automatic index of a constraint with a descending column or a collation (such as
+    // `UNIQUE (a, b COLLATE NOCASE)`), which `autoindex_columns` does not report.
+    let unusual =
+        table_sql.to_ascii_uppercase().split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|w| w == "DESC" || w == "COLLATE");
+    let automatic = if unusual { Vec::new() } else { reader::autoindex_columns(table_sql) };
     schema.iter().filter(|e| e.0 == "index" && e.2.eq_ignore_ascii_case(table) && e.3 != 0).find_map(|(_, name, _, root, sql)| {
         let columns = if sql.trim().is_empty() {
             let n: usize = name.rsplit('_').next()?.parse().ok()?;
@@ -192,19 +193,9 @@ impl Images {
                 Value::Text(s) => s.trim().parse().ok(),
                 _ => None,
             }),
-            Ids::Scanned(rowids) => Ok(rowids.get(&id_key(id)).copied()),
+            Ids::Scanned(rowids) => Ok(spellings(id).iter().find_map(|id| rowids.get(&id_key(id)).copied())),
             Ids::Index(root) => {
-                let mut wanted = vec![id.clone()];
-                match id {
-                    Value::Int(i) => wanted.push(Value::Text(i.to_string())),
-                    Value::Real(f) => wanted.push(Value::Text(f.to_string())),
-                    Value::Text(s) => match s.parse::<i64>() {
-                        Ok(i) => wanted.push(Value::Int(i)),
-                        Err(_) => wanted.extend(s.parse::<f64>().ok().filter(|f| f.is_finite()).map(Value::Real)),
-                    },
-                    _ => {}
-                }
-                for id in wanted {
+                for id in spellings(id) {
                     if let Some(rowid) = last_rowid(db, *root, &[id])? {
                         return Ok(Some(rowid));
                     }
@@ -399,17 +390,63 @@ impl MbTiles {
                 keys
             }
         };
+        // Errors are passed over on purpose: this only finds a sample tile to sniff the format
+        // from, and `tile` reports a damaged tile when it is read.
         keys.into_iter().find_map(|(x, y)| self.tile(z, x, y).ok().flatten())
     }
 }
 
-fn id_key(v: &Value) -> String {
+/// A `tile_id` as the scanned ids are keyed: its text spelling, and whether it is a blob (which
+/// equals no text).
+type IdKey = (bool, String);
+
+fn id_key(v: &Value) -> IdKey {
     match v {
-        Value::Text(s) => s.clone(),
-        Value::Int(i) => i.to_string(),
-        Value::Real(f) => f.to_string(),
-        Value::Blob(b) => b.iter().map(|x| format!("{x:02x}")).collect(),
-        Value::Null => String::new(),
+        Value::Text(s) => (false, s.clone()),
+        Value::Int(i) => (false, i.to_string()),
+        Value::Real(f) => (false, real_text(*f)),
+        Value::Blob(b) => (true, b.iter().map(|x| format!("{x:02x}")).collect()),
+        Value::Null => (false, String::new()),
+    }
+}
+
+/// The values an `images.tile_id` equal to `id` may be stored as: `id`, and the numbers and
+/// texts spelling it.
+fn spellings(id: &Value) -> Vec<Value> {
+    let mut out = vec![id.clone()];
+    match id {
+        Value::Int(i) => out.push(Value::Text(i.to_string())),
+        Value::Real(f) => {
+            out.push(Value::Text(real_text(*f)));
+            if f.to_string() != real_text(*f) {
+                out.push(Value::Text(f.to_string()));
+            }
+        }
+        Value::Text(s) => match s.parse::<i64>() {
+            Ok(i) => out.extend([Value::Int(i), Value::Real(i as f64)]),
+            Err(_) => out.extend(s.parse::<f64>().ok().filter(|f| f.is_finite()).map(Value::Real)),
+        },
+        _ => {}
+    }
+    out
+}
+
+/// A real as SQLite spells it in text (`%!.15g`): `1.0`, `0.3`, `1.0e+20`.
+fn real_text(f: f64) -> String {
+    if !f.is_finite() {
+        return f.to_string();
+    }
+    let r: f64 = format!("{f:.14e}").parse().unwrap_or(f);
+    if r.fract() == 0.0 && r.abs() < 1e15 {
+        format!("{r:.1}")
+    } else if r == 0.0 || (1e-4..1e15).contains(&r.abs()) {
+        r.to_string()
+    } else {
+        let e = format!("{r:e}");
+        let (m, x) = e.split_once('e').unwrap_or((&e, "0"));
+        let m = if m.contains('.') { m.to_string() } else { format!("{m}.0") };
+        let (sign, digits) = x.strip_prefix('-').map_or(("+", x), |d| ("-", d));
+        format!("{m}e{sign}{digits:0>2}")
     }
 }
 
@@ -560,6 +597,8 @@ mod tests {
         };
         let text: fn(i64) -> W = |i| W::Text(format!("{i}"));
         let int: fn(i64) -> W = W::Int;
+        let real: fn(i64) -> W = |i| W::Real(i as f64);
+        let real_text: fn(i64) -> W = |i| W::Text(format!("{i}.0"));
         let view = writer::SchemaObject {
             kind: "view",
             name: "tiles".into(),
@@ -568,7 +607,7 @@ mod tests {
         };
         // (map SQL, images SQL, images' automatic indexes, map's ids, images' ids)
         type Case = (&'static str, &'static str, Vec<Vec<usize>>, fn(i64) -> W, fn(i64) -> W);
-        let cases: [Case; 4] = [
+        let cases: [Case; 6] = [
             (
                 "CREATE TABLE map (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_id TEXT, UNIQUE (zoom_level, tile_column, tile_row))",
                 "CREATE TABLE images (tile_data BLOB, tile_id TEXT UNIQUE)",
@@ -596,6 +635,21 @@ mod tests {
                 vec![],
                 text,
                 |_| W::Null,
+            ),
+            // REAL ids, matched to the text SQLite spells them in, by index and by scan.
+            (
+                "CREATE TABLE map (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_id REAL)",
+                "CREATE TABLE images (tile_data BLOB, tile_id TEXT UNIQUE)",
+                vec![vec![1]],
+                real,
+                real_text,
+            ),
+            (
+                "CREATE TABLE map (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_id REAL)",
+                "CREATE TABLE images (tile_data BLOB, tile_id TEXT)",
+                vec![],
+                real,
+                real_text,
             ),
         ];
         for (map_sql, images_sql, image_index, map_id, image_id) in cases {
@@ -683,11 +737,34 @@ mod tests {
             "CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER COLLATE NOCASE, tile_row INTEGER, tile_data BLOB, UNIQUE (zoom_level, tile_column, tile_row))",
             vec![vec![0, 1, 2]],
             &[],
+            rows.clone(),
+        );
+        let constraint_collated = tiles_with(
+            "CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB, UNIQUE (zoom_level, tile_column COLLATE NOCASE, tile_row))",
+            vec![vec![0, 1, 2]],
+            &[],
             rows,
         );
-        for m in [desc, collated] {
+        for m in [desc, collated, constraint_collated] {
             assert!(matches!(m.rows.keys, Keys::Scanned(_)));
             assert_eq!(m.tile(0, 0, 0).unwrap(), Some(vec![7]));
+        }
+    }
+
+    /// Reals are spelled as SQLite's `%!.15g` spells them.
+    #[test]
+    fn reals_spelled_as_sqlite() {
+        for (f, t) in [
+            (1.0, "1.0"),
+            (-2.0, "-2.0"),
+            (0.0, "0.0"),
+            (1.5, "1.5"),
+            (0.1 + 0.2, "0.3"),
+            (1e20, "1.0e+20"),
+            (1.5e-5, "1.5e-05"),
+            (123456.789, "123456.789"),
+        ] {
+            assert_eq!(real_text(f), t);
         }
     }
 
