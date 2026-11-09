@@ -4,10 +4,12 @@ Comparisons with rioxarray are in `test_xarray_vs_rioxarray.py`; these tests nee
 only.
 """
 
+import gc
 import pickle
 import subprocess
 import sys
 import threading
+import weakref
 
 import numpy as np
 import pytest
@@ -1003,3 +1005,21 @@ def test_sidecar_only_mask_flags_and_uncached_reads_agree(tmp_path):
     with txr.open_rasterio(str(path), masked=True, cache=False) as opened:
         np.testing.assert_allclose(opened[:, :1, :].values, expected[:, :1, :], equal_nan=True)
         np.testing.assert_allclose(opened.values, expected, equal_nan=True)
+
+
+def test_accessor_leaves_no_reference_cycle():
+    """What `.terrio` touched is freed when dropped, without the cyclic garbage collector:
+    `write_crs` reads views of each variable, which share the Dataset's variables."""
+    ds = xr.Dataset(
+        {"a": (("y", "x"), np.zeros((4, 4))), "b": (("y", "x"), np.ones((4, 4)))},
+        coords={"y": [3.5, 2.5, 1.5, 0.5], "x": [0.5, 1.5, 2.5, 3.5]},
+    )
+    gc.disable()
+    try:
+        out = ds.terrio.write_crs("EPSG:4326")
+        assert out.terrio.crs == "EPSG:4326" and out.a.terrio.transform() is not None
+        refs = [weakref.ref(out), weakref.ref(out.a.data), weakref.ref(out.b.data)]
+        del out
+        assert [r() is None for r in refs] == [True, True, True]
+    finally:
+        gc.enable()

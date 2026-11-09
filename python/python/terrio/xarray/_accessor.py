@@ -233,6 +233,9 @@ def _ensure_nodata_dtype(original_nodata: Any, new_dtype: Any) -> Any:
 class XRasterBase:
     """What the DataArray and Dataset accessors share: dimensions, CRS, transform, bounds."""
 
+    # The object is a slot: the instance dict is the state that `_Accessor` keeps on the object.
+    __slots__ = ("__dict__", "_obj")
+
     def __init__(self, xarray_obj: XarrayObject) -> None:
         """Creates the accessor of an object.
 
@@ -2215,3 +2218,40 @@ class TerrioDataset(XRasterBase):
 
 
 __all__ = ["TerrioArray", "TerrioDataset", "XRasterBase"]
+
+
+class _Accessor:
+    """Registers an accessor as xarray's `register_*_accessor` do, without a reference cycle.
+
+    xarray caches the accessor on its object, and the accessor refers to the object: a cycle,
+    which only the cyclic garbage collector frees, and it counts objects, not bytes. Every
+    object `.terrio` touched, the views of each variable it reads internally among them (they
+    share the Dataset's variables), then holds its pixels until a collection. Here the object
+    caches only the accessor's state (its `__dict__`), and each access wraps it in a new
+    accessor: what one access sets, the next sees.
+    """
+
+    def __init__(self, name: str, accessor: type[XRasterBase]) -> None:
+        self._name = name
+        self._accessor = accessor
+
+    def __get__(self, obj: Any, cls: Any) -> Any:
+        if obj is None:  # the class's attribute, as xarray's
+            return self._accessor
+        try:
+            cache = obj._cache
+        except AttributeError:
+            cache = obj._cache = {}
+        state = cache.get(self._name)
+        if state is None:
+            try:
+                acc = self._accessor(obj)
+            except AttributeError as err:
+                # xarray's __getattr__ would swallow it (as in xarray's own registration)
+                raise RuntimeError(f"error initializing {self._name!r} accessor.") from err
+            cache[self._name] = acc.__dict__
+            return acc
+        acc = self._accessor.__new__(self._accessor)
+        acc._obj = obj
+        acc.__dict__ = state
+        return acc
