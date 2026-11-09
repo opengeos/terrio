@@ -7,6 +7,12 @@
   fields it reads with chrono, whose formatting needs its `alloc` feature, and only the
   `parquet` feature turned it on (through arrow-array); the `gdal` feature now enables it. CI
   checks that build in the GDAL backend job (#732).
+- A selection of GeoParquet fields decodes only their columns and the geometry, and fetches only
+  their column chunks from a URL: `open_stream(columns=...)`, `terrio convert --select` (without
+  `--where` or `--sql`, which may name other fields), and JavaScript's `openUrl(...).read()`,
+  which takes `columns` too.
+  Breaking (Rust): `terrio::vector::read_geoparquet_sparse` takes a fifth argument, `columns`;
+  pass `None` to read every field, as before.
 - `terrio.pyogrio` reads GeoParquet files: `read_arrow` and `open_arrow` hand out their Arrow
   record batches as pyogrio does through GDAL's Arrow stream, with GDAL 3.13.3's `meta` (the
   fields as OGR has them, structs flattened, the declared geometry type, `EPSG:4326` for a file
