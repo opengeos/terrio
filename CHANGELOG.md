@@ -2,17 +2,12 @@
 
 ## Unreleased
 
-- A `WarpedVRT` read of a file terrio reads itself reads each source window and warps it in one
-  call that releases the GIL, so threaded readers, such as a server answering tile requests on
-  threads, warp at the same time again. In 0.8.0 the window was warped where it is, as a
-  read-only array, with the GIL held so that no other Python thread could write it; it now never
-  becomes a Python object, so nothing else can write it, and it is still held once. Eight Python
-  threads reading 256 x 256 `nearest` tiles of a 10980 x 10980 UInt16 COG with overviews into
-  Web Mercator read 253 tiles/s with 0.8.0 and 643 now (653 before #673); one thread reads about
-  220 with each. Other sources keep the read-only array and the GIL: datasets open for writing
-  or update, a `WarpedVRT` read through another, a dataset whose `_read_level` is replaced,
-  complex bands, and floats converted into an integer type whose limits the float type does not
-  hold exactly. The pixels are the same.
+- A `WarpedVRT` read of a file terrio opens reads and warps each source window in one call that
+  releases the GIL, so reads on several Python threads, such as a server answering tile requests
+  on threads, no longer wait for each other's warps as in 0.8.0. The window stays in Rust, where
+  no other thread can change it, and is still held once. Other sources, such as a dataset whose
+  `_read_level` is replaced, keep 0.8.0's read-only window, warped with the GIL held. The pixels
+  are the same.
 - `warp` of a `Raster` in memory releases the GIL for the whole warp: it takes the raster's
   shared pixels (no copy) and warps them after releasing it, so warps from Python threads
   (rioxarray-style `reproject` of xarray arrays on a thread pool) overlap. 96 nearest-neighbour
