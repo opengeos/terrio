@@ -2064,6 +2064,11 @@ impl std::fmt::Debug for RangeReader {
 // ever shows next to a request's latency
 const PARALLEL_RUNS: usize = 8;
 
+/// The least each piece of a run holds when the run is split into requests fetched in parallel
+/// (see [`Shared::fetch_blocks`]), so that a run shorter than twice this stays one request:
+/// smaller pieces would cost more in requests than they save in transfer.
+const SPLIT_RUN_BYTES: u64 = 1 << 20;
+
 /// A run of consecutive blocks that one request fetches (see [`Shared::fetch_blocks`]).
 struct Run {
     /// The run's first block.
@@ -2462,7 +2467,8 @@ impl Shared {
     /// in order as if fetched one after another.
     fn fetch_blocks(&mut self, blocks: &[u64], gap: u64) -> io::Result<()> {
         let blocks: Vec<u64> = blocks.iter().copied().filter(|&b| !self.load_cached_block(b)).collect();
-        let mut runs = Vec::new();
+        // Runs of consecutive missing blocks (or separated by at most `gap` cached ones).
+        let mut spans = Vec::new();
         let mut i = 0;
         while i < blocks.len() {
             let start = blocks[i];
@@ -2472,6 +2478,29 @@ impl Shared {
                 end = blocks[i];
             }
             i += 1;
+            spans.push((start, end));
+        }
+        // Fetched in parallel, a long run is split into near-equal pieces fetched together, as a
+        // server sends each response at the pace of one connection: as many as there are request
+        // slots, each of SPLIT_RUN_BYTES at least, so a run under twice that stays whole.
+        if self.client.options.parallel_ranges {
+            let least = SPLIT_RUN_BYTES.div_ceil(self.block_size).max(1);
+            spans = spans
+                .into_iter()
+                .flat_map(|(start, end)| {
+                    let len = end - start + 1;
+                    let pieces = (len / least).clamp(1, PARALLEL_RUNS as u64);
+                    let (size, longer) = (len / pieces, len % pieces);
+                    // the first `longer` pieces take one block more
+                    (0..pieces).map(move |k| {
+                        let first = start + k * size + k.min(longer);
+                        (first, first + size + u64::from(k < longer) - 1)
+                    })
+                })
+                .collect();
+        }
+        let mut runs = Vec::new();
+        for (start, end) in spans {
             let first = start * self.block_size;
             let last = ((end + 1) * self.block_size).min(self.len) - 1;
             // The first bytes, already held, start the run when it starts the file.
@@ -2742,6 +2771,40 @@ impl Seek for RangeReader {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         self.pos = crate::sparse::seek_position(self.pos, self.len, pos)?;
         Ok(self.pos)
+    }
+}
+
+// GeoParquet files read in place: their footer, then the column chunks asked for.
+#[cfg(feature = "parquet")]
+impl parquet::file::reader::Length for RangeReader {
+    fn len(&self) -> u64 {
+        self.len
+    }
+}
+
+#[cfg(feature = "parquet")]
+impl parquet::file::reader::ChunkReader for RangeReader {
+    type T = RangeReader;
+
+    fn get_read(&self, start: u64) -> parquet::errors::Result<Self::T> {
+        let mut r = self.clone();
+        r.pos = start;
+        Ok(r)
+    }
+
+    fn get_bytes(&self, start: u64, length: usize) -> parquet::errors::Result<bytes::Bytes> {
+        // A malformed file may declare more bytes than it has: refused before allocating them.
+        if start.checked_add(length as u64).is_none_or(|end| end > self.len) {
+            return Err(parquet::errors::ParquetError::EOF(format!(
+                "{length} bytes at {start} are past the end of a {}-byte file",
+                self.len
+            )));
+        }
+        let mut buf = vec![0; length];
+        let mut r = self.clone();
+        r.pos = start;
+        r.read_exact(&mut buf).map_err(|e| parquet::errors::ParquetError::External(Box::new(e)))?;
+        Ok(bytes::Bytes::from(buf))
     }
 }
 
@@ -3403,6 +3466,37 @@ mod tests {
             assert_eq!(gate.ranges_asked().len(), 3);
             assert_eq!(read_range(&mut r, 60 * 4096, 5000), data[60 * 4096..60 * 4096 + 5000]);
             assert_eq!(read_range(&mut r, 10 * 4096, 100), data[10 * 4096..10 * 4096 + 100]);
+        }
+    }
+
+    #[test]
+    fn a_long_run_is_fetched_in_pieces_in_parallel() {
+        // 2.5 MiB in one range (640 blocks of 4 KiB): two pieces of 1.25 MiB in flight together
+        // (each waits for both), one request when serial. Then 1 MiB and a block, under twice
+        // SPLIT_RUN_BYTES: one request, without a small piece for the rest.
+        let data: Vec<u8> = (0..5u32 << 20).map(|i| (i * 7 % 251) as u8).collect();
+        let (from, len) = (4096u64, 5u64 << 19);
+        let (short_from, short_len) = (3u64 << 20, (1u64 << 20) + 4096);
+        for parallel in [true, false] {
+            let wait = if parallel { Duration::from_secs(10) } else { Duration::from_millis(100) };
+            let (url, gate) = serve_gated(data.clone(), move |first, gate| {
+                if first > 0 && (first as u64) < short_from {
+                    gate.wait_until(|seen| seen.most >= 2, wait);
+                }
+                206
+            });
+            let opts = HttpOptions { parallel_ranges: parallel, cache_size: 64 << 20, ..options() };
+            let mut r = RangeReader::open_with(&Remote::Url(url), opts).unwrap();
+            r.prefetch(&[(from, len)]).unwrap();
+            let mut asked = gate.ranges_asked();
+            asked.sort_unstable();
+            let pieces: Vec<usize> = if parallel { vec![4096, 4096 + 320 * 4096] } else { vec![4096] };
+            assert_eq!(asked, pieces, "parallel_ranges={parallel}");
+            assert_eq!(gate.most(), if parallel { 2 } else { 1 }, "parallel_ranges={parallel}");
+            assert_eq!(read_range(&mut r, from, len as usize), data[from as usize..(from + len) as usize]);
+            r.prefetch(&[(short_from, short_len)]).unwrap();
+            assert_eq!(gate.ranges_asked().len(), pieces.len() + 1, "one request for a run under 2 MiB");
+            assert_eq!(read_range(&mut r, short_from, short_len as usize), data[short_from as usize..(short_from + short_len) as usize]);
         }
     }
 
@@ -5172,7 +5266,8 @@ mod tests {
     /// GDAL reads them all: an SRTM tile has no signature, and is known by its name and size, as
     /// GDAL's SRTMHGT driver knows one (`VSIStatL`). Under every one of those names, a tile is read
     /// as its local copy is (driver, samples, georeferencing, nodata, unit), by the whole read and
-    /// the lazy open, in two requests: its first 16,384 bytes, then the rest.
+    /// the lazy open: its first 16,384 bytes, then the rest (the lazy open's in pieces of 1 MiB
+    /// fetched in parallel).
     #[test]
     fn a_remote_srtm_tile_is_read_under_every_name_the_driver_takes() {
         let _serial = cache_test_guard();
@@ -5194,13 +5289,11 @@ mod tests {
                 let remote = if lazy { crate::LazyRaster::open(&url).and_then(|mut r| r.read()) } else { crate::open_raster(&url) };
                 let remote = remote.unwrap_or_else(|e| panic!("{name} (lazy {lazy}): {e}"));
                 assert!(read(remote) == expected, "{name} (lazy {lazy}): read otherwise than its local copy");
-                let last = tile.len() - 1;
-                assert_eq!(
-                    header_values(&seen, "range"),
-                    ["bytes=0-16383".to_string(), format!("bytes=16384-{last}")],
-                    "{name} (lazy {lazy})"
-                );
-                assert_eq!(seen.lock().unwrap().len(), 2, "{name} (lazy {lazy})");
+                let mut asked = header_values(&seen, "range");
+                asked.sort();
+                let expected =
+                    if lazy { tile_requests(tile.len()) } else { vec!["bytes=0-16383".into(), format!("bytes=16384-{}", tile.len() - 1)] };
+                assert_eq!(asked, expected, "{name} (lazy {lazy})");
             }
         }
     }
@@ -5273,9 +5366,29 @@ mod tests {
         let hgts = crate::LazyRaster::open(&format!("{base}/N37W120.hgts")).and_then(|mut r| r.read());
         crate::config::pop_scope();
         assert_eq!((img.unwrap().driver.name(), hgts.unwrap().driver.name()), ("SRTMHGT", "SRTMHGT"));
-        let last = srtm_tile().len() - 1;
-        let two = ["bytes=0-16383".to_string(), format!("bytes=16384-{last}")];
-        assert_eq!(header_values(&seen, "range"), [two.clone(), two].concat());
+        let mut asked = header_values(&seen, "range");
+        asked.sort();
+        let mut two = [tile_requests(srtm_tile().len()), tile_requests(srtm_tile().len())].concat();
+        two.sort();
+        assert_eq!(asked, two);
+    }
+
+    /// The requests a lazy read of a whole remote tile of `len` bytes makes, sorted: its first
+    /// 16,384 bytes, then the rest of its blocks (of the default size) as one run split into
+    /// near-equal pieces of SPLIT_RUN_BYTES at least, at most PARALLEL_RUNS of them.
+    fn tile_requests(len: usize) -> Vec<String> {
+        let bs = HttpOptions::default().block_size;
+        let blocks = (len as u64).div_ceil(bs);
+        let pieces = (blocks / SPLIT_RUN_BYTES.div_ceil(bs)).clamp(1, PARALLEL_RUNS as u64);
+        let (size, longer) = (blocks / pieces, blocks % pieces);
+        let mut out = vec!["bytes=0-16383".to_string()];
+        for k in 0..pieces {
+            let first = k * size + k.min(longer);
+            let end = first + size + u64::from(k < longer);
+            out.push(format!("bytes={}-{}", (first * bs).max(16384), (end * bs).min(len as u64) - 1));
+        }
+        out.sort();
+        out
     }
 
     /// A remote file under a tile's extension whose name is no tile's (`big.hgt`, `N38W120_v2.hgt`),

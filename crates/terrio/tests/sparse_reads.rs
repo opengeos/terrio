@@ -157,13 +157,37 @@ fn geoparquet_by_row_group() {
     let total: u64 = groups.iter().map(|g| g.rows).sum();
     assert_eq!(total, 2400);
     let last = groups.len() - 1;
-    let (layer, _) = sparse(&bytes, &file, || terrio::vector::read_geoparquet_sparse(&file, "s.parquet", Some(&[last]), None));
+    let (layer, _) = sparse(&bytes, &file, || terrio::vector::read_geoparquet_sparse(&file, "s.parquet", Some(&[last]), None, None));
     assert_eq!(layer.features.len() as u64, groups[last].rows);
     assert_eq!(layer.features[0].fid, groups[last].first_row);
     let rect = (10.0, 10.0, 22.0, 18.0);
-    let (layer, _) = sparse(&bytes, &file, || terrio::vector::read_geoparquet_sparse(&file, "s.parquet", None, Some(rect)));
+    let (layer, _) = sparse(&bytes, &file, || terrio::vector::read_geoparquet_sparse(&file, "s.parquet", None, Some(rect), None));
     let whole = terrio::memory::open_vector_bytes(bytes.clone(), "s.parquet", &Default::default()).unwrap();
     assert_eq!(spat(std::slice::from_ref(&layer), rect), spat(&whole.layers, rect));
+}
+
+/// A read of some fields fetches the column chunks of those and of the geometry only.
+#[test]
+fn geoparquet_columns_fetch_only_their_chunks() {
+    let mut layers = countries();
+    layers[0].add_field(terrio::FieldDef::new("note", terrio::FieldType::Text));
+    for f in &mut layers[0].features {
+        let note = (0..8).map(|k| format!("{:08x}", (f.fid * 8 + k).wrapping_mul(2_654_435_761) as u32)).collect::<String>();
+        f.attributes.push(terrio::FieldValue::Text(note));
+    }
+    let bytes = terrio::memory::write_vector_bytes(&layers, "s.parquet", &Default::default()).unwrap();
+    let read = |columns: Option<&[String]>| {
+        let file = SparseFile::with_block_size(bytes.len() as u64, 1024);
+        sparse(&bytes, &file, || terrio::vector::read_geoparquet_sparse(&file, "s.parquet", None, None, columns))
+    };
+    let (all, all_bytes) = read(None);
+    let (ids, id_bytes) = read(Some(&["ID".to_string()]));
+    assert_eq!(ids.schema.fields().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["id"]);
+    assert_eq!(ids.features.len(), all.features.len());
+    for (a, b) in all.features.iter().zip(&ids.features) {
+        assert_eq!((a.fid, &a.geometry, &a.attributes[..1]), (b.fid, &b.geometry, &b.attributes[..]));
+    }
+    assert!(id_bytes < all_bytes * 3 / 4, "{id_bytes} of {all_bytes}");
 }
 
 #[test]
@@ -230,11 +254,12 @@ fn real_files() {
         assert_eq!(groups.iter().map(|g| g.rows).collect::<Vec<_>>(), [1000, 1000, 1000, 1000, 1000, 1000, 1000, 342]);
         let rect = (0.0, 40.0, 20.0, 55.0);
         let (layer, fetched) =
-            sparse(&bytes, &file, || terrio::vector::read_geoparquet_sparse(&file, "ne_places_rg.parquet", None, Some(rect)));
+            sparse(&bytes, &file, || terrio::vector::read_geoparquet_sparse(&file, "ne_places_rg.parquet", None, Some(rect), None));
         let fids = spat(std::slice::from_ref(&layer), rect);
         assert_eq!((fids.len(), fids.iter().sum::<u64>()), (306, 921657));
         eprintln!("ne_places_rg.parquet: 306 places in {fetched} of {} bytes", bytes.len());
-        let (layer, _) = sparse(&bytes, &file, || terrio::vector::read_geoparquet_sparse(&file, "ne_places_rg.parquet", Some(&[7]), None));
+        let (layer, _) =
+            sparse(&bytes, &file, || terrio::vector::read_geoparquet_sparse(&file, "ne_places_rg.parquet", Some(&[7]), None, None));
         assert_eq!((layer.features.len(), layer.features[0].fid), (342, 7000));
     }
 
