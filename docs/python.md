@@ -911,7 +911,10 @@ The `TERRIO_ALLOWED_DRIVERS` option limits the drivers too, in the environment o
 driver must then be in both lists, and `allowed_drivers()` gives the drivers both allow. The
 option's value is a comma-separated list of driver names in any case. Set but empty, it allows no
 driver. In an `Env` it only narrows the list outside, and unset there, it leaves that list in
-force. See [Allowed drivers](remote-data.md#allowed-drivers).
+force. `allowed_drivers()` is the way to see what the option allows: `terrio.pyogrio`'s
+`get_gdal_config_option` reports a set but empty value as unset (`None`), and `config_options()`
+shows only the values `Env` scopes hold, `''` where a scope allows nothing. See
+[Allowed drivers](remote-data.md#allowed-drivers).
 
 ## Typing
 

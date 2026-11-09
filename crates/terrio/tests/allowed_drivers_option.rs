@@ -30,8 +30,9 @@ fn an_empty_list_allows_nothing_and_a_scope_cannot_widen_the_environments() {
     let grid = dir.path().join("grid.asc");
     std::fs::write(&grid, "ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n3 4\n").unwrap();
     let grid = grid.to_str().unwrap();
-    // SAFETY: this test binary runs this test only, and nothing it calls leaves a thread running,
-    // so no other thread reads the environment while it changes.
+    // SAFETY: this binary runs only this test, so no other test thread reads the environment while
+    // it changes. Terrio's rayon pool threads may outlive a parallel job, but they are idle between
+    // jobs and read no environment variable here.
     unsafe { std::env::remove_var(OPTION) };
     assert_eq!(in_scope(None, grid), (None, true), "no list");
     for value in ["", " ", ","] {
