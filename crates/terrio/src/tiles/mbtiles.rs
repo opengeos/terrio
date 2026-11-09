@@ -44,6 +44,8 @@ struct Rows {
     root: u32,
     /// The column of the tile's bytes (`tile_data`), or of its image's id (`tile_id`).
     value: usize,
+    /// The column that is the rowid (stored as NULL), if any.
+    alias: Option<usize>,
     keys: Keys,
 }
 
@@ -69,12 +71,23 @@ enum Ids {
     Rowid,
     /// The root of an index whose leading column is `tile_id`.
     Index(u32),
-    /// The rowids by `tile_id` (as [`id_key`] spells it), read on opening.
+    /// The rowids by `tile_id` (as [`id_key`] spells it), read on opening. When `tile_id` follows
+    /// `tile_data` in the table (mbutil's column order), reaching it reads each image's overflow
+    /// pages, so opening such an archive without an index on `tile_id` reads its image bytes.
     Scanned(HashMap<String, i64>),
 }
 
 fn bad(msg: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("MBTiles: {msg}"))
+}
+
+/// A key column's integer: an integer, or a real with no fraction (as SQLite compares them).
+fn int(v: Option<&Value>) -> Option<i64> {
+    match v? {
+        Value::Int(i) => Some(*i),
+        Value::Real(f) if f.fract() == 0.0 && f.abs() < 9.0e18 => Some(*f as i64),
+        _ => None,
+    }
 }
 
 /// The `(z, x, y)` of a row's key columns, rows counted from the top; `None` for a key outside
@@ -88,7 +101,14 @@ fn xyz(z: Option<i64>, x: Option<i64>, row: Option<i64>) -> Option<(u8, u32, u32
 /// The root of an index on `table` whose leading columns are `want`, as written (an automatic
 /// index of a `UNIQUE` constraint, or a `CREATE INDEX` on plain columns).
 fn find_index(schema: &[SchemaEntry], table: &str, table_sql: &str, want: &[usize]) -> Option<u32> {
-    let automatic = reader::autoindex_columns(table_sql);
+    // An index ordered otherwise than the search compares (a column's own collation) is not used.
+    if want.iter().any(|&c| reader::column_has_collation(table_sql, c)) {
+        return None;
+    }
+    // Nor an automatic index of a constraint with a descending column, whose direction
+    // `autoindex_columns` does not report.
+    let descending = table_sql.to_ascii_uppercase().split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|w| w == "DESC");
+    let automatic = if descending { Vec::new() } else { reader::autoindex_columns(table_sql) };
     schema.iter().filter(|e| e.0 == "index" && e.2.eq_ignore_ascii_case(table) && e.3 != 0).find_map(|(_, name, _, root, sql)| {
         let columns = if sql.trim().is_empty() {
             let n: usize = name.rsplit('_').next()?.parse().ok()?;
@@ -114,19 +134,26 @@ impl Rows {
     fn new(db: &Db, schema: &[SchemaEntry], table: &str, value: &str) -> Result<Self> {
         let (root, sql) = db.table_root(table).map_err(|_| bad(format!("no {table} table")))?;
         let columns = column_positions(table, &sql, &["zoom_level", "tile_column", "tile_row", value])?;
+        let alias = reader::rowid_column(&sql);
         let keys = match find_index(schema, table, &sql, &columns[..3]) {
             Some(index) => Keys::Index(index),
             None => {
                 let mut rowids = HashMap::new();
-                db.scan_columns(root, &columns[..3], &mut |rowid, v| {
-                    if let Some(key) = xyz(v[0].as_i64(), v[1].as_i64(), v[2].as_i64()) {
+                db.scan_columns(root, &columns[..3], &mut |rowid, mut v| {
+                    for (i, &c) in columns[..3].iter().enumerate() {
+                        if alias == Some(c) {
+                            v[i] = Value::Int(rowid);
+                        }
+                    }
+                    // The last row of a key, as a lookup in a non-unique index finds it.
+                    if let Some(key) = xyz(int(v.first()), int(v.get(1)), int(v.get(2))) {
                         rowids.insert(key, rowid);
                     }
                 })?;
                 Keys::Scanned(rowids)
             }
         };
-        Ok(Self { root, value: columns[3], keys })
+        Ok(Self { root, value: columns[3], alias, keys })
     }
 }
 
@@ -143,7 +170,10 @@ impl Images {
         } else {
             let mut rowids = HashMap::new();
             db.scan_columns(root, &[id], &mut |rowid, v| {
-                rowids.insert(id_key(&v[0]), rowid);
+                // A NULL id matches nothing, as in the view's join.
+                if v[0] != Value::Null {
+                    rowids.insert(id_key(&v[0]), rowid);
+                }
             })?;
             Ids::Scanned(rowids)
         };
@@ -152,6 +182,10 @@ impl Images {
 
     /// The rowid of the image `id`, matching a number and the text spelling it.
     fn rowid(&self, db: &Db, id: &Value) -> Result<Option<i64>> {
+        // `images.tile_id = map.tile_id` is never true of a NULL id.
+        if *id == Value::Null {
+            return Ok(None);
+        }
         match &self.ids {
             Ids::Rowid => Ok(match id {
                 Value::Int(i) => Some(*i),
@@ -163,11 +197,15 @@ impl Images {
                 let mut wanted = vec![id.clone()];
                 match id {
                     Value::Int(i) => wanted.push(Value::Text(i.to_string())),
-                    Value::Text(s) => wanted.extend(s.parse::<i64>().ok().map(Value::Int)),
+                    Value::Real(f) => wanted.push(Value::Text(f.to_string())),
+                    Value::Text(s) => match s.parse::<i64>() {
+                        Ok(i) => wanted.push(Value::Int(i)),
+                        Err(_) => wanted.extend(s.parse::<f64>().ok().filter(|f| f.is_finite()).map(Value::Real)),
+                    },
                     _ => {}
                 }
                 for id in wanted {
-                    if let Some(rowid) = first_rowid(db, *root, &[id])? {
+                    if let Some(rowid) = last_rowid(db, *root, &[id])? {
                         return Ok(Some(rowid));
                     }
                 }
@@ -177,25 +215,31 @@ impl Images {
     }
 }
 
-/// The rowid of the first record of an index whose leading values are `prefix`.
-fn first_rowid(db: &Db, root: u32, prefix: &[Value]) -> Result<Option<i64>> {
+/// The rowid of the last record of an index whose leading values are `prefix`: of rows sharing
+/// a key, the last, as the archive was read before (rows read in order, the last one kept).
+fn last_rowid(db: &Db, root: u32, prefix: &[Value]) -> Result<Option<i64>> {
     let mut found = None;
     db.index_prefix(root, prefix, &mut |record| {
         found = record.last().and_then(Value::as_i64);
-        false
+        true
     })?;
     Ok(found)
 }
 
-/// Column `c` of the row `rowid` of the table b-tree rooted at `root`.
-fn row_value(db: &Db, root: u32, rowid: i64, c: usize) -> Result<Option<Value>> {
+/// Column `c` of the row `rowid` of the table b-tree rooted at `root`; `alias` is the column that
+/// is the rowid, stored as NULL.
+fn row_value(db: &Db, root: u32, rowid: i64, c: usize, alias: Option<usize>) -> Result<Option<Value>> {
     let Some(payload) = db.lookup(root, rowid)? else { return Ok(None) };
+    if alias == Some(c) {
+        return Ok(Some(Value::Int(rowid)));
+    }
     Ok(db.decode_record(&payload)?.into_iter().nth(c))
 }
 
 impl MbTiles {
     /// Opens an MBTiles file in place: only its schema, metadata and (for archives without an
-    /// index on their tile keys) the key columns of its tiles are read now.
+    /// index on their tile keys) the key columns of its tiles are read now. The exception is an
+    /// `images` table without an index on `tile_id`: see [`Ids::Scanned`].
     pub(crate) fn open(path: &std::path::Path) -> Result<Self> {
         Self::from_db(Db::open(path)?)
     }
@@ -274,7 +318,7 @@ impl MbTiles {
             Keys::Scanned(rowids) => Ok(rowids.get(&(z, x, y)).copied()),
             Keys::Index(root) => {
                 let row = (1i64 << z) - 1 - i64::from(y);
-                first_rowid(&self.db, *root, &[Value::Int(z.into()), Value::Int(x.into()), Value::Int(row)])
+                last_rowid(&self.db, *root, &[Value::Int(z.into()), Value::Int(x.into()), Value::Int(row)])
             }
         }
     }
@@ -282,11 +326,11 @@ impl MbTiles {
     /// A tile's bytes (as stored: vector tiles are usually gzipped).
     pub(crate) fn tile(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
         let Some(rowid) = self.rowid(z, x, y)? else { return Ok(None) };
-        let Some(value) = row_value(&self.db, self.rows.root, rowid, self.rows.value)? else { return Ok(None) };
+        let Some(value) = row_value(&self.db, self.rows.root, rowid, self.rows.value, self.rows.alias)? else { return Ok(None) };
         let data = match &self.images {
             None => Some(value),
             Some(images) => match images.rowid(&self.db, &value)? {
-                Some(rowid) => row_value(&self.db, images.root, rowid, images.data)?,
+                Some(rowid) => row_value(&self.db, images.root, rowid, images.data, None)?,
                 None => None,
             },
         };
@@ -299,11 +343,7 @@ impl MbTiles {
     /// Visits the keys of the tiles at zoom `z`, in the index's order, until `visit` returns
     /// `false`.
     fn keys_at_zoom(&self, root: u32, z: u8, visit: &mut dyn FnMut((u32, u32)) -> bool) -> Result<()> {
-        self.db.index_prefix(root, &[Value::Int(z.into())], &mut |r| match xyz(
-            Some(z.into()),
-            r.get(1).and_then(Value::as_i64),
-            r.get(2).and_then(Value::as_i64),
-        ) {
+        self.db.index_prefix(root, &[Value::Int(z.into())], &mut |r| match xyz(Some(z.into()), int(r.get(1)), int(r.get(2))) {
             Some((_, x, y)) => visit((x, y)),
             None => true,
         })
@@ -338,13 +378,28 @@ impl MbTiles {
         Ok(v)
     }
 
-    /// A tile of the archive at zoom `z`: its first, by column then row.
+    /// A tile of the archive at zoom `z`: the first that has bytes of its first few, in the
+    /// order of the index on tile keys (by column, then stored (TMS) row).
     pub(crate) fn any_tile(&self, z: u8) -> Option<Vec<u8>> {
-        let (x, y) = match &self.rows.keys {
-            Keys::Scanned(rowids) => rowids.keys().filter(|k| k.0 == z).min().map(|k| (k.1, k.2))?,
-            Keys::Index(_) => self.first_key(z).ok()??,
+        const TRIED: usize = 16;
+        let keys: Vec<(u32, u32)> = match &self.rows.keys {
+            Keys::Scanned(rowids) => {
+                let mut keys: Vec<(u32, u32)> = rowids.keys().filter(|k| k.0 == z).map(|k| (k.1, k.2)).collect();
+                keys.sort_by_key(|&(x, y)| (x, std::cmp::Reverse(y)));
+                keys.truncate(TRIED);
+                keys
+            }
+            Keys::Index(root) => {
+                let mut keys = Vec::new();
+                self.keys_at_zoom(*root, z, &mut |k| {
+                    keys.push(k);
+                    keys.len() < TRIED
+                })
+                .ok()?;
+                keys
+            }
         };
-        self.tile(z, x, y).ok()?
+        keys.into_iter().find_map(|(x, y)| self.tile(z, x, y).ok().flatten())
     }
 }
 
@@ -456,7 +511,7 @@ mod tests {
             assert_eq!(m.tiles_at_zoom(8).unwrap(), vec![]);
             assert_eq!(m.tile(8, 0, 0).unwrap(), None);
             assert_eq!(m.tile(2, 4, 0).unwrap(), None);
-            assert!(m.any_tile(3).is_some_and(|t| t.starts_with(b"3/0/")));
+            assert_eq!(m.any_tile(3), Some(b"3/0/7".to_vec()));
         }
     }
 
@@ -491,9 +546,18 @@ mod tests {
     /// an index, as the rowid, or by a scan, as a number or the text spelling it.
     #[test]
     fn reads_map_and_images() {
-        let map_rows =
-            |id: fn(i64) -> W| (0..4i64).map(|i| (i + 1, vec![W::Int(2), W::Int(i), W::Int(3 - i), id(i % 2)])).collect::<Vec<_>>();
-        let image_rows = |id: fn(i64) -> W| (0..2i64).map(|i| (i + 1, vec![W::Blob(vec![i as u8 + 1; 5000]), id(i)])).collect::<Vec<_>>();
+        // Four tiles on the diagonal, and tile (0, 3) whose id is NULL, which matches no image.
+        let map_rows = |id: fn(i64) -> W| {
+            let mut rows: Vec<_> = (0..4i64).map(|i| (i + 1, vec![W::Int(2), W::Int(i), W::Int(3 - i), id(i % 2)])).collect();
+            rows.push((5, vec![W::Int(2), W::Int(0), W::Int(0), W::Null]));
+            rows
+        };
+        // Two images, and one whose id is NULL.
+        let image_rows = |id: fn(i64) -> W| {
+            let mut rows: Vec<_> = (0..2i64).map(|i| (i + 1, vec![W::Blob(vec![i as u8 + 1; 5000]), id(i)])).collect();
+            rows.push((3, vec![W::Blob(vec![9; 10]), W::Null]));
+            rows
+        };
         let text: fn(i64) -> W = |i| W::Text(format!("{i}"));
         let int: fn(i64) -> W = W::Int;
         let view = writer::SchemaObject {
@@ -551,7 +615,105 @@ mod tests {
                 assert_eq!(m.tile(2, x, x).unwrap(), Some(vec![(x % 2) as u8 + 1; 5000]), "{map_sql} {images_sql}");
             }
             assert_eq!(m.tile(2, 0, 1).unwrap(), None);
-            assert_eq!(m.tiles_at_zoom(2).unwrap(), vec![(0, 0), (1, 1), (2, 2), (3, 3)]);
+            assert_eq!(m.tile(2, 0, 3).unwrap(), None, "{map_sql} {images_sql}");
+            assert_eq!(m.tiles_at_zoom(2).unwrap(), vec![(0, 0), (1, 1), (2, 2), (0, 3), (3, 3)]);
         }
+    }
+
+    fn tiles_with(sql: &str, autoindexes: Vec<Vec<usize>>, indexes: &[writer::Index], rows: Vec<(i64, Vec<W>)>) -> MbTiles {
+        let tiles = Table { name: "tiles".into(), sql: sql.into(), rows, autoindexes };
+        MbTiles::from_bytes(writer::write_database_with_indexes(&[metadata_table(), tiles], indexes, &[], 0, 0).unwrap()).unwrap()
+    }
+
+    /// A local file is mapped, not read, and its tiles are read from the map.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn local_files_are_mapped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.mbtiles");
+        let tiles: Vec<_> = (0..4u32).map(|i| (2u8, i, i, vec![i as u8; 9000])).collect();
+        std::fs::write(&path, write(&md(), tiles).unwrap()).unwrap();
+        let m = MbTiles::open(&path).unwrap();
+        assert!(m.db.is_mapped());
+        assert!(matches!(m.rows.keys, Keys::Index(_)));
+        assert_eq!(m.tile(2, 3, 3).unwrap(), Some(vec![3; 9000]));
+    }
+
+    /// Of rows sharing a key, the last is read, with and without an index; keys that are not
+    /// whole numbers name no tile, and are not listed.
+    #[test]
+    fn duplicate_and_fractional_keys() {
+        let sql = "CREATE TABLE tiles (zoom_level INTEGER, tile_column, tile_row INTEGER, tile_data BLOB)";
+        let rows = vec![
+            (1, vec![W::Int(1), W::Int(0), W::Int(1), W::Blob(vec![1])]),
+            (2, vec![W::Int(1), W::Int(0), W::Int(1), W::Blob(vec![2])]),
+            (3, vec![W::Int(1), W::Real(1.0), W::Int(1), W::Blob(vec![3])]),
+            (4, vec![W::Int(1), W::Real(0.5), W::Int(0), W::Blob(vec![4])]),
+        ];
+        let index = writer::Index {
+            name: "tile_index".into(),
+            table: "tiles".into(),
+            sql: "CREATE INDEX tile_index ON tiles (zoom_level, tile_column, tile_row)".into(),
+            columns: vec![0, 1, 2],
+        };
+        let indexed = tiles_with(sql, vec![], &[index], rows.clone());
+        let scanned = tiles_with(sql, vec![], &[], rows);
+        assert!(matches!(indexed.rows.keys, Keys::Index(_)));
+        assert!(matches!(scanned.rows.keys, Keys::Scanned(_)));
+        for m in [indexed, scanned] {
+            assert_eq!(m.tile(1, 0, 0).unwrap(), Some(vec![2]));
+            assert_eq!(m.tile(1, 1, 0).unwrap(), Some(vec![3]));
+            assert_eq!(m.tile(1, 0, 1).unwrap(), None);
+            assert_eq!(m.tiles_at_zoom(1).unwrap(), vec![(0, 0), (1, 0)]);
+        }
+    }
+
+    /// An index the search cannot follow (a descending constraint, a column's own collation)
+    /// is not used: the keys are scanned instead.
+    #[test]
+    fn unsearchable_indexes_are_not_used() {
+        let rows = vec![(1, vec![W::Int(0), W::Int(0), W::Int(0), W::Blob(vec![7])])];
+        let desc = tiles_with(
+            "CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB, UNIQUE (zoom_level, tile_column DESC, tile_row))",
+            vec![vec![0, 1, 2]],
+            &[],
+            rows.clone(),
+        );
+        let collated = tiles_with(
+            "CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER COLLATE NOCASE, tile_row INTEGER, tile_data BLOB, UNIQUE (zoom_level, tile_column, tile_row))",
+            vec![vec![0, 1, 2]],
+            &[],
+            rows,
+        );
+        for m in [desc, collated] {
+            assert!(matches!(m.rows.keys, Keys::Scanned(_)));
+            assert_eq!(m.tile(0, 0, 0).unwrap(), Some(vec![7]));
+        }
+    }
+
+    /// A `map.tile_id` that is the rowid (stored as NULL) names its image by the rowid.
+    #[test]
+    fn map_ids_that_are_rowids() {
+        let view = writer::SchemaObject {
+            kind: "view",
+            name: "tiles".into(),
+            table: "tiles".into(),
+            sql: "CREATE VIEW tiles AS SELECT zoom_level, tile_column, tile_row, tile_data FROM map JOIN images USING (tile_id)".into(),
+        };
+        let map = Table {
+            name: "map".into(),
+            sql: "CREATE TABLE map (tile_id INTEGER PRIMARY KEY, zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER)".into(),
+            rows: (1..=2i64).map(|i| (i, vec![W::Null, W::Int(1), W::Int(i - 1), W::Int(0)])).collect(),
+            autoindexes: vec![],
+        };
+        let images = Table {
+            name: "images".into(),
+            sql: "CREATE TABLE images (tile_data BLOB, tile_id TEXT UNIQUE)".into(),
+            rows: (1..=2i64).map(|i| (i, vec![W::Blob(vec![i as u8; 3]), W::Text(i.to_string())])).collect(),
+            autoindexes: vec![vec![1]],
+        };
+        let m = MbTiles::from_bytes(writer::write_database(&[metadata_table(), map, images], &[view], 0, 0).unwrap()).unwrap();
+        assert_eq!(m.tile(1, 0, 1).unwrap(), Some(vec![1; 3]));
+        assert_eq!(m.tile(1, 1, 1).unwrap(), Some(vec![2; 3]));
     }
 }

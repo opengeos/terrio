@@ -166,8 +166,10 @@ impl PageSet {
     }
 }
 
-/// Orders two values as SQLite's BINARY collation does: NULL, then numbers, text and blobs.
-pub(crate) fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
+/// Orders two values as SQLite's BINARY collation does in a database whose text is in
+/// `encoding` (1 for UTF-8, 2 and 3 for UTF-16LE and UTF-16BE): NULL, then numbers (an integer
+/// and a real compared exactly), text (by its encoded bytes) and blobs.
+pub(crate) fn compare_values(a: &Value, b: &Value, encoding: u32) -> std::cmp::Ordering {
     let rank = |v: &Value| match v {
         Value::Null => 0,
         Value::Int(_) | Value::Real(_) => 1,
@@ -177,20 +179,46 @@ pub(crate) fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     match (a, b) {
         (Value::Int(p), Value::Int(q)) => p.cmp(q),
         (Value::Real(p), Value::Real(q)) => p.total_cmp(q),
-        (Value::Int(p), Value::Real(q)) => (*p as f64).total_cmp(q),
-        (Value::Real(p), Value::Int(q)) => p.total_cmp(&(*q as f64)),
-        (Value::Text(p), Value::Text(q)) => p.as_bytes().cmp(q.as_bytes()),
+        (Value::Int(p), Value::Real(q)) => compare_int_real(*p, *q),
+        (Value::Real(p), Value::Int(q)) => compare_int_real(*q, *p).reverse(),
+        (Value::Text(p), Value::Text(q)) => match encoding {
+            2 => p.encode_utf16().flat_map(u16::to_le_bytes).cmp(q.encode_utf16().flat_map(u16::to_le_bytes)),
+            3 => p.encode_utf16().flat_map(u16::to_be_bytes).cmp(q.encode_utf16().flat_map(u16::to_be_bytes)),
+            _ => p.as_bytes().cmp(q.as_bytes()),
+        },
         (Value::Blob(p), Value::Blob(q)) => p.cmp(q),
         _ => rank(a).cmp(&rank(b)),
     }
 }
 
+/// Orders an integer against a real without rounding the integer, as SQLite does: integers past
+/// 2^53 are not made equal to a nearby real.
+fn compare_int_real(i: i64, r: f64) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    // 2^63: every i64 is below it, and at least -2^63.
+    const LIMIT: f64 = 9_223_372_036_854_775_808.0;
+    if r.is_nan() {
+        return Ordering::Greater;
+    }
+    if r >= LIMIT {
+        return Ordering::Less;
+    }
+    if r < -LIMIT {
+        return Ordering::Greater;
+    }
+    let floor = r.floor();
+    match i.cmp(&(floor as i64)) {
+        Ordering::Equal if floor < r => Ordering::Less,
+        o => o,
+    }
+}
+
 /// Orders an index record's leading values against `prefix`.
-fn compare_prefix(record: &[Value], prefix: &[Value]) -> std::cmp::Ordering {
+fn compare_prefix(record: &[Value], prefix: &[Value], encoding: u32) -> std::cmp::Ordering {
     prefix
         .iter()
         .enumerate()
-        .map(|(i, p)| compare_values(record.get(i).unwrap_or(&Value::Null), p))
+        .map(|(i, p)| compare_values(record.get(i).unwrap_or(&Value::Null), p, encoding))
         .find(|o| o.is_ne())
         .unwrap_or(std::cmp::Ordering::Equal)
 }
@@ -260,6 +288,15 @@ impl Db {
         // SQLite requires at least 480 usable bytes a page.
         let usable = page_size.checked_sub(data[20] as usize).filter(|&u| u >= 480).ok_or_else(|| bad("invalid reserved space"))?;
         Ok(Self { data, page_size, usable })
+    }
+
+    /// Whether the database is a file mapped into memory, not bytes read.
+    #[cfg(test)]
+    pub(crate) fn is_mapped(&self) -> bool {
+        #[cfg(not(target_family = "wasm"))]
+        return matches!(self.data, Bytes::Mapped(_));
+        #[cfg(target_family = "wasm")]
+        false
     }
 
     /// The number of whole pages in the file.
@@ -610,6 +647,7 @@ impl Db {
         if !visited.insert(n) {
             return Err(bad("b-tree page reached twice"));
         }
+        let encoding = self.text_encoding();
         let page = self.page(n)?;
         let h = if n == 1 { 100 } else { 0 };
         let interior = match page[h] {
@@ -624,7 +662,7 @@ impl Db {
         let (mut lo, mut hi) = (0, cells);
         while lo < hi {
             let mid = (lo + hi) / 2;
-            if compare_prefix(&self.index_cell(page, offset(mid)?, interior)?, prefix) == Ordering::Less {
+            if compare_prefix(&self.index_cell(page, offset(mid)?, interior)?, prefix, encoding) == Ordering::Less {
                 lo = mid + 1;
             } else {
                 hi = mid;
@@ -639,7 +677,7 @@ impl Db {
                 }
             }
             let record = self.index_cell(page, off, interior)?;
-            if compare_prefix(&record, prefix) != Ordering::Equal || !visit(record) {
+            if compare_prefix(&record, prefix, encoding) != Ordering::Equal || !visit(record) {
                 return Ok(false);
             }
         }
@@ -675,8 +713,8 @@ impl Db {
                 let values = match local.and_then(|l| local_columns(l, columns, utf8)) {
                     Some(values) => values,
                     None => {
-                        let mut all = self.decode_record(&self.payload(page, start, size)?)?;
-                        columns.iter().map(|&c| all.get_mut(c).map(|v| std::mem::replace(v, Value::Null)).unwrap_or(Value::Null)).collect()
+                        let all = self.decode_record(&self.payload(page, start, size)?)?;
+                        columns.iter().map(|&c| all.get(c).cloned().unwrap_or(Value::Null)).collect()
                     }
                 };
                 f(rowid, values);
@@ -797,6 +835,15 @@ impl Db {
 }
 
 /// The column definitions of a `CREATE TABLE` statement.
+/// Whether column `i` of a `CREATE TABLE` statement declares a collation other than BINARY,
+/// which orders its indexes otherwise than [`compare_values`] does.
+pub(crate) fn column_has_collation(sql: &str, i: usize) -> bool {
+    column_defs(sql).get(i).is_some_and(|d| {
+        let k = keywords(d);
+        k.match_indices("COLLATE").any(|(at, _)| !k[at + 7..].trim_start().trim_start_matches('"').starts_with("BINARY"))
+    })
+}
+
 fn column_defs(sql: &str) -> Vec<String> {
     let Some(open) = sql.find('(') else { return Vec::new() };
     let body = &sql[open + 1..sql.rfind(')').unwrap_or(sql.len())];
@@ -1357,6 +1404,28 @@ mod tests {
             column_defaults("CREATE TABLE t (a TEXT DEFAULT 'it''s', b INTEGER DEFAULT 3, c REAL DEFAULT (1+1), d TEXT)"),
             vec![Some(Value::Text("it's".into())), Some(Value::Int(3)), None, None]
         );
+    }
+
+    /// Index keys are compared as SQLite orders them: an integer past 2^53 and a real exactly,
+    /// and text by its bytes in the database's encoding.
+    #[test]
+    fn compares_index_keys_as_sqlite() {
+        use std::cmp::Ordering::*;
+        let big = 1i64 << 53;
+        assert_eq!(compare_values(&Value::Int(big + 1), &Value::Real(big as f64), 1), Greater);
+        assert_eq!(compare_values(&Value::Real(big as f64), &Value::Int(big + 1), 1), Less);
+        assert_eq!(compare_values(&Value::Int(big), &Value::Real(big as f64), 1), Equal);
+        assert_eq!(compare_values(&Value::Int(1), &Value::Real(1.5), 1), Less);
+        assert_eq!(compare_values(&Value::Int(-2), &Value::Real(-1.5), 1), Less);
+        assert_eq!(compare_values(&Value::Int(i64::MAX), &Value::Real(9.3e18), 1), Less);
+        // U+0100 is after 'B' in UTF-8 and UTF-16BE, but before it in UTF-16LE.
+        let (b, a) = (Value::Text("B".into()), Value::Text("\u{100}".into()));
+        assert_eq!(compare_values(&b, &a, 1), Less);
+        assert_eq!(compare_values(&b, &a, 3), Less);
+        assert_eq!(compare_values(&b, &a, 2), Greater);
+        assert!(column_has_collation("CREATE TABLE t (a TEXT COLLATE NOCASE, b TEXT COLLATE BINARY, c TEXT)", 0));
+        assert!(!column_has_collation("CREATE TABLE t (a TEXT COLLATE NOCASE, b TEXT COLLATE BINARY, c TEXT)", 1));
+        assert!(!column_has_collation("CREATE TABLE t (a TEXT COLLATE NOCASE, b TEXT COLLATE BINARY, c TEXT)", 2));
     }
 
     #[test]
