@@ -803,6 +803,7 @@ impl Client {
                 403 if self.refused_ok => return Ok(response),
                 429 | 500 | 502 | 503 | 504 if attempt < self.options.max_retry => {
                     record_discarded(&self.url, &self.stats_name(), response);
+                    self.check_cancelled()?;
                     retry_warning(status, &self.url, self.options.retry_delay, attempt);
                     self.backoff(&mut attempt)?
                 }
