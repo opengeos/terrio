@@ -26,6 +26,12 @@ struct Counter {
     paths: Arc<std::sync::Mutex<Vec<String>>>,
     /// Paths answered 401, whatever the other settings.
     fail_paths: Arc<std::sync::Mutex<Vec<String>>>,
+    /// While set, each request waits before its answer (a distant server) until this many
+    /// requests have been in flight at once, for at most 10 seconds.
+    hold_for: Arc<AtomicU64>,
+    /// The requests being answered, and the most at once.
+    in_flight: Arc<AtomicU64>,
+    most_in_flight: Arc<AtomicU64>,
 }
 
 impl Counter {
@@ -69,6 +75,21 @@ fn serve(root: PathBuf) -> (String, Counter) {
                     }
                 }
                 c.requests.fetch_add(1, Ordering::SeqCst);
+                let now = c.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                c.most_in_flight.fetch_max(now, Ordering::SeqCst);
+                let hold = c.hold_for.load(Ordering::SeqCst);
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while c.most_in_flight.load(Ordering::SeqCst) < hold && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                // Answered (or dropped) when this guard goes.
+                struct Done(Arc<AtomicU64>);
+                impl Drop for Done {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::SeqCst);
+                    }
+                }
+                let _done = Done(c.in_flight.clone());
                 let path = first.split_whitespace().nth(1).unwrap_or("/").split('?').next().unwrap().trim_start_matches('/').to_string();
                 c.paths.lock().unwrap().push(path.clone());
                 if c.fail.load(Ordering::SeqCst) || c.fail_paths.lock().unwrap().contains(&path) {
@@ -314,6 +335,69 @@ fn remote_stores_are_read_by_window() {
         let gdal_name = format!("ZARR:\"/vsicurl/{url}/{name}\"");
         assert_eq!(terrio::open_raster_lazy(&gdal_name).unwrap().width(), 700);
     }
+}
+
+/// Runs the test `name` again in a process of its own whose thread pool has 2 threads, unless
+/// this process is that one: whether this process is.
+fn on_two_threads(name: &str) -> bool {
+    const CHILD: &str = "TERRIO_TEST_TWO_THREADS";
+    if std::env::var_os(CHILD).is_some() {
+        return true;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([name, "--exact", "--nocapture"])
+        .env(CHILD, "1")
+        .env("RAYON_NUM_THREADS", "2")
+        .output()
+        .unwrap();
+    let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success() && text.contains("1 passed"), "{name} on 2 threads:\n{text}");
+    false
+}
+
+/// Requests wait on the server, not on the cores: a window of many chunks keeps more requests in
+/// flight than terrio's pool has threads (here 2), up to the read's limit of 32.
+#[test]
+fn remote_chunks_are_fetched_more_at_once_than_cores() {
+    if !on_two_threads("remote_chunks_are_fetched_more_at_once_than_cores") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    // A chunk per band: 40 chunks for a window of all the bands.
+    let ds = raster(16, 16, 40);
+    write_zarr(dir.path(), "b.zarr", &ds, &[("FORMAT", "ZARR_V3")]);
+    let (url, counter) = serve(dir.path().to_path_buf());
+    let mut r = terrio::open_raster_lazy(&format!("{url}/b.zarr")).unwrap();
+    counter.take();
+    counter.most_in_flight.store(0, Ordering::SeqCst);
+    // The server answers once 24 requests are in flight (or after 10 s): on the pool's 2
+    // threads, at most 2 would be.
+    counter.hold_for.store(24, Ordering::SeqCst);
+    let bands: Vec<usize> = (1..=40).collect();
+    let w = r.read_window(Window::new(0, 0, 16, 16), &WindowOptions { bands, overview: None }).unwrap();
+    assert_eq!(counter.take().0, 40);
+    let most = counter.most_in_flight.load(Ordering::SeqCst);
+    assert!((24..=32).contains(&most), "{most} requests in flight at most");
+    let local = terrio::open_raster(dir.path().join("b.zarr").to_str().unwrap()).unwrap();
+    assert_eq!(w.raster.data.to_f64_vec(), local.raster.data.to_f64_vec());
+}
+
+/// Once a chunk's request fails, no other chunk is requested: of 96 chunks fetched 32 at a time
+/// from a server answering 401, only the first 32 are asked for.
+#[test]
+fn remote_chunks_are_not_requested_after_a_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let ds = raster(8, 8, 96);
+    write_zarr(dir.path(), "f.zarr", &ds, &[("FORMAT", "ZARR_V3")]);
+    let (url, counter) = serve(dir.path().to_path_buf());
+    let mut r = terrio::open_raster_lazy(&format!("{url}/f.zarr")).unwrap();
+    counter.take();
+    counter.fail.store(true, Ordering::SeqCst);
+    let bands: Vec<usize> = (1..=96).collect();
+    let err = r.read_window(Window::new(0, 0, 8, 8), &WindowOptions { bands, overview: None }).unwrap_err().to_string();
+    assert!(err.contains("401"), "{err}");
+    let requests = counter.take().0;
+    assert!((1..=32).contains(&requests), "{requests} requests after a failure");
 }
 
 /// A metadata document that cannot be read is an error naming the failure (not "no Zarr
