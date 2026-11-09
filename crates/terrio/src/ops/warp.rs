@@ -48,6 +48,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use wbraster::DataType;
 use wbraster::raster::RasterData;
 
+pub mod window;
+
 /// Nodata handling for an input or the output.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum Nodata {

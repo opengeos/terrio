@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- A `WarpedVRT` over a dataset terrio opened for reading now reads and warps each source window
+  in one call that releases the GIL, so reads on several Python threads, such as a server
+  answering tile requests on threads, no longer wait for each other's warps as in 0.8.0. The
+  window is held once, in Rust, where no other thread can change it. These keep 0.8.0's read-only
+  window, warped with the GIL held: datasets opened for writing or update, opened at an
+  `overview_level`, or whose `_read_level` is replaced; another `WarpedVRT` as the source;
+  complex bands; and float32 bands warped in a 32- or 64-bit integer type, or float64 bands in a
+  64-bit one. The pixels are the same on both paths.
+- `WarpedVRT` raises `WarpOptionsError` when `src_alpha` is not one of the source's bands. In
+  0.8.0, a negative value could make another band the alpha, and a value out of range raised
+  `IndexError` when the VRT was read.
 - `warp` of a `Raster` in memory releases the GIL for the whole warp: it takes the raster's
   shared pixels (no copy) and warps them after releasing it, so warps from Python threads
   (rioxarray-style `reproject` of xarray arrays on a thread pool) overlap. 96 nearest-neighbour
