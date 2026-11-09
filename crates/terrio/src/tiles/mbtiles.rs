@@ -13,6 +13,7 @@
 
 use crate::drivers::sqlite::{self as reader, Db, SchemaEntry, Value};
 use crate::drivers::vector::sqlite::{self as writer, Table};
+use crate::gpkg_validation::integrity::real_text;
 use crate::{Error, Result};
 use std::collections::HashMap;
 
@@ -85,9 +86,15 @@ fn bad(msg: impl std::fmt::Display) -> Error {
 fn int(v: Option<&Value>) -> Option<i64> {
     match v? {
         Value::Int(i) => Some(*i),
-        Value::Real(f) if f.fract() == 0.0 && f.abs() < 9.0e18 => Some(*f as i64),
+        Value::Real(f) => whole(*f),
         _ => None,
     }
+}
+
+/// The integer equal to `f`, if there is one.
+fn whole(f: f64) -> Option<i64> {
+    // -2^63 <= f < 2^63, both exactly representable.
+    (f.fract() == 0.0 && (i64::MIN as f64..-(i64::MIN as f64)).contains(&f)).then_some(f as i64)
 }
 
 /// The `(z, x, y)` of a row's key columns, rows counted from the top; `None` for a key outside
@@ -210,8 +217,9 @@ impl Images {
         match &self.ids {
             Ids::Rowid => Ok(match id {
                 Value::Int(i) => Some(*i),
-                Value::Text(s) => s.trim().parse().ok(),
-                Value::Real(f) if f.fract() == 0.0 && f.abs() < 9.0e18 => Some(*f as i64),
+                // Text compared with the integer rowid is taken as a number, as SQLite does.
+                Value::Text(s) => s.trim().parse().ok().or_else(|| s.trim().parse::<f64>().ok().and_then(whole)),
+                Value::Real(f) => whole(*f),
                 _ => None,
             }),
             Ids::Scanned(rowids) => Ok(spellings(id).iter().find_map(|id| rowids.get(&id_key(id)).copied())),
@@ -440,7 +448,7 @@ fn id_key(v: &Value) -> IdKey {
 fn spellings(id: &Value) -> Vec<Value> {
     let mut out = vec![id.clone()];
     match id {
-        Value::Int(i) => out.push(Value::Text(i.to_string())),
+        Value::Int(i) => out.extend([Value::Text(i.to_string()), Value::Text(format!("{i}.0"))]),
         Value::Real(f) => {
             out.push(Value::Text(real_text(*f)));
             if f.to_string() != real_text(*f) {
@@ -454,26 +462,6 @@ fn spellings(id: &Value) -> Vec<Value> {
         _ => {}
     }
     out
-}
-
-/// A real as SQLite spells it in text (`%!.15g`): `1.0`, `0.3`, `1.0e+20`.
-fn real_text(f: f64) -> String {
-    if !f.is_finite() {
-        return f.to_string();
-    }
-    // `+ 0.0` turns -0.0 into 0.0, which SQLite stores and spells as 0.
-    let r: f64 = format!("{f:.14e}").parse::<f64>().unwrap_or(f) + 0.0;
-    if r.fract() == 0.0 && r.abs() < 1e15 {
-        format!("{r:.1}")
-    } else if r == 0.0 || (1e-4..1e15).contains(&r.abs()) {
-        r.to_string()
-    } else {
-        let e = format!("{r:e}");
-        let (m, x) = e.split_once('e').unwrap_or((&e, "0"));
-        let m = if m.contains('.') { m.to_string() } else { format!("{m}.0") };
-        let (sign, digits) = x.strip_prefix('-').map_or(("+", x), |d| ("-", d));
-        format!("{m}e{sign}{digits:0>2}")
-    }
 }
 
 /// Writes an MBTiles file as GDAL lays it out: a `metadata (name, value)` table and a `tiles`
@@ -625,6 +613,7 @@ mod tests {
         let int: fn(i64) -> W = W::Int;
         let real: fn(i64) -> W = |i| W::Real(i as f64);
         let real_text: fn(i64) -> W = |i| W::Text(format!("{i}.0"));
+        let int_text = real_text;
         let view = writer::SchemaObject {
             kind: "view",
             name: "tiles".into(),
@@ -633,7 +622,7 @@ mod tests {
         };
         // (map SQL, images SQL, images' automatic indexes, map's ids, images' ids)
         type Case = (&'static str, &'static str, Vec<Vec<usize>>, fn(i64) -> W, fn(i64) -> W);
-        let cases: [Case; 7] = [
+        let cases: [Case; 10] = [
             (
                 "CREATE TABLE map (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_id TEXT, UNIQUE (zoom_level, tile_column, tile_row))",
                 "CREATE TABLE images (tile_data BLOB, tile_id TEXT UNIQUE)",
@@ -683,6 +672,29 @@ mod tests {
                 "CREATE TABLE images (tile_data BLOB, tile_id INTEGER PRIMARY KEY)",
                 vec![],
                 real,
+                |_| W::Null,
+            ),
+            // Integer ids, matched to text spelling them as reals, by index and by scan.
+            (
+                "CREATE TABLE map (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_id INTEGER)",
+                "CREATE TABLE images (tile_data BLOB, tile_id TEXT UNIQUE)",
+                vec![vec![1]],
+                int,
+                int_text,
+            ),
+            (
+                "CREATE TABLE map (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_id INTEGER)",
+                "CREATE TABLE images (tile_data BLOB, tile_id TEXT)",
+                vec![],
+                int,
+                int_text,
+            ),
+            // A text id spelling a whole real names the image whose rowid it is.
+            (
+                "CREATE TABLE map (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_id TEXT)",
+                "CREATE TABLE images (tile_data BLOB, tile_id INTEGER PRIMARY KEY)",
+                vec![],
+                real_text,
                 |_| W::Null,
             ),
         ];
@@ -783,6 +795,21 @@ mod tests {
             assert!(matches!(m.rows.keys, Keys::Scanned(_)));
             assert_eq!(m.tile(0, 0, 0).unwrap(), Some(vec![7]));
         }
+        // Nor a partial index, however its WHERE is spaced.
+        let partial = writer::Index {
+            name: "tile_index".into(),
+            table: "tiles".into(),
+            sql: "CREATE INDEX tile_index ON tiles (zoom_level, tile_column, tile_row) WHERE+zoom_level>0".into(),
+            columns: vec![0, 1, 2],
+        };
+        let partial = tiles_with(
+            "CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB)",
+            vec![],
+            &[partial],
+            vec![(1, vec![W::Int(0), W::Int(0), W::Int(0), W::Blob(vec![7])])],
+        );
+        assert!(matches!(partial.rows.keys, Keys::Scanned(_)));
+        assert_eq!(partial.tile(0, 0, 0).unwrap(), Some(vec![7]));
         // A keyword in a quoted string is not one.
         let quoted = tiles_with(
             "CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB, note TEXT DEFAULT 'desc collate', UNIQUE (zoom_level, tile_column, tile_row))",
@@ -794,20 +821,10 @@ mod tests {
         assert_eq!(quoted.tile(0, 0, 0).unwrap(), Some(vec![7]));
     }
 
-    /// Reals are spelled as SQLite's `%!.15g` spells them.
+    /// Reals are spelled as SQLite spells them in text.
     #[test]
     fn reals_spelled_as_sqlite() {
-        for (f, t) in [
-            (1.0, "1.0"),
-            (-2.0, "-2.0"),
-            (0.0, "0.0"),
-            (-0.0, "0.0"),
-            (1.5, "1.5"),
-            (0.1 + 0.2, "0.3"),
-            (1e20, "1.0e+20"),
-            (1.5e-5, "1.5e-05"),
-            (123456.789, "123456.789"),
-        ] {
+        for (f, t) in [(1.0, "1.0"), (-0.0, "0.0"), (1.5, "1.5")] {
             assert_eq!(real_text(f), t);
         }
     }

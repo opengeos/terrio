@@ -1117,8 +1117,8 @@ pub(crate) fn autoindex_columns(sql: &str) -> Vec<Vec<usize>> {
 /// on plain columns (no expressions, `DESC`, `COLLATE` or `WHERE`). `None` otherwise.
 pub(crate) fn index_columns(sql: &str, table_sql: &str) -> Option<Vec<usize>> {
     let names: Vec<String> = column_types(table_sql).into_iter().map(|(n, _)| n).collect();
-    let k = keywords(sql);
-    if k.contains(" WHERE ") {
+    // A partial index (`WHERE`, however it is spaced) lacks rows, so it is not one.
+    if keywords(sql).split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|w| w == "WHERE") {
         return None;
     }
     let list = column_list(sql)?;

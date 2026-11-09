@@ -188,14 +188,9 @@ impl TileRaster {
         if present.is_empty() {
             return Err(Error::InvalidData(format!("the archive has no tiles at zoom level {zoom}")));
         }
-        // The first listed tile that has bytes: an MBTiles row may hold none (a NULL tile_data).
-        let mut first = None;
-        for &(x, y) in &present {
-            if let Some(t) = archive.tile(zoom, x, y)? {
-                first = Some(t);
-                break;
-            }
-        }
+        // The first listed tile that has bytes: an MBTiles row may hold none (a NULL tile_data),
+        // and a damaged tile is passed over here as by the format sniff; reading it reports it.
+        let first = present.iter().find_map(|&(x, y)| archive.tile(zoom, x, y).ok().flatten());
         let first = first.ok_or_else(|| Error::InvalidData("missing tile".into()))?;
         let img = decode_image(&first)?;
         let tile_size = img.w.max(1);
