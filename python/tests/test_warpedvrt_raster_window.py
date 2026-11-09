@@ -9,7 +9,6 @@ import subprocess
 import sys
 import textwrap
 import threading
-import time
 import warnings
 from pathlib import Path
 
@@ -432,37 +431,34 @@ def test_a_complex_source_is_warped_from_its_real_parts_as_before(tmp_path, name
 
 @pytest.mark.parametrize("masked", [False, True], ids=["no mask", "internal mask"])
 def test_a_read_while_another_thread_reads_the_source_raises_as_a_read_does(tmp_path, masked):
-    # Another thread reads the source's Raster, which a read holds, without the GIL, until it
-    # returns: a WarpedVRT read that needs the Raster meanwhile raises the RasterioIOError a read
-    # raises then, "Read failed: Already borrowed", with the RuntimeError as its cause; with an
-    # internal mask as well, whose presence the read does not ask the Raster. The WarpedVRT reads
-    # once the other thread holds the Raster, which then refuses even its width.
-    n = 2048
+    # Another thread reads the source's Raster, which a read holds until it returns: a WarpedVRT
+    # read that needs the Raster meanwhile raises the RasterioIOError a read raises then, "Read
+    # failed: Already borrowed", with the RuntimeError as its cause; with an internal mask as
+    # well, whose presence the read does not ask the Raster. The other thread holds the Raster
+    # from before the WarpedVRT reads until after it has raised: the band it reads is an object
+    # whose `__index__`, which the read calls once it holds the Raster, waits until then.
+    n = 64
     mask = np.full((n, n), 255, "uint8") if masked else None
-    path = write(tmp_path / "src.tif", values("float32", 1, n, n), mask=mask, compress="deflate")
-    stop = threading.Event()
+    path = write(tmp_path / "src.tif", values("float32", 1, n, n), mask=mask)
+    holding, done = threading.Event(), threading.Event()
+
+    class Band:
+        def __index__(self):
+            holding.set()
+            done.wait(60)
+            return 1
+
     with terrio.rio.open(path) as src, WarpedVRT(src, crs="EPSG:3857") as vrt:
-
-        def reader():
-            while not stop.is_set():
-                src._raster.read()
-
-        thread = threading.Thread(target=reader)
+        thread = threading.Thread(target=src._raster.read, kwargs={"band": Band()})
         thread.start()
         try:
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                try:
-                    _ = src._raster.width
-                except RuntimeError:
-                    break
-                time.sleep(0.0005)
-            else:
-                raise AssertionError("the other thread never held the Raster")
+            assert holding.wait(60), "the other thread never held the Raster"
+            with pytest.raises(RuntimeError, match="Already mutably borrowed"):
+                _ = src._raster.width
             with pytest.raises(RasterioIOError) as raised:
-                vrt.read(1, out_shape=(64, 64))
+                vrt.read(1, out_shape=(16, 16))
         finally:
-            stop.set()
+            done.set()
             thread.join()
     assert str(raised.value) == "Read failed: Already borrowed", raised.value
     assert isinstance(raised.value.__cause__, RuntimeError), raised.value.__cause__
