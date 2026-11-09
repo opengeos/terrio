@@ -236,7 +236,7 @@ mod tests {
             count.set(count.get() + 1);
             Ok(File::open(&path)?)
         };
-        assert!(ParquetStream::open(open, "t", None, bbox, 64, None).is_ok());
+        assert!(ParquetStream::open(open, "t", None, bbox, 64, None, None).is_ok());
         count.get()
     }
 
