@@ -2508,8 +2508,9 @@ impl Shared {
     /// size together.
     ///
     /// A failed run (or a whole file a server sent instead) ends the fetch as the serial one
-    /// would, once the requests in flight end: no request starts after it, the retries of those
-    /// in flight are cancelled, and their responses are dropped. No request outlives the fetch.
+    /// would: no request starts after it, and those in flight are abandoned, their retries
+    /// cancelled and a wait for a response ended within [`CANCEL_POLL`] (see [`CANCEL_READS`]).
+    /// No request outlives the fetch.
     fn fetch_runs_in_parallel(&mut self, runs: Vec<Run>) -> io::Result<()> {
         // (index of the run, first byte, last byte) of each request
         let requests: Vec<(usize, u64, u64)> =
@@ -3366,7 +3367,7 @@ mod tests {
         // stalled one ends.
         let runs = separate_runs(2);
         let (failed, stalled) = (runs[0].0 as usize, runs[1].0 as usize);
-        let (url, _) = serve_gated(test_data(), move |first, gate| {
+        let (url, gate) = serve_gated(test_data(), move |first, gate| {
             if first == stalled {
                 std::thread::sleep(Duration::from_secs(20));
             } else if first == failed {
@@ -3380,6 +3381,7 @@ mod tests {
         let started = Instant::now();
         assert!(r.prefetch(&runs).is_err());
         assert!(started.elapsed() < Duration::from_secs(10), "waited {:?} for the stalled request", started.elapsed());
+        assert_eq!(gate.most(), 2, "the stalled request was in flight when the run failed");
     }
 
     #[test]
