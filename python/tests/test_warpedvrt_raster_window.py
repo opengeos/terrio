@@ -598,24 +598,34 @@ def test_the_counting_interpreter_ends_when_its_read_fails(tmp_path):
     assert "RasterioIOError: Read failed: " in failed.value.stderr, failed.value.stderr
 
 
+# The shortest read whose counting rates the GIL test compares, in seconds: 20 of the GIL's
+# 5 ms switch intervals (`sys.getswitchinterval()`), so that each rate spans many of them.
+MIN_READ = 0.1
+
+
 @pytest.mark.skipif(cpus() < 2, reason="the warp and the counting thread need a CPU each")
 @pytest.mark.parametrize(
     ("method", "compress"),
     [pytest.param("cubic", None, id="warp"), pytest.param("nearest", "deflate", id="read")],
 )
 def test_a_warped_vrt_lets_other_threads_run_while_it_warps(tmp_path, method, compress):
-    # A 2048 x 2048 float32 raster in 16 x 16 tiles, warped by a WarpedVRT into WGS 84 and read
-    # whole, on one thread of the warp's pool: with cubic resampling from uncompressed tiles the
-    # warp takes most of the read, with nearest from DEFLATE tiles reading the window does.
-    # Meanwhile another Python thread counts, then counts for as long while the reading thread
-    # hashes without the GIL: with the GIL released while the window is read and warped, it
-    # counts about as fast during the read as during the hashing, and at least half as fast;
-    # held through either step, a third as fast or less. Both rates come from one process, one
-    # after the other, each with one other thread busy, so a busy machine slows both alike.
-    n = 2048
-    data = (np.arange(n * n, dtype="float64") % 997).astype("float32").reshape(1, n, n)
-    path = write(tmp_path / "big.tif", data, compress=compress)
-    out = run(COUNTING, path, method, env={**os.environ, "RAYON_NUM_THREADS": "1"})
-    assert out["read"] > 0.1, out
+    # A float32 raster in 16 x 16 tiles, warped by a WarpedVRT into WGS 84 and read whole, on one
+    # thread of the warp's pool: with cubic resampling from uncompressed tiles the warp takes most
+    # of the read, with nearest from DEFLATE tiles reading the window does. Meanwhile another
+    # Python thread counts, then counts for as long while the reading thread hashes without the
+    # GIL: with the GIL released while the window is read and warped, it counts about as fast
+    # during the read as during the hashing, and at least half as fast; held through either step,
+    # a third as fast or less. Both rates come from one process, one after the other, each with
+    # one other thread busy, so a busy machine slows both alike. The raster is 2048 x 2048, or
+    # 4096 x 4096 where the smaller one reads in under `MIN_READ`; a read shorter still is too
+    # short to compare the rates, and the test is skipped.
+    for n in (2048, 4096):
+        data = (np.arange(n * n, dtype="uint32") % 997).astype("float32").reshape(1, n, n)
+        path = write(tmp_path / f"{n}.tif", data, compress=compress)
+        out = run(COUNTING, path, method, env={**os.environ, "RAYON_NUM_THREADS": "1"})
+        if out["read"] >= MIN_READ:
+            break
+    else:
+        pytest.skip(f"a read of {n} x {n} took {out['read']:.3f} s, too short to compare rates")
     assert out["during"] > out["alone"] / 2, out
     assert out["paths"] and all(out["paths"]), out
