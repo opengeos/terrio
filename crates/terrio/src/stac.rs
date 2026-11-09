@@ -1634,6 +1634,7 @@ impl WindowSource for Mosaic {
                     resampling: crate::ops::Resampling::Nearest,
                     working_float: self.nodata.is_some(),
                     invalid_value: None,
+                    within_rects: false,
                 };
                 req.read(dw, dh, buf, |v| v);
             }
