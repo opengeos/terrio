@@ -7,7 +7,8 @@
   `numpy.asarray` raised `RuntimeError: Already borrowed` when a read overlapped another. An
   overlapping read takes another reader of the same path, opened from the process-wide caches
   (its first bytes are not requested again) and kept, up to four, for the next overlapping read.
-  Each reader has its own file handle, and their decoded chunks share the block cache. A relative
+  Each reader has its own file handle, and their decoded chunks are cached separately under the
+  one block-cache byte cap. A relative
   path is resolved when the raster opens, so a later `os.chdir` does not change the file read, and
   a reader opened on another thread takes the options of the thread that opened the raster (an
   `Env` such as `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`). Other rasters, and the other methods, are still one call at a

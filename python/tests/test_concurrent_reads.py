@@ -1,5 +1,6 @@
 """One lazy Raster read from several threads at once."""
 
+import contextlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -53,6 +54,29 @@ def test_one_raster_read_from_threads_at_once_reads_what_one_thread_reads(tmp_pa
     np.testing.assert_array_equal(raster.read(band=2), pixels[1])
 
 
+@contextlib.contextmanager
+def own_reader_held(raster):
+    """Holds the raster's own reader on another thread until the block exits, so that every read
+    meanwhile takes a spare reader, whatever the timing: a resampled read keeps the reader while
+    it converts its `band`, whose `__index__` waits."""
+    holding, done = threading.Event(), threading.Event()
+
+    class Band:
+        def __index__(self):
+            holding.set()
+            done.wait(60)
+            return 1
+
+    thread = threading.Thread(target=raster.read_resampled, args=((8, 8),), kwargs={"band": Band()})
+    thread.start()
+    try:
+        assert holding.wait(60), "the other thread never held the raster's reader"
+        yield
+    finally:
+        done.set()
+        thread.join()
+
+
 def test_overlapping_reads_after_chdir_read_the_file_opened(tmp_path, monkeypatch):
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
@@ -61,18 +85,20 @@ def test_overlapping_reads_after_chdir_read_the_file_opened(tmp_path, monkeypatc
     monkeypatch.chdir(tmp_path / "a")
     raster = terrio.open_raster("tiled.tif", lazy=True)
     monkeypatch.chdir(tmp_path / "b")
-    for got in read_together(raster):
-        np.testing.assert_array_equal(got, pixels)
-    assert len(raster._readers) > 0  # the reads overlapped, so spare readers read too
+    with own_reader_held(raster):
+        got = raster.read()  # by a spare reader, opened after the chdir
+    np.testing.assert_array_equal(got, pixels)
+    assert len(raster._readers) == 1
 
 
 def test_a_burst_of_reads_keeps_at_most_four_spare_readers(tmp_path):
     path = tmp_path / "tiled.tif"
     pixels = write_tiled(path)
     raster = terrio.open_raster(str(path), lazy=True)
-    for got in read_together(raster, threads=12):
-        np.testing.assert_array_equal(got, pixels)
-    assert 0 < len(raster._readers) <= 4  # MAX_SPARE_READERS in python/src/raster.rs
+    with own_reader_held(raster):
+        for got in read_together(raster, threads=12):
+            np.testing.assert_array_equal(got, pixels)
+    assert 1 <= len(raster._readers) <= 4  # MAX_SPARE_READERS in python/src/raster.rs
 
 
 def test_overlapping_reads_take_the_options_the_raster_was_opened_with(tmp_path):
@@ -87,20 +113,11 @@ def test_overlapping_reads_take_the_options_the_raster_was_opened_with(tmp_path)
         dst.write(np.zeros((640, 600), "uint8"), 1)
     with rio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR"):
         raster = terrio.open_raster(path, lazy=True)
-    threads = 8
-    start = threading.Barrier(threads, timeout=30)
-
-    def read_masks(_):
-        # whole reads make the threads overlap, so spare readers open; masks come from them too
-        start.wait()
-        masks = []
-        for _ in range(5):
-            raster.read()
-            masks.append(raster.read_mask())
-        return masks
-
-    with ThreadPoolExecutor(threads) as ex:
-        masks = [m for ms in ex.map(read_masks, range(threads)) for m in ms]
-    assert len(raster._readers) >= 1, "no read overlapped another"
-    for mask in masks:
-        assert mask is None or bool((np.asarray(mask) > 0).all())
+    expected = raster.read_mask()  # the raster's own reader, opened under the Env
+    with own_reader_held(raster):
+        mask = raster.read_mask()  # a spare reader, opened outside it
+    assert len(raster._readers) == 1
+    assert (mask is None) == (expected is None)
+    if mask is not None:
+        np.testing.assert_array_equal(mask, expected)
+        assert bool((np.asarray(mask) > 0).all()), "the .msk sidecar was read"
