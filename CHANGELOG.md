@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, or its other name
+  `GDAL_DISABLE_READDIR_ON_OPEN`, a local GeoTIFF no longer takes overviews from an `.ovr` beside
+  it. They served its reduced reads (`terrio translate --outsize`, a `terrio.rio` read with a
+  smaller `out_shape`), so a file placed next to the dataset changed the pixels read (#720). The
+  commands that manage an external `.ovr` (`terrio overviews --external`, and the Rust and Python
+  overview functions) still read it under the option; the `.msk`, `.aux.xml` and `.ovr.msk` beside
+  the GeoTIFF still follow the option, as before.
+  `terrio.rio` follows both names of the option: under the `TERRIO_` name it still applied an
+  `.aux.xml` sidecar's tags, band descriptions, scales, offsets, units, color interpretations and
+  nodata, and read RPC sidecars. Under the option, its `files` no longer lists the `.aux.xml`,
+  `.ovr`, `.msk`, world and RPC files, which are not read, nor a `.hdr` other than the header of an
+  ENVI or EHdr raster.
 - `terrio.rio` writes JPEG 2000 to a `.jp2` path opened for writing without a driver:
   `driver_from_extension` names the driver `JP2OpenJPEG`, which `open(..., "w")`,
   `shutil.copy` and `terrio.xarray`'s `to_raster` refused in 0.8.0 (`DriverCapabilityError`,
