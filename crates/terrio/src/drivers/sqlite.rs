@@ -295,7 +295,9 @@ impl Db {
     #[cfg(test)]
     pub(crate) fn is_mapped(&self) -> bool {
         #[cfg(not(target_family = "wasm"))]
-        return matches!(self.data, Bytes::Mapped(_));
+        {
+            matches!(self.data, Bytes::Mapped(_))
+        }
         #[cfg(target_family = "wasm")]
         false
     }

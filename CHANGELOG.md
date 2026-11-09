@@ -14,9 +14,10 @@
   opening, from their key columns only, without reading tile bytes, unless those columns follow
   `tile_data` in the table (as `tile_id` does in mbutil's unindexed `images`): the bytes before
   them, and a corrupt tile among them, are then read on opening. An index whose order the lookup
-  cannot follow (a descending constraint, a column collation) is not used. Opening an MBTiles archive from memory keeps the bytes but no
-  longer copies the tiles. Listing a zoom level's tiles now lists the rows of the tiles table,
-  including a row whose `tile_data` is not a blob (reading it gives no tile); a raster opened
+  cannot follow (a descending constraint, a column collation) is not used. Opening an MBTiles
+  archive from memory keeps the bytes but no longer copies the tiles. Listing a zoom level's
+  tiles now lists the rows of the `tiles` table, or of `map`, including a row whose `tile_data`
+  is not a blob or whose `tile_id` names no image (reading it gives no tile); a raster opened
   from the archive takes its tile size from the first listed tile that has bytes. A NULL
   `tile_id` matches no image, as in the `tiles` view's join.
 - `warp` of a `Raster` in memory releases the GIL for the whole warp: it takes the raster's

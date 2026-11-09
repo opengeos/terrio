@@ -107,8 +107,10 @@ fn find_index(schema: &[SchemaEntry], table: &str, table_sql: &str, want: &[usiz
     }
     // Nor an automatic index of a constraint with a descending column or a collation (such as
     // `UNIQUE (a, b COLLATE NOCASE)`), which `autoindex_columns` does not report.
-    let unusual =
-        table_sql.to_ascii_uppercase().split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|w| w == "DESC" || w == "COLLATE");
+    let unusual = without_quoted(table_sql)
+        .to_ascii_uppercase()
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|w| w == "DESC" || w == "COLLATE");
     let automatic = if unusual { Vec::new() } else { reader::autoindex_columns(table_sql) };
     schema.iter().filter(|e| e.0 == "index" && e.2.eq_ignore_ascii_case(table) && e.3 != 0).find_map(|(_, name, _, root, sql)| {
         let columns = if sql.trim().is_empty() {
@@ -119,6 +121,24 @@ fn find_index(schema: &[SchemaEntry], table: &str, table_sql: &str, want: &[usiz
         };
         columns.starts_with(want).then_some(*root)
     })
+}
+
+/// `sql` without its quoted strings and identifiers, so that a word in them (`DEFAULT 'desc'`)
+/// is not taken for a keyword.
+fn without_quoted(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut quote = None;
+    for c in sql.chars() {
+        match quote {
+            // A doubled quote ends one quoted span and starts the next, dropping both.
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if matches!(c, '\'' | '"' | '`') => quote = Some(c),
+            None if c == '[' => quote = Some(']'),
+            None => out.push(c),
+        }
+    }
+    out
 }
 
 /// The position of each of `names` among a table's columns.
@@ -191,6 +211,7 @@ impl Images {
             Ids::Rowid => Ok(match id {
                 Value::Int(i) => Some(*i),
                 Value::Text(s) => s.trim().parse().ok(),
+                Value::Real(f) if f.fract() == 0.0 && f.abs() < 9.0e18 => Some(*f as i64),
                 _ => None,
             }),
             Ids::Scanned(rowids) => Ok(spellings(id).iter().find_map(|id| rowids.get(&id_key(id)).copied())),
@@ -209,9 +230,12 @@ impl Images {
 /// The rowid of the last record of an index whose leading values are `prefix`: of rows sharing
 /// a key, the last, as the archive was read before (rows read in order, the last one kept).
 fn last_rowid(db: &Db, root: u32, prefix: &[Value]) -> Result<Option<i64>> {
-    let mut found = None;
+    let mut found: Option<i64> = None;
     db.index_prefix(root, prefix, &mut |record| {
-        found = record.last().and_then(Value::as_i64);
+        // The greatest rowid, as the scanned ids keep it, whatever the index's trailing columns.
+        if let Some(rowid) = record.last().and_then(Value::as_i64) {
+            found = Some(found.map_or(rowid, |f| f.max(rowid)));
+        }
         true
     })?;
     Ok(found)
@@ -351,7 +375,8 @@ impl MbTiles {
         Ok(first)
     }
 
-    /// The tiles `(x, y)` at zoom `z` (the rows of the tiles table), by row then column.
+    /// The tiles `(x, y)` at zoom `z` (the rows of the `tiles` table, or of `map`, whether or not
+    /// they have an image), by row then column.
     pub(crate) fn tiles_at_zoom(&self, z: u8) -> Result<Vec<(u32, u32)>> {
         let mut v: Vec<(u32, u32)> = match &self.rows.keys {
             Keys::Scanned(rowids) => rowids.keys().filter(|k| k.0 == z).map(|k| (k.1, k.2)).collect(),
@@ -436,7 +461,8 @@ fn real_text(f: f64) -> String {
     if !f.is_finite() {
         return f.to_string();
     }
-    let r: f64 = format!("{f:.14e}").parse().unwrap_or(f);
+    // `+ 0.0` turns -0.0 into 0.0, which SQLite stores and spells as 0.
+    let r: f64 = format!("{f:.14e}").parse::<f64>().unwrap_or(f) + 0.0;
     if r.fract() == 0.0 && r.abs() < 1e15 {
         format!("{r:.1}")
     } else if r == 0.0 || (1e-4..1e15).contains(&r.abs()) {
@@ -607,7 +633,7 @@ mod tests {
         };
         // (map SQL, images SQL, images' automatic indexes, map's ids, images' ids)
         type Case = (&'static str, &'static str, Vec<Vec<usize>>, fn(i64) -> W, fn(i64) -> W);
-        let cases: [Case; 6] = [
+        let cases: [Case; 7] = [
             (
                 "CREATE TABLE map (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_id TEXT, UNIQUE (zoom_level, tile_column, tile_row))",
                 "CREATE TABLE images (tile_data BLOB, tile_id TEXT UNIQUE)",
@@ -650,6 +676,14 @@ mod tests {
                 vec![],
                 real,
                 real_text,
+            ),
+            // A whole REAL id names the image whose rowid it is.
+            (
+                "CREATE TABLE map (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_id REAL)",
+                "CREATE TABLE images (tile_data BLOB, tile_id INTEGER PRIMARY KEY)",
+                vec![],
+                real,
+                |_| W::Null,
             ),
         ];
         for (map_sql, images_sql, image_index, map_id, image_id) in cases {
@@ -749,6 +783,15 @@ mod tests {
             assert!(matches!(m.rows.keys, Keys::Scanned(_)));
             assert_eq!(m.tile(0, 0, 0).unwrap(), Some(vec![7]));
         }
+        // A keyword in a quoted string is not one.
+        let quoted = tiles_with(
+            "CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB, note TEXT DEFAULT 'desc collate', UNIQUE (zoom_level, tile_column, tile_row))",
+            vec![vec![0, 1, 2]],
+            &[],
+            vec![(1, vec![W::Int(0), W::Int(0), W::Int(0), W::Blob(vec![7]), W::Null])],
+        );
+        assert!(matches!(quoted.rows.keys, Keys::Index(_)));
+        assert_eq!(quoted.tile(0, 0, 0).unwrap(), Some(vec![7]));
     }
 
     /// Reals are spelled as SQLite's `%!.15g` spells them.
@@ -758,6 +801,7 @@ mod tests {
             (1.0, "1.0"),
             (-2.0, "-2.0"),
             (0.0, "0.0"),
+            (-0.0, "0.0"),
             (1.5, "1.5"),
             (0.1 + 0.2, "0.3"),
             (1e20, "1.0e+20"),
