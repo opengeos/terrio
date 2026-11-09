@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `terrio.rio` keeps a color interpretation other than red, green and blue on three Byte bands,
+  or four compressed with WebP, where its GeoTIFF writer makes them RGB unless told otherwise:
+  in a COG, set on the dataset or copied by `shutil.copy(..., driver="COG")` (#717); in an
+  update (`r+`) of a GeoTIFF or a COG; and in a GeoTIFF written with `photometric="ycbcr"`.
+  `terrio.rio` told the writer only the bands whose interpretation was not gray, then
+  undefined, so `undefined` x 3 read back as `undefined, green, blue`, and
+  `gray, undefined, undefined` as RGB. These bands are still red, green and blue by default, and
+  a COG writer, or one in YCbCr, now reports that before the file is written. Other GeoTIFFs and
+  COGs are written as before.
 - Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, or its other name
   `GDAL_DISABLE_READDIR_ON_OPEN`, a local GeoTIFF no longer takes overviews from an `.ovr` beside
   it. They served its reduced reads (`terrio translate --outsize`, a `terrio.rio` read with a

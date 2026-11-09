@@ -2436,12 +2436,7 @@ class DatasetWriter(DatasetReader):
             block = (1, self.width)
         s = _tiff.Structure(count=n, width=self.width, height=self.height, block_shape=block)
         s.tiled = tiled
-        ci = [ColorInterp.gray] + [ColorInterp.undefined] * (n - 1)
-        if o.get("PHOTOMETRIC", "").upper() == "RGB" and n >= 3:
-            ci[:3] = [ColorInterp.red, ColorInterp.green, ColorInterp.blue]
-        if o.get("ALPHA", "").upper() in ("YES", "NON-PREMULTIPLIED", "PREMULTIPLIED") and n > 1:
-            ci[-1] = ColorInterp.alpha
-        s.colorinterp = ci
+        s.colorinterp = self._new_structure_defaults()
         s.band_tags = [{} for _ in range(n)]
         s.descriptions = [None] * n
         s.scales = [1.0] * n
@@ -3227,7 +3222,13 @@ class DatasetWriter(DatasetReader):
         w.close()
 
     def _new_structure_defaults(self) -> list[ColorInterp]:
-        """The color interpretations GDAL derives from the creation options.
+        """The color interpretations the writer gives the bands when it is not told otherwise.
+
+        For a GeoTIFF or a COG they are the GeoTIFF writer's. `PHOTOMETRIC=RGB` or `YCBCR` makes
+        the first three bands red, green and blue. Without `PHOTOMETRIC`, so do three Byte bands,
+        or four compressed with WebP: a COG takes none (`_creation_options` drops it), and an
+        update passes one only for an RGB file. `ALPHA` makes the last band alpha. `_flush` sends
+        the writer each band's interpretation that differs from these.
 
         Returns:
             list: One per band.
@@ -3235,7 +3236,15 @@ class DatasetWriter(DatasetReader):
         n = self._count
         ci = [ColorInterp.gray] + [ColorInterp.undefined] * (n - 1)
         o = self._options
-        if o.get("PHOTOMETRIC", "").upper() == "RGB" and n >= 3:
+        photometric = o.get("PHOTOMETRIC", "").upper()
+        rgb = photometric == "RGB"
+        if self._out_driver.upper() in ("GTIFF", "COG"):
+            if photometric:
+                rgb = photometric in ("RGB", "YCBCR")
+            else:
+                webp = o.get("COMPRESS", "").upper() == "WEBP"
+                rgb = self._dtype == "uint8" and (n == 3 or (n == 4 and webp))
+        if rgb and n >= 3:
             ci[:3] = [ColorInterp.red, ColorInterp.green, ColorInterp.blue]
         if o.get("ALPHA", "").upper() in ("YES", "NON-PREMULTIPLIED", "PREMULTIPLIED") and n > 1:
             ci[-1] = ColorInterp.alpha
