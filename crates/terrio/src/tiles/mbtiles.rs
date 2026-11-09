@@ -64,6 +64,9 @@ struct Images {
     /// The `tile_data` column.
     data: usize,
     ids: Ids,
+    /// Whether `tile_id` has numeric affinity, so that a text id is compared as the number it
+    /// spells; otherwise text ids are compared as text.
+    numeric: bool,
 }
 
 /// How an image's row is found from its `tile_id`.
@@ -205,7 +208,10 @@ impl Images {
             })?;
             Ids::Scanned(rowids)
         };
-        Ok(Self { root, data: columns[0], ids })
+        let kind = reader::column_types(&sql).get(id).map(|(_, t)| t.to_ascii_uppercase()).unwrap_or_default();
+        let textual = ["CHAR", "CLOB", "TEXT"].iter().any(|s| kind.contains(s)) || kind.is_empty() || kind.contains("BLOB");
+        let numeric = kind.contains("INT") || !textual;
+        Ok(Self { root, data: columns[0], ids, numeric })
     }
 
     /// The rowid of the image `id`, matching a number and the text spelling it.
@@ -222,9 +228,9 @@ impl Images {
                 Value::Real(f) => whole(*f),
                 _ => None,
             }),
-            Ids::Scanned(rowids) => Ok(spellings(id).iter().find_map(|id| rowids.get(&id_key(id)).copied())),
+            Ids::Scanned(rowids) => Ok(spellings(id, self.numeric).iter().find_map(|id| rowids.get(&id_key(id)).copied())),
             Ids::Index(root) => {
-                for id in spellings(id) {
+                for id in spellings(id, self.numeric) {
                     if let Some(rowid) = last_rowid(db, *root, &[id])? {
                         return Ok(Some(rowid));
                     }
@@ -443,9 +449,10 @@ fn id_key(v: &Value) -> IdKey {
     }
 }
 
-/// The values an `images.tile_id` equal to `id` may be stored as: `id`, and the numbers and
-/// texts spelling it.
-fn spellings(id: &Value) -> Vec<Value> {
+/// The values an `images.tile_id` equal to `id` may be stored as: `id`, the texts spelling a
+/// number, and, when `numeric` (the column's affinity), the number a text spells. A text id
+/// compared with a text column is compared as text, so `'01'` is not `'1'`.
+fn spellings(id: &Value, numeric: bool) -> Vec<Value> {
     let mut out = vec![id.clone()];
     match id {
         Value::Int(i) => out.extend([Value::Text(i.to_string()), Value::Text(format!("{i}.0"))]),
@@ -455,7 +462,7 @@ fn spellings(id: &Value) -> Vec<Value> {
                 out.push(Value::Text(f.to_string()));
             }
         }
-        Value::Text(s) => match s.parse::<i64>() {
+        Value::Text(s) if numeric => match s.parse::<i64>() {
             Ok(i) => out.extend([Value::Int(i), Value::Real(i as f64)]),
             Err(_) => out.extend(s.parse::<f64>().ok().filter(|f| f.is_finite()).map(Value::Real)),
         },
@@ -717,6 +724,26 @@ mod tests {
             assert_eq!(m.tile(2, 0, 1).unwrap(), None);
             assert_eq!(m.tile(2, 0, 3).unwrap(), None, "{map_sql} {images_sql}");
             assert_eq!(m.tiles_at_zoom(2).unwrap(), vec![(0, 0), (1, 1), (2, 2), (0, 3), (3, 3)]);
+        }
+        // Text ids are compared as text with a text column, by index and by scan: '01' is not '1'.
+        for image_index in [vec![vec![1]], vec![]] {
+            let tables = [
+                metadata_table(),
+                Table {
+                    name: "map".into(),
+                    sql: "CREATE TABLE map (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_id TEXT)".into(),
+                    rows: vec![(1, vec![W::Int(0), W::Int(0), W::Int(0), W::Text("01".into())])],
+                    autoindexes: vec![],
+                },
+                Table {
+                    name: "images".into(),
+                    sql: "CREATE TABLE images (tile_data BLOB, tile_id TEXT UNIQUE)".into(),
+                    rows: vec![(1, vec![W::Blob(vec![1; 3]), W::Text("1".into())])],
+                    autoindexes: image_index,
+                },
+            ];
+            let m = MbTiles::from_bytes(writer::write_database(&tables, std::slice::from_ref(&view), 0, 0).unwrap()).unwrap();
+            assert_eq!(m.tile(0, 0, 0).unwrap(), None);
         }
     }
 
