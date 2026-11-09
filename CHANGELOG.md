@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `terrio.rio` keeps a PixelIsPoint raster (`AREA_OR_POINT=Point`) PixelIsPoint when it writes a
+  GeoTIFF or COG. `shutil.copy`, a writer given `update_tags(AREA_OR_POINT="Point")`, an `r+`
+  update of a PixelIsPoint GeoTIFF and `terrio.xarray`'s `to_raster` wrote it as PixelIsArea in
+  0.8.0, whole or in rows. The tag now reaches the GeoTIFF writer, which writes the raster type
+  with the tie point at the centre of pixel (0, 0); the transform is unchanged. The raster type
+  needs a CRS, the dataset's or its GCPs': without one, the raster is still written PixelIsArea,
+  now with a `UserWarning` saying so.
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000

@@ -21,6 +21,7 @@ from affine import Affine  # noqa: E402
 import terrio  # noqa: E402
 import terrio.rio as rio  # noqa: E402
 import terrio.xarray as txr  # noqa: E402
+from terrio.rio import _tiff  # noqa: E402
 from terrio.xarray import _io  # noqa: E402
 from terrio.xarray.exceptions import MissingCRS  # noqa: E402
 
@@ -1003,3 +1004,23 @@ def test_sidecar_only_mask_flags_and_uncached_reads_agree(tmp_path):
     with txr.open_rasterio(str(path), masked=True, cache=False) as opened:
         np.testing.assert_allclose(opened[:, :1, :].values, expected[:, :1, :], equal_nan=True)
         np.testing.assert_allclose(opened.values, expected, equal_nan=True)
+
+
+def test_to_raster_keeps_pixel_is_point(tmp_path):
+    """An array read from a PixelIsPoint GeoTIFF (`AREA_OR_POINT=Point` among its attributes) is
+    written back PixelIsPoint, its tie point the centre of pixel (0, 0): it came out PixelIsArea."""
+    source = tmp_path / "point.tif"
+    pixels = np.arange(12, dtype="int16").reshape(1, 3, 4)
+    terrio.Raster.from_array(
+        pixels, TRANSFORM.to_gdal(), crs="EPSG:32611", metadata={"AREA_OR_POINT": "Point"}
+    ).write(str(source))
+    da = txr.open_rasterio(str(source))
+    assert da.attrs["AREA_OR_POINT"] == "Point"
+    out = tmp_path / "out.tif"
+    da.terrio.to_raster(str(out))
+    with rio.open(out) as src:
+        assert src.tags()["AREA_OR_POINT"] == "Point" and src.transform == TRANSFORM
+        np.testing.assert_array_equal(src.read(), pixels)
+    tags = terrio._terrio.tiff_tags(str(out))[0]
+    assert _tiff._geokey(tags, 1025) == 2
+    assert tuple(tags[33922][3:5]) == (500015.0, 4099985.0)
