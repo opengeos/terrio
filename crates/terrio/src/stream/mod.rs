@@ -87,6 +87,58 @@ trait FeatureSource: Send {
     /// Sets the raw bytes a batch holds, at most about (see [`source_bytes`]), for sources that
     /// count them.
     fn set_batch_bytes(&mut self, _bytes: usize) {}
+    /// Reads only the fields `keep` (indices into the layer's fields) from now on, when the source
+    /// can skip the others before decoding them (a GeoParquet file's columns); `false` otherwise.
+    fn select_columns(&mut self, _keep: &[usize]) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+/// The features of a reader with some of their fields (see [`FeatureReader::select_fields`]).
+struct SelectedFields {
+    inner: FeatureReader,
+    keep: Vec<usize>,
+    /// The most features read from `inner` at a time.
+    batch: usize,
+}
+
+impl FeatureSource for SelectedFields {
+    fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
+        let Some(chunk) = self.inner.read_chunk(self.batch)? else { return Ok(None) };
+        let keep = &self.keep;
+        Ok(Some(
+            chunk
+                .features
+                .into_iter()
+                .map(|mut f| {
+                    f.attributes = keep
+                        .iter()
+                        .map(|&i| f.attributes.get_mut(i).map_or(FieldValue::Null, |v| std::mem::replace(v, FieldValue::Null)))
+                        .collect();
+                    f
+                })
+                .collect(),
+        ))
+    }
+}
+
+/// Whether `path` is `parent`, or one of its members (`parent.member`), matched without case: a
+/// flattened field `bbox.xmin` is a member of the column `bbox`, and a column `bbox.xmin` of the
+/// struct `bbox`.
+pub(crate) fn is_or_under(path: &str, parent: &str) -> bool {
+    path.get(..parent.len()).is_some_and(|head| head.eq_ignore_ascii_case(parent))
+        && path.get(parent.len()..).is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+}
+
+/// The indices of the fields of `schema` that `columns` names, in the schema's order (see
+/// [`FeatureReader::select_fields`]).
+pub(crate) fn field_indices(schema: &wbvector::Schema, columns: &[String]) -> Result<Vec<usize>> {
+    let fields = schema.fields();
+    if let Some(c) = columns.iter().find(|c| !fields.iter().any(|f| is_or_under(&f.name, c))) {
+        let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+        return Err(Error::InvalidArgument(format!("no field named {c:?} (fields: {})", names.join(", "))));
+    }
+    Ok((0..fields.len()).filter(|&i| columns.iter().any(|c| is_or_under(&fields[i].name, c))).collect())
 }
 
 /// A layer without its features: its name, fields, geometry type and CRS.
@@ -127,6 +179,49 @@ impl FeatureReader {
     /// The layer, without its features: its name, fields, geometry type and CRS.
     pub fn layer(&self) -> &Layer {
         &self.layer
+    }
+
+    /// Keeps only the fields `columns` names, in the layer's order: the field of that name
+    /// (matched without case), or the members of a struct column of that name, which the
+    /// GeoParquet and Arrow readers flatten into `name.member` fields. Called before reading.
+    /// `batch` is the most features read at a time from the source, as [`open_layers`] takes it.
+    ///
+    /// # Errors
+    ///
+    /// If a name matches no field.
+    pub fn select_fields(mut self, columns: &[String], batch: usize) -> Result<Self> {
+        let keep = self.field_indices(columns)?;
+        if self.narrow(&keep)? {
+            return Ok(self);
+        }
+        let fields = self.layer.schema.fields();
+        let mut layer = self.layer.clone();
+        layer.schema = wbvector::Schema::new();
+        for &i in &keep {
+            layer.schema.add_field(fields[i].clone());
+        }
+        let chunk_bytes = self.chunk_bytes;
+        let mut reader = FeatureReader::new(layer, Box::new(SelectedFields { inner: self, keep, batch }));
+        reader.chunk_bytes = chunk_bytes;
+        Ok(reader)
+    }
+
+    /// The indices of the fields `columns` names (see [`Self::select_fields`]).
+    fn field_indices(&self, columns: &[String]) -> Result<Vec<usize>> {
+        field_indices(&self.layer.schema, columns)
+    }
+
+    /// Keeps only the fields `keep` when the source reads only those from now on (see
+    /// [`FeatureSource::select_columns`]) and no feature is read yet; `false` otherwise.
+    fn narrow(&mut self, keep: &[usize]) -> Result<bool> {
+        if !self.buffer.is_empty() || self.done || !self.source.select_columns(keep)? {
+            return Ok(false);
+        }
+        let fields = std::mem::replace(&mut self.layer.schema, wbvector::Schema::new());
+        for &i in keep {
+            self.layer.schema.add_field(fields.fields()[i].clone());
+        }
+        Ok(true)
     }
 
     fn fill(&mut self, n: usize) -> Result<()> {
@@ -227,6 +322,16 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
     // `.json` files may be STAC items or collections, which the dataset reader recognizes.
     let driver = VectorDriver::for_extension(path).filter(|_| crate::formats::extension(path).as_deref() != Some("json"));
     let local = crate::vfs::Location::parse(path).is_local() && std::path::Path::new(path).is_file();
+    // A remote GeoParquet file is read in place, a window of row groups at a time.
+    #[cfg(all(remote, feature = "parquet"))]
+    if !local
+        && crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector)).is_ok()
+        && let Some(s) = geoparquet::open_remote(path, options.spatial_filter, batch)?
+    {
+        let layer = crate::dataset::fix_layer(s.layer.clone(), path, VectorDriver::Parquet);
+        crate::dataset::layer_selection(&options.layers, &[layer.name.as_str()], Some(path), false)?;
+        return Ok(vec![FeatureReader::new(layer, Box::new(ParquetSource(s)))]);
+    }
     let Some(driver) = driver.filter(|d| local && can_read_stream(*d)) else {
         let ds = crate::open_vector(path, options)?;
         return Ok(ds
@@ -258,7 +363,7 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
         VectorDriver::FlatGeobuf => open_fgb(path, batch)?,
         #[cfg(feature = "parquet")]
         VectorDriver::Parquet => {
-            let s = geoparquet::ParquetStream::open(|| geoparquet::open_file(path), stem, None, options.spatial_filter, batch, None)?;
+            let s = geoparquet::ParquetStream::open(|| geoparquet::open_file(path), stem, None, options.spatial_filter, batch, None, None)?;
             (s.layer.clone(), Box::new(ParquetSource(s)))
         }
         d => return Err(Error::Unsupported(format!("the {} driver is not read as a stream", d.name()))),
@@ -656,6 +761,10 @@ impl FeatureSource for ParquetSource {
     fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
         self.0.next_batch()
     }
+
+    fn select_columns(&mut self, keep: &[usize]) -> Result<bool> {
+        self.0.select_columns(keep)
+    }
 }
 
 // GeoPackage
@@ -798,6 +907,20 @@ pub fn can_write_stream(driver: VectorDriver) -> bool {
                 | VectorDriver::FlatGeobuf
                 | VectorDriver::Parquet
         )
+}
+
+/// Narrows `reader` to the fields `-select` keeps when its source then reads only those (a
+/// GeoParquet file decodes only their columns), before the translator selects them. Not with
+/// `-where` or `-sql`, which may name other fields; names the reader does not know are left to
+/// the translator to report.
+fn select_early(reader: &mut FeatureReader, o: &VectorTranslateOptions) -> Result<()> {
+    if let (Some(names), None, None) = (&o.select, &o.where_clause, &o.sql) {
+        let names: Vec<String> = names.iter().map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect();
+        if let Ok(keep) = reader.field_indices(&names) {
+            reader.narrow(&keep)?;
+        }
+    }
+    Ok(())
 }
 
 /// Whether the writer of a driver needs a [`LayerProfile`] of the features of `layer` (its
@@ -1838,10 +1961,12 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     let chunk_bytes = if ahead { AHEAD_CHUNK_BYTES } else { CHUNK_BYTES };
     let mut reader = readers.remove(0);
     reader.set_chunk_bytes(chunk_bytes);
+    select_early(&mut reader, &options.translate)?;
     let mut translator = Translator::new(reader.layer(), &options.translate)?;
     let profile = if needs_profile(driver, translator.schema()) {
         let mut first = open_layers(src, &options.open, chunk)?.remove(0);
         first.set_chunk_bytes(chunk_bytes);
+        select_early(&mut first, &options.translate)?;
         let mut t = Translator::new(first.layer(), &options.translate)?;
         let mut p = LayerProfile::new(t.schema());
         while !t.is_done()

@@ -8,6 +8,70 @@
   lifted or replaced the environment's list on its thread: a process limited to `GTiff` opened an
   Esri ASCII grid there (#721). The option is documented in `docs/remote-data.md` and
   `docs/python.md`.
+- A polar stereographic CRS on an ellipsoid projects the pole it is centred on to its false
+  origin, and refuses the opposite pole. In 0.8.0 its own pole failed to project, and the opposite
+  pole, which no coordinates represent, came out about 10²³ m away: EPSG:3413, 3031, 32661 and the
+  other ellipsoidal polar stereographic CRSs, of variants A and B (spherical ones were right). A
+  `sum` into a longitude and latitude grid whose edge is the pole now writes the row along it: from
+  10,000 km of 10 km EPSG:3413 pixels centred on the North Pole into 1° pixels from 80° N to
+  90° N, none of the 360 pixels along the pole was written, and the grid held 36,675.8 of the
+  37,044.5 it now holds (1% less). The longitude and latitude grid suggested for a raster that
+  covers its pole now reaches the North Pole exactly, over every longitude, and reaches the South
+  Pole to within one pixel, as its height rounds down: for the same raster, it spanned 30.5° N to
+  46.0° N, and now 30.4° N to 90° N.
+- `terrio.rio` keeps a PixelIsPoint raster (`AREA_OR_POINT=Point`) PixelIsPoint when it writes a
+  GeoTIFF or COG. `shutil.copy`, a writer given `update_tags(AREA_OR_POINT="Point")`, an `r+`
+  update of a PixelIsPoint GeoTIFF and `terrio.xarray`'s `to_raster` wrote it as PixelIsArea in
+  0.8.0, whole or in rows. The tag now reaches the GeoTIFF writer, which writes the raster type
+  with the tie point at the centre of pixel (0, 0); the transform is unchanged. The raster type
+  needs a CRS, the dataset's or its GCPs': without one, the raster is still written PixelIsArea,
+  now with a `UserWarning` saying so.
+- `terrio.xarray`: an object whose `.terrio` (or `.rio`) accessor was used is freed as soon as it
+  is dropped. xarray's accessor registration keeps a reference cycle (the object caches its
+  accessor, which refers to the object) that only the cyclic garbage collector frees, and that
+  held the pixels of every object `.terrio` touched, including views of each variable that
+  `write_crs` reads internally, so that a loop loading arrays could keep gigabytes. The object now
+  caches only the accessor's state, and each access returns a new accessor over it, so
+  `da.terrio is da.terrio` is False.
+- A remote read of a long range through the block cache, such as a GeoParquet row group or a run
+  of COG tiles, is fetched as up to 8 parallel requests of at least 1 MiB each instead of one at
+  the pace of a single connection (#741). `TERRIO_HTTP_MULTIRANGE=SERIAL` keeps one request.
+- A build with the `gdal` feature and without the default features
+  (`--no-default-features --features gdal`) compiles. The GDAL backend formats the date-time
+  fields it reads with chrono, whose formatting needs its `alloc` feature, and only the
+  `parquet` feature turned it on (through arrow-array); the `gdal` feature now enables it. CI
+  checks that build in the GDAL backend job (#732).
+- A selection of GeoParquet fields decodes only their columns and the geometry, and fetches only
+  their column chunks from a URL: `open_stream(columns=...)`, `terrio convert --select` (without
+  `--where` or `--sql`, which may name other fields), and JavaScript's `openUrl(...).read()`,
+  which takes `columns` too.
+  Breaking (Rust): `terrio::vector::read_geoparquet_sparse` takes a fifth argument, `columns`;
+  pass `None` to read every field, as before.
+- `terrio.pyogrio` reads GeoParquet files: `read_arrow` and `open_arrow` hand out their Arrow
+  record batches as pyogrio does through GDAL's Arrow stream, with GDAL 3.13.3's `meta` (the
+  fields as OGR has them, structs flattened, the declared geometry type, `EPSG:4326` for a file
+  without a CRS), and `read_dataframe(..., use_arrow=True)` builds its GeoDataFrame from them, as
+  `geopandas.read_file(path, engine="pyogrio", use_arrow=True)` asks. Unlike GDAL, whose
+  `skip_features` skips the file's rows before `bbox` filters them, the range is taken from the
+  rows the rectangle keeps, as `read_dataframe` takes it. Arrow reads of other formats still
+  raise `NotImplementedError`.
+- GeoParquet reads decode row groups in parallel, a window of as many as there are threads at a
+  time, and read remote files in place: `open_vector` and `open_stream` on a URL fetch the footer,
+  then only the column chunks of the row groups the filter keeps, by range requests, instead of
+  downloading the whole file.
+- `open_stream` takes `columns=[...]`, the fields to keep (a struct column by its name keeps its
+  `name.member` fields), and the Arrow export of a GeoParquet stream (`__arrow_c_stream__`,
+  `terrio::arrow::open_geoparquet` in Rust) hands out the record batches the file holds, without
+  converting them to features, as GDAL's Arrow stream does: the columns keep their Arrow types
+  (structs and lists included, where the export flattened them into fields and JSON text before),
+  the geometry columns are tagged as GeoArrow extension types with their CRS (OGC:CRS84 when the
+  file names none, as geopandas reads it, where GDAL names it EPSG:4326), and the bounding-box
+  covering column is left out unless asked for. `bbox` skips row groups by their statistics, then
+  rows by the covering column, read alone first (or by the geometries' bounding boxes without
+  one). On 12 cores, the 664,000 polygons of fiboa's es-nc file (Brotli, 27 row groups) read
+  into a pyarrow table in 0.79 s and 761 MB, against 1.56 s and 966 MB through GDAL 3.13's Arrow
+  stream (pyogrio) and 2.33 s and 2.0 GB before; a small rectangle of a 533 MB Overture buildings
+  file on S3 fetches 4.9 MB in 5 requests, where the whole file was downloaded.
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000

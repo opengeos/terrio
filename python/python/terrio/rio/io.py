@@ -2911,9 +2911,22 @@ class DatasetWriter(DatasetReader):
         t = self._transform
         georef = not (t == Affine.identity() or [abs(v) for v in t[:6]] == [0, 1, 0, 0, 0, 1])
         gt = t.to_gdal() if georef else (0.0, 1.0, 0.0, float(self.height), 0.0, -1.0)
-        tags = {k: v for k, v in s.tags.items() if k != "AREA_OR_POINT"}
         crs_obj = self._crs if self._crs is not None else (self._gcp_crs if self._gcps else None)
         crs = crs_obj.to_wkt() if crs_obj else None
+        # The GeoTIFF writer writes `AREA_OR_POINT=Point` as the key RasterPixelIsPoint; other
+        # formats have no raster type to write it to. The key needs a CRS (of the dataset or of its
+        # GCPs): alone, it would stand for a local CRS, so without one the raster stays PixelIsArea.
+        geotiff = self._out_driver.upper() in ("GTIFF", "COG")
+        tags = {k: v for k, v in s.tags.items() if geotiff or k != "AREA_OR_POINT"}
+        if not crs and str(tags.get("AREA_OR_POINT", "")).lower() == "point":
+            del tags["AREA_OR_POINT"]
+            warnings.warn(
+                "AREA_OR_POINT=Point is not kept: a GeoTIFF's raster type needs a CRS, and the "
+                "dataset has none, so it is written as PixelIsArea. Give the dataset a CRS to "
+                "keep it.",
+                UserWarning,
+                stacklevel=3,
+            )
         if self._nodatavals is not None and len(set(map(repr, self._nodatavals))) > 1:
             warnings.warn(
                 f"The TIFFTAG_GDAL_NODATA only support one value per dataset. This value of "
