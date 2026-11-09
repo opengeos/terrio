@@ -32,7 +32,7 @@ fn stream_capsule<'py>(py: Python<'py>, table: &ArrowTable) -> PyResult<Bound<'p
 }
 
 /// A capsule holding the Arrow C schema of the table.
-pub(crate) fn schema_capsule<'py>(py: Python<'py>, schema: &Schema) -> PyResult<Bound<'py, PyCapsule>> {
+fn schema_capsule<'py>(py: Python<'py>, schema: &Schema) -> PyResult<Bound<'py, PyCapsule>> {
     let ffi = FFI_ArrowSchema::try_from(schema).map_err(arrow_err)?;
     PyCapsule::new_with_value(py, ffi, SCHEMA)
 }

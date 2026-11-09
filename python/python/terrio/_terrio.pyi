@@ -956,28 +956,13 @@ class FeatureStream:
     def read_all(self) -> Layer: ...
     def __arrow_c_stream__(self, requested_schema: object | None = None) -> object: ...
 
-@final
-class ArrowStream:
-    """A GeoParquet file read as Arrow record batches, decoded as they are asked for."""
-
-    @property
-    def columns(self) -> list[str]: ...
-    def __arrow_c_schema__(self) -> object: ...
-    def __arrow_c_stream__(self, requested_schema: object | None = None) -> object: ...
-
-def open_arrow(
-    path: str,
-    *,
-    columns: Sequence[str] | None = None,
-    bbox: _Bounds | None = None,
-    batch_size: int = 65536,
-) -> ArrowStream: ...
 def open_stream(
     path: str,
     layer: str | None = None,
     *,
     batch_size: int = 65536,
     bbox: _Bounds | None = None,
+    columns: Sequence[str] | None = None,
 ) -> FeatureStream: ...
 def convert(
     src: str,

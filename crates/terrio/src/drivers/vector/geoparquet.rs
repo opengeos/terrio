@@ -16,6 +16,7 @@
 //! types, bounds and CRS.
 
 use super::datetime::{format_date, format_datetime, parse_date, parse_datetime};
+use super::geoparquet_arrow::{DecodeGroup, GroupWindows, Prefetcher};
 use super::geoparquet_zstd::{self, SharedInput};
 use super::profile::LayerProfile;
 use crate::crs::SpatialRef;
@@ -31,7 +32,7 @@ use arrow_array::{
     Array, ArrayRef, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, RecordBatch, StructArray, TimestampMillisecondArray,
 };
 use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ParquetRecordBatchReaderBuilder};
 use parquet::arrow::arrow_writer::{ArrowLeafColumn, ArrowRowGroupWriterFactory, compute_leaves};
 use parquet::arrow::{ArrowWriter, ProjectionMask};
 use parquet::file::properties::WriterProperties;
@@ -55,19 +56,13 @@ pub fn read_filtered(path: &str, bbox: Option<(f64, f64, f64, f64)>) -> Result<L
     parse_source(|| open_file(path), name, None, bbox, None)
 }
 
-/// A local file opened for the `parquet` crate's readers.
-#[cfg(not(target_os = "wasi"))]
-pub(crate) type LocalFile = std::fs::File;
-/// A local file opened for the `parquet` crate's readers: WASI has no `File::try_clone`.
-#[cfg(target_os = "wasi")]
+/// A local file opened for the `parquet` crate's readers, which threads decoding row groups in
+/// parallel share (a `File`'s clones share its position; WASI has no `File::try_clone`).
 pub(crate) type LocalFile = SharedFile;
 
 /// Opens a local Parquet file.
 pub(crate) fn open_file(path: &str) -> Result<LocalFile> {
-    let file = std::fs::File::open(path)?;
-    #[cfg(target_os = "wasi")]
-    let file = SharedFile::new(file)?;
-    Ok(file)
+    SharedFile::new(std::fs::File::open(path)?)
 }
 
 /// A local Parquet file whose readers share one handle: on WASI (no `dup`), and for the threads
@@ -252,19 +247,38 @@ fn parse_source<R: parquet::file::reader::ChunkReader + 'static>(
     bbox: Option<(f64, f64, f64, f64)>,
     prefetch: Prefetch<'_>,
 ) -> Result<Layer> {
-    let mut s = ParquetStream::open(open, name, row_groups, bbox, 65536, prefetch)?;
-    let mut layer = s.layer.clone();
-    while let Some(batch) = s.next_batch()? {
-        layer.features.extend(batch);
+    ParquetStream::open(open, name, row_groups, bbox, 65536, prefetch)?.read_all()
+}
+
+/// A remote GeoParquet file (a URL whose file name ends in `.parquet` or `.geoparquet`) opened to
+/// be read by range requests: its footer, the covering column of the row groups a filter keeps,
+/// then the column chunks of each window of row groups, fetched in parallel through the block
+/// cache, a window of at most half the cache at a time. `None` for other paths.
+#[cfg(remote)]
+pub(crate) fn open_remote(path: &str, bbox: Option<(f64, f64, f64, f64)>, batch_size: usize) -> Result<Option<ParquetStream>> {
+    let location = crate::vfs::Location::parse(path);
+    let Some(remote) = location.remote() else { return Ok(None) };
+    let file_name = location.file_name();
+    if crate::formats::VectorDriver::for_extension(&file_name) != Some(crate::formats::VectorDriver::Parquet) {
+        return Ok(None);
     }
-    Ok(layer)
+    crate::formats::check_driver_allowed("Parquet", path, crate::formats::Kind::Vector)?;
+    let options = crate::http::HttpOptions::from_env();
+    let budget = (options.cache_size / 2).max(1);
+    let file = crate::http::RangeReader::open_with(&remote, options)?;
+    let name = std::path::Path::new(&file_name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer").to_string();
+    let prefetch = |ranges: &[(u64, u64)]| -> Result<()> { Ok(file.prefetch(ranges)?) };
+    let stream = ParquetStream::open(|| Ok(file.clone()), &name, None, bbox, batch_size, Some(&prefetch))?;
+    let prefetcher = file.clone();
+    Ok(Some(stream.with_prefetcher((Box::new(move |ranges: &[(u64, u64)]| Ok(prefetcher.prefetch(ranges)?)), budget))))
 }
 
 /// The features of a GeoParquet file, read a record batch at a time.
 pub(crate) struct ParquetStream {
     /// The layer, without its features.
     pub layer: Layer,
-    reader: parquet::arrow::arrow_reader::ParquetRecordBatchReader,
+    /// The row groups, decoded in parallel a window at a time.
+    windows: GroupWindows,
     columns: Vec<Column>,
     geom_index: Option<usize>,
     encoding: String,
@@ -365,16 +379,29 @@ impl ParquetStream {
             let ranges: Vec<(u64, u64)> = groups.iter().flat_map(|&g| meta.row_group(g).columns().iter().map(|c| c.byte_range())).collect();
             p(&ranges)?;
         }
-        let reader = if geoparquet_zstd::has_zstd(&meta, &groups, &ProjectionMask::all()) {
-            geoparquet_zstd::reader(input, &meta, &schema, ProjectionMask::all(), groups, row_selection, batch_size)
-        } else {
-            let mut builder = builder.with_row_groups(groups).with_batch_size(batch_size.max(1));
-            if let Some(selection) = row_selection {
-                builder = builder.with_row_selection(selection);
+        // Each row group with its rows of the selection, which runs over the groups kept.
+        let mut selection = row_selection;
+        let queue: Vec<_> =
+            groups.iter().map(|&g| (g, selection.as_mut().map(|s| s.split_off(meta.row_group(g).num_rows() as usize)))).collect();
+        let ranges = meta.row_groups().iter().map(|rg| rg.columns().iter().map(|c| c.byte_range()).collect()).collect();
+        let arrow_meta = ArrowReaderMetadata::try_new(meta.clone(), Default::default()).map_err(|e| err(&e))?;
+        let (file_schema, batch_size) = (schema.clone(), batch_size.max(1));
+        let decode: DecodeGroup = Box::new(move |g, selection| {
+            let reader = if geoparquet_zstd::has_zstd(&meta, &[g], &ProjectionMask::all()) {
+                geoparquet_zstd::reader(input.clone(), &meta, &file_schema, ProjectionMask::all(), vec![g], selection, batch_size)
+            } else {
+                let mut b = ParquetRecordBatchReaderBuilder::new_with_metadata(input.clone(), arrow_meta.clone())
+                    .with_row_groups(vec![g])
+                    .with_batch_size(batch_size);
+                if let Some(selection) = selection {
+                    b = b.with_row_selection(selection);
+                }
+                b.build()
             }
-            builder.build()
-        }
-        .map_err(|e| err(&e))?;
+            .map_err(|e| perr(&e))?;
+            reader.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| perr(&e))
+        });
+        let windows = GroupWindows::new(queue, decode, ranges, None);
 
         match col.get("crs") {
             _ if geo.is_null() => {}
@@ -386,13 +413,28 @@ impl ParquetStream {
                 types.iter().filter_map(Value::as_str).map(|t| t.trim_end_matches(" Z").trim_end_matches(" M")).collect();
             layer.geom_type = declared_type(&types);
         }
-        Ok(Self { layer, reader, columns, geom_index, encoding, fids, fid: 0 })
+        Ok(Self { layer, windows, columns, geom_index, encoding, fids, fid: 0 })
+    }
+
+    /// The layer with all its features.
+    pub(crate) fn read_all(mut self) -> Result<Layer> {
+        let mut layer = std::mem::replace(&mut self.layer, Layer::new(""));
+        while let Some(batch) = self.next_batch()? {
+            layer.features.extend(batch);
+        }
+        Ok(layer)
+    }
+
+    /// Announces the column chunks of each window of row groups to `prefetch` before they are
+    /// decoded (a remote file's block cache, which fetches them in parallel requests).
+    pub(crate) fn with_prefetcher(mut self, prefetch: Prefetcher) -> Self {
+        self.windows.set_prefetcher(prefetch);
+        self
     }
 
     /// The features of the next record batch, decoded in parallel; `None` at the end.
     pub(crate) fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
-        let Some(batch) = self.reader.next() else { return Ok(None) };
-        let batch = batch.map_err(|e| Error::InvalidData(format!("Parquet: {e}")))?;
+        let Some(batch) = self.windows.next()? else { return Ok(None) };
         let geoms = self.geom_index.map(|i| batch.column(i).clone());
         let arrays: Vec<ArrayRef> = self.columns.iter().map(|c| nested(&batch, &c.path)).collect();
         let (columns, encoding, fids, first) = (&self.columns, self.encoding.as_str(), &self.fids, self.fid);

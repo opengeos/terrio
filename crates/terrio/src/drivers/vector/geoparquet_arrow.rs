@@ -40,8 +40,8 @@ impl Default for GeoParquetReadOptions {
     }
 }
 
-/// Decodes the selected rows of a row group into record batches of the output schema.
-type DecodeGroup = Box<dyn Fn(usize) -> Result<Vec<RecordBatch>> + Send + Sync>;
+/// Decodes the rows of a row group (all of them, or a selection) into record batches.
+pub(crate) type DecodeGroup = Box<dyn Fn(usize, Option<RowSelection>) -> Result<Vec<RecordBatch>> + Send + Sync>;
 
 /// Announces the byte ranges `(offset, length)` about to be read, to a reader that fetches them
 /// (a remote file's block cache), with the most bytes worth announcing at once.
@@ -51,21 +51,84 @@ pub(crate) type Prefetcher = (Box<dyn Fn(&[(u64, u64)]) -> Result<()> + Send + S
 /// [module](self) documentation. An [`arrow_array::RecordBatchReader`].
 pub struct GeoParquetBatches {
     schema: SchemaRef,
-    groups: VecDeque<usize>,
-    ready: VecDeque<RecordBatch>,
-    decode: DecodeGroup,
-    /// The byte ranges of the column chunks read in each row group.
-    ranges: Vec<Vec<(u64, u64)>>,
-    prefetch: Option<Prefetcher>,
-    /// The caller's options and STAC asset policy, for the threads that read.
-    context: Arc<crate::stac::AssetReadContext>,
-    window: usize,
+    windows: GroupWindows,
     failed: bool,
 }
 
 impl std::fmt::Debug for GeoParquetBatches {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GeoParquetBatches").field("schema", &self.schema).field("row_groups_left", &self.groups.len()).finish()
+        f.debug_struct("GeoParquetBatches").field("schema", &self.schema).field("row_groups_left", &self.windows.groups.len()).finish()
+    }
+}
+
+/// The row groups of a file decoded in parallel, a window at a time, and their batches handed out
+/// in the file's order: as many row groups at once as there are threads, within the bytes the
+/// prefetcher takes at once. Memory holds a window's batches, not the file.
+pub(crate) struct GroupWindows {
+    /// The row groups left, with the rows to read of each (all by default).
+    groups: VecDeque<(usize, Option<RowSelection>)>,
+    ready: VecDeque<RecordBatch>,
+    decode: DecodeGroup,
+    /// The byte ranges of the column chunks read in each row group of the file.
+    ranges: Vec<Vec<(u64, u64)>>,
+    prefetch: Option<Prefetcher>,
+    /// The caller's options and STAC asset policy, for the threads that read.
+    context: crate::stac::AssetReadContext,
+    window: usize,
+}
+
+impl GroupWindows {
+    /// Decodes `groups` with `decode`; `ranges` are the byte ranges each row group of the file
+    /// reads, announced to `prefetch` a window at a time. The caller's options and asset policy
+    /// are those of the thread that calls this.
+    pub(crate) fn new(
+        groups: impl IntoIterator<Item = (usize, Option<RowSelection>)>,
+        decode: DecodeGroup,
+        ranges: Vec<Vec<(u64, u64)>>,
+        prefetch: Option<Prefetcher>,
+    ) -> Self {
+        Self {
+            groups: groups.into_iter().collect(),
+            ready: VecDeque::new(),
+            decode,
+            ranges,
+            prefetch,
+            context: crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current()),
+            window: crate::par::threads().max(1),
+        }
+    }
+
+    /// Announces the column chunks of each window to `prefetch` from now on.
+    pub(crate) fn set_prefetcher(&mut self, prefetch: Prefetcher) {
+        self.prefetch = Some(prefetch);
+    }
+
+    /// The next batch, decoding the next window of row groups when the batches held are out.
+    pub(crate) fn next(&mut self) -> Result<Option<RecordBatch>> {
+        while self.ready.is_empty() && !self.groups.is_empty() {
+            let bytes = |g: usize| self.ranges[g].iter().map(|r| r.1).sum::<u64>();
+            let budget = self.prefetch.as_ref().map_or(u64::MAX, |p| p.1);
+            let (mut n, mut total) = (0, 0u64);
+            while n < self.window.min(self.groups.len()) && (n == 0 || total + bytes(self.groups[n].0) <= budget) {
+                total += bytes(self.groups[n].0);
+                n += 1;
+            }
+            let window: Vec<(usize, Option<RowSelection>)> = self.groups.drain(..n).collect();
+            if let Some((prefetch, _)) = &self.prefetch {
+                let mut ranges: Vec<(u64, u64)> = window.iter().flat_map(|(g, _)| self.ranges[*g].iter().copied()).collect();
+                ranges.sort_unstable();
+                let _scope = self.context.enter()?;
+                prefetch(&ranges)?;
+            }
+            let (decode, context) = (&self.decode, &self.context);
+            for batches in crate::par::map_range_coarse(n, |i| {
+                let _scope = context.enter()?;
+                decode(window[i].0, window[i].1.clone())
+            }) {
+                self.ready.extend(batches?);
+            }
+        }
+        Ok(self.ready.pop_front())
     }
 }
 
@@ -164,7 +227,7 @@ impl GeoParquetBatches {
         // The row groups whose statistics may hold rows in the rectangle.
         let leaves = covering_leaves(&pmeta, &geo);
         let bboxes = group_bboxes(&pmeta, leaves);
-        let groups: VecDeque<usize> = (0..pmeta.num_row_groups())
+        let groups: Vec<usize> = (0..pmeta.num_row_groups())
             .filter(|&g| match (options.bbox, bboxes[g]) {
                 (Some((x0, y0, x1, y1)), Some(b)) => b[0] <= x1 && b[2] >= x0 && b[1] <= y1 && b[3] >= y0,
                 _ => true,
@@ -176,13 +239,10 @@ impl GeoParquetBatches {
             .iter()
             .map(|rg| (0..rg.num_columns()).filter(|&i| mask.leaf_included(i)).map(|i| rg.column(i).byte_range()).collect())
             .collect();
-        let context = Arc::new(crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current()));
         let batch_size = options.batch_size.max(1);
         let out = schema.clone();
-        let decode_context = context.clone();
         let encoding = primary_col["encoding"].as_str().unwrap_or("WKB").to_ascii_lowercase();
-        let decode: DecodeGroup = Box::new(move |g| {
-            let _scope = decode_context.enter()?;
+        let decode: DecodeGroup = Box::new(move |g, _| {
             let err = |e: &dyn std::fmt::Display| perr(e);
             let read = |mask: &ProjectionMask, selection: Option<RowSelection>| {
                 if geoparquet_zstd::has_zstd(&pmeta, &[g], mask) {
@@ -236,34 +296,8 @@ impl GeoParquetBatches {
             }
             Ok(batches)
         });
-        let window = crate::par::threads().max(1);
-        Ok(Self { schema, groups, ready: VecDeque::new(), decode, ranges, prefetch, context, window, failed: false })
-    }
-
-    /// The next batch, decoding the next window of row groups when the batches held are out: as
-    /// many row groups as there are threads, within the bytes the prefetcher takes at once.
-    fn next_batch(&mut self) -> Result<Option<RecordBatch>> {
-        while self.ready.is_empty() && !self.groups.is_empty() {
-            let bytes = |g: usize| self.ranges[g].iter().map(|r| r.1).sum::<u64>();
-            let budget = self.prefetch.as_ref().map_or(u64::MAX, |p| p.1);
-            let (mut n, mut total) = (0, 0u64);
-            while n < self.window.min(self.groups.len()) && (n == 0 || total + bytes(self.groups[n]) <= budget) {
-                total += bytes(self.groups[n]);
-                n += 1;
-            }
-            let window: Vec<usize> = self.groups.drain(..n).collect();
-            if let Some((prefetch, _)) = &self.prefetch {
-                let mut ranges: Vec<(u64, u64)> = window.iter().flat_map(|&g| self.ranges[g].iter().copied()).collect();
-                ranges.sort_unstable();
-                let _scope = self.context.enter()?;
-                prefetch(&ranges)?;
-            }
-            let decode = &self.decode;
-            for batches in crate::par::map_range_coarse(n, |i| decode(window[i])) {
-                self.ready.extend(batches?);
-            }
-        }
-        Ok(self.ready.pop_front())
+        let windows = GroupWindows::new(groups.into_iter().map(|g| (g, None)), decode, ranges, prefetch);
+        Ok(Self { schema, windows, failed: false })
     }
 }
 
@@ -274,7 +308,7 @@ impl Iterator for GeoParquetBatches {
         if self.failed {
             return None;
         }
-        match self.next_batch() {
+        match self.windows.next() {
             Ok(b) => b.map(Ok),
             Err(e) => {
                 self.failed = true;
@@ -509,17 +543,46 @@ mod tests {
         let ids: Vec<i64> = got.iter().flat_map(|b| b.column(0).as_any().downcast_ref::<Int64Array>().unwrap().values().to_vec()).collect();
         assert_eq!(ids, (10..=99).collect::<Vec<_>>());
         assert_eq!(got[0].schema().fields().iter().map(|f| f.name().as_str()).collect::<Vec<_>>(), ["id", "geometry"]);
-        let seen = seen.lock().unwrap();
-        assert!(seen.iter().all(Option::is_some), "only range requests");
-        let fetched: usize = seen
-            .iter()
-            .filter_map(|r| {
-                let (a, b) = r.as_deref()?.strip_prefix("bytes=")?.split_once('-')?;
-                Some(b.parse::<usize>().ok()?.min(data.len() - 1) - a.parse::<usize>().ok()? + 1)
-            })
-            .sum();
-        // the footer and one row group's id, covering and geometry chunks
-        assert!(fetched * 5 < data.len(), "{fetched} of {} bytes fetched: {seen:?}", data.len());
+        let fetched = |seen: &[Option<String>]| -> usize {
+            seen.iter()
+                .filter_map(|r| {
+                    let (a, b) = r.as_deref()?.strip_prefix("bytes=")?.split_once('-')?;
+                    Some(b.parse::<usize>().ok()?.min(data.len() - 1) - a.parse::<usize>().ok()? + 1)
+                })
+                .sum()
+        };
+        {
+            let seen = seen.lock().unwrap();
+            assert!(seen.iter().all(Option::is_some), "only range requests");
+            // the footer and one row group's id, covering and geometry chunks
+            assert!(fetched(&seen) * 5 < data.len(), "{} of {} bytes fetched: {seen:?}", fetched(&seen), data.len());
+        }
+
+        // `open_vector` and `open_stream` read a URL in place too, not downloaded whole.
+        let url = format!("{base}/points_by_features.parquet");
+        let ids = |layer: &wbvector::Layer| -> Vec<i64> {
+            layer
+                .features
+                .iter()
+                .map(|f| match f.attributes[0] {
+                    wbvector::FieldValue::Integer(i) => i,
+                    ref v => panic!("{v:?}"),
+                })
+                .collect()
+        };
+        let options = crate::VectorOpenOptions { spatial_filter: Some((10.0, -1.0, 99.5, 1.0)), ..Default::default() };
+        let before = fetched(&seen.lock().unwrap());
+        let layer = crate::config::with_options(&[("TERRIO_HTTP_BLOCK_SIZE", "4096")], || {
+            crate::open_vector(&url, &options).unwrap().layers.remove(0)
+        });
+        let by_open_vector = fetched(&seen.lock().unwrap()) - before;
+        assert_eq!(ids(&layer), (10..=99).collect::<Vec<_>>());
+        assert_eq!(layer.name, "points_by_features");
+        assert!(by_open_vector * 3 < data.len(), "{by_open_vector} of {} bytes fetched by open_vector", data.len());
+        let streamed = crate::config::with_options(&[("TERRIO_HTTP_BLOCK_SIZE", "4096")], || {
+            crate::stream::open_layers(&url, &options, 40).unwrap().remove(0).read_all().unwrap()
+        });
+        assert_eq!(ids(&streamed), ids(&layer));
     }
 
     #[test]

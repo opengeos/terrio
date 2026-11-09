@@ -849,3 +849,30 @@ fn converting_kml_keeps_shared_styles_in_kml_and_resolves_them_elsewhere() {
     let written = std::fs::read_to_string(path("o.geojson")).unwrap();
     assert!(written.contains("PEN(c:#FF0000FF)") && !written.contains("@base"), "{written}");
 }
+
+#[test]
+fn selected_fields_keep_their_order_and_struct_members() {
+    let mut layer = Layer::new("t").with_epsg(4326);
+    for name in ["id", "names.primary", "names.common", "namesake", "height"] {
+        layer.add_field(FieldDef::new(name, FieldType::Text));
+    }
+    for k in 0..3u64 {
+        let attributes = (0..5).map(|i| FieldValue::Text(format!("{k}-{i}"))).collect();
+        layer.push(Feature { fid: k, geometry: Some(Geometry::point(k as f64, 0.0)), attributes });
+    }
+    let reader = |layer: &Layer| {
+        let mut l = layer.clone();
+        let source = MemorySource { features: std::mem::take(&mut l.features).into_iter(), batch: 2 };
+        FeatureReader::new(l, Box::new(source))
+    };
+    // a struct column by its name, its members kept in the layer's order, names without case
+    let mut r = reader(&layer).select_fields(&["HEIGHT".into(), "names".into()]).unwrap();
+    let names: Vec<&str> = r.layer().schema.fields().iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["names.primary", "names.common", "height"]);
+    let chunk = r.read_chunk(DEFAULT_CHUNK).unwrap().unwrap();
+    assert_eq!(chunk.features.len(), 3);
+    assert_eq!(chunk.features[2].attributes, ["2-1", "2-2", "2-4"].map(|v| FieldValue::Text(v.into())));
+    assert_eq!(chunk.features[2].geometry, Some(Geometry::point(2.0, 0.0)));
+    let error = reader(&layer).select_fields(&["nope".into()]).err().unwrap().to_string();
+    assert!(error.contains("nope") && error.contains("namesake"), "{error}");
+}
