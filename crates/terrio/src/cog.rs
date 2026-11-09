@@ -3086,11 +3086,10 @@ mod tests {
         // in; opening one per worker would open one per thread on every one of these 20 reads.
         let most = if threads > 1 { threads } else { 0 };
         assert!(opened(&reader) <= most, "{} decoders opened on {threads} threads", opened(&reader));
-        // Reads of other tests can hold the decode workers meanwhile (a read then decodes alone),
-        // but not through all of these.
-        if threads > 1 {
-            assert!(opened(&reader) >= 1, "reads open decoders for their workers");
-        } else {
+        // No lower bound with several threads: the decode workers are shared by the whole process,
+        // so reads of tests running alongside can hold them all and every read here then decodes
+        // alone, which opens none.
+        if threads == 1 {
             assert_eq!(opened(&reader), 0, "a single thread decodes with the reader's own decoder");
         }
         match &reader.inner {
@@ -3100,8 +3099,8 @@ mod tests {
     }
 
     /// Window reads on several threads at once share one budget of decode workers: never more
-    /// worker threads at a time than `par::threads()` (not that many per read), with the values
-    /// of a read alone.
+    /// worker threads at a time than [`crate::geotiff::decode_worker_limit`] (the cores, or the
+    /// thread count when higher), however many reads start them, with the values of a read alone.
     #[test]
     fn concurrent_window_reads_share_the_decode_workers() {
         // Off, so that every read decodes its chunks and needs the workers.
@@ -3119,7 +3118,7 @@ mod tests {
         };
         crate::write_raster_dataset(&RasterDataset::with_driver(r, RasterDriver::GTiff, false), path.to_str().unwrap(), &options).unwrap();
         let path = path.to_str().unwrap();
-        // 30 x 29 tiles: enough that every read keeps its workers busy at once
+        // 30 x 30 tiles: enough that every read keeps its workers busy at once
         let w = Window::new(3, 5, 470, 460);
         let alone = read_f64(&mut LazyRaster::open(path).unwrap(), w, &[1, 2, 3], None);
         crate::geotiff::LIVE_WORKERS[1].store(0, std::sync::atomic::Ordering::Relaxed);

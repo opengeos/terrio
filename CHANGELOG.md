@@ -7,7 +7,8 @@
   as many as keep the process's total within the machine's cores, and decodes its chunks on its
   own thread when fewer than two are free. 8 threads reading at once on 12 cores could run 96
   decode workers. With 8 or 16 readers on 12 cores, a process takes 66–67% less memory and is
-  6–14% faster; on 4 threads, 32% less memory in the same time. A single reader is unchanged.
+  9–14% faster; with 8 readers on 4 threads, 32% less memory and 2% faster. A single reader is
+  unchanged.
 - A VRT source with fractional `SrcRect` or `DstRect` offsets is read within its rectangles (#702).
   A window with as many source pixels as output pixels was copied one for one whatever its offsets,
   so `bilinear`, `cubic` and `average` returned the source pixels a fraction of a pixel from where
