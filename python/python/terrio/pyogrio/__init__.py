@@ -505,7 +505,6 @@ def _is_geoparquet(path) -> bool:
 @contextlib.contextmanager
 def open_arrow(
     path_or_buffer,
-    /,
     layer=None,
     encoding=None,
     columns=None,
