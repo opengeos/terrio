@@ -1204,9 +1204,10 @@ probe per local open, and probes `.ovr.msk` only when `.ovr` exists. It does
 not decode pixel chunks or probe remote paths. Under
 `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` (or `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`)
 no `.ovr` is attached, and a reduced read takes the GeoTIFF's own pixels
-(`an_ovr_is_not_read_under_empty_dir`); the overview commands still read the `.ovr`
-they manage (`external_overviews_are_refreshed_over_an_extent_under_empty_dir` in
-`raster_manage`).
+(`an_ovr_is_not_read_under_empty_dir`). An external refresh over an extent still
+reads the `.ovr` it refreshes, and no other sidecar (in `raster_manage`:
+`external_overviews_are_refreshed_over_an_extent_under_empty_dir` and
+`external_overviews_refreshed_under_empty_dir_read_no_other_sidecar`).
 
 ```sh
 cargo test -p terrio --test external_overviews --test geotiff_nodata

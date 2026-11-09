@@ -99,6 +99,10 @@ _IN_MEMORY_LIMIT = 512 * 1024 * 1024
 # The drivers of files that can hold subdatasets (several variables or arrays).
 _SUBDATASET_DRIVERS = frozenset({"netCDF", "HDF5", "HDF4", "Zarr", "STACIT", "STACTA", "GPKG"})
 
+# The drivers that read a `.hdr` beside the data: their header, read under
+# `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` too.
+_HEADER_DRIVERS = frozenset({"ENVI", "EHdr"})
+
 
 def _in_memory_limit() -> int:
     """The size above which writers keep their pixels on disk.
@@ -1205,7 +1209,7 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
 
         Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` (or `GDAL_DISABLE_READDIR_ON_OPEN`),
         which keeps them from being read, its `.aux.xml`, `.ovr`, `.msk`, world and RPC files are
-        not listed.
+        not listed, nor a `.hdr` other than an ENVI or EHdr raster's header.
 
         Returns:
             list: The paths.
@@ -1215,6 +1219,7 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
         out = [self.name]
         stem, ext = os.path.splitext(self.name)
         world = "." + ext[1:2] + ext[-1:] + "w" if len(ext) > 2 else ".wld"
+        allowed = _sidecars_allowed(self.name)
         sidecars = (
             [
                 self.name + ".aux.xml",
@@ -1227,10 +1232,11 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
                 stem + ".RPB",
                 stem + ".rpb",
             ]
-            if _sidecars_allowed(self.name)
+            if allowed
             else []
         )
-        sidecars.append(stem + ".hdr")
+        if allowed or self.driver in _HEADER_DRIVERS:
+            sidecars.append(stem + ".hdr")
         for f in sidecars:
             if f not in out and os.path.isfile(f):
                 out.append(f)

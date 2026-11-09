@@ -583,7 +583,8 @@ impl LazyRaster {
 
     /// Attaches the `.ovr` beside a local GeoTIFF that has no overviews of its own, even under
     /// `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, which keeps an ordinary open from reading it:
-    /// for the commands that manage that `.ovr` (`ops::overview`).
+    /// for an external refresh over an extent, which keeps that `.ovr`'s pixels outside it
+    /// (`ops::overview`).
     pub(crate) fn attach_managed_ovr(&mut self, path: &str) {
         if let (Inner::Tiff(t), Location::Local(p)) = (&mut self.inner, Location::parse(path)) {
             let mut ovr = p.into_os_string();

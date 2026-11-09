@@ -405,6 +405,11 @@ pub fn refresh_overviews(path: &str, options: &RefreshOptions) -> Result<Vec<(us
             "'{path}' has internal overviews: its external overviews cannot be refreshed over an extent"
         )));
     }
+    // Otherwise they are the `.ovr`'s, attached under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`
+    // too as the file refreshed (other operations compute every level from the image alone).
+    if options.external && !options.bbox.is_empty() {
+        src.attach_managed_ovr(path);
+    }
     gtiff_update::update_file(&target, move |f| {
         let out = refresh(f, &mut src, options);
         drop(src);
@@ -472,15 +477,13 @@ fn parse_file(path: &std::path::Path) -> Result<Tiff> {
     gtiff_update::parse(&mut std::io::BufReader::new(std::fs::File::open(path)?))
 }
 
-/// Opens a GeoTIFF to compute overviews from (with its `.msk` and `.ovr` sidecars). The `.ovr` is
-/// the file these commands manage, so it is read under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`
-/// too.
+/// Opens a GeoTIFF to compute overviews from (with its `.msk` and `.ovr` sidecars, as any open
+/// reads them).
 fn open_source(path: &str) -> Result<LazyRaster> {
-    let mut r = LazyRaster::open(path)?;
+    let r = LazyRaster::open(path)?;
     if r.driver() != crate::formats::RasterDriver::GTiff || !r.is_lazy() {
         return Err(Error::Unsupported(format!("overviews are managed for GeoTIFFs only, not '{path}'")));
     }
-    r.attach_managed_ovr(path);
     Ok(r)
 }
 

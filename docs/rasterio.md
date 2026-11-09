@@ -54,7 +54,7 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   `.aux.xml` sidecars. Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` (or
   `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`), in the environment or an `Env`, the `.aux.xml`,
   `.ovr`, `.msk`, world and RPC files of a local dataset are not read, and `files` lists none of
-  them.
+  them, nor a `.hdr` other than the header of an ENVI or EHdr raster.
 - **Writing.** Writers (`w`, `w+`, `r+`) hold their pixels in memory and write the file when
   closed: incremental and windowed writes work in any order. Rasters larger than
   `TERRIO_RIO_IN_MEMORY_LIMIT` bytes (512 MB by default) keep their pixels in a temporary file

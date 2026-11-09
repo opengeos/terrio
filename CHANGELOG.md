@@ -7,11 +7,13 @@
   it. They served its reduced reads (`terrio translate --outsize`, a `terrio.rio` read with a
   smaller `out_shape`), so a file placed next to the dataset changed the pixels read (#720). The
   commands that manage an external `.ovr` (`terrio overviews --external`, and the Rust and Python
-  overview functions) still read it under the option.
+  overview functions) still read it under the option; the `.msk`, `.aux.xml` and `.ovr.msk` beside
+  the GeoTIFF still follow the option, as before.
   `terrio.rio` follows both names of the option: under the `TERRIO_` name it still applied an
   `.aux.xml` sidecar's tags, band descriptions, scales, offsets, units, color interpretations and
   nodata, and read RPC sidecars. Under the option, its `files` no longer lists the `.aux.xml`,
-  `.ovr`, `.msk`, world and RPC files, which are not read.
+  `.ovr`, `.msk`, world and RPC files, which are not read, nor a `.hdr` other than the header of an
+  ENVI or EHdr raster.
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000
