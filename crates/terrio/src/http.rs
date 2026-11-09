@@ -3506,9 +3506,9 @@ mod tests {
     /// in the child by a thread it does not have. In a process of its own (`par::alone`).
     ///
     /// Linux only: on macOS a child forked while another thread is in the middle of a remote
-    /// read dies of SIGTRAP (exit by signal 5), as the forked child of a multi-threaded test
-    /// process does in `par`'s tests; the system libraries a read calls (name resolution, proxy
-    /// settings) are not safe to use after a fork that copied them half way through a call.
+    /// read died of SIGTRAP (exit by signal 5) in CI, as the forked child of a multi-threaded test
+    /// process does in `par`'s tests. The cause is not confirmed; a likely one is a system library
+    /// (name resolution, proxy settings) copied half way through a call.
     #[test]
     #[cfg(target_os = "linux")]
     fn a_child_forked_during_remote_reads_reads_remote_files() {
