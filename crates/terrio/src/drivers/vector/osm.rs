@@ -428,7 +428,7 @@ fn relation_feature<'a>(
     }
     let tags: Vec<(&str, &str)> = r.tags.iter().map(|(k, v)| (k.as_ref(), v.as_ref())).collect();
     let interesting = tags.iter().any(|(k, _)| *k != "type" && *k != "created_by");
-    let members: Vec<(&(Member, std::sync::Arc<str>), Option<MemberWay>)> =
+    let members: Vec<_> =
         r.members.iter().filter(|m| m.1.as_ref() != "subarea").map(|m| (m, if let Member::Way(w) = m.0 { way(w) } else { None })).collect();
     match rtype {
         Some("multipolygon" | "boundary") => {
