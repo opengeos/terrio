@@ -133,6 +133,9 @@ fn reads_the_columns_asked_for() {
     assert_eq!(batches(&path("zstd_v1.parquet"), &only(&["VALUE", "BBox.xmin"])).0, ["value", "bbox", "geometry"]);
     let error = open_geoparquet(&path("zstd_v1.parquet"), &only(&["nope"])).unwrap_err().to_string();
     assert!(error.contains("nope"), "{error}");
+    // a struct column with no such member is not a column either
+    let error = open_geoparquet(&path("zstd_v1.parquet"), &only(&["bbox.nope"])).unwrap_err().to_string();
+    assert!(error.contains("bbox.nope"), "{error}");
 }
 
 #[test]
