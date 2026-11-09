@@ -90,12 +90,17 @@ def test_overlapping_reads_take_the_options_the_raster_was_opened_with(tmp_path)
     threads = 8
     start = threading.Barrier(threads, timeout=30)
 
-    def read_mask(_):
+    def read_masks(_):
+        # whole reads make the threads overlap, so spare readers open; masks come from them too
         start.wait()
-        return raster.read_mask()
+        masks = []
+        for _ in range(5):
+            raster.read()
+            masks.append(raster.read_mask())
+        return masks
 
     with ThreadPoolExecutor(threads) as ex:
-        masks = list(ex.map(read_mask, range(threads)))
+        masks = [m for ms in ex.map(read_masks, range(threads)) for m in ms]
     assert len(raster._readers) >= 1, "no read overlapped another"
     for mask in masks:
         assert mask is None or bool((np.asarray(mask) > 0).all())
