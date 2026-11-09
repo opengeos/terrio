@@ -15,6 +15,7 @@ import warnings
 
 import numpy as np
 import pytest
+from affine import Affine
 
 import terrio
 import terrio.rio as rio
@@ -29,6 +30,9 @@ PROFILE = dict(width=50, height=40, count=3, dtype="uint8", crs="EPSG:32611", tr
 # The centre and the corner of pixel (0, 0).
 CENTRE = (500015.0, 4099985.0)
 CORNER = (500000.0, 4100000.0)
+# The corner of pixel (0, 0) in the raster space of a PixelIsPoint file, where (0, 0) is the
+# centre of that pixel: the raster position of a GCP at row 0, column 0, as its tie point.
+CORNER_AS_POINT = [-0.5, -0.5]
 MASK = np.full((40, 50), 255, np.uint8)
 MASK[:5] = 0
 # The warning given when a PixelIsPoint raster has no CRS.
@@ -122,6 +126,33 @@ def test_an_update_keeps_pixel_is_point(tmp_path, point_tif):
     _assert_pixel_is_point(point_tif)
 
 
+@pytest.mark.parametrize(
+    "driver, mask, limit",
+    [("GTiff", False, None), ("GTiff", False, "1000"), ("COG", True, None), ("COG", False, None)],
+    ids=["gtiff-whole", "gtiff-rows", "cog-whole", "cog-rows"],
+)
+def test_pixel_is_point_with_a_crs_and_the_identity_transform_keeps_both(
+    tmp_path, monkeypatch, driver, mask, limit
+):
+    """A raster with a CRS and no georeferencing (the identity transform) is written
+    PixelIsPoint too: the raster-type key beside the CRS's keys, and no tie point, pixel scale or
+    transformation matrix. It reads back with its tag and the identity transform."""
+    if limit:
+        monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", limit)
+    out = tmp_path / "point.tif"
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        _write(out, driver, mask=mask, transform=Affine.identity())
+    assert not [w for w in record if NOT_KEPT in str(w.message)]
+    with rio.open(out) as ds:
+        assert ds.tags()["AREA_OR_POINT"] == "Point"
+        assert ds.transform == Affine.identity() and ds.crs.to_epsg() == 32611
+        assert np.array_equal(ds.read(), PIXELS)
+    tags = terrio._terrio.tiff_tags(str(out))[0]
+    assert _tiff._geokey(tags, 1025) == 2
+    assert not {33550, 33922, 34264} & set(tags)
+
+
 def test_area_stays_pixel_is_area(tmp_path):
     """A new GeoTIFF is PixelIsArea, as is one given `AREA_OR_POINT=Area`: its tie point the
     corner of pixel (0, 0)."""
@@ -209,4 +240,4 @@ def test_gcps_with_a_crs_keep_pixel_is_point_without_a_warning(tmp_path):
         assert [(g.row, g.col, g.x, g.y) for g in read] == [(g.row, g.col, g.x, g.y) for g in gcps]
     tags = terrio._terrio.tiff_tags(str(out))[0]
     assert _tiff._geokey(tags, 1025) == 2
-    assert tags[33922][:2] == [-0.5, -0.5]
+    assert tags[33922][:2] == CORNER_AS_POINT
