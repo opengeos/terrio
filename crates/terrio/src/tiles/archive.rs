@@ -29,6 +29,9 @@ pub struct PmTilesReadLimits {
 /// A PMTiles or MBTiles archive opened for reading tiles.
 pub struct TileArchive {
     inner: Inner,
+    /// The tile format, worked out on first use (for an MBTiles archive without a `format`
+    /// item, by reading a tile).
+    format: std::sync::OnceLock<TileFormat>,
     /// Keeps a local copy (of an archive member) alive.
     _local: Option<crate::vfs::LocalPath>,
 }
@@ -62,8 +65,9 @@ impl TileArchive {
     ///
     /// On native builds a local MBTiles file is mapped into memory, as GeoPackages are. It must
     /// not be changed or truncated until the archive is dropped: a tile read from a file
-    /// truncated by another process ends the process with `SIGBUS`. Replace such a file by
-    /// renaming a new one over it, which leaves the open file intact.
+    /// truncated by another process ends the process with `SIGBUS`. On Unix, replace such a file
+    /// by renaming a new one over it, which leaves the open file intact; Windows does not let a
+    /// mapped file be replaced or deleted until the archive is dropped.
     pub fn open(path: &str) -> Result<Self> {
         Self::open_judged(path, Some(&EITHER_KIND))
     }
@@ -83,7 +87,11 @@ impl TileArchive {
             Some(ArchiveKind::MBTiles) => {
                 check_archive_driver("MBTiles", path, kinds.unwrap_or_default())?;
                 let local = crate::vfs::resolve(path)?;
-                Ok(Self { inner: Inner::Mb(Box::new(mbtiles::MbTiles::open(local.path())?)), _local: Some(local) })
+                Ok(Self {
+                    inner: Inner::Mb(Box::new(mbtiles::MbTiles::open(local.path())?)),
+                    format: Default::default(),
+                    _local: Some(local),
+                })
             }
             _ => {
                 let (mut source, local) = ByteSource::open(path)?;
@@ -94,10 +102,14 @@ impl TileArchive {
                     // the MBTiles driver is allowed, by the list of each kind it serves.
                     check_archive_driver("MBTiles", path, kinds.unwrap_or(&EITHER_KIND))?;
                     let local = crate::vfs::resolve(path)?;
-                    return Ok(Self { inner: Inner::Mb(Box::new(mbtiles::MbTiles::open(local.path())?)), _local: Some(local) });
+                    return Ok(Self {
+                        inner: Inner::Mb(Box::new(mbtiles::MbTiles::open(local.path())?)),
+                        format: Default::default(),
+                        _local: Some(local),
+                    });
                 }
                 check_archive_driver("PMTiles", path, kinds.unwrap_or_default())?;
-                Ok(Self { inner: Inner::Pm(Box::new(pmtiles::Reader::open(source)?)), _local: local })
+                Ok(Self { inner: Inner::Pm(Box::new(pmtiles::Reader::open(source)?)), format: Default::default(), _local: local })
             }
         }
     }
@@ -113,10 +125,10 @@ impl TileArchive {
     pub(crate) fn from_bytes_judged(bytes: Vec<u8>, kinds: &[crate::formats::Kind]) -> Result<Self> {
         if bytes.starts_with(b"SQLite format 3\0") {
             check_archive_driver("MBTiles", "an archive in memory", kinds)?;
-            return Ok(Self { inner: Inner::Mb(Box::new(mbtiles::MbTiles::from_bytes(bytes)?)), _local: None });
+            return Ok(Self { inner: Inner::Mb(Box::new(mbtiles::MbTiles::from_bytes(bytes)?)), format: Default::default(), _local: None });
         }
         check_archive_driver("PMTiles", "an archive in memory", kinds)?;
-        Ok(Self { inner: Inner::Pm(Box::new(pmtiles::Reader::open(ByteSource::Memory(bytes))?)), _local: None })
+        Ok(Self { inner: Inner::Pm(Box::new(pmtiles::Reader::open(ByteSource::Memory(bytes))?)), format: Default::default(), _local: None })
     }
 
     /// Opens a remote PMTiles archive whose bytes the caller fetches (see [`crate::sparse`]):
@@ -133,7 +145,11 @@ impl TileArchive {
     /// whole archive. Brotli remains unsupported. Limits are retained for later leaf/tile reads.
     pub fn from_sparse_with_limits(file: crate::sparse::SparseFile, limits: PmTilesReadLimits) -> Result<Self> {
         check_archive_driver("PMTiles", "a remote archive", &EITHER_KIND)?;
-        Ok(Self { inner: Inner::Pm(Box::new(pmtiles::Reader::open_with_limits(ByteSource::Sparse(file), limits)?)), _local: None })
+        Ok(Self {
+            inner: Inner::Pm(Box::new(pmtiles::Reader::open_with_limits(ByteSource::Sparse(file), limits)?)),
+            format: Default::default(),
+            _local: None,
+        })
     }
 
     /// The archive as a dataset: a raster for image tiles (at the zoom level of `options.tiles`),
@@ -163,6 +179,10 @@ impl TileArchive {
 
     /// The tiles' format.
     pub fn format(&self) -> TileFormat {
+        *self.format.get_or_init(|| self.sniff_format())
+    }
+
+    fn sniff_format(&self) -> TileFormat {
         match &self.inner {
             Inner::Pm(r) => match r.header.tile_type {
                 pmtiles::TILE_MVT => TileFormat::Mvt,

@@ -463,9 +463,10 @@ fn spellings(id: &Value, numeric: bool) -> Vec<Value> {
                 out.push(Value::Text(f.to_string()));
             }
         }
-        Value::Text(s) if numeric => match s.parse::<i64>() {
+        // SQLite's numeric conversion ignores surrounding spaces, as `Images::rowid` does.
+        Value::Text(s) if numeric => match s.trim().parse::<i64>() {
             Ok(i) => out.extend([Value::Int(i), Value::Real(i as f64)]),
-            Err(_) => out.extend(s.parse::<f64>().ok().filter(|f| f.is_finite()).map(Value::Real)),
+            Err(_) => out.extend(s.trim().parse::<f64>().ok().filter(|f| f.is_finite()).map(Value::Real)),
         },
         _ => {}
     }
@@ -622,6 +623,7 @@ mod tests {
         let real: fn(i64) -> W = |i| W::Real(i as f64);
         let real_text: fn(i64) -> W = |i| W::Text(format!("{i}.0"));
         let int_text = real_text;
+        let padded: fn(i64) -> W = |i| W::Text(format!(" {i} "));
         let view = writer::SchemaObject {
             kind: "view",
             name: "tiles".into(),
@@ -630,7 +632,7 @@ mod tests {
         };
         // (map SQL, images SQL, images' automatic indexes, map's ids, images' ids)
         type Case = (&'static str, &'static str, Vec<Vec<usize>>, fn(i64) -> W, fn(i64) -> W);
-        let cases: [Case; 10] = [
+        let cases: [Case; 12] = [
             (
                 "CREATE TABLE map (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_id TEXT, UNIQUE (zoom_level, tile_column, tile_row))",
                 "CREATE TABLE images (tile_data BLOB, tile_id TEXT UNIQUE)",
@@ -705,6 +707,21 @@ mod tests {
                 real_text,
                 |_| W::Null,
             ),
+            // Padded text ids, taken as numbers by a numeric column, by index and by scan.
+            (
+                "CREATE TABLE map (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_id TEXT)",
+                "CREATE TABLE images (tile_data BLOB, tile_id INTEGER UNIQUE)",
+                vec![vec![1]],
+                padded,
+                int,
+            ),
+            (
+                "CREATE TABLE map (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_id TEXT)",
+                "CREATE TABLE images (tile_data BLOB, tile_id INTEGER)",
+                vec![],
+                padded,
+                int,
+            ),
         ];
         for (map_sql, images_sql, image_index, map_id, image_id) in cases {
             let map_auto = reader::autoindex_columns(map_sql);
@@ -777,6 +794,9 @@ mod tests {
             (2, vec![W::Int(1), W::Int(0), W::Int(1), W::Blob(vec![2])]),
             (3, vec![W::Int(1), W::Real(1.0), W::Int(1), W::Blob(vec![3])]),
             (4, vec![W::Int(1), W::Real(0.5), W::Int(0), W::Blob(vec![4])]),
+            // A later row of a key without bytes hides an earlier one with them.
+            (5, vec![W::Int(1), W::Int(1), W::Int(0), W::Blob(vec![5])]),
+            (6, vec![W::Int(1), W::Int(1), W::Int(0), W::Null]),
         ];
         let index = writer::Index {
             name: "tile_index".into(),
@@ -792,7 +812,8 @@ mod tests {
             assert_eq!(m.tile(1, 0, 0).unwrap(), Some(vec![2]));
             assert_eq!(m.tile(1, 1, 0).unwrap(), Some(vec![3]));
             assert_eq!(m.tile(1, 0, 1).unwrap(), None);
-            assert_eq!(m.tiles_at_zoom(1).unwrap(), vec![(0, 0), (1, 0)]);
+            assert_eq!(m.tile(1, 1, 1).unwrap(), None);
+            assert_eq!(m.tiles_at_zoom(1).unwrap(), vec![(0, 0), (1, 0), (1, 1)]);
         }
     }
 
