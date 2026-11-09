@@ -1294,7 +1294,7 @@ except Exception as e:
     outcome = f"{type(e).__name__}: {e}".replace(name, "<name>")
 print(json.dumps([terrio.allowed_drivers("raster"), outcome]))
 """
-MEM_REFUSED = "RasterioIOError: <name>: '<name>': the MEM driver is not allowed (allowed: )"
+MEM_REFUSED = "RasterioIOError: <name>: '<name>': the MEM driver is not allowed (allowed: none)"
 
 
 @pytest.mark.parametrize(

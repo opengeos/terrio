@@ -748,6 +748,7 @@ pub fn allowed_drivers(kind: Option<Kind>) -> Option<Vec<String>> {
         Some(_) => None,
         None => allowed_by_every_kind(&lists),
     };
+    // The environment's list applies under a scope too, so it is read again after the scope's.
     let option = [crate::config::get_including_empty(ALLOWED_DRIVERS_OPTION), std::env::var(ALLOWED_DRIVERS_OPTION).ok()]
         .into_iter()
         .flatten()
@@ -1285,6 +1286,11 @@ fn opened_as_tiff_by_content(id: &Identified, allowed: &[String]) -> bool {
         && !id.by_name.iter().any(|d| BY_NAME.contains(&d.as_str()))
 }
 
+/// An allowed list as a refusal names it: `none` for a list that allows nothing.
+pub(crate) fn allowed_text(allowed: &[String]) -> String {
+    if allowed.is_empty() { "none".to_string() } else { allowed.join(", ") }
+}
+
 /// [`check_drivers`] on what [`identify`] or [`identify_bytes`] found for `path`.
 fn check_identified(path: &str, id: &Identified, allowed: &[String]) -> crate::Result<()> {
     let allowed: Vec<String> = allowed.iter().map(|n| canonical_driver_name(n)).collect();
@@ -1293,7 +1299,7 @@ fn check_identified(path: &str, id: &Identified, allowed: &[String]) -> crate::R
         return Err(crate::Error::Unsupported(format!(
             "'{shown}': the {} driver is not allowed (allowed: {})",
             id.by_name.join("/"),
-            allowed.join(", ")
+            allowed_text(&allowed)
         )));
     }
     if let Some(content) = &id.by_content
@@ -1301,7 +1307,7 @@ fn check_identified(path: &str, id: &Identified, allowed: &[String]) -> crate::R
     {
         return Err(crate::Error::Unsupported(format!(
             "'{shown}' holds {content} data, and the {content} driver is not allowed (allowed: {})",
-            allowed.join(", ")
+            allowed_text(&allowed)
         )));
     }
     if id.by_name.is_empty() && id.by_content.is_none() {
@@ -1336,7 +1342,7 @@ pub fn check_driver_allowed(driver: &str, path: &str, kind: Kind) -> crate::Resu
             let shown = path.split(['?', '#']).next().unwrap_or(path);
             Err(crate::Error::Unsupported(format!(
                 "'{shown}' holds {driver} data, and the {driver} driver is not allowed (allowed: {})",
-                list.join(", ")
+                allowed_text(&list)
             )))
         }
         _ => Ok(()),
@@ -1391,7 +1397,7 @@ fn check_query_readable(path: &str, kind: Option<Kind>, allowed: &[String]) -> c
     Err(crate::Error::Unsupported(format!(
         "'{shown}': the drivers that read its answer ({}{or_raster}) are not allowed (allowed: {})",
         readers.join(", "),
-        allowed.join(", ")
+        allowed_text(allowed)
     )))
 }
 
@@ -1602,7 +1608,7 @@ mod allow_list_tests {
         for value in ["", " ", ",", " , "] {
             assert_eq!(scoped(Some(value)), Some(Vec::new()), "{value:?}");
             let refused = crate::config::with_options(&[(ALLOWED_DRIVERS_OPTION, value)], || check_allowed(&tif, Some(Kind::Raster)));
-            assert!(refused.is_err_and(|e| e.to_string().contains("not allowed")), "{value:?}");
+            assert!(refused.is_err_and(|e| e.to_string().ends_with("driver is not allowed (allowed: none)")), "{value:?}");
         }
         assert_eq!(scoped(None), None, "unset, it restricts nothing");
     }
