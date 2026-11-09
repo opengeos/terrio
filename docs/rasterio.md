@@ -51,7 +51,10 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
 - **Metadata.** Profiles, tags, band descriptions, scales, offsets, units, color interpretation,
   color tables, block shapes, overviews and mask flags are read from the TIFF tags as GDAL reads
   them (`GDAL_METADATA`, `GDAL_NODATA`, `TIFFTAG_*` items, the `IMAGE_STRUCTURE` domain), and from
-  `.aux.xml` sidecars.
+  `.aux.xml` sidecars. Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` (or
+  `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`), in the environment or an `Env`, the `.aux.xml`,
+  `.ovr`, `.msk`, world and RPC files of a local dataset are not read, and `files` lists none of
+  them, nor a `.hdr` other than the header of an ENVI or EHdr raster.
 - **Writing.** Writers (`w`, `w+`, `r+`) hold their pixels in memory and write the file when
   closed: incremental and windowed writes work in any order. Rasters larger than
   `TERRIO_RIO_IN_MEMORY_LIMIT` bytes (512 MB by default) keep their pixels in a temporary file
@@ -92,7 +95,7 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
 
 | Module | Covered |
 |---|---|
-| `rio.open` | modes `r`, `r+`, `w`, `w+`; paths, `pathlib.Path`, URLs, file objects, `MemoryFile`; creation options as keywords |
+| `rio.open` | modes `r`, `r+`, `w`, `w+`; paths, `pathlib.Path`, URLs, file objects, `MemoryFile`; creation options as keywords; for writing, the driver of the extension when none is given (`driver_from_extension`: `JP2OpenJPEG` for `.jp2`), and the names of JPEG 2000 drivers for terrio's `JP2` |
 | datasets | `name`, `mode`, `closed`, `driver`, `width`, `height`, `count`, `shape`, `dtypes`, `nodata`, `nodatavals`, `crs`, `transform`, `bounds`, `res`, `profile`, `meta`, `indexes`, `block_shapes`, `block_windows`, `block_window`, `overviews()`, `tags()`, `update_tags`, `descriptions`, `set_band_description`, `colorinterp`, `colormap`, `write_colormap`, `scales`, `offsets`, `units`, `set_band_unit`, `mask_flag_enums`, `compression`, `interleaving`, `photometric`, `read` (`indexes`, `window`, `out`, `out_shape`, `resampling`, `masked`, `boundless`, `fill_value`, `out_dtype`), `read_masks`, `dataset_mask`, `write` (`indexes`, `window`, masked arrays), `write_mask`, `sample`, `index`, `xy`, `window`, `window_transform`, `window_bounds`, `build_overviews`, `statistics`, `stats`, `checksum`, `lnglat`, `close` |
 | `rio.crs` | `CRS.from_epsg`, `from_string`, `from_wkt`, `from_proj4`, `from_dict`, `from_user_input`, `from_authority`; `to_epsg`, `to_authority`, `to_wkt`, `to_string`, `to_proj4`, `to_dict`; `is_geographic`, `is_projected`, `is_valid`, `linear_units`, `linear_units_factor`, `units_factor`; equality with CRSs, strings and codes |
 | `rio.transform` | `Affine`, `from_origin`, `from_bounds`, `from_gcps`, `array_bounds`, `rowcol`, `xy` (affine transforms, GCPs or RPCs, with `rpc_options`), `AffineTransformer`, `GCPTransformer`, `RPCTransformer` (context manager, `close`, `closed`), `get_transformer`, `guard_transform`, `IDENTITY` |

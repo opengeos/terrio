@@ -11,6 +11,38 @@
   `gray, undefined, undefined` as RGB. These bands are still red, green and blue by default, and
   a COG writer, or one in YCbCr, now reports that before the file is written. Other GeoTIFFs and
   COGs are written as before.
+- Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, or its other name
+  `GDAL_DISABLE_READDIR_ON_OPEN`, a local GeoTIFF no longer takes overviews from an `.ovr` beside
+  it. They served its reduced reads (`terrio translate --outsize`, a `terrio.rio` read with a
+  smaller `out_shape`), so a file placed next to the dataset changed the pixels read (#720). The
+  commands that manage an external `.ovr` (`terrio overviews --external`, and the Rust and Python
+  overview functions) still read it under the option; the `.msk`, `.aux.xml` and `.ovr.msk` beside
+  the GeoTIFF still follow the option, as before.
+  `terrio.rio` follows both names of the option: under the `TERRIO_` name it still applied an
+  `.aux.xml` sidecar's tags, band descriptions, scales, offsets, units, color interpretations and
+  nodata, and read RPC sidecars. Under the option, its `files` no longer lists the `.aux.xml`,
+  `.ovr`, `.msk`, world and RPC files, which are not read, nor a `.hdr` other than the header of an
+  ENVI or EHdr raster.
+- `terrio.rio` writes JPEG 2000 to a `.jp2` path opened for writing without a driver:
+  `driver_from_extension` names the driver `JP2OpenJPEG`, which `open(..., "w")`,
+  `shutil.copy` and `terrio.xarray`'s `to_raster` refused in 0.8.0 (`DriverCapabilityError`,
+  `DriverRegistrationError`). Their driver names are now read as the driver allow-list reads
+  them, so `JP2OpenJPEG`, `JPEG2000`, `JP2KAK`, `JP2ECW` and `JP2MrSID` write terrio's JP2, as
+  `MemoryFile` already did with `JP2OpenJPEG`; the file reads back with `driver == "JP2"`.
+  `terrio.rio`'s writers still refuse a name with whitespace around it. The other writers (`-f`
+  on the command line, `Raster.write(driver=...)`) read names the same way, without the
+  whitespace around them: `JP2MrSID`, the one of these names they refused, now selects JP2.
+- A polar stereographic CRS on an ellipsoid projects the pole it is centred on to its false
+  origin, and refuses the opposite pole. In 0.8.0 its own pole failed to project, and the opposite
+  pole, which no coordinates represent, came out about 10²³ m away: EPSG:3413, 3031, 32661 and the
+  other ellipsoidal polar stereographic CRSs, of variants A and B (spherical ones were right). A
+  `sum` into a longitude and latitude grid whose edge is the pole now writes the row along it: from
+  10,000 km of 10 km EPSG:3413 pixels centred on the North Pole into 1° pixels from 80° N to
+  90° N, none of the 360 pixels along the pole was written, and the grid held 36,675.8 of the
+  37,044.5 it now holds (1% less). The longitude and latitude grid suggested for a raster that
+  covers its pole now reaches the North Pole exactly, over every longitude, and reaches the South
+  Pole to within one pixel, as its height rounds down: for the same raster, it spanned 30.5° N to
+  46.0° N, and now 30.4° N to 90° N.
 - `terrio.rio` keeps a PixelIsPoint raster (`AREA_OR_POINT=Point`) PixelIsPoint when it writes a
   GeoTIFF or COG. `shutil.copy`, a writer given `update_tags(AREA_OR_POINT="Point")`, an `r+`
   update of a PixelIsPoint GeoTIFF and `terrio.xarray`'s `to_raster` wrote it as PixelIsArea in
