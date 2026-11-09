@@ -228,6 +228,37 @@ fn converts_as_streams_like_whole_conversions() {
     }
 }
 
+/// A conversion of GeoParquet with `-select` reads only the selected columns, and writes what a
+/// whole conversion writes: fields in the selection's order (into a GeoParquet output too, whose
+/// writer profiles the values), and `-where` on a field left out still filters.
+#[test]
+fn geoparquet_selections_convert_like_whole_conversions() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src.parquet").to_string_lossy().into_owned();
+    crate::write_vector(&[sample(300)], &src, &Default::default()).unwrap();
+    let selections = [
+        VectorTranslateOptions { select: Some(vec!["d".into(), "I".into()]), ..Default::default() },
+        VectorTranslateOptions { select: Some(vec!["d".into()]), where_clause: Some("i > 100".into()), ..Default::default() },
+    ];
+    for translate in selections {
+        for ext in ["parquet", "geojson"] {
+            let streamed = dir.path().join(format!("s.{ext}")).to_string_lossy().into_owned();
+            let whole = dir.path().join(format!("w.{ext}")).to_string_lossy().into_owned();
+            let options = ConvertOptions { translate: translate.clone(), chunk_size: 16, ..Default::default() };
+            convert(&src, &streamed, &options).unwrap();
+            let layers =
+                crate::ops::vector_filter::translate(&crate::open_vector(&src, &Default::default()).unwrap().layers, &translate).unwrap();
+            crate::write_vector(&layers, &whole, &Default::default()).unwrap();
+            let a = crate::open_vector(&whole, &Default::default()).unwrap().layers.remove(0);
+            let b = crate::open_vector(&streamed, &Default::default()).unwrap().layers.remove(0);
+            let names = |l: &Layer| l.schema.fields().iter().map(|f| f.name.clone()).collect::<Vec<_>>();
+            assert_eq!(names(&b), names(&a), "{ext} {:?}", translate.select);
+            assert!(!a.features.is_empty() && a.features.len() <= 300, "{ext}");
+            same_content(&a, &b);
+        }
+    }
+}
+
 /// Shapefiles read as streams (a batch of records read, then decoded in parallel) are those read
 /// whole: past a batch, and with fewer shapes than records or fewer records than shapes.
 #[test]
@@ -848,4 +879,31 @@ fn converting_kml_keeps_shared_styles_in_kml_and_resolves_them_elsewhere() {
     convert(&path("a.kml"), &path("o.geojson"), &Default::default()).unwrap();
     let written = std::fs::read_to_string(path("o.geojson")).unwrap();
     assert!(written.contains("PEN(c:#FF0000FF)") && !written.contains("@base"), "{written}");
+}
+
+#[test]
+fn selected_fields_keep_their_order_and_struct_members() {
+    let mut layer = Layer::new("t").with_epsg(4326);
+    for name in ["id", "names.primary", "names.common", "namesake", "height"] {
+        layer.add_field(FieldDef::new(name, FieldType::Text));
+    }
+    for k in 0..3u64 {
+        let attributes = (0..5).map(|i| FieldValue::Text(format!("{k}-{i}"))).collect();
+        layer.push(Feature { fid: k, geometry: Some(Geometry::point(k as f64, 0.0)), attributes });
+    }
+    let reader = |layer: &Layer| {
+        let mut l = layer.clone();
+        let source = MemorySource { features: std::mem::take(&mut l.features).into_iter(), batch: 2 };
+        FeatureReader::new(l, Box::new(source))
+    };
+    // a struct column by its name, its members kept in the layer's order, names without case
+    let mut r = reader(&layer).select_fields(&["HEIGHT".into(), "names".into()]).unwrap();
+    let names: Vec<&str> = r.layer().schema.fields().iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["names.primary", "names.common", "height"]);
+    let chunk = r.read_chunk(DEFAULT_CHUNK).unwrap().unwrap();
+    assert_eq!(chunk.features.len(), 3);
+    assert_eq!(chunk.features[2].attributes, ["2-1", "2-2", "2-4"].map(|v| FieldValue::Text(v.into())));
+    assert_eq!(chunk.features[2].geometry, Some(Geometry::point(2.0, 0.0)));
+    let error = reader(&layer).select_fields(&["nope".into()]).err().unwrap().to_string();
+    assert!(error.contains("nope") && error.contains("namesake"), "{error}");
 }

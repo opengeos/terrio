@@ -853,6 +853,13 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
             Dataset::Raster(_) => Err(Error::Unsupported(format!("'{path}' holds raster tiles, not vector tiles"))),
         };
     }
+    // A remote GeoParquet file is read in place, by range requests, not downloaded whole.
+    #[cfg(all(remote, feature = "parquet"))]
+    if let Some(stream) = crate::drivers::vector::geoparquet::open_remote(path, options.spatial_filter, 65536)? {
+        let mut layers = select_layers(vec![stream.read_all()?], path, options)?;
+        layers.iter_mut().for_each(|l| options.keep_range(l));
+        return Ok(finish_vector(layers, path, VectorDriver::Parquet));
+    }
     let local = vfs::resolve(path)?;
     match open_local(local.as_str(), options)? {
         Dataset::Vector(v) => Ok(v),
