@@ -264,9 +264,11 @@ pub fn geoparquet_row_groups_sparse(file: &crate::sparse::SparseFile) -> crate::
 #[cfg(feature = "parquet")]
 #[cfg_attr(docsrs, doc(cfg(feature = "parquet")))]
 /// Reads a remote GeoParquet file whose bytes the caller fetches (see [`crate::sparse`]): the
-/// rows of `row_groups` (all by default) whose bounding box intersects `bbox`, reading only the
-/// column chunks of those row groups. Feature ids are the row numbers in the file, as in GDAL.
-/// `name` is the file name, whose stem names the layer.
+/// rows of `row_groups` (all by default) whose bounding box intersects `bbox`, with the fields
+/// `columns` names (all by default; matched as [`crate::stream::FeatureReader::select_fields`]
+/// matches them), reading only the column chunks of those row groups, fields and the geometry.
+/// Feature ids are the row numbers in the file, as in GDAL. `name` is the file name, whose stem
+/// names the layer.
 ///
 /// Reads fail until the bytes they need are fetched, and are then run again.
 pub fn read_geoparquet_sparse(
@@ -274,10 +276,11 @@ pub fn read_geoparquet_sparse(
     name: &str,
     row_groups: Option<&[usize]>,
     bbox: Option<(f64, f64, f64, f64)>,
+    columns: Option<&[String]>,
 ) -> crate::Result<Layer> {
     crate::formats::check_driver_allowed("Parquet", name, crate::formats::Kind::Vector)?;
     let stem = std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
-    let layer = crate::drivers::vector::geoparquet::read_sparse(file, stem, row_groups, bbox)?;
+    let layer = crate::drivers::vector::geoparquet::read_sparse(file, stem, row_groups, bbox, columns)?;
     Ok(crate::dataset::fix_layer(layer, name, crate::formats::VectorDriver::Parquet))
 }
 
