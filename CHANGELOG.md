@@ -6,6 +6,8 @@
   their column chunks from a URL: `open_stream(columns=...)`, `terrio convert --select` (without
   `--where` or `--sql`, which may name other fields), and JavaScript's `openUrl(...).read()`,
   which takes `columns` too.
+  Breaking (Rust): `terrio::vector::read_geoparquet_sparse` takes a fifth argument, `columns`;
+  pass `None` to read every field, as before.
 - GeoParquet reads decode row groups in parallel, a window of as many as there are threads at a
   time, and read remote files in place: `open_vector` and `open_stream` on a URL fetch the footer,
   then only the column chunks of the row groups the filter keeps, by range requests, instead of
