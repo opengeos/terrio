@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A feature-service query URL (`f=json`, `f=pjson`, `f=pbf` or `resultRecordCount=`) or a WFS
+  `GetFeature` URL whose name points to no driver is refused before any request when no allowed
+  driver (`set_allowed_drivers`, `TERRIO_ALLOWED_DRIVERS`) could read its answer: for `open_vector`
+  and `list_layers`, none of the ESRIJSON, ESRIPBF, GeoJSON and GML drivers (nor GDAL, with the
+  `gdal` feature); for `open` and `info`, which read a raster answer as a raster, no raster driver
+  either. They requested it and read the start of its answer (6,000 bytes for a feature-service
+  query) before refusing it (#722). Otherwise the answer is requested and checked against what it
+  holds, as before.
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000

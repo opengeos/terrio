@@ -1285,7 +1285,12 @@ fn check_identified(path: &str, id: &Identified, allowed: &[String]) -> crate::R
 /// readers dispatch by extension) refusing a name that points to a driver the list leaves out.
 pub(crate) fn check_allowed(path: &str, kind: Option<Kind>) -> crate::Result<()> {
     match allowed_drivers(kind) {
-        Some(list) => check_identified(path, &identify(path), &list),
+        Some(list) => {
+            // Before `identify`, which requests the start of a query's answer.
+            #[cfg(remote)]
+            check_query_readable(path, kind, &list)?;
+            check_identified(path, &identify(path), &list)
+        }
         None => Ok(()),
     }
 }
@@ -1306,6 +1311,58 @@ pub fn check_driver_allowed(driver: &str, path: &str, kind: Kind) -> crate::Resu
         }
         _ => Ok(()),
     }
+}
+
+/// The drivers `dataset::open_query` reads the answer to a feature-service query or a WFS
+/// GetFeature request with.
+#[cfg(remote)]
+const QUERY_ANSWER_DRIVERS: [VectorDriver; 4] = [VectorDriver::ESRIJSON, VectorDriver::ESRIPBF, VectorDriver::GeoJSON, VectorDriver::GML];
+
+/// Whether `allowed` lists `driver`.
+#[cfg(remote)]
+fn lists(allowed: &[String], driver: &str) -> bool {
+    allowed.iter().any(|a| canonical_driver_name(a) == canonical_driver_name(driver))
+}
+
+/// Whether the allowed vector drivers have one of [`QUERY_ANSWER_DRIVERS`]: without one,
+/// `dataset::open_query` could only refuse what a query answers.
+#[cfg(remote)]
+pub(crate) fn query_answer_allowed() -> bool {
+    allowed_drivers(Some(Kind::Vector)).is_none_or(|list| QUERY_ANSWER_DRIVERS.iter().any(|d| lists(&list, d.name())))
+}
+
+/// Refuses a feature-service query or WFS GetFeature URL whose name points to no driver before
+/// [`identify`] requests the start of its answer, when `allowed` has no driver that could read the
+/// answer: none of [`QUERY_ANSWER_DRIVERS`], not the GDAL backend's (with the `gdal` feature it
+/// reads what they do not), and, for a dataset of any kind (`kind` `None`), no raster driver, as a
+/// raster answer is read as a raster. A raster open is left to identification.
+#[cfg(remote)]
+fn check_query_readable(path: &str, kind: Option<Kind>, allowed: &[String]) -> crate::Result<()> {
+    let url = path.trim();
+    let Named::Name(location, by_name) = named_drivers(url) else { return Ok(()) };
+    let query = crate::drivers::vector::featureservice::is_query_url(url) || crate::drivers::vector::wfs::is_feature_request(url);
+    if !query || !by_name.is_empty() || location.remote().is_none() {
+        return Ok(());
+    }
+    let mut readers: Vec<&str> = QUERY_ANSWER_DRIVERS.iter().map(|d| d.name()).collect();
+    if cfg!(feature = "gdal") {
+        readers.push(VectorDriver::Gdal.name());
+    }
+    let raster = match kind {
+        Some(Kind::Vector) => false,
+        None => RasterDriver::ALL.iter().any(|d| lists(allowed, d.info().name)),
+        Some(_) => return Ok(()),
+    };
+    if raster || readers.iter().any(|name| lists(allowed, name)) {
+        return Ok(());
+    }
+    let shown = url.split(['?', '#']).next().unwrap_or(url);
+    let or_raster = if kind.is_none() { ", or any raster driver" } else { "" };
+    Err(crate::Error::Unsupported(format!(
+        "'{shown}': the drivers that read its answer ({}{or_raster}) are not allowed (allowed: {})",
+        readers.join(", "),
+        allowed.join(", ")
+    )))
 }
 
 /// [`check_allowed`] for a dataset given as bytes, by its name and its first bytes.
@@ -1553,6 +1610,48 @@ mod allow_list_tests {
         assert!(!both.contains(&"GPKG".to_string()), "the vector list drops GPKG");
         assert!(!both.contains(&"MEM".to_string()), "a name of neither kind needs both lists");
         assert_eq!(allowed_by_every_kind(&[None, None]), None);
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn a_query_is_refused_unrequested_only_when_no_allowed_driver_could_read_its_answer() {
+        let refused = |path: &str, kind: Option<Kind>, allowed: &[&str]| {
+            let allowed: Vec<String> = allowed.iter().map(|name| canonical_driver_name(name)).collect();
+            check_query_readable(path, kind, &allowed).is_err_and(|e| e.to_string().contains("the drivers that read its answer"))
+        };
+        for url in [
+            "https://example.com/FeatureServer/0/query?where=1%3D1&f=json",
+            "https://example.com/FeatureServer/0/query?f=pbf",
+            "https://example.com/MapServer/0/query?resultRecordCount=10",
+            "https://example.com/wfs?service=WFS&request=GetFeature&typeNames=x",
+        ] {
+            for driver in ["ESRIJSON", "ESRIPBF", "GeoJSON", "GML"] {
+                assert!(!refused(url, Some(Kind::Vector), &[driver]), "{url} with {driver}");
+                assert!(!refused(url, None, &[driver]), "{url} with {driver}, any kind");
+            }
+            for allowed in [&[][..], &["ESRI Shapefile", "FlatGeobuf", "WFS", "OAPIF"][..]] {
+                assert!(refused(url, Some(Kind::Vector), allowed), "{url} with {allowed:?}");
+                assert!(refused(url, None, allowed), "{url} with {allowed:?}, any kind");
+            }
+            // A dataset of any kind reads a raster answer as a raster; a raster open is left to
+            // identification.
+            assert!(refused(url, Some(Kind::Vector), &["GTiff"]), "{url} with GTiff");
+            assert!(!refused(url, None, &["GTiff"]), "{url} with GTiff, any kind");
+            assert!(!refused(url, Some(Kind::Raster), &[]), "{url}, a raster");
+            // The GDAL backend reads what the query drivers do not.
+            assert_eq!(refused(url, Some(Kind::Vector), &["GDAL"]), !cfg!(feature = "gdal"), "{url} with GDAL");
+        }
+        // A name that points to a driver is judged by it, and other URLs and local files by their
+        // content.
+        for path in [
+            "ESRIJSON:https://example.com/FeatureServer/0/query?f=json",
+            "https://example.com/layer.fgb?f=json",
+            "https://example.com/collections/x/items?f=json",
+            "https://example.com/data",
+            "/data/x?service=WFS&request=GetFeature",
+        ] {
+            assert!(!refused(path, Some(Kind::Vector), &[]), "{path}");
+        }
     }
 }
 
