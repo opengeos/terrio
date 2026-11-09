@@ -1008,8 +1008,13 @@ pub(crate) type Reopen<'a, D> = &'a (dyn Fn() -> crate::Result<tiff::decoder::De
 ///
 /// Opening a decoder makes the `tiff` crate read the chunk offset and byte count tables of its
 /// image whole, which costs as much as the image has chunks, whatever the window. A worker thus
-/// takes a decoder that an earlier read left, on the image it read, and opens one only when none
-/// is left. At most [`crate::par::threads`] decoders are kept, each with its image's tables.
+/// takes a decoder that an earlier read left, one on its own image first, and opens one only when
+/// none is left. A decoder taken from another image moves to the worker's image and reads its
+/// tables again, so reads that alternate between images save the opening but not the tables.
+///
+/// A decoder is opened only while all the others are busy, so the pool grows to the workers of the
+/// widest read so far and never past [`crate::par::threads`]. Each kept decoder holds the tables of
+/// its image, 16 bytes a chunk, until the raster is closed.
 pub(crate) struct DecoderPool<D: Read + Seek> {
     spare: std::sync::Mutex<Vec<(usize, tiff::decoder::Decoder<D>)>>,
     /// How many decoders the workers opened because none was spare.

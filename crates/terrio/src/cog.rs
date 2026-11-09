@@ -3022,8 +3022,9 @@ mod tests {
 
     /// Multi-chunk window reads reuse the worker decoders that earlier reads opened, at full
     /// resolution and on overviews, rather than open (and read the chunk tables of) one decoder
-    /// per worker each time; the values are those of a reader opened for each read. With a single
-    /// thread there are no workers, and no decoder is opened.
+    /// per worker each time: however many reads, no more decoders are opened than there are
+    /// threads. The values are those of a reader opened for each read. With a single thread there
+    /// are no workers, and no decoder is opened.
     #[test]
     fn window_reads_reuse_the_worker_decoders_of_earlier_reads() {
         // Off, so that every read decodes its chunks and needs the workers.
@@ -3056,21 +3057,26 @@ mod tests {
             Inner::Tiff(t) => t.workers.opened.load(std::sync::atomic::Ordering::Relaxed),
             _ => panic!("a GeoTIFF reader"),
         };
+        let threads = crate::par::threads();
         let first = read_f64(&mut reader, reads[0].0, &[1, 2, 3], reads[0].1);
-        let after_first = opened(&reader);
-        if crate::par::threads() > 1 {
-            assert!(after_first >= 2, "the first read opens its workers' decoders");
+        if threads > 1 {
+            assert!(opened(&reader) >= 1, "the first read opens decoders for its workers");
         } else {
-            assert_eq!(after_first, 0, "a single thread decodes with the reader's own decoder");
+            assert_eq!(opened(&reader), 0, "a single thread decodes with the reader's own decoder");
         }
-        for (w, overview) in &reads {
-            let fresh = read_f64(&mut LazyRaster::open(path).unwrap(), *w, &[3, 1], *overview);
-            assert_eq!(read_f64(&mut reader, *w, &[3, 1], *overview), fresh, "{w:?} on {overview:?}");
+        for _ in 0..3 {
+            for (w, overview) in &reads {
+                let fresh = read_f64(&mut LazyRaster::open(path).unwrap(), *w, &[3, 1], *overview);
+                assert_eq!(read_f64(&mut reader, *w, &[3, 1], *overview), fresh, "{w:?} on {overview:?}");
+            }
         }
         assert_eq!(read_f64(&mut reader, reads[0].0, &[1, 2, 3], reads[0].1), first);
-        assert_eq!(opened(&reader), after_first, "later reads open no decoder");
+        // A decoder is opened only while all the others are busy, whatever order the workers run
+        // in; opening one per worker would open one per thread on every one of these 20 reads.
+        let most = if threads > 1 { threads } else { 0 };
+        assert!(opened(&reader) <= most, "{} decoders opened on {threads} threads", opened(&reader));
         match &reader.inner {
-            Inner::Tiff(t) => assert!(t.workers.len() <= crate::par::threads()),
+            Inner::Tiff(t) => assert!(t.workers.len() <= most),
             _ => unreachable!(),
         }
     }
