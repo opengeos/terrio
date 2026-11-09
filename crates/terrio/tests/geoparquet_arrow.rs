@@ -129,6 +129,8 @@ fn reads_the_columns_asked_for() {
     assert_eq!(got.iter().map(RecordBatch::num_rows).sum::<usize>(), 500);
     // the covering column when asked for
     assert_eq!(batches(&path("zstd_v1.parquet"), &only(&["bbox"])).0, ["bbox", "geometry"]);
+    // names without case, and a struct column by one of its members, as the feature reader takes them
+    assert_eq!(batches(&path("zstd_v1.parquet"), &only(&["VALUE", "BBox.xmin"])).0, ["value", "bbox", "geometry"]);
     let error = open_geoparquet(&path("zstd_v1.parquet"), &only(&["nope"])).unwrap_err().to_string();
     assert!(error.contains("nope"), "{error}");
 }

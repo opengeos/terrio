@@ -715,7 +715,9 @@ pub fn open_geoparquet(path: &str, options: &GeoParquetReadOptions) -> Result<Ge
             (Box::new(move |ranges: &[(u64, u64)]| Ok(prefetcher.prefetch(ranges)?)), budget);
         return GeoParquetBatches::open(file, options, Some(prefetch));
     }
-    let file = crate::drivers::vector::geoparquet::SharedFile::new(std::fs::File::open(path)?)?;
+    // A file in an archive is extracted, as `open_vector` reads it.
+    let local = crate::vfs::resolve(path)?;
+    let file = crate::drivers::vector::geoparquet::SharedFile::new(std::fs::File::open(local.as_str())?)?;
     GeoParquetBatches::open(file, options, None)
 }
 

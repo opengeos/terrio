@@ -174,6 +174,9 @@ window at a time, and a URL is read by range requests: the footer, then only the
 the row groups the filter keeps.
 
 ```python
+import geopandas
+import pyarrow as pa
+
 stream = terrio.open_stream("buildings.parquet", columns=["height"], bbox=(5.0, 45.0, 6.0, 46.0))
 gdf = geopandas.GeoDataFrame.from_arrow(stream)
 for batch in pa.RecordBatchReader.from_stream(terrio.open_stream("https://host/buildings.parquet")):

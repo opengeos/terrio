@@ -383,9 +383,9 @@ impl ParquetStream {
         let mut selection = row_selection;
         let queue: Vec<_> =
             groups.iter().map(|&g| (g, selection.as_mut().map(|s| s.split_off(meta.row_group(g).num_rows() as usize)))).collect();
-        let ranges = meta.row_groups().iter().map(|rg| rg.columns().iter().map(|c| c.byte_range()).collect()).collect();
         let arrow_meta = ArrowReaderMetadata::try_new(meta.clone(), Default::default()).map_err(|e| err(&e))?;
         let (file_schema, batch_size) = (schema.clone(), batch_size.max(1));
+        let window_meta = meta.clone();
         let decode: DecodeGroup = Box::new(move |g, selection| {
             let reader = if geoparquet_zstd::has_zstd(&meta, &[g], &ProjectionMask::all()) {
                 geoparquet_zstd::reader(input.clone(), &meta, &file_schema, ProjectionMask::all(), vec![g], selection, batch_size)
@@ -401,7 +401,7 @@ impl ParquetStream {
             .map_err(|e| perr(&e))?;
             reader.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| perr(&e))
         });
-        let windows = GroupWindows::new(queue, decode, ranges, None);
+        let windows = GroupWindows::new(queue, decode, &window_meta, &ProjectionMask::all(), None);
 
         match col.get("crs") {
             _ if geo.is_null() => {}

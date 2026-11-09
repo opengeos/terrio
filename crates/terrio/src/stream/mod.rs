@@ -283,8 +283,10 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
     let local = crate::vfs::Location::parse(path).is_local() && std::path::Path::new(path).is_file();
     // A remote GeoParquet file is read in place, a window of row groups at a time.
     #[cfg(all(remote, feature = "parquet"))]
-    if !local && let Some(s) = geoparquet::open_remote(path, options.spatial_filter, batch)? {
-        crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
+    if !local
+        && crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector)).is_ok()
+        && let Some(s) = geoparquet::open_remote(path, options.spatial_filter, batch)?
+    {
         let layer = crate::dataset::fix_layer(s.layer.clone(), path, VectorDriver::Parquet);
         crate::dataset::layer_selection(&options.layers, &[layer.name.as_str()], Some(path), false)?;
         return Ok(vec![FeatureReader::new(layer, Box::new(ParquetSource(s)))]);

@@ -1,7 +1,8 @@
 //! GeoParquet read as the Arrow record batches the file holds, without converting them to
 //! features: the attribute columns keep their Arrow types (structs, lists and maps included), and
 //! the geometry columns keep their encoding (WKB or GeoArrow native), tagged as GeoArrow extension
-//! types with their CRS, as GDAL's Arrow stream interface hands them out.
+//! types with their CRS, as GDAL's Arrow stream interface hands them out (GDAL 3.13.3's Parquet
+//! driver).
 //!
 //! The row groups are decoded in parallel, a window of as many as there are threads at a time,
 //! and their batches come out in the file's order: memory holds a window's batches, not the file.
@@ -48,7 +49,7 @@ pub(crate) type DecodeGroup = Box<dyn Fn(usize, Option<RowSelection>) -> Result<
 pub(crate) type Prefetcher = (Box<dyn Fn(&[(u64, u64)]) -> Result<()> + Send + Sync>, u64);
 
 /// The record batches of a GeoParquet file, read as they are asked for: see the
-/// [module](self) documentation. An [`arrow_array::RecordBatchReader`].
+/// documentation of [`crate::arrow::open_geoparquet`]. An [`arrow_array::RecordBatchReader`].
 pub struct GeoParquetBatches {
     schema: SchemaRef,
     windows: GroupWindows,
@@ -61,6 +62,10 @@ impl std::fmt::Debug for GeoParquetBatches {
     }
 }
 
+/// The most decoded (uncompressed) bytes of the row groups of a window, but for its first: memory
+/// holds a window, however many threads decode it.
+const DECODED_WINDOW_BYTES: u64 = 512 << 20;
+
 /// The row groups of a file decoded in parallel, a window at a time, and their batches handed out
 /// in the file's order: as many row groups at once as there are threads, within the bytes the
 /// prefetcher takes at once. Memory holds a window's batches, not the file.
@@ -71,10 +76,14 @@ pub(crate) struct GroupWindows {
     decode: DecodeGroup,
     /// The byte ranges of the column chunks read in each row group of the file.
     ranges: Vec<Vec<(u64, u64)>>,
+    /// The bytes the columns read take decoded (uncompressed), in each row group of the file.
+    decoded: Vec<u64>,
     prefetch: Option<Prefetcher>,
     /// The caller's options and STAC asset policy, for the threads that read.
     context: crate::stac::AssetReadContext,
     window: usize,
+    /// Set once a window failed: its row groups are gone, so no later window is read.
+    failed: bool,
 }
 
 impl GroupWindows {
@@ -84,17 +93,25 @@ impl GroupWindows {
     pub(crate) fn new(
         groups: impl IntoIterator<Item = (usize, Option<RowSelection>)>,
         decode: DecodeGroup,
-        ranges: Vec<Vec<(u64, u64)>>,
+        meta: &parquet::file::metadata::ParquetMetaData,
+        mask: &ProjectionMask,
         prefetch: Option<Prefetcher>,
     ) -> Self {
+        let read =
+            |rg: &parquet::file::metadata::RowGroupMetaData| (0..rg.num_columns()).filter(|&i| mask.leaf_included(i)).collect::<Vec<_>>();
+        let ranges = meta.row_groups().iter().map(|rg| read(rg).into_iter().map(|i| rg.column(i).byte_range()).collect()).collect();
+        let decoded =
+            meta.row_groups().iter().map(|rg| read(rg).into_iter().map(|i| rg.column(i).uncompressed_size().max(0) as u64).sum()).collect();
         Self {
             groups: groups.into_iter().collect(),
             ready: VecDeque::new(),
             decode,
             ranges,
+            decoded,
             prefetch,
             context: crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current()),
             window: crate::par::threads().max(1),
+            failed: false,
         }
     }
 
@@ -103,14 +120,28 @@ impl GroupWindows {
         self.prefetch = Some(prefetch);
     }
 
-    /// The next batch, decoding the next window of row groups when the batches held are out.
+    /// The next batch, decoding the next window of row groups when the batches held are out. After
+    /// an error, every call fails: the rest of the file would be read without the failed window.
     pub(crate) fn next(&mut self) -> Result<Option<RecordBatch>> {
+        if self.failed {
+            return Err(perr(&"an earlier read of this file failed"));
+        }
+        let next = self.next_window();
+        self.failed = next.is_err();
+        next
+    }
+
+    fn next_window(&mut self) -> Result<Option<RecordBatch>> {
         while self.ready.is_empty() && !self.groups.is_empty() {
             let bytes = |g: usize| self.ranges[g].iter().map(|r| r.1).sum::<u64>();
             let budget = self.prefetch.as_ref().map_or(u64::MAX, |p| p.1);
-            let (mut n, mut total) = (0, 0u64);
-            while n < self.window.min(self.groups.len()) && (n == 0 || total + bytes(self.groups[n].0) <= budget) {
+            // within the bytes the prefetcher takes at once and the decoded bytes a window holds
+            let (mut n, mut total, mut decoded) = (0, 0u64, 0u64);
+            while n < self.window.min(self.groups.len())
+                && (n == 0 || total + bytes(self.groups[n].0) <= budget && decoded + self.decoded[self.groups[n].0] <= DECODED_WINDOW_BYTES)
+            {
                 total += bytes(self.groups[n].0);
+                decoded += self.decoded[self.groups[n].0];
                 n += 1;
             }
             let window: Vec<(usize, Option<RowSelection>)> = self.groups.drain(..n).collect();
@@ -161,8 +192,14 @@ impl GeoParquetBatches {
 
         // The output columns, in the file's order: the geometry columns, and the attributes asked
         // for (by default all but the covering column).
+        // A name matches a column without case, and `name.member` names the struct column `name`,
+        // as the feature reader takes them (`FeatureReader::select_fields`).
+        let names = |field: &str, c: &str| {
+            field.eq_ignore_ascii_case(c)
+                || c.get(..field.len()).is_some_and(|head| head.eq_ignore_ascii_case(field)) && c[field.len()..].starts_with('.')
+        };
         if let Some(columns) = &options.columns
-            && let Some(missing) = columns.iter().find(|c| index(c).is_none())
+            && let Some(missing) = columns.iter().find(|c| !file_schema.fields().iter().any(|f| names(f.name(), c)))
         {
             return Err(Error::InvalidArgument(format!("no column named {missing:?} in the file")));
         }
@@ -171,7 +208,7 @@ impl GeoParquetBatches {
                 let name = file_schema.field(i).name();
                 geo_columns.contains_key(name)
                     || match &options.columns {
-                        Some(columns) => columns.contains(name),
+                        Some(columns) => columns.iter().any(|c| names(name, c)),
                         None => covering.as_ref().is_none_or(|(c, _)| c != name),
                     }
             })
@@ -234,14 +271,10 @@ impl GeoParquetBatches {
             })
             .collect();
 
-        let ranges: Vec<Vec<(u64, u64)>> = pmeta
-            .row_groups()
-            .iter()
-            .map(|rg| (0..rg.num_columns()).filter(|&i| mask.leaf_included(i)).map(|i| rg.column(i).byte_range()).collect())
-            .collect();
         let batch_size = options.batch_size.max(1);
         let out = schema.clone();
         let encoding = primary_col["encoding"].as_str().unwrap_or("WKB").to_ascii_lowercase();
+        let (window_meta, window_mask) = (pmeta.clone(), mask.clone());
         let decode: DecodeGroup = Box::new(move |g, _| {
             let err = |e: &dyn std::fmt::Display| perr(e);
             let read = |mask: &ProjectionMask, selection: Option<RowSelection>| {
@@ -296,7 +329,7 @@ impl GeoParquetBatches {
             }
             Ok(batches)
         });
-        let windows = GroupWindows::new(groups.into_iter().map(|g| (g, None)), decode, ranges, prefetch);
+        let windows = GroupWindows::new(groups.into_iter().map(|g| (g, None)), decode, &window_meta, &window_mask, prefetch);
         Ok(Self { schema, windows, failed: false })
     }
 }
@@ -583,6 +616,29 @@ mod tests {
             crate::stream::open_layers(&url, &options, 40).unwrap().remove(0).read_all().unwrap()
         });
         assert_eq!(ids(&streamed), ids(&layer));
+    }
+
+    #[test]
+    fn a_failed_window_stops_the_reader() {
+        use super::{GroupWindows, perr};
+        use arrow_array::{ArrayRef, Int32Array, RecordBatch};
+        use std::sync::Arc;
+        let batch = |g: usize| RecordBatch::try_from_iter([("g", Arc::new(Int32Array::from(vec![g as i32])) as ArrayRef)]).unwrap();
+        // three row groups, a window of one each, the second failing
+        let mut w = GroupWindows {
+            groups: (0..3).map(|g| (g, None)).collect(),
+            ready: Default::default(),
+            decode: Box::new(move |g, _| if g == 1 { Err(perr(&"broken")) } else { Ok(vec![batch(g)]) }),
+            ranges: vec![Vec::new(); 3],
+            decoded: vec![0; 3],
+            prefetch: None,
+            context: crate::stac::AssetReadContext::capture(None),
+            window: 1,
+            failed: false,
+        };
+        assert!(w.next().unwrap().is_some());
+        assert!(w.next().is_err());
+        assert!(w.next().is_err(), "the third row group is not read after the second failed");
     }
 
     #[test]

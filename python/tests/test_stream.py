@@ -74,6 +74,7 @@ def test_arrow_stream_matches_table(path):
     table = pa.Table.from_batches(batches)
     if path.endswith(".parquet"):
         # a GeoParquet stream hands out the file's own types (`i` is written as int32)
+        assert table.schema.field("i").type == pa.int32()
         whole = whole.cast(table.schema)
     assert table.equals(whole)
 
@@ -131,6 +132,23 @@ def test_streams_select_columns_and_rows(tmp_path):
         assert table["i"].to_pylist() == [f["properties"]["i"] for f in whole], ext
         with pytest.raises(terrio.InvalidArgumentError):
             terrio.open_stream(p, columns=["nope"])
+        # names match without case, on both outputs
+        assert pa.table(terrio.open_stream(p, columns=["I"])).column_names[0] == "i", ext
+        assert list(terrio.open_stream(p, columns=["I"]).fields) == ["i"], ext
+
+
+def test_geoparquet_streams_read_files_in_archives(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    import zipfile
+
+    p = str(tmp_path / "s.parquet")
+    squares(1000).write(p)
+    z = str(tmp_path / "s.zip")
+    with zipfile.ZipFile(z, "w") as f:
+        f.write(p, "s.parquet")
+    table = pa.table(terrio.open_stream(f"/vsizip/{z}/s.parquet"))
+    assert table.num_rows == 1000
+    assert table["i"].to_pylist() == list(range(1000))
 
 
 def test_geoparquet_streams_give_a_geodataframe_in_crs84(tmp_path):
