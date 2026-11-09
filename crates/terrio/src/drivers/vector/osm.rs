@@ -746,6 +746,9 @@ fn pb_varint(b: &[u8], i: &mut usize) -> Option<u64> {
     for shift in (0..64).step_by(7) {
         let byte = *b.get(*i)?;
         *i += 1;
+        if shift == 63 && byte > 1 {
+            return None;
+        }
         v |= u64::from(byte & 0x7f) << shift;
         if byte & 0x80 == 0 {
             return Some(v);
@@ -760,15 +763,24 @@ fn pb_fields(b: &[u8]) -> Option<Vec<(u64, Pb<'_>)>> {
     let mut i = 0;
     while i < b.len() {
         let key = pb_varint(b, &mut i)?;
+        if key >> 3 == 0 {
+            return None;
+        }
         match key & 7 {
             0 => out.push((key >> 3, Pb::Int(pb_varint(b, &mut i)?))),
-            1 => i += 8,
+            1 => {
+                b.get(i..i.checked_add(8)?)?;
+                i += 8;
+            }
             2 => {
                 let n = usize::try_from(pb_varint(b, &mut i)?).ok()?;
                 out.push((key >> 3, Pb::Bytes(b.get(i..i.checked_add(n)?)?)));
                 i += n;
             }
-            5 => i += 4,
+            5 => {
+                b.get(i..i.checked_add(4)?)?;
+                i += 4;
+            }
             _ => return None,
         }
     }
@@ -808,7 +820,10 @@ fn blob_spans(r: &mut dyn PbfInput) -> Result<(Vec<std::ops::Range<u64>>, bool)>
                 _ => {}
             }
         }
-        let start = o + 4 + header_len as u64;
+        if size > 32 * 1024 * 1024 {
+            return Err(bad());
+        }
+        let start = o.checked_add(4 + header_len as u64).ok_or_else(bad)?;
         let end = start.checked_add(size).filter(|&e| e <= len).ok_or_else(bad)?;
         match kind {
             b"OSMData" => {
@@ -839,19 +854,34 @@ fn read_spans(r: &mut dyn PbfInput, spans: &[std::ops::Range<u64>]) -> Result<Ve
 /// Whether a header blob lists the `Sort.Type_then_ID` feature: nodes, then ways, then
 /// relations, each by increasing id (as osmium, Geofabrik and the planet files write them).
 fn header_says_sorted(blob: &[u8]) -> Option<bool> {
-    let mut header = Vec::new();
+    const LIMIT: usize = 32 * 1024 * 1024;
+    let mut header = None;
     for (field, value) in pb_fields(blob)? {
         match (field, value) {
-            (1, Pb::Bytes(raw)) => header = raw.to_vec(),
+            (1, Pb::Bytes(raw)) => {
+                if raw.len() > LIMIT || header.is_some() {
+                    return None;
+                }
+                header = Some(raw.to_vec());
+            }
             (3, Pb::Bytes(zlib)) => {
                 use std::io::Read;
-                flate2::read::ZlibDecoder::new(zlib).read_to_end(&mut header).ok()?;
+                if header.is_some() {
+                    return None;
+                }
+                let mut decoded = Vec::new();
+                flate2::read::ZlibDecoder::new(zlib).take((LIMIT + 1) as u64).read_to_end(&mut decoded).ok()?;
+                if decoded.len() > LIMIT {
+                    return None;
+                }
+                header = Some(decoded);
             }
+            (4..=7, Pb::Bytes(_)) => return None,
             _ => {}
         }
     }
-    let feature = b"Sort.Type_then_ID";
-    Some(header.windows(feature.len()).any(|w| w == feature))
+    let header = header?;
+    Some(pb_fields(&header)?.into_iter().any(|(field, value)| matches!((field, value), (4 | 5, Pb::Bytes(b"Sort.Type_then_ID")))))
 }
 
 fn decode_block(span: &[u8]) -> Result<osmpbfreader::osmformat::PrimitiveBlock> {
@@ -1510,6 +1540,25 @@ pub(crate) fn read_sorted_pbf(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_overflowing_and_truncated_protobuf() {
+        let mut index = 0;
+        assert!(pb_varint(&[255, 255, 255, 255, 255, 255, 255, 255, 255, 2], &mut index).is_none());
+        assert!(pb_fields(&[9, 0]).is_none());
+        assert!(pb_fields(&[13, 0]).is_none());
+        assert!(pb_fields(&[0, 0]).is_none());
+        assert!(pb_fields(&[10, 2, 0]).is_none());
+    }
+
+    #[test]
+    fn sorted_feature_is_a_complete_header_field() {
+        let header = Msg::default().bytes(5, b"prefix-Sort.Type_then_ID-suffix");
+        assert_eq!(header_says_sorted(&Msg::default().bytes(1, &header.0).0), Some(false));
+        let header = Msg::default().bytes(5, b"Sort.Type_then_ID");
+        assert_eq!(header_says_sorted(&Msg::default().bytes(1, &header.0).0), Some(true));
+        assert_eq!(header_says_sorted(&Msg::default().bytes(4, b"unsupported").0), None);
+    }
 
     #[test]
     fn classifies_tags_like_gdal() {
