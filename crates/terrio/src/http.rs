@@ -2029,8 +2029,9 @@ const PARALLEL_RUNS: usize = 8;
 struct Run {
     /// The run's first block.
     start: u64,
-    /// The bytes already held that start the run (the file's first bytes), else empty.
-    held: Vec<u8>,
+    /// How many of the run's first bytes the file's first bytes (`Shared::prefix`) hold: copied
+    /// from there when the run is stored, so that no run holds a copy before.
+    held: usize,
     /// The first byte to request, past `last` when `held` covers the run.
     from: u64,
     /// The run's last byte.
@@ -2047,11 +2048,18 @@ impl Run {
 /// The requests of a parallel fetch the threads take in order, at most `free` more than the
 /// runs stored so far, until the fetch stops them (see [`Shared::fetch_runs_in_parallel`]).
 struct RequestWindow {
-    /// (the next request to take, the places left) of the window.
-    state: Mutex<(usize, usize)>,
+    state: Mutex<WindowState>,
     changed: std::sync::Condvar,
     /// Set when the fetch stops: no request is taken, and the clients' retries end.
     cancel: Arc<AtomicBool>,
+}
+
+/// Where a [`RequestWindow`] is.
+struct WindowState {
+    /// The index of the next request to take.
+    next: usize,
+    /// How many more requests may be taken before a run is stored.
+    places: usize,
 }
 
 /// Stops a [`RequestWindow`] when the thread holding it panics.
@@ -2067,7 +2075,11 @@ impl Drop for StopOnPanic<'_> {
 
 impl RequestWindow {
     fn new(places: usize) -> Self {
-        Self { state: Mutex::new((0, places)), changed: std::sync::Condvar::new(), cancel: Arc::new(AtomicBool::new(false)) }
+        Self {
+            state: Mutex::new(WindowState { next: 0, places }),
+            changed: std::sync::Condvar::new(),
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     /// The next of `requests` once the window has a place for it, or `None` when they are all
@@ -2075,13 +2087,13 @@ impl RequestWindow {
     fn take<T: Copy>(&self, requests: &[T]) -> Option<T> {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
-            if self.cancel.load(Ordering::SeqCst) || state.0 >= requests.len() {
+            if self.cancel.load(Ordering::SeqCst) || state.next >= requests.len() {
                 return None;
             }
-            if state.1 > 0 {
-                state.1 -= 1;
-                state.0 += 1;
-                return Some(requests[state.0 - 1]);
+            if state.places > 0 {
+                state.places -= 1;
+                state.next += 1;
+                return Some(requests[state.next - 1]);
             }
             state = self.changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
@@ -2089,7 +2101,7 @@ impl RequestWindow {
 
     /// Gives back the place of a request whose run is stored.
     fn release(&self) {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).1 += 1;
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).places += 1;
         self.changed.notify_one();
     }
 
@@ -2424,11 +2436,11 @@ impl Shared {
             let first = start * self.block_size;
             let last = ((end + 1) * self.block_size).min(self.len) - 1;
             // The first bytes, already held, start the run when it starts the file.
-            let held: Vec<u8> = match &self.prefix {
-                Some(p) if (first as usize) < p.len() => p[first as usize..p.len().min(last as usize + 1)].to_vec(),
-                _ => Vec::new(),
+            let held = match &self.prefix {
+                Some(p) if (first as usize) < p.len() => p.len().min(last as usize + 1) - first as usize,
+                _ => 0,
             };
-            let from = first + held.len() as u64;
+            let from = first + held as u64;
             runs.push(Run { start, held, from, last });
         }
         if runs.iter().filter(|run| run.requests()).count() > 1 && self.client.options.parallel_ranges {
@@ -2477,6 +2489,8 @@ impl Shared {
                     let _stop = window.stop_on_panic();
                     while let Some((run, from, last)) = window.take(requests) {
                         let fetched = context.enter().and_then(|_scope| client.fetch(Some((from, last))));
+                        // A copy of the client for the storing thread to take back (its URLs and
+                        // S3 state): a small cost next to the request's.
                         if sender.send((run, client.clone(), fetched)).is_err() {
                             break;
                         }
@@ -2489,6 +2503,8 @@ impl Shared {
             if threads == 0 {
                 return self.fetch_runs_serially(runs);
             }
+            // A panic here stops the threads too, which would otherwise wait for a place.
+            let _stop = window.stop_on_panic();
             let result = self.store_runs_in_order(runs, &responses, &window);
             // Threads still sending a request take no other and end with it, joined here.
             window.stop();
@@ -2536,7 +2552,12 @@ impl Shared {
     /// cover it). Returns whether the server sent the whole file instead, which is then stored and
     /// ends the fetch.
     fn store_run(&mut self, run: Run, fetched: Option<Result<Fetched>>) -> io::Result<bool> {
-        let Run { start, held: mut data, from, last } = run;
+        let Run { start, held, from, last } = run;
+        let first = (start * self.block_size) as usize;
+        let mut data = match &self.prefix {
+            Some(p) if held > 0 => p[first..first + held].to_vec(),
+            _ => Vec::new(),
+        };
         if let Some(fetched) = fetched {
             let fetched = fetched.map_err(io::Error::other)?;
             self.observe_source();
