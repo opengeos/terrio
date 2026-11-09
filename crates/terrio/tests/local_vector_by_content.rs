@@ -10,6 +10,12 @@ use std::collections::HashMap;
 const GEOJSON: &[u8] = br#"{"type":"FeatureCollection","crs":{"type":"name","properties":{"name":"EPSG:25832"}},"features":[{"type":"Feature","properties":{"name":"road"},"geometry":{"type":"LineString","coordinates":[[700000,5100000],[700001,5100001]]}}]}"#;
 const GML: &[u8] = br#"<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:app="urn:test"><wfs:member><app:road gml:id="road.1"><app:name>road</app:name><app:geom><gml:LineString srsName="urn:ogc:def:crs:EPSG::25832"><gml:posList srsDimension="2">700000 5100000 700001 5100001</gml:posList></gml:LineString></app:geom></app:road></wfs:member></wfs:FeatureCollection>"#;
 
+/// GeoJSON features one per line, without the RS separators of a text sequence: terrio's GeoJSON
+/// reader refuses the document.
+const FEATURES_PER_LINE: &[u8] = b"{\"type\":\"Feature\",\"properties\":{\"id\":0},\"geometry\":{\"type\":\"Point\",\"coordinates\":[10,46]}}\n{\"type\":\"Feature\",\"properties\":{\"id\":1},\"geometry\":{\"type\":\"Point\",\"coordinates\":[11,46]}}\n";
+/// GML whose two features use two CRSs: terrio's GML reader refuses the document.
+const MIXED_CRS_GML: &[u8] = br#"<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:app="urn:test"><wfs:member><app:road gml:id="road.1"><app:name>a</app:name><app:geom><gml:LineString srsName="urn:ogc:def:crs:EPSG::25832"><gml:posList srsDimension="2">700000 5100000 700001 5100001</gml:posList></gml:LineString></app:geom></app:road></wfs:member><wfs:member><app:road gml:id="road.2"><app:name>b</app:name><app:geom><gml:LineString srsName="urn:ogc:def:crs:EPSG::4326"><gml:posList srsDimension="2">46 10 46.001 10.001</gml:posList></gml:LineString></app:geom></app:road></wfs:member></wfs:FeatureCollection>"#;
+
 /// `f` with `TERRIO_ALLOWED_DRIVERS=drivers` on the calling thread.
 fn allowing<T>(drivers: &str, f: impl FnOnce() -> T) -> T {
     terrio::config::push_scope(HashMap::from([("TERRIO_ALLOWED_DRIVERS".to_string(), Some(drivers.to_string()))]));
@@ -66,5 +72,45 @@ fn a_json_document_that_is_not_geojson_is_still_not_recognized() {
             assert!(matches!(error, terrio::Error::Unsupported(_)), "{error:?}");
             assert!(error.to_string().contains("format not recognized"), "{error}");
         }
+    }
+}
+
+/// The documents above under names that point to no driver.
+fn refused_documents(dir: &std::path::Path) -> [(String, &'static str); 2] {
+    [
+        ("lines", FEATURES_PER_LINE, "GeoJSON: trailing characters at line 2 column 1"),
+        ("mixed", MIXED_CRS_GML, "GML: mixed coordinate axis conventions within a layer"),
+    ]
+    .map(|(name, body, refusal)| {
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        (path.to_str().unwrap().to_string(), refusal)
+    })
+}
+
+/// With the `gdal` feature, the GDAL backend reads a GeoJSON or GML document under a name of no
+/// driver that terrio's reader refuses, through every entry point.
+#[cfg(feature = "gdal")]
+#[test]
+fn gdal_reads_documents_terrios_readers_refuse() {
+    let dir = tempfile::tempdir().unwrap();
+    for (path, _) in refused_documents(dir.path()) {
+        let ds = terrio::open_vector(&path, &Default::default()).unwrap();
+        assert_eq!(ds.driver.name(), "GDAL", "{path}");
+        assert_eq!(ds.layers.iter().map(|l| l.features.len()).sum::<usize>(), 2, "{path}");
+        assert!(matches!(terrio::open(&path), Ok(terrio::Dataset::Vector(_))), "{path}");
+        assert!(matches!(terrio::info::info_path(&path, &Default::default()), Ok(terrio::info::Info::Vector(_))), "{path}");
+        assert_eq!(terrio::list_layers(&path).unwrap().len(), ds.layers.len(), "{path}");
+    }
+}
+
+/// Without the `gdal` feature, terrio's reader refuses them with its own error.
+#[cfg(not(feature = "gdal"))]
+#[test]
+fn terrios_readers_refuse_documents_they_cannot_read() {
+    let dir = tempfile::tempdir().unwrap();
+    for (path, refusal) in refused_documents(dir.path()) {
+        let error = terrio::open_vector(&path, &Default::default()).map(|_| ()).unwrap_err();
+        assert!(error.to_string().ends_with(refusal), "{error}");
     }
 }

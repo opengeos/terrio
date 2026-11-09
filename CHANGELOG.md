@@ -3,13 +3,11 @@
 ## Unreleased
 
 - A local GeoJSON or GML file whose name points to no driver (`data`, `data.txt`, a GML saved as
-  `.xml`) is read by its content, as a remote response under such a name is. Its content was
-  already identified, and an allow-list already judged it, but `open_vector`, `open`,
-  `list_layers`, `info`, `convert`, `terrio.open_vector` and `terrio.pyogrio` then failed with
-  "format not recognized". JSON without a GeoJSON root `type` is still not recognized, and content
-  an allow-list leaves out is refused with the same message as before. Builds with the `gdal`
-  feature, which read such a file through their fallback, now read it with the GeoJSON or GML
-  driver.
+  `.xml`) is read by its content, as a remote response under such a name is: `open_vector`, `open`,
+  `list_layers`, `info`, `convert`, `terrio.open_vector` and `terrio.pyogrio` failed with "format
+  not recognized". JSON without a GeoJSON root `type` is still not recognized, and an allow-list
+  refuses such a file as before. Builds with the `gdal` feature read it with the GeoJSON or GML
+  driver, and with GDAL only when that driver refuses it (#715).
 - A VRT source with fractional `SrcRect` or `DstRect` offsets is read within its rectangles (#702).
   A window with as many source pixels as output pixels was copied one for one whatever its offsets,
   so `bilinear`, `cubic` and `average` returned the source pixels a fraction of a pixel from where
