@@ -7,6 +7,40 @@
   h5py writes by default. They were ordered by object header address, which a variable written with
   netCDF's default fill value moves out of definition order. A netCDF-4 file is no longer opened a
   second time for it, except to read a group of several variables or groups.
+- `terrio.rio` writes JPEG 2000 to a `.jp2` path opened for writing without a driver:
+  `driver_from_extension` names the driver `JP2OpenJPEG`, which `open(..., "w")`,
+  `shutil.copy` and `terrio.xarray`'s `to_raster` refused in 0.8.0 (`DriverCapabilityError`,
+  `DriverRegistrationError`). Their driver names are now read as the driver allow-list reads
+  them, so `JP2OpenJPEG`, `JPEG2000`, `JP2KAK`, `JP2ECW` and `JP2MrSID` write terrio's JP2, as
+  `MemoryFile` already did with `JP2OpenJPEG`; the file reads back with `driver == "JP2"`.
+  `terrio.rio`'s writers still refuse a name with whitespace around it. The other writers (`-f`
+  on the command line, `Raster.write(driver=...)`) read names the same way, without the
+  whitespace around them: `JP2MrSID`, the one of these names they refused, now selects JP2.
+- A polar stereographic CRS on an ellipsoid projects the pole it is centred on to its false
+  origin, and refuses the opposite pole. In 0.8.0 its own pole failed to project, and the opposite
+  pole, which no coordinates represent, came out about 10²³ m away: EPSG:3413, 3031, 32661 and the
+  other ellipsoidal polar stereographic CRSs, of variants A and B (spherical ones were right). A
+  `sum` into a longitude and latitude grid whose edge is the pole now writes the row along it: from
+  10,000 km of 10 km EPSG:3413 pixels centred on the North Pole into 1° pixels from 80° N to
+  90° N, none of the 360 pixels along the pole was written, and the grid held 36,675.8 of the
+  37,044.5 it now holds (1% less). The longitude and latitude grid suggested for a raster that
+  covers its pole now reaches the North Pole exactly, over every longitude, and reaches the South
+  Pole to within one pixel, as its height rounds down: for the same raster, it spanned 30.5° N to
+  46.0° N, and now 30.4° N to 90° N.
+- `terrio.rio` keeps a PixelIsPoint raster (`AREA_OR_POINT=Point`) PixelIsPoint when it writes a
+  GeoTIFF or COG. `shutil.copy`, a writer given `update_tags(AREA_OR_POINT="Point")`, an `r+`
+  update of a PixelIsPoint GeoTIFF and `terrio.xarray`'s `to_raster` wrote it as PixelIsArea in
+  0.8.0, whole or in rows. The tag now reaches the GeoTIFF writer, which writes the raster type
+  with the tie point at the centre of pixel (0, 0); the transform is unchanged. The raster type
+  needs a CRS, the dataset's or its GCPs': without one, the raster is still written PixelIsArea,
+  now with a `UserWarning` saying so.
+- `terrio.xarray`: an object whose `.terrio` (or `.rio`) accessor was used is freed as soon as it
+  is dropped. xarray's accessor registration keeps a reference cycle (the object caches its
+  accessor, which refers to the object) that only the cyclic garbage collector frees, and that
+  held the pixels of every object `.terrio` touched, including views of each variable that
+  `write_crs` reads internally, so that a loop loading arrays could keep gigabytes. The object now
+  caches only the accessor's state, and each access returns a new accessor over it, so
+  `da.terrio is da.terrio` is False.
 - A remote read of a long range through the block cache, such as a GeoParquet row group or a run
   of COG tiles, is fetched as up to 8 parallel requests of at least 1 MiB each instead of one at
   the pace of a single connection (#741). `TERRIO_HTTP_MULTIRANGE=SERIAL` keeps one request.
