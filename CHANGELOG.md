@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- A polar stereographic CRS on an ellipsoid projects the pole it is centred on to its false
+  origin, and refuses the opposite pole. In 0.8.0 its own pole failed to project, and the opposite
+  pole, which no coordinates represent, came out about 10²³ m away: EPSG:3413, 3031, 32661 and the
+  other ellipsoidal polar stereographic CRSs, of variants A and B (spherical ones were right). A
+  `sum` into a longitude and latitude grid whose edge is the pole now writes the row along it: from
+  10,000 km of 10 km EPSG:3413 pixels centred on the North Pole into 1° pixels from 80° N to
+  90° N, none of the 360 pixels along the pole was written, and the grid held 36,675.8 of the
+  37,044.5 it now holds (1% less). The longitude and latitude grid suggested for a raster that
+  covers its pole now reaches the North Pole exactly, over every longitude, and reaches the South
+  Pole to within one pixel, as its height rounds down: for the same raster, it spanned 30.5° N to
+  46.0° N, and now 30.4° N to 90° N.
 - `terrio.rio` keeps a PixelIsPoint raster (`AREA_OR_POINT=Point`) PixelIsPoint when it writes a
   GeoTIFF or COG. `shutil.copy`, a writer given `update_tags(AREA_OR_POINT="Point")`, an `r+`
   update of a PixelIsPoint GeoTIFF and `terrio.xarray`'s `to_raster` wrote it as PixelIsArea in
