@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- GeoTIFF window reads on several threads at once share one budget of decode threads: a
+  multi-chunk read starts only as many decode workers as keep the process's total within
+  terrio's thread count (`RAYON_NUM_THREADS`), and decodes its chunks on its own thread when
+  fewer than two are free. Each read started up to one worker per thread, so 8 threads reading
+  at once on 12 threads could run 96 decode workers. With 8 readers on 4 threads, a process
+  peaked at 18–24 threads instead of 43–56 and about 30 MB less memory, in the same time.
 - `terrio.rio` keeps a PixelIsPoint raster (`AREA_OR_POINT=Point`) PixelIsPoint when it writes a
   GeoTIFF or COG. `shutil.copy`, a writer given `update_tags(AREA_OR_POINT="Point")`, an `r+`
   update of a PixelIsPoint GeoTIFF and `terrio.xarray`'s `to_raster` wrote it as PixelIsArea in
