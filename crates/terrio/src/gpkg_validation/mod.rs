@@ -14,7 +14,7 @@ mod extensions;
 mod features;
 mod geometry;
 mod gridded;
-mod integrity;
+pub(crate) mod integrity;
 mod metadata;
 mod relations;
 mod rtree;
