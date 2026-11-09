@@ -3346,9 +3346,9 @@ impl WarpContext<'_> {
         }
     }
 
-    /// The area-based methods but `sum` (average, mode, min, max, quantiles, RMS): each output
-    /// pixel summarizes the source inside both its footprint and the chunk's source window, each
-    /// source pixel weighed by its part inside them.
+    /// The area-based methods other than `sum` (average, mode, min, max, quantiles, RMS): each
+    /// output pixel summarizes the source inside both its footprint and the chunk's source window,
+    /// each source pixel weighed by its part inside them.
     fn warp_area_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
         let n = c.dw;
         let (mut x1, mut y1, mut o1) = (vec![0.0; n], vec![0.0; n], vec![false; n]);
@@ -3380,13 +3380,16 @@ impl WarpContext<'_> {
                 }
                 // A footprint that does not meet the window, as one beside it does, leaves the pixel
                 // alone. Of the others, the part inside the window counts; one without width or
-                // height there takes the source pixel it lies on.
-                let (x0, x1, y0, y1) = (ax - sxo, bx - sxo, ay - syo, by - syo);
+                // height takes the source pixel it lies on, each pixel holding its left and top
+                // edges: on the window's left or top edge, its first column or row; on its right or
+                // bottom edge, none.
+                let (fx0, fx1, fy0, fy1) = (ax - sxo, bx - sxo, ay - syo, by - syo);
                 const EPS: f64 = 1e-10;
-                if !(x1 > EPS && x0 < sw - EPS && y1 > EPS && y0 < sh - EPS) {
+                let meets = |lo: f64, hi: f64, size: f64| lo < size - EPS && (hi > EPS || (hi - lo <= EPS && lo > -EPS));
+                if !(meets(fx0, fx1, sw) && meets(fy0, fy1, sh)) {
                     continue;
                 }
-                let (xmin, xmax, ymin, ymax) = (x0.max(0.0), x1.min(sw), y0.max(0.0), y1.min(sh));
+                let (xmin, xmax, ymin, ymax) = (fx0.max(0.0), fx1.min(sw), fy0.max(0.0), fy1.min(sh));
                 let ix0 = (xmin + EPS).floor().max(0.0) as usize;
                 let mut ix1 = ((xmax - EPS).ceil().max(0.0) as usize).min(c.sw);
                 if ix0 == ix1 && ix1 < c.sw {
@@ -5472,6 +5475,46 @@ mod tests {
                 wrong.push(format!(
                     "{resampling:?}: {beyond} written beyond the horizon, {written} of 288 within it, {meridian:?} by the poles"
                 ));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// A footprint without width or height takes the source pixel it lies on, each pixel holding
+    /// its left and top edges. From a polar stereographic source whose top left corner is the
+    /// pole, between the meridians 45° W (its left edge) and 45° E (its top edge), the EPSG:4326
+    /// pixels by the pole from 50° W to 45° W and from 40° E to 45° E have both corners on one of
+    /// those edges, and take the source's first column or row; the pixels beside the source, west
+    /// and east of them, are left alone.
+    #[test]
+    fn area_methods_take_a_footprint_without_width_on_the_source_s_left_or_top_edge() {
+        let ds = raster(100, 100, [0.0, 1e4, 0.0, 0.0, 0.0, -1e4], 3413, |_, _| 1.0);
+        let mut wrong = Vec::new();
+        for resampling in [
+            Resampling::Average,
+            Resampling::Rms,
+            Resampling::Mode,
+            Resampling::Min,
+            Resampling::Max,
+            Resampling::Med,
+            Resampling::Q1,
+            Resampling::Q3,
+        ] {
+            let o = WarpOptions {
+                dst_srs: Some(SpatialRef::from_epsg(4326).unwrap()),
+                dst_transform: Some([-180.0, 5.0, 0.0, 90.0, 0.0, -5.0]),
+                size: Some((72, 1)),
+                resampling,
+                output_type: Some(DataType::F64),
+                dst_nodata: Nodata::Values(vec![-1.0]),
+                error_threshold: 0.0,
+                ..Default::default()
+            };
+            let row = warp(&[&ds], &o).unwrap().raster.data.to_f64_vec();
+            // 55° W to 50° W, 50° W to 45° W, 45° W to 40° W; 40° E to 45° E, 45° E to 50° E.
+            let got = [25, 26, 27, 44, 45].map(|i| row[i]);
+            if got != [-1.0, 1.0, 1.0, 1.0, -1.0] {
+                wrong.push(format!("{resampling:?}: {got:?}"));
             }
         }
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));

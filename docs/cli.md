@@ -1061,8 +1061,10 @@ see [validation and measured costs](testing.md#exact-sum-footprints).
 With `-r average`, `rms`, `mode`, `min`, `max`, `med`, `q1` or `q3`, each output pixel takes the
 valid source pixels inside its footprint on the source grid, whatever the extent of the output grid:
 where the footprint runs past the source's edges, only its part inside the source counts, and
-`average`, `rms` and `mode` weigh each source pixel by its area inside that part. An output pixel
-is left empty only when no source pixel lies inside it or a corner of it cannot be transformed.
+`average`, `rms` and `mode` weigh each source pixel by its area inside that part. A footprint counts
+within the source window its chunk of the output reads, so a strongly curved transformation can
+shorten it. An output pixel is left empty only when no source pixel lies inside it or a corner of
+it cannot be transformed.
 
 ### Warp source overviews
 

@@ -458,10 +458,14 @@ def test_rpc_source_matches_rasterio(rpc_dir, monkeypatch, name, options):
             # terrio weighs each source pixel at a footprint's edge by its part inside the source
             # window (#703): in the reads at a reduced size, warped by `average` onto coarser
             # grids, the pixels along the edge of the warped footprint (written, beside an
-            # unwritten pixel or the border) are checked for being written, and the others exactly.
+            # unwritten pixel or the border) follow those weights, and are checked for being
+            # written and within 39 (read 2) and 11 (read 3); the others exactly. The 0s of these
+            # reads are their unwritten pixels: image.tif's few 0s leave no written pixel at 0.
             written = a != 0
             assert np.array_equal(written, b != 0), f"read {i}: written elsewhere"
             edge = written & ~_inner(written)
+            change = np.abs(a[edge].astype(int) - b[edge].astype(int)).max(initial=0)
+            assert change <= {2: 39, 3: 11}[i], f"read {i}: an edge pixel differs by {change}"
             a, b = a[~edge], b[~edge]
         assert np.array_equal(a, b), (
             f"read {i}: {np.count_nonzero(a != b)} of {a.size} pixels differ"
