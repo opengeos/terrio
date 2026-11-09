@@ -176,7 +176,8 @@ impl Rows {
                             v[i] = Value::Int(rowid);
                         }
                     }
-                    // The last row of a key, as a lookup in a non-unique index finds it.
+                    // The last row of a key, as a lookup in a non-unique index finds it, even if
+                    // it holds no tile.
                     if let Some(key) = xyz(int(v.first()), int(v.get(1)), int(v.get(2))) {
                         rowids.insert(key, rowid);
                     }

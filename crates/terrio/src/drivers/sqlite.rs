@@ -842,7 +842,7 @@ impl Db {
 pub(crate) fn column_has_collation(sql: &str, i: usize) -> bool {
     column_defs(sql).get(i).is_some_and(|d| {
         let k = keywords(d);
-        k.match_indices("COLLATE").any(|(at, _)| !k[at + 7..].trim_start().trim_start_matches('"').starts_with("BINARY"))
+        k.match_indices("COLLATE").any(|(at, _)| !k[at + 7..].trim_start().starts_with("BINARY"))
     })
 }
 
