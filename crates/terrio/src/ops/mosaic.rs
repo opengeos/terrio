@@ -473,6 +473,7 @@ fn copy_plan(sources: &[MosaicSource], o: &MosaicOptions) -> Result<Option<(VrtD
                 resampling: src.resampling,
                 working_float: src.complex,
                 invalid_value: None,
+                within_rects: true,
             };
             match read.plain_copy(vrt.width, vrt.height) {
                 Ok(Some(copy)) => copies.push(Copy { source, band: src.band, out_band: b, nodata: src.nodata, copy }),
@@ -515,6 +516,7 @@ fn vrt_from_memory(vrt: &VrtDataset, sources: &[MosaicSource]) -> Result<RasterD
                 resampling: src.resampling,
                 working_float: src.complex,
                 invalid_value: None,
+                within_rects: true,
             };
             crate::pixel::with_data!(&mut out, v => {
                 read.read(vrt.width, vrt.height, &mut v[b * n..(b + 1) * n], |x| super::convert_value(x, data_type) as _);
@@ -711,5 +713,37 @@ mod tests {
             .is_err()
         );
         assert!(mosaic(&single, &MosaicOptions { resolution: ResolutionStrategy::User(0.0, 1.0), ..Default::default() }).is_err());
+    }
+
+    /// A mosaic onto its source's pixels a quarter pixel east resamples the source by its method:
+    /// `bilinear` and `average` give the ramp a quarter pixel on, and `nearest` the nearest pixels,
+    /// copied a strip at a time. The mosaic, the mosaic written and the VRT written agree.
+    #[test]
+    fn a_grid_a_fraction_of_a_pixel_off_is_resampled() {
+        let dir = tempfile::tempdir().unwrap();
+        // 8 x 4 pixels of 1 m, a ramp in x: 0, 10, ..., 70.
+        let grid = Grid { width: 8, height: 4, geo_transform: [0.0, 1.0, 0.0, 4.0, 0.0, -1.0] };
+        let ramp = (0..32).map(|i| f64::from(i % 8) * 10.0).collect();
+        let ds = super::super::build_raster(grid, vec![ramp], DataType::F32, None, &SpatialRef::default(), |x, _| x).unwrap();
+        let path = dir.path().join("a.tif").to_string_lossy().into_owned();
+        crate::write_raster_dataset(&ds, &path, &Default::default()).unwrap();
+        let sources = [MosaicSource { path: path.clone(), ds: &ds }];
+        let shifted: Vec<f64> = (0..7).map(|c| f64::from(c) * 10.0 + 2.5).collect();
+        for (resampling, row) in [
+            (Resampling::Nearest, (0..7).map(|c| f64::from(c) * 10.0).collect()),
+            (Resampling::Bilinear, shifted.clone()),
+            (Resampling::Average, shifted),
+        ] {
+            let o = MosaicOptions { extent: Some((0.25, 0.0, 7.25, 4.0)), resampling, ..Default::default() };
+            let rows = row.repeat(4);
+            assert_eq!(mosaic(&sources, &o).unwrap().raster.data.to_f64_vec(), rows, "{resampling:?}");
+            assert_eq!(copy_plan(&sources, &o).unwrap().is_some(), resampling == Resampling::Nearest, "{resampling:?}");
+            let [written, vrt] = ["m.tif", "m.vrt"].map(|name| dir.path().join(name).to_string_lossy().into_owned());
+            mosaic_to_path(std::slice::from_ref(&path), &o, &written, &Default::default()).unwrap();
+            build_vrt(&sources, &o, Some(dir.path())).unwrap().write(&vrt).unwrap();
+            for name in [&written, &vrt] {
+                assert_eq!(crate::open_raster(name).unwrap().raster.data.to_f64_vec(), rows, "{resampling:?} {name}");
+            }
+        }
     }
 }
