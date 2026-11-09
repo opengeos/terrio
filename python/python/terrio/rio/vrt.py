@@ -227,7 +227,8 @@ class WarpedVRT(DatasetReader):
 
         Raises:
             ValueError: If the resampling method is not supported.
-            WarpOptionsError: If an alpha band is added to a source that has one.
+            WarpOptionsError: If an alpha band is added to a source that has one, or if
+                `src_alpha` is not one of the source's bands.
             WarpedVRTError: If RPC positions are said to be in a CRS other than WGS 84.
         """
         super(DatasetReader, self).__init__()
@@ -298,6 +299,11 @@ class WarpedVRT(DatasetReader):
         if dst_alpha:
             dst_alpha_band = dst_alpha
         if src_alpha:
+            # One check for every read, whichever path it takes (`_raster_window`).
+            if not 0 < src_alpha <= src_count:
+                raise WarpOptionsError(
+                    f"src_alpha {src_alpha} is not a source band (1-{src_count})"
+                )
             src_alpha_band = src_alpha
         self._src_alpha = src_alpha_band
         self._dst_alpha = dst_alpha_band

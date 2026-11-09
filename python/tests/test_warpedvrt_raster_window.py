@@ -20,7 +20,7 @@ import terrio
 import terrio.rio
 from terrio import _terrio
 from terrio.rio.enums import Resampling
-from terrio.rio.errors import RasterioIOError
+from terrio.rio.errors import RasterioIOError, WarpOptionsError
 from terrio.rio.io import DatasetReader
 from terrio.rio.vrt import WarpedVRT
 
@@ -240,6 +240,35 @@ def test_the_rust_path_gives_the_python_paths_pixels(tmp_path, c):
         else:
             # The reduced read takes an overview.
             assert any(level is not None for level, _ in rust[1][1]), rust[1][1]
+
+
+def force_python_path(src):
+    """Replaces the source's `_read_level` by a function calling it, so that its WarpedVRT reads
+    take the Python path."""
+    own = src._read_level
+    src._read_level = lambda bands, window, level: own(bands, window, level)
+
+
+@pytest.mark.parametrize("src_alpha", [-1, -2, 3, 4])
+def test_a_src_alpha_outside_the_sources_bands_is_refused_on_both_paths(tmp_path, src_alpha):
+    # `src_alpha` is one of the source's bands, 1 to its count: any other value is refused when
+    # the WarpedVRT is made, whichever path its reads would take. Taken as given, -1 made band 1
+    # the alpha on the Python path (`data[-2]`), and negative values raised OverflowError on the
+    # Rust path.
+    path = write(tmp_path / "src.tif", values("uint8", 2, 29, 37))
+    for on_python_path in (False, True):
+        with terrio.rio.open(path) as src:
+            if on_python_path:
+                force_python_path(src)
+            with pytest.raises(WarpOptionsError) as refused:
+                WarpedVRT(src, crs="EPSG:3857", src_alpha=src_alpha)
+            assert str(refused.value) == f"src_alpha {src_alpha} is not a source band (1-2)"
+            for alpha in (1, 2):
+                with WarpedVRT(src, crs="EPSG:3857", src_alpha=alpha) as vrt:
+                    flags = []
+                    vrt._window_hook = lambda level, window, rust, seen=flags: seen.append(rust)
+                    vrt.read()
+                assert flags == [not on_python_path], flags
 
 
 def cut_short(tmp_path):
