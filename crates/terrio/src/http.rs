@@ -3505,12 +3505,12 @@ mod tests {
     /// the path-specific options) are held by the forking thread across the fork, never left held
     /// in the child by a thread it does not have. In a process of its own (`par::alone`).
     ///
-    /// Linux only: on macOS a child forked while another thread is in the middle of a remote
-    /// read died of SIGTRAP (exit by signal 5) in CI, as the forked child of a multi-threaded test
-    /// process does in `par`'s tests. The cause is not confirmed; a likely one is a system library
-    /// (name resolution, proxy settings) copied half way through a call.
+    /// Not on macOS: there a child forked while another thread was in the middle of a remote
+    /// read died of SIGTRAP (exit by signal 5), as forked children of multi-threaded test
+    /// processes do in `par`'s tests. The cause is unconfirmed; #696 tracks a macOS-safe check
+    /// of the same locks.
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn a_child_forked_during_remote_reads_reads_remote_files() {
         crate::par::alone(90, || {
             use std::sync::atomic::AtomicBool;
