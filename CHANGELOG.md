@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A `Raster` opened lazily from a path (`open_raster(path, lazy=True)`, `rio.open`, the xarray
+  backend) can be read from several Python threads at once: `read`, `read_mask` and
+  `numpy.asarray` raised `RuntimeError: Already borrowed` when a read overlapped another. An
+  overlapping read takes another reader of the same path, opened from the process-wide caches
+  (its first bytes are not requested again) and kept for the next overlapping read. Each reader
+  keeps its own decoded chunks. Other rasters, and the other methods, are still one call at a
+  time.
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000

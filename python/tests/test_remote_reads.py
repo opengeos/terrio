@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pytest
@@ -220,6 +221,27 @@ def test_a_reopened_file_is_read_from_the_process_wide_cache(tmp_path, serve):
             with rio.open(f"{server.url}/raster.tif") as ds:
                 assert ds.read(1).tolist() == [[1] * 4] * 4
     assert [row[2] for row in server.log if row[0] == "GET"] == [503, 200]
+
+
+def test_one_raster_read_from_threads_at_once_requests_its_header_once(tmp_path, serve):
+    """Reads that overlap open more readers of the file, from the process-wide cache: its first
+    bytes are requested once, and every window reads the file's pixels."""
+    pixels = write_cog(tmp_path / "cog.tif")
+    server = serve()
+    raster = terrio.open_raster(f"{server.url}/cog.tif", lazy=True)
+    windows = [(x, y, 256, 256) for y in range(0, 1024, 256) for x in range(0, 1024, 256)]
+    start = threading.Barrier(4, timeout=30)
+
+    def read(w):
+        start.wait()  # four reads at a time, started together
+        return raster.read(band=1, window=w)
+
+    with ThreadPoolExecutor(4) as ex:
+        got = list(ex.map(read, windows))
+    for (x, y, w, h), a in zip(windows, got, strict=True):
+        np.testing.assert_array_equal(a, pixels[0, y : y + h, x : x + w])
+    first_reads = [row for row in server.log if (row[1] or "").startswith("bytes=0-")]
+    assert len(first_reads) == 1, server.log
 
 
 def test_env_headers_add_no_request(tmp_path, serve):

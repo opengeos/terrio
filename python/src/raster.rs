@@ -23,12 +23,53 @@ type BandDomain = (usize, String, Vec<(String, String)>);
 /// decodes, and for remote files fetches, only the tiles a window needs.
 ///
 /// Bands are numbered from 1 and overviews from 0, as in GDAL.
-#[pyclass(module = "terrio", name = "Raster")]
+///
+/// A raster opened lazily from a path can be read from several threads at once: a read that
+/// overlaps another reads with a second reader of the same path (see `Readers`).
+#[pyclass(module = "terrio", name = "Raster", dict)]
 pub struct PyRaster {
     pub(crate) inner: LazyRaster,
 }
 
+/// More readers of a raster opened lazily from `path`, kept in its `_readers` attribute: a read
+/// that overlaps one in progress (which holds the raster's own reader) takes one of them, or
+/// opens one, and leaves it for the next. Opening again reads the headers from the process-wide
+/// caches; each reader keeps its own decoded chunks.
+#[pyclass(frozen)]
+pub(crate) struct Readers {
+    path: String,
+    spare: std::sync::Mutex<Vec<LazyRaster>>,
+}
+
+impl Readers {
+    pub(crate) fn new(path: &str) -> Self {
+        Self { path: path.to_owned(), spare: Default::default() }
+    }
+}
+
 impl PyRaster {
+    /// Runs `read` on the raster's reader or, while another thread reads the raster, on another
+    /// reader of its path (see [`Readers`]). A raster opened otherwise has one reader, which one
+    /// thread at a time reads: an overlapping read raises, as before.
+    fn with_reader<T>(slf: &Bound<'_, Self>, read: impl FnOnce(&mut LazyRaster) -> PyResult<T>) -> PyResult<T> {
+        let busy = match slf.try_borrow_mut() {
+            Ok(mut this) => return read(&mut this.inner),
+            Err(busy) => busy,
+        };
+        let py = slf.py();
+        let Ok(readers) = slf.getattr(pyo3::intern!(py, "_readers")) else { return Err(busy.into()) };
+        let readers = readers.cast::<Readers>()?.get();
+        let lock = || readers.spare.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let spare = lock().pop();
+        let mut reader = match spare {
+            Some(r) => r,
+            None => py.detach_result(|| terrio::open_raster_lazy(&readers.path)).py()?,
+        };
+        let out = read(&mut reader);
+        lock().push(reader);
+        out
+    }
+
     /// Wraps a raster in memory.
     pub(crate) fn from_dataset(ds: RasterDataset) -> Self {
         Self { inner: LazyRaster::from(ds) }
@@ -420,50 +461,51 @@ impl PyRaster {
     ///     InvalidArgumentError: If a band, the window or the overview does not exist.
     #[pyo3(signature = (band=None, window=None, overview=None))]
     fn read<'py>(
-        &mut self,
-        py: Python<'py>,
+        slf: &Bound<'py, Self>,
         band: Option<&Bound<'py, PyAny>>,
         window: Option<(usize, usize, usize, usize)>,
         overview: Option<usize>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let py = slf.py();
         let (mut bands, single) = parse_bands(band)?;
-        let complex = self.is_complex();
-        if complex {
-            // A complex band's real and imaginary parts.
-            if bands.is_empty() {
-                bands = (1..=self.inner.band_count()).collect();
-            } else {
-                // Checked by the complex bands' numbers, which the parts' numbers are not.
-                let count = self.count();
-                if let Some(b) = bands.iter().find(|b| **b == 0 || **b > count) {
-                    return Err(invalid(format!("no band {b}: the raster has {count} band(s)")));
+        Self::with_reader(slf, |inner| {
+            let complex = inner.is_complex();
+            if complex {
+                // A complex band's real and imaginary parts.
+                if bands.is_empty() {
+                    bands = (1..=inner.band_count()).collect();
+                } else {
+                    // Checked by the complex bands' numbers, which the parts' numbers are not.
+                    let count = inner.band_count() / 2;
+                    if let Some(b) = bands.iter().find(|b| **b == 0 || **b > count) {
+                        return Err(invalid(format!("no band {b}: the raster has {count} band(s)")));
+                    }
+                    bands = bands.iter().flat_map(|b| [2 * b - 1, 2 * b]).collect();
                 }
-                bands = bands.iter().flat_map(|b| [2 * b - 1, 2 * b]).collect();
             }
-        }
-        let window = match window {
-            Some((x, y, w, h)) => Window::new(x, y, w, h),
-            None => {
-                let (w, h) =
-                    match overview {
-                        None => (self.inner.width(), self.inner.height()),
-                        Some(i) => self.inner.overviews().get(i).copied().ok_or_else(|| {
-                            invalid(format!("no overview {i}: the raster has {} overview(s)", self.inner.overviews().len()))
-                        })?,
-                    };
-                Window::full(w, h)
+            let window = match window {
+                Some((x, y, w, h)) => Window::new(x, y, w, h),
+                None => {
+                    let (w, h) =
+                        match overview {
+                            None => (inner.width(), inner.height()),
+                            Some(i) => inner.overviews().get(i).copied().ok_or_else(|| {
+                                invalid(format!("no overview {i}: the raster has {} overview(s)", inner.overviews().len()))
+                            })?,
+                        };
+                    Window::full(w, h)
+                }
+            };
+            let options = WindowOptions { bands, overview };
+            let ds = py.detach_result(|| inner.read_window(window, &options)).py()?;
+            let r = ds.raster;
+            if complex {
+                let shape = if single { vec![r.rows, r.cols] } else { vec![r.bands / 2, r.rows, r.cols] };
+                return complex_to_numpy(py, r.data, r.rows * r.cols, &shape);
             }
-        };
-        let options = WindowOptions { bands, overview };
-        let inner = &mut self.inner;
-        let ds = py.detach_result(|| inner.read_window(window, &options)).py()?;
-        let r = ds.raster;
-        if complex {
-            let shape = if single { vec![r.rows, r.cols] } else { vec![r.bands / 2, r.rows, r.cols] };
-            return complex_to_numpy(py, r.data, r.rows * r.cols, &shape);
-        }
-        let shape = if single { vec![r.rows, r.cols] } else { vec![r.bands, r.rows, r.cols] };
-        to_numpy(py, r.data, &shape)
+            let shape = if single { vec![r.rows, r.cols] } else { vec![r.bands, r.rows, r.cols] };
+            to_numpy(py, r.data, &shape)
+        })
     }
 
     /// Reads the pixels at some columns of some rows, as nearest-neighbour resampling picks them,
@@ -671,24 +713,25 @@ impl PyRaster {
     ///     InvalidArgumentError: If the window or the overview does not exist.
     #[pyo3(signature = (window=None, overview=None))]
     fn read_mask<'py>(
-        &mut self,
-        py: Python<'py>,
+        slf: &Bound<'py, Self>,
         window: Option<(usize, usize, usize, usize)>,
         overview: Option<usize>,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
-        let window = match window {
-            Some((x, y, w, h)) => Window::new(x, y, w, h),
-            None => {
-                let (w, h) = match overview {
-                    None => (self.inner.width(), self.inner.height()),
-                    Some(i) => self.inner.overviews().get(i).copied().ok_or_else(|| invalid(format!("no overview {i}")))?,
-                };
-                Window::full(w, h)
-            }
-        };
-        let inner = &mut self.inner;
-        let mask = py.detach_result(|| inner.read_mask(window, overview)).py()?;
-        mask.map(|m| to_numpy(py, RasterData::U8(m), &[window.height, window.width])).transpose()
+        let py = slf.py();
+        Self::with_reader(slf, |inner| {
+            let window = match window {
+                Some((x, y, w, h)) => Window::new(x, y, w, h),
+                None => {
+                    let (w, h) = match overview {
+                        None => (inner.width(), inner.height()),
+                        Some(i) => inner.overviews().get(i).copied().ok_or_else(|| invalid(format!("no overview {i}")))?,
+                    };
+                    Window::full(w, h)
+                }
+            };
+            let mask = py.detach_result(|| inner.read_mask(window, overview)).py()?;
+            mask.map(|m| to_numpy(py, RasterData::U8(m), &[window.height, window.width])).transpose()
+        })
     }
 
     /// Internal overview metadata from the native mask discovery, without reading pixels.
@@ -708,16 +751,17 @@ impl PyRaster {
     /// sampling the full-resolution mask when an overview has none (GDAL 3.13.3).
     #[pyo3(signature = (window, overview=None))]
     fn _read_level_mask<'py>(
-        &mut self,
-        py: Python<'py>,
+        slf: &Bound<'py, Self>,
         window: (usize, usize, usize, usize),
         overview: Option<usize>,
     ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let py = slf.py();
         let (x, y, width, height) = window;
         let window = Window::new(x, y, width, height);
-        let inner = &mut self.inner;
-        let mask = py.detach_result(|| inner.read_level_mask(window, overview)).py()?;
-        mask.map(|m| to_numpy(py, RasterData::U8(m), &[height, width])).transpose()
+        Self::with_reader(slf, |inner| {
+            let mask = py.detach_result(|| inner.read_level_mask(window, overview)).py()?;
+            mask.map(|m| to_numpy(py, RasterData::U8(m), &[height, width])).transpose()
+        })
     }
 
     /// Creates a raster from a NumPy array.
@@ -897,9 +941,9 @@ impl PyRaster {
     /// Returns:
     ///     numpy.ndarray: The pixels, `(bands, rows, cols)`.
     #[pyo3(signature = (dtype=None, copy=None))]
-    fn __array__<'py>(&mut self, py: Python<'py>, dtype: Option<&Bound<'py, PyAny>>, copy: Option<bool>) -> PyResult<Bound<'py, PyAny>> {
+    fn __array__<'py>(slf: &Bound<'py, Self>, dtype: Option<&Bound<'py, PyAny>>, copy: Option<bool>) -> PyResult<Bound<'py, PyAny>> {
         let _ = copy;
-        let a = self.read(py, None, None, None)?;
+        let a = Self::read(slf, None, None, None)?;
         match dtype {
             Some(d) => a.call_method1("astype", (d,)),
             None => Ok(a),
