@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `terrio.xarray`: an object whose `.terrio` (or `.rio`) accessor was used is freed as soon as it
+  is dropped. xarray's accessor registration keeps a reference cycle (the object caches its
+  accessor, which refers to the object) that only the cyclic garbage collector frees, and that
+  held the pixels of every object `.terrio` touched, including views of each variable that
+  `write_crs` reads internally, so that a loop loading arrays could keep gigabytes. The object now
+  caches only the accessor's state, and each access returns a new accessor over it, so
+  `da.terrio is da.terrio` is False.
 - A remote read of a long range through the block cache, such as a GeoParquet row group or a run
   of COG tiles, is fetched as up to 8 parallel requests of at least 1 MiB each instead of one at
   the pace of a single connection (#741). `TERRIO_HTTP_MULTIRANGE=SERIAL` keeps one request.

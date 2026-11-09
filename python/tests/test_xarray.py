@@ -4,10 +4,12 @@ Comparisons with rioxarray are in `test_xarray_vs_rioxarray.py`; these tests nee
 only.
 """
 
+import gc
 import pickle
 import subprocess
 import sys
 import threading
+import weakref
 
 import numpy as np
 import pytest
@@ -1003,3 +1005,27 @@ def test_sidecar_only_mask_flags_and_uncached_reads_agree(tmp_path):
     with txr.open_rasterio(str(path), masked=True, cache=False) as opened:
         np.testing.assert_allclose(opened[:, :1, :].values, expected[:, :1, :], equal_nan=True)
         np.testing.assert_allclose(opened.values, expected, equal_nan=True)
+
+
+@pytest.mark.parametrize("kind", ["DataArray", "Dataset"])
+def test_accessor_leaves_no_reference_cycle(kind):
+    """What `.terrio` touched is freed when dropped, without the cyclic garbage collector:
+    `write_crs` reads views of each variable, which share the Dataset's variables, and
+    `write_nodata` copies the object with the accessor's state."""
+    coords = {"y": [3.5, 2.5, 1.5, 0.5], "x": [0.5, 1.5, 2.5, 3.5]}
+    da = xr.DataArray(np.zeros((4, 4)), dims=("y", "x"), coords=coords)
+    obj = da if kind == "DataArray" else xr.Dataset({"a": da, "b": da + 1})
+    gc.disable()
+    try:
+        out = obj.terrio.write_crs("EPSG:4326").terrio.write_transform()
+        if kind == "DataArray":
+            out = out.terrio.write_nodata(-1)
+        assert out.terrio.crs == "EPSG:4326" and out.terrio.transform() is not None
+        # the arrays from the Variables: an `out.a` view would be one more object to free
+        variables = out.variables if kind == "Dataset" else {"data": out.variable}
+        refs = {"out": weakref.ref(out)}
+        refs.update({n: weakref.ref(v.data) for n, v in variables.items() if v.ndim})
+        del out, variables
+        assert [n for n, r in refs.items() if r() is not None] == []
+    finally:
+        gc.enable()
