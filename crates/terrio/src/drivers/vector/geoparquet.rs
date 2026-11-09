@@ -1371,7 +1371,11 @@ mod tests {
             assert!(s.select_columns(&[2, 0]).unwrap());
             let announced = Arc::new(std::sync::Mutex::new(Vec::new()));
             let seen = announced.clone();
-            let mut s = s.with_prefetcher((Box::new(move |r: &[(u64, u64)]| Ok(seen.lock().unwrap().extend_from_slice(r))), u64::MAX));
+            let record = move |r: &[(u64, u64)]| {
+                seen.lock().unwrap().extend_from_slice(r);
+                Ok(())
+            };
+            let mut s = s.with_prefetcher((Box::new(record), u64::MAX));
             let features = s.next_batch().unwrap().unwrap();
             assert_eq!(*announced.lock().unwrap(), roots(&["a", "c", "geometry"]), "bbox {bbox:?}");
             let ids: Vec<i64> = if bbox.is_some() { (5..8).collect() } else { (0..20).collect() };
