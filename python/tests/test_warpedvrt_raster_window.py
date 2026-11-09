@@ -431,6 +431,41 @@ def test_a_read_level_replaced_on_the_class_reads_the_windows(tmp_path, monkeypa
     assert len(calls) == 1, calls
 
 
+def test_a_read_level_replaced_during_a_sum_read_reads_the_parts_after(tmp_path):
+    # A `sum` of a 2048 x 2048 raster without overviews read into 64 x 64 pixels, one region
+    # warped a part at a time under a 1 MB `warp_mem_limit`. The hook replaces the source's
+    # `_read_level` as the first part starts: each part's path is decided as it starts, so the
+    # first part is read in Rust and every part after through the replacement, on the Python path.
+    # The pixels are those of the same read without the replacement.
+    n = 2048
+    data = (np.arange(n * n, dtype="uint32") % 997).astype("float32").reshape(n, n)
+    path = str(tmp_path / "src.tif")
+    terrio.Raster.from_array(data, GT, crs=CRS).write(
+        path, driver="COG", tile_size=256, options={"OVERVIEW_COUNT": "0"}
+    )
+    kw = {"crs": "EPSG:3857", "resampling": Resampling.sum, "warp_mem_limit": 1}
+    with terrio.rio.open(path) as src, WarpedVRT(src, **kw) as vrt:
+        want = vrt.read(1, out_shape=(64, 64))
+    with terrio.rio.open(path) as src, WarpedVRT(src, **kw) as vrt:
+        own, calls, seen = src._read_level, [], []
+
+        def replacement(bands, window, level):
+            calls.append(window)
+            return own(bands, window, level)
+
+        def hook(level, window, rust):
+            seen.append((window, rust))
+            if len(seen) == 1:
+                src._read_level = replacement
+
+        vrt._window_hook = hook
+        got = vrt.read(1, out_shape=(64, 64))
+    assert len(seen) > 2, seen
+    assert [rust for _, rust in seen] == [True] + [False] * (len(seen) - 1), seen
+    assert calls == [window for window, _ in seen[1:]], (calls, seen)
+    np.testing.assert_array_equal(bits(got), bits(want))
+
+
 @pytest.mark.parametrize("name", ["cint16_strips.tif", "cfloat32_tiles.tif"])
 def test_a_complex_source_is_warped_from_its_real_parts_as_before(tmp_path, name):
     # A complex raster, read in UTM (`src_crs`), warped into a real data type: its window comes

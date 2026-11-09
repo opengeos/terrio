@@ -902,8 +902,10 @@ class WarpedVRT(DatasetReader):
                 itemsize = src.itemsize + (0 if self._sum_holds(src) else work.itemsize)
                 largest = max((part_win[2] * part_win[3] for _, part_win in parts), default=0)
                 _terrio._check_sum_window(largest, itemsize * self._src_count)
-            raster_kwargs = self._raster_window()
             for part, part_win in parts:
+                # Decided as each part starts: a `_read_level` replaced during the read (by another
+                # thread, or by the hook) sends the parts after down the Python path.
+                raster_kwargs = self._raster_window()
                 if self._window_hook is not None:
                     self._window_hook(grid.level, part_win, raster_kwargs is not None)
                 if raster_kwargs is not None:
