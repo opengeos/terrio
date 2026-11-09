@@ -577,6 +577,9 @@ WebAssembly (the `terrio-js` npm package):
       `calc`, `mosaic`, `proximity` and `sieve`, as the command line and Python offer them.
 - [x] Remote data read lazily with HTTP range requests (`fetch`), as native builds do: COGs by window
       and overview, PMTiles, COPC and FlatGeobuf by bounding box, GeoParquet by row group.
+      Zarr v2/v3 stores (including sharded arrays) read by window with `openUrl` in
+      [#683](https://github.com/opengeos/terrio/pull/683), with explicit array selection when a
+      group cannot be discovered through consolidated metadata.
 - [x] More formats in memory: Zarr and GeoZarr, netCDF and HDF5, point clouds (LAS, LAZ, COPC), and
       writing LERC, JPEG XL and JPEG GeoTIFFs.
 - [x] terrio's own FlatGeobuf reader in place of the format library's, which overflowed on large

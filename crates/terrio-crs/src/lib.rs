@@ -628,6 +628,21 @@ impl SpatialRef {
         }
     }
 
+    /// Whether the first two horizontal axes point north then east, as for latitude/longitude
+    /// and northing/easting CRSs. Unknown or undeclared axes return `false`.
+    /// GML authority-order names need these axes swapped into traditional GIS XY order
+    /// (GDAL 3.12.1 `EPSGTreatsAsLatLong` / `EPSGTreatsAsNorthingEasting`).
+    pub fn has_north_east_axis_order(&self) -> bool {
+        let Some(wkt) = self.to_wkt() else { return false };
+        let horizontal = def::split_compound(&wkt).map(|(horizontal, _)| horizontal);
+        let Some(root) = wkt1::parse(horizontal.as_deref().unwrap_or(&wkt)) else { return false };
+        let mut axes = root.children("AXIS");
+        let points = |axis: Option<&wkt1::Node>, direction: &str| {
+            axis.is_some_and(|axis| matches!(axis.args.get(1), Some(wkt1::Arg::Ident(d)) if d.eq_ignore_ascii_case(direction)))
+        };
+        points(axes.next(), "north") && points(axes.next(), "east")
+    }
+
     /// Whether this is a rotated-pole grid (PROJ's `+proj=ob_tran`, CF's
     /// `rotated_latitude_longitude`): its coordinates are in degrees but are not longitudes and
     /// latitudes, so it is not geographic.
@@ -1906,6 +1921,16 @@ impl Transformer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GDAL 3.12.1 axis predicates: projected, geographic, 3D and non-NE controls.
+    #[test]
+    fn horizontal_axis_order_comes_from_declared_directions() {
+        for (code, expected) in [(6708, true), (7792, false), (4326, true), (4979, true), (3035, true), (2065, false), (3413, false)] {
+            assert_eq!(SpatialRef::from_epsg(code).unwrap().has_north_east_axis_order(), expected, "EPSG:{code}");
+        }
+        assert!(SpatialRef::compound(4326, 5773).unwrap().has_north_east_axis_order());
+        assert!(!SpatialRef::default().has_north_east_axis_order());
+    }
 
     #[test]
     fn metres_per_unit_of_tile_matrix_sets() {

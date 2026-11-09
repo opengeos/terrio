@@ -518,6 +518,24 @@ The [CityJSON 1.1](https://www.cityjson.org/specs/1.1.3/) and
 [2.0 specifications](https://www.cityjson.org/specs/2.0.2/) and their published JSON
 Schemas define conformance. GDAL 3.13.3 has no CityJSON driver.
 
+### GML axis order
+
+The simple-feature GML reader normalizes authority-order EPSG identifiers (URNs and
+modern `/def/crs/` URLs) to GIS XY using the CRS's declared horizontal axes. This
+includes latitude-first geographic CRSs and northing-first projected CRSs such as
+EPSG:6708. Short `EPSG:` names and legacy `epsg.xml#` URLs retain XY order; easting-first
+projected CRSs retain XY for every identifier form. Heights are preserved. The GML
+writer emits authority-order coordinates and envelopes for its EPSG URNs. WFS 1.1/2.0
+bounding boxes follow the advertised authority order; WFS 1.0 bounding boxes use XY.
+Standalone layers with conflicting coordinate-axis declarations, including nested geometry
+members, are refused. Unknown EPSG identifiers are written with short `EPSG:` names and XY
+coordinates, preserving coordinate values on a local round trip; their custom CRS definition
+cannot be reconstructed from the code alone.
+
+Older Terrio versions wrote XY coordinates under northing-first projected EPSG URNs. Such
+files need their `srsName` changed to the short `EPSG:` form before reading; the current reader
+honors the declared authority order and cannot distinguish those old files from valid GML.
+
 ### CityGML
 
 The pure-Rust `CityGML` reader accepts 2.0 and 3.0 city models, using namespace

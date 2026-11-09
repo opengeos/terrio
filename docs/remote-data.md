@@ -182,8 +182,11 @@ also requires consent when such assets are declared. Deferred mosaic opens and c
 and nested native raster sources are checked too. Cached readers retain the original consent
 requirement, even after credentials are removed or unsigned reads are enabled. Export, overview
 metadata and resampled reads enforce it before source I/O; parallel readers carry the policy and
-the options in effect when the read starts. Sharing uses owned alpha metadata rather than seeking
-the TIFF again. Azure URI documents retain provider authentication for relative targets within the
+the options in effect when the read starts. Native object fetchers keep the headers, credentials
+and endpoints captured when they are created; a later `terrio.Env` scope does not replace those
+request settings. STAC credential consent remains a read-time decision: an active read's
+`TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS` setting can grant or revoke permission without changing
+the captured credentials. Sharing uses owned alpha metadata rather than seeking the TIFF again. Azure URI documents retain provider authentication for relative targets within the
 configured endpoint, including after a same-origin path redirect. Without credentials,
 public cloud hrefs remain usable. With AWS credentials configured, `AWS_NO_SIGN_REQUEST=YES` keeps
 public S3 reads unsigned and does not require the opt-in (custom authentication headers still need

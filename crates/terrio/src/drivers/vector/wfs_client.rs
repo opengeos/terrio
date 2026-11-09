@@ -495,7 +495,9 @@ fn validate_simple(
             if expected_crs.is_some_and(|expected| !expected.same_as(&actual)) {
                 return Err(invalid("a geometry CRS differs from the requested layer CRS"));
             }
-            if actual.is_geographic() && page_srs.is_some_and(|reference| gml::lat_lon_order(reference) != gml::lat_lon_order(srs)) {
+            if page_srs.is_some_and(|reference| gml::authority_axis_order(reference) != gml::authority_axis_order(srs))
+                && actual.has_north_east_axis_order()
+            {
                 return Err(invalid("mixed geometry axis orders within a page are unsupported"));
             }
         }
@@ -630,8 +632,8 @@ fn read_type(service: &Service, feature: &FeatureType, options: &VectorOpenOptio
         }
         if let Some((xmin, ymin, xmax, ymax)) = options.spatial_filter {
             let swap = !service.version.starts_with("1.0")
-                && feature.srs.as_deref().is_some_and(gml::lat_lon_order)
-                && feature.srs.as_deref().and_then(|s| gml::parse_srs_name(s).ok()).is_some_and(|s| s.is_geographic());
+                && feature.srs.as_deref().is_some_and(gml::authority_axis_order)
+                && feature.srs.as_deref().and_then(|s| gml::parse_srs_name(s).ok()).is_some_and(|s| s.has_north_east_axis_order());
             let mut bbox = if swap { format!("{ymin},{xmin},{ymax},{xmax}") } else { format!("{xmin},{ymin},{xmax},{ymax}") };
             if !service.version.starts_with("1.0")
                 && let Some(srs) = &feature.srs

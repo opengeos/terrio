@@ -8,6 +8,14 @@
   one year of the OlmoEarth v1.3 embeddings store on source.coop (18 inner chunks, 66 MB, a server
   answering in about 0.8 s) took 6.6 to 7.2 s on 12 cores and 9.2 to 10.7 s on 4; it now takes
   5.3 to 5.7 s and 4.5 to 5.9 s. Local stores and WebAssembly are read as before.
+
+## 0.8.0 (2026-11-08)
+
+- `terrio.rio`'s `subdatasets`, and so `terrio.xarray`'s open, list a file's subdatasets from the
+  raster already open instead of opening the file again. A remote store's metadata was fetched
+  twice: opening a UTM zone of the OlmoEarth v1.3 embeddings Zarr store on source.coop with
+  `xr.open_dataarray(..., engine="terrio")` took 5.2 to 6.0 s in 6 requests, and now takes
+  3.2 s in 3. GeoPackage raster tables are still listed by `info`.
 - `terrio translate` reads the bands of a window it copies pixel for pixel together, whichever
   bands they are. It used to read bands that are not the source's first ones in order one by one,
   as `gdal_translate`'s virtual dataset does, and without GDAL's block cache a Zarr chunk holding
@@ -83,6 +91,12 @@
   total. Sizes and geotransforms match GDAL 3.13.3 in all three cases; per-pixel values of a
   reprojected sum still differ from GDAL's.
 
+- GML and WFS normalize northing-first projected authority identifiers to GIS XY, including
+  EPSG:6708. Standalone layers with conflicting coordinate-axis declarations are now refused.
+  Older Terrio GML files that wrote XY under northing-first EPSG URNs need their `srsName`
+  changed to a short `EPSG:` name before reading. Unknown EPSG codes are written with short
+  names and XY coordinates, preserving coordinates without reconstructing a custom CRS (#681).
+
 - `ui` and `view` open the browser through a private HTML redirect file, keeping the session
   token out of process arguments. If a sandboxed browser cannot read the file, paste the
   printed address manually or use `--no-open`.
@@ -112,6 +126,15 @@
   `repeatable` (clap Append/Count) and lists its `conflicts_with` arguments in both directions,
   including members of exclusive argument groups. A CI step requires a newer `schema_version`
   whenever the catalog digest changes relative to the pull request's base.
+
+- JavaScript's `openUrl` reads remote Zarr stores (v2 and v3, sharded or not) by window, as
+  `terrio` reads them natively: `openUrl(store, { format: "Zarr", array: "embeddings" })` (or a
+  URL ending in `.zarr`) opens the array as a raster, fetching its metadata documents, and a
+  window fetches the shard indexes and chunks it needs. `LazyRaster::from_zarr_objects` and
+  `terrio::sparse::SparseObjects` read a store whose objects the caller fetches, as
+  `LazyRaster::from_sparse` and `SparseFile` read one file. 128 bands of a 192 x 192 window of the
+  TESSERA embeddings read in a median 3.9 s in Chrome from Europe (3 runs, 19 requests, 5 MB),
+  where the TESSERA Zarr Explorer (zarrita) took 9.0 s.
 
 - Python raster operations accept format-specific `options` dictionaries when writing a
   destination, as `Raster.write` and CLI `--co` do. Creation options also reach streamed
@@ -609,6 +632,15 @@
 - Fractional zonal coverage clips each ring to rows and boundary cells (axis-aligned
   Sutherland–Hodgman and shoelace areas) instead of general polygon overlays: about ten times
   less coverage time, with the same exact cell areas within floating-point roundoff.
+
+- terrio Web runs the terrio command line in the browser at https://terrio.dev/web/: the CLI
+  compiled to `wasm32-wasip1` runs in a Web Worker on an in-memory workspace, with forms built
+  from `terrio --json-usage` as in `terrio ui`, and reads `https://` URLs (and public `s3://`
+  and `gs://` objects) by range (#576).
+- Typing in the `terrio ui` file browser, or the terrio Web workspace picker, jumps to the next
+  entry whose name starts with the typed text; the arrow keys, Home and End move between
+  entries (#600).
+- `terrio-crs` 0.2.3 adds `list_crs`, the registry CRS listing above, and hardens grid parsing.
 
 ## 0.7.0 (2026-11-03)
 
