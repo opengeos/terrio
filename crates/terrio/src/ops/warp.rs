@@ -1946,20 +1946,15 @@ fn warp_reader_selected(
         if strip < c.sh {
             // A `sum` chunk whose source window's working memory exceeds the limit: the window is
             // read and summed a strip of rows at a time.
-            let mut sums = ctx.sum_strips(c);
-            for r0 in (0..c.sh).step_by(strip) {
-                let window = crate::Window::new(c.sx, c.sy + r0, c.sw, strip.min(c.sh - r0));
-                let (data, valid, masked) = read(window)?;
-                if masked {
-                    ctx.global_validity = true;
-                    storage.src_masked = true;
-                }
-                let sn = window.width * window.height;
-                crate::pixel::with_data!(&data.raster.data, v => {
-                    let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
-                    let part = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy + r0) };
-                    ctx.add_sum_strip(c, &part, (r0, r0 + window.height), &mut sums);
-                });
+            let mut masked = false;
+            let sums = ctx.sum_in_strips(c, strip, |window| {
+                let (data, valid, strip_masked) = read(window)?;
+                masked |= strip_masked;
+                Ok(Strip { data, valid })
+            })?;
+            if masked {
+                ctx.global_validity = true;
+                storage.src_masked = true;
             }
             let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: true };
             warp_chunks(std::slice::from_ref(c), bands, &storage, target, |c, sink, rows| ctx.store_sum_strips(c, &sums, sink, rows));
@@ -2244,19 +2239,12 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
             let options = crate::WindowOptions { overview, bands: Vec::new() };
             let strip = ctx.sum_strip_rows(c);
             if strip < c.sh {
-                let mut sums = ctx.sum_strips(c);
-                for r0 in (0..c.sh).step_by(strip) {
-                    let window = crate::Window::new(c.sx, c.sy + r0, c.sw, strip.min(c.sh - r0));
+                let sums = ctx.sum_in_strips(c, strip, |window| {
                     let data = src.read_window(window, &options)?;
                     let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&data.raster, b)).collect();
                     let valid = validity(&src_bands, &nodata, unified, source_mask(&mut src, window, overview)?);
-                    let sn = window.width * window.height;
-                    crate::pixel::with_data!(&data.raster.data, v => {
-                        let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
-                        let part = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy + r0) };
-                        ctx.add_sum_strip(c, &part, (r0, r0 + window.height), &mut sums);
-                    });
-                }
+                    Ok(Strip { data, valid })
+                })?;
                 return Ok(ChunkRead::Summed(sums));
             }
             let window = crate::Window::new(c.sx, c.sy, c.sw, c.sh);
@@ -3669,6 +3657,33 @@ impl WarpContext<'_> {
         SumStrips { sums: vec![(0.0, false); footprints.len() * self.bands], footprints }
     }
 
+    /// Sums a `sum` chunk from its source window, read `strip` rows at a time by `read`: each strip
+    /// is summed while the next one is read, so that two strips are held at most.
+    fn sum_in_strips(&self, c: &Chunk, strip: usize, mut read: impl FnMut(crate::Window) -> Result<Strip>) -> Result<SumStrips> {
+        let mut sums = self.sum_strips(c);
+        let window = |r0: usize| crate::Window::new(c.sx, c.sy + r0, c.sw, strip.min(c.sh - r0));
+        let (mut r0, mut current) = (0, read(window(0))?);
+        loop {
+            let rows = (r0, r0 + strip.min(c.sh - r0));
+            if rows.1 == c.sh {
+                self.add_strip(c, &current, rows, &mut sums);
+                return Ok(sums);
+            }
+            let next = alongside(|| self.add_strip(c, &current, rows, &mut sums), || read(window(rows.1)))?;
+            (r0, current) = (rows.1, next);
+        }
+    }
+
+    /// Adds a strip of a `sum` chunk's source window, its rows `rows`, to the chunk's sums.
+    fn add_strip(&self, c: &Chunk, strip: &Strip, rows: (usize, usize), sums: &mut SumStrips) {
+        let (bands, sn) = (self.bands, c.sw * (rows.1 - rows.0));
+        crate::pixel::with_data!(&strip.data.raster.data, v => {
+            let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
+            let part = SrcData { bands: &typed, valid: &strip.valid, width: c.sw, origin: (c.sx, c.sy + rows.0) };
+            self.add_sum_strip(c, &part, rows, sums);
+        });
+    }
+
     /// Adds the rows `rows` of a `sum` chunk's source window, whose pixels `src` holds, to the
     /// sums of the chunk's pixels: each pixel's sums get the rows of its footprint in the same
     /// order as from the whole window, so that summed a strip at a time, they are the same.
@@ -3693,6 +3708,33 @@ impl WarpContext<'_> {
                 self.store_sums(sink, &strips.sums[p * self.bands..(p + 1) * self.bands], &mut out, i);
             }
         }
+    }
+}
+
+/// A strip of a chunk's source window: its pixels in the working type, and their validity.
+struct Strip {
+    data: RasterDataset,
+    valid: Vec<Option<Vec<bool>>>,
+}
+
+/// Runs `background` on another thread while `foreground` runs on this one, and returns what
+/// `foreground` returns; one after the other in WebAssembly.
+fn alongside<R>(background: impl FnOnce() + Send, foreground: impl FnOnce() -> R) -> R {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        std::thread::scope(|s| {
+            let running = s.spawn(background);
+            let result = foreground();
+            if let Err(panic) = running.join() {
+                std::panic::resume_unwind(panic);
+            }
+            result
+        })
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        background();
+        foreground()
     }
 }
 
@@ -5877,6 +5919,34 @@ mod tests {
             }
         }
         assert!(paths.iter().all(|n| *n >= 20), "footprints on each path: {paths:?}");
+    }
+
+    /// A `sum` adds the valid source pixels of a footprint row after row, each row from the left,
+    /// as before shares were computed a few rows at a time: a 1 x 1 output over 6000 x 200 pixels,
+    /// whose shares take two blocks of rows, holds the sum of the pixels in that order, bit for
+    /// bit, warped in memory, read whole, and read in strips of two heights.
+    #[test]
+    fn a_sum_adds_a_footprint_row_after_row_whatever_its_blocks_and_strips() {
+        let dir = tempfile::tempdir().unwrap();
+        let ds = raster(6000, 200, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| ((c * 7 + r * 13) % 251) as f64 + 0.37);
+        let expected = ds.raster.data.to_f64_vec().iter().fold(0.0, |sum, v| sum + v);
+        let path = dir.path().join("src.tif").to_str().unwrap().to_string();
+        crate::write_raster_dataset(&ds, &path, &Default::default()).unwrap();
+        let o = |memory_limit| WarpOptions {
+            size: Some((1, 1)),
+            resampling: Resampling::Sum,
+            output_type: Some(DataType::F64),
+            memory_limit,
+            ..Default::default()
+        };
+        let mut got = vec![("in memory".to_string(), warp(&[&ds], &o(64.0 * 1024.0 * 1024.0)).unwrap().raster.data.to_f64_vec()[0])];
+        for memory_limit in [64.0 * 1024.0 * 1024.0, 2_000_000.0, 300_000.0] {
+            let out = warp_lazy(&mut crate::open_raster_lazy(&path).unwrap(), &o(memory_limit)).unwrap();
+            got.push((format!("read within {memory_limit} bytes"), out.raster.data.to_f64_vec()[0]));
+        }
+        for (how, sum) in got {
+            assert_eq!(sum.to_bits(), expected.to_bits(), "{how}: {sum}, not {expected}");
+        }
     }
 
     /// A `sum` chunk whose source window's working memory exceeds the limit (an output of 2 x 2
