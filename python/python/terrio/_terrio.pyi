@@ -963,6 +963,7 @@ def open_stream(
     *,
     batch_size: int = 65536,
     bbox: _Bounds | None = None,
+    columns: Sequence[str] | None = None,
 ) -> FeatureStream: ...
 def convert(
     src: str,

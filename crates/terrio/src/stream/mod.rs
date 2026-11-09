@@ -89,6 +89,32 @@ trait FeatureSource: Send {
     fn set_batch_bytes(&mut self, _bytes: usize) {}
 }
 
+/// The features of a reader with some of their fields (see [`FeatureReader::select_fields`]).
+struct SelectedFields {
+    inner: FeatureReader,
+    keep: Vec<usize>,
+}
+
+impl FeatureSource for SelectedFields {
+    fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
+        let Some(chunk) = self.inner.read_chunk(65536)? else { return Ok(None) };
+        let keep = &self.keep;
+        Ok(Some(
+            chunk
+                .features
+                .into_iter()
+                .map(|mut f| {
+                    f.attributes = keep
+                        .iter()
+                        .map(|&i| f.attributes.get_mut(i).map_or(FieldValue::Null, |v| std::mem::replace(v, FieldValue::Null)))
+                        .collect();
+                    f
+                })
+                .collect(),
+        ))
+    }
+}
+
 /// A layer without its features: its name, fields, geometry type and CRS.
 pub fn schema_of(layer: &Layer) -> Layer {
     Layer {
@@ -127,6 +153,34 @@ impl FeatureReader {
     /// The layer, without its features: its name, fields, geometry type and CRS.
     pub fn layer(&self) -> &Layer {
         &self.layer
+    }
+
+    /// Keeps only the fields `columns` names, in the layer's order: the field of that name
+    /// (matched without case), or the members of a struct column of that name, which the
+    /// GeoParquet and Arrow readers flatten into `name.member` fields. Called before reading.
+    ///
+    /// # Errors
+    ///
+    /// If a name matches no field.
+    pub fn select_fields(self, columns: &[String]) -> Result<Self> {
+        let fields = self.layer.schema.fields();
+        let named = |f: &str, c: &str| {
+            f.eq_ignore_ascii_case(c) || f.get(..c.len()).is_some_and(|head| head.eq_ignore_ascii_case(c)) && f[c.len()..].starts_with('.')
+        };
+        if let Some(c) = columns.iter().find(|c| !fields.iter().any(|f| named(&f.name, c))) {
+            let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+            return Err(Error::InvalidArgument(format!("no field named {c:?} (fields: {})", names.join(", "))));
+        }
+        let keep: Vec<usize> = (0..fields.len()).filter(|&i| columns.iter().any(|c| named(&fields[i].name, c))).collect();
+        let mut layer = self.layer.clone();
+        layer.schema = wbvector::Schema::new();
+        for &i in &keep {
+            layer.schema.add_field(fields[i].clone());
+        }
+        let chunk_bytes = self.chunk_bytes;
+        let mut reader = FeatureReader::new(layer, Box::new(SelectedFields { inner: self, keep }));
+        reader.chunk_bytes = chunk_bytes;
+        Ok(reader)
     }
 
     fn fill(&mut self, n: usize) -> Result<()> {
@@ -227,6 +281,16 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
     // `.json` files may be STAC items or collections, which the dataset reader recognizes.
     let driver = VectorDriver::for_extension(path).filter(|_| crate::formats::extension(path).as_deref() != Some("json"));
     let local = crate::vfs::Location::parse(path).is_local() && std::path::Path::new(path).is_file();
+    // A remote GeoParquet file is read in place, a window of row groups at a time.
+    #[cfg(all(remote, feature = "parquet"))]
+    if !local
+        && crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector)).is_ok()
+        && let Some(s) = geoparquet::open_remote(path, options.spatial_filter, batch)?
+    {
+        let layer = crate::dataset::fix_layer(s.layer.clone(), path, VectorDriver::Parquet);
+        crate::dataset::layer_selection(&options.layers, &[layer.name.as_str()], Some(path), false)?;
+        return Ok(vec![FeatureReader::new(layer, Box::new(ParquetSource(s)))]);
+    }
     let Some(driver) = driver.filter(|d| local && can_read_stream(*d)) else {
         let ds = crate::open_vector(path, options)?;
         return Ok(ds

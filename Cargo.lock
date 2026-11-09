@@ -2670,6 +2670,7 @@ dependencies = [
  "arrow-buffer",
  "arrow-ipc",
  "arrow-schema",
+ "arrow-select",
  "bytes",
  "delaunator",
  "e57",
