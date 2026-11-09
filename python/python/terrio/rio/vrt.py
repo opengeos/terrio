@@ -174,6 +174,9 @@ class WarpedVRT(DatasetReader):
 
     # A private hook for tests: called with the level, the source window and whether the window
     # is read and warped without leaving Rust (`_raster_window`), for each window a region reads.
+    # It stays in the class because nothing else shows which path a window takes (replacing
+    # `_read_level` to watch the windows would send them down the Python path); unset, it costs
+    # one attribute check per window.
     _window_hook: Any = None
 
     def __init__(
@@ -711,9 +714,10 @@ class WarpedVRT(DatasetReader):
             # The source is read in the working data type, unless a `sum` takes it as it is.
             data = gdal_cast(data, self._dtype)
         data = np.ascontiguousarray(data).view()
-        # The warp reads a read-only window where it is, with the GIL held, and copies a writeable
-        # one first (`RegionWarp.warp`). _read_level returns fresh pixels (list band indexing
-        # for in-memory datasets); use a view so this flag never changes the source's array.
+        # On this path, for a source `_raster_window` does not read in Rust, the warp reads a
+        # read-only window where it is, with the GIL held, and copies a writeable one first
+        # (`RegionWarp.warp`). _read_level returns fresh pixels (list band indexing for in-memory
+        # datasets); use a view so this flag never changes the source's array.
         data.flags.writeable = False
         return data, mask
 

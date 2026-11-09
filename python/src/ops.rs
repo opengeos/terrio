@@ -2065,7 +2065,7 @@ impl PyRegionWarp {
         let (out, written) = py
             .detach_result(|| {
                 let mask: Option<Vec<bool>> = match alpha {
-                    Some(a) => Some(crate::warp_window::nonzero(&data, a - 1, w * h)),
+                    Some(a) => Some(crate::warp_window::nonzero(&data, a - 1, w * h)?),
                     None => mask.map(|m| m.into_iter().map(|v| v != 0).collect()),
                 };
                 if let Some(t) = work

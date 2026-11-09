@@ -127,10 +127,14 @@ fn cast<S: Sample>(v: &[S], to: DataType) -> RasterData {
 }
 
 /// Which of the `n` pixels of band `band` (from 0) are not 0: the validity `_source_window` takes
-/// from an alpha band (`data[alpha - 1] != 0`), before any conversion.
-pub(crate) fn nonzero(data: &RasterData, band: usize, n: usize) -> Vec<bool> {
-    fn of<S: Sample>(v: &[S], band: usize, n: usize) -> Vec<bool> {
-        v[band * n..(band + 1) * n].iter().map(|x| x.as_f64() != 0.0).collect()
+/// from an alpha band (`data[alpha - 1] != 0`), before any conversion. An error if the window does
+/// not hold that band.
+pub(crate) fn nonzero(data: &RasterData, band: usize, n: usize) -> terrio::Result<Vec<bool>> {
+    fn of<S: Sample>(v: &[S], band: usize, n: usize) -> terrio::Result<Vec<bool>> {
+        let values = v.get(band * n..(band + 1) * n).ok_or_else(|| {
+            terrio::Error::InvalidArgument(format!("a window of {} values has no band {} of {n} pixels", v.len(), band + 1))
+        })?;
+        Ok(values.iter().map(|x| x.as_f64() != 0.0).collect())
     }
     match data {
         RasterData::U8(v) => of(v, band, n),
