@@ -18,17 +18,21 @@ import numpy as np
 import pytest
 from affine import Affine
 
+import terrio
 import terrio.rio as rio
 from terrio.rio import features, merge, warp
+from terrio.rio import shutil as rio_shutil
 from terrio.rio.enums import ColorInterp, MaskFlags, Resampling
 from terrio.rio.errors import (
     CRSError,
+    DriverCapabilityError,
+    DriverRegistrationError,
     RasterBlockError,
     RasterioIOError,
     UnsupportedOperation,
     WindowError,
 )
-from terrio.rio.io import ZipMemoryFile
+from terrio.rio.io import _EXTENSIONS, DatasetWriter, ZipMemoryFile, get_writer_for_driver
 from terrio.rio.windows import Window
 
 T = rio.transform.from_origin(500000, 4100000, 30, 30)
@@ -223,6 +227,104 @@ def test_write_misuse(tmp_path):
             dst.read()
         with pytest.raises(ValueError):
             dst.write(np.zeros((2, 4, 4), "uint8"))
+
+
+# The names of JPEG 2000 drivers, which the driver allow-list and `driver=` of a read take as JP2.
+JPEG_2000_NAMES = ["JP2", "JP2OpenJPEG", "jp2openjpeg", "JPEG2000", "JP2KAK", "JP2ECW", "JP2MrSID"]
+JP2_PIXELS = (np.arange(48 * 64) % 251).astype("uint8").reshape(1, 48, 64)
+JP2_PROFILE = dict(width=64, height=48, count=1, dtype="uint8", crs="EPSG:32611", transform=T)
+
+
+def _assert_written_as_jp2(path):
+    """Asserts that `path` reads back as terrio's JP2, with `JP2_PIXELS`, its CRS and transform."""
+    with rio.open(path) as ds:
+        assert ds.driver == "JP2"
+        assert np.array_equal(ds.read(), JP2_PIXELS)
+        assert ds.crs.to_epsg() == 32611 and ds.transform == T
+
+
+@pytest.mark.parametrize("driver", [None, *JPEG_2000_NAMES])
+def test_jpeg_2000_is_written_by_extension_and_by_each_jpeg_2000_driver_name(tmp_path, driver):
+    """A `.jp2` path opened for writing without a driver takes `JP2OpenJPEG` from its extension,
+    and writes JPEG 2000, as each name of a JPEG 2000 driver does: all but `JP2` were refused with
+    DriverCapabilityError. The file reads back as terrio's JP2."""
+    path = str(tmp_path / "a.jp2")
+    kwargs = {} if driver is None else {"driver": driver}
+    with rio.open(path, "w", **JP2_PROFILE, **kwargs) as dst:
+        dst.write(JP2_PIXELS)
+    _assert_written_as_jp2(path)
+
+
+@pytest.mark.parametrize("driver", [None, "JP2OpenJPEG", "JPEG2000"])
+def test_shutil_copy_writes_jpeg_2000_by_extension_and_by_driver_name(tmp_path, driver):
+    """`shutil.copy` to a `.jp2` path writes JPEG 2000 with the driver its extension gives,
+    `JP2OpenJPEG`, or with a JPEG 2000 name given: it raised DriverRegistrationError."""
+    src = str(tmp_path / "src.tif")
+    with rio.open(src, "w", driver="GTiff", **JP2_PROFILE) as dst:
+        dst.write(JP2_PIXELS)
+    out = str(tmp_path / "copy.jp2")
+    rio_shutil.copy(src, out, driver=driver)
+    _assert_written_as_jp2(out)
+
+
+def test_each_driver_of_the_extension_table_writes_when_terrio_writes_the_extension():
+    """`driver_from_extension` names the driver that `open(..., "w")` and `shutil.copy` write with
+    when none is given: each name in its table is accepted by `get_writer_for_driver` when a raster
+    driver of this build writes files with that extension, and refused when none does (`.img`
+    without the `gdal` feature). `.jp2`'s `JP2OpenJPEG` was refused."""
+    rasters = [d for d in terrio.drivers() if d["kind"] == "raster"]
+    for ext, driver in _EXTENSIONS.items():
+        claiming = [d for d in rasters if ext[1:] in d["extensions"]]
+        assert claiming, ext
+        if any(d["write"] for d in claiming):
+            assert get_writer_for_driver(driver) is DatasetWriter, (ext, driver)
+        else:
+            with pytest.raises(DriverCapabilityError):
+                get_writer_for_driver(driver)
+
+
+@pytest.mark.parametrize("driver", ["OpenJPEG", "HDF5", "ESRI Shapefile"])
+def test_a_name_no_raster_driver_writes_is_refused_before_writing(tmp_path, driver):
+    """A name of no driver, of a raster driver that only reads (HDF5) or of a vector driver is
+    refused by `open(..., "w")` and `shutil.copy`, and nothing is written."""
+    src = str(tmp_path / "src.tif")
+    with rio.open(src, "w", driver="GTiff", **JP2_PROFILE) as dst:
+        dst.write(JP2_PIXELS)
+    out = tmp_path / "a.jp2"
+    with pytest.raises(DriverCapabilityError, match=f"Writer does not exist for driver: {driver}"):
+        rio.open(str(out), "w", driver=driver, **JP2_PROFILE)
+    with pytest.raises(DriverRegistrationError, match=f"Unrecognized driver: {driver}"):
+        rio_shutil.copy(src, str(out), driver=driver)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["src.tif"]
+
+
+@pytest.mark.parametrize("driver", [" GTiff ", "GTiff ", " JP2OpenJPEG ", "\tCOG"])
+def test_a_driver_name_with_whitespace_around_it_is_refused_before_writing(tmp_path, driver):
+    """A writer keeps the driver name it is given and compares it with `GTiff` and `COG` as
+    written, so a name with whitespace around it, which the driver allow-list reads without it,
+    is refused before anything is written: by `get_writer_for_driver`, `open(..., "w")`,
+    `MemoryFile.open`, `DatasetWriter` and `shutil.copy`."""
+    src = str(tmp_path / "src.tif")
+    with rio.open(src, "w", driver="GTiff", **JP2_PROFILE) as dst:
+        dst.write(JP2_PIXELS)
+    out = str(tmp_path / "out.tif")
+    message = f"Writer does not exist for driver: {driver}"
+    with pytest.raises(DriverCapabilityError) as refused:
+        get_writer_for_driver(driver)
+    assert str(refused.value) == message
+    with pytest.raises(DriverCapabilityError) as refused:
+        rio.open(out, "w", driver=driver, **JP2_PROFILE)
+    assert str(refused.value) == message
+    with rio.MemoryFile(ext=".tif") as memfile, pytest.raises(DriverCapabilityError) as refused:
+        memfile.open(driver=driver, **JP2_PROFILE)
+    assert str(refused.value) == message
+    with pytest.raises(DriverCapabilityError) as refused:
+        DatasetWriter(out, "w", driver=driver, **JP2_PROFILE)
+    assert str(refused.value) == message
+    with pytest.raises(DriverRegistrationError) as unrecognized:
+        rio_shutil.copy(src, out, driver=driver)
+    assert str(unrecognized.value) == f"Unrecognized driver: {driver}"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["src.tif"]
 
 
 def test_update_and_colormap(dem, tmp_path):
