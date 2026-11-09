@@ -3346,10 +3346,10 @@ impl WarpContext<'_> {
         }
     }
 
-    /// The area-based methods (average, mode, min, max, quantiles, RMS, sum).
+    /// The area-based methods but `sum` (average, mode, min, max, quantiles, RMS): each output
+    /// pixel summarizes the source inside both its footprint and the chunk's source window, each
+    /// source pixel weighed by its part inside them.
     fn warp_area_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
-        let xmargin = 2.0 * (1.0f64).max((1.0 / k.xscale).ceil());
-        let ymargin = 2.0 * (1.0f64).max((1.0 / k.yscale).ceil());
         let n = c.dw;
         let (mut x1, mut y1, mut o1) = (vec![0.0; n], vec![0.0; n], vec![false; n]);
         let (mut x2, mut y2, mut o2) = (vec![0.0; n], vec![0.0; n], vec![false; n]);
@@ -3366,15 +3366,10 @@ impl WarpContext<'_> {
             self.approx.transform(true, &mut x2, &mut y2, &mut o2);
             for i in 0..n {
                 let (mut ax, mut bx, mut ay, mut by) = (x1[i], x2[i], y1[i], y2[i]);
-                if !(ax - sxo >= -xmargin
-                    && bx - sxo >= -xmargin
-                    && ay - syo >= -ymargin
-                    && by - syo >= -ymargin
-                    && ax - sxo - sw <= xmargin
-                    && bx - sxo - sw <= xmargin
-                    && ay - syo - sh <= ymargin
-                    && by - syo - sh <= ymargin)
-                {
+                // A corner that could not be transformed, or not to a finite position, leaves the
+                // pixel alone. The others may lie far beyond the window, as those of a pixel larger
+                // than the source do.
+                if !(o1[i] && o2[i] && [ax, bx, ay, by].iter().all(|v| v.is_finite())) {
                     continue;
                 }
                 if ax > bx {
@@ -3383,11 +3378,15 @@ impl WarpContext<'_> {
                 if ay > by {
                     std::mem::swap(&mut ay, &mut by);
                 }
-                let (xmin, xmax, ymin, ymax) = (ax - sxo, bx - sxo, ay - syo, by - syo);
+                // A footprint that does not meet the window, as one beside it does, leaves the pixel
+                // alone. Of the others, the part inside the window counts; one without width or
+                // height there takes the source pixel it lies on.
+                let (x0, x1, y0, y1) = (ax - sxo, bx - sxo, ay - syo, by - syo);
                 const EPS: f64 = 1e-10;
-                if !(xmax > -EPS && xmin < sw + EPS) || !(ymax > -EPS && ymin < sh + EPS) {
+                if !(x1 > EPS && x0 < sw - EPS && y1 > EPS && y0 < sh - EPS) {
                     continue;
                 }
+                let (xmin, xmax, ymin, ymax) = (x0.max(0.0), x1.min(sw), y0.max(0.0), y1.min(sh));
                 let ix0 = (xmin + EPS).floor().max(0.0) as usize;
                 let mut ix1 = ((xmax - EPS).ceil().max(0.0) as usize).min(c.sw);
                 if ix0 == ix1 && ix1 < c.sw {
@@ -5314,6 +5313,168 @@ mod tests {
             let got = warp(&[&ds], &o).unwrap().raster.data.to_f64_vec();
             assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-9), "{cols} x {rows} source: {got:?}, not {want:?}");
         }
+    }
+
+    /// The area methods other than `sum` summarize the source inside each output pixel, each source
+    /// pixel weighed by its part inside both the output pixel and the source window, whatever the
+    /// extent of the output grid. 200 x 200 source pixels of 10 m, each holding its column number,
+    /// whose edges cut 100 m output pixels in half: on grids of 40, 100 and 1000 such pixels, each
+    /// method writes the 21 x 21 output pixels the source meets, and row 15's columns 10, 11 and 30
+    /// summarize source columns 0 to 4, 5 to 14 and 195 to 199, ten rows each.
+    #[test]
+    fn area_methods_take_the_source_inside_an_output_pixel_whatever_the_grid() {
+        let ds = raster(200, 200, [1050.0, 10.0, 0.0, 9050.0, 0.0, -10.0], 32610, |c, _| c as f64);
+        let methods = [
+            (Resampling::Average, [2.0, 9.5, 197.0]),
+            (Resampling::Rms, [6f64.sqrt(), 98.5f64.sqrt(), 38811f64.sqrt()]),
+            (Resampling::Mode, [0.0, 5.0, 195.0]),
+            (Resampling::Min, [0.0, 5.0, 195.0]),
+            (Resampling::Max, [4.0, 14.0, 199.0]),
+            (Resampling::Med, [2.0, 9.0, 197.0]),
+            (Resampling::Q1, [1.0, 7.0, 196.0]),
+            (Resampling::Q3, [3.0, 12.0, 198.0]),
+        ];
+        let mut wrong = Vec::new();
+        for n in [40, 100, 1000] {
+            for (resampling, want) in methods {
+                let o = WarpOptions {
+                    dst_transform: Some([0.0, 100.0, 0.0, 10000.0, 0.0, -100.0]),
+                    size: Some((n, n)),
+                    resampling,
+                    output_type: Some(DataType::F64),
+                    dst_nodata: Nodata::Values(vec![-1.0]),
+                    ..Default::default()
+                };
+                let got = warp(&[&ds], &o).unwrap().raster.data.to_f64_vec();
+                let written = got.iter().filter(|v| **v != -1.0).count();
+                let row = [10, 11, 30].map(|c| got[15 * n + c]);
+                if written != 441 || row.iter().zip(want).any(|(g, w)| (g - w).abs() > 1e-9) {
+                    wrong.push(format!("{n} x {n}, {resampling:?}: {written} written, {row:?} for {want:?}"));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// An output pixel much larger than the source holds, by every area method, the source inside
+    /// it: the 3 x 2 source of 10 m pixels lies across the line between two output pixels of 1 km,
+    /// its first column `[7, 10]` west of it and `[8, 9, 11, 12]` east of it.
+    #[test]
+    fn area_methods_of_an_output_pixel_much_larger_than_the_source_take_the_source_inside_it() {
+        let ds = raster(3, 2, [990.0, 10.0, 0.0, 1800.0, 0.0, -10.0], 32610, |c, r| (7 + c + 3 * r) as f64);
+        let mut wrong = Vec::new();
+        for (resampling, west, east) in [
+            (Resampling::Average, 8.5, 10.0),
+            (Resampling::Rms, 74.5f64.sqrt(), 102.5f64.sqrt()),
+            (Resampling::Mode, 7.0, 8.0),
+            (Resampling::Min, 7.0, 8.0),
+            (Resampling::Max, 10.0, 12.0),
+            (Resampling::Med, 7.0, 9.0),
+            (Resampling::Q1, 7.0, 8.0),
+            (Resampling::Q3, 10.0, 11.0),
+        ] {
+            let o = WarpOptions {
+                dst_transform: Some([0.0, 1000.0, 0.0, 3000.0, 0.0, -1000.0]),
+                size: Some((2, 2)),
+                resampling,
+                output_type: Some(DataType::F64),
+                dst_nodata: Nodata::Values(vec![-1.0]),
+                ..Default::default()
+            };
+            let got = warp(&[&ds], &o).unwrap().raster.data.to_f64_vec();
+            let want = [-1.0, -1.0, west, east];
+            if got.iter().zip(want).any(|(g, w)| (g - w).abs() > 1e-9) {
+                wrong.push(format!("{resampling:?}: {got:?}, not {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// An output pixel whose footprint holds no source is left alone by every area method, as by
+    /// `sum`, on every side of the source: 4 x 4 source pixels of 1 m, values 0 to 15, under 2 m
+    /// output pixels from (-2, 6), whose first and last rows and columns lie just outside it.
+    #[test]
+    fn area_methods_leave_output_pixels_beside_the_source_alone() {
+        let ds = raster(4, 4, [0.0, 1.0, 0.0, 4.0, 0.0, -1.0], 32610, |c, r| (c + 4 * r) as f64);
+        let mut wrong = Vec::new();
+        for (resampling, inside) in [
+            (Resampling::Average, [2.5, 4.5, 10.5, 12.5]),
+            (Resampling::Rms, [10.5f64.sqrt(), 24.5f64.sqrt(), 114.5f64.sqrt(), 160.5f64.sqrt()]),
+            (Resampling::Mode, [0.0, 2.0, 8.0, 10.0]),
+            (Resampling::Min, [0.0, 2.0, 8.0, 10.0]),
+            (Resampling::Max, [5.0, 7.0, 13.0, 15.0]),
+            (Resampling::Med, [1.0, 3.0, 9.0, 11.0]),
+            (Resampling::Q1, [0.0, 2.0, 8.0, 10.0]),
+            (Resampling::Q3, [4.0, 6.0, 12.0, 14.0]),
+            (Resampling::Sum, [10.0, 18.0, 42.0, 50.0]),
+        ] {
+            let o = WarpOptions {
+                dst_transform: Some([-2.0, 2.0, 0.0, 6.0, 0.0, -2.0]),
+                size: Some((4, 4)),
+                resampling,
+                output_type: Some(DataType::F64),
+                dst_nodata: Nodata::Values(vec![-1.0]),
+                ..Default::default()
+            };
+            let got = warp(&[&ds], &o).unwrap().raster.data.to_f64_vec();
+            let mut want = [-1.0; 16];
+            (want[5], want[6], want[9], want[10]) = (inside[0], inside[1], inside[2], inside[3]);
+            if got.iter().zip(want).any(|(g, w)| (g - w).abs() > 1e-9) {
+                wrong.push(format!("{resampling:?}: {got:?}, not {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// An output pixel with a corner that cannot be transformed is left alone by every area
+    /// method, and one whose footprint on the source grid has no width still takes the source
+    /// pixel under it. Under 10-degree pixels of longitude and latitude, over a source in an
+    /// orthographic projection centred on (0, 0): from 80 degrees north to 80 south, the points
+    /// past 90 degrees east or west lie beyond its horizon, and the 288 pixels there stay empty
+    /// while the 288 between are written; from pole to pole, the two pixels between a pole and
+    /// the central meridian have both corners on the meridian, and are written.
+    #[test]
+    fn area_methods_leave_output_pixels_whose_corners_do_not_transform_alone() {
+        let ds = raster(128, 128, [-6.4e6, 1e5, 0.0, 6.4e6, 0.0, -1e5], 4326, |_, _| 1.0);
+        let ortho = SpatialRef::parse("+proj=ortho +lat_0=0 +lon_0=0 +datum=WGS84 +units=m +no_defs").unwrap();
+        let mut wrong = Vec::new();
+        for resampling in [
+            Resampling::Average,
+            Resampling::Rms,
+            Resampling::Mode,
+            Resampling::Min,
+            Resampling::Max,
+            Resampling::Med,
+            Resampling::Q1,
+            Resampling::Q3,
+        ] {
+            let warped = |top: f64, rows: usize| {
+                let o = WarpOptions {
+                    src_srs: Some(ortho.clone()),
+                    dst_srs: Some(SpatialRef::parse("EPSG:4326").unwrap()),
+                    dst_transform: Some([-180.0, 10.0, 0.0, top, 0.0, -10.0]),
+                    size: Some((36, rows)),
+                    resampling,
+                    output_type: Some(DataType::F64),
+                    dst_nodata: Nodata::Values(vec![-1.0]),
+                    ..Default::default()
+                };
+                warp(&[&ds], &o).unwrap().raster.data.to_f64_vec()
+            };
+            // Columns 9 to 26 span longitudes -90 to 90.
+            let got = warped(80.0, 16);
+            let near = |i: usize| (9..27).contains(&(i % 36));
+            let beyond = got.iter().enumerate().filter(|&(i, v)| !near(i) && *v != -1.0).count();
+            let written = got.iter().enumerate().filter(|&(i, v)| near(i) && *v == 1.0).count();
+            let poles = warped(90.0, 18);
+            let meridian = [poles[17], poles[17 * 36 + 18]];
+            if (beyond, written, meridian) != (0, 288, [1.0, 1.0]) {
+                wrong.push(format!(
+                    "{resampling:?}: {beyond} written beyond the horizon, {written} of 288 within it, {meridian:?} by the poles"
+                ));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 
     /// A turned output pixel whose corners lie about 2e19 source pixels from the source, beyond

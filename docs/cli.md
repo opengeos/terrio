@@ -1058,6 +1058,12 @@ tile reprojected from UTM to Web Mercator at the source's resolution totals the 
 source over it within a relative error of 10⁻⁹. Transforming every corner and bounding its footprint takes additional work;
 see [validation and measured costs](testing.md#exact-sum-footprints).
 
+With `-r average`, `rms`, `mode`, `min`, `max`, `med`, `q1` or `q3`, each output pixel takes the
+valid source pixels inside its footprint on the source grid, whatever the extent of the output grid:
+where the footprint runs past the source's edges, only its part inside the source counts, and
+`average`, `rms` and `mode` weigh each source pixel by its area inside that part. An output pixel
+is left empty only when no source pixel lies inside it or a corner of it cannot be transformed.
+
 ### Warp source overviews
 
 ```sh
