@@ -30,6 +30,7 @@ pub struct PyFeatureStream {
     layer: terrio::Layer,
     path: String,
     options: VectorOpenOptions,
+    columns: Option<Vec<String>>,
     batch_size: usize,
     started: bool,
 }
@@ -69,6 +70,8 @@ fn pick(readers: Vec<FeatureReader>, layer: Option<&str>) -> terrio::Result<Feat
 ///         `(min_x, min_y, max_x, max_y)`, in the layer's CRS, found through the R-tree of a
 ///         GeoPackage and the bounding boxes of a GeoParquet file (other formats are not
 ///         filtered).
+///     columns: Only these fields, by name (the geometry is always read). A struct column of a
+///         GeoParquet file is named as a whole: its members, `name.member` in the chunks.
 ///
 /// Returns:
 ///     FeatureStream: The stream.
@@ -76,21 +79,36 @@ fn pick(readers: Vec<FeatureReader>, layer: Option<&str>) -> terrio::Result<Feat
 /// Raises:
 ///     InvalidArgumentError: If the dataset has no such layer.
 #[pyfunction]
-#[pyo3(signature = (path, layer=None, *, batch_size=65536, bbox=None))]
+#[pyo3(signature = (path, layer=None, *, batch_size=65536, bbox=None, columns=None))]
 fn open_stream(
     py: Python<'_>,
     path: &str,
     layer: Option<&str>,
     batch_size: usize,
     bbox: Option<(f64, f64, f64, f64)>,
+    columns: Option<Vec<String>>,
 ) -> PyResult<PyFeatureStream> {
     if batch_size == 0 {
         return Err(invalid("batch_size must be positive"));
     }
     let options = VectorOpenOptions { spatial_filter: bbox, ..Default::default() };
-    let reader = py.detach_result(|| pick(terrio::stream::open_layers(path, &options, batch_size)?, layer)).py()?;
+    let reader = py
+        .detach_result(|| {
+            let reader = pick(terrio::stream::open_layers(path, &options, batch_size)?, layer)?;
+            match &columns {
+                Some(columns) => reader.select_fields(columns, batch_size),
+                None => Ok(reader),
+            }
+        })
+        .py()?;
     let layer = reader.layer().clone();
-    Ok(PyFeatureStream { reader: Mutex::new(Some(reader)), layer, path: path.to_string(), options, batch_size, started: false })
+    Ok(PyFeatureStream { reader: Mutex::new(Some(reader)), layer, path: path.to_string(), options, columns, batch_size, started: false })
+}
+
+/// Whether a stream's path names a GeoParquet file, which its Arrow export reads natively.
+fn is_geoparquet(path: &str) -> bool {
+    let name = terrio::vfs::Location::parse(path).file_name();
+    terrio::formats::VectorDriver::for_extension(&name) == Some(terrio::formats::VectorDriver::Parquet)
 }
 
 #[pymethods]
@@ -157,8 +175,14 @@ impl PyFeatureStream {
     }
 
     /// Exports the stream as an Arrow C stream of record batches, with WKB geometries (the
-    /// Arrow PyCapsule interface), read as the consumer asks for them. A layer with date fields
-    /// is read twice, once to choose their Arrow types. The stream is consumed.
+    /// Arrow PyCapsule interface), read as the consumer asks for them. The stream is consumed.
+    ///
+    /// A GeoParquet file hands out the record batches it holds, as GDAL's Arrow stream does:
+    /// the columns keep their Arrow types (structs and lists included), the geometry columns are
+    /// tagged as GeoArrow extension types with their CRS, and the bounding-box covering column is
+    /// left out. Its row groups are decoded in parallel, a window at a time; a URL is read by
+    /// range requests. Other formats give the schema `Layer.to_arrow()` gives; a layer with date
+    /// fields is read twice, once to choose their Arrow types.
     ///
     /// Args:
     ///     requested_schema: A schema capsule the consumer would like. Ignored.
@@ -176,12 +200,26 @@ impl PyFeatureStream {
         }
         let reader = self.take()?;
         self.started = true;
+        if is_geoparquet(&self.path) {
+            drop(reader);
+            let options = terrio::arrow::GeoParquetReadOptions {
+                columns: self.columns.clone(),
+                bbox: self.options.spatial_filter,
+                batch_size: self.batch_size,
+            };
+            let batches = py.detach_result(|| terrio::arrow::open_geoparquet(&self.path, &options)).py()?;
+            let ffi = FFI_ArrowArrayStream::new(Box::new(batches));
+            return PyCapsule::new_with_value(py, ffi, c"arrow_array_stream");
+        }
         let arrow = terrio::arrow::ArrowWriteOptions { batch_size: self.batch_size, ..Default::default() };
-        let (path, options, name) = (self.path.clone(), self.options.clone(), self.layer.name.clone());
+        let (path, options, name, columns) = (self.path.clone(), self.options.clone(), self.layer.name.clone(), self.columns.clone());
         let stream = py
             .detach_result(|| -> terrio::Result<ArrowStream> {
                 let profile = if terrio::arrow::ArrowEncoder::needs_profile(reader.layer(), &arrow) {
                     let mut first = pick(terrio::stream::open_layers(&path, &options, arrow.batch_size)?, Some(&name))?;
+                    if let Some(columns) = &columns {
+                        first = first.select_fields(columns, arrow.batch_size)?;
+                    }
                     let mut p = terrio::stream::LayerProfile::new(first.layer());
                     while let Some(c) = first.read_chunk(arrow.batch_size)? {
                         p.add(&c.features);

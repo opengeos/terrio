@@ -16,6 +16,125 @@
   source pixels of 10 m whose edges cut 100 m output pixels in half give the same 441 pixels on
   grids of 40, 100 and 1000 pixels (361 on the grid of 100 before), and an edge pixel's `average` of
   source columns 0 to 4 is 2.0 (1.0 before).
+- A VRT source with fractional `SrcRect` or `DstRect` offsets is read within its rectangles (#702).
+  A window with as many source pixels as output pixels was copied one for one whatever its offsets,
+  so `bilinear`, `cubic` and `average` returned the source pixels a fraction of a pixel from where
+  the rectangles place them, as in the mosaics `terrio mosaic` writes onto a grid a fraction of a
+  pixel off a source's: it is now copied only at the same scale on whole-pixel offsets, and
+  otherwise resampled by the source's method (`nearest` takes the nearest pixels). A fractional
+  window was also widened to whole output pixels, and its source window with it, so pixels outside
+  the `SrcRect` reached the output for every method. A source now reads only the pixels that meet
+  its `SrcRect`; a method sampling a point writes only the output pixels whose centres are inside
+  the `DstRect`, and an area method gives an output pixel partly inside it the part of the source
+  inside it. A ramp `0, 10, …, 70` mosaicked a quarter pixel east with `bilinear` or `average` gives
+  `2.5, 12.5, …, 62.5` instead of `0, 10, …, 60`, and the pixels `[10, 20]` of `[10, 20, 30]` placed
+  a quarter pixel east sum to `[7.5, 17.5, 5]` instead of `[7.5, 17.5, 27.5]`. Reads of such a VRT
+  by windows now give the pixels of a whole read: a window of one pixel at the source's resolution
+  was copied whatever its offsets. The VRT `terrio mosaic` writes now gives each source its whole
+  raster as `SrcRect`, with a `DstRect` that runs past the mosaic's edges where the source does, so
+  that a kernel at the edges of a `--te` extent still reads the source's pixels past them.
+- A feature-service query URL (`f=json`, `f=pjson`, `f=pbf` or `resultRecordCount=`) or a WFS
+  `GetFeature` URL whose name points to no driver is refused before any request when no allowed
+  driver (`set_allowed_drivers`, `TERRIO_ALLOWED_DRIVERS`) could read its answer: for `open_vector`
+  and `list_layers`, none of the ESRIJSON, ESRIPBF, GeoJSON and GML drivers (nor GDAL, with the
+  `gdal` feature); for `open` and `info`, which read a raster answer as a raster, no raster driver
+  either. They requested it and read the start of its answer (6,000 bytes for a feature-service
+  query) before refusing it (#722). Otherwise the answer is requested and checked against what it
+  holds, as before.
+- `terrio.rio` keeps a color interpretation other than red, green and blue on three Byte bands,
+  or four compressed with WebP, where its GeoTIFF writer makes them RGB unless told otherwise:
+  in a COG, set on the dataset or copied by `shutil.copy(..., driver="COG")` (#717); in an
+  update (`r+`) of a GeoTIFF or a COG; and in a GeoTIFF written with `photometric="ycbcr"`.
+  `terrio.rio` told the writer only the bands whose interpretation was not gray, then
+  undefined, so `undefined` x 3 read back as `undefined, green, blue`, and
+  `gray, undefined, undefined` as RGB. These bands are still red, green and blue by default, and
+  a COG writer, or one in YCbCr, now reports that before the file is written. Other GeoTIFFs and
+  COGs are written as before.
+- Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, or its other name
+  `GDAL_DISABLE_READDIR_ON_OPEN`, a local GeoTIFF no longer takes overviews from an `.ovr` beside
+  it. They served its reduced reads (`terrio translate --outsize`, a `terrio.rio` read with a
+  smaller `out_shape`), so a file placed next to the dataset changed the pixels read (#720). The
+  commands that manage an external `.ovr` (`terrio overviews --external`, and the Rust and Python
+  overview functions) still read it under the option; the `.msk`, `.aux.xml` and `.ovr.msk` beside
+  the GeoTIFF still follow the option, as before.
+  `terrio.rio` follows both names of the option: under the `TERRIO_` name it still applied an
+  `.aux.xml` sidecar's tags, band descriptions, scales, offsets, units, color interpretations and
+  nodata, and read RPC sidecars. Under the option, its `files` no longer lists the `.aux.xml`,
+  `.ovr`, `.msk`, world and RPC files, which are not read, nor a `.hdr` other than the header of an
+  ENVI or EHdr raster.
+- `terrio.rio` writes JPEG 2000 to a `.jp2` path opened for writing without a driver:
+  `driver_from_extension` names the driver `JP2OpenJPEG`, which `open(..., "w")`,
+  `shutil.copy` and `terrio.xarray`'s `to_raster` refused in 0.8.0 (`DriverCapabilityError`,
+  `DriverRegistrationError`). Their driver names are now read as the driver allow-list reads
+  them, so `JP2OpenJPEG`, `JPEG2000`, `JP2KAK`, `JP2ECW` and `JP2MrSID` write terrio's JP2, as
+  `MemoryFile` already did with `JP2OpenJPEG`; the file reads back with `driver == "JP2"`.
+  `terrio.rio`'s writers still refuse a name with whitespace around it. The other writers (`-f`
+  on the command line, `Raster.write(driver=...)`) read names the same way, without the
+  whitespace around them: `JP2MrSID`, the one of these names they refused, now selects JP2.
+- A polar stereographic CRS on an ellipsoid projects the pole it is centred on to its false
+  origin, and refuses the opposite pole. In 0.8.0 its own pole failed to project, and the opposite
+  pole, which no coordinates represent, came out about 10²³ m away: EPSG:3413, 3031, 32661 and the
+  other ellipsoidal polar stereographic CRSs, of variants A and B (spherical ones were right). A
+  `sum` into a longitude and latitude grid whose edge is the pole now writes the row along it: from
+  10,000 km of 10 km EPSG:3413 pixels centred on the North Pole into 1° pixels from 80° N to
+  90° N, none of the 360 pixels along the pole was written, and the grid held 36,675.8 of the
+  37,044.5 it now holds (1% less). The longitude and latitude grid suggested for a raster that
+  covers its pole now reaches the North Pole exactly, over every longitude, and reaches the South
+  Pole to within one pixel, as its height rounds down: for the same raster, it spanned 30.5° N to
+  46.0° N, and now 30.4° N to 90° N.
+- `terrio.rio` keeps a PixelIsPoint raster (`AREA_OR_POINT=Point`) PixelIsPoint when it writes a
+  GeoTIFF or COG. `shutil.copy`, a writer given `update_tags(AREA_OR_POINT="Point")`, an `r+`
+  update of a PixelIsPoint GeoTIFF and `terrio.xarray`'s `to_raster` wrote it as PixelIsArea in
+  0.8.0, whole or in rows. The tag now reaches the GeoTIFF writer, which writes the raster type
+  with the tie point at the centre of pixel (0, 0); the transform is unchanged. The raster type
+  needs a CRS, the dataset's or its GCPs': without one, the raster is still written PixelIsArea,
+  now with a `UserWarning` saying so.
+- `terrio.xarray`: an object whose `.terrio` (or `.rio`) accessor was used is freed as soon as it
+  is dropped. xarray's accessor registration keeps a reference cycle (the object caches its
+  accessor, which refers to the object) that only the cyclic garbage collector frees, and that
+  held the pixels of every object `.terrio` touched, including views of each variable that
+  `write_crs` reads internally, so that a loop loading arrays could keep gigabytes. The object now
+  caches only the accessor's state, and each access returns a new accessor over it, so
+  `da.terrio is da.terrio` is False.
+- A remote read of a long range through the block cache, such as a GeoParquet row group or a run
+  of COG tiles, is fetched as up to 8 parallel requests of at least 1 MiB each instead of one at
+  the pace of a single connection (#741). `TERRIO_HTTP_MULTIRANGE=SERIAL` keeps one request.
+- A build with the `gdal` feature and without the default features
+  (`--no-default-features --features gdal`) compiles. The GDAL backend formats the date-time
+  fields it reads with chrono, whose formatting needs its `alloc` feature, and only the
+  `parquet` feature turned it on (through arrow-array); the `gdal` feature now enables it. CI
+  checks that build in the GDAL backend job (#732).
+- A selection of GeoParquet fields decodes only their columns and the geometry, and fetches only
+  their column chunks from a URL: `open_stream(columns=...)`, `terrio convert --select` (without
+  `--where` or `--sql`, which may name other fields), and JavaScript's `openUrl(...).read()`,
+  which takes `columns` too.
+  Breaking (Rust): `terrio::vector::read_geoparquet_sparse` takes a fifth argument, `columns`;
+  pass `None` to read every field, as before.
+- `terrio.pyogrio` reads GeoParquet files: `read_arrow` and `open_arrow` hand out their Arrow
+  record batches as pyogrio does through GDAL's Arrow stream, with GDAL 3.13.3's `meta` (the
+  fields as OGR has them, structs flattened, the declared geometry type, `EPSG:4326` for a file
+  without a CRS), and `read_dataframe(..., use_arrow=True)` builds its GeoDataFrame from them, as
+  `geopandas.read_file(path, engine="pyogrio", use_arrow=True)` asks. Unlike GDAL, whose
+  `skip_features` skips the file's rows before `bbox` filters them, the range is taken from the
+  rows the rectangle keeps, as `read_dataframe` takes it. Arrow reads of other formats still
+  raise `NotImplementedError`.
+- GeoParquet reads decode row groups in parallel, a window of as many as there are threads at a
+  time, and read remote files in place: `open_vector` and `open_stream` on a URL fetch the footer,
+  then only the column chunks of the row groups the filter keeps, by range requests, instead of
+  downloading the whole file.
+- `open_stream` takes `columns=[...]`, the fields to keep (a struct column by its name keeps its
+  `name.member` fields), and the Arrow export of a GeoParquet stream (`__arrow_c_stream__`,
+  `terrio::arrow::open_geoparquet` in Rust) hands out the record batches the file holds, without
+  converting them to features, as GDAL's Arrow stream does: the columns keep their Arrow types
+  (structs and lists included, where the export flattened them into fields and JSON text before),
+  the geometry columns are tagged as GeoArrow extension types with their CRS (OGC:CRS84 when the
+  file names none, as geopandas reads it, where GDAL names it EPSG:4326), and the bounding-box
+  covering column is left out unless asked for. `bbox` skips row groups by their statistics, then
+  rows by the covering column, read alone first (or by the geometries' bounding boxes without
+  one). On 12 cores, the 664,000 polygons of fiboa's es-nc file (Brotli, 27 row groups) read
+  into a pyarrow table in 0.79 s and 761 MB, against 1.56 s and 966 MB through GDAL 3.13's Arrow
+  stream (pyogrio) and 2.33 s and 2.0 GB before; a small rectangle of a 533 MB Overture buildings
+  file on S3 fetches 4.9 MB in 5 requests, where the whole file was downloaded.
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000

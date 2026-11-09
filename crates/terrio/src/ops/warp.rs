@@ -5563,6 +5563,71 @@ mod tests {
         }
     }
 
+    /// A polar stereographic CRS projects the pole it is centred on to its origin, so a `sum` into
+    /// a longitude and latitude grid whose edge is that pole writes the row along it, whose pixels
+    /// have two corners on the pole, and keeps the total of the source it covers: 1,000 km of
+    /// 10 km pixels centred on the North Pole (EPSG:3413) into 1° pixels from 80° N to 90° N, and
+    /// on the South Pole (EPSG:3031) into 1° pixels from 90° S to 80° S.
+    #[test]
+    fn sum_into_a_grid_whose_edge_is_a_pole_writes_the_row_along_it() {
+        let geographic = SpatialRef::from_epsg(4326).unwrap();
+        for (epsg, top, edge_row) in [(3413, 90.0, 0), (3031, -80.0, 9)] {
+            let ds = raster(100, 100, [-500_000.0, 10_000.0, 0.0, 500_000.0, 0.0, -10_000.0], epsg, |_, _| 1.0);
+            let o = WarpOptions {
+                dst_srs: Some(geographic.clone()),
+                dst_transform: Some([-180.0, 1.0, 0.0, top, 0.0, -1.0]),
+                size: Some((360, 10)),
+                resampling: Resampling::Sum,
+                output_type: Some(DataType::F64),
+                dst_nodata: Nodata::Values(vec![f64::NAN]),
+                ..Default::default()
+            };
+            let out = warp(&[&ds], &o).unwrap().raster.data.to_f64_vec();
+            let written = out[edge_row * 360..(edge_row + 1) * 360].iter().filter(|v| !v.is_nan()).count();
+            let total: f64 = out.iter().filter(|v| !v.is_nan()).sum();
+            assert!(
+                written == 360 && ((total - 10_000.0) / 10_000.0).abs() < 1e-9,
+                "EPSG:{epsg}: {written} of the 360 pixels along the pole written, total {total} of 10000"
+            );
+        }
+    }
+
+    /// The longitude and latitude grid suggested for a polar stereographic raster that covers the
+    /// pole it is centred on takes in every longitude, and reaches both that pole and the latitude
+    /// of the raster's boundary farthest from it, each to within one of its pixels, as its size is
+    /// rounded to whole pixels: 10,000 km of 10 km pixels centred on the North Pole (EPSG:3413)
+    /// and on the South Pole (EPSG:3031).
+    #[test]
+    fn suggested_longitude_and_latitude_grid_of_a_polar_raster_reaches_its_pole() {
+        let geographic = SpatialRef::from_epsg(4326).unwrap();
+        for (epsg, pole) in [(3413, 90.0), (3031, -90.0)] {
+            let src = SpatialRef::from_epsg(epsg).unwrap();
+            // The latitude of the raster's boundary farthest from the pole, every 10 km along it.
+            let to_geographic = Transformer::new(&src, &geographic).unwrap();
+            let far = (0..=1000)
+                .flat_map(|i| {
+                    let t = -5_000_000.0 + i as f64 * 10_000.0;
+                    [(t, -5_000_000.0), (t, 5_000_000.0), (-5_000_000.0, t), (5_000_000.0, t)]
+                })
+                .map(|(x, y)| to_geographic.transform(x, y).unwrap().1)
+                .fold(pole, |far: f64, lat| if pole > 0.0 { far.min(lat) } else { far.max(lat) });
+            let gt = [-5_000_000.0, 10_000.0, 0.0, 5_000_000.0, 0.0, -10_000.0];
+            let (gt, w, h) = suggested_grid(1000, 1000, gt, &src, &geographic).unwrap();
+            let (left, right, top, bottom) = (gt[0], gt[0] + w as f64 * gt[1], gt[3], gt[3] + h as f64 * gt[5]);
+            let (pole_edge, far_edge) = if pole > 0.0 { (top, bottom) } else { (bottom, top) };
+            // The North Pole edge lands on the pole exactly. The South Pole edge can fall short of
+            // it by up to a pixel, as the grid's height is rounded from the top edge.
+            assert!(
+                (pole_edge - pole).abs() < -gt[5]
+                    && (far_edge - far).abs() < -gt[5]
+                    && (left + 180.0).abs() < 1e-9
+                    && (right - 180.0).abs() < 1e-9,
+                "EPSG:{epsg}: {w} x {h} pixels over longitudes {left} to {right} and latitudes {bottom} to {top}, for a raster \
+                 reaching {far}"
+            );
+        }
+    }
+
     /// Where a change of CRS bends the output's rows across the source's grid, the corners of a
     /// `sum`'s output pixels do not depend on the chunks the output is warped in: in two chunks,
     /// and in chunks of other shapes under smaller memory limits, the output is the same, bit for
