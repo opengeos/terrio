@@ -118,10 +118,13 @@ sha2 = "0.11"
 clap = { version = "4", features = ["derive"] }
 # Win32 file APIs (file identity, reparse points, file locks), where Unix builds use `libc`.
 windows-sys = "0.61.2"
+# Adler-32 for the zlib streams of `deflate_compress`.
 zlib-rs = "0.6"
+# GRIB2's CCSDS packing (template 5.42).
 rust-aec = "0.1.1"
 # Session secrets of the command line; the wasm64 module's custom backend.
 getrandom = "0.4"
+# Silences drivers' diagnostic prints on the command line's standard output.
 gag = "1"
 # LASzip compression of point clouds (LAZ, COPC), pure Rust.
 laz = "0.13"
