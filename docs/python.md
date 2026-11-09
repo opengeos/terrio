@@ -564,7 +564,8 @@ Their keyword options follow the CLI, including compression, partial refresh,
 clipping geometry and overview updates. Local writable little-endian GeoTIFFs
 are required for in-place changes; external overview updates can fail after the
 base update commits. External overviews (`external=True`) write only the `.ovr`
-sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`. Overviews are
+sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`. They read that
+`.ovr` under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` too. Overviews are
 managed for GeoTIFFs only.
 
 `add_overviews(..., progress=callback)` calls `callback(fraction)` as the

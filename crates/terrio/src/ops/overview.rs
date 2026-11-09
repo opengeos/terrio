@@ -472,12 +472,15 @@ fn parse_file(path: &std::path::Path) -> Result<Tiff> {
     gtiff_update::parse(&mut std::io::BufReader::new(std::fs::File::open(path)?))
 }
 
-/// Opens a GeoTIFF to compute overviews from (with its `.msk` and `.ovr` sidecars).
+/// Opens a GeoTIFF to compute overviews from (with its `.msk` and `.ovr` sidecars). The `.ovr` is
+/// the file these commands manage, so it is read under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`
+/// too.
 fn open_source(path: &str) -> Result<LazyRaster> {
-    let r = LazyRaster::open(path)?;
+    let mut r = LazyRaster::open(path)?;
     if r.driver() != crate::formats::RasterDriver::GTiff || !r.is_lazy() {
         return Err(Error::Unsupported(format!("overviews are managed for GeoTIFFs only, not '{path}'")));
     }
+    r.attach_managed_ovr(path);
     Ok(r)
 }
 
