@@ -26,7 +26,8 @@ restricts every terrio open; bytes and file objects are first written to a priva
 file, as pyogrio writes them to GDAL's `/vsimem/`.
 
 Not provided (they raise `NotImplementedError`): `where`, `sql`, `fids`, `encoding` (set the
-`SHAPE_ENCODING` option instead), dataset open options, and writing any driver but GeoJSON.
+`SHAPE_ENCODING` option instead), dataset open options, writing any driver but GeoJSON, and
+`force_2d` and `mask` of `read_arrow` and `open_arrow` (`read_dataframe` takes both).
 
 GeoParquet files are read too. `read_arrow` and `open_arrow` hand out their Arrow record batches
 as pyogrio does through GDAL's Arrow stream (decoded in parallel, read by range requests from a
