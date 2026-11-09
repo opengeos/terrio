@@ -120,4 +120,4 @@ def test_overlapping_reads_take_the_options_the_raster_was_opened_with(tmp_path)
     assert (mask is None) == (expected is None)
     if mask is not None:
         np.testing.assert_array_equal(mask, expected)
-        assert bool((np.asarray(mask) > 0).all()), "the .msk sidecar was read"
+        assert bool((np.asarray(mask) > 0).all()), "expected the .msk sidecar to be ignored"
