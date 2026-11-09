@@ -268,8 +268,8 @@ enum Member {
 
 struct Relation {
     id: i64,
-    members: Vec<(Member, String)>,
-    tags: Vec<(String, String)>,
+    members: Vec<(Member, std::sync::Arc<str>)>,
+    tags: Vec<(std::sync::Arc<str>, std::sync::Arc<str>)>,
 }
 
 /// Collects nodes, ways and relations (from PBF or XML), then builds GDAL's five layers.
@@ -422,14 +422,14 @@ fn relation_feature<'a>(
     schemas: &[wbvector::Schema],
 ) -> (Option<(usize, Feature)>, Vec<i64>) {
     let mut outer = Vec::new();
-    let rtype = r.tags.iter().find(|(k, _)| k == "type").map(|(_, v)| v.as_str());
+    let rtype = r.tags.iter().find(|(k, _)| k.as_ref() == "type").map(|(_, v)| v.as_ref());
     if !wanted[relation_layer(rtype)] {
         return (None, outer);
     }
-    let tags: Vec<(&str, &str)> = r.tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let tags: Vec<(&str, &str)> = r.tags.iter().map(|(k, v)| (k.as_ref(), v.as_ref())).collect();
     let interesting = tags.iter().any(|(k, _)| *k != "type" && *k != "created_by");
-    let members: Vec<(&(Member, String), Option<MemberWay>)> =
-        r.members.iter().filter(|m| m.1 != "subarea").map(|m| (m, if let Member::Way(w) = m.0 { way(w) } else { None })).collect();
+    let members: Vec<(&(Member, std::sync::Arc<str>), Option<MemberWay>)> =
+        r.members.iter().filter(|m| m.1.as_ref() != "subarea").map(|m| (m, if let Member::Way(w) = m.0 { way(w) } else { None })).collect();
     match rtype {
         Some("multipolygon" | "boundary") => {
             let way_members: Vec<_> = members.into_iter().filter(|(m, _)| matches!(m.0, Member::Way(_))).collect();
@@ -442,12 +442,12 @@ fn relation_feature<'a>(
             for (m, w) in way_members {
                 let Some(w) = w else { unreachable!() };
                 let cs = w.coords;
-                if first_outer_tags.is_none() && m.1 == "outer" {
+                if first_outer_tags.is_none() && m.1.as_ref() == "outer" {
                     first_outer_tags = Some(w.tags);
                 }
                 let closed = !cs.is_empty() && cs.first().map(|c| (c.x, c.y)) == cs.last().map(|c| (c.x, c.y));
                 if closed {
-                    if m.1 == "outer"
+                    if m.1.as_ref() == "outer"
                         && let Member::Way(id) = m.0
                     {
                         outer.push(id);
@@ -693,7 +693,11 @@ fn finish_element(
             }
         }
         Some("way") => b.way(id, std::mem::take(refs), &t),
-        Some(_) => b.relations.push(Relation { id, members: std::mem::take(members), tags: std::mem::take(tags) }),
+        Some(_) => b.relations.push(Relation {
+            id,
+            members: std::mem::take(members).into_iter().map(|(m, role)| (m, role.into())).collect(),
+            tags: std::mem::take(tags).into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
+        }),
         None => {}
     }
 }
@@ -825,15 +829,16 @@ fn blob_spans(r: &mut dyn PbfInput) -> Result<(Vec<std::ops::Range<u64>>, bool)>
         }
         let mut header = vec![0u8; header_len];
         r.read_exact(&mut header).map_err(|_| bad())?;
-        let (mut kind, mut size) = (&[][..], 0u64);
+        let (mut kind, mut size) = (None, None);
         for (field, value) in pb_fields(&header).ok_or_else(bad)? {
             match (field, value) {
-                (1, Pb::Bytes(t)) => kind = t,
-                (3, Pb::Int(n)) => size = n,
+                (1, Pb::Bytes(t)) => kind = Some(t),
+                (3, Pb::Int(n)) => size = Some(n),
                 _ => {}
             }
         }
-        if size > 32 * 1024 * 1024 {
+        let (kind, size) = (kind.ok_or_else(bad)?, size.ok_or_else(bad)?);
+        if size > pbf::MAX_BLOB as u64 {
             return Err(bad());
         }
         let start = o.checked_add(4 + header_len as u64).ok_or_else(bad)?;
@@ -1009,7 +1014,7 @@ impl NodeStore {
         }
         let (last_id, last_lon, last_lat) = self.last;
         let b = &mut self.bytes.buf;
-        put_varint(b, (id - last_id) as u64);
+        put_varint(b, id.checked_sub(last_id).ok_or_else(|| Error::InvalidData("OSM PBF: node id delta overflow".into()))? as u64);
         put_varint(b, zigzag(i64::from(lon) - i64::from(last_lon)));
         put_varint(b, zigzag(i64::from(lat) - i64::from(last_lat)));
         self.last = (id, lon, lat);
@@ -1034,7 +1039,7 @@ impl NodeStore {
                 return None;
             }
             let d = pb_varint(data, &mut i)? as i64;
-            nid = if k == 0 { nid } else { nid + d };
+            nid = if k == 0 { nid } else { nid.checked_add(d)? };
             lon += unzigzag(pb_varint(data, &mut i)?);
             lat += unzigzag(pb_varint(data, &mut i)?);
             if nid == id {
@@ -1266,7 +1271,7 @@ fn relation_chunks<'r>(
     // coordinates a chunk keeps that under about 150 MB, and parallel work does not need more.
     const MAX_COORDS: usize = 1 << 20;
     let size = |r: &Relation| -> usize {
-        let rtype = r.tags.iter().find(|(k, _)| k == "type").map(|(_, v)| v.as_str());
+        let rtype = r.tags.iter().find(|(k, _)| k.as_ref() == "type").map(|(_, v)| v.as_ref());
         if !wanted[relation_layer(rtype)] {
             return 0;
         }
@@ -1631,6 +1636,176 @@ mod tests {
 
     fn zz(v: i64) -> u64 {
         ((v << 1) ^ (v >> 63)) as u64
+    }
+
+    fn fileblock(kind: &str, blob: &[u8]) -> Vec<u8> {
+        let header = Msg::default().bytes(1, kind.as_bytes()).int(3, blob.len() as u64).0;
+        let mut out = (header.len() as u32).to_be_bytes().to_vec();
+        out.extend(header);
+        out.extend(blob);
+        out
+    }
+
+    fn compressed(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(data).unwrap();
+        Msg::default().int(2, data.len() as u64).bytes(3, &z.finish().unwrap()).0
+    }
+
+    fn decoded(bytes: &[u8]) -> Result<Vec<OsmObj>> {
+        let mut out = Vec::new();
+        decode_block(bytes, &mut |o| {
+            out.push(o);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    fn primitive(group: Msg) -> Msg {
+        let table = Msg::default().bytes(1, b"").bytes(1, b"name").bytes(1, b"city").bytes(1, b"a");
+        Msg::default().bytes(1, &table.0).bytes(2, &group.0)
+    }
+
+    #[test]
+    fn decodes_dense_offsets_and_metadata_with_raw_zlib_parity() {
+        // Negative deltas; packed segments mixed with unpacked values.
+        let dense = Msg::default()
+            .packed(1, &[zz(7)])
+            .int(1, zz(-2))
+            .packed(8, &[zz(-12), zz(7)])
+            .packed(9, &[zz(9), zz(-3)])
+            .packed(10, &[1, 2, 0, 3, 2, 1, 3, 0])
+            .bytes(5, &Msg::default().packed(2, &[zz(100), zz(-1)]).0);
+        let group = Msg::default().bytes(2, &dense.0);
+        let block = primitive(group).int(17, 1000).int(18, 500).int(19, (-37i64) as u64).int(20, 93);
+        let raw = fileblock("OSMData", &Msg::default().bytes(1, &block.0).0);
+        let zlib = fileblock("OSMData", &compressed(&block.0));
+        for bytes in [&raw, &zlib] {
+            let objects = decoded(bytes).unwrap();
+            let OsmObj::Node(first) = &objects[0] else { panic!() };
+            let OsmObj::Node(second) = &objects[1] else { panic!() };
+            assert_eq!((first.id, first.decimicro_lon, first.decimicro_lat), (7, 90, -120));
+            assert_eq!((second.id, second.decimicro_lon, second.decimicro_lat), (5, 60, -50));
+            assert_eq!(tag_list(&first.tags), [("name", "city")]);
+            assert_eq!(tag_list(&second.tags), [("a", "city"), ("name", "a")]);
+        }
+    }
+
+    #[test]
+    fn decodes_simple_nodes_ways_relations_and_sorts_tags() {
+        let node = Msg::default()
+            .int(1, zz(-5))
+            .int(8, zz(3))
+            .int(9, zz(-8))
+            .int(2, 3)
+            .packed(2, &[1, 1])
+            .packed(3, &[2, 2, 3])
+            .bytes(4, &Msg::default().int(1, 7).int(2, 123).int(6, 0).0);
+        let way = Msg::default().int(1, (-3i64) as u64).packed(8, &[zz(5), zz(-10)]);
+        let relation = Msg::default().int(1, 10).packed(8, &[0, 2, 3]).packed(9, &[zz(5), zz(-8), zz(13)]).packed(10, &[0, 1, 2]);
+        let group = Msg::default().bytes(4, &relation.0).bytes(3, &way.0).bytes(1, &node.0);
+        let block = primitive(group);
+        let objects = decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).unwrap();
+        let OsmObj::Node(node) = &objects[0] else { panic!() };
+        assert_eq!(node.id, -5);
+        assert_eq!(tag_list(&node.tags), [("a", "city"), ("name", "city")]);
+        let OsmObj::Way(way) = &objects[1] else { panic!() };
+        assert_eq!((way.id, way.nodes.as_slice()), (-3, [5, -5].as_slice()));
+        let OsmObj::Relation(relation) = &objects[2] else { panic!() };
+        assert!(relation.members[0].0 == Member::Node(5));
+        assert!(relation.members[1].0 == Member::Way(-3));
+        assert!(relation.members[2].0 == Member::Relation(10));
+        assert_eq!(relation.members[1].1.as_ref(), "city");
+    }
+
+    #[test]
+    fn merges_dense_messages_and_replaces_invalid_utf8() {
+        let first = Msg::default().packed(1, &[zz(1)]).packed(8, &[0]).packed(9, &[0]);
+        let second = Msg::default().packed(1, &[zz(1)]).packed(8, &[0]).packed(9, &[0]);
+        let block = primitive(Msg::default().bytes(2, &first.0).bytes(2, &second.0));
+        let objects = decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).unwrap();
+        let OsmObj::Node(node) = &objects[1] else { panic!() };
+        assert_eq!(node.id, 2);
+        let table = Msg::default().bytes(1, b"").bytes(1, b"name").bytes(1, &[255]);
+        let node = Msg::default().int(1, 0).int(8, 0).int(9, 0).int(2, 1).int(3, 2);
+        let block = Msg::default().bytes(1, &table.0).bytes(2, &Msg::default().bytes(1, &node.0).0);
+        let objects = decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).unwrap();
+        let OsmObj::Node(node) = &objects[0] else { panic!() };
+        assert_eq!(tag_list(&node.tags), [("name", "\u{fffd}")]);
+    }
+
+    #[test]
+    fn rejects_bad_indices_parallel_arrays_and_delta_overflow() {
+        let node = || Msg::default().int(1, 0).int(8, 0).int(9, 0);
+        let groups = [
+            Msg::default().bytes(1, &node().int(2, 999).int(3, 1).0),
+            Msg::default().bytes(1, &node().int(2, 1).0),
+            Msg::default().bytes(1, &Msg::default().int(1, 0).0),
+            Msg::default().bytes(2, &Msg::default().packed(1, &[zz(1)]).0),
+            Msg::default().bytes(2, &Msg::default().packed(1, &[zz(i64::MAX), zz(1)]).packed(8, &[0, 0]).packed(9, &[0, 0]).0),
+            Msg::default().bytes(2, &Msg::default().packed(1, &[0]).packed(8, &[0]).packed(9, &[0]).packed(10, &[1]).0),
+            Msg::default().bytes(3, &Msg::default().int(1, 1).packed(8, &[zz(i64::MIN), zz(-1)]).0),
+            Msg::default().bytes(4, &Msg::default().int(1, 1).packed(8, &[0]).0),
+            Msg::default().bytes(4, &Msg::default().int(1, 1).packed(8, &[0]).packed(9, &[0]).packed(10, &[3]).0),
+        ];
+        for group in groups {
+            let block = primitive(group);
+            assert!(decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).is_err());
+        }
+        let block = primitive(Msg::default().bytes(1, &node().int(8, zz(i64::MAX)).0)).int(17, 1000);
+        assert!(decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).is_err());
+    }
+
+    #[test]
+    fn rejects_truncated_and_oversized_blobs_without_claimed_allocations() {
+        let block = primitive(Msg::default());
+        let file = fileblock("OSMData", &compressed(&block.0));
+        for cut in 0..file.len() {
+            assert!(decoded(&file[..cut]).is_err(), "cut {cut}");
+        }
+        for field in 4..=7 {
+            let e = decoded(&fileblock("OSMData", &Msg::default().bytes(field, b"x").0));
+            assert!(e.err().unwrap().to_string().contains("unsupported blob compression"));
+        }
+        for blob in [
+            Msg::default().bytes(1, &block.0).int(2, u64::MAX),
+            Msg::default().bytes(1, &block.0).int(2, 999),
+            Msg::default().bytes(1, &block.0).bytes(3, b"x"),
+            Msg::default().bytes(3, b"not-zlib"),
+        ] {
+            assert!(decoded(&fileblock("OSMData", &blob.0)).is_err());
+        }
+        let header = Msg::default().bytes(1, b"OSMData").int(3, (pbf::MAX_BLOB + 1) as u64);
+        let mut file = (header.0.len() as u32).to_be_bytes().to_vec();
+        file.extend(header.0);
+        assert!(blob_spans(&mut std::io::Cursor::new(file)).is_err());
+        assert!(decoded(&65537u32.to_be_bytes()).is_err());
+        let bomb = compressed(&vec![0; pbf::MAX_BLOB + 1]);
+        let zlib = pb_fields(&bomb)
+            .unwrap()
+            .find_map(|(n, v)| match (n, v) {
+                (3, Pb::Bytes(b)) => Some(b),
+                _ => None,
+            })
+            .unwrap();
+        assert!(pbf::payload(&Msg::default().bytes(3, zlib).0).is_err());
+    }
+
+    #[test]
+    fn header_features_and_bbox_remain_unexposed() {
+        let bbox = Msg::default().int(1, zz(-10)).int(2, zz(10)).int(3, zz(20)).int(4, zz(-20));
+        let header = Msg::default()
+            .bytes(1, &bbox.0)
+            .bytes(4, b"OsmSchema-V0.6")
+            .bytes(4, b"HistoricalInformation")
+            .bytes(4, b"unknown-required")
+            .bytes(5, b"unknown-optional")
+            .bytes(5, b"Sort.Type_then_ID");
+        assert!(pbf::header_sorted(&compressed(&header.0)).unwrap());
+        let file = fileblock("OSMHeader", &compressed(&header.0));
+        assert!(is_sorted_pbf(&mut std::io::Cursor::new(&file)));
+        assert_eq!(parse(file).unwrap().iter().map(Layer::len).collect::<Vec<_>>(), [0; 5]);
     }
 
     /// A PBF file of blocks, each a list of groups (nodes, ways or relations), sorted by type then

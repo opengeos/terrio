@@ -171,7 +171,13 @@ impl Context {
         if keys.len() != values.len() {
             return Err(bad());
         }
-        keys.into_iter().zip(values).map(|(k, v)| Ok((self.string(k)?, self.string(v)?))).collect()
+        let mut tags = Tags::new();
+        // The previous simple-object reader kept the first duplicate key; dense
+        // nodes inserted sequentially and kept the last.
+        for (k, v) in keys.into_iter().zip(values) {
+            tags.entry(self.string(k)?).or_insert(self.string(v)?);
+        }
+        Ok(tags)
     }
     fn coordinate(&self, v: i64, offset: i64) -> Result<i32> {
         let nano = v.checked_mul(self.granularity).and_then(|v| v.checked_add(offset)).ok_or_else(bad)?;
@@ -240,14 +246,10 @@ impl Context {
                             2 => Member::Relation(id),
                             _ => return Err(bad()),
                         };
-                        Ok((member, self.string(role)?.to_string()))
+                        Ok((member, self.string(role)?))
                     })
                     .collect::<Result<_>>()?;
-                Ok(Object::Relation(Relation {
-                    id: id as i64,
-                    members,
-                    tags: tags.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
-                }))
+                Ok(Object::Relation(Relation { id: id as i64, members, tags: tags.into_iter().collect() }))
             }
             _ => Err(bad()),
         }
@@ -281,16 +283,28 @@ fn primitives(bytes: &[u8], emit: &mut dyn FnMut(Object) -> Result<()>) -> Resul
             // The previous reader visited simple nodes, dense nodes, ways, then
             // relations within each group, irrespective of protobuf field order.
             for kind in [1, 2, 3, 4] {
+                if kind == 2 {
+                    let mut dense: Option<std::borrow::Cow<'_, [u8]>> = None;
+                    for (n, value) in pb_fields(group).ok_or_else(bad)? {
+                        if let (2, Pb::Bytes(bytes)) = (n, value) {
+                            if let Some(merged) = &mut dense {
+                                merged.to_mut().extend_from_slice(bytes);
+                            } else {
+                                dense = Some(std::borrow::Cow::Borrowed(bytes));
+                            }
+                        }
+                    }
+                    if let Some(dense) = dense {
+                        c.dense(&dense, emit)?;
+                    }
+                    continue;
+                }
                 for (n, value) in pb_fields(group).ok_or_else(bad)? {
                     if let Pb::Bytes(object) = value {
                         if n != kind {
                             continue;
                         }
-                        if kind == 2 {
-                            c.dense(object, emit)?;
-                        } else {
-                            emit(c.object(kind, object)?)?;
-                        }
+                        emit(c.object(kind, object)?)?;
                     }
                 }
             }
