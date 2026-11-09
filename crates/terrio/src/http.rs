@@ -3326,13 +3326,14 @@ mod tests {
 
     #[test]
     fn prefetch_has_at_most_eight_requests_in_flight() {
-        // Nine runs: each request is held until the ninth is sent (the open's request and nine
-        // others), for half a second at most. The ninth is sent only once a run is in, after the
-        // wait, with eight in flight until then.
+        // Nine runs: each request is held until eight are in flight, then until the ninth is sent
+        // (the open's request and nine others), for a further 300 ms at most. The ninth is sent
+        // only once a run is in, after the wait, with eight in flight until then.
         let data = test_data();
         let (url, gate) = serve_gated(data.clone(), |first, gate| {
             if first > 0 {
-                gate.wait_until(|seen| seen.firsts.len() >= 10, Duration::from_millis(500));
+                gate.wait_until(|seen| seen.most >= 8 || seen.firsts.len() >= 10, Duration::from_secs(10));
+                gate.wait_until(|seen| seen.firsts.len() >= 10, Duration::from_millis(300));
             }
             206
         });
