@@ -300,7 +300,7 @@ fn caller_fetched_vector_files_are_read_only_with_their_driver_allowed() {
             outcome(crate::vector::geoparquet_row_groups_sparse(&parquet))
         }),
         ("read_geoparquet_sparse", "x.parquet", "Parquet", &|| {
-            outcome(crate::vector::read_geoparquet_sparse(&parquet, "x.parquet", None, None))
+            outcome(crate::vector::read_geoparquet_sparse(&parquet, "x.parquet", None, None, None))
         }),
     ];
     for (name, shown, driver, read) in reads {
