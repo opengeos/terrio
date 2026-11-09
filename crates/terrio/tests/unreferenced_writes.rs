@@ -24,20 +24,34 @@ fn unreferenced() -> RasterWriteOptions {
     RasterWriteOptions { creation_options: vec![("GEOREFERENCED".into(), "NO".into())], ..Default::default() }
 }
 
-/// Whether JPEG 2000 bytes hold a GeoJP2 box among their top-level boxes.
-fn has_geojp2_box(bytes: &[u8]) -> bool {
+/// The top-level boxes of JPEG 2000 bytes, `(type, contents)`. A box of size 0 runs to the end of
+/// the bytes, and one of size 1 gives its size in the 8 bytes after its type. Panics unless the
+/// boxes end exactly at the end of the bytes, so that a walk cut short fails the test.
+fn boxes(bytes: &[u8]) -> Vec<([u8; 4], &[u8])> {
+    let mut out = Vec::new();
     let mut i = 0;
-    while i + 8 <= bytes.len() {
-        let size = u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
-        if &bytes[i + 4..i + 8] == b"uuid" && bytes[i + 8..].starts_with(&GEOJP2) {
-            return true;
-        }
-        if size < 8 {
-            break;
-        }
+    while i < bytes.len() {
+        assert!(i + 8 <= bytes.len(), "a box header is cut short at byte {i} of {}", bytes.len());
+        let kind: [u8; 4] = bytes[i + 4..i + 8].try_into().unwrap();
+        let (size, header) = match u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap()) {
+            0 => (bytes.len() - i, 8),
+            1 => {
+                assert!(i + 16 <= bytes.len(), "a box size is cut short at byte {i} of {}", bytes.len());
+                (u64::from_be_bytes(bytes[i + 8..i + 16].try_into().unwrap()) as usize, 16)
+            }
+            size => (size as usize, 8),
+        };
+        assert!(size >= header && size <= bytes.len() - i, "box {kind:?} at byte {i} of {}: size {size}", bytes.len());
+        out.push((kind, &bytes[i + header..i + size]));
         i += size;
     }
-    false
+    assert_eq!(i, bytes.len(), "the boxes end at byte {i} of {}", bytes.len());
+    out
+}
+
+/// Whether JPEG 2000 bytes hold a GeoJP2 box among their top-level boxes.
+fn has_geojp2_box(bytes: &[u8]) -> bool {
+    boxes(bytes).iter().any(|(kind, contents)| kind == b"uuid" && contents.starts_with(&GEOJP2))
 }
 
 /// The files in a directory, sorted.
@@ -95,6 +109,20 @@ fn a_world_file_of_an_earlier_write_is_removed() {
         assert!(dir.path().join("a.wld").exists(), "{ext}");
         terrio::write_raster_dataset(&raster(None), &path, &unreferenced()).unwrap();
         assert_eq!(files(dir.path()), [format!("a.{ext}")], "{ext}");
+    }
+}
+
+/// A world file that cannot be removed (here a directory of that name) fails the write before the
+/// image is written, rather than leaving the image beside it.
+#[test]
+fn a_world_file_that_cannot_be_removed_fails_the_write_before_the_image() {
+    for ext in ["png", "jpg", "webp"] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("a.wld")).unwrap();
+        let path = dir.path().join(format!("a.{ext}"));
+        let written = terrio::write_raster_dataset(&raster(None), path.to_str().unwrap(), &unreferenced());
+        assert!(matches!(written, Err(terrio::Error::Io(_))), "{ext}: {written:?}");
+        assert_eq!(files(dir.path()), ["a.wld"], "{ext}");
     }
 }
 

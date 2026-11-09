@@ -130,6 +130,7 @@ pub(crate) fn read_jpeg(path: &Path) -> Result<RasterDataset> {
 /// Writes a JPEG file (see [`encode_jpeg`]), its world file and its CRS sidecar.
 pub(crate) fn write_jpeg(r: &Raster, path: &Path, quality: Option<&str>, georeferenced: bool) -> Result<()> {
     let bytes = encode_jpeg(r, quality)?;
+    remove_stale_world_file(r, path, georeferenced)?;
     common::write_replacing(path, bytes)?;
     write_world_file(r, path, georeferenced)?;
     common::write_pam(path, &r.crs)
@@ -223,20 +224,30 @@ pub(crate) fn read_world_file(path: &Path) -> Option<[f64; 6]> {
     Some([v[4] - v[0] / 2.0 - v[2] / 2.0, v[0], v[2], v[5] - v[1] / 2.0 - v[3] / 2.0, v[1], v[3]])
 }
 
+/// Removes the world file (`.wld`) beside `path` before an image without a geotransform
+/// (`georeferenced` false, `GEOREFERENCED=NO`) and without a CRS is written there: one an earlier
+/// write left would georeference the new image. World files are named after the image's stem, so
+/// `a.png` and `a.jpg` share `a.wld`. A removal that fails fails the write before the image is
+/// written.
+pub(crate) fn remove_stale_world_file(r: &Raster, path: &Path, georeferenced: bool) -> Result<()> {
+    if common::writes_georeferencing(r, georeferenced) {
+        return Ok(());
+    }
+    match std::fs::remove_file(path.with_extension("wld")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
+}
+
 /// Writes a world file (`.wld`) for a raster, unless it has neither a geotransform
-/// (`georeferenced` false, `GEOREFERENCED=NO`) nor a CRS: then a world file an earlier write left
-/// at that path is removed, since it would georeference the new image.
+/// (`georeferenced` false, `GEOREFERENCED=NO`) nor a CRS (see [`remove_stale_world_file`]).
 pub(crate) fn write_world_file(r: &Raster, path: &Path, georeferenced: bool) -> Result<()> {
-    let world = path.with_extension("wld");
     if !common::writes_georeferencing(r, georeferenced) {
-        return match std::fs::remove_file(&world) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
-            _ => Ok(()),
-        };
+        return Ok(());
     }
     let (dx, dy) = (r.cell_size_x, -r.cell_size_y);
     let text = format!("{dx}\n0\n0\n{dy}\n{}\n{}\n", r.x_min + dx / 2.0, r.y_max() + dy / 2.0);
-    common::write_replacing(world, text)?;
+    common::write_replacing(path.with_extension("wld"), text)?;
     Ok(())
 }
 
@@ -271,6 +282,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, georeferenced:
             }
         }
     }
+    remove_stale_world_file(r, path, georeferenced)?;
     let mut file = std::io::BufWriter::new(common::create_replacing(path)?);
     let mut enc = png::Encoder::new(&mut file, r.cols as u32, r.rows as u32);
     enc.set_color(color);

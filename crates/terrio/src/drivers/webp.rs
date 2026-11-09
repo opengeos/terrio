@@ -110,8 +110,10 @@ pub(crate) fn encode(r: &Raster, options: &[(String, String)]) -> Result<Vec<u8>
 /// GDAL keeps in its `.aux.xml` too).
 pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, options: &[(String, String)]) -> Result<()> {
     let bytes = encode(r, options)?;
+    let georeferenced = common::georeferenced(options);
+    super::png::remove_stale_world_file(r, path, georeferenced)?;
     common::write_replacing(path, bytes)?;
-    super::png::write_world_file(r, path, common::georeferenced(options))?;
+    super::png::write_world_file(r, path, georeferenced)?;
     common::write_pam_with(path, Some(&r.crs), nodata, r.bands)
 }
 

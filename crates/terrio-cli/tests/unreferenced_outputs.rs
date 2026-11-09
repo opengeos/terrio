@@ -23,20 +23,52 @@ fn source(dir: &Path) {
     terrio::write_raster_dataset(&ds, dir.join("src.tif").to_str().unwrap(), &options).unwrap();
 }
 
+/// The top-level boxes of JPEG 2000 bytes, `(type, contents)`. A box of size 0 runs to the end of
+/// the bytes, and one of size 1 gives its size in the 8 bytes after its type. Panics unless the
+/// boxes end exactly at the end of the bytes, so that a walk cut short fails the test.
+fn boxes(bytes: &[u8]) -> Vec<([u8; 4], &[u8])> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        assert!(i + 8 <= bytes.len(), "a box header is cut short at byte {i} of {}", bytes.len());
+        let kind: [u8; 4] = bytes[i + 4..i + 8].try_into().unwrap();
+        let (size, header) = match u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap()) {
+            0 => (bytes.len() - i, 8),
+            1 => {
+                assert!(i + 16 <= bytes.len(), "a box size is cut short at byte {i} of {}", bytes.len());
+                (u64::from_be_bytes(bytes[i + 8..i + 16].try_into().unwrap()) as usize, 16)
+            }
+            size => (size as usize, 8),
+        };
+        assert!(size >= header && size <= bytes.len() - i, "box {kind:?} at byte {i} of {}: size {size}", bytes.len());
+        out.push((kind, &bytes[i + header..i + size]));
+        i += size;
+    }
+    assert_eq!(i, bytes.len(), "the boxes end at byte {i} of {}", bytes.len());
+    out
+}
+
+/// Whether JPEG 2000 bytes hold a GeoJP2 box among their top-level boxes.
+fn holds_geojp2_box(bytes: &[u8]) -> bool {
+    boxes(bytes).iter().any(|(kind, contents)| kind == b"uuid" && contents.starts_with(&GEOJP2))
+}
+
 /// Whether a JPEG 2000 file holds a GeoJP2 box among its top-level boxes.
 fn has_geojp2_box(path: &Path) -> bool {
-    let bytes = std::fs::read(path).unwrap();
-    let mut i = 0;
-    while i + 8 <= bytes.len() {
-        if &bytes[i + 4..i + 8] == b"uuid" && bytes[i + 8..].starts_with(&GEOJP2) {
-            return true;
-        }
-        match u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap()) as usize {
-            size if size >= 8 => i += size,
-            _ => break,
-        }
-    }
-    false
+    holds_geojp2_box(&std::fs::read(path).unwrap())
+}
+
+/// The box walker reads a box with a 64-bit size and one running to the end of the file, and
+/// refuses a file whose last box is cut short.
+#[test]
+fn the_box_walker_reads_every_box_or_fails() {
+    let geojp2 = |size: u32| [&size.to_be_bytes()[..], b"uuid", &GEOJP2, b"payload"].concat();
+    let extended = [&1u32.to_be_bytes()[..], b"free", &24u64.to_be_bytes(), &[0; 8]].concat();
+    let signature = [&12u32.to_be_bytes()[..], b"jP  ", b"\r\n\x87\n"].concat();
+    assert!(holds_geojp2_box(&[signature.clone(), extended.clone(), geojp2(31)].concat()));
+    assert!(holds_geojp2_box(&[signature.clone(), extended.clone(), geojp2(0)].concat()));
+    let cut = [signature, extended, geojp2(31)].concat();
+    assert!(std::panic::catch_unwind(|| holds_geojp2_box(&cut[..cut.len() - 1])).is_err());
 }
 
 /// Whether a written file is georeferenced: its GeoJP2 box, its world file, its GeoTIFF tie point.
@@ -84,4 +116,8 @@ fn assigned_bounds_or_a_crs_are_written() {
         assert!(georeferenced(d, &out), "{out}");
         assert_eq!(terrio::open_raster(d.join(&out).to_str().unwrap()).unwrap().crs().epsg, Some(32611), "{out}");
     }
+    // A GeoTIFF keeps the CRS in its GeoKeys, without a tie point.
+    run(d, &["translate", "src.tif", "srs.tif", "--a-srs", "EPSG:32611"]);
+    assert!(!georeferenced(d, "srs.tif"));
+    assert_eq!(terrio::open_raster(d.join("srs.tif").to_str().unwrap()).unwrap().crs().epsg, Some(32611));
 }
