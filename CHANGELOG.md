@@ -17,8 +17,8 @@
   rows by the covering column, read alone first (or by the geometries' bounding boxes without
   one). On 12 cores, the 664,000 polygons of fiboa's es-nc file (Brotli, 27 row groups) read
   into a pyarrow table in 0.79 s and 761 MB, against 1.56 s and 966 MB through GDAL 3.13's Arrow
-  stream (pyogrio) and 2.33 s and 2.0 GB before; a small rectangle of a 533 MB Overture buildings file on S3
-  fetches 4.9 MB in 5 requests, where the whole file was downloaded.
+  stream (pyogrio) and 2.33 s and 2.0 GB before; a small rectangle of a 533 MB Overture buildings
+  file on S3 fetches 4.9 MB in 5 requests, where the whole file was downloaded.
 - MBTiles archives are read in place (#693). Opening one reads its schema and metadata from the
   file, mapped into memory on native builds, and each tile is read when asked for, by a lookup in
   the index on `(zoom_level, tile_column, tile_row)` that MBTiles writers create (or, for the
