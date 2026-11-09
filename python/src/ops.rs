@@ -2082,7 +2082,8 @@ enum WindowWarpError {
 }
 
 /// The `RasterioIOError("Read failed: ...")` that `DatasetReader._read_level` raises when a window
-/// cannot be read, `cause` (the read's own error) as its cause.
+/// cannot be read, `cause` (the read's own error) as its cause; `cause` itself if that error
+/// cannot be built (`terrio.rio.errors` unavailable).
 fn read_failed(py: Python<'_>, cause: PyErr) -> PyErr {
     let message = format!("Read failed: {}", cause.value(py));
     match py.import("terrio.rio.errors").and_then(|m| m.getattr("RasterioIOError")).and_then(|class| class.call1((message,))) {
@@ -2091,7 +2092,7 @@ fn read_failed(py: Python<'_>, cause: PyErr) -> PyErr {
             err.set_cause(py, Some(cause));
             err
         }
-        Err(err) => err,
+        Err(_) => cause,
     }
 }
 

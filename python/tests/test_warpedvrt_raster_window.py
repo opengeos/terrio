@@ -222,21 +222,43 @@ def test_the_rust_path_gives_the_python_paths_pixels(tmp_path, c):
             assert any(level is not None for level, _ in rust[1][1]), rust[1][1]
 
 
-def test_a_window_that_cannot_be_read_raises_as_on_the_python_path(tmp_path):
-    # A COG cut short: its tiles past the cut cannot be read. Both paths raise the same
-    # RasterioIOError, "Read failed: ..." with the reader's error as its cause.
+def cut_short(tmp_path):
+    """A COG cut short: its tiles past the cut cannot be read."""
     path = str(tmp_path / "src.tif")
     terrio.Raster.from_array(values("uint16", 1, 64, 64)[0], GT, crs=CRS).write(
         path, driver="COG", tile_size=16, options={"OVERVIEW_COUNT": "0"}
     )
     with open(path, "r+b") as f:
         f.truncate(f.seek(0, 2) // 2)
+    return path
+
+
+def test_a_window_that_cannot_be_read_raises_as_on_the_python_path(tmp_path):
+    # Both paths raise the same RasterioIOError, "Read failed: ..." with the reader's error as
+    # its cause.
+    path = cut_short(tmp_path)
     errors = []
     for python_path in (False, True):
         with pytest.raises(RasterioIOError, match="^Read failed: ") as raised:
             read(path, python_path, resampling=Resampling.nearest)
         errors.append((str(raised.value), type(raised.value.__cause__)))
     assert errors[0] == errors[1], errors
+
+
+def test_a_failed_read_raises_its_own_error_when_rasterioioerror_cannot_be_built(
+    tmp_path, monkeypatch
+):
+    # The one-call path builds its RasterioIOError from `terrio.rio.errors`. Were that module
+    # unavailable, the read raises its own error, not the import's.
+    path = cut_short(tmp_path)
+    with pytest.raises(RasterioIOError) as wrapped:
+        read(path, False, resampling=Resampling.nearest)
+    cause = wrapped.value.__cause__
+    monkeypatch.setitem(sys.modules, "terrio.rio.errors", None)
+    with pytest.raises(Exception) as raised:
+        read(path, False, resampling=Resampling.nearest)
+    assert type(raised.value) is type(cause), raised.value
+    assert str(raised.value) == str(cause)
 
 
 def test_a_window_read_by_another_datasets_method_comes_from_that_dataset(tmp_path):
