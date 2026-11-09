@@ -795,7 +795,9 @@ class WarpedVRT(DatasetReader):
         }
 
     def _source_raster(self) -> Any:
-        """The source's Raster to read a window from in Rust, looked up once, as a read does.
+        """The source's Raster to read a window from in Rust, looked up for each window.
+
+        A read of the dataset (`_read_level`) looks it up for each window too.
 
         Returns:
             Raster: The source's Raster.
@@ -875,11 +877,11 @@ class WarpedVRT(DatasetReader):
                 itemsize = src.itemsize + (0 if self._sum_holds(src) else work.itemsize)
                 largest = max((part_win[2] * part_win[3] for _, part_win in parts), default=0)
                 _terrio._check_sum_window(largest, itemsize * self._src_count)
-            from_raster = self._raster_window()
+            raster_kwargs = self._raster_window()
             for part, part_win in parts:
                 if self._window_hook is not None:
-                    self._window_hook(grid.level, part_win, from_raster is not None)
-                if from_raster is not None:
+                    self._window_hook(grid.level, part_win, raster_kwargs is not None)
+                if raster_kwargs is not None:
                     warped, done = rw._warp_from(
                         self._source_raster(),
                         grid.level,
@@ -887,7 +889,7 @@ class WarpedVRT(DatasetReader):
                         part_win,
                         init=self._init_value,
                         padded_scale=direct,
-                        **from_raster,
+                        **raster_kwargs,
                     )
                 else:
                     data, mask = self._source_window(grid.level, part_win)
