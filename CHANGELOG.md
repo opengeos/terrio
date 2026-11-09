@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A KML or KMZ document's layer names are made unique in time linear in its Folders and Documents.
+  It took time quadratic in them, and cubic when they shared a name (#630): `terrio info` on a
+  1,654-byte KMZ of 4,000 Folders without a name takes 0.10 s, where it took 28.7 s, and on one
+  of 100,000 named Folders 2.1 s, where it took 24.6 s. The names are the same, in the same order:
+  `Folder`, `Folder (2)`, `Folder (3)`, and so on.
 - A VRT source with fractional `SrcRect` or `DstRect` offsets is read within its rectangles (#702).
   A window with as many source pixels as output pixels was copied one for one whatever its offsets,
   so `bilinear`, `cubic` and `average` returned the source pixels a fraction of a pixel from where
