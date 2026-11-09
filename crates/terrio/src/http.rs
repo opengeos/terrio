@@ -2745,6 +2745,40 @@ impl Seek for RangeReader {
     }
 }
 
+// GeoParquet files read in place: their footer, then the column chunks asked for.
+#[cfg(feature = "parquet")]
+impl parquet::file::reader::Length for RangeReader {
+    fn len(&self) -> u64 {
+        self.len
+    }
+}
+
+#[cfg(feature = "parquet")]
+impl parquet::file::reader::ChunkReader for RangeReader {
+    type T = RangeReader;
+
+    fn get_read(&self, start: u64) -> parquet::errors::Result<Self::T> {
+        let mut r = self.clone();
+        r.pos = start;
+        Ok(r)
+    }
+
+    fn get_bytes(&self, start: u64, length: usize) -> parquet::errors::Result<bytes::Bytes> {
+        // A malformed file may declare more bytes than it has: refused before allocating them.
+        if start.checked_add(length as u64).is_none_or(|end| end > self.len) {
+            return Err(parquet::errors::ParquetError::EOF(format!(
+                "{length} bytes at {start} are past the end of a {}-byte file",
+                self.len
+            )));
+        }
+        let mut buf = vec![0; length];
+        let mut r = self.clone();
+        r.pos = start;
+        r.read_exact(&mut buf).map_err(|e| parquet::errors::ParquetError::External(Box::new(e)))?;
+        Ok(bytes::Bytes::from(buf))
+    }
+}
+
 /// A loopback server for the tests of other modules: serves `data` at every path, honouring
 /// ranges, and records each request's `Range` header (`None` without one). Returns its base URL.
 #[cfg(test)]
