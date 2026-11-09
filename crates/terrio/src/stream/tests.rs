@@ -897,13 +897,32 @@ fn selected_fields_keep_their_order_and_struct_members() {
         FeatureReader::new(l, Box::new(source))
     };
     // a struct column by its name, its members kept in the layer's order, names without case
-    let mut r = reader(&layer).select_fields(&["HEIGHT".into(), "names".into()]).unwrap();
+    let mut r = reader(&layer).select_fields(&["HEIGHT".into(), "names".into()], 2).unwrap();
     let names: Vec<&str> = r.layer().schema.fields().iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["names.primary", "names.common", "height"]);
     let chunk = r.read_chunk(DEFAULT_CHUNK).unwrap().unwrap();
     assert_eq!(chunk.features.len(), 3);
     assert_eq!(chunk.features[2].attributes, ["2-1", "2-2", "2-4"].map(|v| FieldValue::Text(v.into())));
     assert_eq!(chunk.features[2].geometry, Some(Geometry::point(2.0, 0.0)));
-    let error = reader(&layer).select_fields(&["nope".into()]).err().unwrap().to_string();
+    let error = reader(&layer).select_fields(&["nope".into()], 2).err().unwrap().to_string();
     assert!(error.contains("nope") && error.contains("namesake"), "{error}");
+}
+
+#[test]
+fn selected_fields_read_the_batches_asked_for() {
+    let mut layer = Layer::new("t").with_epsg(4326);
+    layer.add_field(FieldDef::new("i", FieldType::Integer));
+    layer.add_field(FieldDef::new("name", FieldType::Text));
+    for k in 0..5u64 {
+        let attributes = vec![FieldValue::Integer(k as i64), FieldValue::Text(format!("f{k}"))];
+        layer.push(Feature { fid: k, geometry: Some(Geometry::point(k as f64, 0.0)), attributes });
+    }
+    let mut l = layer.clone();
+    let source = MemorySource { features: std::mem::take(&mut l.features).into_iter(), batch: 2 };
+    let mut r = FeatureReader::new(l, Box::new(source)).select_fields(&["name".into()], 2).unwrap();
+    // a chunk of one feature reads one batch of two from the source, not all five
+    let chunk = r.read_chunk(1).unwrap().unwrap();
+    assert_eq!(chunk.features.len(), 1);
+    assert_eq!(chunk.features[0].attributes, [FieldValue::Text("f0".into())]);
+    assert_eq!(r.buffer.len(), 1);
 }
