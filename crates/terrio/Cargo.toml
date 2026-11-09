@@ -119,7 +119,7 @@ hecras = ["netcdf-hdf5", "dep:ras-commander-fast-hdf"]
 ## XLSX and XLSM workbooks as vector layers (pure Rust).
 xlsx = []
 ## OpenStreetMap PBF and XML.
-osm = ["dep:osmpbfreader"]
+osm = ["dep:osmpbfreader", "dep:memmap2"]
 ## LZMA-compressed GeoTIFFs.
 lzma = ["dep:lzma-rust2"]
 ## FlatGeobuf.
@@ -137,7 +137,7 @@ tiles = ["sqlite"]
 ## Zarr v2 and v3.
 zarr = ["dep:lz4_flex"]
 ## GeoPackage (vector and raster tiles), SQLite/SpatiaLite and the SQLite store of MBTiles.
-sqlite = []
+sqlite = ["dep:memmap2"]
 ## Zstandard (GeoTIFF chunks and EPT tiles) with the zstd C library, natively: it decodes faster
 ## and compresses better than `ruzstd`, used without it and in WebAssembly, which writes at its
 ## fastest level (about zstd's 1) whatever level is asked for. terrio decodes every ZSTD GeoTIFF
@@ -154,8 +154,9 @@ gdal = ["dep:gdal", "dep:gdal-sys"]
 ndarray = ["dep:ndarray"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+# Memory-mapped reads of SQLite files (`sqlite`) and OSM PBF files (`osm`).
+memmap2 = { workspace = true, optional = true }
 # `libzstd`: EPT tiles' Zstandard, natively (without it, and in WebAssembly, `ruzstd`).
-memmap2.workspace = true
 zstd = { workspace = true, optional = true }
 tempfile.workspace = true
 # Listing and extracting tar archives (`terrio::vsi`).
@@ -187,6 +188,10 @@ same-file.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+# The bounded-memory test of compressed XLSX workbooks maps its input.
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+memmap2.workspace = true
 
 [[example]]
 name = "xlsx_workbook"
