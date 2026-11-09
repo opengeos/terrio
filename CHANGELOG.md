@@ -121,6 +121,11 @@
   into a pyarrow table in 0.79 s and 761 MB, against 1.56 s and 966 MB through GDAL 3.13's Arrow
   stream (pyogrio) and 2.33 s and 2.0 GB before; a small rectangle of a 533 MB Overture buildings
   file on S3 fetches 4.9 MB in 5 requests, where the whole file was downloaded.
+- OpenStreetMap PBF decoding uses terrio's protobuf reader instead of `osmpbfreader`, removing
+  21 packages from the default build (#759). Sort detection matches complete header feature values.
+  Reads enforce the 32 MiB blob limit and reject protobuf group wire types 3/4, dense tags without
+  per-node terminators, and coordinate or date granularity that is nonpositive or outside the
+  positive `i32` range.
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000
