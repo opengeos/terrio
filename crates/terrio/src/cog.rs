@@ -1995,6 +1995,9 @@ struct TiffRaster {
     /// by the file's path, so that a file replaced under another reader is never read from the
     /// first one's chunks.
     cache_handle: u64,
+    /// The decoders that decode chunks in parallel, kept between window reads (see
+    /// [`crate::geotiff::DecoderPool`]).
+    workers: crate::geotiff::DecoderPool<PatchedReader<Source>>,
 }
 
 impl Drop for TiffRaster {
@@ -2116,6 +2119,7 @@ impl TiffRaster {
             ovr: None,
             ovr_mask: None,
             cache_handle: crate::block_cache::new_handle(),
+            workers: Default::default(),
         })
     }
 
@@ -2351,7 +2355,8 @@ impl TiffRaster {
             *codec = Some(crate::tiff_codecs::ChunkCodec::new(dec, limits.chunk_bytes, Some(tables.clone())).map_err(tiff_err)?);
         }
         let codec = codec.as_ref().and_then(Option::as_ref);
-        crate::geotiff::decode_chunks(dec, reopen, ifd, &misses, codec, limits.chunk_bytes, &tiff_err, |(idx, chunk, dims)| {
+        let pool = Some(&self.workers);
+        crate::geotiff::decode_chunks(dec, reopen, pool, ifd, &misses, codec, limits.chunk_bytes, &tiff_err, |(idx, chunk, dims)| {
             place_decoded(&mut out, &chunk, dims, &targets[&idx], w, spp)?;
             if caching {
                 crate::block_cache::insert(handle, ifd, idx, chunk, dims);
@@ -3013,6 +3018,67 @@ mod tests {
         assert_eq!(crate::block_cache::tests::take_lookups(), (2, 1));
         read_f64(&mut r, edge, &[1], None);
         assert_eq!(crate::block_cache::tests::take_lookups(), (3, 0));
+    }
+
+    /// Multi-chunk window reads reuse the worker decoders that earlier reads opened, at full
+    /// resolution and on overviews, rather than open (and read the chunk tables of) one decoder
+    /// per worker each time: however many reads, no more decoders are opened than there are
+    /// threads. The values are those of a reader opened for each read. With a single thread there
+    /// are no workers, and no decoder is opened.
+    #[test]
+    fn window_reads_reuse_the_worker_decoders_of_earlier_reads() {
+        // Off, so that every read decodes its chunks and needs the workers.
+        let _serial = crate::block_cache::tests::cache_test_guard(0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiled.tif");
+        let (cols, rows, bands) = (160, 144, 3);
+        let cfg = wbraster::RasterConfig { cols, rows, bands, data_type: DataType::U8, ..Default::default() };
+        let r = wbraster::Raster::from_data_native(cfg, sequence(DataType::U8, cols * rows * bands, 3)).unwrap();
+        let options = crate::RasterWriteOptions {
+            driver: Some(RasterDriver::GTiff),
+            compression: Some("DEFLATE".into()),
+            tile_size: Some(16),
+            overviews: vec![2],
+            ..Default::default()
+        };
+        crate::write_raster_dataset(&RasterDataset::with_driver(r, RasterDriver::GTiff, false), path.to_str().unwrap(), &options).unwrap();
+        let path = path.to_str().unwrap();
+        // Windows of 4 x 4 to 9 x 9 tiles, full resolution and overview mixed.
+        let reads: Vec<(Window, Option<usize>)> = vec![
+            (Window::new(3, 5, 120, 100), None),
+            (Window::new(17, 9, 64, 64), None),
+            (Window::new(0, 0, 70, 66), Some(0)),
+            (Window::new(40, 33, 100, 90), None),
+            (Window::new(8, 4, 60, 60), Some(0)),
+            (Window::new(3, 5, 120, 100), None),
+        ];
+        let mut reader = LazyRaster::open(path).unwrap();
+        let opened = |r: &LazyRaster| match &r.inner {
+            Inner::Tiff(t) => t.workers.opened.load(std::sync::atomic::Ordering::Relaxed),
+            _ => panic!("a GeoTIFF reader"),
+        };
+        let threads = crate::par::threads();
+        let first = read_f64(&mut reader, reads[0].0, &[1, 2, 3], reads[0].1);
+        if threads > 1 {
+            assert!(opened(&reader) >= 1, "the first read opens decoders for its workers");
+        } else {
+            assert_eq!(opened(&reader), 0, "a single thread decodes with the reader's own decoder");
+        }
+        for _ in 0..3 {
+            for (w, overview) in &reads {
+                let fresh = read_f64(&mut LazyRaster::open(path).unwrap(), *w, &[3, 1], *overview);
+                assert_eq!(read_f64(&mut reader, *w, &[3, 1], *overview), fresh, "{w:?} on {overview:?}");
+            }
+        }
+        assert_eq!(read_f64(&mut reader, reads[0].0, &[1, 2, 3], reads[0].1), first);
+        // A decoder is opened only while all the others are busy, whatever order the workers run
+        // in; opening one per worker would open one per thread on every one of these 20 reads.
+        let most = if threads > 1 { threads } else { 0 };
+        assert!(opened(&reader) <= most, "{} decoders opened on {threads} threads", opened(&reader));
+        match &reader.inner {
+            Inner::Tiff(t) => assert!(t.workers.len() <= most),
+            _ => unreachable!(),
+        }
     }
 
     /// With the cache off, reads decode every time and look nothing up.
