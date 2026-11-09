@@ -2128,6 +2128,12 @@ class DatasetReader(DatasetBase):
         return out
 
 
+# The function `DatasetReader` reads a window of a level with, as defined above. A `WarpedVRT`
+# reads and warps a dataset's window in Rust only when the dataset reads its windows through this
+# very function, not through a replacement on a class or on the dataset (`vrt._reads_its_raster`).
+_READER_READ_LEVEL = DatasetReader._read_level
+
+
 class Statistics:
     """Band statistics: minimum, maximum, mean and standard deviation."""
 

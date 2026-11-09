@@ -24,16 +24,16 @@ def cog(path, values, gt, crs="EPSG:3857", nodata=None):
     return str(path)
 
 
-def recorded(src):
-    """Records the windows the warp reads from `src`, in the list it returns."""
+def recorded(vrt):
+    """Records the source windows `vrt`'s warps read, in the list it returns, each of them read
+    and warped in Rust (`WarpedVRT._raster_window`)."""
     windows = []
-    read = src._read_level
 
-    def spy(bands, window, level):
+    def hook(level, window, rust):
+        assert rust, window
         windows.append(window)
-        return read(bands, window, level)
 
-    src._read_level = spy
+    vrt._window_hook = hook
     return windows
 
 
@@ -46,8 +46,8 @@ def bits(values):
 def tile(path, limit, shape, **kw):
     """A reduced read of the whole `sum` VRT of `path`, and the windows it read."""
     with terrio.rio.open(path) as src:
-        windows = recorded(src)
         with WarpedVRT(src, resampling=Resampling.sum, warp_mem_limit=limit, **kw) as vrt:
+            windows = recorded(vrt)
             return vrt.read(out_shape=shape), windows
 
 
@@ -184,11 +184,15 @@ def traced(path, limit, shape, **kw):
     """The peak of the arrays Python allocates during a reduced `sum` read, and the windows read.
 
     The windows the source reads arrive allocated by terrio, not traced: what is traced is what
-    the read allocates in Python, a converted copy of a window among it.
+    the read allocates in Python, a converted copy of a window among it. The read takes the path
+    that brings each window into Python, as it does for a dataset whose `_read_level` is replaced.
     """
     with terrio.rio.open(path) as src:
-        windows = recorded(src)
+        own = src._read_level
+        src._read_level = lambda bands, window, level: own(bands, window, level)
         with WarpedVRT(src, resampling=Resampling.sum, warp_mem_limit=limit, **kw) as vrt:
+            windows = []
+            vrt._window_hook = lambda level, window, rust: windows.append(window)
             tracemalloc.start()
             try:
                 vrt.read(out_shape=shape)
@@ -212,6 +216,12 @@ def test_a_sum_takes_a_source_its_dtype_holds_as_it_is(tmp_path):
     peak, windows = traced(path, 16, (1, 128, 128), dtype="uint8", **grid)
     largest = max(w * h for _, _, w, h in windows)
     assert peak >= largest, (peak, largest)
+    # Read and warped in Rust, the windows are converted as on that path: in float64 not at all,
+    # in uint8 first.
+    with terrio.rio.open(path) as src:
+        for dtype, converted in (("float64", None), ("uint8", "uint8")):
+            with WarpedVRT(src, resampling=Resampling.sum, dtype=dtype, **grid) as vrt:
+                assert vrt._raster_window()["dtype"] == converted, dtype
 
 
 @pytest.mark.parametrize(
