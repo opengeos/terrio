@@ -11,6 +11,11 @@
   pixels, 1% of the total. The longitude and latitude grid suggested for a raster that covers its
   pole now reaches the pole, over every longitude: for 10,000 km of EPSG:3413 centred on the North
   Pole, it spanned 30.5° N to 46.0° N, and now 30.4° N to 90° N.
+- Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
+  read of the same open raster, instead of opening one per worker, which reads the image's whole
+  chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000
+  tiles went from 130 to 5.7 ms on 32 threads, with the block cache off. An open raster keeps up
+  to one decoder per thread, each holding its image's tables (16 bytes a chunk).
 - MBTiles archives are read in place (#693). Opening one reads its schema and metadata from the
   file, mapped into memory on native builds, and each tile is read when asked for, by a lookup in
   the index on `(zoom_level, tile_column, tile_row)` that MBTiles writers create (or, for the
