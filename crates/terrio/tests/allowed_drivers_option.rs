@@ -10,6 +10,7 @@ use terrio::formats::allowed_drivers;
 
 const OPTION: &str = "TERRIO_ALLOWED_DRIVERS";
 
+/// A list of drivers, as [`allowed_drivers`] returns one.
 fn names(names: &[&str]) -> Option<Vec<String>> {
     Some(names.iter().map(|n| n.to_string()).collect())
 }
@@ -29,6 +30,8 @@ fn an_empty_list_allows_nothing_and_a_scope_cannot_widen_the_environments() {
     let grid = dir.path().join("grid.asc");
     std::fs::write(&grid, "ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n3 4\n").unwrap();
     let grid = grid.to_str().unwrap();
+    // SAFETY: this test binary runs this test only, so nothing else reads the environment.
+    unsafe { std::env::remove_var(OPTION) };
     assert_eq!(in_scope(None, grid), (None, true), "no list");
     for value in ["", " ", ","] {
         // SAFETY: this test binary runs this test only, so nothing else reads the environment.

@@ -30,13 +30,13 @@ thread_local! {
 /// The value of the option `key`: the innermost scope of the calling thread that sets (or unsets)
 /// it, else the environment variable. Empty values count as unset.
 pub fn get(key: &str) -> Option<String> {
-    get_set(key).filter(|v| !v.trim().is_empty())
+    get_including_empty(key).filter(|v| !v.trim().is_empty())
 }
 
 /// The value of the option `key`, found as [`get`] finds it, but with an empty or blank value
 /// counting as set: for an option whose empty value says something (an allow-list that allows
 /// nothing).
-pub fn get_set(key: &str) -> Option<String> {
+pub(crate) fn get_including_empty(key: &str) -> Option<String> {
     let scoped = SCOPES.with(|s| s.borrow().iter().rev().find_map(|scope| scope.get(key).cloned()));
     match scoped {
         Some(v) => v,
@@ -61,7 +61,10 @@ pub fn get_any(keys: &[&str]) -> Option<String> {
 /// that the value outside it allows too, and unsetting it keeps the value outside.
 pub fn push_scope(mut options: HashMap<String, Option<String>>) {
     if let Some(value) = options.get_mut(crate::formats::ALLOWED_DRIVERS_OPTION) {
-        *value = crate::formats::scoped_allowed_drivers(get_set(crate::formats::ALLOWED_DRIVERS_OPTION).as_deref(), value.as_deref());
+        *value = crate::formats::scoped_allowed_drivers(
+            get_including_empty(crate::formats::ALLOWED_DRIVERS_OPTION).as_deref(),
+            value.as_deref(),
+        );
     }
     SCOPES.with(|s| s.borrow_mut().push(options));
 }

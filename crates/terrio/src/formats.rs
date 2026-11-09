@@ -748,7 +748,7 @@ pub fn allowed_drivers(kind: Option<Kind>) -> Option<Vec<String>> {
         Some(_) => None,
         None => allowed_by_every_kind(&lists),
     };
-    let option = [crate::config::get_set(ALLOWED_DRIVERS_OPTION), std::env::var(ALLOWED_DRIVERS_OPTION).ok()]
+    let option = [crate::config::get_including_empty(ALLOWED_DRIVERS_OPTION), std::env::var(ALLOWED_DRIVERS_OPTION).ok()]
         .into_iter()
         .flatten()
         .map(|v| option_drivers(&v))

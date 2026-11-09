@@ -3,11 +3,14 @@
 ## Unreleased
 
 - `TERRIO_ALLOWED_DRIVERS` set but empty or blank allows no driver: it allowed every driver, as the
-  option unset does. A thread's scope (`terrio.rio.Env`, `config::push_scope`) now only narrows the
-  list outside it. A scope that set the option to an empty value or to other drivers, or unset it,
-  lifted or replaced the environment's list on its thread: a process limited to `GTiff` opened an
-  Esri ASCII grid there (#721). The option is documented in `docs/remote-data.md` and
-  `docs/python.md`.
+  option unset does. `terrio.rio` no longer opens a `MEM:::DATAPOINTER=` name under a raster list
+  that allows nothing, from this option or from `set_allowed_drivers([])`. A thread's scope
+  (`terrio.rio.Env`, `config::push_scope`) now only narrows the list outside it. A scope that set
+  the option to an empty value or to other drivers, or unset it, lifted or replaced the
+  environment's list on its thread: a process limited to `GTiff` opened an Esri ASCII grid there
+  (#721). The option is documented in `docs/remote-data.md` and `docs/python.md`.
+  Breaking: an environment that sets the option empty (a blank templated variable, say) now opens
+  nothing; unset it to allow every driver.
 - A VRT source with fractional `SrcRect` or `DstRect` offsets is read within its rectangles (#702).
   A window with as many source pixels as output pixels was copied one for one whatever its offsets,
   so `bilinear`, `cubic` and `average` returned the source pixels a fraction of a pixel from where
