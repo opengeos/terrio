@@ -98,11 +98,13 @@ trait FeatureSource: Send {
 struct SelectedFields {
     inner: FeatureReader,
     keep: Vec<usize>,
+    /// The most features read from `inner` at a time.
+    batch: usize,
 }
 
 impl FeatureSource for SelectedFields {
     fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
-        let Some(chunk) = self.inner.read_chunk(65536)? else { return Ok(None) };
+        let Some(chunk) = self.inner.read_chunk(self.batch)? else { return Ok(None) };
         let keep = &self.keep;
         Ok(Some(
             chunk
@@ -118,46 +120,25 @@ impl FeatureSource for SelectedFields {
                 .collect(),
         ))
     }
+}
+
+/// Whether `path` is `parent`, or one of its members (`parent.member`), matched without case: a
+/// flattened field `bbox.xmin` is a member of the column `bbox`, and a column `bbox.xmin` of the
+/// struct `bbox`.
+pub(crate) fn is_or_under(path: &str, parent: &str) -> bool {
+    path.get(..parent.len()).is_some_and(|head| head.eq_ignore_ascii_case(parent))
+        && path.get(parent.len()..).is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
 }
 
 /// The indices of the fields of `schema` that `columns` names, in the schema's order (see
 /// [`FeatureReader::select_fields`]).
 pub(crate) fn field_indices(schema: &wbvector::Schema, columns: &[String]) -> Result<Vec<usize>> {
     let fields = schema.fields();
-    let named = |f: &str, c: &str| {
-        f.eq_ignore_ascii_case(c) || f.get(..c.len()).is_some_and(|head| head.eq_ignore_ascii_case(c)) && f[c.len()..].starts_with('.')
-    };
-    if let Some(c) = columns.iter().find(|c| !fields.iter().any(|f| named(&f.name, c))) {
+    if let Some(c) = columns.iter().find(|c| !fields.iter().any(|f| is_or_under(&f.name, c))) {
         let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
         return Err(Error::InvalidArgument(format!("no field named {c:?} (fields: {})", names.join(", "))));
     }
-    Ok((0..fields.len()).filter(|&i| columns.iter().any(|c| named(&fields[i].name, c))).collect())
-}
-
-/// The features of a reader with some of their fields (see [`FeatureReader::select_fields`]).
-struct SelectedFields {
-    inner: FeatureReader,
-    keep: Vec<usize>,
-}
-
-impl FeatureSource for SelectedFields {
-    fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
-        let Some(chunk) = self.inner.read_chunk(65536)? else { return Ok(None) };
-        let keep = &self.keep;
-        Ok(Some(
-            chunk
-                .features
-                .into_iter()
-                .map(|mut f| {
-                    f.attributes = keep
-                        .iter()
-                        .map(|&i| f.attributes.get_mut(i).map_or(FieldValue::Null, |v| std::mem::replace(v, FieldValue::Null)))
-                        .collect();
-                    f
-                })
-                .collect(),
-        ))
-    }
+    Ok((0..fields.len()).filter(|&i| columns.iter().any(|c| is_or_under(&fields[i].name, c))).collect())
 }
 
 /// A layer without its features: its name, fields, geometry type and CRS.
@@ -203,11 +184,12 @@ impl FeatureReader {
     /// Keeps only the fields `columns` names, in the layer's order: the field of that name
     /// (matched without case), or the members of a struct column of that name, which the
     /// GeoParquet and Arrow readers flatten into `name.member` fields. Called before reading.
+    /// `batch` is the most features read at a time from the source, as [`open_layers`] takes it.
     ///
     /// # Errors
     ///
     /// If a name matches no field.
-    pub fn select_fields(mut self, columns: &[String]) -> Result<Self> {
+    pub fn select_fields(mut self, columns: &[String], batch: usize) -> Result<Self> {
         let keep = self.field_indices(columns)?;
         if self.narrow(&keep)? {
             return Ok(self);
@@ -219,7 +201,7 @@ impl FeatureReader {
             layer.schema.add_field(fields[i].clone());
         }
         let chunk_bytes = self.chunk_bytes;
-        let mut reader = FeatureReader::new(layer, Box::new(SelectedFields { inner: self, keep }));
+        let mut reader = FeatureReader::new(layer, Box::new(SelectedFields { inner: self, keep, batch }));
         reader.chunk_bytes = chunk_bytes;
         Ok(reader)
     }
