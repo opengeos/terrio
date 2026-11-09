@@ -23,6 +23,17 @@
   holds no tile; a row whose column is outside its zoom level's grid (`tile_column >=
   2^zoom_level`) is passed over. A raster opened from an archive without `bounds` takes its extent
   from the listed tiles, including rows without bytes.
+- A `WarpedVRT` over a dataset terrio opened for reading now reads and warps each source window
+  in one call that releases the GIL, so reads on several Python threads, such as a server
+  answering tile requests on threads, no longer wait for each other's warps as in 0.8.0. The
+  window is held once, in Rust, where no other thread can change it. These keep 0.8.0's read-only
+  window, warped with the GIL held: datasets opened for writing or update, opened at an
+  `overview_level`, or whose `_read_level` is replaced; another `WarpedVRT` as the source;
+  complex bands; and float32 bands warped in a 32- or 64-bit integer type, or float64 bands in a
+  64-bit one. The pixels are the same on both paths.
+- `WarpedVRT` raises `WarpOptionsError` when `src_alpha` is not one of the source's bands. In
+  0.8.0, a negative value could make another band the alpha, and a value out of range raised
+  `IndexError` when the VRT was read.
 - `warp` of a `Raster` in memory releases the GIL for the whole warp: it takes the raster's
   shared pixels (no copy) and warps them after releasing it, so warps from Python threads
   (rioxarray-style `reproject` of xarray arrays on a thread pool) overlap. 96 nearest-neighbour
@@ -43,8 +54,10 @@
   `GDAL_HTTP_MULTIRANGE=PARALLEL` does; `TERRIO_HTTP_MULTIRANGE=SERIAL` (or the GDAL name)
   requests them one after another. The requests carry the calling thread's options and STAC
   asset policy. A new request starts as each run is stored, so at most 8 responses are held at
-  once, and one read's runs stay within half the block cache. A failed run ends the read once the
-  requests in flight end; none is retried or sent after it. Peak memory can rise with many
+  once, and one read's runs stay within half the block cache. A failed run ends the read as a
+  serial read would: a request in flight waiting for its response is abandoned within 50 ms, even
+  when the response has stalled (a connection being opened still waits for its connect timeout),
+  and none is retried or sent after it. Peak memory can rise with many
   readers, from glibc's per-thread arenas (`MALLOC_ARENA_MAX=2` bounds them).
 
 ## 0.8.0 (2026-11-08)
