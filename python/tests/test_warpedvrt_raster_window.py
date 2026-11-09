@@ -18,6 +18,7 @@ import terrio
 import terrio.rio
 from terrio.rio.enums import Resampling
 from terrio.rio.errors import RasterioIOError
+from terrio.rio.io import DatasetReader
 from terrio.rio.vrt import WarpedVRT
 
 RESAMPLINGS = [
@@ -252,6 +253,25 @@ def test_a_window_read_by_another_datasets_method_comes_from_that_dataset(tmp_pa
             want = vrt.read()
     assert flags == [False], flags
     np.testing.assert_array_equal(got, want)
+
+
+def test_a_read_level_replaced_on_the_class_reads_the_windows(tmp_path, monkeypatch):
+    # `DatasetReader._read_level` replaced on the class itself, as an application or a test may
+    # replace it: the windows come from the replacement, through the Python path.
+    path = write(tmp_path / "src.tif", values("uint16", 1, 29, 37))
+    own, calls = DatasetReader._read_level, []
+
+    def replacement(self, bands, window, level):
+        calls.append(window)
+        return own(self, bands, window, level)
+
+    monkeypatch.setattr(DatasetReader, "_read_level", replacement)
+    with terrio.rio.open(path) as src, WarpedVRT(src, crs="EPSG:3857") as vrt:
+        flags = []
+        vrt._window_hook = lambda level, window, rust: flags.append(rust)
+        vrt.read()
+    assert flags == [False], flags
+    assert len(calls) == 1, calls
 
 
 @pytest.mark.filterwarnings("ignore::numpy.exceptions.ComplexWarning")

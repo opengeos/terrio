@@ -59,7 +59,7 @@ from terrio.rio.crs import CRS
 from terrio.rio.dtypes import dtype_fwd, typename_rev
 from terrio.rio.enums import ColorInterp, MaskFlags, Resampling
 from terrio.rio.errors import WarpedVRTError, WarpOptionsError
-from terrio.rio.io import DatasetReader, _sum_scale
+from terrio.rio.io import _READER_READ_LEVEL, DatasetReader, _sum_scale
 from terrio.rio.warp import (
     _WARP_NAMES,
     _crs_text,
@@ -740,12 +740,12 @@ class WarpedVRT(DatasetReader):
         """How `RegionWarp._warp_from` reads and warps a region's window from the source's Raster.
 
         A window read so stays in Rust: no Python object refers to it, so the warp runs without
-        the GIL. Only for a source terrio reads itself, through its own
-        `DatasetReader._read_level`, overridden neither by its class nor on the dataset (by
-        another function or another dataset's method), in a type a window is read in (not
-        complex), whose window `_source_window` would take through steps `_warp_from` takes too:
-        the bands, an alpha band or the raster's own mask, and a `gdal_cast` conversion but
-        floats into an integer type whose limits the float type does not hold exactly.
+        the GIL. Only for a source terrio reads itself, through `DatasetReader._read_level` as
+        `terrio.rio.io` defines it, replaced neither on a class nor on the dataset (by another
+        function or another dataset's method), in a type a window is read in (not complex),
+        whose window `_source_window` would take through steps `_warp_from` takes too: the
+        bands, an alpha band or the raster's own mask, and a `gdal_cast` conversion but floats
+        into an integer type whose limits the float type does not hold exactly.
 
         Returns:
             dict | None: The keyword arguments of `_warp_from` besides the window's, or None to
@@ -1464,21 +1464,21 @@ _WINDOW_TYPES = frozenset(
 
 
 def _reads_its_raster(ds: Any) -> bool:
-    """Whether a dataset reads its windows through its own `DatasetReader._read_level`.
+    """Whether a dataset reads its windows through `DatasetReader._read_level` as defined.
 
-    Neither its class nor the dataset itself replaces it: a function set on the dataset, or
-    another dataset's method, would read the windows otherwise.
+    Not through a replacement: a subclass's, one set on `DatasetReader` itself, a function set on
+    the dataset or another dataset's method. A replacement on a class shows as the function of
+    the dataset's bound method, so that function and its dataset are all there is to check.
 
     Args:
         ds: A source dataset.
 
     Returns:
-        bool: Whether `ds._read_level` is `DatasetReader._read_level`, bound to `ds`.
+        bool: Whether `ds._read_level` is the function `terrio.rio.io` defines, bound to `ds`.
     """
-    own, read = DatasetReader._read_level, ds._read_level
+    read = ds._read_level
     return (
-        type(ds)._read_level is own
-        and getattr(read, "__func__", None) is own
+        getattr(read, "__func__", None) is _READER_READ_LEVEL
         and getattr(read, "__self__", None) is ds
     )
 
