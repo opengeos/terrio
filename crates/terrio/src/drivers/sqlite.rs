@@ -985,6 +985,18 @@ fn integer_primary_key(sql: &str, columns: &[String]) -> Option<usize> {
 }
 
 /// The items of a `CREATE TABLE` body: column definitions and table constraints, in order.
+/// The items of a `CREATE TABLE` statement that make an automatic index: column definitions and
+/// table constraints with `PRIMARY KEY` or `UNIQUE`.
+pub(crate) fn constraint_items(sql: &str) -> Vec<String> {
+    table_items(sql)
+        .into_iter()
+        .filter(|item| {
+            let k = keywords(item);
+            k.contains("PRIMARY KEY") || k.split(' ').any(|w| w == "UNIQUE")
+        })
+        .collect()
+}
+
 fn table_items(sql: &str) -> Vec<String> {
     let Some(open) = sql.find('(') else { return Vec::new() };
     let body = &sql[open + 1..sql.rfind(')').unwrap_or(sql.len())];

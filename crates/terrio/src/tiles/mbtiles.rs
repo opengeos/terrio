@@ -116,11 +116,14 @@ fn find_index(schema: &[SchemaEntry], table: &str, table_sql: &str, want: &[usiz
         return None;
     }
     // Nor an automatic index of a constraint with a descending column or a collation (such as
-    // `UNIQUE (a, b COLLATE NOCASE)`), which `autoindex_columns` does not report.
-    let unusual = without_quoted(table_sql)
-        .to_ascii_uppercase()
-        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-        .any(|w| w == "DESC" || w == "COLLATE");
+    // `UNIQUE (a, b COLLATE NOCASE)`), which `autoindex_columns` does not report. Other columns'
+    // collations do not matter.
+    let unusual = reader::constraint_items(table_sql).iter().any(|item| {
+        without_quoted(item)
+            .to_ascii_uppercase()
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|w| w == "DESC" || w == "COLLATE")
+    });
     let automatic = if unusual { Vec::new() } else { reader::autoindex_columns(table_sql) };
     schema.iter().filter(|e| e.0 == "index" && e.2.eq_ignore_ascii_case(table) && e.3 != 0).find_map(|(_, name, _, root, sql)| {
         let columns = if sql.trim().is_empty() {
@@ -176,8 +179,8 @@ impl Rows {
                             v[i] = Value::Int(rowid);
                         }
                     }
-                    // The last row of a key, as a lookup in a non-unique index finds it, even if
-                    // it holds no tile.
+                    // Of rows sharing a key (which MBTiles forbids), the last, even if it holds no
+                    // tile; the old reader kept the last row with bytes.
                     if let Some(key) = xyz(int(v.first()), int(v.get(1)), int(v.get(2))) {
                         rowids.insert(key, rowid);
                     }
@@ -242,8 +245,8 @@ impl Images {
     }
 }
 
-/// The rowid of the last record of an index whose leading values are `prefix`: of rows sharing
-/// a key, the last, as the archive was read before (rows read in order, the last one kept).
+/// The greatest rowid of the records of an index whose leading values are `prefix`: of rows
+/// sharing a key, the last, as the scanned path keeps it.
 fn last_rowid(db: &Db, root: u32, prefix: &[Value]) -> Result<Option<i64>> {
     let mut found: Option<i64> = None;
     db.index_prefix(root, prefix, &mut |record| {
@@ -859,6 +862,15 @@ mod tests {
         );
         assert!(matches!(partial.rows.keys, Keys::Scanned(_)));
         assert_eq!(partial.tile(0, 0, 0).unwrap(), Some(vec![7]));
+        // Nor does a collation of a column outside the constraint.
+        let other = tiles_with(
+            "CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB, note TEXT COLLATE NOCASE, UNIQUE (zoom_level, tile_column, tile_row))",
+            vec![vec![0, 1, 2]],
+            &[],
+            vec![(1, vec![W::Int(0), W::Int(0), W::Int(0), W::Blob(vec![7]), W::Null])],
+        );
+        assert!(matches!(other.rows.keys, Keys::Index(_)));
+        assert_eq!(other.tile(0, 0, 0).unwrap(), Some(vec![7]));
         // A keyword in a quoted string is not one.
         let quoted = tiles_with(
             "CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB, note TEXT DEFAULT 'desc collate', UNIQUE (zoom_level, tile_column, tile_row))",
