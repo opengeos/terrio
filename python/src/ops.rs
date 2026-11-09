@@ -51,6 +51,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mosaic, m)?)?;
     m.add_class::<PyRegionWarp>()?;
     m.add_function(wrap_pyfunction!(_check_sum_window, m)?)?;
+    m.add_function(wrap_pyfunction!(_window_converts, m)?)?;
     m.add("_SUM_AUTO_OVERVIEW", terrio::ops::warp::SUM_AUTO_OVERVIEW)?;
     Ok(())
 }
@@ -1797,6 +1798,17 @@ fn mosaic(
 #[pyfunction]
 fn _check_sum_window(pixels: u64, pixel_bytes: usize) -> PyResult<()> {
     terrio::ops::warp::check_sum_budget(terrio::ops::warp::sum_estimate(pixels, pixel_bytes)).py()
+}
+
+/// Whether `RegionWarp._warp_from` converts a source window of data type `src` to the working type
+/// `work` (names such as `"float32"`): the one definition `terrio.rio.WarpedVRT` asks. False for a
+/// name outside the ten integer and float types.
+#[pyfunction]
+fn _window_converts(src: &str, work: &str) -> bool {
+    match (terrio::ops::parse_data_type(src), terrio::ops::parse_data_type(work)) {
+        (Ok(src), Ok(work)) => crate::warp_window::converts(src, work),
+        _ => false,
+    }
 }
 
 /// A source level (a raster or one of its overviews) warped into a grid one region at a time, as

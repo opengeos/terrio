@@ -762,7 +762,7 @@ class WarpedVRT(DatasetReader):
             return None
         src, work = np.dtype(ds.dtypes[0]), np.dtype(self._dtype)
         convert = src != work and not self._sum_holds(src)
-        if convert and not _converts_in_rust(src, work):
+        if convert and not _terrio._window_converts(src.name, work.name):
             return None
         alpha, dataset_mask = None, False
         if all(v is None for v in self._warp_src_nodata):
@@ -1498,27 +1498,6 @@ def _reads_its_raster(ds: Any) -> bool:
         getattr(read, "__func__", None) is _READER_READ_LEVEL
         and getattr(read, "__self__", None) is ds
     )
-
-
-def _converts_in_rust(src: np.dtype, work: np.dtype) -> bool:
-    """Whether `RegionWarp._warp_from` converts a window of one type to another as `gdal_cast`.
-
-    Not floats into an integer type whose limits the float type does not hold exactly (float32
-    into 32- and 64-bit integers, float64 into 64-bit ones): there `gdal_cast` clips to a rounded
-    limit beyond the type's, and NumPy's conversion of that value depends on the platform.
-
-    Args:
-        src: A source window's data type.
-        work: The working data type.
-
-    Returns:
-        bool: Whether the window may be converted in Rust.
-    """
-    if src.name not in _WINDOW_TYPES or work.name not in _WINDOW_TYPES:
-        return False
-    if src.kind == "f" and work.kind in "iu":
-        return work.itemsize < src.itemsize
-    return True
 
 
 def _dtype_holds_values(src: np.dtype, work: np.dtype) -> bool:

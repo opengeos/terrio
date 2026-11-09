@@ -16,6 +16,7 @@ import pytest
 
 import terrio
 import terrio.rio
+from terrio import _terrio
 from terrio.rio.enums import Resampling
 from terrio.rio.errors import RasterioIOError
 from terrio.rio.io import DatasetReader
@@ -180,6 +181,20 @@ CASES = (
     + [pytest.param(case(s, d), id=f"{s}-to-{d}") for s, d in CONVERTED]
     + [pytest.param(case(s, d), id=f"{s}-to-{d}-python") for s, d in PYTHON_ONLY]
 )
+
+
+def test_the_one_call_converts_all_pairs_but_floats_into_integers_whose_limits_they_round():
+    # The binding converts a window between any two of the ten types but a float type into an
+    # integer type whose limits it does not hold exactly, and decides it alone: the WarpedVRT asks
+    # it (`_terrio._window_converts`). Names outside the ten are never converted.
+    rounded = {("float32", t) for t in ("int32", "uint32", "int64", "uint64")}
+    rounded |= {("float64", t) for t in ("int64", "uint64")}
+    for src in DTYPES:
+        for work in DTYPES:
+            assert _terrio._window_converts(src, work) == ((src, work) not in rounded), (src, work)
+    for other in ("complex64", "complex_int16", "float16", "bool"):
+        assert not _terrio._window_converts(other, "float64"), other
+        assert not _terrio._window_converts("float64", other), other
 
 
 @pytest.mark.parametrize("c", CASES)

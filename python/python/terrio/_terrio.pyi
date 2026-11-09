@@ -174,6 +174,7 @@ __all__ = [
     "_set_warp_nodata_logger",
     "RegionWarp",
     "_check_sum_window",
+    "_window_converts",
     "_SUM_AUTO_OVERVIEW",
     "config_push",
     "config_pop",
@@ -1728,6 +1729,7 @@ def warped_vrt_type(
     kernel_version: str | None = None,
 ) -> tuple[str, list[float | None]]: ...
 def _check_sum_window(pixels: int, pixel_bytes: int) -> None: ...
+def _window_converts(src: str, work: str) -> bool: ...
 @final
 class RegionWarp:
     def __new__(
