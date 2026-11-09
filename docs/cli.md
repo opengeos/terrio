@@ -1336,7 +1336,9 @@ sampled blocks rather than every pixel, and `--hist` stores histograms.
 Overview methods are nearest, average, min, max and mode. Without factors or `--levels`, automatic
 levels stop at the first overview that fits in `--min-size` pixels (256). Existing unrequested
 levels are retained. `--external` manages the supplied filename's `.ovr` sidecar,
-including when that filename is a symlink. Explicit compression applies to
+including when that filename is a symlink, and reads that `.ovr` under
+`TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` too, where other opens do not (the `.msk`, `.aux.xml`
+and `.ovr.msk` beside the GeoTIFF still follow the option). Explicit compression applies to
 requested rebuilt levels. Updates retain destination pixels outside valid source
 coverage and refresh affected overviews unless `--no-update-overviews` is set.
 Georeferencing moves change the affine transform and CRS without resampling;

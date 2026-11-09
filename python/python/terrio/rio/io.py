@@ -99,6 +99,10 @@ _IN_MEMORY_LIMIT = 512 * 1024 * 1024
 # The drivers of files that can hold subdatasets (several variables or arrays).
 _SUBDATASET_DRIVERS = frozenset({"netCDF", "HDF5", "HDF4", "Zarr", "STACIT", "STACTA", "GPKG"})
 
+# The drivers that read a `.hdr` beside the data: their header, read under
+# `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` too.
+_HEADER_DRIVERS = frozenset({"ENVI", "EHdr"})
+
 
 def _in_memory_limit() -> int:
     """The size above which writers keep their pixels on disk.
@@ -272,7 +276,8 @@ def _sidecars_allowed(path: str) -> bool:
     """Whether to read sidecar files (`.aux.xml`, `_RPC.TXT`, `.RPB`) next to a dataset.
 
     Never for remote datasets, whose sidecars terrio does not request, and not when
-    `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` tells GDAL to treat the dataset's directory as empty.
+    `TERRIO_DISABLE_READDIR_ON_OPEN`, or its other name `GDAL_DISABLE_READDIR_ON_OPEN`, is
+    `EMPTY_DIR` for the calling thread: the decision the core takes for its own sidecars.
     (A true value only stops GDAL listing the directory; it still probes each sidecar.)
 
     Args:
@@ -283,7 +288,7 @@ def _sidecars_allowed(path: str) -> bool:
     """
     if _is_remote(path):
         return False
-    return _option("GDAL_DISABLE_READDIR_ON_OPEN") != "EMPTY_DIR"
+    return not _terrio.sidecars_disabled()
 
 
 def _check_driver(path: str, name: str, driver: Any) -> None:
@@ -1202,6 +1207,10 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
     def files(self) -> list[str]:
         """The files of the dataset.
 
+        Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` (or `GDAL_DISABLE_READDIR_ON_OPEN`),
+        which keeps them from being read, its `.aux.xml`, `.ovr`, `.msk`, world and RPC files are
+        not listed, nor a `.hdr` other than an ENVI or EHdr raster's header.
+
         Returns:
             list: The paths.
         """
@@ -1210,18 +1219,24 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
         out = [self.name]
         stem, ext = os.path.splitext(self.name)
         world = "." + ext[1:2] + ext[-1:] + "w" if len(ext) > 2 else ".wld"
-        sidecars = [
-            self.name + ".aux.xml",
-            self.name + ".ovr",
-            self.name + ".msk",
-            stem + world,
-            stem + ".wld",
-            stem + "_rpc.txt",
-            stem + "_RPC.TXT",
-            stem + ".RPB",
-            stem + ".rpb",
-            stem + ".hdr",
-        ]
+        allowed = _sidecars_allowed(self.name)
+        sidecars = (
+            [
+                self.name + ".aux.xml",
+                self.name + ".ovr",
+                self.name + ".msk",
+                stem + world,
+                stem + ".wld",
+                stem + "_rpc.txt",
+                stem + "_RPC.TXT",
+                stem + ".RPB",
+                stem + ".rpb",
+            ]
+            if allowed
+            else []
+        )
+        if allowed or self.driver in _HEADER_DRIVERS:
+            sidecars.append(stem + ".hdr")
         for f in sidecars:
             if f not in out and os.path.isfile(f):
                 out.append(f)
@@ -2200,6 +2215,7 @@ class DatasetWriter(DatasetReader):
 
         Raises:
             TypeError: If the driver, size, count or dtype is missing or invalid.
+            DriverCapabilityError: If the driver name has whitespace around it.
             ValueError: If the nodata value does not fit the data type.
             RasterBlockError: If tile sizes are not multiples of 16.
         """
@@ -2224,6 +2240,10 @@ class DatasetWriter(DatasetReader):
         if mode in ("w", "w+"):
             if not isinstance(driver, str):
                 raise TypeError("A driver name string is required.")
+            if driver != driver.strip():
+                # The name is compared with `GTiff` and `COG` as written, here and when the file
+                # is written, while the core writer would read it without the whitespace.
+                raise DriverCapabilityError(f"Writer does not exist for driver: {driver}")
             try:
                 width, height = int(width), int(height)
             except (TypeError, ValueError):
@@ -2416,12 +2436,7 @@ class DatasetWriter(DatasetReader):
             block = (1, self.width)
         s = _tiff.Structure(count=n, width=self.width, height=self.height, block_shape=block)
         s.tiled = tiled
-        ci = [ColorInterp.gray] + [ColorInterp.undefined] * (n - 1)
-        if o.get("PHOTOMETRIC", "").upper() == "RGB" and n >= 3:
-            ci[:3] = [ColorInterp.red, ColorInterp.green, ColorInterp.blue]
-        if o.get("ALPHA", "").upper() in ("YES", "NON-PREMULTIPLIED", "PREMULTIPLIED") and n > 1:
-            ci[-1] = ColorInterp.alpha
-        s.colorinterp = ci
+        s.colorinterp = self._new_structure_defaults()
         s.band_tags = [{} for _ in range(n)]
         s.descriptions = [None] * n
         s.scales = [1.0] * n
@@ -2911,9 +2926,22 @@ class DatasetWriter(DatasetReader):
         t = self._transform
         georef = not (t == Affine.identity() or [abs(v) for v in t[:6]] == [0, 1, 0, 0, 0, 1])
         gt = t.to_gdal() if georef else (0.0, 1.0, 0.0, float(self.height), 0.0, -1.0)
-        tags = {k: v for k, v in s.tags.items() if k != "AREA_OR_POINT"}
         crs_obj = self._crs if self._crs is not None else (self._gcp_crs if self._gcps else None)
         crs = crs_obj.to_wkt() if crs_obj else None
+        # The GeoTIFF writer writes `AREA_OR_POINT=Point` as the key RasterPixelIsPoint; other
+        # formats have no raster type to write it to. The key needs a CRS (of the dataset or of its
+        # GCPs): alone, it would stand for a local CRS, so without one the raster stays PixelIsArea.
+        geotiff = self._out_driver.upper() in ("GTIFF", "COG")
+        tags = {k: v for k, v in s.tags.items() if geotiff or k != "AREA_OR_POINT"}
+        if not crs and str(tags.get("AREA_OR_POINT", "")).lower() == "point":
+            del tags["AREA_OR_POINT"]
+            warnings.warn(
+                "AREA_OR_POINT=Point is not kept: a GeoTIFF's raster type needs a CRS, and the "
+                "dataset has none, so it is written as PixelIsArea. Give the dataset a CRS to "
+                "keep it.",
+                UserWarning,
+                stacklevel=3,
+            )
         if self._nodatavals is not None and len(set(map(repr, self._nodatavals))) > 1:
             warnings.warn(
                 f"The TIFFTAG_GDAL_NODATA only support one value per dataset. This value of "
@@ -3194,7 +3222,13 @@ class DatasetWriter(DatasetReader):
         w.close()
 
     def _new_structure_defaults(self) -> list[ColorInterp]:
-        """The color interpretations GDAL derives from the creation options.
+        """The color interpretations the writer gives the bands when it is not told otherwise.
+
+        For a GeoTIFF or a COG they are the GeoTIFF writer's. `PHOTOMETRIC=RGB` or `YCBCR` makes
+        the first three bands red, green and blue. Without `PHOTOMETRIC`, so do three Byte bands,
+        or four compressed with WebP: a COG takes none (`_creation_options` drops it), and an
+        update passes one only for an RGB file. `ALPHA` makes the last band alpha. `_flush` sends
+        the writer each band's interpretation that differs from these.
 
         Returns:
             list: One per band.
@@ -3202,7 +3236,15 @@ class DatasetWriter(DatasetReader):
         n = self._count
         ci = [ColorInterp.gray] + [ColorInterp.undefined] * (n - 1)
         o = self._options
-        if o.get("PHOTOMETRIC", "").upper() == "RGB" and n >= 3:
+        photometric = o.get("PHOTOMETRIC", "").upper()
+        rgb = photometric == "RGB"
+        if self._out_driver.upper() in ("GTIFF", "COG"):
+            if photometric:
+                rgb = photometric in ("RGB", "YCBCR")
+            else:
+                webp = o.get("COMPRESS", "").upper() == "WEBP"
+                rgb = self._dtype == "uint8" and (n == 3 or (n == 4 and webp))
+        if rgb and n >= 3:
             ci[:3] = [ColorInterp.red, ColorInterp.green, ColorInterp.blue]
         if o.get("ALPHA", "").upper() in ("YES", "NON-PREMULTIPLIED", "PREMULTIPLIED") and n > 1:
             ci[-1] = ColorInterp.alpha
@@ -3319,6 +3361,11 @@ class MemPointerDataset(DatasetWriter):
 def get_writer_for_driver(driver: str) -> type[DatasetWriter]:
     """The writer class for a driver.
 
+    Names are compared as the driver allow-list compares them (`canonical_driver_name`): in any
+    case, and with the names of JPEG 2000 drivers, such as the `JP2OpenJPEG` that
+    `driver_from_extension` gives `.jp2` paths, as terrio's `JP2`. A name with whitespace around
+    it is refused, as the writer keeps the name it is given and compares it as written.
+
     Args:
         driver: The driver's short name.
 
@@ -3326,11 +3373,18 @@ def get_writer_for_driver(driver: str) -> type[DatasetWriter]:
         type: The writer class.
 
     Raises:
-        DriverCapabilityError: If terrio cannot write the format.
+        DriverCapabilityError: If terrio cannot write the format, or the name has whitespace
+            around it.
     """
-    names = {d["name"].upper(): d for d in _terrio.drivers() if d.get("kind") == "raster"}
-    d = names.get(driver.upper())
-    if driver.upper() != "COG" and (d is None or not d.get("write", True)):
+    name = _terrio.canonical_driver_name(driver)
+    writes = {
+        _terrio.canonical_driver_name(d["name"]): d.get("write", True)
+        for d in _terrio.drivers()
+        if d.get("kind") == "raster"
+    }
+    # `canonical_driver_name` ignores the whitespace around a name, which `DatasetWriter` refuses:
+    # it compares the name with `GTiff` and `COG` as written.
+    if driver != driver.strip() or (name != "COG" and not writes.get(name, False)):
         raise DriverCapabilityError(f"Writer does not exist for driver: {driver}")
     return DatasetWriter
 

@@ -377,3 +377,24 @@ fn vector_grid_accepts_negative_search_axes_and_refuses_large_grids() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("too large"));
     assert!(!d.join("large.tif").exists());
 }
+
+/// `convert -f` writes terrio's JP2 under each name of a JPEG 2000 driver, in builds with the GDAL
+/// backend too, whose drivers are used only for names terrio does not know: `JP2MrSID` was refused
+/// (`unknown raster format`). The file reads back as JP2, with its pixels.
+#[test]
+fn convert_writes_jp2_under_each_jpeg_2000_driver_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let cfg = terrio::RasterConfig { cols: 4, rows: 3, data_type: terrio::DataType::U8, ..Default::default() };
+    let mut ds = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, (0..12).map(f64::from).collect()).unwrap(), false);
+    ds.raster.crs.epsg = Some(4326);
+    terrio::write_raster_dataset(&ds, d.join("in.tif").to_str().unwrap(), &Default::default()).unwrap();
+    for name in ["JP2MrSID", "JP2OpenJPEG", "JPEG2000", "JP2KAK", "JP2ECW"] {
+        let out = format!("{name}.jp2");
+        ok(&["convert", "in.tif", &out, "-f", name], d);
+        let back = terrio::open_raster(d.join(&out).to_str().unwrap()).unwrap();
+        assert_eq!(back.driver, terrio::formats::RasterDriver::JP2, "{name}");
+        let terrio::raster::RasterData::U8(values) = &back.raster.data else { panic!("{name}: not Byte") };
+        assert_eq!(values, &(0..12).collect::<Vec<u8>>(), "{name}");
+    }
+}
