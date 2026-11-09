@@ -3,7 +3,7 @@
 (function () {
   "use strict";
 
-  const VERSION = "0.7.0";
+  const VERSION = "0.8.0";
   const CDN = `https://cdn.jsdelivr.net/npm/terrio-js@${VERSION}/terrio.js`;
 
   const RASTER_FORMATS = [
