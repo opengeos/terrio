@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
+  read of the same open raster. Opening a decoder makes the `tiff` crate read the chunk offset
+  and byte count tables of the image whole, and every read opened one per worker: a 640 x 640
+  read of a 150,000 x 210,000 RGB GeoTIFF in 256 x 256 tiles (481,000 tiles, ZSTD) parsed those
+  tables nine times. With the block cache off, such reads took 130 ms each on 32 threads of a
+  16-core machine and now take 5.7 ms; reads of a 133,120 x 174,080 one in 512 x 512 tiles went
+  from 19 to 7 ms, and pixels are unchanged. Each open raster keeps at most one decoder per
+  thread, each with its image's tables.
 - `warp` of a `Raster` in memory releases the GIL for the whole warp: it takes the raster's
   shared pixels (no copy) and warps them after releasing it, so warps from Python threads
   (rioxarray-style `reproject` of xarray arrays on a thread pool) overlap. 96 nearest-neighbour

@@ -1003,6 +1003,58 @@ pub(crate) fn check_stored_chunks(compression: u16, chunks: impl IntoIterator<It
 /// chunks in parallel.
 pub(crate) type Reopen<'a, D> = &'a (dyn Fn() -> crate::Result<tiff::decoder::Decoder<D>> + Sync);
 
+/// Worker decoders kept between the window reads of one open TIFF.
+///
+/// Opening a decoder makes the `tiff` crate read the chunk offset and byte count tables of the
+/// image it is positioned on whole, so its cost grows with the image's chunk count, not with the
+/// window. Without this pool, every multi-chunk window read opened one decoder per worker thread:
+/// a 640 x 640 read of a 150,000 x 210,000 GeoTIFF in 256 x 256 tiles (481,000 tiles) parsed
+/// those tables nine times. With it, a worker takes a decoder that a previous read left, positioned
+/// on the image it read, and gives it back when it has decoded its chunks.
+///
+/// At most [`crate::par::threads`] decoders are kept; each keeps the tables of its image.
+pub(crate) struct DecoderPool<D: Read + Seek> {
+    spare: std::sync::Mutex<Vec<(usize, tiff::decoder::Decoder<D>)>>,
+    /// How many decoders the workers opened because none was spare.
+    #[cfg(test)]
+    pub(crate) opened: std::sync::atomic::AtomicUsize,
+}
+
+impl<D: Read + Seek> Default for DecoderPool<D> {
+    fn default() -> Self {
+        Self {
+            spare: std::sync::Mutex::new(Vec::new()),
+            #[cfg(test)]
+            opened: Default::default(),
+        }
+    }
+}
+
+impl<D: Read + Seek> DecoderPool<D> {
+    /// A spare decoder and the image it is on, one on `ifd` first.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    fn take(&self, ifd: usize) -> Option<(usize, tiff::decoder::Decoder<D>)> {
+        let mut spare = self.spare.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let i = spare.iter().rposition(|(at, _)| *at == ifd).or_else(|| spare.len().checked_sub(1))?;
+        Some(spare.swap_remove(i))
+    }
+
+    /// Keeps a decoder positioned on image `ifd` for a later read, unless the pool is full.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    fn give_back(&self, ifd: usize, dec: tiff::decoder::Decoder<D>) {
+        let mut spare = self.spare.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if spare.len() < crate::par::threads() {
+            spare.push((ifd, dec));
+        }
+    }
+
+    /// How many decoders are kept.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.spare.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+    }
+}
+
 /// A decoded chunk: its index, its samples and the size `(width, height)` of the image data it
 /// holds.
 pub(crate) type DecodedChunk = (u32, tiff::decoder::DecodingResult, (usize, usize));
@@ -1117,9 +1169,10 @@ fn chunk_buffer(t: Option<tiff::decoder::DecodingSampleType>, bytes: usize) -> t
 /// of them without `reopen`). A chunk taking more than `limit` bytes
 /// ([`crate::TiffReadLimits::chunk_bytes`]) is refused, whichever decodes it.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek>(
+pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek + Send>(
     dec: &mut tiff::decoder::Decoder<R>,
     reopen: Option<Reopen<D>>,
+    pool: Option<&DecoderPool<D>>,
     ifd: usize,
     chunks: &[u32],
     codec: Option<&crate::tiff_codecs::ChunkCodec>,
@@ -1130,12 +1183,12 @@ pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek>(
     // Chunks `..first` were decoded by other threads.
     #[cfg(threads)]
     let first = match reopen {
-        Some(reopen) => decode_in_threads(reopen, ifd, chunks, codec, limit, err, &mut place)?,
+        Some(reopen) => decode_in_threads(reopen, pool, ifd, chunks, codec, limit, err, &mut place)?,
         None => 0,
     };
     #[cfg(not(threads))]
     let first = {
-        let _ = (reopen, ifd);
+        let _ = (reopen, pool, ifd);
         0
     };
     for &idx in &chunks[first..] {
@@ -1148,8 +1201,10 @@ pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek>(
 /// `place` on the calling thread. Returns how many of the first chunks were decoded: a thread that
 /// cannot open the file leaves its share to the caller.
 #[cfg(not(target_family = "wasm"))]
-fn decode_in_threads<D: Read + Seek>(
+#[allow(clippy::too_many_arguments)]
+fn decode_in_threads<D: Read + Seek + Send>(
     reopen: Reopen<D>,
+    pool: Option<&DecoderPool<D>>,
     ifd: usize,
     chunks: &[u32],
     codec: Option<&crate::tiff_codecs::ChunkCodec>,
@@ -1170,19 +1225,37 @@ fn decode_in_threads<D: Read + Seek>(
                 // A thread that cannot be started (its stack not allocated) leaves the chunks to
                 // the others, or to the caller.
                 let _ = std::thread::Builder::new().spawn_scoped(scope, move || {
-                    // A thread that cannot open the file leaves the chunks to the others.
-                    let Ok(mut d) = reopen() else { return };
-                    if ifd != 0 && d.seek_to_image(ifd).is_err() {
+                    // A decoder that an earlier read left, else a new one. A thread that cannot
+                    // open the file leaves the chunks to the others.
+                    let (at, mut d) = match pool.and_then(|p| p.take(ifd)) {
+                        Some(spare) => spare,
+                        None => match reopen() {
+                            Ok(d) => {
+                                #[cfg(test)]
+                                if let Some(p) = pool {
+                                    p.opened.fetch_add(1, Ordering::Relaxed);
+                                }
+                                (0, d)
+                            }
+                            Err(_) => return,
+                        },
+                    };
+                    if at != ifd && d.seek_to_image(ifd).is_err() {
                         return;
                     }
+                    let mut failed = false;
                     while !stop.load(Ordering::Relaxed) {
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some(&idx) = chunks.get(i) else { break };
                         let r = decode_chunk(&mut d, codec, idx, limit, err);
-                        let failed = r.is_err();
+                        failed = r.is_err();
                         if tx.send(r).is_err() || failed {
                             break;
                         }
+                    }
+                    // A decoder that failed is not kept: its state is not known.
+                    if let (Some(p), false) = (pool, failed) {
+                        p.give_back(ifd, d);
                     }
                 });
             }
@@ -1208,8 +1281,10 @@ fn decode_in_threads<D: Read + Seek>(
 /// time, each thread with its own decoder over the TIFF's bytes, and hands them to `place` on the
 /// calling thread. Returns how many of the first chunks were decoded (none without a pool).
 #[cfg(all(threads, target_family = "wasm"))]
-fn decode_in_threads<D: Read + Seek>(
+#[allow(clippy::too_many_arguments)]
+fn decode_in_threads<D: Read + Seek + Send>(
     reopen: Reopen<D>,
+    _pool: Option<&DecoderPool<D>>,
     ifd: usize,
     chunks: &[u32],
     codec: Option<&crate::tiff_codecs::ChunkCodec>,
@@ -1323,7 +1398,7 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     let reopen = || file_decoder(file.clone(), &tags, limits, path);
     // The compressions the `tiff` crate does not decode (alone), with the same limit.
     let codec = crate::tiff_codecs::ChunkCodec::new(&mut dec, limits.chunk_bytes, tables).map_err(tiff_err)?;
-    decode_chunks(&mut dec, Some(&reopen), 0, &chunks, codec.as_ref(), limits.chunk_bytes, &tiff_err, |(idx, chunk, (dw, dh))| {
+    decode_chunks(&mut dec, Some(&reopen), None, 0, &chunks, codec.as_ref(), limits.chunk_bytes, &tiff_err, |(idx, chunk, (dw, dh))| {
         let idx = idx as usize;
         let (plane, rest) = (idx / per_plane, idx % per_plane);
         let geom = ChunkGeom { x0: (rest % across) * cw, y0: (rest / across) * ch, dw, dh, spp };
