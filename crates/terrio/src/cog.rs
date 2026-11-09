@@ -3134,7 +3134,8 @@ mod tests {
             }
         });
         let peak = crate::geotiff::LIVE_WORKERS[1].load(std::sync::atomic::Ordering::Relaxed);
-        assert!(peak <= crate::par::threads(), "{peak} decode workers at once on {} threads", crate::par::threads());
+        let limit = crate::geotiff::decode_worker_limit();
+        assert!(peak <= limit, "{peak} decode workers at once, over the {limit} allowed");
     }
 
     /// With the cache off, reads decode every time and look nothing up.

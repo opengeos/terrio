@@ -1200,8 +1200,8 @@ pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek + Send>(
 }
 
 /// Decodes chunks on several threads, each with its own decoder over the file, handing them to
-/// `place` on the calling thread: as many threads as the chunks, within those free in the budget
-/// all reads share ([`DECODE_WORKERS`]). Returns how many of the first chunks were decoded: a
+/// `place` on the calling thread: as many threads as the chunks, up to [`crate::par::threads`],
+/// within those free in the budget all reads share ([`DECODE_WORKERS`]). Returns how many of the first chunks were decoded: a
 /// thread that cannot open the file leaves its share to the caller.
 #[cfg(not(target_family = "wasm"))]
 #[allow(clippy::too_many_arguments)]
@@ -1217,7 +1217,7 @@ fn decode_in_threads<D: Read + Seek + Send>(
 ) -> crate::Result<usize> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     // Given back once the threads below are done.
-    let Some(reserved) = DecodeWorkers::reserve(chunks.len()) else { return Ok(0) };
+    let Some(reserved) = DecodeWorkers::reserve(chunks.len().min(crate::par::threads())) else { return Ok(0) };
     let workers = reserved.0;
     // The next chunk to decode, and whether to stop.
     let (next, stop) = (AtomicUsize::new(0), AtomicBool::new(false));
@@ -1282,7 +1282,7 @@ fn decode_in_threads<D: Read + Seek + Send>(
 }
 
 /// Decode worker threads running, over all reads: a read starts only as many as keep the total
-/// within [`crate::par::threads`], and decodes its chunks itself when fewer than two are free, so
+/// within [`decode_worker_limit`], and decodes its chunks itself when fewer than two are free, so
 /// that reads on several threads at once share the cores instead of each starting a thread per
 /// core.
 #[cfg(not(target_family = "wasm"))]
@@ -1297,7 +1297,7 @@ impl DecodeWorkers {
     /// Up to `want` workers within the total, or None when fewer than two are free.
     fn reserve(want: usize) -> Option<Self> {
         use std::sync::atomic::Ordering;
-        let limit = crate::par::threads();
+        let limit = decode_worker_limit();
         let mut running = DECODE_WORKERS.load(Ordering::Relaxed);
         loop {
             let n = want.min(limit.saturating_sub(running));
@@ -1310,6 +1310,17 @@ impl DecodeWorkers {
             }
         }
     }
+}
+
+/// The most decode workers running at once over all reads: the machine's cores, or the thread
+/// count when it is set higher. Not the thread count when it is lower: a read still starts at most
+/// [`crate::par::threads`] workers, as each read did before the budget, so reads on several threads
+/// keep every core busy without starting more threads than there are cores.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn decode_worker_limit() -> usize {
+    static CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let cores = *CORES.get_or_init(|| std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get));
+    cores.max(crate::par::threads())
 }
 
 #[cfg(not(target_family = "wasm"))]
