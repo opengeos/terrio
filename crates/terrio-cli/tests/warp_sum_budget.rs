@@ -154,26 +154,27 @@ fn a_sum_counts_a_window_converted_to_another_working_type() {
 }
 
 #[test]
-fn a_sum_read_a_strip_at_a_time_counts_the_strip() {
-    // A warped VRT of 32 x 32 Float32 ones summed into 1 x 1 as Float64, read under 4,000 bytes.
+fn a_sum_read_a_strip_at_a_time_counts_the_two_strips_it_holds() {
+    // A warped VRT of 32 x 32 Float32 ones summed into 1 x 1 as Float64, read under 6,000 bytes.
     // Within its working memory limit, 64 MiB, the read holds the whole window, 4 + 8 bytes a
     // pixel: 12,288 bytes, over the budget. Within a limit of 2,000 bytes, of which a row of the
-    // window takes 256 (8 bytes a pixel in the working type), it reads the window 7 rows at a time,
-    // holding 2,688 bytes, and fits.
+    // window takes 256 (8 bytes a pixel in the working type), it reads the window 7 rows at a time
+    // and holds two strips at once, one summed while the next is read: 14 rows, 5,376 bytes, which
+    // fit.
     let tmp = tempfile::tempdir().unwrap();
     let d = tmp.path();
     write_ones(d, "ones.tif", 1);
-    assert!(run(d, "4000", &["warp", "ones.tif", "whole.vrt", "-r", "sum", "--ts", "1", "1", "--ot", "Float64"]).status.success());
+    assert!(run(d, "6000", &["warp", "ones.tif", "whole.vrt", "-r", "sum", "--ts", "1", "1", "--ot", "Float64"]).status.success());
     let whole = std::fs::read_to_string(d.join("whole.vrt")).unwrap();
     assert!(whole.contains("<WarpMemoryLimit>67108864</WarpMemoryLimit>"), "{whole}");
     std::fs::write(d.join("strips.vrt"), whole.replace("<WarpMemoryLimit>67108864<", "<WarpMemoryLimit>2000<")).unwrap();
-    let refused = run(d, "4000", &["translate", "whole.vrt", "out.tif"]);
+    let refused = run(d, "6000", &["translate", "whole.vrt", "out.tif"]);
     let message = String::from_utf8_lossy(&refused.stderr);
     assert!(!refused.status.success() && message.contains("about 12288 bytes"), "{message}");
-    let fits = run(d, "4000", &["translate", "strips.vrt", "out.tif"]);
+    let fits = run(d, "6000", &["translate", "strips.vrt", "out.tif"]);
     assert!(fits.status.success(), "{}", String::from_utf8_lossy(&fits.stderr));
     assert_eq!(total(&d.join("out.tif")), 1024.0);
-    let refused = run(d, "2600", &["translate", "strips.vrt", "out.tif"]);
+    let refused = run(d, "5300", &["translate", "strips.vrt", "out.tif"]);
     let message = String::from_utf8_lossy(&refused.stderr);
-    assert!(!refused.status.success() && message.contains("about 2688 bytes"), "{message}");
+    assert!(!refused.status.success() && message.contains("about 5376 bytes"), "{message}");
 }

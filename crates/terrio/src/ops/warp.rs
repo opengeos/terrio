@@ -1641,12 +1641,14 @@ pub fn check_sum_budget(need: u64) -> Result<()> {
 }
 
 /// [`check_sum_budget`] for the most source pixels a `sum`'s chunks hold at once, `bytes` per
-/// pixel: a chunk's window, or the strip of it read at a time ([`WarpContext::sum_strip_rows`]).
+/// pixel: a chunk's window, or, when it is read a strip at a time
+/// ([`WarpContext::sum_strip_rows`]), two strips of it, one summed while the next is read.
 fn check_sum_chunks(ctx: &WarpContext, chunks: &[Chunk], bytes: usize) -> Result<()> {
     if ctx.resampling != Resampling::Sum {
         return Ok(());
     }
-    check_sum_budget(sum_estimate(chunks.iter().map(|c| c.sw as u64 * ctx.sum_strip_rows(c) as u64).max().unwrap_or(0), bytes))
+    let held = |c: &Chunk| c.sw as u64 * (2 * ctx.sum_strip_rows(c)).min(c.sh) as u64;
+    check_sum_budget(sum_estimate(chunks.iter().map(held).max().unwrap_or(0), bytes))
 }
 
 /// Reprojects and resamples one or more rasters into one output, as `gdalwarp` does. Later
@@ -5251,6 +5253,18 @@ mod tests {
     }
 
     fn raster(cols: usize, rows: usize, gt: [f64; 6], epsg: u32, f: impl Fn(usize, usize) -> f64) -> RasterDataset {
+        typed_raster(DataType::F32, cols, rows, gt, epsg, f)
+    }
+
+    /// [`raster`], of `data_type` pixels.
+    fn typed_raster(
+        data_type: DataType,
+        cols: usize,
+        rows: usize,
+        gt: [f64; 6],
+        epsg: u32,
+        f: impl Fn(usize, usize) -> f64,
+    ) -> RasterDataset {
         let cfg = RasterConfig {
             cols,
             rows,
@@ -5260,7 +5274,7 @@ mod tests {
             cell_size: gt[1],
             cell_size_y: Some(-gt[5]),
             nodata: -9999.0,
-            data_type: DataType::F32,
+            data_type,
             crs: wbraster::CrsInfo::from_epsg(epsg),
             metadata: vec![],
         };
@@ -5924,11 +5938,13 @@ mod tests {
     /// A `sum` adds the valid source pixels of a footprint row after row, each row from the left,
     /// as before shares were computed a few rows at a time: a 1 x 1 output over 6000 x 200 pixels,
     /// whose shares take two blocks of rows, holds the sum of the pixels in that order, bit for
-    /// bit, warped in memory, read whole, and read in strips of two heights.
+    /// bit, warped in memory, read whole, and read in strips of two heights. The pixels are
+    /// Float64, whose sum rounds, so that added in another order, it differs.
     #[test]
     fn a_sum_adds_a_footprint_row_after_row_whatever_its_blocks_and_strips() {
         let dir = tempfile::tempdir().unwrap();
-        let ds = raster(6000, 200, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| ((c * 7 + r * 13) % 251) as f64 + 0.37);
+        let gt = [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0];
+        let ds = typed_raster(DataType::F64, 6000, 200, gt, 32610, |c, r| ((c * 7 + r * 13) % 251) as f64 * 0.1 + 0.37);
         let expected = ds.raster.data.to_f64_vec().iter().fold(0.0, |sum, v| sum + v);
         let path = dir.path().join("src.tif").to_str().unwrap().to_string();
         crate::write_raster_dataset(&ds, &path, &Default::default()).unwrap();
