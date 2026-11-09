@@ -712,11 +712,10 @@ class WarpedVRT(DatasetReader):
                 # GDALWarpSrcAlphaMasker(): pixels of zero density are left out.
                 mask = data[self._src_alpha - 1] != 0
             else:
-                flags = ds._mask_flags()[0] if ds.count else MaskFlags.all_valid.value
-                if flags & MaskFlags.per_dataset.value and not flags & MaskFlags.alpha.value:
+                if self._uses_dataset_mask():
                     # GDALWarpSrcMaskMasker(): the source's per-dataset mask.
                     mask = self._source_mask(level, window)
-        if data.dtype != np.dtype(self._dtype) and not self._sum_holds(data.dtype):
+        if self._converts_window(data.dtype):
             # The source is read in the working data type, unless a `sum` takes it as it is.
             data = gdal_cast(data, self._dtype)
         data = np.ascontiguousarray(data).view()
@@ -746,6 +745,34 @@ class WarpedVRT(DatasetReader):
             np.dtype(dtype), np.dtype(self._dtype)
         )
 
+    def _converts_window(self, dtype: np.dtype) -> bool:
+        """Whether a source window of a data type is converted to the working type before the warp.
+
+        Both paths decide so: `_source_window` for the window it reads, and `_raster_window` for
+        the windows `RegionWarp._warp_from` reads.
+
+        Args:
+            dtype: The source window's data type.
+
+        Returns:
+            bool: True unless the window is in the working type, or a `sum` warps it as it is
+            (`_sum_holds`).
+        """
+        return dtype != np.dtype(self._dtype) and not self._sum_holds(dtype)
+
+    def _uses_dataset_mask(self) -> bool:
+        """Whether the source's per-dataset mask marks a window's valid pixels.
+
+        Both paths decide so (`_source_window` and `_raster_window`) for a source with neither
+        nodata values nor an alpha band, which take precedence.
+
+        Returns:
+            bool: Whether the first band's mask is per-dataset and not an alpha band.
+        """
+        ds = self.src_dataset
+        flags = ds._mask_flags()[0] if ds.count else MaskFlags.all_valid.value
+        return bool(flags & MaskFlags.per_dataset.value and not flags & MaskFlags.alpha.value)
+
     def _raster_window(self) -> dict[str, Any] | None:
         """How `RegionWarp._warp_from` reads and warps a region's window from the source's Raster.
 
@@ -771,22 +798,20 @@ class WarpedVRT(DatasetReader):
         if not _reads_its_raster(ds):
             return None
         src, work = np.dtype(ds.dtypes[0]), np.dtype(self._dtype)
-        convert = src != work and not self._sum_holds(src)
+        convert = self._converts_window(src)
         if convert and not _terrio._window_converts(src.name, work.name):
             return None
         alpha, dataset_mask = None, False
         if all(v is None for v in self._warp_src_nodata):
             if self._src_alpha:
                 alpha = self._src_alpha
-            else:
-                flags = ds._mask_flags()[0]
-                if flags & MaskFlags.per_dataset.value and not flags & MaskFlags.alpha.value:
-                    # The flag the dataset took from the Raster at open: the Raster itself may be
-                    # held by a read on another thread.
-                    if not ds.structure.has_mask:
-                        # `_source_mask` reads this mask through `read_masks`.
-                        return None
-                    dataset_mask = True
+            elif self._uses_dataset_mask():
+                # The flag the dataset took from the Raster at open: the Raster itself may be
+                # held by a read on another thread.
+                if not ds.structure.has_mask:
+                    # `_source_mask` reads this mask through `read_masks`.
+                    return None
+                dataset_mask = True
         return {
             "bands": list(range(1, self._src_count + 1)),
             "dtype": work.name if convert else None,

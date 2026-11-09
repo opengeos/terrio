@@ -275,6 +275,37 @@ def test_an_alpha_the_working_type_rounds_to_zero_leaves_its_pixels_in(tmp_path,
         assert fraction.any() and not fraction.all(), method
 
 
+@pytest.mark.parametrize("on_python_path", [False, True], ids=["rust", "python"])
+def test_a_dataset_mask_leaves_out_the_pixels_an_alpha_band_would(tmp_path, on_python_path):
+    # Three bands with an internal mask that is 0 on their left third, and the same three bands
+    # with an alpha band that is 0 there instead: both leave the same pixels out, so the three
+    # bands come out the same, bit for bit, for each resampling; and not as without either.
+    rows, cols = 29, 37
+    data = values("uint8", 3, rows, cols)
+    valid = np.where(np.arange(cols)[None, :] < cols // 3, 0, 255).repeat(rows, 0).astype("uint8")
+    sources = {
+        "mask": (write(tmp_path / "mask.tif", data, mask=valid), {}),
+        "alpha": (
+            write(tmp_path / "alpha.tif", np.concatenate([data, valid[None]])),
+            {"src_alpha": 4},
+        ),
+        "neither": (write(tmp_path / "neither.tif", data), {}),
+    }
+    for method in (Resampling.nearest, Resampling.bilinear, Resampling.average, Resampling.sum):
+        got = {}
+        for name, (path, kw) in sources.items():
+            with terrio.rio.open(path) as src:
+                if on_python_path:
+                    force_python_path(src)
+                with WarpedVRT(src, crs="EPSG:3857", resampling=method, **kw) as vrt:
+                    flags = []
+                    vrt._window_hook = lambda level, window, rust, seen=flags: seen.append(rust)
+                    got[name] = vrt.read([1, 2, 3])
+                assert flags == [not on_python_path], (name, flags)
+        np.testing.assert_array_equal(bits(got["mask"]), bits(got["alpha"]), err_msg=str(method))
+        assert not np.array_equal(got["mask"], got["neither"]), method
+
+
 @pytest.mark.parametrize("src_alpha", [-1, -2, 3, 4])
 def test_a_src_alpha_outside_the_sources_bands_is_refused_on_both_paths(tmp_path, src_alpha):
     # `src_alpha` is one of the source's bands, 1 to its count: any other value is refused when
