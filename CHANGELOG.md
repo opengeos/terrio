@@ -7,6 +7,38 @@
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000
   tiles went from 130 to 5.7 ms on 32 threads, with the block cache off. An open raster keeps up
   to one decoder per thread, each holding its image's tables (16 bytes a chunk).
+- MBTiles archives are read in place (#693). Opening one reads its schema and metadata from the
+  file, mapped into memory on native builds, and each tile is read when asked for, by a lookup in
+  the index on `(zoom_level, tile_column, tile_row)` that MBTiles writers create (or, for the
+  `map` and `images` layout, in `map`'s index and `images`' `tile_id` index). An archive was read
+  whole and every tile copied again, so peak memory was several times the file's size. `terrio
+  info` of a 2 GB archive of 10,240 tiles took 10 s, read the whole 2,019 MB from disk and peaked
+  at 7.8 GB of memory; it now takes 0.17 s, reads 10.6 MB (with the kernel's read-ahead) and peaks
+  at 83 MB. A 600 x 600 window read takes 0.29 s, 27.3 MB and 98 MB instead of 4.6 s, 2,019 MB and
+  7.8 GB. An archive without such an index has the rowids of its tiles listed on opening, from
+  their key columns only, without reading tile bytes, unless those columns follow `tile_data` in
+  the table (as `tile_id` does in mbutil's unindexed `images`): the bytes before them, and a
+  corrupt tile among them, are then read on opening. An index whose order the lookup cannot follow
+  (a descending constraint, a column collation) is not used. Opening an MBTiles archive from
+  memory keeps the bytes but no longer copies the tiles. Listing a zoom level's tiles now lists
+  the rows of the `tiles` table, or of `map`, including a row whose `tile_data` is not a blob or
+  whose `tile_id` names no image (reading it gives no tile); a raster opened from the archive
+  takes its tile size from the first listed tile that has bytes. A NULL `tile_id` matches no
+  image, as in the `tiles` view's join. Of rows with the same key, the last is read, even if it
+  holds no tile; a row whose column is outside its zoom level's grid (`tile_column >=
+  2^zoom_level`) is passed over. A raster opened from an archive without `bounds` takes its extent
+  from the listed tiles, including rows without bytes.
+- A `WarpedVRT` over a dataset terrio opened for reading now reads and warps each source window
+  in one call that releases the GIL, so reads on several Python threads, such as a server
+  answering tile requests on threads, no longer wait for each other's warps as in 0.8.0. The
+  window is held once, in Rust, where no other thread can change it. These keep 0.8.0's read-only
+  window, warped with the GIL held: datasets opened for writing or update, opened at an
+  `overview_level`, or whose `_read_level` is replaced; another `WarpedVRT` as the source;
+  complex bands; and float32 bands warped in a 32- or 64-bit integer type, or float64 bands in a
+  64-bit one. The pixels are the same on both paths.
+- `WarpedVRT` raises `WarpOptionsError` when `src_alpha` is not one of the source's bands. In
+  0.8.0, a negative value could make another band the alpha, and a value out of range raised
+  `IndexError` when the VRT was read.
 - `warp` of a `Raster` in memory releases the GIL for the whole warp: it takes the raster's
   shared pixels (no copy) and warps them after releasing it, so warps from Python threads
   (rioxarray-style `reproject` of xarray arrays on a thread pool) overlap. 96 nearest-neighbour
@@ -27,8 +59,10 @@
   `GDAL_HTTP_MULTIRANGE=PARALLEL` does; `TERRIO_HTTP_MULTIRANGE=SERIAL` (or the GDAL name)
   requests them one after another. The requests carry the calling thread's options and STAC
   asset policy. A new request starts as each run is stored, so at most 8 responses are held at
-  once, and one read's runs stay within half the block cache. A failed run ends the read once the
-  requests in flight end; none is retried or sent after it. Peak memory can rise with many
+  once, and one read's runs stay within half the block cache. A failed run ends the read as a
+  serial read would: a request in flight waiting for its response is abandoned within 50 ms, even
+  when the response has stalled (a connection being opened still waits for its connect timeout),
+  and none is retried or sent after it. Peak memory can rise with many
   readers, from glibc's per-thread arenas (`MALLOC_ARENA_MAX=2` bounds them).
 
 ## 0.8.0 (2026-11-08)

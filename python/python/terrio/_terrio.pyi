@@ -174,6 +174,7 @@ __all__ = [
     "_set_warp_nodata_logger",
     "RegionWarp",
     "_check_sum_window",
+    "_window_converts",
     "_SUM_AUTO_OVERVIEW",
     "config_push",
     "config_pop",
@@ -1728,6 +1729,7 @@ def warped_vrt_type(
     kernel_version: str | None = None,
 ) -> tuple[str, list[float | None]]: ...
 def _check_sum_window(pixels: int, pixel_bytes: int) -> None: ...
+def _window_converts(src: str, work: str) -> bool: ...
 @final
 class RegionWarp:
     def __new__(
@@ -1759,6 +1761,19 @@ class RegionWarp:
         mask: NDArray[Any] | None = None,
         init: float = 0.0,
         padded_scale: bool = False,
+    ) -> tuple[NDArray[Any], NDArray[np.bool_]]: ...
+    def _warp_from(
+        self,
+        raster: Raster,
+        level: int | None,
+        region: _Window,
+        window: _Window,
+        bands: Sequence[int],
+        init: float = 0.0,
+        padded_scale: bool = False,
+        dtype: str | None = None,
+        alpha: int | None = None,
+        dataset_mask: bool = False,
     ) -> tuple[NDArray[Any], NDArray[np.bool_]]: ...
 
 @final

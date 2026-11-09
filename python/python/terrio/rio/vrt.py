@@ -58,8 +58,8 @@ from terrio.rio._tiff import Structure
 from terrio.rio.crs import CRS
 from terrio.rio.dtypes import dtype_fwd, typename_rev
 from terrio.rio.enums import ColorInterp, MaskFlags, Resampling
-from terrio.rio.errors import WarpedVRTError, WarpOptionsError
-from terrio.rio.io import DatasetReader, _sum_scale
+from terrio.rio.errors import RasterioIOError, WarpedVRTError, WarpOptionsError
+from terrio.rio.io import _READER_READ_LEVEL, DatasetReader, _sum_scale
 from terrio.rio.warp import (
     _WARP_NAMES,
     _crs_text,
@@ -172,6 +172,13 @@ class WarpedVRT(DatasetReader):
     types.
     """
 
+    # A private hook for tests: called with the level, the source window and whether the window
+    # is read and warped without leaving Rust (`_raster_window`), for each window a region reads.
+    # It stays in the class because nothing else shows which path a window takes (replacing
+    # `_read_level` to watch the windows would send them down the Python path); unset, it costs
+    # one attribute check per window.
+    _window_hook: Any = None
+
     def __init__(
         self,
         src_dataset: Any,
@@ -220,7 +227,8 @@ class WarpedVRT(DatasetReader):
 
         Raises:
             ValueError: If the resampling method is not supported.
-            WarpOptionsError: If an alpha band is added to a source that has one.
+            WarpOptionsError: If an alpha band is added to a source that has one, or if
+                `src_alpha` is not one of the source's bands.
             WarpedVRTError: If RPC positions are said to be in a CRS other than WGS 84.
         """
         super(DatasetReader, self).__init__()
@@ -291,6 +299,11 @@ class WarpedVRT(DatasetReader):
         if dst_alpha:
             dst_alpha_band = dst_alpha
         if src_alpha:
+            # One check for every read, whichever path it takes (`_raster_window`).
+            if not 0 < src_alpha <= src_count:
+                raise WarpOptionsError(
+                    f"src_alpha {src_alpha} is not a source band (1-{src_count})"
+                )
             src_alpha_band = src_alpha
         self._src_alpha = src_alpha_band
         self._dst_alpha = dst_alpha_band
@@ -699,17 +712,17 @@ class WarpedVRT(DatasetReader):
                 # GDALWarpSrcAlphaMasker(): pixels of zero density are left out.
                 mask = data[self._src_alpha - 1] != 0
             else:
-                flags = ds._mask_flags()[0] if ds.count else MaskFlags.all_valid.value
-                if flags & MaskFlags.per_dataset.value and not flags & MaskFlags.alpha.value:
+                if self._uses_dataset_mask():
                     # GDALWarpSrcMaskMasker(): the source's per-dataset mask.
                     mask = self._source_mask(level, window)
-        if data.dtype != np.dtype(self._dtype) and not self._sum_holds(data.dtype):
+        if self._converts_window(data.dtype):
             # The source is read in the working data type, unless a `sum` takes it as it is.
             data = gdal_cast(data, self._dtype)
         data = np.ascontiguousarray(data).view()
-        # The warp reads a read-only window where it is, with the GIL held, and copies a writeable
-        # one first (`RegionWarp.warp`). _read_level returns fresh pixels (list band indexing
-        # for in-memory datasets); use a view so this flag never changes the source's array.
+        # On this path, for a source `_raster_window` does not read in Rust, the warp reads a
+        # read-only window where it is, with the GIL held, and copies a writeable one first
+        # (`RegionWarp.warp`). _read_level returns fresh pixels (list band indexing for in-memory
+        # datasets); use a view so this flag never changes the source's array.
         data.flags.writeable = False
         return data, mask
 
@@ -731,6 +744,100 @@ class WarpedVRT(DatasetReader):
         return self.resampling == Resampling.sum and _dtype_holds_values(
             np.dtype(dtype), np.dtype(self._dtype)
         )
+
+    def _converts_window(self, dtype: np.dtype) -> bool:
+        """Whether a source window of a data type is converted to the working type before the warp.
+
+        Both paths decide so: `_source_window` for the window it reads, and `_raster_window` for
+        the windows `RegionWarp._warp_from` reads.
+
+        Args:
+            dtype: The source window's data type.
+
+        Returns:
+            bool: True unless the window is in the working type, or a `sum` warps it as it is
+            (`_sum_holds`).
+        """
+        return dtype != np.dtype(self._dtype) and not self._sum_holds(dtype)
+
+    def _uses_dataset_mask(self) -> bool:
+        """Whether the source's per-dataset mask marks a window's valid pixels.
+
+        Both paths decide so (`_source_window` and `_raster_window`) for a source with neither
+        nodata values nor an alpha band, which take precedence.
+
+        Returns:
+            bool: Whether the first band's mask is per-dataset and not an alpha band.
+        """
+        ds = self.src_dataset
+        flags = ds._mask_flags()[0] if ds.count else MaskFlags.all_valid.value
+        return bool(flags & MaskFlags.per_dataset.value and not flags & MaskFlags.alpha.value)
+
+    def _raster_window(self) -> dict[str, Any] | None:
+        """How `RegionWarp._warp_from` reads and warps a region's window from the source's Raster.
+
+        A window read so stays in Rust: no Python object refers to it, so the warp runs without
+        the GIL. Only for a source terrio reads itself, through `DatasetReader._read_level` as
+        `terrio.rio.io` defines it, replaced neither on a class nor on the dataset (by another
+        function or another dataset's method), in a type a window is read in (not complex),
+        whose window `_source_window` would take through steps `_warp_from` takes too: the
+        bands, an alpha band or the raster's own mask, and a `gdal_cast` conversion but floats
+        into an integer type whose limits the float type does not hold exactly.
+
+        Returns:
+            dict | None: The keyword arguments of `_warp_from` besides the window's, or None to
+            read the window into Python (`_source_window`) and warp it there (`RegionWarp.warp`).
+        """
+        ds = self.src_dataset
+        raster = getattr(ds, "_raster", None)
+        if not isinstance(raster, _terrio.Raster) or not ds.count:
+            return None
+        if ds.dtypes[0] not in _WINDOW_TYPES:
+            # Complex bands, which a read gives each from two of the raster's bands.
+            return None
+        if not _reads_its_raster(ds):
+            return None
+        src, work = np.dtype(ds.dtypes[0]), np.dtype(self._dtype)
+        convert = self._converts_window(src)
+        if convert and not _terrio._window_converts(src.name, work.name):
+            return None
+        alpha, dataset_mask = None, False
+        if all(v is None for v in self._warp_src_nodata):
+            if self._src_alpha:
+                alpha = self._src_alpha
+            elif self._uses_dataset_mask():
+                # The flag the dataset took from the Raster at open: the Raster itself may be
+                # held by a read on another thread.
+                if not ds.structure.has_mask:
+                    # `_source_mask` reads this mask through `read_masks`.
+                    return None
+                dataset_mask = True
+        return {
+            "bands": list(range(1, self._src_count + 1)),
+            "dtype": work.name if convert else None,
+            "alpha": alpha,
+            "dataset_mask": dataset_mask,
+        }
+
+    def _source_raster(self) -> Any:
+        """The source's Raster to read a window from in Rust, looked up for each window.
+
+        A read of the dataset (`_read_level`) looks it up for each window too.
+
+        Returns:
+            Raster: The source's Raster.
+
+        Raises:
+            RasterioIOError: If the source is closed ("Dataset is closed"), or being closed on
+                another thread, its Raster already released ("Read failed: ..."), as a read of
+                the dataset raises then.
+        """
+        ds = self.src_dataset
+        ds._check_open()
+        raster = ds._raster
+        if not isinstance(raster, _terrio.Raster):
+            raise RasterioIOError("Read failed: the dataset is being closed")
+        return raster
 
     def _source_mask(self, level: int | None, window: tuple[int, int, int, int]) -> Any:
         """The source's per-dataset mask in a window of a level.
@@ -796,8 +903,24 @@ class WarpedVRT(DatasetReader):
                 largest = max((part_win[2] * part_win[3] for _, part_win in parts), default=0)
                 _terrio._check_sum_window(largest, itemsize * self._src_count)
             for part, part_win in parts:
-                data, mask = self._source_window(grid.level, part_win)
-                warped, done = rw.warp(part, part_win, data, mask, self._init_value, direct)
+                # Decided as each part starts: a `_read_level` replaced during the read (by another
+                # thread, or by the hook) sends the parts after down the Python path.
+                raster_kwargs = self._raster_window()
+                if self._window_hook is not None:
+                    self._window_hook(grid.level, part_win, raster_kwargs is not None)
+                if raster_kwargs is not None:
+                    warped, done = rw._warp_from(
+                        self._source_raster(),
+                        grid.level,
+                        part,
+                        part_win,
+                        init=self._init_value,
+                        padded_scale=direct,
+                        **raster_kwargs,
+                    )
+                else:
+                    data, mask = self._source_window(grid.level, part_win)
+                    warped, done = rw.warp(part, part_win, data, mask, self._init_value, direct)
                 warped, done = np.asarray(warped), np.asarray(done)
                 px, py, pw, ph = part
                 rows, cols = slice(py - y, py - y + ph), slice(px - x, px - x + pw)
@@ -1394,6 +1517,26 @@ def _gdal(dtype: str) -> str:
 _WINDOW_TYPES = frozenset(
     ("uint8", "int8", "uint16", "int16", "uint32", "int32", "uint64", "int64", "float32", "float64")
 )
+
+
+def _reads_its_raster(ds: Any) -> bool:
+    """Whether a dataset reads its windows through `DatasetReader._read_level` as defined.
+
+    Not through a replacement: a subclass's, one set on `DatasetReader` itself, a function set on
+    the dataset or another dataset's method. A replacement on a class shows as the function of
+    the dataset's bound method, so that function and its dataset are all there is to check.
+
+    Args:
+        ds: A source dataset.
+
+    Returns:
+        bool: Whether `ds._read_level` is the function `terrio.rio.io` defines, bound to `ds`.
+    """
+    read = ds._read_level
+    return (
+        getattr(read, "__func__", None) is _READER_READ_LEVEL
+        and getattr(read, "__self__", None) is ds
+    )
 
 
 def _dtype_holds_values(src: np.dtype, work: np.dtype) -> bool:

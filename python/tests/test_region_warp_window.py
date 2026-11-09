@@ -229,6 +229,59 @@ with terrio.rio.open(sys.argv[1]) as src:
     assert warped[1] < read + window / 2, (read, warped)
 
 
+@needs_proc
+def test_a_converted_sum_window_is_held_once_in_each_type(tmp_path):
+    # 8192 x 1024 float64 (64 MiB) without overviews, summed by a WarpedVRT into float32, which
+    # does not hold every float64 value: one window, read and converted to float32 in Rust before
+    # the warp. The read's peak RSS grows by what reading that window alone adds (in another
+    # process) and its float32 copy, and by less than half the window more, where one more
+    # float64 copy of it added all of it.
+    n = (8192, 1024)
+    path = str(tmp_path / "f64.tif")
+    v = (np.arange(n[0] * n[1], dtype="float64") % 1009 + 0.123456789).reshape(n[1], n[0])
+    terrio.Raster.from_array(v, (0.0, 1.0, 0.0, float(n[1]), 0.0, -1.0), crs="EPSG:3857").write(
+        path, driver="COG", tile_size=512, options={"OVERVIEW_COUNT": "0"}
+    )
+    read = run(
+        PEAK
+        + """
+import json, sys
+import terrio.rio
+
+with terrio.rio.open(sys.argv[1]) as src:
+    base = peak()
+    window = src._read_level([1], (0, 0, 8192, 1024), None)
+    print(json.dumps(peak() - base))
+""",
+        path,
+    )
+    warped = run(
+        PEAK
+        + """
+import json, sys
+import terrio.rio
+from terrio.rio.enums import Resampling
+from terrio.rio.transform import from_origin
+from terrio.rio.vrt import WarpedVRT
+
+with terrio.rio.open(sys.argv[1]) as src:
+    grid = {"crs": "EPSG:3857", "transform": from_origin(0, 1024, 32, 32), "width": 256}
+    kw = {"resampling": Resampling.sum, "dtype": "float32", "warp_mem_limit": 4096}
+    with WarpedVRT(src, height=32, **grid, **kw) as vrt:
+        windows = []
+        vrt._window_hook = lambda level, window, rust: windows.append([list(window), rust])
+        base = peak()
+        vrt.read(1)
+        print(json.dumps([peak() - base, windows]))
+""",
+        path,
+    )
+    window, converted = n[0] * n[1] * 8, n[0] * n[1] * 4
+    assert warped[1] == [[[0, 0, n[0], n[1]], True]], warped[1]
+    assert read >= window, read
+    assert warped[0] < read + converted + window / 2, (read, warped)
+
+
 def test_a_borrowed_window_keeps_the_gil():
     # A read-only view may have writable aliases. No other Python thread may run while
     # RegionWarp holds a Rust slice of it. The worker deliberately never writes the data.
