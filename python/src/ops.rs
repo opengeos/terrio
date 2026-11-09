@@ -19,7 +19,7 @@ use terrio::ops::polygonize::PolygonizeOptions;
 use terrio::ops::rasterize::{Grid, MergeAlg, RasterizeOptions};
 use terrio::ops::translate::{Scale, Size, TranslateOptions};
 use terrio::ops::vector_filter::{GeometryConversion, VectorTranslateOptions, WriteMode};
-use terrio::ops::warp::{Cutline, Nodata, RegionWarp, WarpOptions};
+use terrio::ops::warp::{Cutline, Nodata, RegionWarp, WarpOptions, window as warp_window};
 use terrio::{DataType, Dataset, RasterDataset, VectorOpenOptions, VectorWriteOptions, Window, WindowOptions};
 use wbraster::raster::RasterData;
 
@@ -1801,12 +1801,13 @@ fn _check_sum_window(pixels: u64, pixel_bytes: usize) -> PyResult<()> {
 }
 
 /// Whether `RegionWarp._warp_from` converts a source window of data type `src` to the working type
-/// `work` (names such as `"float32"`): the one definition `terrio.rio.WarpedVRT` asks. False for a
-/// name outside the ten integer and float types.
+/// `work` (names such as `"float32"`), which `terrio::ops::warp::window::converts` decides:
+/// `terrio.rio.WarpedVRT` asks it before taking that path, and converts every other window itself
+/// on the Python path. False for a name outside the ten integer and float types.
 #[pyfunction]
 fn _window_converts(src: &str, work: &str) -> bool {
     match (terrio::ops::parse_data_type(src), terrio::ops::parse_data_type(work)) {
-        (Ok(src), Ok(work)) => crate::warp_window::converts(src, work),
+        (Ok(src), Ok(work)) => warp_window::converts(src, work),
         _ => false,
     }
 }
@@ -2006,10 +2007,10 @@ impl PyRegionWarp {
     ///     bands: The bands to read, numbered from 1.
     ///     init: The value of pixels no valid source pixel reaches.
     ///     padded_scale: As for `warp`.
-    ///     dtype: The working type the window is converted to first, as `gdal_cast` converts
-    ///         it, or None to warp it in the raster's own type. Not a float type into an integer
-    ///         type whose limits it does not hold exactly (float32 into 32- or 64-bit integers,
-    ///         float64 into 64-bit ones).
+    ///     dtype: The working type the window is converted to first, as
+    ///         `terrio::ops::warp::window::convert` converts it, or None to warp it in the
+    ///         raster's own type. Not a float type into an integer type whose limits it does not
+    ///         hold exactly (float32 into 32- or 64-bit integers, float64 into 64-bit ones).
     ///     alpha: The band, among `bands` and numbered from 1, whose zero values mark the pixels
     ///         left out, or None.
     ///     dataset_mask: Whether the raster's own mask of the window marks the valid pixels
@@ -2065,15 +2066,13 @@ impl PyRegionWarp {
         let (out, written) = py
             .detach_result(|| {
                 let mask: Option<Vec<bool>> = match alpha {
-                    Some(a) => Some(crate::warp_window::nonzero(&data, a - 1, w * h)?),
+                    Some(a) => Some(warp_window::alpha_validity(&data, a - 1, w * h)?),
                     None => mask.map(|m| m.into_iter().map(|v| v != 0).collect()),
                 };
                 if let Some(t) = work
                     && t != data.data_type()
                 {
-                    data = crate::warp_window::convert(&data, t).ok_or_else(|| {
-                        terrio::Error::InvalidArgument(format!("a {:?} window is not converted to {t:?} here", data.data_type()))
-                    })?;
+                    data = warp_window::convert(&data, t)?;
                 }
                 inner.warp(region, window, &data, mask.as_deref(), init, padded_scale)
             })

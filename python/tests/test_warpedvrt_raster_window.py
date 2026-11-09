@@ -188,9 +188,10 @@ CASES = (
 
 
 def test_the_one_call_converts_all_pairs_but_floats_into_integers_whose_limits_they_round():
-    # The binding converts a window between any two of the ten types but a float type into an
-    # integer type whose limits it does not hold exactly, and decides it alone: the WarpedVRT asks
-    # it (`_terrio._window_converts`). Names outside the ten are never converted.
+    # The one call converts a window between any two of the ten types but a float type into an
+    # integer type whose limits it does not hold exactly, as the crate decides it
+    # (`terrio::ops::warp::window::converts`); the WarpedVRT asks it (`_terrio._window_converts`).
+    # Names outside the ten are never converted.
     rounded = {("float32", t) for t in ("int32", "uint32", "int64", "uint64")}
     rounded |= {("float64", t) for t in ("int64", "uint64")}
     for src in DTYPES:
