@@ -5972,6 +5972,63 @@ mod tests {
         }
     }
 
+    /// A coarse `sum` of a VRT reads it a strip of rows at a time too, and the VRT gives each strip
+    /// the rows its whole window holds, sources with fractional and scaled rectangles included
+    /// (#702): the pixels are the same, bit for bit, whatever the strips' height, and the same as
+    /// the warp of the VRT read whole into memory.
+    #[test]
+    fn a_coarse_sum_of_a_vrt_with_fractional_rectangles_is_the_same_in_strips() {
+        let dir = tempfile::tempdir().unwrap();
+        let ds = raster(120, 90, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| ((c * 7 + r * 13) % 50) as f64 + 0.25);
+        let src = dir.path().join("src.tif").to_str().unwrap().to_string();
+        crate::write_raster_dataset(&ds, &src, &Default::default()).unwrap();
+        // 180 x 150 pixels of 20 m: four sources, each a part of the raster from a fractional
+        // offset into a part of the VRT at a fractional offset, by one method: three scaled, and
+        // one of the same size.
+        let source = |method: &str, [sx, sy, sw, sh]: [f64; 4], [dx, dy, dw, dh]: [f64; 4]| {
+            format!(
+                "<ComplexSource resampling=\"{method}\"><SourceFilename relativeToVRT=\"0\">{src}</SourceFilename>\
+                 <SourceBand>1</SourceBand><SrcRect xOff=\"{sx}\" yOff=\"{sy}\" xSize=\"{sw}\" ySize=\"{sh}\"/>\
+                 <DstRect xOff=\"{dx}\" yOff=\"{dy}\" xSize=\"{dw}\" ySize=\"{dh}\"/></ComplexSource>"
+            )
+        };
+        let vrt = format!(
+            "<VRTDataset rasterXSize=\"180\" rasterYSize=\"150\"><SRS>EPSG:32610</SRS>\
+             <GeoTransform>500000, 20, 0, 4000000, 0, -20</GeoTransform><VRTRasterBand dataType=\"Float32\" band=\"1\">\
+             <NoDataValue>-9999</NoDataValue>{}{}{}{}</VRTRasterBand></VRTDataset>",
+            source("nearest", [0.5, 0.25, 59.5, 44.75], [0.3, 0.6, 89.4, 74.2]),
+            source("bilinear", [60.25, 0.5, 59.5, 89.0], [90.5, 0.25, 89.2, 149.5]),
+            source("average", [0.75, 45.5, 59.0, 44.25], [0.0, 75.5, 90.0, 74.25]),
+            source("bilinear", [10.5, 50.25, 40.0, 30.0], [100.3, 100.6, 40.0, 30.0]),
+        );
+        let path = dir.path().join("fractional.vrt").to_str().unwrap().to_string();
+        std::fs::write(&path, vrt).unwrap();
+        let o = |memory_limit| WarpOptions {
+            size: Some((2, 2)),
+            resampling: Resampling::Sum,
+            output_type: Some(DataType::F64),
+            memory_limit,
+            ..Default::default()
+        };
+        let bits = |ds: RasterDataset| ds.raster.data.to_f64_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        // The output, and the windows read.
+        let warped = |memory_limit| {
+            let mut lazy = crate::open_raster_lazy(&path).unwrap();
+            let mut counted = Counted { raster: &mut lazy, reads: Vec::new() };
+            let out = warp_sources(&mut [&mut counted], &o(memory_limit)).unwrap();
+            (bits(out), counted.reads.len())
+        };
+        let (whole, reads) = warped(64.0 * 1024.0 * 1024.0);
+        assert_eq!(reads, 1, "the whole window at once");
+        let read = crate::open_raster(&path).unwrap();
+        assert_eq!(bits(warp(&[&read], &o(64.0 * 1024.0 * 1024.0)).unwrap()), whole, "the VRT read whole");
+        for memory_limit in [20_000.0, 3_000.0] {
+            let (strips, reads) = warped(memory_limit);
+            assert!(reads > 1, "{memory_limit} bytes: {reads} read");
+            assert_eq!(strips, whole, "{memory_limit} bytes");
+        }
+    }
+
     /// Writes `n` x `m` pixels of `f` to `dir/name`, with overviews at the factors `levels`
     /// resampled by `resampling`, and returns the path.
     fn write_with_overviews(
