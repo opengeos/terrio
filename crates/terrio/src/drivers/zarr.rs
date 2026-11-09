@@ -1111,10 +1111,11 @@ fn at_once(bytes: usize, threads: usize, usable: Option<u64>) -> usize {
     usable.map_or(threads, |m| usize::try_from(m / 2 / bytes as u64).unwrap_or(usize::MAX).clamp(1, threads))
 }
 
-/// The most requests a read of a remote store keeps in flight (native builds). They wait on the
-/// server, not on the cores: on terrio's pool, a machine of 12 cores fetched the 18 inner chunks
-/// of a 512 x 512 window of 128 bands of the OlmoEarth embeddings store on source.coop (66 MB, a
-/// server answering in about 0.8 s) 12 at a time, in 6.4 to 7.8 s; 32 at a time, in 5.0 to 5.4 s.
+/// The most requests a read of a remote store keeps in flight (native builds); reads running at
+/// once each have their own. They wait on the server, not on the cores: on terrio's pool, a
+/// machine of 12 cores fetched the 18 inner chunks of a 512 x 512 window of 128 bands of the
+/// OlmoEarth embeddings store on source.coop (66 MB, a server answering in about 0.8 s) 12 at a
+/// time, in 6.6 to 7.2 s; 32 at a time, in 5.3 to 5.7 s.
 const REMOTE_AT_ONCE: usize = 32;
 
 /// The memory a read of a remote store may hold in requests in flight when the memory the
@@ -1123,9 +1124,11 @@ const REMOTE_AT_ONCE: usize = 32;
 const UNKNOWN_MEMORY_BUDGET: u64 = 1 << 30;
 
 /// Whether a read of an array waits on a server: its chunks are then fetched on threads of their
-/// own ([`crate::par::map_waiting`]) rather than on the pool. Remote stores, natively.
+/// own ([`crate::par::map_waiting`]) rather than on the pool. Stores read over the network,
+/// natively; not objects the caller fetches (terrio-js), which are in memory and whose missing
+/// ones a read lists all at once.
 fn waits(a: &Array) -> bool {
-    cfg!(not(target_family = "wasm")) && a.node.is_remote()
+    cfg!(not(target_family = "wasm")) && a.node.is_served()
 }
 
 /// The bytes one request in flight of a remote read holds, and those the read keeps aside for

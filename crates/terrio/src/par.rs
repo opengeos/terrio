@@ -528,6 +528,9 @@ pub(crate) fn map_waiting<R: Send>(n: usize, at_once: usize, f: impl Fn(usize) -
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         let context = crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current());
         let (next, failed) = (AtomicUsize::new(0), AtomicBool::new(false));
+        // A worker that cannot enter the context (consent revoked since the read began) claims no
+        // item; its error is the call's, unless an item failed.
+        let refused = std::sync::Mutex::new(None);
         // A worker's loop: items claimed until none is left or one has failed. The calling thread
         // runs one too, already in its own context.
         let work = |enter: bool| {
@@ -536,7 +539,9 @@ pub(crate) fn map_waiting<R: Send>(n: usize, at_once: usize, f: impl Fn(usize) -
                 Ok(scope) => scope,
                 Err(e) => {
                     failed.store(true, Ordering::Relaxed);
-                    mine.push((0, Err(e)));
+                    if let Ok(mut r) = refused.lock() {
+                        r.get_or_insert(e);
+                    }
                     return mine;
                 }
             };
@@ -566,9 +571,14 @@ pub(crate) fn map_waiting<R: Send>(n: usize, at_once: usize, f: impl Fn(usize) -
             done
         });
         done.sort_by_key(|(i, _)| *i);
-        // After a failure some indices are missing, but an error is among the results.
-        return done.into_iter().map(|(_, r)| r).collect();
+        // After a failure some indices are missing, but an error is among the results or refused.
+        let results = done.into_iter().map(|(_, r)| r).collect::<crate::Result<Vec<R>>>()?;
+        return match refused.into_inner().ok().flatten() {
+            Some(e) => Err(e),
+            None => Ok(results),
+        };
     }
+    #[cfg(target_family = "wasm")]
     let _ = at_once;
     (0..n).map(f).collect()
 }

@@ -211,6 +211,16 @@ impl Store {
         matches!(self.backend, Backend::Local(_))
     }
 
+    /// Whether objects are requested from a server (not a local directory, nor objects the
+    /// caller fetches into memory).
+    fn is_served(&self) -> bool {
+        #[cfg(remote)]
+        let served = matches!(self.backend, Backend::Remote { .. });
+        #[cfg(not(remote))]
+        let served = false;
+        served
+    }
+
     /// A metadata document (JSON), from the consolidated metadata or read and cached. A read
     /// that fails (a network error) or a document that is not JSON is an error, and is not
     /// cached: only missing documents are.
@@ -464,6 +474,11 @@ impl Node {
     /// Whether the store is remote.
     pub(crate) fn is_remote(&self) -> bool {
         !self.store.is_local()
+    }
+
+    /// Whether the store's objects are requested from a server, each request waiting on it.
+    pub(crate) fn is_served(&self) -> bool {
+        self.store.is_served()
     }
 }
 
