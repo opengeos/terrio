@@ -54,7 +54,8 @@ Zarr stores (v2 and v3, GeoZarr included) are read in place over HTTP(S), S3, Go
 Storage and Azure: opening reads the metadata (all of it in one request when the store has
 consolidated metadata, v2's `.zmetadata` or the `consolidated_metadata` of a v3 root group), and a
 window reads only the chunks it touches, in parallel: up to 32 requests in flight, whatever the
-number of cores (natively; in WebAssembly, as many as the thread pool runs). In a sharded v3
+number of cores (natively; in WebAssembly, as many as the thread pool runs), fewer when their
+chunks would take more than half the memory the process can use, and none more once one fails. In a sharded v3
 array, a window reads each shard's index, then the inner chunks it needs, nearby ones in one range
 request. Missing chunks read as the fill value. A store is recognized by a path component ending in `.zarr`, or named as
 GDAL names it: `ZARR:"store"` or `ZARR:"store":/group/array`, the store a URL, an `s3://`, `gs://`

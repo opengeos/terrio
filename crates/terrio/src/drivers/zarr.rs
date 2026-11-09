@@ -1117,28 +1117,82 @@ fn at_once(bytes: usize, threads: usize, usable: Option<u64>) -> usize {
 /// server answering in about 0.8 s) 12 at a time, in 6.4 to 7.8 s; 32 at a time, in 5.0 to 5.4 s.
 const REMOTE_AT_ONCE: usize = 32;
 
-/// How a read of `total` chunks of an array goes, given the most `requests` in flight it may have
-/// (remote stores, [`REMOTE_AT_ONCE`] for a whole read): how many chunks at once, how many inner
-/// chunks of a shard (runs of them) each fetches at once, and whether on threads that wait on the
-/// server ([`crate::par::map_waiting`]) rather than the pool. A local store's chunks are decoded
-/// as many at once as the pool runs and the memory holds ([`decoding_at_once`]).
-fn read_plan(a: &Array, total: usize, requests: usize) -> (usize, usize, bool) {
-    let bytes = decoded_bytes(a);
-    if cfg!(not(target_family = "wasm")) && a.node.is_remote() {
-        // A request in flight holds its bytes and a decoded chunk: half the memory at most.
-        let usable = crate::dataset::fallible::usable_memory();
-        let fit = usable.map_or(requests, |m| usize::try_from(m / 4 / bytes.max(1) as u64).unwrap_or(usize::MAX)).clamp(1, requests.max(1));
-        let chunks = fit.min(total).max(1);
-        return (chunks, (fit / chunks).max(1), true);
+/// The memory a read of a remote store may hold in requests in flight when the memory the
+/// process can use is unknown: as much as half of 2 GiB, so that unsharded chunks of 16 MiB are
+/// still fetched [`REMOTE_AT_ONCE`] at a time, and those of 256 MiB two at a time.
+const UNKNOWN_MEMORY_BUDGET: u64 = 1 << 30;
+
+/// Whether a read of an array waits on a server: its chunks are then fetched on threads of their
+/// own ([`crate::par::map_waiting`]) rather than on the pool. Remote stores, natively.
+fn waits(a: &Array) -> bool {
+    cfg!(not(target_family = "wasm")) && a.node.is_remote()
+}
+
+/// The bytes one request in flight of a remote read holds, and those the read keeps aside for
+/// shard indexes. An unsharded chunk's request holds its fetched bytes (about as many as it
+/// decodes to) and its decoded chunk; an inner run of a shard, its fetched bytes (up to
+/// [`MAX_RUN`], or one inner chunk past it), a copy of an inner chunk and its decoded bytes, and
+/// the shard's index, raw and parsed. The parsed indexes an array caches take up to
+/// [`SHARD_INDEX_CACHE_BYTES`] besides.
+fn request_cost(a: &Array) -> (u64, u64) {
+    let decoded = decoded_bytes(a) as u64;
+    let p = &a.pipeline;
+    match &p.shard {
+        Some(shard) if p.codecs.is_empty() => {
+            let index = shard.index_len(&a.chunks).map_or(u64::MAX, |(count, len)| {
+                (count as u64).saturating_mul(std::mem::size_of::<Option<(u64, u64)>>() as u64).saturating_add(len as u64)
+            });
+            let run = decoded.max(MAX_RUN as u64);
+            (decoded.saturating_mul(2).saturating_add(run).saturating_add(index), SHARD_INDEX_CACHE_BYTES as u64)
+        }
+        _ => (decoded.saturating_mul(2), 0),
     }
-    let at_once = decoding_at_once(bytes);
+}
+
+/// The most requests a whole read of an array keeps in flight: [`REMOTE_AT_ONCE`], fewer when
+/// their buffers would take more than half the memory the process can use (see
+/// [`requests_within`]). Shared by all the chunks and band groups of a read ([`split`]).
+fn request_budget(a: &Array) -> usize {
+    let (cost, reserved) = request_cost(a);
+    requests_within(cost, reserved, crate::dataset::fallible::usable_memory())
+}
+
+/// How many requests holding `cost` bytes each fit in half of `usable` bytes (`None`: unknown,
+/// [`UNKNOWN_MEMORY_BUDGET`]) less `reserved`: between 1, as GDAL reads chunks one after another,
+/// and [`REMOTE_AT_ONCE`].
+fn requests_within(cost: u64, reserved: u64, usable: Option<u64>) -> usize {
+    let budget = usable.map_or(UNKNOWN_MEMORY_BUDGET, |m| m / 2).saturating_sub(reserved);
+    usize::try_from(budget / cost.max(1)).unwrap_or(usize::MAX).clamp(1, REMOTE_AT_ONCE)
+}
+
+/// Shares `requests` in flight among `parts` (chunks, or band groups) read together: how many
+/// parts at once, and how many requests each of them may keep in flight. Their product is at
+/// most `requests` (at least 1).
+fn split(requests: usize, parts: usize) -> (usize, usize) {
+    let requests = requests.max(1);
+    let at_once = requests.min(parts).max(1);
+    (at_once, requests / at_once)
+}
+
+/// How a read of `total` chunks of an array goes, given the most `requests` in flight it may have
+/// (remote stores, [`request_budget`] for a whole read): how many chunks at once, how many inner
+/// chunks of a shard (runs of them) each fetches at once, and whether on threads that wait on the
+/// server ([`waits`]) rather than the pool. A local store's chunks are decoded as many at once as
+/// the pool runs and the memory holds ([`decoding_at_once`]).
+fn read_plan(a: &Array, total: usize, requests: usize) -> (usize, usize, bool) {
+    if waits(a) {
+        let (chunks, inner) = split(requests, total);
+        return (chunks, inner, true);
+    }
+    let at_once = decoding_at_once(decoded_bytes(a));
     (at_once, if at_once < crate::par::threads() { 1 } else { at_once }, false)
 }
 
-/// [`at_most`], or on threads waiting on a server ([`read_plan`]), `at_once` at a time.
+/// [`at_most`], or on threads waiting on a server ([`read_plan`]), `at_once` at a time; no chunk
+/// is requested once one has failed.
 fn each(waiting: bool, n: usize, at_once: usize, f: impl Fn(usize) -> Result<()> + Sync + Send) -> Result<()> {
     if waiting {
-        return crate::par::map_waiting(n, at_once, f).into_iter().collect();
+        return crate::par::map_waiting(n, at_once, f).map(drop);
     }
     at_most(n, at_once, f)
 }
@@ -1249,7 +1303,7 @@ fn decode_chunk(
         Ok(())
     };
     if waiting {
-        crate::par::map_waiting(runs.len(), inner_at_once, fetch).into_iter().collect::<Result<()>>().map_err(err)
+        crate::par::map_waiting(runs.len(), inner_at_once, fetch).map(drop).map_err(err)
     } else if inner_at_once >= crate::par::threads() {
         crate::par::map_range(runs.len(), fetch).into_iter().collect::<Result<()>>().map_err(err)
     } else {
@@ -1260,13 +1314,14 @@ fn decode_chunk(
 /// Reads the region of shape `shape` at `start` of an array: little-endian elements in C order,
 /// missing chunks set to the fill value. Only the chunks (or, in shards, the inner chunks)
 /// intersecting the region are read, in parallel, as many at once as the memory allows
-/// ([`decoding_at_once`]); from a remote store, with at most `requests` in flight ([`read_plan`]).
-fn read_region(a: &Array, start: &[usize], shape: &[usize], requests: usize) -> Result<Vec<u8>> {
-    read_region_with_chunk_policy(a, start, shape, requests, big_chunks_allowed())
+/// ([`decoding_at_once`]); from a remote store, with at most [`request_budget`] requests in flight.
+fn read_region(a: &Array, start: &[usize], shape: &[usize]) -> Result<Vec<u8>> {
+    read_region_with(a, start, shape, request_budget(a), big_chunks_allowed())
 }
 
-/// [`read_region`], with chunks past GDAL's size rule allowed or not as `allow_big` says.
-fn read_region_with_chunk_policy(a: &Array, start: &[usize], shape: &[usize], requests: usize, allow_big: bool) -> Result<Vec<u8>> {
+/// [`read_region`], from a remote store with at most `requests` in flight ([`read_plan`]), and
+/// chunks past GDAL's size rule allowed or not as `allow_big` says.
+fn read_region_with(a: &Array, start: &[usize], shape: &[usize], requests: usize, allow_big: bool) -> Result<Vec<u8>> {
     let nd = a.shape.len();
     if a.chunks.len() != nd || a.chunks.contains(&0) {
         return Err(bad("chunk shape and array shape differ in rank"));
@@ -1345,7 +1400,7 @@ fn read_points(a: &Array, sel: &[Vec<usize>]) -> Result<Vec<u8>> {
     let counts: Vec<usize> = groups.iter().map(Vec::len).collect();
     // At most one chunk per selected element: the product does not overflow.
     let total: usize = counts.iter().product();
-    let (at_once, inner_at_once, waiting) = read_plan(a, total, REMOTE_AT_ONCE);
+    let (at_once, inner_at_once, waiting) = read_plan(a, total, request_budget(a));
     each(waiting, total, at_once, |i| {
         let k = unravel(i, &counts);
         let members: Vec<&[(usize, usize)]> = (0..nd).map(|d| groups[d][k[d]].1.as_slice()).collect();
@@ -1397,7 +1452,7 @@ fn read_all_f64(a: &Array) -> Option<Vec<f64>> {
 
 /// [`read_all_f64`], with chunks past GDAL's size rule allowed or not as `allow_big` says.
 fn read_all_f64_with_chunk_policy(a: &Array, allow_big: bool) -> Option<Vec<f64>> {
-    let bytes = read_region_with_chunk_policy(a, &vec![0; a.shape.len()], &a.shape, REMOTE_AT_ONCE, allow_big).ok()?;
+    let bytes = read_region_with(a, &vec![0; a.shape.len()], &a.shape, request_budget(a), allow_big).ok()?;
     let size = a.data_type.size_bytes();
     let n = bytes.len() / size;
     // As the region was: refused past the memory the process can use, allocated fallibly.
@@ -1642,7 +1697,11 @@ impl Level {
             format!("a window of {}x{} pixels in {} band(s) is too large", w.width, w.height, bands.len())
         })
         .map_err(limited)?;
-        let Some(&last) = self.bds.last() else { return self.read_group(w, bands, REMOTE_AT_ONCE) };
+        // Decided on the calling thread, whose scoped options the groups' threads may not see.
+        let allow_big = big_chunks_allowed();
+        // One budget for the whole read, shared by the groups read at once ([`split`]).
+        let requests = request_budget(&self.array);
+        let Some(&last) = self.bds.last() else { return self.read_group(w, bands, requests, allow_big) };
         let step = self.array.chunks[last].max(1);
         let mut unique: Vec<usize> = bands.to_vec();
         unique.sort_unstable();
@@ -1665,21 +1724,18 @@ impl Level {
             }
         }
         if groups.len() == 1 && groups[0] == bands {
-            return self.read_group(w, bands, REMOTE_AT_ONCE);
+            return self.read_group(w, bands, requests, allow_big);
         }
-        // In parallel unless their chunks are decoded a few at a time ([`decoding_at_once`]); from
-        // a remote store, sharing the requests a read keeps in flight ([`read_plan`]).
-        let at_once = groups.len().min(REMOTE_AT_ONCE);
-        let read_with = |i: usize, requests: usize| Ok((groups[i].clone(), self.read_group(w, &groups[i], requests)?));
-        let read = |i: usize| read_with(i, REMOTE_AT_ONCE);
-        let parts = if decoding_at_once(decoded_bytes(&self.array)) < crate::par::threads() {
-            (0..groups.len()).map(read).collect::<Result<Vec<_>>>()?
-        } else if read_plan(&self.array, groups.len(), REMOTE_AT_ONCE).2 {
-            crate::par::map_waiting(groups.len(), at_once, |i| read_with(i, (REMOTE_AT_ONCE / at_once).max(1)))
-                .into_iter()
-                .collect::<Result<Vec<_>>>()?
+        // From a remote store, the groups share the read's requests in flight ([`split`]); else in
+        // parallel unless their chunks are decoded a few at a time ([`decoding_at_once`]).
+        let read_with = |i: usize, requests: usize| Ok((groups[i].clone(), self.read_group(w, &groups[i], requests, allow_big)?));
+        let parts = if waits(&self.array) {
+            let (at_once, each) = split(requests, groups.len());
+            crate::par::map_waiting(groups.len(), at_once, |i| read_with(i, each))?
+        } else if decoding_at_once(decoded_bytes(&self.array)) < crate::par::threads() {
+            (0..groups.len()).map(|i| read_with(i, requests)).collect::<Result<Vec<_>>>()?
         } else {
-            crate::par::map_range(groups.len(), read).into_iter().collect::<Result<Vec<_>>>()?
+            crate::par::map_range(groups.len(), |i| read_with(i, requests)).into_iter().collect::<Result<Vec<_>>>()?
         };
         let n = w.width * w.height;
         let find =
@@ -1705,8 +1761,9 @@ impl Level {
     }
 
     /// Reads a window of some bands, those between the first and the last (in band order) read
-    /// together.
-    fn read_group(&self, w: crate::Window, bands: &[usize], requests: usize) -> Result<RasterData> {
+    /// together, with at most `requests` in flight from a remote store and chunks past GDAL's size
+    /// rule allowed or not as `allow_big` says.
+    fn read_group(&self, w: crate::Window, bands: &[usize], requests: usize, allow_big: bool) -> Result<RasterData> {
         let a = &self.array;
         let nd = a.shape.len();
         let (_, rows) = self.size();
@@ -1724,7 +1781,7 @@ impl Level {
             start[d] = lo;
             shape[d] = hi - lo + 1;
         }
-        let bytes = read_region(a, &start, &shape, requests)?;
+        let bytes = read_region_with(a, &start, &shape, requests, allow_big)?;
         // Rearranged band-major, north-up, from the region's little-endian elements.
         let size = a.data_type.size_bytes();
         let strides: Vec<usize> = (0..nd).map(|d| shape[d + 1..].iter().product()).collect();
@@ -3018,6 +3075,41 @@ mod tests {
         assert_eq!(at_once(16 << 20, 16, Some(16 << 20)), 16);
         assert_eq!(at_once((16 << 20) + 1, 16, Some(16 << 20)), 1);
         assert_eq!(at_once(gib, 16, None), 16);
+    }
+
+    /// A remote read's requests in flight share one memory budget: band groups read at once, the
+    /// chunks of each and the inner runs of each chunk never hold more than half the memory the
+    /// process can use between them, and an unknown memory is not taken as unlimited.
+    #[test]
+    fn remote_requests_share_one_memory_budget() {
+        let mib = 1u64 << 20;
+        // Unsharded chunks of 16 MiB hold 32 MiB a request: two fit in 128 MiB, which 32 band
+        // groups then share, two at once, one request each.
+        assert_eq!(requests_within(32 * mib, 0, Some(128 * mib)), 2);
+        assert_eq!(split(2, 32), (2, 1));
+        // The memory unknown: chunks of 16 MiB 32 at a time, of 256 MiB two, of 1 GiB one.
+        assert_eq!(requests_within(32 * mib, 0, None), REMOTE_AT_ONCE);
+        assert_eq!(requests_within(512 * mib, 0, None), 2);
+        assert_eq!(requests_within(2048 * mib, 0, None), 1);
+        // Memory to spare: the limit of 32; too little for one request: one, as GDAL reads.
+        assert_eq!(requests_within(mib, 0, Some(64 << 30)), REMOTE_AT_ONCE);
+        assert_eq!(requests_within(1 << 30, 0, Some(mib)), 1);
+        // The shard index cache is set aside: 64 MiB of the 128 left for requests of 16 MiB.
+        assert_eq!(requests_within(16 * mib, 64 * mib, Some(256 * mib)), 4);
+        // However a budget is shared, and nested (groups, their chunks, the chunks' runs), the
+        // requests in flight are at most the budget.
+        for requests in 1..=REMOTE_AT_ONCE {
+            for groups in 1..=40 {
+                let (g, each) = split(requests, groups);
+                assert!(g >= 1 && g <= groups && each >= 1);
+                for chunks in 1..=12 {
+                    let (c, inner) = split(each, chunks);
+                    assert!(c >= 1 && c <= chunks && inner >= 1);
+                    assert!(g * c * inner <= requests, "{requests} requests, {groups} groups, {chunks} chunks");
+                }
+            }
+        }
+        assert_eq!(split(0, 0), (1, 1));
     }
 
     /// The value of the element at `idx` (band, row, column, or row and column) of the arrays of

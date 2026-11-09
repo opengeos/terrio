@@ -2252,6 +2252,40 @@ mod tests {
         }
     }
 
+    /// The threads a remote Zarr read waits on (`par::map_waiting`) carry the read's asset policy:
+    /// consent granted at read time lets their requests go, and revoked, refuses them before any
+    /// is sent, as on the calling thread.
+    #[cfg(remote)]
+    #[test]
+    fn waiting_threads_use_read_time_consent() {
+        for (creator, reader, allowed) in [("NO", "YES", true), ("YES", "NO", false)] {
+            let (base, seen) = crate::http::test_server(vec![7; 16]);
+            let href = format!("{base}/chunk");
+            let (policy, fetcher) = crate::config::with_options(
+                &[("GDAL_HTTP_HEADERS", "X-Key: synthetic-key"), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", creator)],
+                || {
+                    let policy = AssetReadPolicy::for_asset(&format!("{base}/item.json"), &href).unwrap().unwrap();
+                    let _scope = policy.enter().unwrap();
+                    (policy.clone(), crate::http::ObjectFetcher::new())
+                },
+            );
+            crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", reader)], || {
+                let _scope = policy.enter().unwrap();
+                policy.observe_response(&href, "https://other.example/chunk");
+                let result = crate::par::map_waiting(4, 4, |_| {
+                    fetcher.get(&crate::http::Remote::Url(href.clone()), crate::http::ByteRange::Whole).map(Option::unwrap)
+                });
+                if allowed {
+                    assert_eq!(result.unwrap(), vec![vec![7; 16]; 4]);
+                    assert!(!seen.lock().unwrap().is_empty());
+                } else {
+                    assert!(matches!(result, Err(Error::InvalidArgument(_))), "{:?}", result.err());
+                    assert!(seen.lock().unwrap().is_empty());
+                }
+            });
+        }
+    }
+
     #[cfg(remote)]
     #[test]
     fn actual_client_headers_are_checked_after_the_preflight_snapshot() {
