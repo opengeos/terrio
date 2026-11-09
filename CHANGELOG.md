@@ -8,6 +8,11 @@
   dates, 5 bands, 10 x 10 km) through a link of 4 MB/s per connection took 11.0 to 11.6 s
   instead of 14.5 s, in 295 requests instead of 141 for the same 203.5 MiB.
   `TERRIO_HTTP_MULTIRANGE=SERIAL` fetches each range in one request, as before.
+- Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
+  read of the same open raster, instead of opening one per worker, which reads the image's whole
+  chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000
+  tiles went from 130 to 5.7 ms on 32 threads, with the block cache off. An open raster keeps up
+  to one decoder per thread, each holding its image's tables (16 bytes a chunk).
 - MBTiles archives are read in place (#693). Opening one reads its schema and metadata from the
   file, mapped into memory on native builds, and each tile is read when asked for, by a lookup in
   the index on `(zoom_level, tile_column, tile_row)` that MBTiles writers create (or, for the
