@@ -2200,6 +2200,7 @@ class DatasetWriter(DatasetReader):
 
         Raises:
             TypeError: If the driver, size, count or dtype is missing or invalid.
+            DriverCapabilityError: If the driver name has whitespace around it.
             ValueError: If the nodata value does not fit the data type.
             RasterBlockError: If tile sizes are not multiples of 16.
         """
@@ -2224,6 +2225,10 @@ class DatasetWriter(DatasetReader):
         if mode in ("w", "w+"):
             if not isinstance(driver, str):
                 raise TypeError("A driver name string is required.")
+            if driver != driver.strip():
+                # The name is compared with `GTiff` and `COG` as written, here and when the file
+                # is written, while the core writer would read it without the whitespace.
+                raise DriverCapabilityError(f"Writer does not exist for driver: {driver}")
             try:
                 width, height = int(width), int(height)
             except (TypeError, ValueError):
@@ -3332,6 +3337,11 @@ class MemPointerDataset(DatasetWriter):
 def get_writer_for_driver(driver: str) -> type[DatasetWriter]:
     """The writer class for a driver.
 
+    Names are compared as the driver allow-list compares them (`canonical_driver_name`): in any
+    case, and with the names of JPEG 2000 drivers, such as the `JP2OpenJPEG` that
+    `driver_from_extension` gives `.jp2` paths, as terrio's `JP2`. A name with whitespace around
+    it is refused, as the writer keeps the name it is given and compares it as written.
+
     Args:
         driver: The driver's short name.
 
@@ -3339,11 +3349,18 @@ def get_writer_for_driver(driver: str) -> type[DatasetWriter]:
         type: The writer class.
 
     Raises:
-        DriverCapabilityError: If terrio cannot write the format.
+        DriverCapabilityError: If terrio cannot write the format, or the name has whitespace
+            around it.
     """
-    names = {d["name"].upper(): d for d in _terrio.drivers() if d.get("kind") == "raster"}
-    d = names.get(driver.upper())
-    if driver.upper() != "COG" and (d is None or not d.get("write", True)):
+    name = _terrio.canonical_driver_name(driver)
+    writes = {
+        _terrio.canonical_driver_name(d["name"]): d.get("write", True)
+        for d in _terrio.drivers()
+        if d.get("kind") == "raster"
+    }
+    # `canonical_driver_name` ignores the whitespace around a name, which `DatasetWriter` refuses:
+    # it compares the name with `GTiff` and `COG` as written.
+    if driver != driver.strip() or (name != "COG" and not writes.get(name, False)):
         raise DriverCapabilityError(f"Writer does not exist for driver: {driver}")
     return DatasetWriter
 

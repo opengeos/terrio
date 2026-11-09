@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `terrio.rio` writes JPEG 2000 to a `.jp2` path opened for writing without a driver:
+  `driver_from_extension` names the driver `JP2OpenJPEG`, which `open(..., "w")`,
+  `shutil.copy` and `terrio.xarray`'s `to_raster` refused in 0.8.0 (`DriverCapabilityError`,
+  `DriverRegistrationError`). Their driver names are now read as the driver allow-list reads
+  them, so `JP2OpenJPEG`, `JPEG2000`, `JP2KAK`, `JP2ECW` and `JP2MrSID` write terrio's JP2, as
+  `MemoryFile` already did with `JP2OpenJPEG`; the file reads back with `driver == "JP2"`.
+  `terrio.rio`'s writers still refuse a name with whitespace around it. The other writers (`-f`
+  on the command line, `Raster.write(driver=...)`) read names the same way, without the
+  whitespace around them: `JP2MrSID`, the one of these names they refused, now selects JP2.
 - A polar stereographic CRS on an ellipsoid projects the pole it is centred on to its false
   origin, and refuses the opposite pole. In 0.8.0 its own pole failed to project, and the opposite
   pole, which no coordinates represent, came out about 10²³ m away: EPSG:3413, 3031, 32661 and the
