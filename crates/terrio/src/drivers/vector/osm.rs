@@ -582,7 +582,7 @@ fn parse_any_order(bytes: Vec<u8>) -> Result<Vec<Layer>> {
     let (spans, _) = blob_spans(&mut std::io::Cursor::new(&bytes))?;
     let mut b = Builder::new();
     for span in spans {
-        decode_block(&bytes[span.start as usize..span.end as usize], &mut |obj| {
+        pbf::decode(&bytes[span.start as usize..span.end as usize], &mut |obj| {
             match obj {
                 OsmObj::Node(n) => {
                     let (point, stored) = node_coords(n.decimicro_lon, n.decimicro_lat);
@@ -813,7 +813,7 @@ impl<T: std::io::Read + std::io::Seek> PbfInput for T {}
 /// the blob headers (and the file header) are read.
 fn blob_spans(r: &mut dyn PbfInput) -> Result<(Vec<std::ops::Range<u64>>, bool)> {
     use std::io::{Read, SeekFrom};
-    let bad = || Error::InvalidData("OSM PBF: bad blob".into());
+    let bad = pbf::bad;
     let len = r.seek(SeekFrom::End(0))?;
     r.seek(SeekFrom::Start(0))?;
     let mut r = std::io::BufReader::with_capacity(1 << 16, r);
@@ -867,17 +867,6 @@ fn read_spans(r: &mut dyn PbfInput, spans: &[std::ops::Range<u64>]) -> Result<Ve
     r.seek(std::io::SeekFrom::Start(first.start))?;
     r.read_exact(&mut buf)?;
     Ok(buf)
-}
-
-/// Whether a header blob lists the `Sort.Type_then_ID` feature: nodes, then ways, then
-/// relations, each by increasing id (as osmium, Geofabrik and the planet files write them).
-#[cfg(test)]
-fn header_says_sorted(blob: &[u8]) -> Option<bool> {
-    pbf::header_sorted(blob).ok()
-}
-
-fn decode_block(span: &[u8], emit: &mut dyn FnMut(OsmObj) -> Result<()>) -> Result<()> {
-    pbf::decode(span, emit)
 }
 
 /// GDAL's coordinates of a node from its decimicro degrees: nanodegrees times 1e-9 for points,
@@ -1068,7 +1057,7 @@ struct Block {
 fn read_block(span: &[u8], points: bool, schema: &wbvector::Schema) -> Result<Block> {
     let mut b =
         Block { nodes: Vec::new(), points: Vec::new(), ways: Vec::new(), has_nodes: false, has_relations: false, out_of_order: false };
-    decode_block(span, &mut |obj| {
+    pbf::decode(span, &mut |obj| {
         match obj {
             OsmObj::Node(nd) => {
                 b.out_of_order |= !b.ways.is_empty() || b.has_relations;
@@ -1367,7 +1356,7 @@ pub(crate) fn read_sorted_pbf(
         while last > 0 {
             let mut rels = Vec::new();
             let mut only_relations = true;
-            decode_block(&read_spans(input, &spans[last - 1..last])?, &mut |obj| {
+            pbf::decode(&read_spans(input, &spans[last - 1..last])?, &mut |obj| {
                 match obj {
                     OsmObj::Relation(r) => rels.push(r),
                     _ => only_relations = false,
@@ -1558,10 +1547,10 @@ mod tests {
     #[test]
     fn sorted_feature_is_a_complete_header_field() {
         let header = Msg::default().bytes(5, b"prefix-Sort.Type_then_ID-suffix");
-        assert_eq!(header_says_sorted(&Msg::default().bytes(1, &header.0).0), Some(false));
+        assert!(!pbf::header_sorted(&Msg::default().bytes(1, &header.0).0).unwrap());
         let header = Msg::default().bytes(5, b"Sort.Type_then_ID");
-        assert_eq!(header_says_sorted(&Msg::default().bytes(1, &header.0).0), Some(true));
-        assert_eq!(header_says_sorted(&Msg::default().bytes(4, b"unsupported").0), None);
+        assert!(pbf::header_sorted(&Msg::default().bytes(1, &header.0).0).unwrap());
+        assert!(pbf::header_sorted(&Msg::default().bytes(4, b"unsupported").0).is_err());
     }
 
     #[test]
@@ -1686,7 +1675,7 @@ mod tests {
 
     fn decoded(bytes: &[u8]) -> Result<Vec<OsmObj>> {
         let mut out = Vec::new();
-        decode_block(bytes, &mut |o| {
+        pbf::decode(bytes, &mut |o| {
             out.push(o);
             Ok(())
         })?;
@@ -1820,6 +1809,33 @@ mod tests {
             })
             .unwrap();
         assert!(pbf::payload(&Msg::default().bytes(3, zlib).0).is_err());
+    }
+
+    #[test]
+    fn inflation_capacity_stays_within_the_blob_limit() {
+        let blob = compressed(&vec![0; pbf::MAX_BLOB]);
+        let zlib = pb_fields(&blob)
+            .unwrap()
+            .find_map(|(n, v)| match (n, v) {
+                (3, Pb::Bytes(b)) => Some(b),
+                _ => None,
+            })
+            .unwrap();
+        for blob in [&blob, &Msg::default().bytes(3, zlib).0] {
+            let bytes = pbf::payload(blob).unwrap().unwrap();
+            let std::borrow::Cow::Owned(bytes) = bytes else { panic!() };
+            assert_eq!(bytes.len(), pbf::MAX_BLOB);
+            assert!(bytes.capacity() <= pbf::MAX_BLOB);
+        }
+    }
+
+    #[test]
+    fn malformed_blob_errors_are_consistent() {
+        let file = fileblock("OSMData", &[]);
+        let mut truncated = &file[..file.len() - 1];
+        let framing = blob_spans(&mut std::io::Cursor::new(&mut truncated)).unwrap_err();
+        let payload = decoded(&file).err().unwrap();
+        assert_eq!(framing.to_string(), payload.to_string());
     }
 
     #[test]

@@ -29,12 +29,12 @@ pub(super) enum Object {
     Relation(Relation),
 }
 
-fn bad() -> Error {
+pub(super) fn bad() -> Error {
     Error::InvalidData("OSM PBF: malformed or truncated block".into())
 }
 
-/// Raw and zlib were the only encodings supported by the previous reader too.
-/// Never trust raw_size to allocate; stop inflation at the specification's limit.
+/// Raw and zlib payloads, or None for an empty informational header.
+/// Treat raw_size only as a bounded capacity hint; verify the actual output size.
 pub(super) fn payload(blob: &[u8]) -> Result<Option<std::borrow::Cow<'_, [u8]>>> {
     use std::io::Read;
     let mut data = None;
@@ -60,8 +60,25 @@ pub(super) fn payload(blob: &[u8]) -> Result<Option<std::borrow::Cow<'_, [u8]>>>
     let decoded = if encoding == 1 {
         std::borrow::Cow::Borrowed(bytes)
     } else {
-        let mut out = Vec::new();
-        flate2::read::ZlibDecoder::new(bytes).take((MAX_BLOB + 1) as u64).read_to_end(&mut out)?;
+        let mut out = Vec::with_capacity(size.unwrap_or(0).min(MAX_BLOB));
+        let mut decoder = flate2::read::ZlibDecoder::new(bytes);
+        let mut buffer = [0u8; 65536];
+        while out.len() < MAX_BLOB {
+            let available = buffer.len().min(MAX_BLOB - out.len());
+            let n = decoder.read(&mut buffer[..available])?;
+            if n == 0 {
+                break;
+            }
+            if out.len() + n > out.capacity() {
+                let capacity = out.capacity().max(buffer.len()).saturating_mul(2).min(MAX_BLOB);
+                out.reserve_exact(capacity - out.len());
+            }
+            out.extend_from_slice(&buffer[..n]);
+        }
+        // Probe beyond the limit on the stack, without doubling the output buffer.
+        if out.len() == MAX_BLOB && decoder.read(&mut [0u8; 1])? != 0 {
+            return Err(bad());
+        }
         std::borrow::Cow::Owned(out)
     };
     if decoded.len() > MAX_BLOB || size.is_some_and(|n| n != decoded.len()) {
@@ -83,8 +100,8 @@ pub(super) fn header_sorted(blob: &[u8]) -> Result<bool> {
             _ => {}
         }
     }
-    // Required/optional features were not used to reject files before. In particular,
-    // HistoricalInformation was accepted, with visibility and other metadata ignored.
+    // Required/optional features do not gate acceptance. HistoricalInformation is
+    // accepted, with visibility and other metadata ignored.
     Ok(sorted)
 }
 
@@ -172,8 +189,7 @@ impl Context {
             return Err(bad());
         }
         let mut tags = Tags::new();
-        // The previous simple-object reader kept the first duplicate key; dense
-        // nodes inserted sequentially and kept the last.
+        // Simple objects keep the first duplicate key for stable tag output.
         for (k, v) in keys.into_iter().zip(values) {
             tags.entry(self.string(k)?).or_insert(self.string(v)?);
         }
@@ -181,7 +197,7 @@ impl Context {
     }
     fn coordinate(&self, v: i64, offset: i64) -> Result<i32> {
         let nano = v.checked_mul(self.granularity).and_then(|v| v.checked_add(offset)).ok_or_else(bad)?;
-        // Preserve the old reader's integer division to decimicrodegrees.
+        // Integer division to decimicrodegrees truncates toward zero.
         i32::try_from(nano / 100).map_err(|_| bad())
     }
     fn node(&self, id: i64, lat: i64, lon: i64, tags: Tags) -> Result<Object> {
@@ -210,6 +226,7 @@ impl Context {
                         break;
                     }
                     let value = tags.next().ok_or_else(bad)?;
+                    // Dense nodes keep the last duplicate key for stable tag output.
                     node_tags.insert(self.string(key)?, self.string(value)?);
                 }
             }
@@ -276,8 +293,8 @@ fn primitives(bytes: &[u8], emit: &mut dyn FnMut(Object) -> Result<()>) -> Resul
     }
     for (field, value) in pb_fields(bytes).ok_or_else(bad)? {
         if let (2, Pb::Bytes(group)) = (field, value) {
-            // The previous reader visited simple nodes, dense nodes, ways, then
-            // relations within each group, irrespective of protobuf field order.
+            // Emit simple nodes, dense nodes, ways, then relations within each
+            // group, whatever the field order, to keep feature order stable.
             for kind in [1, 2, 3, 4] {
                 if kind == 2 {
                     let mut dense: Option<std::borrow::Cow<'_, [u8]>> = None;
