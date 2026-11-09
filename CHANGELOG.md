@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Warps by `average`, `rms`, `mode`, `min`, `max`, `med`, `q1` and `q3` take the source inside each
+  output pixel at a source's edges too, as `sum` does since #551 (#703). An output pixel with a
+  corner more than a margin outside its chunk's source window was left empty, so the pixels along a
+  source's edges were written or not depending on how far the output grid extended, and an output
+  pixel larger than the whole source was always empty. A written edge pixel weighed the source
+  pixels at the window's edge by the part of the output pixel beyond the edge, an output pixel
+  wholly outside the source next to its first column or row took that column's or row's values, and
+  a pixel whose corners could not be transformed was filled from the source pixels at its own column
+  and row numbers (over an orthographic source, the pixels beyond its horizon). An output pixel is
+  now left empty only when a corner cannot be transformed or its footprint does not meet the source,
+  and each source pixel counts for its part inside both the output pixel and the window. 200 x 200
+  source pixels of 10 m whose edges cut 100 m output pixels in half give the same 441 pixels on
+  grids of 40, 100 and 1000 pixels (361 on the grid of 100 before), and an edge pixel's `average` of
+  source columns 0 to 4 is 2.0 (1.0 before).
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000
