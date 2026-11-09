@@ -14,6 +14,37 @@
   nodata, and read RPC sidecars. Under the option, its `files` no longer lists the `.aux.xml`,
   `.ovr`, `.msk`, world and RPC files, which are not read, nor a `.hdr` other than the header of an
   ENVI or EHdr raster.
+- A selection of GeoParquet fields decodes only their columns and the geometry, and fetches only
+  their column chunks from a URL: `open_stream(columns=...)`, `terrio convert --select` (without
+  `--where` or `--sql`, which may name other fields), and JavaScript's `openUrl(...).read()`,
+  which takes `columns` too.
+  Breaking (Rust): `terrio::vector::read_geoparquet_sparse` takes a fifth argument, `columns`;
+  pass `None` to read every field, as before.
+- `terrio.pyogrio` reads GeoParquet files: `read_arrow` and `open_arrow` hand out their Arrow
+  record batches as pyogrio does through GDAL's Arrow stream, with GDAL 3.13.3's `meta` (the
+  fields as OGR has them, structs flattened, the declared geometry type, `EPSG:4326` for a file
+  without a CRS), and `read_dataframe(..., use_arrow=True)` builds its GeoDataFrame from them, as
+  `geopandas.read_file(path, engine="pyogrio", use_arrow=True)` asks. Unlike GDAL, whose
+  `skip_features` skips the file's rows before `bbox` filters them, the range is taken from the
+  rows the rectangle keeps, as `read_dataframe` takes it. Arrow reads of other formats still
+  raise `NotImplementedError`.
+- GeoParquet reads decode row groups in parallel, a window of as many as there are threads at a
+  time, and read remote files in place: `open_vector` and `open_stream` on a URL fetch the footer,
+  then only the column chunks of the row groups the filter keeps, by range requests, instead of
+  downloading the whole file.
+- `open_stream` takes `columns=[...]`, the fields to keep (a struct column by its name keeps its
+  `name.member` fields), and the Arrow export of a GeoParquet stream (`__arrow_c_stream__`,
+  `terrio::arrow::open_geoparquet` in Rust) hands out the record batches the file holds, without
+  converting them to features, as GDAL's Arrow stream does: the columns keep their Arrow types
+  (structs and lists included, where the export flattened them into fields and JSON text before),
+  the geometry columns are tagged as GeoArrow extension types with their CRS (OGC:CRS84 when the
+  file names none, as geopandas reads it, where GDAL names it EPSG:4326), and the bounding-box
+  covering column is left out unless asked for. `bbox` skips row groups by their statistics, then
+  rows by the covering column, read alone first (or by the geometries' bounding boxes without
+  one). On 12 cores, the 664,000 polygons of fiboa's es-nc file (Brotli, 27 row groups) read
+  into a pyarrow table in 0.79 s and 761 MB, against 1.56 s and 966 MB through GDAL 3.13's Arrow
+  stream (pyogrio) and 2.33 s and 2.0 GB before; a small rectangle of a 533 MB Overture buildings
+  file on S3 fetches 4.9 MB in 5 requests, where the whole file was downloaded.
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000
