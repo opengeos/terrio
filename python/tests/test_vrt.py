@@ -145,3 +145,80 @@ def test_vrt_preserves_filename_whitespace_in_native_and_uploaded_sources(tmp_pa
         )
         for sources in source_maps:
             np.testing.assert_array_equal(terrio.open_vrt(xml, sources).read(1), [[expected]])
+
+
+@pytest.mark.parametrize(
+    ("values", "width", "src_x", "dst_x", "expected"),
+    [
+        # A quarter pixel into [10, 20, 30]: the source a quarter pixel on.
+        (
+            [10, 20, 30],
+            2,
+            0.25,
+            0,
+            {
+                "nearest": [10, 20],
+                "bilinear": [12.5, 22.5],
+                "average": [12.5, 22.5],
+                "sum": [12.5, 22.5],
+            },
+        ),
+        # [10, 20] a quarter pixel east: nothing of the 30 outside the SrcRect.
+        (
+            [10, 20, 30],
+            3,
+            0,
+            0.25,
+            {
+                "nearest": [10, 20, -1],
+                "bilinear": [10, 17.5, -1],
+                "average": [10, 17.5, 20],
+                "sum": [7.5, 17.5, 5],
+            },
+        ),
+        # [20, 30] half a pixel east: nothing of the 10 and the 40 outside the SrcRect.
+        (
+            [10, 20, 30, 40],
+            3,
+            1,
+            0.5,
+            {
+                "nearest": [20, 30, -1],
+                "bilinear": [20, 25, -1],
+                "average": [20, 25, 30],
+                "sum": [10, 25, 15],
+            },
+        ),
+    ],
+)
+def test_vrt_source_reads_its_src_rect_into_its_dst_rect(
+    tmp_path, values, width, src_x, dst_x, expected
+):
+    """A source with fractional rectangles reads only its SrcRect, placed only inside its DstRect.
+
+    -1, the band's nodata, marks the pixels the source does not write: those whose centres, the
+    points `nearest` and `bilinear` sample, are outside the DstRect.
+    """
+    path = tmp_path / "source.tif"
+    source = np.array([values], dtype="float32")
+    terrio.Raster.from_array(source, transform=(0, 1, 0, 1, 0, -1), crs="EPSG:3857").write(
+        str(path)
+    )
+    for method, row in expected.items():
+        xml = (
+            f'<VRTDataset rasterXSize="{width}" rasterYSize="1">'
+            '<VRTRasterBand dataType="Float32" band="1"><NoDataValue>-1</NoDataValue>'
+            f'<SimpleSource resampling="{method}">'
+            "<SourceFilename>{name}</SourceFilename><SourceBand>1</SourceBand>"
+            f'<SrcRect xOff="{src_x}" yOff="0" xSize="2" ySize="1"/>'
+            f'<DstRect xOff="{dst_x}" yOff="0" xSize="2" ySize="1"/>'
+            "</SimpleSource></VRTRasterBand></VRTDataset>"
+        )
+        uploaded = terrio.open_vrt(xml.format(name="upload.tif"), {"upload.tif": path.read_bytes()})
+        np.testing.assert_array_equal(uploaded.read(1), [row], err_msg=method)
+        by_pixel = [uploaded.read(1, window=(c, 0, 1, 1))[0, 0] for c in range(width)]
+        np.testing.assert_array_equal(by_pixel, row, err_msg=method)
+        vrt = tmp_path / f"{method}.vrt"
+        vrt.write_text(xml.format(name=path))
+        with trio.open(vrt) as ds:
+            np.testing.assert_array_equal(ds.read(1), [row], err_msg=method)

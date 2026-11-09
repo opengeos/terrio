@@ -94,6 +94,10 @@ thread) and 1.7 GB, and the smallest overview 0.05 s (GDAL: 0.09 s, 1.1 s and 0.
 window and overview is identical to GDAL's. GeoTIFFs compressed with JPEG XL are read tile by tile
 the same way (JPEG XL files themselves are not a format terrio reads).
 
+`JP2OpenJPEG` (the driver `terrio.rio` names for `.jp2` paths), `JPEG2000`, `JP2KAK`, `JP2ECW` and
+`JP2MrSID` name the JP2 driver too, in any case: to write (`-f`, `driver=`), to read with a driver
+named, and in the allowed drivers. A file written with any of them reads back as `JP2`.
+
 GRIB files (editions 1 and 2) are read as GDAL's GRIB driver reads them, also when found by
 their content rather than their extension: each field of each GRIB2 message, and each GRIB1
 message, is a Float64 band, in file order; the geotransform and CRS are GDAL's for regular,
@@ -763,7 +767,10 @@ ESRI JSON out, and a query URL's answer is judged the same way. `terrio identify
 first 16 KiB, so it can report ESRIJSON for a `.json` GeoJSON file with such signs and a root `type`
 past that point, which still opens as GeoJSON. A `.geojson` file stays GeoJSON. A URL is read as a
 query when it has a parameter `f=json`, `f=pjson` or `resultRecordCount=` and answers ESRI JSON;
-`ESRIJSON:` before a URL or a path names the driver. A
+`ESRIJSON:` before a URL or a path names the driver. Under an allow-list that leaves out the
+ESRIJSON, ESRIPBF, GeoJSON and GML drivers, which read a query's answer (and GDAL, with the `gdal`
+feature), `open_vector` and `list_layers` refuse such a URL before requesting it, and `open` and
+`info` do too when the list leaves out every raster driver. A
 document without `features`, such as a layer's description (a URL without its `/query`), is an
 error.
 

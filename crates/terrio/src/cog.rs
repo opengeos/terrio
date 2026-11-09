@@ -581,6 +581,18 @@ impl LazyRaster {
         }
     }
 
+    /// Attaches the `.ovr` beside a local GeoTIFF that has no overviews of its own, even under
+    /// `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, which keeps an ordinary open from reading it:
+    /// for an external refresh over an extent, which keeps that `.ovr`'s pixels outside it
+    /// (`ops::overview`).
+    pub(crate) fn attach_managed_ovr(&mut self, path: &str) {
+        if let (Inner::Tiff(t), Location::Local(p)) = (&mut self.inner, Location::parse(path)) {
+            let mut ovr = p.into_os_string();
+            ovr.push(".ovr");
+            t.attach_ovr(std::path::Path::new(&ovr));
+        }
+    }
+
     fn open_without_sidecars(path: &str) -> Result<Self> {
         if let Some(result) = crate::catalog::open_lazy(path) {
             return result;
@@ -671,7 +683,11 @@ impl LazyRaster {
         }
         t.tags.warn_unreadable(path);
         t.file = file;
-        if let Location::Local(p) = &loc {
+        // `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` asks that nothing next to the file be read:
+        // no `.ovr` either (see `LazyRaster::attach_managed_ovr`).
+        if let Location::Local(p) = &loc
+            && !crate::config::sidecars_disabled()
+        {
             let mut ovr = p.as_os_str().to_owned();
             ovr.push(".ovr");
             t.attach_ovr(std::path::Path::new(&ovr));

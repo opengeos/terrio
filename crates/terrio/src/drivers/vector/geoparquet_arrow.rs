@@ -209,24 +209,20 @@ impl GeoParquetBatches {
 
         // The output columns, in the file's order: the geometry columns, and the attributes asked
         // for (by default all but the covering column).
-        // A name matches a column without case, and `name.member` names the struct column `name`,
-        // as the feature reader takes them (`FeatureReader::select_fields`).
-        let names = |field: &str, c: &str| {
-            field.eq_ignore_ascii_case(c)
-                || c.get(..field.len()).is_some_and(|head| head.eq_ignore_ascii_case(field)) && c[field.len()..].starts_with('.')
-        };
+        // A name matches a column without case, and `name.member` names the struct column `name`
+        // when it has that member (see `names_field`).
         if let Some(columns) = &options.columns
-            && let Some(missing) = columns.iter().find(|c| !file_schema.fields().iter().any(|f| names(f.name(), c)))
+            && let Some(missing) = columns.iter().find(|c| !file_schema.fields().iter().any(|f| names_field(f, c)))
         {
             return Err(Error::InvalidArgument(format!("no column named {missing:?} in the file")));
         }
         let wanted: Vec<usize> = (0..file_schema.fields().len())
             .filter(|&i| {
-                let name = file_schema.field(i).name();
-                geo_columns.contains_key(name)
+                let field = file_schema.field(i);
+                geo_columns.contains_key(field.name())
                     || match &options.columns {
-                        Some(columns) => columns.iter().any(|c| names(name, c)),
-                        None => covering.as_ref().is_none_or(|(c, _)| c != name),
+                        Some(columns) => columns.iter().any(|c| names_field(field, c)),
+                        None => covering.as_ref().is_none_or(|(c, _)| c != field.name()),
                     }
             })
             .collect();
@@ -425,6 +421,24 @@ impl Filter {
             Filter::None => Ok(BooleanArray::from(vec![true; batch.num_rows()])),
         }
     }
+}
+
+/// Whether the column `c` names the top-level field `field` of a file: by its name, or as a member
+/// (`name.member`, at any depth) of a struct field that has that member.
+fn names_field(field: &Field, c: &str) -> bool {
+    let name = field.name();
+    c.eq_ignore_ascii_case(name)
+        || (crate::stream::is_or_under(c, name) && c.get(name.len() + 1..).is_some_and(|member| has_member(field.data_type(), member)))
+}
+
+/// Whether the struct type `data_type` has the member `path` (`a.b` for a member of a member),
+/// matched without case.
+fn has_member(data_type: &DataType, path: &str) -> bool {
+    let DataType::Struct(children) = data_type else { return false };
+    children.iter().any(|child| match path.split_once('.') {
+        Some((head, rest)) => child.name().eq_ignore_ascii_case(head) && has_member(child.data_type(), rest),
+        None => child.name().eq_ignore_ascii_case(path),
+    })
 }
 
 /// The values of a covering member, as `f64`.
@@ -666,6 +680,43 @@ mod tests {
         assert!(w.next().unwrap().is_some());
         assert!(w.next().is_err());
         assert!(w.next().is_err(), "the third row group is not read after the second failed");
+    }
+
+    #[test]
+    fn a_window_holds_row_groups_within_the_decoded_bytes_limit() {
+        use super::{DECODED_WINDOW_BYTES, GroupWindows};
+        use arrow_array::{ArrayRef, Int32Array, RecordBatch};
+        use std::sync::{Arc, Mutex};
+        // the row groups the first window decodes, for row groups of these decoded sizes
+        let first_window = |decoded: &[u64]| -> Vec<usize> {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let log = calls.clone();
+            let batch = RecordBatch::try_from_iter([("g", Arc::new(Int32Array::from(vec![0i32])) as ArrayRef)]).unwrap();
+            let mut w = GroupWindows {
+                groups: (0..decoded.len()).map(|g| (g, None)).collect(),
+                ready: Default::default(),
+                decode: Box::new(move |g, _| {
+                    log.lock().unwrap().push(g);
+                    Ok(vec![batch.clone()])
+                }),
+                ranges: vec![Vec::new(); decoded.len()],
+                decoded: decoded.to_vec(),
+                prefetch: None,
+                context: crate::stac::AssetReadContext::capture(None),
+                window: 8,
+                failed: false,
+            };
+            assert!(w.next().unwrap().is_some());
+            let mut groups = calls.lock().unwrap().clone();
+            groups.sort_unstable();
+            groups
+        };
+        let half = DECODED_WINDOW_BYTES / 2;
+        // two row groups of half the limit fill it exactly, so a third one does not fit
+        assert_eq!(first_window(&[half, half, 1]), [0, 1]);
+        assert_eq!(first_window(&[half + 1, half, 1]), [0]);
+        // a first row group over the limit is read alone
+        assert_eq!(first_window(&[DECODED_WINDOW_BYTES + 1, 1]), [0]);
     }
 
     #[test]

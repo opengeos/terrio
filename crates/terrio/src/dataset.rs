@@ -728,6 +728,12 @@ fn open_query(url: &str, named: Option<VectorDriver>, options: &VectorOpenOption
     if named.is_none() && !featureservice::is_query_url(url) && !wfs {
         return None;
     }
+    // Without a driver that reads the answer here, it could only be refused: the URL is left to the
+    // other readers without a request (an `ESRIJSON:` or `ESRIPBF:` name has been judged by its
+    // driver before).
+    if named.is_none() && !crate::formats::query_answer_allowed() {
+        return None;
+    }
     let mut recognized = named;
     let answer = crate::http::with_reader_status(&crate::http::Remote::Url(url.to_string()), wfs, |status, reader| {
         let cap = crate::http::json_max_size();
@@ -2579,5 +2585,44 @@ mod content_allow_list_tests {
         });
         let expected = cases.map(|(name, _, layer)| (name, [Ok(layer.to_string()), Ok(layer.to_string())]));
         assert_eq!(read, expected, "the layer read from each archive: [by the fallback, by the KMZ driver]");
+    }
+}
+
+#[cfg(all(test, remote, not(target_family = "wasm")))]
+mod query_allow_list_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Without an allowed driver that reads a feature-service query's answer (here under the
+    /// thread's `TERRIO_ALLOWED_DRIVERS`), `open_query` does not request the URL and leaves it to the
+    /// other readers, also when it is reached without `formats::check_allowed` before it.
+    #[test]
+    fn open_query_leaves_a_query_no_allowed_driver_reads_unrequested() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/FeatureServer/0/query?f=json", listener.local_addr().unwrap());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                counter.fetch_add(1, Ordering::SeqCst);
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap_or(0) > 0 && !line.trim().is_empty() {
+                    line.clear();
+                }
+                let page = r#"{"geometryType":"esriGeometryPoint","fields":[],"features":[]}"#;
+                let answer = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}", page.len());
+                let _ = stream.write_all(answer.as_bytes());
+            }
+        });
+        crate::config::push_scope(HashMap::from([("TERRIO_ALLOWED_DRIVERS".to_string(), Some("GTiff".to_string()))]));
+        let result = open_remote_vector(&url, &VectorOpenOptions::default());
+        crate::config::pop_scope();
+        assert!(result.is_none(), "{:?}", result.map(|r| r.map(|_| ())));
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
     }
 }

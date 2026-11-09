@@ -1255,7 +1255,11 @@ impl Proj for Stere {
                     coslam = -coslam;
                     sinphi = -sinphi;
                 }
-                if (phi - HALFPI).abs() < 1e-15 {
+                // φ is the latitude with its sign reversed for the south pole case, so φ = 90° is
+                // the pole the projection is centred on in both cases, where t is 0: the origin.
+                // t grows without bound towards φ = -90°, the opposite pole, which no coordinates
+                // represent. The spherical case refuses within the same 1e-8 rad.
+                if (phi + HALFPI).abs() < 1e-8 {
                     return None;
                 }
                 let x = self.akm1 * tsfn(phi, sinphi, self.e);
