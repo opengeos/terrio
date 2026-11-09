@@ -249,6 +249,34 @@ def force_python_path(src):
     src._read_level = lambda bands, window, level: own(bands, window, level)
 
 
+@pytest.mark.parametrize("on_python_path", [False, True], ids=["rust", "python"])
+def test_an_alpha_the_working_type_rounds_to_zero_leaves_its_pixels_in(tmp_path, on_python_path):
+    # A float32 source whose alpha band is 0 on its left third and 0.1 elsewhere, warped in uint8,
+    # which rounds 0.1 to 0: the alpha leaves out the left third alone, as it is read before the
+    # window is converted. The data band comes out as from the same source with an alpha of 1.
+    rows, cols = 29, 37
+    data = (np.arange(rows * cols) % 200 + 20).astype("float32").reshape(rows, cols)
+    left = np.arange(cols)[None, :] < cols // 3
+    got = {}
+    for alpha in (0.1, 1.0):
+        band = np.where(left, 0.0, alpha).repeat(rows, 0).astype("float32")
+        path = write(tmp_path / f"{alpha}.tif", np.stack([data, band]))
+        with terrio.rio.open(path) as src:
+            if on_python_path:
+                force_python_path(src)
+            for method in (Resampling.nearest, Resampling.bilinear, Resampling.average):
+                kw = {"dtype": "uint8", "src_alpha": 2, "resampling": method}
+                with WarpedVRT(src, crs="EPSG:3857", **kw) as vrt:
+                    flags = []
+                    vrt._window_hook = lambda level, window, rust, seen=flags: seen.append(rust)
+                    got[alpha, method] = vrt.read(1)
+                assert flags == [not on_python_path], flags
+    for method in (Resampling.nearest, Resampling.bilinear, Resampling.average):
+        fraction = got[0.1, method]
+        np.testing.assert_array_equal(fraction, got[1.0, method], err_msg=str(method))
+        assert fraction.any() and not fraction.all(), method
+
+
 @pytest.mark.parametrize("src_alpha", [-1, -2, 3, 4])
 def test_a_src_alpha_outside_the_sources_bands_is_refused_on_both_paths(tmp_path, src_alpha):
     # `src_alpha` is one of the source's bands, 1 to its count: any other value is refused when
