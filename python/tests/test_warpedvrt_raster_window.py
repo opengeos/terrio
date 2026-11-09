@@ -10,6 +10,7 @@ import sys
 import textwrap
 import threading
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -56,6 +57,8 @@ DTYPES = [
 COMPLEX = (
     Path(__file__).resolve().parents[2] / "crates" / "terrio" / "tests" / "data" / "zstd_samples"
 )
+# In `numpy.exceptions` from NumPy 1.25, and at the top level before; terrio supports NumPy 1.21.
+COMPLEX_WARNING = getattr(np, "exceptions", np).ComplexWarning
 # 10 m pixels in UTM zone 33N, warped into Web Mercator.
 GT = (447090.0, 10.0, 0.0, 6022390.0, 0.0, -10.0)
 CRS = "EPSG:32633"
@@ -342,7 +345,6 @@ def test_a_read_level_replaced_on_the_class_reads_the_windows(tmp_path, monkeypa
     assert len(calls) == 1, calls
 
 
-@pytest.mark.filterwarnings("ignore::numpy.exceptions.ComplexWarning")
 @pytest.mark.parametrize("name", ["cint16_strips.tif", "cfloat32_tiles.tif"])
 def test_a_complex_source_is_warped_from_its_real_parts_as_before(tmp_path, name):
     # A complex raster, read in UTM (`src_crs`), warped into a real data type: its window comes
@@ -357,7 +359,9 @@ def test_a_complex_source_is_warped_from_its_real_parts_as_before(tmp_path, name
     with terrio.rio.open(COMPLEX / name) as src:
         real = src.read().real.astype("float32")
         gt = src.transform.to_gdal()
-        with WarpedVRT(src, **grid) as vrt:
+        with WarpedVRT(src, **grid) as vrt, warnings.catch_warnings():
+            # Converted into float32, the complex values keep their real parts, as meant here.
+            warnings.simplefilter("ignore", COMPLEX_WARNING)
             flags = []
             vrt._window_hook = lambda level, window, rust: flags.append(rust)
             got = vrt.read()
