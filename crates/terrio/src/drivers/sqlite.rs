@@ -178,7 +178,8 @@ pub(crate) fn compare_values(a: &Value, b: &Value, encoding: u32) -> std::cmp::O
     };
     match (a, b) {
         (Value::Int(p), Value::Int(q)) => p.cmp(q),
-        (Value::Real(p), Value::Real(q)) => p.total_cmp(q),
+        // -0.0 and 0.0 are equal, as in SQLite and in `compare_int_real`; NaN is stored as NULL.
+        (Value::Real(p), Value::Real(q)) => p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal),
         (Value::Int(p), Value::Real(q)) => compare_int_real(*p, *q),
         (Value::Real(p), Value::Int(q)) => compare_int_real(*q, *p).reverse(),
         (Value::Text(p), Value::Text(q)) => match encoding {
@@ -834,7 +835,6 @@ impl Db {
     }
 }
 
-/// The column definitions of a `CREATE TABLE` statement.
 /// Whether column `i` of a `CREATE TABLE` statement declares a collation other than BINARY,
 /// which orders its indexes otherwise than [`compare_values`] does.
 pub(crate) fn column_has_collation(sql: &str, i: usize) -> bool {
@@ -844,6 +844,7 @@ pub(crate) fn column_has_collation(sql: &str, i: usize) -> bool {
     })
 }
 
+/// The column definitions of a `CREATE TABLE` statement.
 fn column_defs(sql: &str) -> Vec<String> {
     let Some(open) = sql.find('(') else { return Vec::new() };
     let body = &sql[open + 1..sql.rfind(')').unwrap_or(sql.len())];
@@ -1418,6 +1419,8 @@ mod tests {
         assert_eq!(compare_values(&Value::Int(1), &Value::Real(1.5), 1), Less);
         assert_eq!(compare_values(&Value::Int(-2), &Value::Real(-1.5), 1), Less);
         assert_eq!(compare_values(&Value::Int(i64::MAX), &Value::Real(9.3e18), 1), Less);
+        assert_eq!(compare_values(&Value::Real(-0.0), &Value::Real(0.0), 1), Equal);
+        assert_eq!(compare_values(&Value::Int(0), &Value::Real(-0.0), 1), Equal);
         // U+0100 is after 'B' in UTF-8 and UTF-16BE, but before it in UTF-16LE.
         let (b, a) = (Value::Text("B".into()), Value::Text("\u{100}".into()));
         assert_eq!(compare_values(&b, &a, 1), Less);

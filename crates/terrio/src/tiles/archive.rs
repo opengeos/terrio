@@ -56,11 +56,14 @@ fn check_archive_driver(driver: &str, shown: &str, kinds: &[crate::formats::Kind
 impl TileArchive {
     /// Opens an archive: a local path, or a URL, `s3://`, `gs://` or `az://` object. PMTiles are
     /// read in place (only the header and root directory now); MBTiles are read in place too
-    /// (their schema and metadata now, each tile by an index lookup when it is asked for). On
-    /// native builds a local MBTiles file is mapped into memory: it must not be changed or
-    /// truncated until the archive is dropped, as with any SQLite reader that does not lock it. Under a
+    /// (their schema and metadata now, each tile by an index lookup when it is asked for). Under a
     /// process-wide allow-list, the archive's driver (by its name, or its content for other names)
     /// must be allowed for both kinds of dataset, whose tiles it may hold.
+    ///
+    /// On native builds a local MBTiles file is mapped into memory, as GeoPackages are. It must
+    /// not be changed or truncated until the archive is dropped: a tile read from a file
+    /// truncated by another process ends the process with `SIGBUS`. Replace such a file by
+    /// renaming a new one over it, which leaves the open file intact.
     pub fn open(path: &str) -> Result<Self> {
         Self::open_judged(path, Some(&EITHER_KIND))
     }
