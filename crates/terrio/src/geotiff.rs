@@ -1201,8 +1201,9 @@ pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek + Send>(
 
 /// Decodes chunks on several threads, each with its own decoder over the file, handing them to
 /// `place` on the calling thread: as many threads as the chunks, up to [`crate::par::threads`],
-/// within those free in the budget all reads share ([`DECODE_WORKERS`]). Returns how many of the first chunks were decoded: a
-/// thread that cannot open the file leaves its share to the caller.
+/// within those left free in the budget that all reads share ([`DECODE_WORKERS`]). Returns how
+/// many of the first chunks were decoded: a thread that cannot open the file leaves its share to
+/// the caller.
 #[cfg(not(target_family = "wasm"))]
 #[allow(clippy::too_many_arguments)]
 fn decode_in_threads<D: Read + Seek + Send>(

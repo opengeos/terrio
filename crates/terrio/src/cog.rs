@@ -3101,6 +3101,7 @@ mod tests {
     /// Window reads on several threads at once share one budget of decode workers: never more
     /// worker threads at a time than [`crate::geotiff::decode_worker_limit`] (the cores, or the
     /// thread count when higher), however many reads start them, with the values of a read alone.
+    #[cfg(not(target_family = "wasm"))]
     #[test]
     fn concurrent_window_reads_share_the_decode_workers() {
         // Off, so that every read decodes its chunks and needs the workers.
