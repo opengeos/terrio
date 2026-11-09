@@ -170,7 +170,7 @@ fn decimal_digits(value: f64) -> (Vec<u8>, i32) {
 
 /// SQLite 3.54's %!.17g rendering, including its round-trip shortening.
 /// The digit rounding/shortening follows sqlite3FpDecode (see NOTICE).
-pub(super) fn real_text(real: f64) -> String {
+pub(crate) fn real_text(real: f64) -> String {
     if real == 0.0 {
         return "0.0".into();
     }

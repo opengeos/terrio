@@ -10,6 +10,27 @@
   `MemoryFile` already did with `JP2OpenJPEG`; the file reads back with `driver == "JP2"`. The
   other writers (`-f` on the command line, `Raster.write(driver=...)`) read names the same way:
   `JP2MrSID`, the one of these names they refused, now selects JP2.
+- MBTiles archives are read in place (#693). Opening one reads its schema and metadata from the
+  file, mapped into memory on native builds, and each tile is read when asked for, by a lookup in
+  the index on `(zoom_level, tile_column, tile_row)` that MBTiles writers create (or, for the
+  `map` and `images` layout, in `map`'s index and `images`' `tile_id` index). An archive was read
+  whole and every tile copied again, so peak memory was several times the file's size. `terrio
+  info` of a 2 GB archive of 10,240 tiles took 10 s, read the whole 2,019 MB from disk and peaked
+  at 7.8 GB of memory; it now takes 0.17 s, reads 10.6 MB (with the kernel's read-ahead) and peaks
+  at 83 MB. A 600 x 600 window read takes 0.29 s, 27.3 MB and 98 MB instead of 4.6 s, 2,019 MB and
+  7.8 GB. An archive without such an index has the rowids of its tiles listed on opening, from
+  their key columns only, without reading tile bytes, unless those columns follow `tile_data` in
+  the table (as `tile_id` does in mbutil's unindexed `images`): the bytes before them, and a
+  corrupt tile among them, are then read on opening. An index whose order the lookup cannot follow
+  (a descending constraint, a column collation) is not used. Opening an MBTiles archive from
+  memory keeps the bytes but no longer copies the tiles. Listing a zoom level's tiles now lists
+  the rows of the `tiles` table, or of `map`, including a row whose `tile_data` is not a blob or
+  whose `tile_id` names no image (reading it gives no tile); a raster opened from the archive
+  takes its tile size from the first listed tile that has bytes. A NULL `tile_id` matches no
+  image, as in the `tiles` view's join. Of rows with the same key, the last is read, even if it
+  holds no tile; a row whose column is outside its zoom level's grid (`tile_column >=
+  2^zoom_level`) is passed over. A raster opened from an archive without `bounds` takes its extent
+  from the listed tiles, including rows without bytes.
 - A `WarpedVRT` over a dataset terrio opened for reading now reads and warps each source window
   in one call that releases the GIL, so reads on several Python threads, such as a server
   answering tile requests on threads, no longer wait for each other's warps as in 0.8.0. The

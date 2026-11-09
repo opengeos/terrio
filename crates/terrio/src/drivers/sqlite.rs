@@ -166,6 +166,88 @@ impl PageSet {
     }
 }
 
+/// Orders two values as SQLite's BINARY collation does in a database whose text is in
+/// `encoding` (1 for UTF-8, 2 and 3 for UTF-16LE and UTF-16BE): NULL, then numbers (an integer
+/// and a real compared exactly), text (by its encoded bytes) and blobs.
+pub(crate) fn compare_values(a: &Value, b: &Value, encoding: u32) -> std::cmp::Ordering {
+    let rank = |v: &Value| match v {
+        Value::Null => 0,
+        Value::Int(_) | Value::Real(_) => 1,
+        Value::Text(_) => 2,
+        Value::Blob(_) => 3,
+    };
+    match (a, b) {
+        (Value::Int(p), Value::Int(q)) => p.cmp(q),
+        // -0.0 and 0.0 are equal, as in SQLite and in `compare_int_real`; NaN is stored as NULL.
+        (Value::Real(p), Value::Real(q)) => p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Int(p), Value::Real(q)) => compare_int_real(*p, *q),
+        (Value::Real(p), Value::Int(q)) => compare_int_real(*q, *p).reverse(),
+        (Value::Text(p), Value::Text(q)) => match encoding {
+            2 => p.encode_utf16().flat_map(u16::to_le_bytes).cmp(q.encode_utf16().flat_map(u16::to_le_bytes)),
+            3 => p.encode_utf16().flat_map(u16::to_be_bytes).cmp(q.encode_utf16().flat_map(u16::to_be_bytes)),
+            _ => p.as_bytes().cmp(q.as_bytes()),
+        },
+        (Value::Blob(p), Value::Blob(q)) => p.cmp(q),
+        _ => rank(a).cmp(&rank(b)),
+    }
+}
+
+/// Orders an integer against a real without rounding the integer, as SQLite does: integers past
+/// 2^53 are not made equal to a nearby real.
+fn compare_int_real(i: i64, r: f64) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    // 2^63: every i64 is below it, and at least -2^63.
+    const LIMIT: f64 = 9_223_372_036_854_775_808.0;
+    if r.is_nan() {
+        return Ordering::Greater;
+    }
+    if r >= LIMIT {
+        return Ordering::Less;
+    }
+    if r < -LIMIT {
+        return Ordering::Greater;
+    }
+    let floor = r.floor();
+    match i.cmp(&(floor as i64)) {
+        Ordering::Equal if floor < r => Ordering::Less,
+        o => o,
+    }
+}
+
+/// Orders an index record's leading values against `prefix`.
+fn compare_prefix(record: &[Value], prefix: &[Value], encoding: u32) -> std::cmp::Ordering {
+    prefix
+        .iter()
+        .enumerate()
+        .map(|(i, p)| compare_values(record.get(i).unwrap_or(&Value::Null), p, encoding))
+        .find(|o| o.is_ne())
+        .unwrap_or(std::cmp::Ordering::Equal)
+}
+
+/// The values of `columns` decoded from the part of a record kept on its page, `None` when the
+/// header or one of them lies past it (or is text, when the database's text is not UTF-8).
+fn local_columns(local: &[u8], columns: &[usize], utf8: bool) -> Option<Vec<Value>> {
+    let (header_len, n) = varint(local, 0)?;
+    let header_len = usize::try_from(header_len).ok().filter(|&len| len >= n && len <= local.len())?;
+    let (mut types, mut i) = (Vec::new(), n);
+    while i < header_len {
+        let (t, k) = varint(local, i).filter(|&(_, k)| i + k <= header_len)?;
+        types.push(t);
+        i += k;
+    }
+    columns
+        .iter()
+        .map(|&c| {
+            let Some(&t) = types.get(c) else { return Some(Value::Null) };
+            if !utf8 && t >= 13 && t % 2 == 1 {
+                return None;
+            }
+            let pos = types[..c].iter().try_fold(header_len, |pos, &t| pos.checked_add(Db::value_len(t)))?;
+            Db::value(local, t, pos).ok().map(|(v, _)| v)
+        })
+        .collect()
+}
+
 /// The cell offset stored at `p` in a page's cell pointer array.
 pub(crate) fn cell_pointer(page: &[u8], p: usize) -> Result<usize> {
     let b = page.get(p..p + 2).ok_or_else(|| bad("cell pointer"))?;
@@ -207,6 +289,17 @@ impl Db {
         // SQLite requires at least 480 usable bytes a page.
         let usable = page_size.checked_sub(data[20] as usize).filter(|&u| u >= 480).ok_or_else(|| bad("invalid reserved space"))?;
         Ok(Self { data, page_size, usable })
+    }
+
+    /// Whether the database is a file mapped into memory, not bytes read.
+    #[cfg(test)]
+    pub(crate) fn is_mapped(&self) -> bool {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            matches!(self.data, Bytes::Mapped(_))
+        }
+        #[cfg(target_family = "wasm")]
+        false
     }
 
     /// The number of whole pages in the file.
@@ -301,10 +394,26 @@ impl Db {
         Ok(out)
     }
 
-    /// A cell's payload, following overflow pages.
+    /// A table cell's payload, following overflow pages.
     fn payload(&self, page: &[u8], start: usize, size: usize) -> Result<Vec<u8>> {
+        self.payload_within(page, start, size, self.usable - 35)
+    }
+
+    /// How many bytes of a payload of `size` bytes a cell keeps on its page, when the most a cell
+    /// keeps is `x` (`usable - 35` in table leaves, less in indexes).
+    fn local_size(&self, size: usize, x: usize) -> usize {
         let u = self.usable;
-        let x = u - 35;
+        if size <= x {
+            return size;
+        }
+        let m = ((u - 12) * 32 / 255) - 23;
+        let k = m + (size - m) % (u - 4);
+        if k <= x { k } else { m }
+    }
+
+    /// A cell's payload, following overflow pages, when the most a cell keeps on its page is `x`.
+    fn payload_within(&self, page: &[u8], start: usize, size: usize, x: usize) -> Result<Vec<u8>> {
+        let u = self.usable;
         if size <= x {
             return start.checked_add(size).and_then(|end| page.get(start..end)).map(<[u8]>::to_vec).ok_or_else(|| bad("payload"));
         }
@@ -313,9 +422,7 @@ impl Db {
         if size / (u - 4) > self.pages() {
             return Err(bad("payload"));
         }
-        let m = ((u - 12) * 32 / 255) - 23;
-        let k = m + (size - m) % (u - 4);
-        let local = if k <= x { k } else { m };
+        let local = self.local_size(size, x);
         let mut out = page.get(start..start + local).ok_or_else(|| bad("payload"))?.to_vec();
         let mut next =
             u32::from_be_bytes(page.get(start + local..start + local + 4).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("overflow"))?);
@@ -493,7 +600,7 @@ impl Db {
     }
 
     /// The root page and `CREATE TABLE` statement of a rowid table.
-    fn table_root(&self, name: &str) -> Result<(u32, String)> {
+    pub(crate) fn table_root(&self, name: &str) -> Result<(u32, String)> {
         for (kind, table, _, root, sql) in self.schema()? {
             if kind != "table" || !table.eq_ignore_ascii_case(name) {
                 continue;
@@ -507,6 +614,116 @@ impl Db {
             return Ok((root, sql));
         }
         Err(bad(&format!("no table '{name}'")))
+    }
+
+    /// Visits in order the records of the index b-tree rooted at `root` whose leading values equal
+    /// `prefix` (a record holds the indexed columns, then the rowid), until `visit` returns
+    /// `false`. Only the branches that can hold such records are read: finding one row of a large
+    /// table reads a page per level of its index.
+    pub(crate) fn index_prefix(&self, root: u32, prefix: &[Value], visit: &mut dyn FnMut(Vec<Value>) -> bool) -> Result<()> {
+        self.index_walk(root, prefix, visit, &mut std::collections::HashSet::new(), 0).map(drop)
+    }
+
+    /// The decoded record of the index cell at `off`.
+    fn index_cell(&self, page: &[u8], off: usize, interior: bool) -> Result<Vec<Value>> {
+        let start = if interior { off + 4 } else { off };
+        let (size, n) = varint(page, start).ok_or_else(|| bad("cell"))?;
+        let size = usize::try_from(size).map_err(|_| bad("cell"))?;
+        let x = (self.usable - 12) * 64 / 255 - 23;
+        self.decode_record(&self.payload_within(page, start + n, size, x)?)
+    }
+
+    /// [`Db::index_prefix`] from page `n`: `false` once the walk is over (past the prefix, or
+    /// stopped by `visit`). `visited` holds the pages already read: a page reached twice is corrupt.
+    fn index_walk(
+        &self,
+        n: u32,
+        prefix: &[Value],
+        visit: &mut dyn FnMut(Vec<Value>) -> bool,
+        visited: &mut std::collections::HashSet<u32>,
+        depth: usize,
+    ) -> Result<bool> {
+        use std::cmp::Ordering;
+        if depth > 64 {
+            return Err(bad("b-tree too deep"));
+        }
+        if !visited.insert(n) {
+            return Err(bad("b-tree page reached twice"));
+        }
+        let encoding = self.text_encoding();
+        let page = self.page(n)?;
+        let h = if n == 1 { 100 } else { 0 };
+        let interior = match page[h] {
+            0x02 => true,
+            0x0a => false,
+            _ => return Err(bad("unsupported page type")),
+        };
+        let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
+        let header = if interior { 12 } else { 8 };
+        let offset = |c: usize| cell_pointer(page, h + header + 2 * c);
+        // The first cell not ordered before the prefix: the children left of it hold smaller keys.
+        let (mut lo, mut hi) = (0, cells);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if compare_prefix(&self.index_cell(page, offset(mid)?, interior)?, prefix, encoding) == Ordering::Less {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        for c in lo..cells {
+            let off = offset(c)?;
+            if interior {
+                let child = u32::from_be_bytes(page.get(off..off + 4).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("cell"))?);
+                if !self.index_walk(child, prefix, visit, visited, depth + 1)? {
+                    return Ok(false);
+                }
+            }
+            let record = self.index_cell(page, off, interior)?;
+            if compare_prefix(&record, prefix, encoding) != Ordering::Equal || !visit(record) {
+                return Ok(false);
+            }
+        }
+        if interior {
+            let right = u32::from_be_bytes(page[h + 8..h + 12].try_into().map_err(|_| bad("page"))?);
+            return self.index_walk(right, prefix, visit, visited, depth + 1);
+        }
+        Ok(true)
+    }
+
+    /// Calls `f` with the rowid and the values of `columns` of each row of the table b-tree rooted
+    /// at `root`, in rowid order. A row's overflow pages are read only when the columns do not all
+    /// lie in the part of the row kept on its leaf page, so the leading key columns of a table of
+    /// large blobs are read without the blobs.
+    pub(crate) fn scan_columns(&self, root: u32, columns: &[usize], f: &mut dyn FnMut(i64, Vec<Value>)) -> Result<()> {
+        let mut leaves = Vec::new();
+        self.leaves(root, &mut leaves, &mut PageSet::new(self.pages() as u64), 0)?;
+        let utf8 = self.text_encoding() == 1;
+        for n in leaves {
+            let page = self.page(n)?;
+            let h = if n == 1 { 100 } else { 0 };
+            if page[h] != 0x0d {
+                return Err(bad("unsupported page type"));
+            }
+            let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
+            for c in 0..cells {
+                let off = cell_pointer(page, h + 8 + 2 * c)?;
+                let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
+                let (rowid, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
+                let size = usize::try_from(size).map_err(|_| bad("cell"))?;
+                let start = off + n1 + n2;
+                let local = start.checked_add(self.local_size(size, self.usable - 35)).and_then(|end| page.get(start..end));
+                let values = match local.and_then(|l| local_columns(l, columns, utf8)) {
+                    Some(values) => values,
+                    None => {
+                        let all = self.decode_record(&self.payload(page, start, size)?)?;
+                        columns.iter().map(|&c| all.get(c).cloned().unwrap_or(Value::Null)).collect()
+                    }
+                };
+                f(rowid, values);
+            }
+        }
+        Ok(())
     }
 
     /// The rows of a table with the given rowids (in that order; missing rowids are skipped),
@@ -618,6 +835,15 @@ impl Db {
         }
         Err(bad(&format!("no table '{name}'")))
     }
+}
+
+/// Whether column `i` of a `CREATE TABLE` statement declares a collation other than BINARY,
+/// which orders its indexes otherwise than [`compare_values`] does.
+pub(crate) fn column_has_collation(sql: &str, i: usize) -> bool {
+    column_defs(sql).get(i).is_some_and(|d| {
+        let k = keywords(d);
+        k.match_indices("COLLATE").any(|(at, _)| !k[at + 7..].trim_start().starts_with("BINARY"))
+    })
 }
 
 /// The column definitions of a `CREATE TABLE` statement.
@@ -759,6 +985,18 @@ fn integer_primary_key(sql: &str, columns: &[String]) -> Option<usize> {
 }
 
 /// The items of a `CREATE TABLE` body: column definitions and table constraints, in order.
+/// The items of a `CREATE TABLE` statement that make an automatic index: column definitions and
+/// table constraints with `PRIMARY KEY` or `UNIQUE`.
+pub(crate) fn constraint_items(sql: &str) -> Vec<String> {
+    table_items(sql)
+        .into_iter()
+        .filter(|item| {
+            let k = keywords(item);
+            k.contains("PRIMARY KEY") || k.split(' ').any(|w| w == "UNIQUE")
+        })
+        .collect()
+}
+
 fn table_items(sql: &str) -> Vec<String> {
     let Some(open) = sql.find('(') else { return Vec::new() };
     let body = &sql[open + 1..sql.rfind(')').unwrap_or(sql.len())];
@@ -891,8 +1129,8 @@ pub(crate) fn autoindex_columns(sql: &str) -> Vec<Vec<usize>> {
 /// on plain columns (no expressions, `DESC`, `COLLATE` or `WHERE`). `None` otherwise.
 pub(crate) fn index_columns(sql: &str, table_sql: &str) -> Option<Vec<usize>> {
     let names: Vec<String> = column_types(table_sql).into_iter().map(|(n, _)| n).collect();
-    let k = keywords(sql);
-    if k.contains(" WHERE ") {
+    // A partial index (`WHERE`, however it is spaced) lacks rows, so it is not one.
+    if keywords(sql).split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|w| w == "WHERE") {
         return None;
     }
     let list = column_list(sql)?;
@@ -1181,6 +1419,30 @@ mod tests {
             column_defaults("CREATE TABLE t (a TEXT DEFAULT 'it''s', b INTEGER DEFAULT 3, c REAL DEFAULT (1+1), d TEXT)"),
             vec![Some(Value::Text("it's".into())), Some(Value::Int(3)), None, None]
         );
+    }
+
+    /// Index keys are compared as SQLite orders them: an integer past 2^53 and a real exactly,
+    /// and text by its bytes in the database's encoding.
+    #[test]
+    fn compares_index_keys_as_sqlite() {
+        use std::cmp::Ordering::*;
+        let big = 1i64 << 53;
+        assert_eq!(compare_values(&Value::Int(big + 1), &Value::Real(big as f64), 1), Greater);
+        assert_eq!(compare_values(&Value::Real(big as f64), &Value::Int(big + 1), 1), Less);
+        assert_eq!(compare_values(&Value::Int(big), &Value::Real(big as f64), 1), Equal);
+        assert_eq!(compare_values(&Value::Int(1), &Value::Real(1.5), 1), Less);
+        assert_eq!(compare_values(&Value::Int(-2), &Value::Real(-1.5), 1), Less);
+        assert_eq!(compare_values(&Value::Int(i64::MAX), &Value::Real(9.3e18), 1), Less);
+        assert_eq!(compare_values(&Value::Real(-0.0), &Value::Real(0.0), 1), Equal);
+        assert_eq!(compare_values(&Value::Int(0), &Value::Real(-0.0), 1), Equal);
+        // U+0100 is after 'B' in UTF-8 and UTF-16BE, but before it in UTF-16LE.
+        let (b, a) = (Value::Text("B".into()), Value::Text("\u{100}".into()));
+        assert_eq!(compare_values(&b, &a, 1), Less);
+        assert_eq!(compare_values(&b, &a, 3), Less);
+        assert_eq!(compare_values(&b, &a, 2), Greater);
+        assert!(column_has_collation("CREATE TABLE t (a TEXT COLLATE NOCASE, b TEXT COLLATE BINARY, c TEXT)", 0));
+        assert!(!column_has_collation("CREATE TABLE t (a TEXT COLLATE NOCASE, b TEXT COLLATE BINARY, c TEXT)", 1));
+        assert!(!column_has_collation("CREATE TABLE t (a TEXT COLLATE NOCASE, b TEXT COLLATE BINARY, c TEXT)", 2));
     }
 
     #[test]
