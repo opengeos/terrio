@@ -2327,13 +2327,16 @@ mod content_allow_list_tests {
         assert!(read.as_ref().is_err_and(|e| !e.contains("not allowed")), "read as the vector archive it is: {read:?}");
     }
 
-    /// With `TERRIO_WBVECTOR_FALLBACK=YES`, `wbvector` detects a file named for no driver by its
-    /// content, as KML when `<kml` is anywhere in its first 4 KiB, where `sniff` saw a GeoJSON
-    /// document: the format it finds is read only if its driver is allowed.
+    /// With `TERRIO_WBVECTOR_FALLBACK=YES`, `wbvector` detects a file named for no driver that
+    /// terrio's drivers do not read by its content, as KML when `<kml` is anywhere in its first
+    /// 4 KiB, where `sniff` saw a GeoJSON document (any JSON object): the format it finds is read
+    /// only if its driver is allowed. A GeoJSON document is read as GeoJSON before the fallback.
     #[test]
     fn the_wbvector_fallback_reads_only_allowed_drivers() {
         let dir = tempfile::tempdir().unwrap();
-        let geojson = dir.path().join("q.dat2");
+        let json = dir.path().join("q.dat2");
+        std::fs::write(&json, r#"{"features":[],"name":"<kml"}"#).unwrap();
+        let geojson = dir.path().join("g.dat2");
         std::fs::write(&geojson, r#"{"type":"FeatureCollection","features":[],"name":"<kml"}"#).unwrap();
         let kml = dir.path().join("k.dat2");
         let doc = r#"<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>
@@ -2343,7 +2346,8 @@ mod content_allow_list_tests {
             let options = [("TERRIO_ALLOWED_DRIVERS", drivers), ("TERRIO_WBVECTOR_FALLBACK", "YES")];
             with(&options, || open(path.to_str().unwrap())).map(|d| matches!(d, Dataset::Vector(_))).map_err(|e| e.to_string())
         };
-        assert_refused(open_with(&geojson, "GeoJSON"), "KML", "a GeoJSON document holding '<kml'");
+        assert_refused(open_with(&json, "GeoJSON"), "KML", "a JSON document holding '<kml'");
+        assert_eq!(open_with(&geojson, "GeoJSON"), Ok(true), "a GeoJSON document holding '<kml'");
         assert_eq!(open_with(&kml, "KML"), Ok(true));
     }
 
