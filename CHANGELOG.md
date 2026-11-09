@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- A `WarpedVRT` read of a file terrio reads itself reads each source window and warps it in one
+  call that releases the GIL, so threaded readers, such as a server answering tile requests on
+  threads, warp at the same time again. In 0.8.0 the window was warped where it is, as a
+  read-only array, with the GIL held so that no other Python thread could write it; it now never
+  becomes a Python object, so nothing else can write it, and it is still held once. Eight Python
+  threads reading 256 x 256 `nearest` tiles of a 10980 x 10980 UInt16 COG with overviews into
+  Web Mercator read 253 tiles/s with 0.8.0 and 643 now (653 before #673); one thread reads about
+  220 with each. Other sources keep the read-only array and the GIL: datasets open for writing
+  or update, a `WarpedVRT` read through another, a dataset whose `_read_level` is replaced,
+  complex bands, and floats converted into an integer type whose limits the float type does not
+  hold exactly. The pixels are the same.
 - A remote read requests the separate byte runs of a window (a COG window over several tiles)
   in parallel, up to 8 at once, through the process-wide connection pool, as GDAL's default
   `GDAL_HTTP_MULTIRANGE=PARALLEL` does; `TERRIO_HTTP_MULTIRANGE=SERIAL` (or the GDAL name)
