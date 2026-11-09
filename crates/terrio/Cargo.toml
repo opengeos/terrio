@@ -48,7 +48,6 @@ arrow-select = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 quick-xml.workspace = true
 encoding_rs.workspace = true
-osmpbfreader = { workspace = true, optional = true }
 half.workspace = true
 flate2.workspace = true
 # Adler-32 for the zlib streams of `deflate_compress`.
@@ -124,7 +123,7 @@ hecras = ["netcdf-hdf5", "dep:ras-commander-fast-hdf"]
 ## XLSX and XLSM workbooks as vector layers (pure Rust).
 xlsx = []
 ## OpenStreetMap PBF and XML.
-osm = ["dep:osmpbfreader"]
+osm = []
 ## LZMA-compressed GeoTIFFs.
 lzma = ["dep:lzma-rust2"]
 ## FlatGeobuf.
