@@ -3,20 +3,14 @@
 ## Unreleased
 
 - Warps by `average`, `rms`, `mode`, `min`, `max`, `med`, `q1` and `q3` take the source inside each
-  output pixel at a source's edges too, as `sum` does since #551 (#703). An output pixel with a
-  corner more than a margin outside its chunk's source window was left empty, so the pixels along a
-  source's edges were written or not depending on how far the output grid extended, and an output
-  pixel larger than the whole source was always empty. A written edge pixel weighed the source
-  pixels at the window's edge by the part of the output pixel beyond the edge, an output pixel
-  wholly outside the source next to its first column or row took that column's or row's values, and
-  a pixel whose corners could not be transformed was filled from the source pixels at its own column
-  and row numbers (over an orthographic source, the pixels beyond its horizon). An output pixel is
-  now left empty only when a corner cannot be transformed or its footprint does not meet the source,
-  and each source pixel counts for its part inside both the output pixel and the window. A footprint
-  counts within the source window its chunk reads, so a strongly curved transformation can shorten
-  it. 200 x 200 source pixels of 10 m whose edges cut 100 m output pixels in half give the same 441
-  pixels on grids of 40, 100 and 1000 pixels (361 on the grid of 100 before), and an edge pixel's
-  `average` of source columns 0 to 4 is 2.0 (1.0 before).
+  output pixel at a source's edges too, as `sum` does since #551 (#703). Each source pixel counts for
+  its part inside both the output pixel and the source window its chunk reads, and an output pixel
+  is left empty only when a corner of it cannot be transformed or no source pixel of that window
+  lies inside it. The pixels along a source's edges were written or not depending on the extent of
+  the output grid and its chunks, weighed the window's edge pixels by the part of the output pixel
+  beyond them, and took the first column's or row's values beside the source; over an orthographic
+  source, the pixels beyond the horizon were filled. An edge pixel's `average` of source columns 0
+  to 4 is now 2.0 (1.0 before).
 - A VRT source with fractional `SrcRect` or `DstRect` offsets is read within its rectangles (#702).
   A window with as many source pixels as output pixels was copied one for one whatever its offsets,
   so `bilinear`, `cubic` and `average` returned the source pixels a fraction of a pixel from where

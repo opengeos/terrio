@@ -5487,7 +5487,7 @@ mod tests {
     /// those edges, and take the source's first column or row; the pixels beside the source, west
     /// and east of them, are left alone.
     #[test]
-    fn area_methods_take_a_footprint_without_width_on_the_source_s_left_or_top_edge() {
+    fn area_methods_take_a_footprint_without_width_on_the_source_left_or_top_edge() {
         let ds = raster(100, 100, [0.0, 1e4, 0.0, 0.0, 0.0, -1e4], 3413, |_, _| 1.0);
         let mut wrong = Vec::new();
         for resampling in [
