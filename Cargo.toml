@@ -49,6 +49,7 @@ arrow-schema = "58"
 # Arrow IPC streams of vector layers; already built for parquet.
 arrow-ipc = { version = "58", default-features = false }
 arrow-buffer = "58"
+arrow-select = "58"
 bytes = "1"
 quick-xml = "0.42"
 # Multi-byte DBF code pages (CP932, CP936, CP949, CP950) of shapefiles, with the differences of

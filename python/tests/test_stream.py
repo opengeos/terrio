@@ -71,7 +71,12 @@ def test_arrow_stream_matches_table(path):
     reader = pa.RecordBatchReader.from_stream(terrio.open_stream(path, batch_size=250))
     batches = list(reader)
     assert [b.num_rows for b in batches] == [250] * 4
-    assert pa.Table.from_batches(batches).equals(whole)
+    table = pa.Table.from_batches(batches)
+    if path.endswith(".parquet"):
+        # a GeoParquet stream hands out the file's own types (`i` is written as int32)
+        assert table.schema.field("i").type == pa.int32()
+        whole = whole.cast(table.schema)
+    assert table.equals(whole)
 
 
 def test_bbox_and_errors(tmp_path):
@@ -86,6 +91,75 @@ def test_bbox_and_errors(tmp_path):
     next(stream)
     with pytest.raises(terrio.InvalidArgumentError):
         stream.__arrow_c_stream__()
+
+
+def test_geoparquet_arrow_streams_hand_out_the_files_batches(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    p = str(tmp_path / "s.parquet")
+    squares(1000).write(p)
+    batches = list(pa.RecordBatchReader.from_stream(terrio.open_stream(p, batch_size=300)))
+    assert [b.num_rows for b in batches] == [300, 300, 300, 100]
+    table = pa.Table.from_batches(batches)
+    # the file's columns, without the bounding-box covering column
+    assert table.column_names == ["i", "v", "name", "day", "geometry"]
+    plain = pq.read_table(p)
+    for name in table.column_names:
+        assert table[name].to_pylist() == plain[name].to_pylist()
+    geometry = table.schema.field("geometry")
+    assert geometry.metadata[b"ARROW:extension:name"] == b"geoarrow.wkb"
+    assert b"crs" in geometry.metadata[b"ARROW:extension:metadata"]
+
+
+def test_streams_select_columns_and_rows(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    box = (-100.0, -80.0, -90.0, -70.0)
+    for ext in ["parquet", "gpkg"]:
+        p = str(tmp_path / f"s.{ext}")
+        squares(1000).write(p)
+        whole = terrio.open_vector(p, bbox=box)[0].__geo_interface__["features"]
+        assert 0 < len(whole) < 1000, ext
+        # chunks with the fields asked for, in the layer's order
+        stream = terrio.open_stream(p, bbox=box, columns=["name", "i"])
+        assert list(stream.fields) == ["i", "name"], ext
+        features = stream.read_all().__geo_interface__["features"]
+        assert [f["properties"] for f in features] == [
+            {"i": f["properties"]["i"], "name": f["properties"]["name"]} for f in whole
+        ], ext
+        # and the Arrow export
+        table = pa.table(terrio.open_stream(p, bbox=box, columns=["i"]))
+        assert table.column_names[0] == "i" and "name" not in table.column_names, ext
+        assert table["i"].to_pylist() == [f["properties"]["i"] for f in whole], ext
+        with pytest.raises(terrio.InvalidArgumentError):
+            terrio.open_stream(p, columns=["nope"])
+        # names match without case, on both outputs
+        assert pa.table(terrio.open_stream(p, columns=["I"])).column_names[0] == "i", ext
+        assert list(terrio.open_stream(p, columns=["I"]).fields) == ["i"], ext
+
+
+def test_geoparquet_streams_read_files_in_archives(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    import zipfile
+
+    p = str(tmp_path / "s.parquet")
+    squares(1000).write(p)
+    z = str(tmp_path / "s.zip")
+    with zipfile.ZipFile(z, "w") as f:
+        f.write(p, "s.parquet")
+    table = pa.table(terrio.open_stream(f"/vsizip/{z}/s.parquet"))
+    assert table.num_rows == 1000
+    assert table["i"].to_pylist() == list(range(1000))
+
+
+def test_geoparquet_streams_give_a_geodataframe_in_crs84(tmp_path):
+    gpd = pytest.importorskip("geopandas")
+    p = str(tmp_path / "s.parquet")
+    squares(1000).write(p)
+    gdf = gpd.GeoDataFrame.from_arrow(terrio.open_stream(p))
+    assert len(gdf) == 1000
+    # GeoParquet without a `crs` means OGC:CRS84, as geopandas reads it (GDAL names it EPSG:4326)
+    assert gdf.crs.equals("OGC:CRS84")
+    assert gdf.geometry.iloc[0].equals(terrio.open_vector(p)[0].to_geopandas().geometry.iloc[0])
 
 
 @pytest.mark.parametrize("ext", ["fgb", "parquet", "shp", "geojsonl", "csv", "geojson"])

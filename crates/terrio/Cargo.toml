@@ -44,6 +44,7 @@ arrow-array = { workspace = true, optional = true }
 arrow-schema = { workspace = true, optional = true }
 arrow-ipc = { workspace = true, optional = true }
 arrow-buffer = { workspace = true, optional = true }
+arrow-select = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 quick-xml.workspace = true
 encoding_rs.workspace = true
@@ -108,7 +109,7 @@ geotiff = []
 ## DWG and ASCII/binary DXF reading and writing, through acadrust.
 cad = ["dep:acadrust"]
 ## GeoParquet, the `arrow` module and Arrow streams of vector layers.
-parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:arrow-ipc", "dep:arrow-buffer", "dep:bytes"]
+parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:arrow-ipc", "dep:arrow-buffer", "dep:arrow-select", "dep:bytes"]
 ## HTTP(S), S3, GCS and Azure inputs, range reads of remote COGs and STAC (native builds only).
 remote = ["dep:ureq", "dep:rustls-graviola", "dep:hmac", "dep:sha2", "terrio-crs/grid-transport"]
 ## AVIF tiles of PMTiles and MBTiles archives.
