@@ -13,8 +13,9 @@
 //!
 //! As in GDAL, the output is a window of the source (`srcwin`, or `projwin` in georeferenced
 //! coordinates) read into an output of the same or another size, band by band, through the
-//! same windowing as VRT sources. Values are then optionally rescaled and converted to the output
-//! type with GDAL's rounding and clamping.
+//! windowing of VRT sources, the window being part of its raster rather than a source's
+//! rectangles: kernels and areas reach the pixels around it. Values are then optionally rescaled
+//! and converted to the output type with GDAL's rounding and clamping.
 
 use super::Ct as Transformer;
 use super::overview::OverviewSelection;
@@ -381,6 +382,7 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
             resampling: o.resampling.unwrap_or_default(),
             working_float: complex,
             invalid_value: if complex { None } else { src_nodata },
+            within_rects: false,
         };
         // Scaling parameters, as gdal_translate derives them.
         let scaling = if complex {

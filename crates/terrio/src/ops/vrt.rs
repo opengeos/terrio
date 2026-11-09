@@ -391,6 +391,7 @@ impl VrtDataset {
                     resampling: src.resampling,
                     working_float: src.complex,
                     invalid_value: None,
+                    within_rects: true,
                 };
                 // GDAL's complex sources work in double precision for some types, else in float.
                 let double = is_float_working(r.data_type)
@@ -522,7 +523,8 @@ pub(crate) fn fmt_number(v: f64) -> String {
 // ─── Reading a window of a source into a destination window ────────────────────────────────────
 
 /// A read of a source window into a destination window, with GDAL's VRT source semantics
-/// (`VRTSimpleSource::GetSrcDstWindow()` followed by `GDALRasterBand::RasterIO()`).
+/// (`VRTSimpleSource::GetSrcDstWindow()` followed by `GDALRasterBand::RasterIO()`). A VRT
+/// source's read stays within its rectangles ([`Self::within_rects`]).
 pub(crate) struct SourceRead<'a> {
     /// The source band's pixels.
     pub values: super::BandView<'a>,
@@ -547,6 +549,12 @@ pub(crate) struct SourceRead<'a> {
     /// The value written where resampling finds no valid source pixel (`None`: nothing is
     /// written).
     pub invalid_value: Option<f64>,
+    /// Whether the read stays within its rectangles, as a VRT source's does: it uses only the
+    /// source pixels that meet `src_rect`, and writes a destination pixel only from the part of
+    /// it inside `dst_rect` (a method sampling a point, only when the pixel's centre is inside).
+    /// Otherwise, as for a window of one raster, kernels and areas reach the source pixels
+    /// around `src_rect`, and a window copies whenever it has as many pixels as it writes.
+    pub within_rects: bool,
 }
 
 impl SourceRead<'_> {
@@ -565,22 +573,24 @@ impl SourceRead<'_> {
         let rows = &mut out[start..end];
         let x0 = w.out_off.0;
         if self.copies(&w) {
+            let [c0, r0, c1, r1] = self.copy_span(&w);
             crate::par::chunks_mut(rows, dw, |r, line| {
-                let sy = w.req_off.1 + r;
-                if sy >= self.height {
+                if !(r0..r1).contains(&r) {
                     return;
                 }
-                for c in 0..ow {
-                    let sx = w.req_off.0 + c;
-                    if sx >= self.width {
-                        continue;
-                    }
-                    let i = sy * self.width + sx;
-                    if is_valid(i) {
-                        line[x0 + c] = f(self.values.get(i));
+                let row = (w.req_off.1 + r) * self.width + w.req_off.0;
+                for c in c0..c1 {
+                    if is_valid(row + c) {
+                        line[x0 + c] = f(self.values.get(row + c));
                     }
                 }
             });
+            return;
+        }
+        // The destination pixels written, relative to the window, and the source pixels read.
+        let [c0, r0, c1, r1] = self.written(&w);
+        let [sx0, sy0, sx1, sy1] = self.cover();
+        if sx1 <= sx0 || sy1 <= sy0 {
             return;
         }
         let (fx, fy, fw, fh) = (w.dreq_off.0, w.dreq_off.1, w.dreq_size.0, w.dreq_size.1);
@@ -589,11 +599,17 @@ impl SourceRead<'_> {
             let incx = fw / ow as f64;
             let incy = fh / oh as f64;
             crate::par::chunks_mut(rows, dw, |r, line| {
-                let sy = ((r as f64 + 0.5) * incy + fy + EPS).max(0.0).min((self.height - 1) as f64) as usize;
+                if !(r0..r1).contains(&r) {
+                    return;
+                }
+                let sy = ((r as f64 + 0.5) * incy + fy + EPS).max(sy0 as f64).min((sy1 - 1) as f64) as usize;
                 let mut sxf = 0.5 * incx + fx + EPS;
                 for c in 0..ow {
-                    let sx = sxf.max(0.0).min((self.width - 1) as f64) as usize;
+                    let sx = sxf.max(sx0 as f64).min((sx1 - 1) as f64) as usize;
                     sxf += incx;
+                    if !(c0..c1).contains(&c) {
+                        continue;
+                    }
                     let i = sy * self.width + sx;
                     if is_valid(i) {
                         line[x0 + c] = f(self.values.get(i));
@@ -611,7 +627,10 @@ impl SourceRead<'_> {
         // range holds: it is passed on as it is, for `f` to store in the output's type.
         let keep = self.working_float || self.resampling == Resampling::Sum;
         crate::par::chunks_mut(rows, dw, |r, line| {
-            for c in 0..ow {
+            if !(r0..r1).contains(&r) {
+                return;
+            }
+            for c in c0..c1 {
                 match res[r * ow + c] {
                     Some(v) => line[x0 + c] = f(if keep { v } else { convert_value(v, self.src_type) }),
                     None => {
@@ -636,27 +655,112 @@ impl SourceRead<'_> {
         if !self.copies(&w) {
             return Err(());
         }
-        // Source pixels past the source's edges, and rows past the destination's, are not read.
-        let cols = ow.min(self.width.saturating_sub(w.req_off.0));
-        let rows = oh.min(self.height.saturating_sub(w.req_off.1)).min(dh.saturating_sub(w.out_off.1));
+        // Source pixels past the source's edges (or, within the rectangles, outside them), and
+        // rows past the destination's, are not read.
+        let [c0, r0, c1, r1] = self.copy_span(&w);
+        let cols = c1 - c0;
+        let rows = (r1 - r0).min(dh.saturating_sub(w.out_off.1 + r0));
         if cols == 0 || rows == 0 {
             return Ok(None);
         }
-        Ok(Some(PlainCopy { src: w.req_off, dst_x: w.out_off.0, cols, dst_rows: w.out_off.1..w.out_off.1 + rows }))
+        let (src, dst_y) = ((w.req_off.0 + c0, w.req_off.1 + r0), w.out_off.1 + r0);
+        Ok(Some(PlainCopy { src, dst_x: w.out_off.0 + c0, cols, dst_rows: dst_y..dst_y + rows }))
     }
 
     /// Whether a read through `w` copies source pixels one for one: when it requests as many
     /// source pixels as it writes, except that a `sum` copies only a window of whole source
     /// pixels and otherwise shares each source pixel by the area inside each destination pixel.
+    /// Within its rectangles, a read copies only a window of the same scale: `nearest` when each
+    /// destination pixel's centre is nearest to the source pixel copied, the other methods on
+    /// whole offsets only, and a `sum` only into destination pixels wholly inside `dst_rect`.
     fn copies(&self, w: &Window) -> bool {
         const EPSILON: f64 = 1e-10;
         let whole = |f: f64, i: usize| (f - i as f64).abs() <= EPSILON;
-        w.req_size == w.out_size
-            && (self.resampling != Resampling::Sum
-                || whole(w.dreq_off.0, w.req_off.0)
-                    && whole(w.dreq_off.1, w.req_off.1)
-                    && whole(w.dreq_size.0, w.out_size.0)
-                    && whole(w.dreq_size.1, w.out_size.1))
+        let same_scale = whole(w.dreq_size.0, w.out_size.0) && whole(w.dreq_size.1, w.out_size.1);
+        let aligned = whole(w.dreq_off.0, w.req_off.0) && whole(w.dreq_off.1, w.req_off.1);
+        if w.req_size != w.out_size {
+            return false;
+        }
+        if !self.within_rects {
+            return self.resampling != Resampling::Sum || same_scale && aligned;
+        }
+        // The source pixel holding the first destination pixel's centre.
+        let nearest = |f: f64, i: usize| (f + 0.5 + EPSILON).floor() == i as f64;
+        same_scale
+            && match self.resampling {
+                Resampling::Nearest => nearest(w.dreq_off.0, w.req_off.0) && nearest(w.dreq_off.1, w.req_off.1),
+                Resampling::Sum => aligned && self.inside(w),
+                _ => aligned,
+            }
+    }
+
+    /// Whether each destination pixel of `w` is wholly inside `dst_rect`.
+    fn inside(&self, w: &Window) -> bool {
+        const EPSILON: f64 = 1e-10;
+        let [dxo, dyo, dxs, dys] = self.dst_rect;
+        let (x0, y0) = (w.out_off.0 as f64, w.out_off.1 as f64);
+        let (x1, y1) = (x0 + w.out_size.0 as f64, y0 + w.out_size.1 as f64);
+        dxo <= x0 + EPSILON && x1 <= dxo + dxs + EPSILON && dyo <= y0 + EPSILON && y1 <= dyo + dys + EPSILON
+    }
+
+    /// The source window a read's areas are clipped to, `[x0, y0, x1, y1]`: within its
+    /// rectangles, `src_rect`, otherwise none.
+    fn src_bounds(&self) -> [f64; 4] {
+        if !self.within_rects {
+            return [f64::NEG_INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY];
+        }
+        let [x, y, xs, ys] = self.src_rect;
+        [x, y, x + xs, y + ys]
+    }
+
+    /// The source pixels a read uses, `[x0, y0, x1, y1]`: within its rectangles, those that meet
+    /// `src_rect`, otherwise all.
+    fn cover(&self) -> [usize; 4] {
+        if !self.within_rects {
+            return [0, 0, self.width, self.height];
+        }
+        const EPSILON: f64 = 1e-10;
+        let [x0, y0, x1, y1] = self.src_bounds();
+        let span = |lo: f64, hi: f64, n: usize| {
+            let a = (lo + EPSILON).floor().clamp(0.0, n as f64) as usize;
+            (a, ((hi - EPSILON).ceil().clamp(0.0, n as f64) as usize).max(a))
+        };
+        let ((x0, x1), (y0, y1)) = (span(x0, x1, self.width), span(y0, y1, self.height));
+        [x0, y0, x1, y1]
+    }
+
+    /// The destination pixels a read through `w` writes, `[c0, r0, c1, r1]` relative to the
+    /// window: within its rectangles, a method sampling a point writes only those whose centres
+    /// are inside `dst_rect` (a centre on its left or top edge is inside, on its right or bottom
+    /// edge outside).
+    fn written(&self, w: &Window) -> [usize; 4] {
+        let (ow, oh) = w.out_size;
+        if !self.within_rects || self.resampling.is_area_based() {
+            return [0, 0, ow, oh];
+        }
+        const EPSILON: f64 = 1e-10;
+        let [dxo, dyo, dxs, dys] = self.dst_rect;
+        // The first pixel whose centre is at `edge` or past it.
+        let first = |edge: f64, off: usize, n: usize| ((edge - 0.5 - EPSILON).ceil() - off as f64).clamp(0.0, n as f64) as usize;
+        let span = |lo: f64, hi: f64, off: usize, n: usize| {
+            let a = first(lo, off, n);
+            (a, first(hi, off, n).max(a))
+        };
+        let ((c0, c1), (r0, r1)) = (span(dxo, dxo + dxs, w.out_off.0, ow), span(dyo, dyo + dys, w.out_off.1, oh));
+        [c0, r0, c1, r1]
+    }
+
+    /// The destination pixels a copy through `w` writes, `[c0, r0, c1, r1]` relative to the
+    /// window: those [`Self::written`] gives whose source pixels are among those it uses.
+    fn copy_span(&self, w: &Window) -> [usize; 4] {
+        let [c0, r0, c1, r1] = self.written(w);
+        let [sx0, sy0, sx1, sy1] = self.cover();
+        let span = |lo: usize, hi: usize, s0: usize, s1: usize, off: usize| {
+            let a = lo.max(s0.saturating_sub(off));
+            (a, hi.min(s1.saturating_sub(off)).max(a))
+        };
+        let ((c0, c1), (r0, r1)) = (span(c0, c1, sx0, sx1, w.req_off.0), span(r0, r1, sy0, sy1, w.req_off.1));
+        [c0, r0, c1, r1]
     }
 
     /// `VRTSimpleSource::GetSrcDstWindow()` for a request covering the whole destination.
@@ -965,9 +1069,22 @@ pub(crate) fn gdal_average_with_origin(
     };
     let val = |x: usize, y: usize| wt.cast(s.values.get(y * s.width + x));
     let valid = |x: usize, y: usize| s.valid.is_none_or(|m| m[y * s.width + x]);
+    // Within its rectangles, a read averages the part of each destination pixel inside them:
+    // footprints are clipped to `src_rect`, request-relative `[x0, y0, x1, y1]`, and only the
+    // source pixels that meet it are read.
+    let clip = (origin.is_none() && s.within_rects).then(|| {
+        let [x0, y0, x1, y1] = s.src_bounds();
+        let (ox, oy) = (req_off.0 as f64, req_off.1 as f64);
+        [x0 - ox, y0 - oy, x1 - ox, y1 - oy]
+    });
+    let cover = s.cover();
     for (dst, src) in gdal_chunks(s, req_off, ratio, out, 0) {
         let [dx0, dy0, nx, ny] = dst;
-        let [cx0, cy0, cx1, cy1] = src;
+        let [mut cx0, mut cy0, mut cx1, mut cy1] = src;
+        if clip.is_some() {
+            (cx0, cy0) = (cx0.max(cover[0]), cy0.max(cover[1]));
+            (cx1, cy1) = (cx1.min(cover[2]).max(cx0), cy1.min(cover[3]).max(cy0));
+        }
         // GDAL reads the chunk's mask: all valid, it averages without one; none valid, nodata.
         let mut any_valid = false;
         let mut all_valid = true;
@@ -991,14 +1108,21 @@ pub(crate) fn gdal_average_with_origin(
             left: f64,
             right: f64,
             full: f64,
+            empty: bool,
         }
         let mut spacing_two = true;
         let mut last_x1 = -1i64;
         let xs: Vec<SrcX> = (dx0..dx0 + nx)
             .map(|i| {
                 let a = delta.0 + (i as f64 + o[0]) * ratio.0;
-                let x0 = ((a + 1e-8) as i64).max(rx0);
                 let b = delta.0 + (i as f64 + o[0] + 1.) * ratio.0;
+                let (a, b, clipped) = match clip {
+                    Some(c) if a < c[0] || b > c[2] => (a.max(c[0]), b.min(c[2]), true),
+                    _ => (a, b, false),
+                };
+                // A clipped footprint is not two whole pixels.
+                spacing_two &= !clipped;
+                let x0 = ((a + 1e-8) as i64).max(rx0);
                 let mut x1 = (b - 1e-8).ceil() as i64;
                 if x1 == x0 {
                     x1 += 1;
@@ -1015,7 +1139,7 @@ pub(crate) fn gdal_average_with_origin(
                     spacing_two = false;
                 }
                 last_x1 = x1;
-                SrcX { x0, x1, left, right, full }
+                SrcX { x0, x1, left, right, full, empty: clipped && b <= a }
             })
             .collect();
         // Absolute source coordinates of request-relative ones.
@@ -1023,15 +1147,22 @@ pub(crate) fn gdal_average_with_origin(
         let ay = |y: i64| (y - source_origin.1) as usize;
         for j in dy0..dy0 + ny {
             let a = delta.1 + (j as f64 + o[1]) * ratio.1;
-            let y0 = ((a + 1e-8) as i64).max(ry0);
             let b = delta.1 + (j as f64 + o[1] + 1.) * ratio.1;
+            let (a, b, clipped) = match clip {
+                Some(c) if a < c[1] || b > c[3] => (a.max(c[1]), b.min(c[3]), true),
+                _ => (a, b, false),
+            };
+            if clipped && b <= a {
+                continue;
+            }
+            let y0 = ((a + 1e-8) as i64).max(ry0);
             let mut y1 = (b - 1e-8).ceil() as i64;
             if y1 == y0 {
                 y1 += 1;
             }
             y1 = y1.min(ry1);
             let line = &mut res[j * ow..(j + 1) * ow];
-            if spacing_two && y1 == y0 + 2 && !masked {
+            if spacing_two && !clipped && y1 == y0 + 2 && !masked {
                 // A factor of two without nodata.
                 let (r0, r1) = (ay(y0), ay(y0 + 1));
                 let quad = |c: usize| {
@@ -1085,7 +1216,7 @@ pub(crate) fn gdal_average_with_origin(
                 full_col += (y1 - y0 - 2) as f64;
                 full_col += top;
             }
-            for (c, sx) in xs.iter().enumerate() {
+            for (c, sx) in xs.iter().enumerate().filter(|(_, sx)| !sx.empty) {
                 let (mut total, mut total_weight, mut mul) = (0.0, 0.0, 1.0);
                 if !masked {
                     let mut inv = 1.0;
@@ -1186,13 +1317,20 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
         | Resampling::Q1
         | Resampling::Q3
         | Resampling::Sum => {
+            // Within its rectangles, a destination pixel takes the part of its area inside them.
+            let [bx0, by0, bx1, by1] = s.src_bounds();
             crate::par::chunks_mut(&mut res, ow, |r, line| {
                 let mut vals: Vec<(f64, f64)> = Vec::new();
                 let y0 = fy + r as f64 * ry;
                 let y1 = y0 + ry;
+                let (y0, y1) = (y0.max(by0), y1.min(by1));
                 for (c, cell) in line.iter_mut().enumerate() {
                     let x0 = fx + c as f64 * rx;
                     let x1 = x0 + rx;
+                    let (x0, x1) = (x0.max(bx0), x1.min(bx1));
+                    if s.within_rects && (x1 <= x0 || y1 <= y0) {
+                        continue;
+                    }
                     vals.clear();
                     let iy0 = (y0 + 1e-8).floor().max(0.0) as usize;
                     let iy1 = ((y1 - 1e-8).ceil() as usize).min(s.height).max(iy0 + 1).min(s.height);
@@ -1219,23 +1357,25 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
         }
         method => {
             let radius = method.radius().max(1) as f64;
-            let taps = |dst: usize, ratio: f64, off: f64, size: usize| -> (usize, Vec<f64>) {
+            // A kernel's taps on the source pixels the read uses, `[lo, hi)`.
+            let taps = |dst: usize, ratio: f64, off: f64, lo: usize, hi: usize| -> (usize, Vec<f64>) {
                 let center = (dst as f64 + 0.5) * ratio + off;
                 let scale = if 1.0 / ratio >= 1.0 { 1.0 } else { 1.0 / ratio };
                 let r = radius / scale;
-                let start = ((center - r + 0.5).floor() as i64).max(0) as usize;
-                let stop = ((center + r + 0.5) as i64).min(size as i64).max(start as i64) as usize;
+                let start = ((center - r + 0.5).floor() as i64).max(lo as i64) as usize;
+                let stop = ((center + r + 0.5) as i64).min(hi as i64).max(start as i64) as usize;
                 let w = (start..stop).map(|p| method.weight(scale * (p as f64 - center + 0.5))).collect();
                 (start, w)
             };
-            let xt: Vec<(usize, Vec<f64>)> = (0..ow).map(|c| taps(c, rx, fx, s.width)).collect();
+            let [sx0, sy0, sx1, sy1] = s.cover();
+            let xt: Vec<(usize, Vec<f64>)> = (0..ow).map(|c| taps(c, rx, fx, sx0, sx1)).collect();
             let negative_weights = matches!(method, Resampling::Cubic | Resampling::Lanczos);
             // GDAL's work type is `float` for these types (`GDALGetOvrWorkDataType`), `double` else:
             // the result is rounded to float for them. The sums themselves stay in f64.
             let single = matches!(s.src_type, DataType::U8 | DataType::U16 | DataType::I8 | DataType::I16 | DataType::F32);
             let work = |v: f64| if single { v as f32 as f64 } else { v };
             crate::par::chunks_mut(&mut res, ow, |r, line| {
-                let (y0, wys) = taps(r, ry, fy, s.height);
+                let (y0, wys) = taps(r, ry, fy, sy0, sy1);
                 // GDAL's `GDALResampleChunk_ConvolutionT` filters rows first: each row is the
                 // average of its valid pixels by their horizontal weights, or invalid when it has
                 // none (or too few consecutive ones for a kernel with negative weights). The
@@ -1543,6 +1683,7 @@ mod tests {
             resampling: Resampling::Nearest,
             working_float: false,
             invalid_value: None,
+            within_rects: true,
         };
         let mut out = vec![-1.0; 48];
         r.read(8, 6, &mut out, |v| v);
@@ -1578,6 +1719,7 @@ mod tests {
                 resampling,
                 working_float: false,
                 invalid_value: None,
+                within_rects: true,
             };
             let mut out = vec![f64::NAN; 1600];
             r.read(40, 40, &mut out, |v| v);
@@ -1622,6 +1764,7 @@ mod tests {
             resampling: Resampling::Sum,
             working_float: false,
             invalid_value: None,
+            within_rects: true,
         };
         let mut out = vec![-1.0; 16];
         r.read(4, 4, &mut out, |v| v);
@@ -1668,6 +1811,7 @@ mod tests {
             resampling: Resampling::Sum,
             working_float: false,
             invalid_value: None,
+            within_rects: true,
         };
         for src_rect in [[0.25, 0.0, 2.0, 2.0], [0.0, 0.25, 2.0, 2.0], [0.0, 0.0, 2.25, 2.0], [0.0, 0.0, 2.0, 2.25]] {
             let r = SourceRead { src_rect, ..base };
@@ -1711,6 +1855,7 @@ mod tests {
             resampling: Resampling::Sum,
             working_float: false,
             invalid_value: None,
+            within_rects: true,
         };
         let mut quarters = vec![-1.0; 4];
         r.read(2, 2, &mut quarters, |v| v);
@@ -1726,5 +1871,192 @@ mod tests {
         let mut total = vec![-1.0; 1];
         r.read(1, 1, &mut total, |v| convert_value(v, DataType::U16));
         assert_eq!((quarters, total), (vec![0.25; 4], vec![800.0]));
+    }
+
+    /// Within its rectangles, a read copies source pixels one for one only where a copy is what
+    /// its method gives, along rows as along columns, over `[10, 20, 30, 40]`. A window a quarter
+    /// pixel in is resampled, but by `nearest`. A window of whole pixels, 2.5 pixels long, is
+    /// copied into the pixels whose centres it covers (`nearest`, `bilinear`) or into all those it
+    /// meets (`average`), and shared by area by a `sum`. A window from 0.6 placed at 0.25 has as
+    /// many source pixels as it writes, but the pixels nearest the centres start a pixel before.
+    #[test]
+    fn a_read_within_its_rectangles_copies_only_what_its_method_gives() {
+        let values = [10.0, 20.0, 30.0, 40.0];
+        for along_row in [true, false] {
+            // The source's size, and the destination's.
+            let ((width, height), (dw, dh)) = if along_row { ((4, 1), (3, 1)) } else { ((1, 4), (1, 3)) };
+            let rect = |off: f64, len: f64| if along_row { [off, 0.0, len, 1.0] } else { [0.0, off, 1.0, len] };
+            let copy = |n: usize| {
+                let (cols, rows) = if along_row { (n, 1) } else { (1, n) };
+                PlainCopy { src: (0, 0), dst_x: 0, cols, dst_rows: 0..rows }
+            };
+            let (quarter_in, whole) = ((rect(0.25, 2.0), rect(0.0, 2.0)), (rect(0.0, 2.5), rect(0.0, 2.5)));
+            for ((src_rect, dst_rect), resampling, expected, copied) in [
+                (quarter_in, Resampling::Nearest, [10.0, 20.0, -1.0], Some(2)),
+                (quarter_in, Resampling::Bilinear, [12.5, 22.5, -1.0], None),
+                (quarter_in, Resampling::Average, [12.5, 22.5, -1.0], None),
+                (whole, Resampling::Nearest, [10.0, 20.0, -1.0], Some(2)),
+                (whole, Resampling::Bilinear, [10.0, 20.0, -1.0], Some(2)),
+                (whole, Resampling::Average, [10.0, 20.0, 30.0], Some(3)),
+                (whole, Resampling::Sum, [10.0, 20.0, 15.0], None),
+                ((rect(0.6, 2.5), rect(0.25, 2.5)), Resampling::Nearest, [10.0, 20.0, 30.0], None),
+            ] {
+                let r = SourceRead {
+                    values: crate::ops::BandView::F64(&values),
+                    valid: None,
+                    width,
+                    height,
+                    src_type: DataType::F64,
+                    src_rect,
+                    dst_rect,
+                    resampling,
+                    working_float: false,
+                    invalid_value: None,
+                    within_rects: true,
+                };
+                let mut out = vec![-1.0; 3];
+                r.read(dw, dh, &mut out, |v| v);
+                let case = format!("{resampling:?} {src_rect:?} at {dst_rect:?}");
+                assert_eq!(out, expected, "{case}");
+                assert_eq!(r.plain_copy(dw, dh), copied.map(|n| Some(copy(n))).ok_or(()), "{case}");
+            }
+        }
+    }
+
+    /// Within its rectangles, `nearest` reads no source pixel past the `SrcRect`, even for a
+    /// destination pixel whose centre is inside the `DstRect` by less than the tolerance its
+    /// sample takes: the first pixel of `[10, 20, 30]` upsampled 2.5 times into a `DstRect` 1.5e-10
+    /// pixel longer, whose last centre samples the `SrcRect`'s edge.
+    #[test]
+    fn nearest_reads_no_pixel_past_the_src_rect_at_its_edge() {
+        let values = [10.0, 20.0, 30.0];
+        let r = SourceRead {
+            values: crate::ops::BandView::F64(&values),
+            valid: None,
+            width: 3,
+            height: 1,
+            src_type: DataType::F64,
+            src_rect: [0.0, 0.0, 1.0, 1.0],
+            dst_rect: [0.0, 0.0, 2.5 + 1.5e-10, 1.0],
+            resampling: Resampling::Nearest,
+            working_float: false,
+            invalid_value: None,
+            within_rects: true,
+        };
+        let mut out = vec![-1.0; 3];
+        r.read(3, 1, &mut out, |v| v);
+        assert_eq!(out, [10.0; 3]);
+    }
+
+    /// A VRT source reads only the pixels that meet its `SrcRect` and places them only inside its
+    /// `DstRect`, whatever their offsets. A window of the same size with a fractional offset is
+    /// resampled by the source's method, `nearest` picking the nearest pixel. A method sampling a
+    /// point writes only the pixels whose centres are inside the `DstRect`; a method over an area
+    /// gives a pixel partly inside it the part of the source inside it. Over the one-row sources
+    /// `[10, 20, 30]` and `[10, 20, 30, 40]`, through each kind of source, opened, read lazily,
+    /// read by windows of one pixel and materialized; -1, the band's nodata, is where the source
+    /// writes nothing.
+    #[test]
+    fn a_source_reads_only_its_src_rect_into_its_dst_rect() {
+        let dir = tempfile::tempdir().unwrap();
+        let write_source = |values: &[f64]| {
+            let path = dir.path().join(format!("source{}.tif", values.len())).to_string_lossy().into_owned();
+            let grid = Grid { width: values.len(), height: 1, geo_transform: [0.0, 1.0, 0.0, 1.0, 0.0, -1.0] };
+            let ds =
+                crate::ops::build_raster(grid, vec![values.to_vec()], DataType::F32, None, &SpatialRef::default(), convert_value).unwrap();
+            crate::write_raster_dataset(&ds, &path, &Default::default()).unwrap();
+            path
+        };
+        let (three, four) = (write_source(&[10.0, 20.0, 30.0]), write_source(&[10.0, 20.0, 30.0, 40.0]));
+        // (source, band width, SrcRect x offset, DstRect x offset, each method's row): both
+        // rectangles are 2 x 1 pixels.
+        let cases = [
+            (
+                &three,
+                2,
+                0.25,
+                0.0,
+                [
+                    ("nearest", vec![10.0, 20.0]),
+                    ("bilinear", vec![12.5, 22.5]),
+                    ("average", vec![12.5, 22.5]),
+                    ("sum", vec![12.5, 22.5]),
+                    ("max", vec![20.0, 30.0]),
+                    ("min", vec![10.0, 20.0]),
+                ],
+            ),
+            (
+                &three,
+                3,
+                0.0,
+                0.25,
+                [
+                    ("nearest", vec![10.0, 20.0, -1.0]),
+                    ("bilinear", vec![10.0, 17.5, -1.0]),
+                    ("average", vec![10.0, 17.5, 20.0]),
+                    ("sum", vec![7.5, 17.5, 5.0]),
+                    ("max", vec![10.0, 20.0, 20.0]),
+                    ("min", vec![10.0, 10.0, 20.0]),
+                ],
+            ),
+            (
+                &four,
+                3,
+                1.0,
+                0.5,
+                [
+                    ("nearest", vec![20.0, 30.0, -1.0]),
+                    ("bilinear", vec![20.0, 25.0, -1.0]),
+                    ("average", vec![20.0, 25.0, 30.0]),
+                    ("sum", vec![10.0, 25.0, 15.0]),
+                    ("max", vec![20.0, 30.0, 30.0]),
+                    ("min", vec![20.0, 20.0, 30.0]),
+                ],
+            ),
+        ];
+        let mut wrong = Vec::new();
+        for (path, width, sx, dx, methods) in &cases {
+            let average = methods.iter().find(|(m, _)| *m == "average").map(|(_, row)| row).unwrap();
+            let sources = methods
+                .iter()
+                .flat_map(|(method, row)| ["SimpleSource", "ComplexSource", "KernelFilteredSource"].map(|tag| (tag, Some(*method), row)))
+                .chain([("AveragedSource", None, average)]);
+            for (tag, method, expected) in sources {
+                let resampling = method.map(|m| format!(" resampling=\"{m}\"")).unwrap_or_default();
+                // A kernel of one pixel of weight 1 leaves the source as it is.
+                let kernel = if tag == "KernelFilteredSource" { "<Kernel><Size>1</Size><Coefs>1</Coefs></Kernel>" } else { "" };
+                let text = format!(
+                    "<VRTDataset rasterXSize=\"{width}\" rasterYSize=\"1\"><VRTRasterBand dataType=\"Float32\" band=\"1\">\
+                     <NoDataValue>-1</NoDataValue><{tag}{resampling}><SourceFilename relativeToVRT=\"0\">{path}</SourceFilename>\
+                     <SourceBand>1</SourceBand><SrcRect xOff=\"{sx}\" yOff=\"0\" xSize=\"2\" ySize=\"1\"/>\
+                     <DstRect xOff=\"{dx}\" yOff=\"0\" xSize=\"2\" ySize=\"1\"/>{kernel}</{tag}></VRTRasterBand></VRTDataset>"
+                );
+                let file = dir.path().join("read.vrt");
+                std::fs::write(&file, &text).unwrap();
+                let file = file.to_string_lossy().into_owned();
+                let mut lazy = crate::open_raster_lazy(&file).unwrap();
+                let pixel = |c: usize| crate::Window::new(c, 0, 1, 1);
+                let mut reads = vec![
+                    ("opened", crate::open_raster(&file).unwrap().raster.data.to_f64_vec()),
+                    ("read lazily", lazy.read().unwrap().raster.data.to_f64_vec()),
+                    (
+                        "read by windows of one pixel",
+                        (0..*width).map(|c| lazy.read_window(pixel(c), &Default::default()).unwrap().raster.data.to_f64_vec()[0]).collect(),
+                    ),
+                ];
+                // `VrtDataset` reads every kind of source but a kernel-filtered one.
+                if tag != "KernelFilteredSource" {
+                    let materialized = VrtDataset::from_xml(&text).unwrap().materialize(dir.path()).unwrap();
+                    reads.push(("materialized", materialized.raster.data.to_f64_vec()));
+                }
+                let source = method.map_or(tag.to_string(), |m| format!("{tag} {m}"));
+                for (how, got) in reads {
+                    if &got != expected {
+                        wrong.push(format!("{source}, SrcRect x {sx} at x {dx}, {how}: {got:?}, not {expected:?}"));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{} reads differ:\n{}", wrong.len(), wrong.join("\n"));
     }
 }

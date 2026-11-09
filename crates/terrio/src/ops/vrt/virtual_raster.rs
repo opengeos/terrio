@@ -649,6 +649,7 @@ impl Reader {
             resampling: src.resampling,
             working_float: src.complex,
             invalid_value: None,
+            within_rects: true,
         };
         let double = super::is_float_working(ds.raster.data_type)
             || matches!(output_type, DataType::I32 | DataType::U32 | DataType::I64 | DataType::U64 | DataType::F64);
