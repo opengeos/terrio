@@ -70,7 +70,10 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   under `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, as GDAL). `driver="COG"` writes a Cloud
   Optimized GeoTIFF whose overviews are GDAL's COG driver's, pixel for pixel: the same levels
   (`overview_count`), and the same resampling (`overview_resampling` or `resampling`, by default
-  `cubic`, `nearest` for paletted rasters).
+  `cubic`, `nearest` for paletted rasters). A COG takes no `photometric` option: three Byte bands,
+  or four compressed with WebP, are red, green and blue by default, and any other color
+  interpretation set on the dataset, or copied by `shutil.copy`, is kept, as it is by an `r+`
+  update.
 - **Nodata.** Each band's nodata value is read, from the file or an `.aux.xml` sidecar (where GDAL
   keeps per-band values); GeoTIFFs hold one value for all bands, so a writer given different
   values writes the last band's, with GDAL's warning.
