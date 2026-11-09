@@ -562,15 +562,31 @@ SRTM_NAMES = [
 ]
 
 
+def _tile_requests(length, block=64 << 10, least=1 << 20, slots=8):
+    """The requests a lazy read of a whole remote tile makes, sorted: its first 16,384 bytes,
+    then the rest of its blocks (terrio's default 64 KiB) as one run split into near-equal pieces
+    of 1 MiB at least (``SPLIT_RUN_BYTES``), 8 at most (``PARALLEL_RUNS``)."""
+    blocks = -(-length // block)
+    pieces = min(max(blocks // -(-least // block), 1), slots)
+    size, longer = divmod(blocks, pieces)
+    out = ["bytes=0-16383"]
+    for k in range(pieces):
+        first = k * size + min(k, longer)
+        end = first + size + (k < longer)
+        out.append(f"bytes={max(first * block, 16384)}-{min(end * block, length) - 1}")
+    return sorted(out)
+
+
 def test_a_remote_srtm_tile_is_known_by_its_name_and_size(tmp_path, serve):
     """A remote SRTM tile named for Imagine (``N37W120.img``, as NASADEM names its tiles) was
     refused after its first 16,384 bytes, which show no Imagine header, and one named ``.hgts``,
     ``.err``, ``.num``, ``.swb`` or ``.raw`` after them too, where GDAL reads them all: a tile is
     known by its name and size, as GDAL's SRTMHGT driver knows one (``VSIStatL``). Under every
-    name it opens as its local copy does, read in two requests (GDAL: a HEAD and eight, the same
-    bytes). A file so named without a tile's size is refused after its first request (at most
-    16,384 bytes), where one named ``.hgt`` was fetched whole before the reader refused it; and
-    ``driver=`` without SRTMHGT refuses the tile named ``.img`` after its first request."""
+    name it opens as its local copy does, read by its first 16,384 bytes, then the rest in pieces
+    of 1 MiB fetched in parallel (GDAL: a HEAD and eight requests, the same bytes). A file so
+    named without a tile's size is refused after its first request (at most 16,384 bytes), where
+    one named ``.hgt`` was fetched whole before the reader refused it; and ``driver=`` without
+    SRTMHGT refuses the tile named ``.img`` after its first request."""
     samples = (np.arange(1201 * 1201) % 3000).astype(">i2")
     samples[0] = -32768
     tile = samples.tobytes()
@@ -587,8 +603,8 @@ def test_a_remote_srtm_tile_is_known_by_its_name_and_size(tmp_path, serve):
         with rio.open(f"{server.url}/{name}") as ds:
             assert ds.profile == profile, name
             np.testing.assert_array_equal(ds.read(1), pixels)
-        ranges = [row[1] for row in server.log]
-        assert ranges == ["bytes=0-16383", f"bytes=16384-{len(tile) - 1}"], (name, server.log)
+        ranges = sorted(row[1] for row in server.log)
+        assert ranges == _tile_requests(len(tile)), (name, server.log)
         assert server.bytes_sent() == len(tile)
         terrio.clear_http_cache()
         server = serve(root=tmp_path / "wrong")
@@ -607,7 +623,9 @@ def test_a_remote_srtm_tile_is_known_by_its_name_and_size(tmp_path, serve):
     assert len(server.log) == 1, server.log
     with rio.open(url) as ds:
         np.testing.assert_array_equal(ds.read(1), pixels)
-    assert len(server.log) == 2 and server.bytes_sent() == len(tile), server.log
+    # the rest of the tile, in pieces fetched in parallel
+    assert len(server.log) == len(_tile_requests(len(tile))), server.log
+    assert server.bytes_sent() == len(tile), server.log
 
 
 def test_a_remote_imagine_file_is_read_under_a_tile_name_too(tmp_path, serve):
