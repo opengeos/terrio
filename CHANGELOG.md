@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A remote read of a long range through the block cache fetches it in pieces of at least 1 MiB,
+  up to 8 requests at a time, where one request carried it at the pace of a single connection:
+  a GeoParquet row group or a run of adjacent COG tiles. xterrio's remote Sentinel-2 cube (10
+  dates, 5 bands, 10 x 10 km) through a link of 4 MB/s per connection took 11.0 to 11.6 s
+  instead of 14.5 s, in 295 requests instead of 141 for the same 203.5 MiB.
+  `TERRIO_HTTP_MULTIRANGE=SERIAL` fetches each range in one request, as before.
 - MBTiles archives are read in place (#693). Opening one reads its schema and metadata from the
   file, mapped into memory on native builds, and each tile is read when asked for, by a lookup in
   the index on `(zoom_level, tile_column, tile_row)` that MBTiles writers create (or, for the

@@ -2064,6 +2064,11 @@ impl std::fmt::Debug for RangeReader {
 // ever shows next to a request's latency
 const PARALLEL_RUNS: usize = 8;
 
+/// The least a piece of a long run holds when the run is split into requests fetched in
+/// parallel (see [`Shared::fetch_blocks`]): smaller pieces would cost more in requests than they
+/// save in transfer.
+const SPLIT_RUN_BYTES: u64 = 1 << 20;
+
 /// A run of consecutive blocks that one request fetches (see [`Shared::fetch_blocks`]).
 struct Run {
     /// The run's first block.
@@ -2462,12 +2467,20 @@ impl Shared {
     /// in order as if fetched one after another.
     fn fetch_blocks(&mut self, blocks: &[u64], gap: u64) -> io::Result<()> {
         let blocks: Vec<u64> = blocks.iter().copied().filter(|&b| !self.load_cached_block(b)).collect();
+        // Fetched in parallel, a long run is split into pieces fetched together, as a server
+        // sends each response at the pace of one connection: as many as there are request slots,
+        // of at least SPLIT_RUN_BYTES each.
+        let max_run = if self.client.options.parallel_ranges {
+            (blocks.len() as u64).div_ceil(PARALLEL_RUNS as u64).max(SPLIT_RUN_BYTES.div_ceil(self.block_size)).max(1)
+        } else {
+            u64::MAX
+        };
         let mut runs = Vec::new();
         let mut i = 0;
         while i < blocks.len() {
             let start = blocks[i];
             let mut end = start;
-            while i + 1 < blocks.len() && blocks[i + 1] <= end + 1 + gap {
+            while i + 1 < blocks.len() && blocks[i + 1] <= end + 1 + gap && blocks[i + 1] - start < max_run {
                 i += 1;
                 end = blocks[i];
             }
@@ -3403,6 +3416,31 @@ mod tests {
             assert_eq!(gate.ranges_asked().len(), 3);
             assert_eq!(read_range(&mut r, 60 * 4096, 5000), data[60 * 4096..60 * 4096 + 5000]);
             assert_eq!(read_range(&mut r, 10 * 4096, 100), data[10 * 4096..10 * 4096 + 100]);
+        }
+    }
+
+    #[test]
+    fn a_long_run_is_fetched_in_pieces_in_parallel() {
+        // 2.5 MiB in one range: three requests of at least 1 MiB in flight together (each waits
+        // for the three), one request when serial.
+        let data: Vec<u8> = (0..3u32 << 20).map(|i| (i * 7 % 251) as u8).collect();
+        let (from, len) = (4096u64, 5u64 << 19);
+        for parallel in [true, false] {
+            let wait = if parallel { Duration::from_secs(10) } else { Duration::from_millis(100) };
+            let (url, gate) = serve_gated(data.clone(), move |first, gate| {
+                if first > 0 {
+                    gate.wait_until(|seen| seen.most >= 3, wait);
+                }
+                206
+            });
+            let opts = HttpOptions { parallel_ranges: parallel, cache_size: 64 << 20, ..options() };
+            let mut r = RangeReader::open_with(&Remote::Url(url), opts).unwrap();
+            r.prefetch(&[(from, len)]).unwrap();
+            let asked = gate.ranges_asked();
+            assert_eq!(asked.len(), if parallel { 3 } else { 1 }, "parallel_ranges={parallel}: {asked:?}");
+            assert_eq!(gate.most(), if parallel { 3 } else { 1 }, "parallel_ranges={parallel}");
+            assert_eq!(read_range(&mut r, from, len as usize), data[from as usize..(from + len) as usize]);
+            assert_eq!(gate.ranges_asked(), asked, "read from the cache");
         }
     }
 
@@ -5172,7 +5210,8 @@ mod tests {
     /// GDAL reads them all: an SRTM tile has no signature, and is known by its name and size, as
     /// GDAL's SRTMHGT driver knows one (`VSIStatL`). Under every one of those names, a tile is read
     /// as its local copy is (driver, samples, georeferencing, nodata, unit), by the whole read and
-    /// the lazy open, in two requests: its first 16,384 bytes, then the rest.
+    /// the lazy open: its first 16,384 bytes, then the rest (the lazy open's in pieces of 1 MiB
+    /// fetched in parallel).
     #[test]
     fn a_remote_srtm_tile_is_read_under_every_name_the_driver_takes() {
         let _serial = cache_test_guard();
@@ -5194,13 +5233,11 @@ mod tests {
                 let remote = if lazy { crate::LazyRaster::open(&url).and_then(|mut r| r.read()) } else { crate::open_raster(&url) };
                 let remote = remote.unwrap_or_else(|e| panic!("{name} (lazy {lazy}): {e}"));
                 assert!(read(remote) == expected, "{name} (lazy {lazy}): read otherwise than its local copy");
-                let last = tile.len() - 1;
-                assert_eq!(
-                    header_values(&seen, "range"),
-                    ["bytes=0-16383".to_string(), format!("bytes=16384-{last}")],
-                    "{name} (lazy {lazy})"
-                );
-                assert_eq!(seen.lock().unwrap().len(), 2, "{name} (lazy {lazy})");
+                let mut asked = header_values(&seen, "range");
+                asked.sort();
+                let expected =
+                    if lazy { tile_requests(tile.len()) } else { vec!["bytes=0-16383".into(), format!("bytes=16384-{}", tile.len() - 1)] };
+                assert_eq!(asked, expected, "{name} (lazy {lazy})");
             }
         }
     }
@@ -5273,9 +5310,24 @@ mod tests {
         let hgts = crate::LazyRaster::open(&format!("{base}/N37W120.hgts")).and_then(|mut r| r.read());
         crate::config::pop_scope();
         assert_eq!((img.unwrap().driver.name(), hgts.unwrap().driver.name()), ("SRTMHGT", "SRTMHGT"));
-        let last = srtm_tile().len() - 1;
-        let two = ["bytes=0-16383".to_string(), format!("bytes=16384-{last}")];
-        assert_eq!(header_values(&seen, "range"), [two.clone(), two].concat());
+        let mut asked = header_values(&seen, "range");
+        asked.sort();
+        let mut two = [tile_requests(srtm_tile().len()), tile_requests(srtm_tile().len())].concat();
+        two.sort();
+        assert_eq!(asked, two);
+    }
+
+    /// The requests a read of a whole remote tile of `len` bytes makes, sorted: its first 16,384
+    /// bytes, then the rest in pieces of 1 MiB (see `SPLIT_RUN_BYTES`).
+    fn tile_requests(len: usize) -> Vec<String> {
+        let mut out = vec!["bytes=0-16383".to_string()];
+        let (mut from, mut end) = (16384, 1 << 20);
+        while from < len {
+            out.push(format!("bytes={from}-{}", end.min(len) - 1));
+            (from, end) = (end, end + (1 << 20));
+        }
+        out.sort();
+        out
     }
 
     /// A remote file under a tile's extension whose name is no tile's (`big.hgt`, `N38W120_v2.hgt`),
