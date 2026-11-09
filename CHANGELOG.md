@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- A `sum` of one source without a cutline into an output of 2 x 2 pixels or fewer reads its source
+  a strip of rows at a time, so that its memory no longer grows with the source (#706). Such an
+  output is one chunk, which read its whole source window at once, and each output pixel computed
+  the shares of its whole footprint at once, 8 bytes per source pixel and twice that across a
+  change of CRS. The window is now read and summed in strips that fit the warp's working memory
+  (64 MiB), and each pixel's shares are computed a few rows at a time, in the same order: the
+  output is the same, bit for bit. `terrio warp -r sum --ts 1 1 --ot Float64` of a 16384 x 16384
+  Float32 COG without overviews peaked at 3,255 MiB and now at 225 MiB, in 2.3 s instead of 4.6 s,
+  and a 32768 x 32768 VRT of it, which the 4 GiB budget refused, is summed in 381 MiB.
+  `TERRIO_WARP_SUM_MAX_BYTES` now counts the source pixels held at once, without the shares: the
+  windows that several sources, a cutline, a `WarpedVRT` region or `terrio.rio.warp.reproject`
+  hold whole, and one source's chunk window or strip.
 - A `Raster` read lazily from a file, such as a GeoTIFF (`open_raster(path, lazy=True)`,
   `rio.open`, the xarray backend), can be read from several Python threads at once: `read`,
   `read_mask` and `numpy.asarray` raised `RuntimeError: Already borrowed` when a read overlapped
