@@ -23,7 +23,9 @@
 
 use crate::ops::simplify::open_ring;
 use crate::{Error, Result};
-use osmpbfreader::{OsmId, OsmObj, OsmPbfReader, Tags};
+#[path = "osm_pbf.rs"]
+mod pbf;
+use pbf::{Object as OsmObj, Tags};
 use std::collections::HashMap;
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
 
@@ -226,7 +228,7 @@ fn hstore(out: &mut String, s: &str) {
 }
 
 fn tag_list(tags: &Tags) -> Vec<(&str, &str)> {
-    tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+    tags.iter().map(|(k, v)| (k.as_ref(), v.as_ref())).collect()
 }
 
 fn is_area(tags: &[(&str, &str)]) -> bool {
@@ -577,35 +579,20 @@ pub fn parse(bytes: Vec<u8>) -> Result<Vec<Layer>> {
 
 /// Parses a PBF file whatever the order of its objects, holding them all.
 fn parse_any_order(bytes: Vec<u8>) -> Result<Vec<Layer>> {
-    let mut reader = OsmPbfReader::new(std::io::Cursor::new(bytes));
+    let (spans, _) = blob_spans(&mut std::io::Cursor::new(&bytes))?;
     let mut b = Builder::new();
-    for obj in reader.iter() {
-        let obj = obj.map_err(|e| Error::InvalidData(format!("OSM PBF: {e}")))?;
-        match obj {
-            OsmObj::Node(n) => {
-                // GDAL's arithmetic: nanodegrees times 1e-9 for points, and its grid for vertices.
-                let nano = |d: i32| 1e-9 * (i64::from(d) * 100) as f64;
-                let c = Coord::xy(nano(n.decimicro_lon), nano(n.decimicro_lat));
-                b.node(n.id.0, c.clone(), Coord::xy(grid(c.x), grid(c.y)), &tag_list(&n.tags));
+    for span in spans {
+        decode_block(&bytes[span.start as usize..span.end as usize], &mut |obj| {
+            match obj {
+                OsmObj::Node(n) => {
+                    let (point, stored) = node_coords(n.decimicro_lon, n.decimicro_lat);
+                    b.node(n.id, point, stored, &tag_list(&n.tags));
+                }
+                OsmObj::Way(w) => b.way(w.id, w.nodes, &tag_list(&w.tags)),
+                OsmObj::Relation(r) => b.relations.push(r),
             }
-            OsmObj::Way(w) => b.way(w.id.0, w.nodes.iter().map(|n| n.0).collect(), &tag_list(&w.tags)),
-            OsmObj::Relation(r) => {
-                let members = r
-                    .refs
-                    .iter()
-                    .map(|m| {
-                        let id = match m.member {
-                            OsmId::Node(n) => Member::Node(n.0),
-                            OsmId::Way(w) => Member::Way(w.0),
-                            OsmId::Relation(r) => Member::Relation(r.0),
-                        };
-                        (id, m.role.to_string())
-                    })
-                    .collect();
-                let tags = r.tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-                b.relations.push(Relation { id: r.id.0, members, tags });
-            }
-        }
+            Ok(())
+        })?;
     }
     Ok(b.finish())
 }
@@ -758,33 +745,59 @@ fn pb_varint(b: &[u8], i: &mut usize) -> Option<u64> {
 }
 
 /// The varint and length-delimited fields of a protobuf message, as `(number, value)`.
-fn pb_fields(b: &[u8]) -> Option<Vec<(u64, Pb<'_>)>> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < b.len() {
-        let key = pb_varint(b, &mut i)?;
-        if key >> 3 == 0 {
+#[derive(Clone)]
+struct PbFields<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> PbFields<'a> {
+    fn field(&mut self) -> Option<Option<(u64, Pb<'a>)>> {
+        let b = self.bytes;
+        let key = pb_varint(b, &mut self.at)?;
+        if key >> 3 == 0 || key >> 3 > 0x1fff_ffff {
             return None;
         }
-        match key & 7 {
-            0 => out.push((key >> 3, Pb::Int(pb_varint(b, &mut i)?))),
-            1 => {
-                b.get(i..i.checked_add(8)?)?;
-                i += 8;
-            }
+        let value = match key & 7 {
+            0 => Pb::Int(pb_varint(b, &mut self.at)?),
             2 => {
-                let n = usize::try_from(pb_varint(b, &mut i)?).ok()?;
-                out.push((key >> 3, Pb::Bytes(b.get(i..i.checked_add(n)?)?)));
-                i += n;
+                let n = usize::try_from(pb_varint(b, &mut self.at)?).ok()?;
+                let end = self.at.checked_add(n)?;
+                let bytes = b.get(self.at..end)?;
+                self.at = end;
+                Pb::Bytes(bytes)
             }
-            5 => {
-                b.get(i..i.checked_add(4)?)?;
-                i += 4;
+            1 | 5 => {
+                let end = self.at.checked_add(if key & 7 == 1 { 8 } else { 4 })?;
+                b.get(self.at..end)?;
+                self.at = end;
+                return Some(None);
             }
             _ => return None,
-        }
+        };
+        Some(Some((key >> 3, value)))
     }
-    Some(out)
+}
+
+impl<'a> Iterator for PbFields<'a> {
+    type Item = (u64, Pb<'a>);
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.at < self.bytes.len() {
+            if let Some(field) = self.field()? {
+                return Some(field);
+            }
+        }
+        None
+    }
+}
+
+/// Validate once, then iterate borrowed fields without allocating a field array.
+fn pb_fields(b: &[u8]) -> Option<PbFields<'_>> {
+    let mut fields = PbFields { bytes: b, at: 0 };
+    while fields.at < b.len() {
+        fields.field()?;
+    }
+    Some(PbFields { bytes: b, at: 0 })
 }
 
 /// A PBF file being read: in memory, or a file read a batch of blocks at a time.
@@ -792,7 +805,7 @@ pub(crate) trait PbfInput: std::io::Read + std::io::Seek {}
 impl<T: std::io::Read + std::io::Seek> PbfInput for T {}
 
 /// The spans of a PBF file's data blobs (each with its length prefix and header, as
-/// `OsmPbfReader` reads them), and whether its header says it is sorted by type then id. Only
+/// the block decoder reads them), and whether its header says it is sorted by type then id. Only
 /// the blob headers (and the file header) are read.
 fn blob_spans(r: &mut dyn PbfInput) -> Result<(Vec<std::ops::Range<u64>>, bool)> {
     use std::io::{Read, SeekFrom};
@@ -833,7 +846,7 @@ fn blob_spans(r: &mut dyn PbfInput) -> Result<(Vec<std::ops::Range<u64>>, bool)>
             b"OSMHeader" => {
                 let mut blob = vec![0u8; size as usize];
                 r.read_exact(&mut blob)?;
-                sorted = header_says_sorted(&blob).ok_or_else(bad)?;
+                sorted = pbf::header_sorted(&blob)?;
             }
             _ => r.seek_relative(size as i64)?,
         }
@@ -853,58 +866,13 @@ fn read_spans(r: &mut dyn PbfInput, spans: &[std::ops::Range<u64>]) -> Result<Ve
 
 /// Whether a header blob lists the `Sort.Type_then_ID` feature: nodes, then ways, then
 /// relations, each by increasing id (as osmium, Geofabrik and the planet files write them).
+#[cfg(test)]
 fn header_says_sorted(blob: &[u8]) -> Option<bool> {
-    const LIMIT: usize = 32 * 1024 * 1024;
-    let mut header = None;
-    for (field, value) in pb_fields(blob)? {
-        match (field, value) {
-            (1, Pb::Bytes(raw)) => {
-                if raw.len() > LIMIT || header.is_some() {
-                    return None;
-                }
-                header = Some(raw.to_vec());
-            }
-            (3, Pb::Bytes(zlib)) => {
-                use std::io::Read;
-                if header.is_some() {
-                    return None;
-                }
-                let mut decoded = Vec::new();
-                flate2::read::ZlibDecoder::new(zlib).take((LIMIT + 1) as u64).read_to_end(&mut decoded).ok()?;
-                if decoded.len() > LIMIT {
-                    return None;
-                }
-                header = Some(decoded);
-            }
-            (4..=7, Pb::Bytes(_)) => return None,
-            _ => {}
-        }
-    }
-    let header = header?;
-    Some(pb_fields(&header)?.into_iter().any(|(field, value)| matches!((field, value), (4 | 5, Pb::Bytes(b"Sort.Type_then_ID")))))
+    pbf::header_sorted(blob).ok()
 }
 
-fn decode_block(span: &[u8]) -> Result<osmpbfreader::osmformat::PrimitiveBlock> {
-    let err = |e: osmpbfreader::Error| Error::InvalidData(format!("OSM PBF: {e}"));
-    let blob = OsmPbfReader::new(span).blobs().next().ok_or_else(|| Error::InvalidData("OSM PBF: bad blob".into()))?.map_err(err)?;
-    osmpbfreader::primitive_block_from_blob(&blob).map_err(err)
-}
-
-fn relation(r: &osmpbfreader::Relation) -> Relation {
-    let members = r
-        .refs
-        .iter()
-        .map(|m| {
-            let id = match m.member {
-                OsmId::Node(n) => Member::Node(n.0),
-                OsmId::Way(w) => Member::Way(w.0),
-                OsmId::Relation(r) => Member::Relation(r.0),
-            };
-            (id, m.role.to_string())
-        })
-        .collect();
-    let tags = r.tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-    Relation { id: r.id.0, members, tags }
+fn decode_block(span: &[u8], emit: &mut dyn FnMut(OsmObj) -> Result<()>) -> Result<()> {
+    pbf::decode(span, emit)
 }
 
 /// GDAL's coordinates of a node from its decimicro degrees: nanodegrees times 1e-9 for points,
@@ -1085,28 +1053,27 @@ impl NodeStore {
 struct Block {
     nodes: Vec<(i64, i32, i32)>,
     points: Vec<Feature>,
-    ways: Vec<osmpbfreader::Way>,
+    ways: Vec<pbf::Way>,
     has_nodes: bool,
     has_relations: bool,
     out_of_order: bool,
 }
 
 fn read_block(span: &[u8], points: bool, schema: &wbvector::Schema) -> Result<Block> {
-    let block = decode_block(span)?;
     let mut b =
         Block { nodes: Vec::new(), points: Vec::new(), ways: Vec::new(), has_nodes: false, has_relations: false, out_of_order: false };
-    for obj in osmpbfreader::blocks::iter(&block) {
+    decode_block(span, &mut |obj| {
         match obj {
             OsmObj::Node(nd) => {
                 b.out_of_order |= !b.ways.is_empty() || b.has_relations;
                 b.has_nodes = true;
-                b.nodes.push((nd.id.0, nd.decimicro_lon, nd.decimicro_lat));
+                b.nodes.push((nd.id, nd.decimicro_lon, nd.decimicro_lat));
                 if points {
                     let tags = tag_list(&nd.tags);
                     if tags.iter().any(|(k, _)| !POINT_INSIGNIFICANT.contains(k)) {
-                        let attrs = SPECS[0].attributes(schema, nd.id.0, false, &tags);
+                        let attrs = SPECS[0].attributes(schema, nd.id, false, &tags);
                         let point = node_coords(nd.decimicro_lon, nd.decimicro_lat).0;
-                        b.points.push(Feature { fid: nd.id.0 as u64, geometry: Some(Geometry::Point(point)), attributes: attrs });
+                        b.points.push(Feature { fid: nd.id as u64, geometry: Some(Geometry::Point(point)), attributes: attrs });
                     }
                 }
             }
@@ -1116,7 +1083,8 @@ fn read_block(span: &[u8], points: bool, schema: &wbvector::Schema) -> Result<Bl
             }
             OsmObj::Relation(_) => b.has_relations = true,
         }
-    }
+        Ok(())
+    })?;
     Ok(b)
 }
 
@@ -1182,13 +1150,13 @@ fn decode_member(b: &[u8], mut at: usize) -> Option<MemberWay<'_>> {
 
 /// What a way of a sorted file gives (see [`Builder::finish`], which this mirrors).
 fn way_out(
-    w: &osmpbfreader::Way,
+    w: &pbf::Way,
     nodes: &NodeStore,
     wanted: &[bool; 5],
     members: &std::collections::HashSet<i64>,
     schema: &wbvector::Schema,
 ) -> WayOut {
-    let id = w.id.0;
+    let id = w.id;
     let tags = tag_list(&w.tags);
     let closed = w.nodes.len() > 1 && w.nodes.first() == w.nodes.last();
     let area = closed && is_area(&tags);
@@ -1198,7 +1166,7 @@ fn way_out(
         return out;
     }
     let n = if area { w.nodes.len() - 1 } else { w.nodes.len() };
-    let mut raw: Vec<[i32; 2]> = w.nodes[..n].iter().filter_map(|n| nodes.get_raw(n.0)).collect();
+    let mut raw: Vec<[i32; 2]> = w.nodes[..n].iter().filter_map(|n| nodes.get_raw(*n)).collect();
     if area && !raw.is_empty() {
         raw.push(raw[0]);
     }
@@ -1345,12 +1313,12 @@ pub(crate) fn is_sorted_pbf(input: &mut dyn PbfInput) -> bool {
                 _ => {}
             }
         }
-        if kind != b"OSMHeader" || size > 64 << 20 {
+        if kind != b"OSMHeader" || size > pbf::MAX_BLOB as u64 {
             return None;
         }
         let mut blob = vec![0u8; size as usize];
         input.read_exact(&mut blob).ok()?;
-        header_says_sorted(&blob)
+        pbf::header_sorted(&blob).ok()
     };
     header().unwrap_or(false)
 }
@@ -1391,15 +1359,15 @@ pub(crate) fn read_sorted_pbf(
     let mut last = spans.len();
     if need_relations {
         while last > 0 {
-            let block = decode_block(&read_spans(input, &spans[last - 1..last])?)?;
             let mut rels = Vec::new();
             let mut only_relations = true;
-            for obj in osmpbfreader::blocks::iter(&block) {
+            decode_block(&read_spans(input, &spans[last - 1..last])?, &mut |obj| {
                 match obj {
-                    OsmObj::Relation(r) => rels.push(relation(&r)),
+                    OsmObj::Relation(r) => rels.push(r),
                     _ => only_relations = false,
                 }
-            }
+                Ok(())
+            })?;
             tail.push(rels);
             if !only_relations {
                 break;
