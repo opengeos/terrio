@@ -858,6 +858,25 @@ pub(crate) fn xml_escape(s: &str) -> String {
 /// A raster whose geotransform is GDAL's default (no georeferencing).
 pub(crate) const NO_GEOTRANSFORM: [f64; 6] = [0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
+/// Whether creation options leave a raster its geotransform: not with terrio's
+/// `GEOREFERENCED=NO`, given to a raster that has none (any value but `YES`, `TRUE`, `ON` or `1`,
+/// the last one given counting). Without a geotransform and without a CRS, a writer writes no
+/// georeferencing: no GeoTIFF tie point, GeoJP2 box or world file.
+pub(crate) fn georeferenced(creation_options: &[(String, String)]) -> bool {
+    creation_options
+        .iter()
+        .rev()
+        .find(|(k, _)| k.eq_ignore_ascii_case("GEOREFERENCED"))
+        .is_none_or(|(_, v)| matches!(v.to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1"))
+}
+
+/// Whether a raster written to a format that keeps its georeferencing beside the pixels (a
+/// GeoJP2 box, a world file) gets it: unless it has no geotransform (`georeferenced` false) and
+/// no CRS. A CRS alone is still written, with the raster's unit-pixel grid.
+pub(crate) fn writes_georeferencing(r: &Raster, georeferenced: bool) -> bool {
+    georeferenced || !spatial_ref(&r.crs).is_unknown()
+}
+
 /// GDAL's WKT of WGS 84 in latitude, longitude order (`SRS_WKT_WGS84_LAT_LONG`), which it gives
 /// the geolocation arrays of swaths.
 pub(crate) const WGS84_LAT_LONG_WKT: &str = "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST],AUTHORITY[\"EPSG\",\"4326\"]]";

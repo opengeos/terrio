@@ -494,7 +494,9 @@ pub fn translate_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: Over
 /// the overview `RasterIO` chooses (`OverviewSelection::Auto`). Other outputs (resampled by
 /// average, RMS, mode or Lanczos, from a level read alone, of complex bands or of another
 /// format), those that [`translate_lazy`] translates from the source read whole, and outputs
-/// that replace one of the source's files are written from the output translated whole.
+/// that replace one of the source's files are written from the output translated whole. A source
+/// without a geotransform of its own (an unreferenced GeoTIFF or JPEG 2000 file) gives an output
+/// without one, unless `assign_ullr` gives it one ([`LazyRaster::keep_unreferenced`]).
 ///
 /// # Errors
 ///
@@ -506,7 +508,12 @@ pub fn translate_lazy_to_file(
     path: &str,
     options: &crate::RasterWriteOptions,
 ) -> Result<()> {
-    write_lazy(src, o, overview, path, options, None)
+    // A source without a geotransform gives an output without one, unless one is assigned.
+    let mut options = options.clone();
+    if o.assign_ullr.is_none() {
+        src.keep_unreferenced(&mut options, path);
+    }
+    write_lazy(src, o, overview, path, &options, None)
 }
 
 /// [`translate_lazy_to_file`], in strips of `rows_per_strip` rows (by default, about 64 MB).

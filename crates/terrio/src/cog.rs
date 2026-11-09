@@ -951,6 +951,25 @@ impl LazyRaster {
         }
     }
 
+    /// Marks `options` for writing this raster to `path` without a geotransform when it has none
+    /// (an unreferenced GeoTIFF or JPEG 2000 file): `GEOREFERENCED=NO` for a GeoTIFF, COG, JPEG
+    /// 2000, PNG, JPEG or WebP output, unless the options give a geotransform or a
+    /// `GEOREFERENCED` of their own. Written without a CRS either, such an output has no
+    /// georeferencing at all: no tie point, GeoJP2 box or world file declaring the unit-pixel grid
+    /// [`geo_transform`](Self::geo_transform) gives it.
+    pub fn keep_unreferenced(&self, options: &mut crate::RasterWriteOptions, path: &str) {
+        let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
+        if matches!(
+            driver,
+            Some(RasterDriver::GTiff | RasterDriver::Cog | RasterDriver::JP2 | RasterDriver::PNG | RasterDriver::JPEG | RasterDriver::WEBP)
+        ) && !self.geotransform_present()
+            && options.geo_transform.is_none()
+            && !options.creation_options.iter().any(|(key, _)| key.eq_ignore_ascii_case("GEOREFERENCED"))
+        {
+            options.creation_options.push(("GEOREFERENCED".into(), "NO".into()));
+        }
+    }
+
     /// The CRS.
     pub fn crs(&self) -> SpatialRef {
         match &self.inner {

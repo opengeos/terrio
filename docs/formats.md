@@ -57,6 +57,11 @@ with GDAL's default, `EXACT=0`, libwebp writes values of its own choosing there.
 that is opaque everywhere is left out, so the file reads back as 3 bands, in GDAL as in terrio.
 WebP files are read lossless or lossy, as 3 bands, or 4 with an alpha channel.
 
+A raster without a geotransform and without a CRS (`GEOREFERENCED=NO`, which `terrio.rio`,
+`translate`, `convert` and pipelines give a source without a geotransform) is written to PNG,
+JPEG and WebP without a world file, removing one an earlier write left at that path, and to JPEG
+2000 without a GeoJP2 box. A CRS without a geotransform is written as before.
+
 Native TIFF readers limit each decoded tile or strip to 256 MiB by default. For trusted
 files with larger chunks, use `TiffReadLimits` with `LazyRaster::open_tiff_with_limits`
 (or its bytes/sparse counterparts), or `terrio::open_raster_with_tiff_limits` for an

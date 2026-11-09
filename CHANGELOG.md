@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A raster without a geotransform and without a CRS is written without georeferencing to JPEG
+  2000, PNG, JPEG and WebP, as to GeoTIFF: no GeoJP2 box, and no world file (one an earlier write
+  left at that path is removed). They declared the unit-pixel grid such a raster is given,
+  `(0, 1, 0, height, 0, -1)`, as its georeferencing (#714). `terrio.rio` marks such a raster with
+  `GEOREFERENCED=NO`, which only the GeoTIFF writer read. `terrio translate`, `convert` and
+  pipelines now give it to the outputs of a source without a geotransform (an unreferenced
+  GeoTIFF or JPEG 2000 file) unless `--a-ullr` or `--t-srs` georeferences them, so `translate`
+  and `convert` no longer write such a source's GeoTIFF with a geotransform either
+  (`LazyRaster::keep_unreferenced`). A CRS without a geotransform is written as before.
 - Multi-chunk window reads of a GeoTIFF keep the decoders of their worker threads for the next
   read of the same open raster, instead of opening one per worker, which reads the image's whole
   chunk offset and byte count tables, on every read. 640 x 640 reads of a GeoTIFF in 481,000

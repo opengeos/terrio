@@ -128,10 +128,10 @@ pub(crate) fn read_jpeg(path: &Path) -> Result<RasterDataset> {
 }
 
 /// Writes a JPEG file (see [`encode_jpeg`]), its world file and its CRS sidecar.
-pub(crate) fn write_jpeg(r: &Raster, path: &Path, quality: Option<&str>) -> Result<()> {
+pub(crate) fn write_jpeg(r: &Raster, path: &Path, quality: Option<&str>, georeferenced: bool) -> Result<()> {
     let bytes = encode_jpeg(r, quality)?;
     common::write_replacing(path, bytes)?;
-    write_world_file(r, path)?;
+    write_world_file(r, path, georeferenced)?;
     common::write_pam(path, &r.crs)
 }
 
@@ -223,16 +223,25 @@ pub(crate) fn read_world_file(path: &Path) -> Option<[f64; 6]> {
     Some([v[4] - v[0] / 2.0 - v[2] / 2.0, v[0], v[2], v[5] - v[1] / 2.0 - v[3] / 2.0, v[1], v[3]])
 }
 
-/// Writes a world file (`.wld`) for a raster.
-pub(crate) fn write_world_file(r: &Raster, path: &Path) -> Result<()> {
+/// Writes a world file (`.wld`) for a raster, unless it has neither a geotransform
+/// (`georeferenced` false, `GEOREFERENCED=NO`) nor a CRS: then a world file an earlier write left
+/// at that path is removed, since it would georeference the new image.
+pub(crate) fn write_world_file(r: &Raster, path: &Path, georeferenced: bool) -> Result<()> {
+    let world = path.with_extension("wld");
+    if !common::writes_georeferencing(r, georeferenced) {
+        return match std::fs::remove_file(&world) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        };
+    }
     let (dx, dy) = (r.cell_size_x, -r.cell_size_y);
     let text = format!("{dx}\n0\n0\n{dy}\n{}\n{}\n", r.x_min + dx / 2.0, r.y_max() + dy / 2.0);
-    common::write_replacing(path.with_extension("wld"), text)?;
+    common::write_replacing(world, text)?;
     Ok(())
 }
 
 /// Writes a PNG (Byte or UInt16, 1 to 4 bands), its world file and its CRS sidecar.
-pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> {
+pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, georeferenced: bool) -> Result<()> {
     let color = match r.bands {
         1 => png::ColorType::Grayscale,
         2 => png::ColorType::GrayscaleAlpha,
@@ -277,7 +286,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
     w.write_image_data(&bytes).map_err(|e| png_err(path, e))?;
     w.finish().map_err(|e| png_err(path, e))?;
     file.into_inner().map_err(std::io::IntoInnerError::into_error)?.finish()?;
-    write_world_file(r, path)?;
+    write_world_file(r, path, georeferenced)?;
     common::write_pam(path, &r.crs)
 }
 
@@ -325,7 +334,7 @@ mod tests {
         // A grayscale PNG has no color table.
         let gray = common::make_raster(3, 2, 1, RasterData::U8(vec![0, 1, 2, 3, 4, 5]), common::NO_GEOTRANSFORM, Default::default(), None)
             .unwrap();
-        write(&gray, None, &p).unwrap();
+        write(&gray, None, &p, true).unwrap();
         let ds = read(&p).unwrap();
         assert!(ds.color_table.is_empty());
         assert!(ds.band_metadata.is_empty());
@@ -341,7 +350,7 @@ mod tests {
         for (bands, names) in (1..=4).zip(expected) {
             let r = common::make_raster(2, 2, bands, RasterData::U8(vec![7; 4 * bands]), common::NO_GEOTRANSFORM, Default::default(), None)
                 .unwrap();
-            write(&r, None, &p).unwrap();
+            write(&r, None, &p, true).unwrap();
             let ds = read(&p).unwrap();
             let got: Vec<&str> = ds.band_metadata.iter().filter_map(|m| m.color_interp.as_deref()).collect();
             assert_eq!(got, names, "{bands} bands");
