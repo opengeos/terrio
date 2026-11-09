@@ -1003,16 +1003,13 @@ pub(crate) fn check_stored_chunks(compression: u16, chunks: impl IntoIterator<It
 /// chunks in parallel.
 pub(crate) type Reopen<'a, D> = &'a (dyn Fn() -> crate::Result<tiff::decoder::Decoder<D>> + Sync);
 
-/// Worker decoders kept between the window reads of one open TIFF.
+/// The decoders that the workers of [`decode_chunks`] leave for the next window read of the same
+/// TIFF.
 ///
-/// Opening a decoder makes the `tiff` crate read the chunk offset and byte count tables of the
-/// image it is positioned on whole, so its cost grows with the image's chunk count, not with the
-/// window. Without this pool, every multi-chunk window read opened one decoder per worker thread:
-/// a 640 x 640 read of a 150,000 x 210,000 GeoTIFF in 256 x 256 tiles (481,000 tiles) parsed
-/// those tables nine times. With it, a worker takes a decoder that a previous read left, positioned
-/// on the image it read, and gives it back when it has decoded its chunks.
-///
-/// At most [`crate::par::threads`] decoders are kept; each keeps the tables of its image.
+/// Opening a decoder makes the `tiff` crate read the chunk offset and byte count tables of its
+/// image whole, which costs as much as the image has chunks, whatever the window. A worker thus
+/// takes a decoder that an earlier read left, on the image it read, and opens one only when none
+/// is left. At most [`crate::par::threads`] decoders are kept, each with its image's tables.
 pub(crate) struct DecoderPool<D: Read + Seek> {
     spare: std::sync::Mutex<Vec<(usize, tiff::decoder::Decoder<D>)>>,
     /// How many decoders the workers opened because none was spare.
