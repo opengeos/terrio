@@ -185,3 +185,88 @@ fn native_gml_is_preferred_with_the_fallback_enabled() {
     let _scope = ScopeGuard;
     check_read(path.to_str().unwrap(), "GML");
 }
+
+/// A GPX document and a KML document of three points each, point `i` at `(i, 0)`.
+#[cfg(not(feature = "gdal"))]
+fn gpx_and_kml() -> [(&'static str, String, &'static str); 2] {
+    let points = |each: &dyn Fn(usize) -> String| (0..3).map(each).collect::<String>();
+    let gpx = r#"<?xml version="1.0"?><gpx version="1.1" creator="test" xmlns="http://www.topografix.com/GPX/1/1">"#.to_string()
+        + &points(&|i| format!(r#"<wpt lat="0" lon="{i}"><name>p{i}</name></wpt>"#))
+        + "</gpx>";
+    let kml = r#"<?xml version="1.0"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>"#.to_string()
+        + &points(&|i| format!("<Placemark><name>k{i}</name><Point><coordinates>{i},0</coordinates></Point></Placemark>"))
+        + "</Document></kml>";
+    [("points.gpx", gpx, "GPX"), ("places.kml", kml, "KML")]
+}
+
+/// The x of the points of the first layer `path` gives with `skip_features` and `max_features`.
+#[cfg(not(feature = "gdal"))]
+fn xs_in_range(path: &str, skip_features: usize, max_features: Option<usize>) -> (String, Vec<f64>) {
+    let options = terrio::VectorOpenOptions { skip_features, max_features, ..Default::default() };
+    let read = terrio::open_vector(path, &options).unwrap();
+    let xs = read.layers[0]
+        .features
+        .iter()
+        .map(|f| match &f.geometry {
+            Some(terrio::Geometry::Point(c)) => c.x,
+            other => panic!("{path}: not a point: {other:?}"),
+        })
+        .collect();
+    (read.driver.name().to_string(), xs)
+}
+
+/// Without the `gdal` feature, with `TERRIO_WBVECTOR_FALLBACK=YES`, a document only the `wbvector`
+/// fallback recognises (GPX or KML under a name of no driver) gives the features `skip_features` and
+/// `max_features` ask for, and the driver of its format, as the same document under its own
+/// extension does (#726). So do a GML document terrio's reader refuses, which goes on to the
+/// fallback, and a GeoPackage under a name of no driver.
+#[cfg(not(feature = "gdal"))]
+#[test]
+fn the_wbvector_fallback_keeps_the_range_asked_for() {
+    let dir = tempfile::tempdir().unwrap();
+    terrio::config::push_scope(HashMap::from([("TERRIO_WBVECTOR_FALLBACK".to_string(), Some("YES".to_string()))]));
+    let _scope = ScopeGuard;
+    // A GML document terrio's reader refuses, which goes on to the fallback: its second feature
+    // alone.
+    let [_, (mixed, _)] = refused_documents(dir.path());
+    let features = |options: &terrio::VectorOpenOptions| {
+        let read = terrio::open_vector(&mixed, options).unwrap();
+        (read.driver.name().to_string(), read.layers[0].features.iter().map(|f| f.attributes.clone()).collect::<Vec<_>>())
+    };
+    let (driver, all) = features(&Default::default());
+    let ranged = features(&terrio::VectorOpenOptions { skip_features: 1, max_features: Some(1), ..Default::default() });
+    assert_eq!((driver.as_str(), all.len()), ("GML", 2));
+    assert_ne!(all[0], all[1]);
+    assert_eq!(ranged, ("GML".to_string(), all[1..].to_vec()));
+    // GPX and KML, under their own extensions and under a name of no driver.
+    let ranges: [(usize, Option<usize>, &[f64]); 5] =
+        [(1, Some(1), &[1.0]), (2, None, &[2.0]), (0, Some(2), &[0.0, 1.0]), (5, None, &[]), (0, None, &[0.0, 1.0, 2.0])];
+    let (mut got, mut want) = (Vec::new(), Vec::new());
+    for (name, document, driver) in gpx_and_kml() {
+        let named = dir.path().join(name);
+        let unnamed = named.with_extension("bin");
+        for path in [&named, &unnamed] {
+            std::fs::write(path, &document).unwrap();
+            for (skip, max, xs) in ranges {
+                let file = path.file_name().unwrap().to_str().unwrap();
+                got.push((file.to_string(), skip, max, xs_in_range(path.to_str().unwrap(), skip, max)));
+                want.push((file.to_string(), skip, max, (driver.to_string(), xs.to_vec())));
+            }
+        }
+    }
+    // A GeoPackage under a name of no driver, which the fallback finds by its SQLite header: the
+    // points of the KML document, written by terrio.
+    #[cfg(feature = "sqlite")]
+    {
+        let places = terrio::open_vector(dir.path().join("places.kml").to_str().unwrap(), &Default::default()).unwrap();
+        let gpkg = dir.path().join("rows.gpkg");
+        terrio::write_vector(&places.layers, gpkg.to_str().unwrap(), &Default::default()).unwrap();
+        let unnamed = gpkg.with_extension("bin");
+        std::fs::copy(&gpkg, &unnamed).unwrap();
+        for (skip, max, xs) in ranges {
+            got.push(("rows.bin".to_string(), skip, max, xs_in_range(unnamed.to_str().unwrap(), skip, max)));
+            want.push(("rows.bin".to_string(), skip, max, ("GPKG".to_string(), xs.to_vec())));
+        }
+    }
+    assert_eq!(got, want);
+}

@@ -231,7 +231,7 @@ pub(crate) fn read_mask<R: Read + Seek>(f: &mut R, m: &MaskImage, window: (usize
     let row_bytes = bw.div_ceil(8);
     let size = crate::dataset::fallible::len(&[row_bytes, bh], "a TIFF mask chunk")?;
     if size > limit {
-        return Err(Error::DecodedLimitExceeded { resource: "TIFF chunk or tag value", limit });
+        return Err(Error::DecodedLimitExceeded { resource: crate::cog::TIFF_CHUNK_RESOURCE, limit });
     }
     let what = "the mask";
     let mut out = crate::dataset::fallible::filled(crate::dataset::fallible::len(&[w, h], what)?, 0u8, what)?;

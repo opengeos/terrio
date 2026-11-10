@@ -906,8 +906,9 @@ terrio.allowed_drivers("raster")  # ["GTIFF"]
 
 `set_allowed_drivers` lasts for the process: later calls narrow the list, and lifting it with
 `None` raises `InvalidArgumentError`. `GDAL_HTTP_HEADERS` set for a prefix is sent only to that
-prefix, never to another host a redirect leads to. See [Remote Data](remote-data.md) for the
-options themselves.
+prefix, never to another host a redirect leads to. `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO`, in the
+environment or in an `Env`, keeps reads from following a redirect to another origin at all. See
+[Remote Data](remote-data.md) for the options themselves.
 
 The `TERRIO_ALLOWED_DRIVERS` option limits the drivers too, in the environment or in an `Env`. A
 driver must then be in both lists, and `allowed_drivers()` gives the drivers both allow. The
@@ -917,6 +918,20 @@ force. `allowed_drivers()` is the way to see what the option allows: `terrio.pyo
 `get_gdal_config_option` reports a set but empty value as unset (`None`), and `config_options()`
 shows only the values `Env` scopes hold, `''` where a scope allows nothing. See
 [Allowed drivers](remote-data.md#allowed-drivers).
+
+GeoTIFF readers refuse a tile or strip that decodes to more than 256 MiB
+(`ResourceLimitError`), a bound on what a malformed header can make a read allocate. A
+pixel-interleaved file of many bands reaches it with ordinary tiles. For trusted files, the
+`TERRIO_TIFF_MAX_CHUNK_BYTES` option, a positive number of bytes, raises it for the rasters
+opened while it is set, in the environment or an `Env`. Size it to the file's chunks (tile
+width x height x bands x bytes per sample when pixel-interleaved), not to an unbounded value:
+a read may hold about the limit times the chunks it decodes in parallel. The refusal names the
+option:
+
+```python
+with Env(TERRIO_TIFF_MAX_CHUNK_BYTES=str(1 << 30)):
+    da = terrio.xarray.open_rasterio("pixel_interleaved_1488_bands.tif")
+```
 
 ## Typing
 
