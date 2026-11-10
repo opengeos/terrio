@@ -63,7 +63,11 @@ impl Readers {
             _ => None,
         };
         let path = absolute.as_deref().and_then(std::path::Path::to_str).unwrap_or(path);
-        Self { path: path.to_owned(), options: terrio::config::thread_options(), spare: Default::default() }
+        let mut options = terrio::config::thread_options();
+        // Freeze the resolved limit, including an unset value, for readers opened later.
+        let limit = "TERRIO_TIFF_MAX_CHUNK_BYTES";
+        options.insert(limit.to_owned(), terrio::config::get(limit));
+        Self { path: path.to_owned(), options, spare: Default::default() }
     }
 
     /// Opens another reader with the options the raster was opened with, on whatever thread.

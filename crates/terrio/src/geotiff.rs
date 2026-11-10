@@ -1413,7 +1413,7 @@ fn decode_in_threads<D: Read + Seek + Send>(
 
 /// Reads a GeoTIFF (or BigTIFF, or COG) into memory: the full-resolution image of the first IFD.
 pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::RasterDataset> {
-    read_geotiff_with_limits(path, crate::TiffReadLimits::default())
+    read_geotiff_with_limits(path, crate::TiffReadLimits::from_config()?)
 }
 
 pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::cog::TiffReadLimits) -> crate::Result<crate::RasterDataset> {
