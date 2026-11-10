@@ -263,6 +263,21 @@ fn netcdf4_variable_order() {
     }
 }
 
+/// An unqualified multi-variable open selects the first data variable in listing order.
+/// GDAL 3.13.3 exposes only a zero-band container for this file; Terrio intentionally also
+/// provides the first raster. Its samples and nodata match GDAL's explicit `zulu` subdataset.
+#[test]
+fn netcdf_default_raster_follows_definition_order() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_order/definition_order.nc");
+    let implicit = open(&path.to_string_lossy());
+    let explicit = open(&format!("NETCDF:\"{}\":zulu", path.display()));
+    assert_eq!(implicit.nodata(), Some(-1.0));
+    assert_eq!(implicit.raster.data.to_f64_vec(), vec![2.0, 3.0, 0.0, 1.0]);
+    assert_eq!(implicit.raster.data.to_f64_vec(), explicit.raster.data.to_f64_vec());
+    assert_eq!(implicit.geo_transform(), explicit.geo_transform());
+    assert_eq!(implicit.crs().epsg, explicit.crs().epsg);
+}
+
 /// `Short` variables flagged `_Unsigned` whose `valid_range`, or `valid_min` and `valid_max`, hold
 /// `[9200, -9536]` in the variable's signed type, as GOES ABI L2 products do
 /// (`scripts/make_netcdf_unsigned_fixtures.py`): the bounds are read as unsigned too (9200 to

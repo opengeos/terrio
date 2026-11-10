@@ -271,7 +271,7 @@ fn all_variables<'a>(f: &'a NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_
     // tracks it, as netCDF-4 groups do: their definition order. netCDF lists the links of a group
     // that does not track it by name. The file is opened again, once, to tell.
     let h5 = std::cell::OnceCell::new();
-    let by_name = |group_path: &str| -> bool {
+    let untracked = |group_path: &str| -> bool {
         let header = || {
             let h = h5.get_or_init(|| if classic { None } else { hdf5() }).as_ref()?;
             let mut g = h.root_group().ok()?;
@@ -280,6 +280,8 @@ fn all_variables<'a>(f: &'a NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_
             }
             ObjectHeader::parse_at_storage(g.storage(), g.address(), g.offset_size(), g.length_size()).ok()
         };
+        // No Link Info message means untracked links, sorted by name. If reopening or
+        // parsing the header fails, retain the reader's order rather than guessing.
         header().is_some_and(|h| !h.messages.iter().any(|m| matches!(m, HdfMessage::LinkInfo(li) if li.creation_order_tracked)))
     };
     fn visit<'a>(chain: Vec<&'a NcGroup>, prefix: &str, by_name: &dyn Fn(&str) -> bool, out: &mut Vec<VarRef<'a>>) {
@@ -301,7 +303,7 @@ fn all_variables<'a>(f: &'a NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_
         }
     }
     let mut out = Vec::new();
-    visit(vec![root], "", &by_name, &mut out);
+    visit(vec![root], "", &untracked, &mut out);
     Ok(out)
 }
 
