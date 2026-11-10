@@ -311,6 +311,22 @@ def _read_geoparquet_dataframe(
     return gdf
 
 
+def _to_datetime_iso8601(pd, ser):
+    """`pd.to_datetime(ser, format="ISO8601")`, without pandas 2's warning about mixed time zones.
+
+    pandas 2 warns that parsing mixed time zones will raise, which only a change of the process's
+    warning filters silences, so they are changed for the call on pandas 2 only. pandas 3 raises
+    instead, which `_parse_datetime` handles, and the filters are left alone.
+    """
+    if int(pd.__version__.split(".")[0]) >= 3:
+        return pd.to_datetime(ser, format="ISO8601")
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", ".*parsing datetimes with mixed time zones will raise.*", FutureWarning
+        )
+        return pd.to_datetime(ser, format="ISO8601")
+
+
 def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
     """Date and date-time strings to datetime64[ms], as pyogrio 0.13 parses them with pandas."""
     import datetime
@@ -321,13 +337,9 @@ def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
         return ser
     warning = "Error parsing datetimes, original strings are returned: {message}"
     try:
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", ".*parsing datetimes with mixed time zones will raise.*", FutureWarning
-            )
-            res = pd.to_datetime(ser, format="ISO8601")
-            if not mixed_offsets_as_utc and res.dtype == "object":
-                res = res.map(lambda x: x.to_pydatetime(), na_action="ignore")
+        res = _to_datetime_iso8601(pd, ser)
+        if not mixed_offsets_as_utc and res.dtype == "object":
+            res = res.map(lambda x: x.to_pydatetime(), na_action="ignore")
     except Exception as ex:
         if isinstance(ex, ValueError) and "Mixed timezones detected" in str(ex):
             if mixed_offsets_as_utc:

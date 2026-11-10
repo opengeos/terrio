@@ -60,6 +60,7 @@ from terrio.rio.dtypes import dtype_fwd, typename_rev
 from terrio.rio.enums import ColorInterp, MaskFlags, Resampling
 from terrio.rio.errors import RasterioIOError, WarpedVRTError, WarpOptionsError
 from terrio.rio.io import _READER_READ_LEVEL, DatasetReader, _sum_scale
+from terrio.rio.transform import compose
 from terrio.rio.warp import (
     _WARP_NAMES,
     _crs_text,
@@ -362,9 +363,12 @@ class WarpedVRT(DatasetReader):
         elif transform is not None and width and height:
             t, w, h = transform, int(width), int(height)
         elif transform is None and self.src_crs == self.dst_crs:
-            t = self.src_transform * Affine.scale(
-                src_dataset.width / width,
-                src_dataset.height / height,  # type: ignore[operator]
+            t = compose(
+                self.src_transform,
+                Affine.scale(
+                    src_dataset.width / width,
+                    src_dataset.height / height,  # type: ignore[operator]
+                ),
             )
             w, h = int(width), int(height)  # type: ignore[arg-type]
         elif transform is None and rpc_georef:
@@ -378,7 +382,7 @@ class WarpedVRT(DatasetReader):
                 rpcs=src_rpcs,
                 **rpc_options,
             )
-            t = t * Affine.scale(dw / width, dh / height)  # type: ignore[operator]
+            t = compose(t, Affine.scale(dw / width, dh / height))  # type: ignore[operator]
             w, h = int(width), int(height)  # type: ignore[arg-type]
         elif transform is None:
             left, bottom, right, top = src_dataset.bounds
@@ -392,7 +396,7 @@ class WarpedVRT(DatasetReader):
                 right,
                 top,
             )
-            t = t * Affine.scale(dw / width, dh / height)  # type: ignore[operator]
+            t = compose(t, Affine.scale(dw / width, dh / height))  # type: ignore[operator]
             w, h = int(width), int(height)  # type: ignore[arg-type]
         else:
             # A transform without a size (rasterio raises): the suggested size, on that transform.
