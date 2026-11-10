@@ -537,7 +537,9 @@ pub fn zonal_stats_with(
             _ => None,
         })
         .collect();
-    let mut path_headers = crate::par::map_waiting(paths.len(), crate::par::threads(), |i| {
+    // Keep small header batches on the caller, as before context propagation was added.
+    let header_threads = if paths.len() >= 4 { crate::par::threads() } else { 1 };
+    let mut path_headers = crate::par::map_waiting(paths.len(), header_threads, |i| {
         Ok(paths[i].map(|path| {
             let header = crate::open_raster_lazy(path).map(|r| (r.header(), index::GridKey::of(&r)));
             (header, crate::warnings::take())

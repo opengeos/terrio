@@ -9,6 +9,30 @@
 #![cfg(not(target_family = "wasm"))]
 
 use std::collections::HashMap;
+
+struct ScopeGuard;
+impl Drop for ScopeGuard {
+    fn drop(&mut self) {
+        terrio::config::pop_scope();
+    }
+}
+
+/// Run each scenario in a fresh process with two pool threads, even on a one-core runner.
+/// This fixes the configuration before Terrio starts its process-wide pool.
+fn in_parallel_child(test: &str) -> bool {
+    if std::env::var_os("TERRIO_ZONAL_SCOPE_TEST_CHILD").is_some() {
+        assert_eq!(std::env::var("RAYON_NUM_THREADS").unwrap(), "2");
+        return true;
+    }
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture"])
+        .env("RAYON_NUM_THREADS", "2")
+        .env("TERRIO_ZONAL_SCOPE_TEST_CHILD", "1")
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{}{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+    false
+}
 use terrio::ops::zonal::{Statistic, ZonalBand, ZonalOptions, ZonalRaster, ZonalSource, zonal_stats};
 use terrio::vector::Coord;
 use terrio::{DataType, Feature, FieldValue, Geometry, Layer, Raster, RasterConfig, RasterDataset};
@@ -30,8 +54,8 @@ fn sums(paths: &[String], options: &[(&str, &str)]) -> Result<Vec<FieldValue>, S
         .collect();
     let zonal = ZonalOptions { stats: vec![Statistic::Sum], ..Default::default() };
     terrio::config::push_scope(options.iter().map(|(k, v)| (k.to_string(), Some(v.to_string()))).collect::<HashMap<_, _>>());
+    let _scope = ScopeGuard;
     let out = zonal_stats(&zones(), &mut sources, &zonal);
-    terrio::config::pop_scope();
     out.map(|layer| layer.features[0].attributes.clone()).map_err(|e| e.to_string())
 }
 
@@ -48,8 +72,11 @@ fn grids(dir: &std::path::Path, n: usize) -> Vec<String> {
 
 #[test]
 fn a_driver_allow_list_set_for_the_thread_refuses_every_raster_path() {
+    if !in_parallel_child("a_driver_allow_list_set_for_the_thread_refuses_every_raster_path") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
-    for n in [1, 4, 8] {
+    for n in [1, 2, 3, 4, 8] {
         let paths = grids(dir.path(), n);
         assert_eq!(sums(&paths, &[]), Ok(vec![FieldValue::Float(10.0); n]), "{n} grids, no list");
         let refused = sums(&paths, &[("TERRIO_ALLOWED_DRIVERS", "GTiff")]).unwrap_err();
@@ -63,6 +90,9 @@ fn a_driver_allow_list_set_for_the_thread_refuses_every_raster_path() {
 /// them read the world files, so the zone covers each raster.
 #[test]
 fn options_set_for_the_thread_reach_the_threads_reading_raster_paths() {
+    if !in_parallel_child("options_set_for_the_thread_reach_the_threads_reading_raster_paths") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let paths: Vec<String> = (0..4)
         .map(|i| {
