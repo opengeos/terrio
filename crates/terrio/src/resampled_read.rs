@@ -612,6 +612,11 @@ impl LazyRaster {
                 Ok(self.read_window(Window::new(x, y, w, h), &options)?.raster.data)
             }
             How::Nearest => {
+                // One fetch round for the whole window: without this, `sample_by_blocks` fails at
+                // the first missing chunk and the caller re-decodes every chunk before it on each
+                // retry.
+                let (x, y, w, h) = request.window;
+                self.prefetch_window(Window::new(x, y, w, h), &options)?;
                 let (cols, rows) = nearest_pixels(request.fwindow, read.buf, request.size);
                 if let Some(data) = self.read_sampled(&cols, &rows, &options)? {
                     return Ok(data);
@@ -756,6 +761,8 @@ impl LazyRaster {
             }
         };
         let (x, y, w, h) = request.window;
+        // The mask chunks of the whole request window in one fetch round, as for pixels.
+        self.prefetch_mask_band_window(Window::new(x, y, w, h), request.level)?;
         if request.is_copy(read.buf) {
             return self.read_mask_band(Window::new(x, y, w, h), request.level);
         }
@@ -790,8 +797,11 @@ impl LazyRaster {
         }
         let full = read.full;
         let options = WindowOptions { bands: vec![alpha], overview: None };
-        let rescaled = |data: RasterData| RasterData::U8(alpha_mask(&data));
         let (x, y, w, h) = full.window;
+        // A UInt16 alpha band is read from full resolution: fetch its chunks in one round, as
+        // for the pixels.
+        self.prefetch_window(Window::new(x, y, w, h), &options)?;
+        let rescaled = |data: RasterData| RasterData::U8(alpha_mask(&data));
         let data = if full.is_copy(read.buf) {
             rescaled(self.read_window(Window::new(x, y, w, h), &options)?.raster.data)
         } else if read.resampling == Resampling::Nearest {
