@@ -9,6 +9,25 @@ use terrio_crs::{SpatialRef, Transformer};
 
 static CONFIG: Mutex<()> = Mutex::new(());
 
+/// Holds the process-wide grid settings for one test, and restores them to the environment's
+/// when the test ends, passing or failing.
+struct Settings(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+impl Settings {
+    fn take() -> Self {
+        let guard = CONFIG.lock().unwrap_or_else(|e| e.into_inner());
+        terrio_crs::set_network_enabled(Some(false));
+        Settings(guard)
+    }
+}
+
+impl Drop for Settings {
+    fn drop(&mut self) {
+        terrio_crs::set_grid_search_paths(None);
+        terrio_crs::set_network_enabled(None);
+    }
+}
+
 /// A 2 x 2 GTX geoid grid from (0°, 0°), 1° apart: 10, 20 (south row), 30, 40 metres.
 fn write_tiny_gtx(path: &Path) {
     let mut b = Vec::new();
@@ -25,8 +44,8 @@ fn write_tiny_gtx(path: &Path) {
 }
 
 /// The ellipsoidal height of 100 m above the geoid at (0.25°, 0.5°), with the geoid grid named
-/// `grid`: 122.5 m when the grid is read, `None` when the transformation refuses the point and
-/// `Some(100.0)` when the height is kept for a missing grid.
+/// `grid`: 122.5 m when the grid is read, and `None` when it is missing (a geoid grid named in a
+/// PROJ string is required, so the point is refused).
 fn ellipsoidal_height(grid: &str) -> Option<f64> {
     let src = SpatialRef::parse(&format!("+proj=longlat +datum=WGS84 +geoidgrids={grid} +vunits=m")).unwrap();
     let t = Transformer::new(&src, &SpatialRef::from_epsg(4979).unwrap()).unwrap();
@@ -37,10 +56,13 @@ fn read(h: Option<f64>) -> bool {
     h.is_some_and(|h| (h - 122.5).abs() < 1e-9)
 }
 
+fn missing(h: Option<f64>) -> bool {
+    h.is_none()
+}
+
 #[test]
 fn grids_named_by_path_are_read_only_without_search_paths_set_from_code() {
-    let _g = CONFIG.lock().unwrap_or_else(|e| e.into_inner());
-    terrio_crs::set_network_enabled(Some(false));
+    let _settings = Settings::take();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("tiny.gtx");
     write_tiny_gtx(&path);
@@ -50,18 +72,28 @@ fn grids_named_by_path_are_read_only_without_search_paths_set_from_code() {
     assert!(read(ellipsoidal_height(name)), "an absolute path is read by default");
 
     terrio_crs::set_grid_search_paths(Some(Vec::new()));
-    assert!(!read(ellipsoidal_height(name)), "an absolute path is not read with search paths set");
+    assert!(missing(ellipsoidal_height(name)), "an absolute path is not read with search paths set");
 
     terrio_crs::set_grid_search_paths(Some(vec![dir.path().to_path_buf()]));
-    assert!(!read(ellipsoidal_height(name)), "even when it is inside a search directory");
+    assert!(missing(ellipsoidal_height(name)), "even when it is inside a search directory");
     assert!(read(ellipsoidal_height("tiny.gtx")), "the same grid is found by name");
-    terrio_crs::set_grid_search_paths(None);
+}
+
+#[test]
+fn grid_files_over_the_size_limit_are_not_read() {
+    let _settings = Settings::take();
+    let dir = tempfile::tempdir().unwrap();
+    // A sparse file just over 2 GiB, starting as a valid grid.
+    let path = dir.path().join("huge.gtx");
+    write_tiny_gtx(&path);
+    std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len((2 << 30) + 1).unwrap();
+    terrio_crs::set_grid_search_paths(Some(vec![dir.path().to_path_buf()]));
+    assert!(missing(ellipsoidal_height("huge.gtx")));
 }
 
 #[test]
 fn relative_grid_names_stay_inside_the_search_directories() {
-    let _g = CONFIG.lock().unwrap_or_else(|e| e.into_inner());
-    terrio_crs::set_network_enabled(Some(false));
+    let _settings = Settings::take();
     let dir = tempfile::tempdir().unwrap();
     let search = dir.path().join("search");
     std::fs::create_dir_all(search.join("sub")).unwrap();
@@ -70,13 +102,12 @@ fn relative_grid_names_stay_inside_the_search_directories() {
 
     terrio_crs::set_grid_search_paths(Some(vec![search]));
     assert!(read(ellipsoidal_height("sub/inside.gtx")), "a subdirectory of a search directory");
-    assert!(!read(ellipsoidal_height("sub/../../outside.gtx")), "a name leaving the search directory");
-    assert!(!read(ellipsoidal_height("../outside.gtx")), "a path relative to the working directory");
-    terrio_crs::set_grid_search_paths(None);
+    assert!(missing(ellipsoidal_height("sub/../../outside.gtx")), "a name leaving the search directory");
+    assert!(missing(ellipsoidal_height("../outside.gtx")), "a path relative to the working directory");
 }
 
-/// Transforms a point with a FIFO as its horizontal grid, failing the test if the transformation
-/// blocks opening it.
+/// Transforms a point with a special file (a FIFO, a device) as its horizontal grid, failing the
+/// test if the transformation blocks or does not return.
 #[cfg(unix)]
 fn transform_with_fifo_grid(fifo: &Path) -> bool {
     let wkt = format!(
@@ -96,8 +127,7 @@ fn transform_with_fifo_grid(fifo: &Path) -> bool {
 #[cfg(unix)]
 #[test]
 fn fifos_named_as_grids_are_never_opened() {
-    let _g = CONFIG.lock().unwrap_or_else(|e| e.into_inner());
-    terrio_crs::set_network_enabled(Some(false));
+    let _settings = Settings::take();
     let dir = tempfile::tempdir().unwrap();
     let fifo = dir.path().join("grid.gsb");
     let status = std::process::Command::new("mkfifo").arg(&fifo).status().expect("mkfifo");
@@ -118,5 +148,13 @@ fn fifos_named_as_grids_are_never_opened() {
         let _ = tx.send(t.transform(5.0, 52.0).is_ok());
     });
     assert!(!rx.recv_timeout(Duration::from_secs(10)).expect("transforming blocked on the FIFO"));
+}
+
+#[cfg(unix)]
+#[test]
+fn devices_named_as_grids_are_never_read() {
+    let _settings = Settings::take();
     terrio_crs::set_grid_search_paths(None);
+    // /dev/zero would otherwise be read without end.
+    assert!(!transform_with_fifo_grid(Path::new("/dev/zero")));
 }

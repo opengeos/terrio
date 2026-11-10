@@ -925,17 +925,41 @@ fn machine_search_dirs() -> Vec<std::path::PathBuf> {
 #[cfg(not(target_family = "wasm"))]
 const MAX_GRID_BYTES: u64 = 2 << 30;
 
+/// Whether file metadata is that of a grid file that can be read: a regular file of at most
+/// [`MAX_GRID_BYTES`].
+#[cfg(not(target_family = "wasm"))]
+fn readable_grid(meta: &std::fs::Metadata) -> bool {
+    meta.is_file() && meta.len() <= MAX_GRID_BYTES
+}
+
+/// Whether a path is a grid file that [`read_grid_file`] reads.
+#[cfg(not(target_family = "wasm"))]
+fn is_grid_file(p: &std::path::Path) -> bool {
+    std::fs::metadata(p).is_ok_and(|m| readable_grid(&m))
+}
+
 /// The bytes of a regular file of at most [`MAX_GRID_BYTES`]: devices, FIFOs and directories are
-/// never opened, and a file growing while it is read is cut off rather than read without bound.
+/// never read, and a file growing while it is read is cut off rather than read without bound.
 #[cfg(not(target_family = "wasm"))]
 fn read_grid_file(p: &std::path::Path) -> Option<Arc<[u8]>> {
     use std::io::Read;
-    let meta = std::fs::metadata(p).ok()?;
-    if !meta.is_file() || meta.len() > MAX_GRID_BYTES {
+    if !is_grid_file(p) {
         return None;
     }
-    let mut buf = Vec::with_capacity(usize::try_from(meta.len()).ok()?);
-    std::fs::File::open(p).ok()?.take(MAX_GRID_BYTES + 1).read_to_end(&mut buf).ok()?;
+    // The file may have been replaced since: open without blocking (a FIFO waits for a writer
+    // otherwise), then check what was opened.
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+    let file = options.open(p).ok()?;
+    let meta = file.metadata().ok()?;
+    if !readable_grid(&meta) {
+        return None;
+    }
+    // read_to_end grows the buffer as needed; reserve only a modest part of the claimed size.
+    let mut buf = Vec::with_capacity(usize::try_from(meta.len().min(64 << 20)).ok()?);
+    file.take(MAX_GRID_BYTES + 1).read_to_end(&mut buf).ok()?;
     (buf.len() as u64 <= MAX_GRID_BYTES).then(|| Arc::from(buf))
 }
 
@@ -1004,8 +1028,8 @@ fn present_locally(name: &str) -> bool {
         let mut names = vec![name.to_string()];
         names.extend(old_names(name));
         return names.iter().any(|n| match grid_location(n) {
-            GridLocation::Path(p) => p.is_file(),
-            GridLocation::InSearchDirs => dirs.iter().any(|d| d.join(n).is_file()),
+            GridLocation::Path(p) => is_grid_file(p),
+            GridLocation::InSearchDirs => dirs.iter().any(|d| is_grid_file(&d.join(n))),
             GridLocation::Refused => false,
         });
     }
@@ -1077,8 +1101,12 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
     }
     // Read in place; a grid that cannot be read so (a server without range requests, a failed
     // request) is downloaded instead, unless the CDN does not have it.
+    // Only names the CDN can have are fetched: a path (or a refused name) is missing, not a
+    // network failure, so the transformation can fall back to another operation.
     #[cfg(remote)]
-    if bytes.is_none() && network_enabled() && !download_whole() {
+    let fetch = bytes.is_none() && network_enabled() && cdn_url(name).is_some();
+    #[cfg(remote)]
+    if fetch && !download_whole() {
         match open_remote(name) {
             Ok(file) => {
                 let file = Arc::new(file);
@@ -1095,7 +1123,7 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
     }
     #[cfg(remote)]
     let bytes = match bytes {
-        None if network_enabled() => {
+        None if fetch => {
             let got = download(name);
             if got.is_none() {
                 fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string());
