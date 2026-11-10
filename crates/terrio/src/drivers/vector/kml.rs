@@ -271,14 +271,23 @@ fn layers_of(
             l
         })
         .collect();
-    // Layer names must be unique.
-    for i in 1..layers.len() {
-        let mut n = 2;
-        let base = layers[i].name.clone();
-        while layers[..i].iter().any(|l| l.name == layers[i].name) {
-            layers[i].name = format!("{base} ({n})");
-            n += 1;
+    // Layer names must be unique: a name an earlier layer has takes the first free suffix, ` (2)`,
+    // ` (3)`, and so on. Names are only ever added, so the suffixes a name found taken stay taken,
+    // and its next search resumes after the last suffix it took.
+    let mut taken = std::collections::HashSet::with_capacity(layers.len());
+    let mut next: HashMap<String, usize> = HashMap::new();
+    for layer in &mut layers {
+        if taken.insert(layer.name.clone()) {
+            continue;
         }
+        let n = next.entry(layer.name.clone()).or_insert(2);
+        layer.name = loop {
+            let name = format!("{} ({n})", layer.name);
+            *n += 1;
+            if taken.insert(name.clone()) {
+                break name;
+            }
+        };
     }
     layers
 }
@@ -1324,5 +1333,55 @@ mod tests {
             let value = style(&layers[0], i);
             assert!(value.starts_with("PEN") || (value.starts_with('s') && value.ends_with(".kml#p")), "{value}");
         }
+    }
+
+    /// A document's layer names are made unique in document order, in a KML file and a KMZ
+    /// archive alike. A name an earlier layer has takes the first free suffix, ` (2)`, ` (3)`, and
+    /// so on, and a container without a name is named after its element. A suffix a name given
+    /// earlier holds is skipped, and a name given later is renamed when an earlier layer holds it,
+    /// generated or not.
+    #[test]
+    fn layer_names_are_made_unique_in_document_order() {
+        let point = "<Placemark><Point><coordinates>1,2</coordinates></Point></Placemark>";
+        let folder = |name: &str, inside: &str| match name {
+            "" => format!("<Folder>{point}{inside}</Folder>"),
+            name => format!("<Folder><name>{name}</name>{point}{inside}</Folder>"),
+        };
+        let nested = [folder("", ""), folder("roads (2)", ""), format!("<Document>{point}</Document>")].concat();
+        let containers = [
+            folder("roads", ""),
+            folder("", ""),
+            folder("roads", ""),
+            folder("", ""),
+            folder("Folder (3)", ""),
+            folder("", ""),
+            folder("Folder (2)", ""),
+            format!("<Document>{point}</Document>"),
+            folder("doc", ""),
+            folder("roads", &nested),
+            folder("", ""),
+        ]
+        .concat();
+        let doc = format!("<kml><Document><name>doc</name>{point}{containers}</Document></kml>");
+        let expected = [
+            "doc",
+            "roads",
+            "Folder",
+            "roads (2)",
+            "Folder (2)",
+            "Folder (3)",
+            "Folder (4)",
+            "Folder (2) (2)",
+            "Document",
+            "doc (2)",
+            "roads (3)",
+            "Folder (5)",
+            "roads (2) (2)",
+            "Document (2)",
+            "Folder (6)",
+        ];
+        let names = |layers: Vec<Layer>| layers.into_iter().map(|l| l.name).collect::<Vec<_>>();
+        assert_eq!(names(parse(&doc, "kml").unwrap()), expected);
+        assert_eq!(names(parse_kmz(archive(&[("doc.kml", &doc)]), "kmz").unwrap()), expected);
     }
 }
