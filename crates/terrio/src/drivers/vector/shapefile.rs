@@ -344,17 +344,19 @@ pub(crate) fn apply_prj(layer: &mut Layer, prj: Option<&str>) {
     }
 }
 
-/// Whether a warning quotes `c` as a space, so that the quote is one line, sends a terminal no
-/// escape sequence, and reads as its characters do: whitespace, control characters (ESC included),
-/// and the format characters that change how the text around them reads without showing
-/// themselves. Those are the bidirectional controls (Unicode's `Bidi_Control`: U+061C, U+200E,
-/// U+200F, U+202A to U+202E, U+2066 to U+2069), the zero-width characters (U+200B to U+200D,
-/// U+2060, U+FEFF) and the soft hyphen (U+00AD); Rust's standard library has no test for their
-/// general category.
+/// Quote whitespace, control codes and Unicode 15.1 General_Category=Cf format controls
+/// as spaces. The Cf ranges were checked against Python's unicodedata table; printable
+/// non-ASCII text is preserved, while terminal escapes, bidi controls and invisible tags are not.
 fn quoted_as_space(c: char) -> bool {
     c.is_whitespace()
         || c.is_control()
-        || matches!(c, '\u{00AD}' | '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
+        || matches!(c,
+            '\u{00AD}' | '\u{0600}'..='\u{0605}' | '\u{061C}' | '\u{06DD}' | '\u{070F}' |
+            '\u{0890}'..='\u{0891}' | '\u{08E2}' | '\u{180E}' | '\u{200B}'..='\u{200F}' |
+            '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' |
+            '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}' | '\u{110BD}' | '\u{110CD}' |
+            '\u{13430}'..='\u{1343F}' | '\u{1BCA0}'..='\u{1BCA3}' | '\u{1D173}'..='\u{1D17A}' |
+            '\u{E0001}' | '\u{E0020}'..='\u{E007F}')
 }
 
 /// The keywords a CRS's WKT starts with: WKT 1's (OGC 18-010r7 B.8, and ESRI's `VERTCS`) and
@@ -426,13 +428,17 @@ fn is_crs_definition(text: &str) -> bool {
         let Some(end) = end else {
             return false;
         };
-        text = text[end..].trim_start();
-        if text.is_empty() {
+        let rest = &text[end..];
+        let next = rest.trim_start();
+        if next.is_empty() {
             return true;
         }
-        if let Some(next) = text.strip_prefix(',') {
-            text = next.trim_start();
-        }
+        let separator = &rest[..rest.len() - next.len()];
+        text = match next.strip_prefix(',') {
+            Some(after) => after.trim_start(),
+            None if separator.contains(['\n', '\r']) => next,
+            None => return false,
+        };
     }
 }
 
@@ -1997,6 +2003,7 @@ mod tests {
             ("Projection GEOGRAPHIC\nDatum WGS84\nUnits DD", "Projection GEOGRAPHIC Datum WGS84 Units DD"),
             ("\x1b[31mred\x1b[0m\x07\u{9b}2J", " [31mred [0m  2J"),
             ("one line\u{2028}and another", "one line and another"),
+            ("hidden\u{E0041}\u{2061}text", "hidden  text"),
             ("invoice\u{202E}fdp.exe\u{200B}\u{061C}\u{00AD}\u{FEFF}", "invoice fdp.exe    "),
             ("PROJCS[\"x\"]\nnot a coordinate reference system", "PROJCS[\"x\"] not a coordinate reference system"),
             ("ERROR:404", "ERROR:404"),
@@ -2118,6 +2125,9 @@ mod tests {
             r#"LOCAL_CS["x"] notes [1]"#,
             r#"PROJCS["x"],"#,
             r#"PROJCS["x"],,VERTCS["y"]"#,
+            r#"PROJCS["x"]VERTCS["y"]"#,
+            r#"PROJCS["x"] VERTCS["y"]"#,
+            "PROJCS[\"x\"]\tVERTCS[\"y\"]",
             r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984"(SPHEROID["WGS_1984",6378137,298.257223563]]]"#,
             "not a coordinate reference system",
             "http://example.com/crs",
