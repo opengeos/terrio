@@ -110,8 +110,10 @@ pub(crate) fn encode(r: &Raster, options: &[(String, String)]) -> Result<Vec<u8>
 /// GDAL keeps in its `.aux.xml` too).
 pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, options: &[(String, String)]) -> Result<()> {
     let bytes = encode(r, options)?;
+    let georeferenced = common::georeferenced(options);
     common::write_replacing(path, bytes)?;
-    super::png::write_world_file(r, path)?;
+    super::png::remove_stale_world_file(r, path, georeferenced)?;
+    super::png::write_world_file(r, path, georeferenced)?;
     common::write_pam_with(path, Some(&r.crs), nodata, r.bands)
 }
 
@@ -134,9 +136,11 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
             data[b * n + i] = *value;
         }
     }
-    let gt = super::png::read_world_file(path).unwrap_or(common::NO_GEOTRANSFORM);
-    let raster = common::make_raster(cols, rows, bands, RasterData::U8(data), gt, Default::default(), None)?;
+    let gt = super::png::read_world_file(path);
+    let raster =
+        common::make_raster(cols, rows, bands, RasterData::U8(data), gt.unwrap_or(common::NO_GEOTRANSFORM), Default::default(), None)?;
     let mut ds = RasterDataset::with_driver(raster, RasterDriver::WEBP, false);
+    ds.geotransform_present = Some(gt.is_some());
     // `WEBPRasterBand::GetColorInterpretation`.
     ds.band_metadata = ["Red", "Green", "Blue", "Alpha"][..bands]
         .iter()

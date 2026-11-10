@@ -665,7 +665,7 @@ pub(crate) mod codec {
             RasterDriver::GPKG => crate::drivers::gpkg::to_bytes(&ds.raster, ds.nodata(), table, options.compression.as_deref()),
             #[cfg(feature = "jp2")]
             RasterDriver::JP2 => {
-                let jp2 = crate::drivers::jp2::to_bytes(&ds.raster)?;
+                let jp2 = crate::drivers::jp2::to_bytes(&ds.raster, crate::drivers::common::georeferenced(&options.creation_options))?;
                 // The nodata value goes to a `.aux.xml` sidecar, the two files zipped as the file
                 // drivers' output is.
                 let Some(xml) = crate::drivers::common::pam_xml(None, ds.nodata(), ds.raster.bands) else { return Ok(jp2) };
@@ -1238,6 +1238,23 @@ mod tests {
             assert_eq!(back.raster.data.to_f64_vec(), ds.raster.data.to_f64_vec());
             assert_eq!(back.nodata(), None);
         }
+    }
+
+    /// The in-memory JPEG 2000 codec (WebAssembly's) writes no GeoJP2 box for a raster without a
+    /// geotransform (`GEOREFERENCED=NO`) and without a CRS, as the file writer does; with a CRS,
+    /// the box is written.
+    #[test]
+    fn jpeg2000_codec_writes_no_geojp2_box_without_georeferencing() {
+        const GEOJP2: [u8; 16] = [0xb1, 0x4b, 0xf8, 0xbd, 0x08, 0x3d, 0x4b, 0x43, 0xa5, 0xae, 0x8c, 0xd7, 0xd5, 0xa6, 0xce, 0x03];
+        let has_box = |bytes: &[u8]| bytes.windows(20).any(|w| w[..4] == *b"uuid" && w[4..] == GEOJP2);
+        let unreferenced = RasterWriteOptions { creation_options: vec![("GEOREFERENCED".into(), "NO".into())], ..Default::default() };
+        let mut ds = raster(3, DataType::U8);
+        ds.has_nodata = false;
+        assert!(has_box(&codec::write_raster(&ds, RasterDriver::JP2, &unreferenced, "x").unwrap()));
+        ds.raster.crs = Default::default();
+        let jp2 = codec::write_raster(&ds, RasterDriver::JP2, &unreferenced, "x").unwrap();
+        assert!(crate::drivers::jp2::is_jpeg2000(&jp2) && !has_box(&jp2));
+        assert!(has_box(&codec::write_raster(&ds, RasterDriver::JP2, &Default::default(), "x").unwrap()));
     }
 
     #[test]

@@ -987,6 +987,15 @@ terrio translate INPUT OUTPUT [options]
 (`--ovr`), `--a-nodata`, `--a-srs`, `--a-ullr`, and the output format options. Type conversion
 rounds and clamps as GDAL does.
 
+An input without a geotransform of its own (an unreferenced GeoTIFF or JPEG 2000 file) gives an
+output without one, unless `--a-ullr` assigns bounds: a GeoTIFF or COG without a tie point, a JPEG
+2000 file without a GeoJP2 box, and a PNG, JPEG or WebP file without a world file. A CRS alone
+(`--a-srs`) is still written, in a JPEG 2000 file's GeoJP2 box or beside a world file. `convert`
+(unless `--t-srs` reprojects) and pipelines write such inputs the same way. An unreferenced
+PNG, JPEG or WebP write removes any existing `<stem>.wld` after the image is successfully written,
+including a world file shared with a sibling image of the same stem. Failure to remove it reports
+an error after the image write; an image write that fails leaves the world file alone.
+
 A raster read by window (GeoTIFF/COG, Zarr, virtual rasters) is read for the output alone, as
 `gdal_translate` reads it: the tiles of its window, of its bands, and, resized, from the overview
 GDAL's `RasterIO` chooses for the output's size (`--overview AUTO`, the default), or from the level
