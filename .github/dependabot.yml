@@ -1,8 +1,8 @@
 version: 2
 updates:
   # The Rust workspace (library, CLI, Python and JS bindings share one Cargo.lock). Minor and
-  # patch updates come as one weekly PR; major updates come one per PR, since some crates
-  # (parquet, arrow, flatgeobuf) must stay on the versions wbraster and wbvector use.
+  # patch updates come as one weekly PR; major updates come one per PR. The ignored major
+  # updates below require coordinated format dependencies or a deliberate public API change.
   - package-ecosystem: cargo
     directory: /
     schedule:
@@ -11,9 +11,10 @@ updates:
       cargo:
         update-types: [minor, patch]
     open-pull-requests-limit: 10
-    # These follow other crates rather than the newest release: parquet and arrow are the versions
-    # wbvector reads GeoParquet with (their types cross between the two), and flatbuffers is the
-    # version flatgeobuf's generated code is built with. They move when those crates do.
+    # Major versions taken deliberately rather than as they come out: parquet and arrow move together,
+    # and terrio re-exports arrow-array and arrow-schema (`terrio::arrow`), so their majors change
+    # terrio's API; flatbuffers is the version flatgeobuf's generated code is built with, and moves
+    # when flatgeobuf does.
     ignore:
       - dependency-name: "parquet"
         update-types: ["version-update:semver-major"]
