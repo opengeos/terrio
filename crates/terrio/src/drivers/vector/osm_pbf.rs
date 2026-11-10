@@ -9,7 +9,8 @@
 
 use super::{Member, Pb, Relation, pb_fields, pb_varint, unzigzag};
 use crate::{Error, Result};
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 pub(super) const MAX_BLOB: usize = 32 * 1024 * 1024;
@@ -184,16 +185,28 @@ fn deltas(v: Vec<u64>) -> Result<Vec<i64>> {
         .collect()
 }
 
-struct Context {
-    strings: Vec<Arc<str>>,
+struct Context<'a> {
+    strings: Vec<&'a [u8]>,
+    decoded: RefCell<HashMap<usize, Arc<str>>>,
     granularity: i64,
     lat_offset: i64,
     lon_offset: i64,
 }
-impl Context {
+impl<'a> Context<'a> {
+    fn append_strings(&mut self, table: &'a [u8]) -> Result<()> {
+        for (n, value) in pb_fields(table).ok_or_else(bad)? {
+            if let (1, Pb::Bytes(s)) = (n, value) {
+                self.strings.push(s);
+            }
+        }
+        Ok(())
+    }
     fn string(&self, index: u64) -> Result<Arc<str>> {
         let index = usize::try_from(index).map_err(|_| bad())?;
-        self.strings.get(index).cloned().ok_or_else(bad)
+        let bytes = self.strings.get(index).ok_or_else(bad)?;
+        // Unused entries borrow their encoded bytes; only referenced strings allocate.
+        let mut decoded = self.decoded.borrow_mut();
+        Ok(decoded.entry(index).or_insert_with(|| Arc::from(String::from_utf8_lossy(bytes).as_ref())).clone())
     }
     fn tags(&self, bytes: &[u8]) -> Result<Tags> {
         let keys = numbers(bytes, 2)?;
@@ -286,20 +299,13 @@ impl Context {
 }
 
 fn primitives(bytes: &[u8], emit: &mut dyn FnMut(Object) -> Result<()>) -> Result<()> {
-    let mut c = Context { strings: Vec::new(), granularity: 100, lat_offset: 0, lon_offset: 0 };
+    let mut c = Context { strings: Vec::new(), decoded: RefCell::new(HashMap::new()), granularity: 100, lat_offset: 0, lon_offset: 0 };
     let mut has_table = false;
-    let empty: Arc<str> = Arc::from("");
     for (field, value) in pb_fields(bytes).ok_or_else(bad)? {
         match (field, value) {
             (1, Pb::Bytes(table)) => {
                 has_table = true;
-                for (n, value) in pb_fields(table).ok_or_else(bad)? {
-                    if let (1, Pb::Bytes(s)) = (n, value) {
-                        // Match osmpbfreader's lossy UTF-8 decoding; share empty entries to avoid
-                        // allocating an Arc for every empty string in a hostile table.
-                        c.strings.push(if s.is_empty() { empty.clone() } else { Arc::from(String::from_utf8_lossy(s).as_ref()) });
-                    }
-                }
+                c.append_strings(table)?;
             }
             (17, Pb::Int(g)) => c.granularity = i64::from(positive_i32(g)?),
             (18, Pb::Int(g)) => {
@@ -355,4 +361,27 @@ fn primitives(bytes: &[u8], emit: &mut dyn FnMut(Object) -> Result<()>) -> Resul
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unused_string_entries_do_not_allocate_decoded_strings() {
+        // A compact table of nonempty strings previously allocated an Arc per unused entry.
+        let mut table = [0x0a, 1, b'x'].repeat(100_000);
+        table.extend_from_slice(&[0x0a, 1, 0xff]);
+        let mut context =
+            Context { strings: Vec::new(), decoded: RefCell::new(HashMap::new()), granularity: 100, lat_offset: 0, lon_offset: 0 };
+        context.append_strings(&table).unwrap();
+        assert_eq!(context.strings.len(), 100_001);
+        assert!(context.decoded.borrow().is_empty());
+        let first = context.string(3).unwrap();
+        assert_eq!(&*first, "x");
+        assert!(Arc::ptr_eq(&first, &context.string(3).unwrap()));
+        assert_eq!(&*context.string(100_000).unwrap(), "\u{fffd}");
+        assert_eq!(context.decoded.borrow().len(), 2);
+        assert!(context.string(100_001).is_err());
+    }
 }
