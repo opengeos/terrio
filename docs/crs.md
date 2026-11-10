@@ -28,6 +28,15 @@ as PROJ strings with typical parameters and as pyproj's WKT1 and WKT2 of them:
 `vandg2` and others) rather than computing something else. The known difference is
 Krovak off Bessel's ellipsoid, where PROJ's inverse is not the inverse of its forward.
 
+Polar Stereographic (variant C), EPSG method 9830, puts its false origin on the standard parallel
+φF rather than at the pole, and no `+proj=` string names it. terrio reads it, from EPSG:2985 and
+EPSG:2986 (Petrels 1972 and Perroud 1950 / Terre Adelie Polar Stereographic) and from WKT1, WKT2
+and PROJJSON definitions that name it, in both configurations of `terrio-crs`, as variant B on the
+same standard parallel, whose pole lies at the northing at the false origin minus
+ρF = a cos φF / (1 − e² sin² φF)^0.5 (plus ρF for the north pole case): a false northing of
+−2,299,363.488 m for EPSG:2985, as the PROJJSON terrio writes for it gives the projection. A WKT
+that names the method without its standard parallel is refused.
+
 Mollweide and Wagner IV/V use Terrio's own ports of PROJ's formulas, including
 PROJ's finite Mollweide pole approximation. Their inverses judge antimeridian
 rounding on the normalized projected ellipse, allowing its radius up to
