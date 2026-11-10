@@ -1021,6 +1021,7 @@ impl LazyRaster {
     }
 
     /// The sizes `(width, height)` of the overviews, largest first.
+    /// Returns an empty list when the retained asset-read policy refuses access.
     pub fn overviews(&self) -> Vec<(usize, usize)> {
         let Ok(_scope) = self.enter_asset_read() else { return Vec::new() };
         match &self.inner {
