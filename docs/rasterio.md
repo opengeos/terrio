@@ -59,7 +59,12 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   closed: incremental and windowed writes work in any order. Rasters larger than
   `TERRIO_RIO_IN_MEMORY_LIMIT` bytes (512 MB by default) keep their pixels in a temporary file
   next to the output instead, mapped in memory, and GeoTIFFs are then written in rows of blocks
-  (`terrio.GeoTiffWriter`), without the raster in RAM. GeoTIFFs are written with GDAL's
+  (`terrio.GeoTiffWriter`), without the raster in RAM. `shutil.copy` writes such a GeoTIFF, and a
+  COG, from its source as it writes them, a row of a COG's tiles at a time, the COG's overviews
+  computed as the rows come: neither the source's pixels nor a temporary file of them are held.
+  A copy whose source has a dataset mask, or overviews a COG copies, or that is compressed with
+  JPEG, WebP, LERC or JPEG XL, holds the source's pixels until it is written, as a smaller
+  GeoTIFF does. GeoTIFFs are written with GDAL's
   layout for the profile: strips or tiles (`tiled`, `blockxsize`, `blockysize`), pixel or band
   interleaving, compression (`lzw`, `deflate`, `zstd`, `packbits`) with predictors 2 and 3,
   photometric RGB and alpha bands as GDAL defaults to them, tags, band metadata, color tables,
