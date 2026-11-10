@@ -31,7 +31,7 @@ geographiclib-rs = { version = "0.2.7", default-features = false }
 geo = { version = "0.33.1", default-features = false, features = ["spade"] }
 # Candidate lookup for polygon overlays, pure Rust. geo 0.33 still uses rstar 0.12, so a build has
 # both.
-rstar = "0.13.0"
+rstar = "0.14.0"
 # Delaunay and constrained triangulations for hulls and linear gridding; the version geo uses.
 spade = "2.15.1"
 
