@@ -820,11 +820,39 @@ pub(crate) fn write_pam_with(path: &Path, crs: Option<&CrsInfo>, nodata: Option<
     match pam_xml(crs, nodata, bands) {
         Some(xml) => std::fs::write(aux, xml)?,
         None => match std::fs::remove_file(aux) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(pam_cleanup_error(path, e)),
             _ => {}
         },
     }
     Ok(())
+}
+
+/// Do not leave a newly replaced image readable beside stale PAM metadata on cleanup failure.
+/// Removing the output normally suffices. A directory may permit overwriting an existing file
+/// but not removing it; in that case truncate the writable output. Report mitigation failures too.
+fn pam_cleanup_error(path: &Path, cleanup: std::io::Error) -> Error {
+    match std::fs::metadata(path) {
+        Ok(metadata) if !metadata.is_file() => return cleanup.into(),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return cleanup.into(),
+        Err(error) => {
+            return Error::Io(std::io::Error::new(
+                cleanup.kind(),
+                format!("{cleanup}; could not inspect the new output to invalidate it ({error})"),
+            ));
+        }
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => cleanup.into(),
+        Err(remove) if remove.kind() == std::io::ErrorKind::NotFound => cleanup.into(),
+        Err(remove) => match std::fs::OpenOptions::new().write(true).truncate(true).open(path) {
+            Ok(_) => cleanup.into(),
+            Err(invalidate) => Error::Io(std::io::Error::new(
+                cleanup.kind(),
+                format!("{cleanup}; could not remove the new output ({remove}) or invalidate it ({invalidate})"),
+            )),
+        },
+    }
 }
 
 /// The text of a `.aux.xml` sidecar with a CRS and a nodata value for each of `bands` bands;
@@ -867,11 +895,12 @@ pub(crate) const NO_GEOTRANSFORM: [f64; 6] = [0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
 /// Whether creation options leave a raster its geotransform: not with terrio's
 /// `GEOREFERENCED=NO`, given to a raster that has none (any value but `YES`, `TRUE`, `ON` or `1`,
-/// the first one given counting). Without a geotransform and without a CRS, a writer writes no
+/// the last one given counting). Without a geotransform and without a CRS, a writer writes no
 /// georeferencing: no GeoTIFF tie point, GeoJP2 box or world file.
 pub(crate) fn georeferenced(creation_options: &[(String, String)]) -> bool {
     creation_options
         .iter()
+        .rev()
         .find(|(k, _)| k.eq_ignore_ascii_case("GEOREFERENCED"))
         .is_none_or(|(_, v)| matches!(v.to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1"))
 }
@@ -1592,4 +1621,18 @@ mod dataset_pam_fallback_tests {
         let colors: Vec<Option<&str>> = ds.band_metadata.iter().map(|b| b.color_interp.as_deref()).collect();
         assert_eq!(colors, [None, Some("Alpha")]);
     }
+}
+
+/// `/proc/self/fd` is not unlinkable but its regular-file target can still be truncated.
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn failed_pam_cleanup_invalidates_an_output_that_cannot_be_unlinked() {
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    let mut output = tempfile::tempfile().unwrap();
+    output.write_all(b"new image with stale metadata").unwrap();
+    let path = std::path::PathBuf::from(format!("/proc/self/fd/{}", output.as_raw_fd()));
+    let error = pam_cleanup_error(&path, std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    assert!(matches!(error, Error::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied));
+    assert_eq!(output.metadata().unwrap().len(), 0);
 }

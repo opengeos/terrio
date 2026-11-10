@@ -60,12 +60,14 @@ WebP files are read lossless or lossy, as 3 bands, or 4 with an alpha channel.
 A raster without a geotransform and without a CRS (`GEOREFERENCED=NO`, which `terrio.rio`,
 `translate`, `convert` and pipelines give a source without a geotransform) is written to PNG,
 JPEG and WebP without a world file, and to JPEG 2000 without a GeoJP2 box. A world file an earlier
-write left at that path is removed before the image is written: world files are named after the
+write left at that path is removed after the image is successfully written: world files are named after the
 image's stem, so `a.png` and `a.jpg` share `a.wld`. A CRS without a geotransform is written as
 before. Every format that keeps a CRS or a nodata value in a `.aux.xml` sidecar (PNG, JPEG, WebP,
 JPEG 2000 and the others that write one) also removes a sidecar an earlier write left at that path
 when the new raster has neither, after the image is written: the sidecar is named after the whole
-file name (`a.png.aux.xml`), and what it holds would be read as the new image's.
+file name (`a.png.aux.xml`), and what it holds would be read as the new image's. If stale PAM
+metadata cannot be removed, the new output is removed or invalidated before returning the error;
+failures to invalidate it are included in the error.
 
 Native TIFF readers limit each decoded tile or strip to 256 MiB by default. For trusted
 files with larger chunks, use `TiffReadLimits` with `LazyRaster::open_tiff_with_limits`

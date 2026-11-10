@@ -150,12 +150,13 @@ fn a_nodata_sidecar_of_an_earlier_write_is_removed() {
 /// being read as the new image's.
 #[test]
 fn a_sidecar_that_cannot_be_removed_fails_the_write() {
-    for ext in ["png", "jpg", "webp"] {
+    for ext in ["png", "jpg", "webp", "jp2"] {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join(format!("a.{ext}.aux.xml"))).unwrap();
         let path = dir.path().join(format!("a.{ext}"));
         let written = terrio::write_raster_dataset(&raster(None), path.to_str().unwrap(), &unreferenced());
         assert!(matches!(written, Err(terrio::Error::Io(_))), "{ext}: {written:?}");
+        assert!(!path.exists(), "{ext}: failed cleanup left the new image readable");
     }
 }
 
@@ -200,11 +201,11 @@ fn a_failed_image_write_preserves_the_world_file() {
     }
 }
 
-/// Duplicate creation options follow GDAL's first-match precedence, across output formats.
+/// GEOREFERENCED keeps the existing GeoTIFF last-match precedence across output formats.
 #[test]
-fn the_first_georeferenced_option_wins() {
+fn the_last_georeferenced_option_wins() {
     for ext in ["jp2", "png", "jpg", "webp", "tif"] {
-        for (first, second, expected) in [("NO", "YES", false), ("YES", "NO", true)] {
+        for (first, second, expected) in [("NO", "YES", true), ("YES", "NO", false)] {
             let options = RasterWriteOptions {
                 creation_options: vec![("GEOREFERENCED".into(), first.into()), ("georeferenced".into(), second.into())],
                 ..Default::default()
