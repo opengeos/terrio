@@ -143,7 +143,7 @@ def test_json_usage_without_dataset_arguments(path):
     result = run(*path, "--json-usage")
     assert result.returncode == 0, result.stderr
     catalog = json.loads(result.stdout)
-    assert catalog["schema_version"] == "0.1.2"
+    assert catalog["schema_version"] == "0.1.3"
     assert catalog["unstable"] is True
     assert catalog["command"]["path"] == ["terrio", *path]
     assert catalog["command"]["arguments"]

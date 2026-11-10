@@ -14,7 +14,8 @@ use terrio::ops::{Resampling, parse_data_type};
 
 #[derive(clap::Args)]
 pub struct Args {
-    /// The input rasters, then the output path. `@FILE` reads input paths from FILE, one per line.
+    /// The input rasters, then the output path. `@FILE` reads input paths from FILE, one per line,
+    /// and a file name with `*` or `?` (quoted: `'tiles/*.tif'`) matches the files of its folder.
     #[arg(required = true, num_args = 2..)]
     paths: Vec<String>,
     /// The sources' CRS, overriding what they declare.
