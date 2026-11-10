@@ -356,7 +356,8 @@ URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops the
 - **Scope.** It applies to every kind of dataset, rasters, vectors and point clouds alike.
 - **With `set_allowed_drivers`.** When a list is also set with
   `terrio::formats::set_allowed_drivers` (Python: `terrio.set_allowed_drivers`), a driver must be
-  in both.
+  in both. That function keeps a list for each kind, rasters, vectors and point clouds, and a list
+  set without a kind applies to all three.
 - **Set for one thread** (Python's `terrio.rio.Env`, `terrio::config::push_scope`), it only narrows
   the list outside the scope, the environment's and an outer scope's: the scope allows the drivers
   both name. A scope that unsets the option leaves the list outside in force. The environment's

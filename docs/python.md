@@ -909,10 +909,12 @@ terrio.allowed_drivers("raster")  # ["GTIFF"]
 ```
 
 `set_allowed_drivers` lasts for the process: later calls narrow the list, and lifting it with
-`None` raises `InvalidArgumentError`. `GDAL_HTTP_HEADERS` set for a prefix is sent only to that
-prefix, never to another host a redirect leads to. `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO`, in the
-environment or in an `Env`, keeps reads from following a redirect to another origin at all. See
-[Remote Data](remote-data.md) for the options themselves.
+`None` raises `InvalidArgumentError`. Without `kind`, the list applies to every kind of dataset:
+rasters, vectors and point clouds (`kind` is `"raster"`, `"vector"` or `"pointcloud"`).
+`GDAL_HTTP_HEADERS` set for a prefix is sent only to that prefix, never to another host a redirect
+leads to. `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO`, in the environment or in an `Env`, keeps reads from
+following a redirect to another origin at all. See [Remote Data](remote-data.md) for the options
+themselves.
 
 The `TERRIO_ALLOWED_DRIVERS` option limits the drivers too, in the environment or in an `Env`. A
 driver must then be in both lists, and `allowed_drivers()` gives the drivers both allow. The
