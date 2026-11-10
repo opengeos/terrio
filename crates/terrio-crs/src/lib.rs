@@ -303,6 +303,12 @@ impl SpatialRef {
             }
             return s;
         }
+        // Do not let a declared registry code repair an incomplete variant C definition.
+        // Keep it as WKT so the transformer reports the parsing error. Valid PROJ4
+        // extensions have already taken precedence above.
+        if is_variant_c(wkt) && Def::from_wkt(wkt).is_err() {
+            return Self { wkt: Some(wkt.to_string()), ..Default::default() };
+        }
         let epsg = identify_epsg(wkt);
         Self { epsg, wkt: Some(wkt.to_string()), ..Default::default() }.with_esri()
     }
@@ -729,7 +735,6 @@ fn proj_to_wkt(p: &str) -> Option<String> {
 
 /// Whether a WKT 1 or WKT 2 names Polar Stereographic (variant C), EPSG method 9830, as a
 /// projection or conversion method, at any depth (in a bound or compound CRS too).
-#[cfg(feature = "wbprojection-fallback")]
 fn is_variant_c(wkt: &str) -> bool {
     fn names(n: &wkt1::Node) -> bool {
         (["PROJECTION", "METHOD"].iter().any(|k| n.key.eq_ignore_ascii_case(k))

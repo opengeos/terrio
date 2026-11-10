@@ -346,6 +346,38 @@ fn polar_stereographic_variant_c_without_its_standard_parallel_is_refused() {
     }
 }
 
+/// A declared EPSG code must not replace an incomplete variant C definition. A valid
+/// PROJ4 extension still describes the whole CRS, as GDAL 3.13.3 reads WKT 1.
+#[test]
+fn incomplete_variant_c_with_a_declared_code_is_refused() {
+    let geographic = SpatialRef::from_epsg(4636).unwrap();
+    for code in [2985, 2986] {
+        for (wkt, parameter, authority) in [
+            (TERRE_ADELIE_WKT1, r#"PARAMETER["Latitude of standard parallel",-67],"#, format!(r#"AUTHORITY["EPSG","{code}"]"#)),
+            (
+                TERRE_ADELIE_WKT2,
+                r#"PARAMETER["Latitude of standard parallel",-67,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8832]],"#,
+                format!(r#"ID["EPSG",{code}]"#),
+            ),
+        ] {
+            let incomplete = wkt.replace(parameter, "");
+            let declared = format!("{},{}]", &incomplete[..incomplete.len() - 1], authority);
+            for definition in [declared.clone(), format!(r#"{},EXTENSION["PROJ4","+proj=not_real"]]"#, &declared[..declared.len() - 1])] {
+                let crs = SpatialRef::from_wkt(&definition);
+                let error = Transformer::new(&geographic, &crs).err().map(|e| e.to_string());
+                assert!(error.as_deref().is_some_and(|e| e.contains("Polar Stereographic (variant C)")), "EPSG:{code}: {error:?}");
+            }
+        }
+    }
+    let incomplete = TERRE_ADELIE_WKT1.replace(r#"PARAMETER["Latitude of standard parallel",-67],"#, "");
+    let extended =
+        format!(r#"{},AUTHORITY["EPSG","2985"],EXTENSION["PROJ4","+proj=longlat +datum=WGS84"]]"#, &incomplete[..incomplete.len() - 1]);
+    let crs = SpatialRef::from_wkt(&extended);
+    let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+    let (x, y) = Transformer::new(&wgs84, &crs).unwrap().transform(140.0, -66.0).unwrap();
+    assert!((x - 140.0).abs() < 1e-12 && (y + 66.0).abs() < 1e-12);
+}
+
 /// The wbprojection CRS a variant C CRS converts to, from which terrio describes CRSs in formats
 /// such as NetCDF's grid mappings, projects the note's example point as terrio does, also when the
 /// CRS is the source of a WKT 2 bound CRS.
