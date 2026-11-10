@@ -497,8 +497,9 @@ impl Redirects {
     }
 
     /// Where the redirects of a read may lead, `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN` read with `get`:
-    /// anywhere when it is not set, or set to `YES` (`TRUE`, `ON`, `1`); to the origin of the URL
-    /// asked for any other value, so that a misspelt `NO` keeps reads on their origin too.
+    /// anywhere when it is not set, empty or blank, or set to `YES` (`TRUE`, `ON`, `1`); to the
+    /// origin of the URL asked for any other value, so that a misspelt `NO` keeps reads on their
+    /// origin too.
     pub(crate) fn for_reads_with(get: impl Fn(&str) -> Option<String>) -> Self {
         match get(FOLLOW_CROSS_ORIGIN) {
             Some(v) if !v.trim().is_empty() && !matches!(v.trim().to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1") => {

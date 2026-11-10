@@ -271,7 +271,8 @@ Signatures and SAS tokens are hidden in logs and error messages.
 Redirects are followed, up to 10 of them. `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO` keeps the
 requests of a read on the origin of its URL (scheme, host and port): a redirect to another origin
 is refused before anything is sent there, by an error naming the option, and redirects within the
-origin are still followed. Any value but `YES` (`TRUE`, `ON`, `1`), the default, does the same.
+origin are still followed. Any other value does the same, except `YES` (`TRUE`, `ON`, `1`) and an
+empty or blank value: these, and the option unset (the default), follow redirects to any origin.
 The option applies to every request a read sends: ranged reads, files and documents fetched
 whole, listings of object stores, WFS and feature-service requests, and the token fetch that
 signs STAC assets. It is read when a file is opened or fetched, from the environment (the CLI)
