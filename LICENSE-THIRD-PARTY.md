@@ -10,8 +10,8 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 
 ## Overview
 
-- Apache License 2.0 (268)
-- MIT License (69)
+- Apache License 2.0 (269)
+- MIT License (70)
 - ISC License (20)
 - BSD 3-Clause "New" or "Revised" License (15)
 - BSD 2-Clause "Simplified" License (8)
@@ -4988,6 +4988,7 @@ Used by:
 - [hashbrown 0.16.1](https://github.com/rust-lang/hashbrown)
 - [hashbrown 0.17.1](https://github.com/rust-lang/hashbrown)
 - [heapless 0.8.0](https://github.com/rust-embedded/heapless)
+- [heapless 0.9.3](https://github.com/rust-embedded/heapless)
 - [heck 0.5.0](https://github.com/withoutboats/heck)
 - [hermit-abi 0.5.3](https://github.com/hermit-os/hermit-rs)
 - [httparse 1.10.1](https://github.com/seanmonstar/httparse)
@@ -6639,7 +6640,7 @@ Used by:
 - [r-efi 6.0.0](https://github.com/r-efi/r-efi)
 - [rand 0.10.3](https://github.com/rust-random/rand)
 - [rstar 0.12.2](https://github.com/georust/rstar)
-- [rstar 0.13.0](https://github.com/georust/rstar)
+- [rstar 0.14.0](https://github.com/georust/rstar)
 - [rustc-hash 2.1.3](https://github.com/rust-lang/rustc-hash)
 - [rustls-graviola 0.4.0](https://github.com/ctz/graviola/)
 - [ryu 1.0.23](https://github.com/dtolnay/ryu)
@@ -8693,6 +8694,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 Used by:
 
 - [ordered-float 3.9.2](https://github.com/reem/rust-ordered-float)
+- [ordered-float 5.5.1](https://github.com/reem/rust-ordered-float)
 
 ```text
 Copyright (c) 2015 Jonathan Reem
