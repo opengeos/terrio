@@ -386,7 +386,7 @@ pub(crate) fn write(
         RasterDriver::SAGA => saga::write(r, nodata, p),
         RasterDriver::XYZ => xyz::write(r, p),
         RasterDriver::RST => rst::write(r, nodata, p),
-        RasterDriver::PNG => png::write(r, nodata, p, georeferenced),
+        RasterDriver::PNG => png::write(r, nodata, p, co("ZLEVEL"), georeferenced),
         RasterDriver::JPEG => png::write_jpeg(r, p, co("QUALITY"), georeferenced),
         RasterDriver::WEBP => webp::write(r, nodata, p, &options.creation_options),
         #[cfg(feature = "grib")]

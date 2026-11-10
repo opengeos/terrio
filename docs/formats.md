@@ -57,6 +57,9 @@ with GDAL's default, `EXACT=0`, libwebp writes values of its own choosing there.
 that is opaque everywhere is left out, so the file reads back as 3 bands, in GDAL as in terrio.
 WebP files are read lossless or lossy, as 3 bands, or 4 with an alpha channel.
 
+PNG image data is compressed at the `ZLEVEL` creation option, the Deflate level, from 1 (the
+least effort) to 9 (the most), 6 by default; another value is refused.
+
 A raster without a geotransform and without a CRS (`GEOREFERENCED=NO`, which `terrio.rio`,
 `translate`, `convert` and pipelines give a source without a geotransform) is written to PNG,
 JPEG and WebP without a world file, and to JPEG 2000 without a GeoJP2 box. A world file an earlier
@@ -92,6 +95,13 @@ not supported (GDAL writes neither). WhiteIsZero samples are read as stored, as 
 under every compression terrio reads: terrio decodes them itself (the `tiff` crate inverts those of
 8 bits and more uncompressed or under LZW, Deflate and PackBits, and refuses some), and
 `terrio.rio` gives those of at most 16 bits GDAL's inverted gray color table.
+
+GeoTIFF and COG Deflate chunks (`DEFLATE`, `LERC_DEFLATE`) are compressed at the `ZLEVEL`
+creation option, from 1 (the least effort) to 9 (the most), 6 by default, and Zstandard chunks
+(`ZSTD`, `LERC_ZSTD`) at `ZSTD_LEVEL`, from 1 to 22, 9 by default. `ZSTD_LEVEL` has an effect only
+with the `libzstd` feature: without it, as in the default build and in WebAssembly, Zstandard
+chunks are compressed at the one level their encoder has. A level out of range is refused,
+whatever the compression.
 
 JPEG 2000 is decoded and encoded with the Rust port of OpenJPEG, the codec of GDAL's JP2OpenJPEG
 driver, so pixels are GDAL's (Sentinel-2 L1C and L2A bands included). Georeferencing comes from
@@ -200,7 +210,7 @@ netCDF files are written as GDAL writes rasters, with its creation options:
 |---|---|
 | `FORMAT` | `NC` (CDF-1, the default), `NC2` (CDF-2), `NC5` (CDF-5), `NC4` (netCDF-4) or `NC4C` (netCDF-4, classic model) |
 | `COMPRESS` | `NONE` or `DEFLATE` (with the shuffle filter, as GDAL sets it; a classic format becomes `NC4C`, as in GDAL) |
-| `ZLEVEL` | The deflate level, 1 (the default) to 9 |
+| `ZLEVEL` | The deflate level, 1 (the default) to 9; another value is refused |
 | `CHUNKING` | `YES` (compressed variables chunked by row, GDAL's default) or `NO` (one chunk per band) |
 | `GROUP` | A netCDF-4 group for the variables, such as `/science/grid` (terrio's option; groups are created as needed, `FORMAT` defaults to `NC4`) |
 | `APPEND_SUBDATASET` | `YES`: add the raster to an existing file (in its `GROUP`), as GDAL's option adds a variable. The file is written again with its rasters and the new one (one raster per group; its other variables and attributes, and its rasters' chunking and compression, are not kept: the creation options of this write apply to all) |
