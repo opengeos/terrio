@@ -1101,11 +1101,15 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
     }
     // Read in place; a grid that cannot be read so (a server without range requests, a failed
     // request) is downloaded instead, unless the CDN does not have it.
-    // A grid named by a path cannot be on the CDN: it is missing, not a network failure, so the
-    // transformation can fall back to another operation. Other names are asked for (and those
-    // the CDN cannot have, such as `.gsb` names, recorded as fetch failures, as before).
+    // Only a single file name can be on the CDN. Anything else (a path, a name with directories,
+    // a Windows drive prefix) is missing, not a network failure, so the transformation can fall
+    // back to another operation. Plain names the CDN does not have (`.gsb` names) are still asked
+    // for and recorded as fetch failures.
     #[cfg(remote)]
-    let fetch = bytes.is_none() && network_enabled() && !name.contains(['/', '\\']);
+    let fetch = bytes.is_none() && network_enabled() && {
+        let mut parts = std::path::Path::new(name).components();
+        matches!(parts.next(), Some(std::path::Component::Normal(_))) && parts.next().is_none() && !name.contains(['/', '\\'])
+    };
     #[cfg(remote)]
     if fetch && !download_whole() {
         match open_remote(name) {
