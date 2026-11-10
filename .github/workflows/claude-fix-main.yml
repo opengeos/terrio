@@ -228,7 +228,7 @@ jobs:
 
       - name: Fix
         # Pinned to the same commit as claude-autofix.yml; Dependabot bumps both.
-        uses: anthropics/claude-code-action@d535f5172dec02b204866b393d6b20b9b2aaf98d # v1 (Claude Code 2.1.220)
+        uses: anthropics/claude-code-action@61a9c274fa7110a66dfafc1bbbced03833eb25fe # v1 (Claude Code 2.1.220)
         with:
           github_token: ${{ github.token }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

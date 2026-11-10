@@ -393,7 +393,9 @@ nodata override and optional Z coordinates), returning a line layer with IDs and
 `ops::zonal::zonal_stats` accepts a polygon layer, `ZonalSource`s (a `ZonalRaster` and its
 `ZonalBand`s) and `ZonalOptions`. A `ZonalRaster` is an open `LazyRaster` or a path
 (`ZonalRaster::Path`) opened only while it is read, so thousands of files stay within the
-open-file limit. `ZonalOptions` holds the statistics, pixel inclusion, and optional `dst_srs`
+open-file limit. A path is opened and read under the options set for the calling thread
+(`config::push_scope`), a driver allow-list among them, on whatever thread reads it.
+`ZonalOptions` holds the statistics, pixel inclusion, and optional `dst_srs`
 and `decimal_places`. The result retains the
 source features and adds statistic fields. Output reprojection occurs after analysis, and
 rounding (0–15 decimal places, ties away from zero after binary64 scaling) leaves source
