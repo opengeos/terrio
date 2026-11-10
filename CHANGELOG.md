@@ -2,15 +2,6 @@
 
 ## Unreleased
 
-- A raster without a geotransform and without a CRS is written without georeferencing to JPEG
-  2000, PNG, JPEG and WebP, as to GeoTIFF: no GeoJP2 box, and no world file (one an earlier write
-  left at that path is removed). They declared the unit-pixel grid such a raster is given,
-  `(0, 1, 0, height, 0, -1)`, as its georeferencing (#714). `terrio.rio` marks such a raster with
-  `GEOREFERENCED=NO`, which only the GeoTIFF writer read. `terrio translate`, `convert` and
-  pipelines now give it to the outputs of a source without a geotransform (an unreferenced
-  GeoTIFF or JPEG 2000 file) unless `--a-ullr` or `--t-srs` georeferences them, so `translate`
-  and `convert` no longer write such a source's GeoTIFF with a geotransform either
-  (`LazyRaster::keep_unreferenced`). A CRS without a geotransform is written as before.
 - A `Raster` read lazily from a file, such as a GeoTIFF (`open_raster(path, lazy=True)`,
   `rio.open`, the xarray backend), can be read from several Python threads at once: `read`,
   `read_mask` and `numpy.asarray` raised `RuntimeError: Already borrowed` when a read overlapped
