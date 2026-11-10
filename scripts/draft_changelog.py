@@ -153,18 +153,16 @@ def first_paragraph(body: str | None) -> str:
         The first paragraph, or an empty string when there is none.
     """
     text = re.sub(r"<!--.*?-->|```.*?```", "", body or "", flags=re.DOTALL)
-    text = re.sub(r"(?m)^\s*#.*$", "", text)
+    text = re.sub(r"(?m)^[ \t]*#{1,6}[ \t].*$", "", text)
     for paragraph in re.split(r"\n\s*\n", text):
         paragraph = paragraph.strip()
-        # Each item of a list is a candidate of its own.
-        if re.match(r"[-*]\s", paragraph):
-            candidates = re.split(r"\n\s*[-*]\s", paragraph[2:])
-        else:
-            candidates = [paragraph]
-        for candidate in candidates:
+        # The text before a list and each of its items are candidates of their own; a lead-in
+        # such as "Changes:" is not an entry.
+        for candidate in re.split(r"(?m)^[ \t]*[-*][ \t]+", paragraph):
             candidate = " ".join(candidate.split())
             if (
                 candidate
+                and not candidate.endswith(":")
                 and not candidate.startswith(("|", "```"))
                 and not re.fullmatch(r"\*\*[^*]*\*\*\.?", candidate)
                 and not REFERENCE_ONLY.match(candidate)
