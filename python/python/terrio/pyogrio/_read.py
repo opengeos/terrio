@@ -422,7 +422,8 @@ def _crs(crs: str | None) -> str | None:
         # as ESC) are quoted as spaces, so that the quote is one line and sends a terminal no
         # escape sequence.
         quoted = "".join(c if c.isprintable() else " " for c in crs.strip()[:80])
-        # stacklevel: the call of read_info or read_dataframe.
+        # stacklevel: the direct call of read_info or read_dataframe. Wrappers such as
+        # list_layers or geopandas add another frame, so this may point into the wrapper.
         warnings.warn(
             f"the layer's CRS definition cannot be parsed ('{quoted}'): it is read without a CRS",
             stacklevel=4,

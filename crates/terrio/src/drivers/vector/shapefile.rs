@@ -318,21 +318,28 @@ pub(crate) fn header_layer(shp: &[u8], name: &str) -> Result<Layer> {
 /// an empty `.prj` leaves it without, silently, as no `.prj` does. A leading byte-order mark is not
 /// part of the definition.
 pub(crate) fn apply_prj(layer: &mut Layer, prj: Option<&str>) {
-    let Some(prj) = prj.map(|s| s.trim_start_matches('\u{feff}').trim()).filter(|s| !s.is_empty()) else {
+    let Some(prj) = prj
+        .map(|s| s.trim_start_matches('\u{feff}').trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '\0' | '\x1a')).trim_start())
+        .filter(|s| !s.is_empty())
+    else {
         return;
     };
+    // Validate WKT's entire form before identifying its EPSG code: identification reads only
+    // the first root, so it must not bypass the check for trailing prose or unbalanced text.
+    if !(is_crs_definition(prj) || (crs_wkt_opener(prj).is_none() && SpatialRef::parse_literal(prj).is_ok())) {
+        let quote = |s: &str| s.chars().map(|c| if quoted_as_space(c) { ' ' } else { c }).collect::<String>();
+        let quoted = quote(&prj.chars().take(80).collect::<String>());
+        crate::warnings::warn(format!(
+            "{}.prj holds no CRS definition terrio can read ('{quoted}'): the layer is read without a CRS",
+            quote(&layer.name)
+        ));
+        return;
+    }
     match SpatialRef::from_wkt(prj).epsg.and_then(|code| SpatialRef::from_epsg(code).ok()) {
         Some(s) => s.apply_to_layer(layer),
-        None if is_crs_definition(prj) || (crs_wkt_opener(prj).is_none() && SpatialRef::parse_literal(prj).is_ok()) => {
+        None => {
             SpatialRef::from_wkt(prj).apply_to_layer(layer);
             layer.set_crs_wkt(Some(prj.to_string()));
-        }
-        None => {
-            let quoted: String = prj.chars().take(80).map(|c| if quoted_as_space(c) { ' ' } else { c }).collect();
-            crate::warnings::warn(format!(
-                "{}.prj holds no CRS definition terrio can read ('{quoted}'): the layer is read without a CRS",
-                layer.name
-            ));
         }
     }
 }
@@ -1999,6 +2006,13 @@ mod tests {
             let warning = format!("p.prj holds no CRS definition terrio can read ('{quoted}'): the layer is read without a CRS");
             assert_eq!(read_with(prj), (None, None, vec![warning]), "{prj:?}");
         }
+        // EPSG identification must not bypass full-form validation.
+        for suffix in ["\nnotes", "[", "]"] {
+            let text = format!("{esri}{suffix}");
+            let (epsg, wkt, warnings) = read_with(&text);
+            assert_eq!((epsg, wkt), (None, None), "{text}");
+            assert_eq!(warnings.len(), 1, "{text}: {warnings:?}");
+        }
         // An empty `.prj` (a byte-order mark alone included): no CRS, silently, as without one.
         for prj in ["", " \r\n", "\u{feff}"] {
             assert_eq!(read_with(prj), (None, None, vec![]), "{prj:?}");
@@ -2025,6 +2039,10 @@ mod tests {
         ] {
             assert_eq!(read_with(&format!("{prj}\n")), (None, Some(prj.to_string()), vec![]), "{prj:?}");
         }
+        // Conventional NUL / DOS EOF padding does not invalidate an otherwise complete WKT.
+        for padding in ["\0", "\x1a", "\0\r\n"] {
+            assert_eq!(read_with(&format!("{custom}{padding}")), (None, Some(custom.to_string()), vec![]));
+        }
         // So are those terrio does not read that have the form of a definition: an engineering CRS
         // in WKT 1 and WKT 2, WKT that is no CRS, another authority's code and an unknown code.
         let engineering = r#"ENGCRS["site grid",EDATUM["site"],CS[Cartesian,2],AXIS["(E)",east],AXIS["(N)",north],LENGTHUNIT["metre",1]]"#;
@@ -2040,6 +2058,17 @@ mod tests {
             assert!(SpatialRef::parse_literal(prj).is_err(), "{prj:?}");
             assert_eq!(read_with(&format!("{prj}\n")), (None, Some(prj.to_string()), vec![]), "{prj:?}");
         }
+    }
+
+    #[test]
+    fn prj_warning_quotes_control_characters_in_the_layer_name() {
+        let _ = crate::warnings::take();
+        let mut layer = Layer::new("p\x1b\u{202e}");
+        apply_prj(&mut layer, Some("not a CRS"));
+        let warnings = crate::warnings::take();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].starts_with("p  .prj holds no CRS"), "{warnings:?}");
+        assert!(!warnings[0].contains(['\x1b', '\u{202e}']));
     }
 
     #[test]

@@ -110,6 +110,14 @@ def test_a_prj_without_a_crs_definition_gives_no_crs_and_a_warning(tmp_path, prj
     assert (layer.crs, layer.crs_wkt, len(layer), messages) == (None, None, 3, [warning])
 
 
+@pytest.mark.parametrize("suffix", ["\nnotes", "[", "]"])
+def test_epsg_identification_does_not_accept_trailing_wkt_junk(tmp_path, suffix):
+    path = _shapefile(tmp_path, ESRI_WGS84 + suffix)
+    info, messages = _warned(lambda: tpg.read_info(path))
+    assert info["crs"] is None
+    assert len(messages) == 1 and "holds no CRS definition" in messages[0]
+
+
 def test_the_command_line_reads_the_layer_without_the_prj(tmp_path):
     path = _shapefile(tmp_path, NOT_A_CRS[0])
     warning = f"terrio: warning: {_prj_warning(NOT_A_CRS[0])}\n"
