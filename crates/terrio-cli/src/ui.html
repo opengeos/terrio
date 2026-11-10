@@ -397,9 +397,21 @@ function choose(path) {
 // A field that takes many paths can take every file of a folder matching a pattern, as one
 // `folder/*.tif` line that terrio expands itself, so that dozens of inputs need one click.
 function patternMatcher(pattern) {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*").replaceAll("?", ".");
-  // Windows file names ignore case, and terrio matches them so there.
-  return new RegExp(`^${escaped}$`, separator === "\\" ? "isu" : "su");
+  // Match like the CLI: retry only the most recent star, with no exponential regex backtracking.
+  const fold = (text) => Array.from(separator === "\\" ? text.toLowerCase() : text);
+  const chars = fold(pattern);
+  return { test(name) {
+    const value = fold(name);
+    let p = 0, n = 0, star = -1, retry = 0;
+    while (n < value.length) {
+      if (chars[p] === "*") { star = p++; retry = n; }
+      else if (chars[p] === "?" || chars[p] === value[n]) { p++; n++; }
+      else if (star >= 0) { p = star + 1; n = ++retry; }
+      else return false;
+    }
+    while (chars[p] === "*") p++;
+    return p === chars.length;
+  } };
 }
 
 function matchingEntries() {
@@ -414,6 +426,7 @@ function matchingEntries() {
 function updateMatchCount() {
   const matches = matchingEntries();
   const count = byId("browse-count");
+  count.title = "Counts listed names only; filenames that are not valid Unicode are hidden.";
   const ok = matches && matches.length && !byId("browse-folder").disabled;
   byId("browse-add-matching").disabled = !ok;
   if (!matches) count.textContent = "Use * for any characters and ? for one";

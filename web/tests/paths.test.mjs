@@ -102,3 +102,16 @@ test("the page's form code is the same as terrio ui's", () => {
     ["translate", "--of=GTiff", "in.tif"],
   );
 });
+
+
+test("local file patterns avoid exponential backtracking and match Unicode characters", () => {
+  const { patternMatcher } = definitions(readFileSync(new URL("../../crates/terrio-cli/src/ui.html", import.meta.url), "utf8"), ["patternMatcher"]);
+  const matcher = new Function("separator", `${patternMatcher}\nreturn patternMatcher;`)("/");
+  assert.equal(matcher("*a*a*a*a*a*b").test("a".repeat(10000)), false);
+  assert.equal(matcher("?.tif").test("🌍.tif"), true);
+  assert.equal(matcher("*.tif").test("a\nb.tif"), true);
+  assert.equal(matcher("[a]*.tif").test("[a]1.tif"), true);
+  assert.equal(matcher("*.tif").test("a.TIF"), false);
+  const windows = new Function("separator", `${patternMatcher}\nreturn patternMatcher;`)("\\");
+  assert.equal(windows("*.tif").test("a.TIF"), true);
+});

@@ -101,7 +101,9 @@ pub const MAX_FILE_LIST: u64 = 64 << 20;
 ///
 /// An input given directly whose file name holds `*` or `?` is replaced by the entries of its
 /// folder that match, in name order (see [`expand_wildcards`]), for the terrio UI, MCP clients and
-/// Windows shells, which do not expand wildcards themselves.
+/// Windows shells, which do not expand wildcards themselves. MCP callers may enumerate matching
+/// file names this way, as through the other local filesystem tools; file contents are not read
+/// as argument lists.
 pub fn expand_file_lists(inputs: &[String]) -> terrio::Result<Vec<String>> {
     let mut out = Vec::with_capacity(inputs.len());
     for input in inputs {
