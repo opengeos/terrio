@@ -21,6 +21,8 @@
 use super::common;
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
+use hdf5_reader::messages::HdfMessage;
+use hdf5_reader::object_header::ObjectHeader;
 use netcdf_reader::{NcAttrValue, NcAttribute, NcFile, NcFormat, NcGroup, NcType, NcVariable};
 use std::path::Path;
 use wbraster::CrsInfo;
@@ -260,48 +262,58 @@ impl VarRef<'_> {
     }
 }
 
-/// Every variable, in GDAL's order: the root group's in definition order, then each subgroup's
-/// (in definition order, recursively).
-fn all_variables<'a>(f: &'a NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf5File>) -> Result<Vec<VarRef<'a>>> {
+/// Every variable, in GDAL 3.13.3's order: the root group's in definition order, then each subgroup's
+/// (in definition order, recursively). A group that does not track creation order is listed by name.
+fn all_variables<'a>(
+    f: &'a NcFile,
+    path: &Path,
+    hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf5File>,
+    ordered: bool,
+) -> Result<Vec<VarRef<'a>>> {
     let root = f.root_group().map_err(|e| err(path, e))?;
     let classic = matches!(f.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5);
-    // NetCDF-4 groups and variables come back in name order; their object headers were allocated
-    // in definition order, which is GDAL's order.
-    let addresses = if classic { None } else { hdf5() };
-    let group_address = |group_path: &str| -> u64 {
-        addresses
-            .as_ref()
-            .and_then(|h| {
-                let mut g = h.root_group().ok()?;
-                for part in group_path.split('/').filter(|p| !p.is_empty()) {
-                    g = g.group(part).ok()?;
-                }
-                Some(g.address())
-            })
-            .unwrap_or(u64::MAX)
+    // NetCDF-4 groups and variables come in the creation order of their HDF5 links when the group
+    // tracks it, as netCDF-4 groups do: their definition order. netCDF lists the links of a group
+    // that does not track it by name. The file is opened again, once, to tell.
+    let h5 = std::cell::OnceCell::new();
+    let sort_by_name = |group_path: &str| -> bool {
+        // Explicit variable lookup needs no ordering. In memory this also avoids copying the
+        // entire input into the auxiliary HDF5 reader; classic files need no HDF5 reader either.
+        if !ordered || classic {
+            return false;
+        }
+        let header = || {
+            let h = h5.get_or_init(hdf5).as_ref()?;
+            let mut g = h.root_group().ok()?;
+            for part in group_path.split('/').filter(|p| !p.is_empty()) {
+                g = g.group(part).ok()?;
+            }
+            ObjectHeader::parse_at_storage(g.storage(), g.address(), g.offset_size(), g.length_size()).ok()
+        };
+        // No Link Info message means untracked links, sorted by name. If reopening or
+        // parsing the header fails, retain the reader's order rather than guessing.
+        header().is_some_and(|h| !h.messages.iter().any(|m| matches!(m, HdfMessage::LinkInfo(li) if li.creation_order_tracked)))
     };
-    fn visit<'a>(chain: Vec<&'a NcGroup>, prefix: &str, classic: bool, group_address: &dyn Fn(&str) -> u64, out: &mut Vec<VarRef<'a>>) {
+    fn visit<'a>(chain: Vec<&'a NcGroup>, prefix: &str, sort_by_name: &dyn Fn(&str) -> bool, out: &mut Vec<VarRef<'a>>) {
         let g = *chain.last().unwrap_or(&chain[0]);
         let mut vars: Vec<&NcVariable> = g.variables.iter().collect();
-        if !classic {
-            vars.sort_by_key(|v| v.data_offset);
+        let mut groups: Vec<&NcGroup> = g.groups.iter().collect();
+        if (vars.len() > 1 || groups.len() > 1) && sort_by_name(prefix) {
+            vars.sort_by(|a, b| a.name.cmp(&b.name));
+            groups.sort_by(|a, b| a.name.cmp(&b.name));
         }
         for v in vars {
             let full = if prefix.is_empty() { v.name.clone() } else { format!("{prefix}/{}", v.name) };
             out.push(VarRef { groups: chain.clone(), v, full });
         }
-        let mut children: Vec<(&NcGroup, String)> = g.groups.iter().map(|c| (c, format!("{prefix}/{}", c.name))).collect();
-        if !classic {
-            children.sort_by_key(|(_, p)| group_address(p));
-        }
-        for (c, p) in children {
+        for c in groups {
             let mut next = chain.clone();
             next.push(c);
-            visit(next, &p, classic, group_address, out);
+            visit(next, &format!("{prefix}/{}", c.name), sort_by_name, out);
         }
     }
     let mut out = Vec::new();
-    visit(vec![root], "", classic, &group_address, &mut out);
+    visit(vec![root], "", &sort_by_name, &mut out);
     Ok(out)
 }
 
@@ -353,7 +365,7 @@ fn subdatasets(vars: &[VarRef], file: &str) -> Vec<(String, String)> {
 /// The paths of a file's raster variables (`Band1`, `/group/Band1`), as [`read`] names them.
 pub(crate) fn data_variable_paths(path: &Path) -> Result<Vec<String>> {
     let f = NcFile::open(path).map_err(|e| err(path, e))?;
-    let vars = all_variables(&f, path, &|| super::hdf5::open_file(path).ok())?;
+    let vars = all_variables(&f, path, &|| super::hdf5::open_file(path).ok(), true)?;
     Ok(data_variables(&vars).iter().map(|r| r.full.clone()).collect())
 }
 
@@ -445,7 +457,7 @@ pub(crate) fn read_bytes(bytes: &[u8], name: &str, variable: Option<&str>) -> Re
 }
 
 fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf5File>, variable: Option<&str>) -> Result<RasterDataset> {
-    let vars = all_variables(f, path, hdf5)?;
+    let vars = all_variables(f, path, hdf5, variable.is_none())?;
     let candidates = data_variables(&vars);
     let var = match variable {
         Some(name) => {
@@ -990,6 +1002,29 @@ fn grid_mapping_crs(g: &NcVariable) -> Option<CrsInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Explicit selection does not reopen HDF5 (or clone a byte-backed file); an unavailable
+    /// auxiliary header on a listing retains the netCDF reader's order rather than guessing.
+    #[test]
+    fn explicit_selection_skips_auxiliary_order_reads_and_unavailable_headers_keep_reader_order() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_order/definition_order.nc");
+        let bytes = std::fs::read(&path).unwrap();
+        let file = NcFile::from_bytes(&bytes).unwrap();
+        let opens = std::cell::Cell::new(0);
+        let unavailable = || {
+            opens.set(opens.get() + 1);
+            None
+        };
+        let selected = read_file(&file, &path, &unavailable, Some("zulu")).unwrap();
+        assert_eq!(selected.raster.data.to_f64_vec(), [2.0, 3.0, 0.0, 1.0]);
+        assert_eq!(opens.get(), 0, "explicit selection must not open the auxiliary reader");
+        let vars = all_variables(&file, &path, &unavailable, true).unwrap();
+        assert_eq!(opens.get(), 1, "a listing attempts at most one auxiliary open");
+        let root = file.root_group().unwrap();
+        let expected: Vec<_> = root.variables.iter().map(|v| v.name.as_str()).collect();
+        let actual: Vec<_> = vars[..expected.len()].iter().map(|v| v.full.as_str()).collect();
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn formats_numbers_as_c_does() {
