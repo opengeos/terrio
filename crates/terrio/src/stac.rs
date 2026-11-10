@@ -540,7 +540,11 @@ impl AssetReadContext {
     pub(crate) fn enter(&self) -> Result<AssetReadContextScope> {
         crate::config::push_scope(self.options.clone());
         let mut scope = AssetReadContextScope { _policy: None };
-        scope._policy = self.policy.as_ref().map(AssetReadPolicy::enter).transpose()?;
+        scope._policy = Some(match &self.policy {
+            Some(policy) => policy.enter()?,
+            // A snapshot without provenance must clear a suspended worker task's policy too.
+            None => AssetReadScope { previous: ASSET_READ_POLICY.with(|p| p.take()), _thread: std::marker::PhantomData },
+        });
         Ok(scope)
     }
 }
@@ -2049,6 +2053,40 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
 
 #[cfg(test)]
 mod tests {
+    /// A worker's suspended task must not lend its provenance to an unscoped read.
+    #[test]
+    fn asset_context_replaces_and_restores_an_absent_policy() {
+        let context = crate::config::with_options(&[("TERRIO_TEST_CONTEXT", "captured")], || super::AssetReadContext::capture(None));
+        crate::config::with_options(&[("TERRIO_TEST_CONTEXT", "worker")], || {
+            let unrelated = super::AssetReadPolicy::for_tests("https://unrelated.example/item.json", false);
+            let _previous = unrelated.enter().unwrap();
+            {
+                let _scope = context.enter().unwrap();
+                assert!(super::AssetReadPolicy::current().is_none());
+                assert_eq!(crate::config::get("TERRIO_TEST_CONTEXT").as_deref(), Some("captured"));
+            }
+            assert_eq!(super::AssetReadPolicy::current().unwrap().document, unrelated.document);
+            assert_eq!(crate::config::get("TERRIO_TEST_CONTEXT").as_deref(), Some("worker"));
+        });
+    }
+
+    /// Refused consent must leave the worker's previous options and provenance intact.
+    #[test]
+    fn refused_asset_context_restores_worker_state() {
+        let policy = super::AssetReadPolicy::for_tests("https://credentialed.example/item.json", true);
+        let context =
+            crate::config::with_options(&[("TERRIO_TEST_CONTEXT", "captured"), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+                super::AssetReadContext::capture(Some(policy))
+            });
+        crate::config::with_options(&[("TERRIO_TEST_CONTEXT", "worker")], || {
+            let unrelated = super::AssetReadPolicy::for_tests("https://unrelated.example/item.json", false);
+            let _previous = unrelated.enter().unwrap();
+            assert!(context.enter().is_err());
+            assert_eq!(super::AssetReadPolicy::current().unwrap().document, unrelated.document);
+            assert_eq!(crate::config::get("TERRIO_TEST_CONTEXT").as_deref(), Some("worker"));
+        });
+    }
+
     use super::*;
 
     /// Cached native clients retain credentials; changing current configuration cannot revoke

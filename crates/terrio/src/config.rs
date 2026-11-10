@@ -92,7 +92,7 @@ pub fn thread_options() -> HashMap<String, Option<String>> {
 /// this snapshot. The previous stack is restored even when `f` panics.
 /// Use only around blocking leaf operations: `f` must not yield into nested pool work,
 /// which could run unrelated tasks before the temporary thread-local scope is restored.
-#[cfg(any(test, remote, feature = "zarr"))]
+#[cfg(any(test, remote, feature = "zarr", all(feature = "pointcloud", not(target_family = "wasm"))))]
 pub(crate) fn with_thread_options<T>(options: HashMap<String, Option<String>>, f: impl FnOnce() -> T) -> T {
     struct Restore(Vec<HashMap<String, Option<String>>>);
     impl Drop for Restore {
