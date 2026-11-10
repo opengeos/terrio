@@ -755,11 +755,13 @@ mod tests {
         assert_eq!(parse_subdataset("GPKG:C:\\x.gpkg:grid"), Some(("C:\\x.gpkg".into(), "grid".into())));
     }
 
-    /// `skip_features` and `max_features` keep that range of each layer's features, in the
-    /// table's order, counted after the spatial filter when there is one (#790): for a file, and
-    /// for bytes, as `memory::open_vector_bytes` and the in-memory codecs read them.
+    /// `skip_features` and `max_features` keep that range of each layer's features, or of the
+    /// layer named, in the table's order, counted after the spatial filter when there is one
+    /// (#790): for a file, an archive member and bytes, as `memory::open_vector_bytes` and the
+    /// in-memory codecs read them.
     #[test]
     fn a_feature_range_keeps_those_features_of_each_layer() {
+        use std::io::Write as _;
         let points = |name: &str, n: u32| {
             let mut layer = wbvector::Layer::new(name).with_epsg(4326);
             for i in 0..n {
@@ -775,6 +777,12 @@ mod tests {
         let path = dir.path().join("points.gpkg");
         std::fs::write(&path, &bytes).unwrap();
         let path = path.to_str().unwrap();
+        let archive = dir.path().join("points.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        zip.start_file("points.gpkg", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(&bytes).unwrap();
+        zip.finish().unwrap();
+        let member = format!("/vsizip/{}/points.gpkg", archive.to_str().unwrap());
         // The x of each layer's points.
         let xs = |layers: &[wbvector::Layer]| {
             let x = |f: &wbvector::Feature| match &f.geometry {
@@ -783,36 +791,47 @@ mod tests {
             };
             layers.iter().map(|l| (l.name.clone(), l.features.iter().map(x).collect::<Vec<_>>())).collect::<Vec<_>>()
         };
+        let vector = |d: crate::Dataset| match d {
+            crate::Dataset::Vector(v) => xs(&v.layers),
+            crate::Dataset::Raster(_) => panic!("a raster"),
+        };
         type Read<'a> = &'a dyn Fn(&crate::VectorOpenOptions) -> Vec<(String, Vec<f64>)>;
-        let reads: [(&str, Read); 3] = [
+        let reads: [(&str, Read); 5] = [
             ("a file", &|o: &crate::VectorOpenOptions| xs(&crate::open_vector(path, o).unwrap().layers)),
+            ("an archive member", &|o: &crate::VectorOpenOptions| xs(&crate::open_vector(&member, o).unwrap().layers)),
             ("open_vector_bytes", &|o: &crate::VectorOpenOptions| {
                 xs(&crate::memory::open_vector_bytes(bytes.clone(), "points.gpkg", o).unwrap().layers)
             }),
-            ("open_bytes", &|o: &crate::VectorOpenOptions| match open_bytes(bytes.clone(), "points.gpkg", o).unwrap() {
-                crate::Dataset::Vector(v) => xs(&v.layers),
-                crate::Dataset::Raster(_) => panic!("a raster"),
+            ("the in-memory codecs", &|o: &crate::VectorOpenOptions| {
+                vector(crate::memory::codec::open(bytes.clone(), "points.gpkg", o).unwrap())
             }),
+            ("open_bytes", &|o: &crate::VectorOpenOptions| vector(open_bytes(bytes.clone(), "points.gpkg", o).unwrap())),
         ];
-        // (skip_features, max_features, spatial_filter) and the x the two layers keep.
-        type Case = (usize, Option<usize>, Option<crate::drivers::vector::gpkg_read::Rect>, [&'static [f64]; 2]);
+        // (layers named, skip_features, max_features, spatial_filter) and the x each layer read
+        // keeps.
+        type Case = (&'static [&'static str], usize, Option<usize>, Option<crate::drivers::vector::gpkg_read::Rect>, Kept);
+        type Kept = &'static [(&'static str, &'static [f64])];
         let middle = Some((0.5, -1.0, 3.5, 1.0));
-        let cases: [Case; 7] = [
-            (1, Some(2), None, [&[1.0, 2.0], &[1.0, 2.0]]),
-            (4, None, None, [&[4.0], &[]]),
-            (0, Some(1), None, [&[0.0], &[0.0]]),
-            (5, None, None, [&[], &[]]),
-            (0, None, None, [&[0.0, 1.0, 2.0, 3.0, 4.0], &[0.0, 1.0, 2.0]]),
-            (0, None, middle, [&[1.0, 2.0, 3.0], &[1.0, 2.0]]),
-            (1, Some(1), middle, [&[2.0], &[2.0]]),
+        let cases: [Case; 9] = [
+            (&[], 1, Some(2), None, &[("five", &[1.0, 2.0]), ("three", &[1.0, 2.0])]),
+            (&[], 4, None, None, &[("five", &[4.0]), ("three", &[])]),
+            (&[], 0, Some(1), None, &[("five", &[0.0]), ("three", &[0.0])]),
+            (&[], 5, None, None, &[("five", &[]), ("three", &[])]),
+            (&[], 0, None, None, &[("five", &[0.0, 1.0, 2.0, 3.0, 4.0]), ("three", &[0.0, 1.0, 2.0])]),
+            (&[], 0, None, middle, &[("five", &[1.0, 2.0, 3.0]), ("three", &[1.0, 2.0])]),
+            (&[], 1, Some(1), middle, &[("five", &[2.0]), ("three", &[2.0])]),
+            (&[], 0, Some(1), middle, &[("five", &[1.0]), ("three", &[1.0])]),
+            (&["three"], 1, Some(1), None, &[("three", &[1.0])]),
         ];
         let (mut got, mut want) = (Vec::new(), Vec::new());
         for (entry, read) in reads {
-            for (skip_features, max_features, spatial_filter, [five, three]) in cases {
-                let options = crate::VectorOpenOptions { skip_features, max_features, spatial_filter, ..Default::default() };
-                got.push((entry, skip_features, max_features, spatial_filter.is_some(), read(&options)));
-                let kept = vec![("five".to_string(), five.to_vec()), ("three".to_string(), three.to_vec())];
-                want.push((entry, skip_features, max_features, spatial_filter.is_some(), kept));
+            for (layers, skip_features, max_features, spatial_filter, kept) in cases {
+                let layers: Vec<String> = layers.iter().map(|l| l.to_string()).collect();
+                let options =
+                    crate::VectorOpenOptions { layers: layers.clone(), skip_features, max_features, spatial_filter, ..Default::default() };
+                let case = (entry, layers, skip_features, max_features, spatial_filter.is_some());
+                got.push((case.clone(), read(&options)));
+                want.push((case, kept.iter().map(|(l, x)| (l.to_string(), x.to_vec())).collect::<Vec<_>>()));
             }
         }
         assert_eq!(got, want);
