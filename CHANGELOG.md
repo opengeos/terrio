@@ -2,12 +2,6 @@
 
 ## Unreleased
 
-- A local GeoJSON or GML file whose name points to no driver (`data`, `data.txt`, a GML saved as
-  `.xml`) is read by its content, as a remote response under such a name is: `open_vector`, `open`,
-  `list_layers`, `info`, `convert`, `terrio.open_vector` and `terrio.pyogrio` failed with "format
-  not recognized". JSON without a GeoJSON root `type` is still not recognized, and an allow-list
-  refuses such a file as before. Builds with the `gdal` feature read it with the GeoJSON or GML
-  driver, and with GDAL only when that driver refuses it (#715).
 - A `Raster` read lazily from a file, such as a GeoTIFF (`open_raster(path, lazy=True)`,
   `rio.open`, the xarray backend), can be read from several Python threads at once: `read`,
   `read_mask` and `numpy.asarray` raised `RuntimeError: Already borrowed` when a read overlapped
