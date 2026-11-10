@@ -164,13 +164,20 @@ fn open_vrt(py: Python<'_>, xml: &str, sources: &Bound<'_, PyDict>) -> PyResult<
 ///     UserWarning: If the raster declares a CRS terrio cannot represent (it then has none).
 #[pyfunction]
 #[pyo3(signature = (path, lazy=false))]
-fn open_raster(py: Python<'_>, path: &str, lazy: bool) -> PyResult<PyRaster> {
+fn open_raster<'py>(py: Python<'py>, path: &str, lazy: bool) -> PyResult<Bound<'py, PyRaster>> {
     if lazy {
         let r = crate::with_warnings(py, || terrio::open_raster_lazy(path))?;
-        return Ok(PyRaster { inner: r });
+        let reopens = r.is_lazy();
+        let r = Bound::new(py, PyRaster { inner: r })?;
+        // Reads that overlap open more readers of the path (a raster read whole into memory once
+        // is not opened again).
+        if reopens {
+            r.setattr(pyo3::intern!(py, "_readers"), crate::raster::Readers::new(path))?;
+        }
+        return Ok(r);
     }
     let ds = crate::with_warnings(py, || terrio::open_raster(path))?;
-    Ok(PyRaster::from_dataset(ds))
+    Bound::new(py, PyRaster::from_dataset(ds))
 }
 
 /// Opens a vector dataset.
