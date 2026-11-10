@@ -339,6 +339,7 @@ impl VirtualRaster {
                 base: base.into(),
                 cached: HashMap::new(),
                 lru: Default::default(),
+                levels: Default::default(),
                 sources,
             }),
         ))
@@ -525,9 +526,75 @@ struct Reader {
     sources: HashMap<String, LazyRaster>,
     cached: HashMap<String, LazyRaster>,
     lru: std::collections::VecDeque<String>,
+    /// The VRT's implicit overviews, found the first time they are asked for
+    /// ([`Reader::implicit_overviews`]).
+    levels: std::sync::OnceLock<Vec<(usize, usize)>>,
 }
 
 impl Reader {
+    /// The VRT's implicit overviews, `(width, height)` largest first: those of its first source
+    /// (of the first band that has one, in document order), at the VRT's scale. A level reads
+    /// each source from its own level of the same scale or from the nearest finer one
+    /// ([`Reader::source_values`]), so the first source alone is opened to list them, once, for
+    /// its header. None for a warped or pansharpened VRT, a VRT with a kernel source, whose
+    /// kernel spans full-resolution pixels, or a first source that cannot be opened.
+    fn implicit_overviews(&self) -> Vec<(usize, usize)> {
+        let description: &VirtualRaster = &self.description;
+        let Ok(_depth) = ReadDepth::enter() else {
+            return Vec::new();
+        };
+        let kernel = [Some(description), self.mask.as_deref()]
+            .into_iter()
+            .flatten()
+            .flat_map(|d| d.root.children.iter().filter(|e| e.name == "VRTRasterBand"))
+            .any(|band| band.children.iter().any(|s| s.name == "KernelFilteredSource"));
+        if description.warped || description.pansharpen.is_some() || kernel {
+            return Vec::new();
+        }
+        let Some(first) = description.layout.bands.iter().flat_map(|b| &b.sources).next() else {
+            return Vec::new();
+        };
+        let path = resolve_reference(&self.base, &first.filename, first.relative_to_vrt);
+        let opened;
+        let source = match self.sources.get(&first.filename).or_else(|| self.cached.get(&path)) {
+            Some(source) => source,
+            None => match crate::open_raster_lazy(&path) {
+                Ok(source) => {
+                    opened = source;
+                    &opened
+                }
+                Err(_) => return Vec::new(),
+            },
+        };
+        let (sw, sh) = (source.width() as f64, source.height() as f64);
+        let rect = if first.src_rect[0].is_nan() { [0., 0., sw, sh] } else { first.src_rect };
+        // The first source's pixels in a VRT pixel, along x and y.
+        let (rx, ry) = (rect[2] / first.dst_rect[2], rect[3] / first.dst_rect[3]);
+        if !(rx.is_finite() && ry.is_finite() && rx > 0. && ry > 0.) {
+            return Vec::new();
+        }
+        let (w, h) = (description.layout.width, description.layout.height);
+        let mut levels: Vec<(usize, usize)> = Vec::new();
+        for (ow, oh) in source.overviews() {
+            // The VRT's pixels in a pixel of the level.
+            let (fx, fy) = (sw / ow as f64 / rx, sh / oh as f64 / ry);
+            let size = (level_size(w, fx), level_size(h, fy));
+            let above = levels.last().copied().unwrap_or((w, h));
+            if fx > 1. && fy > 1. && size.0 <= above.0 && size.1 <= above.1 && size != above {
+                levels.push(size);
+            }
+        }
+        levels
+    }
+
+    /// The size of level `level` of the VRT: its own at 0, its overview `level - 1` above.
+    fn level(&self, level: usize) -> Result<(usize, usize)> {
+        if level == 0 {
+            return Ok((self.description.layout.width, self.description.layout.height));
+        }
+        self.levels.get_or_init(|| self.implicit_overviews()).get(level - 1).copied().ok_or_else(|| invalid("no such overview"))
+    }
+
     fn source(&mut self, name: &str, relative: bool) -> Result<&mut LazyRaster> {
         // Uploaded source names override references exactly; persistent readers use
         // resolved paths so relativeToVRT=0/1 cannot alias different files.
@@ -551,21 +618,36 @@ impl Reader {
         Ok(self.cached.get_mut(&path).expect("source inserted"))
     }
 
+    /// The values of a source in a window of a level of the VRT, of size `level` (the VRT's own
+    /// size at full resolution). At an overview, the source's `DstRect` is scaled to the level,
+    /// and the source is read from its own level of as many of its pixels to one of the VRT's
+    /// level, or from the nearest finer one (full resolution at worst), its `SrcRect` scaled to
+    /// it: the resampling below brings a finer level to the VRT's.
     fn source_values(
         &mut self,
         src: &VrtSource,
         element: &xml::Element,
         window: Window,
         output_type: DataType,
+        level: (usize, usize),
     ) -> Result<Vec<Option<f64>>> {
         let valid_rect = |r: &[f64; 4]| r.iter().all(|v| v.is_finite()) && r[2] > 0. && r[3] > 0.;
         if !valid_rect(&src.dst_rect) || (!src.src_rect[0].is_nan() && !valid_rect(&src.src_rect)) {
             return Err(invalid("invalid source/destination rectangle"));
         }
+        let full = (self.description.layout.width, self.description.layout.height);
+        let overview = level != full;
+        let dst = if overview {
+            let [x, y, w, h] = src.dst_rect;
+            let (lw, lh, fw, fh) = (level.0 as f64, level.1 as f64, full.0 as f64, full.1 as f64);
+            [x * lw / fw, y * lh / fh, w * lw / fw, h * lh / fh]
+        } else {
+            src.dst_rect
+        };
         // GDAL's `VRTSimpleSource::GetSrcDstWindow()`: a request that misses the source's
         // destination rectangle leaves the source alone, unopened: a mosaic reads the windows
         // over its other sources when this one cannot be opened (a remote source that is down).
-        let [dx, dy, dw, dh] = src.dst_rect;
+        let [dx, dy, dw, dh] = dst;
         let (wx, wy) = (window.x as f64, window.y as f64);
         if wx >= dx + dw || wy >= dy + dh || wx + window.width as f64 <= dx || wy + window.height as f64 <= dy {
             return Ok(vec![None; window.width * window.height]);
@@ -576,12 +658,27 @@ impl Reader {
         if !valid_rect(&rect) {
             return Err(invalid("invalid source/destination rectangle"));
         }
+        // The source's level: of its overviews (largest first), the last whose pixels hold no
+        // more of its full-resolution pixels than a pixel of the VRT's level does.
+        let (source_level, width, height, rect) = if overview {
+            let need = (rect[2] / dst[2], rect[3] / dst[3]);
+            let fits = |&(_, &(ow, oh)): &(usize, &(usize, usize))| {
+                width as f64 / ow as f64 <= need.0 * (1. + 1e-9) && height as f64 / oh as f64 <= need.1 * (1. + 1e-9)
+            };
+            match source.overviews().iter().enumerate().rev().find(fits) {
+                Some((i, &(ow, oh))) => {
+                    let (sw, sh, w, h) = (ow as f64, oh as f64, width as f64, height as f64);
+                    (Some(i), ow, oh, [rect[0] * sw / w, rect[1] * sh / h, rect[2] * sw / w, rect[3] * sh / h])
+                }
+                None => (None, width, height, rect),
+            }
+        } else {
+            (None, width, height, rect)
+        };
         let kernel = element.child("Kernel");
         let radius = kernel.map(kernel_size).transpose()?.unwrap_or(1) / 2;
         // A copy picked by nearest neighbour (the same size, on whole pixels) needs no margin.
-        let copy = rect[2] == src.dst_rect[2]
-            && rect[3] == src.dst_rect[3]
-            && [rect[0], rect[1], src.dst_rect[0], src.dst_rect[1]].iter().all(|v| v.fract() == 0.0);
+        let copy = rect[2] == dst[2] && rect[3] == dst[3] && [rect[0], rect[1], dst[0], dst[1]].iter().all(|v| v.fract() == 0.0);
         let pad = radius
             + match src.resampling {
                 Resampling::Nearest if copy => 0,
@@ -589,8 +686,8 @@ impl Reader {
                 Resampling::Bilinear => 2,
                 _ => 4,
             };
-        let mapx = |x: f64| rect[0] + (x - src.dst_rect[0]) * rect[2] / src.dst_rect[2];
-        let mapy = |y: f64| rect[1] + (y - src.dst_rect[1]) * rect[3] / src.dst_rect[3];
+        let mapx = |x: f64| rect[0] + (x - dst[0]) * rect[2] / dst[2];
+        let mapy = |y: f64| rect[1] + (y - dst[1]) * rect[3] / dst[3];
         let x0 = (mapx(window.x as f64).floor() - pad as f64).max(0.).min(width as f64) as usize;
         let y0 = (mapy(window.y as f64).floor() - pad as f64).max(0.).min(height as f64) as usize;
         let x1 = (mapx((window.x + window.width) as f64).ceil() + pad as f64).max(0.).min(width as f64) as usize;
@@ -601,9 +698,9 @@ impl Reader {
         }
         let area = Window::new(x0, y0, x1 - x0, y1 - y0);
         let mask_band = element.child("SourceBand").is_some_and(|e| e.text.trim().starts_with("mask,"));
-        let ds = source.read_window(area, &WindowOptions { bands: vec![src.band], overview: None })?;
+        let ds = source.read_window(area, &WindowOptions { bands: vec![src.band], overview: source_level })?;
         let mut data = if mask_band {
-            let mask = source.read_mask(area, None)?.unwrap_or_else(|| {
+            let mask = source.read_mask(area, source_level)?.unwrap_or_else(|| {
                 let values = ds.raster.data.to_f64_vec();
                 values
                     .iter()
@@ -631,7 +728,7 @@ impl Reader {
         };
         let mut valid = src.nodata.filter(|_| src.complex).map(|nd| values.valid(nd));
         if element.child("UseMaskBand").is_some_and(|e| e.text.trim().eq_ignore_ascii_case("true") || e.text.trim() == "1")
-            && let Some(mask) = source.read_mask(area, None)?
+            && let Some(mask) = source.read_mask(area, source_level)?
         {
             let v = valid.get_or_insert_with(|| vec![true; area.width * area.height]);
             for (valid, mask) in v.iter_mut().zip(mask) {
@@ -645,7 +742,7 @@ impl Reader {
             height: area.height,
             src_type: if kernel.is_some() || mask_band { DataType::F64 } else { ds.raster.data_type },
             src_rect: [rect[0] - x0 as f64, rect[1] - y0 as f64, rect[2], rect[3]],
-            dst_rect: [src.dst_rect[0] - window.x as f64, src.dst_rect[1] - window.y as f64, src.dst_rect[2], src.dst_rect[3]],
+            dst_rect: [dst[0] - window.x as f64, dst[1] - window.y as f64, dst[2], dst[3]],
             resampling: src.resampling,
             working_float: src.complex,
             invalid_value: None,
@@ -984,8 +1081,9 @@ impl WindowSource for Reader {
         paths.dedup();
         Ok(paths)
     }
+    /// The VRT's implicit overviews ([`Reader::implicit_overviews`]).
     fn overviews(&self) -> Vec<(usize, usize)> {
-        Vec::new()
+        self.levels.get_or_init(|| self.implicit_overviews()).clone()
     }
     fn block_size(&self) -> Option<(usize, usize)> {
         Some(if self.description.warped { (512, 128) } else { (128, 128) })
@@ -1050,27 +1148,35 @@ impl WindowSource for Reader {
         let aligned = blocks.iter().all(|&(shift, h)| shift.rem_euclid(h as f64) == 0.0);
         if aligned && rows > 1 { Some(rows) } else { own }
     }
-    fn read_mask(&mut self, _level: usize, window: Window) -> Result<Option<Vec<u8>>> {
+    fn read_mask(&mut self, level: usize, window: Window) -> Result<Option<Vec<u8>>> {
         let _depth = ReadDepth::enter()?;
         let Some(mask) = self.mask.clone() else {
             return Ok(None);
         };
-        self.read_description(&mask, window, &[1])
+        let size = self.level(level)?;
+        self.read_description(&mask, window, &[1], size)
             .map(|v| Some(v.to_f64_vec().into_iter().map(|v| if v == 0. { 0 } else { 255 }).collect()))
     }
 
-    fn read(&mut self, _level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
+    fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
         let _depth = ReadDepth::enter()?;
         if self.description.warped {
             return self.warped_blocks(window, bands);
         }
         let description = self.description.clone();
-        self.read_description(&description, window, bands)
+        let size = self.level(level)?;
+        self.read_description(&description, window, bands, size)
     }
 }
 
 impl Reader {
-    fn read_description(&mut self, description: &VirtualRaster, window: Window, bands: &[usize]) -> Result<RasterData> {
+    fn read_description(
+        &mut self,
+        description: &VirtualRaster,
+        window: Window,
+        bands: &[usize],
+        level: (usize, usize),
+    ) -> Result<RasterData> {
         let mut values = Vec::with_capacity(window.width * window.height * bands.len());
         let elements = description.root.children.iter().filter(|e| e.name == "VRTRasterBand").collect::<Vec<_>>();
         for b in bands {
@@ -1084,7 +1190,7 @@ impl Reader {
             let mut inputs = Vec::new();
             let mut out = vec![layout.nodata.unwrap_or(0.); window.width * window.height];
             for (source, xml) in layout.sources.iter().zip(sources) {
-                let input = self.source_values(source, xml, window, layout.data_type)?;
+                let input = self.source_values(source, xml, window, layout.data_type, level)?;
                 if element.attr("subClass") == Some("VRTDerivedRasterBand") {
                     let transfer = element
                         .child("SourceTransferType")
@@ -1114,6 +1220,14 @@ impl Reader {
 }
 
 /// The greatest common divisor.
+/// The size of a level `factor` times coarser than `n` pixels: `n / factor` rounded up, or to the
+/// nearest whole number when within a billionth of it, as a quotient of sizes holds rounding error.
+fn level_size(n: usize, factor: f64) -> usize {
+    let v = n as f64 / factor;
+    let r = v.round();
+    (if (v - r).abs() <= 1e-9 * v.max(1.) { r } else { v.ceil() }).max(1.) as usize
+}
+
 fn gcd(a: usize, b: usize) -> usize {
     if b == 0 { a } else { gcd(b, a % b) }
 }
@@ -1577,6 +1691,7 @@ mod tests {
             sources: HashMap::new(),
             cached: HashMap::new(),
             lru: Default::default(),
+            levels: Default::default(),
         };
         for index in 0..33 {
             std::fs::write(dir.path().join(format!("{index}.asc")), "ncols 1\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n7\n").unwrap();
@@ -1828,6 +1943,202 @@ mod tests {
         assert_eq!(pam.band_nodata, vec![(1, -101.)]);
     }
 
+    /// A VRT over `sources` (absolute paths, at `DstRect`s `(x, y)` of `w` x `h` source pixels
+    /// each, one for one), `width` x `height` Float32 pixels, with `extra` after its band.
+    fn mosaic(width: usize, height: usize, sources: &[(&Path, usize, usize, usize, usize)], extra: &str) -> String {
+        let simple = sources
+            .iter()
+            .map(|(path, x, y, w, h)| {
+                format!(
+                    "<SimpleSource><SourceFilename relativeToVRT=\"0\">{}</SourceFilename><SourceBand>1</SourceBand><SrcRect xOff=\"0\" yOff=\"0\" xSize=\"{w}\" ySize=\"{h}\"/><DstRect xOff=\"{x}\" yOff=\"{y}\" xSize=\"{w}\" ySize=\"{h}\"/></SimpleSource>",
+                    path.display()
+                )
+            })
+            .collect::<String>();
+        format!(
+            "<VRTDataset rasterXSize=\"{width}\" rasterYSize=\"{height}\"><GeoTransform>0,1,0,{height},0,-1</GeoTransform><VRTRasterBand dataType=\"Float32\" band=\"1\">{simple}</VRTRasterBand>{extra}</VRTDataset>"
+        )
+    }
+
+    fn open(xml: &str) -> LazyRaster {
+        VirtualRaster::from_xml(xml).unwrap().into_lazy(Path::new(""), HashMap::new()).unwrap()
+    }
+
+    fn level(raster: &mut LazyRaster, overview: Option<usize>, window: Window) -> Vec<f64> {
+        raster.read_window(window, &WindowOptions { bands: vec![1], overview }).unwrap().raster.data.to_f64_vec()
+    }
+
+    /// A VRT that maps a source one for one has the source's overviews, and reads each from the
+    /// source's own, pixel for pixel.
+    #[test]
+    fn a_vrt_has_its_source_s_overviews_and_reads_each_from_the_source_s() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = pyramid(dir.path());
+        let mut source = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        let mut vrt = open(&mosaic(32, 32, &[(&path, 0, 0, 32, 32)], ""));
+        assert_eq!(vrt.overviews(), vec![(16, 16), (8, 8), (4, 4)]);
+        assert_eq!(vrt.overviews(), source.overviews());
+        for (i, (w, h)) in source.overviews().into_iter().enumerate() {
+            let want = level(&mut source, Some(i), Window::full(w, h));
+            let got = level(&mut vrt, Some(i), Window::full(w, h));
+            assert_eq!(
+                got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "overview {i}"
+            );
+        }
+    }
+
+    /// A VRT has the overviews of its first source: a source without one of them is read from its
+    /// nearest finer level (full resolution at worst), brought to the VRT's level by the source's
+    /// resampling, here nearest.
+    #[test]
+    fn a_mosaic_has_its_first_source_s_overviews_and_reads_a_source_without_one_from_a_finer_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = pyramid(dir.path());
+        // 32 x 32 pixels constant over blocks of 8 x 8, with an overview of 2 only.
+        for (name, overviews) in [("coarse.tif", vec![2]), ("none.tif", vec![])] {
+            let path = dir.path().join(name);
+            let values = (0..1024).map(|i| ((i / 32 / 8) * 4 + (i % 32) / 8) as f64).collect();
+            let grid = Grid { width: 32, height: 32, geo_transform: [32., 1., 0., 32., 0., -1.] };
+            let raster = crate::ops::build_raster(
+                grid,
+                vec![values],
+                DataType::F32,
+                None,
+                &crate::crs::SpatialRef::from_epsg(3857).unwrap(),
+                crate::ops::convert_value,
+            )
+            .unwrap();
+            let options = crate::RasterWriteOptions { overviews, overview_resampling: Some("average".into()), ..Default::default() };
+            crate::write_raster_dataset(&raster, path.to_str().unwrap(), &options).unwrap();
+            let mut first_source = crate::open_raster_lazy(first.to_str().unwrap()).unwrap();
+            let mut vrt = open(&mosaic(64, 32, &[(&first, 0, 0, 32, 32), (&path, 32, 0, 32, 32)], ""));
+            assert_eq!(vrt.overviews(), vec![(32, 16), (16, 8), (8, 4)], "{name}");
+            for (i, n) in [(1usize, 8usize), (2, 4)] {
+                let got = level(&mut vrt, Some(i), Window::full(2 * n, n));
+                let want = level(&mut first_source, Some(i), Window::full(n, n));
+                let left: Vec<f64> = (0..n).flat_map(|r| got[r * 2 * n..r * 2 * n + n].to_vec()).collect();
+                assert_eq!(left, want, "{name}, overview {i}: the first source's own");
+                let right: Vec<f64> = (0..n).flat_map(|r| got[r * 2 * n + n..(r + 1) * 2 * n].to_vec()).collect();
+                let blocks = n / 4;
+                let expected: Vec<f64> = (0..n * n).map(|k| ((k / n / blocks) * 4 + (k % n) / blocks) as f64).collect();
+                assert_eq!(right, expected, "{name}, overview {i}: the second source at the level");
+            }
+        }
+    }
+
+    /// A tile-like read of a level of a mosaic reads the sources in its window alone, each from
+    /// its own level of that scale, or the nearest finer one; listing the levels reads nothing.
+    #[test]
+    fn a_reduced_read_of_a_mosaic_reads_the_sources_in_its_window_at_their_level() {
+        use std::sync::{Arc, Mutex};
+        type Reads = Arc<Mutex<Vec<(usize, usize, Window)>>>;
+        struct Leveled {
+            name: usize,
+            overviews: Vec<(usize, usize)>,
+            reads: Reads,
+        }
+        impl WindowSource for Leveled {
+            fn overviews(&self) -> Vec<(usize, usize)> {
+                self.overviews.clone()
+            }
+            fn read(&mut self, level: usize, w: Window, bands: &[usize]) -> Result<RasterData> {
+                self.reads.lock().unwrap().push((self.name, level, w));
+                Ok(RasterData::F64(vec![(self.name * 10 + level) as f64; w.width * w.height * bands.len()]))
+            }
+        }
+        let reads: Reads = Arc::default();
+        let grid = Grid { width: 64, height: 64, geo_transform: [0., 1., 0., 64., 0., -1.] };
+        let mut sources = HashMap::new();
+        let mut simple = String::new();
+        for name in 0..4 {
+            // The last source has no overview of a quarter.
+            let overviews = if name == 3 { vec![(32, 32)] } else { vec![(32, 32), (16, 16)] };
+            let header = crate::ops::raster_header(grid, DataType::F64, 1, None, &Default::default()).unwrap();
+            let source = LazyRaster::from_source(header, Box::new(Leveled { name, overviews, reads: reads.clone() }));
+            sources.insert(format!("s{name}.tif"), source);
+            let (x, y) = (64 * (name % 2), 64 * (name / 2));
+            simple += &format!(
+                "<SimpleSource><SourceFilename>s{name}.tif</SourceFilename><SourceBand>1</SourceBand><SrcRect xOff=\"0\" yOff=\"0\" xSize=\"64\" ySize=\"64\"/><DstRect xOff=\"{x}\" yOff=\"{y}\" xSize=\"64\" ySize=\"64\"/></SimpleSource>"
+            );
+        }
+        let xml = format!(
+            "<VRTDataset rasterXSize=\"128\" rasterYSize=\"128\"><VRTRasterBand dataType=\"Float64\">{simple}</VRTRasterBand></VRTDataset>"
+        );
+        let mut vrt = VirtualRaster::from_xml(&xml).unwrap().into_lazy(Path::new(""), sources).unwrap();
+        assert_eq!(vrt.overviews(), vec![(64, 64), (32, 32)]);
+        assert!(reads.lock().unwrap().is_empty());
+        // At a quarter, the first source's quarter of the level: its own overview of a quarter.
+        assert_eq!(level(&mut vrt, Some(1), Window::new(0, 0, 16, 16)), vec![2.; 256]);
+        assert_eq!(*reads.lock().unwrap(), vec![(0, 2, Window::new(0, 0, 16, 16))]);
+        reads.lock().unwrap().clear();
+        // The last source's quarter: its overview of a half, the nearest finer level.
+        assert_eq!(level(&mut vrt, Some(1), Window::new(16, 16, 16, 16)), vec![31.; 256]);
+        assert_eq!(*reads.lock().unwrap(), vec![(3, 1, Window::new(0, 0, 32, 32))]);
+    }
+
+    /// A VRT lists the overviews of its first source alone: another source, here missing, is not
+    /// opened until a read reaches it.
+    #[test]
+    fn a_vrt_takes_its_overviews_from_its_first_source_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = pyramid(dir.path());
+        let missing = dir.path().join("missing.tif");
+        let mut vrt = open(&mosaic(64, 32, &[(&first, 0, 0, 32, 32), (&missing, 32, 0, 32, 32)], ""));
+        assert_eq!(vrt.overviews(), vec![(32, 16), (16, 8), (8, 4)]);
+        let mut source = crate::open_raster_lazy(first.to_str().unwrap()).unwrap();
+        assert_eq!(level(&mut vrt, Some(0), Window::new(0, 0, 16, 16)), level(&mut source, Some(0), Window::full(16, 16)));
+        assert!(vrt.read_window(Window::new(16, 0, 16, 16), &WindowOptions { bands: vec![1], overview: Some(0) }).is_err());
+    }
+
+    /// A VRT at another scale than its first source has the source's overviews at its own scale,
+    /// and reads each from the source's overview of the same pixels.
+    #[test]
+    fn a_vrt_at_half_its_source_s_resolution_has_the_source_s_coarser_overviews() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = pyramid(dir.path());
+        let xml = format!(
+            "<VRTDataset rasterXSize=\"16\" rasterYSize=\"16\"><GeoTransform>0,2,0,32,0,-2</GeoTransform><VRTRasterBand dataType=\"Float32\" band=\"1\"><SimpleSource><SourceFilename relativeToVRT=\"0\">{}</SourceFilename><SourceBand>1</SourceBand><SrcRect xOff=\"0\" yOff=\"0\" xSize=\"32\" ySize=\"32\"/><DstRect xOff=\"0\" yOff=\"0\" xSize=\"16\" ySize=\"16\"/></SimpleSource></VRTRasterBand></VRTDataset>",
+            path.display()
+        );
+        let mut vrt = open(&xml);
+        assert_eq!(vrt.overviews(), vec![(8, 8), (4, 4)]);
+        let mut source = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        assert_eq!(level(&mut vrt, Some(0), Window::full(8, 8)), level(&mut source, Some(1), Window::full(8, 8)));
+        assert_eq!(level(&mut vrt, Some(1), Window::full(4, 4)), level(&mut source, Some(2), Window::full(4, 4)));
+    }
+
+    /// A kernel spans full-resolution pixels: a VRT with a kernel source has no overviews.
+    #[test]
+    fn a_vrt_with_a_kernel_source_has_no_overviews() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = pyramid(dir.path());
+        let kernel = format!(
+            "<VRTDataset rasterXSize=\"32\" rasterYSize=\"32\"><VRTRasterBand dataType=\"Float32\"><KernelFilteredSource><SourceFilename relativeToVRT=\"0\">{}</SourceFilename><SourceBand>1</SourceBand><Kernel><Size>3</Size><Coefs>0 0 0 0 1 0 0 0 0</Coefs></Kernel></KernelFilteredSource></VRTRasterBand></VRTDataset>",
+            path.display()
+        );
+        assert_eq!(open(&kernel).overviews(), Vec::<(usize, usize)>::new());
+    }
+
+    /// The mask band of a VRT is read at an overview from its sources' overviews too.
+    #[test]
+    fn a_vrt_s_mask_band_is_read_at_an_overview() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = pyramid(dir.path());
+        let mask = format!(
+            "<MaskBand><VRTRasterBand dataType=\"Byte\"><SimpleSource><SourceFilename relativeToVRT=\"0\">{}</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></MaskBand>",
+            path.display()
+        );
+        let mut vrt = open(&mosaic(32, 32, &[(&path, 0, 0, 32, 32)], &mask));
+        let mut source = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        for (i, (w, h)) in source.overviews().into_iter().enumerate() {
+            let values = level(&mut source, Some(i), Window::full(w, h));
+            let want: Vec<u8> = values.iter().map(|&v| if v as u8 == 0 { 0 } else { 255 }).collect();
+            assert_eq!(vrt.read_mask(Window::full(w, h), Some(i)).unwrap(), Some(want), "overview {i}");
+        }
+    }
+
     fn pyramid(dir: &Path) -> std::path::PathBuf {
         let path = dir.join("levels.tif");
         let source = crate::ops::build_raster(
@@ -1868,6 +2179,7 @@ mod tests {
                 sources: HashMap::new(),
                 cached: HashMap::new(),
                 lru: Default::default(),
+                levels: Default::default(),
             };
             let parsed = reader.parse_warp().unwrap();
             assert_eq!(parsed.source_overview, expected_level);
@@ -1897,6 +2209,7 @@ mod tests {
                         sources: HashMap::new(),
                         cached: HashMap::new(),
                         lru: Default::default(),
+                        levels: Default::default(),
                     };
                     assert!(reader.parse_warp().is_err());
                 }
@@ -1925,6 +2238,7 @@ mod tests {
                 sources: HashMap::new(),
                 cached: HashMap::new(),
                 lru: Default::default(),
+                levels: Default::default(),
             };
             let parsed = reader.parse_warp().unwrap();
             assert_eq!(parsed.source_overview, Some(1));
@@ -1974,6 +2288,7 @@ mod tests {
             sources: HashMap::new(),
             cached: HashMap::new(),
             lru: Default::default(),
+            levels: Default::default(),
         };
         let scaled = reader.parse_warp().unwrap().options.rpc.unwrap();
         assert_eq!(scaled.line_off, rpc.line_off / 4.);
@@ -2001,6 +2316,7 @@ mod tests {
             sources: HashMap::new(),
             cached: HashMap::new(),
             lru: Default::default(),
+            levels: Default::default(),
         };
         let parsed = reader.parse_warp().unwrap();
         assert_eq!(parsed.options.error_threshold, 0.);
