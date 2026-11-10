@@ -1531,7 +1531,13 @@ impl<'a> Plan<'a> {
 
     /// The warp of source `k`, through `t` ([`Plan::transformer`]), and the chunks of the output
     /// it is warped in, in order.
-    fn context<'t>(&self, k: usize, t: &'t GenImgProj, o: &WarpOptions) -> (WarpContext<'t>, Vec<Chunk>, Storage) {
+    fn context<'t>(
+        &self,
+        k: usize,
+        t: &'t GenImgProj,
+        o: &WarpOptions,
+        source_bytes: Option<usize>,
+    ) -> (WarpContext<'t>, Vec<Chunk>, Storage) {
         let s = &self.srcs[k];
         let nodata = self.src_nodata(k, o);
         let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && self.bands > 1;
@@ -1547,6 +1553,7 @@ impl<'a> Plan<'a> {
             memory_limit: o.memory_limit,
             bands: self.bands,
             out_bits: self.out_type.size_bytes() * 8,
+            source_bits: source_bytes.map_or(self.out_type.size_bytes() * self.bands * 8, |bytes| bytes * 8),
             src_has_nodata: nodata.iter().any(Option::is_some),
             // GDAL takes a single band's validity as the unified one, whatever UNIFIED_SRC_NODATA
             // says ("If there's just a single band, then transfer papanBandSrcValid[0] as
@@ -1647,7 +1654,7 @@ fn check_sum_chunks(ctx: &WarpContext, chunks: &[Chunk], bytes: usize) -> Result
     if ctx.resampling != Resampling::Sum {
         return Ok(());
     }
-    let held = |c: &Chunk| c.sw as u64 * (2 * ctx.sum_strip_rows(c, bytes)).min(c.sh) as u64;
+    let held = |c: &Chunk| c.sw as u64 * (2 * ctx.sum_strip_rows(c)).min(c.sh) as u64;
     check_sum_budget(sum_estimate(chunks.iter().map(held).max().unwrap_or(0), bytes))
 }
 
@@ -1732,7 +1739,7 @@ fn warp_data_masked(
 
     for (k, s) in p.srcs.iter().enumerate() {
         let t = p.transformer(k)?;
-        let (mut ctx, chunks, mut storage) = p.context(k, &t, o);
+        let (mut ctx, chunks, mut storage) = p.context(k, &t, o, None);
         t.check_policy()?;
         let nodata = p.src_nodata(k, o);
         let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
@@ -1913,7 +1920,7 @@ fn warp_reader_selected(
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let n = grid.width * grid.height;
     let t = p.transformer(0)?;
-    let (mut ctx, chunks, mut storage) = p.context(0, &t, o);
+    let (mut ctx, chunks, mut storage) = p.context(0, &t, o, Some(src_bytes));
     check_sum_chunks(&ctx, &chunks, src_bytes)?;
     let nodata = p.src_nodata(0, o);
     if working.is_some() && nodata.iter().any(Option::is_some) {
@@ -1944,7 +1951,7 @@ fn warp_reader_selected(
         Ok::<_, Error>((data, valid, masked))
     };
     for c in &chunks {
-        let strip = ctx.sum_strip_rows(c, src_bytes);
+        let strip = ctx.sum_strip_rows(c);
         if strip < c.sh {
             // A `sum` chunk whose source window's working memory exceeds the limit: the window is
             // read and summed a strip of rows at a time.
@@ -2168,8 +2175,8 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let w = grid.width;
     let t = p.transformer(0)?;
-    let (mut ctx, chunks, mut storage) = p.context(0, &t, o);
     let src_bytes = header.raster.data_type.size_bytes() * header.raster.bands;
+    let (mut ctx, chunks, mut storage) = p.context(0, &t, o, Some(src_bytes));
     check_sum_chunks(&ctx, &chunks, src_bytes)?;
     if src.has_mask() {
         ctx.global_validity = true;
@@ -2240,7 +2247,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
         |i| {
             let c = &chunks[i];
             let options = crate::WindowOptions { overview, bands: Vec::new() };
-            let strip = ctx.sum_strip_rows(c, src_bytes);
+            let strip = ctx.sum_strip_rows(c);
             if strip < c.sh {
                 let sums = ctx.sum_in_strips(c, strip, |window| {
                     let data = src.read_window(window, &options)?;
@@ -2542,6 +2549,8 @@ struct WarpContext<'a> {
     memory_limit: f64,
     bands: usize,
     out_bits: usize,
+    /// Source data held per pixel during a read, including simultaneous conversion buffers.
+    source_bits: usize,
     src_has_nodata: bool,
     /// GDAL's unified source validity (`panUnifiedSrcValid`): an output pixel whose source pixel
     /// under the sample point is invalid in every band is left unwritten.
@@ -2892,6 +2901,9 @@ fn next_up_f64(f: f64) -> f64 {
 impl WarpContext<'_> {
     fn working_memory(&self, sw: usize, sh: usize, dw: usize, dh: usize) -> f64 {
         let mut src_bits = self.out_bits * self.bands;
+        if self.resampling == Resampling::Sum {
+            src_bits = src_bits.max(self.source_bits);
+        }
         if self.cutline {
             src_bits += 32;
         }
@@ -3639,15 +3651,15 @@ impl WarpContext<'_> {
     /// its working memory (including source/conversion buffers) fits the limit, else a strip of
     /// as many rows as fit, at least one. Only a chunk of at most 2 x 2 pixels, which [`Self::collect_chunks`]
     /// does not split, can exceed the limit.
-    fn sum_strip_rows(&self, c: &Chunk, source_bytes: usize) -> usize {
-        // Include the source and conversion buffers alive while a strip is built, not just
-        // its final working type. Keep the ordinary working-memory estimate as a lower bound.
-        let conversion_bytes = source_bytes.saturating_sub(self.out_bits * self.bands / 8);
-        let source_row = self.working_memory(c.sw, 1, 0, 0) + conversion_bytes as f64 * c.sw as f64;
+    fn sum_strip_rows(&self, c: &Chunk) -> usize {
+        let source_row = self.working_memory(c.sw, 1, 0, 0);
         let output = self.working_memory(0, 0, c.dw, c.dh);
         if self.resampling != Resampling::Sum || source_row * c.sh as f64 + output <= self.memory_limit {
             return c.sh;
         }
+        // Chunk collection uses the same source/conversion footprint, so only the minimum
+        // unsplittable output chunk can require strips and per-output-pixel accumulators.
+        debug_assert!(c.dw <= 2 && c.dh <= 2);
         let rows = (self.memory_limit - output) / source_row;
         (rows.floor() as usize).clamp(1, c.sh)
     }
@@ -3730,10 +3742,24 @@ struct Strip {
 fn alongside<R>(background: impl FnOnce() + Send, foreground: impl FnOnce() -> Result<R>) -> Result<R> {
     #[cfg(not(target_family = "wasm"))]
     {
+        // Keep ownership outside the spawned closure so a failed spawn can run the same task
+        // on the caller instead. A resource-constrained process still completes sequentially.
+        let pending = std::sync::Mutex::new(Some(background));
+        let run_background = || {
+            let task = pending.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(task) = task {
+                task();
+            }
+        };
         std::thread::scope(|s| {
-            let running = std::thread::Builder::new().spawn_scoped(s, background).map_err(Error::Io)?;
+            let running = std::thread::Builder::new().spawn_scoped(s, run_background).ok();
+            if running.is_none() {
+                run_background();
+            }
             let result = foreground();
-            if let Err(panic) = running.join() {
+            if let Some(running) = running
+                && let Err(panic) = running.join()
+            {
                 std::panic::resume_unwind(panic);
             }
             result
@@ -4961,6 +4987,7 @@ impl RegionWarp {
             memory_limit: f64::INFINITY,
             bands: self.src_nodata.len(),
             out_bits: self.out_type.size_bytes() * 8,
+            source_bits: self.out_type.size_bytes() * self.src_nodata.len() * 8,
             src_has_nodata: self.src_nodata.iter().any(Option::is_some),
             // A warped VRT's validity is unified (rasterio's UNIFIED_SRC_NODATA=YES, see
             // `RegionWarp::validity`), through `unified_center`.
@@ -6064,6 +6091,31 @@ mod tests {
         }
     }
 
+    /// Larger source/conversion storage must split the output before choosing strips. The
+    /// planning-only header avoids allocating the 2600-square input or millions of footprints.
+    #[test]
+    fn sum_chunk_planning_counts_read_buffers_before_allocating_footprints() {
+        let gt = [500000.0, 1.0, 0.0, 4000000.0, 0.0, -1.0];
+        for (dtype, source_bytes) in [(DataType::F32, 8), (DataType::F32, 13), (DataType::F64, 12)] {
+            let mut header = raster(1, 1, gt, 32610, |_, _| 1.0);
+            header.raster.cols = 2600;
+            header.raster.rows = 2600;
+            let source_type = if source_bytes == 8 { DataType::F64 } else { dtype };
+            header.raster.data_type = source_type;
+            header.raster.data = RasterData::new_filled(source_type, 0, 0.0);
+            header.set_geo_transform(gt);
+            header.has_nodata = false;
+            let options = WarpOptions { resampling: Resampling::Sum, output_type: Some(dtype), ..Default::default() };
+            let plan = Plan::new(&[&header], &options).unwrap();
+            let transform = plan.transformer(0).unwrap();
+            let (context, chunks, _) = plan.context(0, &transform, &options, Some(source_bytes));
+            assert!(chunks.len() > 1, "{dtype:?}, {source_bytes} source bytes: output was not split");
+            for chunk in chunks {
+                assert!(context.sum_strip_rows(&chunk) == chunk.sh || (chunk.dw <= 2 && chunk.dh <= 2));
+            }
+        }
+    }
+
     /// Conversion peaks include the original samples and f64 intermediary as well as the
     /// final strip. Keep each read within the limit and retain the same sum for both conversions.
     #[test]
@@ -6684,7 +6736,7 @@ mod tests {
         };
         let p = Plan::new(&[&ds], &o).unwrap();
         let t = p.transformer(0).unwrap();
-        let (_, chunks, _) = p.context(0, &t, &o);
+        let (_, chunks, _) = p.context(0, &t, &o, None);
         assert!(chunks.len() > 1, "{} chunks", chunks.len());
         (ds, o, chunks)
     }
