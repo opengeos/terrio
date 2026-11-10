@@ -45,7 +45,13 @@ def _same(a: str, b: str) -> bool:
     """
     if "://" in a or "://" in b:
         return a == b
-    return os.path.abspath(a) == os.path.abspath(b)
+    if os.path.abspath(a) == os.path.abspath(b):
+        return True
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        # A new destination has no file identity yet.
+        return False
 
 
 def exists(path: Any) -> bool:

@@ -11,6 +11,7 @@ before.
 """
 
 import filecmp
+import os
 import tracemalloc
 
 import numpy as np
@@ -225,3 +226,30 @@ def test_a_copy_s_writer_given_a_mask_after_all_writes_its_source_whole(tmp_path
     with rio.open(out) as ds:
         assert np.array_equal(ds.dataset_mask(), mask)
         assert np.array_equal(ds.read()[:, :, 100:], RGB[:, :, 100:])
+
+
+@pytest.mark.parametrize("driver", ["COG", "GTiff"])
+@pytest.mark.parametrize("link", ["symlink", "hardlink"])
+@pytest.mark.parametrize("opened", [False, True])
+def test_copy_refuses_source_alias_before_writing(tmp_path, monkeypatch, driver, link, opened):
+    """A streamed copy must not truncate its source through a different local name."""
+    monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", "1")
+    src, alias = tmp_path / "source.tif", tmp_path / "alias.tif"
+    source(src, compress="lzw")
+    before = src.read_bytes()
+    try:
+        if link == "symlink":
+            alias.symlink_to(src)
+        else:
+            os.link(src, alias)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"{link} unavailable: {error}")
+    with rio.open(src) as ds:
+        with pytest.raises(rio.errors.RasterioIOError, match="identify the same dataset"):
+            rio_shutil.copy(
+                ds if opened else src, alias, driver=driver, compress="deflate", tiled=True
+            )
+    assert src.read_bytes() == before
+    assert alias.read_bytes() == before
+    with rio.open(src) as ds:
+        np.testing.assert_array_equal(ds.read(), RGB)
