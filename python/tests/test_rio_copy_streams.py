@@ -317,3 +317,23 @@ def test_streamed_copy_reads_a_vrt_before_replacing_its_input(tmp_path, monkeypa
     with rio.open(dst) as ds:
         np.testing.assert_array_equal(ds.read(), RGB)
     assert not list(tmp_path.glob("*.tmp-*"))
+
+
+@pytest.mark.parametrize("driver", ["COG", "GTiff"])
+def test_streamed_copy_replaces_destination_symlink_without_writing_its_target(
+    tmp_path, monkeypatch, driver
+):
+    monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", "1")
+    src, target, dst = tmp_path / "source.tif", tmp_path / "target.tif", tmp_path / "link.tif"
+    source(src)
+    source(target, pixels=RGB ^ 255)
+    before = target.read_bytes()
+    try:
+        dst.symlink_to(target)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"symlink unavailable: {error}")
+    rio_shutil.copy(src, dst, driver=driver, compress="deflate", tiled=True)
+    assert not dst.is_symlink()
+    assert target.read_bytes() == before
+    with rio.open(dst) as ds:
+        np.testing.assert_array_equal(ds.read(), RGB)

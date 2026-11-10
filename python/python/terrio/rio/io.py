@@ -3236,9 +3236,9 @@ class DatasetWriter(DatasetReader):
         )
         try:
             source = self._copy_of
-            # Read taller source blocks together within a 16 MiB slab budget, then feed the
-            # COG writer one output tile row at a time. A whole-image strip is split in half
-            # (or less under the budget), so a copy never stages its complete source image.
+            # Read taller source blocks together within a 16 MiB slab budget (or one output
+            # tile row), then feed the COG writer a tile row at a time. A whole-image strip
+            # taller than a tile row is split in half or smaller. Small images can fit in one slab.
             write_step = self.structure.block_shape[0] if cog and source is not None else 0
             step = write_step
             if step and source is not None:
