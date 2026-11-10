@@ -273,6 +273,12 @@ requests of a read on the origin of its URL (scheme, host and port): a redirect 
 is refused before anything is sent there, by an error naming the option, and redirects within the
 origin are still followed. Any other value does the same, except `YES` (`TRUE`, `ON`, `1`) and an
 empty or blank value: these, and the option unset (the default), follow redirects to any origin.
+S3 bucket-region discovery also obeys this rule: set `AWS_REGION` to the bucket's region
+before opening a non-default-region bucket under `NO`, since changing from the global Amazon
+endpoint to its regional host changes the origin.
+The optional GDAL backend cannot enforce this policy for its opaque nested reads. While
+origin-only redirects are selected, GDAL reads (including automatic fallbacks and explicit
+`GDAL:` opens) are refused; native readers continue to work.
 The option applies to every request a read sends: ranged reads, files and documents fetched
 whole, listings of object stores, WFS and feature-service requests, and the token fetch that
 signs STAC assets. It is read when a file is opened or fetched, from the environment (the CLI)
