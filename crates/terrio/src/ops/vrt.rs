@@ -429,6 +429,7 @@ impl VrtDataset {
             Grid { width: self.width, height: self.height, geo_transform: self.geo_transform.unwrap_or([0.0, 1.0, 0.0, 0.0, 0.0, -1.0]) };
         let mut ds = super::build_raster_data(grid, out, self.bands.len(), nodata, &srs.unwrap_or_default())?;
         ds.driver = RasterDriver::VRT;
+        ds.geotransform_present = Some(self.geo_transform.is_some());
         Ok(ds)
     }
 }

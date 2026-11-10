@@ -276,3 +276,34 @@ fn xyz_rewrite_removes_stale_pam_crs() {
     assert!(!std::path::Path::new(&format!("{path}.aux.xml")).exists());
     assert_eq!(terrio::open_raster(&path).unwrap().raster.crs.epsg, None);
 }
+
+#[test]
+fn image_and_tiff_readers_report_stored_transform_presence() {
+    for ext in ["png", "jpg", "webp", "tif"] {
+        for referenced in [false, true] {
+            let options = if referenced { RasterWriteOptions::default() } else { unreferenced() };
+            let (_dir, path) = write(&raster(None), ext, &options);
+            assert_eq!(terrio::open_raster(&path).unwrap().geotransform_present, Some(referenced), "{ext}");
+            assert_eq!(terrio::open_raster_lazy(&path).unwrap().read().unwrap().geotransform_present, Some(referenced), "{ext}");
+        }
+    }
+}
+
+#[test]
+fn vrt_without_a_transform_reports_absence_in_eager_and_lazy_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    for referenced in [false, true] {
+        let transform = if referenced { "<GeoTransform>0,1,0,24,0,-1</GeoTransform>" } else { "" };
+        let path = dir.path().join("a.vrt");
+        std::fs::write(
+            &path,
+            format!(
+                "<VRTDataset rasterXSize=\"32\" rasterYSize=\"24\">{transform}<VRTRasterBand dataType=\"Byte\" band=\"1\"/></VRTDataset>"
+            ),
+        )
+        .unwrap();
+        let path = path.to_str().unwrap();
+        assert_eq!(terrio::open_raster(path).unwrap().geotransform_present, Some(referenced));
+        assert_eq!(terrio::open_raster_lazy(path).unwrap().read().unwrap().geotransform_present, Some(referenced));
+    }
+}

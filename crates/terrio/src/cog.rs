@@ -1363,6 +1363,7 @@ impl LazyRaster {
         let raster = crate::pixel::raster_from_data(cfg, data)?;
         let mut ds = RasterDataset::with_driver(raster, self.driver(), first_nodata.is_some());
         ds.set_geo_transform(geo_transform);
+        ds.geotransform_present = Some(self.geotransform_present());
         let (gcps, color_table) = match &self.inner {
             Inner::Tiff(t) => (&t.tags.gcps, &t.tags.color_table),
             Inner::Memory(source) | Inner::Source(source, _) => (&source.gcps, &source.color_table),

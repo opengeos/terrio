@@ -127,3 +127,22 @@ fn assigned_bounds_or_a_crs_are_written() {
     assert!(!georeferenced(d, "srs.tif"));
     assert_eq!(terrio::open_raster(d.join("srs.tif").to_str().unwrap()).unwrap().crs().epsg, Some(32611));
 }
+
+#[test]
+fn unreferenced_images_remain_unreferenced_through_each_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    source(d);
+    for ext in ["png", "jpg", "webp", "jp2"] {
+        let src = format!("src.{ext}");
+        run(d, &["translate", "src.tif", &src]);
+        for command in ["translate", "convert", "pipeline"] {
+            let out = format!("{command}-{ext}.tif");
+            match command {
+                "pipeline" => run(d, &["pipeline", "read", &src, "!", "write", &out]),
+                _ => run(d, &[command, &src, &out]),
+            }
+            assert!(!georeferenced(d, &out), "{src} via {command}");
+        }
+    }
+}

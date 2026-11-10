@@ -89,9 +89,10 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
             _ => None,
         }
     });
-    let gt = read_world_file(path).unwrap_or(common::NO_GEOTRANSFORM);
-    let raster = common::make_raster(cols, rows, bands, data, gt, Default::default(), nodata)?;
+    let gt = read_world_file(path);
+    let raster = common::make_raster(cols, rows, bands, data, gt.unwrap_or(common::NO_GEOTRANSFORM), Default::default(), nodata)?;
     let mut ds = RasterDataset::with_driver(raster, RasterDriver::PNG, nodata.is_some());
+    ds.geotransform_present = Some(gt.is_some());
     // GDAL's colour interpretations (`PNGRasterBand::GetColorInterpretation`); gray, a single
     // band's default, is left unset.
     let interps: &[&str] = match info.color_type {
@@ -122,9 +123,12 @@ pub(crate) fn read_jpeg(path: &Path) -> Result<RasterDataset> {
             data[b * n + i] = *v;
         }
     }
-    let gt = read_world_file(path).unwrap_or(common::NO_GEOTRANSFORM);
-    let raster = common::make_raster(cols, rows, bands, RasterData::U8(data), gt, Default::default(), None)?;
-    Ok(RasterDataset::with_driver(raster, RasterDriver::JPEG, false))
+    let gt = read_world_file(path);
+    let raster =
+        common::make_raster(cols, rows, bands, RasterData::U8(data), gt.unwrap_or(common::NO_GEOTRANSFORM), Default::default(), None)?;
+    let mut ds = RasterDataset::with_driver(raster, RasterDriver::JPEG, false);
+    ds.geotransform_present = Some(gt.is_some());
+    Ok(ds)
 }
 
 /// Writes a JPEG file (see [`encode_jpeg`]), its world file and its CRS sidecar.
