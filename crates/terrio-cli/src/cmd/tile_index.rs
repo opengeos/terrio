@@ -16,7 +16,8 @@ use terrio::{Error, Result, VectorWriteOptions};
 
 #[derive(clap::Args)]
 pub struct CommonArgs {
-    /// Input datasets/directories followed by the output. `@FILE` reads input paths.
+    /// Input datasets/directories followed by the output. `@FILE` reads input paths, and a file
+    /// name with `*` or `?` matches the files of its folder.
     #[arg(required=true,num_args=1..,value_name="INPUT... OUTPUT")]
     paths: Vec<String>,
     /// Output vector format (otherwise inferred from the filename).

@@ -103,3 +103,45 @@ fn a_file_whose_name_begins_with_at_is_named_with_a_directory() {
     ok(&["mosaic", "./@a.tif", "out.tif"], d);
     assert_eq!(pixels(&d.join("out.tif")).2, vec![1.; 4]);
 }
+
+#[test]
+fn wildcard_inputs_match_the_files_of_a_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    std::fs::create_dir(d.join("tiles")).unwrap();
+    tile(&d.join("tiles"), "c.tif", 4., 3.);
+    tile(&d.join("tiles"), "a.tif", 0., 1.);
+    tile(&d.join("tiles"), "b.tif", 2., 2.);
+    // Neither another extension nor a hidden file is matched by `*.tif`.
+    std::fs::write(d.join("tiles/notes.txt"), "not a raster").unwrap();
+    std::fs::write(d.join("tiles/.hidden.tif"), "not a raster").unwrap();
+    ok(&["mosaic", "tiles/a.tif", "tiles/b.tif", "tiles/c.tif", "explicit.tif"], d);
+    // Quoted, as the terrio UI and MCP pass it: no shell expands the pattern.
+    ok(&["mosaic", "tiles/*.tif", "matched.tif"], d);
+    assert_eq!(pixels(&d.join("matched.tif")), pixels(&d.join("explicit.tif")));
+    ok(&["mosaic", "tiles/?.tif", "matched.vrt"], d);
+    let vrt = std::fs::read_to_string(d.join("matched.vrt")).unwrap();
+    let order: Vec<usize> = ["a.tif", "b.tif", "c.tif"].iter().map(|name| vrt.find(name).unwrap()).collect();
+    assert!(order.is_sorted(), "the matches are in name order: {vrt}");
+    assert!(!vrt.contains("notes.txt") && !vrt.contains(".hidden"), "{vrt}");
+    // An absolute pattern, as the UI's file browser writes it.
+    let absolute = d.join("tiles").join("*.tif");
+    ok(&["warp", absolute.to_str().unwrap(), "warped.tif"], d);
+    assert_eq!(pixels(&d.join("warped.tif")), pixels(&d.join("explicit.tif")));
+
+    let r = run(&["mosaic", "tiles/*.jp2", "none.tif"], d);
+    assert_eq!(r.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&r.stderr).contains("no files match tiles/*.jp2"), "{}", String::from_utf8_lossy(&r.stderr));
+    assert!(!d.join("none.tif").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_named_with_a_wildcard_character_is_opened_as_written() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    tile(d, "what?.tif", 0., 5.);
+    tile(d, "whatX.tif", 0., 6.);
+    ok(&["mosaic", "what?.tif", "out.tif"], d);
+    assert_eq!(pixels(&d.join("out.tif")).2, vec![5.; 4]);
+}

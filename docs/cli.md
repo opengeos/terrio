@@ -140,6 +140,19 @@ terrio mosaic @filelist.txt naip.vrt
 terrio warp @filelist.txt extra.tif out.tif --t-srs EPSG:3857
 ```
 
+These commands also expand wildcards in an input's file name themselves, as GDAL's `gdal raster
+mosaic` does, for [`terrio ui`](#ui), MCP clients and Windows shells, which pass them on unexpanded:
+`*` stands for any run of characters and `?` for one. The input is replaced by the entries of its
+folder that match, sorted by name; names beginning with `.` match only a pattern that does too, and
+case is ignored on Windows. Wildcards in folder names are not expanded, nor are URLs, `/vsi` paths or
+an input that exists as written, and a pattern that matches nothing is an error. Quote the pattern
+in a POSIX shell to have terrio expand it, or leave it unquoted to have the shell do so:
+
+```sh
+terrio mosaic 'tiles/*.tif' mosaic.tif
+terrio mosaic 'scenes/LC08_*_B4.TIF' extra.tif b4.vrt
+```
+
 ## identify
 
 ```sh
@@ -3849,7 +3862,11 @@ terrio ui --port 8080 --no-open
 Serves a page with a form for every command, generated from the
 [command catalog](#machine-readable-command-catalog), so it always matches this binary. Pick files
 with the built-in file browser, which lists the disk of the computer running terrio: type the start of
-a name to jump to it, and repeat a letter to step through the names that start with it. The page shows
+a name to jump to it, and repeat a letter to step through the names that start with it. For the
+inputs that take `@FILE` lists and wildcards (those of `mosaic`, `warp`, `concat`, `raster-index` and
+others; see [Commands](#commands)), **Add matching files** adds every file of the listed folder that matches a pattern, such as `*.tif`, as one
+`folder/*.tif` line that the command expands when it runs; the browser shows how many files match.
+The page shows
 the equivalent command line, quoted for a POSIX shell, to copy into a script. Relative paths are
 taken from the directory `terrio ui` started in. **Cancel**, or closing the tab, stops a running command, which can leave a
 partial output file; Ctrl-C stops the server. This works through both the `terrio` binary and the

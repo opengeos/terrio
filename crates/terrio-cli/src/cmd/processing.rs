@@ -282,7 +282,8 @@ pub struct SampleArgs {
     #[command(flatten)]
     output: VectorOutput,
     /// An input raster (repeat for multiple rasters). `sample` loads each raster into memory;
-    /// `zonal-stats` reads them lazily, by block, and also takes `@FILE` lists of paths.
+    /// `zonal-stats` reads them lazily, by block, and also takes `@FILE` lists of paths and file
+    /// names with `*` or `?`, which match the files of their folder.
     #[arg(long = "raster", value_name = "PATH")]
     rasters: Vec<String>,
     /// Bands from every raster, from 1, comma-separated. By default, band 1.
