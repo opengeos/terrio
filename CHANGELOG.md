@@ -5,12 +5,12 @@
 - Warps by `average`, `rms`, `mode`, `min`, `max`, `med`, `q1` and `q3` take the source inside each
   output pixel at a source's edges too, as `sum` does since #551 (#703). Each source pixel counts for
   its part inside both the output pixel and the source window its chunk reads, and an output pixel
-  is left empty only when a corner of it cannot be transformed or no source pixel of that window
-  lies inside it. The pixels along a source's edges were written or not depending on the extent of
-  the output grid and its chunks, weighed the window's edge pixels by the part of the output pixel
-  beyond them, and took the first column's or row's values beside the source; over an orthographic
-  source, the pixels beyond the horizon were filled. An edge pixel's `average` of source columns 0
-  to 4 is now 2.0 (1.0 before).
+  is left empty only when a corner of it cannot be transformed or no valid source pixel of that
+  window lies inside it. The pixels along a source's edges were written or not depending on the
+  extent of the output grid and its chunks, weighed the window's edge pixels by the part of the
+  output pixel beyond them, and took the first column's or row's values beside the source; over an
+  orthographic source, the pixels beyond the horizon were filled. An edge pixel's `average` of
+  source columns 0 to 4 is now 2.0 (1.0 before).
 - A VRT source with fractional `SrcRect` or `DstRect` offsets is read within its rectangles (#702).
   A window with as many source pixels as output pixels was copied one for one whatever its offsets,
   so `bilinear`, `cubic` and `average` returned the source pixels a fraction of a pixel from where

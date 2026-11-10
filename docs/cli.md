@@ -1062,9 +1062,9 @@ With `-r average`, `rms`, `mode`, `min`, `max`, `med`, `q1` or `q3`, each output
 valid source pixels inside its footprint on the source grid: where the footprint runs past the
 source's edges, only its part inside the source counts, and `average`, `rms` and `mode` weigh each
 source pixel by its area inside that part. A footprint counts within the source window that its
-chunk of the output reads, and an output pixel is left empty only when no source pixel of that
-window lies inside it or a corner of it cannot be transformed. The window holds the footprints of
-its chunk unless a strongly curved transformation takes one past the points the window is sampled
+chunk of the output reads, and an output pixel is left empty only when no valid source pixel of
+that window lies inside it or a corner of it cannot be transformed. The window holds the footprints
+of its chunk unless a strongly curved transformation takes one past the points the window is sampled
 from: such a footprint is shortened, and its pixel can then differ with the chunks the warp splits
 the output grid into.
 

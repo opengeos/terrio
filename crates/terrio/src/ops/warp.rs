@@ -5484,7 +5484,8 @@ mod tests {
     /// its left and top edges. From a polar stereographic source whose top left corner is the
     /// pole, between the meridians 45° W (its left edge) and 45° E (its top edge), the EPSG:4326
     /// pixels by the pole from 50° W to 45° W and from 40° E to 45° E have both corners on one of
-    /// those edges, and take the source's first column or row; the pixels beside the source, west
+    /// those edges, and take the source's first column or row. The pixel from 45° W to 40° W,
+    /// whose footprint lies inside the source, takes it too, and the pixels beside the source, west
     /// and east of them, are left alone.
     #[test]
     fn area_methods_take_a_footprint_without_width_on_the_source_left_or_top_edge() {
