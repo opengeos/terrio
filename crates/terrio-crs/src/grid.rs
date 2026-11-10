@@ -1003,6 +1003,8 @@ fn grid_location(name: &str) -> GridLocation<'_> {
     if first.is_some() && p.components().all(|c| matches!(c, Component::Normal(_))) {
         GridLocation::InSearchDirs
     } else {
+        let shown: String = name.chars().take(120).collect();
+        crate::warnings::warn(format!("grid {shown} is not read: relative grid names must contain only ordinary path components"));
         GridLocation::Refused
     }
 }
