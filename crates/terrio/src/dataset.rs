@@ -702,7 +702,7 @@ fn open_remote_vector_response(url: &str, options: &VectorOpenOptions) -> Option
     };
     let driver = remote_vector_response_driver(&head)?;
     let result = crate::formats::check_driver_allowed(driver.name(), url, crate::formats::Kind::Vector)
-        .and_then(|()| crate::http::get_file(&remote, crate::http::Redirects::Any))
+        .and_then(|()| crate::http::get_file(&remote, crate::http::Redirects::for_reads()))
         .and_then(|bytes| read_vector_answer(url, bytes, driver, options));
     #[cfg(feature = "gdal")]
     let result = gdal_fallback(url, result, |path| crate::gdal_backend::open_vector(path, options));
@@ -958,6 +958,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     // Keep an asset-policy refusal terminal and visible, rather than replacing it with the
     // native format error when a remote STAC-selected raster needs the optional backend.
     crate::stac::check_gdal_asset_read()?;
+    crate::gdal_backend::check_redirect_policy()?;
     gdal(path).map_err(|gdal_error| if gdal_error.is_resource_refusal() { gdal_error } else { e })
 }
 
@@ -1000,6 +1001,18 @@ mod fallback_tests {
             });
             assert!(matches!(result, Err(Error::InvalidData(_))));
         }
+    }
+
+    #[test]
+    fn origin_only_reads_do_not_use_opaque_gdal_fallbacks() {
+        crate::config::with_options(&[("TERRIO_HTTP_FOLLOW_CROSS_ORIGIN", "NO")], || {
+            for error in [Error::InvalidData("wrapped remote read failure".into()), std::io::Error::other("remote read failure").into()] {
+                let result: Result<()> = gdal_fallback("local.vrt", Err(error), |_| panic!("origin policy bypassed through GDAL"));
+                assert!(matches!(result, Err(Error::InvalidArgument(ref message)) if message.contains("TERRIO_HTTP_FOLLOW_CROSS_ORIGIN")));
+            }
+            let result = crate::gdal_backend::open_raster("GDAL:local.vrt");
+            assert!(matches!(result, Err(Error::InvalidArgument(ref message)) if message.contains("TERRIO_HTTP_FOLLOW_CROSS_ORIGIN")));
+        });
     }
 
     #[test]
@@ -1174,10 +1187,13 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     }
 }
 
-/// The dataset of a layer read by the `wbvector` fallback.
+/// The dataset of a layer read by the `wbvector` fallback: the range of features `options` asks
+/// for (`skip_features`, `max_features`), as a driver's read keeps it, and the driver of the format
+/// the fallback found.
 fn wbvector_dataset(layer: Layer, path: &str, options: &VectorOpenOptions, driver: VectorDriver) -> Result<Dataset> {
-    let layers = select_layers(vec![layer], path, options)?;
-    Ok(Dataset::Vector(VectorDataset::new(layers.into_iter().map(|l| fix_layer(l, path, driver)).collect(), driver)))
+    let mut layers = select_layers(vec![layer], path, options)?;
+    layers.iter_mut().for_each(|l| options.keep_range(l));
+    Ok(Dataset::Vector(finish_vector(layers, path, driver)))
 }
 
 /// Whether the `wbvector` fallback reads a file as KMZ: a zip archive, whatever its name (a zip

@@ -463,7 +463,9 @@ pub fn register_grid(name: &str, bytes: Vec<u8>) {
     initialize();
     terrio_crs::register_grid(name, bytes);
 }
-/// Override the shared engine's grid search paths.
+/// Override the shared engine's grid search paths. While they are set, grids named by a path in
+/// a CRS definition (`+nadgrids=/data/a.gsb`) are treated as missing; see
+/// [`terrio_crs::set_grid_search_paths`].
 pub fn set_grid_search_paths(paths: Option<Vec<std::path::PathBuf>>) {
     initialize();
     terrio_crs::set_grid_search_paths(paths);

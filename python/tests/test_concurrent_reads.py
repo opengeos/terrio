@@ -121,3 +121,20 @@ def test_overlapping_reads_take_the_options_the_raster_was_opened_with(tmp_path)
     if mask is not None:
         np.testing.assert_array_equal(mask, expected)
         assert bool((np.asarray(mask) > 0).all()), "expected the .msk sidecar to be ignored"
+
+
+def test_spare_readers_keep_the_environment_chunk_limit(tmp_path, monkeypatch):
+    """Later pool opens retain both an environment limit and its original absence."""
+    path = str(tmp_path / "tiled.tif")
+    pixels = write_tiled(path)
+    for original in (None, "16384"):
+        if original is None:
+            monkeypatch.delenv("TERRIO_TIFF_MAX_CHUNK_BYTES", raising=False)
+        else:
+            monkeypatch.setenv("TERRIO_TIFF_MAX_CHUNK_BYTES", original)
+        raster = terrio.open_raster(path, lazy=True)
+        monkeypatch.setenv("TERRIO_TIFF_MAX_CHUNK_BYTES", "1")
+        with own_reader_held(raster):
+            got = raster.read()
+        np.testing.assert_array_equal(got, pixels)
+        assert len(raster._readers) == 1
