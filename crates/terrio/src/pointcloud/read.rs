@@ -218,8 +218,9 @@ impl std::fmt::Debug for PointCloudReader {
 }
 
 /// Refuses a point cloud `driver` is about to open when the allow-list of point clouds leaves the
-/// driver out: `TERRIO_ALLOWED_DRIVERS`, which applies to every kind (point clouds have no list of
-/// their own, see [`crate::formats::allowed_drivers`]), as a de-registered driver opens nothing.
+/// driver out: the process-wide list set for point clouds or for every kind, and
+/// `TERRIO_ALLOWED_DRIVERS`, which applies to every kind (see
+/// [`crate::formats::allowed_drivers`]), as a de-registered driver opens nothing.
 pub(super) fn check_driver(driver: &str, name: &str) -> Result<()> {
     crate::formats::check_driver_allowed(driver, name, crate::formats::Kind::PointCloud)
 }

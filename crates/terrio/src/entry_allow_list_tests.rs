@@ -470,10 +470,11 @@ fn cloud() -> PointCloud {
     PointCloud::new(dims, Default::default())
 }
 
-/// Point clouds have no allow-list of their own kind but `TERRIO_ALLOWED_DRIVERS`, which applies to
-/// every kind: their readers open a file only with the driver it is read with allowed: EPT, PLY and
+/// Point clouds have an allow-list of their own kind, and `TERRIO_ALLOWED_DRIVERS` applies to every
+/// kind: their readers open a file only with the driver it is read with allowed: EPT, PLY and
 /// E57 by their names (or, from memory, their signatures), LAS, LAZ and COPC by their header, which
-/// is read only if the list has one of the three.
+/// is read only if the list has one of the three. `tests/point_cloud_allow_list.rs` sets the
+/// process-wide lists.
 #[cfg(feature = "pointcloud")]
 #[test]
 fn point_clouds_are_read_only_with_their_driver_allowed() {
