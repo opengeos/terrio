@@ -536,8 +536,10 @@ impl Reader {
     /// (of the first band that has one, in document order), at the VRT's scale. A level reads
     /// each source from its own level of the same scale or from the nearest finer one
     /// ([`Reader::source_values`]), so the first source alone is opened to list them, once, for
-    /// its header. None for a warped or pansharpened VRT, a VRT with a kernel source, whose
+    /// its header. Empty for a warped or pansharpened VRT, a VRT with a kernel source, whose
     /// kernel spans full-resolution pixels, or a first source that cannot be opened.
+    /// The listing is fixed for this reader's lifetime, including an empty listing after a
+    /// failed source open; open a new reader to retry discovery after a transient failure.
     fn implicit_overviews(&self) -> Vec<(usize, usize)> {
         let description: &VirtualRaster = &self.description;
         let Ok(_depth) = ReadDepth::enter() else {
@@ -1228,7 +1230,6 @@ impl Reader {
     }
 }
 
-/// The greatest common divisor.
 /// The size of a level `factor` times coarser than `n` pixels: `n / factor` rounded up, or to the
 /// nearest whole number when within a billionth of it, as a quotient of sizes holds rounding error.
 fn level_size(n: usize, factor: f64) -> usize {
@@ -1237,6 +1238,7 @@ fn level_size(n: usize, factor: f64) -> usize {
     (if (v - r).abs() <= 1e-9 * v.max(1.) { r } else { v.ceil() }).max(1.) as usize
 }
 
+/// The greatest common divisor.
 fn gcd(a: usize, b: usize) -> usize {
     if b == 0 { a } else { gcd(b, a % b) }
 }
@@ -2430,8 +2432,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = pyramid(dir.path());
         let missing = dir.path().join("missing.tif");
-        let vrt = open(&mosaic(64, 32, &[(&missing, 0, 0, 32, 32), (&path, 32, 0, 32, 32)], ""));
+        let xml = mosaic(64, 32, &[(&missing, 0, 0, 32, 32), (&path, 32, 0, 32, 32)], "");
+        let vrt = open(&xml);
         assert_eq!(vrt.overviews(), Vec::<(usize, usize)>::new());
+        std::fs::copy(&path, &missing).unwrap();
+        // Failed discovery is fixed for this reader; a fresh reader retries it.
+        assert_eq!(vrt.overviews(), Vec::<(usize, usize)>::new());
+        assert_eq!(open(&xml).overviews(), vec![(32, 16), (16, 8), (8, 4)]);
     }
 
     /// A VRT lists its overviews once, opening its first source for them: they stay listed when

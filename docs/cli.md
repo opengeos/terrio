@@ -1356,7 +1356,9 @@ read from its nearest finer level, full resolution at worst, and its method resa
 VRT's level, so it costs a finer read; a mosaic whose sources share their overviews reads each
 from its own. The first source alone is opened to list the overviews, for its header; a read opens
 the sources in its window. A VRT with a `KernelFilteredSource`, whose kernel spans full-resolution
-pixels, has none, nor have warped and pansharpened VRTs.
+pixels, has none, nor have warped and pansharpened VRTs. The listing is fixed for the lifetime
+of the open VRT, including an empty listing if its first source cannot be opened. After a
+transient source failure, reopen the VRT to discover its overviews.
 
 Mixed native band types use a common numeric buffer selected with GDAL-style
 `DataTypeUnion` promotion, preserving Float64 precision. Plain and derived bands
