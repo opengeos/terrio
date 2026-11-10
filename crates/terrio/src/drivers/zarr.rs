@@ -777,26 +777,45 @@ fn blosc_decompress(src: &[u8], most: usize) -> Result<Vec<u8>> {
 /// Undoes Blosc's bit shuffle of a block: bit `kk` of byte `j` of element `i` is stored at bit
 /// `(j * 8 + kk) * n + i` (least significant bit first), over a multiple of 8 elements (Blosc
 /// format version 2 leaves blocks of other sizes as they are; later versions copy the rest).
+///
+/// Eight elements at a time: bits `kk` of byte `j` of elements `8g..8g + 8` are byte `g` of bit
+/// row `j * 8 + kk`, so the eight rows' bytes `g` are an 8 x 8 bit matrix whose transpose holds
+/// byte `j` of the eight elements. A bit at a time, 4.7 MB of int8 TESSERA embeddings took about
+/// 100 ms in WebAssembly.
 fn bit_unshuffle(block: &[u8], bsize: usize, typesize: usize, version: u8) -> Result<Vec<u8>> {
     let nelems = bsize / typesize;
     if version <= 2 && !nelems.is_multiple_of(8) {
         return copied(&block[..bsize], "a Blosc block");
     }
     let n = nelems - nelems % 8;
+    let row = n / 8;
     let mut out = crate::dataset::fallible::filled_now(bsize, 0u8, "a Blosc block")?;
     for j in 0..typesize {
-        for kk in 0..8 {
-            let row = (j * 8 + kk) * n;
-            for i in 0..n {
-                let p = row + i;
-                if (block[p / 8] >> (p % 8)) & 1 != 0 {
-                    out[i * typesize + j] |= 1 << kk;
-                }
+        let rows = &block[j * 8 * row..(j + 1) * 8 * row];
+        for g in 0..row {
+            let mut x = 0u64;
+            for kk in 0..8 {
+                x |= u64::from(rows[kk * row + g]) << (8 * kk);
+            }
+            let y = transpose_bits_8x8(x);
+            for (b, e) in out[8 * g * typesize..].chunks_mut(typesize).take(8).enumerate() {
+                e[j] = (y >> (8 * b)) as u8;
             }
         }
     }
     out[n * typesize..bsize].copy_from_slice(&block[n * typesize..bsize]);
     Ok(out)
+}
+
+/// Transposes an 8 x 8 bit matrix held in a `u64`, byte `i` its row `i` and bit `j` of a byte its
+/// column `j`: bit `j` of byte `i` goes to bit `i` of byte `j` (Hacker's Delight, 7-3).
+fn transpose_bits_8x8(mut x: u64) -> u64 {
+    let t = (x ^ (x >> 7)) & 0x00AA_00AA_00AA_00AA;
+    x ^= t ^ (t << 7);
+    let t = (x ^ (x >> 14)) & 0x0000_CCCC_0000_CCCC;
+    x ^= t ^ (t << 14);
+    let t = (x ^ (x >> 28)) & 0x0000_0000_F0F0_F0F0;
+    x ^ t ^ (t << 28)
 }
 
 /// BloscLZ decompression (a FastLZ variant), to at most `maxout` bytes: more is an error, as in
@@ -2928,6 +2947,53 @@ mod tests {
         let out = bit_unshuffle(&shuffled, 16, 2, 2).unwrap();
         let back: Vec<u16> = out.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         assert_eq!(back, elems);
+    }
+
+    /// Blosc's bit unshuffle, a bit at a time, as the format describes it.
+    fn bit_unshuffle_bitwise(block: &[u8], bsize: usize, typesize: usize, version: u8) -> Vec<u8> {
+        let nelems = bsize / typesize;
+        if version <= 2 && !nelems.is_multiple_of(8) {
+            return block[..bsize].to_vec();
+        }
+        let n = nelems - nelems % 8;
+        let mut out = vec![0u8; bsize];
+        for j in 0..typesize {
+            for kk in 0..8 {
+                for i in 0..n {
+                    let p = (j * 8 + kk) * n + i;
+                    if (block[p / 8] >> (p % 8)) & 1 != 0 {
+                        out[i * typesize + j] |= 1 << kk;
+                    }
+                }
+            }
+        }
+        out[n * typesize..bsize].copy_from_slice(&block[n * typesize..bsize]);
+        out
+    }
+
+    #[test]
+    fn bit_unshuffles_as_the_bitwise_definition() {
+        // Pseudo-random blocks (xorshift): element sizes 1 to 16, element counts a multiple of 8
+        // or not, blocks with bytes past their last whole element, in format versions 2 and 3.
+        let mut s = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s as u8
+        };
+        for typesize in [1usize, 2, 3, 4, 8, 16] {
+            for nelems in [8, 16, 24, 64, 1000, 4096, 4101] {
+                for extra in [0, 1, typesize.saturating_sub(1)] {
+                    let bsize = nelems * typesize + extra;
+                    let block: Vec<u8> = (0..bsize).map(|_| next()).collect();
+                    for version in [2, 3] {
+                        let fast = bit_unshuffle(&block, bsize, typesize, version).unwrap();
+                        assert_eq!(fast, bit_unshuffle_bitwise(&block, bsize, typesize, version), "{typesize} {nelems} {extra} {version}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
