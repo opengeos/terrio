@@ -2366,11 +2366,29 @@ type ChunkSpool = std::fs::File;
 #[cfg(target_family = "wasm")]
 type ChunkSpool = std::io::Cursor<Vec<u8>>;
 
-fn chunk_spool() -> Result<ChunkSpool> {
+/// The directory of a COG's chunk spools, which together hold about as many bytes as the COG.
+/// As GDAL's COG driver places its temporary files: next to the output (on its drive, not the
+/// system's temporary directory), or in `TERRIO_TMPDIR` (`CPL_TMPDIR`) when that is set.
+///
+/// Reference: GDAL v3.12.1 `frmts/gtiff/cogdriver.cpp` (`GetTmpFilename`).
+fn spool_dir(path: &str) -> std::path::PathBuf {
+    if let Some(dir) = crate::config::get_any(&["TERRIO_TMPDIR", "CPL_TMPDIR"]) {
+        return dir.into();
+    }
+    match std::path::Path::new(path).parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => ".".into(),
+    }
+}
+
+fn chunk_spool(dir: &std::path::Path) -> Result<ChunkSpool> {
     #[cfg(not(target_family = "wasm"))]
-    return Ok(tempfile::tempfile()?);
+    return tempfile::tempfile_in(dir).map_err(|e| Error::Io(std::io::Error::new(e.kind(), format!("{}: {e}", dir.display()))));
     #[cfg(target_family = "wasm")]
-    Ok(Default::default())
+    {
+        let _ = dir;
+        Ok(Default::default())
+    }
 }
 
 /// One resolution level of a [`CogWriter`].
@@ -2472,6 +2490,7 @@ impl CogWriter {
                 CogBuild { level, src, plan, buf, buf_row0: 0, buf_rows: 0, next_y: 0, mask: Vec::new(), mask_plan }
             })
             .collect();
+        let dir = spool_dir(path);
         let levels = sizes
             .into_iter()
             .map(|(cols, rows)| {
@@ -2481,11 +2500,11 @@ impl CogWriter {
                     received: 0,
                     pending: RasterData::new_filled(raster.data_type, 0, 0.0),
                     pending_rows: 0,
-                    spools: (0..planes).map(|_| chunk_spool()).collect::<Result<_>>()?,
+                    spools: (0..planes).map(|_| chunk_spool(&dir)).collect::<Result<_>>()?,
                     sizes: vec![Vec::new(); planes],
                     tags: Vec::new(),
                     mask: if opts.mask.is_some() {
-                        Some(CogMask { pending: Vec::new(), spool: chunk_spool()?, sizes: Vec::new(), tags: Vec::new() })
+                        Some(CogMask { pending: Vec::new(), spool: chunk_spool(&dir)?, sizes: Vec::new(), tags: Vec::new() })
                     } else {
                         None
                     },
@@ -3161,6 +3180,42 @@ mod tests {
             writer.finish().unwrap();
             assert_eq!(std::fs::read(path).unwrap(), encode(&raster, &opts).unwrap(), "{method:?}");
         }
+    }
+
+    /// A COG's chunks wait next to the output, on its drive, not in the system's temporary
+    /// directory (#767); `TERRIO_TMPDIR` or `CPL_TMPDIR` moves them, as `CPL_TMPDIR` does GDAL's.
+    #[test]
+    fn cog_chunks_spool_beside_the_output() {
+        use std::collections::HashMap;
+        let unset = || HashMap::from([("TERRIO_TMPDIR".to_string(), None), ("CPL_TMPDIR".to_string(), None)]);
+        crate::config::push_scope(unset());
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(spool_dir(&format!("out{sep}mosaic.tif")), std::path::Path::new("out"));
+        assert_eq!(spool_dir("mosaic.tif"), std::path::Path::new("."));
+        crate::config::pop_scope();
+
+        let raster = overview_fixture(1, DataType::U8, RasterData::U8((0..65 * 35).map(|i| (i % 251) as u8).collect()));
+        let opts = TiffOptions { cog: true, tile_size: Some(16), ..Default::default() };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spooled.tif");
+        let missing = dir.path().join("missing").to_str().unwrap().to_string();
+        for key in ["TERRIO_TMPDIR", "CPL_TMPDIR"] {
+            // The option is read: a directory that does not exist fails the write before it starts.
+            let mut scope = unset();
+            scope.insert(key.into(), Some(missing.clone()));
+            crate::config::push_scope(scope);
+            let refused = CogWriter::create(path.to_str().unwrap(), &raster, &opts);
+            crate::config::pop_scope();
+            assert!(matches!(refused, Err(Error::Io(_))), "{key}");
+        }
+        crate::config::push_scope(unset());
+        let mut writer = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
+        crate::config::pop_scope();
+        writer.write_rows(raster.data.clone(), 35).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), encode(&raster, &opts).unwrap());
+        // The spools were unnamed: nothing but the COG is left beside it.
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     /// COGs written a few rows at a time are those written from the whole raster, byte for

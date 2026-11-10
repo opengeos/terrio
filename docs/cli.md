@@ -1226,6 +1226,11 @@ references the inputs; other outputs hold the mosaicked pixels. Each input is it
 the input extends past them, so that a resampling kernel at the edges of a `--te` extent still reads
 the input's pixels beyond it.
 
+Local inputs are read in place, not copied. A COG output keeps its compressed tiles in
+unnamed temporary files next to the output until it is laid out, as GDAL's COG driver does, so a
+mosaic on another drive needs no space on the system drive. `TERRIO_TMPDIR` (or `CPL_TMPDIR`)
+names another directory for them.
+
 ## Serialized virtual rasters
 
 ```sh
