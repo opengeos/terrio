@@ -96,6 +96,12 @@ fn an_unreferenced_source_gives_unreferenced_outputs() {
             }
             assert!(!georeferenced(d, &out), "{out}");
         }
+        let out = format!("{command}-cog.tif");
+        match command {
+            "pipeline" => run(d, &["pipeline", "read", "src.tif", "!", "write", &out, "--format", "COG"]),
+            _ => run(d, &[command, "src.tif", &out, "-f", "COG"]),
+        }
+        assert!(!georeferenced(d, &out), "{out}");
     }
 }
 

@@ -69,7 +69,13 @@ pub fn translate_path_to_file(
 ) -> Result<()> {
     match open_path(source, overview)? {
         OpenedRaster::Lazy(mut src) => translate_lazy_to_file(&mut src, options, overview, destination, write_options),
-        OpenedRaster::Whole(src) => crate::write_raster_dataset(&translate(&src, options)?, destination, write_options),
+        OpenedRaster::Whole(src) => {
+            let mut write_options = write_options.clone();
+            if options.assign_ullr.is_none() {
+                crate::drivers::common::keep_unreferenced(&mut write_options, destination, src.geotransform_present.unwrap_or(true));
+            }
+            crate::write_raster_dataset(&translate(&src, options)?, destination, &write_options)
+        }
     }
 }
 

@@ -130,8 +130,8 @@ pub(crate) fn read_jpeg(path: &Path) -> Result<RasterDataset> {
 /// Writes a JPEG file (see [`encode_jpeg`]), its world file and its CRS sidecar.
 pub(crate) fn write_jpeg(r: &Raster, path: &Path, quality: Option<&str>, georeferenced: bool) -> Result<()> {
     let bytes = encode_jpeg(r, quality)?;
-    remove_stale_world_file(r, path, georeferenced)?;
     common::write_replacing(path, bytes)?;
+    remove_stale_world_file(r, path, georeferenced)?;
     write_world_file(r, path, georeferenced)?;
     common::write_pam(path, &r.crs)
 }
@@ -224,11 +224,11 @@ pub(crate) fn read_world_file(path: &Path) -> Option<[f64; 6]> {
     Some([v[4] - v[0] / 2.0 - v[2] / 2.0, v[0], v[2], v[5] - v[1] / 2.0 - v[3] / 2.0, v[1], v[3]])
 }
 
-/// Removes the world file (`.wld`) beside `path` before an image without a geotransform
+/// Removes any world file (`.wld`) beside `path` after an image without a geotransform
 /// (`georeferenced` false, `GEOREFERENCED=NO`) and without a CRS is written there: one an earlier
 /// write left would georeference the new image. World files are named after the image's stem, so
-/// `a.png` and `a.jpg` share `a.wld`. A removal that fails fails the write before the image is
-/// written.
+/// `a.png` and `a.jpg` share `a.wld`: this also removes a sibling image's shared file.
+/// A removal that fails reports an error after the image has been written.
 pub(crate) fn remove_stale_world_file(r: &Raster, path: &Path, georeferenced: bool) -> Result<()> {
     if common::writes_georeferencing(r, georeferenced) {
         return Ok(());
@@ -282,7 +282,6 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, georeferenced:
             }
         }
     }
-    remove_stale_world_file(r, path, georeferenced)?;
     let mut file = std::io::BufWriter::new(common::create_replacing(path)?);
     let mut enc = png::Encoder::new(&mut file, r.cols as u32, r.rows as u32);
     enc.set_color(color);
@@ -298,6 +297,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, georeferenced:
     w.write_image_data(&bytes).map_err(|e| png_err(path, e))?;
     w.finish().map_err(|e| png_err(path, e))?;
     file.into_inner().map_err(std::io::IntoInnerError::into_error)?.finish()?;
+    remove_stale_world_file(r, path, georeferenced)?;
     write_world_file(r, path, georeferenced)?;
     common::write_pam(path, &r.crs)
 }

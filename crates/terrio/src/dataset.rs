@@ -45,6 +45,10 @@ pub struct RasterDataset {
     /// cannot hold (they then hold the extent of its footprint); `None` for north-up rasters.
     /// Set it with [`RasterDataset::set_geo_transform`].
     pub affine: Option<[f64; 6]>,
+    /// Whether the source explicitly reports an affine geotransform. `None` for an in-memory
+    /// raster or a driver that does not report presence separately from its fallback pixel grid.
+    /// GDAL-backed whole reads preserve this distinction; setting a transform marks it present.
+    pub geotransform_present: Option<bool>,
     /// Whether the bands hold complex numbers, as GDAL's `CInt16`, `CInt32`, `CFloat32` and
     /// `CFloat64` bands: each complex band is two bands of `raster`, its real parts then its
     /// imaginary parts, of the parts' type (`Int16` for `CInt16`). Band `k` (from 0) of the
@@ -152,6 +156,7 @@ impl RasterDataset {
     /// or south-up one is kept in [`RasterDataset::affine`], the raster's origin and cell sizes
     /// then describing the bounding box of its footprint. Clears any inherited GCPs.
     pub fn set_geo_transform(&mut self, gt: [f64; 6]) {
+        self.geotransform_present = Some(true);
         self.gcps.clear();
         let r = &mut self.raster;
         if is_north_up(&gt) {
@@ -185,6 +190,7 @@ impl RasterDataset {
             band_metadata: Vec::new(),
             gcps: Vec::new(),
             affine: None,
+            geotransform_present: None,
             complex: false,
             geolocation: None,
             metadata_domains: Vec::new(),

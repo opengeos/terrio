@@ -867,14 +867,34 @@ pub(crate) const NO_GEOTRANSFORM: [f64; 6] = [0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
 /// Whether creation options leave a raster its geotransform: not with terrio's
 /// `GEOREFERENCED=NO`, given to a raster that has none (any value but `YES`, `TRUE`, `ON` or `1`,
-/// the last one given counting). Without a geotransform and without a CRS, a writer writes no
+/// the first one given counting). Without a geotransform and without a CRS, a writer writes no
 /// georeferencing: no GeoTIFF tie point, GeoJP2 box or world file.
 pub(crate) fn georeferenced(creation_options: &[(String, String)]) -> bool {
     creation_options
         .iter()
-        .rev()
         .find(|(k, _)| k.eq_ignore_ascii_case("GEOREFERENCED"))
         .is_none_or(|(_, v)| matches!(v.to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1"))
+}
+
+/// Preserve a source's absent transform unless the output explicitly assigns one.
+pub(crate) fn keep_unreferenced(options: &mut crate::RasterWriteOptions, path: &str, present: bool) {
+    let driver = options.driver.or_else(|| crate::formats::RasterDriver::for_extension(path));
+    if matches!(
+        driver,
+        Some(
+            crate::formats::RasterDriver::GTiff
+                | crate::formats::RasterDriver::Cog
+                | crate::formats::RasterDriver::JP2
+                | crate::formats::RasterDriver::PNG
+                | crate::formats::RasterDriver::JPEG
+                | crate::formats::RasterDriver::WEBP
+        )
+    ) && !present
+        && options.geo_transform.is_none()
+        && !options.creation_options.iter().any(|(key, _)| key.eq_ignore_ascii_case("GEOREFERENCED"))
+    {
+        options.creation_options.push(("GEOREFERENCED".into(), "NO".into()));
+    }
 }
 
 /// Whether a raster written to a format that keeps its georeferencing beside the pixels (a

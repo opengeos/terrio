@@ -485,7 +485,7 @@ impl LazyRaster {
         match &self.inner {
             Inner::Tiff(t) => t.tags.geo_transform.is_some(),
             Inner::Source(_, source) => source.geotransform_present().unwrap_or(true),
-            Inner::Memory(_) => true,
+            Inner::Memory(ds) => ds.geotransform_present.unwrap_or(true),
         }
     }
 
@@ -974,16 +974,7 @@ impl LazyRaster {
     /// georeferencing at all: no tie point, GeoJP2 box or world file declaring the unit-pixel grid
     /// [`geo_transform`](Self::geo_transform) gives it.
     pub fn keep_unreferenced(&self, options: &mut crate::RasterWriteOptions, path: &str) {
-        let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
-        if matches!(
-            driver,
-            Some(RasterDriver::GTiff | RasterDriver::Cog | RasterDriver::JP2 | RasterDriver::PNG | RasterDriver::JPEG | RasterDriver::WEBP)
-        ) && !self.geotransform_present()
-            && options.geo_transform.is_none()
-            && !options.creation_options.iter().any(|(key, _)| key.eq_ignore_ascii_case("GEOREFERENCED"))
-        {
-            options.creation_options.push(("GEOREFERENCED".into(), "NO".into()));
-        }
+        crate::drivers::common::keep_unreferenced(options, path, self.geotransform_present());
     }
 
     /// The CRS.
@@ -1108,6 +1099,7 @@ impl LazyRaster {
                 band_metadata: ds.band_metadata.clone(),
                 gcps: ds.gcps.clone(),
                 affine: ds.affine,
+                geotransform_present: Some(self.geotransform_present()),
                 complex: ds.complex,
                 geolocation: ds.geolocation.clone(),
                 metadata_domains: ds.metadata_domains.clone(),
@@ -1135,6 +1127,7 @@ impl LazyRaster {
         ds.has_nodata = first_nodata.is_some();
         ds.raster.nodata = first_nodata.unwrap_or(-9999.);
         ds.set_geo_transform(self.geo_transform());
+        ds.geotransform_present = Some(self.geotransform_present());
         if let Inner::Tiff(t) = &self.inner {
             ds.band_metadata = t.tags.band_properties.clone();
             ds.color_table = t.tags.color_table.clone();

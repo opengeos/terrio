@@ -39,11 +39,14 @@ def _boxes(data):
         size, kind = struct.unpack(">I4s", data[i : i + 8])
         header = 8
         if size == 1:
+            assert i + 16 <= len(data), "truncated extended box header"
             size, header = struct.unpack(">Q", data[i + 8 : i + 16])[0], 16
         elif size == 0:
             size = len(data) - i
+        assert size >= header and i + size <= len(data), "invalid or truncated box"
         out.append((kind, data[i + header : i + size]))
         i += size
+    assert i == len(data), f"the boxes end at byte {i} of {len(data)}"
     return out
 
 
@@ -143,3 +146,17 @@ def test_a_memoryfile_jpeg_2000_without_a_transform_or_a_crs_holds_no_geojp2_box
     with rio.MemoryFile(data, ext=".jp2") as memfile, memfile.open() as src:
         assert src.transform == Affine.identity() and src.crs is None
         assert np.array_equal(src.read(), PIXELS)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"x",
+        struct.pack(">I4s", 1, b"free"),
+        struct.pack(">I4s", 4, b"free"),
+        struct.pack(">I4s", 12, b"free"),
+    ],
+)
+def test_box_walker_rejects_truncated_or_invalid_boxes(data):
+    with pytest.raises(AssertionError):
+        _boxes(data)

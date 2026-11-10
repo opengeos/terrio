@@ -159,17 +159,16 @@ fn a_sidecar_that_cannot_be_removed_fails_the_write() {
     }
 }
 
-/// A world file that cannot be removed (here a directory of that name) fails the write before the
-/// image is written, rather than leaving the image beside it.
+/// A world file that cannot be removed reports failure after the image is written.
 #[test]
-fn a_world_file_that_cannot_be_removed_fails_the_write_before_the_image() {
+fn a_world_file_that_cannot_be_removed_reports_failure() {
     for ext in ["png", "jpg", "webp"] {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("a.wld")).unwrap();
         let path = dir.path().join(format!("a.{ext}"));
         let written = terrio::write_raster_dataset(&raster(None), path.to_str().unwrap(), &unreferenced());
         assert!(matches!(written, Err(terrio::Error::Io(_))), "{ext}: {written:?}");
-        assert_eq!(files(dir.path()), ["a.wld"], "{ext}");
+        assert_eq!(files(dir.path()), [format!("a.{ext}"), "a.wld".into()], "{ext}");
     }
 }
 
@@ -185,4 +184,70 @@ fn bytes_of_an_unreferenced_raster_hold_the_image_alone() {
     assert!(jp2.starts_with(b"\x00\x00\x00\x0cjP  \r\n\x87\n") && !has_geojp2_box(&jp2));
     let jp2 = terrio::memory::write_raster_bytes(&raster(None), "a.jp2", &RasterWriteOptions::default()).unwrap();
     assert!(has_geojp2_box(&jp2));
+}
+
+/// Failure to write the image must not remove an existing shared world file.
+#[test]
+fn a_failed_image_write_preserves_the_world_file() {
+    for ext in ["png", "jpg", "webp"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("a.{ext}"));
+        std::fs::create_dir(&path).unwrap();
+        let world = dir.path().join("a.wld");
+        std::fs::write(&world, "existing georeferencing").unwrap();
+        assert!(terrio::write_raster_dataset(&raster(None), path.to_str().unwrap(), &unreferenced()).is_err());
+        assert_eq!(std::fs::read_to_string(world).unwrap(), "existing georeferencing", "{ext}");
+    }
+}
+
+/// Duplicate creation options follow GDAL's first-match precedence, across output formats.
+#[test]
+fn the_first_georeferenced_option_wins() {
+    for ext in ["jp2", "png", "jpg", "webp", "tif"] {
+        for (first, second, expected) in [("NO", "YES", false), ("YES", "NO", true)] {
+            let options = RasterWriteOptions {
+                creation_options: vec![("GEOREFERENCED".into(), first.into()), ("georeferenced".into(), second.into())],
+                ..Default::default()
+            };
+            let (dir, path) = write(&raster(None), ext, &options);
+            let present = match ext {
+                "jp2" => has_geojp2_box(&std::fs::read(&path).unwrap()),
+                "tif" => terrio::open_raster_lazy(&path).unwrap().has_geo_transform(),
+                _ => dir.path().join("a.wld").exists(),
+            };
+            assert_eq!(present, expected, "{ext}: {first}, {second}");
+        }
+    }
+}
+
+/// GDAL 3.13.3 whole reads retain absence separately from a legitimate unit-pixel transform.
+#[cfg(feature = "gdal")]
+#[test]
+fn whole_read_translation_preserves_an_absent_geotransform() {
+    use terrio::ops::overview::OverviewSelection;
+    use terrio::ops::translate::{TranslateOptions, translate_path_to_file};
+    let dir = tempfile::tempdir().unwrap();
+    for referenced in [false, true] {
+        let src = dir.path().join(format!("source-{referenced}.tif"));
+        let options = if referenced { RasterWriteOptions::default() } else { unreferenced() };
+        terrio::write_raster_dataset(&raster(None), src.to_str().unwrap(), &options).unwrap();
+        let source = format!("GDAL:{}", src.display());
+        for ext in ["jp2", "png", "jpg", "webp", "tif"] {
+            let path = dir.path().join(format!("out-{referenced}.{ext}"));
+            translate_path_to_file(
+                &source,
+                &TranslateOptions::default(),
+                OverviewSelection::Auto,
+                path.to_str().unwrap(),
+                &Default::default(),
+            )
+            .unwrap();
+            let present = match ext {
+                "jp2" => has_geojp2_box(&std::fs::read(&path).unwrap()),
+                "tif" => terrio::open_raster_lazy(path.to_str().unwrap()).unwrap().has_geo_transform(),
+                _ => path.with_extension("wld").exists(),
+            };
+            assert_eq!(present, referenced, "{ext}: referenced={referenced}");
+        }
+    }
 }
