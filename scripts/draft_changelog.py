@@ -4,14 +4,15 @@ Usage: python scripts/draft_changelog.py [--since TAG] [--until REF] [--version 
 
 Feature pull requests do not edit ``CHANGELOG.md``; the release pull request writes the section for
 its version. This script drafts that section: it takes the pull request numbers from the squash
-commit subjects (``... (#123)``) in ``TAG..REF`` (by default from the last ``v*`` tag before
-``REF``, and ``REF`` is ``HEAD``), reads their titles and descriptions with ``gh``, and prints a Markdown section with one
-entry per pull request, the description's first paragraph followed by its number. Pull requests
-of type ``ci``, ``chore``, ``build`` or ``test``, release pull requests (``Release X.Y.Z``) and
-those ``gh`` cannot read (with a warning) are left out, and the
-rest are grouped by the type of their title (features, fixes, performance, then the others). The
-draft is a starting point: edit the entries into the changelog's style before committing them.
-Needs ``git`` and an authenticated ``gh``.
+commit subjects (``... (#123)``) in ``TAG..REF``, where ``--until`` gives ``REF`` (default
+``HEAD``) and ``--since`` gives ``TAG`` (default: the last ``v*`` tag before ``REF``). It reads
+their titles and descriptions with ``gh`` and prints a Markdown section with one entry per pull
+request, the description's first paragraph followed by its number. Pull requests of type ``ci``,
+``chore``, ``build`` or ``test``, release pull requests (``Release X.Y.Z``) and numbers that name
+no pull request (with a warning) are left out; the rest are grouped by the type of their title
+(features, fixes, performance, then the others). The draft is a starting point: edit the entries
+into the changelog's style before committing them. Needs ``git`` with full history and tags, and
+an authenticated ``gh``.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ OTHER_GROUP = "Other changes"
 PR_NUMBER = re.compile(r"\(#(\d+)\)\s*$")
 TITLE_TYPE = re.compile(r"^(\w+)(?:\([^)]*\))?!?:")
 # The release pull request's title, matched as the Changelog workflow does.
-RELEASE_TITLE = re.compile(r"Release \d+\.\d+\.\d+$")
+RELEASE_TITLE = re.compile(r"Release [0-9]+\.[0-9]+\.[0-9]+")
 # Paragraphs that only link the pull request to issues or other pull requests.
 REFERENCE_ONLY = re.compile(
     r"^(?:(?:closes|fixes|resolves|part of|follow-up to|refs?)\s+#\d+[.,]?\s*)+$", re.IGNORECASE
@@ -133,7 +134,7 @@ def title_type(title: str) -> str:
         The lower-case type (``fix``), ``release`` for a release pull request, or an empty
         string when the title has no type.
     """
-    if RELEASE_TITLE.match(title):
+    if RELEASE_TITLE.fullmatch(title):
         return "release"
     match = TITLE_TYPE.match(title)
     return match.group(1).lower() if match else ""
@@ -217,7 +218,9 @@ def main() -> int:
         The process exit status.
     """
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--since", help="previous release tag (default: the last v* tag before --until)")
+    parser.add_argument(
+        "--since", help="previous release tag (default: the last v* tag before --until)"
+    )
     parser.add_argument("--until", default="HEAD", help="end of the range (default: HEAD)")
     parser.add_argument("--version", help="version for the heading (default: Unreleased)")
     args = parser.parse_args()
