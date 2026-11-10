@@ -41,16 +41,22 @@ CUSTOM_TM = (
     'PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],'
     'PARAMETER["false_northing",0],UNIT["metre",1]]'
 )
-# Text that is no CRS definition, a colon between two words included.
-NOT_A_CRS = ["not a coordinate reference system", "http://example.com/crs", "note:draft"]
+# Text that is no CRS definition, text with a colon after no authority's name included.
+NOT_A_CRS = [
+    "not a coordinate reference system",
+    "http://example.com/crs",
+    "note:draft",
+    "ERROR:404",
+]
 # An engineering CRS: a definition terrio's parser does not read.
 LOCAL_CS = 'LOCAL_CS["site grid",UNIT["metre",1]]'
 # An OGC URN of a CRS of an authority terrio does not read.
 IGNF_URN = "urn:ogc:def:crs:IGNF::LAMB93"
-# Control characters: ESC, which opens a terminal's escape sequences, BEL and the 8-bit CSI.
-CONTROL = "\x1b[31mred\x1b[0m\x07\x9b2J"
-# CONTROL as a warning quotes it, each control character as a space.
-CONTROL_QUOTED = " [31mred [0m  2J"
+# Control characters: ESC, which opens a terminal's escape sequences, BEL and the 8-bit CSI; and
+# a right-to-left override, which makes the text after it read backwards.
+CONTROL = "\x1b[31mred\u202e\x1b[0m\x07\x9b2J"
+# CONTROL as a warning quotes it, each of those characters as a space.
+CONTROL_QUOTED = " [31mred  [0m  2J"
 
 
 def _shapefile(tmp_path, prj):
@@ -156,7 +162,7 @@ def test_a_prj_terrio_reads_without_an_epsg_code_is_kept(tmp_path):
     assert messages == []
 
 
-@pytest.mark.parametrize("prj", [LOCAL_CS, "IGNF:LAMB93", IGNF_URN])
+@pytest.mark.parametrize("prj", [LOCAL_CS, "IGNF:LAMB93", "ignf:LAMB93", IGNF_URN])
 def test_a_crs_definition_terrio_does_not_read_is_kept(tmp_path, prj):
     path = _shapefile(tmp_path, prj)
     layer, messages = _warned(lambda: terrio.open_vector(path)[0])
@@ -174,6 +180,7 @@ def test_a_crs_definition_terrio_does_not_read_is_kept(tmp_path, prj):
     [
         (LOCAL_CS, "site grid", None),
         ("IGNF:LAMB93", "RGF93 Lambert 93", 2154),
+        ("ignf:LAMB93", "RGF93 Lambert 93", 2154),
         (IGNF_URN, "RGF93 Lambert 93", 2154),
     ],
 )
@@ -275,3 +282,24 @@ def test_a_warning_quotes_control_characters_as_spaces(tmp_path):
     )
     info, messages = _warned(lambda: tpg.read_info(path))
     assert (info["crs"], messages) == (None, [warning])
+
+
+@pytest.mark.parametrize(
+    ("prj", "crs", "calls"),
+    [(ESRI_WGS84, "EPSG:4326", 0), ("EPSG:32633", "EPSG:32633", 0), ("EPSG:999999", None, 1)],
+)
+def test_pyproj_checks_only_an_epsg_code_terrio_does_not_know(
+    tmp_path, monkeypatch, prj, crs, calls
+):
+    pyproj = pytest.importorskip("pyproj")
+    parsed = []
+    real = pyproj.CRS.from_user_input
+
+    def from_user_input(*args, **kwargs):
+        parsed.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pyproj.CRS, "from_user_input", staticmethod(from_user_input))
+    info, messages = _warned(lambda: tpg.read_info(_shapefile(tmp_path, prj)))
+    warning = f"the layer's CRS definition cannot be parsed ('{prj}'): it is read without a CRS"
+    assert (info["crs"], len(parsed), messages) == (crs, calls, [] if crs else [warning])

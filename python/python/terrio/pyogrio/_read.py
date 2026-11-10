@@ -394,12 +394,22 @@ def _crs(crs: str | None) -> str | None:
     `EPSG:<code>` when GDAL identifies an EPSG code, otherwise GDAL's WKT1 (here PROJ's
     `WKT1_GDAL` export, which names axes as GDAL does).
 
-    A definition pyproj cannot parse, an `EPSG:<code>` it does not know included, is `None`, with
-    a warning that quotes it, since a GeoDataFrame refuses it; without pyproj, or with one that
-    fails to import, the definition is given as it is.
+    An `EPSG:<code>` that terrio knows is given as it is, without pyproj. A definition pyproj
+    cannot parse, an `EPSG:<code>` neither knows included, is `None`, with a warning that quotes
+    it, since a GeoDataFrame refuses it; without pyproj, or with one that fails to import, the
+    definition is given as it is.
     """
     if crs is None:
         return crs
+    # terrio identified the code, or a `.prj` names one terrio knows: no need for pyproj. An
+    # `EPSG:<digits>` reference is looked up in terrio's database, never read as a file name.
+    if re.fullmatch(r"EPSG:[0-9]{1,9}", crs):
+        try:
+            _terrio.crs_info(crs)
+        except _terrio_errors.CRSError:
+            pass
+        else:
+            return crs
     try:
         from pyproj import CRS
     except Exception:  # noqa: BLE001

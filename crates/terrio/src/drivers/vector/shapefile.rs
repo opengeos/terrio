@@ -311,30 +311,43 @@ pub(crate) fn header_layer(shp: &[u8], name: &str) -> Result<Layer> {
 /// Sets a layer's CRS from a `.prj` file, as GDAL's Shapefile driver does (FindBestMatch()):
 /// the EPSG CRS the `.prj` is identified as, and otherwise its definition.
 ///
-/// A definition terrio does not read (`SpatialRef::parse_literal`) is still kept as it is when it
-/// has the form of one (`is_crs_definition`). Any other text leaves the layer without a CRS,
-/// with a warning that quotes it; an empty `.prj` leaves it without, silently, as no `.prj` does.
-/// A leading byte-order mark is not part of the definition.
+/// A definition is kept as it is when it has the form of one (`is_crs_definition`), whether terrio
+/// reads it or not, or when terrio reads it (`SpatialRef::parse_literal`) and it is not WKT: a
+/// PROJ string, PROJJSON. WKT goes by its form alone, since the parser reads its first root and
+/// not what follows. Any other text leaves the layer without a CRS, with a warning that quotes it;
+/// an empty `.prj` leaves it without, silently, as no `.prj` does. A leading byte-order mark is not
+/// part of the definition.
 pub(crate) fn apply_prj(layer: &mut Layer, prj: Option<&str>) {
     let Some(prj) = prj.map(|s| s.trim_start_matches('\u{feff}').trim()).filter(|s| !s.is_empty()) else {
         return;
     };
     match SpatialRef::from_wkt(prj).epsg.and_then(|code| SpatialRef::from_epsg(code).ok()) {
         Some(s) => s.apply_to_layer(layer),
-        None if SpatialRef::parse_literal(prj).is_ok() || is_crs_definition(prj) => {
+        None if is_crs_definition(prj) || (crs_wkt_opener(prj).is_none() && SpatialRef::parse_literal(prj).is_ok()) => {
             SpatialRef::from_wkt(prj).apply_to_layer(layer);
             layer.set_crs_wkt(Some(prj.to_string()));
         }
         None => {
-            // Whitespace and control characters (ESC included) are quoted as spaces, so that the
-            // quote is one line and sends a terminal no escape sequence.
-            let quoted: String = prj.chars().take(80).map(|c| if c.is_whitespace() || c.is_control() { ' ' } else { c }).collect();
+            let quoted: String = prj.chars().take(80).map(|c| if quoted_as_space(c) { ' ' } else { c }).collect();
             crate::warnings::warn(format!(
                 "{}.prj holds no CRS definition terrio can read ('{quoted}'): the layer is read without a CRS",
                 layer.name
             ));
         }
     }
+}
+
+/// Whether a warning quotes `c` as a space, so that the quote is one line, sends a terminal no
+/// escape sequence, and reads as its characters do: whitespace, control characters (ESC included),
+/// and the format characters that change how the text around them reads without showing
+/// themselves. Those are the bidirectional controls (Unicode's `Bidi_Control`: U+061C, U+200E,
+/// U+200F, U+202A to U+202E, U+2066 to U+2069), the zero-width characters (U+200B to U+200D,
+/// U+2060, U+FEFF) and the soft hyphen (U+00AD); Rust's standard library has no test for their
+/// general category.
+fn quoted_as_space(c: char) -> bool {
+    c.is_whitespace()
+        || c.is_control()
+        || matches!(c, '\u{00AD}' | '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
 }
 
 /// The keywords a CRS's WKT starts with: WKT 1's (OGC 18-010r7 B.8, and ESRI's `VERTCS`) and
@@ -366,36 +379,68 @@ const CRS_WKT_KEYWORDS: [&str; 24] = [
     "BOUNDCRS",
 ];
 
-/// Whether `text` has the form of a CRS definition, whether terrio reads it or not: WKT whose
-/// first keyword is a CRS's, opened by `[` or `(`, with its brackets and its quotes balanced, an
-/// OGC URN of a CRS (`urn:ogc:def:crs:IGNF::LAMB93`, or a combined one), or a single
-/// `AUTHORITY:CODE` whose authority is written in capitals (`IGNF:LAMB93`, not `note:draft`).
-/// Brackets are counted, not parsed: WKT may nest deeper than a parser recurses.
+/// The position of the bracket that opens `text`'s first WKT node, when the text before it is a
+/// CRS's keyword (`PROJCS[`, `engcrs (`).
+fn crs_wkt_opener(text: &str) -> Option<usize> {
+    let open = text.find(['[', '('])?;
+    CRS_WKT_KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(text[..open].trim())).then_some(open)
+}
+
+/// Whether `text` has the form of a CRS definition, whether terrio reads it or not: WKT whose root
+/// is opened by `[` or `(` after a CRS's keyword and has its brackets and its quotes balanced, with
+/// nothing after it but another definition, on the next line or after a comma (`,VERTCS[...]`); or
+/// a reference (`is_crs_reference`). The roots are taken one after the other, and their brackets
+/// counted, not parsed: WKT may nest deeper than a parser recurses.
 fn is_crs_definition(text: &str) -> bool {
-    if let Some(open) = text.find(['[', '(']) {
-        if !CRS_WKT_KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(text[..open].trim())) {
-            return false;
+    let mut text = text.trim();
+    loop {
+        if !text.contains(['[', '(']) {
+            return is_crs_reference(text);
         }
-        let (mut depth, mut quoted) = (0usize, false);
+        let Some(open) = crs_wkt_opener(text) else {
+            return false;
+        };
+        let (mut depth, mut quoted, mut end) = (0usize, false, None);
         // Every delimiter is ASCII, which no byte of a UTF-8 sequence of another character is.
-        for b in text[open..].bytes() {
+        for (i, b) in text.bytes().enumerate().skip(open) {
             match b {
                 b'"' => quoted = !quoted,
                 b'[' | b'(' if !quoted => depth += 1,
-                b']' | b')' if !quoted => match depth.checked_sub(1) {
-                    Some(d) => depth = d,
-                    None => return false,
-                },
+                b']' | b')' if !quoted => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i + 1);
+                        break;
+                    }
+                }
                 _ => {}
             }
         }
-        return depth == 0 && !quoted;
+        let Some(end) = end else {
+            return false;
+        };
+        text = text[end..].trim_start();
+        if text.is_empty() {
+            return true;
+        }
+        if let Some(next) = text.strip_prefix(',') {
+            text = next.trim_start();
+        }
     }
-    let authority =
-        |a: &str| a.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && a.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+}
+
+/// The authorities of the CRS database of PROJ 9.8.1 (`get_authorities()` of pyproj 3.8.0, which
+/// bundles it).
+const CRS_AUTHORITIES: [&str; 8] = ["EPSG", "ESRI", "IAU_2015", "IGNF", "NKG", "NRCAN", "OGC", "PROJ"];
+
+/// Whether `text` refers to a CRS of a known authority (`CRS_AUTHORITIES`, in either case): an OGC
+/// URN of a CRS (`urn:ogc:def:crs:IGNF::LAMB93`, or a combined one), or a single `AUTHORITY:CODE`
+/// (`IGNF:LAMB93`, not `ERROR:404`).
+fn is_crs_reference(text: &str) -> bool {
+    let authority = |a: &str| CRS_AUTHORITIES.iter().any(|k| k.eq_ignore_ascii_case(a));
     let code = |c: &str| !c.is_empty() && c.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
     // The `authority:version:code` of an OGC URN (OGC 07-092r3 7.2), its version possibly empty.
-    // Its authority may be in either case: every textual part of a URN is case-insensitive (7.2).
+    // Every textual part of a URN is case-insensitive (7.2).
     let reference = |r: &str| {
         let mut f = r.split(':');
         matches!((f.next(), f.next(), f.next(), f.next()), (Some(a), Some(v), Some(c), None) if authority(a) && (v.is_empty() || code(v)) && code(c))
@@ -414,9 +459,7 @@ fn is_crs_definition(text: &str) -> bool {
             .split(',')
             .all(|p| p.split_once(':').is_some_and(|(kind, r)| kinds.iter().any(|k| k.eq_ignore_ascii_case(kind)) && reference(r)));
     }
-    // Outside a URN, an authority in capitals (`EPSG`, `IGNF`, `IAU_2015`) tells a reference from
-    // other text that holds a colon (`note:draft`, `Units:feet`).
-    text.split_once(':').is_some_and(|(a, c)| authority(a) && !a.contains(|c: char| c.is_ascii_lowercase()) && code(c))
+    text.split_once(':').is_some_and(|(a, c)| authority(a) && code(c))
 }
 
 /// Decodes a `.shp` record's content (after its 8-byte record header).
@@ -1931,8 +1974,10 @@ mod tests {
             readings.remove(0)
         };
         // Text that is not a CRS definition terrio reads: no CRS, and a warning naming the file
-        // and quoting the text, whitespace and control characters (ESC, BEL, the 8-bit CSI) as
-        // spaces. A `.prj` naming a file is not read through.
+        // and quoting the text, whitespace, control characters (ESC, BEL, the 8-bit CSI) and the
+        // invisible format characters (a right-to-left override, zero-width ones) as spaces. A
+        // `.prj` naming a file is not read through, and WKT followed by prose is not a definition,
+        // although the parser reads its first root.
         let esri = r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
         let malformed = r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984"(SPHEROID["WGS_1984",6378137,298.257223563]]]"#;
         let named = dir.path().join("other.prj");
@@ -1945,6 +1990,9 @@ mod tests {
             ("Projection GEOGRAPHIC\nDatum WGS84\nUnits DD", "Projection GEOGRAPHIC Datum WGS84 Units DD"),
             ("\x1b[31mred\x1b[0m\x07\u{9b}2J", " [31mred [0m  2J"),
             ("one line\u{2028}and another", "one line and another"),
+            ("invoice\u{202E}fdp.exe\u{200B}\u{061C}\u{00AD}\u{FEFF}", "invoice fdp.exe    "),
+            ("PROJCS[\"x\"]\nnot a coordinate reference system", "PROJCS[\"x\"] not a coordinate reference system"),
+            ("ERROR:404", "ERROR:404"),
             (malformed, &malformed[..80]),
             (named, &named_quoted),
         ] {
@@ -1959,15 +2007,22 @@ mod tests {
         let (epsg, wkt, warnings) = read_with(&format!("\u{feff}{esri}"));
         assert_eq!((epsg, warnings), (Some(4326), vec![]));
         assert!(wkt.is_some_and(|w| w.starts_with(r#"GEOGCS["WGS 84""#)));
-        // Definitions terrio reads without an EPSG code are kept as they are, without a warning.
+        // Definitions terrio reads without an EPSG code are kept as they are, without a warning: a
+        // reference in either case, and WKT followed by another definition, on the next line or
+        // after a comma.
         let custom = r#"PROJCS["custom",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",15.5],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",0],UNIT["metre",1]]"#;
-        for prj in [custom, "+proj=longlat +ellps=GRS80 +no_defs", r#"PROJCS["x"]"#] {
-            assert_eq!(read_with(&format!("{prj}\n")), (None, Some(prj.to_string()), vec![]), "{prj:?}");
-        }
-        // So are references whose authority is not in capitals that terrio reads; their form alone
-        // would not keep them.
-        for prj in ["epsg:4326", "esri:102100", "iau_2015:49900", "ogc:crs84"] {
-            assert!(SpatialRef::parse_literal(prj).is_ok() && !is_crs_definition(prj), "{prj:?}");
+        let vertical = r#"VERTCS["NAVD_1988",VDATUM["North_American_Vertical_Datum_1988"],PARAMETER["Vertical_Shift",0.0],PARAMETER["Direction",1.0],UNIT["Meter",1.0]]"#;
+        for prj in [
+            custom,
+            "+proj=longlat +ellps=GRS80 +no_defs",
+            r#"PROJCS["x"]"#,
+            "epsg:4326",
+            "esri:102100",
+            "iau_2015:49900",
+            "ogc:crs84",
+            &format!("{custom}\n{vertical}"),
+            &format!("{custom},{vertical}"),
+        ] {
             assert_eq!(read_with(&format!("{prj}\n")), (None, Some(prj.to_string()), vec![]), "{prj:?}");
         }
         // So are those terrio does not read that have the form of a definition: an engineering CRS
@@ -1978,6 +2033,7 @@ mod tests {
             engineering,
             r#"ENGCRS["x"]"#,
             "IGNF:LAMB93",
+            "ignf:LAMB93",
             "urn:ogc:def:crs:IGNF::LAMB93",
             "EPSG:999999",
         ] {
@@ -1988,35 +2044,8 @@ mod tests {
 
     #[test]
     fn a_crs_definition_is_told_by_its_form() {
-        // WKT 1 (OGC 18-010r7 B.8, and ESRI's VERTCS) and WKT 2 (OGC 18-010r7, and 12-063r5's
-        // IMAGECRS) roots, in any case, opened by either bracket.
-        let keywords = [
-            "GEOGCS",
-            "PROJCS",
-            "GEOCCS",
-            "VERT_CS",
-            "VERTCS",
-            "LOCAL_CS",
-            "COMPD_CS",
-            "FITTED_CS",
-            "GEODCRS",
-            "GEODETICCRS",
-            "GEOGCRS",
-            "GEOGRAPHICCRS",
-            "PROJCRS",
-            "PROJECTEDCRS",
-            "DERIVEDPROJCRS",
-            "VERTCRS",
-            "VERTICALCRS",
-            "ENGCRS",
-            "ENGINEERINGCRS",
-            "PARAMETRICCRS",
-            "TIMECRS",
-            "IMAGECRS",
-            "COMPOUNDCRS",
-            "BOUNDCRS",
-        ];
-        for k in keywords {
+        // Every CRS keyword, in either case, opened by either bracket.
+        for k in CRS_WKT_KEYWORDS {
             for text in [format!(r#"{k}["x",UNIT["metre",1]]"#), format!(r#"{}("x")"#, k.to_ascii_lowercase())] {
                 assert!(is_crs_definition(&text), "{text}");
             }
@@ -2027,10 +2056,17 @@ mod tests {
             r#"LOCAL_CS["a]b",UNIT["metre",1]]"#,
             r#"LOCAL_CS["say ""grid""",UNIT["metre",1]]"#,
             deep.as_str(),
+            // Roots one after the other, on the next line or after a comma.
+            "PROJCS[\"x\"]\nVERTCS[\"y\"]",
+            "LOCAL_CS[\"x\"] , VERTCS[\"y\"]\nVERTCS[\"z\"]\n",
+            "ENGCRS[\"x\"]\nIGNF:LAMB93",
+            // A known authority's code, in either case.
             "IGNF:LAMB93",
+            "ignf:LAMB93",
             "ESRI:102100",
             "IAU_2015:49900",
             "EPSG:999999",
+            "nrcan:CGVD28",
             // OGC URNs (OGC 07-092r3 7.2), in either case, and combined ones (7.5.2, 7.5.4, 7.5.5).
             "urn:ogc:def:crs:IGNF::LAMB93",
             "urn:ogc:def:crs:ignf::LAMB93",
@@ -2048,6 +2084,11 @@ mod tests {
             r#"PROJCS["x"]]"#,
             r#"PROJCS["x"]][]"#,
             r#"PROJCS["x]"#,
+            // A root followed by what is no definition.
+            "PROJCS[\"x\"]\nnot a coordinate reference system",
+            r#"LOCAL_CS["x"] notes [1]"#,
+            r#"PROJCS["x"],"#,
+            r#"PROJCS["x"],,VERTCS["y"]"#,
             r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984"(SPHEROID["WGS_1984",6378137,298.257223563]]]"#,
             "not a coordinate reference system",
             "http://example.com/crs",
@@ -2056,14 +2097,16 @@ mod tests {
             "9IGNF:LAMB93",
             "IGNF:LAMB 93",
             "IGNF:LAMB93:2",
-            // Outside a URN, an authority not in capitals: other text holding a colon, and
-            // references terrio does not read in that case.
+            // An authority that is none: other text holding a colon.
+            "ERROR:404",
+            "NOTE:DRAFT",
+            "TODO:FIX",
             "note:draft",
             "Units:feet",
             "file:proj",
             "urn:ogc",
-            "ignf:LAMB93",
-            "Ignf:LAMB93",
+            "urn:ogc:def:crs:NOTE::DRAFT",
+            "IGNF:LAMB/93",
             "/tmp/other.prj",
             r"C:\data\other.prj",
             "C:/data/other.prj",

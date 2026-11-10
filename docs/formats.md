@@ -957,14 +957,16 @@ reads it.
   polygon. With every method, a ring of a multi-part record that touches itself at a vertex to
   enclose a hole is first split into its exterior and holes, as GDAL 3.13 does.
 - **Shapefile `.prj`** files give the layer the EPSG CRS they are identified as (see
-  [Identification](crs.md#identification)), otherwise the definition they hold, as it is: one
-  terrio reads (see [Defining a CRS](crs.md#defining-a-crs)), or one that has the form of a
-  definition, which is WKT whose first keyword is a CRS's (WKT 1 or 2, such as `LOCAL_CS` or
-  `ENGCRS`) with its brackets and quotes balanced, an OGC URN of a CRS
-  (`urn:ogc:def:crs:IGNF::LAMB93`, or a combined one), or a single `AUTHORITY:CODE` whose authority
-  is in capitals, such as `IGNF:LAMB93`. Any other text (prose, a URL, unbalanced WKT; a file it
-  names is not read) leaves the layer without a CRS, with a warning that quotes it. An empty `.prj`
-  leaves it without one silently, as a missing `.prj` does, and a leading byte-order mark is
+  [Identification](crs.md#identification)), otherwise the definition they hold, as it is: one that
+  has the form of a definition, which is WKT whose first keyword is a CRS's (WKT 1 or 2, such as
+  `LOCAL_CS` or `ENGCRS`) with its brackets and quotes balanced and nothing after it but another
+  definition (on the next line, or after a comma, as in `PROJCS[...],VERTCS[...]`), an OGC URN of a
+  CRS (`urn:ogc:def:crs:IGNF::LAMB93`, or a combined one), or a single `AUTHORITY:CODE` of a known
+  authority (EPSG, ESRI, IAU_2015, IGNF, NKG, NRCAN, OGC or PROJ), in either case, such as
+  `IGNF:LAMB93`; or another definition terrio reads (see [Defining a CRS](crs.md#defining-a-crs)),
+  such as a PROJ string. Any other text (prose, a URL, unbalanced WKT, WKT followed by prose; a file
+  it names is not read) leaves the layer without a CRS, with a warning that quotes it. An empty
+  `.prj` leaves it without one silently, as a missing `.prj` does, and a leading byte-order mark is
   skipped.
 - **OSM XML** (`.osm`) gives the same five layers as PBF, with tags in the file's order.
 - **KMZ archives** are written as GDAL writes them, a `doc.kml` linking to one document per
