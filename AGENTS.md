@@ -73,7 +73,7 @@ export CARGO_PROFILE_TEST_DEBUG=0
   with a paragraph stating the user-visible change, written as a changelog entry;
   the release pull request drafts its section from these with
   `scripts/draft_changelog.py`. CI fails a pull request that edits the changelog
-  unless its title starts with `Release X.Y.Z`.
+  unless its title is `Release X.Y.Z`.
 - Batch verified review fixes into a commit per round, then reply to each comment
   with the fix or rationale and resolve addressed threads.
 - Merge only when authorized, CI is green and actionable reviews are addressed.

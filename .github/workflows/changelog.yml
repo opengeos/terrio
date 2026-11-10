@@ -20,7 +20,7 @@ jobs:
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
-          if [[ "$TITLE" =~ ^Release\ [0-9]+\.[0-9]+\.[0-9]+ ]]; then
+          if [[ "$TITLE" =~ ^Release\ [0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Release pull request: the changelog may change."
             exit 0
           fi

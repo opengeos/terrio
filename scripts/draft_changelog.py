@@ -29,7 +29,7 @@ OTHER_GROUP = "Other changes"
 PR_NUMBER = re.compile(r"\(#(\d+)\)\s*$")
 TITLE_TYPE = re.compile(r"^(\w+)(?:\([^)]*\))?!?:")
 # The release pull request's title, matched as the Changelog workflow does.
-RELEASE_TITLE = re.compile(r"Release \d+\.\d+\.\d+")
+RELEASE_TITLE = re.compile(r"Release \d+\.\d+\.\d+$")
 # Paragraphs that only link the pull request to issues or other pull requests.
 REFERENCE_ONLY = re.compile(
     r"^(?:(?:closes|fixes|resolves|part of|follow-up to|refs?)\s+#\d+[.,]?\s*)+$", re.IGNORECASE
@@ -59,8 +59,19 @@ def previous_tag(until: str) -> str:
 
     Returns:
         The tag name, such as ``v0.8.0``.
+
+    Raises:
+        SystemExit: When no ``v*`` tag precedes the revision, as in a shallow clone without tags.
     """
-    return run(["git", "describe", "--tags", "--abbrev=0", "--match", "v*", f"{until}^"]).strip()
+    try:
+        return run(
+            ["git", "describe", "--tags", "--abbrev=0", "--match", "v*", f"{until}^"]
+        ).strip()
+    except subprocess.CalledProcessError as err:
+        raise SystemExit(
+            f"error: no v* tag before {until} ({err.stderr.strip()}); pass --since, or run in a"
+            " full clone with its tags"
+        ) from None
 
 
 def merged_pr_numbers(since: str, until: str) -> list[int]:
@@ -72,8 +83,15 @@ def merged_pr_numbers(since: str, until: str) -> list[int]:
 
     Returns:
         The pull request numbers, oldest first.
+
+    Raises:
+        SystemExit: When git cannot list the range, as for a revision that does not exist.
     """
-    subjects = run(["git", "log", "--reverse", "--format=%s", f"{since}..{until}"]).splitlines()
+    try:
+        log = run(["git", "log", "--reverse", "--format=%s", f"{since}..{until}"])
+    except subprocess.CalledProcessError as err:
+        raise SystemExit(f"error: cannot list {since}..{until}: {err.stderr.strip()}") from None
+    subjects = log.splitlines()
     numbers = [int(m.group(1)) for s in subjects if (m := PR_NUMBER.search(s))]
     return list(dict.fromkeys(numbers))
 
@@ -86,12 +104,22 @@ def fetch_pr(number: int) -> dict | None:
 
     Returns:
         A dict with the ``number``, ``title`` and ``body`` of the pull request, or ``None``
-        (after a warning on standard error) when ``gh`` cannot read it, as for an issue number.
+        (after a warning on standard error) when the number names no pull request, as an
+        issue number does.
+
+    Raises:
+        SystemExit: When ``gh`` is missing or fails for another reason, such as no
+            authentication, so that a failure does not print an empty draft.
     """
     try:
         return json.loads(run(["gh", "pr", "view", str(number), "--json", "number,title,body"]))
+    except FileNotFoundError:
+        raise SystemExit("error: gh is not installed") from None
     except subprocess.CalledProcessError as err:
-        print(f"warning: skipped #{number}: {err.stderr.strip()}", file=sys.stderr)
+        message = err.stderr.strip()
+        if "Could not resolve to a PullRequest" not in message:
+            raise SystemExit(f"error: gh could not read #{number}: {message}") from None
+        print(f"warning: skipped #{number}: not a pull request", file=sys.stderr)
         return None
 
 
@@ -128,16 +156,20 @@ def first_paragraph(body: str | None) -> str:
     text = re.sub(r"(?m)^\s*#.*$", "", text)
     for paragraph in re.split(r"\n\s*\n", text):
         paragraph = paragraph.strip()
-        if (
-            paragraph
-            and not paragraph.startswith(("|", "```"))
-            and not re.fullmatch(r"\*\*[^*]*\*\*\.?", paragraph)
-            and not REFERENCE_ONLY.match(paragraph)
-        ):
-            # A description that opens with a list gives its first item.
-            if re.match(r"[-*]\s", paragraph):
-                paragraph = re.split(r"\n\s*[-*]\s", paragraph[2:])[0]
-            return " ".join(paragraph.split())
+        # Each item of a list is a candidate of its own.
+        if re.match(r"[-*]\s", paragraph):
+            candidates = re.split(r"\n\s*[-*]\s", paragraph[2:])
+        else:
+            candidates = [paragraph]
+        for candidate in candidates:
+            candidate = " ".join(candidate.split())
+            if (
+                candidate
+                and not candidate.startswith(("|", "```"))
+                and not re.fullmatch(r"\*\*[^*]*\*\*\.?", candidate)
+                and not REFERENCE_ONLY.match(candidate)
+            ):
+                return candidate
     return ""
 
 
