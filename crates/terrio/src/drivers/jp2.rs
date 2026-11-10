@@ -794,6 +794,7 @@ impl Jp2Window {
         // Without georeferencing, unit pixels with the image's bottom at y = 0, as terrio's other
         // readers do.
         ds.set_geo_transform(gt.unwrap_or([0.0, 1.0, 0.0, h as f64, 0.0, -1.0]));
+        ds.geotransform_present = Some(gt.is_some());
         let reversibility = reversibility(source.open()?.as_mut(), len, j2k).unwrap_or(None);
         ds.metadata_domains = image_structure(&header.precisions, alpha, reversibility);
         if !palette {

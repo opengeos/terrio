@@ -252,3 +252,27 @@ fn whole_read_translation_preserves_an_absent_geotransform() {
         }
     }
 }
+
+#[test]
+fn eager_jp2_reads_preserve_transform_presence_including_a_real_unit_grid() {
+    for referenced in [false, true] {
+        let options = if referenced { RasterWriteOptions::default() } else { unreferenced() };
+        let (_dir, path) = write(&raster(None), "jp2", &options);
+        assert_eq!(terrio::open_raster(&path).unwrap().geotransform_present, Some(referenced));
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(terrio::memory::open_raster_bytes(bytes, "a.jp2").unwrap().geotransform_present, Some(referenced));
+    }
+}
+
+#[test]
+fn xyz_rewrite_removes_stale_pam_crs() {
+    let config = RasterConfig { cols: 2, rows: 2, bands: 1, data_type: DataType::F64, ..Default::default() };
+    let mut ds = RasterDataset::new(Raster::from_data(config, vec![1., 2., 3., 4.]).unwrap(), false);
+    ds.raster.crs.epsg = Some(4326);
+    let (_dir, path) = write(&ds, "xyz", &RasterWriteOptions::default());
+    assert!(std::path::Path::new(&format!("{path}.aux.xml")).exists());
+    ds.raster.crs = Default::default();
+    terrio::write_raster_dataset(&ds, &path, &RasterWriteOptions::default()).unwrap();
+    assert!(!std::path::Path::new(&format!("{path}.aux.xml")).exists());
+    assert_eq!(terrio::open_raster(&path).unwrap().raster.crs.epsg, None);
+}
