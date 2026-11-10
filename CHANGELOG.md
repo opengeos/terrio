@@ -2,15 +2,6 @@
 
 ## Unreleased
 
-- `TERRIO_ALLOWED_DRIVERS` set but empty, blank or not UTF-8 allows no driver: it allowed every
-  driver, as the option unset does. `terrio.rio` no longer opens a `MEM:::DATAPOINTER=` name under a
-  raster list that allows nothing, from this option or from `set_allowed_drivers([])`. A thread's
-  scope (`terrio.rio.Env`, `config::push_scope`) now only narrows the list outside it. A scope that
-  set the option to an empty value or to other drivers, or unset it, lifted or replaced the
-  environment's list on its thread: a process limited to `GTiff` opened an Esri ASCII grid there
-  (#721). The option is documented in `docs/remote-data.md` and `docs/python.md`.
-  Breaking: an environment that sets the option empty (a blank templated variable, say) now opens
-  nothing; unset it to allow every driver.
 - A `Raster` read lazily from a file, such as a GeoTIFF (`open_raster(path, lazy=True)`,
   `rio.open`, the xarray backend), can be read from several Python threads at once: `read`,
   `read_mask` and `numpy.asarray` raised `RuntimeError: Already borrowed` when a read overlapped
