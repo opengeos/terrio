@@ -827,7 +827,7 @@ Linux, macOS and Windows. Counting makes a discovery pass before the removal pas
 `deleted` reflects that discovery count, which requires an unchanged tree to be exact.
 
 `-q` prints nothing, `--json` prints what was done (`copied`, `bytes`, `unchanged`, `deleted`,
-`errors`), `--stats` the HTTP requests and bytes received.
+`errors`), `--stats` the HTTP requests, and the bytes received and sent.
 
 VSI moves replace existing destination files, as GDAL does, and refuse existing
 destination directories. Local filesystem renames preserve native links and names;
