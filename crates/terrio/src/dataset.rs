@@ -702,7 +702,7 @@ fn open_remote_vector_response(url: &str, options: &VectorOpenOptions) -> Option
     };
     let driver = remote_vector_response_driver(&head)?;
     let result = crate::formats::check_driver_allowed(driver.name(), url, crate::formats::Kind::Vector)
-        .and_then(|()| crate::http::get_file(&remote, crate::http::Redirects::Any))
+        .and_then(|()| crate::http::get_file(&remote, crate::http::Redirects::for_reads()))
         .and_then(|bytes| read_vector_answer(url, bytes, driver, options));
     #[cfg(feature = "gdal")]
     let result = gdal_fallback(url, result, |path| crate::gdal_backend::open_vector(path, options));
@@ -958,6 +958,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     // Keep an asset-policy refusal terminal and visible, rather than replacing it with the
     // native format error when a remote STAC-selected raster needs the optional backend.
     crate::stac::check_gdal_asset_read()?;
+    crate::gdal_backend::check_redirect_policy()?;
     gdal(path).map_err(|gdal_error| if gdal_error.is_resource_refusal() { gdal_error } else { e })
 }
 
@@ -1000,6 +1001,18 @@ mod fallback_tests {
             });
             assert!(matches!(result, Err(Error::InvalidData(_))));
         }
+    }
+
+    #[test]
+    fn origin_only_reads_do_not_use_opaque_gdal_fallbacks() {
+        crate::config::with_options(&[("TERRIO_HTTP_FOLLOW_CROSS_ORIGIN", "NO")], || {
+            for error in [Error::InvalidData("wrapped remote read failure".into()), std::io::Error::other("remote read failure").into()] {
+                let result: Result<()> = gdal_fallback("local.vrt", Err(error), |_| panic!("origin policy bypassed through GDAL"));
+                assert!(matches!(result, Err(Error::InvalidArgument(ref message)) if message.contains("TERRIO_HTTP_FOLLOW_CROSS_ORIGIN")));
+            }
+            let result = crate::gdal_backend::open_raster("GDAL:local.vrt");
+            assert!(matches!(result, Err(Error::InvalidArgument(ref message)) if message.contains("TERRIO_HTTP_FOLLOW_CROSS_ORIGIN")));
+        });
     }
 
     #[test]

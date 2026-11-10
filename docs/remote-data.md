@@ -268,6 +268,27 @@ The GDAL variable is read when the terrio one is not set.
 Transient errors (connection failures, HTTP 429, 500, 502, 503, 504) are retried with backoff.
 Signatures and SAS tokens are hidden in logs and error messages.
 
+Redirects are followed, up to 10 of them. `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO` keeps the
+requests of a read on the origin of its URL (scheme, host and port): a redirect to another origin
+is refused before anything is sent there, by an error naming the option, and redirects within the
+origin are still followed. Any other value does the same, except `YES` (`TRUE`, `ON`, `1`) and an
+empty or blank value: these, and the option unset (the default), follow redirects to any origin.
+S3 bucket-region discovery also obeys this rule: set `AWS_REGION` to the bucket's region
+before opening a non-default-region bucket under `NO`, since changing from the global Amazon
+endpoint to its regional host changes the origin.
+The optional GDAL backend cannot enforce this policy for its opaque nested reads. While
+origin-only redirects are selected, GDAL reads (including automatic fallbacks and explicit
+`GDAL:` opens) are refused; native readers continue to work.
+The option applies to every request a read sends: ranged reads, files and documents fetched
+whole, listings of object stores, WFS and feature-service requests, and the token fetch that
+signs STAC assets. It is read when a file is opened or fetched, from the environment (the CLI)
+or, for the calling thread, from `terrio.rio.Env` or `config::push_scope`. A STAC link follows
+`TERRIO_STAC_FOLLOW_CROSS_ORIGIN` ([STAC](#stac)); with `YES`, it follows redirects as a read
+does, so this option keeps it on its origin too. OGC API Features requests stay on their origin
+either way. In WebAssembly, `openUrl` sends its requests through the host's `fetch`, which
+follows redirects itself; a `fetch` that refuses them (`redirect: "error"`) keeps reads on their
+origin.
+
 The first request of a remote file asks for its first 16,384 bytes, as GDAL's `/vsicurl/` does:
 a file that is not what its name says (64 MiB of noise named `.tif`, say) is refused after them,
 not downloaded. A feature-service query (`f=json`, `f=pjson`, `f=pbf` or `resultRecordCount=`)
