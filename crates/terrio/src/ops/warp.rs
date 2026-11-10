@@ -5469,8 +5469,12 @@ mod tests {
             let near = |i: usize| (9..27).contains(&(i % 36));
             let beyond = got.iter().enumerate().filter(|&(i, v)| !near(i) && *v != -1.0).count();
             let written = got.iter().enumerate().filter(|&(i, v)| near(i) && *v == 1.0).count();
+            // Beside the central meridian, by the poles: row 0, column 17 (80° N to 90° N, 10° W to
+            // 0°) and row 17, column 18 (90° S to 80° S, 0° to 10° E). Their two corners lie on the
+            // meridian, so their footprints have no width.
             let poles = warped(90.0, 18);
-            let meridian = [poles[17], poles[17 * 36 + 18]];
+            let (by_north_pole, by_south_pole) = (poles[17], poles[17 * 36 + 18]);
+            let meridian = [by_north_pole, by_south_pole];
             if (beyond, written, meridian) != (0, 288, [1.0, 1.0]) {
                 wrong.push(format!(
                     "{resampling:?}: {beyond} written beyond the horizon, {written} of 288 within it, {meridian:?} by the poles"

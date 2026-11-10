@@ -5,12 +5,13 @@
 - Warps by `average`, `rms`, `mode`, `min`, `max`, `med`, `q1` and `q3` take the source inside each
   output pixel at a source's edges too, as `sum` does since #551 (#703). Each source pixel counts for
   its part inside both the output pixel and the source window its chunk reads, and an output pixel
-  is left empty only when a corner of it cannot be transformed or no valid source pixel of that
-  window lies inside it. The pixels along a source's edges were written or not depending on the
-  extent of the output grid and its chunks, weighed the window's edge pixels by the part of the
-  output pixel beyond them, and took the first column's or row's values beside the source; over an
-  orthographic source, the pixels beyond the horizon were filled. An edge pixel's `average` of
-  source columns 0 to 4 is now 2.0 (1.0 before).
+  is left empty only when one of the two corners that bound its footprint (top left and bottom
+  right) cannot be transformed or no valid source pixel of that window lies inside it. The pixels
+  along a source's edges were written or not depending on the extent of the output grid and its
+  chunks, weighed the window's edge pixels by the part of the output pixel beyond them, and took
+  the first column's or row's values beside the source; over an orthographic source, the pixels
+  beyond the horizon were filled. An edge pixel's `average` of source columns 0 to 4 is now 2.0
+  (1.0 before).
 - A `Raster` read lazily from a file, such as a GeoTIFF (`open_raster(path, lazy=True)`,
   `rio.open`, the xarray backend), can be read from several Python threads at once: `read`,
   `read_mask` and `numpy.asarray` raised `RuntimeError: Already borrowed` when a read overlapped
