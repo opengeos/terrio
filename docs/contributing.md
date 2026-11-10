@@ -268,11 +268,13 @@ pull requests merged since the last release, then edit the entries into the chan
 python scripts/draft_changelog.py --version X.Y.Z
 ```
 
-The script reads the pull request numbers from the commit subjects since the latest `v*` tag,
+The script reads the pull request numbers from the commit subjects since the last `v*` tag,
 takes the first paragraph of each description, leaves out `ci`, `chore`, `build` and `test` pull
-requests, and groups the rest by the type of their title. It needs an authenticated `gh`. The
-`Changelog` CI check fails a pull request that changes `CHANGELOG.md` unless its title starts with
-`Release`.
+requests, and groups the rest by the type of their title. It needs an authenticated `gh`. Rename
+`Unreleased` to the version's heading, merge the draft into it, and drop drafted entries that an
+entry already there covers: pull requests merged before this rule still wrote their own entries.
+The `Changelog` CI check fails a pull request that changes `CHANGELOG.md` unless its title starts
+with `Release X.Y.Z`.
 
 ## Release notes
 
