@@ -38,7 +38,6 @@ pub(super) fn bad() -> Error {
 /// Raw and zlib payloads, or None for an empty informational header.
 /// Treat raw_size only as a bounded capacity hint; verify the actual output size.
 pub(super) fn payload(blob: &[u8]) -> Result<Option<std::borrow::Cow<'_, [u8]>>> {
-    use std::io::Read;
     let mut data = None;
     let mut size = None;
     for (field, value) in pb_fields(blob).ok_or_else(bad)? {
@@ -63,23 +62,31 @@ pub(super) fn payload(blob: &[u8]) -> Result<Option<std::borrow::Cow<'_, [u8]>>>
         std::borrow::Cow::Borrowed(bytes)
     } else {
         let mut out = Vec::with_capacity(size.unwrap_or(0).min(MAX_BLOB));
-        let mut decoder = flate2::read::ZlibDecoder::new(bytes);
+        let mut decoder = flate2::Decompress::new(true);
         let mut buffer = [0u8; 65536];
-        while out.len() < MAX_BLOB {
-            let available = buffer.len().min(MAX_BLOB - out.len());
-            let n = decoder.read(&mut buffer[..available])?;
-            if n == 0 {
-                break;
+        loop {
+            // One extra byte probes the limit without growing the output allocation. Require
+            // StreamEnd even when raw_size is absent: EOF alone can be a truncated zlib stream.
+            let available = buffer.len().min(MAX_BLOB - out.len()).max(1);
+            let (before_in, before_out) = (decoder.total_in(), decoder.total_out());
+            let status = decoder
+                .decompress(&bytes[before_in as usize..], &mut buffer[..available], flate2::FlushDecompress::Finish)
+                .map_err(|_| bad())?;
+            let n = (decoder.total_out() - before_out) as usize;
+            if out.len() + n > MAX_BLOB {
+                return Err(bad());
             }
             if out.len() + n > out.capacity() {
                 let capacity = out.capacity().max(buffer.len()).saturating_mul(2).min(MAX_BLOB);
                 out.reserve_exact(capacity - out.len());
             }
             out.extend_from_slice(&buffer[..n]);
-        }
-        // Probe beyond the limit on the stack, without doubling the output buffer.
-        if out.len() == MAX_BLOB && decoder.read(&mut [0u8; 1])? != 0 {
-            return Err(bad());
+            if status == flate2::Status::StreamEnd {
+                break;
+            }
+            if n == 0 && decoder.total_in() == before_in {
+                return Err(bad());
+            }
         }
         std::borrow::Cow::Owned(out)
     };
@@ -195,7 +202,8 @@ impl Context {
             return Err(bad());
         }
         let mut tags = Tags::new();
-        // Simple objects keep the first duplicate key for stable tag output.
+        // Preserve osmpbfreader 0.19.1 make_tags: collecting simple tags keeps the first
+        // duplicate, unlike the dense-node insertion path below.
         for (k, v) in keys.into_iter().zip(values) {
             tags.entry(self.string(k)?).or_insert(self.string(v)?);
         }
@@ -232,7 +240,8 @@ impl Context {
                         break;
                     }
                     let value = tags.next().ok_or_else(bad)?;
-                    // Dense nodes keep the last duplicate key for stable tag output.
+                    // Preserve osmpbfreader 0.19.1 DenseNodes::next: insertion keeps the last
+                    // duplicate, unlike the simple-object collection path.
                     node_tags.insert(self.string(key)?, self.string(value)?);
                 }
             }
@@ -264,6 +273,7 @@ impl Context {
                         0 => Member::Node(id),
                         1 => Member::Way(id),
                         2 => Member::Relation(id),
+                        // osmpbfreader skips unknown member types after accumulating their id delta.
                         _ => continue,
                     };
                     members.push((member, self.string(role)?));
@@ -278,13 +288,16 @@ impl Context {
 fn primitives(bytes: &[u8], emit: &mut dyn FnMut(Object) -> Result<()>) -> Result<()> {
     let mut c = Context { strings: Vec::new(), granularity: 100, lat_offset: 0, lon_offset: 0 };
     let mut has_table = false;
+    let empty: Arc<str> = Arc::from("");
     for (field, value) in pb_fields(bytes).ok_or_else(bad)? {
         match (field, value) {
             (1, Pb::Bytes(table)) => {
                 has_table = true;
                 for (n, value) in pb_fields(table).ok_or_else(bad)? {
                     if let (1, Pb::Bytes(s)) = (n, value) {
-                        c.strings.push(Arc::from(String::from_utf8_lossy(s).as_ref()));
+                        // Match osmpbfreader's lossy UTF-8 decoding; share empty entries to avoid
+                        // allocating an Arc for every empty string in a hostile table.
+                        c.strings.push(if s.is_empty() { empty.clone() } else { Arc::from(String::from_utf8_lossy(s).as_ref()) });
                     }
                 }
             }
@@ -296,7 +309,7 @@ fn primitives(bytes: &[u8], emit: &mut dyn FnMut(Object) -> Result<()>) -> Resul
             (19 | 20, Pb::Int(o)) => {
                 // Protobuf int64 uses two's-complement varints: the high bit
                 // denotes a negative offset, not an out-of-range positive value.
-                let offset = i64::from_le_bytes(o.to_le_bytes());
+                let offset = o as i64;
                 if field == 19 {
                     c.lat_offset = offset;
                 } else {

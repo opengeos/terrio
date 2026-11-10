@@ -1813,6 +1813,31 @@ mod tests {
         assert!(pbf::payload(&Msg::default().bytes(3, zlib).0).is_err());
     }
 
+    /// A complete PBF fileblock must still reject a truncated inner zlib stream, including
+    /// a missing checksum after all plaintext was emitted, with or without raw_size.
+    #[test]
+    fn rejects_truncated_zlib_inside_complete_fileblocks() {
+        let block = primitive(Msg::default());
+        let blob = compressed(&block.0);
+        let zlib = pb_fields(&blob)
+            .unwrap()
+            .find_map(|(n, v)| match (n, v) {
+                (3, Pb::Bytes(b)) => Some(b),
+                _ => None,
+            })
+            .unwrap();
+        for cut in 0..zlib.len() {
+            for with_size in [false, true] {
+                let mut blob = Msg::default().bytes(3, &zlib[..cut]);
+                if with_size {
+                    blob = blob.int(2, block.0.len() as u64);
+                }
+                assert!(decoded(&fileblock("OSMData", &blob.0)).is_err(), "cut {cut}, raw_size={with_size}");
+            }
+        }
+        assert!(decoded(&fileblock("OSMData", &Msg::default().bytes(3, zlib).0)).is_ok());
+    }
+
     #[test]
     fn inflation_capacity_stays_within_the_blob_limit() {
         let blob = compressed(&vec![0; pbf::MAX_BLOB]);
