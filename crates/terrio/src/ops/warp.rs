@@ -1647,7 +1647,7 @@ fn check_sum_chunks(ctx: &WarpContext, chunks: &[Chunk], bytes: usize) -> Result
     if ctx.resampling != Resampling::Sum {
         return Ok(());
     }
-    let held = |c: &Chunk| c.sw as u64 * (2 * ctx.sum_strip_rows(c)).min(c.sh) as u64;
+    let held = |c: &Chunk| c.sw as u64 * (2 * ctx.sum_strip_rows(c, bytes)).min(c.sh) as u64;
     check_sum_budget(sum_estimate(chunks.iter().map(held).max().unwrap_or(0), bytes))
 }
 
@@ -1944,7 +1944,7 @@ fn warp_reader_selected(
         Ok::<_, Error>((data, valid, masked))
     };
     for c in &chunks {
-        let strip = ctx.sum_strip_rows(c);
+        let strip = ctx.sum_strip_rows(c, src_bytes);
         if strip < c.sh {
             // A `sum` chunk whose source window's working memory exceeds the limit: the window is
             // read and summed a strip of rows at a time.
@@ -2169,7 +2169,8 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     let w = grid.width;
     let t = p.transformer(0)?;
     let (mut ctx, chunks, mut storage) = p.context(0, &t, o);
-    check_sum_chunks(&ctx, &chunks, header.raster.data_type.size_bytes() * header.raster.bands)?;
+    let src_bytes = header.raster.data_type.size_bytes() * header.raster.bands;
+    check_sum_chunks(&ctx, &chunks, src_bytes)?;
     if src.has_mask() {
         ctx.global_validity = true;
         storage.src_masked = true;
@@ -2239,7 +2240,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
         |i| {
             let c = &chunks[i];
             let options = crate::WindowOptions { overview, bands: Vec::new() };
-            let strip = ctx.sum_strip_rows(c);
+            let strip = ctx.sum_strip_rows(c, src_bytes);
             if strip < c.sh {
                 let sums = ctx.sum_in_strips(c, strip, |window| {
                     let data = src.read_window(window, &options)?;
@@ -3635,14 +3636,19 @@ impl WarpContext<'_> {
     }
 
     /// The rows of a `sum` chunk's source window that a read holds at once: the whole window when
-    /// its working memory ([`Self::working_memory`]) fits the limit, else a strip of as many rows
-    /// as fit, at least one. Only a chunk of at most 2 x 2 pixels, which [`Self::collect_chunks`]
+    /// its working memory (including source/conversion buffers) fits the limit, else a strip of
+    /// as many rows as fit, at least one. Only a chunk of at most 2 x 2 pixels, which [`Self::collect_chunks`]
     /// does not split, can exceed the limit.
-    fn sum_strip_rows(&self, c: &Chunk) -> usize {
-        if self.resampling != Resampling::Sum || self.working_memory(c.sw, c.sh, c.dw, c.dh) <= self.memory_limit {
+    fn sum_strip_rows(&self, c: &Chunk, source_bytes: usize) -> usize {
+        // Include the source and conversion buffers alive while a strip is built, not just
+        // its final working type. Keep the ordinary working-memory estimate as a lower bound.
+        let conversion_bytes = source_bytes.saturating_sub(self.out_bits * self.bands / 8);
+        let source_row = self.working_memory(c.sw, 1, 0, 0) + conversion_bytes as f64 * c.sw as f64;
+        let output = self.working_memory(0, 0, c.dw, c.dh);
+        if self.resampling != Resampling::Sum || source_row * c.sh as f64 + output <= self.memory_limit {
             return c.sh;
         }
-        let rows = (self.memory_limit - self.working_memory(0, 0, c.dw, c.dh)) / self.working_memory(c.sw, 1, 0, 0);
+        let rows = (self.memory_limit - output) / source_row;
         (rows.floor() as usize).clamp(1, c.sh)
     }
 
@@ -3721,11 +3727,11 @@ struct Strip {
 
 /// Runs `background` on another thread while `foreground` runs on this one, and returns what
 /// `foreground` returns; one after the other in WebAssembly.
-fn alongside<R>(background: impl FnOnce() + Send, foreground: impl FnOnce() -> R) -> R {
+fn alongside<R>(background: impl FnOnce() + Send, foreground: impl FnOnce() -> Result<R>) -> Result<R> {
     #[cfg(not(target_family = "wasm"))]
     {
         std::thread::scope(|s| {
-            let running = s.spawn(background);
+            let running = std::thread::Builder::new().spawn_scoped(s, background).map_err(Error::Io)?;
             let result = foreground();
             if let Err(panic) = running.join() {
                 std::panic::resume_unwind(panic);
@@ -6054,6 +6060,37 @@ mod tests {
                         assert_eq!(bits(read), whole, "{source}, {grid}, {memory_limit} bytes: {name}");
                     }
                 }
+            }
+        }
+    }
+
+    /// Conversion peaks include the original samples and f64 intermediary as well as the
+    /// final strip. Keep each read within the limit and retain the same sum for both conversions.
+    #[test]
+    fn sum_strips_include_source_and_conversion_buffers() {
+        let dir = tempfile::tempdir().unwrap();
+        for (source_type, working, bytes_per_pixel) in [(DataType::F32, DataType::F64, 12), (DataType::U8, DataType::F32, 13)] {
+            let mut ds = raster(32, 32, [500000.0, 1.0, 0.0, 4000000.0, 0.0, -1.0], 32610, |_, _| 1.0);
+            ds.has_nodata = false;
+            ds.raster.data_type = source_type;
+            ds.raster.data = RasterData::new_filled(source_type, 1024, 1.0);
+            let path = dir.path().join(format!("{source_type:?}.tif"));
+            crate::write_raster_dataset(&ds, path.to_str().unwrap(), &Default::default()).unwrap();
+            let mut source = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+            let mut counted = Counted { raster: &mut source, reads: Vec::new() };
+            let options = WarpOptions {
+                size: Some((1, 1)),
+                resampling: Resampling::Sum,
+                output_type: Some(working),
+                memory_limit: 2000.0,
+                ..Default::default()
+            };
+            let result = warp_reader_selected(&mut counted, &options, None, Some(working), false, None).unwrap();
+            assert_eq!(result.raster.data.to_f64_vec(), [1024.0]);
+            assert!(counted.reads.len() > 1);
+            assert_eq!(counted.reads.iter().map(|(_, pixels)| *pixels).sum::<usize>(), 1024);
+            for (_, pixels) in counted.reads {
+                assert!(pixels * bytes_per_pixel <= 2000, "{source_type:?} to {working:?}: {pixels} pixels exceed the conversion budget");
             }
         }
     }

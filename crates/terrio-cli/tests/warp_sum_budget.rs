@@ -158,8 +158,8 @@ fn a_sum_read_a_strip_at_a_time_counts_the_two_strips_it_holds() {
     // A warped VRT of 32 x 32 Float32 ones summed into 1 x 1 as Float64, read under 6,000 bytes.
     // Within its working memory limit, 64 MiB, the read holds the whole window, 4 + 8 bytes a
     // pixel: 12,288 bytes, over the budget. Within a limit of 2,000 bytes, of which a row of the
-    // window takes 256 (8 bytes a pixel in the working type), it reads the window 7 rows at a time
-    // and holds two strips at once, one summed while the next is read: 14 rows, 5,376 bytes, which
+    // window takes 384 (source plus conversion: 12 bytes per pixel), it reads 5 rows at a time
+    // and holds two strips at once, one summed while the next is read: 10 rows, 3,840 bytes, which
     // fit.
     let tmp = tempfile::tempdir().unwrap();
     let d = tmp.path();
@@ -174,7 +174,7 @@ fn a_sum_read_a_strip_at_a_time_counts_the_two_strips_it_holds() {
     let fits = run(d, "6000", &["translate", "strips.vrt", "out.tif"]);
     assert!(fits.status.success(), "{}", String::from_utf8_lossy(&fits.stderr));
     assert_eq!(total(&d.join("out.tif")), 1024.0);
-    let refused = run(d, "5300", &["translate", "strips.vrt", "out.tif"]);
+    let refused = run(d, "3800", &["translate", "strips.vrt", "out.tif"]);
     let message = String::from_utf8_lossy(&refused.stderr);
-    assert!(!refused.status.success() && message.contains("about 5376 bytes"), "{message}");
+    assert!(!refused.status.success() && message.contains("about 3840 bytes"), "{message}");
 }
