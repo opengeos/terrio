@@ -99,7 +99,7 @@ pub const MAX_FILE_LIST: u64 = 64 << 20;
 /// inputs that fail to open, so a client could otherwise read any text file back line by line.
 /// They pass their inputs as an array instead.
 ///
-/// An input given directly whose file name holds `*` or `?` is replaced by the entries of its
+/// An input given directly whose file name holds `*` or `?` is replaced by the files of its
 /// folder that match, in name order (see [`expand_wildcards`]), for the terrio UI, MCP clients and
 /// Windows shells, which do not expand wildcards themselves. MCP callers may enumerate matching
 /// file names this way, as through the other local filesystem tools; file contents are not read
