@@ -363,7 +363,7 @@ enum Georef {
 /// Maps source pixel/line coordinates to destination pixel/line coordinates and back, through
 /// the CRS transformation: GDAL's `GDALGenImgProjTransform`.
 struct GenImgProj {
-    src_geographic: bool,
+    src_longitude_period: Option<f64>,
     src_gt: [f64; 6],
     src_inv: [f64; 6],
     /// Source pixels to georeferenced coordinates by GCPs or RPCs, in place of the geotransform.
@@ -396,7 +396,7 @@ impl GenImgProj {
             ))
         };
         Ok(Self {
-            src_geographic: src_srs.is_geographic(),
+            src_longitude_period: src_srs.longitude_period(),
             src_gt,
             src_inv,
             src_gcp: None,
@@ -3352,26 +3352,28 @@ impl WarpContext<'_> {
     /// A genuine coarse footprint can span over 180 degrees, so confirm the discontinuity using
     /// an exact midpoint. Circular/global footprints remain a separate operation (#764).
     fn regional_longitude_wrap(&self, ax: f64, bx: f64, dx: f64, dy: f64) -> bool {
+        let Some(period) = self.t.src_longitude_period else {
+            return false;
+        };
         let gt = self.t.src_gt;
         if self.t.ct.is_none()
-            || !self.t.src_geographic
             || self.t.src_gcp.is_some()
             || gt[2] != 0.0
             || gt[4] != 0.0
-            || (gt[1] * self.src_w as f64).abs() >= 360.0 - 1e-8
+            || (gt[1] * self.src_w as f64).abs() >= period * (1.0 - 1e-10)
             || ((0.0..=self.src_w as f64).contains(&ax) && (0.0..=self.src_w as f64).contains(&bx))
         {
             return false;
         }
         let (a, b) = (gt[0] + ax * gt[1], gt[0] + bx * gt[1]);
-        if (a - b).abs() <= 180.0 {
+        if (a - b).abs() <= period / 2.0 {
             return false;
         }
         let Some((mx, _)) = self.t.point(true, dx, dy) else {
             return false;
         };
         let mid = gt[0] + mx * gt[1];
-        (a - mid).abs() > 180.0 || (mid - b).abs() > 180.0
+        (a - mid).abs() > period / 2.0 || (mid - b).abs() > period / 2.0
     }
 
     /// The area-based methods other than `sum` (average, mode, min, max, quantiles, RMS): each
@@ -5014,6 +5016,20 @@ mod tests {
                 assert_ne!(out[41 + 19], -999., "{resampling:?}");
                 assert_eq!(out[41 + 20], -999., "{resampling:?}");
                 assert_eq!(out[41 + 21], -999., "{resampling:?}");
+                for (unit, radians, degrees) in [("radian", 1.0, 180.0 / std::f64::consts::PI), ("grad", std::f64::consts::PI / 200.0, 0.9)]
+                {
+                    let wkt = format!(
+                        r#"GEOGCS["WGS84 {unit}",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["{unit}",{radians}]]"#
+                    );
+                    let srs = SpatialRef::parse(&wkt).unwrap();
+                    assert!((srs.longitude_period().unwrap() * degrees - 360.0).abs() < 1e-9);
+                    let mut source = regional.clone();
+                    source.set_geo_transform([160. / degrees, 1. / degrees, 0., 2. / degrees, 0., -1. / degrees]);
+                    source.raster.crs = srs.to_crs_info();
+                    let out = warp(&[&source], &o).unwrap().raster.data.to_f64_vec();
+                    assert_ne!(out[41 + 19], -999., "{unit} {resampling:?}");
+                    assert_eq!(out[41 + 20], -999., "{unit} {resampling:?}");
+                }
                 let o = WarpOptions {
                     dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=1 +no_defs").unwrap()),
                     dst_transform: Some([-151., 300., 0., 2., 0., -4.]),

@@ -461,6 +461,8 @@ def test_rpc_source_matches_rasterio(rpc_dir, monkeypatch, name, options):
             # unwritten pixel or the border) follow those weights, and are checked for being
             # written and within 39 (read 2) and 11 (read 3); the others exactly. The 0s of these
             # reads are their unwritten pixels: image.tif's few 0s leave no written pixel at 0.
+            # Bounds are the observed maximum absolute Byte differences for these exact reduced
+            # fixture reads after #703, not a derived error bound or general parity tolerance.
             written = a != 0
             assert np.array_equal(written, b != 0), f"read {i}: written elsewhere"
             edge = written & ~_inner(written)
