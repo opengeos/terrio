@@ -69,8 +69,13 @@ file name (`a.png.aux.xml`), and what it holds would be read as the new image's.
 metadata cannot be removed, the new output is removed or invalidated before returning the error;
 failures to invalidate it are included in the error.
 
-Native TIFF readers limit each decoded tile or strip to 256 MiB by default. For trusted
-files with larger chunks, use `TiffReadLimits` with `LazyRaster::open_tiff_with_limits`
+Native TIFF readers limit each decoded tile or strip to 256 MiB by default. A
+pixel-interleaved GeoTIFF of many bands can exceed it with ordinary tiles: a 256 x 256 tile
+of 1,488 Float32 bands decodes to 390 MB. For trusted files with larger chunks, set the
+`TERRIO_TIFF_MAX_CHUNK_BYTES` option to a positive number of bytes, in the environment or an
+`Env` scope, for every reader opened without explicit limits (the command line, Python,
+`terrio.rio` and `terrio.xarray` included); a raster keeps the limit it was opened with. In
+Rust, use `TiffReadLimits` with `LazyRaster::open_tiff_with_limits`
 (or its bytes/sparse counterparts), or `terrio::open_raster_with_tiff_limits` for an
 eager read. The override applies to parallel decoders too. It limits decoded chunks;
 callers still choose the size of the returned raster/window allocation. The limit

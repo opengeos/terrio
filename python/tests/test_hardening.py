@@ -157,6 +157,29 @@ def test_a_tiff_chunk_too_large_to_allocate_raises(tmp_path):
     assert_raises_allocation_error(read_limited("window", path))
 
 
+def test_the_tiff_chunk_option_sets_the_limit_of_rasters_opened_without_limits(
+    tmp_path, monkeypatch
+):
+    """`TERRIO_TIFF_MAX_CHUNK_BYTES` sets the decoding limit of a raster opened without explicit
+    limits, from the environment or an `Env` scope: one 64 x 64 tile, 4,096 bytes decoded."""
+    path = tmp_path / "tile.tif"
+    path.write_bytes(tiled_tiff(64, 64, 64, tile_bytes=zlib.compress(b"" * 4096)))
+
+    def read():
+        return int(terrio.open_raster(str(path), lazy=True).read(1).sum())
+
+    monkeypatch.delenv("TERRIO_TIFF_MAX_CHUNK_BYTES", raising=False)
+    assert read() == 4096
+    monkeypatch.setenv("TERRIO_TIFF_MAX_CHUNK_BYTES", "4095")
+    with pytest.raises(terrio.errors.ResourceLimitError, match="decoded-byte limit 4095"):
+        read()
+    with rio.Env(TERRIO_TIFF_MAX_CHUNK_BYTES="4096"):
+        assert read() == 4096
+    monkeypatch.setenv("TERRIO_TIFF_MAX_CHUNK_BYTES", "4 MiB")
+    with pytest.raises(terrio.errors.InvalidArgumentError, match="TERRIO_TIFF_MAX_CHUNK_BYTES"):
+        read()
+
+
 def test_a_raster_too_large_to_allocate_raises(tmp_path):
     """Raster buffer: a 200,000 x 200,000 image read whole, by window (terrio.rio, the window
     buffer) and eagerly (terrio.open_raster, the raster buffer after the first chunk)."""
