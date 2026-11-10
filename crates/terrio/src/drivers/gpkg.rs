@@ -132,7 +132,9 @@ pub(crate) fn open(path: &str, options: &crate::VectorOpenOptions) -> Result<cra
     open_bytes(super::sqlite_edit::read_consistent(Path::new(path))?, path, options)
 }
 
-/// Opens a GeoPackage held in memory, `name` being its file name.
+/// Opens a GeoPackage held in memory, `name` being its file name. Of its vector layers, those
+/// `options` names, each with the features its spatial filter keeps, then the range of them
+/// `skip_features` and `max_features` ask for.
 pub(crate) fn open_bytes(bytes: Vec<u8>, name: &str, options: &crate::VectorOpenOptions) -> Result<crate::Dataset> {
     use crate::drivers::vector::gpkg_read;
     let db = Db::new(bytes)?;
@@ -143,7 +145,8 @@ pub(crate) fn open_bytes(bytes: Vec<u8>, name: &str, options: &crate::VectorOpen
         return Ok(crate::Dataset::Raster(ds));
     }
     let wanted: Vec<String> = options.layers.clone();
-    let read = gpkg_read::read_db_named(&db, &wanted, options.spatial_filter, Some(name))?;
+    let mut read = gpkg_read::read_db_named(&db, &wanted, options.spatial_filter, Some(name))?;
+    read.iter_mut().for_each(|l| options.keep_range(l));
     Ok(crate::Dataset::Vector(crate::dataset::finish_vector(read, name, crate::formats::VectorDriver::GPKG)))
 }
 
@@ -750,5 +753,68 @@ mod tests {
         assert_eq!((r.raster.cols, r.raster.rows, r.raster.data_type), (300, 2, DataType::U16));
         assert_eq!(r.raster.data.to_f64_vec(), raster.data.to_f64_vec());
         assert_eq!(parse_subdataset("GPKG:C:\\x.gpkg:grid"), Some(("C:\\x.gpkg".into(), "grid".into())));
+    }
+
+    /// `skip_features` and `max_features` keep that range of each layer's features, in the
+    /// table's order, counted after the spatial filter when there is one (#790): for a file, and
+    /// for bytes, as `memory::open_vector_bytes` and the in-memory codecs read them.
+    #[test]
+    fn a_feature_range_keeps_those_features_of_each_layer() {
+        let points = |name: &str, n: u32| {
+            let mut layer = wbvector::Layer::new(name).with_epsg(4326);
+            for i in 0..n {
+                layer.add_feature(Some(wbvector::Geometry::point(f64::from(i), 0.0)), &[]).unwrap();
+            }
+            layer
+        };
+        let mut b = crate::drivers::vector::geopackage::Builder::new();
+        b.add_layer(&points("five", 5)).unwrap();
+        b.add_layer(&points("three", 3)).unwrap();
+        let bytes = b.finish().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("points.gpkg");
+        std::fs::write(&path, &bytes).unwrap();
+        let path = path.to_str().unwrap();
+        // The x of each layer's points.
+        let xs = |layers: &[wbvector::Layer]| {
+            let x = |f: &wbvector::Feature| match &f.geometry {
+                Some(wbvector::Geometry::Point(c)) => c.x,
+                other => panic!("not a point: {other:?}"),
+            };
+            layers.iter().map(|l| (l.name.clone(), l.features.iter().map(x).collect::<Vec<_>>())).collect::<Vec<_>>()
+        };
+        type Read<'a> = &'a dyn Fn(&crate::VectorOpenOptions) -> Vec<(String, Vec<f64>)>;
+        let reads: [(&str, Read); 3] = [
+            ("a file", &|o: &crate::VectorOpenOptions| xs(&crate::open_vector(path, o).unwrap().layers)),
+            ("open_vector_bytes", &|o: &crate::VectorOpenOptions| {
+                xs(&crate::memory::open_vector_bytes(bytes.clone(), "points.gpkg", o).unwrap().layers)
+            }),
+            ("open_bytes", &|o: &crate::VectorOpenOptions| match open_bytes(bytes.clone(), "points.gpkg", o).unwrap() {
+                crate::Dataset::Vector(v) => xs(&v.layers),
+                crate::Dataset::Raster(_) => panic!("a raster"),
+            }),
+        ];
+        // (skip_features, max_features, spatial_filter) and the x the two layers keep.
+        type Case = (usize, Option<usize>, Option<crate::drivers::vector::gpkg_read::Rect>, [&'static [f64]; 2]);
+        let middle = Some((0.5, -1.0, 3.5, 1.0));
+        let cases: [Case; 7] = [
+            (1, Some(2), None, [&[1.0, 2.0], &[1.0, 2.0]]),
+            (4, None, None, [&[4.0], &[]]),
+            (0, Some(1), None, [&[0.0], &[0.0]]),
+            (5, None, None, [&[], &[]]),
+            (0, None, None, [&[0.0, 1.0, 2.0, 3.0, 4.0], &[0.0, 1.0, 2.0]]),
+            (0, None, middle, [&[1.0, 2.0, 3.0], &[1.0, 2.0]]),
+            (1, Some(1), middle, [&[2.0], &[2.0]]),
+        ];
+        let (mut got, mut want) = (Vec::new(), Vec::new());
+        for (entry, read) in reads {
+            for (skip_features, max_features, spatial_filter, [five, three]) in cases {
+                let options = crate::VectorOpenOptions { skip_features, max_features, spatial_filter, ..Default::default() };
+                got.push((entry, skip_features, max_features, spatial_filter.is_some(), read(&options)));
+                let kept = vec![("five".to_string(), five.to_vec()), ("three".to_string(), three.to_vec())];
+                want.push((entry, skip_features, max_features, spatial_filter.is_some(), kept));
+            }
+        }
+        assert_eq!(got, want);
     }
 }
