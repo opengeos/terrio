@@ -620,9 +620,9 @@ impl Reader {
 
     /// The values of a source in a window of a level of the VRT, of size `level` (the VRT's own
     /// size at full resolution). At an overview, the source's `DstRect` is scaled to the level,
-    /// and the source is read from its own level of as many of its pixels to one of the VRT's
-    /// level, or from the nearest finer one (full resolution at worst), its `SrcRect` scaled to
-    /// it: the resampling below brings a finer level to the VRT's.
+    /// and the source is read from its own level of the same scale, or from the nearest finer one
+    /// (full resolution at worst), its `SrcRect` scaled to it: the resampling below brings a
+    /// finer level to the VRT's.
     fn source_values(
         &mut self,
         src: &VrtSource,
@@ -658,14 +658,23 @@ impl Reader {
         if !valid_rect(&rect) {
             return Err(invalid("invalid source/destination rectangle"));
         }
-        // The source's level: of its overviews (largest first), the last whose pixels hold no
-        // more of its full-resolution pixels than a pixel of the VRT's level does.
+        // The source's level: its overview of the level's scale, the one that maps to the level's
+        // size as [`Reader::implicit_overviews`] maps the first source's (a size rounded up gives
+        // the level's pixels slightly fewer of the source's pixels than that overview's hold).
+        // Else, of its overviews (largest first), the last whose pixels hold no more of its
+        // full-resolution pixels than a pixel of the VRT's level does.
         let (source_level, width, height, rect) = if overview {
             let need = (rect[2] / dst[2], rect[3] / dst[3]);
+            // The source's full-resolution pixels in a pixel of the VRT.
+            let (sx, sy) = (rect[2] / src.dst_rect[2], rect[3] / src.dst_rect[3]);
+            let same_scale = |&(_, &(ow, oh)): &(usize, &(usize, usize))| {
+                (level_size(full.0, width as f64 / ow as f64 / sx), level_size(full.1, height as f64 / oh as f64 / sy)) == level
+            };
             let fits = |&(_, &(ow, oh)): &(usize, &(usize, usize))| {
                 width as f64 / ow as f64 <= need.0 * (1. + 1e-9) && height as f64 / oh as f64 <= need.1 * (1. + 1e-9)
             };
-            match source.overviews().iter().enumerate().rev().find(fits) {
+            let overviews = source.overviews();
+            match overviews.iter().enumerate().find(same_scale).or_else(|| overviews.iter().enumerate().rev().find(fits)) {
                 Some((i, &(ow, oh))) => {
                     let (sw, sh, w, h) = (ow as f64, oh as f64, width as f64, height as f64);
                     (Some(i), ow, oh, [rect[0] * sw / w, rect[1] * sh / h, rect[2] * sw / w, rect[3] * sh / h])
@@ -2145,17 +2154,11 @@ mod tests {
     #[test]
     fn a_derived_band_applies_its_pixel_function_to_its_sources_overview_pixels() {
         let dir = tempfile::tempdir().unwrap();
-        let (a, b) = (pyramid(dir.path()), leveled(dir.path(), "b.tif", |_, column| (2 * column + 1) as f64));
-        let simple = |path: &Path| {
-            format!(
-                "<SimpleSource><SourceFilename relativeToVRT=\"0\">{}</SourceFilename><SourceBand>1</SourceBand></SimpleSource>",
-                path.display()
-            )
-        };
+        let (a, b) = (pyramid(dir.path()), leveled(dir.path(), "b.tif", (32, 32), &[2, 4, 8], |_, column| (2 * column + 1) as f64, None));
         let xml = format!(
             "<VRTDataset rasterXSize=\"32\" rasterYSize=\"32\"><VRTRasterBand dataType=\"Float64\" subClass=\"VRTDerivedRasterBand\"><PixelFunctionType>mul</PixelFunctionType><SourceTransferType>Float64</SourceTransferType>{}{}</VRTRasterBand></VRTDataset>",
-            simple(&a),
-            simple(&b)
+            simple_source(&a, "1", None),
+            simple_source(&b, "1", None)
         );
         let mut vrt = open(&xml);
         assert_eq!(vrt.overviews(), vec![(16, 16), (8, 8), (4, 4)]);
@@ -2206,26 +2209,76 @@ mod tests {
         assert_eq!(read(0, Window::new(0, 0, 1, 1), 2), vec![4.]);
     }
 
-    /// A 32 x 32 Float32 GeoTIFF of `value(row, column)` at `dir/name`, with overviews of 2, 4 and
-    /// 8 by `average`, as [`pyramid`] writes its own.
-    fn leveled(dir: &Path, name: &str, value: impl Fn(usize, usize) -> f64) -> std::path::PathBuf {
+    /// A Float32 GeoTIFF of `width` x `height` pixels of `value(row, column)` at `dir/name`, with
+    /// the overviews of `factors` by `average` (as [`pyramid`] writes its own) and, when given, an
+    /// internal mask (0 for an invalid pixel, row by row).
+    fn leveled(
+        dir: &Path,
+        name: &str,
+        (width, height): (usize, usize),
+        factors: &[usize],
+        value: impl Fn(usize, usize) -> f64,
+        mask: Option<Vec<u8>>,
+    ) -> std::path::PathBuf {
         let path = dir.join(name);
         let source = crate::ops::build_raster(
-            Grid { width: 32, height: 32, geo_transform: [0., 1., 0., 32., 0., -1.] },
-            vec![(0..1024).map(|i| value(i / 32, i % 32)).collect()],
+            Grid { width, height, geo_transform: [0., 1., 0., height as f64, 0., -1.] },
+            vec![(0..width * height).map(|i| value(i / width, i % width)).collect()],
             DataType::F32,
             None,
             &crate::crs::SpatialRef::from_epsg(3857).unwrap(),
             crate::ops::convert_value,
         )
         .unwrap();
-        crate::write_raster_dataset(
-            &source,
-            path.to_str().unwrap(),
-            &crate::RasterWriteOptions { overviews: vec![2, 4, 8], overview_resampling: Some("average".into()), ..Default::default() },
-        )
-        .unwrap();
+        let options = crate::RasterWriteOptions {
+            overviews: factors.to_vec(),
+            overview_resampling: Some("average".into()),
+            mask,
+            ..Default::default()
+        };
+        crate::write_raster_dataset(&source, path.to_str().unwrap(), &options).unwrap();
         path
+    }
+
+    /// A `SimpleSource` of band `band` (`1`, or `mask,1` for its mask) of `path`, its `SrcRect` and
+    /// `DstRect` the same `rect` when given.
+    fn simple_source(path: &Path, band: &str, rect: Option<[usize; 4]>) -> String {
+        let rects = rect.map_or(String::new(), |[x, y, w, h]| {
+            format!(
+                "<SrcRect xOff=\"{x}\" yOff=\"{y}\" xSize=\"{w}\" ySize=\"{h}\"/><DstRect xOff=\"{x}\" yOff=\"{y}\" xSize=\"{w}\" ySize=\"{h}\"/>"
+            )
+        });
+        format!(
+            "<SimpleSource><SourceFilename relativeToVRT=\"0\">{}</SourceFilename><SourceBand>{band}</SourceBand>{rects}</SimpleSource>",
+            path.display()
+        )
+    }
+
+    /// A level of a VRT is its size divided by the VRT pixels a pixel of the level spans, rounded
+    /// up: a 97 x 97 mosaic of a 64 x 64 source with overviews of 32 and 16 has levels of 49 and
+    /// 25. Their last column and last row are the other source's, which covers the rest; the
+    /// first source's part of the level of a half is its own overview.
+    #[test]
+    fn a_vrt_s_levels_are_rounded_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = leveled(dir.path(), "first.tif", (64, 64), &[2, 4], |row, column| (row * 64 + column) as f64, None);
+        let rest = leveled(dir.path(), "rest.tif", (97, 97), &[], |_, _| 5., None);
+        let xml = format!(
+            "<VRTDataset rasterXSize=\"97\" rasterYSize=\"97\"><VRTRasterBand dataType=\"Float32\">{}{}{}</VRTRasterBand></VRTDataset>",
+            simple_source(&first, "1", Some([0, 0, 64, 64])),
+            simple_source(&rest, "1", Some([64, 0, 33, 97])),
+            simple_source(&rest, "1", Some([0, 64, 64, 33]))
+        );
+        let mut vrt = open(&xml);
+        assert_eq!(vrt.overviews(), vec![(49, 49), (25, 25)]);
+        for (i, n) in [(0usize, 49usize), (1, 25)] {
+            let got = level(&mut vrt, Some(i), Window::full(n, n));
+            let last_column: Vec<f64> = (0..n).map(|row| got[row * n + n - 1]).collect();
+            assert_eq!(last_column, vec![5.; n], "overview {i}: the last column");
+            assert_eq!(got[(n - 1) * n..].to_vec(), vec![5.; n], "overview {i}: the last row");
+        }
+        let mut source = crate::open_raster_lazy(first.to_str().unwrap()).unwrap();
+        assert_eq!(level(&mut vrt, Some(0), Window::new(0, 0, 32, 32)), level(&mut source, Some(0), Window::full(32, 32)));
     }
 
     fn pyramid(dir: &Path) -> std::path::PathBuf {
