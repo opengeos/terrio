@@ -363,6 +363,7 @@ enum Georef {
 /// Maps source pixel/line coordinates to destination pixel/line coordinates and back, through
 /// the CRS transformation: GDAL's `GDALGenImgProjTransform`.
 struct GenImgProj {
+    src_geographic: bool,
     src_gt: [f64; 6],
     src_inv: [f64; 6],
     /// Source pixels to georeferenced coordinates by GCPs or RPCs, in place of the geotransform.
@@ -395,6 +396,7 @@ impl GenImgProj {
             ))
         };
         Ok(Self {
+            src_geographic: src_srs.is_geographic(),
             src_gt,
             src_inv,
             src_gcp: None,
@@ -3346,6 +3348,31 @@ impl WarpContext<'_> {
         }
     }
 
+    /// Preserve empty regional pixels when wrapped corners would summarize the source's width.
+    /// A genuine coarse footprint can span over 180 degrees, so confirm the discontinuity using
+    /// an exact midpoint. Circular/global footprints remain a separate operation (#764).
+    fn regional_longitude_wrap(&self, ax: f64, bx: f64, dx: f64, dy: f64) -> bool {
+        let gt = self.t.src_gt;
+        if !self.t.src_geographic
+            || self.t.src_gcp.is_some()
+            || gt[2] != 0.0
+            || gt[4] != 0.0
+            || (gt[1] * self.src_w as f64).abs() >= 360.0 - 1e-8
+            || ((0.0..=self.src_w as f64).contains(&ax) && (0.0..=self.src_w as f64).contains(&bx))
+        {
+            return false;
+        }
+        let (a, b) = (gt[0] + ax * gt[1], gt[0] + bx * gt[1]);
+        if (a - b).abs() <= 180.0 {
+            return false;
+        }
+        let Some((mx, _)) = self.t.point(true, dx, dy) else {
+            return false;
+        };
+        let mid = gt[0] + mx * gt[1];
+        (a - mid).abs() > 180.0 || (mid - b).abs() > 180.0
+    }
+
     /// The area-based methods other than `sum` (average, mode, min, max, quantiles, RMS): each
     /// output pixel summarizes the source inside both its footprint and the chunk's source window,
     /// each source pixel weighed by its part inside them.
@@ -3370,6 +3397,9 @@ impl WarpContext<'_> {
                 // pixel alone. The others may lie far beyond the window, as those of a pixel larger
                 // than the source do.
                 if !(o1[i] && o2[i] && [ax, bx, ay, by].iter().all(|v| v.is_finite())) {
+                    continue;
+                }
+                if self.regional_longitude_wrap(ax, bx, (i + c.dx) as f64 + 0.5, (row + c.dy) as f64 + 0.5) {
                     continue;
                 }
                 if ax > bx {
@@ -4950,6 +4980,49 @@ mod tests {
         };
         let data = (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c))).map(|(r, c)| f(c, r)).collect();
         RasterDataset::new(Raster::from_data(cfg, data).unwrap(), false)
+    }
+
+    #[test]
+    fn regional_area_crossings_stay_empty_without_rejecting_coarse_footprints() {
+        let methods = [
+            (Resampling::Average, 10.5),
+            (Resampling::Rms, 143.5_f64.sqrt()),
+            (Resampling::Mode, 1.0),
+            (Resampling::Min, 1.0),
+            (Resampling::Max, 20.0),
+            (Resampling::Med, 10.0),
+            (Resampling::Q1, 5.0),
+            (Resampling::Q3, 15.0),
+        ];
+        let regional = raster(20, 4, [160., 1., 0., 2., 0., -1.], 4326, |c, _| c as f64 + 1.);
+        let coarse = raster(20, 4, [-10., 1., 0., 2., 0., -1.], 4326, |c, _| c as f64 + 1.);
+        for (resampling, expected) in methods {
+            for memory_limit in [1024., 64. * 1024. * 1024.] {
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180 +no_defs").unwrap()),
+                    dst_transform: Some([-20., 40. / 41., 0., 2., 0., -1.]),
+                    size: Some((41, 4)),
+                    output_type: Some(DataType::F64),
+                    dst_nodata: Nodata::Values(vec![-999.]),
+                    error_threshold: 0.,
+                    memory_limit,
+                    resampling,
+                    ..Default::default()
+                };
+                let out = warp(&[&regional], &o).unwrap().raster.data.to_f64_vec();
+                assert_ne!(out[41 + 19], -999., "{resampling:?}");
+                assert_eq!(out[41 + 20], -999., "{resampling:?}");
+                assert_eq!(out[41 + 21], -999., "{resampling:?}");
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=1 +no_defs").unwrap()),
+                    dst_transform: Some([-151., 300., 0., 2., 0., -4.]),
+                    size: Some((1, 1)),
+                    ..o
+                };
+                let out = warp(&[&coarse], &o).unwrap().raster.data.to_f64_vec();
+                assert!((out[0] - expected).abs() < 1e-9, "{resampling:?}: {} vs {expected}", out[0]);
+            }
+        }
     }
 
     /// A source warped a chunk at a time, read by windows and written as its rows are done (as a
