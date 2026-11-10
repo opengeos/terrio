@@ -360,9 +360,9 @@ URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops the
 - **Set for one thread** (Python's `terrio.rio.Env`, `terrio::config::push_scope`), it only narrows
   the list outside the scope, the environment's and an outer scope's: the scope allows the drivers
   both name. A scope that unsets the option leaves the list outside in force. The environment's
-  list applies even when it is set after the scope. Zonal statistics also applies the calling
-  thread's scoped options when opening and reading raster paths on helper threads, and a read of
-  an EPT point cloud when fetching and reading its nodes.
+  list applies even when it is set after the scope. Zonal statistics applies the calling
+  thread's scoped options when it opens and reads raster paths on helper threads. A read of an
+  EPT point cloud applies them when it fetches and reads the nodes.
 
 `terrio::formats::allowed_drivers` (Python: `terrio.allowed_drivers()`) gives the drivers allowed on
 the calling thread.

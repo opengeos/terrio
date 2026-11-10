@@ -510,12 +510,20 @@ impl FormatReader for EptReader {
         }
         let keys: Vec<(Key, u64)> = c.nodes[c.next..j].iter().filter(|(_, n)| *n > 0).copied().collect();
         let files: Vec<String> = keys.iter().map(|(k, _)| self.data_file(*k)).collect();
-        // The nodes are fetched and decoded as many at a time as terrio's pool has threads (one at
-        // a time in WebAssembly), on the calling thread and threads that enter its options
-        // (`map_waiting`): an `Env`'s HTTP headers and driver allow-list apply to every node.
+        // Fetch and decode on the shared pool, retaining its process-wide concurrency cap.
+        // These are blocking leaf jobs: neither fetch nor decode starts nested pool work,
+        // so the caller's options cannot leak into unrelated tasks while a scope is active.
         let base = &self.base;
-        let parts =
-            crate::par::map_waiting(keys.len(), crate::par::threads(), |i| self.decode(keys[i].0, keys[i].1, fetch(base, &files[i])?))?;
+        #[cfg(not(target_family = "wasm"))]
+        let parts: Vec<Result<Vec<Dimension>>> = {
+            let options = crate::config::thread_options();
+            crate::par::map_range(keys.len(), |i| {
+                crate::config::with_thread_options(options.clone(), || self.decode(keys[i].0, keys[i].1, fetch(base, &files[i])?))
+            })
+        };
+        #[cfg(target_family = "wasm")]
+        let parts: Vec<Result<Vec<Dimension>>> = keys.iter().zip(&files).map(|((k, n), f)| self.decode(*k, *n, fetch(base, f)?)).collect();
+        let parts = parts.into_iter().collect::<Result<Vec<_>>>()?;
         let dims = super::read::concat(parts, &self.dims);
         c.next = j;
         let out = apply_options(dims, &c.filter, 1, 0);
@@ -565,12 +573,12 @@ mod tests {
             .map_err(|e| e.to_string())
     }
 
-    /// The points read from `path` in chunks of 1,000 points (one chunk for all the nodes of a
-    /// [`dataset`]) under the calling thread's `options`, or the error's message.
+    /// The points read from `path` in chunks of 10 points, exercising repeated multi-node
+    /// chunks of a nine-node [`dataset`], under the calling thread's options.
     fn read_in_chunks(path: &str, options: &[(&str, &str)]) -> std::result::Result<usize, String> {
         let chunks = || -> crate::Result<usize> {
             let mut reader = crate::pointcloud::open_points(path)?;
-            reader.chunks(&Default::default(), 1000)?.map(|chunk| chunk.map(|c| c.len())).sum()
+            reader.chunks(&Default::default(), 10)?.map(|chunk| chunk.map(|c| c.len())).sum()
         };
         crate::config::with_options(options, chunks).map_err(|e| e.to_string())
     }
@@ -597,7 +605,7 @@ mod tests {
 
     #[cfg(remote)]
     mod over_http {
-        use super::{EptDataType, Path, dataset, read};
+        use super::{EptDataType, Path, dataset, read, read_in_chunks};
         use std::io::{BufRead, BufReader, Write};
         use std::net::{TcpListener, TcpStream};
         use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
@@ -695,9 +703,11 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 dataset(dir.path(), nodes, EptDataType::Binary);
                 let (base, seen) = serve(dir.path(), nodes.min(crate::par::threads()));
-                assert_eq!(read(&format!("{base}/ept.json"), &options), Ok(40), "{nodes} node(s)");
+                let path = format!("{base}/ept.json");
+                assert_eq!(read(&path, &options), Ok(40), "{nodes} node(s)");
+                assert_eq!(read_in_chunks(&path, &options), Ok(40), "{nodes} node(s), in chunks");
                 let requests = seen.requests.lock().unwrap();
-                assert_eq!(requests.iter().filter(|(path, ..)| path.starts_with("/ept-data/")).count(), nodes);
+                assert_eq!(requests.iter().filter(|(path, ..)| path.starts_with("/ept-data/")).count(), 2 * nodes);
                 let without: Vec<_> = requests
                     .iter()
                     .filter(|(_, probe, agent)| probe.as_deref() != Some("set") || agent.as_deref() != Some("probe/1.0"))
@@ -735,6 +745,10 @@ mod tests {
         #[test]
         fn the_nodes_of_a_read_are_fetched_as_many_at_a_time_as_the_pool_has_threads() {
             let at_once = crate::par::threads().min(9);
+            if at_once < 2 {
+                eprintln!("EPT concurrency assertion skipped: the pool has fewer than two threads");
+                return;
+            }
             let dir = tempfile::tempdir().unwrap();
             dataset(dir.path(), 9, EptDataType::Binary);
             let (base, seen) = serve(dir.path(), at_once);
