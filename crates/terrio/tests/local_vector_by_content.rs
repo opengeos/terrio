@@ -114,3 +114,17 @@ fn terrios_readers_refuse_documents_they_cannot_read() {
         assert!(error.to_string().ends_with(refusal), "{error}");
     }
 }
+
+/// Without the `gdal` feature, with `TERRIO_WBVECTOR_FALLBACK=YES`, a document terrio's GML reader
+/// refuses under a name of no driver goes on to the `wbvector` fallback, which reads it.
+#[cfg(not(feature = "gdal"))]
+#[test]
+fn the_wbvector_fallback_reads_a_document_terrios_reader_refuses() {
+    let dir = tempfile::tempdir().unwrap();
+    let [_, (mixed, _)] = refused_documents(dir.path());
+    terrio::config::push_scope(HashMap::from([("TERRIO_WBVECTOR_FALLBACK".to_string(), Some("YES".to_string()))]));
+    let read = terrio::open_vector(&mixed, &Default::default());
+    terrio::config::pop_scope();
+    let layers = read.unwrap().layers;
+    assert_eq!(layers.iter().map(|l| (l.name.as_str(), l.features.len())).collect::<Vec<_>>(), [("mixed", 2)]);
+}

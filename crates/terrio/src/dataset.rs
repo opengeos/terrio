@@ -1061,16 +1061,18 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
-    // A file whose name points to no driver is read as a bounded probe of its root identifies it,
-    // as a remote response under such a name is (`open_remote_vector_response`), and so is `.pbf`,
-    // which a query's protocol buffer shares with OpenStreetMap. The probe sees only allowed
-    // drivers; with the `gdal` feature, what a reader refuses goes to GDAL from the entry points.
+    // A file whose name points to no driver is identified by a bounded probe of its root, as a
+    // remote response under such a name is (`open_remote_vector_response`); so is `.pbf`, which a
+    // query's protocol buffer shares with OpenStreetMap. The probe sees only allowed drivers; with
+    // the `gdal` feature, what a reader refuses goes to GDAL from the entry points.
     #[cfg(not(target_family = "wasm"))]
     let pbf =
         VectorDriver::for_extension(path) == Some(VectorDriver::OSM) && ext == "pbf" && !path.to_ascii_lowercase().ends_with(".osm.pbf");
     #[cfg(not(target_family = "wasm"))]
     if (VectorDriver::for_extension(path).is_none() || pbf) && RasterDriver::for_extension(path).is_none() && !Path::new(path).is_dir() {
-        let driver = crate::inspection::identify(path, false).ok().flatten().and_then(|identified| match identified.driver.as_str() {
+        let identified = crate::inspection::identify(path, false).ok().flatten();
+        let found = identified.as_ref().map(|identified| identified.driver.as_str());
+        let driver = found.and_then(|found| match found {
             "ESRIPBF" => Some(VectorDriver::ESRIPBF),
             _ if pbf => None,
             "CityGML" => Some(VectorDriver::CityGML),
@@ -1083,7 +1085,15 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
             _ => None,
         });
         if let Some(driver) = driver {
-            return read_vector_local(path, driver, options).map(Dataset::Vector);
+            let result = read_vector_local(path, driver, options);
+            // A GeoJSON or GML document its reader refuses goes on to the `wbvector` fallback when
+            // that is allowed, as it did before these two were read here.
+            let to_fallback = matches!(found, Some("GeoJSON" | "GML"))
+                && wbvector_fallback_allowed()
+                && result.as_ref().is_err_and(|e| !e.is_resource_refusal());
+            if !to_fallback {
+                return result.map(Dataset::Vector);
+            }
         }
         // Its name also names this driver, which an allow-list may have let it through for: the
         // driver that reads it is the one to judge.
