@@ -420,7 +420,7 @@ function matchingEntries() {
   const re = patternMatcher(pattern);
   // As in a shell, and in terrio: hidden names match only a pattern that begins with a dot.
   // Folders are not matched, as terrio matches files only.
-  return (browsing.entries || []).filter((entry) => !entry.dir && (!entry.name.startsWith(".") || pattern.startsWith(".")) && re.test(entry.name));
+  return (browsing.entries || []).filter((entry) => !entry.dir && entry.size !== null && (!entry.name.startsWith(".") || pattern.startsWith(".")) && re.test(entry.name));
 }
 
 function updateMatchCount() {

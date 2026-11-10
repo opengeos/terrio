@@ -174,7 +174,7 @@ pub fn expand_wildcards(input: &str) -> terrio::Result<Option<Vec<String>>> {
     let separator = if cfg!(windows) { &['/', '\\'][..] } else { &['/'][..] };
     let split = input.rfind(separator).map_or(0, |i| i + 1);
     let (folder, pattern) = input.split_at(split);
-    if !pattern.contains(['*', '?']) || input.contains("://") || input.starts_with("/vsi") || std::path::Path::new(input).exists() {
+    if !pattern.contains(['*', '?']) || terrio::vfs::is_gdal_name(input) || std::path::Path::new(input).exists() {
         return Ok(None);
     }
     let dir = std::path::Path::new(if folder.is_empty() { "." } else { folder });
@@ -272,6 +272,15 @@ mod tests {
 
     fn matches(pattern: &str, name: &str) -> bool {
         wildcard_match(&pattern.chars().collect::<Vec<_>>(), &name.chars().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn driver_names_with_wildcards_remain_literal() {
+        for name in [r#"NETCDF:"file?.nc":var"#, "PG:dbname=a?b", "ODBC:table*", "gdal:input?.tif"] {
+            assert_eq!(super::expand_file_lists(&[name.into()]).unwrap(), [name]);
+        }
+        assert!(!terrio::vfs::is_gdal_name("C:*.tif"));
+        assert!(!terrio::vfs::is_gdal_name(r"\\?\C:\tiles\*.tif"));
     }
 
     #[test]
