@@ -175,6 +175,8 @@ pub(crate) struct EptReader {
     /// The hierarchy pages read, by the key of their root.
     pages: HashMap<String, HashMap<String, i64>>,
     cursor: Option<EptCursor>,
+    /// Catalog provenance retained across deferred hierarchy and node reads.
+    asset_policy: Option<crate::stac::AssetReadPolicy>,
 }
 
 struct EptCursor {
@@ -271,7 +273,17 @@ impl EptReader {
             _ => None,
         };
         let header = made_up_header(&dims, info.points, Some(info.bounds_conforming), &crs.horizontal, scale_offset);
-        Ok(Self { base, info, header, crs, schema_dims, dims, pages: HashMap::new(), cursor: None })
+        Ok(Self {
+            base,
+            info,
+            header,
+            crs,
+            schema_dims,
+            dims,
+            pages: HashMap::new(),
+            cursor: None,
+            asset_policy: crate::stac::AssetReadPolicy::current(),
+        })
     }
 
     /// The hierarchy page whose root is `key`.
@@ -488,12 +500,14 @@ impl FormatReader for EptReader {
     }
 
     fn start(&mut self, options: &PointReadOptions, chunk: usize) -> Result<()> {
+        let _asset_scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
         let nodes = self.select(options)?;
         self.cursor = Some(EptCursor { nodes, next: 0, filter: options.filter.clone(), chunk });
         Ok(())
     }
 
     fn next_chunk(&mut self) -> Result<Option<Vec<Dimension>>> {
+        let _asset_scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
         let Some(mut c) = self.cursor.take() else { return Ok(None) };
         // Skip the nodes without points.
         while c.next < c.nodes.len() && c.nodes[c.next].1 == 0 {
@@ -640,7 +654,7 @@ mod tests {
         fn serve_with(dir: &Path, hold: usize, nodes_to: Option<String>) -> (String, Arc<Seen>) {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let base = format!("http://{}", listener.local_addr().unwrap());
-            let (root, seen) = (dir.to_path_buf(), Arc::new(Seen::default()));
+            let (root, seen) = (dir.canonicalize().unwrap(), Arc::new(Seen::default()));
             let record = seen.clone();
             std::thread::spawn(move || {
                 for stream in listener.incoming().flatten() {
@@ -685,11 +699,17 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(1));
                 }
             }
-            let response = match std::fs::read(root.join(path.trim_start_matches('/'))) {
-                Ok(body) => {
+            let body = root
+                .join(path.trim_start_matches('/'))
+                .canonicalize()
+                .ok()
+                .filter(|file| file.starts_with(root))
+                .and_then(|file| std::fs::read(file).ok());
+            let response = match body {
+                Some(body) => {
                     [format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes(), body].concat()
                 }
-                Err(_) => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+                None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
             };
             let _ = stream.write_all(&response);
             if node {
@@ -780,8 +800,52 @@ mod tests {
             }
         }
 
+        /// A deferred reader retains the catalog provenance from open, including hierarchy
+        /// reads started after the opening scope has ended.
+        #[test]
+        fn reader_keeps_its_open_time_asset_policy() {
+            use super::super::{EptReader, FormatReader};
+            for nodes in [1, 9] {
+                let dir = tempfile::tempdir().unwrap();
+                dataset(dir.path(), nodes, EptDataType::Binary);
+                let (base, seen) = serve(dir.path(), 1);
+                for preload in [false, true] {
+                    for (consent, allowed) in [("NO", false), ("YES", true)] {
+                        let policy = crate::stac::AssetReadPolicy::for_tests("https://catalog.example/item.json", false);
+                        let mut reader = crate::config::with_options(&[("GDAL_HTTP_HEADERS", "")], || {
+                            let _scope = policy.enter().unwrap();
+                            let mut reader = EptReader::open(&format!("{base}/ept.json")).unwrap();
+                            if preload {
+                                reader.start(&Default::default(), usize::MAX).unwrap();
+                            }
+                            reader
+                        });
+                        seen.requests.lock().unwrap().clear();
+                        let result = crate::config::with_options(
+                            &[("GDAL_HTTP_HEADERS", "X-Probe: set"), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", consent)],
+                            || {
+                                if !preload {
+                                    reader.start(&Default::default(), usize::MAX)?;
+                                }
+                                reader.next_chunk()
+                            },
+                        );
+                        if allowed {
+                            assert!(result.unwrap().is_some());
+                            let requests = seen.requests.lock().unwrap();
+                            assert_eq!(requests.iter().filter(|(path, ..)| path.starts_with("/ept-data/")).count(), nodes);
+                        } else {
+                            assert!(result.err().is_some_and(|e| e.to_string().contains("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS")));
+                            assert!(seen.requests.lock().unwrap().is_empty());
+                        }
+                    }
+                }
+            }
+        }
+
         /// The nodes of a read are fetched as many at a time as terrio's pool has threads (at most
         /// the nine there are): the server answers a node once that many have been asked for.
+        /// On a one-thread pool a pass does not establish concurrency.
         #[test]
         fn the_nodes_of_a_read_are_fetched_as_many_at_a_time_as_the_pool_has_threads() {
             let scenario = || {

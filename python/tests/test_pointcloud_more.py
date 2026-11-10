@@ -328,9 +328,10 @@ def ept_nodes(tmp_path_factory):
 
         def do_GET(self):
             seen.append((self.path, self.headers.get("X-Probe"), self.headers.get("User-Agent")))
-            path = root / self.path.lstrip("/")
-            data = path.read_bytes() if path.is_file() else b""
-            self.send_response(200 if path.is_file() else 404)
+            path = (root / self.path.lstrip("/")).resolve()
+            inside = path.is_relative_to(root.resolve()) and path.is_file()
+            data = path.read_bytes() if inside else b""
+            self.send_response(200 if inside else 404)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
