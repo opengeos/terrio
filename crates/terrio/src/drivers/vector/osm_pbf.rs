@@ -39,11 +39,19 @@ pub(super) fn bad() -> Error {
 /// Raw and zlib payloads, or None for an empty informational header.
 /// Treat raw_size only as a bounded capacity hint; verify the actual output size.
 pub(super) fn payload(blob: &[u8]) -> Result<Option<std::borrow::Cow<'_, [u8]>>> {
+    if blob.len() > MAX_BLOB {
+        return Err(Error::ResourceLimit(format!("OSM PBF: encoded blob exceeds byte limit {MAX_BLOB}")));
+    }
     let mut data = None;
     let mut size = None;
     for (field, value) in pb_fields(blob).ok_or_else(bad)? {
         match (field, value) {
-            (2, Pb::Int(n)) => size = Some(usize::try_from(n).map_err(|_| bad())?),
+            (2, Pb::Int(n)) => {
+                if n > MAX_BLOB as u64 {
+                    return Err(Error::DecodedLimitExceeded { resource: "OSM PBF blob", limit: MAX_BLOB });
+                }
+                size = Some(n as usize);
+            }
             (1 | 3, Pb::Bytes(bytes)) => {
                 if data.replace((field, bytes)).is_some() {
                     return Err(bad());
@@ -54,9 +62,6 @@ pub(super) fn payload(blob: &[u8]) -> Result<Option<std::borrow::Cow<'_, [u8]>>>
             }
             _ => {}
         }
-    }
-    if blob.len() > MAX_BLOB || size.is_some_and(|n| n > MAX_BLOB) {
-        return Err(bad());
     }
     let Some((encoding, bytes)) = data else { return Ok(None) };
     let decoded = if encoding == 1 {
@@ -75,7 +80,7 @@ pub(super) fn payload(blob: &[u8]) -> Result<Option<std::borrow::Cow<'_, [u8]>>>
                 .map_err(|_| bad())?;
             let n = (decoder.total_out() - before_out) as usize;
             if out.len() + n > MAX_BLOB {
-                return Err(bad());
+                return Err(Error::DecodedLimitExceeded { resource: "OSM PBF blob", limit: MAX_BLOB });
             }
             if out.len() + n > out.capacity() {
                 let capacity = out.capacity().max(buffer.len()).saturating_mul(2).min(MAX_BLOB);
@@ -91,7 +96,7 @@ pub(super) fn payload(blob: &[u8]) -> Result<Option<std::borrow::Cow<'_, [u8]>>>
         }
         std::borrow::Cow::Owned(out)
     };
-    if decoded.len() > MAX_BLOB || size.is_some_and(|n| n != decoded.len()) {
+    if size.is_some_and(|n| n != decoded.len()) {
         return Err(bad());
     }
     Ok(Some(decoded))

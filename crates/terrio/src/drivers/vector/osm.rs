@@ -827,7 +827,7 @@ fn blob_spans(r: &mut dyn PbfInput) -> Result<(Vec<std::ops::Range<u64>>, bool)>
         r.read_exact(&mut prefix).map_err(|_| bad())?;
         let header_len = u32::from_be_bytes(prefix) as usize;
         if header_len > 64 * 1024 {
-            return Err(bad());
+            return Err(Error::ResourceLimit("OSM PBF: blob header exceeds byte limit 65536".into()));
         }
         let mut header = vec![0u8; header_len];
         r.read_exact(&mut header).map_err(|_| bad())?;
@@ -841,7 +841,7 @@ fn blob_spans(r: &mut dyn PbfInput) -> Result<(Vec<std::ops::Range<u64>>, bool)>
         }
         let (kind, size) = (kind.ok_or_else(bad)?, size.ok_or_else(bad)?);
         if size > pbf::MAX_BLOB as u64 {
-            return Err(bad());
+            return Err(Error::ResourceLimit(format!("OSM PBF: encoded blob exceeds byte limit {}", pbf::MAX_BLOB)));
         }
         let start = o.checked_add(4 + header_len as u64).ok_or_else(bad)?;
         let end = start.checked_add(size).filter(|&e| e <= len).ok_or_else(bad)?;
@@ -1821,6 +1821,41 @@ mod tests {
             })
             .unwrap();
         assert!(pbf::payload(&Msg::default().bytes(3, zlib).0).is_err());
+    }
+
+    #[test]
+    fn blob_size_refusals_are_terminal() {
+        fn terminal(error: Error) {
+            assert!(error.is_resource_refusal(), "{error}");
+            #[cfg(feature = "gdal")]
+            {
+                let result: Result<()> =
+                    crate::dataset::gdal_fallback("oversized.osm.pbf", Err(error), |_| panic!("OSM blob limit retried through GDAL"));
+                assert!(result.unwrap_err().is_resource_refusal());
+            }
+        }
+        // Refuse advertised sizes before reading or allocating the missing payload.
+        let header = Msg::default().bytes(1, b"OSMData").int(3, (pbf::MAX_BLOB + 1) as u64);
+        let mut file = (header.0.len() as u32).to_be_bytes().to_vec();
+        file.extend(header.0);
+        terminal(blob_spans(&mut std::io::Cursor::new(file)).unwrap_err());
+        terminal(blob_spans(&mut std::io::Cursor::new(65537u32.to_be_bytes())).unwrap_err());
+        terminal(pbf::payload(&Msg::default().bytes(1, b"x").int(2, (pbf::MAX_BLOB + 1) as u64).0).unwrap_err());
+        terminal(pbf::payload(&Msg::default().bytes(1, &vec![0; pbf::MAX_BLOB + 1]).0).unwrap_err());
+        // Probe actual decoded bytes as well: raw_size is absent in this compressed bomb.
+        let bomb = compressed(&vec![0; pbf::MAX_BLOB + 1]);
+        let zlib = pb_fields(&bomb)
+            .unwrap()
+            .find_map(|(n, v)| match (n, v) {
+                (3, Pb::Bytes(b)) => Some(b),
+                _ => None,
+            })
+            .unwrap();
+        terminal(pbf::payload(&Msg::default().bytes(3, zlib).0).unwrap_err());
+        // A wrong declared length or broken stream is malformed, not a budget refusal.
+        for blob in [Msg::default().bytes(1, b"x").int(2, 2), Msg::default().bytes(3, b"broken")] {
+            assert!(matches!(pbf::payload(&blob.0), Err(Error::InvalidData(_))));
+        }
     }
 
     /// A complete PBF fileblock must still reject a truncated inner zlib stream, including
