@@ -46,6 +46,10 @@ tiles = terrio.open_raster("https://example.com/tiles.pmtiles", lazy=True)
 # JPEG 2000 (Sentinel-2 bands) too: resolution levels are overviews, windows decode their tiles.
 b04 = terrio.open_raster("T10SEG_20240630T185919_B04.jp2", lazy=True)
 patch = b04.read(1, window=(2000, 6000, 1024, 1024))
+# A VRT too: it has its first source's overviews, each read from its sources' own (see
+# cli.md#serialized-virtual-rasters).
+mosaic = terrio.open_raster("mosaic.vrt", lazy=True)
+preview = mosaic.read_resampled((512, 512), resampling="average")
 mask = terrio.open_raster("masked.tif", lazy=True).read_mask()  # a GeoTIFF's internal mask, or None
 
 # A GeoTIFF larger than memory, written in rows (band after band, from the top).
