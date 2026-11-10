@@ -1073,6 +1073,10 @@ fn transform_points<'py>(
 /// environment (``TERRIO_GRID_DIR``, ``PROJ_DATA``, ``PROJ_LIB``, PROJ's user directory and
 /// terrio's download cache), as PROJ's ``proj_context_set_search_paths``.
 ///
+/// While search paths are set, grids are read only from them and from registered grids: a grid
+/// named by a path in a CRS definition (``+nadgrids=/data/a.gsb``, ``./a.gsb``) is treated as
+/// missing, so a definition from untrusted input cannot read arbitrary files.
+///
 /// Args:
 ///     paths: The directories, in search order; ``None`` goes back to the environment's.
 #[pyfunction]

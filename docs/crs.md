@@ -309,7 +309,12 @@ the grid, the next best transformation is used, as PROJ does. Grids are looked u
 
 The search directories and network access can also be set from code
 (`terrio::crs::set_grid_search_paths`, `set_network_enabled`, and the same functions in Python),
-as PROJ's `proj_context_set_search_paths` and `proj_context_set_enable_network`.
+as PROJ's `proj_context_set_search_paths` and `proj_context_set_enable_network`. Grid names
+must stay inside the search directories (`subdir/grid.gsb`, not `a/../../grid.gsb`), and only
+regular files of at most 2 GiB are read. A grid named by a path (`+nadgrids=/data/a.gsb`,
+`./a.gsb`) is read from that path by default, as PROJ does, but once search paths are set from
+code it is treated as missing, so a CRS definition from untrusted input cannot read other files.
+Add its directory to the search paths, or register the grid, instead.
 
 ```sh
 TERRIO_NETWORK=ON terrio crs EPSG:4267 --to EPSG:4269 -100 40   # reads the NADCON5 grid by range

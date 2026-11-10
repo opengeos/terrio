@@ -765,6 +765,12 @@ fn config() -> &'static Mutex<Config> {
 /// of the environment (`TERRIO_GRID_DIR`, `PROJ_DATA`, `PROJ_LIB`, PROJ's user directory and
 /// terrio's download cache); `None` goes back to the environment's. As PROJ's
 /// `proj_context_set_search_paths`. Transformers created afterwards use them.
+///
+/// While search paths are set this way, grids are read only from them (and from grids registered
+/// with [`register_grid`]): a grid named by a path in a CRS definition (`+nadgrids=/data/a.gsb`,
+/// `./a.gsb`, `../a.gsb`) is treated as missing, so a definition from untrusted input cannot read
+/// arbitrary files. Add the grid's directory to the search paths or register it instead. Unlike
+/// PROJ, which reads such paths whatever its search paths are.
 pub fn set_grid_search_paths(paths: Option<Vec<std::path::PathBuf>>) {
     {
         let mut c = config().lock().unwrap_or_else(PoisonError::into_inner);
@@ -915,23 +921,74 @@ fn machine_search_dirs() -> Vec<std::path::PathBuf> {
     dirs
 }
 
+/// The largest grid file read, larger than any grid on the PROJ CDN.
+#[cfg(not(target_family = "wasm"))]
+const MAX_GRID_BYTES: u64 = 2 << 30;
+
+/// The bytes of a regular file of at most [`MAX_GRID_BYTES`]: devices, FIFOs and directories are
+/// never opened, and a file growing while it is read is cut off rather than read without bound.
+#[cfg(not(target_family = "wasm"))]
+fn read_grid_file(p: &std::path::Path) -> Option<Arc<[u8]>> {
+    use std::io::Read;
+    let meta = std::fs::metadata(p).ok()?;
+    if !meta.is_file() || meta.len() > MAX_GRID_BYTES {
+        return None;
+    }
+    let mut buf = Vec::with_capacity(usize::try_from(meta.len()).ok()?);
+    std::fs::File::open(p).ok()?.take(MAX_GRID_BYTES + 1).read_to_end(&mut buf).ok()?;
+    (buf.len() as u64 <= MAX_GRID_BYTES).then(|| Arc::from(buf))
+}
+
+/// Where a grid name is looked for on disk.
+#[cfg(not(target_family = "wasm"))]
+enum GridLocation<'a> {
+    /// A path (absolute, or starting with `./` or `../`), read as given.
+    Path(&'a std::path::Path),
+    /// A name relative to the search directories, such as `us_noaa_conus.tif` or
+    /// `subdir/grid.gsb`: every component is a plain name, so it stays inside them.
+    InSearchDirs,
+    /// Neither: a path while the search paths are set from code (which confine grids to them), or
+    /// a relative name that leaves the search directories (`a/../../etc/hosts`).
+    Refused,
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn grid_location(name: &str) -> GridLocation<'_> {
+    use std::path::Component;
+    let p = std::path::Path::new(name);
+    let first = p.components().next();
+    if p.is_absolute() || p.has_root() || matches!(first, Some(Component::Prefix(_) | Component::CurDir | Component::ParentDir)) {
+        // As PROJ, a grid named by a path is read from it, unless the search paths were set
+        // from code: those then bound what is read, so a CRS definition from untrusted input
+        // cannot name any file the process can see.
+        if config().lock().unwrap_or_else(PoisonError::into_inner).paths.is_some() {
+            return GridLocation::Refused;
+        }
+        return GridLocation::Path(p);
+    }
+    if first.is_some() && p.components().all(|c| matches!(c, Component::Normal(_))) {
+        GridLocation::InSearchDirs
+    } else {
+        GridLocation::Refused
+    }
+}
+
 /// The bytes of a grid file, by name or path, from memory or the local directories.
 fn find_local(name: &str) -> Option<Arc<[u8]>> {
     if let Some(b) = registered().lock().unwrap_or_else(PoisonError::into_inner).get(name) {
         return Some(b.clone());
     }
     #[cfg(not(target_family = "wasm"))]
-    {
-        let p = std::path::Path::new(name);
-        if p.is_absolute() || name.starts_with("./") || name.starts_with("../") {
-            return std::fs::read(p).ok().map(Arc::from);
-        }
-        for d in search_dirs() {
-            let f = d.join(name);
-            if f.is_file() {
-                return std::fs::read(f).ok().map(Arc::from);
+    match grid_location(name) {
+        GridLocation::Path(p) => return read_grid_file(p),
+        GridLocation::InSearchDirs => {
+            for d in search_dirs() {
+                if let Some(b) = read_grid_file(&d.join(name)) {
+                    return Some(b);
+                }
             }
         }
+        GridLocation::Refused => {}
     }
     None
 }
@@ -943,14 +1000,14 @@ fn present_locally(name: &str) -> bool {
     }
     #[cfg(not(target_family = "wasm"))]
     {
-        let p = std::path::Path::new(name);
-        if p.is_absolute() {
-            return p.is_file();
-        }
         let dirs = search_dirs();
         let mut names = vec![name.to_string()];
         names.extend(old_names(name));
-        return names.iter().any(|n| dirs.iter().any(|d| d.join(n).is_file()));
+        return names.iter().any(|n| match grid_location(n) {
+            GridLocation::Path(p) => p.is_file(),
+            GridLocation::InSearchDirs => dirs.iter().any(|d| d.join(n).is_file()),
+            GridLocation::Refused => false,
+        });
     }
     #[allow(unreachable_code)]
     false
@@ -995,7 +1052,7 @@ fn download(name: &str) -> Option<Arc<[u8]>> {
     }
     let path = dir.join(name);
     std::fs::rename(&tmp, &path).ok()?;
-    std::fs::read(path).ok().map(Arc::from)
+    read_grid_file(&path)
 }
 
 /// The grid file of a name, read once.
