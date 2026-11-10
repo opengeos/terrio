@@ -805,8 +805,10 @@ pub(crate) fn hashed_file_payload(path: &Path, sha256: String) -> Payload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::io::{BufRead, BufReader, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     fn reply(mut stream: TcpStream, status: u16, location: &str) -> Vec<u8> {
@@ -1192,6 +1194,106 @@ mod tests {
         let by_host = crate::http::fetch_stats_by_host().into_iter().find(|(h, _)| *h == host).map(|(_, s)| s);
         assert_eq!(by_host, expected, "per host");
         let name = format!("/vsicurl/http://{host}/stats/upload.bin");
+        let by_file = crate::http::fetch_stats_by_file().into_iter().find(|(n, _)| *n == name).map(|(_, s)| s);
+        assert_eq!(by_file, expected, "per file");
+    }
+
+    /// The tunnels a [`serve_connect_proxy`] proxy saw: target, method and body length.
+    type Tunnels = Arc<Mutex<Vec<(String, String, usize)>>>;
+
+    /// A loopback HTTP proxy standing in for Amazon's endpoints: for each tunnel a client opens
+    /// (`CONNECT host:port`), it reads the request inside it with its body, records the target, the
+    /// method and the body's length, and answers `answer(target)`, a whole response. No name is
+    /// resolved and the machine is not left.
+    fn serve_connect_proxy(answer: impl Fn(&str) -> String + Send + 'static) -> (String, Tunnels) {
+        fn head(reader: &mut impl BufRead) -> Vec<String> {
+            let mut lines = Vec::new();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                    return lines;
+                }
+                lines.push(line.trim().to_string());
+            }
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy = format!("http://{}", listener.local_addr().unwrap());
+        let seen: Tunnels = Arc::default();
+        let record = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let connect = head(&mut reader);
+                let target = connect.first().and_then(|l| l.split_whitespace().nth(1)).unwrap_or("").to_string();
+                let _ = stream.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n");
+                let request = head(&mut reader);
+                let method = request.first().and_then(|l| l.split_whitespace().next()).unwrap_or("").to_string();
+                let length = request
+                    .iter()
+                    .find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case("content-length")))
+                    .and_then(|(_, v)| v.trim().parse().ok())
+                    .unwrap_or(0);
+                let mut body = vec![0; length];
+                let _ = reader.read_exact(&mut body);
+                record.lock().unwrap().push((target.clone(), method, length));
+                let _ = stream.write_all(answer(&target).as_bytes());
+            }
+        });
+        (proxy, seen)
+    }
+
+    /// An S3 write is counted for the URL asked in the bucket's region once a response names it.
+    /// Through a proxy (`HTTP_PROXY`, set for a child process only), Amazon's global endpoint answers
+    /// an upload with 301 and the bucket's region, and the upload is sent again to the regional
+    /// endpoint: the host counted is the regional one, with the body once, as the 301 is not counted.
+    #[test]
+    fn an_s3_write_is_counted_for_its_regional_endpoint() {
+        const CHILD: &str = "TERRIO_TEST_S3_WRITE_REGION";
+        let (bucket, key) = ("sent-bytes-region", "stats/upload.bin");
+        let (global, regional) = (format!("{bucket}.s3.amazonaws.com"), format!("{bucket}.s3.eu-west-1.amazonaws.com"));
+        if std::env::var_os(CHILD).is_none() {
+            let global_target = format!("{global}:80");
+            let (proxy, seen) = serve_connect_proxy(move |target| {
+                if target == global_target {
+                    "HTTP/1.1 301 Moved Permanently\r\nx-amz-bucket-region: eu-west-1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_string()
+                } else {
+                    "HTTP/1.1 200 OK\r\nETag: \"0\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+                }
+            });
+            // The proxy variable reaches only the child, which runs this test alone, so no other
+            // test's requests go through the proxy.
+            let module = module_path!().split_once("::").unwrap().1;
+            let name = format!("{module}::{}", stringify!(an_s3_write_is_counted_for_its_regional_endpoint));
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command.args(["--exact", &name]).env(CHILD, "1");
+            // Removed before `HTTP_PROXY` is set: on Windows the names are one variable whatever their case.
+            for key in ["ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "http_proxy", "NO_PROXY", "no_proxy"] {
+                command.env_remove(key);
+            }
+            command.env("HTTP_PROXY", &proxy);
+            let output = command.output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(output.status.success() && stdout.contains("1 passed"), "{stdout}{}", String::from_utf8_lossy(&output.stderr));
+            let expected = [(format!("{global}:80"), "PUT".to_string(), 1000), (format!("{regional}:80"), "PUT".to_string(), 1000)];
+            assert_eq!(*seen.lock().unwrap(), expected);
+            return;
+        }
+        let remote = Remote::S3(S3Object { bucket: bucket.into(), key: key.into() });
+        crate::config::push_scope(HashMap::from([
+            ("AWS_HTTPS".to_string(), Some("NO".to_string())),
+            ("AWS_S3_ENDPOINT".to_string(), None),
+            ("AWS_VIRTUAL_HOSTING".to_string(), None),
+        ]));
+        let written = write_request_with("PUT", &remote, "", &[], Payload::Bytes(vec![7u8; 1000]), Accept::Success, (None, None));
+        crate::config::pop_scope();
+        written.unwrap();
+        let expected = Some(crate::http::FetchStats { requests: 1, bytes: 0, sent_bytes: 1000 });
+        let by_host = |host: &str| crate::http::fetch_stats_by_host().into_iter().find(|(h, _)| h == host).map(|(_, s)| s);
+        assert_eq!((by_host(&regional), by_host(&global)), (expected, None), "per host: {regional}, then {global}");
+        let name = format!("/vsis3/{bucket}/{key}");
         let by_file = crate::http::fetch_stats_by_file().into_iter().find(|(n, _)| *n == name).map(|(_, s)| s);
         assert_eq!(by_file, expected, "per file");
     }
