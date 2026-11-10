@@ -947,6 +947,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     }
     let retry = match &e {
         Error::InvalidArgument(_) | Error::Http(_) => false,
+        Error::InvalidData(message) if message == crate::drivers::vector::kml::AMBIGUOUS_KMZ => false,
         e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => vfs::is_gdal_name(path),
@@ -1000,6 +1001,15 @@ mod fallback_tests {
             });
             assert!(matches!(result, Err(Error::InvalidData(_))));
         }
+    }
+
+    #[test]
+    fn ambiguous_kmz_archives_are_not_retried() {
+        let result: Result<()> =
+            gdal_fallback("input.kmz", Err(Error::InvalidData(crate::drivers::vector::kml::AMBIGUOUS_KMZ.into())), |_| {
+                panic!("duplicate-entry refusal retried through GDAL")
+            });
+        assert!(matches!(result, Err(Error::InvalidData(_))));
     }
 
     #[test]

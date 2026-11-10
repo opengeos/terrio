@@ -55,6 +55,9 @@ pub(crate) fn max_kmz_document_bytes() -> u64 {
     crate::config::get("TERRIO_KMZ_MAX_SIZE").and_then(|v| v.trim().parse().ok()).unwrap_or(DEFAULT_MAX_KMZ_DOCUMENT_BYTES)
 }
 
+/// A duplicate-entry refusal is terminal, including for the optional GDAL backend.
+pub(crate) const AMBIGUOUS_KMZ: &str = "KMZ: the archive holds several entries with the same name, so its main document is ambiguous";
+
 /// A KML document's layers, and its style table: style ids and their OGR style strings.
 pub type Styled = (Vec<Layer>, Vec<(String, String)>);
 
@@ -148,9 +151,7 @@ fn kmz_styled<R: std::io::Read + std::io::Seek>(reader: R, default_name: &str) -
     // The zip reader keeps one entry per name, the last: the first of two entries named `doc.kml`
     // could not be read, nor told from the other.
     if zip.archive().has_duplicate_names() {
-        return Err(Error::InvalidData(
-            "KMZ: the archive holds several entries with the same name, so its main document is ambiguous".into(),
-        ));
+        return Err(Error::InvalidData(AMBIGUOUS_KMZ.into()));
     }
     let names: Vec<String> = zip.archive().file_names().filter_map(|n| n.ok().map(|n| n.into_owned())).collect();
     let (main_index, main) = main_document(zip.archive())?;
@@ -1324,6 +1325,15 @@ mod tests {
             std::fs::write(&path, &kmz).unwrap();
             let refused = read_kmz(path.to_str().unwrap());
             assert!(matches!(&refused, Err(Error::InvalidData(m)) if m == message), "{label}: {refused:?}");
+            // Public entry points must preserve the refusal even with the GDAL backend enabled.
+            let path = path.to_str().unwrap();
+            for refused in [
+                crate::open(path).map(|_| ()),
+                crate::open_vector(path, &Default::default()).map(|_| ()),
+                crate::list_layers(path).map(|_| ()),
+            ] {
+                assert!(matches!(&refused, Err(Error::InvalidData(m)) if m == message), "{label}: {refused:?}");
+            }
         }
         // Without the second name, the archive reads.
         assert_eq!(
