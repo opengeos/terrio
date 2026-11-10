@@ -109,7 +109,10 @@ pub struct WindowOptions {
 /// allocation the process cannot survive.
 ///
 /// The default is the `tiff` crate's: 256 MiB for a decoded chunk (tile or strip). Files with
-/// larger chunks need a larger limit: see [`LazyRaster::open_tiff_with_limits`],
+/// larger chunks, such as a pixel-interleaved GeoTIFF of many bands whose tile holds every band,
+/// need a larger limit: the `TERRIO_TIFF_MAX_CHUNK_BYTES` option sets it for the readers opened
+/// without explicit limits (see [`TiffReadLimits::from_config`]); see also
+/// [`LazyRaster::open_tiff_with_limits`],
 /// [`LazyRaster::from_tiff_bytes_with_limits`], [`LazyRaster::from_sparse_with_limits`] and
 /// [`crate::open_raster_with_tiff_limits`] for eager reads. The
 /// window a read returns is not bounded by it: check the window's size before reading it.
@@ -132,7 +135,32 @@ impl Default for TiffReadLimits {
     }
 }
 
+/// The option that sets [`TiffReadLimits::chunk_bytes`] of readers opened without explicit limits.
+pub(crate) const TIFF_MAX_CHUNK_BYTES_OPTION: &str = "TERRIO_TIFF_MAX_CHUNK_BYTES";
+
+/// The resource of a GeoTIFF's [`Error::DecodedLimitExceeded`], whose message names
+/// [`TIFF_MAX_CHUNK_BYTES_OPTION`].
+pub(crate) const TIFF_CHUNK_RESOURCE: &str = "TIFF chunk or tag value";
+
 impl TiffReadLimits {
+    /// The limits of a reader opened without explicit ones: the defaults, with
+    /// [`TiffReadLimits::chunk_bytes`] set by the `TERRIO_TIFF_MAX_CHUNK_BYTES` option (a positive
+    /// number of bytes) when it is set, in the calling thread's scope or the environment
+    /// ([`crate::config::get`]). Raise it only for trusted files: it bounds what a malformed
+    /// header can make a read allocate.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidArgument`] when the option is set to anything but a positive integer.
+    pub fn from_config() -> Result<Self> {
+        match crate::config::get(TIFF_MAX_CHUNK_BYTES_OPTION) {
+            None => Ok(Self::default()),
+            Some(v) => v.trim().parse::<usize>().ok().filter(|n| *n > 0).map(|chunk_bytes| Self { chunk_bytes }).ok_or_else(|| {
+                Error::InvalidArgument(format!("{TIFF_MAX_CHUNK_BYTES_OPTION} must be a positive integer number of bytes, not '{v}'"))
+            }),
+        }
+    }
+
     /// No limit: a malformed header can make a read attempt an allocation of any size.
     pub fn unlimited() -> Self {
         Self { chunk_bytes: usize::MAX }
@@ -164,7 +192,7 @@ impl TiffReadLimits {
     /// limit, for a chunk or tag value over it.
     pub(crate) fn error(self) -> impl Fn(tiff::TiffError) -> Error + Sync + Copy {
         move |e| match e {
-            tiff::TiffError::LimitsExceeded => Error::DecodedLimitExceeded { resource: "TIFF chunk or tag value", limit: self.chunk_bytes },
+            tiff::TiffError::LimitsExceeded => Error::DecodedLimitExceeded { resource: TIFF_CHUNK_RESOURCE, limit: self.chunk_bytes },
             e => tiff_err(e),
         }
     }
@@ -630,11 +658,15 @@ impl LazyRaster {
     /// Opens a GeoTIFF in place, reading only its headers. Returns `None` when the file is not a
     /// TIFF (having read only its first bytes).
     pub fn open_tiff(path: &str) -> Result<Option<Self>> {
-        Self::open_tiff_with_limits(path, TiffReadLimits::default())
+        Self::open_tiff_using(path, TiffReadLimits::from_config)
     }
 
     /// [`LazyRaster::open_tiff`] with other decoding limits than the defaults.
     pub fn open_tiff_with_limits(path: &str, limits: TiffReadLimits) -> Result<Option<Self>> {
+        Self::open_tiff_using(path, || Ok(limits))
+    }
+
+    fn open_tiff_using(path: &str, limits: impl FnOnce() -> Result<TiffReadLimits>) -> Result<Option<Self>> {
         let loc = Location::parse(path);
         let resolve_file = || {
             let local = vfs::resolve(path)?;
@@ -670,6 +702,7 @@ impl LazyRaster {
         if !is_tiff(&mut source) {
             return Ok(None);
         }
+        let limits = limits()?;
         // A TIFF is read by the GeoTIFF reader whatever its name: only if the GTiff driver is
         // allowed. `LazyRaster::open` judges a local file's content before; a remote one's, and a
         // TIFF opened here directly, are judged here, after the first request.
@@ -698,7 +731,7 @@ impl LazyRaster {
     /// Opens a GeoTIFF held in memory, reading only its headers now. Returns `None` when the bytes
     /// are not a TIFF.
     pub fn from_tiff_bytes(bytes: Vec<u8>) -> Result<Option<Self>> {
-        Self::from_tiff_bytes_with_limits(bytes, TiffReadLimits::default())
+        Self::from_tiff_shared_bytes(std::sync::Arc::new(bytes))
     }
 
     /// [`LazyRaster::from_tiff_bytes`] with other decoding limits than the defaults.
@@ -708,14 +741,22 @@ impl LazyRaster {
 
     /// Opens GeoTIFF bytes shared by immutable readers without copying the file buffer.
     pub fn from_tiff_shared_bytes(bytes: std::sync::Arc<Vec<u8>>) -> Result<Option<Self>> {
-        Self::from_tiff_shared_bytes_with_limits(bytes, TiffReadLimits::default())
+        Self::from_tiff_shared_bytes_using(bytes, TiffReadLimits::from_config)
     }
 
     fn from_tiff_shared_bytes_with_limits(bytes: std::sync::Arc<Vec<u8>>, limits: TiffReadLimits) -> Result<Option<Self>> {
+        Self::from_tiff_shared_bytes_using(bytes, || Ok(limits))
+    }
+
+    fn from_tiff_shared_bytes_using(
+        bytes: std::sync::Arc<Vec<u8>>,
+        limits: impl FnOnce() -> Result<TiffReadLimits>,
+    ) -> Result<Option<Self>> {
         let mut source = Source::Memory(std::io::Cursor::new(SharedBytes(bytes)));
         if !is_tiff(&mut source) {
             return Ok(None);
         }
+        let limits = limits()?;
         // Opened as a GeoTIFF by its caller: only if the GTiff driver is allowed.
         crate::formats::check_driver_allowed("GTiff", "a GeoTIFF in memory", crate::formats::Kind::Raster)?;
         let t = TiffRaster::new(source, None, limits)?;
@@ -727,7 +768,7 @@ impl LazyRaster {
     /// only its headers. Reads fail until the bytes they need are fetched, and are then run
     /// again. Returns `None` when the file is not a TIFF.
     pub fn from_sparse(file: crate::sparse::SparseFile) -> Result<Option<Self>> {
-        Self::from_sparse_with_limits(file, TiffReadLimits::default())
+        Self::from_sparse_using(file, TiffReadLimits::from_config)
     }
 
     /// Opens the array at `key` (`""` for the store's root: a group's single array) of a Zarr
@@ -743,6 +784,10 @@ impl LazyRaster {
 
     /// [`LazyRaster::from_sparse`] with other decoding limits than the defaults.
     pub fn from_sparse_with_limits(file: crate::sparse::SparseFile, limits: TiffReadLimits) -> Result<Option<Self>> {
+        Self::from_sparse_using(file, || Ok(limits))
+    }
+
+    fn from_sparse_using(file: crate::sparse::SparseFile, limits: impl FnOnce() -> Result<TiffReadLimits>) -> Result<Option<Self>> {
         let mut source = Source::Sparse(file);
         source.seek(SeekFrom::Start(0))?;
         let mut magic = [0u8; 4];
@@ -750,6 +795,7 @@ impl LazyRaster {
         if !matches!(&magic, b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+") {
             return Ok(None);
         }
+        let limits = limits()?;
         // Opened as a GeoTIFF by its caller: only if the GTiff driver is allowed.
         crate::formats::check_driver_allowed("GTiff", "a remote GeoTIFF", crate::formats::Kind::Raster)?;
         source.seek(SeekFrom::Start(0))?;

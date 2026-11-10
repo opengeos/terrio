@@ -918,6 +918,20 @@ force. `allowed_drivers()` is the way to see what the option allows: `terrio.pyo
 shows only the values `Env` scopes hold, `''` where a scope allows nothing. See
 [Allowed drivers](remote-data.md#allowed-drivers).
 
+GeoTIFF readers refuse a tile or strip that decodes to more than 256 MiB
+(`ResourceLimitError`), a bound on what a malformed header can make a read allocate. A
+pixel-interleaved file of many bands reaches it with ordinary tiles. For trusted files, the
+`TERRIO_TIFF_MAX_CHUNK_BYTES` option, a positive number of bytes, raises it for the rasters
+opened while it is set, in the environment or an `Env`. Size it to the file's chunks (tile
+width x height x bands x bytes per sample when pixel-interleaved), not to an unbounded value:
+a read may hold about the limit times the chunks it decodes in parallel. The refusal names the
+option:
+
+```python
+with Env(TERRIO_TIFF_MAX_CHUNK_BYTES=str(1 << 30)):
+    da = terrio.xarray.open_rasterio("pixel_interleaved_1488_bands.tif")
+```
+
 ## Typing
 
 The package ships type stubs (`py.typed`), checked with `mypy --strict` and `stubtest`:
