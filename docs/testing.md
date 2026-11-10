@@ -210,6 +210,12 @@ python scripts/conformance.py ../terrio-data --only ops,dem-calc   # some suites
 python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs too; fail on a difference
 ```
 
+The `ops` report explicitly records the known footprint-edge weighting divergence from #703
+for the DEM NAD83-to-UTM average/RMS and the 100 m aligned Mercator average cases. Their
+original tolerances and full pixel/mask comparisons remain in force; results beyond tolerance
+remain **differs**, including in `--strict` mode. The note explains the intentional area-overlap
+rule rather than treating the outputs as pixel-identical or excluding edge pixels.
+
 ## What is compared
 
 | Area | Script | Checks |

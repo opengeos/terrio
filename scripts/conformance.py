@@ -855,7 +855,7 @@ def suite_cad(ctx):
 
 def suite_ops(ctx):
     """translate, warp and mosaic against gdal_translate, gdalwarp, gdalbuildvrt and gdal_merge."""
-    return suite_json_ops(
+    suite = suite_json_ops(
         ctx,
         "ops",
         "compare_ops_with_gdal.py",
@@ -863,9 +863,21 @@ def suite_ops(ctx):
         "`gdal_translate`, `gdalwarp`, `gdalbuildvrt`, `gdal_merge.py`",
         "The outputs of the same command lines on real files: size, type, CRS and geotransform must "
         "match, then pixels are compared. Identical: every pixel equal. Within tolerance: every "
-        "pixel within the case's tolerance (1e-2 for interpolating resamplings).",
+        "pixel within the case's tolerance (1e-2 for interpolating resamplings). Known average/RMS "
+        "footprint-edge weighting differences (#703) remain reported as differences: no pixels "
+        "are excluded and the tolerances are unchanged.",
         1,
     )
+
+    edge_weight_cases = {
+        "warp DEM NAD83->UTM average",
+        "warp DEM NAD83->UTM rms",
+        "warp DEM ->3857 tr 100 tap average (-ovr NONE)",
+    }
+    for case in suite.cases:
+        if case.name in edge_weight_cases and case.status == DIFFERS and " pixels differ (" in case.detail:
+            case.detail += "; case has known #703 area-overlap edge-weight divergence; full comparison retained"
+    return suite
 
 
 def suite_raster_masks(ctx):

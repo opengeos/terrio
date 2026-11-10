@@ -667,6 +667,11 @@ impl Def {
         self.to_meter
     }
 
+    /// Longitude revolution in the native angular unit, for a geographic CRS.
+    pub fn longitude_period(&self) -> Option<f64> {
+        self.is_geographic().then_some(360.0 / self.to_deg.abs()).filter(|v| v.is_finite() && *v > 0.0)
+    }
+
     /// Whether this is a geographic CRS. A rotated-pole grid is not: its coordinates are in
     /// degrees, but are not longitudes and latitudes.
     pub fn is_geographic(&self) -> bool {
