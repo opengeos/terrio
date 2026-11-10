@@ -2175,12 +2175,16 @@ class Statistics:
 class DatasetWriter(DatasetReader):
     """A dataset opened for writing (`w`, `w+`) or updating (`r+`).
 
-    The pixels are held in memory; the file is written when the dataset is closed.
+    Pixels are held in memory or a mapped staging file; streamed copies read their source
+    directly instead. The file is written when the dataset is closed.
     """
 
     # Whether the mask written is another dataset's mask band, as a copy's is (GDAL's CreateCopy
     # regenerates the overviews of its source's mask), rather than a MEM dataset's.
     _mask_has_dataset = False
+    # A copy's source (`shutil.copy`), whose pixels the file is written from as it is written,
+    # when it is written in rows: they are then not held (see `_streams_on_flush`).
+    _copy_of: Any = None
 
     def __init__(
         self,
@@ -2237,6 +2241,7 @@ class DatasetWriter(DatasetReader):
         kwargs.pop("thread_safe", None)
         gcps = kwargs.pop("gcps", None)
         rpcs = kwargs.pop("rpcs", None)
+        copy_of = kwargs.pop("_copy_of", None)
         if mode in ("w", "w+"):
             if not isinstance(driver, str):
                 raise TypeError("A driver name string is required.")
@@ -2269,9 +2274,14 @@ class DatasetWriter(DatasetReader):
             self.width, self.height, self._count, self._dtype = width, height, count, dt
             self._nodata = None if nodata is None else float(nodata)
             self._options = self._creation_options(kwargs)
-            fill = self._nodata if self._nodata is not None else 0
-            with np.errstate(invalid="ignore"):
-                self._data = self._allocate((count, height, width), dt, fill)
+            shape = (count, height, width)
+            if copy_of is not None and self._streams_on_flush(self._streams(shape, dt)):
+                self._copy_of = copy_of
+                self._data = np.empty((0, 0, 0), dt)
+            else:
+                fill = self._nodata if self._nodata is not None else 0
+                with np.errstate(invalid="ignore"):
+                    self._data = self._allocate(shape, dt, fill)
             self._structure = self._new_structure()
             if transform is not None:
                 self._transform = guard_transform(transform)
@@ -2913,8 +2923,37 @@ class DatasetWriter(DatasetReader):
             if self._dirty and self.mode in ("w", "w+", "r+"):
                 self._flush()
         finally:
+            self._copy_of = None
             self._release_spill()
             DatasetBase.close(self)
+
+    def _streams_on_flush(self, file_backed: bool | None = None) -> bool:
+        """Whether the file is written in rows of blocks (`_write_streaming`) rather than whole.
+
+        A GeoTIFF is, when its pixels are held in a file (larger than the in-memory limit); a
+        COG is, without a mask, the source's overviews to copy, or overviews built, and with a
+        compression the row writers take.
+
+        Args:
+            file_backed: Whether the pixels are held in a file: by default, whether they are
+                (a copy written from its source is so only when they would be).
+
+        Returns:
+            bool: True when the file is written in rows.
+        """
+        if file_backed is None:
+            file_backed = isinstance(self._data, np.memmap) or self._copy_of is not None
+        cog = self._out_driver == "COG"
+        return (
+            (file_backed or cog)
+            and (
+                self._out_driver == "GTiff"
+                or (cog and self._mask is None and "@COPY_SRC_OVERVIEWS" not in self._options)
+            )
+            and not self._overview_factors
+            and str(self._options.get("COMPRESS", "NONE")).upper()
+            in ("NONE", "LZW", "DEFLATE", "ZIP", "ZSTD", "PACKBITS")
+        )
 
     def _flush(self) -> None:
         """Writes the dataset to its file.
@@ -2948,17 +2987,12 @@ class DatasetWriter(DatasetReader):
                 f"{self._nodata} will be used for all bands on re-opening",
                 stacklevel=3,
             )
-        cog = self._out_driver == "COG"
-        streaming = (
-            (isinstance(self._data, np.memmap) or cog)
-            and (
-                self._out_driver == "GTiff"
-                or (cog and self._mask is None and "@COPY_SRC_OVERVIEWS" not in self._options)
-            )
-            and not self._overview_factors
-            and str(self._options.get("COMPRESS", "NONE")).upper()
-            in ("NONE", "LZW", "DEFLATE", "ZIP", "ZSTD", "PACKBITS")
-        )
+        streaming = self._streams_on_flush()
+        if self._copy_of is not None and not streaming:
+            # A copy given its source to write from no longer writes in rows (unreachable from
+            # `shutil.copy`, which gives none with a mask): its pixels, then, whole.
+            self._data = np.require(self._copy_of.read(), dtype=self._dtype)
+            self._copy_of = None
         raster: Any = None
         if not streaming:
             try:
@@ -3024,7 +3058,7 @@ class DatasetWriter(DatasetReader):
                 # then regenerated otherwise than a file's (`mask_levels` in gtiff_write.rs).
                 opts["@MASK_WITHOUT_DATASET"] = "YES"
         tmp = self._path + f".tmp-{uuid.uuid4().hex}"
-        target = tmp if self.mode == "r+" else self._path
+        target = tmp if self.mode == "r+" or streaming else self._path
         # The sidecar mask is written first beside its place, then both files are put in place
         # once the dataset is written: a failure while writing leaves the dataset and its mask as
         # they were (only between the two renames could the dataset be new and its mask old).
@@ -3201,18 +3235,49 @@ class DatasetWriter(DatasetReader):
             **kw,
         )
         try:
-            for y, n in self._slabs():
-                rows = np.ascontiguousarray(self._data[:, y : y + n, :])
+            source = self._copy_of
+            # Read taller source blocks together within a 16 MiB slab budget (or one output
+            # tile row), then feed the COG writer a tile row at a time. A whole-image strip
+            # taller than a tile row is split in half or smaller. Small images can fit in one slab.
+            write_step = self.structure.block_shape[0] if cog and source is not None else 0
+            step = write_step
+            if step and source is not None:
+                block_rows = max(shape[0] for shape in source.block_shapes)
+                if block_rows > step:
+                    row_bytes = self.width * self.count * np.dtype(self._dtype).itemsize
+                    budget_rows = max(step, ((16 * 1024 * 1024 // row_bytes) // step) * step)
+                    wanted = math.lcm(step, *(shape[0] for shape in source.block_shapes))
+                    if block_rows >= self.height:
+                        wanted = max(step, (self.height // 2 // step) * step)
+                    step = min(wanted, budget_rows)
+            slabs = (
+                ((y, min(step, self.height - y)) for y in range(0, self.height, step))
+                if step
+                else self._slabs()
+            )
+            for y, n in slabs:
+                if source is None:
+                    rows = np.ascontiguousarray(self._data[:, y : y + n, :])
+                else:
+                    part = source.read(window=Window(0, y, self.width, n))
+                    rows = np.ascontiguousarray(np.require(part, dtype=self._dtype))
                 m = (
                     None
                     if self._mask is None or sidecar_mask
                     else np.ascontiguousarray(self._mask[y : y + n])
                 )
                 if m is None:
-                    w.write(rows)
+                    if write_step:
+                        for start in range(0, n, write_step):
+                            w.write(np.ascontiguousarray(rows[:, start : start + write_step, :]))
+                    else:
+                        w.write(rows)
                 else:
                     # A GeoTiffWriter: a COG streams only without a mask.
                     w.write(rows, m)  # type: ignore[call-arg]
+                del rows
+                if source is not None:
+                    del part
         except BaseException:
             # Closing an incomplete writer fails too ("N rows written of M"): keep the first
             # error, which says what went wrong.
