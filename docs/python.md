@@ -414,9 +414,9 @@ full resolution exactly. The estimate's accuracy is described under
 overview of floating-point data without nodata when the footprint covers complete overview
 cells. Cropping through those cells makes even the total approximate; rounded integer means,
 partly nodata blocks and other overview resamplings also introduce approximation. Give a coarse `sum` a floating-point `ot`: a
-`"UInt16"` output stores 65535 for any larger sum. A `sum` of one source without a cutline
+`"UInt16"` output stores 65535 for any larger sum. For paths and lazy inputs, a `sum` of one source without a cutline
 reads the window of an output too coarse to be split into chunks a strip of rows at a time, as
-`terrio warp` does (see [Warp source overviews](cli.md#warp-source-overviews)). A `sum` whose
+`terrio warp` does (see [Warp source overviews](cli.md#warp-source-overviews)). The working-memory estimate applies per strip, with at least one row; two strips overlap during reading and computation, in addition to output and decoder buffers. An unmasked, already loaded `Raster` reuses its resident pixels and does not use strip reads or this source-read budget. For paths and lazy inputs, a `sum` whose
 source pixels held at once would exceed 4 GiB, as several sources or a cutline hold every source
 whole, raises `ResourceLimitError` (a `MemoryError`) before they are read, and so do a `sum` read
 of a `WarpedVRT` and a `sum` `terrio.rio.warp.reproject` of a band or dataset: `overview=n` sums a

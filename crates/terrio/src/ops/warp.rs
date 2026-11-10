@@ -270,7 +270,9 @@ pub struct WarpOptions {
     pub crop_to_cutline: bool,
     /// Maximum error, in pixels, of the approximate transformer (`-et`; 0 for exact transforms).
     pub error_threshold: f64,
-    /// Working memory per chunk, in bytes (`-wm`), which decides how the output is split.
+    /// Working-memory estimate per chunk, in bytes (`-wm`), which decides how output is split.
+    /// Unsplittable single-source sum chunks use this estimate per strip (at least one row);
+    /// their read/compute pipeline holds two strips at once, plus output and decoder buffers.
     pub memory_limit: f64,
     /// Ground control points georeferencing the (first) source in place of its geotransform,
     /// in the source CRS: warped with a GCP polynomial or thin plate splines, as `gdalwarp` warps
