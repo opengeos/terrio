@@ -431,6 +431,10 @@ pub enum ObjectRange {
     Suffix(u64),
 }
 
+/// The requests the caller of a [`SparseFile`] or [`SparseObjects`] in terrio-js keeps in flight at
+/// once: browsers queue more, and servers may rate-limit them.
+pub const PARALLEL_REQUESTS: usize = 12;
+
 /// A part of an object: its key and range.
 type Part = (String, ObjectRange);
 
@@ -459,6 +463,8 @@ type Held = (HashMap<Part, Option<Vec<u8>>>, u64);
 pub struct SparseObjects {
     held: Mutex<Held>,
     missing: Mutex<(Vec<Part>, HashSet<Part>)>,
+    /// The requests the caller keeps in flight, when reads should fill them (0: not asked).
+    parallel: std::sync::atomic::AtomicUsize,
 }
 
 impl SparseObjects {
@@ -479,6 +485,20 @@ impl SparseObjects {
             missing.0.push(part);
         }
         Err(io::Error::other(format!("{key} ({range:?}) is not fetched yet")))
+    }
+
+    /// Asks reads to split their parts into at least `n` requests where they can, as the caller
+    /// keeps `n` in flight at once: Zarr reads then split the inner chunks of a shard into that
+    /// many runs, rather than runs of up to 1 MiB. Worth it where requests at once are not queued:
+    /// in Node.js, not in browsers, which keep 6 connections to an HTTP/1.1 server such as S3.
+    /// Not asked (0), the default, parts are as reads choose them.
+    pub fn set_parallel_requests(&self, n: usize) {
+        self.parallel.store(n, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The requests reads should fill ([`SparseObjects::set_parallel_requests`]), when asked.
+    pub fn parallel_requests(&self) -> Option<usize> {
+        Some(self.parallel.load(std::sync::atomic::Ordering::Relaxed)).filter(|&n| n > 0)
     }
 
     /// Whether a read missed parts not fetched since.

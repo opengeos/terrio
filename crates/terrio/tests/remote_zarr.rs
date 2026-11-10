@@ -238,6 +238,73 @@ fn stores_fetched_by_the_caller_are_read_in_rounds() {
     assert!(requests > 0);
 }
 
+/// A read of many inner chunks of one shard, from a store whose objects the caller fetches, is
+/// split into the requests the caller keeps in flight when it asks (terrio-js in Node.js), rather
+/// than into runs of up to 1 MiB, which it is otherwise (in browsers, which queue requests).
+#[test]
+fn caller_fetched_shard_reads_fill_the_parallel_requests() {
+    use terrio::sparse::{ObjectRange, PARALLEL_REQUESTS, SparseObjects};
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("s.zarr");
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::write(store.join("zarr.json"), r#"{"zarr_format": 3, "node_type": "group", "attributes": {}}"#).unwrap();
+    // One shard of 48 x 48: 36 inner chunks of 8 x 8 (128 bytes each), next to each other.
+    let meta = serde_json::json!({
+        "zarr_format": 3, "node_type": "array", "shape": [48, 48], "data_type": "uint16",
+        "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [48, 48]}},
+        "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
+        "fill_value": 0,
+        "codecs": [{"name": "sharding_indexed", "configuration": {
+            "chunk_shape": [8, 8], "codecs": [{"name": "bytes", "configuration": {"endian": "little"}}],
+            "index_codecs": [{"name": "bytes", "configuration": {"endian": "little"}}, {"name": "crc32c"}],
+            "index_location": "end"}}]
+    });
+    let value = |r: usize, c: usize| (r * 100 + c) as u16;
+    write_sharded(&store.join("a"), [48, 48], [48, 48], [8, 8], meta, |iy, ix| {
+        Some((iy * 8..iy * 8 + 8).flat_map(|r| (ix * 8..ix * 8 + 8).flat_map(move |c| value(r, c).to_le_bytes())).collect())
+    });
+    // Fetches the objects missed: the parts of them asked for.
+    let fetch = |objects: &SparseObjects| -> Vec<ObjectRange> {
+        let missing = objects.missing();
+        assert!(!missing.is_empty(), "permanent error without missing objects");
+        for (key, range) in &missing {
+            let data = std::fs::read(store.join(key)).ok().map(|b| match *range {
+                ObjectRange::Whole => b,
+                ObjectRange::At(o, l) => b[o as usize..(o + l) as usize].to_vec(),
+                ObjectRange::Suffix(n) => b[b.len() - n as usize..].to_vec(),
+            });
+            objects.insert(key, *range, data);
+        }
+        missing.into_iter().map(|(_, r)| r).collect()
+    };
+    // The whole array, the requests in flight asked or not: the shard's index (its last bytes),
+    // then its inner chunks, in runs.
+    for (parallel, expected) in [(None, 1), (Some(PARALLEL_REQUESTS), PARALLEL_REQUESTS)] {
+        let objects = Arc::new(SparseObjects::new());
+        if let Some(n) = parallel {
+            objects.set_parallel_requests(n);
+        }
+        let mut r = loop {
+            match terrio::LazyRaster::from_zarr_objects(objects.clone(), "s.zarr", "a") {
+                Ok(r) if !objects.has_missing() => break r,
+                _ => drop(fetch(&objects)),
+            }
+        };
+        let mut runs = 0;
+        let w = loop {
+            match r.read_window(Window::new(0, 0, 48, 48), &WindowOptions::default()) {
+                Ok(w) if !objects.has_missing() => break w,
+                _ => runs = fetch(&objects).iter().filter(|r| matches!(r, ObjectRange::At(..))).count(),
+            }
+        };
+        assert_eq!(runs, expected, "{parallel:?}");
+        assert_eq!(
+            (w.raster.get(0, 0, 0), w.raster.get(0, 47, 47), w.raster.get(0, 20, 9)),
+            (0.0, value(47, 47) as f64, value(20, 9) as f64)
+        );
+    }
+}
+
 /// Coordinate objects must arrive before the public constructor exposes a final transform.
 #[test]
 fn caller_fetched_coordinates_are_required_before_open_succeeds() {

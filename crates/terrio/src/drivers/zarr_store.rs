@@ -480,6 +480,15 @@ impl Node {
     pub(crate) fn is_served(&self) -> bool {
         self.store.is_served()
     }
+
+    /// The requests the caller fetching the store's objects keeps in flight, when it asks reads to
+    /// fill them ([`crate::sparse::SparseObjects::set_parallel_requests`]).
+    pub(crate) fn parallel_requests(&self) -> Option<usize> {
+        match &self.store.backend {
+            Backend::Sparse(objects) => objects.parallel_requests(),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
