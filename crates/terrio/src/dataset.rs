@@ -702,7 +702,7 @@ fn open_remote_vector_response(url: &str, options: &VectorOpenOptions) -> Option
     };
     let driver = remote_vector_response_driver(&head)?;
     let result = crate::formats::check_driver_allowed(driver.name(), url, crate::formats::Kind::Vector)
-        .and_then(|()| crate::http::get_file(&remote, crate::http::Redirects::Any))
+        .and_then(|()| crate::http::get_file(&remote, crate::http::Redirects::for_reads()))
         .and_then(|bytes| read_vector_answer(url, bytes, driver, options));
     #[cfg(feature = "gdal")]
     let result = gdal_fallback(url, result, |path| crate::gdal_backend::open_vector(path, options));
