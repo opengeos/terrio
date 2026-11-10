@@ -107,7 +107,7 @@ same-file = "1.0.6"
 tar = { version = "0.4", default-features = false }
 # POSIX file locks for in-place SQLite updates (Unix).
 libc = "0.2"
-zip = { version = "9", default-features = false, features = ["deflate"] }
+zip = { version = "9.1", default-features = false, features = ["deflate"] }
 # No TLS provider of its own: terrio supplies `rustls-graviola`, which needs no C compiler.
 ureq = { version = "3", default-features = false, features = ["gzip", "rustls-no-provider", "rustls-webpki-roots"] }
 rustls-graviola = "0.4"

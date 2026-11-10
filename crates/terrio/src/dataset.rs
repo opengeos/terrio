@@ -2350,7 +2350,7 @@ mod content_allow_list_tests {
     }
 
     /// With `TERRIO_WBVECTOR_FALLBACK=YES`, a zip archive named for no driver is read as KMZ: its
-    /// `doc.kml` in any case, else its first `.kml` member, its members stored or deflated. A zip
+    /// first `.kml` entry at the root, here `DOC.KML`, its members stored or deflated. A zip
     /// archive is never XML, so one named `.xml` is read as KMZ too, even with `<kml` in its first
     /// 4 KiB: only a path without an extension beside a `.shp` file is read as the shapefile.
     // Without the GDAL backend: with it, what terrio refuses goes on to GDAL (gdal_fallback).
@@ -2372,7 +2372,7 @@ mod content_allow_list_tests {
             zip.finish().unwrap().into_inner()
         };
         let main = kml("main", &[point("10.5,47.25"), point("11.5,46.5")].concat());
-        let members = [("notes.txt", "-".to_string()), ("a.kml", kml("first", &point("1,2"))), ("DOC.KML", main)];
+        let members = [("notes.txt", "-".to_string()), ("DOC.KML", main), ("a.kml", kml("first", &point("1,2")))];
         let (stored, deflated) = (archive(zip::CompressionMethod::Stored, &members), archive(zip::CompressionMethod::Deflated, &members));
         let shows_kml = |bytes: &[u8]| bytes[..bytes.len().min(4096)].windows(4).any(|w| w == b"<kml");
         assert_eq!((shows_kml(&stored), shows_kml(&deflated)), (true, false), "<kml in the first 4 KiB: (stored, deflated)");
@@ -2536,11 +2536,11 @@ mod content_allow_list_tests {
     }
 
     /// With `TERRIO_WBVECTOR_FALLBACK=YES`, a zip archive named for no driver is read as the same
-    /// archive named `.kmz` is: from its first member named `doc.kml` (in any case) at the
-    /// archive's root, else its first `.kml` member. An archive with two `doc.kml` members reads the
-    /// last one (zip keeps one entry per name, the last), and a member that cannot be opened
-    /// (encrypted) stops the read only if it is the one read. The document is decoded as Latin-1
-    /// when it is not UTF-8.
+    /// archive named `.kmz` is: from its first `.kml` member at the archive's root, whatever its
+    /// name, else its first `.kml` member. An archive with two `doc.kml` members is refused (zip
+    /// keeps one entry per name, the last, so the first cannot be read), and a member that cannot
+    /// be opened (encrypted) stops the read only if it is the one read. The document is decoded as
+    /// Latin-1 when it is not UTF-8.
     #[cfg(not(feature = "gdal"))]
     #[test]
     fn the_wbvector_fallback_reads_the_kmz_member_the_kmz_driver_reads() {
@@ -2553,14 +2553,17 @@ mod content_allow_list_tests {
         // A document in Latin-1 (é is the byte 0xE9), not UTF-8.
         let latin1: Vec<u8> =
             format!(r#"<?xml version="1.0" encoding="ISO-8859-1"?>{}"#, kml("caf\u{e9}")).chars().map(|c| c as u8).collect();
-        let cases: [(&str, &[Member], &str); 7] = [
-            ("twice", &[("doc.kml", first, 0), ("doc.kml", last, 0)], "last"),
-            ("cases", &[("DOC.KML", upper, 0), ("doc.kml", last, 0)], "upper"),
-            ("no_doc", &[("notes.txt", b"-", 0), ("b.kml", b, 0), ("a.kml", a, 0)], "b"),
-            ("nested", &[("b.kml", b, 0), ("files/doc.kml", a, 0)], "b"),
-            ("locked_before", &[("secret.txt", b"-", 1), ("doc.kml", last, 0)], "last"),
-            ("locked_after", &[("doc.kml", last, 0), ("secret.txt", b"-", 1)], "last"),
-            ("latin1", &[("doc.kml", &latin1, 0)], "caf\u{e9}"),
+        let ambiguous =
+            r#"Err(InvalidData("KMZ: the archive holds several entries with the same name, so its main document is ambiguous"))"#;
+        let cases: [(&str, &[Member], std::result::Result<&str, &str>); 8] = [
+            ("twice", &[("doc.kml", first, 0), ("doc.kml", last, 0)], Err(ambiguous)),
+            ("cases", &[("DOC.KML", upper, 0), ("doc.kml", last, 0)], Ok("upper")),
+            ("before_doc", &[("a.kml", a, 0), ("doc.kml", last, 0)], Ok("a")),
+            ("no_doc", &[("notes.txt", b"-", 0), ("b.kml", b, 0), ("a.kml", a, 0)], Ok("b")),
+            ("nested", &[("b.kml", b, 0), ("files/doc.kml", a, 0)], Ok("b")),
+            ("locked_before", &[("secret.txt", b"-", 1), ("doc.kml", last, 0)], Ok("last")),
+            ("locked_after", &[("doc.kml", last, 0), ("secret.txt", b"-", 1)], Ok("last")),
+            ("latin1", &[("doc.kml", &latin1, 0)], Ok("caf\u{e9}")),
         ];
         let dir = tempfile::tempdir().unwrap();
         let read = cases.map(|(name, members, _)| {
@@ -2575,7 +2578,10 @@ mod content_allow_list_tests {
             });
             (name, read)
         });
-        let expected = cases.map(|(name, _, layer)| (name, [Ok(layer.to_string()), Ok(layer.to_string())]));
+        let expected = cases.map(|(name, _, layer)| {
+            let layer = layer.map(str::to_string).map_err(str::to_string);
+            (name, [layer.clone(), layer])
+        });
         assert_eq!(read, expected, "the layer read from each archive: [by the fallback, by the KMZ driver]");
     }
 }

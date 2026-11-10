@@ -962,6 +962,11 @@ reads it.
   `--kmz-resource`, Python `kmz_resources`, JavaScript `kmzResources`), such as the icon images
   of `SYMBOL` styles, are packed beside those documents, so relative icon links resolve inside
   the archive.
+- **A KMZ archive's main document** is its first KML file at the root of the archive, in the
+  order of its entries, whatever its name (OGC KML 2.3, Annex C.1); a KML file in a folder is
+  the main document only when the root holds none. An archive holding two entries with the same
+  name is refused as invalid data (`InvalidDataError` in Python): which of them is meant is
+  ambiguous.
 - **KMZ archives are read within limits**, whether opened from a file or from memory: the zip
   archive limits of `/vsizip/` (`TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO`,
   `TERRIO_ZIP_MAX_SIZE`), and 512 MiB of decompressed text for the main document and the layer
