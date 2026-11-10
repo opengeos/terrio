@@ -35,8 +35,9 @@ and PROJJSON definitions that name it, in both configurations of `terrio-crs`, a
 same standard parallel, whose pole lies at the northing at the false origin minus
 ρF = a cos φF / (1 − e² sin² φF)^0.5 (plus ρF for the north pole case). For EPSG:2985 this is a
 false northing of −2,299,363.488 m. `to_projjson` writes the CRS as variant B with this false
-northing, and `to_gdal_projjson` refuses method 9830. A WKT that names the method without its
-standard parallel is refused.
+northing, and `to_gdal_projjson` refuses method 9830. Definitions must supply a finite standard parallel
+within −90° to 90°, longitude of origin, and easting and northing at false origin. Incomplete
+definitions and invalid parameter values are refused.
 
 Mollweide and Wagner IV/V use Terrio's own ports of PROJ's formulas, including
 PROJ's finite Mollweide pole approximation. Their inverses judge antimeridian

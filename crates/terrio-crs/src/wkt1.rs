@@ -305,14 +305,12 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
 
     // `x_0` and `y_0` are ESRI's names for them in `PROJ_healpix`, `PROJ_rhealpix` and `PROJ_isea`.
     let proj_method = matches!(method.as_str(), "projhealpix" | "projrhealpix") || method.starts_with("projisea");
-    let fe = get(&["falseeasting", "eastingatfalseorigin", "eastingatprojectioncentre"])
-        .or_else(|| if proj_method { get(&["x0"]) } else { None })
-        .unwrap_or(0.0)
-        * to_meter;
-    let mut fn_ = get(&["falsenorthing", "northingatfalseorigin", "northingatprojectioncentre"])
-        .or_else(|| if proj_method { get(&["y0"]) } else { None })
-        .unwrap_or(0.0)
-        * to_meter;
+    let easting = get(&["falseeasting", "eastingatfalseorigin", "eastingatprojectioncentre"])
+        .or_else(|| if proj_method { get(&["x0"]) } else { None });
+    let northing = get(&["falsenorthing", "northingatfalseorigin", "northingatprojectioncentre"])
+        .or_else(|| if proj_method { get(&["y0"]) } else { None });
+    let fe = easting.unwrap_or(0.0) * to_meter;
+    let mut fn_ = northing.unwrap_or(0.0) * to_meter;
     let azimuth = angle(&["azimuth", "azimuthofinitialline"]);
     let gamma = angle(&["rectifiedgridangle", "angleofrectifiedtoskewedgrid"]);
     let push = |out: &mut Vec<String>, k: &str, v: Option<f64>| {
@@ -406,11 +404,14 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         }
         // Variant B on the same standard parallel, with its false origin moved to the pole.
         "polarstereographicvariantc" => {
-            let lat = angle(&["latitudeofstandardparallel"])?;
+            let lat = angle(&["latitudeofstandardparallel"]).filter(|v| v.is_finite() && v.abs() <= 90.0)?;
+            let lon = lon_0.filter(|v| v.is_finite())?;
+            easting.filter(|v| v.is_finite())?;
+            northing.filter(|v| v.is_finite())?;
             out.push("+proj=stere".into());
             push(&mut out, "lat_0", Some(if lat < 0.0 { -90.0 } else { 90.0 }));
             push(&mut out, "lat_ts", Some(lat));
-            push(&mut out, "lon_0", lon_0);
+            push(&mut out, "lon_0", Some(lon));
             fn_ = variant_c_pole_northing(a, rf, lat, fn_);
         }
         "obliquestereographic" | "doublestereographic" => {

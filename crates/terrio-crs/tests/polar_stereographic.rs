@@ -392,6 +392,60 @@ fn variant_c_method_code_overrides_a_generic_wkt1_name() {
     assert!(Transformer::new(&geographic, &SpatialRef::from_wkt(&incomplete)).is_err());
 }
 
+/// Required origin parameters cannot silently default to Greenwich or zero offsets.
+#[test]
+fn variant_c_requires_its_origin_parameters() {
+    let geographic = SpatialRef::from_epsg(4636).unwrap();
+    for (name, wkt, parameters) in [
+        (
+            "WKT 1",
+            TERRE_ADELIE_WKT1,
+            [
+                r#"PARAMETER["Longitude of origin",140],"#,
+                r#"PARAMETER["Easting at false origin",300000],"#,
+                r#"PARAMETER["Northing at false origin",200000],"#,
+            ],
+        ),
+        (
+            "WKT 2",
+            TERRE_ADELIE_WKT2,
+            [
+                r#"PARAMETER["Longitude of origin",140,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8833]],"#,
+                r#"PARAMETER["Easting at false origin",300000,LENGTHUNIT["metre",1],ID["EPSG",8826]],"#,
+                r#"PARAMETER["Northing at false origin",200000,LENGTHUNIT["metre",1],ID["EPSG",8827]]"#,
+            ],
+        ),
+    ] {
+        for parameter in parameters {
+            assert!(wkt.contains(parameter), "{name}: {parameter}");
+            let incomplete = wkt.replace(parameter, "").replace(",]", "]");
+            let declared = if name == "WKT 1" { r#"AUTHORITY["EPSG","2985"]"# } else { r#"ID["EPSG",2985]"# };
+            for definition in [incomplete.clone(), format!("{},{}]", &incomplete[..incomplete.len() - 1], declared)] {
+                assert!(Transformer::new(&geographic, &SpatialRef::from_wkt(&definition)).is_err(), "{name}: missing {parameter}");
+            }
+        }
+        for value in ["-91", "91", "NaN", "inf"] {
+            let definition = wkt.replace(r#"parallel",-67"#, &format!(r#"parallel",{value}"#));
+            assert_ne!(definition, wkt);
+            assert!(Transformer::new(&geographic, &SpatialRef::from_wkt(&definition)).is_err(), "{name}: parallel {value}");
+        }
+    }
+}
+
+/// Zero latitude remains a valid standard parallel: the false origin is on the equator.
+#[test]
+fn variant_c_equatorial_standard_parallel_keeps_its_false_origin() {
+    let case = wkt1_variant_c(
+        r#"SPHEROID["International 1924",6378388,297]"#,
+        "+ellps=intl",
+        [0.0, 140.0, 300000.0, 200000.0],
+        90.0,
+        (300000.0, 6578388.0),
+    );
+    let (x, y) = Transformer::new(&case.geographic, &case.crs).unwrap().transform(140.0, 0.0).unwrap();
+    assert!((x - 300000.0).abs() < 1e-6 && (y - 200000.0).abs() < 1e-6, "({x}, {y})");
+}
+
 /// The wbprojection CRS a variant C CRS converts to, from which terrio describes CRSs in formats
 /// such as NetCDF's grid mappings, projects the note's example point as terrio does, also when the
 /// CRS is the source of a WKT 2 bound CRS.

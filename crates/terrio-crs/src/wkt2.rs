@@ -238,10 +238,23 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         "stere"
     } else if is(&["polarstereographicvariantc"], &[9830]) {
         // Variant B on the same standard parallel, with its false origin moved to the pole.
-        let ts = p.get(LAT_TS).ok_or_else(|| bad("Polar Stereographic (variant C) without its standard parallel"))?;
+        let ts = p
+            .get(LAT_TS)
+            .filter(|v| v.is_finite() && v.abs() <= 90.0)
+            .ok_or_else(|| bad("Polar Stereographic (variant C) without a valid standard parallel"))?;
+        let lon =
+            lon_0().filter(|v| v.is_finite()).ok_or_else(|| bad("Polar Stereographic (variant C) without its longitude of origin"))?;
+        fe = p
+            .get(FE)
+            .filter(|v| v.is_finite())
+            .ok_or_else(|| bad("Polar Stereographic (variant C) without its easting at false origin"))?;
+        fn_ = p
+            .get(FN)
+            .filter(|v| v.is_finite())
+            .ok_or_else(|| bad("Polar Stereographic (variant C) without its northing at false origin"))?;
         push("lat_0", Some(if ts < 0.0 { -90.0 } else { 90.0 }));
         push("lat_ts", Some(ts));
-        push("lon_0", lon_0());
+        push("lon_0", Some(lon));
         fn_ = super::wkt1::variant_c_pole_northing(geog.a, geog.rf, ts, fn_);
         "stere"
     } else if is(&["obliquestereographic"], &[9809]) {
