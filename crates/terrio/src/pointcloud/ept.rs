@@ -510,18 +510,203 @@ impl FormatReader for EptReader {
         }
         let keys: Vec<(Key, u64)> = c.nodes[c.next..j].iter().filter(|(_, n)| *n > 0).copied().collect();
         let files: Vec<String> = keys.iter().map(|(k, _)| self.data_file(*k)).collect();
-        // Fetch (in parallel, on native builds) and decode the nodes.
+        // The nodes are fetched and decoded as many at a time as terrio's pool has threads (one at
+        // a time in WebAssembly), on the calling thread and threads that enter its options
+        // (`map_waiting`): an `Env`'s HTTP headers and driver allow-list apply to every node.
         let base = &self.base;
-        #[cfg(not(target_family = "wasm"))]
-        let parts: Vec<Result<Vec<Dimension>>> =
-            crate::par::map_range(keys.len(), |i| self.decode(keys[i].0, keys[i].1, fetch(base, &files[i])?));
-        #[cfg(target_family = "wasm")]
-        let parts: Vec<Result<Vec<Dimension>>> = keys.iter().zip(&files).map(|((k, n), f)| self.decode(*k, *n, fetch(base, f)?)).collect();
-        let parts = parts.into_iter().collect::<Result<Vec<_>>>()?;
+        let parts =
+            crate::par::map_waiting(keys.len(), crate::par::threads(), |i| self.decode(keys[i].0, keys[i].1, fetch(base, &files[i])?))?;
         let dims = super::read::concat(parts, &self.dims);
         c.next = j;
         let out = apply_options(dims, &c.filter, 1, 0);
         self.cursor = Some(c);
         Ok(Some(out))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{EptDataType, PointCloud, PointWriteOptions};
+    use super::{Dimension, Values};
+    use std::path::Path;
+
+    /// The 40 points of eight clusters of five, one at each corner of a 1,000-unit cube. In nodes
+    /// of at most 10 points, the root keeps one point of each cluster, and each of its eight
+    /// children the four others of one.
+    fn corners() -> PointCloud {
+        let mut xyz: [Vec<f64>; 3] = Default::default();
+        for corner in 0..8u32 {
+            for k in 0..5u32 {
+                for (axis, values) in xyz.iter_mut().enumerate() {
+                    values.push(f64::from((corner >> axis) & 1) * 1000.0 + f64::from(k) * 0.1);
+                }
+            }
+        }
+        let [x, y, z] = xyz;
+        let dims = vec![Dimension::new("x", Values::F64(x)), Dimension::new("y", Values::F64(y)), Dimension::new("z", Values::F64(z))];
+        PointCloud::new(dims, Default::default())
+    }
+
+    /// The points of [`corners`] written in `dir` as an EPT dataset of `nodes` nodes (one, or nine:
+    /// the root and its eight children), in `data_type`. Returns its `ept.json`.
+    fn dataset(dir: &Path, nodes: usize, data_type: EptDataType) -> String {
+        let leaf_points = if nodes == 1 { 100 } else { 10 };
+        let options = PointWriteOptions { copc_leaf_points: Some(leaf_points), ept_data_type: data_type, ..Default::default() };
+        let path = dir.join("ept.json").to_string_lossy().into_owned();
+        crate::pointcloud::write_points(&corners(), &path, &options).unwrap();
+        assert_eq!(std::fs::read_dir(dir.join("ept-data")).unwrap().count(), nodes);
+        path
+    }
+
+    /// The points read from `path` under the calling thread's `options`, or the error's message.
+    fn read(path: &str, options: &[(&str, &str)]) -> std::result::Result<usize, String> {
+        crate::config::with_options(options, || crate::pointcloud::read_points(path, &Default::default()))
+            .map(|cloud| cloud.len())
+            .map_err(|e| e.to_string())
+    }
+
+    /// The points read from `path` in chunks of 1,000 points (one chunk for all the nodes of a
+    /// [`dataset`]) under the calling thread's `options`, or the error's message.
+    fn read_in_chunks(path: &str, options: &[(&str, &str)]) -> std::result::Result<usize, String> {
+        let chunks = || -> crate::Result<usize> {
+            let mut reader = crate::pointcloud::open_points(path)?;
+            reader.chunks(&Default::default(), 1000)?.map(|chunk| chunk.map(|c| c.len())).sum()
+        };
+        crate::config::with_options(options, chunks).map_err(|e| e.to_string())
+    }
+
+    /// Under the calling thread's `TERRIO_ALLOWED_DRIVERS=EPT` (`config::push_scope`, as
+    /// `terrio.rio.Env` sets it), a dataset whose nodes are LAZ is refused, whether a read takes
+    /// one node or nine, whole or in chunks: the LAS reader would read them. With LAZ allowed too,
+    /// or with nodes in another encoding, the dataset is read.
+    #[test]
+    fn the_calling_threads_allow_list_applies_to_every_node() {
+        let refused = "'0-0-0-0.laz' holds LAS data, and the LAS driver is not allowed (allowed: EPT)";
+        for nodes in [1, 9] {
+            let dir = tempfile::tempdir().unwrap();
+            let laz = dataset(&dir.path().join("laz"), nodes, EptDataType::Laszip);
+            let binary = dataset(&dir.path().join("binary"), nodes, EptDataType::Binary);
+            let list = |drivers| [("TERRIO_ALLOWED_DRIVERS", drivers)];
+            assert_eq!(read(&laz, &list("EPT")), Err(refused.to_string()), "{nodes} node(s)");
+            assert_eq!(read_in_chunks(&laz, &list("EPT")), Err(refused.to_string()), "{nodes} node(s), in chunks");
+            assert_eq!(read(&laz, &list("EPT,LAZ")), Ok(40), "{nodes} node(s)");
+            assert_eq!(read_in_chunks(&laz, &list("EPT,LAZ")), Ok(40), "{nodes} node(s), in chunks");
+            assert_eq!(read(&binary, &list("EPT")), Ok(40), "{nodes} node(s)");
+        }
+    }
+
+    #[cfg(remote)]
+    mod over_http {
+        use super::{EptDataType, Path, dataset, read};
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+
+        /// A request a [`serve`] server saw: its path, and its `X-Probe` and `User-Agent` headers.
+        type Request = (String, Option<String>, Option<String>);
+
+        /// What a [`serve`] server saw: its requests, and the node requests that arrived, are in
+        /// flight, and were in flight at once at most.
+        #[derive(Default)]
+        struct Seen {
+            requests: Mutex<Vec<Request>>,
+            arrived: AtomicUsize,
+            in_flight: AtomicUsize,
+            most: AtomicUsize,
+        }
+
+        /// Serves the files in `dir` over HTTP, a thread for each connection. A request for a node
+        /// is answered once `hold` node requests have arrived, or after 5 seconds: so that nodes
+        /// fetched fewer than `hold` at a time are seen to be.
+        fn serve(dir: &Path, hold: usize) -> (String, Arc<Seen>) {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let (root, seen) = (dir.to_path_buf(), Arc::new(Seen::default()));
+            let record = seen.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let (root, record) = (root.clone(), record.clone());
+                    std::thread::spawn(move || answer(stream, &root, hold, &record));
+                }
+            });
+            (base, seen)
+        }
+
+        fn answer(mut stream: TcpStream, root: &Path, hold: usize, seen: &Seen) {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line);
+            let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+            let (mut probe, mut agent) = (None, None);
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = header.split_once(':') {
+                    match name.trim().to_ascii_lowercase().as_str() {
+                        "x-probe" => probe = Some(value.trim().to_string()),
+                        "user-agent" => agent = Some(value.trim().to_string()),
+                        _ => {}
+                    }
+                }
+            }
+            seen.requests.lock().unwrap().push((path.clone(), probe, agent));
+            let node = path.starts_with("/ept-data/");
+            if node {
+                seen.arrived.fetch_add(1, SeqCst);
+                seen.most.fetch_max(seen.in_flight.fetch_add(1, SeqCst) + 1, SeqCst);
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while seen.arrived.load(SeqCst) < hold && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            let response = match std::fs::read(root.join(path.trim_start_matches('/'))) {
+                Ok(body) => {
+                    [format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes(), body].concat()
+                }
+                Err(_) => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+            };
+            let _ = stream.write_all(&response);
+            if node {
+                seen.in_flight.fetch_sub(1, SeqCst);
+            }
+        }
+
+        /// Every request of a read of a remote EPT dataset carries the HTTP options the calling
+        /// thread set for itself (a header and the user agent, as `terrio.rio.Env` sets them), its
+        /// nodes' too, whether the read takes one node or nine.
+        #[test]
+        fn every_request_of_a_read_carries_the_calling_threads_http_options() {
+            let options = [("GDAL_HTTP_HEADERS", "X-Probe: set"), ("GDAL_HTTP_USERAGENT", "probe/1.0")];
+            for nodes in [1, 9] {
+                let dir = tempfile::tempdir().unwrap();
+                dataset(dir.path(), nodes, EptDataType::Binary);
+                let (base, seen) = serve(dir.path(), nodes.min(crate::par::threads()));
+                assert_eq!(read(&format!("{base}/ept.json"), &options), Ok(40), "{nodes} node(s)");
+                let requests = seen.requests.lock().unwrap();
+                assert_eq!(requests.iter().filter(|(path, ..)| path.starts_with("/ept-data/")).count(), nodes);
+                let without: Vec<_> = requests
+                    .iter()
+                    .filter(|(_, probe, agent)| probe.as_deref() != Some("set") || agent.as_deref() != Some("probe/1.0"))
+                    .collect();
+                assert!(without.is_empty(), "{nodes} node(s), requests without the options: {without:?}");
+            }
+        }
+
+        /// The nodes of a read are fetched as many at a time as terrio's pool has threads (at most
+        /// the nine there are): the server answers a node once that many have been asked for.
+        #[test]
+        fn the_nodes_of_a_read_are_fetched_as_many_at_a_time_as_the_pool_has_threads() {
+            let at_once = crate::par::threads().min(9);
+            let dir = tempfile::tempdir().unwrap();
+            dataset(dir.path(), 9, EptDataType::Binary);
+            let (base, seen) = serve(dir.path(), at_once);
+            assert_eq!(read(&format!("{base}/ept.json"), &[]), Ok(40));
+            let most = seen.most.load(SeqCst);
+            assert!(most >= at_once, "at most {most} node request(s) in flight at once, {at_once} expected");
+        }
     }
 }

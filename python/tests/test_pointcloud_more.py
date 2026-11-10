@@ -6,8 +6,12 @@ directory filled by `scripts/fetch_test_data.sh`; their expected values come fro
 GDAL 3.12 (`gdal_grid`).
 """
 
+import http.server
 import json
 import os
+import subprocess
+import sys
+import threading
 
 import numpy as np
 import pytest
@@ -281,6 +285,110 @@ def test_ept_append(tmp_path):
     ) + len(second)
     with pytest.raises(terrio.TerrioError):
         terrio.convert_points(str(tmp_path / "second.laz"), str(tmp_path / "x.laz"), append=True)
+
+
+EPT_READ_CHILD = r"""
+import json, sys
+import terrio, terrio.rio as rio
+source, where, options = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+
+
+def read():
+    try:
+        return len(terrio.read_points(source))
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+
+
+if where == "Env":
+    with rio.Env(**options):
+        print(json.dumps(read()))
+else:
+    print(json.dumps(read()))
+"""
+
+
+@pytest.fixture(scope="module")
+def ept_nodes(tmp_path_factory):
+    """EPT datasets whose nodes are LAZ, of one node (100 points) and of nine (100,001 points:
+    the root and its eight children), served by a local HTTP server that records each request's
+    path and its `X-Probe` and `User-Agent` headers."""
+    root = tmp_path_factory.mktemp("ept-nodes")
+    rng = np.random.default_rng(0)
+    for name, n, nodes in [("one", 100, 1), ("nine", 100_001, 9)]:
+        points = {axis: rng.uniform(0, 1000, n) for axis in "xyz"}
+        cloud = terrio.PointCloud.from_dict(points, crs="EPSG:32633")
+        cloud.write(str(root / name), format="EPT", ept_data_type="laszip")
+        assert len(os.listdir(root / name / "ept-data")) == nodes
+    seen = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            seen.append((self.path, self.headers.get("X-Probe"), self.headers.get("User-Agent")))
+            path = root / self.path.lstrip("/")
+            data = path.read_bytes() if path.is_file() else b""
+            self.send_response(200 if path.is_file() else 404)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield root, f"http://127.0.0.1:{server.server_address[1]}", seen
+    server.shutdown()
+
+
+def read_in_child(source, where, **options):
+    """The points read from `source` in a child process, or its error: with the options set with
+    `terrio.rio.Env`, or in the child's environment."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(("GDAL_HTTP", "TERRIO_HTTP", "TERRIO_ALLOWED_DRIVERS"))
+    }
+    if where == "environment":
+        env.update(options)
+    p = subprocess.run(
+        [sys.executable, "-c", EPT_READ_CHILD, source, where, json.dumps(options)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    assert p.returncode == 0, p.stderr[-600:]
+    return json.loads(p.stdout)
+
+
+@pytest.mark.parametrize("where", ["Env", "environment"])
+@pytest.mark.parametrize(("name", "nodes", "points"), [("one", 1, 100), ("nine", 9, 100_001)])
+def test_every_request_of_an_ept_read_carries_the_http_options(
+    ept_nodes, name, nodes, points, where
+):
+    """Every request of a read of a remote EPT dataset carries the header and the user agent set
+    with `terrio.rio.Env` or in the environment, its nodes' too, whether the read takes one node
+    or nine."""
+    _, base, seen = ept_nodes
+    seen.clear()
+    options = {"GDAL_HTTP_HEADERS": "X-Probe: set", "GDAL_HTTP_USERAGENT": "probe/1.0"}
+    assert read_in_child(f"{base}/{name}/ept.json", where, **options) == points
+    assert len([path for path, _, _ in seen if path.startswith(f"/{name}/ept-data/")]) == nodes
+    assert {(probe, agent) for _, probe, agent in seen} == {("set", "probe/1.0")}, seen
+
+
+@pytest.mark.parametrize("where", ["Env", "environment"])
+@pytest.mark.parametrize("name", ["one", "nine"])
+def test_an_ept_dataset_in_laz_is_refused_without_its_nodes_driver(ept_nodes, name, where):
+    """Under `TERRIO_ALLOWED_DRIVERS=EPT`, set with `terrio.rio.Env` or in the environment, an
+    EPT dataset whose nodes are LAZ is refused, whether a read takes one node or nine: the LAS
+    reader would read them."""
+    root, _, _ = ept_nodes
+    assert read_in_child(str(root / name / "ept.json"), where, TERRIO_ALLOWED_DRIVERS="EPT") == (
+        "UnsupportedError: '0-0-0-0.laz' holds LAS data, and the LAS driver is not allowed"
+        " (allowed: EPT)"
+    )
 
 
 def test_ept_and_filters_as_pdal(data_dir):
