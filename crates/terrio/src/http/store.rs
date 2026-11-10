@@ -437,6 +437,9 @@ fn write_request_with(
     let payload = if creds.is_some() { payload.for_signing()? } else { payload };
     let payload = &payload;
     let mut url = base_url(region.as_deref());
+    // Each response is counted, with the body sent, for the URL asked: in the bucket's region once
+    // it is known, and not where a redirect led.
+    let (name, mut counted) = (super::stats_name_of(remote), url.clone());
     let payload_hash = match &creds {
         None => String::new(),
         Some(_) if signs_payload(&url, payload) => payload.sha256()?,
@@ -532,6 +535,7 @@ fn write_request_with(
             discovered = true;
             region = Some(r);
             url = base_url(region.as_deref());
+            counted = url.clone();
             continue;
         }
         if matches!(status, 307 | 308)
@@ -550,14 +554,14 @@ fn write_request_with(
             continue;
         }
         if matches!(status, 429 | 500 | 502 | 503 | 504) && attempt < options.max_retry {
+            super::record_discarded(&counted, &name, response, length);
             std::thread::sleep(options.retry_delay.saturating_mul(1 << attempt.min(16)));
             attempt += 1;
             continue;
         }
         let mut body = Vec::new();
         let _ = response.into_body().into_reader().take(1 << 20).read_to_end(&mut body);
-        super::REQUESTS.fetch_add(1, Ordering::Relaxed);
-        super::BYTES.fetch_add(body.len() as u64, Ordering::Relaxed);
+        super::record_request(&counted, &name, body.len() as u64, length);
         if (200..300).contains(&status)
             || (accept == Accept::Missing && status == 404)
             || (accept == Accept::Unimplemented && matches!(status, 400 | 405 | 501))
@@ -1168,6 +1172,28 @@ mod tests {
         let err = list_pages_api(api, false, None, false).unwrap_err();
         assert!(err.to_string().contains("not an XML object-store listing"), "{err}");
         server.join().unwrap();
+    }
+
+    /// A write is counted with the body it sends, in total, per host and per file (named for the URL
+    /// asked, its query left out): once for each response but a redirect, so an upload retried after
+    /// a 503 counts its body twice, and the same-origin redirect after it is not counted.
+    #[test]
+    fn a_write_is_counted_with_the_body_it_sends() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let host = listener.local_addr().unwrap().to_string();
+        let remote = Remote::Url(format!("http://{host}/stats/upload.bin?sig=secret"));
+        let server = std::thread::spawn(move || {
+            [(503, ""), (307, "/stats/moved.bin"), (200, "")].map(|(status, to)| reply(listener.accept().unwrap().0, status, to))
+        });
+        let payload = vec![7u8; 1000];
+        write_request("PUT", &remote, "", &[], Payload::Bytes(payload.clone()), Accept::Success).unwrap();
+        assert_eq!(server.join().unwrap(), [payload.clone(), payload.clone(), payload]);
+        let expected = Some(crate::http::FetchStats { requests: 2, bytes: 0, sent_bytes: 2000 });
+        let by_host = crate::http::fetch_stats_by_host().into_iter().find(|(h, _)| *h == host).map(|(_, s)| s);
+        assert_eq!(by_host, expected, "per host");
+        let name = format!("/vsicurl/http://{host}/stats/upload.bin");
+        let by_file = crate::http::fetch_stats_by_file().into_iter().find(|(n, _)| *n == name).map(|(_, s)| s);
+        assert_eq!(by_file, expected, "per file");
     }
 
     #[test]

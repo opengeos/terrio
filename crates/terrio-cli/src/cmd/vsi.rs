@@ -426,5 +426,5 @@ pub fn print_stats() {
 #[cfg(not(target_family = "wasm"))]
 pub fn print_stats() {
     let s = terrio::http::fetch_stats();
-    eprintln!("terrio: {} HTTP request(s), {} byte(s) received", s.requests, s.bytes);
+    eprintln!("terrio: {} HTTP request(s), {} byte(s) received, {} byte(s) sent", s.requests, s.bytes, s.sent_bytes);
 }
