@@ -961,10 +961,11 @@ reads it.
   terrio reads (see [Defining a CRS](crs.md#defining-a-crs)), or one that has the form of a
   definition, which is WKT whose first keyword is a CRS's (WKT 1 or 2, such as `LOCAL_CS` or
   `ENGCRS`) with its brackets and quotes balanced, an OGC URN of a CRS
-  (`urn:ogc:def:crs:IGNF::LAMB93`, or a combined one), or a single `AUTHORITY:CODE` such as
-  `IGNF:LAMB93`. Any other text (prose, a URL, unbalanced WKT; a file it names is not read) leaves
-  the layer without a CRS, with a warning that quotes it. An empty `.prj` leaves it without one
-  silently, as a missing `.prj` does, and a leading byte-order mark is skipped.
+  (`urn:ogc:def:crs:IGNF::LAMB93`, or a combined one), or a single `AUTHORITY:CODE` whose authority
+  is in capitals, such as `IGNF:LAMB93`. Any other text (prose, a URL, unbalanced WKT; a file it
+  names is not read) leaves the layer without a CRS, with a warning that quotes it. An empty `.prj`
+  leaves it without one silently, as a missing `.prj` does, and a leading byte-order mark is
+  skipped.
 - **OSM XML** (`.osm`) gives the same five layers as PBF, with tags in the file's order.
 - **KMZ archives** are written as GDAL writes them, a `doc.kml` linking to one document per
   layer under `layers/`. Files given as KMZ resources (Rust `KmzOptions::resources`, CLI

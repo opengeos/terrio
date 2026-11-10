@@ -11,6 +11,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+import types
 import warnings
 
 import pytest
@@ -40,11 +41,16 @@ CUSTOM_TM = (
     'PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],'
     'PARAMETER["false_northing",0],UNIT["metre",1]]'
 )
-NOT_A_CRS = ["not a coordinate reference system", "http://example.com/crs"]
+# Text that is no CRS definition, a colon between two words included.
+NOT_A_CRS = ["not a coordinate reference system", "http://example.com/crs", "note:draft"]
 # An engineering CRS: a definition terrio's parser does not read.
 LOCAL_CS = 'LOCAL_CS["site grid",UNIT["metre",1]]'
 # An OGC URN of a CRS of an authority terrio does not read.
 IGNF_URN = "urn:ogc:def:crs:IGNF::LAMB93"
+# Control characters: ESC, which opens a terminal's escape sequences, BEL and the 8-bit CSI.
+CONTROL = "\x1b[31mred\x1b[0m\x07\x9b2J"
+# CONTROL as a warning quotes it, each control character as a space.
+CONTROL_QUOTED = " [31mred [0m  2J"
 
 
 def _shapefile(tmp_path, prj):
@@ -235,3 +241,37 @@ def test_without_pyproj_the_definition_is_given_as_it_is(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "pyproj", None)
     info, messages = _warned(lambda: tpg.read_info(path))
     assert (info["crs"], messages) == ("not a coordinate reference system", [])
+
+
+def test_a_pyproj_that_fails_to_import_counts_as_no_pyproj(tmp_path, monkeypatch):
+    # A broken installation can raise another error than ImportError.
+    def fail(name):
+        raise OSError("the library cannot be loaded")
+
+    broken = types.ModuleType("pyproj")
+    vars(broken)["__getattr__"] = fail
+    path = _geopackage(tmp_path, "not a coordinate reference system")
+    monkeypatch.setitem(sys.modules, "pyproj", broken)
+    info, messages = _warned(lambda: tpg.read_info(path))
+    assert (info["crs"], messages) == ("not a coordinate reference system", [])
+
+
+def test_a_warning_quotes_control_characters_as_spaces(tmp_path):
+    # In a `.prj` that holds no CRS definition: terrio's warning, in Python and on the command
+    # line's standard error.
+    path = _shapefile(tmp_path, CONTROL)
+    warning = _prj_warning(CONTROL_QUOTED)
+    info, messages = _warned(lambda: tpg.read_info(path))
+    assert (info["crs"], messages) == (None, [warning])
+    cmd = [sys.executable, "-m", "terrio", "info", path]
+    done = subprocess.run(cmd, capture_output=True, text=True, cwd=tmp_path)
+    assert (done.returncode, done.stderr) == (0, f"terrio: warning: {warning}\n")
+    # In a definition pyproj cannot parse.
+    pytest.importorskip("pyproj")
+    path = _geopackage(tmp_path, CONTROL)
+    warning = (
+        f"the layer's CRS definition cannot be parsed ('{CONTROL_QUOTED}'): "
+        "it is read without a CRS"
+    )
+    info, messages = _warned(lambda: tpg.read_info(path))
+    assert (info["crs"], messages) == (None, [warning])

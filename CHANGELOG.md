@@ -9,10 +9,10 @@
   as the CRS of a GeoPackage or another Shapefile. A definition is still kept as it is, whether
   terrio reads it or it only has the form of one (WKT whose first keyword is a CRS's, with its
   brackets and quotes balanced, such as an engineering CRS's, an OGC URN of a CRS, or a single
-  `AUTHORITY:CODE`, such as `IGNF:LAMB93`). A `.prj` that starts with a byte-order mark is now read
-  after it (its CRS was not identified). `terrio.pyogrio` also gives a CRS definition from any
-  source that pyproj cannot parse, an `EPSG:` code it does not know included, as `None`, with a
-  warning, rather than handing it to GeoDataFrame.
+  `AUTHORITY:CODE` whose authority is in capitals, such as `IGNF:LAMB93`). A `.prj` that starts with
+  a byte-order mark is now read after it (its CRS was not identified). `terrio.pyogrio` also gives a
+  CRS definition from any source that pyproj cannot parse, an `EPSG:` code it does not know
+  included, as `None`, with a warning, rather than handing it to GeoDataFrame.
 - A VRT source with fractional `SrcRect` or `DstRect` offsets is read within its rectangles (#702).
   A window with as many source pixels as output pixels was copied one for one whatever its offsets,
   so `bilinear`, `cubic` and `average` returned the source pixels a fraction of a pixel from where

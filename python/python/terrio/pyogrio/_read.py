@@ -395,20 +395,23 @@ def _crs(crs: str | None) -> str | None:
     `WKT1_GDAL` export, which names axes as GDAL does).
 
     A definition pyproj cannot parse, an `EPSG:<code>` it does not know included, is `None`, with
-    a warning that quotes it, since a GeoDataFrame refuses it; without pyproj, the definition is
-    given as it is.
+    a warning that quotes it, since a GeoDataFrame refuses it; without pyproj, or with one that
+    fails to import, the definition is given as it is.
     """
     if crs is None:
         return crs
     try:
         from pyproj import CRS
-    except ImportError:
+    except Exception:  # noqa: BLE001
         return crs
     try:
         parsed = CRS.from_user_input(crs)
         return crs if crs.startswith("EPSG:") else parsed.to_wkt("WKT1_GDAL")
     except Exception:  # noqa: BLE001
-        quoted = "".join(" " if c.isspace() else c for c in crs.strip()[:80])
+        # Non-printable characters (whitespace other than the space, and control characters such
+        # as ESC) are quoted as spaces, so that the quote is one line and sends a terminal no
+        # escape sequence.
+        quoted = "".join(c if c.isprintable() else " " for c in crs.strip()[:80])
         # stacklevel: the call of read_info or read_dataframe.
         warnings.warn(
             f"the layer's CRS definition cannot be parsed ('{quoted}'): it is read without a CRS",
