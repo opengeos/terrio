@@ -420,8 +420,9 @@ Command-group progress:
       `windows`, `features`, `warp`, `merge`, `mask`, `vrt.WarpedVRT`, `io.MemoryFile`, `env`,
       `plot`; every function compared with rasterio on synthetic and real files, and rasterio's
       documentation examples run unchanged but for the import.
-      Supported COG and large GeoTIFF copies use bounded source slabs with atomic publication
-      and source-alias protection (#797); non-streamable cases retain the documented held-copy path.
+      Supported COG and large GeoTIFF copies use bounded source slabs with atomic publication of
+      the main TIFF file and source-alias protection (#797); sidecar updates are separate, and
+      non-streamable cases retain the documented held-copy path.
 - [x] An npm package built from the WebAssembly target. Done: datasets opened from bytes (GeoTIFF,
       ASCII grid and the text and FlatGeobuf vector formats), bands as typed arrays, GeoJSON out,
       conversion to bytes, CRS transforms, zipped Shapefile and MapInfo and GeoPackage from memory,
