@@ -666,14 +666,15 @@ struct ReadArgs {
     layers: Option<Vec<String>>,
 }
 
-/// Keeps the features that intersect a rectangle, as `ogr2ogr -spat` does.
+/// Keeps the features that intersect a rectangle, as `ogr2ogr -spat` does; without one, the
+/// layers as they are (not copied).
 #[cfg_attr(not(any(feature = "tiles", feature = "flatgeobuf", feature = "parquet")), allow(dead_code))]
-fn spatial_filter(layers: &[terrio::Layer], bbox: Option<[f64; 4]>) -> terrio::Result<Vec<terrio::Layer>> {
+fn spatial_filter(layers: Vec<terrio::Layer>, bbox: Option<[f64; 4]>) -> terrio::Result<Vec<terrio::Layer>> {
     match bbox {
-        None => Ok(layers.to_vec()),
+        None => Ok(layers),
         Some([a, b, c, d]) => {
             let o = terrio::ops::vector_filter::VectorTranslateOptions { spatial_filter: Some((a, b, c, d)), ..Default::default() };
-            terrio::ops::vector_filter::translate(layers, &o)
+            terrio::ops::vector_filter::translate(&layers, &o)
         }
     }
 }
@@ -952,7 +953,7 @@ impl RemoteDataset {
                             o.layers = a.layers.clone().unwrap_or_default();
                             o.spatial_filter = a.bbox.map(|[a, b, c, d]| (a, b, c, d));
                             match TileArchive::from_sparse(file.clone())?.into_dataset(&name, &o)? {
-                                terrio::Dataset::Vector(v) => Ok(Dataset::from_layers(spatial_filter(&v.layers, a.bbox)?, v.driver)),
+                                terrio::Dataset::Vector(v) => Ok(Dataset::from_layers(spatial_filter(v.layers, a.bbox)?, v.driver)),
                                 terrio::Dataset::Raster(r) => Ok(Dataset::from_raster(r)),
                             }
                         }
@@ -960,14 +961,14 @@ impl RemoteDataset {
                         Some(Reader::FlatGeobuf(_)) => {
                             let bbox = a.bbox.map(|[a, b, c, d]| (a, b, c, d));
                             let (_, layer) = terrio::vector::read_flatgeobuf_sparse(&file, &name, bbox)?;
-                            Ok(Dataset::from_layers(spatial_filter(&[layer], a.bbox)?, VectorDriver::FlatGeobuf))
+                            Ok(Dataset::from_layers(spatial_filter(vec![layer], a.bbox)?, VectorDriver::FlatGeobuf))
                         }
                         #[cfg(feature = "parquet")]
                         Some(Reader::Parquet(_)) => {
                             let bbox = a.bbox.map(|[a, b, c, d]| (a, b, c, d));
                             let layer =
                                 terrio::vector::read_geoparquet_sparse(&file, &name, a.row_groups.as_deref(), bbox, a.columns.as_deref())?;
-                            Ok(Dataset::from_layers(spatial_filter(&[layer], a.bbox)?, VectorDriver::Parquet))
+                            Ok(Dataset::from_layers(spatial_filter(vec![layer], a.bbox)?, VectorDriver::Parquet))
                         }
                         _ => Err(terrio::Error::InvalidArgument("not open".into())),
                     }
