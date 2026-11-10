@@ -351,21 +351,29 @@ def test_streamed_copy_replaces_destination_symlink_without_writing_its_target(
         np.testing.assert_array_equal(ds.read(), RGB)
 
 
-def corrupt_tile(path, index):
-    """Overwrites the compressed bytes of a tile of the little-endian TIFF at `path` (its first
-    image), so that reading the tile fails."""
+def corrupt_tile(path, index, subfile_type=0):
+    """Overwrites the compressed bytes of a tile of the little-endian TIFF at `path`, in its first
+    image of NewSubfileType `subfile_type` (0 the full-resolution image, 1 an overview, 4 a mask),
+    so that reading the tile fails."""
     data = bytearray(path.read_bytes())
     (ifd,) = struct.unpack_from("<I", data, 4)
-    (n,) = struct.unpack_from("<H", data, ifd)
-    found = {}
-    for i in range(n):
-        tag, kind, count, value = struct.unpack_from("<HHII", data, ifd + 2 + 12 * i)
-        if tag in (324, 325):  # TileOffsets, TileByteCounts
-            assert kind == 4 and count > 1, (tag, kind, count)
-            found[tag] = struct.unpack_from(f"<{count}I", data, value)
-    offset, size = found[324][index], found[325][index]
-    data[offset : offset + size] = b"\xff" * size
-    path.write_bytes(bytes(data))
+    while ifd:
+        (n,) = struct.unpack_from("<H", data, ifd)
+        found = {254: (0,)}
+        for i in range(n):
+            tag, kind, count, value = struct.unpack_from("<HHII", data, ifd + 2 + 12 * i)
+            if tag == 254:  # NewSubfileType
+                found[tag] = (value,)
+            if tag in (324, 325):  # TileOffsets, TileByteCounts
+                assert kind == 4 and count > 1, (tag, kind, count)
+                found[tag] = struct.unpack_from(f"<{count}I", data, value)
+        if found[254][0] == subfile_type:
+            offset, size = found[324][index], found[325][index]
+            data[offset : offset + size] = b"\xff" * size
+            path.write_bytes(bytes(data))
+            return
+        (ifd,) = struct.unpack_from("<I", data, ifd + 2 + 12 * n)
+    raise AssertionError(f"{path} has no image of NewSubfileType {subfile_type}")
 
 
 # The copies that hold their source's pixels until they are written, and those written in rows
@@ -384,10 +392,36 @@ COPIES_OF_A_FAILING_SOURCE = {
     "cog": ("COG", dict(compress="deflate"), None, None),
     "gtiff-over-the-in-memory-limit": ("GTiff", dict(compress="lzw", tiled=True), "1", None),
 }
+# Copies of a source whose full-resolution image reads, but whose mask or first overview has a
+# tile that cannot be read: the copy, the NewSubfileType of that image (4 a mask, 1 an
+# overview), and the error the copy raises. The mask is read block row by block row with the
+# pixels, and its read error is the core's (an `OSError`), not wrapped as a band's is; the
+# overviews a COG copies are read when the dataset is written, as it closes.
+COPIES_OF_A_SOURCE_WHOSE_MASK_OR_OVERVIEW_FAILS = {
+    "cog-of-a-masked-source-whose-mask-fails": (
+        "cog-of-a-masked-source",
+        4,
+        OSError,
+        "corrupt deflate",
+    ),
+    "gtiff-over-the-limit-of-a-masked-source-whose-mask-fails": (
+        "gtiff-over-the-limit-of-a-masked-source",
+        4,
+        OSError,
+        "corrupt deflate",
+    ),
+    "cog-copying-overviews-whose-overview-fails": (
+        "cog-copying-overviews",
+        1,
+        rio.errors.RasterioIOError,
+        "Write failed",
+    ),
+}
 
 
-def failing_source(path, has=None):
-    """`source(path)`, with a dataset mask or overviews, and one tile that cannot be read."""
+def failing_source(path, has=None, subfile_type=0):
+    """`source(path)`, with a dataset mask or overviews, and one tile that cannot be read, in the
+    image of NewSubfileType `subfile_type` (see `corrupt_tile`)."""
     with rio.open(path, "w", **dict(PROFILE, count=3, dtype="uint8", compress="deflate")) as dst:
         dst.write(RGB)
         if has == "mask":
@@ -396,23 +430,30 @@ def failing_source(path, has=None):
             dst.write_mask(mask)
         if has == "overviews":
             dst.build_overviews([2, 4], Resampling.nearest)
-    corrupt_tile(path, 6)
+    corrupt_tile(path, 6 if subfile_type == 0 else 0, subfile_type)
     return str(path)
 
 
 @pytest.mark.parametrize("onto", ["a-file", "a-symlink", "nothing"])
-@pytest.mark.parametrize("name", list(COPIES_OF_A_FAILING_SOURCE))
+@pytest.mark.parametrize(
+    "case",
+    list(COPIES_OF_A_FAILING_SOURCE) + list(COPIES_OF_A_SOURCE_WHOSE_MASK_OR_OVERVIEW_FAILS),
+)
 def test_a_copy_whose_source_fails_leaves_its_destination_as_it_was(
-    tmp_path, monkeypatch, name, onto
+    tmp_path, monkeypatch, case, onto
 ):
-    """A source with a tile that cannot be read: the copy raises, an existing destination keeps
-    its bytes (a symbolic link stays one, and its target keeps its bytes), and no file named after
-    the destination (a temporary or spill file, a mask) is left. Files are checked by name, not
-    counted: Windows lists a COG writer's spools in the directory while they are open."""
+    """A source with a tile that cannot be read, in its full-resolution image, its mask or an
+    overview the COG copies: the copy raises, an existing destination keeps its bytes (a symbolic
+    link stays one, and its target keeps its bytes), and no file named after the destination (a
+    temporary or spill file, a mask) is left. Files are checked by name, not counted: Windows
+    lists a COG writer's spools in the directory while they are open."""
+    name, subfile_type, raised, message = COPIES_OF_A_SOURCE_WHOSE_MASK_OR_OVERVIEW_FAILS.get(
+        case, (case, 0, rio.errors.RasterioIOError, "Read failed")
+    )
     driver, options, limit, has = COPIES_OF_A_FAILING_SOURCE[name]
     if limit:
         monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", limit)
-    src = failing_source(tmp_path / "src.tif", has)
+    src = failing_source(tmp_path / "src.tif", has, subfile_type)
     out, target = tmp_path / "out.tif", tmp_path / "target.tif"
     existing = {"a-file": out, "a-symlink": target}.get(onto)
     if existing is not None:
@@ -426,7 +467,7 @@ def test_a_copy_whose_source_fails_leaves_its_destination_as_it_was(
         except (OSError, NotImplementedError) as error:
             pytest.skip(f"symlink unavailable: {error}")
     before = existing.read_bytes() if existing is not None else None
-    with pytest.raises(rio.errors.RasterioIOError, match="Read failed"):
+    with pytest.raises(raised, match=message):
         rio_shutil.copy(src, str(out), driver=driver, **options)
     left = sorted(p.name for p in tmp_path.glob("out.tif*"))
     if existing is None:
