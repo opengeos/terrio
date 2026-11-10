@@ -2382,7 +2382,16 @@ fn spool_dir(path: &str) -> std::path::PathBuf {
         return std::env::temp_dir();
     }
     // `/dev/stdout` names a regular file when stdout is redirected to one: spool beside that file.
-    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.into());
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| {
+        // canonicalize requires the final file to exist. Follow a dangling link too, since
+        // opening the output will create its target. Bound traversal just as file opening does.
+        let mut target = std::path::PathBuf::from(path);
+        for _ in 0..40 {
+            let Ok(next) = std::fs::read_link(&target) else { break };
+            target = if next.is_absolute() { next } else { target.parent().unwrap_or(std::path::Path::new(".")).join(next) };
+        }
+        target
+    });
     match resolved.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
         _ => ".".into(),
@@ -2391,7 +2400,7 @@ fn spool_dir(path: &str) -> std::path::PathBuf {
 
 fn chunk_spool(dir: &std::path::Path) -> Result<ChunkSpool> {
     #[cfg(not(target_family = "wasm"))]
-    return tempfile::tempfile_in(dir).map_err(|e| Error::Io(std::io::Error::new(e.kind(), format!("{}: {e}", dir.display()))));
+    return tempfile::tempfile_in(dir).map_err(Error::Io);
     #[cfg(target_family = "wasm")]
     {
         let _ = dir;
@@ -3215,7 +3224,10 @@ mod tests {
             let refused = CogWriter::create(path.to_str().unwrap(), &raster, &opts);
             crate::config::pop_scope();
             match refused {
-                Err(Error::Io(e)) => assert!(e.to_string().contains(&missing), "{key}: {e}"),
+                Err(Error::Io(e)) => {
+                    assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{key}: {e}");
+                    assert!(e.raw_os_error().is_some(), "{key}: lost the OS error code");
+                }
                 other => panic!("{key}: {:?}", other.err()),
             }
         }
@@ -3271,6 +3283,31 @@ mod tests {
         let spooled = spool_dir(link.to_str().unwrap());
         crate::config::pop_scope();
         assert_eq!(spooled, std::fs::canonicalize(files.path()).unwrap());
+    }
+
+    /// A dangling output link still names the directory where opening will create the COG.
+    #[cfg(unix)]
+    #[test]
+    fn cog_through_dangling_links_spools_beside_its_target() {
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_TMPDIR".to_string(), None), ("CPL_TMPDIR".to_string(), None)]));
+        let dir = tempfile::tempdir().unwrap();
+        let files = dir.path().join("files");
+        let links = dir.path().join("links");
+        std::fs::create_dir(&files).unwrap();
+        std::fs::create_dir(&links).unwrap();
+        let target = files.join("out.tif");
+        let absolute = links.join("absolute.tif");
+        let relative = links.join("relative.tif");
+        std::os::unix::fs::symlink(&target, &absolute).unwrap();
+        std::os::unix::fs::symlink("absolute.tif", &relative).unwrap();
+        for link in [&absolute, &relative] {
+            assert_eq!(std::fs::canonicalize(spool_dir(link.to_str().unwrap())).unwrap(), files);
+        }
+        let direct = links.join("direct.tif");
+        std::os::unix::fs::symlink("../files/out.tif", &direct).unwrap();
+        assert_eq!(std::fs::canonicalize(spool_dir(direct.to_str().unwrap())).unwrap(), files);
+        assert!(!target.exists());
+        crate::config::pop_scope();
     }
 
     /// A COG written to a device spools in the system's temporary directory, not `/dev`.
