@@ -64,7 +64,8 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   computed as the rows come: no complete source array or temporary pixel staging file is held.
   Taller source blocks are read in slabs of up to 16 MiB (at least one output tile row), aligned
   to source and output rows when that fits, then fed to the COG writer one tile row at a time.
-  Whole-image strips are split into at least two reads; blocks exceeding the slab budget may
+  Whole-image strips are split into at least two reads; blocks or row alignments exceeding the
+  slab budget may
   still be decoded repeatedly. Streamed output is published only after writing succeeds, and
   copying onto a symlink or hardlink of the source is refused.
   A copy whose source has a dataset mask, or overviews a COG copies, or that is compressed with
