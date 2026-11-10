@@ -55,6 +55,11 @@ pub(crate) mod store;
 /// Redirects followed before giving up.
 const MAX_REDIRECTS: u32 = 10;
 
+/// The option that keeps the requests of a read on the origin of its URL: any value but `YES`
+/// (`TRUE`, `ON`, `1`), the default, refuses a redirect to another origin
+/// ([`Redirects::for_reads`]).
+pub(crate) const FOLLOW_CROSS_ORIGIN: &str = "TERRIO_HTTP_FOLLOW_CROSS_ORIGIN";
+
 /// The bytes the first request of a remote file asks for: GDAL's `/vsicurl/` chunk
 /// (`CPL_VSIL_CURL_CHUNK_SIZE`, 16,384 by default), which is what GDAL reads of a file before its
 /// drivers decide whether they recognise it (GDAL refuses a 64 MiB file
@@ -474,6 +479,9 @@ pub(crate) enum Redirects {
     /// was checked to lead to that origin. A redirect to another origin is refused before
     /// anything is sent there.
     SameOrigin,
+    /// Only to the origin of the URL asked, as [`Redirects::SameOrigin`]: for a read under
+    /// `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO`, whose refusal names that option.
+    SameOriginRead,
 }
 
 impl Redirects {
@@ -481,17 +489,38 @@ impl Redirects {
     fn allow(self, asked: &str, to: &str) -> bool {
         self == Redirects::Any || (crate::vfs::url_origin(to).is_some() && crate::vfs::url_origin(to) == crate::vfs::url_origin(asked))
     }
+
+    /// Where the redirects of a read may lead, as the calling thread's options set
+    /// `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN` (see [`Redirects::for_reads_with`]).
+    pub(crate) fn for_reads() -> Self {
+        Self::for_reads_with(crate::config::get)
+    }
+
+    /// Where the redirects of a read may lead, `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN` read with `get`:
+    /// anywhere when it is not set, empty or blank, or set to `YES` (`TRUE`, `ON`, `1`); to the
+    /// origin of the URL asked for any other value, so that a misspelt `NO` keeps reads on their
+    /// origin too.
+    pub(crate) fn for_reads_with(get: impl Fn(&str) -> Option<String>) -> Self {
+        match get(FOLLOW_CROSS_ORIGIN) {
+            Some(v) if !v.trim().is_empty() && !matches!(v.trim().to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1") => {
+                Redirects::SameOriginRead
+            }
+            _ => Redirects::Any,
+        }
+    }
 }
 
-/// The error of a redirect that [`Redirects::allow`] refuses: it names the origin it led to, not
-/// the URL (which may hold a signature).
-fn redirect_refused(asked: &str, to: &str) -> Error {
+/// The error of a redirect that [`Redirects::allow`] refuses under `policy`: it names the origin it
+/// led to, not the URL (which may hold a signature), and the option that refused it.
+fn redirect_refused(policy: Redirects, asked: &str, to: &str) -> Error {
     let to = crate::vfs::url_origin(to).map_or_else(|| "?".to_string(), |(scheme, host)| format!("{scheme}://{host}"));
-    Error::Http(format!(
-        "{}: a redirect to another origin ({to}) was not followed: a link a document chose is read from its own origin \
-         only (TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES follows it)",
-        redact(asked)
-    ))
+    let why = match policy {
+        Redirects::SameOriginRead => format!("reads stay on the origin they were given ({FOLLOW_CROSS_ORIGIN} is not YES)"),
+        Redirects::Any | Redirects::SameOrigin => {
+            "a link a document chose is read from its own origin only (TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES follows it)".to_string()
+        }
+    };
+    Error::Http(format!("{}: a redirect to another origin ({to}) was not followed: {why}", redact(asked)))
 }
 
 #[derive(Clone)]
@@ -557,6 +586,9 @@ impl Client {
         };
         client.on_azure_endpoint = client.azure && client.resolve_on_azure_endpoint();
         client.headers = client.resolve_headers();
+        // A request without a policy of its own (a listing, a service's answer, an object fetched
+        // whole) follows redirects as a read under the creating thread's options does.
+        client.redirects = Redirects::for_reads_with(|k| client.option(&[k]));
         client
     }
 
@@ -769,9 +801,13 @@ impl Client {
                         redact(&url)
                     )));
                 }
+                let next = format!("{}{}", object.url(Some(&region)), self.query);
+                if !self.redirects.allow(&self.url, &next) {
+                    return Err(redirect_refused(self.redirects, &self.url, &next));
+                }
                 auth.discovered = true;
                 auth.region = Some(region);
-                self.url = format!("{}{}", object.url(auth.region.as_deref()), self.query);
+                self.url = next;
                 url = self.url.clone();
                 continue;
             }
@@ -785,7 +821,7 @@ impl Client {
                 let to = resolve_redirect(&url, &location);
                 // Checked before anything is sent there.
                 if !self.redirects.allow(&self.url, &to) {
-                    return Err(redirect_refused(&self.url, &to));
+                    return Err(redirect_refused(self.redirects, &self.url, &to));
                 }
                 self.observe_response(&to);
                 url = to;
@@ -1623,7 +1659,7 @@ pub(crate) fn get(remote: &Remote) -> Result<Vec<u8>> {
 
 /// [`get`] with a cap of `cap` bytes.
 pub(crate) fn get_capped(remote: &Remote, cap: u64) -> Result<Vec<u8>> {
-    get_capped_following(remote, cap, Redirects::Any)
+    get_capped_following(remote, cap, Redirects::for_reads())
 }
 
 /// [`get_capped`], its redirects followed as `redirects` allows.
@@ -1815,7 +1851,7 @@ pub(crate) fn request_response(
             }
             let to = resolve_redirect(&url, location);
             if !policy.allow(asked, &to) {
-                return Err(redirect_refused(asked, &to));
+                return Err(redirect_refused(policy, asked, &to));
             }
             url = to;
             continue;
@@ -2196,7 +2232,7 @@ impl RangeReader {
     /// the process-wide cache holds is opened without a request; of whole blocks of first bytes,
     /// only those the cache no longer holds are requested.
     pub fn open_with(remote: &Remote, options: HttpOptions) -> Result<Self> {
-        Self::open_following(remote, options, Redirects::Any)
+        Self::open_following(remote, options, Redirects::for_reads())
     }
 
     /// [`RangeReader::open_with`], every request's redirects followed as `redirects` allows.
@@ -4303,6 +4339,197 @@ mod tests {
         assert!(Redirects::Any.allow("http://a.test/x.json", "http://b.test/x.json"));
     }
 
+    /// The refusal of a redirect under `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN`, to the origin `other`.
+    fn kept_on_origin(other: &str) -> String {
+        format!(
+            "a redirect to another origin ({other}) was not followed: reads stay on the origin they were given \
+             (TERRIO_HTTP_FOLLOW_CROSS_ORIGIN is not YES)"
+        )
+    }
+
+    /// A read of the whole file at a URL.
+    type ReadAll = fn(&str) -> Result<Vec<u8>>;
+
+    /// Reads of `url` through the range reader, a whole-body `GET`, an object fetched whole (a
+    /// request without a redirect policy of its own) and a `GET` with a header (the request loop
+    /// of the signing token fetch with an API key, and of STAC requests with headers or a body),
+    /// each the whole of the file.
+    fn reads() -> [(&'static str, ReadAll); 4] {
+        [
+            ("range reader", |url| {
+                let reader = RangeReader::open(&Remote::Url(url.to_string()))?;
+                let mut out = Vec::new();
+                reader.lock()?.copy_to(&mut out)?;
+                Ok(out)
+            }),
+            ("whole-body GET", |url| get(&Remote::Url(url.to_string()))),
+            ("object fetched whole", |url| {
+                Ok(ObjectFetcher::new().get(&Remote::Url(url.to_string()), ByteRange::Whole)?.unwrap_or_default())
+            }),
+            ("GET with a header", |url| {
+                get_with_headers_capped(url, &[("X-Read".to_string(), "1".to_string())], json_max_size(), Redirects::for_reads())
+            }),
+        ]
+    }
+
+    /// A read follows a redirect to another origin (another port), unless
+    /// `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN` is set to another value than `YES`: the redirect is then
+    /// refused before anything is sent to that origin, by an error naming the option.
+    #[test]
+    fn a_read_follows_a_redirect_to_another_origin_unless_the_option_keeps_it_on_its_own() {
+        let data: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+        let (other, other_seen) = serve_recording(data.clone(), None);
+        let (asked, _) = serve_recording(vec![0], Some(format!("{other}/data.bin")));
+        for (label, read) in reads() {
+            let url = |value: &str| format!("{asked}/old-{}-{}.bin", label.replace(' ', "-"), value.replace(' ', "_"));
+            let reached = other_seen.lock().unwrap().len();
+            for value in ["NO", "off", "0", "never"] {
+                let refused = crate::config::with_options(&[(FOLLOW_CROSS_ORIGIN, value)], || read(&url(value)));
+                let message = refused.as_ref().map_or_else(ToString::to_string, |d| format!("read, {} bytes", d.len()));
+                assert!(message.contains(&kept_on_origin(&other)), "{label}, {value}: {message}");
+            }
+            assert_eq!(other_seen.lock().unwrap().len(), reached, "{label}: a refused redirect reached the other origin");
+            assert_eq!(read(&url("default")).unwrap(), data, "{label}, not set");
+            for value in ["YES", "true", "", "  "] {
+                let followed = crate::config::with_options(&[(FOLLOW_CROSS_ORIGIN, value)], || read(&url(value)));
+                assert_eq!(followed.unwrap(), data, "{label}, {value:?}");
+            }
+            assert!(other_seen.lock().unwrap().len() > reached, "{label}: the redirects were not followed");
+        }
+    }
+
+    /// Under `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO`, a redirect within the origin is followed.
+    #[test]
+    fn a_read_kept_on_its_origin_follows_redirects_within_it() {
+        let data: Vec<u8> = (0..20_000u32).map(|i| (i % 241) as u8).collect();
+        let body = data.clone();
+        let (base, seen) = test_routes_with(move |base| {
+            vec![
+                ("/old.bin".to_string(), 302, vec![("Location".to_string(), format!("{base}/new.bin"))], Vec::new()),
+                ("/new.bin".to_string(), 200, Vec::new(), body),
+            ]
+        });
+        for (label, read) in reads() {
+            let url = format!("{base}/old.bin?{}", label.replace(' ', "-"));
+            let followed = crate::config::with_options(&[(FOLLOW_CROSS_ORIGIN, "NO")], || read(&url));
+            assert_eq!(followed.unwrap(), data, "{label}");
+        }
+        assert!(seen.lock().unwrap().iter().any(|(line, _)| line.contains("/new.bin")));
+    }
+
+    /// Under `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO`, every redirect of a read is checked, not only
+    /// its first: a redirect within the origin is followed, and the next one, to another origin,
+    /// is refused before anything is sent there. Without the option, the read follows both.
+    #[test]
+    fn a_read_kept_on_its_origin_checks_every_redirect() {
+        let data: Vec<u8> = (0..20_000u32).map(|i| (i % 239) as u8).collect();
+        let (other, other_seen) = serve_recording(data.clone(), None);
+        let to_other = format!("{other}/data.bin");
+        let (asked, seen) = test_routes_with(move |base| {
+            vec![
+                ("/old.bin".to_string(), 302, vec![("Location".to_string(), format!("{base}/hop.bin"))], Vec::new()),
+                ("/hop.bin".to_string(), 302, vec![("Location".to_string(), to_other)], Vec::new()),
+            ]
+        });
+        let hops = || seen.lock().unwrap().iter().filter(|(line, _)| line.contains(" /hop.bin ")).count();
+        let mut wrong = Vec::new();
+        for (label, read) in reads() {
+            let url = format!("{asked}/old.bin?{}", label.replace(' ', "-"));
+            let (hopped, reached) = (hops(), other_seen.lock().unwrap().len());
+            let refused = crate::config::with_options(&[(FOLLOW_CROSS_ORIGIN, "NO")], || read(&url));
+            let message = refused.as_ref().map_or_else(ToString::to_string, |d| format!("read, {} bytes", d.len()));
+            if !message.contains(&kept_on_origin(&other)) {
+                wrong.push(format!("{label}: {message}"));
+            }
+            if hops() == hopped {
+                wrong.push(format!("{label}: the redirect within the origin was not followed"));
+            }
+            if other_seen.lock().unwrap().len() != reached {
+                wrong.push(format!("{label}: the other origin was asked"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        for (label, read) in reads() {
+            let url = format!("{asked}/old.bin?{}-not-set", label.replace(' ', "-"));
+            assert_eq!(read(&url).unwrap(), data, "{label}, not set");
+        }
+    }
+
+    /// Serves `data` with ranges to the requests of its first block (a range from 0), and
+    /// redirects every other request to the same path on `to`. Returns its base URL.
+    fn serve_first_block_then_redirect(data: Vec<u8>, to: String) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                let _ = reader.read_line(&mut request_line);
+                let path = request_line.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let range = read_head(&mut reader).iter().find_map(|line| {
+                    let line = line.to_ascii_lowercase();
+                    let (a, b) = line.strip_prefix("range: bytes=")?.split_once('-')?;
+                    Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?))
+                });
+                let response = match range {
+                    Some((0, b)) => {
+                        let b = b.min(data.len() - 1);
+                        let head = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes 0-{b}/{}\r\nConnection: close\r\n\r\n",
+                            b + 1,
+                            data.len()
+                        );
+                        [head.into_bytes(), data[..=b].to_vec()].concat()
+                    }
+                    _ => {
+                        format!("HTTP/1.1 302 Found\r\nLocation: {to}{path}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes()
+                    }
+                };
+                let _ = stream.write_all(&response);
+            }
+        });
+        base
+    }
+
+    /// A read kept on its origin keeps its later requests there too: a file whose first block
+    /// comes from its own origin and the rest from a redirect to another is refused when the rest
+    /// is read, by the range reader and by a remote vector document downloaded whole, and the
+    /// other origin is not asked. Without the option, the range reader reads the file whole, and
+    /// the document is refused for its bytes' two origins after the other origin was asked.
+    #[test]
+    fn a_read_kept_on_its_origin_keeps_its_later_requests_there() {
+        let features: Vec<String> = (0..400)
+            .map(|i| {
+                format!(
+                    r#"{{"type":"Feature","properties":{{"name":"feature {i:04}"}},"geometry":{{"type":"Point","coordinates":[{i},1]}}}}"#
+                )
+            })
+            .collect();
+        let data = format!(r#"{{"type":"FeatureCollection","features":[{}]}}"#, features.join(",")).into_bytes();
+        assert!(data.len() > 2 * FIRST_READ as usize, "{} bytes", data.len());
+        let (other, other_seen) = serve_recording(data.clone(), None);
+        let asked = serve_first_block_then_redirect(data.clone(), other.clone());
+        let ranged = |url: &str| -> Result<Vec<u8>> {
+            let reader = RangeReader::open(&Remote::Url(url.to_string()))?;
+            let mut out = Vec::new();
+            reader.lock()?.copy_to(&mut out)?;
+            Ok(out)
+        };
+        let document = |url: &str| crate::open_vector(url, &crate::VectorOpenOptions::default()).map(|v| v.layers[0].features.len());
+        let kept = [(FOLLOW_CROSS_ORIGIN, "NO")];
+        let refused = crate::config::with_options(&kept, || ranged(&format!("{asked}/ranged.bin")));
+        assert!(refused.as_ref().is_err_and(|e| e.to_string().contains(&kept_on_origin(&other))), "{:?}", refused.map(|d| d.len()));
+        let refused = crate::config::with_options(&kept, || document(&format!("{asked}/features")));
+        assert!(refused.as_ref().is_err_and(|e| e.to_string().contains(&kept_on_origin(&other))), "{refused:?}");
+        assert_eq!(other_seen.lock().unwrap().len(), 0, "the other origin was asked");
+        assert_eq!(ranged(&format!("{asked}/ranged-followed.bin")).unwrap(), data);
+        let reached = other_seen.lock().unwrap().len();
+        let mixed = document(&format!("{asked}/features-followed"));
+        assert!(mixed.as_ref().is_err_and(|e| e.to_string().contains("came from different response origins")), "{mixed:?}");
+        assert!(other_seen.lock().unwrap().len() > reached, "the document's redirect was not followed");
+    }
+
     /// The header lines of a request or a response, up to the blank line.
     fn read_head(reader: &mut impl BufRead) -> Vec<String> {
         let mut lines = Vec::new();
@@ -4394,6 +4621,23 @@ mod tests {
             ("AWS_S3_ENDPOINT".to_string(), None),
             ("AWS_VIRTUAL_HOSTING".to_string(), None),
         ])
+    }
+
+    #[test]
+    fn same_origin_reads_refuse_cross_origin_bucket_region_discovery() {
+        for status in [301, 307, 400] {
+            let (agent, targets) = serve_proxy(move |_| {
+                format!("HTTP/1.1 {status} Region\r\nx-amz-bucket-region: us-west-2\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            });
+            crate::config::push_scope(amazon_scope());
+            let mut client = amazon_client(agent);
+            client.redirects = Redirects::SameOriginRead;
+            let result = client.fetch(Some((0, 99)));
+            crate::config::pop_scope();
+            let error = result.err().expect("region redirect must be refused").to_string();
+            assert!(error.contains(FOLLOW_CROSS_ORIGIN), "{error}");
+            assert_eq!(*targets.lock().unwrap(), vec!["bucket.s3.amazonaws.com:80".to_string()]);
+        }
     }
 
     /// On Amazon's endpoints a bucket's region, as a server names it (`x-amz-bucket-region`),

@@ -1085,4 +1085,39 @@ mod tests {
         let bands = labelled_bands(&[1, 2], None, Some("B04"), |_| unreachable!());
         assert_eq!(bands.iter().map(|b| b.label.as_deref().unwrap()).collect::<Vec<_>>(), ["B04_b1", "B04_b2"]);
     }
+
+    /// `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO`, set for the calling thread, reaches the threads that
+    /// open raster URLs: four URLs redirected to another origin are refused, and that origin is
+    /// not asked. Without the option, the redirects are followed and the rasters read.
+    #[cfg(remote)]
+    #[test]
+    fn raster_urls_are_kept_on_their_origin_by_the_threads_opening_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g.tif");
+        let cfg = RasterConfig { cols: 2, rows: 2, bands: 1, data_type: DataType::F64, ..Default::default() };
+        let mut ds = RasterDataset::new(Raster::from_data(cfg, vec![1.0, 2.0, 3.0, 4.0]).unwrap(), false);
+        ds.set_geo_transform([0.0, 1.0, 0.0, 2.0, 0.0, -1.0]);
+        crate::write_raster_dataset(&ds, path.to_str().unwrap(), &Default::default()).unwrap();
+        let (other, other_seen) = crate::http::test_server(std::fs::read(&path).unwrap());
+        let moved = |i: usize| (format!("/g{i}.tif"), 302, vec![("Location".to_string(), format!("{other}/g.tif"))], Vec::new());
+        let (asked, _) = crate::http::test_routes((0..4).map(moved).collect());
+        let mut zones = Layer::new("zones");
+        let square = vec![Coord::xy(0.0, 0.0), Coord::xy(2.0, 0.0), Coord::xy(2.0, 2.0), Coord::xy(0.0, 2.0), Coord::xy(0.0, 0.0)];
+        zones.features.push(Feature { fid: 0, geometry: Some(Geometry::polygon(square, vec![])), attributes: vec![] });
+        let sums = |query: &str| {
+            let mut sources: Vec<ZonalSource> = (0..4)
+                .map(|i| ZonalSource {
+                    raster: super::ZonalRaster::Path(format!("{asked}/g{i}.tif?{query}")),
+                    bands: vec![ZonalBand::new(1, format!("r{i}"))],
+                })
+                .collect();
+            let options = ZonalOptions { stats: vec![Statistic::Sum], ..Default::default() };
+            zonal_stats(&zones, &mut sources, &options).map(|layer| layer.features[0].attributes.clone())
+        };
+        let refused = crate::config::with_options(&[(crate::http::FOLLOW_CROSS_ORIGIN, "NO")], || sums("kept"));
+        let message = refused.as_ref().map_or_else(ToString::to_string, |sums| format!("read: {sums:?}"));
+        assert!(message.contains("was not followed: reads stay on the origin they were given"), "{message}");
+        assert_eq!(other_seen.lock().unwrap().len(), 0, "the other origin was asked");
+        assert_eq!(sums("followed").unwrap(), vec![crate::FieldValue::Float(10.0); 4]);
+    }
 }

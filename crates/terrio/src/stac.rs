@@ -123,11 +123,17 @@ fn azure_document_location(location: &str, remote: &crate::http::Remote, respons
 /// How the requests of a link a document chose follow redirects: to the origin [`may_follow`]
 /// allowed only, unless `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`, as the link itself (else a
 /// same-origin link redirected by its server to another origin would escape the check). Across
-/// origins, no header the document supplies is sent. A request the
-/// caller chose follows redirects anywhere, as GDAL follows them.
+/// origins, no header the document supplies is sent. A request the caller chose, and a link
+/// with `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES`, follow them as a read does
+/// ([`crate::http::Redirects::for_reads`]: anywhere, unless `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN`
+/// keeps reads on their origin).
 #[cfg(remote)]
 fn link_redirects(link: bool) -> crate::http::Redirects {
-    if link && !option_on("TERRIO_STAC_FOLLOW_CROSS_ORIGIN") { crate::http::Redirects::SameOrigin } else { crate::http::Redirects::Any }
+    if link && !option_on("TERRIO_STAC_FOLLOW_CROSS_ORIGIN") {
+        crate::http::Redirects::SameOrigin
+    } else {
+        crate::http::Redirects::for_reads()
+    }
 }
 
 fn fetch_json(loc: &str) -> Result<(Value, String)> {
@@ -982,7 +988,7 @@ fn pc_token(account: &str, container: &str) -> Result<String> {
         &url,
         &headers,
         crate::http::MAX_TOKEN_BYTES,
-        crate::http::Redirects::Any,
+        crate::http::Redirects::for_reads(),
     )?)
     .map_err(|e| bad(format!("{url}: {e}")))?;
     let token = v["token"].as_str().filter(|t| !t.is_empty()).ok_or_else(|| bad(format!("{url}: no token in the response")))?.to_string();
@@ -2427,7 +2433,7 @@ mod tests {
                 assert!(!reader.overviews().is_empty());
                 reader.read_window(Window::full(1, 1), &WindowOptions { overview: Some(0), ..Default::default() }).unwrap();
                 let before = seen.lock().unwrap().len();
-                crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+                let mut alias = crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
                     let mut alias = reader.shared();
                     assert_eq!(alias.alpha_band(), Some(4));
                     assert!(alias.read_window(Window::full(1, 1), &Default::default()).is_err());
@@ -2436,8 +2442,15 @@ mod tests {
                             .read_resampled_by_band(&crate::ResampledReadOptions { size: (1, 1), bands: vec![1], ..Default::default() })
                             .is_err()
                     );
+                    alias
                 });
                 assert_eq!(seen.lock().unwrap().len(), before, "sharing and refused metadata reads issue no requests");
+                // Restoring consent preserves overview metadata and explicit reads in both handles.
+                assert!(!reader.overviews().is_empty());
+                assert_eq!(alias.overviews(), reader.overviews());
+                for handle in [&mut reader, &mut alias] {
+                    handle.read_window(Window::full(1, 1), &WindowOptions { overview: Some(0), ..Default::default() }).unwrap();
+                }
             },
         );
     }
@@ -2603,6 +2616,10 @@ mod tests {
                 ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO"),
             ],
             || {
+                let raster = with_asset_read("https://catalog.example/item.json", &href, || LazyRaster::open(&href)).unwrap();
+                assert!(AssetReadPolicy::current().is_none());
+                assert!(raster.overviews().is_empty());
+                assert!(seen.lock().unwrap().is_empty(), "overview discovery must not contact the private store");
                 let result =
                     with_asset_read("https://catalog.example/item.json", &href, || LazyRaster::open(&href)).and_then(|mut r| r.read());
                 assert!(
@@ -3265,6 +3282,47 @@ mod tests {
         assert!(reached[0].0.starts_with("GET /private.json"), "{reached:?}");
         assert!(!reached[0].1.iter().any(|(k, _)| k == "x-doc"), "a document's header reached another origin: {reached:?}");
         assert!(seen.lock().unwrap().iter().any(|(_, h)| h.iter().any(|(k, v)| k == "x-doc" && v == "1")), "its own origin got it");
+    }
+
+    /// `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO` keeps the requests of STAC documents on their origin
+    /// too: the caller's own document, redirected to another origin, and a link that
+    /// `TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES` lets follow redirects as a read does. The refusal names
+    /// the option, and the other origin is not asked. Without it, both follow the redirect.
+    #[cfg(remote)]
+    #[test]
+    fn stac_requests_are_kept_on_their_origin_by_the_read_option() {
+        let (other, other_seen) = crate::http::test_routes(private_routes());
+        let (base, _) = crate::http::test_routes(redirecting_routes(&other));
+        let kept = "reads stay on the origin they were given (TERRIO_HTTP_FOLLOW_CROSS_ORIGIN is not YES)";
+        let read_option = [(crate::http::FOLLOW_CROSS_ORIGIN, "NO")];
+        let refused = crate::config::with_options(&read_option, || fetch(&format!("{base}/moved.json"))).map(|d| d.len());
+        assert!(refused.as_ref().is_err_and(|e| e.to_string().contains(kept)), "the caller's document: {refused:?}");
+        let both = [(crate::http::FOLLOW_CROSS_ORIGIN, "NO"), ("TERRIO_STAC_FOLLOW_CROSS_ORIGIN", "YES")];
+        let link = || crate::open_vector(&format!("{base}/headers.geojson"), &crate::VectorOpenOptions::default());
+        let refused = crate::config::with_options(&both, link).map(|v| v.layers.len());
+        assert!(refused.as_ref().is_err_and(|e| e.to_string().contains(kept)), "the link: {refused:?}");
+        assert!(other_seen.lock().unwrap().is_empty(), "the other origin was asked: {:?}", other_seen.lock().unwrap());
+        assert_eq!(fetch(&format!("{base}/moved.json")).unwrap(), SENTINEL);
+        let followed = crate::config::with_options(&[("TERRIO_STAC_FOLLOW_CROSS_ORIGIN", "YES")], link);
+        assert_eq!(followed.unwrap().layers[0].features.len(), 2);
+    }
+
+    /// The STAC signing token fetch follows a redirect to another origin as a read does, unless
+    /// `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN` keeps it on its origin.
+    #[cfg(remote)]
+    #[test]
+    fn a_signing_token_fetch_is_kept_on_its_origin_by_the_read_option() {
+        let (other, other_seen) = crate::http::test_server(br#"{"token":"st=1&sig=moved"}"#.to_vec());
+        let moved = vec![("Location".to_string(), format!("{other}/token"))];
+        let (asked, _) = crate::http::test_routes(vec![("/token/redirectaccount/c".to_string(), 302, moved, Vec::new())]);
+        let sas = format!("{asked}/token");
+        let refused = crate::config::with_options(&[("TERRIO_PC_SAS_URL", sas.as_str()), (crate::http::FOLLOW_CROSS_ORIGIN, "NO")], || {
+            pc_token("redirectaccount", "c")
+        });
+        assert!(refused.as_ref().is_err_and(|e| e.to_string().contains("reads stay on the origin they were given")), "{refused:?}");
+        assert!(other_seen.lock().unwrap().is_empty(), "the other origin was asked");
+        let fetched = crate::config::with_options(&[("TERRIO_PC_SAS_URL", sas.as_str())], || pc_token("redirectaccount", "c"));
+        assert_eq!(fetched.unwrap(), "st=1&sig=moved");
     }
 
     /// What a redirect brought from another origin for a location the caller chose (followed, as
