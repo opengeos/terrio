@@ -171,7 +171,11 @@ def test_the_tiff_chunk_option_sets_the_limit_of_rasters_opened_without_limits(
     monkeypatch.delenv("TERRIO_TIFF_MAX_CHUNK_BYTES", raising=False)
     assert read() == 4096
     monkeypatch.setenv("TERRIO_TIFF_MAX_CHUNK_BYTES", "4095")
-    with pytest.raises(terrio.errors.ResourceLimitError, match="decoded-byte limit 4095"):
+    with pytest.raises(
+        terrio.errors.ResourceLimitError,
+        match="decoded-byte limit 4095; for a trusted file, raise it with the "
+        "TERRIO_TIFF_MAX_CHUNK_BYTES",
+    ):
         read()
     with rio.Env(TERRIO_TIFF_MAX_CHUNK_BYTES="4096"):
         assert read() == 4096

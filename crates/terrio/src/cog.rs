@@ -138,6 +138,10 @@ impl Default for TiffReadLimits {
 /// The option that sets [`TiffReadLimits::chunk_bytes`] of readers opened without explicit limits.
 pub(crate) const TIFF_MAX_CHUNK_BYTES_OPTION: &str = "TERRIO_TIFF_MAX_CHUNK_BYTES";
 
+/// The resource of a GeoTIFF's [`Error::DecodedLimitExceeded`], whose message names
+/// [`TIFF_MAX_CHUNK_BYTES_OPTION`].
+pub(crate) const TIFF_CHUNK_RESOURCE: &str = "TIFF chunk or tag value";
+
 impl TiffReadLimits {
     /// The limits of a reader opened without explicit ones: the defaults, with
     /// [`TiffReadLimits::chunk_bytes`] set by the `TERRIO_TIFF_MAX_CHUNK_BYTES` option (a positive
@@ -188,7 +192,7 @@ impl TiffReadLimits {
     /// limit, for a chunk or tag value over it.
     pub(crate) fn error(self) -> impl Fn(tiff::TiffError) -> Error + Sync + Copy {
         move |e| match e {
-            tiff::TiffError::LimitsExceeded => Error::DecodedLimitExceeded { resource: "TIFF chunk or tag value", limit: self.chunk_bytes },
+            tiff::TiffError::LimitsExceeded => Error::DecodedLimitExceeded { resource: TIFF_CHUNK_RESOURCE, limit: self.chunk_bytes },
             e => tiff_err(e),
         }
     }

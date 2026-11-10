@@ -437,6 +437,11 @@ fn the_chunk_option_sets_the_limit_of_readers_opened_without_limits() {
         assert_eq!(with_chunk_option("128", read).unwrap(), 16, "{name}");
         let e = with_chunk_option(" 127 ", read).unwrap_err();
         assert!(matches!(e, terrio::Error::DecodedLimitExceeded { limit: 127, .. }), "{name}: {e}");
+        // The refusal names the option that raises it.
+        assert!(
+            e.to_string().contains("limit 127; for a trusted file, raise it with the TERRIO_TIFF_MAX_CHUNK_BYTES option"),
+            "{name}: {e}"
+        );
     }
     // A raster opened under the option keeps its limit for later reads, outside the scope.
     let mut r = with_chunk_option("127", || terrio::open_raster_lazy(path)).unwrap();
