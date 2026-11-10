@@ -1,6 +1,7 @@
 //! A raster without a geotransform (`GEOREFERENCED=NO`) and without a CRS is written without
 //! georeferencing: no GeoJP2 box in a JPEG 2000 file, no world file beside a PNG, JPEG or WebP
-//! one. A CRS alone is still written, as before, with the raster's unit-pixel grid.
+//! one, and no `.aux.xml` sidecar an earlier write left. A CRS alone is still written, as before,
+//! with the raster's unit-pixel grid.
 
 use terrio::{DataType, Raster, RasterConfig, RasterDataset, RasterWriteOptions};
 
@@ -109,6 +110,52 @@ fn a_world_file_of_an_earlier_write_is_removed() {
         assert!(dir.path().join("a.wld").exists(), "{ext}");
         terrio::write_raster_dataset(&raster(None), &path, &unreferenced()).unwrap();
         assert_eq!(files(dir.path()), [format!("a.{ext}")], "{ext}");
+    }
+}
+
+/// An image written over one whose `.aux.xml` sidecar holds a CRS, without a geotransform or a CRS
+/// of its own, leaves no sidecar: the earlier image's CRS would be read as the new one's.
+#[test]
+fn a_crs_sidecar_of_an_earlier_write_is_removed() {
+    let mut readings = Vec::new();
+    for ext in ["png", "jpg", "webp"] {
+        let (dir, path) = write(&raster(Some(32611)), ext, &RasterWriteOptions::default());
+        let sidecar = format!("a.{ext}.aux.xml");
+        assert_eq!(files(dir.path()), [format!("a.{ext}"), sidecar.clone(), "a.wld".into()], "{ext}");
+        assert!(std::fs::read_to_string(dir.path().join(&sidecar)).unwrap().contains("<SRS"), "{ext}");
+        terrio::write_raster_dataset(&raster(None), &path, &unreferenced()).unwrap();
+        let back = terrio::open_raster(&path).unwrap().crs();
+        readings.push((ext, back.epsg, back.is_unknown(), files(dir.path())));
+    }
+    let unreferenced = |ext: &'static str| (ext, None, true, vec![format!("a.{ext}")]);
+    assert_eq!(readings, [unreferenced("png"), unreferenced("jpg"), unreferenced("webp")]);
+}
+
+/// So does a JPEG 2000 file written over one whose sidecar holds a nodata value, without one of
+/// its own: the earlier value would be read as the new image's.
+#[test]
+fn a_nodata_sidecar_of_an_earlier_write_is_removed() {
+    let mut with_nodata = raster(None);
+    with_nodata.raster.nodata = 7.0;
+    with_nodata.has_nodata = true;
+    let (dir, path) = write(&with_nodata, "jp2", &RasterWriteOptions::default());
+    assert_eq!(files(dir.path()), ["a.jp2", "a.jp2.aux.xml"]);
+    assert_eq!(terrio::open_raster(&path).unwrap().nodata(), Some(7.0));
+    terrio::write_raster_dataset(&raster(None), &path, &RasterWriteOptions::default()).unwrap();
+    assert_eq!(terrio::open_raster(&path).unwrap().nodata(), None);
+    assert_eq!(files(dir.path()), ["a.jp2"]);
+}
+
+/// A sidecar that cannot be removed (here a directory of that name) fails the write, rather than
+/// being read as the new image's.
+#[test]
+fn a_sidecar_that_cannot_be_removed_fails_the_write() {
+    for ext in ["png", "jpg", "webp"] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(format!("a.{ext}.aux.xml"))).unwrap();
+        let path = dir.path().join(format!("a.{ext}"));
+        let written = terrio::write_raster_dataset(&raster(None), path.to_str().unwrap(), &unreferenced());
+        assert!(matches!(written, Err(terrio::Error::Io(_))), "{ext}: {written:?}");
     }
 }
 

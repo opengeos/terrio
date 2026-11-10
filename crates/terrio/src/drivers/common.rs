@@ -805,17 +805,24 @@ pub(crate) fn write_band_nodata_pam(path: &Path, values: &[Option<f64>]) -> Resu
 }
 
 /// Writes the CRS to a `.aux.xml` sidecar, as GDAL does for formats without a CRS of their own.
+/// Without a CRS, the sidecar is removed instead (see [`write_pam_with`]).
 pub(crate) fn write_pam(path: &Path, crs: &CrsInfo) -> Result<()> {
     write_pam_with(path, Some(crs), None, 0)
 }
 
-/// Writes a `.aux.xml` sidecar with a CRS and a nodata value for each of `bands` bands. Nothing
-/// is written when there is nothing to record.
+/// Writes a `.aux.xml` sidecar with a CRS and a nodata value for each of `bands` bands. When there
+/// is nothing to record, a sidecar already there is removed instead: it describes an image written
+/// earlier at `path`, and its CRS or nodata value would be read as the new image's. The sidecar is
+/// named after the whole file name, so no other image shares it.
 pub(crate) fn write_pam_with(path: &Path, crs: Option<&CrsInfo>, nodata: Option<f64>, bands: usize) -> Result<()> {
-    if let Some(xml) = pam_xml(crs, nodata, bands) {
-        let mut aux = path.as_os_str().to_owned();
-        aux.push(".aux.xml");
-        std::fs::write(aux, xml)?;
+    let mut aux = path.as_os_str().to_owned();
+    aux.push(".aux.xml");
+    match pam_xml(crs, nodata, bands) {
+        Some(xml) => std::fs::write(aux, xml)?,
+        None => match std::fs::remove_file(aux) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        },
     }
     Ok(())
 }

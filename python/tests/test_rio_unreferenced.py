@@ -118,6 +118,19 @@ def test_a_world_file_of_an_earlier_write_is_removed(tmp_path, driver, ext):
         assert src.transform == Affine.identity()
 
 
+@pytest.mark.parametrize("driver, ext", [f[:2] for f in FORMATS if f[1] != ".jp2"], ids=IDS[1:])
+def test_a_crs_sidecar_of_an_earlier_write_is_removed(tmp_path, driver, ext):
+    """An image written over one that had a CRS, without a transform or a CRS, leaves no `.aux.xml`
+    sidecar: the earlier CRS would be read as the new image's."""
+    path = str(tmp_path / f"a{ext}")
+    _write(path, driver, transform=T, crs="EPSG:32611")
+    assert os.path.exists(path + ".aux.xml")
+    _write(path, driver)
+    with rio.open(path) as src:
+        assert (src.crs, src.transform) == (None, Affine.identity())
+    assert sorted(os.listdir(tmp_path)) == [f"a{ext}"]
+
+
 def test_a_memoryfile_jpeg_2000_without_a_transform_or_a_crs_holds_no_geojp2_box():
     """A JPEG 2000 written to a `MemoryFile` (a tile server's path) holds no GeoJP2 box, and its
     bytes read back with the identity transform."""
