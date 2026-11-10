@@ -1022,6 +1022,7 @@ impl LazyRaster {
 
     /// The sizes `(width, height)` of the overviews, largest first.
     pub fn overviews(&self) -> Vec<(usize, usize)> {
+        let Ok(_scope) = self.enter_asset_read() else { return Vec::new() };
         match &self.inner {
             Inner::Tiff(t) => t.levels[1..].iter().map(|l| (l.width, l.height)).collect(),
             Inner::Memory(_) => Vec::new(),

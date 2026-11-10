@@ -2603,6 +2603,10 @@ mod tests {
                 ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO"),
             ],
             || {
+                let raster = with_asset_read("https://catalog.example/item.json", &href, || LazyRaster::open(&href)).unwrap();
+                assert!(AssetReadPolicy::current().is_none());
+                assert!(raster.overviews().is_empty());
+                assert!(seen.lock().unwrap().is_empty(), "overview discovery must not contact the private store");
                 let result =
                     with_asset_read("https://catalog.example/item.json", &href, || LazyRaster::open(&href)).and_then(|mut r| r.read());
                 assert!(
