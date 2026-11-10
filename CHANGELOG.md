@@ -2,11 +2,6 @@
 
 ## Unreleased
 
-- netCDF: netCDF-4 variables and groups are listed as GDAL lists them: in definition order (the
-  creation order of their HDF5 links), or by name in a group that does not track creation order, as
-  h5py writes by default. They were ordered by object header address, which a variable written with
-  netCDF's default fill value moves out of definition order. A netCDF-4 file is no longer opened a
-  second time for it, except to read a group of several variables or groups.
 - `terrio.rio` writes JPEG 2000 to a `.jp2` path opened for writing without a driver:
   `driver_from_extension` names the driver `JP2OpenJPEG`, which `open(..., "w")`,
   `shutil.copy` and `terrio.xarray`'s `to_raster` refused in 0.8.0 (`DriverCapabilityError`,
