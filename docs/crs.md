@@ -313,7 +313,7 @@ as PROJ's `proj_context_set_search_paths` and `proj_context_set_enable_network`.
 must stay lexically inside the search directories (`subdir/grid.gsb`, not `a/../../grid.gsb`), and only
 regular files of at most 2 GiB are read (a larger one is skipped with a warning). A grid named by a path (`+nadgrids=/data/a.gsb`,
 `./a.gsb`) is read from that path by default, as PROJ does, but once search paths are set from
-code it is treated as missing, with a warning, so a CRS definition from untrusted input cannot read other files.
+code it is treated as missing, with a warning, so a CRS definition from untrusted input cannot read grid files from other paths.
 Add its directory to the search paths, or register the grid, instead.
 
 ```sh

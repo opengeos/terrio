@@ -767,9 +767,9 @@ fn config() -> &'static Mutex<Config> {
 /// `proj_context_set_search_paths`. Transformers created afterwards use them.
 ///
 /// While search paths are set this way, grids are read only from them, from grids registered with
-/// [`register_grid`] and, with the network on, from the PROJ CDN: a grid named by a path in a CRS definition (`+nadgrids=/data/a.gsb`,
-/// `./a.gsb`, `../a.gsb`) is treated as missing, so a definition from untrusted input cannot read
-/// arbitrary files. Add the grid's directory to the search paths or register it instead. Unlike
+/// [`register_grid`] and, with the network on, from the PROJ CDN: a grid named by a path in a CRS
+/// definition (`+nadgrids=/data/a.gsb`, `./a.gsb`, `../a.gsb`) is treated as missing, with a
+/// warning, so a definition from untrusted input cannot read grid files from arbitrary paths. Add the grid's directory to the search paths or register it instead. Unlike
 /// PROJ, which reads such paths whatever its search paths are.
 pub fn set_grid_search_paths(paths: Option<Vec<std::path::PathBuf>>) {
     {
@@ -1112,8 +1112,8 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
     // request) is downloaded instead, unless the CDN does not have it.
     // Only a single file name can be on the CDN. Anything else (a path, a name with directories,
     // a Windows drive prefix) is missing, not a network failure, so the transformation can fall
-    // back to another operation. Plain names the CDN does not have (`.gsb` names) are still asked
-    // for and recorded as fetch failures.
+    // back to another operation. Plain names the CDN cannot serve (non-`.tif` names such as `.gsb`)
+    // are recorded as fetch failures without a request.
     #[cfg(remote)]
     let fetch = bytes.is_none() && network_enabled() && {
         let mut parts = std::path::Path::new(name).components();

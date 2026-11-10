@@ -4,6 +4,7 @@
 //! binary: grid search paths are process-wide, and its tests take turns with them.
 use std::path::Path;
 use std::sync::Mutex;
+#[cfg(unix)]
 use std::time::Duration;
 use terrio_crs::{SpatialRef, Transformer};
 

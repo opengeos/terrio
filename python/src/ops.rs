@@ -1076,7 +1076,7 @@ fn transform_points<'py>(
 /// While search paths are set, grids are read only from them, from registered grids and, with the
 /// network on, from the PROJ CDN: a grid
 /// named by a path in a CRS definition (``+nadgrids=/data/a.gsb``, ``./a.gsb``) is treated as
-/// missing, so a definition from untrusted input cannot read arbitrary files.
+/// missing, so a definition from untrusted input cannot read grid files from arbitrary paths.
 ///
 /// Args:
 ///     paths: The directories, in search order; ``None`` goes back to the environment's.
