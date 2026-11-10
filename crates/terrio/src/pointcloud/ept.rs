@@ -621,20 +621,25 @@ mod tests {
         /// is answered once `hold` node requests have arrived, or after 5 seconds: so that nodes
         /// fetched fewer than `hold` at a time are seen to be.
         fn serve(dir: &Path, hold: usize) -> (String, Arc<Seen>) {
+            serve_with(dir, hold, None)
+        }
+
+        /// [`serve`], a request for a node redirected to the same path on `nodes_to` when given.
+        fn serve_with(dir: &Path, hold: usize, nodes_to: Option<String>) -> (String, Arc<Seen>) {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let base = format!("http://{}", listener.local_addr().unwrap());
             let (root, seen) = (dir.to_path_buf(), Arc::new(Seen::default()));
             let record = seen.clone();
             std::thread::spawn(move || {
                 for stream in listener.incoming().flatten() {
-                    let (root, record) = (root.clone(), record.clone());
-                    std::thread::spawn(move || answer(stream, &root, hold, &record));
+                    let (root, record, nodes_to) = (root.clone(), record.clone(), nodes_to.clone());
+                    std::thread::spawn(move || answer(stream, &root, hold, nodes_to.as_deref(), &record));
                 }
             });
             (base, seen)
         }
 
-        fn answer(mut stream: TcpStream, root: &Path, hold: usize, seen: &Seen) {
+        fn answer(mut stream: TcpStream, root: &Path, hold: usize, nodes_to: Option<&str>, seen: &Seen) {
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut line = String::new();
             let _ = reader.read_line(&mut line);
@@ -655,6 +660,11 @@ mod tests {
             }
             seen.requests.lock().unwrap().push((path.clone(), probe, agent));
             let node = path.starts_with("/ept-data/");
+            if node && let Some(to) = nodes_to {
+                let redirect = format!("HTTP/1.1 302 Found\r\nLocation: {to}{path}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = stream.write_all(redirect.as_bytes());
+                return;
+            }
             if node {
                 seen.arrived.fetch_add(1, SeqCst);
                 seen.most.fetch_max(seen.in_flight.fetch_add(1, SeqCst) + 1, SeqCst);
@@ -693,6 +703,30 @@ mod tests {
                     .filter(|(_, probe, agent)| probe.as_deref() != Some("set") || agent.as_deref() != Some("probe/1.0"))
                     .collect();
                 assert!(without.is_empty(), "{nodes} node(s), requests without the options: {without:?}");
+            }
+        }
+
+        /// Under the calling thread's `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO`, a read whose node requests
+        /// are redirected to another origin is refused, whether it takes one node or nine, and the
+        /// other origin gets no request. Without the option, the read follows the redirects.
+        #[test]
+        fn the_calling_threads_cross_origin_rule_applies_to_every_node() {
+            let option = [(crate::http::FOLLOW_CROSS_ORIGIN, "NO")];
+            for nodes in [1, 9] {
+                let dir = tempfile::tempdir().unwrap();
+                dataset(dir.path(), nodes, EptDataType::Binary);
+                let (other, other_seen) = serve(dir.path(), 1);
+                let (asked, _) = serve_with(dir.path(), 1, Some(other.clone()));
+                let url = format!("{asked}/ept.json");
+                let refused = read(&url, &option);
+                let kept = format!(
+                    "a redirect to another origin ({other}) was not followed: reads stay on the origin they were given \
+                     (TERRIO_HTTP_FOLLOW_CROSS_ORIGIN is not YES)"
+                );
+                assert!(refused.as_ref().is_err_and(|e| e.contains(&kept)), "{nodes} node(s): {refused:?}");
+                assert_eq!(other_seen.requests.lock().unwrap().len(), 0, "{nodes} node(s): the other origin was asked");
+                assert_eq!(read(&url, &[]), Ok(40), "{nodes} node(s), without the option");
+                assert_eq!(other_seen.requests.lock().unwrap().len(), nodes, "{nodes} node(s), without the option");
             }
         }
 
