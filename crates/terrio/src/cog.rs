@@ -3122,7 +3122,7 @@ mod tests {
         // 30 x 30 tiles: enough that every read keeps its workers busy at once
         let w = Window::new(3, 5, 470, 460);
         let alone = read_f64(&mut LazyRaster::open(path).unwrap(), w, &[1, 2, 3], None);
-        crate::geotiff::LIVE_WORKERS[1].store(0, std::sync::atomic::Ordering::Relaxed);
+        crate::geotiff::PEAK_WORKERS.store(0, std::sync::atomic::Ordering::Relaxed);
         std::thread::scope(|s| {
             for _ in 0..8 {
                 s.spawn(|| {
@@ -3133,7 +3133,7 @@ mod tests {
                 });
             }
         });
-        let peak = crate::geotiff::LIVE_WORKERS[1].load(std::sync::atomic::Ordering::Relaxed);
+        let peak = crate::geotiff::PEAK_WORKERS.load(std::sync::atomic::Ordering::Relaxed);
         let limit = crate::geotiff::decode_worker_limit();
         assert!(peak <= limit, "{peak} decode workers at once, over the {limit} allowed");
     }
