@@ -72,7 +72,12 @@ def copy(
     """Copies a raster to a new file, with GDAL's `CreateCopy` semantics.
 
     The copy keeps the pixels, georeferencing, nodata values, tags, band descriptions, color
-    interpretation and color table, and the dataset mask. It is written window by window.
+    interpretation and color table, and the dataset mask. A COG is written a row of its tiles at
+    a time from the source, its overviews computed as the rows come, so that the source's pixels
+    are not held: unless the source has a dataset mask, or overviews the COG copies, or the
+    compression is one written whole (JPEG, WebP, LERC, JPEG XL), when the copy holds them until
+    it is written. So is a GeoTIFF larger than the in-memory limit (`TERRIO_RIO_IN_MEMORY_LIMIT`),
+    in rows of blocks, without a dataset mask; a smaller one is held and written whole.
 
     Args:
         src: A path, or a dataset opened for reading.
@@ -110,14 +115,25 @@ def copy(
         _copy_dataset(ds, dst_path, driver, creation_options)
 
 
-def _copy_dataset(src: Any, dst_path: str, driver: str, creation_options: dict[str, Any]) -> None:
-    """Writes an open dataset to a new file, block row by block row.
+def _copy_dataset(
+    src: Any,
+    dst_path: str,
+    driver: str,
+    creation_options: dict[str, Any],
+    from_source: bool = True,
+) -> None:
+    """Writes an open dataset to a new file.
+
+    A file written in rows (`DatasetWriter._streams_on_flush`) is written from the source as it is
+    written; another is written block row by block row into the dataset, written when it closes.
 
     Args:
         src: The dataset.
         dst_path: The output path.
         driver: The output format.
         creation_options: Creation options.
+        from_source: Whether a file written in rows is written from the source; otherwise the
+            copy holds the source's pixels until it is written, whatever its format.
     """
     from terrio.rio import open as rio_open
     from terrio.rio.windows import Window
@@ -152,6 +168,14 @@ def _copy_dataset(src: Any, dst_path: str, driver: str, creation_options: dict[s
         ):
             profile["@copy_src_overviews"] = src.name
     gcps, gcp_crs = src.gcps
+    per_dataset_mask = all(
+        "per_dataset" in [f.name for f in flags] for flags in src.mask_flag_enums
+    )
+    if from_source and not per_dataset_mask:
+        # When the copy is written in rows (a COG without the source's overviews to copy, or a
+        # GeoTIFF larger than the in-memory limit), it reads them from the source as it writes
+        # them, rather than holding the source's pixels until it is closed.
+        profile["_copy_of"] = src
     with rio_open(dst_path, "w", **profile) as dst:
         dst._mask_has_dataset = True
         dst.update_tags(**src.tags())
@@ -176,9 +200,8 @@ def _copy_dataset(src: Any, dst_path: str, driver: str, creation_options: dict[s
             cmap = None
         if cmap:
             dst.write_colormap(1, cmap)
-        per_dataset_mask = all(
-            "per_dataset" in [f.name for f in flags] for flags in src.mask_flag_enums
-        )
+        if dst._copy_of is not None:
+            return
         rows = max(1, min(src.height, (64 << 20) // max(1, src.width * src.count * 8)))
         for y in range(0, src.height, rows):
             w = Window(0, y, src.width, min(rows, src.height - y))
