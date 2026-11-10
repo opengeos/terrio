@@ -102,10 +102,25 @@ pub fn parse_kmz_styled(bytes: Vec<u8>, default_name: &str) -> Result<Styled> {
 /// separates folders too, as Windows tools write it.
 fn main_document<R: std::io::Read + std::io::Seek>(zip: &zip::ZipArchive<R>) -> Result<(usize, String)> {
     let documents: Vec<(usize, String)> = (0..zip.len())
-        .filter_map(|i| Some((i, zip.name_for_index(i)?.ok()?.into_owned())))
+        .filter_map(|i| match zip.name_for_index(i)? {
+            Ok(name) => Some((i, name.into_owned())),
+            Err(error) => {
+                crate::warnings::warn(format!("KMZ: entry {i} has an undecodable name and is skipped: {error}"));
+                None
+            }
+        })
         .filter(|(_, name)| name.to_ascii_lowercase().ends_with(".kml"))
         .collect();
-    let at_root = documents.iter().position(|(_, name)| !name.contains(['/', '\\'])).unwrap_or(0);
+    let at_root = documents
+        .iter()
+        .position(|(_, name)| {
+            let mut relative = name.as_str();
+            while let Some(rest) = relative.strip_prefix("./").or_else(|| relative.strip_prefix(".\\")) {
+                relative = rest;
+            }
+            !relative.contains(['/', '\\'])
+        })
+        .unwrap_or(0);
     documents.into_iter().nth(at_root).ok_or_else(|| Error::InvalidData("the KMZ archive holds no KML document".into()))
 }
 
@@ -1304,6 +1319,15 @@ mod tests {
             i += at + to.len();
         }
         out
+    }
+
+    #[test]
+    fn leading_current_directory_components_leave_a_kml_at_the_archive_root() {
+        let (first, nested) = (named("first", 1), named("nested", 3));
+        for root in ["./doc.kml", "././doc.kml", r".\doc.kml"] {
+            let bytes = archive(&[("files/nested.kml", nested.as_str()), (root, first.as_str())]);
+            assert_eq!(summary(&parse_kmz(bytes, "kmz").unwrap()), [("first", 1)], "{root}");
+        }
     }
 
     /// An archive holding two entries of the same name is refused, whichever entries they are: the
