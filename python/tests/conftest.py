@@ -6,7 +6,17 @@ from pathlib import Path
 
 import pytest
 
-import terrio
+# GDAL's bindings register their drivers before any test starts rasterio's. rasterio's pip wheel
+# bundles a second libgdal: once its environment has started in a process (`rasterio.Env`, or any
+# `rasterio.open`), a later first import of `osgeo.gdal` registers only the GDAL plugins, and
+# `gdal.GetDriverByName("GTiff")` is None. Under pytest-xdist the order of a worker's test files
+# varies, so which tests then failed varied too.
+try:
+    from osgeo import gdal as _gdal  # noqa: F401
+except ImportError:
+    pass
+
+import terrio  # noqa: E402
 
 
 def _reference_gdal_version():
