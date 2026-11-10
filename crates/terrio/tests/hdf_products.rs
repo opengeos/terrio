@@ -263,6 +263,21 @@ fn netcdf4_variable_order() {
     }
 }
 
+/// Classic formats retain netCDF variable-ID order. Classic and 64-bit offset were checked
+/// against GDAL 3.13.3; it does not recognize this CDF5 fixture, checked against netCDF4's IDs.
+#[test]
+fn classic_netcdf_variables_keep_definition_order() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_order");
+    for name in ["classic_order.nc", "offset64_order.nc", "cdf5_order.nc"] {
+        let path = dir.join(name).to_string_lossy().into_owned();
+        let terrio::info::Info::Raster(info) = terrio::info::info_path(&path, &Default::default()).unwrap() else {
+            panic!("{name}: not a raster")
+        };
+        let names: Vec<_> = info.subdatasets.iter().map(|s| s.name.rsplit(':').next().unwrap()).collect();
+        assert_eq!(names, ["zulu", "alpha", "middle"], "{name}");
+    }
+}
+
 /// An unqualified multi-variable open selects the first data variable in listing order.
 /// GDAL 3.13.3 exposes only a zero-band container for this file; Terrio intentionally also
 /// provides the first raster. Its samples and nodata match GDAL's explicit `zulu` subdataset.

@@ -14,8 +14,10 @@ densely, by name hash, and each subgroup two variables, stored compactly in defi
 lists them in name order, as netCDF lists the links of a group that does not track their creation
 order.
 
-`expected.json` holds, for each file, the subdataset names GDAL lists, the expected order of the
-`netcdf4_variable_order` test. Needs netCDF4, h5py and rasterio.
+Classic, 64-bit-offset and CDF5 fixtures additionally pin unchanged definition order.
+
+`expected.json` holds, for each netCDF-4 file, the subdataset names GDAL lists, the expected order of the
+`netcdf4_variable_order` test. Needs netCDF4, h5py and GDAL Python bindings.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from pathlib import Path
 import h5py
 import netCDF4
 import numpy as np
-import rasterio
+from osgeo import gdal
 
 OUT = Path(__file__).resolve().parent.parent / "crates" / "terrio" / "tests" / "data" / "netcdf_order"
 # name: fill value, None for netCDF's default one.
@@ -65,12 +67,27 @@ def write_untracked_order(path: Path) -> None:
                 group.create_dataset(variable, data=VALUES)
 
 
+CLASSIC_FORMATS = [
+    ("classic_order.nc", "NETCDF3_CLASSIC"),
+    ("offset64_order.nc", "NETCDF3_64BIT_OFFSET"),
+    ("cdf5_order.nc", "NETCDF3_64BIT_DATA"),
+]
+
+
+def write_classic_order(path: Path, file_format: str) -> None:
+    """Write several classic variables in definition order rather than name order."""
+    with netCDF4.Dataset(path, "w", format=file_format) as nc:
+        nc.createDimension("y", 2)
+        nc.createDimension("x", 2)
+        for index, name in enumerate(("zulu", "alpha", "middle")):
+            nc.createVariable(name, "i2", ("y", "x"))[:] = VALUES + index
+
+
 def subdatasets(path: Path) -> list[str]:
     """GDAL's subdataset names of `path`, without the file part."""
-    with rasterio.open(path) as ds:
-        # By number: the metadata come back in key order (1, 10, 11, ..., 2).
-        tags = ds.tags(ns="SUBDATASETS")
-        return [tags[f"SUBDATASET_{i}_NAME"].rsplit(":", 1)[-1] for i in range(1, len(tags) // 2 + 1)]
+    gdal.UseExceptions()
+    with gdal.Open(str(path)) as ds:
+        return [name.rsplit(":", 1)[-1] for name, _ in ds.GetSubDatasets()]
 
 
 def main() -> None:
@@ -81,7 +98,15 @@ def main() -> None:
         write(OUT / name)
         expected[name] = subdatasets(OUT / name)
         (OUT / f"{name}.aux.xml").unlink(missing_ok=True)
-    print(f"GDAL {rasterio.__gdal_version__}")
+    for name, file_format in CLASSIC_FORMATS:
+        path = OUT / name
+        write_classic_order(path, file_format)
+        # GDAL 3.13.3 opens classic and 64-bit-offset files but does not recognize this CDF5
+        # fixture. Its definition-order regression uses netCDF variable IDs independently.
+        if file_format != "NETCDF3_64BIT_DATA":
+            assert subdatasets(path) == ["zulu", "alpha", "middle"]
+        (OUT / f"{name}.aux.xml").unlink(missing_ok=True)
+    print(gdal.VersionInfo("--version"))
     (OUT / "expected.json").write_text(json.dumps(expected, indent=1) + "\n")
 
 
