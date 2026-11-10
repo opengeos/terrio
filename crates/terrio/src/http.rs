@@ -516,7 +516,9 @@ fn redirect_refused(policy: Redirects, asked: &str, to: &str) -> Error {
     let to = crate::vfs::url_origin(to).map_or_else(|| "?".to_string(), |(scheme, host)| format!("{scheme}://{host}"));
     let why = match policy {
         Redirects::SameOriginRead => format!("reads stay on the origin they were given ({FOLLOW_CROSS_ORIGIN} is not YES)"),
-        _ => "a link a document chose is read from its own origin only (TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES follows it)".to_string(),
+        Redirects::Any | Redirects::SameOrigin => {
+            "a link a document chose is read from its own origin only (TERRIO_STAC_FOLLOW_CROSS_ORIGIN=YES follows it)".to_string()
+        }
     };
     Error::Http(format!("{}: a redirect to another origin ({to}) was not followed: {why}", redact(asked)))
 }
@@ -799,9 +801,13 @@ impl Client {
                         redact(&url)
                     )));
                 }
+                let next = format!("{}{}", object.url(Some(&region)), self.query);
+                if !self.redirects.allow(&self.url, &next) {
+                    return Err(redirect_refused(self.redirects, &self.url, &next));
+                }
                 auth.discovered = true;
                 auth.region = Some(region);
-                self.url = format!("{}{}", object.url(auth.region.as_deref()), self.query);
+                self.url = next;
                 url = self.url.clone();
                 continue;
             }
@@ -4615,6 +4621,23 @@ mod tests {
             ("AWS_S3_ENDPOINT".to_string(), None),
             ("AWS_VIRTUAL_HOSTING".to_string(), None),
         ])
+    }
+
+    #[test]
+    fn same_origin_reads_refuse_cross_origin_bucket_region_discovery() {
+        for status in [301, 307, 400] {
+            let (agent, targets) = serve_proxy(move |_| {
+                format!("HTTP/1.1 {status} Region\r\nx-amz-bucket-region: us-west-2\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            });
+            crate::config::push_scope(amazon_scope());
+            let mut client = amazon_client(agent);
+            client.redirects = Redirects::SameOriginRead;
+            let result = client.fetch(Some((0, 99)));
+            crate::config::pop_scope();
+            let error = result.err().expect("region redirect must be refused").to_string();
+            assert!(error.contains(FOLLOW_CROSS_ORIGIN), "{error}");
+            assert_eq!(*targets.lock().unwrap(), vec!["bucket.s3.amazonaws.com:80".to_string()]);
+        }
     }
 
     /// On Amazon's endpoints a bucket's region, as a server names it (`x-amz-bucket-region`),
