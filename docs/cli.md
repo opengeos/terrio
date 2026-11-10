@@ -1226,13 +1226,14 @@ references the inputs; other outputs hold the mosaicked pixels. Each input is it
 the input extends past them, so that a resampling kernel at the edges of a `--te` extent still reads
 the input's pixels beyond it.
 
-Local inputs are read in place, not copied. A COG output keeps its compressed tiles in
-unnamed temporary files next to the output until it is laid out, as GDAL's COG driver does, so a
-mosaic on another drive needs no space on the system drive. The output's drive needs room for
-them, about the size of the COG, as well as the COG while it is written, and a slow or network
-drive writes them at its speed. `TERRIO_TMPDIR` (or `CPL_TMPDIR`) names another directory for
-them. An output that is not a regular file (`/dev/stdout`) spools in the system's temporary
-directory.
+Local inputs are read in place, not copied. A COG output keeps its compressed tiles in unnamed
+temporary files next to the output until it is laid out, as GDAL's COG driver does, so these tile
+spools need no space on the system drive. The output's drive needs room for them, about the size
+of the COG, as well as the COG while it is written, and a slow or network drive writes them at its
+speed. `TERRIO_TMPDIR` (or `CPL_TMPDIR`) names another directory for them. An output through a
+symbolic link, or a `/dev/stdout` redirected to a file, spools beside the file it names; a pipe or
+device spools in the system's temporary directory. Other temporary storage still uses the system's
+temporary directory: zip members extracted to be read and remote inputs downloaded whole.
 
 ## Serialized virtual rasters
 

@@ -2367,11 +2367,11 @@ type ChunkSpool = std::fs::File;
 type ChunkSpool = std::io::Cursor<Vec<u8>>;
 
 /// The directory of a COG's chunk spools, which together hold about as many bytes as the COG.
-/// As GDAL's COG driver places its temporary files: next to the output (on its drive, not the
-/// system's temporary directory), or in `TERRIO_TMPDIR` (`CPL_TMPDIR`) when that is set. An
-/// output that is not a regular file (`/dev/stdout`, a FIFO), whose directory is not one to write
-/// in, spools in the system's temporary directory, as GDAL does for an output without random
-/// writes.
+/// As GDAL's COG driver places its temporary files (`GetTmpFilename`), this is the directory of
+/// the file the output names (a symbolic link or a redirected `/dev/stdout` resolved), so the
+/// spools stay on the output's drive; `TERRIO_TMPDIR` or `CPL_TMPDIR` names another. An output
+/// that is not a regular file (a pipe or a device) has no directory to spool beside, so the
+/// system's temporary directory is used.
 ///
 /// Reference: GDAL v3.12.1 `frmts/gtiff/cogdriver.cpp` (`GetTmpFilename`).
 fn spool_dir(path: &str) -> std::path::PathBuf {
@@ -2381,7 +2381,9 @@ fn spool_dir(path: &str) -> std::path::PathBuf {
     if std::fs::metadata(path).is_ok_and(|m| !m.is_file()) {
         return std::env::temp_dir();
     }
-    match std::path::Path::new(path).parent() {
+    // `/dev/stdout` names a regular file when stdout is redirected to one: spool beside that file.
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.into());
+    match resolved.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
         _ => ".".into(),
     }
@@ -3212,16 +3214,63 @@ mod tests {
             crate::config::push_scope(scope);
             let refused = CogWriter::create(path.to_str().unwrap(), &raster, &opts);
             crate::config::pop_scope();
-            assert!(matches!(refused, Err(Error::Io(_))), "{key}");
+            match refused {
+                Err(Error::Io(e)) => assert!(e.to_string().contains(&missing), "{key}: {e}"),
+                other => panic!("{key}: {:?}", other.err()),
+            }
         }
+        // A spool opened in a configured directory is there while the COG is written.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let mut scope = unset();
+        scope.insert("TERRIO_TMPDIR".into(), Some(elsewhere.path().to_str().unwrap().into()));
+        crate::config::push_scope(scope);
+        let writer = CogWriter::create(dir.path().join("elsewhere.tif").to_str().unwrap(), &raster, &opts).unwrap();
+        crate::config::pop_scope();
+        assert_spooled_in(&writer, elsewhere.path());
+        drop(writer);
+        std::fs::remove_file(dir.path().join("elsewhere.tif")).unwrap();
+
         crate::config::push_scope(unset());
         let mut writer = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
         crate::config::pop_scope();
+        assert_spooled_in(&writer, dir.path());
         writer.write_rows(raster.data.clone(), 35).unwrap();
         writer.finish().unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), encode(&raster, &opts).unwrap());
         // The spools were unnamed: nothing but the COG is left beside it.
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    /// Where the writer's spools are open, read from the file descriptors on Linux (other systems
+    /// have no portable way to name an unnamed file).
+    fn assert_spooled_in(writer: &CogWriter, dir: &std::path::Path) {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            let dir = std::fs::canonicalize(dir).unwrap();
+            for spool in writer.levels.iter().flat_map(|l| &l.spools) {
+                let target = std::fs::read_link(format!("/proc/self/fd/{}", spool.as_raw_fd())).unwrap();
+                assert!(target.starts_with(&dir), "{} is not in {}", target.display(), dir.display());
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (writer, dir);
+    }
+
+    /// An output that is a symbolic link (as `/dev/stdout` redirected to a file is) spools beside
+    /// the file it names, not in the link's directory.
+    #[cfg(unix)]
+    #[test]
+    fn cog_through_a_link_spools_beside_its_target() {
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_TMPDIR".to_string(), None), ("CPL_TMPDIR".to_string(), None)]));
+        let (links, files) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let target = files.path().join("out.tif");
+        std::fs::write(&target, b"").unwrap();
+        let link = links.path().join("out.tif");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let spooled = spool_dir(link.to_str().unwrap());
+        crate::config::pop_scope();
+        assert_eq!(spooled, std::fs::canonicalize(files.path()).unwrap());
     }
 
     /// A COG written to a device spools in the system's temporary directory, not `/dev`.
