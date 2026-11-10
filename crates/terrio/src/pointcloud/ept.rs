@@ -517,8 +517,12 @@ impl FormatReader for EptReader {
         #[cfg(not(target_family = "wasm"))]
         let parts: Vec<Result<Vec<Dimension>>> = {
             let options = crate::config::thread_options();
+            let context = crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current());
             crate::par::map_range(keys.len(), |i| {
-                crate::config::with_thread_options(options.clone(), || self.decode(keys[i].0, keys[i].1, fetch(base, &files[i])?))
+                crate::config::with_thread_options(options.clone(), || {
+                    let _scope = context.enter()?;
+                    self.decode(keys[i].0, keys[i].1, fetch(base, &files[i])?)
+                })
             })
         };
         #[cfg(target_family = "wasm")]
@@ -740,21 +744,64 @@ mod tests {
             }
         }
 
+        /// Deferred node reads retain remote-document provenance: credentials require consent
+        /// on every worker even when metadata and hierarchy were opened before this read.
+        #[test]
+        fn node_reads_keep_the_stac_asset_consent_policy() {
+            use super::super::{EptReader, FormatReader};
+            for nodes in [1, 9] {
+                let dir = tempfile::tempdir().unwrap();
+                dataset(dir.path(), nodes, EptDataType::Binary);
+                let (base, seen) = serve(dir.path(), 1);
+                for (consent, allowed) in [("NO", false), ("YES", true)] {
+                    let mut reader = EptReader::open(&format!("{base}/ept.json")).unwrap();
+                    reader.start(&Default::default(), usize::MAX).unwrap();
+                    seen.requests.lock().unwrap().clear();
+                    let policy = crate::stac::AssetReadPolicy::for_tests("https://catalog.example/item.json", false);
+                    let result = crate::config::with_options(
+                        &[("GDAL_HTTP_HEADERS", "X-Probe: set"), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", consent)],
+                        || {
+                            let _scope = policy.enter().unwrap();
+                            reader.next_chunk()
+                        },
+                    );
+                    if allowed {
+                        assert!(result.unwrap().is_some());
+                        assert_eq!(seen.requests.lock().unwrap().len(), nodes);
+                        // Auth observed on a worker must mark the caller's shared policy too.
+                        crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+                            assert!(policy.check_consent().is_err());
+                        });
+                    } else {
+                        assert!(result.err().is_some_and(|e| e.to_string().contains("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS")));
+                        assert!(seen.requests.lock().unwrap().is_empty());
+                    }
+                }
+            }
+        }
+
         /// The nodes of a read are fetched as many at a time as terrio's pool has threads (at most
         /// the nine there are): the server answers a node once that many have been asked for.
         #[test]
         fn the_nodes_of_a_read_are_fetched_as_many_at_a_time_as_the_pool_has_threads() {
-            let at_once = crate::par::threads().min(9);
-            if at_once < 2 {
-                eprintln!("EPT concurrency assertion skipped: the pool has fewer than two threads");
-                return;
-            }
-            let dir = tempfile::tempdir().unwrap();
-            dataset(dir.path(), 9, EptDataType::Binary);
-            let (base, seen) = serve(dir.path(), at_once);
-            assert_eq!(read(&format!("{base}/ept.json"), &[]), Ok(40));
-            let most = seen.most.load(SeqCst);
-            assert!(most >= at_once, "at most {most} node request(s) in flight at once, {at_once} expected");
+            let scenario = || {
+                let at_once = crate::par::threads().min(9);
+                if at_once < 2 {
+                    eprintln!("EPT concurrency assertion skipped: the pool has fewer than two threads");
+                    return true;
+                }
+                let dir = tempfile::tempdir().unwrap();
+                dataset(dir.path(), 9, EptDataType::Binary);
+                let (base, seen) = serve(dir.path(), at_once);
+                assert_eq!(read(&format!("{base}/ept.json"), &[]), Ok(40));
+                let most = seen.most.load(SeqCst);
+                assert!(most >= at_once, "at most {most} node request(s) in flight at once, {at_once} expected");
+                true
+            };
+            #[cfg(unix)]
+            crate::par::alone(30, scenario);
+            #[cfg(not(unix))]
+            assert!(scenario());
         }
     }
 }
