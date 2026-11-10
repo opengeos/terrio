@@ -76,7 +76,7 @@ class Recording(DatasetReader):
 
 def traced_copy(src, out, **options):
     """`shutil.copy(src, out, **options)`, and the peak of the memory Python and NumPy allocate
-    during it."""
+    during it. Rust allocations are excluded; process RSS is measured separately."""
     tracemalloc.start()
     try:
         rio_shutil.copy(src, out, **options)
@@ -298,3 +298,22 @@ def test_cog_copy_reads_tall_source_blocks_in_bounded_slabs(tmp_path, block_rows
     assert src.windows == [(y, min(slab_rows, HEIGHT - y)) for y in range(0, HEIGHT, slab_rows)]
     with rio.open(tmp_path / "out.tif") as ds:
         np.testing.assert_array_equal(ds.read(), RGB)
+
+
+@pytest.mark.parametrize("driver", ["COG", "GTiff"])
+def test_streamed_copy_reads_a_vrt_before_replacing_its_input(tmp_path, monkeypatch, driver):
+    """A VRT may read the output's old contents throughout a streamed replacement."""
+    monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", "1")
+    dst, vrt = tmp_path / "source.tif", tmp_path / "source.vrt"
+    source(dst)
+    bands = "".join(
+        f'<VRTRasterBand dataType="Byte" band="{b}"><SimpleSource>'
+        '<SourceFilename relativeToVRT="1">source.tif</SourceFilename>'
+        f"<SourceBand>{b}</SourceBand></SimpleSource></VRTRasterBand>"
+        for b in (1, 2, 3)
+    )
+    vrt.write_text(f'<VRTDataset rasterXSize="{WIDTH}" rasterYSize="{HEIGHT}">{bands}</VRTDataset>')
+    rio_shutil.copy(vrt, dst, driver=driver, compress="deflate", tiled=True)
+    with rio.open(dst) as ds:
+        np.testing.assert_array_equal(ds.read(), RGB)
+    assert not list(tmp_path.glob("*.tmp-*"))

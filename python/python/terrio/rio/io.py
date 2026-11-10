@@ -2175,7 +2175,8 @@ class Statistics:
 class DatasetWriter(DatasetReader):
     """A dataset opened for writing (`w`, `w+`) or updating (`r+`).
 
-    The pixels are held in memory; the file is written when the dataset is closed.
+    Pixels are held in memory or a mapped staging file; streamed copies read their source
+    directly instead. The file is written when the dataset is closed.
     """
 
     # Whether the mask written is another dataset's mask band, as a copy's is (GDAL's CreateCopy
