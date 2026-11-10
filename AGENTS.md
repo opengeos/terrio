@@ -68,6 +68,12 @@ export CARGO_PROFILE_TEST_DEBUG=0
   when parallel work is requested. Preserve other contributors' changes.
 - Open regular pull requests, not drafts. State the resulting behavior, supported
   scope, validation evidence and material limitations in the description.
+- Do not edit `CHANGELOG.md` in a feature pull request: concurrent entries under
+  `Unreleased` conflict with every other open pull request. Open the description
+  with a paragraph stating the user-visible change, written as a changelog entry;
+  the release pull request drafts its section from these with
+  `scripts/draft_changelog.py`. CI fails a pull request that edits the changelog
+  unless its title starts with `Release`.
 - Batch verified review fixes into a commit per round, then reply to each comment
   with the fix or rationale and resolve addressed threads.
 - Merge only when authorized, CI is green and actionable reviews are addressed.

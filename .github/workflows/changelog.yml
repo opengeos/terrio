@@ -1,0 +1,27 @@
+name: Changelog
+
+# CHANGELOG.md is written by the release pull request, not by feature pull requests, whose
+# entries at the top of `Unreleased` conflicted with every other open pull request. See
+# "Changelog" in docs/contributing.md.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    paths: [CHANGELOG.md]
+
+permissions:
+  contents: read
+
+jobs:
+  release-only:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Allow changelog edits only in a release pull request
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if [[ "$TITLE" =~ ^Release[[:space:]] ]]; then
+            echo "Release pull request: the changelog may change."
+            exit 0
+          fi
+          echo "::error file=CHANGELOG.md::Feature pull requests do not edit CHANGELOG.md. Revert it to main's version and describe the change in the pull request description; the release pull request writes the changelog (see Changelog in docs/contributing.md)."
+          exit 1
