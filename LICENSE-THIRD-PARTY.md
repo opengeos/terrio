@@ -10,7 +10,7 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 
 ## Overview
 
-- Apache License 2.0 (260)
+- Apache License 2.0 (262)
 - MIT License (67)
 - ISC License (20)
 - BSD 3-Clause "New" or "Revised" License (15)
@@ -275,8 +275,9 @@ Used by:
 - [siphasher 1.0.4](https://github.com/jedisct1/rust-siphash)
 - [spade 2.15.1](https://github.com/Stoeoef/spade)
 - [static_assertions 1.1.0](https://github.com/nvzqz/static-assertions-rs)
-- [ureq-proto 0.6.5](https://github.com/algesten/ureq-proto)
+- [ureq-proto 0.7.1](https://github.com/algesten/ureq-proto)
 - [zeroize 1.9.1](https://github.com/RustCrypto/utils)
+- [zeroize_derive 1.5.0](https://github.com/RustCrypto/utils)
 
 ```text
 
@@ -2615,7 +2616,7 @@ Used by:
 
 Used by:
 
-- [ureq 3.5.0](https://github.com/algesten/ureq)
+- [ureq 3.5.1](https://github.com/algesten/ureq)
 - [zune-core 0.5.3](https://github.com/etemesi254/zune-image)
 - [zune-jpeg 0.5.15](https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg)
 - [zune-jpegxl 0.5.2](https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpegxl)
@@ -4977,7 +4978,7 @@ Used by:
 - [errno 0.3.14](https://github.com/lambda-fairy/rust-errno)
 - [fastrand 2.5.0](https://github.com/smol-rs/fastrand)
 - [filetime 0.2.29](https://github.com/alexcrichton/filetime)
-- [flate2 1.1.10](https://github.com/rust-lang/flate2-rs)
+- [flate2 1.1.11](https://github.com/rust-lang/flate2-rs)
 - [geo-types 0.7.20](https://github.com/georust/geo)
 - [hash32 0.3.1](https://github.com/japaric/hash32)
 - [hashbrown 0.16.1](https://github.com/rust-lang/hashbrown)
@@ -6581,6 +6582,7 @@ Used by:
 - [android_system_properties 0.1.6](https://github.com/nical/android_system_properties)
 - [anyhow 1.0.104](https://github.com/dtolnay/anyhow)
 - [atomig-macro 0.4.0](https://github.com/LukasKalbertodt/atomig/)
+- [constant_time_eq 0.6.1](https://codeberg.org/cesarb/constant_time_eq)
 - [fdeflate 0.3.7](https://github.com/image-rs/fdeflate)
 - [flatbuffers 24.12.23](https://github.com/google/flatbuffers)
 - [flatbuffers 25.12.19](https://github.com/google/flatbuffers)
@@ -6609,7 +6611,7 @@ Used by:
 - [jxl-vardct 0.11.1](https://github.com/tirr-c/jxl-oxide.git)
 - [laz 0.13.0](https://github.com/tmontaigu/laz-rs)
 - [lerc-core 0.5.2](https://github.com/i-norden/lerc-rust)
-- [lerc-reader 0.5.0](https://github.com/i-norden/lerc-rust)
+- [lerc-reader 0.5.2](https://github.com/i-norden/lerc-rust)
 - [lerc-writer 0.5.2](https://github.com/i-norden/lerc-rust)
 - [libc 0.2.191](https://github.com/rust-lang/libc)
 - [miniz_oxide 0.8.9](https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide)
@@ -9627,7 +9629,7 @@ Used by:
 
 - [tracing-core 0.1.36](https://github.com/tokio-rs/tracing)
 - [zip 8.6.0](https://github.com/zip-rs/zip2)
-- [zip 9.3.0](https://github.com/zip-rs/zip2)
+- [zip 9.5.0](https://github.com/zip-rs/zip2)
 
 ```text
 The MIT License (MIT)
