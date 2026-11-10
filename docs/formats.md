@@ -411,7 +411,8 @@ such a name is; CityJSON, CityGML, ESRI JSON and ESRI protocol buffers are read 
 Other content under such a name is not recognized: JSON whose root `type` is missing or lies past
 those 16 KiB, and GPX, KML, OSM XML, TopoJSON and GeoJSON text sequences, which need their
 extension. An allow-list judges the format the file holds: content whose driver it leaves out is
-refused, naming that format.
+refused, naming that format. JSON without a root `type` in its first 16 KiB is named GeoJSON
+too, so a list without GeoJSON refuses it as GeoJSON.
 
 ### CityJSON
 

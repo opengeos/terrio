@@ -1061,6 +1061,10 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
+    // The error of the reader of a GeoJSON or GML document that goes on to the `wbvector` fallback
+    // below: reported if the fallback cannot read the document either.
+    #[cfg_attr(target_family = "wasm", allow(unused_mut))]
+    let mut reader_error = None;
     // A file whose name points to no driver is identified by a bounded probe of its root, as a
     // remote response under such a name is (`open_remote_vector_response`); so is `.pbf`, which a
     // query's protocol buffer shares with OpenStreetMap. The probe sees only allowed drivers; with
@@ -1087,12 +1091,13 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         if let Some(driver) = driver {
             let result = read_vector_local(path, driver, options);
             // A GeoJSON or GML document its reader refuses goes on to the `wbvector` fallback when
-            // that is allowed, as it did before these two were read here.
+            // that is allowed.
             let to_fallback = matches!(found, Some("GeoJSON" | "GML"))
                 && wbvector_fallback_allowed()
                 && result.as_ref().is_err_and(|e| !e.is_resource_refusal());
-            if !to_fallback {
-                return result.map(Dataset::Vector);
+            match result {
+                Err(e) if to_fallback => reader_error = Some(e),
+                result => return result.map(Dataset::Vector),
             }
         }
         // Its name also names this driver, which an allow-list may have let it through for: the
@@ -1149,9 +1154,12 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
                 // database as a GeoPackage...): read only if the driver of that format is allowed.
                 let driver = VectorDriver::ALL.iter().find(|d| d.to_wb().as_ref() == Some(&format)).map_or("unknown", |d| d.name());
                 crate::formats::check_driver_allowed(driver, path, crate::formats::Kind::Vector)?;
-                wbvector_dataset(wbvector::read(path)?, path, options)
+                match wbvector::read(path) {
+                    Ok(layer) => wbvector_dataset(layer, path, options),
+                    Err(e) => Err(reader_error.unwrap_or_else(|| e.into())),
+                }
             }
-            Err(_) => Err(Error::Unsupported(format!("'{path}': format not recognized ({raster_err})"))),
+            Err(_) => Err(reader_error.unwrap_or_else(|| Error::Unsupported(format!("'{path}': format not recognized ({raster_err})")))),
         },
     }
 }

@@ -128,3 +128,28 @@ fn the_wbvector_fallback_reads_a_document_terrios_reader_refuses() {
     let layers = read.unwrap().layers;
     assert_eq!(layers.iter().map(|l| (l.name.as_str(), l.features.len())).collect::<Vec<_>>(), [("mixed", 2)]);
 }
+
+/// Without the `gdal` feature, with `TERRIO_WBVECTOR_FALLBACK=YES`, a document that the fallback
+/// cannot read either keeps the error of terrio's reader: GeoJSON the fallback does not recognize
+/// under a name of no driver, and GML cut short, which it recognizes but cannot read.
+#[cfg(not(feature = "gdal"))]
+#[test]
+fn a_document_the_wbvector_fallback_cannot_read_keeps_its_readers_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let [lines, _] = refused_documents(dir.path());
+    let cut = dir.path().join("cut");
+    std::fs::write(&cut, &MIXED_CRS_GML[..MIXED_CRS_GML.len() / 2]).unwrap();
+    let cut = (cut.to_str().unwrap().to_string(), "XML: syntax error: tag not closed: `>` not found before end of input");
+    terrio::config::push_scope(HashMap::from([("TERRIO_WBVECTOR_FALLBACK".to_string(), Some("YES".to_string()))]));
+    let errors: Vec<_> = [lines, cut]
+        .into_iter()
+        .flat_map(|(path, refusal)| {
+            [terrio::open_vector(&path, &Default::default()).map(|_| ()), terrio::open(&path).map(|_| ())]
+                .map(|read| (read.unwrap_err().to_string(), refusal))
+        })
+        .collect();
+    terrio::config::pop_scope();
+    for (error, refusal) in errors {
+        assert!(error.ends_with(refusal), "{error}");
+    }
+}
