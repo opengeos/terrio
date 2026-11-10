@@ -3353,7 +3353,8 @@ impl WarpContext<'_> {
     /// an exact midpoint. Circular/global footprints remain a separate operation (#764).
     fn regional_longitude_wrap(&self, ax: f64, bx: f64, dx: f64, dy: f64) -> bool {
         let gt = self.t.src_gt;
-        if !self.t.src_geographic
+        if self.t.ct.is_none()
+            || !self.t.src_geographic
             || self.t.src_gcp.is_some()
             || gt[2] != 0.0
             || gt[4] != 0.0
@@ -5021,6 +5022,15 @@ mod tests {
                 };
                 let out = warp(&[&coarse], &o).unwrap().raster.data.to_f64_vec();
                 assert!((out[0] - expected).abs() < 1e-9, "{resampling:?}: {} vs {expected}", out[0]);
+                // A same-CRS affine footprint has no normalized longitude discontinuity,
+                // even when both halves span more than 180 degrees.
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::from_epsg(4326).unwrap()),
+                    dst_transform: Some([-200., 400., 0., 2., 0., -4.]),
+                    ..o
+                };
+                let out = warp(&[&coarse], &o).unwrap().raster.data.to_f64_vec();
+                assert!((out[0] - expected).abs() < 1e-9, "continuous {resampling:?}: {}", out[0]);
             }
         }
     }
