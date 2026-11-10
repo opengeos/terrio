@@ -307,18 +307,9 @@ def test_cog_copy_reads_tall_source_blocks_in_bounded_slabs(tmp_path, block_rows
         np.testing.assert_array_equal(ds.read(), RGB)
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Windows refuses to replace a file the open VRT still reads (WinError 5)",
-)
 @pytest.mark.parametrize("driver", ["COG", "GTiff"])
 def test_streamed_copy_reads_a_vrt_before_replacing_its_input(tmp_path, monkeypatch, driver):
     """A VRT may read the output's old contents throughout a streamed replacement."""
-    if sys.platform == "win32":
-        pytest.skip(
-            "Windows cannot replace a file while the VRT still holds it open: "
-            "the copy fails with access denied and leaves the destination as it was"
-        )
     monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", "1")
     dst, vrt = tmp_path / "source.tif", tmp_path / "source.vrt"
     source(dst)
@@ -329,6 +320,15 @@ def test_streamed_copy_reads_a_vrt_before_replacing_its_input(tmp_path, monkeypa
         for b in (1, 2, 3)
     )
     vrt.write_text(f'<VRTDataset rasterXSize="{WIDTH}" rasterYSize="{HEIGHT}">{bands}</VRTDataset>')
+    if sys.platform == "win32":
+        # Windows refuses to replace a file the VRT still holds open (WinError 5): the copy must
+        # fail cleanly and leave the destination as it was.
+        before = dst.read_bytes()
+        with pytest.raises(rio.errors.RasterioIOError):
+            rio_shutil.copy(vrt, dst, driver=driver, compress="deflate", tiled=True)
+        assert dst.read_bytes() == before
+        assert not list(tmp_path.glob("*.tmp-*"))
+        return
     rio_shutil.copy(vrt, dst, driver=driver, compress="deflate", tiled=True)
     with rio.open(dst) as ds:
         np.testing.assert_array_equal(ds.read(), RGB)
