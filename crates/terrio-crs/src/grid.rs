@@ -986,6 +986,9 @@ fn grid_location(name: &str) -> GridLocation<'_> {
         // from code: those then bound what is read, so a CRS definition from untrusted input
         // cannot name any file the process can see.
         if config().lock().unwrap_or_else(PoisonError::into_inner).paths.is_some() {
+            crate::warnings::warn(format!(
+                "grid {name} named by a path is not read: grid search paths are set, so grids are read only from them"
+            ));
             return GridLocation::Refused;
         }
         return GridLocation::Path(p);

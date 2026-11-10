@@ -72,7 +72,9 @@ fn grids_named_by_path_are_read_only_without_search_paths_set_from_code() {
     assert!(read(ellipsoidal_height(name)), "an absolute path is read by default");
 
     terrio_crs::set_grid_search_paths(Some(Vec::new()));
+    let _ = terrio_crs::take_warnings();
     assert!(missing(ellipsoidal_height(name)), "an absolute path is not read with search paths set");
+    assert!(terrio_crs::take_warnings().iter().any(|w| w.contains("named by a path is not read")), "and the refusal is reported");
 
     terrio_crs::set_grid_search_paths(Some(vec![dir.path().to_path_buf()]));
     assert!(missing(ellipsoidal_height(name)), "even when it is inside a search directory");
