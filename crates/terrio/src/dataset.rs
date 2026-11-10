@@ -1174,10 +1174,13 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     }
 }
 
-/// The dataset of a layer read by the `wbvector` fallback.
+/// The dataset of a layer read by the `wbvector` fallback: the range of features `options` asks
+/// for (`skip_features`, `max_features`), as a driver's read keeps it, and the driver of the format
+/// the fallback found.
 fn wbvector_dataset(layer: Layer, path: &str, options: &VectorOpenOptions, driver: VectorDriver) -> Result<Dataset> {
-    let layers = select_layers(vec![layer], path, options)?;
-    Ok(Dataset::Vector(VectorDataset::new(layers.into_iter().map(|l| fix_layer(l, path, driver)).collect(), driver)))
+    let mut layers = select_layers(vec![layer], path, options)?;
+    layers.iter_mut().for_each(|l| options.keep_range(l));
+    Ok(Dataset::Vector(finish_vector(layers, path, driver)))
 }
 
 /// Whether the `wbvector` fallback reads a file as KMZ: a zip archive, whatever its name (a zip
