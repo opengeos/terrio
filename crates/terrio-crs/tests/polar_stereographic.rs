@@ -378,6 +378,20 @@ fn incomplete_variant_c_with_a_declared_code_is_refused() {
     assert!((x - 140.0).abs() < 1e-12 && (y + 66.0).abs() < 1e-12);
 }
 
+/// EPSG method 9830 takes precedence over a generic WKT 1 projection name.
+#[test]
+fn variant_c_method_code_overrides_a_generic_wkt1_name() {
+    let wkt = TERRE_ADELIE_WKT1
+        .replace(r#"PROJECTION["Polar_Stereographic_(variant_C)"]"#, r#"PROJECTION["Polar_Stereographic",AUTHORITY["EPSG","9830"]]"#);
+    let geographic = SpatialRef::from_epsg(4636).unwrap();
+    let crs = SpatialRef::from_wkt(&wkt);
+    let (lon, lat) = worked_example_point();
+    let (x, y) = Transformer::new(&geographic, &crs).unwrap().transform(lon, lat).unwrap();
+    assert!((x - 303_169.52).abs() < 0.005 && (y - 244_055.72).abs() < 0.005, "({x}, {y})");
+    let incomplete = wkt.replace(r#"PARAMETER["Latitude of standard parallel",-67],"#, "");
+    assert!(Transformer::new(&geographic, &SpatialRef::from_wkt(&incomplete)).is_err());
+}
+
 /// The wbprojection CRS a variant C CRS converts to, from which terrio describes CRSs in formats
 /// such as NetCDF's grid mappings, projects the note's example point as terrio does, also when the
 /// CRS is the source of a WKT 2 bound CRS.

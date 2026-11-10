@@ -620,7 +620,10 @@ impl Def {
         // A WKT 1 on Polar Stereographic (variant C) the reader cannot convert (without its
         // standard parallel, geographic CRS or ellipsoid) is refused: wbprojection reads it as
         // variant B, with the false origin at the pole.
-        if root.child("PROJECTION").and_then(|p| p.name()).is_some_and(|m| wkt1::norm(m) == "polarstereographicvariantc") {
+        if root
+            .child("PROJECTION")
+            .is_some_and(|p| p.epsg() == Some(9830) || p.name().is_some_and(|m| wkt1::norm(m) == "polarstereographicvariantc"))
+        {
             return Err(Error::Crs("an incomplete Polar Stereographic (variant C) WKT".into()));
         }
         // Other kinds of WKT 2 CRS and WKT 1 projections the readers do not know: wbprojection's

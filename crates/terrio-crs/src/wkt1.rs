@@ -267,7 +267,8 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     let k = get(&["scalefactor", "scalefactoratnaturalorigin", "scalefactoroninitialline"]);
     let sp1 = angle(&["standardparallel1", "standardparallel", "latitudeof1ststandardparallel"]);
     let sp2 = angle(&["standardparallel2", "latitudeof2ndstandardparallel"]);
-    let method = norm(root.child("PROJECTION")?.name()?);
+    let projection = root.child("PROJECTION")?;
+    let method = if projection.epsg() == Some(9830) { "polarstereographicvariantc".to_string() } else { norm(projection.name()?) };
     if method == "hotineobliquemercatortwopointnaturalorigin" {
         // A present but malformed value must not be dropped and replaced by a zero default.
         for parameter in root.children("PARAMETER") {
