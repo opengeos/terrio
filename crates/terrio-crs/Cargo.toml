@@ -21,6 +21,10 @@ thiserror.workspace = true
 tiff.workspace = true
 ruzstd.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# O_NONBLOCK, so that opening a grid replaced by a FIFO cannot block.
+libc.workspace = true
+
 [features]
 default = []
 # Zstandard TIFF grids, with the zstd C library (off by default: the crate is otherwise pure Rust).
