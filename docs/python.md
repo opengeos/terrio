@@ -588,7 +588,9 @@ Their keyword options follow the CLI, including compression, partial refresh,
 clipping geometry and overview updates. Local writable little-endian GeoTIFFs
 are required for in-place changes; external overview updates can fail after the
 base update commits. External overviews (`external=True`) write only the `.ovr`
-sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`. Overviews are
+sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`. They read that
+`.ovr` under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` too; the `.msk`, `.aux.xml`
+and `.ovr.msk` beside the GeoTIFF still follow the option. Overviews are
 managed for GeoTIFFs only.
 
 `add_overviews(..., progress=callback)` calls `callback(fraction)` as the
@@ -904,6 +906,15 @@ terrio.allowed_drivers("raster")  # ["GTIFF"]
 `None` raises `InvalidArgumentError`. `GDAL_HTTP_HEADERS` set for a prefix is sent only to that
 prefix, never to another host a redirect leads to. See [Remote Data](remote-data.md) for the
 options themselves.
+
+The `TERRIO_ALLOWED_DRIVERS` option limits the drivers too, in the environment or in an `Env`. A
+driver must then be in both lists, and `allowed_drivers()` gives the drivers both allow. The
+option's value is a comma-separated list of driver names in any case. Set but empty, it allows no
+driver. In an `Env` it only narrows the list outside, and unset there, it leaves that list in
+force. `allowed_drivers()` is the way to see what the option allows: `terrio.pyogrio`'s
+`get_gdal_config_option` reports a set but empty value as unset (`None`), and `config_options()`
+shows only the values `Env` scopes hold, `''` where a scope allows nothing. See
+[Allowed drivers](remote-data.md#allowed-drivers).
 
 ## Typing
 

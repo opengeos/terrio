@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+- A `Raster` read lazily from a file, such as a GeoTIFF (`open_raster(path, lazy=True)`,
+  `rio.open`, the xarray backend), can be read from several Python threads at once: `read`,
+  `read_mask` and `numpy.asarray` raised `RuntimeError: Already borrowed` when a read overlapped
+  another. An overlapping read takes another reader of the same path, opened from the process-wide
+  caches (its first bytes are not requested again) and kept, up to four, for the next overlapping
+  read. Each reader has its own file handle, and their decoded chunks are cached separately under
+  the one block-cache byte cap. A relative path is resolved when the raster opens, so a later
+  `os.chdir` does not change the file read, and a reader opened on another thread takes the options
+  of the thread that opened the raster (an `Env` such as `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`).
+  Other rasters, including those decoded whole when they open (formats read whole and local VRTs),
+  and the other methods, are still one call at a time.
+- A VRT source with fractional `SrcRect` or `DstRect` offsets is read within its rectangles (#702).
+  A window with as many source pixels as output pixels was copied one for one whatever its offsets,
+  so `bilinear`, `cubic` and `average` returned the source pixels a fraction of a pixel from where
+  the rectangles place them, as in the mosaics `terrio mosaic` writes onto a grid a fraction of a
+  pixel off a source's: it is now copied only at the same scale on whole-pixel offsets, and
+  otherwise resampled by the source's method (`nearest` takes the nearest pixels). A fractional
+  window was also widened to whole output pixels, and its source window with it, so pixels outside
+  the `SrcRect` reached the output for every method. A source now reads only the pixels that meet
+  its `SrcRect`; a method sampling a point writes only the output pixels whose centres are inside
+  the `DstRect`, and an area method gives an output pixel partly inside it the part of the source
+  inside it. A ramp `0, 10, …, 70` mosaicked a quarter pixel east with `bilinear` or `average` gives
+  `2.5, 12.5, …, 62.5` instead of `0, 10, …, 60`, and the pixels `[10, 20]` of `[10, 20, 30]` placed
+  a quarter pixel east sum to `[7.5, 17.5, 5]` instead of `[7.5, 17.5, 27.5]`. Reads of such a VRT
+  by windows now give the pixels of a whole read: a window of one pixel at the source's resolution
+  was copied whatever its offsets. The VRT `terrio mosaic` writes now gives each source its whole
+  raster as `SrcRect`, with a `DstRect` that runs past the mosaic's edges where the source does, so
+  that a kernel at the edges of a `--te` extent still reads the source's pixels past them.
+- A feature-service query URL (`f=json`, `f=pjson`, `f=pbf` or `resultRecordCount=`) or a WFS
+  `GetFeature` URL whose name points to no driver is refused before any request when no allowed
+  driver (`set_allowed_drivers`, `TERRIO_ALLOWED_DRIVERS`) could read its answer: for `open_vector`
+  and `list_layers`, none of the ESRIJSON, ESRIPBF, GeoJSON and GML drivers (nor GDAL, with the
+  `gdal` feature); for `open` and `info`, which read a raster answer as a raster, no raster driver
+  either. They requested it and read the start of its answer (6,000 bytes for a feature-service
+  query) before refusing it (#722). Otherwise the answer is requested and checked against what it
+  holds, as before.
+- `terrio.rio` keeps a color interpretation other than red, green and blue on three Byte bands,
+  or four compressed with WebP, where its GeoTIFF writer makes them RGB unless told otherwise:
+  in a COG, set on the dataset or copied by `shutil.copy(..., driver="COG")` (#717); in an
+  update (`r+`) of a GeoTIFF or a COG; and in a GeoTIFF written with `photometric="ycbcr"`.
+  `terrio.rio` told the writer only the bands whose interpretation was not gray, then
+  undefined, so `undefined` x 3 read back as `undefined, green, blue`, and
+  `gray, undefined, undefined` as RGB. These bands are still red, green and blue by default, and
+  a COG writer, or one in YCbCr, now reports that before the file is written. Other GeoTIFFs and
+  COGs are written as before.
+- Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, or its other name
+  `GDAL_DISABLE_READDIR_ON_OPEN`, a local GeoTIFF no longer takes overviews from an `.ovr` beside
+  it. They served its reduced reads (`terrio translate --outsize`, a `terrio.rio` read with a
+  smaller `out_shape`), so a file placed next to the dataset changed the pixels read (#720). The
+  commands that manage an external `.ovr` (`terrio overviews --external`, and the Rust and Python
+  overview functions) still read it under the option; the `.msk`, `.aux.xml` and `.ovr.msk` beside
+  the GeoTIFF still follow the option, as before.
+  `terrio.rio` follows both names of the option: under the `TERRIO_` name it still applied an
+  `.aux.xml` sidecar's tags, band descriptions, scales, offsets, units, color interpretations and
+  nodata, and read RPC sidecars. Under the option, its `files` no longer lists the `.aux.xml`,
+  `.ovr`, `.msk`, world and RPC files, which are not read, nor a `.hdr` other than the header of an
+  ENVI or EHdr raster.
 - `terrio.rio` writes JPEG 2000 to a `.jp2` path opened for writing without a driver:
   `driver_from_extension` names the driver `JP2OpenJPEG`, which `open(..., "w")`,
   `shutil.copy` and `terrio.xarray`'s `to_raster` refused in 0.8.0 (`DriverCapabilityError`,

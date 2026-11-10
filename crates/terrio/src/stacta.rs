@@ -479,7 +479,7 @@ fn config_true(key: &str) -> bool {
 fn check_allowed() -> Result<()> {
     match crate::formats::allowed_drivers(Some(crate::formats::Kind::Raster)) {
         Some(list) if !list.iter().any(|d| crate::formats::canonical_driver_name(d) == "STACTA") => {
-            Err(Error::Unsupported(format!("STACTA: the STACTA driver is not allowed (allowed: {})", list.join(", "))))
+            Err(Error::Unsupported(format!("STACTA: the STACTA driver is not allowed (allowed: {})", crate::formats::allowed_text(&list))))
         }
         _ => Ok(()),
     }

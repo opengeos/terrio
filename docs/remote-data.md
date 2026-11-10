@@ -270,7 +270,11 @@ Signatures and SAS tokens are hidden in logs and error messages.
 
 The first request of a remote file asks for its first 16,384 bytes, as GDAL's `/vsicurl/` does:
 a file that is not what its name says (64 MiB of noise named `.tif`, say) is refused after them,
-not downloaded. A remote `.json` or `.geojson` document opened as a raster is identified by its
+not downloaded. A feature-service query (`f=json`, `f=pjson`, `f=pbf` or `resultRecordCount=`)
+or a WFS `GetFeature` URL is not requested at all when no allowed driver could read its answer:
+for a vector open, when the list leaves out the ESRIJSON, ESRIPBF, GeoJSON and GML drivers (and
+GDAL, with the `gdal` feature), and for `open` and `info`, every raster driver too. A remote
+`.json` or `.geojson` document opened as a raster is identified by its
 first 32,768 bytes, as GDAL's STACTA and STACIT drivers identify one: unless they show a STAC
 document, it is refused after them rather than fetched whole to be read as GeoJSON. A remote file
 opened as a raster whose name points to no raster driver (`x`, `x.bin`, `dir.json/x`, a vector
@@ -320,6 +324,27 @@ old pixels with chunks decoded from the new ones, so close its readers before ch
 and open them again afterwards. A remote file
 opened again decodes its chunks anew, but from the bytes the HTTP cache above may still hold for its
 URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops them.
+
+## Allowed drivers
+
+`TERRIO_ALLOWED_DRIVERS` limits the drivers datasets may be opened with, for files you do not trust:
+
+- **Value.** A comma-separated list of driver names, in any case (`GTiff`, `gtiff`), where
+  `JP2OpenJPEG`, `JPEG2000`, `JP2KAK`, `JP2ECW` and `JP2MRSID` all name `JP2`. Unset, it restricts
+  nothing. Set but empty or blank, or to bytes that are not UTF-8, it allows no driver.
+- **Scope.** It applies to every kind of dataset, rasters, vectors and point clouds alike.
+- **With `set_allowed_drivers`.** When a list is also set with
+  `terrio::formats::set_allowed_drivers` (Python: `terrio.set_allowed_drivers`), a driver must be
+  in both.
+- **Set for one thread** (Python's `terrio.rio.Env`, `terrio::config::push_scope`), it only narrows
+  the list outside the scope, the environment's and an outer scope's: the scope allows the drivers
+  both name. A scope that unsets the option leaves the list outside in force. The environment's
+  list applies even when it is set after the scope. Work run on Terrio's thread pool, such as
+  opening raster paths in `zonal_stats`, currently sees only the environment's list and
+  `set_allowed_drivers`, not the calling thread's scope (tracked in #761).
+
+`terrio::formats::allowed_drivers` (Python: `terrio.allowed_drivers()`) gives the drivers allowed on
+the calling thread.
 
 ## Managing files
 

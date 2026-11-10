@@ -99,6 +99,10 @@ _IN_MEMORY_LIMIT = 512 * 1024 * 1024
 # The drivers of files that can hold subdatasets (several variables or arrays).
 _SUBDATASET_DRIVERS = frozenset({"netCDF", "HDF5", "HDF4", "Zarr", "STACIT", "STACTA", "GPKG"})
 
+# The drivers that read a `.hdr` beside the data: their header, read under
+# `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` too.
+_HEADER_DRIVERS = frozenset({"ENVI", "EHdr"})
+
 
 def _in_memory_limit() -> int:
     """The size above which writers keep their pixels on disk.
@@ -272,7 +276,8 @@ def _sidecars_allowed(path: str) -> bool:
     """Whether to read sidecar files (`.aux.xml`, `_RPC.TXT`, `.RPB`) next to a dataset.
 
     Never for remote datasets, whose sidecars terrio does not request, and not when
-    `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` tells GDAL to treat the dataset's directory as empty.
+    `TERRIO_DISABLE_READDIR_ON_OPEN`, or its other name `GDAL_DISABLE_READDIR_ON_OPEN`, is
+    `EMPTY_DIR` for the calling thread: the decision the core takes for its own sidecars.
     (A true value only stops GDAL listing the directory; it still probes each sidecar.)
 
     Args:
@@ -283,7 +288,7 @@ def _sidecars_allowed(path: str) -> bool:
     """
     if _is_remote(path):
         return False
-    return _option("GDAL_DISABLE_READDIR_ON_OPEN") != "EMPTY_DIR"
+    return not _terrio.sidecars_disabled()
 
 
 def _check_driver(path: str, name: str, driver: Any) -> None:
@@ -1202,6 +1207,10 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
     def files(self) -> list[str]:
         """The files of the dataset.
 
+        Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` (or `GDAL_DISABLE_READDIR_ON_OPEN`),
+        which keeps them from being read, its `.aux.xml`, `.ovr`, `.msk`, world and RPC files are
+        not listed, nor a `.hdr` other than an ENVI or EHdr raster's header.
+
         Returns:
             list: The paths.
         """
@@ -1210,18 +1219,24 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
         out = [self.name]
         stem, ext = os.path.splitext(self.name)
         world = "." + ext[1:2] + ext[-1:] + "w" if len(ext) > 2 else ".wld"
-        sidecars = [
-            self.name + ".aux.xml",
-            self.name + ".ovr",
-            self.name + ".msk",
-            stem + world,
-            stem + ".wld",
-            stem + "_rpc.txt",
-            stem + "_RPC.TXT",
-            stem + ".RPB",
-            stem + ".rpb",
-            stem + ".hdr",
-        ]
+        allowed = _sidecars_allowed(self.name)
+        sidecars = (
+            [
+                self.name + ".aux.xml",
+                self.name + ".ovr",
+                self.name + ".msk",
+                stem + world,
+                stem + ".wld",
+                stem + "_rpc.txt",
+                stem + "_RPC.TXT",
+                stem + ".RPB",
+                stem + ".rpb",
+            ]
+            if allowed
+            else []
+        )
+        if allowed or self.driver in _HEADER_DRIVERS:
+            sidecars.append(stem + ".hdr")
         for f in sidecars:
             if f not in out and os.path.isfile(f):
                 out.append(f)
@@ -2421,12 +2436,7 @@ class DatasetWriter(DatasetReader):
             block = (1, self.width)
         s = _tiff.Structure(count=n, width=self.width, height=self.height, block_shape=block)
         s.tiled = tiled
-        ci = [ColorInterp.gray] + [ColorInterp.undefined] * (n - 1)
-        if o.get("PHOTOMETRIC", "").upper() == "RGB" and n >= 3:
-            ci[:3] = [ColorInterp.red, ColorInterp.green, ColorInterp.blue]
-        if o.get("ALPHA", "").upper() in ("YES", "NON-PREMULTIPLIED", "PREMULTIPLIED") and n > 1:
-            ci[-1] = ColorInterp.alpha
-        s.colorinterp = ci
+        s.colorinterp = self._new_structure_defaults()
         s.band_tags = [{} for _ in range(n)]
         s.descriptions = [None] * n
         s.scales = [1.0] * n
@@ -3212,7 +3222,13 @@ class DatasetWriter(DatasetReader):
         w.close()
 
     def _new_structure_defaults(self) -> list[ColorInterp]:
-        """The color interpretations GDAL derives from the creation options.
+        """The color interpretations the writer gives the bands when it is not told otherwise.
+
+        For a GeoTIFF or a COG they are the GeoTIFF writer's. `PHOTOMETRIC=RGB` or `YCBCR` makes
+        the first three bands red, green and blue. Without `PHOTOMETRIC`, so do three Byte bands,
+        or four compressed with WebP: a COG takes none (`_creation_options` drops it), and an
+        update passes one only for an RGB file. `ALPHA` makes the last band alpha. `_flush` sends
+        the writer each band's interpretation that differs from these.
 
         Returns:
             list: One per band.
@@ -3220,7 +3236,15 @@ class DatasetWriter(DatasetReader):
         n = self._count
         ci = [ColorInterp.gray] + [ColorInterp.undefined] * (n - 1)
         o = self._options
-        if o.get("PHOTOMETRIC", "").upper() == "RGB" and n >= 3:
+        photometric = o.get("PHOTOMETRIC", "").upper()
+        rgb = photometric == "RGB"
+        if self._out_driver.upper() in ("GTIFF", "COG"):
+            if photometric:
+                rgb = photometric in ("RGB", "YCBCR")
+            else:
+                webp = o.get("COMPRESS", "").upper() == "WEBP"
+                rgb = self._dtype == "uint8" and (n == 3 or (n == 4 and webp))
+        if rgb and n >= 3:
             ci[:3] = [ColorInterp.red, ColorInterp.green, ColorInterp.blue]
         if o.get("ALPHA", "").upper() in ("YES", "NON-PREMULTIPLIED", "PREMULTIPLIED") and n > 1:
             ci[-1] = ColorInterp.alpha

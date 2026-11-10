@@ -1227,3 +1227,81 @@ def test_geopackage_subdatasets_keep_info_fallback(tmp_path):
     assert len(expected) == 2
     with rio.open(path) as dataset:
         assert dataset.subdatasets == expected
+
+
+@pytest.mark.parametrize(
+    "option", ["TERRIO_DISABLE_READDIR_ON_OPEN", "GDAL_DISABLE_READDIR_ON_OPEN"]
+)
+def test_empty_dir_reads_nothing_beside_the_dataset(tmp_path, option):
+    """Under `EMPTY_DIR`, by either name of the option, a local GeoTIFF is read from its own file
+    only: its `.ovr`, `.msk` and `.aux.xml` give it no overviews, no mask and no band description,
+    a reduced read takes its own pixels, and `files` lists it alone. Without the option, the
+    three sidecars are read."""
+    path = str(tmp_path / "image.tif")
+    profile = dict(
+        driver="GTiff",
+        width=64,
+        height=64,
+        count=1,
+        dtype="uint8",
+        crs="EPSG:32633",
+        transform=rio.transform.from_origin(500000, 5000000, 10, 10),
+    )
+    with rio.open(path, "w", **profile) as dst:
+        dst.write(np.full((64, 64), 1, "uint8"), 1)
+    half = dict(
+        profile, width=32, height=32, transform=rio.transform.from_origin(500000, 5000000, 20, 20)
+    )
+    with rio.open(path + ".ovr", "w", **half) as dst:
+        dst.write(np.full((32, 32), 2, "uint8"), 1)
+    with rio.open(path + ".msk", "w", **profile) as dst:
+        dst.write(np.zeros((64, 64), "uint8"), 1)
+    with open(path + ".aux.xml", "w") as f:
+        f.write(
+            '<PAMDataset><PAMRasterBand band="1"><Description>from aux.xml</Description>'
+            "</PAMRasterBand></PAMDataset>"
+        )
+
+    def seen():
+        with rio.open(path) as src:
+            return (
+                src.overviews(1),
+                [os.path.basename(f) for f in src.files],
+                np.unique(src.read(1, out_shape=(16, 16))).tolist(),
+                int((src.dataset_mask() > 0).sum()),
+                src.descriptions,
+            )
+
+    sidecars = ["image.tif.aux.xml", "image.tif.ovr", "image.tif.msk"]
+    assert seen() == ([2], ["image.tif", *sidecars], [2], 0, ("from aux.xml",))
+    with rio.Env(**{option: "EMPTY_DIR"}):
+        assert seen() == ([], ["image.tif"], [1], 64 * 64, (None,))
+
+
+@pytest.mark.parametrize(
+    "option", ["TERRIO_DISABLE_READDIR_ON_OPEN", "GDAL_DISABLE_READDIR_ON_OPEN"]
+)
+def test_empty_dir_lists_a_hdr_only_as_the_header_it_reads(tmp_path, option):
+    """Under `EMPTY_DIR`, `files` lists the `.hdr` of an EHdr or ENVI raster, its header, which is
+    read, and not a `.hdr` beside a GeoTIFF, which is not."""
+    profile = dict(
+        width=8,
+        height=8,
+        count=1,
+        dtype="uint8",
+        crs="EPSG:32633",
+        transform=rio.transform.from_origin(500000, 5000000, 10, 10),
+    )
+    for driver, name in (("GTiff", "image.tif"), ("EHdr", "dem.bil"), ("ENVI", "img.dat")):
+        with rio.open(str(tmp_path / name), "w", driver=driver, **profile) as dst:
+            dst.write(np.ones((8, 8), "uint8"), 1)
+    (tmp_path / "image.hdr").write_text("ENVI\n")
+
+    def listed(name):
+        with rio.open(str(tmp_path / name)) as src:
+            return [os.path.basename(f) for f in src.files]
+
+    with rio.Env(**{option: "EMPTY_DIR"}):
+        assert listed("image.tif") == ["image.tif"]
+        assert listed("dem.bil") == ["dem.bil", "dem.hdr"]
+        assert listed("img.dat") == ["img.dat", "img.hdr"]
