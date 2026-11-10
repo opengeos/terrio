@@ -766,8 +766,8 @@ fn config() -> &'static Mutex<Config> {
 /// terrio's download cache); `None` goes back to the environment's. As PROJ's
 /// `proj_context_set_search_paths`. Transformers created afterwards use them.
 ///
-/// While search paths are set this way, grids are read only from them (and from grids registered
-/// with [`register_grid`]): a grid named by a path in a CRS definition (`+nadgrids=/data/a.gsb`,
+/// While search paths are set this way, grids are read only from them, from grids registered with
+/// [`register_grid`] and, with the network on, from the PROJ CDN (and its download cache): a grid named by a path in a CRS definition (`+nadgrids=/data/a.gsb`,
 /// `./a.gsb`, `../a.gsb`) is treated as missing, so a definition from untrusted input cannot read
 /// arbitrary files. Add the grid's directory to the search paths or register it instead. Unlike
 /// PROJ, which reads such paths whatever its search paths are.
@@ -986,8 +986,9 @@ fn grid_location(name: &str) -> GridLocation<'_> {
         // from code: those then bound what is read, so a CRS definition from untrusted input
         // cannot name any file the process can see.
         if config().lock().unwrap_or_else(PoisonError::into_inner).paths.is_some() {
+            let shown: String = name.chars().take(120).collect();
             crate::warnings::warn(format!(
-                "grid {name} named by a path is not read: grid search paths are set, so grids are read only from them"
+                "grid {shown} named by a path is not read: grid search paths are set, so grids are read only from them"
             ));
             return GridLocation::Refused;
         }
