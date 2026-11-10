@@ -178,7 +178,6 @@ terrio reads and writes its formats with these crates, among others:
 | [`flatgeobuf`](https://crates.io/crates/flatgeobuf) | FlatGeobuf |
 | [Apache Arrow and Parquet](https://github.com/apache/arrow-rs) | GeoParquet and Arrow |
 | [`netcdf-reader`](https://crates.io/crates/netcdf-reader), [`hdf5-reader`](https://crates.io/crates/hdf5-reader) | netCDF and HDF5 |
-| [`osmpbfreader`](https://crates.io/crates/osmpbfreader) | OpenStreetMap PBF |
 | [`quick-xml`](https://crates.io/crates/quick-xml) | KML, GPX and other XML formats |
 | [`laz`](https://crates.io/crates/laz) | LAZ and COPC, a port of [LASzip](https://laszip.org) |
 | [`e57`](https://crates.io/crates/e57) | E57 laser scans |
