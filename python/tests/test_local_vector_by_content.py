@@ -70,3 +70,37 @@ def test_content_the_allow_list_leaves_out_is_refused_as_before(documents):
 def test_a_json_document_that_is_not_geojson_is_still_not_recognized(documents):
     with pytest.raises(terrio.UnsupportedError, match="format not recognized"):
         terrio.open_vector(str(documents / "notgeo"))
+
+
+# A GPX document and a KML document of three points each, point `i` at `(i, 0)`.
+GPX = (
+    '<?xml version="1.0"?><gpx version="1.1" creator="test" '
+    'xmlns="http://www.topografix.com/GPX/1/1">'
+    + "".join(f'<wpt lat="0" lon="{i}"><name>p{i}</name></wpt>' for i in range(3))
+    + "</gpx>"
+)
+KML = (
+    '<?xml version="1.0"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
+    + "".join(
+        f"<Placemark><name>k{i}</name><Point><coordinates>{i},0</coordinates></Point></Placemark>"
+        for i in range(3)
+    )
+    + "</Document></kml>"
+)
+
+
+@pytest.mark.parametrize(("suffix", "text", "driver"), [(".gpx", GPX, "GPX"), (".kml", KML, "KML")])
+def test_a_document_the_wbvector_fallback_reads_keeps_the_range_asked_for(
+    tmp_path, suffix, text, driver
+):
+    # Under its own extension, and under a name of no driver, which only the fallback reads (#726).
+    pytest.importorskip("geopandas")
+    paths = [tmp_path / f"doc{suffix}", tmp_path / "doc.bin"]
+    for path in paths:
+        path.write_text(text)
+    with rio.Env(TERRIO_WBVECTOR_FALLBACK="YES"):
+        for path in paths:
+            frame = tpg.read_dataframe(str(path), skip_features=1, max_features=1)
+            info = tpg.read_info(str(path))
+            got = (path.name, info["driver"], frame.geometry.x.tolist())
+            assert got == (path.name, driver, [1.0])
