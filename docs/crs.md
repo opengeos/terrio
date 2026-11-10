@@ -317,6 +317,7 @@ code it is treated as missing, with a warning, so a CRS definition from untruste
 Add its directory to the search paths, or register the grid, instead.
 A local entry refused for its type or size is treated as missing. With network access enabled,
 a plain grid name can therefore use its CDN copy instead; path-named grids never use the CDN.
+The search-directory boundary is lexical: symlinks inside trusted search directories are followed.
 
 ```sh
 TERRIO_NETWORK=ON terrio crs EPSG:4267 --to EPSG:4269 -100 40   # reads the NADCON5 grid by range

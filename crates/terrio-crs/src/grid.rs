@@ -1047,10 +1047,16 @@ fn present_locally(name: &str) -> bool {
     false
 }
 
+/// Whether a grid name is a single ordinary file component on this platform.
+fn single_file_name(name: &str) -> bool {
+    let mut parts = std::path::Path::new(name).components();
+    matches!(parts.next(), Some(std::path::Component::Normal(_))) && parts.next().is_none() && !name.contains(['/', '\\'])
+}
+
 /// The URL of a grid on the PROJ CDN.
 #[cfg(remote)]
 fn cdn_url(name: &str) -> Option<String> {
-    if name.contains(['/', '\\']) || !name.ends_with(".tif") {
+    if !single_file_name(name) || !name.ends_with(".tif") {
         return None;
     }
     let endpoint =
@@ -1116,10 +1122,7 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
     // back to another operation. Plain names the CDN cannot serve (non-`.tif` names such as `.gsb`)
     // are recorded as fetch failures without a request.
     #[cfg(remote)]
-    let fetch = bytes.is_none() && network_enabled() && {
-        let mut parts = std::path::Path::new(name).components();
-        matches!(parts.next(), Some(std::path::Component::Normal(_))) && parts.next().is_none() && !name.contains(['/', '\\'])
-    };
+    let fetch = bytes.is_none() && network_enabled() && single_file_name(name);
     #[cfg(remote)]
     if fetch && !download_whole() {
         match open_remote(name) {
@@ -1198,7 +1201,7 @@ pub(crate) fn available(name: &str) -> bool {
     {
         return a;
     }
-    let a = present_locally(name) || (network_enabled() && name.ends_with(".tif") && !name.contains(['/', '\\']));
+    let a = present_locally(name) || (network_enabled() && name.ends_with(".tif") && single_file_name(name));
     {
         let mut m = availability().lock().unwrap_or_else(PoisonError::into_inner);
         if generation == cache_generation() {
@@ -2288,5 +2291,18 @@ mod tests {
         let set = Arc::new(GridSet { grids: vec![Grid { ext, src, usage: Use::V { sample: 0 }, children: Vec::new() }] });
         // At lat = 0.0 (south edge), the two southern corners are NaN and the two northern corners have weight 0.
         assert_eq!(vgrid_value(&[set], 0.5, 0.0, 1.0), None);
+    }
+    #[test]
+    fn cdn_names_are_single_ordinary_file_components() {
+        assert!(single_file_name("grid.tif"));
+        for name in ["", ".", "..", "sub/grid.tif", r"sub\grid.tif", "./grid.tif", "../grid.tif"] {
+            assert!(!single_file_name(name), "{name}");
+        }
+        #[cfg(windows)]
+        for name in ["C:grid.tif", r"C:\grid.tif", r"\\host\grid.tif"] {
+            assert!(!single_file_name(name), "{name}");
+        }
+        #[cfg(unix)]
+        assert!(single_file_name("C:grid.tif"));
     }
 }
