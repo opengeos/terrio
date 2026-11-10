@@ -2281,6 +2281,77 @@ mod tests {
         assert_eq!(level(&mut vrt, Some(0), Window::new(0, 0, 32, 32)), level(&mut source, Some(0), Window::full(32, 32)));
     }
 
+    /// Valid: the left half and the top quarter of 32 x 32 pixels.
+    fn left_and_top() -> Vec<u8> {
+        (0..32 * 32).map(|i| if i % 32 < 16 || i / 32 < 8 { 255 } else { 0 }).collect()
+    }
+
+    /// A source's own mask as the VRT's mask band (`<SourceBand>mask,1</SourceBand>`, as mosaics of
+    /// masked COGs have it) is read at an overview from the source's mask at that level.
+    #[test]
+    fn a_source_s_own_mask_is_read_at_an_overview() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = leveled(dir.path(), "masked.tif", (32, 32), &[2, 4], |row, column| (row * 32 + column) as f64, Some(left_and_top()));
+        let xml = format!(
+            "<VRTDataset rasterXSize=\"32\" rasterYSize=\"32\"><VRTRasterBand dataType=\"Float32\">{}</VRTRasterBand><MaskBand><VRTRasterBand dataType=\"Byte\">{}</VRTRasterBand></MaskBand></VRTDataset>",
+            simple_source(&path, "1", None),
+            simple_source(&path, "mask,1", None)
+        );
+        let mut vrt = open(&xml);
+        assert_eq!(vrt.overviews(), vec![(16, 16), (8, 8)]);
+        let mut source = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        for (i, (w, h)) in source.overviews().into_iter().enumerate() {
+            let want = source.read_mask(Window::full(w, h), Some(i)).unwrap();
+            assert!(want.as_ref().is_some_and(|m| m.contains(&0) && m.contains(&255)), "overview {i}: the source's mask");
+            assert_eq!(vrt.read_mask(Window::full(w, h), Some(i)).unwrap(), want, "overview {i}");
+        }
+    }
+
+    /// A source composited through its own mask (`<UseMaskBand>true</UseMaskBand>`) over another is
+    /// composited at an overview by its mask at that level: its overview pixels where they are
+    /// valid, the other source's elsewhere.
+    #[test]
+    fn a_source_used_through_its_mask_is_composited_by_it_at_an_overview() {
+        let dir = tempfile::tempdir().unwrap();
+        let background = leveled(dir.path(), "background.tif", (32, 32), &[2, 4], |_, _| 7., None);
+        let path = leveled(dir.path(), "masked.tif", (32, 32), &[2, 4], |row, column| (row * 32 + column) as f64, Some(left_and_top()));
+        let xml = format!(
+            "<VRTDataset rasterXSize=\"32\" rasterYSize=\"32\"><VRTRasterBand dataType=\"Float32\">{}<ComplexSource><SourceFilename relativeToVRT=\"0\">{}</SourceFilename><SourceBand>1</SourceBand><UseMaskBand>true</UseMaskBand></ComplexSource></VRTRasterBand></VRTDataset>",
+            simple_source(&background, "1", None),
+            path.display()
+        );
+        let mut vrt = open(&xml);
+        assert_eq!(vrt.overviews(), vec![(16, 16), (8, 8)]);
+        let mut source = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        for (i, (w, h)) in source.overviews().into_iter().enumerate() {
+            let mask = source.read_mask(Window::full(w, h), Some(i)).unwrap().unwrap();
+            assert!(mask.contains(&0) && mask.contains(&255), "overview {i}: the source's mask");
+            let pixels = level(&mut source, Some(i), Window::full(w, h));
+            let want: Vec<f64> = pixels.iter().zip(&mask).map(|(&v, &m)| if m != 0 { v } else { 7. }).collect();
+            assert_eq!(level(&mut vrt, Some(i), Window::full(w, h)), want, "overview {i}");
+        }
+    }
+
+    /// A warped VRT is read through its warp, whose reads have no levels: it has no overviews,
+    /// whatever its source has, even when one of its bands also lists a source, which its reads
+    /// ignore.
+    #[test]
+    fn a_warped_vrt_has_no_overviews() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = pyramid(dir.path());
+        let xml = VirtualRaster::warped(path.to_str().unwrap(), &WarpOptions::default()).unwrap().to_xml();
+        let stray = xml.replacen("</VRTRasterBand>", &format!("{}</VRTRasterBand>", simple_source(&path, "1", None)), 1);
+        assert_ne!(stray, xml);
+        for xml in [xml, stray] {
+            let mut vrt = open(&xml);
+            assert_eq!(vrt.overviews(), Vec::<(usize, usize)>::new());
+            assert!(vrt.read_window(Window::new(0, 0, 1, 1), &WindowOptions { bands: vec![1], overview: Some(0) }).is_err());
+            let warped = vrt.read_window(Window::full(32, 32), &WindowOptions { bands: vec![1], overview: None }).unwrap().raster.data;
+            let mut source = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+            assert_eq!(warped.to_f64_vec(), level(&mut source, None, Window::full(32, 32)));
+        }
+    }
+
     fn pyramid(dir: &Path) -> std::path::PathBuf {
         let path = dir.join("levels.tif");
         let source = crate::ops::build_raster(
