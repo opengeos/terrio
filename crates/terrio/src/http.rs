@@ -4344,9 +4344,11 @@ mod tests {
     /// A read of the whole file at a URL.
     type ReadAll = fn(&str) -> Result<Vec<u8>>;
 
-    /// Reads of `url` through the range reader, a whole-body `GET` and an object fetched whole
-    /// (a request without a redirect policy of its own), each the whole of the file.
-    fn reads() -> [(&'static str, ReadAll); 3] {
+    /// Reads of `url` through the range reader, a whole-body `GET`, an object fetched whole (a
+    /// request without a redirect policy of its own) and a `GET` with a header (the request loop
+    /// of the signing token fetch with an API key, and of STAC requests with headers or a body),
+    /// each the whole of the file.
+    fn reads() -> [(&'static str, ReadAll); 4] {
         [
             ("range reader", |url| {
                 let reader = RangeReader::open(&Remote::Url(url.to_string()))?;
@@ -4357,6 +4359,9 @@ mod tests {
             ("whole-body GET", |url| get(&Remote::Url(url.to_string()))),
             ("object fetched whole", |url| {
                 Ok(ObjectFetcher::new().get(&Remote::Url(url.to_string()), ByteRange::Whole)?.unwrap_or_default())
+            }),
+            ("GET with a header", |url| {
+                get_with_headers_capped(url, &[("X-Read".to_string(), "1".to_string())], json_max_size(), Redirects::for_reads())
             }),
         ]
     }
@@ -4370,7 +4375,7 @@ mod tests {
         let (other, other_seen) = serve_recording(data.clone(), None);
         let (asked, _) = serve_recording(vec![0], Some(format!("{other}/data.bin")));
         for (label, read) in reads() {
-            let url = |value: &str| format!("{asked}/old-{}-{value}.bin", label.replace(' ', "-"));
+            let url = |value: &str| format!("{asked}/old-{}-{}.bin", label.replace(' ', "-"), value.replace(' ', "_"));
             let reached = other_seen.lock().unwrap().len();
             for value in ["NO", "off", "0", "never"] {
                 let refused = crate::config::with_options(&[(FOLLOW_CROSS_ORIGIN, value)], || read(&url(value)));
@@ -4379,7 +4384,7 @@ mod tests {
             }
             assert_eq!(other_seen.lock().unwrap().len(), reached, "{label}: a refused redirect reached the other origin");
             assert_eq!(read(&url("default")).unwrap(), data, "{label}, not set");
-            for value in ["YES", "true", ""] {
+            for value in ["YES", "true", "", "  "] {
                 let followed = crate::config::with_options(&[(FOLLOW_CROSS_ORIGIN, value)], || read(&url(value)));
                 assert_eq!(followed.unwrap(), data, "{label}, {value:?}");
             }
@@ -4404,6 +4409,44 @@ mod tests {
             assert_eq!(followed.unwrap(), data, "{label}");
         }
         assert!(seen.lock().unwrap().iter().any(|(line, _)| line.contains("/new.bin")));
+    }
+
+    /// Under `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO`, every redirect of a read is checked, not only
+    /// its first: a redirect within the origin is followed, and the next one, to another origin,
+    /// is refused before anything is sent there. Without the option, the read follows both.
+    #[test]
+    fn a_read_kept_on_its_origin_checks_every_redirect() {
+        let data: Vec<u8> = (0..20_000u32).map(|i| (i % 239) as u8).collect();
+        let (other, other_seen) = serve_recording(data.clone(), None);
+        let to_other = format!("{other}/data.bin");
+        let (asked, seen) = test_routes_with(move |base| {
+            vec![
+                ("/old.bin".to_string(), 302, vec![("Location".to_string(), format!("{base}/hop.bin"))], Vec::new()),
+                ("/hop.bin".to_string(), 302, vec![("Location".to_string(), to_other)], Vec::new()),
+            ]
+        });
+        let hops = || seen.lock().unwrap().iter().filter(|(line, _)| line.contains(" /hop.bin ")).count();
+        let mut wrong = Vec::new();
+        for (label, read) in reads() {
+            let url = format!("{asked}/old.bin?{}", label.replace(' ', "-"));
+            let (hopped, reached) = (hops(), other_seen.lock().unwrap().len());
+            let refused = crate::config::with_options(&[(FOLLOW_CROSS_ORIGIN, "NO")], || read(&url));
+            let message = refused.as_ref().map_or_else(ToString::to_string, |d| format!("read, {} bytes", d.len()));
+            if !message.contains(&kept_on_origin(&other)) {
+                wrong.push(format!("{label}: {message}"));
+            }
+            if hops() == hopped {
+                wrong.push(format!("{label}: the redirect within the origin was not followed"));
+            }
+            if other_seen.lock().unwrap().len() != reached {
+                wrong.push(format!("{label}: the other origin was asked"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        for (label, read) in reads() {
+            let url = format!("{asked}/old.bin?{}-not-set", label.replace(' ', "-"));
+            assert_eq!(read(&url).unwrap(), data, "{label}, not set");
+        }
     }
 
     /// Serves `data` with ranges to the requests of its first block (a range from 0), and
