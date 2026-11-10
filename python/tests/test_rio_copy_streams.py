@@ -307,6 +307,10 @@ def test_cog_copy_reads_tall_source_blocks_in_bounded_slabs(tmp_path, block_rows
         np.testing.assert_array_equal(ds.read(), RGB)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows refuses to replace a file the open VRT still reads (WinError 5)",
+)
 @pytest.mark.parametrize("driver", ["COG", "GTiff"])
 def test_streamed_copy_reads_a_vrt_before_replacing_its_input(tmp_path, monkeypatch, driver):
     """A VRT may read the output's old contents throughout a streamed replacement."""
