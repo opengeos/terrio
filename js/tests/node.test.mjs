@@ -207,6 +207,20 @@ test("CityJSON late root type retains vertical XYZ and unknown CRS", () => {
   ds.free();
 });
 
+test("toGeoJSON escapes control characters and keeps feature order across parse chunks", () => {
+  // The text is parsed in chunks of about 8 MB: the long first feature ends one.
+  const props = [{ s: "a\u0001b\u001f\"q\"", n: 1.5 }, { s: "x".repeat(9 << 20), n: 2 }, { s: "last", n: -3 }];
+  const ds = terrio.fromGeoJSON({
+    type: "FeatureCollection",
+    features: props.map((p, i) => ({ type: "Feature", properties: p, geometry: { type: "Polygon", coordinates: [[[i, 0], [i + 1, 0], [i, 1], [i, 0]]] } })),
+  });
+  const fc = ds.toGeoJSON();
+  assert.equal(fc.type, "FeatureCollection");
+  assert.deepEqual(fc.features.map((f) => f.properties), props);
+  assert.deepEqual(fc.features[2].geometry, { type: "Polygon", coordinates: [[[2, 0], [3, 0], [2, 1], [2, 0]]] });
+  ds.free();
+});
+
 test("CityGML 3.0 reads vertical XYZ with object identity and CRS", () => {
   const xml = `<CityModel xmlns="http://www.opengis.net/citygml/3.0" xmlns:g="http://www.opengis.net/gml/3.2" xmlns:b="http://www.opengis.net/citygml/building/3.0">
     <cityObjectMember><b:Building g:id="house"><b:function>office</b:function><b:function>retail</b:function><b:lod2MultiSurface><g:MultiSurface srsName="EPSG:32632" srsDimension="3"><g:surfaceMember><g:Polygon><g:exterior><g:LinearRing><g:posList>10 20 30 10 21 30 10 21 31 10 20 30</g:posList></g:LinearRing></g:exterior></g:Polygon></g:surfaceMember></g:MultiSurface></b:lod2MultiSurface></b:Building></cityObjectMember></CityModel>`;
