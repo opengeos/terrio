@@ -1152,10 +1152,14 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
             Ok(format) => {
                 // Found by its content (an XML element anywhere in its first 4 KiB, a SQLite
                 // database as a GeoPackage...): read only if the driver of that format is allowed.
-                let driver = VectorDriver::ALL.iter().find(|d| d.to_wb().as_ref() == Some(&format)).map_or("unknown", |d| d.name());
-                crate::formats::check_driver_allowed(driver, path, crate::formats::Kind::Vector)?;
+                let driver = VectorDriver::ALL.iter().find(|d| d.to_wb().as_ref() == Some(&format)).copied();
+                if let Err(refused) =
+                    crate::formats::check_driver_allowed(driver.map_or("unknown", |d| d.name()), path, crate::formats::Kind::Vector)
+                {
+                    return Err(reader_error.unwrap_or(refused));
+                }
                 match wbvector::read(path) {
-                    Ok(layer) => wbvector_dataset(layer, path, options),
+                    Ok(layer) => wbvector_dataset(layer, path, options, driver.unwrap_or(VectorDriver::GeoJSON)),
                     Err(e) => Err(reader_error.unwrap_or_else(|| e.into())),
                 }
             }
@@ -1165,12 +1169,9 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
 }
 
 /// The dataset of a layer read by the `wbvector` fallback.
-fn wbvector_dataset(layer: Layer, path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
+fn wbvector_dataset(layer: Layer, path: &str, options: &VectorOpenOptions, driver: VectorDriver) -> Result<Dataset> {
     let layers = select_layers(vec![layer], path, options)?;
-    Ok(Dataset::Vector(VectorDataset::new(
-        layers.into_iter().map(|l| fix_layer(l, path, VectorDriver::GeoJSON)).collect(),
-        VectorDriver::GeoJSON,
-    )))
+    Ok(Dataset::Vector(VectorDataset::new(layers.into_iter().map(|l| fix_layer(l, path, driver)).collect(), driver)))
 }
 
 /// Whether the `wbvector` fallback reads a file as KMZ: a zip archive, whatever its name (a zip

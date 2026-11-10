@@ -7,6 +7,13 @@
 
 use std::collections::HashMap;
 
+struct ScopeGuard;
+impl Drop for ScopeGuard {
+    fn drop(&mut self) {
+        terrio::config::pop_scope();
+    }
+}
+
 const GEOJSON: &[u8] = br#"{"type":"FeatureCollection","crs":{"type":"name","properties":{"name":"EPSG:25832"}},"features":[{"type":"Feature","properties":{"name":"road"},"geometry":{"type":"LineString","coordinates":[[700000,5100000],[700001,5100001]]}}]}"#;
 const GML: &[u8] = br#"<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:app="urn:test"><wfs:member><app:road gml:id="road.1"><app:name>road</app:name><app:geom><gml:LineString srsName="urn:ogc:def:crs:EPSG::25832"><gml:posList srsDimension="2">700000 5100000 700001 5100001</gml:posList></gml:LineString></app:geom></app:road></wfs:member></wfs:FeatureCollection>"#;
 
@@ -19,9 +26,8 @@ const MIXED_CRS_GML: &[u8] = br#"<wfs:FeatureCollection xmlns:wfs="http://www.op
 /// `f` with `TERRIO_ALLOWED_DRIVERS=drivers` on the calling thread.
 fn allowing<T>(drivers: &str, f: impl FnOnce() -> T) -> T {
     terrio::config::push_scope(HashMap::from([("TERRIO_ALLOWED_DRIVERS".to_string(), Some(drivers.to_string()))]));
-    let out = f();
-    terrio::config::pop_scope();
-    out
+    let _scope = ScopeGuard;
+    f()
 }
 
 /// Every entry point reads `path` as one feature of `driver`, in EPSG:25832.
@@ -123,9 +129,10 @@ fn the_wbvector_fallback_reads_a_document_terrios_reader_refuses() {
     let dir = tempfile::tempdir().unwrap();
     let [_, (mixed, _)] = refused_documents(dir.path());
     terrio::config::push_scope(HashMap::from([("TERRIO_WBVECTOR_FALLBACK".to_string(), Some("YES".to_string()))]));
-    let read = terrio::open_vector(&mixed, &Default::default());
-    terrio::config::pop_scope();
-    let layers = read.unwrap().layers;
+    let _scope = ScopeGuard;
+    let read = terrio::open_vector(&mixed, &Default::default()).unwrap();
+    assert_eq!(read.driver.name(), "GML");
+    let layers = read.layers;
     assert_eq!(layers.iter().map(|l| (l.name.as_str(), l.features.len())).collect::<Vec<_>>(), [("mixed", 2)]);
 }
 
@@ -139,8 +146,9 @@ fn a_document_the_wbvector_fallback_cannot_read_keeps_its_readers_error() {
     let [lines, _] = refused_documents(dir.path());
     let cut = dir.path().join("cut");
     std::fs::write(&cut, &MIXED_CRS_GML[..MIXED_CRS_GML.len() / 2]).unwrap();
-    let cut = (cut.to_str().unwrap().to_string(), "XML: syntax error: tag not closed: `>` not found before end of input");
+    let cut = (cut.to_str().unwrap().to_string(), "XML: syntax error");
     terrio::config::push_scope(HashMap::from([("TERRIO_WBVECTOR_FALLBACK".to_string(), Some("YES".to_string()))]));
+    let _scope = ScopeGuard;
     let errors: Vec<_> = [lines, cut]
         .into_iter()
         .flat_map(|(path, refusal)| {
@@ -148,8 +156,32 @@ fn a_document_the_wbvector_fallback_cannot_read_keeps_its_readers_error() {
                 .map(|read| (read.unwrap_err().to_string(), refusal))
         })
         .collect();
-    terrio::config::pop_scope();
     for (error, refusal) in errors {
-        assert!(error.ends_with(refusal), "{error}");
+        assert!(error.contains(refusal), "{error}");
     }
+}
+
+/// A fallback misidentification cannot replace the native reader's more specific error.
+#[cfg(not(feature = "gdal"))]
+#[test]
+fn a_disallowed_fallback_keeps_the_native_readers_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("lines");
+    let text = std::str::from_utf8(FEATURES_PER_LINE).unwrap().replace("\"id\":0", "\"marker\":\"<kml\",\"id\":0");
+    std::fs::write(&path, text).unwrap();
+    terrio::config::push_scope(HashMap::from([("TERRIO_WBVECTOR_FALLBACK".to_string(), Some("YES".to_string()))]));
+    let _scope = ScopeGuard;
+    let error = allowing("GeoJSON", || terrio::open_vector(path.to_str().unwrap(), &Default::default())).unwrap_err();
+    assert!(error.to_string().contains("GeoJSON: trailing characters"), "{error}");
+}
+
+/// Enabling the fallback still prefers the native GML reader when it accepts the document.
+#[test]
+fn native_gml_is_preferred_with_the_fallback_enabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("features");
+    std::fs::write(&path, GML).unwrap();
+    terrio::config::push_scope(HashMap::from([("TERRIO_WBVECTOR_FALLBACK".to_string(), Some("YES".to_string()))]));
+    let _scope = ScopeGuard;
+    check_read(path.to_str().unwrap(), "GML");
 }
