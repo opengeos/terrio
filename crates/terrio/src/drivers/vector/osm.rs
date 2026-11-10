@@ -1517,6 +1517,16 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_informational_compression_is_rejected() {
+        // A valid Zstandard frame of an empty HeaderBlock (generated with Python's zstd).
+        // The legacy reader ignored such header compression and continued reading data.
+        let zstd = [0x28, 0xb5, 0x2f, 0xfd, 0x20, 0, 1, 0, 0];
+        let blob = Msg::default().bytes(7, &zstd).int(2, 0);
+        let file = fileblock("OSMHeader", &blob.0);
+        assert!(parse(file).err().unwrap().to_string().contains("unsupported blob compression"));
+    }
+
+    #[test]
     fn empty_informational_headers_remain_unsorted() {
         assert!(!pbf::header_sorted(&[]).unwrap());
         let file = fileblock("OSMHeader", &[]);

@@ -110,7 +110,8 @@ pub(super) fn header_sorted(blob: &[u8]) -> Result<bool> {
             _ => {}
         }
     }
-    // Required/optional features do not gate acceptance. HistoricalInformation is
+    // For legacy compatibility, required/optional features do not gate acceptance; this
+    // departs from the specification's required-feature rejection rule. HistoricalInformation is
     // accepted, with visibility and other metadata ignored.
     Ok(sorted)
 }
