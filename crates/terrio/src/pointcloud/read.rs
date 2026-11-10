@@ -321,6 +321,17 @@ pub fn open_points_bytes(bytes: Vec<u8>, name: &str) -> Result<PointCloudReader>
     Ok(PointCloudReader { inner, name: name.to_string() })
 }
 
+/// Opens LAS records terrio has just encoded from points it holds, for the EPT writer, which reads
+/// them back to describe or convert them. They are not a dataset from outside, so the allow-list
+/// of point clouds (see [`check_driver`]) does not apply: a list that leaves the LAS family out
+/// does not stop a dataset of another format from being written.
+pub(super) fn open_encoded_las(bytes: Vec<u8>, name: &str) -> Result<PointCloudReader> {
+    let mut source = Source::Memory(Cursor::new(bytes));
+    let header = LasHeader::read(&mut source)?;
+    let inner: Box<dyn FormatReader> = Box::new(LasReader::new(source, header, None, None)?);
+    Ok(PointCloudReader { inner, name: name.to_string() })
+}
+
 /// Opens a remote COPC file whose bytes the caller fetches (see [`crate::sparse`]): reads fail
 /// until the bytes they need are fetched, and are then run again. `name` is the file name.
 pub fn open_points_sparse(file: crate::sparse::SparseFile, name: &str) -> Result<PointCloudReader> {

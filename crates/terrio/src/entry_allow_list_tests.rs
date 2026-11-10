@@ -9,7 +9,7 @@
 #[cfg(feature = "jp2")]
 use crate::formats::RasterDriver;
 #[cfg(feature = "pointcloud")]
-use crate::pointcloud::{Dimension, PointCloud, PointWriteOptions, Values};
+use crate::pointcloud::{Dimension, EptDataType, PointCloud, PointWriteOptions, Values};
 use crate::{DataType, RasterDataset, RasterWriteOptions, Result, VectorOpenOptions, VectorWriteOptions};
 use std::collections::HashMap;
 use std::path::Path;
@@ -520,6 +520,22 @@ fn point_clouds_are_read_only_with_their_driver_allowed() {
     let ept = |list| under(list, || outcome(crate::pointcloud::ept::EptReader::open(&path("ept/ept.json"))));
     assert_eq!(ept(Some("LAS")), holds(&path("ept/ept.json"), "EPT", "LAS"));
     assert_eq!(ept(Some("EPT")), Ok(()));
+}
+
+/// Writing an EPT dataset reads back the LAS records it encodes, to describe them and, for binary and
+/// Zstandard tiles, to convert them. They are not a dataset from outside: under a list without the
+/// LAS family, the dataset is written all the same, whatever its tiles.
+#[cfg(feature = "pointcloud")]
+#[test]
+fn an_ept_dataset_is_written_under_a_list_without_the_las_family() {
+    let dir = tempfile::tempdir().unwrap();
+    for data_type in [EptDataType::Laszip, EptDataType::Binary, EptDataType::Zstandard] {
+        let path = dir.path().join(format!("{data_type:?}")).join("ept.json");
+        let options = PointWriteOptions { ept_data_type: data_type, ..Default::default() };
+        let written = under(Some("GTiff"), || outcome(crate::pointcloud::write_points(&cloud(), path.to_str().unwrap(), &options)));
+        assert_eq!(written, Ok(()), "{data_type:?}");
+        assert_eq!(outcome(crate::pointcloud::read_points(path.to_str().unwrap(), &Default::default())), Ok(()), "{data_type:?} read");
+    }
 }
 
 /// The GDAL backend opens a dataset with whatever driver of GDAL's recognises it: only with the
