@@ -1211,3 +1211,118 @@ def test_content_checks_of_uploads_release_the_gil_through_the_guard(tmp_path):
         sys.setswitchinterval(interval)
     assert summary["raster_samples"] == 8192 * 8192, summary
     assert during > 0, during
+
+
+OPTION_CHILD = r"""
+import json, sys, threading
+import terrio, terrio.rio as rio
+grid = sys.argv[1]
+outcomes = {}
+
+
+def attempt(label, scope):
+    def run():
+        with rio.Env(**scope):
+            try:
+                with rio.open(grid):
+                    opened = True
+            except Exception:
+                opened = False
+            outcomes[label] = [terrio.allowed_drivers(), opened]
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join()
+
+
+attempt("no scope", {})
+for value in ["", " ", "AAIGrid", None, "AAIGrid, GTiff"]:
+    attempt(repr(value), {"TERRIO_ALLOWED_DRIVERS": value})
+print(json.dumps(outcomes))
+"""
+
+
+@pytest.mark.parametrize(
+    ("environment", "listed"),
+    [(None, None), ("AAIGrid", ["AAIGRID"]), ("GTiff", ["GTIFF"]), ("", []), (" ", [])],
+)
+def test_the_allowed_drivers_option_fails_closed_and_scopes_only_narrow_it(
+    tmp_path, environment, listed
+):
+    """`TERRIO_ALLOWED_DRIVERS` set but empty or blank allows no driver, and an `Env` scope on a
+    thread only narrows the list the environment sets: an empty or blank value, other drivers, or
+    unsetting the option, open nothing that list refuses. With the option unset, or listing
+    `AAIGrid`, the grid opens wherever the scope allows it too. In a child process with the
+    option in its environment."""
+    grid = tmp_path / "grid.asc"
+    grid.write_text("ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n3 4\n")
+    env = {k: v for k, v in os.environ.items() if k != "TERRIO_ALLOWED_DRIVERS"}
+    if environment is not None:
+        env["TERRIO_ALLOWED_DRIVERS"] = environment
+    p = subprocess.run(
+        [sys.executable, "-c", OPTION_CHILD, str(grid)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    assert p.returncode == 0, p.stderr[-600:]
+    outcomes = json.loads(p.stdout)
+    opens = listed is None or "AAIGRID" in listed
+    assert outcomes == {
+        "no scope": [listed, opens],
+        "''": [[], False],
+        "' '": [[], False],
+        "'AAIGrid'": [["AAIGRID"] if opens else [], opens],
+        "None": [listed, opens],
+        "'AAIGrid, GTiff'": [["AAIGRID", "GTIFF"] if listed is None else listed, opens],
+    }
+
+
+MEM_CHILD = r"""
+import json, sys
+import numpy as np
+import terrio, terrio.rio as rio
+if sys.argv[1] == "set_allowed_drivers":
+    terrio.set_allowed_drivers([], kind="raster")
+pixels = np.arange(4, dtype=np.uint8).reshape(2, 2)
+name = f"MEM:::DATAPOINTER={pixels.ctypes.data},PIXELS=2,LINES=2,BANDS=1,DATATYPE=Byte"
+try:
+    with rio.open(name) as ds:
+        outcome = ds.read(1).tolist()
+except Exception as e:
+    outcome = f"{type(e).__name__}: {e}".replace(name, "<name>")
+print(json.dumps([terrio.allowed_drivers("raster"), outcome]))
+"""
+MEM_REFUSED = "RasterioIOError: <name>: '<name>': the MEM driver is not allowed (allowed: none)"
+
+
+@pytest.mark.parametrize(
+    ("environment", "call", "expected"),
+    [
+        (None, "", [None, [[0, 1], [2, 3]]]),
+        ("MEM", "", [["MEM"], [[0, 1], [2, 3]]]),
+        ("", "", [[], MEM_REFUSED]),
+        (" ", "", [[], MEM_REFUSED]),
+        (",", "", [[], MEM_REFUSED]),
+        (None, "set_allowed_drivers", [[], MEM_REFUSED]),
+    ],
+)
+def test_a_mem_pointer_name_opens_only_with_mem_allowed(environment, call, expected):
+    """With `GDAL_MEM_ENABLE_OPEN=YES`, `terrio.rio` opens a `MEM:::DATAPOINTER=` name only when
+    the raster allow-list is unset or names `MEM`: a list that allows nothing, from
+    `TERRIO_ALLOWED_DRIVERS` set empty or blank or from `set_allowed_drivers([])`, refuses it. In a
+    child process, as both lists are process-wide."""
+    env = {k: v for k, v in os.environ.items() if k != "TERRIO_ALLOWED_DRIVERS"}
+    env["GDAL_MEM_ENABLE_OPEN"] = "YES"
+    if environment is not None:
+        env["TERRIO_ALLOWED_DRIVERS"] = environment
+    p = subprocess.run(
+        [sys.executable, "-c", MEM_CHILD, call],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    assert p.returncode == 0, p.stderr[-600:]
+    assert json.loads(p.stdout) == expected

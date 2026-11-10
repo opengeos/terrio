@@ -242,7 +242,8 @@ def open(
         io.is_mem_pointer_name(fp)
         and mode in ("r", "r+")
         and (not driver or driver.upper() == "MEM")
-        and "MEM" in (_terrio.allowed_drivers("raster") or ["MEM"])
+        # `[]` allows nothing: only no list at all (`None`) lets every driver through.
+        and ((allowed := _terrio.allowed_drivers("raster")) is None or "MEM" in allowed)
     ):
         return io.MemPointerDataset(fp, mode)
     path = os.fspath(fp) if not isinstance(fp, str) else fp
