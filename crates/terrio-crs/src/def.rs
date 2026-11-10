@@ -617,6 +617,12 @@ impl Def {
             }
             return Ok(d);
         }
+        // A WKT 1 on Polar Stereographic (variant C) the reader cannot convert (without its
+        // standard parallel or ellipsoid) is refused: wbprojection's parser reads the method as
+        // variant B, with the false origin at the pole.
+        if root.child("PROJECTION").and_then(|p| p.name()).is_some_and(|m| wkt1::norm(m) == "polarstereographicvariantc") {
+            return Err(Error::Crs("a Polar Stereographic (variant C) WKT without its standard parallel or ellipsoid".into()));
+        }
         // Other kinds of WKT 2 CRS and WKT 1 projections the readers do not know: wbprojection's
         // parser. A WKT 2 geographic or projected CRS the reader refuses is not handed to it: its
         // WKT 2 parameters and method names would be read wrongly, silently (#123).

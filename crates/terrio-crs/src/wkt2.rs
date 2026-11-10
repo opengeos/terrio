@@ -236,6 +236,14 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("lat_ts", Some(ts));
         push("lon_0", lon_0());
         "stere"
+    } else if is(&["polarstereographicvariantc"], &[9830]) {
+        // Variant B on the same standard parallel, with its false origin moved to the pole.
+        let ts = p.get(LAT_TS).ok_or_else(|| bad("Polar Stereographic (variant C) without its standard parallel"))?;
+        push("lat_0", Some(if ts < 0.0 { -90.0 } else { 90.0 }));
+        push("lat_ts", Some(ts));
+        push("lon_0", lon_0());
+        fn_ = super::wkt1::variant_c_pole_northing(geog.a, geog.rf, ts, fn_);
+        "stere"
     } else if is(&["obliquestereographic"], &[9809]) {
         push("lat_0", lat_0());
         push("lon_0", lon_0());

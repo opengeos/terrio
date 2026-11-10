@@ -308,7 +308,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         .or_else(|| if proj_method { get(&["x0"]) } else { None })
         .unwrap_or(0.0)
         * to_meter;
-    let fn_ = get(&["falsenorthing", "northingatfalseorigin", "northingatprojectioncentre"])
+    let mut fn_ = get(&["falsenorthing", "northingatfalseorigin", "northingatprojectioncentre"])
         .or_else(|| if proj_method { get(&["y0"]) } else { None })
         .unwrap_or(0.0)
         * to_meter;
@@ -402,6 +402,15 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "lat_ts", sp1);
             push(&mut out, "lon_0", lon_0);
             push(&mut out, "k", k.or(Some(1.0)));
+        }
+        // Variant B on the same standard parallel, with its false origin moved to the pole.
+        "polarstereographicvariantc" => {
+            let lat = angle(&["latitudeofstandardparallel"])?;
+            out.push("+proj=stere".into());
+            push(&mut out, "lat_0", Some(if lat < 0.0 { -90.0 } else { 90.0 }));
+            push(&mut out, "lat_ts", Some(lat));
+            push(&mut out, "lon_0", lon_0);
+            fn_ = variant_c_pole_northing(a, rf, lat, fn_);
         }
         "obliquestereographic" | "doublestereographic" => {
             out.push("+proj=sterea".into());
@@ -668,6 +677,20 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     out.push(format!("+to_meter={to_meter}"));
     out.extend(tail);
     Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None })
+}
+
+/// The northing of the pole in Polar Stereographic (variant C), EPSG method 9830, whose false
+/// origin lies on the standard parallel φF rather than at the pole: NF − ρF for the south pole case
+/// (φF < 0) and NF + ρF for the north, from the northing NF at the false origin, with ρF = a mF and
+/// mF = cos φF / (1 − e² sin² φF)^0.5 (IOGP Guidance Note 7-2), on an ellipsoid of semi-major
+/// axis `a` and inverse flattening `rf` (0 for a sphere). A point lies at ρ = ρF t / tF from the
+/// pole, as in variant B with the same standard parallel, so the method is variant B with this
+/// false northing.
+pub(crate) fn variant_c_pole_northing(a: f64, rf: f64, lat_ts: f64, northing: f64) -> f64 {
+    let es = if rf == 0.0 { 0.0 } else { (2.0 - 1.0 / rf) / rf };
+    let phi = lat_ts.to_radians();
+    let rho_f = a * phi.cos() / (1.0 - es * phi.sin().powi(2)).sqrt();
+    if lat_ts < 0.0 { northing - rho_f } else { northing + rho_f }
 }
 
 #[cfg(test)]
