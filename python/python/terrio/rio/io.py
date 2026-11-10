@@ -3057,7 +3057,7 @@ class DatasetWriter(DatasetReader):
                 # then regenerated otherwise than a file's (`mask_levels` in gtiff_write.rs).
                 opts["@MASK_WITHOUT_DATASET"] = "YES"
         tmp = self._path + f".tmp-{uuid.uuid4().hex}"
-        target = tmp if self.mode == "r+" else self._path
+        target = tmp if self.mode == "r+" or streaming else self._path
         # The sidecar mask is written first beside its place, then both files are put in place
         # once the dataset is written: a failure while writing leaves the dataset and its mask as
         # they were (only between the two renames could the dataset be new and its mask old).
@@ -3235,9 +3235,20 @@ class DatasetWriter(DatasetReader):
         )
         try:
             source = self._copy_of
-            # A copy reads its source a row of a COG's tiles at a time: the COG's writer then
-            # holds fewer rows of tiles being compressed than for larger slabs.
-            step = self.structure.block_shape[0] if cog and source is not None else 0
+            # Read taller source blocks together within a 16 MiB slab budget, then feed the
+            # COG writer one output tile row at a time. A whole-image strip is split in half
+            # (or less under the budget), so a copy never stages its complete source image.
+            write_step = self.structure.block_shape[0] if cog and source is not None else 0
+            step = write_step
+            if step and source is not None:
+                block_rows = max(shape[0] for shape in source.block_shapes)
+                if block_rows > step:
+                    row_bytes = self.width * self.count * np.dtype(self._dtype).itemsize
+                    budget_rows = max(step, ((16 * 1024 * 1024 // row_bytes) // step) * step)
+                    wanted = math.lcm(step, *(shape[0] for shape in source.block_shapes))
+                    if block_rows >= self.height:
+                        wanted = max(step, (self.height // 2 // step) * step)
+                    step = min(wanted, budget_rows)
             slabs = (
                 ((y, min(step, self.height - y)) for y in range(0, self.height, step))
                 if step
@@ -3255,10 +3266,17 @@ class DatasetWriter(DatasetReader):
                     else np.ascontiguousarray(self._mask[y : y + n])
                 )
                 if m is None:
-                    w.write(rows)
+                    if write_step:
+                        for start in range(0, n, write_step):
+                            w.write(np.ascontiguousarray(rows[:, start : start + write_step, :]))
+                    else:
+                        w.write(rows)
                 else:
                     # A GeoTiffWriter: a COG streams only without a mask.
                     w.write(rows, m)  # type: ignore[call-arg]
+                del rows
+                if source is not None:
+                    del part
         except BaseException:
             # Closing an incomplete writer fails too ("N rows written of M"): keep the first
             # error, which says what went wrong.

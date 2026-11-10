@@ -133,8 +133,12 @@ def test_a_copy_written_in_rows_reads_its_source_a_row_at_a_time(
     with src:
         rio_shutil.copy(src, str(tmp_path / "out.tif"), driver=driver, **options)
     assert src.windows == [(y, min(rows, HEIGHT - y)) for y in range(0, HEIGHT, rows)]
-    # No temporary file holds the pixels while the copy is written.
-    assert src.seen == {"src.tif", "out.tif"}
+    # Only the source and the output being written exist, with no pixel staging file.
+    assert "src.tif" in src.seen
+    outputs = src.seen - {"src.tif"}
+    assert len(outputs) == 1
+    assert next(iter(outputs)).startswith("out.tif.tmp-")
+    assert {p.name for p in tmp_path.iterdir()} == {"src.tif", "out.tif"}
 
 
 FLOAT = (RGB[:1].astype("float32") - 100.0) / 3.0
@@ -252,4 +256,45 @@ def test_copy_refuses_source_alias_before_writing(tmp_path, monkeypatch, driver,
     assert src.read_bytes() == before
     assert alias.read_bytes() == before
     with rio.open(src) as ds:
+        np.testing.assert_array_equal(ds.read(), RGB)
+
+
+@pytest.mark.parametrize("driver", ["COG", "GTiff"])
+@pytest.mark.parametrize("existing", [False, True])
+def test_failed_streamed_copy_preserves_destination(tmp_path, monkeypatch, driver, existing):
+    """Source failures must not publish partial output or replace an existing dataset."""
+    monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", "1")
+    src, dst = tmp_path / "source.tif", tmp_path / "output.tif"
+    source(src)
+    before = None
+    if existing:
+        source(dst, pixels=RGB ^ 255)
+        before = dst.read_bytes()
+
+    class FailingReader(DatasetReader):
+        calls = 0
+
+        def read(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls > (1 if driver == "COG" else 0):
+                raise OSError("source tile unavailable")
+            return super().read(*args, **kwargs)
+
+    with FailingReader(src) as ds:
+        with pytest.raises(rio.errors.RasterioIOError, match="source tile unavailable"):
+            rio_shutil.copy(ds, dst, driver=driver, compress="deflate", tiled=True)
+    if existing:
+        assert dst.read_bytes() == before
+    else:
+        assert not dst.exists()
+    assert not list(tmp_path.glob("*.tmp-*"))
+
+
+@pytest.mark.parametrize("block_rows, slab_rows", [(768, 1536), (1024, 1024)])
+def test_cog_copy_reads_tall_source_blocks_in_bounded_slabs(tmp_path, block_rows, slab_rows):
+    src = Recording(source(tmp_path / "src.tif", blockxsize=512, blockysize=block_rows), tmp_path)
+    with src:
+        rio_shutil.copy(src, tmp_path / "out.tif", driver="COG", compress="deflate")
+    assert src.windows == [(y, min(slab_rows, HEIGHT - y)) for y in range(0, HEIGHT, slab_rows)]
+    with rio.open(tmp_path / "out.tif") as ds:
         np.testing.assert_array_equal(ds.read(), RGB)

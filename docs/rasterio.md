@@ -61,7 +61,12 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   next to the output instead, mapped in memory, and GeoTIFFs are then written in rows of blocks
   (`terrio.GeoTiffWriter`), without the raster in RAM. `shutil.copy` writes such a GeoTIFF, and a
   COG, from its source as it writes them, a row of a COG's tiles at a time, the COG's overviews
-  computed as the rows come: neither the source's pixels nor a temporary file of them are held.
+  computed as the rows come: no complete source array or temporary pixel staging file is held.
+  Taller source blocks are read in slabs of up to 16 MiB (at least one output tile row), aligned
+  to source and output rows when that fits, then fed to the COG writer one tile row at a time.
+  Whole-image strips are split into at least two reads; blocks exceeding the slab budget may
+  still be decoded repeatedly. Streamed output is published only after writing succeeds, and
+  copying onto a symlink or hardlink of the source is refused.
   A copy whose source has a dataset mask, or overviews a COG copies, or that is compressed with
   JPEG, WebP, LERC or JPEG XL, holds the source's pixels until it is written, as a smaller
   GeoTIFF does. GeoTIFFs are written with GDAL's

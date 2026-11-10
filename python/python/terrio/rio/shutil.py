@@ -80,7 +80,8 @@ def copy(
     The copy keeps the pixels, georeferencing, nodata values, tags, band descriptions, color
     interpretation and color table, and the dataset mask. A COG is written a row of its tiles at
     a time from the source, its overviews computed as the rows come, so that the source's pixels
-    are not held: unless the source has a dataset mask, or overviews the COG copies, or the
+    are not held. Taller source blocks are read in bounded slabs, then written one tile row
+    at a time. Unless the source has a dataset mask, or overviews the COG copies, or the
     compression is one written whole (JPEG, WebP, LERC, JPEG XL), when the copy holds them until
     it is written. So is a GeoTIFF larger than the in-memory limit (`TERRIO_RIO_IN_MEMORY_LIMIT`),
     in rows of blocks, without a dataset mask; a smaller one is held and written whole.
