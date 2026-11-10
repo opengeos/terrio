@@ -169,8 +169,8 @@ fn stores_fetched_by_the_caller_are_read_in_rounds() {
             _ => fetch(&objects),
         }
     };
-    // The root's two documents at once, then the array's.
-    assert_eq!(rounds, 3);
+    // The root's two documents and the array's at once.
+    assert_eq!(rounds, 2);
     assert_eq!((r.width(), r.height(), r.crs().epsg), (64, 64, Some(32630)));
     // A window across two shards: their indexes, then their inner chunks.
     let (window, mut rounds) = (Window::new(28, 10, 8, 4), 0);

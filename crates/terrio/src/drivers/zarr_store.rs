@@ -211,6 +211,12 @@ impl Store {
         matches!(self.backend, Backend::Local(_))
     }
 
+    /// Whether the caller fetches the objects (terrio-js): a read missing some fails, and runs
+    /// again once they are fetched (see [`crate::sparse::SparseObjects`]).
+    fn is_sparse(&self) -> bool {
+        matches!(self.backend, Backend::Sparse(_))
+    }
+
     /// Whether objects are requested from a server (not a local directory, nor objects the
     /// caller fetches into memory).
     fn is_served(&self) -> bool {
@@ -263,16 +269,25 @@ impl Store {
     }
 
     /// Reads the consolidated metadata at the root, when there is some: v2's `.zmetadata`, or the
-    /// `consolidated_metadata` of a v3 root group.
-    fn load_consolidated(&mut self) -> Result<()> {
+    /// `consolidated_metadata` of a v3 root group. For a store whose objects the caller fetches,
+    /// the `zarr.json` of the node at `node` (below the root, `""` for none) is asked for in the
+    /// same round as the root's documents, the first: a v3 store without consolidated metadata
+    /// otherwise asks for it in the next round (a round trip; with consolidated metadata, one
+    /// request in vain). Not its `.zarray`: v2 stores nearly always have consolidated metadata.
+    fn load_consolidated(&mut self, node: &str) -> Result<()> {
         let mut map = HashMap::new();
         // Both looked for at once: on a remote store, each is a round trip.
         let this = &*self;
         let options = crate::config::thread_options();
-        let mut found = crate::par::map_range(2, |i| {
+        let found = crate::par::map_range(2, |i| {
             crate::config::with_thread_options(options.clone(), || this.probe([".zmetadata", "zarr.json"][i]))
-        })
-        .into_iter();
+        });
+        // Root documents not fetched yet (the first round): the node's are missed with them. Their
+        // results are not used here; the lookups that need them read them in later rounds.
+        if self.is_sparse() && !node.is_empty() && found.iter().any(Result::is_err) {
+            let _ = self.probe(&join_key(node, "zarr.json"));
+        }
+        let mut found = found.into_iter();
         let v2 = found.next().unwrap_or(Ok(None))?;
         // A v2 store's consolidated metadata stands alone: a failed read of the root's
         // `zarr.json` (a transient error, a 403) does not fail it.
@@ -326,7 +341,7 @@ impl Node {
         let key = path.strip_prefix(&root).map(|k| k.to_string_lossy().replace('\\', "/")).unwrap_or_default();
         let mut store = Store::new(Backend::Local(root.clone()), root.display().to_string());
         // Local files are read as they are found: unreadable metadata is reported when used.
-        let _ = store.load_consolidated();
+        let _ = store.load_consolidated("");
         Node { store: Arc::new(store), key }
     }
 
@@ -362,7 +377,7 @@ impl Node {
         let given = given.trim_end_matches('/');
         let name = if key.is_empty() && !given.is_empty() && !given.contains('?') { given.to_string() } else { name };
         let mut store = Store::new(Backend::Remote { base, fetcher: Box::new(crate::http::ObjectFetcher::new()) }, name);
-        store.load_consolidated()?;
+        store.load_consolidated("")?;
         let node = Node { store: Arc::new(store), key };
         let mut found = node.store.consolidated.is_some();
         for f in METADATA_FILES {
@@ -381,9 +396,10 @@ impl Node {
     /// named `name` in messages: its root, or the node at `key`. Fails until the metadata it
     /// reads is fetched.
     pub(crate) fn sparse(objects: Arc<crate::sparse::SparseObjects>, name: &str, key: &str) -> Result<Node> {
+        let key = key.trim_matches('/');
         let mut store = Store::new(Backend::Sparse(objects), name.to_string());
-        store.load_consolidated()?;
-        let node = Node { store: Arc::new(store), key: key.trim_matches('/').to_string() };
+        store.load_consolidated(key)?;
+        let node = Node { store: Arc::new(store), key: key.to_string() };
         let mut found = node.store.consolidated.is_some();
         for f in METADATA_FILES {
             if found {
