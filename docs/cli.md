@@ -1096,13 +1096,16 @@ rounded at each level, and 1.4% to 2.6% above them for Float32 data 7% nodata, i
 and in holes 40 pixels wide. A sum outgrows small integer types: a `UInt16` output stores 65535
 for any larger sum, so give a coarse `sum` `--ot Float32` or `--ot Float64`.
 
-A `sum` holds the source window an output chunk reads and 8 bytes per pixel of it for the
-pixels' shares: 12 bytes per pixel for one Float32 band. A coarse output, such as `--ts 1 1`,
-reads the whole source in one chunk unless it reads an overview, and a `sum` with several
-sources or a cutline holds every source (or the overview read) whole. When this estimate
-exceeds 4 GiB, the `sum` is refused before its source is read; set `TERRIO_WARP_SUM_MAX_BYTES`
-to a positive integer byte count to change the budget, or sum a level with `--overview n`.
-Invalid settings are argument errors.
+A `sum` of one source without a cutline holds the source window of an output chunk, which the
+warp's working memory (64 MiB) bounds: a coarse output, such as `--ts 1 1`, is a chunk too small
+to split, whose window, often the whole source, is read and summed a strip of rows at a time,
+with the same output. A strip holds as many rows as the working memory does, at least one, and
+the next strip is read while one is summed, so two are held at once. A `sum` with several
+sources or a cutline holds every source (or the overview read) whole. Either way, the shares of
+each output pixel's footprint are computed a few rows at a time. When the source pixels a `sum`
+would hold at once (4 bytes per pixel for one Float32 band) exceed 4 GiB, the `sum` is refused
+before its source is read; set `TERRIO_WARP_SUM_MAX_BYTES` to a positive integer byte count to
+change the budget, or sum a level with `--overview n`. Invalid settings are argument errors.
 
 Forced GCP overviews can give slightly different automatically suggested bounds than GDAL,
 which refits GCPs at the selected resolution. Specify `--te` and `--ts` for an identical
