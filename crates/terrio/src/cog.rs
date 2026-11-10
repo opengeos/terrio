@@ -3075,11 +3075,6 @@ mod tests {
         };
         let threads = crate::par::threads();
         let first = read_f64(&mut reader, reads[0].0, &[1, 2, 3], reads[0].1);
-        if threads > 1 {
-            assert!(opened(&reader) >= 1, "the first read opens decoders for its workers");
-        } else {
-            assert_eq!(opened(&reader), 0, "a single thread decodes with the reader's own decoder");
-        }
         for _ in 0..3 {
             for (w, overview) in &reads {
                 let fresh = read_f64(&mut LazyRaster::open(path).unwrap(), *w, &[3, 1], *overview);
@@ -3091,10 +3086,56 @@ mod tests {
         // in; opening one per worker would open one per thread on every one of these 20 reads.
         let most = if threads > 1 { threads } else { 0 };
         assert!(opened(&reader) <= most, "{} decoders opened on {threads} threads", opened(&reader));
+        // No lower bound with several threads: the decode workers are shared by the whole process,
+        // so reads of tests running alongside can hold them all and every read here then decodes
+        // alone, which opens none.
+        if threads == 1 {
+            assert_eq!(opened(&reader), 0, "a single thread decodes with the reader's own decoder");
+        }
         match &reader.inner {
             Inner::Tiff(t) => assert!(t.workers.len() <= most),
             _ => unreachable!(),
         }
+    }
+
+    /// Window reads on several threads at once share one budget of decode workers: never more
+    /// worker threads at a time than [`crate::geotiff::decode_worker_limit`] (the cores, or the
+    /// thread count when higher), however many reads start them, with the values of a read alone.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn concurrent_window_reads_share_the_decode_workers() {
+        // Off, so that every read decodes its chunks and needs the workers.
+        let _serial = crate::block_cache::tests::cache_test_guard(0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiled.tif");
+        let (cols, rows, bands) = (480, 480, 3);
+        let cfg = wbraster::RasterConfig { cols, rows, bands, data_type: DataType::U8, ..Default::default() };
+        let r = wbraster::Raster::from_data_native(cfg, sequence(DataType::U8, cols * rows * bands, 3)).unwrap();
+        let options = crate::RasterWriteOptions {
+            driver: Some(RasterDriver::GTiff),
+            compression: Some("DEFLATE".into()),
+            tile_size: Some(16),
+            ..Default::default()
+        };
+        crate::write_raster_dataset(&RasterDataset::with_driver(r, RasterDriver::GTiff, false), path.to_str().unwrap(), &options).unwrap();
+        let path = path.to_str().unwrap();
+        // 30 x 30 tiles: enough that every read keeps its workers busy at once
+        let w = Window::new(3, 5, 470, 460);
+        let alone = read_f64(&mut LazyRaster::open(path).unwrap(), w, &[1, 2, 3], None);
+        crate::geotiff::PEAK_WORKERS.store(0, std::sync::atomic::Ordering::Relaxed);
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| {
+                    let mut r = LazyRaster::open(path).unwrap();
+                    for _ in 0..5 {
+                        assert_eq!(read_f64(&mut r, w, &[1, 2, 3], None), alone);
+                    }
+                });
+            }
+        });
+        let peak = crate::geotiff::PEAK_WORKERS.load(std::sync::atomic::Ordering::Relaxed);
+        let limit = crate::geotiff::decode_worker_limit();
+        assert!(peak <= limit, "{peak} decode workers at once, over the {limit} allowed");
     }
 
     /// With the cache off, reads decode every time and look nothing up.
