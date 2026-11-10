@@ -173,25 +173,54 @@ impl Fetcher {
         Ok(len.and_then(|l| l.trim().parse().ok()))
     }
 
-    /// Fetches byte ranges `(offset, length)` into the file, [`MAX_PARALLEL`] requests at a time.
+    /// Fetches byte ranges `(offset, length)` into the file, [`MAX_PARALLEL`] requests at a time
+    /// ([`in_window`]).
     async fn fetch_into(&self, file: &SparseFile, ranges: &[(u64, u64)]) -> Result<(), JsError> {
-        for batch in ranges.chunks(MAX_PARALLEL) {
-            self.fetch_batch(file, batch).await?;
-        }
-        Ok(())
+        // Set when a server that ignores `Range` sent the whole file: the other ranges are held.
+        let whole = Cell::new(false);
+        let whole = &whole;
+        in_window(ranges, |&(offset, len)| async move {
+            if whole.get() {
+                return Ok(());
+            }
+            let f = self.response(self.request(Some((offset, offset + len - 1)), false)?).await?;
+            match f.status {
+                206 if f.data.len() as u64 == len => file.insert(offset, &f.data),
+                200 if f.data.len() as u64 == file.len() => {
+                    file.insert(0, &f.data);
+                    whole.set(true);
+                }
+                status => {
+                    return Err(JsError::new(&format!(
+                        "{}: bytes {offset}-{}: unexpected response (status {status}, {} bytes): the server must \
+                         answer Range requests, without a Content-Encoding",
+                        self.url,
+                        offset + len - 1,
+                        f.data.len()
+                    )));
+                }
+            }
+            Ok(())
+        })
+        .await
     }
 
     /// Fetches parts of objects of a store at the URL into `objects`, [`MAX_PARALLEL`] requests at
-    /// a time: `key` at `url/key`. Missing objects (404) are handed over as missing.
+    /// a time ([`in_window`]): `key` at `url/key`. Missing objects (404) are handed over as missing.
     /// With explicit opt-in, metadata probes also accept 403, as anonymous S3 stores can
     /// answer for absent keys. Denied chunks/shards remain errors rather than fill-valued data.
     async fn fetch_objects(&self, objects: &SparseObjects, parts: &[(String, ObjectRange)]) -> Result<(), JsError> {
         let url = self.url.split('#').next().unwrap_or(&self.url);
         let (base, query) = url.split_once('?').map_or((url, String::new()), |(b, q)| (b, format!("?{q}")));
         let base = base.trim_end_matches('/');
-        for batch in parts.chunks(MAX_PARALLEL) {
-            let promises = js_sys::Array::new();
-            for (key, range) in batch {
+        let query = query.as_str();
+        // Once a request fails, the bodies of the others are cancelled, not read: those being
+        // read (their readers held here), and those whose responses come after.
+        let failed = Cell::new(false);
+        let readers = RefCell::new(Vec::new());
+        let (failed, readers) = (&failed, &readers);
+        in_window(parts, |(key, range)| async move {
+            let result: Result<(), JsError> = async {
                 let header = match *range {
                     ObjectRange::Whole => None,
                     ObjectRange::At(o, n) => Some(format!(
@@ -205,143 +234,157 @@ impl Fetcher {
                     .map(|part| js_sys::encode_uri_component(part).as_string().unwrap_or_default())
                     .collect::<Vec<_>>()
                     .join("/");
-                promises.push(self.request_to(&format!("{base}/{encoded}{query}"), header, false)?.as_ref());
-            }
-            // Every request settled before any is looked at (see `fetch_batch`).
-            let settled = js_sys::Array::from(&JsFuture::from(js_sys::Promise::all_settled(&promises)).await.map_err(js_error)?);
-            let result: Result<(), JsError> = async {
-                for ((key, range), s) in batch.iter().zip(settled.iter()) {
-                    if get(&s, "status").as_string().as_deref() != Some("fulfilled") {
-                        return Err(js_error(get(&s, "reason")));
-                    }
-                    let response = get(&s, "value");
-                    let status = get(&response, "status").as_f64().unwrap_or(0.0) as u16;
-                    if status != 200 && status != 206 {
-                        cancel_body(&response).await;
-                        self.requests.set(self.requests.get() + 1);
-                        if status == 404
-                            || (status == 403
-                                && self.allow_missing_metadata403
-                                && matches!(key.rsplit('/').next(), Some(".zmetadata" | ".zarray" | ".zgroup" | "zarr.json")))
-                        {
-                            objects.insert(key, *range, None);
-                            continue;
-                        }
-                        return Err(JsError::new(&format!("{base}/{key}: HTTP status {status}")));
-                    }
-                    let f = self.any_response(js_sys::Promise::resolve(&response)).await?;
-                    if f.status == 206 && !matches!(*range, ObjectRange::At(_, 0) | ObjectRange::Suffix(0)) {
-                        // Browsers may hide Content-Range under CORS. When exposed, check
-                        // position as well as length; a same-sized wrong range corrupts pixels.
-                        if let Some(header) =
-                            call(&get(&response, "headers"), "get", &["content-range".into()]).ok().and_then(|v| v.as_string())
-                        {
-                            let parsed = (|| {
-                                let (interval, total) = header.strip_prefix("bytes ")?.split_once('/')?;
-                                let (first, last) = interval.split_once('-')?;
-                                let total = if total == "*" { None } else { Some(total.parse::<u64>().ok()?) };
-                                Some((first.parse::<u64>().ok()?, last.parse::<u64>().ok()?, total))
-                            })();
-                            let valid = parsed.is_some_and(|(first, last, total)| {
-                                first <= last
-                                    && total.is_none_or(|total| last < total)
-                                    && last - first + 1 == f.data.len() as u64
-                                    && match *range {
-                                        ObjectRange::At(o, n) => first == o && last.checked_add(1) == o.checked_add(n),
-                                        ObjectRange::Suffix(n) => {
-                                            total.is_none_or(|total| first == total.saturating_sub(n) && last == total - 1)
-                                        }
-                                        ObjectRange::Whole => first == 0 && total.is_none_or(|total| last == total - 1),
-                                    }
-                            });
-                            if !valid {
-                                return Err(JsError::new("object range response has an unexpected Content-Range"));
-                            }
-                        }
-                        if let ObjectRange::Suffix(n) = *range
-                            && f.data.len() as u64 > n
-                        {
-                            return Err(JsError::new("object suffix response exceeds requested length"));
-                        }
-                        if let ObjectRange::At(_, n) = *range
-                            && f.data.len() as u64 != n
-                        {
-                            return Err(JsError::new("object range response has an unexpected length"));
-                        }
-                    }
-                    let data = match (f.status, *range) {
-                        (200 | 206, ObjectRange::At(_, 0) | ObjectRange::Suffix(0)) => Some(Vec::new()),
-                        (200 | 206, ObjectRange::Whole) | (206, _) => Some(f.data),
-                        // A server that ignores `Range` sends the whole object: the part asked.
-                        (200, ObjectRange::At(o, n)) => Some(
-                            f.data
-                                .get(
-                                    usize::try_from(o).map_err(|_| JsError::new("object offset exceeds address space"))?
-                                        ..usize::try_from(o.checked_add(n).ok_or_else(|| JsError::new("object range overflow"))?)
-                                            .map_err(|_| JsError::new("object range exceeds address space"))?,
-                                )
-                                .map(<[u8]>::to_vec)
-                                .ok_or_else(|| JsError::new(&format!("{base}/{key}: bytes {o}+{n} past the end of the object")))?,
-                        ),
-                        (200, ObjectRange::Suffix(n)) => {
-                            Some(f.data[f.data.len().saturating_sub(usize::try_from(n).unwrap_or(usize::MAX))..].to_vec())
-                        }
-                        (status, _) => return Err(JsError::new(&format!("{base}/{key}: HTTP status {status}"))),
-                    };
-                    objects.insert(key, *range, data);
+                let request = self.request_to(&format!("{base}/{encoded}{query}"), header, false)?;
+                let response = JsFuture::from(request).await.map_err(js_error)?;
+                if failed.get() {
+                    cancel_body(&response).await;
+                    return Ok(());
                 }
+                let status = get(&response, "status").as_f64().unwrap_or(0.0) as u16;
+                if status != 200 && status != 206 {
+                    cancel_body(&response).await;
+                    self.requests.set(self.requests.get() + 1);
+                    if status == 404
+                        || (status == 403
+                            && self.allow_missing_metadata403
+                            && matches!(key.rsplit('/').next(), Some(".zmetadata" | ".zarray" | ".zgroup" | "zarr.json")))
+                    {
+                        objects.insert(key, *range, None);
+                        return Ok(());
+                    }
+                    return Err(JsError::new(&format!("{base}/{key}: HTTP status {status}")));
+                }
+                let f = Fetched { status, total: None, data: self.read_body(&response, readers).await? };
+                if f.status == 206 && !matches!(*range, ObjectRange::At(_, 0) | ObjectRange::Suffix(0)) {
+                    // Browsers may hide Content-Range under CORS. When exposed, check
+                    // position as well as length; a same-sized wrong range corrupts pixels.
+                    if let Some(header) =
+                        call(&get(&response, "headers"), "get", &["content-range".into()]).ok().and_then(|v| v.as_string())
+                    {
+                        let parsed = (|| {
+                            let (interval, total) = header.strip_prefix("bytes ")?.split_once('/')?;
+                            let (first, last) = interval.split_once('-')?;
+                            let total = if total == "*" { None } else { Some(total.parse::<u64>().ok()?) };
+                            Some((first.parse::<u64>().ok()?, last.parse::<u64>().ok()?, total))
+                        })();
+                        let valid = parsed.is_some_and(|(first, last, total)| {
+                            first <= last
+                                && total.is_none_or(|total| last < total)
+                                && last - first + 1 == f.data.len() as u64
+                                && match *range {
+                                    ObjectRange::At(o, n) => first == o && last.checked_add(1) == o.checked_add(n),
+                                    ObjectRange::Suffix(n) => {
+                                        total.is_none_or(|total| first == total.saturating_sub(n) && last == total - 1)
+                                    }
+                                    ObjectRange::Whole => first == 0 && total.is_none_or(|total| last == total - 1),
+                                }
+                        });
+                        if !valid {
+                            return Err(JsError::new("object range response has an unexpected Content-Range"));
+                        }
+                    }
+                    if let ObjectRange::Suffix(n) = *range
+                        && f.data.len() as u64 > n
+                    {
+                        return Err(JsError::new("object suffix response exceeds requested length"));
+                    }
+                    if let ObjectRange::At(_, n) = *range
+                        && f.data.len() as u64 != n
+                    {
+                        return Err(JsError::new("object range response has an unexpected length"));
+                    }
+                }
+                let data = match (f.status, *range) {
+                    (200 | 206, ObjectRange::At(_, 0) | ObjectRange::Suffix(0)) => Some(Vec::new()),
+                    (200 | 206, ObjectRange::Whole) | (206, _) => Some(f.data),
+                    // A server that ignores `Range` sends the whole object: the part asked.
+                    (200, ObjectRange::At(o, n)) => Some(
+                        f.data
+                            .get(
+                                usize::try_from(o).map_err(|_| JsError::new("object offset exceeds address space"))?
+                                    ..usize::try_from(o.checked_add(n).ok_or_else(|| JsError::new("object range overflow"))?)
+                                        .map_err(|_| JsError::new("object range exceeds address space"))?,
+                            )
+                            .map(<[u8]>::to_vec)
+                            .ok_or_else(|| JsError::new(&format!("{base}/{key}: bytes {o}+{n} past the end of the object")))?,
+                    ),
+                    (200, ObjectRange::Suffix(n)) => {
+                        Some(f.data[f.data.len().saturating_sub(usize::try_from(n).unwrap_or(usize::MAX))..].to_vec())
+                    }
+                    (status, _) => return Err(JsError::new(&format!("{base}/{key}: HTTP status {status}"))),
+                };
+                objects.insert(key, *range, data);
                 Ok(())
             }
             .await;
-            if result.is_err() {
-                // Settling fetch promises does not consume their bodies. Release every
-                // remaining response when one member of the batch fails.
-                for s in settled.iter() {
-                    if get(&s, "status").as_string().as_deref() == Some("fulfilled") {
-                        cancel_body(&get(&s, "value")).await;
-                    }
+            if result.is_err() && !failed.replace(true) {
+                for reader in readers.borrow_mut().drain(..) {
+                    let _ = call(&reader, "cancel", &[]);
                 }
             }
-            result?;
-        }
-        Ok(())
+            result
+        })
+        .await
     }
 
-    /// Fetches byte ranges in parallel into the file.
-    async fn fetch_batch(&self, file: &SparseFile, ranges: &[(u64, u64)]) -> Result<(), JsError> {
-        let promises = js_sys::Array::new();
-        for &(o, n) in ranges {
-            promises.push(self.request(Some((o, o + n - 1)), false)?.as_ref());
-        }
-        // Every request settled before any is looked at: returning on the first failure leaves
-        // no rejected promise unhandled (which ends a Node process).
-        let settled = js_sys::Array::from(&JsFuture::from(js_sys::Promise::all_settled(&promises)).await.map_err(js_error)?);
-        for (&(offset, len), s) in ranges.iter().zip(settled.iter()) {
-            if get(&s, "status").as_string().as_deref() != Some("fulfilled") {
-                return Err(js_error(get(&s, "reason")));
-            }
-            let f = self.response(js_sys::Promise::resolve(&get(&s, "value"))).await?;
-            match f.status {
-                206 if f.data.len() as u64 == len => file.insert(offset, &f.data),
-                200 if f.data.len() as u64 == file.len() => {
-                    // The server ignored `Range`: the file is held whole, and the rest of the
-                    // batch is not needed.
-                    file.insert(0, &f.data);
-                    return Ok(());
-                }
-                status => {
-                    return Err(JsError::new(&format!(
-                        "{}: bytes {offset}-{}: unexpected response (status {status}, {} bytes): the server must \
-                         answer Range requests, without a Content-Encoding",
-                        self.url,
-                        offset + len - 1,
-                        f.data.len()
-                    )));
+    /// Reads a response's body with a reader held in `readers` while it reads, so that a failed
+    /// request elsewhere can cancel it (see [`Fetcher::fetch_objects`]): a cancelled read ends
+    /// early, with the bytes read so far.
+    async fn read_body(&self, response: &JsValue, readers: &RefCell<Vec<JsValue>>) -> Result<Vec<u8>, JsError> {
+        let mut data = Vec::new();
+        let body = get(response, "body");
+        if !body.is_null() && !body.is_undefined() {
+            let reader = call(&body, "getReader", &[])?;
+            readers.borrow_mut().push(reader.clone());
+            let read: Result<(), JsError> = async {
+                loop {
+                    let promise = call(&reader, "read", &[])?.dyn_into::<js_sys::Promise>().map_err(|_| JsError::new("no body"))?;
+                    let chunk = JsFuture::from(promise).await.map_err(js_error)?;
+                    if get(&chunk, "done").is_truthy() {
+                        return Ok(());
+                    }
+                    data.extend_from_slice(&js_sys::Uint8Array::new(&get(&chunk, "value")).to_vec());
                 }
             }
+            .await;
+            readers.borrow_mut().retain(|r| r != &reader);
+            read?;
         }
-        Ok(())
+        self.requests.set(self.requests.get() + 1);
+        self.bytes.set(self.bytes.get() + data.len() as u64);
+        Ok(data)
     }
+}
+
+/// Runs `f` on each of `items`, [`MAX_PARALLEL`] at a time, the next starting as soon as one
+/// ends rather than when the slowest of a batch does: a read of many chunks keeps its requests in
+/// flight without waiting on the slowest of each batch. Each call reads or releases its own
+/// response. Once one fails, none starts; those started finish, so that no rejected promise is
+/// left unhandled (which ends a Node process) and no body unread, and the first failure is
+/// returned.
+async fn in_window<'a, T, F, Fut>(items: &'a [T], f: F) -> Result<(), JsError>
+where
+    F: Fn(&'a T) -> Fut,
+    Fut: std::future::Future<Output = Result<(), JsError>>,
+{
+    use futures_util::stream::{self, StreamExt};
+    let failed = Cell::new(false);
+    let (failed, f) = (&failed, &f);
+    let results: Vec<Result<(), JsError>> = stream::iter(items)
+        .map(|item| async move {
+            if failed.get() {
+                return Ok(());
+            }
+            let r = f(item).await;
+            if r.is_err() {
+                failed.set(true);
+            }
+            r
+        })
+        .buffer_unordered(MAX_PARALLEL)
+        .collect()
+        .await;
+    results.into_iter().collect()
 }
 
 /// What a remote file is read as.

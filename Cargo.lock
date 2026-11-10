@@ -2772,6 +2772,7 @@ name = "terrio-js"
 version = "0.8.0"
 dependencies = [
  "console_error_panic_hook",
+ "futures-util",
  "getrandom 0.4.3",
  "js-sys",
  "rayon",
