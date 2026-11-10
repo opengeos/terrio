@@ -303,6 +303,12 @@ impl SpatialRef {
             }
             return s;
         }
+        // Do not let a declared registry code repair an incomplete variant C definition.
+        // Keep it as WKT so the transformer reports the parsing error. Valid PROJ4
+        // extensions have already taken precedence above.
+        if is_variant_c(wkt) && Def::from_wkt(wkt).is_err() {
+            return Self { wkt: Some(wkt.to_string()), ..Default::default() };
+        }
         let epsg = identify_epsg(wkt);
         Self { epsg, wkt: Some(wkt.to_string()), ..Default::default() }.with_esri()
     }
@@ -687,6 +693,15 @@ impl SpatialRef {
     #[doc(hidden)]
     #[cfg(feature = "wbprojection-fallback")]
     pub fn to_wbp(&self) -> Result<wbp::Crs> {
+        // wbprojection reads Polar Stereographic (variant C) as variant B, with the false origin
+        // at the pole: a CRS on it (by its EPSG code's WKT, else its own) is given to it as the
+        // PROJ string terrio reads, or not at all.
+        if let Some(w) = self.epsg.and_then(epsg::get).map(|e| e.wkt.as_str()).or(self.wkt.as_deref())
+            && is_variant_c(w)
+        {
+            let p = wkt_proj(w).ok_or_else(|| Error::Crs("a Polar Stereographic (variant C) CRS terrio cannot convert".into()))?;
+            return Ok(wbp::from_proj_string(&p)?);
+        }
         if let Some(code) = self.epsg
             && let Ok(c) = wbp::Crs::from_epsg(code)
         {
@@ -716,6 +731,17 @@ impl SpatialRef {
 /// The WKT 1 of a PROJ string, as GDAL writes it (see [`wkt1_write`]).
 fn proj_to_wkt(p: &str) -> Option<String> {
     wkt1_write::from_proj(p)
+}
+
+/// Whether a WKT 1 or WKT 2 names Polar Stereographic (variant C), EPSG method 9830, as a
+/// projection or conversion method, at any depth (in a bound or compound CRS too).
+fn is_variant_c(wkt: &str) -> bool {
+    fn names(n: &wkt1::Node) -> bool {
+        (["PROJECTION", "METHOD"].iter().any(|k| n.key.eq_ignore_ascii_case(k))
+            && (n.epsg() == Some(9830) || n.name().is_some_and(|m| wkt1::norm(m) == "polarstereographicvariantc")))
+            || n.args.iter().any(|a| matches!(a, wkt1::Arg::Node(c) if names(c)))
+    }
+    wkt1::parse(wkt).is_some_and(|root| names(&root))
 }
 
 /// The PROJ string of a WKT definition as terrio reads it: its PROJ4 extension, else its WKT 1

@@ -941,4 +941,23 @@ mod tests {
         assert_eq!(&std::fs::read(&p).unwrap()[..4], b"\x89HDF");
         assert!(write(&raster(DataType::I16, 1, 4326), None, &p, &Options { format: Some("NC9"), ..Default::default() }).is_err());
     }
+
+    /// A CRS on Polar Stereographic (variant C), whose false origin lies on its standard parallel,
+    /// gets CF's polar stereographic grid mapping on that parallel, with the false northing of the
+    /// pole: 200,000 m less ρF = 2,499,363.488 m for Petrels 1972 / Terre Adelie Polar
+    /// Stereographic (IOGP Guidance Note 7-2).
+    #[test]
+    fn a_variant_c_polar_stereographic_crs_gets_the_grid_mapping_of_its_pole() {
+        let (name, attrs) = grid_mapping(&crate::crs::SpatialRef::from_epsg(2985).unwrap());
+        let value = |key: &str| match attrs.iter().find(|(k, _)| k == key).map(|(_, a)| a) {
+            Some(Attr::Doubles(v)) if v.len() == 1 => v[0],
+            _ => panic!("{key} is not an attribute of one double"),
+        };
+        assert_eq!(name, "polar_stereographic");
+        assert_eq!(value("latitude_of_projection_origin"), -90.0);
+        assert_eq!(value("standard_parallel"), -67.0);
+        assert_eq!(value("straight_vertical_longitude_from_pole"), 140.0);
+        assert_eq!(value("false_easting"), 300_000.0);
+        assert!((value("false_northing") - (200_000.0 - 2_499_363.488)).abs() < 1e-3, "{}", value("false_northing"));
+    }
 }
