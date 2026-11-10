@@ -349,17 +349,9 @@ pub(crate) trait StreamedSource: Sync {
 struct SharedRaster {
     referenced: bool,
     reader: Arc<Mutex<LazyRaster>>,
-    overviews: Vec<(usize, usize)>,
     block: Option<(usize, usize)>,
     alpha: Option<usize>,
     mask: bool,
-    /// Per overview, whether the shared reader's overview has a mask of its own, and whether it
-    /// keeps the mask flags of full resolution without one.
-    own_masks: Vec<bool>,
-    keeps_mask_flags: Vec<bool>,
-    /// Per overview, the overviews of the shared reader's band of it.
-    level_overviews: Vec<Vec<usize>>,
-    mask_overviews: Vec<(usize, usize)>,
     mask_bits: Option<u16>,
 }
 impl SharedRaster {
@@ -381,7 +373,7 @@ impl WindowSource for SharedRaster {
         self.alpha
     }
     fn overviews(&self) -> Vec<(usize, usize)> {
-        self.overviews.clone()
+        self.lock().map(|reader| reader.overviews()).unwrap_or_default()
     }
     fn block_size(&self) -> Option<(usize, usize)> {
         self.block
@@ -393,19 +385,19 @@ impl WindowSource for SharedRaster {
         self.lock()?.read_mask(window, level.checked_sub(1))
     }
     fn level_has_own_mask(&self, level: usize) -> bool {
-        level.checked_sub(1).map_or(self.mask, |i| self.own_masks.get(i).copied().unwrap_or(false))
+        level.checked_sub(1).map_or(self.mask, |i| self.lock().is_ok_and(|reader| reader.level_has_own_mask(i)))
     }
     fn level_keeps_mask_flags(&self, level: usize) -> bool {
-        level.checked_sub(1).is_none_or(|i| self.keeps_mask_flags.get(i).copied().unwrap_or(true))
+        level.checked_sub(1).is_none_or(|i| self.lock().map_or(true, |reader| reader.level_keeps_mask_flags(i)))
     }
     fn level_band_overviews(&self, level: usize) -> Vec<usize> {
-        level.checked_sub(1).and_then(|i| self.level_overviews.get(i).cloned()).unwrap_or_default()
+        level.checked_sub(1).and_then(|i| self.lock().ok().map(|reader| reader.level_overviews(Some(i)))).unwrap_or_default()
     }
     fn level_resampling(&mut self, overview: usize) -> Option<String> {
         self.lock().ok()?.level_resampling(overview)
     }
     fn mask_band_overviews(&self) -> Vec<(usize, usize)> {
-        self.mask_overviews.clone()
+        self.lock().map(|reader| reader.mask_band_overviews()).unwrap_or_default()
     }
     fn mask_band_bits(&self) -> Option<u16> {
         self.mask_bits
@@ -476,32 +468,15 @@ impl LazyRaster {
             header.gcps = t.tags.gcps.clone();
             header.raster.crs = t.tags.crs_info();
         }
-        let overviews = self.overviews();
         let block = self.block_size();
         let alpha = self.alpha_band();
         let mask = self.has_mask();
-        let own_masks = (0..overviews.len()).map(|i| self.level_has_own_mask(i)).collect();
-        let keeps_mask_flags = (0..overviews.len()).map(|i| self.level_keeps_mask_flags(i)).collect();
-        let level_overviews = (0..overviews.len()).map(|i| self.level_overviews(Some(i))).collect();
-        let mask_overviews = self.mask_band_overviews();
         let mask_bits = self.mask_band_bits();
         let referenced = self.geotransform_present();
         let policy = self.asset_policy.clone();
         let replacement = Self::from(header.clone());
         let original = std::mem::replace(self, replacement);
-        let shared = SharedRaster {
-            referenced,
-            reader: Arc::new(Mutex::new(original)),
-            overviews,
-            block,
-            alpha,
-            mask,
-            own_masks,
-            keeps_mask_flags,
-            level_overviews,
-            mask_overviews,
-            mask_bits,
-        };
+        let shared = SharedRaster { referenced, reader: Arc::new(Mutex::new(original)), block, alpha, mask, mask_bits };
         *self = Self::from_source(header.clone(), Box::new(shared.clone()));
         self.asset_policy = policy.clone();
         let mut alias = Self::from_source(header, Box::new(shared));
@@ -1067,7 +1042,9 @@ impl LazyRaster {
     }
 
     /// The sizes `(width, height)` of the overviews, largest first.
+    /// Returns an empty list when the retained asset-read policy refuses access.
     pub fn overviews(&self) -> Vec<(usize, usize)> {
+        let Ok(_scope) = self.enter_asset_read() else { return Vec::new() };
         match &self.inner {
             Inner::Tiff(t) => t.levels[1..].iter().map(|l| (l.width, l.height)).collect(),
             Inner::Memory(_) => Vec::new(),

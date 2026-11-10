@@ -1347,6 +1347,19 @@ the part of the source inside it, so a `sum` source adds its `SrcRect`'s total, 
 edges counted for its part inside. A `KernelFilteredSource` filters its band before the window is
 taken: its kernel reads the pixels around the `SrcRect`.
 
+A VRT has the overviews of its first source (the first source of the first band that has one), at
+the VRT's own scale, so a reduced read of it (`terrio translate --outsize`, `terrio warp` with
+`--overview AUTO`, `read_resampled` and `out_shape` in Python) reads its sources' overviews rather
+than their full resolution. An overview of the VRT reads each source from the source's own
+overview of the same scale, with its `SrcRect` and `DstRect` scaled to it. A source without one is
+read from its nearest finer level, full resolution at worst, and its method resamples that to the
+VRT's level, so it costs a finer read; a mosaic whose sources share their overviews reads each
+from its own. The first source alone is opened to list the overviews, for its header; a read opens
+the sources in its window. A VRT with a `KernelFilteredSource`, whose kernel spans full-resolution
+pixels, has none, nor have warped and pansharpened VRTs. The listing is fixed for the lifetime
+of the open VRT, including an empty listing if its first source cannot be opened. After a
+transient source failure, reopen the VRT to discover its overviews.
+
 Mixed native band types use a common numeric buffer selected with GDAL-style
 `DataTypeUnion` promotion, preserving Float64 precision. Plain and derived bands
 round to their declared type before entering that buffer. A selected lazy band

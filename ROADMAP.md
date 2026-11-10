@@ -94,6 +94,8 @@ and drivers below.
 - [x] Richer VRT interoperability: serialized warped VRTs, then selected built-in derived bands
       and kernel-filtered sources, with lazy window reads and GDAL-compatible output.
       Rust, CLI/MCP, Python and WebAssembly; supported subsets are documented in the CLI guide.
+      Ordinary VRTs expose implicit source-overview levels for reduced reads (#796); warped,
+      pansharpened and kernel-filtered VRTs remain outside that overview path.
 - [x] Richer vector SQL: computed SELECT columns, DISTINCT, summary aggregates and limited
       attribute joins, with the supported OGR SQL subset documented explicitly. Done in
       [#245](https://github.com/opengeos/terrio/pull/245), with real-data OGR SQL comparisons.
@@ -268,6 +270,8 @@ Command-group progress:
       schemas and geometry (on `geo-types`), and a driver registry with format detection.
 - [x] Virtual file system: local files, HTTP(S) with range requests, S3 (with SigV4 signing), Google
       Cloud Storage and Azure; zip archives.
+      Native HTTP reads can keep redirects on their original origin with
+      `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO` (#793); opaque GDAL reads are refused under that policy.
 - [x] Coordinate reference systems: EPSG codes, WKT and PROJ strings in and out; transformations that
       match GDAL's (units, axis orders, prime meridians and datum transformations) for every EPSG
       geographic and projected CRS. Done, and since: ESRI codes under the ESRI authority, WKT 1 and
@@ -281,6 +285,9 @@ Command-group progress:
 
 - [x] Raster: Cloud Optimized GeoTIFF (overviews, internal tiling, all common compressions), ASCII
       grids.
+      Default TIFF readers capture a configurable decoded-chunk budget through
+      `TERRIO_TIFF_MAX_CHUNK_BYTES` for trusted large stacks (#799), including Python spare
+      readers; explicit Rust limits retain precedence.
 - [x] Vector: Shapefile (with `.prj`, `.cpg` and zipped), FlatGeobuf (with its spatial index),
       GeoParquet 1.1 (with bounding-box filtering), CSV with point or WKT columns, XLSX as GDAL's
       driver reads and writes it.

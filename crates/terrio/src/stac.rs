@@ -2433,7 +2433,7 @@ mod tests {
                 assert!(!reader.overviews().is_empty());
                 reader.read_window(Window::full(1, 1), &WindowOptions { overview: Some(0), ..Default::default() }).unwrap();
                 let before = seen.lock().unwrap().len();
-                crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
+                let mut alias = crate::config::with_options(&[("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")], || {
                     let mut alias = reader.shared();
                     assert_eq!(alias.alpha_band(), Some(4));
                     assert!(alias.read_window(Window::full(1, 1), &Default::default()).is_err());
@@ -2442,8 +2442,15 @@ mod tests {
                             .read_resampled_by_band(&crate::ResampledReadOptions { size: (1, 1), bands: vec![1], ..Default::default() })
                             .is_err()
                     );
+                    alias
                 });
                 assert_eq!(seen.lock().unwrap().len(), before, "sharing and refused metadata reads issue no requests");
+                // Restoring consent preserves overview metadata and explicit reads in both handles.
+                assert!(!reader.overviews().is_empty());
+                assert_eq!(alias.overviews(), reader.overviews());
+                for handle in [&mut reader, &mut alias] {
+                    handle.read_window(Window::full(1, 1), &WindowOptions { overview: Some(0), ..Default::default() }).unwrap();
+                }
             },
         );
     }
@@ -2609,6 +2616,10 @@ mod tests {
                 ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO"),
             ],
             || {
+                let raster = with_asset_read("https://catalog.example/item.json", &href, || LazyRaster::open(&href)).unwrap();
+                assert!(AssetReadPolicy::current().is_none());
+                assert!(raster.overviews().is_empty());
+                assert!(seen.lock().unwrap().is_empty(), "overview discovery must not contact the private store");
                 let result =
                     with_asset_read("https://catalog.example/item.json", &href, || LazyRaster::open(&href)).and_then(|mut r| r.read());
                 assert!(
