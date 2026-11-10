@@ -769,7 +769,8 @@ fn config() -> &'static Mutex<Config> {
 /// While search paths are set this way, grids are read only from them, from grids registered with
 /// [`register_grid`] and, with the network on, from the PROJ CDN: a grid named by a path in a CRS
 /// definition (`+nadgrids=/data/a.gsb`, `./a.gsb`, `../a.gsb`) is treated as missing, with a
-/// warning, so a definition from untrusted input cannot read grid files from arbitrary paths. Add the grid's directory to the search paths or register it instead. Unlike
+/// warning, so a definition from untrusted input cannot read grid files from arbitrary paths.
+/// Add the grid's directory to the search paths or register it instead. Unlike
 /// PROJ, which reads such paths whatever its search paths are.
 pub fn set_grid_search_paths(paths: Option<Vec<std::path::PathBuf>>) {
     {
