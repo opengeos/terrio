@@ -3,6 +3,8 @@ export_schema and create_vector."""
 
 import json
 import os
+import warnings
+import zipfile
 
 import pytest
 
@@ -276,3 +278,42 @@ def test_kml_styles_resolve_when_a_path_is_converted(tmp_path):
     assert b"<styleUrl>#base</styleUrl>" in converted
     terrio.convert(str(source), str(tmp_path / "c.geojson"))
     assert ogr_style(terrio.open_vector(str(tmp_path / "c.geojson"))) == BASE_STYLE
+
+
+def kml_document(name, points):
+    placemarks = "<Placemark><Point><coordinates>1,2</coordinates></Point></Placemark>" * points
+    body = f"<Document><name>{name}</name>{placemarks}</Document>"
+    return f'<kml xmlns="http://www.opengis.net/kml/2.2">{body}</kml>'
+
+
+def kmz(path, members):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # zipfile warns about a duplicate name it is asked to write
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, text in members:
+                archive.writestr(name, text)
+    return str(path)
+
+
+def test_a_kmz_is_read_from_the_first_kml_entry_at_its_root(tmp_path):
+    """OGC KML 2.3, Annex C.1: the first KML file at the root is the main one, whatever its name."""
+    first, second = kml_document("first", 1), kml_document("second", 3)
+    path = kmz(tmp_path / "places.kmz", [("a.kml", first), ("doc.kml", second)])
+    dataset = terrio.open_vector(path)
+    assert [(layer.name, len(layer)) for layer in dataset] == [("first", 1)]
+    assert terrio.list_layers(path) == ["first"]
+    with open(path, "rb") as f:
+        in_memory = terrio.open_bytes(f.read(), "places.kmz")
+    assert [(layer.name, len(layer)) for layer in in_memory] == [("first", 1)]
+
+
+def test_a_kmz_with_two_entries_of_one_name_is_refused(tmp_path):
+    first, second = kml_document("first", 1), kml_document("second", 3)
+    path = kmz(tmp_path / "places.kmz", [("doc.kml", first), ("doc.kml", second)])
+    ambiguous = "several entries with the same name"
+    with pytest.raises(terrio.InvalidDataError, match=ambiguous):
+        terrio.open_vector(path)
+    with pytest.raises(terrio.InvalidDataError, match=ambiguous):
+        terrio.list_layers(path)
+    with open(path, "rb") as f, pytest.raises(terrio.InvalidDataError, match=ambiguous):
+        terrio.open_bytes(f.read(), "places.kmz")

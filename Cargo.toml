@@ -108,7 +108,7 @@ tar = { version = "0.4", default-features = false }
 libc = "0.2"
 # Deflate through flate2 and zlib-rs only: `deflate` adds zopfli, which zip uses only for
 # compression levels above 9, and terrio never sets a level.
-zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # No TLS provider of its own: terrio supplies `rustls-graviola`, which needs no C compiler.
 ureq = { version = "3", default-features = false, features = ["gzip", "rustls-no-provider", "rustls-webpki-roots"] }
 rustls-graviola = "0.4"

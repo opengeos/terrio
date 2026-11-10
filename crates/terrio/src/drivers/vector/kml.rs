@@ -55,6 +55,9 @@ pub(crate) fn max_kmz_document_bytes() -> u64 {
     crate::config::get("TERRIO_KMZ_MAX_SIZE").and_then(|v| v.trim().parse().ok()).unwrap_or(DEFAULT_MAX_KMZ_DOCUMENT_BYTES)
 }
 
+/// A duplicate-entry refusal is terminal, including for the optional GDAL backend.
+pub(crate) const AMBIGUOUS_KMZ: &str = "KMZ: the archive holds several entries with the same name, so its main document is ambiguous";
+
 /// A KML document's layers, and its style table: style ids and their OGR style strings.
 pub type Styled = (Vec<Layer>, Vec<(String, String)>);
 
@@ -68,8 +71,10 @@ pub fn read_styled(path: &str) -> Result<Styled> {
     parse_styled(&xml::decode(&std::fs::read(path)?), &stem(path))
 }
 
-/// Reads a KMZ file: its main document (`doc.kml`, or the first `.kml` file), and the documents
+/// Reads a KMZ file: its main document (its first `.kml` file at the root), and the documents
 /// in the archive it links to (GDAL writes one per layer under `layers/`).
+/// Without a `.kml` file at the root, its first `.kml` file is the main document. An archive
+/// holding two entries of the same name is refused.
 pub fn read_kmz(path: &str) -> Result<Vec<Layer>> {
     Ok(read_kmz_styled(path)?.0)
 }
@@ -90,14 +95,33 @@ pub fn parse_kmz_styled(bytes: Vec<u8>, default_name: &str) -> Result<Styled> {
     kmz_styled(std::io::Cursor::new(bytes), default_name)
 }
 
-/// The main document of a KMZ archive: `doc.kml` (in any case), else its first `.kml` member.
-fn main_document(names: &[String]) -> Result<String> {
-    names
+/// The main document of a KMZ archive, its index and name: the first `.kml` entry at the archive's
+/// root, in the order of its entries, whatever its name (OGC KML 2.3, Annex C.1: "If more than one
+/// KML file exists at the root directory level, the first file entry (in unsorted order) shall be
+/// treated as the main KML file"); else, when the root holds none, its first `.kml` entry. A `\`
+/// separates folders too, as Windows tools write it.
+fn main_document<R: std::io::Read + std::io::Seek>(zip: &zip::ZipArchive<R>) -> Result<(usize, String)> {
+    let documents: Vec<(usize, String)> = (0..zip.len())
+        .filter_map(|i| match zip.name_for_index(i)? {
+            Ok(name) => Some((i, name.into_owned())),
+            Err(error) => {
+                crate::warnings::warn(format!("KMZ: entry {i} has an undecodable name and is skipped: {error}"));
+                None
+            }
+        })
+        .filter(|(_, name)| name.to_ascii_lowercase().ends_with(".kml"))
+        .collect();
+    let at_root = documents
         .iter()
-        .find(|n| n.eq_ignore_ascii_case("doc.kml"))
-        .or_else(|| names.iter().find(|n| n.to_ascii_lowercase().ends_with(".kml")))
-        .cloned()
-        .ok_or_else(|| Error::InvalidData("the KMZ archive holds no KML document".into()))
+        .position(|(_, name)| {
+            let mut relative = name.as_str();
+            while let Some(rest) = relative.strip_prefix("./").or_else(|| relative.strip_prefix(".\\")) {
+                relative = rest;
+            }
+            !relative.contains(['/', '\\'])
+        })
+        .unwrap_or(0);
+    documents.into_iter().nth(at_root).ok_or_else(|| Error::InvalidData("the KMZ archive holds no KML document".into()))
 }
 
 /// Reads the KML document named `name` from a KMZ archive within `budget`, the bytes left of
@@ -139,10 +163,15 @@ pub(crate) fn read_document_at<R: std::io::Read + std::io::Seek>(
 /// (`crate::vfs::ZipLimits`) and, for the main and layer documents, `TERRIO_KMZ_MAX_SIZE`.
 fn kmz_styled<R: std::io::Read + std::io::Seek>(reader: R, default_name: &str) -> Result<Styled> {
     let mut zip = crate::vfs::LimitedZip::open(reader)?;
+    // The zip reader keeps one entry per name, the last: the first of two entries named `doc.kml`
+    // could not be read, nor told from the other.
+    if zip.archive().has_duplicate_names() {
+        return Err(Error::InvalidData(AMBIGUOUS_KMZ.into()));
+    }
     let names: Vec<String> = zip.archive().file_names().filter_map(|n| n.ok().map(|n| n.into_owned())).collect();
-    let main = main_document(&names)?;
+    let (main_index, main) = main_document(zip.archive())?;
     let mut documents_budget = max_kmz_document_bytes();
-    let root = xml::parse(&read_document(&mut zip, &main, &mut documents_budget)?)?;
+    let root = xml::parse(&read_document_at(&mut zip, main_index, &mut documents_budget)?)?;
     // The documents that are layers, each with its layer name.
     let mut links = Vec::new();
     root.find_all("NetworkLink", &mut links);
@@ -1249,6 +1278,92 @@ mod tests {
         let main = format!("<kml><Document>{point}{}{}</Document></kml>", network_link("again", "doc.kml"), network_link("", "./doc.kml"));
         let kmz = deflated(&[("doc.kml", main.as_bytes())]);
         assert_eq!(summary(&parse_kmz(kmz, "main").unwrap()), [("main", 1)]);
+    }
+
+    /// A KML document named `name` holding `points` placemarks.
+    fn named(name: &str, points: usize) -> String {
+        let placemarks = "<Placemark><Point><coordinates>1,2</coordinates></Point></Placemark>".repeat(points);
+        format!("<kml><Document><name>{name}</name>{placemarks}</Document></kml>")
+    }
+
+    /// The main document is the first KML entry at the archive's root, in the order of its
+    /// entries, whatever its name (OGC KML 2.3, Annex C.1); one in a folder is the main document
+    /// only when the root holds none.
+    #[test]
+    fn the_main_document_is_the_first_kml_entry_at_the_archive_root() {
+        let (first, second) = (named("first", 1), named("second", 3));
+        for (members, expected) in [
+            (vec![("a.kml", first.as_str()), ("doc.kml", second.as_str())], [("first", 1)]),
+            (vec![("doc.kml", first.as_str()), ("a.kml", second.as_str())], [("first", 1)]),
+            (vec![("notes.txt", "-"), ("A.KML", first.as_str()), ("DOC.KML", second.as_str())], [("first", 1)]),
+            (vec![("files/b.kml", second.as_str()), ("files/doc.kml", second.as_str()), ("a.kml", first.as_str())], [("first", 1)]),
+            (vec![("notes.txt", "-"), ("files/a.kml", first.as_str()), ("files/doc.kml", second.as_str())], [("first", 1)]),
+            (vec![("files\\doc.kml", second.as_str()), ("a.kml", first.as_str())], [("first", 1)]),
+        ] {
+            let names: Vec<&str> = members.iter().map(|(name, _)| *name).collect();
+            assert_eq!(summary(&parse_kmz(archive(&members), "kmz").unwrap()), expected, "{names:?}");
+        }
+        let refused = parse_kmz(archive(&[("notes.txt", "-")]), "kmz");
+        assert!(matches!(&refused, Err(Error::InvalidData(m)) if m == "the KMZ archive holds no KML document"), "{refused:?}");
+    }
+
+    /// `kmz` with every `from` in its entries' names (and anywhere else) replaced by `to`, a name of
+    /// the same length: zip writers refuse a second entry of the same name, so it is written under
+    /// another.
+    fn renamed(kmz: &[u8], from: &str, to: &str) -> Vec<u8> {
+        assert_eq!(from.len(), to.len());
+        let mut out = kmz.to_vec();
+        let mut i = 0;
+        while let Some(at) = out[i..].windows(from.len()).position(|w| w == from.as_bytes()) {
+            out[i + at..i + at + to.len()].copy_from_slice(to.as_bytes());
+            i += at + to.len();
+        }
+        out
+    }
+
+    #[test]
+    fn leading_current_directory_components_leave_a_kml_at_the_archive_root() {
+        let (first, nested) = (named("first", 1), named("nested", 3));
+        for root in ["./doc.kml", "././doc.kml", r".\doc.kml"] {
+            let bytes = archive(&[("files/nested.kml", nested.as_str()), (root, first.as_str())]);
+            assert_eq!(summary(&parse_kmz(bytes, "kmz").unwrap()), [("first", 1)], "{root}");
+        }
+    }
+
+    /// An archive holding two entries of the same name is refused, whichever entries they are: the
+    /// zip reader keeps one entry per name, the last, so the first of two `doc.kml` could not be
+    /// told apart from it.
+    #[test]
+    fn an_archive_with_two_entries_of_one_name_is_refused() {
+        let (first, second) = (named("first", 1), named("second", 3));
+        let two_docs = renamed(&archive(&[("doc.kml", first.as_str()), ("dox.kml", second.as_str())]), "dox.kml", "doc.kml");
+        let two_icons =
+            renamed(&archive(&[("doc.kml", first.as_str()), ("files/a.png", "1"), ("files/b.png", "2")]), "files/b.png", "files/a.png");
+        for (label, kmz) in [("two doc.kml", two_docs), ("two files/a.png", two_icons)] {
+            let refused = parse_kmz(kmz.clone(), "kmz");
+            let message = "KMZ: the archive holds several entries with the same name, so its main document is ambiguous";
+            assert!(matches!(&refused, Err(Error::InvalidData(m)) if m == message), "{label}: {refused:?}");
+            // The same bytes read from a file.
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("duplicates.kmz");
+            std::fs::write(&path, &kmz).unwrap();
+            let refused = read_kmz(path.to_str().unwrap());
+            assert!(matches!(&refused, Err(Error::InvalidData(m)) if m == message), "{label}: {refused:?}");
+            // Public entry points must preserve the refusal even with the GDAL backend enabled.
+            let path = path.to_str().unwrap();
+            for refused in [
+                crate::open(path).map(|_| ()),
+                crate::open_vector(path, &Default::default()).map(|_| ()),
+                crate::list_layers(path).map(|_| ()),
+            ] {
+                assert!(matches!(&refused, Err(Error::InvalidData(m)) if m == message), "{label}: {refused:?}");
+            }
+        }
+        // Without the second name, the archive reads.
+        assert_eq!(
+            summary(&parse_kmz(archive(&[("doc.kml", first.as_str()), ("dox.kml", second.as_str())]), "kmz").unwrap()),
+            [("first", 1)]
+        );
     }
 
     fn pin(url: &str, inline: &str) -> String {
