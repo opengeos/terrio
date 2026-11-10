@@ -370,6 +370,61 @@ def test_a_remote_zip_member_is_read_by_range(tmp_path, counting_server):
     assert stats["bytes"] < size // 10, (stats, size)
 
 
+def test_env_keeps_a_read_on_the_origin_it_was_given(tmp_path, counting_server):
+    """TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO, set with terrio.rio.Env, refuses a redirect to another
+    origin (another port) before anything is sent there; a redirect within the origin is still
+    followed, and without the option a redirect to another origin is followed."""
+    other, stats = counting_server
+    pixels = np.full((1, 64, 64), 42, "uint8")
+    terrio.Raster.from_array(pixels, (0.0, 1.0, 0.0, 64.0, 0.0, -1.0), "EPSG:4326").write(
+        str(tmp_path / "image.tif")
+    )
+    data = (tmp_path / "image.tif").read_bytes()
+
+    class Redirecting(http.server.BaseHTTPRequestHandler):
+        """/cross/NAME redirects to NAME on the other origin, /hop/NAME to /NAME on this one."""
+
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            for prefix, to in (("/cross/", other + "/"), ("/hop/", "/")):
+                if self.path.startswith(prefix):
+                    self.send_response(302)
+                    self.send_header("Location", to + self.path[len(prefix) :])
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+            start, end, status = 0, len(data) - 1, 200
+            rng = self.headers.get("Range")
+            if rng and rng.startswith("bytes="):
+                a, _, b = rng[6:].partition("-")
+                start, status = int(a), 206
+                end = min(int(b), len(data) - 1) if b else len(data) - 1
+            self.send_response(status)
+            self.send_header("Content-Length", str(end + 1 - start))
+            if status == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+            self.end_headers()
+            self.wfile.write(data[start : end + 1])
+
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Redirecting)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    asked = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        with rio.Env(TERRIO_HTTP_FOLLOW_CROSS_ORIGIN="NO"):
+            with pytest.raises(RasterioIOError, match="reads stay on the origin they were given"):
+                rio.open(f"{asked}/cross/image.tif")
+            with rio.open(f"{asked}/hop/image.tif") as src:
+                assert src.read(1)[0, 0] == 42
+        assert stats["requests"] == 0, stats
+        with rio.open(f"{asked}/cross/image.tif") as src:
+            assert src.read(1)[0, 0] == 42
+        assert stats["requests"] > 0, stats
+    finally:
+        httpd.shutdown()
+
+
 @pytest.mark.parametrize("path", sorted((REGRESSIONS / "tiff").glob("*.tif")), ids=lambda p: p.name)
 def test_fuzz_regressions_raise_exceptions_not_panics(path):
     """Each GeoTIFF the `tiff` fuzz target crashed on opens and reads, or raises an `Exception`.
