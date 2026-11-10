@@ -2368,12 +2368,18 @@ type ChunkSpool = std::io::Cursor<Vec<u8>>;
 
 /// The directory of a COG's chunk spools, which together hold about as many bytes as the COG.
 /// As GDAL's COG driver places its temporary files: next to the output (on its drive, not the
-/// system's temporary directory), or in `TERRIO_TMPDIR` (`CPL_TMPDIR`) when that is set.
+/// system's temporary directory), or in `TERRIO_TMPDIR` (`CPL_TMPDIR`) when that is set. An
+/// output that is not a regular file (`/dev/stdout`, a FIFO), whose directory is not one to write
+/// in, spools in the system's temporary directory, as GDAL does for an output without random
+/// writes.
 ///
 /// Reference: GDAL v3.12.1 `frmts/gtiff/cogdriver.cpp` (`GetTmpFilename`).
 fn spool_dir(path: &str) -> std::path::PathBuf {
     if let Some(dir) = crate::config::get_any(&["TERRIO_TMPDIR", "CPL_TMPDIR"]) {
         return dir.into();
+    }
+    if std::fs::metadata(path).is_ok_and(|m| !m.is_file()) {
+        return std::env::temp_dir();
     }
     match std::path::Path::new(path).parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
@@ -3216,6 +3222,20 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), encode(&raster, &opts).unwrap());
         // The spools were unnamed: nothing but the COG is left beside it.
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    /// A COG written to a device spools in the system's temporary directory, not `/dev`.
+    #[cfg(unix)]
+    #[test]
+    fn cog_to_a_device_spools_in_the_temporary_directory() {
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_TMPDIR".to_string(), None), ("CPL_TMPDIR".to_string(), None)]));
+        assert_eq!(spool_dir("/dev/null"), std::env::temp_dir());
+        let raster = overview_fixture(1, DataType::U8, RasterData::U8((0..65 * 35).map(|i| (i % 251) as u8).collect()));
+        let opts = TiffOptions { cog: true, tile_size: Some(16), ..Default::default() };
+        let mut writer = CogWriter::create("/dev/null", &raster, &opts).unwrap();
+        crate::config::pop_scope();
+        writer.write_rows(raster.data.clone(), 35).unwrap();
+        writer.finish().unwrap();
     }
 
     /// COGs written a few rows at a time are those written from the whole raster, byte for

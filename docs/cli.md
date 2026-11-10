@@ -1228,8 +1228,11 @@ the input's pixels beyond it.
 
 Local inputs are read in place, not copied. A COG output keeps its compressed tiles in
 unnamed temporary files next to the output until it is laid out, as GDAL's COG driver does, so a
-mosaic on another drive needs no space on the system drive. `TERRIO_TMPDIR` (or `CPL_TMPDIR`)
-names another directory for them.
+mosaic on another drive needs no space on the system drive. The output's drive needs room for
+them, about the size of the COG, as well as the COG while it is written, and a slow or network
+drive writes them at its speed. `TERRIO_TMPDIR` (or `CPL_TMPDIR`) names another directory for
+them. An output that is not a regular file (`/dev/stdout`) spools in the system's temporary
+directory.
 
 ## Serialized virtual rasters
 

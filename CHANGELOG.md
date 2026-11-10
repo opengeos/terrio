@@ -2,12 +2,6 @@
 
 ## Unreleased
 
-- A COG written a strip of rows at a time (`--of COG`, as `terrio mosaic` and `convert` write one)
-  keeps its compressed tiles in temporary files next to the output while it is written, as GDAL's COG driver does, instead of
-  in the system's temporary directory (#767). Writing a COG mosaic of rasters on `D:` to `D:` on
-  Windows no longer writes about the size of the COG to `C:`. `TERRIO_TMPDIR` (or GDAL's
-  `CPL_TMPDIR`) puts them in another directory. The files have no name and are removed when the
-  write ends.
 - A `Raster` read lazily from a file, such as a GeoTIFF (`open_raster(path, lazy=True)`,
   `rio.open`, the xarray backend), can be read from several Python threads at once: `read`,
   `read_mask` and `numpy.asarray` raised `RuntimeError: Already borrowed` when a read overlapped
