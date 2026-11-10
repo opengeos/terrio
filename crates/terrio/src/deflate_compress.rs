@@ -1373,9 +1373,12 @@ mod tests {
     /// The output of each level, 1 to 9, given by its length and CRC-32: on the Int16 tile; on
     /// 40 bytes, stored up to level 3 and compressed from level 4, as the size under which an
     /// input is stored shrinks with the level; on 300,000 bytes of 12 letters; on 100,000 bytes of
-    /// 5 letters, where the minimum match length that a level's search depth allows decides; and
-    /// on matches of every length from 3 to 258, each with a longer one further back, where the
-    /// level's nice match length decides. Level 6 gives the values of `output_matches_libdeflate`.
+    /// 5 letters, where the minimum match length that a level's search depth allows decides; on
+    /// matches of every length from 3 to 258, each with a longer one further back, where the
+    /// level's nice match length decides; and on noise with 3-byte strings repeated 6,000 bytes
+    /// later, where the greedy parser's 4,096-byte limit for length-3 matches decides (levels 1 to
+    /// 4 store it; the lazy parser's limit is 8,192). Level 6 gives the values of
+    /// `output_matches_libdeflate`.
     #[test]
     fn each_level_gives_these_outputs() {
         // The length and CRC-32 of the output of levels 1 to 9.
@@ -1391,7 +1394,15 @@ mod tests {
             nice.extend(lcg(16, seed + 1, 256));
             nice.extend_from_slice(&base[..260]);
         }
-        let cases: [(&str, Vec<u8>, Outputs); 5] = [
+        // Noise of 256 letters (a minimum match length of 3 at every level), the 3 bytes at every
+        // 97th position repeated 6,000 bytes later.
+        let mut far = lcg(40_000, 3, 256);
+        let n = far.len();
+        for i in (0..).step_by(97).take_while(|i| i + 6003 <= n) {
+            let three = [far[i], far[i + 1], far[i + 2]];
+            far[i + 6000..i + 6003].copy_from_slice(&three);
+        }
+        let cases: [(&str, Vec<u8>, Outputs); 6] = [
             (
                 "Int16 tile",
                 walk(),
@@ -1465,6 +1476,21 @@ mod tests {
                     (10731, 0x9fc6ef29),
                     (10435, 0x00934499),
                     (10435, 0x00934499),
+                ],
+            ),
+            (
+                "3-byte strings 6,000 bytes back",
+                far,
+                [
+                    (40011, 0xa32dd0db),
+                    (40011, 0x8df33568),
+                    (40011, 0x8df33568),
+                    (40011, 0x8df33568),
+                    (39929, 0x5c237e89),
+                    (39929, 0x8ac4f6ff),
+                    (39929, 0x8ac4f6ff),
+                    (39929, 0x5d682a6c),
+                    (39929, 0x5d682a6c),
                 ],
             ),
         ];
