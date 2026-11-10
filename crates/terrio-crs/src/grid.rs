@@ -1101,10 +1101,11 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
     }
     // Read in place; a grid that cannot be read so (a server without range requests, a failed
     // request) is downloaded instead, unless the CDN does not have it.
-    // Only names the CDN can have are fetched: a path (or a refused name) is missing, not a
-    // network failure, so the transformation can fall back to another operation.
+    // A grid named by a path cannot be on the CDN: it is missing, not a network failure, so the
+    // transformation can fall back to another operation. Other names are asked for (and those
+    // the CDN cannot have, such as `.gsb` names, recorded as fetch failures, as before).
     #[cfg(remote)]
-    let fetch = bytes.is_none() && network_enabled() && cdn_url(name).is_some();
+    let fetch = bytes.is_none() && network_enabled() && !name.contains(['/', '\\']);
     #[cfg(remote)]
     if fetch && !download_whole() {
         match open_remote(name) {
