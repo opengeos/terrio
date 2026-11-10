@@ -749,8 +749,9 @@ pub fn allowed_drivers(kind: Option<Kind>) -> Option<Vec<String>> {
         None => allowed_by_every_kind(&lists),
     };
     // The environment's list applies under a scope too, so it is read again after the scope's. A
-    // value that is not UTF-8 is read lossily: it names no driver, so it allows none.
-    let environment = std::env::var_os(ALLOWED_DRIVERS_OPTION).map(|v| v.to_string_lossy().into_owned());
+    // value that is not UTF-8 is read as empty: it allows no driver, even where part of it names
+    // one.
+    let environment = std::env::var_os(ALLOWED_DRIVERS_OPTION).map(|v| v.into_string().unwrap_or_default());
     let option = [crate::config::get_including_empty(ALLOWED_DRIVERS_OPTION), environment]
         .into_iter()
         .flatten()

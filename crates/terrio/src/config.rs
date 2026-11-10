@@ -35,9 +35,9 @@ pub fn get(key: &str) -> Option<String> {
 
 /// The value of the option `key`, found as [`get`] finds it, but with an empty or blank value
 /// counting as set: for an option whose empty value says something (an allow-list that allows
-/// nothing). An environment value that is not UTF-8 is set too, read lossily.
+/// nothing). An environment value that is not UTF-8 is set too, and read as empty.
 pub(crate) fn get_including_empty(key: &str) -> Option<String> {
-    scoped(key).unwrap_or_else(|| std::env::var_os(key).map(|v| v.to_string_lossy().into_owned()))
+    scoped(key).unwrap_or_else(|| std::env::var_os(key).map(|v| v.into_string().unwrap_or_default()))
 }
 
 /// The value the innermost scope of the calling thread that sets or unsets `key` gives it:

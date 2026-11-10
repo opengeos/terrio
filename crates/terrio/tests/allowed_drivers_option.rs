@@ -60,16 +60,20 @@ fn an_empty_list_allows_nothing_and_a_scope_cannot_widen_the_environments() {
     unsafe { std::env::remove_var(OPTION) };
     assert_eq!(before, (names(&["GTIFF", "AAIGRID"]), true));
     assert_eq!(after, (names(&["GTIFF"]), false));
-    // A value that is not UTF-8 is set, and read lossily it names no driver: it allows none, alone,
-    // in the value a scope set after it holds, and under a scope set before it.
+    // A value that is not UTF-8 is set, and read as empty: it allows no driver, even where part of
+    // it names one, alone, in the value a scope set after it holds, and under a scope set before it.
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt as _;
-        let invalid = std::ffi::OsStr::from_bytes(b"AAIGrid\xff");
+        for value in [&b"GTiff,\xff"[..], b"AAIGrid,\xff", b"AAIGrid\xff"] {
+            // SAFETY: as above.
+            unsafe { std::env::set_var(OPTION, std::ffi::OsStr::from_bytes(value)) };
+            assert_eq!(in_scope(None, grid), (names(&[]), false), "not UTF-8: {value:?}");
+        }
+        let invalid = std::ffi::OsStr::from_bytes(b"AAIGrid,\xff");
         let scope = || terrio::config::push_scope(HashMap::from([(OPTION.to_string(), Some("AAIGrid".to_string()))]));
         // SAFETY: as above.
         unsafe { std::env::set_var(OPTION, invalid) };
-        assert_eq!(in_scope(None, grid), (names(&["AAIGRID\u{fffd}"]), false), "not UTF-8");
         scope();
         let held = terrio::config::thread_options().get(OPTION).cloned();
         let after = (allowed_drivers(None), terrio::open(grid).is_ok());
