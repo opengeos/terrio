@@ -407,7 +407,8 @@ function matchingEntries() {
   if (!pattern || pattern.includes("/") || pattern.includes(separator) || !/[*?]/.test(pattern)) return null;
   const re = patternMatcher(pattern);
   // As in a shell, and in terrio: hidden names match only a pattern that begins with a dot.
-  return (browsing.entries || []).filter((entry) => (!entry.name.startsWith(".") || pattern.startsWith(".")) && re.test(entry.name));
+  // Folders are not matched, as terrio matches files only.
+  return (browsing.entries || []).filter((entry) => !entry.dir && (!entry.name.startsWith(".") || pattern.startsWith(".")) && re.test(entry.name));
 }
 
 function updateMatchCount() {
@@ -435,6 +436,7 @@ async function browseTo(path) {
     byId("browse-path").textContent = error.message;
     list.replaceChildren();
     byId("browse-folder").disabled = true;
+    browsing.entries = [];
     updateMatchCount();
     return;
   }

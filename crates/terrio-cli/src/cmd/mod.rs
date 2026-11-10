@@ -157,11 +157,14 @@ pub fn read_list_text(list: &str, what: &str) -> terrio::Result<String> {
     Ok(text.strip_prefix('\u{feff}').map(String::from).unwrap_or(text))
 }
 
-/// The local entries matching `input` when its file name (the part after the last separator) holds
+/// The local files matching `input` when its file name (the part after the last separator) holds
 /// the wildcards `*` (any run of characters) or `?` (one character); `None` for any other input.
 ///
-/// As in a POSIX shell, names beginning with `.` match only a pattern that does too, and the
-/// matches are sorted by name. Wildcards in folder names are not expanded. Matching ignores case on
+/// Only regular files match (symbolic links are followed), not folders: a folder dataset such as a
+/// Zarr store is named directly. As in a POSIX shell, names beginning with `.` match only a pattern
+/// that does too, and the matches are sorted by name. A matching name that is not valid Unicode is
+/// an error rather than left out, as is a failure while listing the folder, so that a pattern never
+/// stands for part of its matches. Wildcards in folder names are not expanded. Matching ignores case on
 /// Windows, as its file systems do. An input that exists as written, URLs (`://`) and `/vsi` paths
 /// are taken literally, so that `?` in a query string or a file name is left alone. A pattern that
 /// matches nothing is an error, rather than being passed on to fail to open.
@@ -177,12 +180,28 @@ pub fn expand_wildcards(input: &str) -> terrio::Result<Option<Vec<String>>> {
         std::fs::read_dir(dir).map_err(|e| terrio::Error::InvalidArgument(format!("cannot list {} for {input}: {e}", dir.display())))?;
     let fold = |s: &str| if cfg!(windows) { s.to_lowercase() } else { s.to_string() };
     let pattern_chars: Vec<char> = fold(pattern).chars().collect();
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| !name.starts_with('.') || pattern.starts_with('.'))
-        .filter(|name| wildcard_match(&pattern_chars, &fold(name).chars().collect::<Vec<_>>()))
-        .collect();
+    let listing_error = |e: std::io::Error| terrio::Error::InvalidArgument(format!("cannot list {} for {input}: {e}", dir.display()));
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(listing_error)?;
+        let os_name = entry.file_name();
+        let lossy = os_name.to_string_lossy();
+        if (lossy.starts_with('.') && !pattern.starts_with('.'))
+            || !wildcard_match(&pattern_chars, &fold(&lossy).chars().collect::<Vec<_>>())
+            || !std::fs::metadata(entry.path()).is_ok_and(|m| m.is_file())
+        {
+            continue;
+        }
+        match os_name.into_string() {
+            Ok(name) => names.push(name),
+            Err(name) => {
+                return Err(terrio::Error::InvalidArgument(format!(
+                    "{} matches {input} but its name is not valid Unicode: name it on its own",
+                    dir.join(name).display()
+                )));
+            }
+        }
+    }
     if names.is_empty() {
         return Err(terrio::Error::InvalidArgument(format!("no files match {input}")));
     }

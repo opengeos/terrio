@@ -115,6 +115,8 @@ fn wildcard_inputs_match_the_files_of_a_folder() {
     // Neither another extension nor a hidden file is matched by `*.tif`.
     std::fs::write(d.join("tiles/notes.txt"), "not a raster").unwrap();
     std::fs::write(d.join("tiles/.hidden.tif"), "not a raster").unwrap();
+    // Nor is a folder, even one whose name matches.
+    std::fs::create_dir(d.join("tiles/old.tif")).unwrap();
     ok(&["mosaic", "tiles/a.tif", "tiles/b.tif", "tiles/c.tif", "explicit.tif"], d);
     // Quoted, as the terrio UI and MCP pass it: no shell expands the pattern.
     ok(&["mosaic", "tiles/*.tif", "matched.tif"], d);
@@ -123,7 +125,7 @@ fn wildcard_inputs_match_the_files_of_a_folder() {
     let vrt = std::fs::read_to_string(d.join("matched.vrt")).unwrap();
     let order: Vec<usize> = ["a.tif", "b.tif", "c.tif"].iter().map(|name| vrt.find(name).unwrap()).collect();
     assert!(order.is_sorted(), "the matches are in name order: {vrt}");
-    assert!(!vrt.contains("notes.txt") && !vrt.contains(".hidden"), "{vrt}");
+    assert!(!vrt.contains("notes.txt") && !vrt.contains(".hidden") && !vrt.contains("old.tif"), "{vrt}");
     // An absolute pattern, as the UI's file browser writes it.
     let absolute = d.join("tiles").join("*.tif");
     ok(&["warp", absolute.to_str().unwrap(), "warped.tif"], d);
@@ -144,4 +146,23 @@ fn a_file_named_with_a_wildcard_character_is_opened_as_written() {
     tile(d, "whatX.tif", 0., 6.);
     ok(&["mosaic", "what?.tif", "out.tif"], d);
     assert_eq!(pixels(&d.join("out.tif")).2, vec![5.; 4]);
+}
+
+#[test]
+fn sample_expands_wildcard_rasters() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    std::fs::create_dir(d.join("tiles")).unwrap();
+    tile(&d.join("tiles"), "a.tif", 0., 1.);
+    tile(&d.join("tiles"), "b.tif", 0., 2.);
+    std::fs::write(
+        d.join("points.geojson"),
+        r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0.5,0.5]}}]}"#,
+    )
+    .unwrap();
+    ok(&["sample", "points.geojson", "matched.geojson", "--raster", "tiles/*.tif"], d);
+    let matched = std::fs::read_to_string(d.join("matched.geojson")).unwrap();
+    ok(&["sample", "points.geojson", "listed.geojson", "--raster", "tiles/a.tif", "--raster", "tiles/b.tif"], d);
+    assert_eq!(matched, std::fs::read_to_string(d.join("listed.geojson")).unwrap());
+    assert!(matched.contains("a_") && matched.contains("b_"), "one field per matched raster: {matched}");
 }

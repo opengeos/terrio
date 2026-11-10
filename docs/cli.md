@@ -142,9 +142,10 @@ terrio warp @filelist.txt extra.tif out.tif --t-srs EPSG:3857
 
 These commands also expand wildcards in an input's file name themselves, as GDAL's `gdal raster
 mosaic` does, for [`terrio ui`](#ui), MCP clients and Windows shells, which pass them on unexpanded:
-`*` stands for any run of characters and `?` for one. The input is replaced by the entries of its
-folder that match, sorted by name; names beginning with `.` match only a pattern that does too, and
-case is ignored on Windows. Wildcards in folder names are not expanded, nor are URLs, `/vsi` paths or
+`*` stands for any run of characters and `?` for one. The input is replaced by the files of its
+folder that match, sorted by name. Folders do not match (name a folder dataset such as a Zarr store
+directly); names beginning with `.` match only a pattern that does too, and case is ignored on
+Windows. Wildcards in folder names are not expanded, nor are URLs, `/vsi` paths or
 an input that exists as written, and a pattern that matches nothing is an error. Quote the pattern
 in a POSIX shell to have terrio expand it, or leave it unquoted to have the shell do so:
 
@@ -3896,7 +3897,8 @@ port (`ssh -L 8080:127.0.0.1:8080 host`, then `terrio ui --port 8080 --no-open` 
 
 As with [MCP tools](#mcp), a run returns up to 100,000 bytes of output when the command ends, a
 non-zero status for a query's result (`compare`, `pixel-info`) is not a failure, and `@FILE` lists
-are refused: enter the paths one per line instead. To try terrio without installing it, see the
+are refused: enter the paths one per line instead, or a wildcard line such as `tiles/*.tif`, which
+the command expands. To try terrio without installing it, see the
 [Playground](playground.md).
 
 ## preview
