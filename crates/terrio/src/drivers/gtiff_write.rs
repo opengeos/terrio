@@ -3295,6 +3295,9 @@ mod tests {
         let links = dir.path().join("links");
         std::fs::create_dir(&files).unwrap();
         std::fs::create_dir(&links).unwrap();
+        // The temporary directory itself may be a link (macOS: /var -> /private/var), so
+        // compare against the resolved directory.
+        let files = std::fs::canonicalize(&files).unwrap();
         let target = files.join("out.tif");
         let absolute = links.join("absolute.tif");
         let relative = links.join("relative.tif");
