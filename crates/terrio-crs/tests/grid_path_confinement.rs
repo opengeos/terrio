@@ -90,7 +90,9 @@ fn grid_files_over_the_size_limit_are_not_read() {
     write_tiny_gtx(&path);
     std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len((2 << 30) + 1).unwrap();
     terrio_crs::set_grid_search_paths(Some(vec![dir.path().to_path_buf()]));
+    let _ = terrio_crs::take_warnings();
     assert!(missing(ellipsoidal_height("huge.gtx")));
+    assert!(terrio_crs::take_warnings().iter().any(|w| w.contains("larger than")), "and the refusal is reported");
 }
 
 #[test]
@@ -111,7 +113,7 @@ fn relative_grid_names_stay_inside_the_search_directories() {
 /// Transforms a point with a special file (a FIFO, a device) as its horizontal grid, failing the
 /// test if the transformation blocks or does not return.
 #[cfg(unix)]
-fn transform_with_fifo_grid(fifo: &Path) -> bool {
+fn transform_with_special_grid(fifo: &Path) -> bool {
     let wkt = format!(
         "GEOGCS[\"x\",DATUM[\"x\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],\
          UNIT[\"degree\",0.0174532925199433],EXTENSION[\"PROJ4\",\"+proj=longlat +ellps=WGS84 +nadgrids={} +no_defs\"]]",
@@ -137,10 +139,10 @@ fn fifos_named_as_grids_are_never_opened() {
 
     // With search paths set from code, the path is not looked at.
     terrio_crs::set_grid_search_paths(Some(Vec::new()));
-    assert!(!transform_with_fifo_grid(&fifo));
+    assert!(!transform_with_special_grid(&fifo));
     // By default, the path is read only when it is a regular file.
     terrio_crs::set_grid_search_paths(None);
-    assert!(!transform_with_fifo_grid(&fifo));
+    assert!(!transform_with_special_grid(&fifo));
     // Nor inside a search directory.
     terrio_crs::set_grid_search_paths(Some(vec![dir.path().to_path_buf()]));
     let src = SpatialRef::parse("+proj=longlat +ellps=WGS84 +nadgrids=grid.gsb +no_defs").unwrap();
@@ -158,5 +160,5 @@ fn devices_named_as_grids_are_never_read() {
     let _settings = Settings::take();
     terrio_crs::set_grid_search_paths(None);
     // /dev/zero would otherwise be read without end.
-    assert!(!transform_with_fifo_grid(Path::new("/dev/zero")));
+    assert!(!transform_with_special_grid(Path::new("/dev/zero")));
 }

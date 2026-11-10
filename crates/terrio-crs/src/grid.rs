@@ -767,7 +767,7 @@ fn config() -> &'static Mutex<Config> {
 /// `proj_context_set_search_paths`. Transformers created afterwards use them.
 ///
 /// While search paths are set this way, grids are read only from them, from grids registered with
-/// [`register_grid`] and, with the network on, from the PROJ CDN (and its download cache): a grid named by a path in a CRS definition (`+nadgrids=/data/a.gsb`,
+/// [`register_grid`] and, with the network on, from the PROJ CDN: a grid named by a path in a CRS definition (`+nadgrids=/data/a.gsb`,
 /// `./a.gsb`, `../a.gsb`) is treated as missing, so a definition from untrusted input cannot read
 /// arbitrary files. Add the grid's directory to the search paths or register it instead. Unlike
 /// PROJ, which reads such paths whatever its search paths are.
@@ -943,7 +943,12 @@ fn is_grid_file(p: &std::path::Path) -> bool {
 #[cfg(not(target_family = "wasm"))]
 fn read_grid_file(p: &std::path::Path) -> Option<Arc<[u8]>> {
     use std::io::Read;
-    if !is_grid_file(p) {
+    let meta = std::fs::metadata(p).ok()?;
+    if meta.is_file() && meta.len() > MAX_GRID_BYTES {
+        crate::warnings::warn(format!("grid file {} is not read: larger than {MAX_GRID_BYTES} bytes", p.display()));
+        return None;
+    }
+    if !readable_grid(&meta) {
         return None;
     }
     // The file may have been replaced since: open without blocking (a FIFO waits for a writer
