@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- terrio-js: while a remote file opens (GeoTIFF, PMTiles, COPC, FlatGeobuf, GeoParquet), each
+  request is at least as long as the bytes read so far, up to 4 MiB: a COG header of 655 KB
+  (93456 x 52031 pixels) takes 4 requests instead of 8.
+- terrio-js in Node.js, Deno and Bun splits a Zarr shard read into as many requests as it keeps
+  in flight (12), rather than into runs of up to 1 MiB: with the changes above, 128 bands of
+  TESSERA embeddings, read from S3 us-west-2 in Europe, took 2.29 s instead of 4.86 s. Browsers,
+  which queue requests on 6 connections to S3, keep the runs.
+- terrio-js keeps 12 remote requests in flight in a sliding window, the next starting as soon as
+  one ends, rather than in batches of 12 that wait for their slowest request. When a request of a
+  Zarr read fails, the bodies of the others are cancelled rather than read to their end.
+- terrio-js opens a remote Zarr v3 array without consolidated metadata in one round of requests
+  fewer: the array's `zarr.json` is asked for with the root's documents.
+- Zarr: Blosc's bit unshuffle transposes 8 x 8 bit blocks rather than moving a bit at a time;
+  4.7 MB of int8 TESSERA embeddings took about 100 ms to unshuffle in WebAssembly before.
 - A VRT source with fractional `SrcRect` or `DstRect` offsets is read within its rectangles (#702).
   A window with as many source pixels as output pixels was copied one for one whatever its offsets,
   so `bilinear`, `cubic` and `average` returned the source pixels a fraction of a pixel from where

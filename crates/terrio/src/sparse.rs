@@ -350,6 +350,24 @@ pub fn read_with<T>(
     Err(crate::Error::InvalidData(format!("the read still needed more bytes after {rounds} fetch rounds")))
 }
 
+/// Grows each range `(offset, length)` of [`SparseFile::missing`] to at least `least` bytes, in
+/// whole `block`s within a file of `len` bytes, merging those that then overlap: a header read in
+/// steps (a TIFF's IFDs, one after another) takes requests that grow with what it read so far,
+/// rather than a request per block or two.
+pub fn grow_ranges(ranges: &[(u64, u64)], least: u64, block: u64, len: u64) -> Vec<(u64, u64)> {
+    let least = least.div_ceil(block.max(1)) * block.max(1);
+    let mut spans: Vec<(u64, u64)> = ranges.iter().map(|&(o, n)| (o, o.saturating_add(n.max(least)).min(len))).collect();
+    spans.sort_unstable();
+    let mut out: Vec<(u64, u64)> = Vec::with_capacity(spans.len());
+    for (start, end) in spans {
+        match out.last_mut() {
+            Some((_, last)) if start <= *last => *last = (*last).max(end),
+            _ => out.push((start, end)),
+        }
+    }
+    out.into_iter().map(|(start, end)| (start, end - start)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +434,15 @@ mod tests {
         assert_eq!(fetches, 2);
         f.trim(4096);
         assert!(f.lock().blocks.len() <= 4);
+    }
+
+    #[test]
+    fn ranges_grow_to_the_least_and_merge() {
+        let k = 1024;
+        // Grown to 4 KiB (from 3.5 KiB in whole blocks), the first two overlap; the file ends at 20 KiB.
+        assert_eq!(grow_ranges(&[(2 * k, k), (0, k), (18 * k, k)], 3 * k + 512, k, 20 * k), [(0, 6 * k), (18 * k, 2 * k)]);
+        // Longer than the least: unchanged.
+        assert_eq!(grow_ranges(&[(0, 8 * k)], 2 * k, k, 20 * k), [(0, 8 * k)]);
     }
 }
 
