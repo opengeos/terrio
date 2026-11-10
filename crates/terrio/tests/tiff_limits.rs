@@ -406,9 +406,14 @@ fn mask_chunks_over_the_limit_are_errors_at_every_level() {
 /// tests running at the same time keep the default.
 fn with_chunk_option<T>(value: &str, f: impl FnOnce() -> T) -> T {
     terrio::config::push_scope([("TERRIO_TIFF_MAX_CHUNK_BYTES".to_string(), Some(value.to_string()))].into());
-    let out = f();
-    terrio::config::pop_scope();
-    out
+    struct Scope;
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            terrio::config::pop_scope();
+        }
+    }
+    let _scope = Scope;
+    f()
 }
 
 #[test]
@@ -466,4 +471,20 @@ fn a_chunk_option_that_is_not_a_positive_integer_is_an_error() {
     }
     // Empty or blank counts as unset, as for every option.
     assert!(with_chunk_option(" ", || LazyRaster::from_tiff_bytes(bytes.clone())).unwrap().is_some());
+}
+
+#[test]
+fn non_tiff_probes_ignore_invalid_tiff_configuration() {
+    let bytes = b"not a TIFF file".to_vec();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("other.bin");
+    std::fs::write(&path, &bytes).unwrap();
+    with_chunk_option("invalid", || {
+        assert!(LazyRaster::open_tiff(path.to_str().unwrap()).unwrap().is_none());
+        assert!(LazyRaster::from_tiff_bytes(bytes.clone()).unwrap().is_none());
+        assert!(LazyRaster::from_tiff_shared_bytes(std::sync::Arc::new(bytes.clone())).unwrap().is_none());
+        let file = SparseFile::new(bytes.len() as u64);
+        let fetch = |o: u64, n: u64| Ok(bytes[o as usize..(o + n) as usize].to_vec());
+        assert!(read_with(&file, 8, fetch, || LazyRaster::from_sparse(file.clone())).unwrap().is_none());
+    });
 }

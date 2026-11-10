@@ -163,7 +163,7 @@ def test_the_tiff_chunk_option_sets_the_limit_of_rasters_opened_without_limits(
     """`TERRIO_TIFF_MAX_CHUNK_BYTES` sets the decoding limit of a raster opened without explicit
     limits, from the environment or an `Env` scope: one 64 x 64 tile, 4,096 bytes decoded."""
     path = tmp_path / "tile.tif"
-    path.write_bytes(tiled_tiff(64, 64, 64, tile_bytes=zlib.compress(b"" * 4096)))
+    path.write_bytes(tiled_tiff(64, 64, 64, tile_bytes=zlib.compress(b"\x01" * 4096)))
 
     def read():
         return int(terrio.open_raster(str(path), lazy=True).read(1).sum())

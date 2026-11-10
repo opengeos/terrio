@@ -54,11 +54,12 @@ pub enum Error {
 /// chunk's limit is `TERRIO_TIFF_MAX_CHUNK_BYTES` for readers opened without explicit limits.
 fn decoded_limit_hint(resource: &str) -> &'static str {
     if resource == crate::cog::TIFF_CHUNK_RESOURCE {
-        "; for a trusted file, raise it with the TERRIO_TIFF_MAX_CHUNK_BYTES option (a byte count)"
+        "; for a trusted file, raise it with the TERRIO_TIFF_MAX_CHUNK_BYTES option (a byte count) when opened without explicit limits; otherwise raise TiffReadLimits"
     } else {
         ""
     }
 }
+
 impl Error {
     /// Whether this error refuses a resource budget or allocation. Such errors are terminal:
     /// the optional GDAL fallback must neither retry them nor hide them behind another error.

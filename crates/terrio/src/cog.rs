@@ -658,11 +658,15 @@ impl LazyRaster {
     /// Opens a GeoTIFF in place, reading only its headers. Returns `None` when the file is not a
     /// TIFF (having read only its first bytes).
     pub fn open_tiff(path: &str) -> Result<Option<Self>> {
-        Self::open_tiff_with_limits(path, TiffReadLimits::from_config()?)
+        Self::open_tiff_using(path, TiffReadLimits::from_config)
     }
 
     /// [`LazyRaster::open_tiff`] with other decoding limits than the defaults.
     pub fn open_tiff_with_limits(path: &str, limits: TiffReadLimits) -> Result<Option<Self>> {
+        Self::open_tiff_using(path, || Ok(limits))
+    }
+
+    fn open_tiff_using(path: &str, limits: impl FnOnce() -> Result<TiffReadLimits>) -> Result<Option<Self>> {
         let loc = Location::parse(path);
         let resolve_file = || {
             let local = vfs::resolve(path)?;
@@ -698,6 +702,7 @@ impl LazyRaster {
         if !is_tiff(&mut source) {
             return Ok(None);
         }
+        let limits = limits()?;
         // A TIFF is read by the GeoTIFF reader whatever its name: only if the GTiff driver is
         // allowed. `LazyRaster::open` judges a local file's content before; a remote one's, and a
         // TIFF opened here directly, are judged here, after the first request.
@@ -726,7 +731,7 @@ impl LazyRaster {
     /// Opens a GeoTIFF held in memory, reading only its headers now. Returns `None` when the bytes
     /// are not a TIFF.
     pub fn from_tiff_bytes(bytes: Vec<u8>) -> Result<Option<Self>> {
-        Self::from_tiff_bytes_with_limits(bytes, TiffReadLimits::from_config()?)
+        Self::from_tiff_shared_bytes(std::sync::Arc::new(bytes))
     }
 
     /// [`LazyRaster::from_tiff_bytes`] with other decoding limits than the defaults.
@@ -736,14 +741,22 @@ impl LazyRaster {
 
     /// Opens GeoTIFF bytes shared by immutable readers without copying the file buffer.
     pub fn from_tiff_shared_bytes(bytes: std::sync::Arc<Vec<u8>>) -> Result<Option<Self>> {
-        Self::from_tiff_shared_bytes_with_limits(bytes, TiffReadLimits::from_config()?)
+        Self::from_tiff_shared_bytes_using(bytes, TiffReadLimits::from_config)
     }
 
     fn from_tiff_shared_bytes_with_limits(bytes: std::sync::Arc<Vec<u8>>, limits: TiffReadLimits) -> Result<Option<Self>> {
+        Self::from_tiff_shared_bytes_using(bytes, || Ok(limits))
+    }
+
+    fn from_tiff_shared_bytes_using(
+        bytes: std::sync::Arc<Vec<u8>>,
+        limits: impl FnOnce() -> Result<TiffReadLimits>,
+    ) -> Result<Option<Self>> {
         let mut source = Source::Memory(std::io::Cursor::new(SharedBytes(bytes)));
         if !is_tiff(&mut source) {
             return Ok(None);
         }
+        let limits = limits()?;
         // Opened as a GeoTIFF by its caller: only if the GTiff driver is allowed.
         crate::formats::check_driver_allowed("GTiff", "a GeoTIFF in memory", crate::formats::Kind::Raster)?;
         let t = TiffRaster::new(source, None, limits)?;
@@ -755,7 +768,7 @@ impl LazyRaster {
     /// only its headers. Reads fail until the bytes they need are fetched, and are then run
     /// again. Returns `None` when the file is not a TIFF.
     pub fn from_sparse(file: crate::sparse::SparseFile) -> Result<Option<Self>> {
-        Self::from_sparse_with_limits(file, TiffReadLimits::from_config()?)
+        Self::from_sparse_using(file, TiffReadLimits::from_config)
     }
 
     /// Opens the array at `key` (`""` for the store's root: a group's single array) of a Zarr
@@ -771,6 +784,10 @@ impl LazyRaster {
 
     /// [`LazyRaster::from_sparse`] with other decoding limits than the defaults.
     pub fn from_sparse_with_limits(file: crate::sparse::SparseFile, limits: TiffReadLimits) -> Result<Option<Self>> {
+        Self::from_sparse_using(file, || Ok(limits))
+    }
+
+    fn from_sparse_using(file: crate::sparse::SparseFile, limits: impl FnOnce() -> Result<TiffReadLimits>) -> Result<Option<Self>> {
         let mut source = Source::Sparse(file);
         source.seek(SeekFrom::Start(0))?;
         let mut magic = [0u8; 4];
@@ -778,6 +795,7 @@ impl LazyRaster {
         if !matches!(&magic, b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+") {
             return Ok(None);
         }
+        let limits = limits()?;
         // Opened as a GeoTIFF by its caller: only if the GTiff driver is allowed.
         crate::formats::check_driver_allowed("GTiff", "a remote GeoTIFF", crate::formats::Kind::Raster)?;
         source.seek(SeekFrom::Start(0))?;
