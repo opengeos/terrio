@@ -526,8 +526,10 @@ pub fn zonal_stats_with(
     // The grid of each source; none for a source without bands, which is not read.
     let mut source_grid: Vec<Option<usize>> = Vec::new();
     let mut nodata = Vec::new();
-    // Paths are opened for their headers on the pool, a few at a time, and closed again (see
-    // `ZonalRaster::Path`); the warnings of their opening are recorded on the calling thread.
+    // Paths are opened for their headers a few at a time, and closed again (see
+    // `ZonalRaster::Path`); the warnings of their opening are recorded on the calling thread. The
+    // threads of `map_waiting` see the calling thread's options (an `Env`'s driver allow-list among
+    // them), which pool threads would not.
     let paths: Vec<Option<&str>> = sources
         .iter()
         .map(|s| match &s.raster {
@@ -535,16 +537,14 @@ pub fn zonal_stats_with(
             _ => None,
         })
         .collect();
-    let mut path_headers = crate::par::map_init(
-        &paths,
-        || (),
-        |_, path| {
-            path.map(|path| {
-                let header = crate::open_raster_lazy(path).map(|r| (r.header(), index::GridKey::of(&r)));
-                (header, crate::warnings::take())
-            })
-        },
-    )
+    // Keep small header batches on the caller, as before context propagation was added.
+    let header_threads = if paths.len() >= 4 { crate::par::threads() } else { 1 };
+    let mut path_headers = crate::par::map_waiting(paths.len(), header_threads, |i| {
+        Ok(paths[i].map(|path| {
+            let header = crate::open_raster_lazy(path).map(|r| (r.header(), index::GridKey::of(&r)));
+            (header, crate::warnings::take())
+        }))
+    })?
     .into_iter();
     for source in sources.iter() {
         let path_header = path_headers.next().flatten();
@@ -709,9 +709,22 @@ pub fn zonal_stats_with(
             }
         } else {
             let queue = Mutex::new(sources.iter_mut().enumerate());
+            // These threads do not inherit the calling thread's options (an `Env`'s driver
+            // allow-list among them) or its STAC asset read policy: each enters them. One that
+            // cannot fails the next source it takes.
+            let context = crate::stac::AssetReadContext::capture(crate::stac::AssetReadPolicy::current());
             std::thread::scope(|scope| {
                 for _ in 0..drivers {
                     scope.spawn(|| {
+                        let _context = match context.enter() {
+                            Ok(entered) => entered,
+                            Err(e) => {
+                                if let Some((s, _)) = queue.lock().ok().and_then(|mut q| q.next()) {
+                                    record(s, Err(e));
+                                }
+                                return;
+                            }
+                        };
                         while let Some((s, source)) = queue.lock().ok().and_then(|mut q| q.next()) {
                             record(s, reduce_one(s, source));
                             release_freed_memory();

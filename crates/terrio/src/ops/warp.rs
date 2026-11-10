@@ -270,7 +270,9 @@ pub struct WarpOptions {
     pub crop_to_cutline: bool,
     /// Maximum error, in pixels, of the approximate transformer (`-et`; 0 for exact transforms).
     pub error_threshold: f64,
-    /// Working memory per chunk, in bytes (`-wm`), which decides how the output is split.
+    /// Working-memory estimate per chunk, in bytes (`-wm`), which decides how output is split.
+    /// Unsplittable single-source sum chunks use this estimate per strip (at least one row);
+    /// their read/compute pipeline holds two strips at once, plus output and decoder buffers.
     pub memory_limit: f64,
     /// Ground control points georeferencing the (first) source in place of its geotransform,
     /// in the source CRS: warped with a GCP polynomial or thin plate splines, as `gdalwarp` warps
@@ -363,6 +365,7 @@ enum Georef {
 /// Maps source pixel/line coordinates to destination pixel/line coordinates and back, through
 /// the CRS transformation: GDAL's `GDALGenImgProjTransform`.
 struct GenImgProj {
+    src_longitude_period: Option<f64>,
     src_gt: [f64; 6],
     src_inv: [f64; 6],
     /// Source pixels to georeferenced coordinates by GCPs or RPCs, in place of the geotransform.
@@ -395,6 +398,7 @@ impl GenImgProj {
             ))
         };
         Ok(Self {
+            src_longitude_period: src_srs.longitude_period(),
             src_gt,
             src_inv,
             src_gcp: None,
@@ -1531,7 +1535,13 @@ impl<'a> Plan<'a> {
 
     /// The warp of source `k`, through `t` ([`Plan::transformer`]), and the chunks of the output
     /// it is warped in, in order.
-    fn context<'t>(&self, k: usize, t: &'t GenImgProj, o: &WarpOptions) -> (WarpContext<'t>, Vec<Chunk>, Storage) {
+    fn context<'t>(
+        &self,
+        k: usize,
+        t: &'t GenImgProj,
+        o: &WarpOptions,
+        source_bytes: Option<usize>,
+    ) -> (WarpContext<'t>, Vec<Chunk>, Storage) {
         let s = &self.srcs[k];
         let nodata = self.src_nodata(k, o);
         let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && self.bands > 1;
@@ -1547,6 +1557,7 @@ impl<'a> Plan<'a> {
             memory_limit: o.memory_limit,
             bands: self.bands,
             out_bits: self.out_type.size_bytes() * 8,
+            source_bits: source_bytes.map_or(self.out_type.size_bytes() * self.bands * 8, |bytes| bytes * 8),
             src_has_nodata: nodata.iter().any(Option::is_some),
             // GDAL takes a single band's validity as the unified one, whatever UNIFIED_SRC_NODATA
             // says ("If there's just a single band, then transfer papanBandSrcValid[0] as
@@ -1611,14 +1622,12 @@ pub const SUM_AUTO_OVERVIEW: bool = true;
 const SUM_MAX_BYTES: u64 = 4 << 30;
 
 /// The memory a `sum` holds for a source window of `pixels` pixels of `bytes` bytes (all its
-/// bands, and the copies a conversion to another working type holds at once): the window, and 8
-/// bytes per pixel for the shares of an output pixel's footprint, which can be the whole window.
-/// An estimate: one Float32 band gives 12 bytes per pixel, the peak measured in the same CRS; a
-/// reprojected `sum` held up to about 20, and a `WarpedVRT` read 16 in float32 and 24 in float64,
-/// as it copies the window to warp it.
+/// bands, and the copies a conversion to another working type holds at once) that it holds whole:
+/// the window itself. The shares of an output pixel's footprint take a few of its rows at a time
+/// ([`SUM_SHARE_BYTES`]), whatever the window.
 #[doc(hidden)]
 pub fn sum_estimate(pixels: u64, bytes: usize) -> u64 {
-    pixels.saturating_mul(bytes as u64 + 8)
+    pixels.saturating_mul(bytes as u64)
 }
 
 /// Refuses a `sum` whose estimated memory `need` exceeds `TERRIO_WARP_SUM_MAX_BYTES` (a positive
@@ -1633,7 +1642,7 @@ pub fn check_sum_budget(need: u64) -> Result<()> {
     .ok_or_else(|| Error::InvalidArgument("TERRIO_WARP_SUM_MAX_BYTES must be a positive integer".into()))?;
     if need > limit {
         return Err(Error::ResourceLimit(format!(
-            "a `sum` would hold about {need} bytes of source pixels and their shares, more than \
+            "a `sum` would hold about {need} bytes of source pixels at once, more than \
              TERRIO_WARP_SUM_MAX_BYTES={limit}: sum an overview level instead, with `--overview n` \
              (`overview=n` for `terrio.warp`, or a source opened with `overview_level=n` in `terrio.rio`), \
              or raise TERRIO_WARP_SUM_MAX_BYTES"
@@ -1642,12 +1651,15 @@ pub fn check_sum_budget(need: u64) -> Result<()> {
     Ok(())
 }
 
-/// [`check_sum_budget`] for the largest source window of a `sum`'s chunks, `bytes` per pixel.
-fn check_sum_chunks(o: &WarpOptions, chunks: &[Chunk], bytes: usize) -> Result<()> {
-    if o.resampling != Resampling::Sum {
+/// [`check_sum_budget`] for the most source pixels a `sum`'s chunks hold at once, `bytes` per
+/// pixel: a chunk's window, or, when it is read a strip at a time
+/// ([`WarpContext::sum_strip_rows`]), two strips of it, one summed while the next is read.
+fn check_sum_chunks(ctx: &WarpContext, chunks: &[Chunk], bytes: usize) -> Result<()> {
+    if ctx.resampling != Resampling::Sum {
         return Ok(());
     }
-    check_sum_budget(sum_estimate(chunks.iter().map(|c| c.sw as u64 * c.sh as u64).max().unwrap_or(0), bytes))
+    let held = |c: &Chunk| c.sw as u64 * (2 * ctx.sum_strip_rows(c)).min(c.sh) as u64;
+    check_sum_budget(sum_estimate(chunks.iter().map(held).max().unwrap_or(0), bytes))
 }
 
 /// Reprojects and resamples one or more rasters into one output, as `gdalwarp` does. Later
@@ -1731,7 +1743,7 @@ fn warp_data_masked(
 
     for (k, s) in p.srcs.iter().enumerate() {
         let t = p.transformer(k)?;
-        let (mut ctx, chunks, mut storage) = p.context(k, &t, o);
+        let (mut ctx, chunks, mut storage) = p.context(k, &t, o, None);
         t.check_policy()?;
         let nodata = p.src_nodata(k, o);
         let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
@@ -1912,8 +1924,8 @@ fn warp_reader_selected(
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let n = grid.width * grid.height;
     let t = p.transformer(0)?;
-    let (mut ctx, chunks, mut storage) = p.context(0, &t, o);
-    check_sum_chunks(o, &chunks, src_bytes)?;
+    let (mut ctx, chunks, mut storage) = p.context(0, &t, o, Some(src_bytes));
+    check_sum_chunks(&ctx, &chunks, src_bytes)?;
     let nodata = p.src_nodata(0, o);
     if working.is_some() && nodata.iter().any(Option::is_some) {
         storage.avoid_nodata = Some(bands == 1 || !unified_sink);
@@ -1925,22 +1937,47 @@ fn warp_reader_selected(
     if n != 0 {
         crate::pixel::with_data!(&mut out, v => v.chunks_mut(n).zip(&fill).for_each(|(band,fill)|band.iter_mut().for_each(|x|*x=*fill as _)));
     }
-    for c in &chunks {
-        let mut window = src.read_window(crate::Window::new(c.sx, c.sy, c.sw, c.sh), &read_options)?;
+    // A window of the source in the working type, the validity of its pixels, and whether the
+    // source has a mask.
+    let mut read = |window: crate::Window| {
+        let mut data = src.read_window(window, &read_options)?;
         if let Some(dtype) = working
-            && window.raster.data_type != dtype
+            && data.raster.data_type != dtype
         {
-            let values = window.raster.data.to_f64_vec().into_iter().map(|v| super::convert_value(v, dtype)).collect();
-            window.raster.data = RasterData::from_f64_vec(dtype, values);
-            window.raster.data_type = dtype;
+            let values = data.raster.data.to_f64_vec().into_iter().map(|v| super::convert_value(v, dtype)).collect();
+            data.raster.data = RasterData::from_f64_vec(dtype, values);
+            data.raster.data_type = dtype;
         }
-        let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
-        let mask = source_mask(src, crate::Window::new(c.sx, c.sy, c.sw, c.sh), read_options.overview)?;
-        if mask.is_some() {
+        let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&data.raster, b)).collect();
+        let mask = source_mask(src, window, read_options.overview)?;
+        let masked = mask.is_some();
+        let valid = validity(&src_bands, &nodata, unified, mask);
+        Ok::<_, Error>((data, valid, masked))
+    };
+    for c in &chunks {
+        let strip = ctx.sum_strip_rows(c);
+        if strip < c.sh {
+            // A `sum` chunk whose source window's working memory exceeds the limit: the window is
+            // read and summed a strip of rows at a time.
+            let mut masked = false;
+            let sums = ctx.sum_in_strips(c, strip, |window| {
+                let (data, valid, strip_masked) = read(window)?;
+                masked |= strip_masked;
+                Ok(Strip { data, valid })
+            })?;
+            if masked {
+                ctx.global_validity = true;
+                storage.src_masked = true;
+            }
+            let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: true };
+            warp_chunks(std::slice::from_ref(c), bands, &storage, target, |c, sink, rows| ctx.store_sum_strips(c, &sums, sink, rows));
+            continue;
+        }
+        let (window, valid, masked) = read(crate::Window::new(c.sx, c.sy, c.sw, c.sh))?;
+        if masked {
             ctx.global_validity = true;
             storage.src_masked = true;
         }
-        let valid = validity(&src_bands, &nodata, unified, mask);
         let sn = c.sw * c.sh;
         // The chunks partition the output: each finds it at its initial value.
         let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: true };
@@ -2020,16 +2057,12 @@ pub fn warp_sources(sources: &mut [&mut dyn WarpSource], o: &WarpOptions) -> Res
     let mut p = Plan::new(&refs, o)?;
     let overviews = (0..sources.len()).map(|k| p.select_overview(k, &info[k].overviews, o)).collect::<Result<Vec<_>>>()?;
     if o.resampling == Resampling::Sum {
-        // Every source is read whole, and an output pixel's shares can cover a chunk's window.
-        let (mut need, mut window) = (0u64, 0);
-        for (k, s) in info.iter().enumerate() {
+        // Every source is read whole.
+        let need = info.iter().enumerate().fold(0u64, |need, (k, s)| {
             let (grid, raster) = (p.srcs[k].grid, &s.raster.raster);
-            let pixels = grid.width as u64 * grid.height as u64;
-            need = need.saturating_add(pixels.saturating_mul((raster.data_type.size_bytes() * raster.bands) as u64));
-            let t = p.transformer(k)?;
-            window = window.max(p.context(k, &t, o).1.iter().map(|c| c.sw as u64 * c.sh as u64).max().unwrap_or(0));
-        }
-        check_sum_budget(need.saturating_add(sum_estimate(window, 0)))?;
+            need.saturating_add(sum_estimate(grid.width as u64 * grid.height as u64, raster.data_type.size_bytes() * raster.bands))
+        });
+        check_sum_budget(need)?;
     }
     let mut data = Vec::with_capacity(sources.len());
     let mut masks = Vec::with_capacity(sources.len());
@@ -2146,8 +2179,9 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let w = grid.width;
     let t = p.transformer(0)?;
-    let (mut ctx, chunks, mut storage) = p.context(0, &t, o);
-    check_sum_chunks(o, &chunks, header.raster.data_type.size_bytes() * header.raster.bands)?;
+    let src_bytes = header.raster.data_type.size_bytes() * header.raster.bands;
+    let (mut ctx, chunks, mut storage) = p.context(0, &t, o, Some(src_bytes));
+    check_sum_chunks(&ctx, &chunks, src_bytes)?;
     if src.has_mask() {
         ctx.global_validity = true;
         storage.src_masked = true;
@@ -2205,28 +2239,52 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     if chunks.is_empty() {
         write_done(&mut rows, &mut base, grid.height)?;
     }
+    // What is read for a chunk: its source window and the window's mask, or, for a `sum` whose
+    // window's working memory exceeds the limit, the chunk summed from its window a strip of rows
+    // at a time.
+    enum ChunkRead {
+        Window(Box<RasterDataset>, Option<Vec<bool>>),
+        Summed(SumStrips),
+    }
     super::strips::pipelined(
         chunks.len(),
         |i| {
             let c = &chunks[i];
+            let options = crate::WindowOptions { overview, bands: Vec::new() };
+            let strip = ctx.sum_strip_rows(c);
+            if strip < c.sh {
+                let sums = ctx.sum_in_strips(c, strip, |window| {
+                    let data = src.read_window(window, &options)?;
+                    let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&data.raster, b)).collect();
+                    let valid = validity(&src_bands, &nodata, unified, source_mask(&mut src, window, overview)?);
+                    Ok(Strip { data, valid })
+                })?;
+                return Ok(ChunkRead::Summed(sums));
+            }
             let window = crate::Window::new(c.sx, c.sy, c.sw, c.sh);
-            Ok((src.read_window(window, &crate::WindowOptions { overview, bands: Vec::new() })?, source_mask(&mut src, window, overview)?))
+            Ok(ChunkRead::Window(Box::new(src.read_window(window, &options)?), source_mask(&mut src, window, overview)?))
         },
-        |i, (window, mask)| {
+        |i, read| {
             let c = &chunks[i];
             // The chunk's part of the output, as `f64`: the output's initial value (the chunks of
             // a source don't overlap), warped.
             let mut staged: Vec<Vec<f64>> = fill.iter().map(|fill| vec![*fill; c.dw * c.dh]).collect();
-            let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
-            let valid = validity(&src_bands, &nodata, unified, mask);
-            let sn = c.sw * c.sh;
-            crate::pixel::with_data!(&window.raster.data, v => {
-                let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
-                let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
-                let sink = storage.sink(storage.first_nodata().is_some_and(|nd| is_nodata(warp_round(nd, storage.work_type), nd)));
-                ctx.warp_chunk(c, &data, &sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c }));
-                sink.finish();
-            });
+            let sink = storage.sink(storage.first_nodata().is_some_and(|nd| is_nodata(warp_round(nd, storage.work_type), nd)));
+            let part = chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c });
+            match read {
+                ChunkRead::Summed(sums) => ctx.store_sum_strips(c, &sums, &sink, part),
+                ChunkRead::Window(window, mask) => {
+                    let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
+                    let valid = validity(&src_bands, &nodata, unified, mask);
+                    let sn = c.sw * c.sh;
+                    crate::pixel::with_data!(&window.raster.data, v => {
+                        let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
+                        let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
+                        ctx.warp_chunk(c, &data, &sink, part);
+                    });
+                }
+            }
+            sink.finish();
             // Stored in the pending rows, rounded to the output type.
             grow(&mut rows, base, c.dy + c.dh);
             let total = rows.len() / bands;
@@ -2495,6 +2553,8 @@ struct WarpContext<'a> {
     memory_limit: f64,
     bands: usize,
     out_bits: usize,
+    /// Source data held per pixel during a read, including simultaneous conversion buffers.
+    source_bits: usize,
     src_has_nodata: bool,
     /// GDAL's unified source validity (`panUnifiedSrcValid`): an output pixel whose source pixel
     /// under the sample point is invalid in every band is left unwritten.
@@ -2541,7 +2601,11 @@ struct Target<'a> {
 /// stored back. The chunks of a source partition the output (`collect_chunks`), and the values
 /// stored are already rounded to the output type (`Sink::value`), so storing them back is exact.
 fn warp_source<T: crate::pixel::Pixel>(ctx: &WarpContext, chunks: &[Chunk], data: &SrcData<T>, storage: &Storage, t: Target) {
-    let bands = data.bands.len();
+    warp_chunks(chunks, data.bands.len(), storage, t, |c, sink, rows| ctx.warp_chunk(c, data, sink, rows));
+}
+
+/// [`warp_source`], each chunk's part of the output (its rows, `bands` bands) warped by `warp`.
+fn warp_chunks(chunks: &[Chunk], bands: usize, storage: &Storage, t: Target, warp: impl Fn(&Chunk, &Sink, Vec<RowOut>)) {
     let (w, n) = (t.width, t.n);
     let mut staged: Vec<Vec<f64>> = vec![Vec::new(); bands];
     for c in chunks {
@@ -2568,7 +2632,7 @@ fn warp_source<T: crate::pixel::Pixel>(ctx: &WarpContext, chunks: &[Chunk], data
             None => false,
         };
         let sink = storage.sink(holds_nodata);
-        ctx.warp_chunk(c, data, &sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c }));
+        warp(c, &sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c }));
         sink.finish();
         for (b, part) in staged.iter().enumerate() {
             crate::pixel::with_data!(&mut *t.out, v => {
@@ -2841,6 +2905,9 @@ fn next_up_f64(f: f64) -> f64 {
 impl WarpContext<'_> {
     fn working_memory(&self, sw: usize, sh: usize, dw: usize, dh: usize) -> f64 {
         let mut src_bits = self.out_bits * self.bands;
+        if self.resampling == Resampling::Sum {
+            src_bits = src_bits.max(self.source_bits);
+        }
         if self.cutline {
             src_bits += 32;
         }
@@ -3346,10 +3413,38 @@ impl WarpContext<'_> {
         }
     }
 
-    /// The area-based methods (average, mode, min, max, quantiles, RMS, sum).
+    /// Preserve empty regional pixels when wrapped corners would summarize the source's width.
+    /// A genuine coarse footprint can span over 180 degrees, so confirm the discontinuity using
+    /// an exact midpoint. Circular/global footprints remain a separate operation (#764).
+    fn regional_longitude_wrap(&self, ax: f64, bx: f64, dx: f64, dy: f64) -> bool {
+        let Some(period) = self.t.src_longitude_period else {
+            return false;
+        };
+        let gt = self.t.src_gt;
+        if self.t.ct.is_none()
+            || self.t.src_gcp.is_some()
+            || gt[2] != 0.0
+            || gt[4] != 0.0
+            || (gt[1] * self.src_w as f64).abs() >= period * (1.0 - 1e-10)
+            || ((0.0..=self.src_w as f64).contains(&ax) && (0.0..=self.src_w as f64).contains(&bx))
+        {
+            return false;
+        }
+        let (a, b) = (gt[0] + ax * gt[1], gt[0] + bx * gt[1]);
+        if (a - b).abs() <= period / 2.0 {
+            return false;
+        }
+        let Some((mx, _)) = self.t.point(true, dx, dy) else {
+            return false;
+        };
+        let mid = gt[0] + mx * gt[1];
+        (a - mid).abs() > period / 2.0 || (mid - b).abs() > period / 2.0
+    }
+
+    /// The area-based methods other than `sum` (average, mode, min, max, quantiles, RMS): each
+    /// output pixel summarizes the source inside both its footprint and the chunk's source window,
+    /// each source pixel weighed by its part inside them.
     fn warp_area_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
-        let xmargin = 2.0 * (1.0f64).max((1.0 / k.xscale).ceil());
-        let ymargin = 2.0 * (1.0f64).max((1.0 / k.yscale).ceil());
         let n = c.dw;
         let (mut x1, mut y1, mut o1) = (vec![0.0; n], vec![0.0; n], vec![false; n]);
         let (mut x2, mut y2, mut o2) = (vec![0.0; n], vec![0.0; n], vec![false; n]);
@@ -3366,15 +3461,13 @@ impl WarpContext<'_> {
             self.approx.transform(true, &mut x2, &mut y2, &mut o2);
             for i in 0..n {
                 let (mut ax, mut bx, mut ay, mut by) = (x1[i], x2[i], y1[i], y2[i]);
-                if !(ax - sxo >= -xmargin
-                    && bx - sxo >= -xmargin
-                    && ay - syo >= -ymargin
-                    && by - syo >= -ymargin
-                    && ax - sxo - sw <= xmargin
-                    && bx - sxo - sw <= xmargin
-                    && ay - syo - sh <= ymargin
-                    && by - syo - sh <= ymargin)
-                {
+                // A corner that could not be transformed, or not to a finite position, leaves the
+                // pixel alone. The others may lie far beyond the window, as those of a pixel larger
+                // than the source do.
+                if !(o1[i] && o2[i] && [ax, bx, ay, by].iter().all(|v| v.is_finite())) {
+                    continue;
+                }
+                if self.regional_longitude_wrap(ax, bx, (i + c.dx) as f64 + 0.5, (row + c.dy) as f64 + 0.5) {
                     continue;
                 }
                 if ax > bx {
@@ -3383,11 +3476,18 @@ impl WarpContext<'_> {
                 if ay > by {
                     std::mem::swap(&mut ay, &mut by);
                 }
-                let (xmin, xmax, ymin, ymax) = (ax - sxo, bx - sxo, ay - syo, by - syo);
+                // A footprint that does not meet the window, as one beside it does, leaves the pixel
+                // alone. Of the others, the part inside the window counts; one without width or
+                // height takes the source pixel it lies on, each pixel holding its left and top
+                // edges: on the window's left or top edge, its first column or row; on its right or
+                // bottom edge, none.
+                let (fx0, fx1, fy0, fy1) = (ax - sxo, bx - sxo, ay - syo, by - syo);
                 const EPS: f64 = 1e-10;
-                if !(xmax > -EPS && xmin < sw + EPS) || !(ymax > -EPS && ymin < sh + EPS) {
+                let meets = |lo: f64, hi: f64, size: f64| lo < size - EPS && (hi > EPS || (hi - lo <= EPS && lo > -EPS));
+                if !(meets(fx0, fx1, sw) && meets(fy0, fy1, sh)) {
                     continue;
                 }
+                let (xmin, xmax, ymin, ymax) = (fx0.max(0.0), fx1.min(sw), fy0.max(0.0), fy1.min(sh));
                 let ix0 = (xmin + EPS).floor().max(0.0) as usize;
                 let mut ix1 = ((xmax - EPS).ceil().max(0.0) as usize).min(c.sw);
                 if ix0 == ix1 && ix1 < c.sw {
@@ -3535,67 +3635,290 @@ impl WarpContext<'_> {
         (top, bottom): (&CornerRow, &CornerRow),
         out: &mut [&mut [f64]],
     ) {
-        let n = c.dw;
-        // The corners of the row's pixels, along its top edge and along its bottom edge.
-        let (top_x, top_y, top_ok) = (&top.x, &top.y, &top.ok);
-        let (bottom_x, bottom_y, bottom_ok) = (&bottom.x, &bottom.y, &bottom.ok);
-        let (sxo, syo, sw, sh) = (c.sx as f64, c.sy as f64, c.sw as f64, c.sh as f64);
-        let (mut areas, mut carry) = (Vec::new(), Vec::new());
-        for i in 0..n {
-            if !(top_ok[i] && top_ok[i + 1] && bottom_ok[i + 1] && bottom_ok[i]) {
+        let (mut areas, mut sums) = (Vec::new(), vec![(0.0, false); out.len()]);
+        for i in 0..c.dw {
+            let Some(footprint) = self.sum_footprint(c, (top, bottom), i) else {
                 continue;
+            };
+            sums.fill((0.0, false));
+            footprint.add(k, footprint.rows, &mut areas, &mut sums);
+            self.store_sums(sink, &sums, out, i);
+        }
+    }
+
+    /// The footprint on a chunk's source window of pixel `i` of a row of the chunk, whose corners
+    /// are along `top` and `bottom` ([`Self::sum_corners`]); None for a pixel left alone.
+    fn sum_footprint(&self, c: &Chunk, (top, bottom): (&CornerRow, &CornerRow), i: usize) -> Option<SumFootprint> {
+        if !(top.ok[i] && top.ok[i + 1] && bottom.ok[i + 1] && bottom.ok[i]) {
+            return None;
+        }
+        let (sxo, syo) = (c.sx as f64, c.sy as f64);
+        // The quadrilateral, corner after corner, in the pixels of the chunk's source window.
+        let q = [
+            (top.x[i] - sxo, top.y[i] - syo),
+            (top.x[i + 1] - sxo, top.y[i + 1] - syo),
+            (bottom.x[i + 1] - sxo, bottom.y[i + 1] - syo),
+            (bottom.x[i] - sxo, bottom.y[i] - syo),
+        ];
+        // A corner that is not a finite number leaves the pixel alone. The others may lie far
+        // beyond the window, as those of a pixel much larger than the source do: only the
+        // window's pixels within the quadrilateral's bounds are visited.
+        if !q.iter().all(|&(x, y)| x.is_finite() && y.is_finite()) {
+            return None;
+        }
+        SumFootprint::new(q, c.sw, c.sh)
+    }
+
+    /// Stores the sums of pixel `i` of a row, one per band, each with whether a valid source pixel
+    /// was added ([`SumFootprint::add`]): a pixel none was added to is left as it is.
+    fn store_sums(&self, sink: &Sink, sums: &[(f64, bool)], out: &mut [&mut [f64]], i: usize) {
+        let mut found = false;
+        for (b, (o, &(sum, any))) in out.iter_mut().zip(sums).enumerate() {
+            if any {
+                o[i] = sink.value(sum * self.sum_scale, b);
+                found = true;
             }
-            // The quadrilateral, corner after corner, in the pixels of the chunk's source window.
-            let q = [
-                (top_x[i] - sxo, top_y[i] - syo),
-                (top_x[i + 1] - sxo, top_y[i + 1] - syo),
-                (bottom_x[i + 1] - sxo, bottom_y[i + 1] - syo),
-                (bottom_x[i] - sxo, bottom_y[i] - syo),
-            ];
-            // A corner that is not a finite number leaves the pixel alone. The others may lie far
-            // beyond the window, as those of a pixel much larger than the source do: only the
-            // window's pixels within the quadrilateral's bounds are visited.
-            if !q.iter().all(|&(x, y)| x.is_finite() && y.is_finite()) {
-                continue;
+        }
+        if found {
+            sink.avoid_all(out, i);
+        }
+    }
+
+    /// The rows of a `sum` chunk's source window that a read holds at once: the whole window when
+    /// its working memory (including source/conversion buffers) fits the limit, else a strip of
+    /// as many rows as fit, at least one. Only a chunk of at most 2 x 2 pixels, which [`Self::collect_chunks`]
+    /// does not split, can exceed the limit.
+    fn sum_strip_rows(&self, c: &Chunk) -> usize {
+        let source_row = self.working_memory(c.sw, 1, 0, 0);
+        let output = self.working_memory(0, 0, c.dw, c.dh);
+        if self.resampling != Resampling::Sum || source_row * c.sh as f64 + output <= self.memory_limit {
+            return c.sh;
+        }
+        // Chunk collection uses the same source/conversion footprint, so only the minimum
+        // unsplittable output chunk can require strips and per-output-pixel accumulators.
+        debug_assert!(c.dw <= 2 && c.dh <= 2);
+        let rows = (self.memory_limit - output) / source_row;
+        (rows.floor() as usize).clamp(1, c.sh)
+    }
+
+    /// A `sum` chunk to sum a strip of its source window at a time ([`Self::add_sum_strip`]).
+    fn sum_strips(&self, c: &Chunk) -> SumStrips {
+        let mut batch = CornerBatch::default();
+        let mut top = self.sum_corners(c, 0, &mut batch);
+        let mut footprints = Vec::with_capacity(c.dw * c.dh);
+        for y in 0..c.dh {
+            let bottom = self.sum_corners(c, y + 1, &mut batch);
+            footprints.extend((0..c.dw).map(|i| self.sum_footprint(c, (&top, &bottom), i)));
+            top = bottom;
+        }
+        SumStrips { sums: vec![(0.0, false); footprints.len() * self.bands], footprints }
+    }
+
+    /// Sums a `sum` chunk from its source window, read `strip` rows at a time by `read`: each strip
+    /// is summed while the next one is read, so that two strips are held at most.
+    fn sum_in_strips(&self, c: &Chunk, strip: usize, mut read: impl FnMut(crate::Window) -> Result<Strip>) -> Result<SumStrips> {
+        let mut sums = self.sum_strips(c);
+        let window = |r0: usize| crate::Window::new(c.sx, c.sy + r0, c.sw, strip.min(c.sh - r0));
+        let (mut r0, mut current) = (0, read(window(0))?);
+        loop {
+            let rows = (r0, r0 + strip.min(c.sh - r0));
+            if rows.1 == c.sh {
+                self.add_strip(c, &current, rows, &mut sums);
+                return Ok(sums);
             }
-            let (x0, x1) = q.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p.0), hi.max(p.0)));
-            let (y0, y1) = q.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
-            // The window's pixels within the quadrilateral's bounds.
-            let cols = (floor_i(x0.clamp(0.0, sw)) as usize, (ceil_i(x1.clamp(0.0, sw)) as usize).min(c.sw));
-            let rows = (floor_i(y0.clamp(0.0, sh)) as usize, (ceil_i(y1.clamp(0.0, sh)) as usize).min(c.sh));
-            if cols.0 >= cols.1 || rows.0 >= rows.1 {
-                continue;
+            let next = alongside(|| self.add_strip(c, &current, rows, &mut sums), || read(window(rows.1)))?;
+            (r0, current) = (rows.1, next);
+        }
+    }
+
+    /// Adds a strip of a `sum` chunk's source window, its rows `rows`, to the chunk's sums.
+    fn add_strip(&self, c: &Chunk, strip: &Strip, rows: (usize, usize), sums: &mut SumStrips) {
+        let (bands, sn) = (self.bands, c.sw * (rows.1 - rows.0));
+        crate::pixel::with_data!(&strip.data.raster.data, v => {
+            let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
+            let part = SrcData { bands: &typed, valid: &strip.valid, width: c.sw, origin: (c.sx, c.sy + rows.0) };
+            self.add_sum_strip(c, &part, rows, sums);
+        });
+    }
+
+    /// Adds the rows `rows` of a `sum` chunk's source window, whose pixels `src` holds, to the
+    /// sums of the chunk's pixels: each pixel's sums get the rows of its footprint in the same
+    /// order as from the whole window, so that summed a strip at a time, they are the same.
+    fn add_sum_strip<T: crate::pixel::Pixel>(&self, c: &Chunk, src: &SrcData<T>, rows: (usize, usize), strips: &mut SumStrips) {
+        let k = Kernel::new(src, *c, 1.0, 1.0, self.resampling);
+        let pixels: Vec<_> = strips.footprints.iter().zip(strips.sums.chunks_mut(self.bands)).collect();
+        crate::par::for_each_owned(pixels, |_, (footprint, sums)| {
+            if let Some(f) = footprint {
+                let rows = (f.rows.0.max(rows.0), f.rows.1.min(rows.1));
+                if rows.0 < rows.1 {
+                    f.add(&k, rows, &mut Vec::new(), sums);
+                }
             }
-            let nx = cols.1 - cols.0;
-            let rectangle = (q[0].1 == q[1].1 && q[2].1 == q[3].1 && q[0].0 == q[3].0 && q[1].0 == q[2].0)
-                || (q[0].0 == q[1].0 && q[2].0 == q[3].0 && q[0].1 == q[3].1 && q[1].1 == q[2].1);
-            // The paths of a quadrilateral inside the window: a pixel turned by a few degrees, as a
-            // change of CRS turns it, and one within 2 x 2 source pixels. All the paths are exact.
-            let inside = x0 >= 0.0 && y0 >= 0.0 && x1 <= sw && y1 <= sh;
-            if rectangle {
-                // An axis-aligned rectangle: each share is the product of the overlaps along the axes.
-                areas.clear();
+        });
+    }
+
+    /// Stores the sums of a `sum` chunk summed a strip at a time in the chunk's rows.
+    fn store_sum_strips(&self, c: &Chunk, strips: &SumStrips, sink: &Sink, rows: Vec<RowOut>) {
+        for (y, mut out) in rows.into_iter().enumerate() {
+            for i in 0..c.dw {
+                let p = y * c.dw + i;
+                self.store_sums(sink, &strips.sums[p * self.bands..(p + 1) * self.bands], &mut out, i);
+            }
+        }
+    }
+}
+
+/// A strip of a chunk's source window: its pixels in the working type, and their validity.
+struct Strip {
+    data: RasterDataset,
+    valid: Vec<Option<Vec<bool>>>,
+}
+
+/// Runs `background` on another thread while `foreground` runs on this one, and returns what
+/// `foreground` returns; one after the other in WebAssembly.
+fn alongside<R>(background: impl FnOnce() + Send, foreground: impl FnOnce() -> Result<R>) -> Result<R> {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        // Keep ownership outside the spawned closure so a failed spawn can run the same task
+        // on the caller instead. A resource-constrained process still completes sequentially.
+        let pending = std::sync::Mutex::new(Some(background));
+        let run_background = || {
+            let task = pending.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(task) = task {
+                task();
+            }
+        };
+        std::thread::scope(|s| {
+            let running = std::thread::Builder::new().spawn_scoped(s, run_background).ok();
+            if running.is_none() {
+                run_background();
+            }
+            let result = foreground();
+            if let Some(running) = running
+                && let Err(panic) = running.join()
+            {
+                std::panic::resume_unwind(panic);
+            }
+            result
+        })
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        background();
+        foreground()
+    }
+}
+
+/// A `sum` chunk summed a strip of its source window at a time: the footprint of each of its
+/// pixels, row after row, and their sums, band by band, with whether a valid source pixel was
+/// added.
+struct SumStrips {
+    footprints: Vec<Option<SumFootprint>>,
+    sums: Vec<(f64, bool)>,
+}
+
+/// The shares of the source pixels a `sum` adds at once, at most: of an output pixel's footprint,
+/// as many of its rows as this many bytes hold, at least one.
+const SUM_SHARE_BYTES: usize = 8 << 20;
+
+/// An output pixel's footprint on a chunk's source window, for a `sum`: the window's pixels within
+/// the bounds of its quadrilateral, and how the share of each inside the quadrilateral is computed.
+/// All the paths are exact, and compute each pixel's share alone, whichever of its rows they are
+/// asked for.
+struct SumFootprint {
+    /// The quadrilateral's bounds, along x and along y, in the window's pixels.
+    x: (f64, f64),
+    y: (f64, f64),
+    /// The window's pixels within the bounds.
+    cols: (usize, usize),
+    rows: (usize, usize),
+    shares: Shares,
+}
+
+/// How the shares of a [`SumFootprint`]'s pixels are computed.
+enum Shares {
+    /// An axis-aligned rectangle: each share is the product of the overlaps along the axes.
+    Rectangle,
+    /// A pixel turned by a few degrees, as a change of CRS turns it, inside the window.
+    Clean(CleanBlock),
+    /// A quadrilateral within 2 x 2 source pixels, inside the window: the shares, row after row.
+    Block([f64; 4]),
+    /// Any other quadrilateral.
+    General(QuadEdges),
+}
+
+impl SumFootprint {
+    /// The footprint of the quadrilateral `q`, whose corners are finite, on a window of `sw` x `sh`
+    /// pixels; None when its bounds hold none of the window's pixels.
+    fn new(q: [(f64, f64); 4], sw: usize, sh: usize) -> Option<Self> {
+        let (x0, x1) = q.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p.0), hi.max(p.0)));
+        let (y0, y1) = q.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
+        let (swf, shf) = (sw as f64, sh as f64);
+        // The window's pixels within the quadrilateral's bounds.
+        let cols = (floor_i(x0.clamp(0.0, swf)) as usize, (ceil_i(x1.clamp(0.0, swf)) as usize).min(sw));
+        let rows = (floor_i(y0.clamp(0.0, shf)) as usize, (ceil_i(y1.clamp(0.0, shf)) as usize).min(sh));
+        if cols.0 >= cols.1 || rows.0 >= rows.1 {
+            return None;
+        }
+        let (nx, ny) = (cols.1 - cols.0, rows.1 - rows.0);
+        let rectangle = (q[0].1 == q[1].1 && q[2].1 == q[3].1 && q[0].0 == q[3].0 && q[1].0 == q[2].0)
+            || (q[0].0 == q[1].0 && q[2].0 == q[3].0 && q[0].1 == q[3].1 && q[1].1 == q[2].1);
+        // The paths of a quadrilateral inside the window: a pixel turned by a few degrees, as a
+        // change of CRS turns it, and one within 2 x 2 source pixels.
+        let inside = x0 >= 0.0 && y0 >= 0.0 && x1 <= swf && y1 <= shf;
+        let shares = if rectangle {
+            Shares::Rectangle
+        } else if let Some(clean) = inside.then(|| CleanBlock::new(&q, cols, rows)).flatten() {
+            Shares::Clean(clean)
+        } else if inside && nx <= 2 && ny <= 2 {
+            Shares::Block(block_areas(&q, cols, rows))
+        } else {
+            // In the block's own coordinates, as the other paths compute: the same in every
+            // chunk, whichever source pixel the chunk's window starts at.
+            Shares::General(QuadEdges::new(&q.map(|(x, y)| (x - cols.0 as f64, y - rows.0 as f64)), nx, ny))
+        };
+        Some(Self { x: (x0, x1), y: (y0, y1), cols, rows, shares })
+    }
+
+    /// The shares of the footprint's pixels in the window's rows `rows.0..rows.1`, which are
+    /// among its own, row after row in `areas`.
+    fn shares(&self, rows: (usize, usize), areas: &mut Vec<f64>) {
+        let (cols, nx) = (self.cols, self.cols.1 - self.cols.0);
+        // The rows in the footprint's own.
+        let block = (rows.0 - self.rows.0, rows.1 - self.rows.0);
+        areas.clear();
+        match &self.shares {
+            Shares::Rectangle => {
+                let ((x0, x1), (y0, y1)) = (self.x, self.y);
                 for y in rows.0..rows.1 {
                     let wy = overlap(y0, y1, y);
                     areas.extend((cols.0..cols.1).map(|x| wy * overlap(x0, x1, x)));
                 }
-            } else if !(inside && clean_block_areas(&q, cols, rows, &mut areas)) {
-                if inside && cols.1 - cols.0 <= 2 && rows.1 - rows.0 <= 2 {
-                    block_areas(&q, cols, rows, &mut areas);
-                } else {
-                    // In the block's own coordinates, as the other paths compute: the same in every
-                    // chunk, whichever source pixel the chunk's window starts at.
-                    let block = q.map(|(x, y)| (x - cols.0 as f64, y - rows.0 as f64));
-                    quad_cell_areas(&block, (0, nx), (0, rows.1 - rows.0), &mut areas, &mut carry);
-                }
             }
-            let mut found = false;
-            for (b, o) in out.iter_mut().enumerate() {
+            Shares::Clean(clean) => clean.areas(block, areas),
+            Shares::Block(shares) => areas.extend_from_slice(&shares[block.0 * nx..block.1 * nx]),
+            Shares::General(edges) => edges.areas(block, areas),
+        }
+    }
+
+    /// Adds each valid source pixel of the footprint in the window's rows `rows.0..rows.1` (which
+    /// `k` holds), times its share, to its band's sum in `sums`, recording that one was added:
+    /// row after row, from the left, as many rows at a time as [`SUM_SHARE_BYTES`] holds the
+    /// shares of. `areas` is scratch space.
+    fn add<T: crate::pixel::Pixel>(&self, k: &Kernel<T>, rows: (usize, usize), areas: &mut Vec<f64>, sums: &mut [(f64, bool)]) {
+        let (x, nx) = (self.cols.0, self.cols.1 - self.cols.0);
+        let step = (SUM_SHARE_BYTES / (8 * nx)).max(1);
+        let mut y0 = rows.0;
+        while y0 < rows.1 {
+            let y1 = rows.1.min(y0 + step);
+            self.shares((y0, y1), areas);
+            for (b, band) in sums.iter_mut().enumerate() {
                 let (values, valid) = (k.src.bands[b], k.src.valid[b].as_deref());
-                let (mut sum, mut any) = (0.0, false);
-                for (j, y) in (rows.0..rows.1).enumerate() {
+                // Summed here and stored once: the sums of a chunk's pixels lie side by side.
+                let (mut sum, mut any) = *band;
+                for (j, y) in (y0..y1).enumerate() {
                     // The row's pixels in the window, which hold its columns side by side.
-                    let start = k.index(cols.0, y);
+                    let start = k.index(x, y);
                     for (at, (w, v)) in (start..).zip(areas[j * nx..(j + 1) * nx].iter().zip(&values[start..start + nx])) {
                         if *w > 0.0 && valid.is_none_or(|m| m[at]) {
                             sum += crate::pixel::Pixel::to_f64(*v) * w;
@@ -3603,14 +3926,9 @@ impl WarpContext<'_> {
                         }
                     }
                 }
-                if any {
-                    o[i] = sink.value(sum * self.sum_scale, b);
-                    found = true;
-                }
+                *band = (sum, any);
             }
-            if found {
-                sink.avoid_all(out, i);
-            }
+            y0 = y1;
         }
     }
 }
@@ -3666,13 +3984,13 @@ fn ceil_i(x: f64) -> i64 {
 const INTEGER_LIMIT: f64 = (1u64 << 62) as f64;
 
 /// The area of the quadrilateral `q` inside each pixel of a block of at most 2 × 2 pixels
-/// (`cols` × `rows`) that holds it whole, row after row in `areas`: from the areas of the
-/// quadrilateral, of its part left of the block's middle column line, of its part above the
-/// block's middle row line, and of its part in both, the top left pixel holds the last, the top
-/// right and the bottom left the differences, the bottom right the rest. Each of those areas is
-/// `∮ y dx` along the boundary of the part (`∮ min(y, 1) dx` for a part above `y = 1`), to which
-/// the stretch along the middle column line adds nothing.
-fn block_areas(q: &[(f64, f64); 4], cols: (usize, usize), rows: (usize, usize), areas: &mut Vec<f64>) {
+/// (`cols` × `rows`) that holds it whole, row after row (the first `cols × rows` values): from the
+/// areas of the quadrilateral, of its part left of the block's middle column line, of its part
+/// above the block's middle row line, and of its part in both, the top left pixel holds the last,
+/// the top right and the bottom left the differences, the bottom right the rest. Each of those
+/// areas is `∮ y dx` along the boundary of the part (`∮ min(y, 1) dx` for a part above `y = 1`), to
+/// which the stretch along the middle column line adds nothing.
+fn block_areas(q: &[(f64, f64); 4], cols: (usize, usize), rows: (usize, usize)) -> [f64; 4] {
     // `∫ min(y, 1) dx` along the segment from `a` to `b`.
     let below_one = |a: (f64, f64), b: (f64, f64)| match (a.1 <= 1.0, b.1 <= 1.0) {
         (true, true) => 0.5 * (b.0 - a.0) * (a.1 + b.1),
@@ -3701,137 +4019,208 @@ fn block_areas(q: &[(f64, f64); 4], cols: (usize, usize), rows: (usize, usize), 
     }
     let sign = if whole < 0.0 { -1.0 } else { 1.0 };
     let (whole, top, left, corner) = (sign * whole, sign * top, sign * left, sign * corner);
-    areas.clear();
-    match (cols.1 - cols.0, rows.1 - rows.0) {
-        (1, 1) => areas.push(whole),
-        (2, 1) => areas.extend([left, whole - left]),
-        (1, 2) => areas.extend([top, whole - top]),
-        _ => areas.extend([corner, top - corner, left - corner, whole - left - top + corner]),
+    let areas = match (cols.1 - cols.0, rows.1 - rows.0) {
+        (1, 1) => [whole, 0.0, 0.0, 0.0],
+        (2, 1) => [left, whole - left, 0.0, 0.0],
+        (1, 2) => [top, whole - top, 0.0, 0.0],
+        _ => [corner, top - corner, left - corner, whole - left - top + corner],
+    };
+    areas.map(|area| area.clamp(0.0, 1.0))
+}
+
+/// A quadrilateral `[tl, tr, br, bl]` in a block of pixels `cols` × `rows` (at least 2 × 2,
+/// holding it whole) each of whose corners lies in the corner pixel of the block it names, and
+/// whose sides run within 45 degrees of the axes: a pixel turned by a few degrees, each of whose
+/// sides stays within one row or one column of the block's border. The pixels inside the border
+/// are covered whole; along the border, a side cuts each pixel straight across, so that its
+/// covered area is its height (or width) at its middle; in a corner, the covered part is the
+/// quadrilateral that the corner of the shape and the pixel's inner sides make.
+struct CleanBlock {
+    /// The corners, in the block's coordinates, where the inner sides of its last column and row
+    /// are x = w and y = h.
+    corners: [(f64, f64); 4],
+    nx: usize,
+    ny: usize,
+    /// The slopes of the sides as lines: y at x for the top and the bottom, x at y for the left
+    /// and the right.
+    slopes: [f64; 4],
+}
+
+impl CleanBlock {
+    /// The block of `q`, or None for any other quadrilateral.
+    fn new(q: &[(f64, f64); 4], cols: (usize, usize), rows: (usize, usize)) -> Option<Self> {
+        let (nx, ny) = (cols.1 - cols.0, rows.1 - rows.0);
+        if nx < 2 || ny < 2 {
+            return None;
+        }
+        let [tl, tr, br, bl] = q.map(|(x, y)| (x - cols.0 as f64, y - rows.0 as f64));
+        let (w, h) = ((nx - 1) as f64, (ny - 1) as f64);
+        let across = |a: (f64, f64), b: (f64, f64)| b.0 - a.0 > (b.1 - a.1).abs();
+        let down = |a: (f64, f64), b: (f64, f64)| b.1 - a.1 > (b.0 - a.0).abs();
+        if !(tl.0 < 1.0
+            && tl.1 < 1.0
+            && tr.0 >= w
+            && tr.1 < 1.0
+            && br.0 >= w
+            && br.1 >= h
+            && bl.0 < 1.0
+            && bl.1 >= h
+            && across(tl, tr)
+            && across(bl, br)
+            && down(tl, bl)
+            && down(tr, br))
+        {
+            return None;
+        }
+        let slopes =
+            [(tr.1 - tl.1) / (tr.0 - tl.0), (br.1 - bl.1) / (br.0 - bl.0), (bl.0 - tl.0) / (bl.1 - tl.1), (br.0 - tr.0) / (br.1 - tr.1)];
+        Some(Self { corners: [tl, tr, br, bl], nx, ny, slopes })
     }
-    for area in areas.iter_mut() {
-        *area = area.clamp(0.0, 1.0);
+
+    /// The area of the quadrilateral inside each pixel of the block's rows `rows.0..rows.1`, row
+    /// after row, after those already in `areas`.
+    fn areas(&self, rows: (usize, usize), areas: &mut Vec<f64>) {
+        let ([tl, tr, br, bl], (nx, ny)) = (self.corners, (self.nx, self.ny));
+        let (w, h) = ((nx - 1) as f64, (ny - 1) as f64);
+        let [top_slope, bottom_slope, left_slope, right_slope] = self.slopes;
+        let top = |x: f64| tl.1 + (x - tl.0) * top_slope;
+        let bottom = |x: f64| bl.1 + (x - bl.0) * bottom_slope;
+        let left = |y: f64| tl.0 + (y - tl.1) * left_slope;
+        let right = |y: f64| tr.0 + (y - tr.1) * right_slope;
+        let quad = |a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)| {
+            0.5 * ((a.0 - c.0) * (b.1 - d.1) - (b.0 - d.0) * (a.1 - c.1)).abs()
+        };
+        for y in rows.0..rows.1 {
+            let start = areas.len();
+            areas.resize(start + nx, 1.0);
+            let row = &mut areas[start..];
+            if y == 0 {
+                row[0] = quad(tl, (1.0, top(1.0)), (1.0, 1.0), (left(1.0), 1.0));
+                row[nx - 1] = quad((w, top(w)), tr, (right(1.0), 1.0), (w, 1.0));
+                for (area, x) in row[1..nx - 1].iter_mut().zip(1usize..) {
+                    *area = 1.0 - top(x as f64 + 0.5);
+                }
+            } else if y == ny - 1 {
+                row[0] = quad((left(h), h), (1.0, h), (1.0, bottom(1.0)), bl);
+                row[nx - 1] = quad((w, h), (right(h), h), br, (w, bottom(w)));
+                for (area, x) in row[1..nx - 1].iter_mut().zip(1usize..) {
+                    *area = bottom(x as f64 + 0.5) - h;
+                }
+            } else {
+                let middle = y as f64 + 0.5;
+                row[0] = 1.0 - left(middle);
+                row[nx - 1] = right(middle) - w;
+            }
+        }
     }
 }
 
-/// The area of the quadrilateral `[tl, tr, br, bl]` inside each pixel of the block of pixels
-/// `cols` × `rows` (at least 2 × 2, holding it whole), row after row in `areas`, when each of its
-/// corners lies in the corner pixel of the block it names and its sides run within 45 degrees of
-/// the axes: a pixel turned by a few degrees, each of whose sides stays within one row or one
-/// column of the block's border. The pixels inside the border are covered whole; along the border,
-/// a side cuts each pixel straight across, so that its covered area is its height (or width) at
-/// its middle; in a corner, the covered part is the quadrilateral that the corner of the shape and
-/// the pixel's inner sides make. Returns false, computing nothing, for any other quadrilateral.
-fn clean_block_areas(q: &[(f64, f64); 4], cols: (usize, usize), rows: (usize, usize), areas: &mut Vec<f64>) -> bool {
-    let (nx, ny) = (cols.1 - cols.0, rows.1 - rows.0);
-    if nx < 2 || ny < 2 {
-        return false;
-    }
-    // In the block's coordinates, where the inner sides of its last column and row are x = w and
-    // y = h.
-    let [tl, tr, br, bl] = q.map(|(x, y)| (x - cols.0 as f64, y - rows.0 as f64));
-    let (w, h) = ((nx - 1) as f64, (ny - 1) as f64);
-    let across = |a: (f64, f64), b: (f64, f64)| b.0 - a.0 > (b.1 - a.1).abs();
-    let down = |a: (f64, f64), b: (f64, f64)| b.1 - a.1 > (b.0 - a.0).abs();
-    if !(tl.0 < 1.0
-        && tl.1 < 1.0
-        && tr.0 >= w
-        && tr.1 < 1.0
-        && br.0 >= w
-        && br.1 >= h
-        && bl.0 < 1.0
-        && bl.1 >= h
-        && across(tl, tr)
-        && across(bl, br)
-        && down(tl, bl)
-        && down(tr, br))
-    {
-        return false;
-    }
-    // The sides as lines: y at x for the top and the bottom, x at y for the left and the right.
-    let (top_slope, bottom_slope) = ((tr.1 - tl.1) / (tr.0 - tl.0), (br.1 - bl.1) / (br.0 - bl.0));
-    let (left_slope, right_slope) = ((bl.0 - tl.0) / (bl.1 - tl.1), (br.0 - tr.0) / (br.1 - tr.1));
-    let top = |x: f64| tl.1 + (x - tl.0) * top_slope;
-    let bottom = |x: f64| bl.1 + (x - bl.0) * bottom_slope;
-    let left = |y: f64| tl.0 + (y - tl.1) * left_slope;
-    let right = |y: f64| tr.0 + (y - tr.1) * right_slope;
-    let quad =
-        |a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)| 0.5 * ((a.0 - c.0) * (b.1 - d.1) - (b.0 - d.0) * (a.1 - c.1)).abs();
-    areas.clear();
-    areas.resize(nx * ny, 1.0);
-    areas[0] = quad(tl, (1.0, top(1.0)), (1.0, 1.0), (left(1.0), 1.0));
-    areas[nx - 1] = quad((w, top(w)), tr, (right(1.0), 1.0), (w, 1.0));
-    areas[(ny - 1) * nx] = quad((left(h), h), (1.0, h), (1.0, bottom(1.0)), bl);
-    areas[ny * nx - 1] = quad((w, h), (right(h), h), br, (w, bottom(w)));
-    for x in 1..nx - 1 {
-        let middle = x as f64 + 0.5;
-        areas[x] = 1.0 - top(middle);
-        areas[(ny - 1) * nx + x] = bottom(middle) - h;
-    }
-    for y in 1..ny - 1 {
-        let middle = y as f64 + 0.5;
-        areas[y * nx] = 1.0 - left(middle);
-        areas[y * nx + nx - 1] = right(middle) - w;
-    }
-    true
-}
-
-/// The area of the quadrilateral `q` (its corners in order, in pixel coordinates) inside each
-/// pixel `[x, x + 1] × [y, y + 1]` of the columns `cols.0..cols.1` and the rows `rows.0..rows.1`,
-/// row after row in `areas`. `carry` is scratch space.
+/// The edges of a quadrilateral (its corners in order, in pixel coordinates) over a block of
+/// `nx` × `ny` pixels `[x, x + 1] × [y, y + 1]` from (0, 0), which holds the part of the
+/// quadrilateral the area of which inside each pixel [`QuadEdges::areas`] computes, any of the
+/// block's rows at a time.
 ///
 /// By Green's theorem, the area of a polygon inside a pixel is the sum, over the polygon's edges,
 /// of the integral along the part of the edge over the pixel's column of how far the edge is below
 /// the pixel's top, `clamp(y - top, 0, 1)`, signed by the direction the edge runs in `x`. A piece
 /// of an edge counts whole in the rows above it, in part in those it crosses and not at all in
-/// those below it: the whole counts are carried up each column once all edges are summed.
-fn quad_cell_areas(q: &[(f64, f64); 4], cols: (usize, usize), rows: (usize, usize), areas: &mut Vec<f64>, carry: &mut Vec<f64>) {
-    let (nx, ny) = (cols.1 - cols.0, rows.1 - rows.0);
-    areas.clear();
-    areas.resize(nx * ny, 0.0);
-    // `carry[col * (ny + 1) + r]` counts in every row of the column above row `r`.
-    carry.clear();
-    carry.resize(nx * (ny + 1), 0.0);
-    let row_index = |y: i64| y.clamp(rows.0 as i64, rows.1 as i64) as usize - rows.0;
-    // Twice the signed area: its sign is the sign of the sums.
-    let mut orientation = 0.0;
-    for e in 0..4 {
-        let ((ax, ay), (bx, by)) = (q[e], q[(e + 1) % 4]);
-        orientation += (bx - ax) * (ay + by);
-        if ax == bx {
-            continue;
+/// those below it: the whole counts are carried up each column once its pieces are summed.
+struct QuadEdges {
+    nx: usize,
+    ny: usize,
+    /// The edges that run in `x` over the block's columns.
+    edges: [Option<Edge>; 4],
+    /// The sign of the sums: that of the quadrilateral's area.
+    sign: f64,
+}
+
+/// An edge of a quadrilateral that runs in `x` over a block's columns: its left end and its slope,
+/// 1 or -1 as it runs right or left, and its part over the block's columns, from `x = lo` to
+/// `x = hi`.
+#[derive(Clone, Copy)]
+struct Edge {
+    left: (f64, f64),
+    slope: f64,
+    sign: f64,
+    lo: f64,
+    hi: f64,
+}
+
+impl QuadEdges {
+    /// The edges of the quadrilateral `q` over a block of `nx` × `ny` pixels.
+    fn new(q: &[(f64, f64); 4], nx: usize, ny: usize) -> Self {
+        let mut edges = [None; 4];
+        // Twice the signed area: its sign is the sign of the sums.
+        let mut orientation = 0.0;
+        for (e, edge) in edges.iter_mut().enumerate() {
+            let ((ax, ay), (bx, by)) = (q[e], q[(e + 1) % 4]);
+            orientation += (bx - ax) * (ay + by);
+            if ax == bx {
+                continue;
+            }
+            let sign = if bx > ax { 1.0 } else { -1.0 };
+            let ((lx, ly), (rx, ry)) = if ax < bx { ((ax, ay), (bx, by)) } else { ((bx, by), (ax, ay)) };
+            let (lo, hi) = (lx.max(0.0), rx.min(nx as f64));
+            if lo < hi {
+                *edge = Some(Edge { left: (lx, ly), slope: (ry - ly) / (rx - lx), sign, lo, hi });
+            }
         }
-        let sign = if bx > ax { 1.0 } else { -1.0 };
-        let ((lx, ly), (rx, ry)) = if ax < bx { ((ax, ay), (bx, by)) } else { ((bx, by), (ax, ay)) };
-        let (lo, hi) = (lx.max(cols.0 as f64), rx.min(cols.1 as f64));
-        if lo >= hi {
-            continue;
-        }
-        let slope = (ry - ly) / (rx - lx);
-        let mut x = lo as usize;
-        while (x as f64) < hi {
-            // The piece of the edge over column `x`.
-            let (xa, xb) = (lo.max(x as f64), hi.min((x + 1) as f64));
-            if xa < xb {
-                let (ya, yb) = (ly + slope * (xa - lx), ly + slope * (xb - lx));
-                let length = sign * (xb - xa);
-                let col = x - cols.0;
+        Self { nx, ny, edges, sign: if orientation < 0.0 { -1.0 } else { 1.0 } }
+    }
+
+    /// The area of the quadrilateral inside each pixel of the block's rows `rows.0..rows.1`, row
+    /// after row in `areas`, the same, bit for bit, whichever rows are asked for. In each column,
+    /// the pieces of the edges over it are taken edge after edge, each adding its part to the rows
+    /// it crosses; the whole counts are then carried up from the bottom of the block, those of the
+    /// pieces starting in the same row summed first, so that the rows below those asked for count
+    /// as they do when the whole block is.
+    fn areas(&self, rows: (usize, usize), areas: &mut Vec<f64>) {
+        let (nx, ny) = (self.nx, self.ny);
+        let row_index = |y: i64| y.clamp(0, ny as i64) as usize;
+        areas.clear();
+        areas.resize(nx * (rows.1 - rows.0), 0.0);
+        for col in 0..nx {
+            // The whole counts of the column's pieces, by the row each starts in: they count in the
+            // rows above it.
+            let (mut counts, mut n) = ([(0, 0.0); 4], 0);
+            for edge in self.edges.iter().flatten() {
+                if col < edge.lo as usize || col as f64 >= edge.hi {
+                    continue;
+                }
+                // The piece of the edge over the column.
+                let (xa, xb) = (edge.lo.max(col as f64), edge.hi.min((col + 1) as f64));
+                if xa >= xb {
+                    continue;
+                }
+                let (lx, ly) = edge.left;
+                let (ya, yb) = (ly + edge.slope * (xa - lx), ly + edge.slope * (xb - lx));
+                let length = edge.sign * (xb - xa);
                 let first = row_index(floor_i(ya.min(yb)));
-                carry[col * (ny + 1) + first] += length;
-                for r in first..row_index(ceil_i(ya.max(yb))) {
-                    let top = (rows.0 + r) as f64;
-                    areas[r * nx + col] += length * ramp_mean(ya - top, yb - top);
+                for r in first.max(rows.0)..row_index(ceil_i(ya.max(yb))).min(rows.1) {
+                    let top = r as f64;
+                    areas[(r - rows.0) * nx + col] += length * ramp_mean(ya - top, yb - top);
+                }
+                if first > rows.0 {
+                    match counts[..n].iter_mut().find(|(row, _)| *row == first) {
+                        Some((_, count)) => *count += length,
+                        None => {
+                            counts[n] = (first, length);
+                            n += 1;
+                        }
+                    }
                 }
             }
-            x += 1;
-        }
-    }
-    let sign = if orientation < 0.0 { -1.0 } else { 1.0 };
-    for col in 0..nx {
-        let mut carried = 0.0;
-        for r in (0..ny).rev() {
-            carried += carry[col * (ny + 1) + r + 1];
-            let area = &mut areas[r * nx + col];
-            *area = (sign * (*area + carried)).clamp(0.0, 1.0);
+            // From the bottom up: a row gets the counts of the pieces starting below it.
+            counts[..n].sort_unstable_by_key(|(row, _)| std::cmp::Reverse(*row));
+            let (mut carried, mut next) = (0.0, 0);
+            for r in (rows.0..rows.1).rev() {
+                while next < n && counts[next].0 > r {
+                    carried += counts[next].1;
+                    next += 1;
+                }
+                let area = &mut areas[(r - rows.0) * nx + col];
+                *area = (self.sign * (*area + carried)).clamp(0.0, 1.0);
+            }
         }
     }
 }
@@ -4635,6 +5024,7 @@ impl RegionWarp {
             memory_limit: f64::INFINITY,
             bands: self.src_nodata.len(),
             out_bits: self.out_type.size_bytes() * 8,
+            source_bits: self.out_type.size_bytes() * self.src_nodata.len() * 8,
             src_has_nodata: self.src_nodata.iter().any(Option::is_some),
             // A warped VRT's validity is unified (rasterio's UNIFIED_SRC_NODATA=YES, see
             // `RegionWarp::validity`), through `unified_center`.
@@ -4933,6 +5323,18 @@ mod tests {
     }
 
     fn raster(cols: usize, rows: usize, gt: [f64; 6], epsg: u32, f: impl Fn(usize, usize) -> f64) -> RasterDataset {
+        typed_raster(DataType::F32, cols, rows, gt, epsg, f)
+    }
+
+    /// [`raster`], of `data_type` pixels.
+    fn typed_raster(
+        data_type: DataType,
+        cols: usize,
+        rows: usize,
+        gt: [f64; 6],
+        epsg: u32,
+        f: impl Fn(usize, usize) -> f64,
+    ) -> RasterDataset {
         let cfg = RasterConfig {
             cols,
             rows,
@@ -4942,12 +5344,78 @@ mod tests {
             cell_size: gt[1],
             cell_size_y: Some(-gt[5]),
             nodata: -9999.0,
-            data_type: DataType::F32,
+            data_type,
             crs: wbraster::CrsInfo::from_epsg(epsg),
             metadata: vec![],
         };
         let data = (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c))).map(|(r, c)| f(c, r)).collect();
         RasterDataset::new(Raster::from_data(cfg, data).unwrap(), false)
+    }
+
+    #[test]
+    fn regional_area_crossings_stay_empty_without_rejecting_coarse_footprints() {
+        let methods = [
+            (Resampling::Average, 10.5),
+            (Resampling::Rms, 143.5_f64.sqrt()),
+            (Resampling::Mode, 1.0),
+            (Resampling::Min, 1.0),
+            (Resampling::Max, 20.0),
+            (Resampling::Med, 10.0),
+            (Resampling::Q1, 5.0),
+            (Resampling::Q3, 15.0),
+        ];
+        let regional = raster(20, 4, [160., 1., 0., 2., 0., -1.], 4326, |c, _| c as f64 + 1.);
+        let coarse = raster(20, 4, [-10., 1., 0., 2., 0., -1.], 4326, |c, _| c as f64 + 1.);
+        for (resampling, expected) in methods {
+            for memory_limit in [1024., 64. * 1024. * 1024.] {
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180 +no_defs").unwrap()),
+                    dst_transform: Some([-20., 40. / 41., 0., 2., 0., -1.]),
+                    size: Some((41, 4)),
+                    output_type: Some(DataType::F64),
+                    dst_nodata: Nodata::Values(vec![-999.]),
+                    error_threshold: 0.,
+                    memory_limit,
+                    resampling,
+                    ..Default::default()
+                };
+                let out = warp(&[&regional], &o).unwrap().raster.data.to_f64_vec();
+                assert_ne!(out[41 + 19], -999., "{resampling:?}");
+                assert_eq!(out[41 + 20], -999., "{resampling:?}");
+                assert_eq!(out[41 + 21], -999., "{resampling:?}");
+                for (unit, radians, degrees) in [("radian", 1.0, 180.0 / std::f64::consts::PI), ("grad", std::f64::consts::PI / 200.0, 0.9)]
+                {
+                    let wkt = format!(
+                        r#"GEOGCS["WGS84 {unit}",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["{unit}",{radians}]]"#
+                    );
+                    let srs = SpatialRef::parse(&wkt).unwrap();
+                    assert!((srs.longitude_period().unwrap() * degrees - 360.0).abs() < 1e-9);
+                    let mut source = regional.clone();
+                    source.set_geo_transform([160. / degrees, 1. / degrees, 0., 2. / degrees, 0., -1. / degrees]);
+                    source.raster.crs = srs.to_crs_info();
+                    let out = warp(&[&source], &o).unwrap().raster.data.to_f64_vec();
+                    assert_ne!(out[41 + 19], -999., "{unit} {resampling:?}");
+                    assert_eq!(out[41 + 20], -999., "{unit} {resampling:?}");
+                }
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=1 +no_defs").unwrap()),
+                    dst_transform: Some([-151., 300., 0., 2., 0., -4.]),
+                    size: Some((1, 1)),
+                    ..o
+                };
+                let out = warp(&[&coarse], &o).unwrap().raster.data.to_f64_vec();
+                assert!((out[0] - expected).abs() < 1e-9, "{resampling:?}: {} vs {expected}", out[0]);
+                // A same-CRS affine footprint has no normalized longitude discontinuity,
+                // even when both halves span more than 180 degrees.
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::from_epsg(4326).unwrap()),
+                    dst_transform: Some([-200., 400., 0., 2., 0., -4.]),
+                    ..o
+                };
+                let out = warp(&[&coarse], &o).unwrap().raster.data.to_f64_vec();
+                assert!((out[0] - expected).abs() < 1e-9, "continuous {resampling:?}: {}", out[0]);
+            }
+        }
     }
 
     /// A source warped a chunk at a time, read by windows and written as its rows are done (as a
@@ -5316,6 +5784,213 @@ mod tests {
         }
     }
 
+    /// The area methods other than `sum` summarize the source inside each output pixel, each source
+    /// pixel weighed by its part inside both the output pixel and the source window, whatever the
+    /// extent of the output grid. 200 x 200 source pixels of 10 m, each holding its column number,
+    /// whose edges cut 100 m output pixels in half: on grids of 40, 100 and 1000 such pixels, each
+    /// method writes the 21 x 21 output pixels the source meets, and row 15's columns 10, 11 and 30
+    /// summarize source columns 0 to 4, 5 to 14 and 195 to 199, ten rows each.
+    #[test]
+    fn area_methods_take_the_source_inside_an_output_pixel_whatever_the_grid() {
+        let ds = raster(200, 200, [1050.0, 10.0, 0.0, 9050.0, 0.0, -10.0], 32610, |c, _| c as f64);
+        let methods = [
+            (Resampling::Average, [2.0, 9.5, 197.0]),
+            (Resampling::Rms, [6f64.sqrt(), 98.5f64.sqrt(), 38811f64.sqrt()]),
+            (Resampling::Mode, [0.0, 5.0, 195.0]),
+            (Resampling::Min, [0.0, 5.0, 195.0]),
+            (Resampling::Max, [4.0, 14.0, 199.0]),
+            (Resampling::Med, [2.0, 9.0, 197.0]),
+            (Resampling::Q1, [1.0, 7.0, 196.0]),
+            (Resampling::Q3, [3.0, 12.0, 198.0]),
+        ];
+        let mut wrong = Vec::new();
+        for n in [40, 100, 1000] {
+            for (resampling, want) in methods {
+                let o = WarpOptions {
+                    dst_transform: Some([0.0, 100.0, 0.0, 10000.0, 0.0, -100.0]),
+                    size: Some((n, n)),
+                    resampling,
+                    output_type: Some(DataType::F64),
+                    dst_nodata: Nodata::Values(vec![-1.0]),
+                    ..Default::default()
+                };
+                let got = warp(&[&ds], &o).unwrap().raster.data.to_f64_vec();
+                let written = got.iter().filter(|v| **v != -1.0).count();
+                let row = [10, 11, 30].map(|c| got[15 * n + c]);
+                if written != 441 || row.iter().zip(want).any(|(g, w)| (g - w).abs() > 1e-9) {
+                    wrong.push(format!("{n} x {n}, {resampling:?}: {written} written, {row:?} for {want:?}"));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// An output pixel much larger than the source holds, by every area method, the source inside
+    /// it: the 3 x 2 source of 10 m pixels lies across the line between two output pixels of 1 km,
+    /// its first column `[7, 10]` west of it and `[8, 9, 11, 12]` east of it.
+    #[test]
+    fn area_methods_of_an_output_pixel_much_larger_than_the_source_take_the_source_inside_it() {
+        let ds = raster(3, 2, [990.0, 10.0, 0.0, 1800.0, 0.0, -10.0], 32610, |c, r| (7 + c + 3 * r) as f64);
+        let mut wrong = Vec::new();
+        for (resampling, west, east) in [
+            (Resampling::Average, 8.5, 10.0),
+            (Resampling::Rms, 74.5f64.sqrt(), 102.5f64.sqrt()),
+            (Resampling::Mode, 7.0, 8.0),
+            (Resampling::Min, 7.0, 8.0),
+            (Resampling::Max, 10.0, 12.0),
+            (Resampling::Med, 7.0, 9.0),
+            (Resampling::Q1, 7.0, 8.0),
+            (Resampling::Q3, 10.0, 11.0),
+        ] {
+            let o = WarpOptions {
+                dst_transform: Some([0.0, 1000.0, 0.0, 3000.0, 0.0, -1000.0]),
+                size: Some((2, 2)),
+                resampling,
+                output_type: Some(DataType::F64),
+                dst_nodata: Nodata::Values(vec![-1.0]),
+                ..Default::default()
+            };
+            let got = warp(&[&ds], &o).unwrap().raster.data.to_f64_vec();
+            let want = [-1.0, -1.0, west, east];
+            if got.iter().zip(want).any(|(g, w)| (g - w).abs() > 1e-9) {
+                wrong.push(format!("{resampling:?}: {got:?}, not {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// An output pixel whose footprint holds no source is left alone by every area method, as by
+    /// `sum`, on every side of the source: 4 x 4 source pixels of 1 m, values 0 to 15, under 2 m
+    /// output pixels from (-2, 6), whose first and last rows and columns lie just outside it.
+    #[test]
+    fn area_methods_leave_output_pixels_beside_the_source_alone() {
+        let ds = raster(4, 4, [0.0, 1.0, 0.0, 4.0, 0.0, -1.0], 32610, |c, r| (c + 4 * r) as f64);
+        let mut wrong = Vec::new();
+        for (resampling, inside) in [
+            (Resampling::Average, [2.5, 4.5, 10.5, 12.5]),
+            (Resampling::Rms, [10.5f64.sqrt(), 24.5f64.sqrt(), 114.5f64.sqrt(), 160.5f64.sqrt()]),
+            (Resampling::Mode, [0.0, 2.0, 8.0, 10.0]),
+            (Resampling::Min, [0.0, 2.0, 8.0, 10.0]),
+            (Resampling::Max, [5.0, 7.0, 13.0, 15.0]),
+            (Resampling::Med, [1.0, 3.0, 9.0, 11.0]),
+            (Resampling::Q1, [0.0, 2.0, 8.0, 10.0]),
+            (Resampling::Q3, [4.0, 6.0, 12.0, 14.0]),
+            (Resampling::Sum, [10.0, 18.0, 42.0, 50.0]),
+        ] {
+            let o = WarpOptions {
+                dst_transform: Some([-2.0, 2.0, 0.0, 6.0, 0.0, -2.0]),
+                size: Some((4, 4)),
+                resampling,
+                output_type: Some(DataType::F64),
+                dst_nodata: Nodata::Values(vec![-1.0]),
+                ..Default::default()
+            };
+            let got = warp(&[&ds], &o).unwrap().raster.data.to_f64_vec();
+            let mut want = [-1.0; 16];
+            (want[5], want[6], want[9], want[10]) = (inside[0], inside[1], inside[2], inside[3]);
+            if got.iter().zip(want).any(|(g, w)| (g - w).abs() > 1e-9) {
+                wrong.push(format!("{resampling:?}: {got:?}, not {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// An output pixel with a corner that cannot be transformed is left alone by every area
+    /// method, and one whose footprint on the source grid has no width still takes the source
+    /// pixel under it. Under 10-degree pixels of longitude and latitude, over a source in an
+    /// orthographic projection centred on (0, 0): from 80 degrees north to 80 south, the points
+    /// past 90 degrees east or west lie beyond its horizon, and the 288 pixels there stay empty
+    /// while the 288 between are written; from pole to pole, the two pixels between a pole and
+    /// the central meridian have both corners on the meridian, and are written.
+    #[test]
+    fn area_methods_leave_output_pixels_whose_corners_do_not_transform_alone() {
+        let ds = raster(128, 128, [-6.4e6, 1e5, 0.0, 6.4e6, 0.0, -1e5], 4326, |_, _| 1.0);
+        let ortho = SpatialRef::parse("+proj=ortho +lat_0=0 +lon_0=0 +datum=WGS84 +units=m +no_defs").unwrap();
+        let mut wrong = Vec::new();
+        for resampling in [
+            Resampling::Average,
+            Resampling::Rms,
+            Resampling::Mode,
+            Resampling::Min,
+            Resampling::Max,
+            Resampling::Med,
+            Resampling::Q1,
+            Resampling::Q3,
+        ] {
+            let warped = |top: f64, rows: usize| {
+                let o = WarpOptions {
+                    src_srs: Some(ortho.clone()),
+                    dst_srs: Some(SpatialRef::parse("EPSG:4326").unwrap()),
+                    dst_transform: Some([-180.0, 10.0, 0.0, top, 0.0, -10.0]),
+                    size: Some((36, rows)),
+                    resampling,
+                    output_type: Some(DataType::F64),
+                    dst_nodata: Nodata::Values(vec![-1.0]),
+                    ..Default::default()
+                };
+                warp(&[&ds], &o).unwrap().raster.data.to_f64_vec()
+            };
+            // Columns 9 to 26 span longitudes -90 to 90.
+            let got = warped(80.0, 16);
+            let near = |i: usize| (9..27).contains(&(i % 36));
+            let beyond = got.iter().enumerate().filter(|&(i, v)| !near(i) && *v != -1.0).count();
+            let written = got.iter().enumerate().filter(|&(i, v)| near(i) && *v == 1.0).count();
+            // Beside the central meridian, by the poles: row 0, column 17 (80° N to 90° N, 10° W to
+            // 0°) and row 17, column 18 (90° S to 80° S, 0° to 10° E). Their two corners lie on the
+            // meridian, so their footprints have no width.
+            let poles = warped(90.0, 18);
+            let (by_north_pole, by_south_pole) = (poles[17], poles[17 * 36 + 18]);
+            let meridian = [by_north_pole, by_south_pole];
+            if (beyond, written, meridian) != (0, 288, [1.0, 1.0]) {
+                wrong.push(format!(
+                    "{resampling:?}: {beyond} written beyond the horizon, {written} of 288 within it, {meridian:?} by the poles"
+                ));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// A footprint without width or height takes the source pixel it lies on, each pixel holding
+    /// its left and top edges. From a polar stereographic source whose top left corner is the
+    /// pole, between the meridians 45° W (its left edge) and 45° E (its top edge), the EPSG:4326
+    /// pixels by the pole from 50° W to 45° W and from 40° E to 45° E have both corners on one of
+    /// those edges, and take the source's first column or row. The pixel from 45° W to 40° W,
+    /// whose footprint lies inside the source, takes it too, and the pixels beside the source, west
+    /// and east of them, are left alone.
+    #[test]
+    fn area_methods_take_a_footprint_without_width_on_the_source_left_or_top_edge() {
+        let ds = raster(100, 100, [0.0, 1e4, 0.0, 0.0, 0.0, -1e4], 3413, |_, _| 1.0);
+        let mut wrong = Vec::new();
+        for resampling in [
+            Resampling::Average,
+            Resampling::Rms,
+            Resampling::Mode,
+            Resampling::Min,
+            Resampling::Max,
+            Resampling::Med,
+            Resampling::Q1,
+            Resampling::Q3,
+        ] {
+            let o = WarpOptions {
+                dst_srs: Some(SpatialRef::from_epsg(4326).unwrap()),
+                dst_transform: Some([-180.0, 5.0, 0.0, 90.0, 0.0, -5.0]),
+                size: Some((72, 1)),
+                resampling,
+                output_type: Some(DataType::F64),
+                dst_nodata: Nodata::Values(vec![-1.0]),
+                error_threshold: 0.0,
+                ..Default::default()
+            };
+            let row = warp(&[&ds], &o).unwrap().raster.data.to_f64_vec();
+            // 55° W to 50° W, 50° W to 45° W, 45° W to 40° W; 40° E to 45° E, 45° E to 50° E.
+            let got = [25, 26, 27, 44, 45].map(|i| row[i]);
+            if got != [-1.0, 1.0, 1.0, 1.0, -1.0] {
+                wrong.push(format!("{resampling:?}: {got:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
     /// A turned output pixel whose corners lie about 2e19 source pixels from the source, beyond
     /// the range of a 64-bit integer, still holds the source inside it whole.
     #[test]
@@ -5543,6 +6218,299 @@ mod tests {
                 let differ = whole.iter().zip(&warped(memory_limit)).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
                 assert_eq!(differ, 0, "error threshold {error_threshold}, {memory_limit} bytes");
             }
+        }
+    }
+
+    /// The shares of a `sum` footprint's pixels, computed a few rows at a time, are the same, bit
+    /// for bit, whichever rows are computed together: one at a time, or the footprint split in two
+    /// anywhere. Footprints on every path: axis-aligned rectangles, pixels turned by a few degrees
+    /// inside the window, quadrilaterals within 2 x 2 pixels, and others (turned further, with
+    /// their corners moved, or running past the window).
+    #[test]
+    fn sum_shares_are_the_same_whatever_rows_are_computed_together() {
+        // xorshift: a fixed sequence of numbers in [0, 1).
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut random = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let (sw, sh) = (24, 20);
+        let mut paths = [0; 4];
+        for case in 0..800 {
+            // A pixel of side `s` turned by `degrees` around `(cx, cy)`, its corners moved by up to
+            // half of `moved` along each axis: half of them smaller than 1.5 source pixels.
+            let (cx, cy) = (random() * 34.0 - 5.0, random() * 30.0 - 5.0);
+            let s = if case % 2 == 0 { 0.2 + random() * 1.3 } else { 0.3 + random() * 12.0 };
+            let degrees = match case % 3 {
+                0 => 0.0,
+                1 => random() * 4.0 - 2.0,
+                _ => random() * 360.0,
+            };
+            let moved = if case % 4 == 3 { random() * 2.0 } else { 0.0 };
+            let (sin, cos) = f64::to_radians(degrees).sin_cos();
+            let q = [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)].map(|(u, v)| {
+                (cx + s * (u * cos - v * sin) + moved * (random() - 0.5), cy + s * (u * sin + v * cos) + moved * (random() - 0.5))
+            });
+            let Some(f) = SumFootprint::new(q, sw, sh) else {
+                continue;
+            };
+            paths[match f.shares {
+                Shares::Rectangle => 0,
+                Shares::Clean(_) => 1,
+                Shares::Block(_) => 2,
+                Shares::General(_) => 3,
+            }] += 1;
+            let nx = f.cols.1 - f.cols.0;
+            let (mut whole, mut part) = (Vec::new(), Vec::new());
+            f.shares(f.rows, &mut whole);
+            assert_eq!(whole.len(), nx * (f.rows.1 - f.rows.0), "{q:?}");
+            let rows = f.rows.0..f.rows.1;
+            let together = rows.clone().map(|r| (r, r + 1)).chain(rows.flat_map(|r| [(f.rows.0, r + 1), (r, f.rows.1)]));
+            for (r0, r1) in together {
+                f.shares((r0, r1), &mut part);
+                let want = &whole[(r0 - f.rows.0) * nx..(r1 - f.rows.0) * nx];
+                let same = part.len() == want.len() && part.iter().zip(want).all(|(a, b)| a.to_bits() == b.to_bits());
+                assert!(same, "{q:?}, rows {r0}..{r1}: {part:?}, not {want:?}");
+            }
+        }
+        assert!(paths.iter().all(|n| *n >= 20), "footprints on each path: {paths:?}");
+    }
+
+    /// A `sum` adds the valid source pixels of a footprint row after row, each row from the left,
+    /// as before shares were computed a few rows at a time: a 1 x 1 output over 6000 x 200 pixels,
+    /// whose shares take two blocks of rows, holds the sum of the pixels in that order, bit for
+    /// bit, warped in memory, read whole, and read in strips of two heights. The pixels are
+    /// Float64, whose sum rounds, so that added in another order, it differs.
+    #[test]
+    fn a_sum_adds_a_footprint_row_after_row_whatever_its_blocks_and_strips() {
+        let dir = tempfile::tempdir().unwrap();
+        let gt = [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0];
+        let ds = typed_raster(DataType::F64, 6000, 200, gt, 32610, |c, r| ((c * 7 + r * 13) % 251) as f64 * 0.1 + 0.37);
+        let expected = ds.raster.data.to_f64_vec().iter().fold(0.0, |sum, v| sum + v);
+        let path = dir.path().join("src.tif").to_str().unwrap().to_string();
+        crate::write_raster_dataset(&ds, &path, &Default::default()).unwrap();
+        let o = |memory_limit| WarpOptions {
+            size: Some((1, 1)),
+            resampling: Resampling::Sum,
+            output_type: Some(DataType::F64),
+            memory_limit,
+            ..Default::default()
+        };
+        let mut got = vec![("in memory".to_string(), warp(&[&ds], &o(64.0 * 1024.0 * 1024.0)).unwrap().raster.data.to_f64_vec()[0])];
+        for memory_limit in [64.0 * 1024.0 * 1024.0, 2_000_000.0, 300_000.0] {
+            let out = warp_lazy(&mut crate::open_raster_lazy(&path).unwrap(), &o(memory_limit)).unwrap();
+            got.push((format!("read within {memory_limit} bytes"), out.raster.data.to_f64_vec()[0]));
+        }
+        for (how, sum) in got {
+            assert_eq!(sum.to_bits(), expected.to_bits(), "{how}: {sum}, not {expected}");
+        }
+    }
+
+    /// A `sum` chunk whose source window's working memory exceeds the limit (an output of 2 x 2
+    /// pixels or fewer, which is not split into smaller chunks) reads and sums its window a strip
+    /// of rows at a time, as many rows as fit the limit, and its pixels are the same, bit for bit,
+    /// as from the whole window, whatever the strips' height: in the source's CRS and across a
+    /// change of CRS, with output pixels turned on the source's grid, for two bands with nodata
+    /// pixels and for a source with its own mask; read lazily, and, for north-up outputs, streamed
+    /// to a file and through a serialized warped VRT.
+    #[test]
+    fn a_coarse_sum_reads_its_source_a_strip_at_a_time_with_the_same_pixels() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cols, rows, gt) = (300, 200, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0]);
+        let value = |b: usize, c: usize, r: usize| {
+            if (c + 3 * r + b).is_multiple_of(97) { -9999.0 } else { ((c * 7 + r * 13 + b * 5) % 50) as f64 + 0.25 }
+        };
+        let cfg = RasterConfig {
+            cols,
+            rows,
+            bands: 2,
+            x_min: gt[0],
+            y_min: gt[3] + gt[5] * rows as f64,
+            cell_size: gt[1],
+            cell_size_y: Some(-gt[5]),
+            nodata: -9999.0,
+            data_type: DataType::F32,
+            crs: wbraster::CrsInfo::from_epsg(32610),
+            metadata: vec![],
+        };
+        let data = (0..2).flat_map(|b| (0..rows).flat_map(move |r| (0..cols).map(move |c| value(b, c, r)))).collect();
+        let mut ds = RasterDataset::new(Raster::from_data(cfg, data).unwrap(), false);
+        ds.has_nodata = true;
+        let nodata = dir.path().join("nodata.tif").to_str().unwrap().to_string();
+        crate::write_raster_dataset(&ds, &nodata, &Default::default()).unwrap();
+        // The same pixels without a nodata value, every 89th left out by the source's own mask.
+        let mut unmasked = ds.clone();
+        unmasked.has_nodata = false;
+        let mask = (0..cols * rows).map(|i| if i % 89 == 0 { 0 } else { 255 }).collect();
+        let masked = dir.path().join("masked.tif").to_str().unwrap().to_string();
+        crate::write_raster_dataset(&unmasked, &masked, &crate::RasterWriteOptions { mask: Some(mask), ..Default::default() }).unwrap();
+        let geographic = SpatialRef::from_epsg(4326).unwrap();
+        // 2 x 2 output pixels of 2500 m inside the source, turned by 0.2 degrees (less than a source
+        // pixel along each side) and by 20 degrees.
+        let turned = |degrees: f64| {
+            let (s, c) = degrees.to_radians().sin_cos();
+            [501000.0, 2500.0 * c, 2500.0 * s, 3999500.0, 2500.0 * s, -2500.0 * c]
+        };
+        let grids = [
+            ("1 x 1", WarpOptions { size: Some((1, 1)), ..Default::default() }),
+            ("2 x 2", WarpOptions { size: Some((2, 2)), ..Default::default() }),
+            ("2 x 2 turned by 0.2 degrees", WarpOptions { dst_transform: Some(turned(0.2)), size: Some((2, 2)), ..Default::default() }),
+            ("2 x 2 turned by 20 degrees", WarpOptions { dst_transform: Some(turned(20.0)), size: Some((2, 2)), ..Default::default() }),
+            ("1 x 1 in EPSG:4326", WarpOptions { dst_srs: Some(geographic.clone()), size: Some((1, 1)), ..Default::default() }),
+            ("2 x 2 in EPSG:4326", WarpOptions { dst_srs: Some(geographic.clone()), size: Some((2, 2)), ..Default::default() }),
+        ];
+        let bits = |ds: RasterDataset| ds.raster.data.to_f64_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        for (path, source) in [(&nodata, "nodata values"), (&masked, "a mask")] {
+            for (grid, base) in &grids {
+                let o = |memory_limit| WarpOptions {
+                    resampling: Resampling::Sum,
+                    output_type: Some(DataType::F64),
+                    memory_limit,
+                    ..base.clone()
+                };
+                // The output, and the pixels of each window read.
+                let warped = |memory_limit| {
+                    let mut lazy = crate::open_raster_lazy(path).unwrap();
+                    let mut counted = Counted { raster: &mut lazy, reads: Vec::new() };
+                    let out = warp_sources(&mut [&mut counted], &o(memory_limit)).unwrap();
+                    (bits(out), counted.reads.iter().map(|(_, pixels)| *pixels).collect::<Vec<_>>())
+                };
+                let (whole, reads) = warped(64.0 * 1024.0 * 1024.0);
+                assert_eq!(reads.len(), 1, "{source}, {grid}: the whole window at once");
+                if path == &nodata {
+                    assert_eq!(bits(warp(&[&ds], &o(64.0 * 1024.0 * 1024.0)).unwrap()), whole, "{grid}: in memory");
+                }
+                for memory_limit in [100_000.0, 20_000.0, 5_000.0] {
+                    let (strips, strip_reads) = warped(memory_limit);
+                    // Two bands of 8 bytes in the working type: each strip's pixels within the limit,
+                    // and each pixel of the window read once.
+                    let fits = strip_reads.iter().all(|pixels| (16 * pixels) as f64 <= memory_limit);
+                    assert!(strip_reads.len() > 1 && fits, "{source}, {grid}, {memory_limit} bytes: {strip_reads:?}");
+                    assert_eq!(strip_reads.iter().sum::<usize>(), reads[0], "{source}, {grid}, {memory_limit} bytes");
+                    assert_eq!(strips, whole, "{source}, {grid}, {memory_limit} bytes");
+                    for name in ["streamed.tif", "serialized.vrt"].into_iter().filter(|_| base.dst_transform.is_none()) {
+                        let out = dir.path().join(name).to_str().unwrap().to_string();
+                        warp_to_path(std::slice::from_ref(path), &o(memory_limit), &out, &Default::default()).unwrap();
+                        let read = crate::open_raster_lazy(&out).unwrap().read().unwrap();
+                        assert_eq!(bits(read), whole, "{source}, {grid}, {memory_limit} bytes: {name}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Larger source/conversion storage must split the output before choosing strips. The
+    /// planning-only header avoids allocating the 2600-square input or millions of footprints.
+    #[test]
+    fn sum_chunk_planning_counts_read_buffers_before_allocating_footprints() {
+        let gt = [500000.0, 1.0, 0.0, 4000000.0, 0.0, -1.0];
+        for (dtype, source_bytes) in [(DataType::F32, 8), (DataType::F32, 13), (DataType::F64, 12)] {
+            let mut header = raster(1, 1, gt, 32610, |_, _| 1.0);
+            header.raster.cols = 2600;
+            header.raster.rows = 2600;
+            let source_type = if source_bytes == 8 { DataType::F64 } else { dtype };
+            header.raster.data_type = source_type;
+            header.raster.data = RasterData::new_filled(source_type, 0, 0.0);
+            header.set_geo_transform(gt);
+            header.has_nodata = false;
+            let options = WarpOptions { resampling: Resampling::Sum, output_type: Some(dtype), ..Default::default() };
+            let plan = Plan::new(&[&header], &options).unwrap();
+            let transform = plan.transformer(0).unwrap();
+            let (context, chunks, _) = plan.context(0, &transform, &options, Some(source_bytes));
+            assert!(chunks.len() > 1, "{dtype:?}, {source_bytes} source bytes: output was not split");
+            for chunk in chunks {
+                assert!(context.sum_strip_rows(&chunk) == chunk.sh || (chunk.dw <= 2 && chunk.dh <= 2));
+            }
+        }
+    }
+
+    /// Conversion peaks include the original samples and f64 intermediary as well as the
+    /// final strip. Keep each read within the limit and retain the same sum for both conversions.
+    #[test]
+    fn sum_strips_include_source_and_conversion_buffers() {
+        let dir = tempfile::tempdir().unwrap();
+        for (source_type, working, bytes_per_pixel) in [(DataType::F32, DataType::F64, 12), (DataType::U8, DataType::F32, 13)] {
+            let mut ds = raster(32, 32, [500000.0, 1.0, 0.0, 4000000.0, 0.0, -1.0], 32610, |_, _| 1.0);
+            ds.has_nodata = false;
+            ds.raster.data_type = source_type;
+            ds.raster.data = RasterData::new_filled(source_type, 1024, 1.0);
+            let path = dir.path().join(format!("{source_type:?}.tif"));
+            crate::write_raster_dataset(&ds, path.to_str().unwrap(), &Default::default()).unwrap();
+            let mut source = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+            let mut counted = Counted { raster: &mut source, reads: Vec::new() };
+            let options = WarpOptions {
+                size: Some((1, 1)),
+                resampling: Resampling::Sum,
+                output_type: Some(working),
+                memory_limit: 2000.0,
+                ..Default::default()
+            };
+            let result = warp_reader_selected(&mut counted, &options, None, Some(working), false, None).unwrap();
+            assert_eq!(result.raster.data.to_f64_vec(), [1024.0]);
+            assert!(counted.reads.len() > 1);
+            assert_eq!(counted.reads.iter().map(|(_, pixels)| *pixels).sum::<usize>(), 1024);
+            for (_, pixels) in counted.reads {
+                assert!(pixels * bytes_per_pixel <= 2000, "{source_type:?} to {working:?}: {pixels} pixels exceed the conversion budget");
+            }
+        }
+    }
+
+    /// A coarse `sum` of a VRT reads it a strip of rows at a time too, and the VRT gives each strip
+    /// the rows its whole window holds, sources with fractional and scaled rectangles included
+    /// (#702): the pixels are the same, bit for bit, whatever the strips' height, and the same as
+    /// the warp of the VRT read whole into memory.
+    #[test]
+    fn a_coarse_sum_of_a_vrt_with_fractional_rectangles_is_the_same_in_strips() {
+        let dir = tempfile::tempdir().unwrap();
+        let ds = raster(120, 90, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| ((c * 7 + r * 13) % 50) as f64 + 0.25);
+        let src = dir.path().join("src.tif").to_str().unwrap().to_string();
+        crate::write_raster_dataset(&ds, &src, &Default::default()).unwrap();
+        // 180 x 150 pixels of 20 m: four sources, each a part of the raster from a fractional
+        // offset into a part of the VRT at a fractional offset, by one method: three scaled, and
+        // one of the same size.
+        let source = |method: &str, [sx, sy, sw, sh]: [f64; 4], [dx, dy, dw, dh]: [f64; 4]| {
+            format!(
+                "<ComplexSource resampling=\"{method}\"><SourceFilename relativeToVRT=\"0\">{src}</SourceFilename>\
+                 <SourceBand>1</SourceBand><SrcRect xOff=\"{sx}\" yOff=\"{sy}\" xSize=\"{sw}\" ySize=\"{sh}\"/>\
+                 <DstRect xOff=\"{dx}\" yOff=\"{dy}\" xSize=\"{dw}\" ySize=\"{dh}\"/></ComplexSource>"
+            )
+        };
+        let vrt = format!(
+            "<VRTDataset rasterXSize=\"180\" rasterYSize=\"150\"><SRS>EPSG:32610</SRS>\
+             <GeoTransform>500000, 20, 0, 4000000, 0, -20</GeoTransform><VRTRasterBand dataType=\"Float32\" band=\"1\">\
+             <NoDataValue>-9999</NoDataValue>{}{}{}{}</VRTRasterBand></VRTDataset>",
+            source("nearest", [0.5, 0.25, 59.5, 44.75], [0.3, 0.6, 89.4, 74.2]),
+            source("bilinear", [60.25, 0.5, 59.5, 89.0], [90.5, 0.25, 89.2, 149.5]),
+            source("average", [0.75, 45.5, 59.0, 44.25], [0.0, 75.5, 90.0, 74.25]),
+            source("bilinear", [10.5, 50.25, 40.0, 30.0], [100.3, 100.6, 40.0, 30.0]),
+        );
+        let path = dir.path().join("fractional.vrt").to_str().unwrap().to_string();
+        std::fs::write(&path, vrt).unwrap();
+        let o = |memory_limit| WarpOptions {
+            size: Some((2, 2)),
+            resampling: Resampling::Sum,
+            output_type: Some(DataType::F64),
+            memory_limit,
+            ..Default::default()
+        };
+        let bits = |ds: RasterDataset| ds.raster.data.to_f64_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        // The output, and the windows read.
+        let warped = |memory_limit| {
+            let mut lazy = crate::open_raster_lazy(&path).unwrap();
+            let mut counted = Counted { raster: &mut lazy, reads: Vec::new() };
+            let out = warp_sources(&mut [&mut counted], &o(memory_limit)).unwrap();
+            (bits(out), counted.reads.len())
+        };
+        let (whole, reads) = warped(64.0 * 1024.0 * 1024.0);
+        assert_eq!(reads, 1, "the whole window at once");
+        let read = crate::open_raster(&path).unwrap();
+        assert_eq!(bits(warp(&[&read], &o(64.0 * 1024.0 * 1024.0)).unwrap()), whole, "the VRT read whole");
+        for memory_limit in [20_000.0, 3_000.0] {
+            let (strips, reads) = warped(memory_limit);
+            assert!(reads > 1, "{memory_limit} bytes: {reads} read");
+            assert_eq!(strips, whole, "{memory_limit} bytes");
         }
     }
 
@@ -6078,7 +7046,7 @@ mod tests {
         };
         let p = Plan::new(&[&ds], &o).unwrap();
         let t = p.transformer(0).unwrap();
-        let (_, chunks, _) = p.context(0, &t, &o);
+        let (_, chunks, _) = p.context(0, &t, &o, None);
         assert!(chunks.len() > 1, "{} chunks", chunks.len());
         (ds, o, chunks)
     }

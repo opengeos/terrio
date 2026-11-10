@@ -393,15 +393,42 @@ def _crs(crs: str | None) -> str | None:
 
     `EPSG:<code>` when GDAL identifies an EPSG code, otherwise GDAL's WKT1 (here PROJ's
     `WKT1_GDAL` export, which names axes as GDAL does).
+
+    An `EPSG:<code>` that terrio knows is given as it is, without pyproj. A definition pyproj
+    cannot parse, an `EPSG:<code>` neither knows included, is `None`, with a warning that quotes
+    it, since a GeoDataFrame refuses it; without pyproj, or with one that fails to import, the
+    definition is given as it is.
     """
-    if crs is None or crs.startswith("EPSG:"):
+    if crs is None:
         return crs
+    # terrio identified the code, or a `.prj` names one terrio knows: no need for pyproj. An
+    # `EPSG:<digits>` reference is looked up in terrio's database, never read as a file name.
+    if re.fullmatch(r"EPSG:[0-9]{1,9}", crs):
+        try:
+            _terrio.crs_info(crs)
+        except _terrio_errors.CRSError:
+            pass
+        else:
+            return crs
     try:
         from pyproj import CRS
-
-        return CRS.from_user_input(crs).to_wkt("WKT1_GDAL")
     except Exception:  # noqa: BLE001
         return crs
+    try:
+        parsed = CRS.from_user_input(crs)
+        return crs if crs.startswith("EPSG:") else parsed.to_wkt("WKT1_GDAL")
+    except Exception:  # noqa: BLE001
+        # Non-printable characters (whitespace other than the space, and control characters such
+        # as ESC) are quoted as spaces, so that the quote is one line and sends a terminal no
+        # escape sequence.
+        quoted = "".join(c if c.isprintable() else " " for c in crs.strip()[:80])
+        # stacklevel: the direct call of read_info or read_dataframe. Wrappers such as
+        # list_layers or geopandas add another frame, so this may point into the wrapper.
+        warnings.warn(
+            f"the layer's CRS definition cannot be parsed ('{quoted}'): it is read without a CRS",
+            stacklevel=4,
+        )
+        return None
 
 
 def read(

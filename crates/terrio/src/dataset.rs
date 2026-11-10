@@ -45,6 +45,10 @@ pub struct RasterDataset {
     /// cannot hold (they then hold the extent of its footprint); `None` for north-up rasters.
     /// Set it with [`RasterDataset::set_geo_transform`].
     pub affine: Option<[f64; 6]>,
+    /// Whether the source explicitly reports an affine geotransform. `None` for an in-memory
+    /// raster or a driver that does not report presence separately from its fallback pixel grid.
+    /// GDAL-backed whole reads preserve this distinction; setting a transform marks it present.
+    pub geotransform_present: Option<bool>,
     /// Whether the bands hold complex numbers, as GDAL's `CInt16`, `CInt32`, `CFloat32` and
     /// `CFloat64` bands: each complex band is two bands of `raster`, its real parts then its
     /// imaginary parts, of the parts' type (`Int16` for `CInt16`). Band `k` (from 0) of the
@@ -152,6 +156,7 @@ impl RasterDataset {
     /// or south-up one is kept in [`RasterDataset::affine`], the raster's origin and cell sizes
     /// then describing the bounding box of its footprint. Clears any inherited GCPs.
     pub fn set_geo_transform(&mut self, gt: [f64; 6]) {
+        self.geotransform_present = Some(true);
         self.gcps.clear();
         let r = &mut self.raster;
         if is_north_up(&gt) {
@@ -185,6 +190,7 @@ impl RasterDataset {
             band_metadata: Vec::new(),
             gcps: Vec::new(),
             affine: None,
+            geotransform_present: None,
             complex: false,
             geolocation: None,
             metadata_domains: Vec::new(),
@@ -1061,15 +1067,22 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
-    // City-model documents, ESRI JSON and protocol buffers with no recognized extension (a downloaded
-    // query result) use a bounded root probe, as does `.pbf`, which a query's protocol buffer shares
-    // with OpenStreetMap.
+    // The error of the reader of a GeoJSON or GML document that goes on to the `wbvector` fallback
+    // below: reported if the fallback cannot read the document either.
+    #[cfg_attr(target_family = "wasm", allow(unused_mut))]
+    let mut reader_error = None;
+    // A file whose name points to no driver is identified by a bounded probe of its root, as a
+    // remote response under such a name is (`open_remote_vector_response`); so is `.pbf`, which a
+    // query's protocol buffer shares with OpenStreetMap. The probe sees only allowed drivers; with
+    // the `gdal` feature, what a reader refuses goes to GDAL from the entry points.
     #[cfg(not(target_family = "wasm"))]
     let pbf =
         VectorDriver::for_extension(path) == Some(VectorDriver::OSM) && ext == "pbf" && !path.to_ascii_lowercase().ends_with(".osm.pbf");
     #[cfg(not(target_family = "wasm"))]
     if (VectorDriver::for_extension(path).is_none() || pbf) && RasterDriver::for_extension(path).is_none() && !Path::new(path).is_dir() {
-        let driver = crate::inspection::identify(path, false).ok().flatten().and_then(|identified| match identified.driver.as_str() {
+        let identified = crate::inspection::identify(path, false).ok().flatten();
+        let found = identified.as_ref().map(|identified| identified.driver.as_str());
+        let driver = found.and_then(|found| match found {
             "ESRIPBF" => Some(VectorDriver::ESRIPBF),
             _ if pbf => None,
             "CityGML" => Some(VectorDriver::CityGML),
@@ -1077,10 +1090,21 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
             // Its first bytes show ESRI JSON, but a root `type` further on can say GeoJSON: the JSON
             // reader decides on the whole document.
             "ESRIJSON" => Some(VectorDriver::GeoJSON),
+            "GeoJSON" => Some(VectorDriver::GeoJSON),
+            "GML" => Some(VectorDriver::GML),
             _ => None,
         });
         if let Some(driver) = driver {
-            return read_vector_local(path, driver, options).map(Dataset::Vector);
+            let result = read_vector_local(path, driver, options);
+            // A GeoJSON or GML document its reader refuses goes on to the `wbvector` fallback when
+            // that is allowed.
+            let to_fallback = matches!(found, Some("GeoJSON" | "GML"))
+                && wbvector_fallback_allowed()
+                && result.as_ref().is_err_and(|e| !e.is_resource_refusal());
+            match result {
+                Err(e) if to_fallback => reader_error = Some(e),
+                result => return result.map(Dataset::Vector),
+            }
         }
         // Its name also names this driver, which an allow-list may have let it through for: the
         // driver that reads it is the one to judge.
@@ -1134,22 +1158,26 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
             Ok(format) => {
                 // Found by its content (an XML element anywhere in its first 4 KiB, a SQLite
                 // database as a GeoPackage...): read only if the driver of that format is allowed.
-                let driver = VectorDriver::ALL.iter().find(|d| d.to_wb().as_ref() == Some(&format)).map_or("unknown", |d| d.name());
-                crate::formats::check_driver_allowed(driver, path, crate::formats::Kind::Vector)?;
-                wbvector_dataset(wbvector::read(path)?, path, options)
+                let driver = VectorDriver::ALL.iter().find(|d| d.to_wb().as_ref() == Some(&format)).copied();
+                if let Err(refused) =
+                    crate::formats::check_driver_allowed(driver.map_or("unknown", |d| d.name()), path, crate::formats::Kind::Vector)
+                {
+                    return Err(reader_error.unwrap_or(refused));
+                }
+                match wbvector::read(path) {
+                    Ok(layer) => wbvector_dataset(layer, path, options, driver.unwrap_or(VectorDriver::GeoJSON)),
+                    Err(e) => Err(reader_error.unwrap_or_else(|| e.into())),
+                }
             }
-            Err(_) => Err(Error::Unsupported(format!("'{path}': format not recognized ({raster_err})"))),
+            Err(_) => Err(reader_error.unwrap_or_else(|| Error::Unsupported(format!("'{path}': format not recognized ({raster_err})")))),
         },
     }
 }
 
 /// The dataset of a layer read by the `wbvector` fallback.
-fn wbvector_dataset(layer: Layer, path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
+fn wbvector_dataset(layer: Layer, path: &str, options: &VectorOpenOptions, driver: VectorDriver) -> Result<Dataset> {
     let layers = select_layers(vec![layer], path, options)?;
-    Ok(Dataset::Vector(VectorDataset::new(
-        layers.into_iter().map(|l| fix_layer(l, path, VectorDriver::GeoJSON)).collect(),
-        VectorDriver::GeoJSON,
-    )))
+    Ok(Dataset::Vector(VectorDataset::new(layers.into_iter().map(|l| fix_layer(l, path, driver)).collect(), driver)))
 }
 
 /// Whether the `wbvector` fallback reads a file as KMZ: a zip archive, whatever its name (a zip
@@ -2329,13 +2357,16 @@ mod content_allow_list_tests {
         assert!(read.as_ref().is_err_and(|e| !e.contains("not allowed")), "read as the vector archive it is: {read:?}");
     }
 
-    /// With `TERRIO_WBVECTOR_FALLBACK=YES`, `wbvector` detects a file named for no driver by its
-    /// content, as KML when `<kml` is anywhere in its first 4 KiB, where `sniff` saw a GeoJSON
-    /// document: the format it finds is read only if its driver is allowed.
+    /// With `TERRIO_WBVECTOR_FALLBACK=YES`, `wbvector` detects a file named for no driver that
+    /// terrio's drivers do not read by its content, as KML when `<kml` is anywhere in its first
+    /// 4 KiB, where `sniff` saw a GeoJSON document (any JSON object): the format it finds is read
+    /// only if its driver is allowed. A GeoJSON document is read as GeoJSON before the fallback.
     #[test]
     fn the_wbvector_fallback_reads_only_allowed_drivers() {
         let dir = tempfile::tempdir().unwrap();
-        let geojson = dir.path().join("q.dat2");
+        let json = dir.path().join("q.dat2");
+        std::fs::write(&json, r#"{"features":[],"name":"<kml"}"#).unwrap();
+        let geojson = dir.path().join("g.dat2");
         std::fs::write(&geojson, r#"{"type":"FeatureCollection","features":[],"name":"<kml"}"#).unwrap();
         let kml = dir.path().join("k.dat2");
         let doc = r#"<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>
@@ -2345,7 +2376,8 @@ mod content_allow_list_tests {
             let options = [("TERRIO_ALLOWED_DRIVERS", drivers), ("TERRIO_WBVECTOR_FALLBACK", "YES")];
             with(&options, || open(path.to_str().unwrap())).map(|d| matches!(d, Dataset::Vector(_))).map_err(|e| e.to_string())
         };
-        assert_refused(open_with(&geojson, "GeoJSON"), "KML", "a GeoJSON document holding '<kml'");
+        assert_refused(open_with(&json, "GeoJSON"), "KML", "a JSON document holding '<kml'");
+        assert_eq!(open_with(&geojson, "GeoJSON"), Ok(true), "a GeoJSON document holding '<kml'");
         assert_eq!(open_with(&kml, "KML"), Ok(true));
     }
 

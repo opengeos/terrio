@@ -217,6 +217,10 @@ impl SpatialRef {
     pub fn is_geographic(&self) -> bool {
         self.as_core().is_geographic()
     }
+    /// One longitude revolution in the geographic CRS's native angular units.
+    pub(crate) fn longitude_period(&self) -> Option<f64> {
+        self.as_core().longitude_period()
+    }
     /// Whether horizontal axes are declared north then east, requiring a GML XY swap.
     pub(crate) fn has_north_east_axis_order(&self) -> bool {
         self.as_core().has_north_east_axis_order()

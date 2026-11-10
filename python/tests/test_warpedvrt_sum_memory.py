@@ -149,15 +149,15 @@ def test_a_sum_of_bands_with_output_nodata_is_warped_whole(tmp_path):
 
 def test_the_sum_budget_applies_to_each_part(tmp_path, monkeypatch):
     # 1024 x 1024 float32 summed into 64 x 64: in one window, the read would hold 4 bytes per
-    # pixel and 8 for the shares, 12,582,912 bytes. Under a 4,000,000-byte budget it is refused
-    # before anything is read, and a part at a time (1 MB windows) it is not. A 1 x 1 read, one
-    # pixel whose window is the whole source, cannot be split and is refused either way.
+    # pixel, 4,194,304 bytes. Under a 4,000,000-byte budget it is refused before anything is read,
+    # and a part at a time (1 MB windows) it is not. A 1 x 1 read, one pixel whose window is the
+    # whole source, cannot be split and is refused either way.
     n = 1024
     values = np.random.default_rng(3).random((n, n), dtype="float32")
     path, grid = square(n, values, tmp_path, "f32.tif")
     expected, _ = tile(path, WHOLE, (1, 64, 64), **grid)
     monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "4000000")
-    refused = r"about 12582912 bytes .*TERRIO_WARP_SUM_MAX_BYTES=4000000"
+    refused = r"about 4194304 bytes .*TERRIO_WARP_SUM_MAX_BYTES=4000000"
     with pytest.raises(terrio.ResourceLimitError, match=refused):
         tile(path, WHOLE, (1, 64, 64), **grid)
     parts, _ = tile(path, PARTS, (1, 64, 64), **grid)
@@ -170,13 +170,13 @@ def test_the_sum_budget_counts_the_largest_part(tmp_path, monkeypatch):
     # 1024 x 1024 float32 filling the right half of a grid twice as wide, summed into 128 x 64
     # under a 4 MB `warp_mem_limit`: the first part, the left half, reads a sliver of the source
     # (its padding, 2 x 1024 pixels) and each of the right half's parts 514 x 1024 pixels, about
-    # 6.3 MB with the shares. Under a 1,000,000-byte budget the read is refused for its largest
-    # part, whichever part comes first.
+    # 2.1 MB. Under a 1,000,000-byte budget the read is refused for its largest part, whichever
+    # part comes first.
     n = 1024
     path = cog(tmp_path / "f32.tif", np.ones((n, n), "float32"), (0.0, 1.0, 0.0, n, 0.0, -1.0))
     grid = {"crs": "EPSG:3857", "transform": from_origin(-n, n, 1, 1), "width": 2 * n, "height": n}
     monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "1000000")
-    with pytest.raises(terrio.ResourceLimitError, match=r"about 6316032 bytes"):
+    with pytest.raises(terrio.ResourceLimitError, match=r"about 2105344 bytes"):
         tile(path, 4, (1, 64, 128), **grid)
 
 

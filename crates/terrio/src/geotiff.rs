@@ -1200,8 +1200,10 @@ pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek + Send>(
 }
 
 /// Decodes chunks on several threads, each with its own decoder over the file, handing them to
-/// `place` on the calling thread. Returns how many of the first chunks were decoded: a thread that
-/// cannot open the file leaves its share to the caller.
+/// `place` on the calling thread: as many threads as the chunks, up to [`crate::par::threads`],
+/// within those left free in the budget that all reads share ([`DECODE_WORKERS`]). Returns how
+/// many of the first chunks were decoded: a thread that cannot open the file leaves its share to
+/// the caller.
 #[cfg(not(target_family = "wasm"))]
 #[allow(clippy::too_many_arguments)]
 fn decode_in_threads<D: Read + Seek + Send>(
@@ -1215,68 +1217,150 @@ fn decode_in_threads<D: Read + Seek + Send>(
     place: &mut impl FnMut(DecodedChunk) -> crate::Result<()>,
 ) -> crate::Result<usize> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    let workers = crate::par::threads().min(chunks.len());
-    if workers > 1 {
-        // The next chunk to decode, and whether to stop.
-        let (next, stop) = (AtomicUsize::new(0), AtomicBool::new(false));
-        std::thread::scope(|scope| -> crate::Result<()> {
-            // A bounded queue: decoding never runs far ahead of placing.
-            let (tx, rx) = std::sync::mpsc::sync_channel::<crate::Result<DecodedChunk>>(workers * 2);
-            for _ in 0..workers {
-                let (tx, next, stop) = (tx.clone(), &next, &stop);
-                // A thread that cannot be started (its stack not allocated) leaves the chunks to
-                // the others, or to the caller.
-                let _ = std::thread::Builder::new().spawn_scoped(scope, move || {
-                    // A decoder that an earlier read left, else a new one. A thread that cannot
-                    // open the file leaves the chunks to the others.
-                    let (at, mut d) = match pool.and_then(|p| p.take(ifd)) {
-                        Some(spare) => spare,
-                        None => match reopen() {
-                            Ok(d) => {
-                                #[cfg(test)]
-                                if let Some(p) = pool {
-                                    p.opened.fetch_add(1, Ordering::Relaxed);
-                                }
-                                (0, d)
+    // Given back once the threads below are done. A read that cannot reserve two workers
+    // stays serial for its entire window: it does not wait for or acquire later releases,
+    // which can increase latency for a small read concurrent with a larger one.
+    let Some(reserved) = DecodeWorkers::reserve(chunks.len().min(crate::par::threads())) else { return Ok(0) };
+    let workers = reserved.0;
+    // The next chunk to decode, and whether to stop.
+    let (next, stop) = (AtomicUsize::new(0), AtomicBool::new(false));
+    std::thread::scope(|scope| -> crate::Result<()> {
+        // A bounded queue: decoding never runs far ahead of placing.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<crate::Result<DecodedChunk>>(workers * 2);
+        for _ in 0..workers {
+            let (tx, next, stop) = (tx.clone(), &next, &stop);
+            // A thread that cannot be started (its stack not allocated) leaves the chunks to
+            // the others, or to the caller.
+            let _ = std::thread::Builder::new().spawn_scoped(scope, move || {
+                #[cfg(test)]
+                let _live = LiveWorker::enter();
+                // A decoder that an earlier read left, else a new one. A thread that cannot
+                // open the file leaves the chunks to the others.
+                let (at, mut d) = match pool.and_then(|p| p.take(ifd)) {
+                    Some(spare) => spare,
+                    None => match reopen() {
+                        Ok(d) => {
+                            #[cfg(test)]
+                            if let Some(p) = pool {
+                                p.opened.fetch_add(1, Ordering::Relaxed);
                             }
-                            Err(_) => return,
-                        },
-                    };
-                    if at != ifd && d.seek_to_image(ifd).is_err() {
-                        return;
-                    }
-                    let mut failed = false;
-                    while !stop.load(Ordering::Relaxed) {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(&idx) = chunks.get(i) else { break };
-                        let r = decode_chunk(&mut d, codec, idx, limit, err);
-                        failed = r.is_err();
-                        if tx.send(r).is_err() || failed {
-                            break;
+                            (0, d)
                         }
-                    }
-                    // A decoder that failed is not kept: its state is not known.
-                    if let (Some(p), false) = (pool, failed) {
-                        p.give_back(ifd, d);
-                    }
-                });
-            }
-            drop(tx);
-            let mut result = Ok(());
-            for r in &rx {
-                if let Err(e) = r.and_then(&mut *place) {
-                    result = Err(e);
-                    break;
+                        Err(_) => return,
+                    },
+                };
+                if at != ifd && d.seek_to_image(ifd).is_err() {
+                    return;
                 }
+                let mut failed = false;
+                while !stop.load(Ordering::Relaxed) {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&idx) = chunks.get(i) else { break };
+                    let r = decode_chunk(&mut d, codec, idx, limit, err);
+                    failed = r.is_err();
+                    if tx.send(r).is_err() || failed {
+                        break;
+                    }
+                }
+                // A decoder that failed is not kept: its state is not known.
+                if let (Some(p), false) = (pool, failed) {
+                    p.give_back(ifd, d);
+                }
+            });
+        }
+        drop(tx);
+        let mut result = Ok(());
+        for r in &rx {
+            if let Err(e) = r.and_then(&mut *place) {
+                result = Err(e);
+                break;
             }
-            // Stop the workers early on an error.
-            stop.store(true, Ordering::Relaxed);
-            drop(rx);
-            result
-        })?;
-        return Ok(next.into_inner().min(chunks.len()));
+        }
+        // Stop the workers early on an error.
+        stop.store(true, Ordering::Relaxed);
+        drop(rx);
+        result
+    })?;
+    Ok(next.into_inner().min(chunks.len()))
+}
+
+/// Decode worker threads running, over all reads: a read starts only as many as keep the total
+/// within [`decode_worker_limit`], and decodes its chunks itself when fewer than two are free, so
+/// that reads on several threads at once share the cores instead of each starting a thread per
+/// core.
+#[cfg(not(target_family = "wasm"))]
+static DECODE_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Worker threads reserved for one read, given back when dropped.
+#[cfg(not(target_family = "wasm"))]
+struct DecodeWorkers<'a>(usize, &'a std::sync::atomic::AtomicUsize);
+
+#[cfg(not(target_family = "wasm"))]
+impl<'a> DecodeWorkers<'a> {
+    /// Up to `want` workers within the total, or None when fewer than two are free.
+    fn reserve(want: usize) -> Option<Self> {
+        Self::reserve_from(&DECODE_WORKERS, want, decode_worker_limit())
     }
-    Ok(0)
+
+    fn reserve_from(total: &'a std::sync::atomic::AtomicUsize, want: usize, limit: usize) -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        let mut running = total.load(Ordering::Relaxed);
+        loop {
+            let n = want.min(limit.saturating_sub(running));
+            if n < 2 {
+                return None;
+            }
+            match total.compare_exchange_weak(running, running + n, Ordering::AcqRel, Ordering::Relaxed) {
+                Ok(_) => return Some(Self(n, total)),
+                Err(now) => running = now,
+            }
+        }
+    }
+}
+
+/// The most decode workers running at once over all reads: the machine's cores, or the thread
+/// count when it is set higher. Not the thread count when it is lower: a read still starts at most
+/// [`crate::par::threads`] workers, as each read did before the budget, so reads on several threads
+/// keep every core busy, with the total bounded by the larger of cores and the configured count.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn decode_worker_limit() -> usize {
+    static CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let cores = *CORES.get_or_init(|| std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get));
+    cores.max(crate::par::threads())
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl Drop for DecodeWorkers<'_> {
+    fn drop(&mut self) {
+        self.1.fetch_sub(self.0, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// Decode worker threads alive, and the most there were at once.
+#[cfg(test)]
+pub(crate) static LIVE_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) static PEAK_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Counts a decode worker thread in [`LIVE_WORKERS`] while it lives.
+#[cfg(test)]
+struct LiveWorker;
+
+#[cfg(test)]
+impl LiveWorker {
+    fn enter() -> Self {
+        use std::sync::atomic::Ordering;
+        let live = LIVE_WORKERS.fetch_add(1, Ordering::AcqRel) + 1;
+        PEAK_WORKERS.fetch_max(live, Ordering::AcqRel);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for LiveWorker {
+    fn drop(&mut self) {
+        LIVE_WORKERS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
 }
 
 /// Decodes chunks on the thread pool of WebAssembly built with threads, a few per thread at a
@@ -1476,6 +1560,7 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
         ds.has_nodata = ds.band_nodata[0].is_some();
         ds.raster.nodata = ds.band_nodata[0].unwrap_or(-9999.);
     }
+    ds.geotransform_present = Some(tags.geo_transform.is_some());
     match tags.corner_geo_transform() {
         Some(gt) => ds.set_geo_transform(gt),
         None => {
@@ -1535,6 +1620,33 @@ impl<R: Seek> Seek for PatchedReader<R> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Reservations start with free capacity, stop at the cap, and release capacity on drop.
+    /// A local counter keeps this deterministic even when other tests decode concurrently.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn decode_reservations_respect_the_limit_and_release_capacity() {
+        use super::DecodeWorkers;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let total = AtomicUsize::new(0);
+        assert!(DecodeWorkers::reserve_from(&total, 1, 4).is_none());
+        let first = DecodeWorkers::reserve_from(&total, 3, 4).unwrap();
+        assert_eq!(first.0, 3);
+        assert_eq!(total.load(Ordering::Relaxed), 3);
+        assert!(DecodeWorkers::reserve_from(&total, 2, 4).is_none());
+        assert_eq!(total.load(Ordering::Relaxed), 3);
+        drop(first);
+        assert_eq!(total.load(Ordering::Relaxed), 0);
+        let all = DecodeWorkers::reserve_from(&total, 8, 4).unwrap();
+        assert_eq!(all.0, 4);
+        assert!(DecodeWorkers::reserve_from(&total, 2, 4).is_none());
+        drop(all);
+        assert_eq!(total.load(Ordering::Relaxed), 0);
+        let again = DecodeWorkers::reserve_from(&total, 2, 4).unwrap();
+        assert_eq!(again.0, 2);
+        drop(again);
+        assert_eq!(total.load(Ordering::Relaxed), 0);
+    }
     use super::*;
 
     /// A little-endian classic TIFF of one 4 x 2 Byte strip whose ImageWidth entry has type

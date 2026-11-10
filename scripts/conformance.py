@@ -257,14 +257,14 @@ def suite_subdatasets(ctx):
         "GDAL's netCDF and HDF5 drivers",
         "Every netCDF and HDF5 file of the test data (netCDF-4 groups, HDF5 products, GDAL's "
         "HDF-EOS5, complex, COSMO-SkyMed and netCDF geolocation test files, NASA HDF-EOS5 grids and "
-        "swaths when fetched, the repository's `_Unsigned` and user-defined attribute fixtures): the subdataset list (names "
+        "swaths when fetched, the repository's `_Unsigned`, user-defined attribute and variable order fixtures): the subdataset list (names "
         "and descriptions) and, for HDF5, the metadata as GDAL reports them, then each "
         "subdataset's summary (geolocation arrays included) and every pixel.",
     )
     out, err = "", ""
     # The test data's directories, then the repository's fixtures.
     dirs = [(sub, os.path.join(ctx.data, sub)) for sub in ("", "gdal_hdf5", "gdal_netcdf", "hdfeos5")]
-    dirs += [(sub, str(ROOT / "crates/terrio/tests/data" / sub)) for sub in ("netcdf_unsigned", "netcdf_int64_unsigned", "netcdf_user_defined")]
+    dirs += [(sub, str(ROOT / "crates/terrio/tests/data" / sub)) for sub in ("netcdf_unsigned", "netcdf_int64_unsigned", "netcdf_user_defined", "netcdf_order")]
     for sub, d in dirs:
         if not os.path.isdir(d):
             continue
@@ -855,7 +855,7 @@ def suite_cad(ctx):
 
 def suite_ops(ctx):
     """translate, warp and mosaic against gdal_translate, gdalwarp, gdalbuildvrt and gdal_merge."""
-    return suite_json_ops(
+    suite = suite_json_ops(
         ctx,
         "ops",
         "compare_ops_with_gdal.py",
@@ -863,9 +863,21 @@ def suite_ops(ctx):
         "`gdal_translate`, `gdalwarp`, `gdalbuildvrt`, `gdal_merge.py`",
         "The outputs of the same command lines on real files: size, type, CRS and geotransform must "
         "match, then pixels are compared. Identical: every pixel equal. Within tolerance: every "
-        "pixel within the case's tolerance (1e-2 for interpolating resamplings).",
+        "pixel within the case's tolerance (1e-2 for interpolating resamplings). Known average/RMS "
+        "footprint-edge weighting differences (#703) remain reported as differences: no pixels "
+        "are excluded and the tolerances are unchanged.",
         1,
     )
+
+    edge_weight_cases = {
+        "warp DEM NAD83->UTM average",
+        "warp DEM NAD83->UTM rms",
+        "warp DEM ->3857 tr 100 tap average (-ovr NONE)",
+    }
+    for case in suite.cases:
+        if case.name in edge_weight_cases and case.status == DIFFERS and " pixels differ (" in case.detail:
+            case.detail += "; case has known #703 area-overlap edge-weight divergence; full comparison retained"
+    return suite
 
 
 def suite_raster_masks(ctx):

@@ -592,6 +592,12 @@ impl SpatialRef {
             .unwrap_or(1.0)
     }
 
+    /// One longitude revolution in native angular units, or `None` for a nongeographic CRS.
+    #[doc(hidden)]
+    pub fn longitude_period(&self) -> Option<f64> {
+        Def::new(self).ok()?.longitude_period()
+    }
+
     /// Whether the CRS has geocentric Cartesian X/Y/Z coordinates.
     pub fn is_geocentric(&self) -> bool {
         Def::new(self).is_ok_and(|d| d.is_geocentric())

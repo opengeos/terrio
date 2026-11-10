@@ -409,6 +409,12 @@ RPC_CASES = [
 ]
 
 
+def _inner(written):
+    """The pixels whose four neighbours are written (`(bands, rows, cols)`), none on the border."""
+    p = np.pad(written, ((0, 0), (1, 1), (1, 1)))
+    return p[:, :-2, 1:-1] & p[:, 2:, 1:-1] & p[:, 1:-1, :-2] & p[:, 1:-1, 2:]
+
+
 @pytest.mark.parametrize(
     "name,options",
     # rgb.tif: three bands with a nodata value.
@@ -448,6 +454,21 @@ def test_rpc_source_matches_rasterio(rpc_dir, monkeypatch, name, options):
     np.testing.assert_allclose(t_t, g_t, rtol=1e-12, atol=0)
     for i, (a, b) in enumerate(zip(g_reads, t_reads, strict=True)):
         assert a.shape == b.shape and a.dtype == b.dtype, i
+        if i in (2, 3) and options.get("resampling") == RR.average:
+            # terrio weighs each source pixel at a footprint's edge by its part inside the source
+            # window (#703): in the reads at a reduced size, warped by `average` onto coarser
+            # grids, the pixels along the edge of the warped footprint (written, beside an
+            # unwritten pixel or the border) follow those weights, and are checked for being
+            # written and within 39 (read 2) and 11 (read 3); the others exactly. The 0s of these
+            # reads are their unwritten pixels: image.tif's few 0s leave no written pixel at 0.
+            # Bounds are the observed maximum absolute Byte differences for these exact reduced
+            # fixture reads after #703, not a derived error bound or general parity tolerance.
+            written = a != 0
+            assert np.array_equal(written, b != 0), f"read {i}: written elsewhere"
+            edge = written & ~_inner(written)
+            change = np.abs(a[edge].astype(int) - b[edge].astype(int)).max(initial=0)
+            assert change <= {2: 39, 3: 11}[i], f"read {i}: an edge pixel differs by {change}"
+            a, b = a[~edge], b[~edge]
         assert np.array_equal(a, b), (
             f"read {i}: {np.count_nonzero(a != b)} of {a.size} pixels differ"
         )

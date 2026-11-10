@@ -414,10 +414,12 @@ full resolution exactly. The estimate's accuracy is described under
 overview of floating-point data without nodata when the footprint covers complete overview
 cells. Cropping through those cells makes even the total approximate; rounded integer means,
 partly nodata blocks and other overview resamplings also introduce approximation. Give a coarse `sum` a floating-point `ot`: a
-`"UInt16"` output stores 65535 for any larger sum. A `sum` whose source window, estimated
-with 8 bytes per pixel for the pixels' shares, would hold more than 4 GiB raises
-`ResourceLimitError` (a `MemoryError`) before it is read, and so do a `sum` read of a
-`WarpedVRT` and a `sum` `terrio.rio.warp.reproject` of a band or dataset: `overview=n` sums a
+`"UInt16"` output stores 65535 for any larger sum. For paths and lazy inputs, a `sum` of one source without a cutline
+reads the window of an output too coarse to be split into chunks a strip of rows at a time, as
+`terrio warp` does (see [Warp source overviews](cli.md#warp-source-overviews)). The working-memory estimate applies per strip, with at least one row; two strips overlap during reading and computation, in addition to output and decoder buffers. An unmasked, already loaded `Raster` reuses its resident pixels and does not use strip reads or this source-read budget. For paths and lazy inputs, a `sum` whose
+source pixels held at once would exceed 4 GiB, as several sources or a cutline hold every source
+whole, raises `ResourceLimitError` (a `MemoryError`) before they are read, and so do a `sum` read
+of a `WarpedVRT` and a `sum` `terrio.rio.warp.reproject` of a band or dataset: `overview=n` sums a
 level (for the `terrio.rio` ones, a source opened with `overview_level=n`, whose pixels count
 the same way), and the `TERRIO_WARP_SUM_MAX_BYTES` environment variable, a positive integer
 byte count, changes the budget. A `sum` read of a `WarpedVRT` warps a region whose source
@@ -906,6 +908,15 @@ terrio.allowed_drivers("raster")  # ["GTIFF"]
 `None` raises `InvalidArgumentError`. `GDAL_HTTP_HEADERS` set for a prefix is sent only to that
 prefix, never to another host a redirect leads to. See [Remote Data](remote-data.md) for the
 options themselves.
+
+The `TERRIO_ALLOWED_DRIVERS` option limits the drivers too, in the environment or in an `Env`. A
+driver must then be in both lists, and `allowed_drivers()` gives the drivers both allow. The
+option's value is a comma-separated list of driver names in any case. Set but empty, it allows no
+driver. In an `Env` it only narrows the list outside, and unset there, it leaves that list in
+force. `allowed_drivers()` is the way to see what the option allows: `terrio.pyogrio`'s
+`get_gdal_config_option` reports a set but empty value as unset (`None`), and `config_options()`
+shows only the values `Env` scopes hold, `''` where a scope allows nothing. See
+[Allowed drivers](remote-data.md#allowed-drivers).
 
 ## Typing
 
