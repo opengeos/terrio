@@ -711,7 +711,7 @@ impl TiffOptions {
                 }
             });
         }
-        o.georeferenced = !co("GEOREFERENCED").is_some_and(|v| !yes(v));
+        o.georeferenced = super::common::georeferenced(&options.creation_options);
         let src_mdd: Vec<&str> =
             options.creation_options.iter().filter(|(k, _)| k.eq_ignore_ascii_case("SRC_MDD")).map(|(_, v)| v.as_str()).collect();
         (o.domains, o.drop_default_items) = MetadataDomain::parse(co("@METADATA_DOMAINS"), cog, co("COPY_SRC_MDD"), &src_mdd)?;

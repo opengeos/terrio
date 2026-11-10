@@ -1560,6 +1560,7 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
         ds.has_nodata = ds.band_nodata[0].is_some();
         ds.raster.nodata = ds.band_nodata[0].unwrap_or(-9999.);
     }
+    ds.geotransform_present = Some(tags.geo_transform.is_some());
     match tags.corner_geo_transform() {
         Some(gt) => ds.set_geo_transform(gt),
         None => {

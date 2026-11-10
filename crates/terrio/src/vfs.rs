@@ -29,7 +29,8 @@ use std::path::{Path, PathBuf};
 /// than naming a plain local file. Windows drive letters are part of local paths, including
 /// drive-relative names (`C:file`) and verbatim paths (`\\?\C:\dir`). No scheme or GDAL
 /// subdataset prefix is a single letter. This classification is independent of the host OS.
-pub(crate) fn is_gdal_name(name: &str) -> bool {
+#[doc(hidden)]
+pub fn is_gdal_name(name: &str) -> bool {
     if name.starts_with("/vsi") {
         return true;
     }

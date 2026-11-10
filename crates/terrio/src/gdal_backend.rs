@@ -950,6 +950,7 @@ fn finish_raster(
     }
     let mut out = RasterDataset::with_driver(raster, RasterDriver::Gdal, has_nodata);
     out.complex = complex;
+    out.geotransform_present = Some(ds.geo_transform().is_ok());
     let geolocation: Vec<(String, String)> = ds
         .metadata_domain("GEOLOCATION")
         .unwrap_or_default()

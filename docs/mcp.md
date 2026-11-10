@@ -80,7 +80,8 @@ you intend to allow, and review source and destination arguments before permitti
 
 ## Limits
 
-Over MCP, `@FILE` input lists are refused: pass each input as an item of `args`.
+Over MCP, `@FILE` input lists are refused: pass each input as an item of `args`. Wildcards in an
+input's file name (`tiles/*.tif`) are expanded, as on the [command line](cli.md#commands).
 
 Relative paths are relative to the directory the client started the server in; agents do better
 with absolute paths. A command's output (standard output and error together) is cut after 100,000

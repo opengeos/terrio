@@ -57,6 +57,18 @@ with GDAL's default, `EXACT=0`, libwebp writes values of its own choosing there.
 that is opaque everywhere is left out, so the file reads back as 3 bands, in GDAL as in terrio.
 WebP files are read lossless or lossy, as 3 bands, or 4 with an alpha channel.
 
+A raster without a geotransform and without a CRS (`GEOREFERENCED=NO`, which `terrio.rio`,
+`translate`, `convert` and pipelines give a source without a geotransform) is written to PNG,
+JPEG and WebP without a world file, and to JPEG 2000 without a GeoJP2 box. A world file an earlier
+write left at that path is removed after the image is successfully written: world files are named after the
+image's stem, so `a.png` and `a.jpg` share `a.wld`. A CRS without a geotransform is written as
+before. Every format that keeps a CRS or a nodata value in a `.aux.xml` sidecar (PNG, JPEG, WebP,
+JPEG 2000 and the others that write one) also removes a sidecar an earlier write left at that path
+when the new raster has neither, after the image is written: the sidecar is named after the whole
+file name (`a.png.aux.xml`), and what it holds would be read as the new image's. If stale PAM
+metadata cannot be removed, the new output is removed or invalidated before returning the error;
+failures to invalidate it are included in the error.
+
 Native TIFF readers limit each decoded tile or strip to 256 MiB by default. For trusted
 files with larger chunks, use `TiffReadLimits` with `LazyRaster::open_tiff_with_limits`
 (or its bytes/sparse counterparts), or `terrio::open_raster_with_tiff_limits` for an
@@ -966,6 +978,20 @@ reads it.
   counter-clockwise ring a hole of the clockwise ring before it, and `SKIP` makes every ring a
   polygon. With every method, a ring of a multi-part record that touches itself at a vertex to
   enclose a hole is first split into its exterior and holes, as GDAL 3.13 does.
+- **Shapefile `.prj`** files give the layer the EPSG CRS they are identified as (see
+  [Identification](crs.md#identification)), otherwise the definition they hold, as it is: one that
+  has the form of a definition, which is WKT whose first keyword is a CRS's (WKT 1 or 2, such as
+  `LOCAL_CS` or `ENGCRS`) with its brackets and quotes balanced and nothing after it but another
+  definition (on the next line, or after a comma, as in `PROJCS[...],VERTCS[...]`), an OGC URN of a
+  CRS (`urn:ogc:def:crs:IGNF::LAMB93`, or a combined one), or a single `AUTHORITY:CODE` of a known
+  authority (EPSG, ESRI, IAU_2015, IGNF, NKG, NRCAN, OGC or PROJ), in either case, such as
+  `IGNF:LAMB93`; or another definition terrio reads (see [Defining a CRS](crs.md#defining-a-crs)),
+  such as a PROJ string. Any other text (prose, a URL, unbalanced WKT, WKT followed by prose; a file
+  it names is not read) leaves the layer without a CRS, with a warning that quotes it. An empty
+  `.prj` leaves it without one silently, as a missing `.prj` does, and a leading byte-order mark is
+  skipped. Trailing NUL or DOS EOF padding is ignored. Reference syntax does not prove that a
+  code exists: a well-formed unknown code from a known authority is retained here; Python's
+  pyogrio interface warns and returns no CRS if pyproj cannot parse that reference.
 - **OSM XML** (`.osm`) gives the same five layers as PBF, with tags in the file's order.
 - **KMZ archives** are written as GDAL writes them, a `doc.kml` linking to one document per
   layer under `layers/`. Files given as KMZ resources (Rust `KmzOptions::resources`, CLI

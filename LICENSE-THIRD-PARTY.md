@@ -2406,7 +2406,7 @@ Used by:
 
 Used by:
 
-- [lzma-rust2 0.24.0](https://github.com/hasenbanck/lzma-rust2/)
+- [lzma-rust2 0.25.0](https://github.com/hasenbanck/lzma-rust2/)
 
 ```text
                                  Apache License

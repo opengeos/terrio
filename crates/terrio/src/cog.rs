@@ -485,7 +485,7 @@ impl LazyRaster {
         match &self.inner {
             Inner::Tiff(t) => t.tags.geo_transform.is_some(),
             Inner::Source(_, source) => source.geotransform_present().unwrap_or(true),
-            Inner::Memory(_) => true,
+            Inner::Memory(ds) => ds.geotransform_present.unwrap_or(true),
         }
     }
 
@@ -967,6 +967,16 @@ impl LazyRaster {
         }
     }
 
+    /// Marks `options` for writing this raster to `path` without a geotransform when it has none
+    /// (an unreferenced GeoTIFF or JPEG 2000 file): `GEOREFERENCED=NO` for a GeoTIFF, COG, JPEG
+    /// 2000, PNG, JPEG or WebP output, unless the options give a geotransform or a
+    /// `GEOREFERENCED` of their own. Written without a CRS either, such an output has no
+    /// georeferencing at all: no tie point, GeoJP2 box or world file declaring the unit-pixel grid
+    /// [`geo_transform`](Self::geo_transform) gives it.
+    pub fn keep_unreferenced(&self, options: &mut crate::RasterWriteOptions, path: &str) {
+        crate::drivers::common::keep_unreferenced(options, path, self.geotransform_present());
+    }
+
     /// The CRS.
     pub fn crs(&self) -> SpatialRef {
         match &self.inner {
@@ -1089,6 +1099,7 @@ impl LazyRaster {
                 band_metadata: ds.band_metadata.clone(),
                 gcps: ds.gcps.clone(),
                 affine: ds.affine,
+                geotransform_present: Some(self.geotransform_present()),
                 complex: ds.complex,
                 geolocation: ds.geolocation.clone(),
                 metadata_domains: ds.metadata_domains.clone(),
@@ -1116,6 +1127,7 @@ impl LazyRaster {
         ds.has_nodata = first_nodata.is_some();
         ds.raster.nodata = first_nodata.unwrap_or(-9999.);
         ds.set_geo_transform(self.geo_transform());
+        ds.geotransform_present = Some(self.geotransform_present());
         if let Inner::Tiff(t) = &self.inner {
             ds.band_metadata = t.tags.band_properties.clone();
             ds.color_table = t.tags.color_table.clone();
@@ -1351,6 +1363,7 @@ impl LazyRaster {
         let raster = crate::pixel::raster_from_data(cfg, data)?;
         let mut ds = RasterDataset::with_driver(raster, self.driver(), first_nodata.is_some());
         ds.set_geo_transform(geo_transform);
+        ds.geotransform_present = Some(self.geotransform_present());
         let (gcps, color_table) = match &self.inner {
             Inner::Tiff(t) => (&t.tags.gcps, &t.tags.color_table),
             Inner::Memory(source) | Inner::Source(source, _) => (&source.gcps, &source.color_table),

@@ -943,6 +943,10 @@ impl Reader {
 }
 
 impl WindowSource for Reader {
+    fn geotransform_present(&self) -> Option<bool> {
+        Some(self.description.layout.geo_transform.is_some())
+    }
+
     fn band_data_type(&self, band: usize) -> Option<DataType> {
         band.checked_sub(1).and_then(|i| self.description.layout.bands.get(i)).map(|b| b.data_type)
     }
