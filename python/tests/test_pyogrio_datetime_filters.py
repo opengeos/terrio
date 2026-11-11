@@ -2,6 +2,7 @@
 
 import functools
 import sys
+import warnings
 
 import pytest
 
@@ -110,3 +111,26 @@ def test_invalid_mixed_datetime_retains_its_diagnostic_without_filter_changes():
             sys.setprofile(previous)
     assert actual.equals(values)
     assert calls == []
+
+
+@pytest.mark.parametrize("extra", ["2024", "2024-01", "NaT", ""])
+def test_pandas_iso_dates_do_not_bypass_mixed_offset_detection(extra):
+    """Pandas-only ISO forms and missing strings cannot expose its mixed-offset warning.
+
+    Args:
+        extra: A value pandas accepts that datetime.fromisoformat cannot parse.
+    """
+    values = pd.Series(["2024-01-01T12:00:00+01:00", "2024-01-02T12:00:00+02:00", extra])
+    calls = []
+    previous = sys.getprofile()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", FutureWarning)
+        sys.setprofile(functools.partial(record_filter_changes, calls))
+        try:
+            result = tpg._parse_datetime(values, False, True)
+        finally:
+            sys.setprofile(previous)
+    assert calls == []
+    assert not [warning for warning in caught if issubclass(warning.category, FutureWarning)]
+    expected = pd.to_datetime(values, format="ISO8601", utc=True).astype("datetime64[ms, UTC]")
+    pd.testing.assert_series_equal(result, expected)

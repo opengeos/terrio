@@ -319,7 +319,7 @@ def _read_geoparquet_dataframe(
     return gdf
 
 
-def _iso_datetime(value: str) -> _dt.datetime:
+def _parse_iso_datetime(value: str) -> _dt.datetime:
     """Parse an ISO datetime, including trailing Z on Python 3.10.
 
     Args:
@@ -349,14 +349,22 @@ def _to_datetime_iso8601(pd, ser):
     """
     if int(pd.__version__.split(".")[0]) < 3:
         offsets = set()
-        for value in ser:
+        for value in pd.unique(ser):
             if pd.isna(value):
                 continue
             try:
-                offset = _iso_datetime(value).utcoffset()
+                offset = _parse_iso_datetime(value).utcoffset()
             except (AttributeError, TypeError, ValueError):
-                # Let pandas retain its own invalid-input diagnostic.
-                break
+                try:
+                    # Pandas also accepts reduced dates and missing strings such as "NaT".
+                    # A singleton cannot mix offsets or emit the mixed-timezone warning.
+                    parsed = pd.to_datetime([value], format="ISO8601")[0]
+                    if pd.isna(parsed):
+                        continue
+                    offset = parsed.utcoffset()
+                except (AttributeError, TypeError, ValueError):
+                    # Let pandas retain its own invalid-input diagnostic.
+                    break
             if len(offsets) < 2:
                 offsets.add(offset)
         else:
@@ -388,7 +396,7 @@ def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
                     return ser
             else:
                 try:
-                    res = ser.map(_iso_datetime, na_action="ignore")
+                    res = ser.map(_parse_iso_datetime, na_action="ignore")
                 except Exception as ex2:
                     warnings.warn(warning.format(message=str(ex2)), stacklevel=3)
                     return ser

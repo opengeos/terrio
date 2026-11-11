@@ -152,6 +152,7 @@ def test_dataset_beside_readme_opens_as_the_core_does(tmp_path, sources, extensi
     assert_geodataframe_equal(
         tpg.read_dataframe(source, layer=0), tpg.read_dataframe(sources[extension])
     )
+    # Recreate readable streams because read_dataframe consumes them.
     source = path if mode == "path" else buffer(data, mode)
     assert tpg.list_layers(source).tolist() == tpg.list_layers(sources[extension]).tolist()
     assert terrio.list_layers(str(path)) == [row[0] for row in tpg.list_layers(path)]

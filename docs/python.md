@@ -165,6 +165,7 @@ the dataset. Collections of root-level shapefiles still expose one layer per sha
 Datetime parsing preserves uniform UTC offsets, converts mixed offsets to UTC by default, and
 preserves individual offsets with `mixed_offsets_as_utc=False`. Terrio does not change warning
 filters during parsing on pandas 2 or 3; pandas can still manage its own warning filters.
+Preserving individual offsets also accepts the ISO UTC suffix `Z` on Python 3.10.
 
 ### Streams
 
