@@ -1418,6 +1418,8 @@ fn translate(
 ///         are ignored.
 ///     kernel_version: The GDAL release whose bilinear/cubic resampling to reproduce, "3.12" or
 ///         "3.13". By default the `TERRIO_GDAL_COMPAT` option's, else "3.12".
+///     grid_invariant: Keep values independent of tiles/windows (default). False selects
+///         GDAL's chunk-dependent sampling. None follows TERRIO_WARP_GRID.
 ///     init: A `Raster` holding the values the output starts from (all its bands, on the output
 ///         grid, in any type), as GDAL warps without `INIT_DEST`: pixels no valid source pixel
 ///         reaches keep them. By default the output starts at its nodata value, else 0.
@@ -1430,7 +1432,7 @@ fn translate(
     src, dst=None, *, s_srs=None, t_srs=None, tr=None, te=None, te_srs=None, ts=None, dst_transform=None, tap=false,
     resampling="near", overview=None, srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125,
     format=None, compress=None, tile_size=None, bigtiff=false, options=None, gcps=None, order=0, gcp_method="auto",
-    rpc=None, to=None, wo=None, geoloc=false, geolocation=None, kernel_version=None, init=None, _sum_scale=1.0
+    rpc=None, to=None, wo=None, geoloc=false, geolocation=None, kernel_version=None, grid_invariant=None, init=None, _sum_scale=1.0
 ))]
 #[allow(clippy::too_many_arguments)]
 fn warp(
@@ -1467,6 +1469,7 @@ fn warp(
     geoloc: bool,
     geolocation: Option<&Bound<'_, pyo3::types::PyDict>>,
     kernel_version: Option<&str>,
+    grid_invariant: Option<bool>,
     init: Option<&Bound<'_, PyAny>>,
     _sum_scale: f64,
 ) -> PyResult<PyRaster> {
@@ -1519,6 +1522,9 @@ fn warp(
         sum_scale: _sum_scale,
         ..Default::default()
     };
+    if let Some(value) = grid_invariant {
+        o.grid_invariant = value;
+    }
     for (k, v) in wo.unwrap_or_default() {
         match k.to_ascii_uppercase().as_str() {
             "SOURCE_EXTRA" => o.source_extra = Some(v.trim().parse().map_err(|_| invalid("SOURCE_EXTRA must be an integer"))?),
@@ -1846,6 +1852,8 @@ fn _window_converts(src: &str, work: &str) -> bool {
 ///         `rpc_options` (`RPC_HEIGHT`, `RPC_DEM`...).
 ///     kernel_version: The GDAL release whose bilinear/cubic resampling to reproduce, "3.12" or
 ///         "3.13". By default the `TERRIO_GDAL_COMPAT` option's, else "3.12".
+///     grid_invariant: Keep values independent of tiles/windows (default). False selects
+///         GDAL's chunk-dependent sampling. None follows TERRIO_WARP_GRID.
 ///     sum_scale: With `sum`, the full-resolution pixels each pixel of the source level stands
 ///         for, `(W / w) * (H / h)` for a `w` x `h` overview of a `W` x `H` raster: each source
 ///         value counts that many times. 1 by default; a positive number.
@@ -1857,7 +1865,7 @@ pub struct PyRegionWarp {
 #[pymethods]
 impl PyRegionWarp {
     #[new]
-    #[pyo3(signature = (src_size, src_transform, src_crs, dst_crs, dst_transform, resampling, error_threshold, dtype, src_nodata, dst_nodata=None, gcps=None, gcp_order=0, gcp_method="auto", rpc=None, rpc_options=None, kernel_version=None, sum_scale=1.0))]
+    #[pyo3(signature = (src_size, src_transform, src_crs, dst_crs, dst_transform, resampling, error_threshold, dtype, src_nodata, dst_nodata=None, gcps=None, gcp_order=0, gcp_method="auto", rpc=None, rpc_options=None, kernel_version=None, sum_scale=1.0, grid_invariant=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -1878,11 +1886,13 @@ impl PyRegionWarp {
         rpc_options: Option<std::collections::HashMap<String, String>>,
         kernel_version: Option<&str>,
         sum_scale: f64,
+        grid_invariant: Option<bool>,
     ) -> PyResult<Self> {
         if !(sum_scale.is_finite() && sum_scale > 0.0) {
             return Err(invalid(format!("sum_scale must be a positive number, not {sum_scale}")));
         }
         let kernel_version = terrio::ops::warp::KernelVersion::parse_or_configured(kernel_version).py()?;
+        let grid_invariant = grid_invariant.unwrap_or_else(|| WarpOptions::default().grid_invariant);
         let (src_srs, dst_srs) = (SpatialRef::parse(src_crs).py()?, SpatialRef::parse(dst_crs).py()?);
         let (resampling, dtype) = (Resampling::parse(resampling).py()?, terrio::ops::parse_data_type(dtype).py()?);
         if let (None, Some(rpc)) = (&gcps, rpc) {
@@ -1903,7 +1913,9 @@ impl PyRegionWarp {
                 dst_nodata,
             )
             .py()?;
-            return Ok(Self { inner: inner.with_kernel_version(kernel_version).with_sum_scale(sum_scale) });
+            return Ok(Self {
+                inner: inner.with_kernel_version(kernel_version).with_grid_invariance(grid_invariant).with_sum_scale(sum_scale),
+            });
         }
         let inner = match gcps {
             // GCPs georeference the source instead of `src_transform`.
@@ -1938,7 +1950,7 @@ impl PyRegionWarp {
             ),
         }
         .py()?;
-        Ok(Self { inner: inner.with_kernel_version(kernel_version).with_sum_scale(sum_scale) })
+        Ok(Self { inner: inner.with_kernel_version(kernel_version).with_grid_invariance(grid_invariant).with_sum_scale(sum_scale) })
     }
 
     /// The source window `(x, y, width, height)` a region `(x, y, width, height)` of the grid

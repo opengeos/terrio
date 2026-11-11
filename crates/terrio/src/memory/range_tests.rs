@@ -46,6 +46,27 @@ fn encoded() -> Vec<(String, Vec<u8>)> {
         })
         .collect::<Vec<_>>();
     formats.push(("points.shp.zip".into(), write_shapefile_zip_bytes(&fixture(), "points").unwrap()));
+    #[cfg(feature = "tiles")]
+    {
+        use crate::tiles::mvt::{MvtFeature, MvtLayer, MvtValue, encode, encode_points};
+        let layers = ["first", "second"]
+            .into_iter()
+            .map(|name| MvtLayer {
+                name: name.into(),
+                extent: 4096,
+                features: (0..4)
+                    .map(|index| MvtFeature {
+                        id: Some(index),
+                        geom_type: crate::tiles::mvt::POINT,
+                        geometry: encode_points(&[(100 + index as i32, 200)]),
+                        tags: vec![("sequence".into(), MvtValue::UInt(index))],
+                        ..Default::default()
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        formats.push(("0/0/0.pbf".into(), encode(&layers)));
+    }
     formats
 }
 

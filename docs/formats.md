@@ -1235,6 +1235,32 @@ of several files (Shapefile, MapInfo MIF and TAB) are read from zip archives of 
 OSM is read from PBF or XML bytes. GeoPackage (layers and rasters), PMTiles and MBTiles (raster
 and vector tiles) are read from and written to bytes; MVT tiles are read from bytes.
 
+## GML and MapInfo byte output
+
+GML byte output is a standalone XML document on native and WebAssembly builds.
+`layer.to_bytes("places.gml")` reads back through
+`terrio.open_bytes(data, "places.gml")` under the same filename. The bytes omit
+the `.xsd` sidecar; readers infer field types from the document, so the original
+types are not guaranteed without the schema. Filesystem output with
+`layer.write("places.gml")` writes the schema beside the GML.
+`.gml.zip` byte output is refused with a hint to use a document filename.
+
+Native MapInfo byte output requires an explicit **`.mif.zip`** or **`.tab.zip`**
+filename. These archives contain the MIF/MID or TAB/DAT/MAP/ID members and use
+MIME type `application/zip`. A `.zip` filename with an explicit MapInfo driver
+defaults to MIF members. Bare `.mif` and `.tab` byte output is refused, while
+filesystem writes retain their separate members. MapInfo byte writing remains
+unavailable in WebAssembly; reading its archives is supported.
+
+```python
+data = layer.to_bytes("places.tab.zip")
+restored = terrio.open_bytes(data, "places.tab.zip")
+```
+
+ZIP input labeled `.gml`, `.mif` or `.tab` is refused with a `.zip` filename
+hint. This prevents a ZIP from being interpreted as an empty MIF layer or
+malformed XML/TAB document. KMZ and XLSX retain their intrinsic ZIP packaging.
+
 ## Shapefile ZIP output in memory
 
 Rust, Python and JavaScript/WASM use the same pure-Rust archive writer, including
