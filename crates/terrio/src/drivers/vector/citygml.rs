@@ -762,22 +762,7 @@ fn authority_axis_order(name: &str) -> bool {
 }
 
 fn parse_crs(name: &str) -> Result<SpatialRef> {
-    Ok(if let Some(parts) = name.strip_prefix("urn:ogc:def:crs,") {
-        let codes = parts
-            .split(',')
-            .map(|part| {
-                if !part.starts_with("crs:EPSG:") {
-                    return Err(invalid("unsupported compound CRS authority"));
-                }
-                let code = part.rsplit(':').next().unwrap_or_default();
-                code.parse::<u32>().map_err(invalid)?;
-                Ok(code)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        SpatialRef::parse(&format!("EPSG:{}", codes.join("+")))?
-    } else {
-        SpatialRef::parse(name)?
-    })
+    SpatialRef::parse_literal(name)
 }
 
 impl<'a> Reader<'a> {

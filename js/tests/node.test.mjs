@@ -433,6 +433,28 @@ test("ZIP archives with duplicate member names are refused", () => {
   assert.throws(() => terrio.open(bytes, "vector.zip"), /several entries with the same name/);
 });
 
+test("compound CRS URNs preserve both components and GML XYZ", () => {
+  // GDAL 3.13.3: two horizontal axes followed by the vertical axis.
+  for (const [h, v, position, xy] of [[2154,5720,[652000,6862000],[652000,6862000]], [4269,5713,[52,4],[4,52]]]) {
+    const name = `urn:ogc:def:crs,crs:EPSG::${h},crs:EPSG::${v}`;
+    const crs = JSON.parse(terrio.crsToProjjson(name));
+    assert.equal(crs.type, "CompoundCRS");
+    assert.deepEqual(crs.components.map(c => c.id.code), [h,v]);
+    assert.deepEqual(crs.components.map(c => c.coordinate_system.axis.length), [2,1]);
+    const xml = `<FeatureCollection><featureMember><p><geom><Point srsName="${name}" srsDimension="3"><pos>${position.join(" ")} 35</pos></Point></geom></p></featureMember></FeatureCollection>`;
+    const ds = terrio.open(new TextEncoder().encode(xml), "point.gml");
+    try {
+      assert.equal(JSON.parse(terrio.crsToProjjson(ds.crs)).type, "CompoundCRS");
+      assert.deepEqual(ds.toGeoJSON().features[0].geometry.coordinates, [...xy,35]);
+    } finally { ds.free(); }
+  }
+  for (const name of ["not EPSG:4326", "urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720", "EPSG:4979+5720"]) {
+    assert.throws(() => terrio.describeCrs(name));
+  }
+  const bad = `<FeatureCollection><featureMember><p><geom><Point srsName="urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720"><pos>1 2</pos></Point></geom></p></featureMember></FeatureCollection>`;
+  assert.throws(() => terrio.open(new TextEncoder().encode(bad), "point.gml"));
+});
+
 test("CRS transforms", () => {
   const [xs, ys] = terrio.transformPoints([0, 180], [0, 0], "EPSG:4326", "EPSG:3857");
   assert.ok(xs instanceof Float64Array);

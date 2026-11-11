@@ -171,9 +171,40 @@ fn epsg_reference(s: &str) -> Option<u32> {
     let code = canonical_epsg_reference(s);
     #[cfg(feature = "wbprojection-fallback")]
     {
-        // Keep legacy free-form references, but normalize canonical versioned
+        // Keep legacy reference suffixes, but normalize canonical versioned
         // references first: the fallback can mistake their version for the code.
-        code.or_else(|| wbp::epsg_from_srs_reference(s))
+        code.or_else(|| {
+            let upper = s.trim().to_ascii_uppercase();
+            // Keep legacy suffixes after a recognized reference, without letting
+            // arbitrary text, compound references or unrecognized WKT leak a code.
+            if upper.contains(',') || (upper.contains('+') && !upper.starts_with('+')) {
+                return None;
+            }
+            let starts_with_code = |text: &str| text.as_bytes().first().is_some_and(u8::is_ascii_digit);
+            let mut reference = upper.strip_prefix('+').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+            reference |= upper.strip_prefix("EPSG:").is_some_and(|rest| starts_with_code(rest.trim_start_matches(':')));
+            reference |= upper
+                .strip_prefix("URN:OGC:DEF:CRS:EPSG:")
+                .is_some_and(|rest| rest.split_once(':').is_some_and(|(_, code)| starts_with_code(code)));
+            for prefix in [
+                "HTTP://WWW.OPENGIS.NET/DEF/CRS/EPSG/",
+                "HTTPS://WWW.OPENGIS.NET/DEF/CRS/EPSG/",
+                "HTTP://OPENGIS.NET/DEF/CRS/EPSG/",
+                "HTTPS://OPENGIS.NET/DEF/CRS/EPSG/",
+            ] {
+                reference |=
+                    upper.strip_prefix(prefix).is_some_and(|rest| rest.split_once('/').is_some_and(|(_, code)| starts_with_code(code)));
+            }
+            for prefix in [
+                "HTTP://WWW.OPENGIS.NET/GML/SRS/EPSG.XML#",
+                "HTTPS://WWW.OPENGIS.NET/GML/SRS/EPSG.XML#",
+                "HTTP://OPENGIS.NET/GML/SRS/EPSG.XML#",
+                "HTTPS://OPENGIS.NET/GML/SRS/EPSG.XML#",
+            ] {
+                reference |= upper.strip_prefix(prefix).is_some_and(starts_with_code);
+            }
+            reference.then(|| wbp::epsg_from_srs_reference(s)).flatten()
+        })
     }
     #[cfg(not(feature = "wbprojection-fallback"))]
     code
@@ -191,6 +222,9 @@ fn canonical_epsg_reference(s: &str) -> Option<u32> {
     let upper = s.to_ascii_uppercase();
     if let Some(code) = upper.strip_prefix("EPSG:") {
         return digits(code.strip_prefix(':').unwrap_or(code));
+    }
+    if let Some(code) = upper.strip_prefix("URN:X-OGC:DEF:CRS:EPSG:") {
+        return digits(code);
     }
     if let Some(rest) = upper.strip_prefix("URN:OGC:DEF:CRS:EPSG:") {
         let (_, code) = rest.split_once(':')?;
@@ -347,6 +381,12 @@ impl SpatialRef {
     /// `EPSG:4326+5773`.
     pub fn compound(horizontal: u32, vertical: u32) -> Result<Self> {
         let h = Self::from_epsg(horizontal)?;
+        if epsg::vertical(horizontal).is_some()
+            || epsg::compound(horizontal).is_some()
+            || Def::new(&h).is_ok_and(|d| d.is_geocentric() || d.has_height())
+        {
+            return Err(Error::Crs(format!("EPSG:{horizontal} is not a two-dimensional horizontal CRS")));
+        }
         let v = epsg::vertical(vertical).ok_or_else(|| Error::Crs(format!("EPSG:{vertical} is not a vertical CRS")))?;
         let name = format!("{} + {}", h.name().unwrap_or_default(), v.name);
         let wkt = format!("COMPD_CS[\"{name}\",{},{}]", h.to_wkt().unwrap_or_default(), v.wkt);
@@ -423,6 +463,27 @@ impl SpatialRef {
         }
         if let Some(code) = iau::reference(s) {
             return Self::from_iau(code?);
+        }
+        // OGC 07-092r3 7.5.2: two CRS components, not a single authority reference.
+        // GDAL 3.13.3 retains the horizontal and vertical parts of this form.
+        if let Some(parts) = upper.strip_prefix("URN:OGC:DEF:CRS,") {
+            let mut parts = parts.split(',');
+            let (Some(horizontal), Some(vertical), None) = (parts.next(), parts.next(), parts.next()) else {
+                return Err(Error::Crs("a compound CRS URN requires two CRS components".into()));
+            };
+            let code = |part: &str| -> Result<u32> {
+                let Some(rest) = part.trim().strip_prefix("CRS:EPSG:") else {
+                    return Err(Error::Crs(format!("unsupported compound CRS component '{part}'")));
+                };
+                let Some((_, code)) = rest.split_once(':') else {
+                    return Err(Error::Crs(format!("invalid compound CRS component '{part}'")));
+                };
+                if code.is_empty() || !code.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(Error::Crs(format!("invalid compound CRS component '{part}'")));
+                }
+                code.parse().map_err(|_| Error::Crs(format!("invalid compound CRS code '{code}'")))
+            };
+            return Self::compound(code(horizontal)?, code(vertical)?);
         }
         // `EPSG:4326+5773`: a horizontal and a vertical CRS.
         if let Some(rest) = upper.strip_prefix("EPSG:")
@@ -2158,6 +2219,54 @@ mod tests {
         let nad83 = r#"GEOGCS["unknown",DATUM["NAD83",SPHEROID["GRS 1980",6378137,298.257222101]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
         assert_eq!(identify_epsg(nad83), Some(4269));
         assert!(epsg::datums_named("Unknown based on Bessel 1841 ellipsoid").is_empty());
+    }
+
+    /// Compound OGC references retain horizontal and vertical components, as GDAL 3.13.3.
+    #[test]
+    fn compound_urns_preserve_both_components() {
+        for (text, horizontal, vertical) in [
+            ("urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::5720", 2154, 5720),
+            ("URN:OGC:DEF:CRS,CRS:epsg:9.9:4269,CRS:epsg::5713", 4269, 5713),
+            ("urn:ogc:def:crs,crs:EPSG::4326,crs:EPSG::5773", 4326, 5773),
+        ] {
+            let expected = SpatialRef::compound(horizontal, vertical).unwrap();
+            for actual in [SpatialRef::parse(text), SpatialRef::parse_literal(text)] {
+                let actual = actual.unwrap();
+                assert_eq!(actual.epsg, None, "{text}");
+                assert_eq!(actual.to_wkt(), expected.to_wkt(), "{text}");
+                let json: serde_json::Value = serde_json::from_str(&actual.to_projjson().unwrap()).unwrap();
+                assert_eq!(json["type"], "CompoundCRS");
+            }
+        }
+    }
+
+    #[test]
+    fn unrelated_text_and_unsupported_compound_references_are_refused() {
+        for text in [
+            "not EPSG:4326",
+            "description EPSG:4326 suffix",
+            "PREFIX[ID[\"EPSG\",4326]]",
+            "EPSG:2154+garbage",
+            "EPSG:2154+5720junk",
+            "urn:ogc:def:crs:EPSG::2154,crs:EPSG::5720",
+            "urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720",
+            "urn:ogc:def:crs,crs:EPSG::2154",
+            "urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::5720,crs:EPSG::5713",
+            "urn:ogc:def:crs,cs:EPSG::2154,crs:EPSG::5720",
+            "urn:ogc:def:crs,crs:EPSG::99999999,crs:EPSG::5720",
+            "urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::99999999",
+            "urn:ogc:def:crs,crs:EPSG::2154junk,crs:EPSG::5720",
+        ] {
+            assert!(SpatialRef::parse_literal(text).is_err(), "{text}");
+        }
+    }
+
+    /// GDAL 3.13.3 permits a 2D horizontal CRS plus a vertical CRS, not duplicate height axes.
+    #[test]
+    fn compound_components_must_have_horizontal_and_vertical_roles() {
+        for (horizontal, vertical) in [(5720, 5713), (4978, 5720), (4979, 5720), (7405, 5720), (2154, 4326)] {
+            assert!(SpatialRef::compound(horizontal, vertical).is_err(), "{horizontal}+{vertical}");
+        }
     }
 
     /// Canonical references stay identical across feature configurations; legacy

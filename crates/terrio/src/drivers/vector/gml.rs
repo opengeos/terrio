@@ -209,7 +209,12 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
             .filter_map(|raw| raw.geometry)
             .find_map(srs_name_of)
             .or_else(|| root.child("boundedBy").and_then(|node| node.find("Envelope")).and_then(|node| node.attr("srsName")));
-        let srs = srs_name.and_then(|srs| parse_srs_name(srs).ok());
+        let srs = match srs_name {
+            // A partially recognized compound reference would attach the wrong CRS to
+            // three-dimensional coordinates. Refuse the entire declaration instead.
+            Some(name) if name.trim().to_ascii_uppercase().starts_with("URN:OGC:DEF:CRS,") => Some(parse_srs_name(name)?),
+            _ => srs_name.and_then(|srs| parse_srs_name(srs).ok()),
+        };
         let swap = srs_name.is_some_and(authority_axis_order) && srs.as_ref().is_some_and(SpatialRef::has_north_east_axis_order);
         if let Some(srs) = &srs {
             srs.apply_to_layer(&mut layer);
@@ -309,10 +314,10 @@ pub(crate) fn parse_srs_name(name: &str) -> Result<SpatialRef> {
             && !code.is_empty()
             && code.bytes().all(|byte| byte.is_ascii_digit())
         {
-            return SpatialRef::parse(&format!("EPSG:{code}"));
+            return SpatialRef::parse_literal(&format!("EPSG:{code}"));
         }
     }
-    SpatialRef::parse(name)
+    SpatialRef::parse_literal(name)
 }
 
 /// Whether a srsName form declares authority axis order: URNs and modern `/def/crs/` URLs,
@@ -693,6 +698,38 @@ fn write_geometry(s: &mut String, g: &Geometry, srs: &str, swap: bool, id: &str,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GDAL 3.13.3 keeps both compound components and normalizes only horizontal XY.
+    #[test]
+    fn compound_urns_keep_vertical_metadata_and_coordinates() {
+        for (horizontal, vertical, pos, xy) in
+            [(2154, 5720, (652_000.0, 6_862_000.0), (652_000.0, 6_862_000.0)), (4269, 5713, (52.0, 4.0), (4.0, 52.0))]
+        {
+            let name = format!("urn:ogc:def:crs,crs:EPSG::{horizontal},crs:EPSG::{vertical}");
+            let text = format!(
+                "<FeatureCollection><featureMember><point><geom><Point srsName=\"{name}\" srsDimension=\"3\"><pos>{} {} 35</pos></Point></geom></point></featureMember></FeatureCollection>",
+                pos.0, pos.1
+            );
+            let layers = parse(&xml::parse(&text).unwrap(), None).unwrap();
+            let layer = &layers[0];
+            assert_eq!(layer.crs_wkt(), SpatialRef::compound(horizontal, vertical).unwrap().to_wkt().as_deref());
+            assert_eq!(layer.features[0].geometry, Some(Geometry::Point(Coord { x: xy.0, y: xy.1, z: Some(35.0), m: None })));
+        }
+    }
+
+    #[test]
+    fn unsupported_compound_urns_are_errors_instead_of_partial_metadata() {
+        for name in [
+            "urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720",
+            "urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::999999999",
+            "urn:ogc:def:crs,crs:EPSG::2154",
+        ] {
+            let text = format!(
+                "<FeatureCollection><featureMember><point><geom><Point srsName=\"{name}\"><pos>1 2</pos></Point></geom></point></featureMember></FeatureCollection>"
+            );
+            assert!(parse(&xml::parse(&text).unwrap(), None).is_err(), "{name}");
+        }
+    }
 
     /// GDAL 3.12.1 exposes EPSG:6708 GML coordinates in traditional easting, northing order.
     #[test]

@@ -2681,3 +2681,16 @@ Bounds planning scans at most 512 corners at a time, including the final endpoin
 with roughly 17 KiB of coordinate/validity scratch rather than allocating an entire
 output-width row before memory-limit splitting. The polar regression starts off a
 global batch boundary and spans several batches; RPC batch membership stays global.
+
+## Compound authority references
+
+`cargo test -p terrio-crs --lib` (also with `--features wbprojection-fallback`)
+checks compound EPSG URNs, invalid component roles and unrelated text. GML and
+CityGML regressions keep both components and normalize horizontal axis order
+without changing height. Python path/bytes and layer CRS arguments are covered
+in `python/tests/test_compound_crs_urn.py`; Node covers shared parsing and GML XYZ.
+The registered `compound-crs` suite runs
+`scripts/compare_compound_crs_with_gdal.py`: three EPSG horizontal/vertical pairs
+against GDAL 3.13.3 with `GML_REPORT_COMPD_CS=YES`, with exact component IDs,
+2+1 axes and normalized XYZ. CRS
+names and serialized PROJJSON text are deliberately outside that comparison.

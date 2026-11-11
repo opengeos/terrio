@@ -7,8 +7,14 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 - EPSG codes: `EPSG:32613`, `32613`, `urn:ogc:def:crs:EPSG::32613`,
   `http://www.opengis.net/def/crs/EPSG/0/32613`, including geographic 3D CRSs (`EPSG:4979`) and
   compound CRSs (`EPSG:5498`);
-- a horizontal and a vertical CRS, as GDAL builds them: `EPSG:4326+5773` (WGS 84 with EGM96
-  heights);
+- Horizontal plus vertical EPSG pairs: `EPSG:2154+5720` and
+  `urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::5720`. Both components are retained,
+  including in GML and CityGML metadata. Compound URNs require exactly two
+  components: a two-dimensional horizontal CRS followed by a vertical CRS.
+  Unsupported authorities, missing components and invalid component roles are errors.
+  Terrio retains the compound metadata in GML; GDAL requires
+  [`GML_REPORT_COMPD_CS=YES`](https://github.com/OSGeo/gdal/blob/v3.13.3/ogr/ogrsf_frmts/gml/ogrgmldatasource.cpp#L1601)
+  to report both GML components;
 - `OGC:CRS84` and `WGS84`;
 - ESRI codes, the geographic and projected CRSs of PROJ's ESRI authority: `ESRI:54009` (World
   Mollweide), `esri:102003`, `urn:ogc:def:crs:ESRI::102003`. The few whose projection terrio
@@ -157,7 +163,8 @@ direct native/fallback results against both pinned upstream suites.
 Canonical EPSG references use one parser in both standalone configurations.
 Versioned URNs/URLs resolve the code separately from the authority version
 (`urn:ogc:def:crs:EPSG:6.6:4326` resolves EPSG:4326). The fallback retains its
-legacy free-form authority extraction only after canonical parsing fails;
+legacy numeric suffix handling only after a recognized authority prefix fails
+canonical parsing; unrelated text is never searched for an EPSG code;
 inputs such as `EPSG:4326junk` are refused by the native default and retain the
 legacy acceptance with the fallback. Inputs beginning with `+` remain PROJ
 strings in every configuration.
