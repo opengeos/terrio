@@ -2580,4 +2580,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Replay GDAL sampling for these reference comparisons; stable policy has its own suite.
+    os.environ.setdefault("TERRIO_WARP_GRID", "GDAL")
     sys.exit(main())
