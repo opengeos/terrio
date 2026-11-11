@@ -304,6 +304,7 @@ fn layers_of(
 }
 
 /// Make names unique across the complete dataset, after KMZ documents are combined.
+/// ASCII case variants collide as they do for SQLite/GeoPackage table names.
 fn make_layer_names_unique(layers: &mut [Layer]) {
     // Layer names must be unique: a name an earlier layer has takes the first free suffix, ` (2)`,
     // ` (3)`, and so on. Names are only ever added, so the suffixes a name found taken stay taken,
@@ -311,14 +312,15 @@ fn make_layer_names_unique(layers: &mut [Layer]) {
     let mut taken = std::collections::HashSet::with_capacity(layers.len());
     let mut next: HashMap<String, usize> = HashMap::new();
     for layer in layers {
-        if taken.insert(layer.name.clone()) {
+        let key = layer.name.to_ascii_lowercase();
+        if taken.insert(key.clone()) {
             continue;
         }
-        let n = next.entry(layer.name.clone()).or_insert(2);
+        let n = next.entry(key).or_insert(2);
         layer.name = loop {
             let name = format!("{} ({n})", layer.name);
             *n += 1;
-            if taken.insert(name.clone()) {
+            if taken.insert(name.to_ascii_lowercase()) {
                 break name;
             }
         };

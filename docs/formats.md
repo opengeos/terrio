@@ -1032,7 +1032,7 @@ reads it.
   archive limits of `/vsizip/` (`TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO`,
   `TERRIO_ZIP_MAX_SIZE`), and 512 MiB of decompressed text for the main document and the layer
   documents it links to together. Repeated links to a document read it once and emit its layers once.
-  Existing document and folder names are used; collisions receive the first free
+  Existing document and folder names are used; collisions, including ASCII case variants, receive the first free
   ` (2)`, ` (3)` suffix across the complete dataset, in main-document order followed
   by linked documents in link order. This also makes every layer selectable by name
   and avoids duplicate table names when converting to GeoPackage. The first link supplies the default name

@@ -429,17 +429,21 @@ test("finite polar kilometre inputs preserve direction through normalization", (
 });
 
 test("KMZ selection names are unique across all linked documents", () => {
-  const bytes = readFileSync(new URL("../../crates/terrio/tests/data/kmz/cross_document_names.kmz", import.meta.url));
-  const ds = terrio.open(bytes, "source.kmz");
-  try {
-    const names = ["roads (2)", "roads", "roads (3)", "roads (4)"];
-    assert.deepEqual(ds.layerNames(), names);
-    names.forEach((name, i) => {
-      const feature = ds.toGeoJSON(name).features[0];
-      assert.deepEqual(feature.geometry.coordinates, [i+1,46]);
-      assert.equal(feature.properties.Name, `point ${i+1}`);
-    });
-  } finally { ds.free(); }
+  for (const [fixture, names] of [
+    ["cross_document_names.kmz", ["roads (2)", "roads", "roads (3)", "roads (4)"]],
+    ["case_variant_names.kmz", ["Roads (2)", "Roads", "roads (3)", "ROADS (4)"]],
+  ]) {
+    const bytes = readFileSync(new URL(`../../crates/terrio/tests/data/kmz/${fixture}`, import.meta.url));
+    const ds = terrio.open(bytes, "source.kmz");
+    try {
+      assert.deepEqual(ds.layerNames(), names);
+      names.forEach((name, i) => {
+        const feature = ds.toGeoJSON(name).features[0];
+        assert.deepEqual(feature.geometry.coordinates, [i+1,46]);
+        assert.equal(feature.properties.Name, `point ${i+1}`);
+      });
+    } finally { ds.free(); }
+  }
 });
 
 test("ZIP archives with duplicate member names are refused", () => {

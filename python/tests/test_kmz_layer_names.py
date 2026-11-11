@@ -33,6 +33,24 @@ def link(name, member):
 CASES = [
     (
         {
+            "doc.kml": document(folder("Roads", 1) + link("roads", "layers/a.kml")),
+            "layers/a.kml": document(point(2)),
+        },
+        ["Roads", "roads (2)"],
+        [1, 2],
+    ),
+    (
+        {
+            "doc.kml": document(
+                folder("Roads (2)", 1) + folder("Roads", 2) + link("roads", "layers/a.kml")
+            ),
+            "layers/a.kml": document(point(3) + folder("ROADS", 4)),
+        },
+        ["Roads (2)", "Roads", "roads (3)", "ROADS (4)"],
+        [1, 2, 3, 4],
+    ),
+    (
+        {
             "doc.kml": document(folder("roads", 1) + link("roads", "layers/a.kml")),
             "layers/a.kml": document(point(2)),
         },

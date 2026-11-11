@@ -2739,7 +2739,7 @@ global batch boundary and spans several batches; RPC batch membership stays glob
 ## KMZ dataset-wide layer names
 
 `python/tests/test_kmz_layer_names.py` checks whole-dataset naming across main
-folders, main placemarks and linked documents, including existing numbered names
+folders, main placemarks and linked documents, including ASCII case collisions, existing numbered names
 and link order different from ZIP entry order. Every layer remains selectable by
 name and converts to a distinct GeoPackage table through Python and CLI. The
 shared reader's Rust tests retain the single-document suffix rules. Node checks
