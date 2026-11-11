@@ -626,8 +626,8 @@ fn a_named_layer_answers_to_the_file_stem_through_gdal() {
     );
 }
 
-/// Date-time fields read through the backend become ISO 8601 text: with their offset when it is
-/// not zero, and without a zone when they have none. The `gdal` feature alone formats them too
+/// Date-time fields read through the backend become ISO 8601 text: `Z` for UTC, their offset
+/// otherwise, and no zone when they have none. The `gdal` feature alone formats them too
 /// (`--no-default-features --features gdal`). Checked with GDAL 3.12.2.
 #[test]
 fn date_time_fields_read_as_iso_8601_with_their_zone_or_none() {

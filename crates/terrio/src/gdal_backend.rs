@@ -1255,7 +1255,7 @@ fn value_from(v: GdalValue) -> FieldValue {
         GdalValue::DateValue(d) => FieldValue::Date(d.to_string()),
         // layer_from intercepts every OFTDateTime before this converted-value match:
         // only the original feature retains the timezone flag datetime_field needs.
-        GdalValue::DateTimeValue(t) => FieldValue::DateTime(t.to_rfc3339()),
+        GdalValue::DateTimeValue(t) => FieldValue::DateTime(t.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)),
         GdalValue::IntegerListValue(v) => json(v.into_iter().map(Into::into).collect()),
         GdalValue::Integer64ListValue(v) => json(v.into_iter().map(Into::into).collect()),
         GdalValue::RealListValue(v) => json(v.into_iter().map(Into::into).collect()),
