@@ -25,19 +25,19 @@ TRANSFORM = from_origin(500000, 4600000, 10, 10)
 MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
 # The irreversible 9/7 wavelet is computed in float32. Both decoders read the same payload, yet
 # on macOS arm64 a few samples decode one step apart from GDAL's. That the OpenJPEG build in
-# rasterio's wheel fuses multiply-adds is inferred, as in `test_resampled_reads.py`, not
-# measured. Linux, Windows and the reversible 5/3 path stay exact everywhere. The worst case
-# seen was 41 of 4096 samples (1.0%) for a uint16 band; low-quality 9/7 output leaves far more
-# samples near a rounding boundary than the resampling cases there, so the bound is 2%.
+# rasterio's wheel fuses multiply-adds is inferred, not measured. Linux, Windows and the
+# reversible 5/3 path stay exact everywhere, and terrio's decoder gives the same output on every
+# platform, so a decoder regression still fails there. The bound only absorbs GDAL's side: the
+# worst case seen was 41 of 4096 samples (1.0%) for a uint16 band, and 2% leaves 2x headroom.
 IRREVERSIBLE_ONE_STEP_MAX_FRACTION = 0.02
 
 
 def assert_decodes_as_gdal(actual, expected, *, irreversible):
     """Exact equality, except for one-step float rounding on macOS arm64's irreversible path."""
+    assert actual.dtype == expected.dtype and actual.shape == expected.shape
     if not (MACOS_ARM and irreversible):
         np.testing.assert_array_equal(actual, expected)
         return
-    assert actual.dtype == expected.dtype and actual.shape == expected.shape
     difference = np.abs(actual.astype("int64") - expected.astype("int64"))
     assert difference.max(initial=0) <= 1, f"max difference {difference.max()}"
     fraction = np.mean(difference != 0)
