@@ -92,6 +92,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from pathlib import Path
 
@@ -105,7 +106,7 @@ DIFFERS = "differs"
 # A case whose reference values could not be computed (no coordinates to compare), reported apart.
 NOT_COMPARED = "not compared"
 
-GDAL_FREE_SUITES = frozenset(("jp2-writer", "pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write", "citygml-write", "xlsx-workbook"))
+GDAL_FREE_SUITES = frozenset(("jp2-writer", "pyogrio-buffers", "pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write", "citygml-write", "xlsx-workbook"))
 
 
 @dataclasses.dataclass
@@ -316,6 +317,57 @@ VECTOR_ROUNDTRIPS = [
     ("ne_places.parquet", ["geojson", "fgb", "gpkg", "csv", "kml"]),
     ("hike.gpx", ["gpx", "gpkg", "kml"]),
 ]
+
+
+def suite_pyogrio_buffers(ctx):
+    """Compare signed vector buffers with the installed Pyogrio/GDAL reference.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Exact dataframe comparisons, with unavailable reference drivers reported apart.
+    """
+    suite = Suite("pyogrio-buffers", "pyogrio signed buffers", "Pyogrio/GDAL",
+                  "GeoPackage, FlatGeobuf and GeoParquet uploads: columns, values, dtypes, "
+                  "point geometries and CRS match Pyogrio/GDAL. Warning text is not compared.")
+    missing = missing_modules("terrio", "pytest", "geopandas", "pyogrio")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    import pyogrio
+    if hasattr(pyogrio, "__terrio_version__"):
+        suite.skipped = "needs the independent Pyogrio/GDAL reference, not Terrio's compatibility adapter"
+        return suite
+    suite.reference = f"GDAL {'.'.join(map(str, pyogrio.__gdal_version__))} via pyogrio {pyogrio.__version__}"
+    with tempfile.TemporaryDirectory(prefix="terrio-buffer-conformance-") as directory:
+        report = Path(directory) / "results.xml"
+        code, out, err = run([sys.executable, "-m", "pytest", "-q",
+                              str(ROOT / "python/tests/test_pyogrio_buffer_sources.py") + "::test_signed_buffers_match_gdal",
+                              f"--junitxml={report}"])
+        try:
+            cases = list(ET.parse(report).getroot().iter("testcase"))
+        except (OSError, ET.ParseError):
+            suite.error = tail(err or out)
+            return suite
+    for case in cases:
+        name = case.get("name", "buffer comparison")
+        failure = case.find("failure")
+        error = case.find("error")
+        if error is not None:
+            suite.error = tail(error.text or error.get("message", "pytest error"))
+            return suite
+        skipped = case.find("skipped")
+        if failure is not None:
+            status, detail = DIFFERS, tail(failure.text or failure.get("message", "comparison failed"))
+        elif skipped is not None:
+            status, detail = NOT_COMPARED, skipped.get("message", "reference unavailable")
+        else:
+            status, detail = IDENTICAL, "dataframe values, dtypes, point geometries and CRS match"
+        suite.cases.append(Case("vector buffers", name, status, detail))
+    if not cases or (code and not any(case.status == DIFFERS for case in suite.cases)):
+        suite.error = tail(err or out)
+    return suite
 
 
 def suite_vector_roundtrip(ctx):
@@ -3375,6 +3427,7 @@ SUITES = OrderedDict(
         ("subdatasets", suite_subdatasets),
         ("histograms", suite_histograms),
         ("vector-roundtrip", suite_vector_roundtrip),
+        ("pyogrio-buffers", suite_pyogrio_buffers),
         ("cad", suite_cad),
         ("cityjson", suite_cityjson),
         ("cityjson-write", suite_cityjson_write),
