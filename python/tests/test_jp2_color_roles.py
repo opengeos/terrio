@@ -70,7 +70,14 @@ def test_explicit_jp2_roles_preserve_values_and_unreferenced_storage(
     for kind, payload in _boxes(raw):
         assert not (kind == b"uuid" and payload.startswith(GEOJP2_UUID))
     codestream = next(payload for kind, payload in _boxes(raw) if kind == b"jp2c")
-    cod = codestream.index(b"\xff\x52")
+    assert codestream[:2] == b"\xff\x4f"  # SOC
+    cod = 2
+    while codestream[cod : cod + 2] != b"\xff\x52":
+        assert codestream[cod] == 0xFF
+        length = struct.unpack_from(">H", codestream, cod + 2)[0]
+        assert length >= 2 and cod + length + 2 <= len(codestream)
+        cod += length + 2
+    assert struct.unpack_from(">H", codestream, cod + 2)[0] >= 7
     assert codestream[cod + 8] == int(roles[:3] == ("Red", "Green", "Blue"))
     header = next(payload for kind, payload in _boxes(raw) if kind == b"jp2h")
     definitions = next(payload for kind, payload in _boxes(header) if kind == b"cdef")

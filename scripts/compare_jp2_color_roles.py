@@ -35,6 +35,8 @@ def compare(path, values, roles):
                                  for array in (actual, native_values)])
     differing = int(np.count_nonzero(differences))
     exact = 1.0 - differing / differences.size
+    # The shared raster-conformance schema uses matching fractions, not flags.
+    # Integer samples require zero tolerance, so within_tol and exact coincide.
     result = dict(same_size=same_size,
                   same_type=actual.dtype == values.dtype and native_types == (str(values.dtype),) * len(roles),
                   same_metadata=reference_roles == list(roles) and native_roles == [role.lower() for role in roles],
