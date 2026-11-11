@@ -633,7 +633,20 @@ fn check_directory<R: Read + Seek>(r: &mut R, limits: &ZipLimits) -> Result<Dire
 /// Opens an archive whose end record [`check_directory`] read.
 fn open_archive<R: Read + Seek>(reader: R, directory: &Directory) -> Result<zip::ZipArchive<R>> {
     let config = zip::read::Config { archive_offset: zip::read::ArchiveOffset::Known(directory.archive_offset) };
-    Ok(zip::ZipArchive::with_config(config, reader)?)
+    let zip = zip::ZipArchive::with_config(config, reader)?;
+    check_unique_zip_names(&zip)?;
+    Ok(zip)
+}
+
+/// A duplicate-entry refusal is terminal, including for the optional GDAL backend.
+pub(crate) const AMBIGUOUS_ZIP: &str = "zip: the archive holds several entries with the same name, so its contents are ambiguous";
+
+/// Refuses ambiguous member names before reading or extracting any archive member.
+pub(crate) fn check_unique_zip_names<R: Read + Seek>(zip: &zip::ZipArchive<R>) -> Result<()> {
+    if zip.has_duplicate_names() {
+        return Err(Error::InvalidData(AMBIGUOUS_ZIP.into()));
+    }
+    Ok(())
 }
 
 /// A zip archive whose members are read into memory within the [`ZipLimits`], as `/vsizip/`
@@ -1313,6 +1326,40 @@ mod tests {
         }
         zip.finish().unwrap();
         buf.into_inner()
+    }
+
+    #[test]
+    fn duplicate_name_checks_do_not_read_or_seek_again() {
+        struct Metered {
+            bytes: std::io::Cursor<Vec<u8>>,
+            reads: std::rc::Rc<std::cell::Cell<usize>>,
+            seeks: std::rc::Rc<std::cell::Cell<usize>>,
+        }
+        impl Read for Metered {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.bytes.read(buffer)?;
+                self.reads.set(self.reads.get() + count);
+                Ok(count)
+            }
+        }
+        impl Seek for Metered {
+            fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+                self.seeks.set(self.seeks.get() + 1);
+                self.bytes.seek(position)
+            }
+        }
+        for (bytes, duplicate) in [
+            (deflated_members(&[("a", 600), ("b", 600)]), false),
+            (include_bytes!("../tests/data/zip/duplicate_members.zip").to_vec(), true),
+        ] {
+            let reads = std::rc::Rc::new(std::cell::Cell::new(0));
+            let seeks = std::rc::Rc::new(std::cell::Cell::new(0));
+            let reader = Metered { bytes: std::io::Cursor::new(bytes), reads: reads.clone(), seeks: seeks.clone() };
+            let zip = zip::ZipArchive::new(reader).unwrap();
+            let before = (reads.get(), seeks.get());
+            assert_eq!(check_unique_zip_names(&zip).is_err(), duplicate);
+            assert_eq!((reads.get(), seeks.get()), before, "uniqueness checks use the loaded directory");
+        }
     }
 
     #[test]

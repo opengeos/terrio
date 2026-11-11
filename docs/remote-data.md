@@ -18,6 +18,11 @@ An archive named without a member opens its main dataset: the first file, by nam
 kind found among vector layers, rasters and point clouds (LAS, LAZ, COPC, PLY, E57), so
 `terrio info tile.las.zip` reads the LAS file inside.
 
+Archives with duplicate member names are refused as invalid data before reading or extracting
+members. This applies to whole archives, `/vsizip/` members, byte buffers, and XLSX or KMZ
+containers, including duplicate names outside the selected dataset. A later entry cannot silently
+replace an earlier one. The optional GDAL backend does not retry these ambiguous archives.
+
 ## Reading in place
 
 GeoTIFFs and COGs are opened lazily: `terrio info` fetches the header only, and window or overview
@@ -28,6 +33,17 @@ Zarr stores, JPEG 2000, GRIB, SRTM HGT, STAC tiled assets, COPC and EPT are read
 (`ESRIJSON`, `ESRIPBF`) are read page by page (see [Formats](formats.md#vectors)). Other formats are downloaded to a temporary
 directory first; a remote shapefile's `.shx`, `.dbf`, `.prj` and `.cpg`
 come with it.
+
+A full lazy TIFF open reads the image-directory chain, including overview and mask metadata.
+An unreadable directory or required next-directory pointer fails the open with its read cause;
+it does not silently return partial metadata. This can reject damaged TIFFs whose base image
+another reader can recover. File inventory, copy, rename and deletion use first-image metadata
+and do not require readable later directories. Failed HTTP directory reads, including short
+range responses, do not trigger a whole-file retry during translation.
+Best-effort metadata queries and eager first-image reads retain the metadata collected before
+a later directory fails. The native eager pixel decoder still requires the first directory's
+final pointer. Translation through the optional GDAL backend can recover a base image that
+GDAL can read despite that missing pointer.
 
 ```sh
 terrio info https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif

@@ -24,6 +24,8 @@ from terrio.rio.warp import calculate_default_transform as t_cdt  # noqa: E402
 from terrio.rio.warp import reproject as t_reproject  # noqa: E402
 from terrio.rio.warp import transform as t_transform  # noqa: E402
 
+pytestmark = pytest.mark.usefixtures("gdal_warp_grid")
+
 
 @pytest.mark.parametrize("resampling", ["bilinear", "cubic", "lanczos"])
 def test_pixels_over_invalid_source_pixels_are_skipped(resampling):
