@@ -112,6 +112,12 @@ with the `libzstd` feature: without it, as in the default build and in WebAssemb
 chunks are compressed at the one level their encoder has. A level out of range is refused,
 whatever the compression.
 
+Deflate levels 6–9 supplement the bounded hash-chain search with up to four
+run-boundary candidates. This keeps long matches across repeating categorical
+rows instead of encoding each short uniform run separately. It can change the
+compressed bytes and CPU cost; the decoded pixels are unchanged. Levels 1–5
+retain their existing search. Compressed bytes need not match libdeflate or GDAL.
+
 JPEG 2000 is decoded and encoded with the Rust port of OpenJPEG, the codec of GDAL's JP2OpenJPEG
 driver, so pixels are GDAL's (Sentinel-2 L1C and L2A bands included). Georeferencing comes from
 the GeoJP2 box or the GMLJP2 box (Sentinel-2's), a 1-bit alpha channel is promoted to 0 and 255 as
