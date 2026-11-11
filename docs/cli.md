@@ -1134,7 +1134,25 @@ whose values it shares by area. Over 256 × 256 outputs of a 16384 × 16384 rast
 overviews, at 16, 32 and 64 times its pixel size, the totals were within 2 × 10⁻⁷ of the source's
 for Float32 and Float64 data, 0.4% to 0.6% above them for UInt16 data, whose averages are
 rounded at each level, and 1.4% to 2.6% above them for Float32 data 7% nodata, in two corners
-and in holes 40 pixels wide. A sum outgrows small integer types: a `UInt16` output stores 65535
+and in holes 40 pixels wide. These measurements are not an error bound: nodata holes smaller
+than an overview cell can disappear into its valid-pixel mean. For example, a block with one
+valid value 100 and three nodata pixels has mean 100; counting it over the whole block
+estimates 400 instead of the valid total 100. An internal mask has the same limitation when
+its overview records only valid/invalid, without the fraction of valid source pixels.
+
+For nonnegative data and complete average-overview cells, the excess is each partly valid
+cell's mean times its number of invalid source pixels, summed over those cells. With a
+constant valid value and invalid fraction `p` entirely in partly valid cells, the estimate
+is `1 / (1 - p)` times the valid total: 7.9% nodata can give about 8.6% excess relative to
+that total. Variable values, integer rounding and cropped cells prevent treating the nodata
+fraction alone as a general bound. The 4096 × 4096 Float32 example in [#707](https://github.com/opengeos/terrio/issues/707), with 7.9% nodata
+in corners and 40-pixel holes, overcounts by 7.1% at ×64, but only 0.03% at ×8, where the
+holes align with complete overview cells. Overview sums can also mark output pixels valid
+where full-resolution sums have no valid source contribution. Choose a finer stored level
+with `--overview n` (zero is the first overview), or `AUTO-n`, to reduce this effect; use
+`--overview NONE` when valid totals and full-resolution nodata coverage are required.
+
+A sum outgrows small integer types: a `UInt16` output stores 65535
 for any larger sum, so give a coarse `sum` `--ot Float32` or `--ot Float64`.
 
 A `sum` of one source without a cutline holds the source window of an output chunk, which the
