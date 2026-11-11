@@ -2,6 +2,18 @@
 // SPDX-License-Identifier: MIT
 //! Lazy TIFF metadata must retain the cause of failed remote directory reads.
 
+#[test]
+fn malformed_uploaded_tiff_metadata_is_invalid_data() {
+    for bytes in [b"II*\0".as_slice(), b"II*\0broken"] {
+        let error = match terrio::LazyRaster::from_tiff_bytes(bytes.to_vec()) {
+            Err(error) => error,
+            Ok(_) => panic!("malformed metadata must fail"),
+        };
+        assert!(matches!(error, terrio::Error::InvalidData(_)), "{error:?}");
+        assert!(error.to_string().contains("TIFF:"), "{error}");
+    }
+}
+
 #[cfg(fs)]
 #[test]
 fn short_non_tiff_inputs_are_not_matches() {
@@ -44,6 +56,7 @@ fn remote_directory_errors_keep_their_cause() {
                         other => panic!("expected HTTP request {request}: {other:?}"),
                     }
                 };
+                stream.set_nonblocking(false).unwrap();
                 stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                 stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
                 let mut reader = BufReader::new(stream.try_clone().unwrap());

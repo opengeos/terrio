@@ -2249,7 +2249,18 @@ impl TiffRaster {
             Source::Zip(member) => member.reopen(),
             _ => None,
         };
-        let tags = try_read_geo_tags_from(&mut source)?.ok_or_else(|| Error::InvalidData("not a TIFF file".into()))?;
+        let uploaded = matches!(&source, Source::Memory(_));
+        let tags = try_read_geo_tags_from(&mut source)
+            .map_err(|error| {
+                // An immutable byte buffer cannot suffer a transport failure: reaching its
+                // end while parsing metadata means malformed input. Live reads keep I/O causes.
+                if uploaded && error.kind() == std::io::ErrorKind::UnexpectedEof {
+                    Error::InvalidData(format!("TIFF: {error}"))
+                } else {
+                    Error::Io(error)
+                }
+            })?
+            .ok_or_else(|| Error::InvalidData("not a TIFF file".into()))?;
         // A directory libtiff cannot read is refused here, before any pixel is decoded.
         tags.check_structure()?;
         let masks = crate::tiff_mask::find_masks(&mut source)?;

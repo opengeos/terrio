@@ -1540,7 +1540,8 @@ mod tests {
             let source = source.to_str().unwrap();
             let files = file_list(source, None).unwrap();
             assert_eq!(files.files, [source]);
-            assert!(matches!(crate::LazyRaster::from_tiff_bytes(bytes.to_vec()), Err(crate::Error::Io(_))));
+            assert!(matches!(crate::LazyRaster::from_tiff_bytes(bytes.to_vec()), Err(crate::Error::InvalidData(_))));
+            assert!(matches!(crate::LazyRaster::open_tiff(source), Err(crate::Error::Io(_))));
             let copied = directory.path().join(format!("copied-{missing_pointer}.tif"));
             copy(source, copied.to_str().unwrap(), &Default::default()).unwrap();
             assert_eq!(std::fs::read(&copied).unwrap(), bytes);
