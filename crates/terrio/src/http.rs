@@ -206,10 +206,14 @@ pub struct FetchStats {
     pub requests: u64,
     /// The number of body bytes received.
     pub bytes: u64,
+    /// The number of body bytes sent: those of uploads (`PUT`) and of other requests that carry a
+    /// body (`POST`).
+    pub sent_bytes: u64,
 }
 
 static REQUESTS: AtomicU64 = AtomicU64::new(0);
 static BYTES: AtomicU64 = AtomicU64::new(0);
+static SENT_BYTES: AtomicU64 = AtomicU64::new(0);
 /// Requests and bytes per host, for [`fetch_stats_by_host`].
 static HOST_STATS: Mutex<BTreeMap<String, FetchStats>> = Mutex::new(BTreeMap::new());
 /// Requests and bytes per file, for [`fetch_stats_by_file`].
@@ -222,18 +226,22 @@ fn stats(map: &Mutex<BTreeMap<String, FetchStats>>) -> std::sync::MutexGuard<'_,
     map.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The requests made and bytes received over HTTP by this process so far.
+/// The requests made over HTTP by this process so far, and the bytes received and sent.
 pub fn fetch_stats() -> FetchStats {
-    FetchStats { requests: REQUESTS.load(Ordering::Relaxed), bytes: BYTES.load(Ordering::Relaxed) }
+    FetchStats {
+        requests: REQUESTS.load(Ordering::Relaxed),
+        bytes: BYTES.load(Ordering::Relaxed),
+        sent_bytes: SENT_BYTES.load(Ordering::Relaxed),
+    }
 }
 
-/// The requests made and bytes received per host: the host of the URL that was asked for (as GDAL's
+/// The requests made, and bytes received and sent, per host: the host of the URL that was asked for (as GDAL's
 /// network statistics name the file asked for), not of where a redirect led.
 pub fn fetch_stats_by_host() -> Vec<(String, FetchStats)> {
     stats(&HOST_STATS).iter().map(|(k, v)| (k.clone(), *v)).collect()
 }
 
-/// The requests made and bytes received per file, named as GDAL's network statistics name the
+/// The requests made, and bytes received and sent, per file, named as GDAL's network statistics name the
 /// files they report (`VSINetworkStatsGetAsSerializedJSON`): `/vsiaz/container/blob` for an
 /// `az://` blob read with a bearer token, `/vsis3/bucket/key` for an S3 object, else
 /// `/vsicurl/<url>`. Query strings (SAS tokens, signatures) are left out.
@@ -246,29 +254,48 @@ pub fn fetch_stats_by_file() -> Vec<(String, FetchStats)> {
 pub fn reset_fetch_stats() {
     REQUESTS.store(0, Ordering::Relaxed);
     BYTES.store(0, Ordering::Relaxed);
+    SENT_BYTES.store(0, Ordering::Relaxed);
     for map in [&HOST_STATS, &FILE_STATS] {
         stats(map).clear();
     }
 }
 
 /// Counts a response that is not passed on (an error, or one retried), as GDAL's network
-/// statistics count it: a request, and the bytes of its body, read up to 1 MiB and dropped.
-fn record_discarded(url: &str, name: &str, response: ureq::http::Response<ureq::Body>) {
+/// statistics count it: a request, and the bytes of its body, read up to 1 MiB and dropped. The
+/// request sent `sent` bytes of body.
+fn record_discarded(url: &str, name: &str, response: ureq::http::Response<ureq::Body>, sent: u64) {
     let mut body = Vec::new();
     let _ = response.into_body().into_reader().take(1 << 20).read_to_end(&mut body);
-    record_fetch(url, name, body.len() as u64);
+    record_request(url, name, body.len() as u64, sent);
 }
 
 /// Counts a response that returned `bytes` of body for a request to `url`, for the file `name`
 /// (see [`fetch_stats_by_file`]).
 fn record_fetch(url: &str, name: &str, bytes: u64) {
+    record_request(url, name, bytes, 0);
+}
+
+/// Counts a request to `url`, for the file `name` (see [`fetch_stats_by_file`]), that sent `sent`
+/// bytes of body and was answered with `received` bytes of body.
+fn record_request(url: &str, name: &str, received: u64, sent: u64) {
     REQUESTS.fetch_add(1, Ordering::Relaxed);
-    BYTES.fetch_add(bytes, Ordering::Relaxed);
+    BYTES.fetch_add(received, Ordering::Relaxed);
+    SENT_BYTES.fetch_add(sent, Ordering::Relaxed);
     for (map, key) in [(&HOST_STATS, host_of(url)), (&FILE_STATS, name)] {
         let mut m = stats(map);
         let s = m.entry(key.to_string()).or_default();
         s.requests += 1;
-        s.bytes += bytes;
+        s.bytes += received;
+        s.sent_bytes += sent;
+    }
+}
+
+/// The name [`fetch_stats_by_file`] counts a request to `remote` under, as a client names the file
+/// it reads: `/vsis3/bucket/key` for an S3 object, else `/vsicurl/<url>` without its query string.
+fn stats_name_of(remote: &Remote) -> String {
+    match remote {
+        Remote::S3(o) => format!("/vsis3/{}/{}", o.bucket, o.key),
+        Remote::Url(u) => format!("/vsicurl/{}", u.split('?').next().unwrap_or(u)),
     }
 }
 
@@ -794,7 +821,7 @@ impl Client {
                 // The region may become part of the host: only a region name is taken, checked
                 // before anything is sent.
                 if !s3::usable_region(&region) {
-                    record_discarded(&self.url, &self.stats_name(), response);
+                    record_discarded(&self.url, &self.stats_name(), response, 0);
                     let shown: String = region.chars().take(64).collect();
                     return Err(Error::Http(format!(
                         "{}: status {status} names the bucket's region {shown:?}, which is not a region name: not followed",
@@ -838,14 +865,14 @@ impl Client {
                 // A refused signed request, returned to a caller that handles it.
                 403 if self.refused_ok => return Ok(response),
                 429 | 500 | 502 | 503 | 504 if attempt < self.options.max_retry => {
-                    record_discarded(&self.url, &self.stats_name(), response);
+                    record_discarded(&self.url, &self.stats_name(), response, 0);
                     self.check_cancelled()?;
                     retry_warning(status, &self.url, self.options.retry_delay, attempt);
                     self.backoff(&mut attempt)?
                 }
                 400..=599 if self.service_errors => return Ok(response),
                 _ => {
-                    record_discarded(&self.url, &self.stats_name(), response);
+                    record_discarded(&self.url, &self.stats_name(), response, 0);
                     let hint = match (&self.s3, status) {
                         (Some(S3Auth { creds: None, .. }), 403) => {
                             " (no AWS credentials found: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or a profile)"
@@ -1798,6 +1825,8 @@ pub(crate) fn request_response(
     let agent = agent(&options);
     let first_origin = crate::vfs::url_origin(url);
     let asked = url;
+    // Each response is counted for the URL asked, with the body sent.
+    let (name, sent) = (stats_name_of(&Remote::Url(asked.to_string())), body.map_or(0, |b| b.len() as u64));
     let mut url = url.to_string();
     let (mut redirects, mut attempt) = (0, 0);
     let backoff = |attempt: &mut u32| {
@@ -1866,7 +1895,9 @@ pub(crate) fn request_response(
         }
         if matches!(status, 429 | 500 | 502 | 503 | 504) && attempt < options.max_retry {
             // A rate limit's `Retry-After` (seconds or a date, at most a minute), else the backoff.
-            match response.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(retry_after_seconds) {
+            let retry_after = response.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(retry_after_seconds);
+            record_discarded(asked, &name, response, sent);
+            match retry_after {
                 Some(secs) => {
                     retry_warning(status, &url, Duration::from_secs(secs.min(60)), 0);
                     std::thread::sleep(std::time::Duration::from_secs(secs.min(60)));
@@ -1886,8 +1917,7 @@ pub(crate) fn request_response(
             .take(cap.saturating_add(1))
             .read_to_end(&mut data)
             .map_err(|e| Error::Http(format!("{}: {e}", redact(&url))))?;
-        REQUESTS.fetch_add(1, Ordering::Relaxed);
-        BYTES.fetch_add(data.len() as u64, Ordering::Relaxed);
+        record_request(asked, &name, data.len() as u64, sent);
         if data.len() as u64 > cap {
             return Err(over_cap(&url, cap));
         }
@@ -4116,7 +4146,7 @@ mod tests {
         assert_eq!((after.requests - first.requests, after.bytes - first.bytes), (1, 6), "a refused request and its body");
         let files: BTreeMap<String, FetchStats> = fetch_stats_by_file().into_iter().collect();
         assert_eq!(files[&format!("/vsicurl/{url}")], first, "per file, as per host");
-        assert_eq!(files[&format!("/vsicurl/{}", url.replace("/data", "/denied"))], FetchStats { requests: 1, bytes: 6 });
+        assert_eq!(files[&format!("/vsicurl/{}", url.replace("/data", "/denied"))], FetchStats { requests: 1, bytes: 6, sent_bytes: 0 });
     }
 
     #[test]
@@ -4540,6 +4570,42 @@ mod tests {
             }
             lines.push(line.trim().to_string());
         }
+    }
+
+    /// A `POST` is counted with the body it sends, per host and per file (named for the URL asked,
+    /// its query left out): once for each response but a redirect, so one retried after a 503 counts
+    /// its body twice, and the 307 that keeps it within its origin is not counted.
+    #[test]
+    fn a_post_is_counted_with_the_body_it_sends() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let host = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            [(503, "", ""), (307, "/stats/moved", ""), (200, "", "{\"ok\":1}")].map(|(status, to, answer)| {
+                let mut stream = listener.accept().unwrap().0;
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let length = read_head(&mut reader)
+                    .iter()
+                    .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                    .unwrap_or(0);
+                let mut body = vec![0u8; length];
+                reader.read_exact(&mut body).unwrap();
+                let head =
+                    format!("HTTP/1.1 {status} Test\r\nLocation: {to}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", answer.len());
+                stream.write_all(&[head.as_bytes(), answer.as_bytes()].concat()).unwrap();
+                body.len()
+            })
+        });
+        let body = vec![b'x'; 300];
+        let url = format!("http://{host}/stats/search?token=secret");
+        let response = request_response("POST", &url, Some(&body), &[], 1 << 20, Redirects::Any).unwrap();
+        assert_eq!(response.body, b"{\"ok\":1}");
+        assert_eq!(server.join().unwrap(), [300, 300, 300]);
+        let expected = Some(FetchStats { requests: 2, bytes: 8, sent_bytes: 600 });
+        let by_host = fetch_stats_by_host().into_iter().find(|(h, _)| *h == host).map(|(_, s)| s);
+        assert_eq!(by_host, expected, "per host");
+        let name = format!("/vsicurl/http://{host}/stats/search");
+        let by_file = fetch_stats_by_file().into_iter().find(|(n, _)| *n == name).map(|(_, s)| s);
+        assert_eq!(by_file, expected, "per file");
     }
 
     /// The process's agent is reused while its settings, the proxy variables and the process
