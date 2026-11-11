@@ -2676,7 +2676,12 @@ The `reduced-first-masks` conformance suite checks `NewSubfileType` mask associa
 for ordinary and reduced-resolution first TIFF images. Using a Landsat-derived
 external overview pyramid, it compares pixels and masks before and after an
 extent-limited external overview refresh with an equivalent ordinary-first-image
-GDAL control. A reduced first image with a legacy mask marked 4 is also covered.
+GDAL control. The refresh check changes base pixels inside the masked region and
+verifies the reduced overview's updated values and mask. This checks decoding after
+Terrio's refresh, not equivalence to GDAL's refresh algorithm. Internal reduced-first
+TIFF overview creation and refresh remain outside this change: the existing writer
+planner requires a full-resolution image. A reduced first image with a legacy mask
+marked 4 is also covered.
 A unique size-matching legacy mask remains usable for a reduced first image.
 An unreduced first image still ignores a reduced mask and uses nodata/alpha validity.
 GDAL 3.13.3 itself ignores first-image masks marked 5; Terrio deliberately

@@ -31,7 +31,7 @@ def mark_image(path, index, subfile):
 
 
 @pytest.mark.parametrize("reduced,mask_reduced", [(False, False), (True, True), (True, False)])
-def test_reduced_first_masks_match_gdal_before_and_after_external_refresh(
+def test_reduced_first_masks_match_gdal_control_before_and_after_external_refresh(
     tmp_path, data_dir, gdal, reduced, mask_reduced
 ):
     source = data_dir / "landsat7.tif"
