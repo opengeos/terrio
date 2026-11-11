@@ -20,8 +20,9 @@
 //! Georeferencing is read from the GeoJP2 box (a small GeoTIFF) or, failing that, from the GML
 //! (GMLJP2) box, as GDAL reads them; it is written as a GeoJP2 box. A 1-bit alpha channel of 8-bit
 //! colours is promoted to 0 and 255, as GDAL does. Nodata goes to a `.aux.xml` sidecar, where GDAL
-//! keeps it for JPEG 2000. Files are written losslessly (the reversible 5/3 wavelet), with GDAL's
-//! codestream comment.
+//! keeps it for JPEG 2000. Output defaults to lossless (reversible 5/3). QUALITY percentages
+//! select increasing rate-limited layers; REVERSIBLE selects the 5/3 or irreversible 9/7 filter.
+//! With no options, output retains Terrio's lossless default. The options otherwise follow GDAL 3.13.3.
 //!
 //! The port is also built as a C library, whose C allocator calls `wasm32-unknown-unknown` has no
 //! libc to answer: terrio defines them there (`wasm_libc`). The port releases null pointers with
@@ -37,6 +38,56 @@ use wbraster::{CrsInfo, DataType, Raster};
 
 /// The UUID of the GeoJP2 box.
 const GEOJP2_UUID: [u8; 16] = [0xb1, 0x4b, 0xf8, 0xbd, 0x08, 0x3d, 0x4b, 0x43, 0xa5, 0xae, 0x8c, 0xd7, 0xd5, 0xa6, 0xce, 0x03];
+
+/// GDAL 3.13.3 QUALITY percentages map to OpenJPEG's compression ratios, not PSNR.
+#[derive(Debug)]
+struct EncodingOptions {
+    qualities: Vec<f64>,
+    reversible: bool,
+}
+
+impl EncodingOptions {
+    fn from_creation_options(options: &[(String, String)]) -> Result<Self> {
+        let get = |key: &str| options.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
+        let reversible = get("REVERSIBLE")
+            .map(|value| {
+                if ["YES", "TRUE", "ON", "1"].iter().any(|v| value.eq_ignore_ascii_case(v)) {
+                    Ok(true)
+                } else if ["NO", "FALSE", "OFF", "0"].iter().any(|v| value.eq_ignore_ascii_case(v)) {
+                    Ok(false)
+                } else {
+                    Err(Error::InvalidArgument(format!("REVERSIBLE={value} is not a legal value.")))
+                }
+            })
+            .transpose()?;
+        let qualities = match get("QUALITY") {
+            Some(value) => {
+                let values: Vec<f64> = value.split(',').map(|v| v.trim().parse::<f64>().unwrap_or(f64::NAN)).collect();
+                if values.len() > 100
+                    || values.iter().any(|v| !v.is_finite() || *v <= 0.0 || *v > 100.0)
+                    || values.windows(2).any(|p| p[0] >= p[1])
+                {
+                    return Err(Error::InvalidArgument(format!(
+                        "QUALITY={value} must contain 1 to 100 strictly increasing percentages greater than 0 and at most 100."
+                    )));
+                }
+                // OpenJPEG multiplies the f32 rate by 8 before computing the byte budget.
+                // Reject overflow there as well: infinity would turn the budget into zero.
+                if values.iter().any(|quality| !((100.0 / quality) as f32 * 8.0).is_finite()) {
+                    return Err(Error::InvalidArgument(format!("QUALITY={value} is too small for the JPEG 2000 codec's rate arithmetic.")));
+                }
+                values
+            }
+            None => vec![if reversible == Some(false) { 25.0 } else { 100.0 }],
+        };
+        let reversible = reversible.unwrap_or(qualities.last() == Some(&100.0));
+        Ok(Self { qualities, reversible })
+    }
+
+    fn lossless(&self) -> bool {
+        self.reversible && self.qualities.last() == Some(&100.0)
+    }
+}
 
 /// The codec: OpenJPEG's Rust port, driven through its C-style API over in-memory streams.
 mod codec {
@@ -352,8 +403,8 @@ mod codec {
         }
     }
 
-    /// Encodes components as a lossless J2K codestream.
-    pub(super) fn encode(w: usize, h: usize, comps: &[Component]) -> Result<Vec<u8>> {
+    /// Encodes components as a J2K codestream with explicit wavelet and quality layers.
+    pub(super) fn encode(w: usize, h: usize, comps: &[Component], options: &super::EncodingOptions) -> Result<Vec<u8>> {
         let mut parms: Vec<openjp2::opj_image_comptparm> = comps
             .iter()
             .map(|c| openjp2::opj_image_comptparm {
@@ -387,14 +438,17 @@ mod codec {
             }
             let mut params = opj_cparameters_t::default();
             opj_set_default_encoder_parameters(&mut params);
-            params.tcp_numlayers = 1;
-            params.tcp_rates[0] = 0.0;
+            params.tcp_numlayers = options.qualities.len() as i32;
+            for (rate, quality) in params.tcp_rates.iter_mut().zip(&options.qualities) {
+                *rate = if *quality == 100.0 { 0.0 } else { (100.0 / quality) as f32 };
+            }
             params.cp_disto_alloc = 1;
-            params.irreversible = 0;
+            params.irreversible = i32::from(!options.reversible);
             // GDAL's comment. The parameters own it and release it with C's `free`. (Without one,
             // the port makes its own with Rust's allocator and releases it with C's, which traps
             // in WebAssembly.)
-            let comment = format!("Created by OpenJPEG version {OPJ_VERSION}. LOSSLESS settings used\0");
+            let settings = if options.lossless() { "LOSSLESS" } else { "LOSSY" };
+            let comment = format!("Created by OpenJPEG version {OPJ_VERSION}. {settings} settings used\0");
             let copy = malloc(comment.len()) as *mut u8;
             if !copy.is_null() {
                 std::ptr::copy_nonoverlapping(comment.as_ptr(), copy, comment.len());
@@ -1254,16 +1308,17 @@ fn read_source(source: StreamSource) -> Result<RasterDataset> {
     Ok(ds)
 }
 
-/// Writes a lossless JP2 with a GeoJP2 box (see [`to_bytes`]); nodata goes to a `.aux.xml`
+/// Writes a JP2 with a GeoJP2 box (see [`to_bytes`]); nodata goes to a `.aux.xml`
 /// sidecar.
-pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, georeferenced: bool) -> Result<()> {
-    common::write_replacing(path, to_bytes(r, georeferenced)?)?;
+pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, georeferenced: bool, options: &[(String, String)]) -> Result<()> {
+    common::write_replacing(path, to_bytes(r, georeferenced, options)?)?;
     common::write_pam_with(path, None, nodata, r.bands)
 }
 
-/// Encodes a raster as a lossless JP2 file with a GeoJP2 box, unless it has neither a
+/// Encodes a raster as a JP2 file with a GeoJP2 box, unless it has neither a
 /// geotransform (`georeferenced` false, `GEOREFERENCED=NO`) nor a CRS.
-pub(crate) fn to_bytes(r: &Raster, georeferenced: bool) -> Result<Vec<u8>> {
+pub(crate) fn to_bytes(r: &Raster, georeferenced: bool, creation_options: &[(String, String)]) -> Result<Vec<u8>> {
+    let options = EncodingOptions::from_creation_options(creation_options)?;
     let (precision, signed) = match r.data_type {
         DataType::U8 => (8, false),
         DataType::I8 => (8, true),
@@ -1288,7 +1343,7 @@ pub(crate) fn to_bytes(r: &Raster, georeferenced: bool) -> Result<Vec<u8>> {
         }
     };
     let comps: Vec<Component> = (0..r.bands).map(|b| Component { precision, signed, data: band(b) }).collect();
-    let codestream = encode(r.cols, r.rows, &comps)?;
+    let codestream = encode(r.cols, r.rows, &comps, &options)?;
 
     let mut out = Vec::new();
     let mut put = |typ: &[u8; 4], payload: &[u8]| {
@@ -1374,11 +1429,50 @@ mod tests {
     }
 
     #[test]
+    fn quality_boundaries_are_checked_before_codec_rounding() {
+        let quality = |value: &str| vec![("QUALITY".to_string(), value.to_string())];
+        assert!(EncodingOptions::from_creation_options(&quality("100.000001")).is_err());
+        let near = EncodingOptions::from_creation_options(&quality("99.999999")).unwrap();
+        assert!(!near.reversible && !near.lossless());
+        let mut options = quality("99.999999");
+        options.push(("REVERSIBLE".into(), "YES".into()));
+        let explicit = EncodingOptions::from_creation_options(&options).unwrap();
+        assert!(explicit.reversible && !explicit.lossless());
+    }
+
+    #[test]
+    fn requested_quality_changes_codestream_and_reversibility() {
+        let values: Vec<u8> = (0..3 * 64 * 64).map(|i| ((i * 37 + i / 64) % 251) as u8).collect();
+        let raster =
+            common::make_raster(64, 64, 3, RasterData::U8(values.clone()), common::NO_GEOTRANSFORM, Default::default(), None).unwrap();
+        let options = |q: &str| vec![("quality".to_string(), q.to_string())];
+        let default = to_bytes(&raster, false, &[]).unwrap();
+        assert_eq!(default, to_bytes(&raster, false, &options("100")).unwrap());
+        assert_eq!(read_bytes(&default).unwrap().raster.data.to_f64_vec(), values.iter().map(|v| *v as f64).collect::<Vec<_>>());
+        let low = to_bytes(&raster, false, &options("10")).unwrap();
+        let high = to_bytes(&raster, false, &options("50")).unwrap();
+        assert_ne!(low, high);
+        assert_ne!(read_bytes(&low).unwrap().raster.data.to_f64_vec(), raster.data.to_f64_vec());
+        assert!(low.windows(b"LOSSY settings used".len()).any(|s| s == b"LOSSY settings used"));
+        let progressive = to_bytes(&raster, false, &options("10,100")).unwrap();
+        assert_eq!(read_bytes(&progressive).unwrap().raster.data.to_f64_vec(), raster.data.to_f64_vec());
+        for quality in ["", "0", "-1", "101", "nan", "inf", "1e-40", "1e-36", "25,10", "25,25"] {
+            assert!(to_bytes(&raster, false, &options(quality)).unwrap_err().to_string().contains("QUALITY"));
+        }
+    }
+
+    #[test]
     fn pipeline_exports_unreferenced_codestream_without_inventing_a_transform() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("image.j2k");
         let output = directory.path().join("image.tif");
-        let bytes = codec::encode(4, 4, &[codec::Component { precision: 8, signed: false, data: vec![7; 16] }]).unwrap();
+        let bytes = codec::encode(
+            4,
+            4,
+            &[codec::Component { precision: 8, signed: false, data: vec![7; 16] }],
+            &EncodingOptions::from_creation_options(&[]).unwrap(),
+        )
+        .unwrap();
         std::fs::write(&source, bytes).unwrap();
         let reader = crate::LazyRaster::open(source.to_str().unwrap()).unwrap();
         assert!(!reader.geotransform_present());
@@ -1405,7 +1499,7 @@ mod tests {
         .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("t.jp2");
-        write(&r, Some(-1500.0), &p, true).unwrap();
+        write(&r, Some(-1500.0), &p, true, &[]).unwrap();
         let ds = read(&p).unwrap();
         assert_eq!(ds.raster.data_i16().unwrap(), &data[..]);
         assert_eq!(ds.crs().epsg, Some(32611));
@@ -1427,7 +1521,7 @@ mod tests {
             let gt = [500000.0, 10.0, 0.0, 4100000.0, 0.0, -10.0];
             let r = common::make_raster(w, h, bands, data, gt, CrsInfo::from_epsg(32611), None).unwrap();
             let src = path(&format!("{name}.jp2"));
-            write(&r, Some(0.0), Path::new(&src), true).unwrap();
+            write(&r, Some(0.0), Path::new(&src), true, &[]).unwrap();
             let Dataset::Raster(whole) = crate::open(&src).unwrap() else { panic!("not a raster") };
             for driver in [D::Cog, D::GTiff] {
                 let options = RasterWriteOptions { driver: Some(driver), compression: Some("DEFLATE".into()), ..Default::default() };

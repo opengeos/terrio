@@ -2201,6 +2201,39 @@ test("coordinate operation safeguards and warnings", () => {
   assert.ok(Array.from(terrio.takeWarnings()).some((w) => w.includes("missing grid")));
 });
 
+test("JPEG 2000 quality and reversible options reach the WASM encoder", { skip: needs("jp2") }, () => {
+  const n = 64 * 64;
+  const values = new Uint8Array(3 * n).map((_, i) => (i * 37 + Math.floor(i / 64)) % 251);
+  const image = terrio.rasterFromArray(values, 64, 64, [0, 1, 0, 64, 0, -1]);
+  const low = image.toBytes("low.jp2", { creationOptions: { QUALITY: "10", REVERSIBLE: "NO" } });
+  const high = image.toBytes("high.jp2", { creationOptions: { quality: "50" } });
+  assert.notDeepEqual(low, high);
+  assert.notDeepEqual([...terrio.open(low, "low.jp2").readBand(1)], [...values.slice(0, n)]);
+  for (const options of [{}, { QUALITY: "100" }, { QUALITY: "10,100", REVERSIBLE: "YES" }]) {
+    const exact = terrio.open(image.toBytes("exact.jp2", { creationOptions: options }), "exact.jp2");
+    for (let b = 1; b <= 3; b++) assert.deepEqual([...exact.readBand(b)], [...values.slice((b - 1) * n, b * n)]);
+  }
+  for (const quality of ["nan", "100.000001", "1e-36"]) {
+    assert.throws(() => image.toBytes("bad.jp2", { creationOptions: { QUALITY: quality } }), /QUALITY/);
+  }
+  const almost = terrio.open(image.toBytes("almost.jp2", { creationOptions: { QUALITY: "99.999999" } }), "almost.jp2");
+  assert.notDeepEqual([...almost.readBand(1)], [...values.slice(0, n)]);
+});
+
+test("WebP shared lossy encoder preserves TIFF alpha at different qualities", () => {
+  const n = 32 * 32;
+  const rgba = new Uint8Array(4 * n).map((_, i) => (i * 31 + Math.floor(i / 32)) % 256);
+  const image = terrio.rasterFromArray(rgba, 32, 32, [0, 1, 0, 32, 0, -1]);
+  const low = image.toBytes("low.tif", { compress: "WEBP", creationOptions: { QUALITY: "10" } });
+  const high = image.toBytes("high.tif", { compress: "WEBP", creationOptions: { QUALITY: "90" } });
+  assert.notDeepEqual(low, high);
+  for (const bytes of [low, high]) {
+    const decoded = terrio.open(bytes, "tile.tif");
+    assert.deepEqual([...decoded.readBand(4)], [...rgba.slice(3 * n)]);
+    assert.notDeepEqual([...decoded.readBand(1)], [...rgba.slice(0, n)]);
+  }
+});
+
 test("GDAL 3.13 terrain and native WebP creation options", () => {
   const values = new Float32Array([942.315, 946.702, 951.43, 945.132, 943.95, 959.37, 948.15, 954.318, 960.01]);
   const dem = terrio.rasterFromArray(values, 3, 3, [500000, 3.5, 0, 4100000, 0, -3.5], "EPSG:32610");

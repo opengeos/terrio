@@ -1061,48 +1061,258 @@ pub(crate) type Reopen<'a, D> = &'a (dyn Fn() -> crate::Result<tiff::decoder::De
 /// none is left. A decoder taken from another image moves to the worker's image and reads its
 /// tables again, so reads that alternate between images save the opening but not the tables.
 ///
-/// A decoder is opened only while all the others are busy, so the pool grows to the workers of the
-/// widest read so far and never past [`crate::par::threads`]. Each kept decoder holds the tables of
-/// its image, 16 bytes a chunk, until the raster is closed.
+/// A decoder is opened only when the pool has none to spare, so the pool grows to the workers of
+/// the widest read so far and never past [`crate::par::threads`]. Each kept decoder holds the
+/// tables of its image, 16 bytes a chunk plus retained JPEG coding tables, so all open readers keep their decoders
+/// within one budget ([`SPARE_DECODER_BYTES`], see [`SpareDecoders`]): a decoder given back past it
+/// closes the least recently used decoders of the other pools, which open theirs again when they
+/// are next read. A reader that is closed gives up its share. Every reader has a pool of its own,
+/// also the reader of a raster's external overviews (`.ovr`) and each of the readers that a
+/// binding opens on one file to read it from several threads.
 pub(crate) struct DecoderPool<D: Read + Seek> {
-    spare: std::sync::Mutex<Vec<(usize, tiff::decoder::Decoder<D>)>>,
+    /// The identity of the pool in `spares`.
+    id: u64,
+    /// The store that holds this pool's spare decoders: [`SPARE_DECODERS`], except in tests.
+    spares: &'static SpareDecoders,
     /// How many decoders the workers opened because none was spare.
     #[cfg(test)]
     pub(crate) opened: std::sync::atomic::AtomicUsize,
+    _decoders: std::marker::PhantomData<fn() -> D>,
+}
+
+/// The most bytes the spare decoders of all the open readers hold together (see
+/// [`SpareDecoders`]): 256 MiB, which keeps one decoder per thread for a raster of 500,000 chunks
+/// on 32 threads, or for 250 rasters of 1,000 chunks. `TERRIO_TIFF_SPARE_CACHEMAX` overrides it
+/// process-wide at first use (bytes, optional K/M/G suffix; 0 disables spare retention).
+const SPARE_DECODER_BYTES: u64 = 256 << 20;
+
+/// The bytes counted for a spare decoder besides its tables, so that the decoders of many rasters
+/// of few chunks count too: what the decoder of a local file holds, its read buffer and its
+/// directory (10 KiB measured), rounded up. The decoder of a zip member holds more, a buffer of
+/// 64 KiB and the state of its decompressor, which is not counted.
+pub(crate) const SPARE_DECODER_OVERHEAD: u64 = 16 << 10;
+
+/// The spare decoders of all the open readers. The sentinel defers reading the process-wide
+/// `TERRIO_TIFF_SPARE_CACHEMAX` until first use, without a lazy-initialization lock across fork.
+static SPARE_DECODERS: SpareDecoders = SpareDecoders::new(u64::MAX);
+
+/// Holds the spare decoders' lock across a fork, for [`crate::par`]: the forking thread takes it
+/// before the process is copied and lets it go after, so that the child never starts with it held
+/// by a thread it does not have.
+#[cfg(all(unix, not(target_family = "wasm")))]
+pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
+    held.push(Box::new(SPARE_DECODERS.lock()));
+}
+
+/// A spare decoder, whatever it reads from.
+type AnyDecoder = Box<dyn std::any::Any + Send>;
+
+/// One spare decoder: the image it is on, the bytes counted for it and its place in the order of
+/// use.
+struct Spare {
+    ifd: usize,
+    cost: u64,
+    tick: u64,
+    decoder: AnyDecoder,
+}
+
+/// The spare decoders of the pools that share a budget.
+struct Spares {
+    /// The spare decoders of each pool, by its identity.
+    pools: std::collections::BTreeMap<u64, Vec<Spare>>,
+    /// The pool of each spare decoder, by the tick of its last use: the first is the least
+    /// recently used.
+    order: std::collections::BTreeMap<u64, u64>,
+    bytes: u64,
+    tick: u64,
+}
+
+impl Spares {
+    /// Takes the decoder of `pool` that was last used at `tick` out, if it is kept.
+    fn remove(&mut self, pool: u64, tick: u64) -> Option<Spare> {
+        self.order.remove(&tick);
+        let spares = self.pools.get_mut(&pool)?;
+        let spare = spares.swap_remove(spares.iter().position(|s| s.tick == tick)?);
+        if spares.is_empty() {
+            self.pools.remove(&pool);
+        }
+        self.bytes -= spare.cost;
+        Some(spare)
+    }
+}
+
+/// The spare decoders that the [`DecoderPool`]s of the open readers keep, within one budget of
+/// bytes: the tables each decoder holds (16 bytes a chunk plus JPEG coding tables) and a fixed part
+/// ([`SPARE_DECODER_OVERHEAD`]).
+///
+/// A decoder kept past the budget closes the least recently used decoders of the other pools
+/// until the rest fits. Those of its own pool stay: the workers of one read give theirs back
+/// together, and a pool that kept only some of them would open the others again on every read,
+/// which takes the read as long as opening them all. What the pools hold together is thus the
+/// budget, or the decoders of one pool when they alone take more (at most one per thread, as
+/// before the budget).
+pub(crate) struct SpareDecoders {
+    budget: std::sync::atomic::AtomicU64,
+    kept: std::sync::Mutex<Spares>,
+}
+
+impl SpareDecoders {
+    /// No decoders, to be kept within `budget` bytes.
+    pub(crate) const fn new(budget: u64) -> Self {
+        let spares = Spares { pools: std::collections::BTreeMap::new(), order: std::collections::BTreeMap::new(), bytes: 0, tick: 0 };
+        Self { budget: std::sync::atomic::AtomicU64::new(budget), kept: std::sync::Mutex::new(spares) }
+    }
+
+    fn budget(&self) -> u64 {
+        use std::sync::atomic::Ordering::Relaxed;
+        let budget = self.budget.load(Relaxed);
+        if budget != u64::MAX {
+            return budget;
+        }
+        // Read outside the store lock, as the block cache does. Thread-local options cannot
+        // change this process-wide budget. Invalid values retain the default.
+        let configured = std::env::var("TERRIO_TIFF_SPARE_CACHEMAX")
+            .ok()
+            .and_then(|v| crate::block_cache::parse_byte_size(&v))
+            .unwrap_or(SPARE_DECODER_BYTES);
+        self.budget.compare_exchange(u64::MAX, configured, Relaxed, Relaxed).map(|_| configured).unwrap_or_else(|already_set| already_set)
+    }
+
+    /// The decoders, also after a panic elsewhere poisoned their lock. The lock is held for map
+    /// operations only: no decoder is opened or closed under it.
+    fn lock(&self) -> std::sync::MutexGuard<'_, Spares> {
+        crate::par::fork_safe();
+        self.kept.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A spare decoder of `pool` and the image it is on: the most recently used one on `ifd`, else
+    /// the most recently used one.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    fn take(&self, pool: u64, ifd: usize) -> Option<(usize, AnyDecoder)> {
+        let mut all = self.lock();
+        let spares = all.pools.get(&pool)?;
+        let latest = |on_image: bool| spares.iter().filter(|s| !on_image || s.ifd == ifd).map(|s| s.tick).max();
+        let tick = latest(true).or_else(|| latest(false))?;
+        let spare = all.remove(pool, tick)?;
+        Some((spare.ifd, spare.decoder))
+    }
+
+    /// Keeps a decoder of `pool`, positioned on image `ifd` and counted for `cost` bytes, as the
+    /// most recently used one, unless the pool keeps `most` already. Returns the decoders that are
+    /// not kept, for the caller to close once the lock is let go: this one, or the least recently
+    /// used ones of the other pools, as many as bring the total within the budget.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    fn keep(&self, pool: u64, ifd: usize, cost: u64, most: usize, decoder: AnyDecoder) -> Vec<AnyDecoder> {
+        let budget = self.budget();
+        if budget == 0 {
+            return vec![decoder];
+        }
+        let mut all = self.lock();
+        if all.pools.get(&pool).map_or(0, Vec::len) >= most {
+            return vec![decoder];
+        }
+        all.tick += 1;
+        let tick = all.tick;
+        all.bytes += cost;
+        all.order.insert(tick, pool);
+        all.pools.entry(pool).or_default().push(Spare { ifd, cost, tick, decoder });
+        let mut closed = Vec::new();
+        let mut after = std::ops::Bound::Unbounded;
+        while all.bytes > budget {
+            let Some((&tick, &other)) = all.order.range((after, std::ops::Bound::Unbounded)).find(|&(_, &other)| other != pool) else {
+                break;
+            };
+            after = std::ops::Bound::Excluded(tick);
+            closed.extend(all.remove(other, tick).map(|spare| spare.decoder));
+        }
+        closed
+    }
+
+    /// Takes every spare decoder of `pool` out, for the caller to close once the lock is let go.
+    fn remove_pool(&self, pool: u64) -> Vec<Spare> {
+        let mut all = self.lock();
+        let spares = all.pools.remove(&pool).unwrap_or_default();
+        for spare in &spares {
+            all.order.remove(&spare.tick);
+            all.bytes -= spare.cost;
+        }
+        spares
+    }
+
+    /// The bytes counted for the decoders kept.
+    #[cfg(test)]
+    pub(crate) fn bytes(&self) -> u64 {
+        self.lock().bytes
+    }
 }
 
 impl<D: Read + Seek> Default for DecoderPool<D> {
     fn default() -> Self {
-        Self {
-            spare: std::sync::Mutex::new(Vec::new()),
-            #[cfg(test)]
-            opened: Default::default(),
-        }
+        Self::sharing(&SPARE_DECODERS)
+    }
+}
+
+impl<D: Read + Seek> Drop for DecoderPool<D> {
+    fn drop(&mut self) {
+        // Closed once `remove_pool` has let the lock go.
+        drop(self.spares.remove_pool(self.id));
     }
 }
 
 impl<D: Read + Seek> DecoderPool<D> {
-    /// A spare decoder and the image it is on, one on `ifd` first.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
-    fn take(&self, ifd: usize) -> Option<(usize, tiff::decoder::Decoder<D>)> {
-        let mut spare = self.spare.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let i = spare.iter().rposition(|(at, _)| *at == ifd).or_else(|| spare.len().checked_sub(1))?;
-        Some(spare.swap_remove(i))
-    }
-
-    /// Keeps a decoder positioned on image `ifd` for a later read, unless the pool is full.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
-    fn give_back(&self, ifd: usize, dec: tiff::decoder::Decoder<D>) {
-        let mut spare = self.spare.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if spare.len() < crate::par::threads() {
-            spare.push((ifd, dec));
+    /// A pool that keeps its decoders within the budget of `spares`, with the pools that share it.
+    pub(crate) fn sharing(spares: &'static SpareDecoders) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            spares,
+            #[cfg(test)]
+            opened: Default::default(),
+            _decoders: std::marker::PhantomData,
         }
     }
 
     /// How many decoders are kept.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.spare.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+        self.spares.lock().pools.get(&self.id).map_or(0, Vec::len)
+    }
+}
+
+impl<D: Read + Seek + Send + 'static> DecoderPool<D> {
+    /// A spare decoder and the image it is on, one on `ifd` first.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    fn take(&self, ifd: usize) -> Option<(usize, tiff::decoder::Decoder<D>)> {
+        let (at, decoder) = self.spares.take(self.id, ifd)?;
+        // The pool's identity is its own, so the decoders kept under it are the ones it gave back.
+        decoder.downcast().ok().map(|decoder| (at, *decoder))
+    }
+
+    /// Keeps a decoder positioned on image `ifd` for a later read, unless the pool is full; the
+    /// decoders of other rasters that no longer fit the budget are closed.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    fn give_back(&self, ifd: usize, mut dec: tiff::decoder::Decoder<D>) {
+        let chunks = match dec.get_chunk_type() {
+            tiff::decoder::ChunkType::Tile => dec.tile_count(),
+            tiff::decoder::ChunkType::Strip => dec.strip_count(),
+        };
+        // Offset and byte count, 8 bytes each.
+        let Ok(chunks) = chunks else { return };
+        let mut cost = SPARE_DECODER_OVERHEAD + 16 * u64::from(chunks);
+        // Image's JPEG tables are an owned byte vector. Read only the loaded directory entry,
+        // not the tag's payload: accounting must not copy or reread a potentially large table.
+        if let Some(entry) = dec.image_ifd().find_entry(tiff::tags::Tag::JPEGTables) {
+            match dec.find_tag_unsigned::<u16>(tiff::tags::Tag::Compression) {
+                Ok(Some(7)) => {
+                    let Some(total) = cost.checked_add(entry.count()) else { return };
+                    cost = total;
+                }
+                Ok(_) => {} // Non-JPEG images do not retain the tag in their decoder state.
+                Err(_) => return,
+            }
+        }
+        // Closed here, once `keep` has let the lock go.
+        drop(self.spares.keep(self.id, ifd, cost, crate::par::threads(), Box::new(dec)));
     }
 }
 
@@ -1220,7 +1430,7 @@ fn chunk_buffer(t: Option<tiff::decoder::DecodingSampleType>, bytes: usize) -> t
 /// of them without `reopen`). A chunk taking more than `limit` bytes
 /// ([`crate::TiffReadLimits::chunk_bytes`]) is refused, whichever decodes it.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek + Send>(
+pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek + Send + 'static>(
     dec: &mut tiff::decoder::Decoder<R>,
     reopen: Option<Reopen<D>>,
     pool: Option<&DecoderPool<D>>,
@@ -1255,7 +1465,7 @@ pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek + Send>(
 /// the caller.
 #[cfg(not(target_family = "wasm"))]
 #[allow(clippy::too_many_arguments)]
-fn decode_in_threads<D: Read + Seek + Send>(
+fn decode_in_threads<D: Read + Seek + Send + 'static>(
     reopen: Reopen<D>,
     pool: Option<&DecoderPool<D>>,
     ifd: usize,
@@ -1417,7 +1627,7 @@ impl Drop for LiveWorker {
 /// calling thread. Returns how many of the first chunks were decoded (none without a pool).
 #[cfg(all(threads, target_family = "wasm"))]
 #[allow(clippy::too_many_arguments)]
-fn decode_in_threads<D: Read + Seek + Send>(
+fn decode_in_threads<D: Read + Seek + Send + 'static>(
     reopen: Reopen<D>,
     _pool: Option<&DecoderPool<D>>,
     ifd: usize,
@@ -2394,5 +2604,293 @@ mod tests {
             assert!(e.contains("cannot allocate") && e.contains("for a TIFF chunk"), "{t:?} {bytes}: {e}");
         }
         assert!(matches!(chunk_buffer(Some(S::U16), 64).unwrap(), tiff::decoder::DecodingResult::U16(v) if v.len() == 32));
+    }
+
+    /// No stand-in closed.
+    const NONE: [u32; 0] = [];
+
+    /// Keeps a stand-in for a decoder, the number `tag`, and returns the tags of those not kept.
+    fn keep_tagged(spares: &SpareDecoders, pool: u64, ifd: usize, cost: u64, tag: u32) -> Vec<u32> {
+        let closed = spares.keep(pool, ifd, cost, 4, Box::new(tag));
+        closed.into_iter().map(|d| *d.downcast::<u32>().unwrap()).collect()
+    }
+
+    /// The tag and the image of the stand-in that `take` returns.
+    fn take_tagged(spares: &SpareDecoders, pool: u64, ifd: usize) -> Option<(u32, usize)> {
+        spares.take(pool, ifd).map(|(at, d)| (*d.downcast::<u32>().unwrap(), at))
+    }
+
+    /// The pools keep their spare decoders within one budget of bytes: a decoder kept past it
+    /// closes the least recently used ones of the other pools, and a pool that is closed gives up
+    /// its share.
+    #[test]
+    fn spare_decoders_of_all_pools_share_one_budget() {
+        let spares = SpareDecoders::new(100);
+        assert_eq!(keep_tagged(&spares, 1, 0, 30, 10), NONE);
+        assert_eq!(keep_tagged(&spares, 2, 0, 30, 20), NONE);
+        assert_eq!(keep_tagged(&spares, 1, 0, 40, 11), NONE);
+        assert_eq!(spares.bytes(), 100);
+        // Past the budget: the least recently used decoder goes, as many as it takes.
+        assert_eq!(keep_tagged(&spares, 3, 0, 30, 30), [10]);
+        assert_eq!(spares.bytes(), 100);
+        assert_eq!(keep_tagged(&spares, 3, 0, 60, 31), [20, 11]);
+        assert_eq!(spares.bytes(), 90);
+        // A decoder that is used again is the most recently used: pool 3's are now older than it.
+        assert_eq!(keep_tagged(&spares, 1, 0, 10, 12), NONE);
+        assert_eq!(take_tagged(&spares, 3, 0), Some((31, 0)));
+        assert_eq!(take_tagged(&spares, 3, 0), Some((30, 0)));
+        assert_eq!(keep_tagged(&spares, 3, 0, 30, 30), NONE);
+        assert_eq!(keep_tagged(&spares, 3, 0, 60, 31), NONE);
+        assert_eq!(keep_tagged(&spares, 2, 0, 30, 21), [12, 30]);
+        assert_eq!(spares.bytes(), 90);
+        // A pool that is closed takes its decoders out of the count and out of the order of use.
+        assert_eq!(spares.remove_pool(3).len(), 1);
+        assert_eq!(spares.bytes(), 30);
+        assert_eq!(spares.remove_pool(3).len(), 0);
+        assert_eq!(keep_tagged(&spares, 4, 0, 80, 40), [21]);
+        assert_eq!(spares.remove_pool(4).len(), 1);
+        assert_eq!(spares.bytes(), 0);
+    }
+
+    /// A pool keeps its own decoders past the budget, so that a raster whose decoders alone take
+    /// more does not open them again on every read; those of the other pools go first, and a pool
+    /// keeps no more than the most it is allowed.
+    #[test]
+    fn a_pool_keeps_its_own_spare_decoders_past_the_budget() {
+        let spares = SpareDecoders::new(100);
+        assert_eq!(keep_tagged(&spares, 1, 0, 20, 10), NONE);
+        for tag in 20..23 {
+            assert_eq!(keep_tagged(&spares, 2, 0, 60, tag), if tag == 21 { vec![10] } else { vec![] });
+        }
+        assert_eq!(spares.bytes(), 180);
+        // The other pool's decoder is kept, as the only one of its pool, and closes pool 2's.
+        assert_eq!(keep_tagged(&spares, 1, 0, 20, 11), [20, 21]);
+        assert_eq!(spares.bytes(), 80);
+        // No more than the most a pool keeps (4 here): the fifth is not kept.
+        for tag in 12..15 {
+            assert_eq!(keep_tagged(&spares, 1, 0, 1, tag), NONE);
+        }
+        assert_eq!(keep_tagged(&spares, 1, 0, 1, 15), [15]);
+        assert_eq!(spares.bytes(), 83);
+    }
+
+    #[test]
+    fn a_zero_spare_budget_disables_retention() {
+        let spares = SpareDecoders::new(0);
+        assert_eq!(keep_tagged(&spares, 1, 0, 30, 10), [10]);
+        assert_eq!(take_tagged(&spares, 1, 0), None);
+        assert_eq!(spares.bytes(), 0);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn spare_decoder_budget_reads_the_process_environment() {
+        const CHILD: &str = "TERRIO_TEST_SPARE_BUDGET_EXPECTED";
+        if let Ok(expected) = std::env::var(CHILD) {
+            let expected: u64 = expected.parse().unwrap();
+            assert_eq!(SPARE_DECODERS.budget(), expected);
+            assert_eq!(SPARE_DECODERS.budget(), expected);
+            return;
+        }
+        for (value, expected) in [("512M", 512 << 20), ("2G", 2 << 30), ("0", 0), ("invalid", SPARE_DECODER_BYTES)] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "geotiff::tests::spare_decoder_budget_reads_the_process_environment", "--nocapture"])
+                .env("TERRIO_TIFF_SPARE_CACHEMAX", value)
+                .env(CHILD, expected.to_string())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{value}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    /// A pool keeps the decoders it is given: each counts for the fixed part and the tables of
+    /// its image, 16 bytes a tile or strip, comes back with the image it was on, to its own pool
+    /// only, and leaves the count when its pool is dropped.
+    #[test]
+    fn a_spare_decoder_counts_for_the_chunk_tables_of_its_image() {
+        type Bytes = std::io::Cursor<Vec<u8>>;
+        // 25 rows in 7 strips of 4 rows.
+        let mut stripped = Bytes::default();
+        {
+            let mut encoder = tiff::encoder::TiffEncoder::new(&mut stripped).unwrap();
+            let mut image = encoder.new_image::<tiff::encoder::colortype::Gray8>(10, 25).unwrap();
+            image.rows_per_strip(4).unwrap();
+            image.write_data(&[7u8; 250]).unwrap();
+        }
+        // 6 x 6 tiles of 16 pixels.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiled.tif");
+        let cfg = wbraster::RasterConfig { cols: 96, rows: 96, bands: 1, data_type: wbraster::DataType::U8, ..Default::default() };
+        let raster = wbraster::Raster::from_data_native(cfg, wbraster::raster::RasterData::U8(vec![3; 96 * 96])).unwrap();
+        let options =
+            crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::GTiff), tile_size: Some(16), ..Default::default() };
+        let dataset = crate::RasterDataset::with_driver(raster, crate::formats::RasterDriver::GTiff, false);
+        crate::write_raster_dataset(&dataset, path.to_str().unwrap(), &options).unwrap();
+        let tiled = Bytes::new(std::fs::read(&path).unwrap());
+        let decoder = |bytes: &Bytes| tiff::decoder::Decoder::new(Bytes::new(bytes.get_ref().clone())).unwrap();
+
+        let spares: &'static SpareDecoders = Box::leak(Box::new(SpareDecoders::new(1 << 20)));
+        let pool = DecoderPool::<Bytes>::sharing(spares);
+        pool.give_back(0, decoder(&stripped));
+        assert_eq!(spares.bytes(), SPARE_DECODER_OVERHEAD + 16 * 7);
+        let (at, mut taken) = pool.take(0).unwrap();
+        assert_eq!((at, taken.dimensions().unwrap(), spares.bytes()), (0, (10, 25), 0));
+        // One decoder a pool at a time: a pool keeps no more than one per thread.
+        pool.give_back(1, decoder(&tiled));
+        assert_eq!(spares.bytes(), SPARE_DECODER_OVERHEAD + 16 * 36);
+        let other = DecoderPool::<Bytes>::sharing(spares);
+        assert!(other.take(1).is_none());
+        other.give_back(0, taken);
+        assert_eq!((pool.len(), other.len()), (1, 1));
+        assert_eq!(spares.bytes(), 2 * SPARE_DECODER_OVERHEAD + 16 * (36 + 7));
+        drop(other);
+        assert_eq!(spares.bytes(), SPARE_DECODER_OVERHEAD + 16 * 36);
+        let (at, mut taken) = pool.take(0).unwrap();
+        assert_eq!((at, taken.dimensions().unwrap()), (1, (96, 96)));
+        pool.give_back(1, taken);
+        drop(pool);
+        assert_eq!(spares.bytes(), 0);
+    }
+
+    /// A decoder whose strip count overflows must not retain unaccounted chunk tables.
+    /// This malformed geometry is accepted by tiff's directory reader; GDAL 3.13.3 is
+    /// the reference version for the surrounding TIFF conformance tests.
+    #[test]
+    fn a_spare_decoder_with_an_unknown_chunk_count_is_dropped() {
+        let chunks = u32::MAX.div_ceil(4096);
+        let table_at = 8 + 2 + 10 * 12 + 4;
+        let entries = [
+            (256u16, 4u16, 1, 1),
+            (257, 4, 1, u32::MAX),
+            (258, 3, 1, 8),
+            (259, 3, 1, 1),
+            (262, 3, 1, 1),
+            (273, 4, chunks, table_at),
+            (277, 3, 1, 1),
+            (278, 4, 1, 4096),
+            (279, 4, chunks, table_at + 4 * chunks),
+            (284, 3, 1, 1),
+        ];
+        let mut bytes = b"II*\0\x08\0\0\0".to_vec();
+        bytes.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        for (tag, kind, count, value) in entries {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&kind.to_le_bytes());
+            bytes.extend_from_slice(&count.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.resize((table_at + 8 * chunks) as usize, 0);
+        let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(bytes)).unwrap();
+        assert!(decoder.strip_count().is_err());
+        let spares = Box::leak(Box::new(SpareDecoders::new(1 << 20)));
+        let pool = DecoderPool::sharing(spares);
+        pool.give_back(0, decoder);
+        assert_eq!(pool.len(), 0);
+        assert_eq!(spares.bytes(), 0);
+    }
+
+    /// JPEG comments form a large, valid tables stream; pixels remain constant gray.
+    /// GDAL 3.13.3 is the independent JPEG reference used by the conformance tests.
+    #[test]
+    fn spare_decoder_cost_includes_retained_jpeg_tables_without_rereading() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering::Relaxed},
+        };
+        use tiff::tags::Tag;
+        struct Observed {
+            bytes: std::io::Cursor<Vec<u8>>,
+            read: Arc<AtomicUsize>,
+        }
+        impl Read for Observed {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.bytes.read(bytes)?;
+                self.read.fetch_add(n, Relaxed);
+                Ok(n)
+            }
+        }
+        impl Seek for Observed {
+            fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+                self.bytes.seek(from)
+            }
+        }
+        let mut tables = vec![0xff, 0xd8];
+        for _ in 0..4 {
+            tables.extend_from_slice(&[0xff, 0xfe, 0x80, 0x02]);
+            tables.extend_from_slice(&[b'x'; 32768]);
+        }
+        tables.extend_from_slice(&[0xff, 0xd9]);
+        let spares = Box::leak(Box::new(SpareDecoders::new(64 << 10)));
+        let mut pools = Vec::new();
+        for compression in [1u16, 7] {
+            let mut payload = vec![7u8; 16 * 16];
+            if compression == 7 {
+                payload.clear();
+                jpeg_encoder::Encoder::new(&mut payload, 90).encode(&[7; 16 * 16], 16, 16, jpeg_encoder::ColorType::Luma).unwrap();
+            }
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            {
+                let mut encoder = tiff::encoder::TiffEncoder::new(&mut bytes).unwrap();
+                let mut directory = encoder.image_directory().unwrap();
+                let offset = directory.write_data(payload.as_slice()).unwrap();
+                for (tag, value) in [
+                    (Tag::ImageWidth, 16u32),
+                    (Tag::ImageLength, 16),
+                    (Tag::RowsPerStrip, 16),
+                    (Tag::StripOffsets, offset as u32),
+                    (Tag::StripByteCounts, payload.len() as u32),
+                ] {
+                    directory.write_tag(tag, value).unwrap();
+                }
+                for (tag, value) in [
+                    (Tag::BitsPerSample, 8u16),
+                    (Tag::SamplesPerPixel, 1),
+                    (Tag::PhotometricInterpretation, 1),
+                    (Tag::Compression, compression),
+                ] {
+                    directory.write_tag(tag, value).unwrap();
+                }
+                directory.write_tag(Tag::JPEGTables, tables.as_slice()).unwrap();
+                directory.finish().unwrap();
+            }
+            let data = bytes.into_inner();
+            let dataset = crate::memory::open_raster_bytes(data.clone(), "gray.tif").unwrap();
+            assert_eq!(dataset.raster.data.to_f64_vec(), vec![7.0; 16 * 16]);
+            let read = Arc::new(AtomicUsize::new(0));
+            let decoder = tiff::decoder::Decoder::new(Observed { bytes: std::io::Cursor::new(data), read: read.clone() }).unwrap();
+            let before = read.load(Relaxed);
+            let pool = DecoderPool::sharing(spares);
+            pool.give_back(0, decoder);
+            assert_eq!(read.load(Relaxed), before, "accounting must not reread the JPEG tables");
+            pools.push(pool);
+            let retained_tables = if compression == 7 { tables.len() as u64 } else { 0 };
+            assert_eq!(spares.bytes(), SPARE_DECODER_OVERHEAD + 16 + retained_tables);
+        }
+        assert_eq!((pools[0].len(), pools[1].len()), (0, 1));
+    }
+
+    /// A worker takes the most recently used spare decoder on its image, and one on another image
+    /// only when there is none; never one of another pool.
+    #[test]
+    fn a_spare_decoder_on_the_image_is_taken_first() {
+        let spares = SpareDecoders::new(1000);
+        for (ifd, tag) in [(0, 10), (1, 11), (0, 12), (1, 13)] {
+            assert_eq!(keep_tagged(&spares, 1, ifd, 1, tag), NONE);
+        }
+        assert_eq!(keep_tagged(&spares, 2, 0, 1, 20), NONE);
+        assert_eq!(take_tagged(&spares, 1, 0), Some((12, 0)));
+        assert_eq!(take_tagged(&spares, 1, 0), Some((10, 0)));
+        assert_eq!(take_tagged(&spares, 1, 0), Some((13, 1)));
+        assert_eq!(take_tagged(&spares, 1, 2), Some((11, 1)));
+        assert_eq!(take_tagged(&spares, 1, 0), None);
+        assert_eq!(spares.bytes(), 1);
+        assert_eq!(take_tagged(&spares, 2, 0), Some((20, 0)));
+        assert_eq!(spares.bytes(), 0);
     }
 }
