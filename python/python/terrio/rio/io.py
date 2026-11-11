@@ -1928,7 +1928,7 @@ class DatasetReader(DatasetBase):
         else:
             buf = win_shape
         precise = (
-            dtype == np.dtype("complex128")
+            dtype.name == "complex128"
             and type(self)._read_level is DatasetReader._read_level
             and getattr(self._raster, "data_type", None) == "CInt32"
         )
@@ -1996,7 +1996,7 @@ class DatasetReader(DatasetBase):
                 buf,
                 resampling,
                 background,
-                out_dtype=dtype if dtype == np.dtype("complex128") else None,
+                out_dtype=dtype if dtype.name == "complex128" else None,
             )
             arr = gdal_cast(data, dtype)
             result = arr

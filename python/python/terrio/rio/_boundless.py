@@ -479,7 +479,7 @@ class _VRT:
         bands = self.bands if band in self.bands else [band]
         nodata = ds.nodatavals[band - 1]
         wide = (
-            np.dtype(dtype) == np.dtype("complex128")
+            np.dtype(dtype).name == "complex128"
             and getattr(ds._raster, "data_type", None) == "CInt32"
         )
         read_level = partial(ds._read_level, out_dtype="complex128") if wide else ds._read_level

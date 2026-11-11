@@ -574,11 +574,11 @@ impl PyRaster {
         band: Option<&Bound<'py, PyAny>>,
         window: Option<(usize, usize, usize, usize)>,
         overview: Option<usize>,
-        out_dtype: Option<&str>,
+        out_dtype: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let py = slf.py();
-        let out_dtype: Option<String> =
-            out_dtype.map(|d| py.import("numpy")?.call_method1("dtype", (d,))?.getattr("name")?.extract()).transpose()?;
+        let out_dtype = out_dtype.map(|d| py.import("numpy")?.call_method1("dtype", (d,))).transpose()?;
+        let double = out_dtype.as_ref().map(|d| d.getattr("name")?.extract::<String>()).transpose()?.as_deref() == Some("complex128");
         let (mut bands, single) = parse_bands(band)?;
         Self::with_reader(slf, |inner| {
             let complex = inner.is_complex();
@@ -613,7 +613,7 @@ impl PyRaster {
             let r = ds.raster;
             if complex {
                 let shape = if single { vec![r.rows, r.cols] } else { vec![r.bands / 2, r.rows, r.cols] };
-                let array = complex_to_numpy_as(py, r.data, r.rows * r.cols, &shape, out_dtype.as_deref() == Some("complex128"))?;
+                let array = complex_to_numpy_as(py, r.data, r.rows * r.cols, &shape, double)?;
                 return match &out_dtype {
                     Some(d) => array.call_method1("astype", (d,)),
                     None => Ok(array),
@@ -1070,9 +1070,7 @@ impl PyRaster {
     #[pyo3(signature = (dtype=None, copy=None))]
     fn __array__<'py>(slf: &Bound<'py, Self>, dtype: Option<&Bound<'py, PyAny>>, copy: Option<bool>) -> PyResult<Bound<'py, PyAny>> {
         let _ = copy;
-        let dtype: Option<String> =
-            dtype.map(|d| slf.py().import("numpy")?.call_method1("dtype", (d,))?.getattr("name")?.extract()).transpose()?;
-        Self::read(slf, None, None, None, dtype.as_deref())
+        Self::read(slf, None, None, None, dtype)
     }
 
     /// The raster as a PNG of up to 512 pixels a side, which notebooks display; `None` when it

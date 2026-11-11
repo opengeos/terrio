@@ -351,7 +351,7 @@ class Raster:
         window: _Window | None = None,
         overview: int | None = None,
         *,
-        out_dtype: str | None = None,
+        out_dtype: DTypeLike | None = None,
     ) -> NDArray[Any]: ...
     def read_sampled(
         self,
