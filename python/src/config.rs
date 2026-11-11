@@ -20,6 +20,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(check_drivers, m)?)?;
     m.add_function(wrap_pyfunction!(canonical_driver_name, m)?)?;
     m.add_function(wrap_pyfunction!(identify_drivers, m)?)?;
+    m.add_function(wrap_pyfunction!(vector_byte_extension, m)?)?;
     m.add_function(wrap_pyfunction!(network_stats, m)?)?;
     m.add_function(wrap_pyfunction!(reset_network_stats, m)?)?;
     m.add_function(wrap_pyfunction!(clear_http_cache, m)?)?;
@@ -148,6 +149,18 @@ fn canonical_driver_name(name: &str) -> String {
 fn identify_drivers(py: Python<'_>, path: &str) -> PyResult<(Vec<String>, Option<String>)> {
     let id = py.detach_result(|| Ok(terrio::formats::identify(path))).py()?;
     Ok((id.by_name, id.by_content))
+}
+
+/// Suggests a filename extension using the shared vector byte identifiers, without reading files.
+///
+/// Args:
+///     data: Bytes of a vector dataset.
+///
+/// Returns:
+///     str | None: The suggested extension, or None when a filename is needed.
+#[pyfunction]
+fn vector_byte_extension(data: &[u8]) -> Option<&'static str> {
+    terrio::memory::suggest_vector_extension(data)
 }
 
 /// The HTTP traffic of this process since the last reset, with GDAL's network-statistics counters
