@@ -36,7 +36,7 @@ RGB = RGB.astype("uint8")
 PROFILE = dict(
     driver="GTiff", width=WIDTH, height=HEIGHT, crs="EPSG:32611", transform=T, tiled=True
 )
-SPOOL = re.compile(r"\.tmp[A-Za-z0-9_]{6}")
+WINDOWS_SPOOL = re.compile(r"\.tmp[A-Za-z0-9]{6}")
 PALETTE = {0: (0, 0, 0, 255), 1: (200, 30, 30, 255), 2: (30, 200, 30, 255), 3: (30, 30, 200, 255)}
 
 
@@ -140,9 +140,9 @@ def test_a_copy_written_in_rows_reads_its_source_a_row_at_a_time(
     assert "src.tif" in src.seen
     outputs = src.seen - {"src.tif"}
     if sys.platform == "win32":
-        # A COG's overview spools are unlinked on creation on Unix, but on Windows they are named
-        # `.tmpXXXXXX` files in the output's directory (as GDAL's) until they are closed.
-        outputs = {name for name in outputs if not SPOOL.fullmatch(name)}
+        # A COG's chunk spools are anonymous files on Unix, but Windows lists a file deleted on
+        # close (`tempfile::tempfile_in`, named `.tmpXXXXXX`) in its directory until it closes.
+        outputs = {name for name in outputs if not WINDOWS_SPOOL.fullmatch(name)}
     assert len(outputs) == 1
     assert next(iter(outputs)).startswith("out.tif.tmp-")
     assert {p.name for p in tmp_path.iterdir()} == {"src.tif", "out.tif"}
@@ -307,10 +307,6 @@ def test_cog_copy_reads_tall_source_blocks_in_bounded_slabs(tmp_path, block_rows
         np.testing.assert_array_equal(ds.read(), RGB)
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Windows refuses to replace a file the open VRT still reads (WinError 5)",
-)
 @pytest.mark.parametrize("driver", ["COG", "GTiff"])
 def test_streamed_copy_reads_a_vrt_before_replacing_its_input(tmp_path, monkeypatch, driver):
     """A VRT may read the output's old contents throughout a streamed replacement."""
@@ -324,6 +320,15 @@ def test_streamed_copy_reads_a_vrt_before_replacing_its_input(tmp_path, monkeypa
         for b in (1, 2, 3)
     )
     vrt.write_text(f'<VRTDataset rasterXSize="{WIDTH}" rasterYSize="{HEIGHT}">{bands}</VRTDataset>')
+    if sys.platform == "win32":
+        # Windows refuses to replace a file the VRT still holds open (WinError 5): the copy must
+        # fail cleanly and leave the destination as it was.
+        before = dst.read_bytes()
+        with pytest.raises(rio.errors.RasterioIOError):
+            rio_shutil.copy(vrt, dst, driver=driver, compress="deflate", tiled=True)
+        assert dst.read_bytes() == before
+        assert not list(tmp_path.glob("*.tmp-*"))
+        return
     rio_shutil.copy(vrt, dst, driver=driver, compress="deflate", tiled=True)
     with rio.open(dst) as ds:
         np.testing.assert_array_equal(ds.read(), RGB)
