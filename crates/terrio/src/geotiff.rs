@@ -212,21 +212,26 @@ pub(crate) fn check_tiff_allowed(path: &std::path::Path, shown: &str) -> crate::
 /// Reads the georeferencing tags of a TIFF stream's first image, and finds the palette images
 /// among all its images. Returns `None` when the stream is not a TIFF.
 pub(crate) fn read_geo_tags_from<R: Read + Seek>(f: R) -> Option<GeoTags> {
+    try_read_geo_tags_from(f).ok().flatten()
+}
+
+/// Reads TIFF metadata while preserving read and seek failures for lazy opens.
+pub(crate) fn try_read_geo_tags_from<R: Read + Seek>(f: R) -> std::io::Result<Option<GeoTags>> {
     read_geo_tags_impl(f, false)
 }
 
 /// Comparison-only TIFF metadata; ordinary lazy opens avoid its out-of-line reads.
 pub(crate) fn read_compare_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
-    read_geo_tags_impl(std::io::BufReader::new(std::fs::File::open(path).ok()?), true)
+    read_geo_tags_impl(std::io::BufReader::new(std::fs::File::open(path).ok()?), true).ok().flatten()
 }
 
-fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Option<GeoTags> {
+fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> std::io::Result<Option<GeoTags>> {
     let mut header = [0u8; 16];
-    f.read_exact(&mut header[..8]).ok()?;
+    f.read_exact(&mut header[..8])?;
     let le = match &header[..2] {
         b"II" => true,
         b"MM" => false,
-        _ => return None,
+        _ => return Ok(None),
     };
     let u16_at = |b: &[u8]| if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) };
     let u32_at = |b: &[u8]| {
@@ -240,28 +245,28 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
     let big = match u16_at(&header[2..4]) {
         42 => false,
         43 => true,
-        _ => return None,
+        _ => return Ok(None),
     };
     let ifd_offset = if big {
-        f.read_exact(&mut header[8..16]).ok()?;
+        f.read_exact(&mut header[8..16])?;
         u64_at(&header[8..16])
     } else {
         u32_at(&header[4..8]) as u64
     };
 
-    f.seek(SeekFrom::Start(ifd_offset)).ok()?;
+    f.seek(SeekFrom::Start(ifd_offset))?;
     let count = if big {
         let mut b = [0u8; 8];
-        f.read_exact(&mut b).ok()?;
+        f.read_exact(&mut b)?;
         u64_at(&b)
     } else {
         let mut b = [0u8; 2];
-        f.read_exact(&mut b).ok()?;
+        f.read_exact(&mut b)?;
         u16_at(&b) as u64
     };
     let entry_len = if big { 20 } else { 12 };
     let mut entries = vec![0u8; (count as usize).min(4096) * entry_len];
-    f.read_exact(&mut entries).ok()?;
+    f.read_exact(&mut entries)?;
 
     let mut tags: Vec<(u16, Values)> = Vec::new();
     let mut palette_offset = None;
@@ -280,7 +285,7 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
         if tag == PHOTOMETRIC && u16_at(&e[2..4]) == 3 {
             let value = &e[if big { 12 } else { 8 }..];
             if u16_at(value) == 3 {
-                let entry_start = f.stream_position().ok()? - entries.len() as u64;
+                let entry_start = f.stream_position()? - entries.len() as u64;
                 let index = (e.as_ptr() as usize - entries.as_ptr() as usize) as u64;
                 palette_offset = Some(entry_start + index + if big { 12 } else { 8 });
             }
@@ -336,7 +341,9 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
             12 => 8, // DOUBLE
             _ => continue,
         };
-        let len = (n as usize).checked_mul(size)?;
+        let len = (n as usize)
+            .checked_mul(size)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "TIFF tag length overflow"))?;
         if len > 1 << 24 {
             continue;
         }
@@ -344,11 +351,11 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
             inline[..len].to_vec()
         } else {
             let off = if big { u64_at(inline) } else { u32_at(inline) as u64 };
-            let pos = f.stream_position().ok()?;
-            f.seek(SeekFrom::Start(off)).ok()?;
+            let pos = f.stream_position()?;
+            f.seek(SeekFrom::Start(off))?;
             let mut d = vec![0u8; len];
-            f.read_exact(&mut d).ok()?;
-            f.seek(SeekFrom::Start(pos)).ok()?;
+            f.read_exact(&mut d)?;
+            f.seek(SeekFrom::Start(pos))?;
             d
         };
         let values = match typ {
@@ -363,10 +370,11 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
     // The other images: overviews and masks.
     let mut palette_offsets: Vec<u64> = palette_offset.into_iter().collect();
     let mut seen = vec![ifd_offset];
-    let mut next = read_offset(&mut f, big, le);
-    while let Some(offset) = next.filter(|o| *o != 0 && seen.len() < MAX_IFDS && !seen.contains(o)) {
+    let mut next = read_offset(&mut f, big, le)?;
+    while next != 0 && seen.len() < MAX_IFDS && !seen.contains(&next) {
+        let offset = next;
         seen.push(offset);
-        next = palette_offset_in_ifd(&mut f, offset, big, le, &mut palette_offsets);
+        next = palette_offset_in_ifd(&mut f, offset, big, le, &mut palette_offsets)?;
     }
 
     let doubles = |t: u16| {
@@ -566,7 +574,7 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
             g.line += 0.5;
         }
     }
-    Some(out)
+    Ok(Some(out))
 }
 
 /// Canonical GDAL band roles; unknown metadata roles map to Undefined as GDAL does.
@@ -753,34 +761,34 @@ impl GeoTags {
 }
 
 /// Reads a file offset (4 bytes, or 8 in a BigTIFF) at the stream's position.
-fn read_offset<R: Read>(f: &mut R, big: bool, le: bool) -> Option<u64> {
+fn read_offset<R: Read>(f: &mut R, big: bool, le: bool) -> std::io::Result<u64> {
     let mut b = [0u8; 8];
     if big {
-        f.read_exact(&mut b).ok()?;
-        Some(if le { u64::from_le_bytes(b) } else { u64::from_be_bytes(b) })
+        f.read_exact(&mut b)?;
+        Ok(if le { u64::from_le_bytes(b) } else { u64::from_be_bytes(b) })
     } else {
-        f.read_exact(&mut b[..4]).ok()?;
+        f.read_exact(&mut b[..4])?;
         let a = [b[0], b[1], b[2], b[3]];
-        Some(if le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) } as u64)
+        Ok(if le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) } as u64)
     }
 }
 
 /// Looks for a palette `PhotometricInterpretation` in the IFD at `offset`, recording its value's
 /// offset. Returns the offset of the next IFD.
-fn palette_offset_in_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: bool, out: &mut Vec<u64>) -> Option<u64> {
+fn palette_offset_in_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: bool, out: &mut Vec<u64>) -> std::io::Result<u64> {
     let u16_at = |b: &[u8]| if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) };
-    f.seek(SeekFrom::Start(offset)).ok()?;
+    f.seek(SeekFrom::Start(offset))?;
     let count = if big {
         read_offset(f, true, le)?
     } else {
         let mut b = [0u8; 2];
-        f.read_exact(&mut b).ok()?;
+        f.read_exact(&mut b)?;
         u16_at(&b) as u64
     };
     let start = offset + if big { 8 } else { 2 };
     let entry_len = if big { 20 } else { 12 };
     let mut entries = vec![0u8; (count as usize).min(4096) * entry_len];
-    f.read_exact(&mut entries).ok()?;
+    f.read_exact(&mut entries)?;
     for (i, e) in entries.chunks(entry_len).enumerate() {
         let value = if big { 12 } else { 8 };
         if u16_at(&e[0..2]) == PHOTOMETRIC && u16_at(&e[2..4]) == 3 && u16_at(&e[value..]) == 3 {
@@ -1620,6 +1628,53 @@ impl<R: Seek> Seek for PatchedReader<R> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn metadata_read_keeps_read_and_seek_errors() {
+        struct FailingReader {
+            bytes: std::io::Cursor<Vec<u8>>,
+            fail_at: u64,
+            fail_seek: bool,
+        }
+        impl Read for FailingReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.bytes.position() >= self.fail_at {
+                    return Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "directory request failed"));
+                }
+                let n = buffer.len().min((self.fail_at - self.bytes.position()) as usize);
+                self.bytes.read(&mut buffer[..n])
+            }
+        }
+        impl Seek for FailingReader {
+            fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+                if self.fail_seek {
+                    return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "seek refused"));
+                }
+                self.bytes.seek(position)
+            }
+        }
+        // A classic TIFF with one out-of-line ModelPixelScale tag and a second IFD.
+        let mut bytes = b"II\x2a\0\x08\0\0\0".to_vec();
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&MODEL_PIXEL_SCALE.to_le_bytes());
+        bytes.extend_from_slice(&12u16.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&26u32.to_le_bytes());
+        bytes.extend_from_slice(&50u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 24]);
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        for fail_at in [0, 8, 10, 26, 50, 52] {
+            let source = FailingReader { bytes: std::io::Cursor::new(bytes.clone()), fail_at, fail_seek: false };
+            let error = try_read_geo_tags_from(source).expect_err("read failure must propagate");
+            assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+            assert_eq!(error.to_string(), "directory request failed");
+        }
+        let source = FailingReader { bytes: std::io::Cursor::new(bytes.clone()), fail_at: u64::MAX, fail_seek: true };
+        assert_eq!(try_read_geo_tags_from(source).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(try_read_geo_tags_from(std::io::Cursor::new(bytes)).unwrap().is_some());
+        assert!(try_read_geo_tags_from(std::io::Cursor::new(b"not tiff")).unwrap().is_none());
+    }
 
     /// Reservations start with free capacity, stop at the cap, and release capacity on drop.
     /// A local counter keeps this deterministic even when other tests decode concurrently.
