@@ -2990,6 +2990,8 @@ def suite_schema_dimensions(ctx):
     # Bindings without ``wkbPointZ`` spell the Z point ``wkbPoint25D``, the same type.
     kinds = {"Point": ogr.wkbPoint, "PointZ": ogr.wkbPoint25D, "PointM": ogr.wkbPointM, "PointZM": ogr.wkbPointZM}
     names = {wkb: name for name, wkb in kinds.items()}
+    # GDAL may report the ISO code for the Z point (1001) rather than the 2.5D code.
+    names[getattr(ogr, "wkbPointZ", ogr.wkbPoint25D)] = "PointZ"
     srs = osr.SpatialReference()
     srs.ImportFromEPSG(4326)
     driver = ogr.GetDriverByName("FlatGeobuf")
