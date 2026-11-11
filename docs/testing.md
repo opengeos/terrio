@@ -2681,3 +2681,24 @@ Bounds planning scans at most 512 corners at a time, including the final endpoin
 with roughly 17 KiB of coordinate/validity scratch rather than allocating an entire
 output-width row before memory-limit splitting. The polar regression starts off a
 global batch boundary and spans several batches; RPC batch membership stays global.
+
+## Categorical Deflate output
+
+Run `python scripts/conformance.py ../data --only deflate --strict` with current
+Python bindings and GDAL. The five issue #712 patterns check the exact decoded
+samples, mask, Byte type, nodata, affine and CRS through GDAL (locally validated
+with GDAL 3.13.3). Three repeating-class TIFFs have an 8,500-byte ceiling; this
+catches the previous 12–20 KiB outputs without asserting compressed-byte equality.
+An available `esa_worldcover_colormap.tif` contributes a real-data crop, whose
+pixel and georeferencing preservation is checked without a compression-ratio
+promise. Palette preservation is outside this encoder comparison.
+
+The native codec tests retain the original libdeflate byte goldens and add size
+bounds for repeating rows, odd row widths and 32 KiB window crossings. Python
+checks the default GTiff and COG writers; Node checks the WASM TIFF writer.
+CPU timing is a measurement, not a CI threshold: compare repeated optimized
+encodes on the same inputs. On a local 512-square tile benchmark, the new search
+reduced squares from 4,870 to 1,220 compressed bytes and about 0.93 to 0.45 ms CPU;
+a WorldCover tile stayed at 27,597 bytes and took about 2.62 versus 3.47 ms.
+A half-zero/half-noise UInt16 control grew 72 bytes out of about 265 KiB. These
+measurements describe the size/CPU tradeoff and are not universal speed claims.
