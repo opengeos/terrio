@@ -1,4 +1,6 @@
-"""JPEG 2000 quality and transform options, independently decoded by GDAL 3.13.3.
+"""JPEG 2000 quality and transform options, independently decoded by GDAL.
+
+Locally validated with GDAL 3.13.3; conformance reports rasterio's actual GDAL version.
 
 QUALITY is a percentage of uncompressed size, not a PSNR target. Rate targets are
 approximate, including container overhead. Encoder byte identity with GDAL is not claimed.

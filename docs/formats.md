@@ -125,7 +125,8 @@ container overhead. The final quality defaults to 100; `REVERSIBLE=NO` alone ins
 25. A final quality below 100 defaults to irreversible 9/7, while a final quality of 100
 defaults to reversible 5/3. `REVERSIBLE=YES` explicitly selects 5/3 but is still lossy when
 rate-limited below 100. Only reversible output ending at quality 100 is lossless.
-Path and memory writes expose the same options, including JavaScript/WASM. Files are read in place by window and resolution level, as GDAL reads them: the resolution
+Path and memory writes expose the same options, including JavaScript/WASM. Files are read in
+place by window and resolution level, as GDAL reads them: the resolution
 levels are the overviews (each halving the size, down to about 128 pixels, with GDAL's block
 sizes), and a window decodes only the tiles, precincts and code blocks it covers, its tiles in
 parallel, from local files, bytes or HTTP range requests. On a 10980 x 10980 Sentinel-2 band, a

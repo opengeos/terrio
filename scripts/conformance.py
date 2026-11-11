@@ -3266,7 +3266,9 @@ def suite_oapif(ctx):
 
 
 def suite_jp2_writer(ctx):
-    suite = Suite("jp2-writer", "JPEG 2000 creation options", "GDAL 3.13.3",
+    code, version, _ = run([sys.executable, "-c", "import rasterio; print(rasterio.__gdal_version__)"])
+    reference = f"GDAL {version.strip()} (rasterio)" if code == 0 else "GDAL (rasterio unavailable)"
+    suite = Suite("jp2-writer", "JPEG 2000 creation options", reference,
                   "Lossless defaults and progressive final layers preserve exact pixels. "
                   "Lossy quality changes sizes and pixels; independent GDAL decoding, types, "
                   "georeferencing and reversibility match, including real Landsat RGB. "

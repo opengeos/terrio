@@ -22,7 +22,7 @@
 //! colours is promoted to 0 and 255, as GDAL does. Nodata goes to a `.aux.xml` sidecar, where GDAL
 //! keeps it for JPEG 2000. Output defaults to lossless (reversible 5/3). QUALITY percentages
 //! select increasing rate-limited layers; REVERSIBLE selects the 5/3 or irreversible 9/7 filter.
-//! Options follow GDAL 3.13.3, except that no options preserve Terrio's lossless default.
+//! With no options, output retains Terrio's lossless default. The options otherwise follow GDAL 3.13.3.
 //!
 //! The port is also built as a C library, whose C allocator calls `wasm32-unknown-unknown` has no
 //! libc to answer: terrio defines them there (`wasm_libc`). The port releases null pointers with
