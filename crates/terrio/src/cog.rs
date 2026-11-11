@@ -1651,7 +1651,7 @@ impl LazyRaster {
     pub fn has_overview_mask(&self, overview: usize) -> bool {
         let Inner::Tiff(t) = &self.inner else { return false };
         let Some(l) = t.levels.get(overview + 1) else { return false };
-        mask_for_image(&t.masks, l).is_some()
+        l.external.is_none() && mask_for_image(&t.masks, l).is_some()
     }
 
     /// Reads a window of the per-dataset mask of the full-resolution image or of an overview as
@@ -3653,6 +3653,38 @@ mod tests {
         assert_eq!(crate::block_cache::tests::take_lookups().0, 0);
         let expected = sequence(DataType::U8, 80 * 64, 4).to_f64_vec();
         assert_eq!(full[0], expected[2 * 80 + 3]);
+    }
+
+    /// GDAL 3.13.3 treats an external overview as its own TIFF, even at the base size.
+    #[test]
+    fn equal_sized_external_overview_does_not_claim_the_base_internal_mask() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("image.tif");
+        let cfg = wbraster::RasterConfig { cols: 16, rows: 16, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let dataset = RasterDataset::with_driver(
+            wbraster::Raster::from_data_native(cfg, RasterData::U8(vec![7; 256])).unwrap(),
+            RasterDriver::GTiff,
+            false,
+        );
+        crate::write_raster_dataset(
+            &dataset,
+            path.to_str().unwrap(),
+            &crate::RasterWriteOptions { mask: Some(vec![0; 256]), ..Default::default() },
+        )
+        .unwrap();
+        {
+            let mut output = std::fs::File::create(dir.path().join("image.tif.ovr")).unwrap();
+            let mut encoder = tiff::encoder::TiffEncoder::new(&mut output).unwrap();
+            let mut image = encoder.new_image::<tiff::encoder::colortype::Gray8>(16, 16).unwrap();
+            image.encoder().write_tag(Tag::NewSubfileType, 1u32).unwrap();
+            image.write_data(&[9u8; 256]).unwrap();
+        }
+        let mut source = LazyRaster::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(source.overviews(), [(16, 16)]);
+        assert_eq!(source.read_mask(Window::full(16, 16), None).unwrap(), Some(vec![0; 256]));
+        assert!(!source.has_overview_mask(0));
+        assert!(!source.level_has_own_mask(0));
+        assert_eq!(source.read_mask(Window::full(16, 16), Some(0)).unwrap(), None);
     }
 
     /// Readers of different files never share chunks, though their chunks have the same indexes.
