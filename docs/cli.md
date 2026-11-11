@@ -1151,7 +1151,7 @@ alone as a general bound. A separate 4096 × 4096 Float32 example in
 40-pixel holes, overcounts by 7.1% at ×64, but only 0.03% at ×8, where the holes align
 with complete overview cells. Overview sums can also mark output pixels valid where
 full-resolution sums have no valid source contribution. Choose a finer stored level with
-`--overview n` (zero is the first overview), or `AUTO-n`, which can reduce this effect.
+`--overview n` (zero is the first and finest overview), or `AUTO-n`, which can reduce this effect.
 The improvement is not monotonic for variable values and independently built overviews.
 Use `--overview NONE` when valid totals and full-resolution nodata coverage are
 required.

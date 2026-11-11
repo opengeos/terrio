@@ -431,7 +431,7 @@ fraction `p` wholly in partly valid cells gives relative excess `p / (1 - p)` ov
 valid total, rather than `p`; with variable values the nodata fraction alone does not
 bound the relative error. Output pixels can also become valid where a full-resolution
 sum has no valid source contribution. Select a finer `overview=n` (zero is the first
-overview) or `"AUTO-n"`, which can reduce the effect, or `overview="NONE"` for valid
+and finest overview) or `"AUTO-n"`, which can reduce the effect, or `overview="NONE"` for valid
 totals and full-resolution nodata coverage. Finer independently built overviews need not
 improve the error monotonically when values vary. The mean-based formulas do not apply
 to nearest overviews, which may select nodata from a partly valid block.
