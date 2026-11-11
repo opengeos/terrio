@@ -1140,17 +1140,21 @@ valid value 100 and three nodata pixels has mean 100; counting it over the whole
 estimates 400 instead of the valid total 100. An internal mask has the same limitation when
 its overview records only valid/invalid, without the fraction of valid source pixels.
 
-For nonnegative data and complete average-overview cells, the excess is each partly valid
-cell's mean times its number of invalid source pixels, summed over those cells. With a
-constant valid value and invalid fraction `p` entirely in partly valid cells, the estimate
-is `1 / (1 - p)` times the valid total: 7.9% nodata can give about 8.6% excess relative to
-that total. Variable values, integer rounding and cropped cells prevent treating the nodata
-fraction alone as a general bound. The 4096 × 4096 Float32 example in [#707](https://github.com/opengeos/terrio/issues/707), with 7.9% nodata
-in corners and 40-pixel holes, overcounts by 7.1% at ×64, but only 0.03% at ×8, where the
-holes align with complete overview cells. Overview sums can also mark output pixels valid
-where full-resolution sums have no valid source contribution. Choose a finer stored level
-with `--overview n` (zero is the first overview), or `AUTO-n`, to reduce this effect; use
-`--overview NONE` when valid totals and full-resolution nodata coverage are required.
+For nonnegative data and complete overview cells holding exact valid-pixel means
+(without integer rounding), the excess is each partly valid cell's mean times its number
+of invalid source pixels, summed over those cells. With a constant positive valid value
+and invalid fraction `p` entirely in partly valid cells, the estimate is `1 / (1 - p)`
+times the valid total: 7.9% nodata can give about 8.6% excess relative to that total.
+Variable values, integer rounding and cropped cells prevent treating the nodata fraction
+alone as a general bound. A separate 4096 × 4096 Float32 example in
+[#707](https://github.com/opengeos/terrio/issues/707), with 7.9% nodata in corners and
+40-pixel holes, overcounts by 7.1% at ×64, but only 0.03% at ×8, where the holes align
+with complete overview cells. Overview sums can also mark output pixels valid where
+full-resolution sums have no valid source contribution. Choose a finer stored level with
+`--overview n` (zero is the first overview), or `AUTO-n`, which can reduce this effect.
+The improvement is not monotonic for variable values and independently built overviews.
+Use `--overview NONE` when valid totals and full-resolution nodata coverage are
+required.
 
 A sum outgrows small integer types: a `UInt16` output stores 65535
 for any larger sum, so give a coarse `sum` `--ot Float32` or `--ot Float64`.

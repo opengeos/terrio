@@ -420,16 +420,21 @@ full resolution exactly. The estimate's accuracy is described under
 overview of floating-point data without nodata when the footprint covers complete overview
 cells. Cropping through those cells makes even the total approximate; rounded integer means,
 partly nodata blocks and other overview resamplings also introduce approximation.
-In a partly valid block, the valid-pixel mean counts for invalid pixels too; small nodata
-holes can disappear into it. The measured 1.4% to 2.6% excess in the CLI guide is not a bound:
-the example in [#707](https://github.com/opengeos/terrio/issues/707) has 7.9% nodata and overcounts by 7.1% at ×64, versus 0.03% at ×8.
-An internal mask with binary overviews has the same limitation. For constant nonnegative
-valid values, an invalid fraction `p` wholly in partly valid cells gives relative excess
-`p / (1 - p)` over the valid total, rather than `p`; with variable values the nodata fraction
-alone does not bound the relative error. Output pixels can also become valid where a
-full-resolution sum has no valid source contribution. Select a finer `overview=n` (zero is
-the first overview) or `"AUTO-n"` to reduce the effect, or `overview="NONE"` for valid totals
-and full-resolution nodata coverage.
+In a partly valid average-overview block, the valid-pixel mean is also applied to
+invalid pixels; small nodata holes can disappear into it. The measured 1.4% to 2.6%
+excess in the CLI guide is not a bound: the separate raster in
+[#707](https://github.com/opengeos/terrio/issues/707) has 7.9% nodata and overcounts by
+7.1% at ×64, versus 0.03% at ×8. An internal mask with binary overviews has the same
+limitation. For complete cells holding exact averages of constant positive valid values,
+an invalid fraction `p` wholly in partly valid cells gives relative excess `p / (1 - p)`
+over the valid total, rather than `p`; with variable values the nodata fraction alone
+does not bound the relative error. Output pixels can also become valid where a
+full-resolution sum has no valid source contribution. Select a finer `overview=n` (zero
+is the first overview) or `"AUTO-n"`, which can reduce the effect, or `overview="NONE"`
+for valid totals and full-resolution nodata coverage. Finer independently built
+overviews need not improve the error monotonically when values vary. The mean-based
+formulas do not apply to nearest overviews, which may select nodata from a partly valid
+block.
 Give a coarse `sum` a floating-point `ot`: a
 `"UInt16"` output stores 65535 for any larger sum. For paths and lazy inputs, a `sum` of one source without a cutline
 reads the window of an output too coarse to be split into chunks a strip of rows at a time, as
