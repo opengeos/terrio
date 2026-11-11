@@ -255,56 +255,13 @@ fn webp_encode(data: Vec<u8>, chunk: &ChunkInfo, options: &CodecParams) -> Resul
     if data.len() != chunk.w * chunk.h * chunk.spp {
         return Err(Error::InvalidData("WebP sample buffer length differs from chunk dimensions".into()));
     }
-    let mut rgba = if chunk.spp == 4 { data } else { data.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect() };
-    // The pure Rust VP8 encoder accepts opaque RGB. Preserve alpha in the WebP
-    // container's independent, uncompressed ALPH chunk instead of ignoring quality.
-    let alpha = (!options.webp_lossless && chunk.spp == 4 && rgba.as_chunks::<4>().0.iter().any(|p| p[3] != 255)).then(|| {
-        rgba.as_chunks_mut::<4>()
-            .0
-            .iter_mut()
-            .map(|p| {
-                let a = p[3];
-                p[3] = 255;
-                a
-            })
-            .collect::<Vec<_>>()
-    });
+    let rgba = if chunk.spp == 4 { data } else { data.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect() };
+    if !options.webp_lossless {
+        return super::webp::encode_lossy(rgba, chunk.w, chunk.h, options.webp_quality as f32);
+    }
     let image = webp_rust::ImageBuffer { width: chunk.w, height: chunk.h, rgba };
-    let encoded = if options.webp_lossless {
-        webp_rust::encode_lossless_with_config(&image, &webp_rust::LosslessEncodingConfig { z_level: 2 }, None)
-    } else {
-        webp_rust::encode_lossy_with_config(
-            &image,
-            &webp_rust::LossyEncodingConfig { quality: options.webp_quality as f32, method: 0, ..Default::default() },
-            None,
-        )
-    }
-    .map_err(|error| Error::InvalidData(format!("WebP: {error}")))?;
-    let Some(alpha) = alpha else { return Ok(encoded) };
-    if encoded.get(..4) != Some(b"RIFF") || encoded.get(8..16) != Some(b"WEBPVP8 ") {
-        return Err(Error::InvalidData("WebP encoder did not return a simple VP8 container".into()));
-    }
-    let mut body = b"WEBP".to_vec();
-    let mut append = |tag: &[u8; 4], payload: &[u8]| {
-        body.extend_from_slice(tag);
-        body.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        body.extend_from_slice(payload);
-        if !payload.len().is_multiple_of(2) {
-            body.push(0);
-        }
-    };
-    let mut extended = vec![0x10, 0, 0, 0];
-    extended.extend_from_slice(&((chunk.w - 1) as u32).to_le_bytes()[..3]);
-    extended.extend_from_slice(&((chunk.h - 1) as u32).to_le_bytes()[..3]);
-    append(b"VP8X", &extended);
-    let mut alpha_chunk = vec![0]; // uncompressed, unfiltered alpha
-    alpha_chunk.extend_from_slice(&alpha);
-    append(b"ALPH", &alpha_chunk);
-    body.extend_from_slice(&encoded[12..]);
-    let mut output = b"RIFF".to_vec();
-    output.extend_from_slice(&(body.len() as u32).to_le_bytes());
-    output.extend_from_slice(&body);
-    Ok(output)
+    webp_rust::encode_lossless_with_config(&image, &webp_rust::LosslessEncodingConfig { z_level: 2 }, None)
+        .map_err(|error| Error::InvalidData(format!("WebP: {error}")))
 }
 
 /// Encodes a chunk as a lossless JPEG XL codestream: 1 to 4 channels (gray, gray and alpha, RGB,

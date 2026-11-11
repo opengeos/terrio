@@ -43,13 +43,17 @@ of other formats are not provided, and `use_arrow=True` reads them by the regula
 from __future__ import annotations
 
 import contextlib
+import datetime as _dt
 import json
 import os
+import re
 import warnings
+from typing import Any
 
 import numpy as np
 
 from terrio import _terrio
+from terrio._warnings import warn_user
 from terrio.pyogrio import errors
 from terrio.pyogrio._read import _Source
 from terrio.pyogrio._read import read as _read
@@ -302,9 +306,13 @@ def _read_geoparquet_dataframe(
     name = meta["geometry_name"]
     if not read_geometry or not name:
         return table.to_pandas(**kwargs)
-    storage = table.schema.field(name).type
+    column = table[name]
+    storage = column.type
+    if getattr(storage, "extension_name", "") == "geoarrow.wkb":
+        storage = storage.storage_type
+        column = pa.chunked_array([chunk.storage for chunk in column.chunks], type=storage)
     if pa.types.is_binary(storage) or pa.types.is_large_binary(storage):
-        geometry = shapely.from_wkb(table[name].to_numpy(zero_copy_only=False))
+        geometry = shapely.from_wkb(column.to_numpy(zero_copy_only=False))
         df = table.drop_columns([name]).to_pandas(**kwargs)
         gdf = gp.GeoDataFrame(
             df, geometry=gp.GeoSeries(geometry, index=df.index, name=name), crs=meta["crs"]
@@ -318,26 +326,157 @@ def _read_geoparquet_dataframe(
     return gdf
 
 
-def _to_datetime_iso8601(pd, ser):
-    """`pd.to_datetime(ser, format="ISO8601")`, without pandas 2's warning about mixed time zones.
+_SUBMICROSECOND_ISO = re.compile(r"[.,][0-9]{6}[0-9]*[1-9]")
+_REDUCED_ISO = re.compile(r"[0-9]{4}(?:-[0-9]{2})?")
+_STANDARD_ISO_OFFSET = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:[.,][0-9]+)?(?P<offset>Z|[+-][0-9]{2}:?[0-9]{2})?)?"
+)
+_DATETIME_FRACTION = re.compile(r"([T ][0-9]{2}:[0-9]{2}:[0-9]{2}[.,])([0-9]+)")
 
-    pandas 2 warns that parsing mixed time zones will raise, which only a change of the process's
-    warning filters silences, so they are changed for the call on pandas 2 only. pandas 3 raises
-    instead, which `_parse_datetime` handles, and the filters are left alone.
+
+def _same_iso_offset(pd, values):
+    """Recognize a uniform offset without parsing calendar values twice.
+
+    Args:
+        pd: The pandas module.
+        values: Distinct input values.
+
+    Returns:
+        bool: All nonmissing values use standard ISO syntax with the same offset.
+            Other syntax uses the full inspection path. Pandas still validates dates.
     """
-    if int(pd.__version__.split(".")[0]) >= 3:
-        return pd.to_datetime(ser, format="ISO8601")
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", ".*parsing datetimes with mixed time zones will raise.*", FutureWarning
+    suffixes = None
+    initialized = False
+    for value in values:
+        if not isinstance(value, str):
+            if pd.isna(value):
+                continue
+            return False
+        if initialized:
+            if suffixes:
+                if not value.endswith(suffixes):
+                    return False
+            elif value.endswith("Z") or "+" in value[10:] or "-" in value[10:]:
+                return False
+            continue
+        match = _STANDARD_ISO_OFFSET.fullmatch(value)
+        if match is None:
+            return False
+        offset = match.group("offset")
+        if offset is not None:
+            offset = offset.replace(":", "")
+            if offset in {"Z", "+0000", "-0000"}:
+                suffixes = ("Z", "+0000", "+00:00", "-0000", "-00:00")
+            else:
+                suffixes = (offset, offset[:3] + ":" + offset[3:])
+        initialized = True
+    return True
+
+
+def _parse_reduced_iso_dates(pd, values):
+    """Batch the timezone-free reduced forms that the stdlib does not accept.
+
+    Args:
+        pd: The pandas module.
+        values: Distinct input values.
+
+    Returns:
+        dict: Valid reduced dates parsed in a batch. Rejected positions retain
+            their existing per-value diagnostic path without discarding valid results.
+    """
+    candidates = [
+        value for value in values if isinstance(value, str) and _REDUCED_ISO.fullmatch(value)
+    ]
+    if not candidates:
+        return {}
+    try:
+        parsed = pd.to_datetime(candidates, format="ISO8601", errors="coerce")
+    except (TypeError, ValueError):
+        return {}
+    return {
+        value: timestamp.to_pydatetime(warn=False)
+        for value, timestamp in zip(candidates, parsed, strict=True)
+        if not pd.isna(timestamp)
+    }
+
+
+def _parse_iso_datetime(pd, value: str, *, warn_precision_loss: bool = False) -> Any:
+    """Parse one ISO datetime for offset inspection or Python datetime output.
+
+    Args:
+        pd: The pandas module.
+        value: An ISO date-time string.
+        warn_precision_loss: Report sub-microsecond loss when producing Python datetime output.
+
+    Returns:
+        datetime: A value preserving its UTC offset, or pandas' NaT for missing strings.
+
+    Raises:
+        ValueError: The string is not a valid ISO datetime.
+    """
+    try:
+        # Python datetime output has microsecond precision on every supported version.
+        # Trim only timestamp fractions, keeping the original value for the diagnostic.
+        normalized = _DATETIME_FRACTION.sub(
+            lambda match: match[1] + match[2][:6].ljust(6, "0"), value
         )
-        return pd.to_datetime(ser, format="ISO8601")
+        parsed = _dt.datetime.fromisoformat(
+            normalized[:-1] + "+00:00" if normalized.endswith("Z") else normalized
+        )
+    except (AttributeError, TypeError, ValueError):
+        # A singleton cannot mix offsets or emit the mixed-timezone warning.
+        # The shared bridge below reports precision loss at the caller on both paths.
+        parsed = pd.to_datetime([value], format="ISO8601")[0].to_pydatetime(warn=False)
+    if warn_precision_loss and _SUBMICROSECOND_ISO.search(value):
+        # Offset inspection discards this temporary value; Python output must retain the
+        # precision diagnostic that pandas' to_pydatetime gives for the same conversion.
+        warn_user("Discarding nonzero nanoseconds in conversion.")
+    return parsed
+
+
+def _to_datetime_iso8601(pd, ser):
+    """Parse ISO date-times without changing process-wide warning filters.
+
+    Args:
+        pd: The pandas module.
+        ser: A series of date-time strings and missing values.
+
+    Returns:
+        Series: Parsed values for a uniform timezone or naive input.
+
+    Raises:
+        ValueError: Timezones are mixed, or pandas refuses an invalid input.
+    """
+    if int(pd.__version__.split(".")[0]) < 3:
+        offsets = set()
+        unique = pd.unique(ser)
+        if _same_iso_offset(pd, unique):
+            return pd.to_datetime(ser, format="ISO8601")
+        reduced = _parse_reduced_iso_dates(pd, unique)
+        for value in unique:
+            if pd.isna(value):
+                continue
+            try:
+                parsed = reduced[value] if value in reduced else _parse_iso_datetime(pd, value)
+                if parsed is pd.NaT:
+                    continue
+                offset = parsed.utcoffset()
+            except (AttributeError, TypeError, ValueError):
+                # Let pandas retain its own invalid-input diagnostic.
+                break
+            if len(offsets) < 2:
+                offsets.add(offset)
+        else:
+            if len(offsets) > 1:
+                # Match pandas 3's error before pandas 2 can emit its FutureWarning. The caller
+                # already handles both UTC conversion and per-value offset preservation.
+                raise ValueError("Mixed timezones detected")
+    return pd.to_datetime(ser, format="ISO8601")
 
 
 def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
     """Date and date-time strings to datetime64[ms], as pyogrio 0.13 parses them with pandas."""
-    import datetime
-
     import pandas as pd
 
     if datetime_as_string:
@@ -357,7 +496,16 @@ def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
                     return ser
             else:
                 try:
-                    res = ser.map(datetime.datetime.fromisoformat, na_action="ignore")
+                    unique = pd.unique(ser)
+                    reduced = _parse_reduced_iso_dates(pd, unique)
+                    values = {
+                        value: reduced[value]
+                        if value in reduced
+                        else _parse_iso_datetime(pd, value, warn_precision_loss=True)
+                        for value in unique
+                        if not pd.isna(value)
+                    }
+                    res = ser.map(values, na_action="ignore")
                 except Exception as ex2:
                     warnings.warn(warning.format(message=str(ex2)), stacklevel=3)
                     return ser
@@ -616,6 +764,7 @@ def open_arrow(
         f.name
         for f in reader.schema
         if (f.metadata or {}).get(b"ARROW:extension:name", b"").startswith(b"geoarrow.")
+        or getattr(f.type, "extension_name", "").startswith("geoarrow.")
     ]
     meta["geometry_name"] = geometry[0] if geometry else ""
     if not read_geometry and geometry:
