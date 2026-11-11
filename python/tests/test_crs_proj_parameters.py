@@ -481,6 +481,23 @@ def test_wkt2_mercator_registry_export_retains_spherical_extension():
     )
 
 
+@pytest.mark.parametrize("authority,point", [("ESRI:102003", (-95, 40)), ("OGC:CRS84", (10, 50))])
+def test_non_epsg_authority_transforms_match_their_wkt(authority, point):
+    """Non-EPSG authority inputs retain coordinates when selecting their native registry.
+
+    Args:
+        authority: Native ESRI or OGC authority input.
+        point: A geographic point within its area.
+    """
+    crs = CRS.from_user_input(authority)
+    np.testing.assert_allclose(
+        coordinates(crs, point),
+        coordinates(CRS.from_wkt(crs.to_wkt()), point),
+        rtol=0,
+        atol=1e-6,
+    )
+
+
 def test_etrs89_export_reports_loss_of_datum_identity():
     """An ellipsoid-only ETRS89 export explicitly reports its omitted datum identity."""
     crs = CRS.from_epsg(25832)
