@@ -1140,9 +1140,9 @@ valid value 100 and three nodata pixels has mean 100; counting it over the whole
 estimates 400 instead of the valid total 100. An internal mask has the same limitation when
 its overview records only valid/invalid, without the fraction of valid source pixels.
 
-For nonnegative data and complete overview cells holding exact valid-pixel means
-(without integer rounding), the excess is each partly valid cell's mean times its number
-of invalid source pixels, summed over those cells. With a constant positive valid value
+For nonnegative data and complete overview cells holding exact area-weighted valid-pixel
+means (without integer rounding), the excess is each partly valid cell's mean times the
+area of its invalid portions in source-pixel units, summed over those cells. With a constant positive valid value
 and invalid fraction `p` entirely in partly valid cells, the estimate is `1 / (1 - p)`
 times the valid total: 7.9% nodata can give about 8.6% excess relative to that total.
 Variable values, integer rounding and cropped cells prevent treating the nodata fraction
