@@ -18,7 +18,7 @@ POLAR = [("EPSG:6932", 90.0), ("EPSG:3574", -90.0), ("EPSG:3408", -90.0), ("EPSG
 
 
 def rim(crs, opposite):
-    """The radius of the CRS's disk: the distance from its origin of a point 1e-8° from the
+    """The radius of the CRS's disk: the distance from its origin of a point 9e-7° from the
     opposite pole."""
     x, y = transform("EPSG:4326", crs, [0.0], [opposite * 0.99999999])
     return math.hypot(x[0], y[0])
@@ -36,8 +36,8 @@ def test_coordinates_beyond_a_polar_lambert_azimuthal_disk_transform_to_infinity
 def test_a_world_warped_into_a_polar_lambert_azimuthal_disk_fills_the_disk_only(crs, opposite):
     """A world of 1° pixels (3 along 90° N, 2 along 90° S, 1 elsewhere) warped into the CRS's
     default grid, the square around the disk, with nearest: each pixel is the source pixel its
-    centre falls in, and nodata (0) where its centre does not transform, which every pixel more
-    than a pixel beyond the rim is."""
+    centre falls in, and nodata (0) where its centre does not transform or lies on the source's
+    excluded south edge (-90°). Every pixel more than a pixel beyond the rim fails to transform."""
     src = np.ones((180, 360), dtype="float32")
     src[0], src[-1] = 3.0, 2.0
     world = terrio.Raster.from_array(src, (-180.0, 1.0, 0.0, 90.0, 0.0, -1.0), crs="EPSG:4326")
