@@ -24,8 +24,10 @@ Terrio changing warning filters, including invalid input after mixed offsets and
 ISO forms. Standard ISO strings with a uniform offset pass directly to pandas after a distinct
 value syntax scan. Other pandas 2 inputs inspect every distinct value so invalid strings retain
 their original diagnostic; pandas 3 uses its parser directly. Reduced `YYYY`/`YYYY-MM` values
-are parsed in a timezone-free batch. Python datetime output trims timestamp fractions to
-microseconds before stdlib parsing and attributes any precision warning to the caller.
+are parsed in a timezone-free batch, retaining valid results when one value is invalid.
+Python datetime output normalizes timestamp fractions to six digits before stdlib parsing
+and attributes any precision warning to the caller. Other pandas-only ISO forms can still
+require one pandas fallback per distinct value on older Python versions.
 Regressions check bounded pandas calls for repeated and reduced-date inputs, the older stdlib
 precision path, and the uniform-offset shortcut. The additional scan has a CPU cost; it is
 not an end-to-end read benchmark or a timing gate.

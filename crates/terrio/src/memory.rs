@@ -49,10 +49,9 @@ pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Dataset> {
 /// Identification is only a hint: the ordinary reader still validates the data and driver policy.
 /// The pyogrio compatibility caller targets Pyogrio 0.13.0 / GDAL 3.12.2.
 pub fn suggest_vector_extension(bytes: &[u8]) -> Option<&'static str> {
-    let driver = crate::formats::identify_bytes("", bytes)
-        .by_content
-        .as_deref()
-        .and_then(crate::formats::VectorDriver::from_name)
+    let driver = crate::inspection::identify_bytes_unjudged(bytes, "")
+        .and_then(|identified| crate::formats::VectorDriver::from_name(&identified.driver))
+        .or_else(|| crate::formats::identify_bytes("", bytes).by_content.as_deref().and_then(crate::formats::VectorDriver::from_name))
         .or_else(|| codec::vector_driver(bytes, ""))?;
     // Anonymous buffers contain the whole object. Require the binary envelope rather than
     // a prefix that could also be a CSV column name; the reader still validates the payload.
@@ -775,9 +774,11 @@ mod tests {
             (b"fgb\x02fgb\0".as_slice(), Some("fgb")),
             (b"PAR1\0\0\0\0PAR1".as_slice(), Some("parquet")),
             (br#"{"type":"FeatureCollection","features":[]}"#.as_slice(), Some("geojson")),
+            (br#"{"type":"FeatureCollection","features":[],"Topology":"survey"}"#.as_slice(), Some("geojson")),
             (b"<kml/>".as_slice(), Some("kml")),
             (b"<gpx/>".as_slice(), Some("gpx")),
             (br#"<osm version="0.6"/>"#.as_slice(), Some("osm")),
+            (br#"<osm version="0.6"><tag k="name" v="gml survey"/></osm>"#.as_slice(), Some("osm")),
             (b"\0\0\0\x0b\x0a\x09OSMHeader".as_slice(), Some("pbf")),
             (b"<gml:FeatureCollection/>".as_slice(), Some("gml")),
             (b"WKT,id\nPOINT (1 2),1\n".as_slice(), None),

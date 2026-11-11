@@ -42,11 +42,13 @@ def test_uniform_offsets_do_not_require_stdlib_preparse(monkeypatch):
     assert calls == []
 
 
-def test_fractional_seconds_are_normalized_for_older_stdlib(monkeypatch):
+@pytest.mark.parametrize("fraction", ["5", "12345", "1234567", "123456789"])
+def test_fractional_seconds_are_normalized_for_older_stdlib(monkeypatch, fraction):
     """Python datetime output does not require singleton pandas calls for nanoseconds.
 
     Args:
         monkeypatch: Scoped external parser replacement.
+        fraction: Fractional seconds with a precision an older parser may reject.
     """
 
     def reject_pandas(*args, **kwargs):
@@ -73,7 +75,8 @@ def test_fractional_seconds_are_normalized_for_older_stdlib(monkeypatch):
         Raises:
             ValueError: More than six fractional digits remain.
         """
-        if ".123456789" in value:
+        digits = value.split(".")[1].split("+")[0]
+        if len(digits) not in {3, 6}:
             raise ValueError("unsupported precision")
         return datetime.datetime.fromisoformat(value)
 
@@ -81,12 +84,15 @@ def test_fractional_seconds_are_normalized_for_older_stdlib(monkeypatch):
         tpg, "_dt", SimpleNamespace(datetime=SimpleNamespace(fromisoformat=limited))
     )
     monkeypatch.setattr(pd, "to_datetime", reject_pandas)
-    with pytest.warns(UserWarning, match="Discarding nonzero nanoseconds") as caught:
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         result = tpg._parse_iso_datetime(
-            pd, "2024-01-01T12:00:00.123456789+01:00", warn_precision_loss=True
+            pd, f"2024-01-01T12:00:00.{fraction}+01:00", warn_precision_loss=True
         )
-    assert result.microsecond == 123456
-    assert caught[0].filename == __file__
+    assert result.microsecond == int(fraction[:6].ljust(6, "0"))
+    assert bool(caught) == (len(fraction) > 6)
+    if caught:
+        assert caught[0].filename == __file__
 
 
 def test_precision_warning_from_pandas_fallback_points_at_caller(monkeypatch):
@@ -295,15 +301,19 @@ def test_repeated_iso_forms_do_not_parse_each_row_with_pandas(monkeypatch, extra
 
 
 @pytest.mark.parametrize("as_utc", [False, True])
-def test_distinct_reduced_dates_use_batch_fallback(monkeypatch, as_utc):
+@pytest.mark.parametrize("invalid", [False, True])
+def test_distinct_reduced_dates_use_batch_fallback(monkeypatch, as_utc, invalid):
     """Many distinct reduced dates use bounded pandas calls in both offset modes.
 
     Args:
         monkeypatch: Scoped external parser replacement.
         as_utc: Whether to convert mixed offsets to UTC.
+        invalid: Whether one late reduced value is invalid.
     """
     reduced = pd.date_range("2000-01-01", periods=1200, freq="MS").strftime("%Y-%m").tolist()
     values = pd.Series(["2024-01-01T12:00:00+01:00", "2024-01-02T12:00:00+02:00", *reduced])
+    if invalid:
+        values.loc[len(values)] = "2024-99"
     original = pd.to_datetime
     calls = []
 
@@ -321,9 +331,14 @@ def test_distinct_reduced_dates_use_batch_fallback(monkeypatch, as_utc):
         return original(*args, **kwargs)
 
     monkeypatch.setattr(pd, "to_datetime", counted)
-    result = tpg._parse_datetime(values, False, as_utc)
-    assert result.iloc[2].year == 2000
-    assert result.iloc[-1].year == 2099
+    if invalid:
+        with pytest.warns(UserWarning, match="Error parsing datetimes"):
+            result = tpg._parse_datetime(values, False, as_utc)
+        pd.testing.assert_series_equal(result, values)
+    else:
+        result = tpg._parse_datetime(values, False, as_utc)
+        assert result.iloc[2].year == 2000
+        assert result.iloc[-1].year == 2099
     assert len(calls) < 10
 
 

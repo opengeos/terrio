@@ -188,6 +188,31 @@ def test_top_level_json_arrays_are_refused_as_invalid_geojson():
         tpg.read_info(data)
 
 
+@pytest.mark.parametrize(
+    "data,extension",
+    [
+        (
+            b'{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"Topology":"survey"},"geometry":{"type":"Point","coordinates":[1,2]}}]}',
+            "geojson",
+        ),
+        (
+            b'<osm version="0.6"><node id="1" lat="2" lon="1">'
+            b'<tag k="name" v="gml survey"/></node></osm>',
+            "osm",
+        ),
+    ],
+)
+def test_property_text_cannot_override_the_document_format(data, extension):
+    """Root identifiers take precedence over format-like property text.
+
+    Args:
+        data: A complete GeoJSON or OSM document containing another format's token.
+        extension: Its correct filename hint.
+    """
+    assert terrio._terrio.vector_byte_extension(data) == extension
+    assert len(tpg.read_dataframe(data, layer=0)) == 1
+
+
 @pytest.mark.parametrize("prefix", [b"", b"\xef\xbb\xbf", b" \n"])
 def test_osm_xml_buffers_have_an_xml_filename_hint(prefix):
     """An OSM XML upload uses the XML extension rather than the binary PBF suffix.

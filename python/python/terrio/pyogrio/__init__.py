@@ -332,7 +332,7 @@ _STANDARD_ISO_OFFSET = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}:[0-9]{2}"
     r"(?:[.,][0-9]+)?(?P<offset>Z|[+-][0-9]{2}:?[0-9]{2})?)?"
 )
-_DATETIME_FRACTION = re.compile(r"([T ][0-9]{2}:[0-9]{2}:[0-9]{2}[.,][0-9]{6})[0-9]+")
+_DATETIME_FRACTION = re.compile(r"([T ][0-9]{2}:[0-9]{2}:[0-9]{2}[.,])([0-9]+)")
 
 
 def _same_iso_offset(pd, values):
@@ -382,8 +382,8 @@ def _parse_reduced_iso_dates(pd, values):
         values: Distinct input values.
 
     Returns:
-        dict: Parsed reduced dates, or an empty cache if pandas rejects the batch.
-            Rejected inputs retain their existing per-value diagnostic path.
+        dict: Valid reduced dates parsed in a batch. Rejected positions retain
+            their existing per-value diagnostic path without discarding valid results.
     """
     candidates = [
         value for value in values if isinstance(value, str) and _REDUCED_ISO.fullmatch(value)
@@ -391,12 +391,13 @@ def _parse_reduced_iso_dates(pd, values):
     if not candidates:
         return {}
     try:
-        parsed = pd.to_datetime(candidates, format="ISO8601")
+        parsed = pd.to_datetime(candidates, format="ISO8601", errors="coerce")
     except (TypeError, ValueError):
         return {}
     return {
         value: timestamp.to_pydatetime(warn=False)
         for value, timestamp in zip(candidates, parsed, strict=True)
+        if not pd.isna(timestamp)
     }
 
 
@@ -417,7 +418,9 @@ def _parse_iso_datetime(pd, value: str, *, warn_precision_loss: bool = False) ->
     try:
         # Python datetime output has microsecond precision on every supported version.
         # Trim only timestamp fractions, keeping the original value for the diagnostic.
-        normalized = _DATETIME_FRACTION.sub(r"\1", value)
+        normalized = _DATETIME_FRACTION.sub(
+            lambda match: match[1] + match[2][:6].ljust(6, "0"), value
+        )
         parsed = _dt.datetime.fromisoformat(
             normalized[:-1] + "+00:00" if normalized.endswith("Z") else normalized
         )
