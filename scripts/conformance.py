@@ -22,6 +22,7 @@ Suites:
     catalogs          indexed real DEM mosaics and HTTP window I/O vs GDAL GTI
                       (compare_catalogs_with_gdal.py)
     vrt               serialized warped/derived/kernel VRTs, masks and lazy windows
+    jp2-colors        JPEG 2000 component roles and masks on real Landsat data
     overviews         source overview selection and HTTP COG bytes vs gdalwarp -ovr
     sum-overviews     extensive sum estimates and exact NONE controls vs GDAL
     translate-overviews  resized reads from overviews and HTTP COG bytes vs gdal_translate
@@ -963,6 +964,20 @@ def suite_vrt(ctx):
         "must preserve types, nodata, georeferencing and values; Terrio-authored warped "
         "descriptions are also read by GDAL. Datum grid availability is matched.",
         2,
+    )
+
+
+def suite_jp2_colors(ctx):
+    """Real Landsat component values, channel roles and masks through each writer."""
+    package = ROOT / "js/pkg-node/terrio.js"
+    extra = ("--node-package", str(package)) if package.is_file() else ()
+    return suite_json_ops(
+        ctx, "jp2-colors", "compare_jp2_color_roles.py", "JPEG 2000 channel roles",
+        "GDAL JP2OpenJPEG reader",
+        "Real Landsat components written with undefined, BGR, RGBA and ARGB roles. "
+        "Python paths/bytes, CLI and optional Node/WASM must retain exact pixel values, "
+        "types, masks and channel roles, without inventing georeferencing. These are "
+        "reader comparisons, not compressed-byte identity with GDAL's encoder.", 2, extra=extra,
     )
 
 
@@ -3289,6 +3304,7 @@ SUITES = OrderedDict(
         ("benchmark-compat", suite_benchmark_compat),
         ("catalogs", suite_catalogs),
         ("vrt", suite_vrt),
+        ("jp2-colors", suite_jp2_colors),
         ("overviews", suite_overviews),
         ("sum-overviews", suite_sum_overviews),
         ("translate-overviews", suite_translate_overviews),

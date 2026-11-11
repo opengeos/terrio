@@ -125,6 +125,18 @@ thread) and 1.7 GB, and the smallest overview 0.05 s (GDAL: 0.09 s, 1.1 s and 0.
 window and overview is identical to GDAL's. GeoTIFFs compressed with JPEG XL are read tile by tile
 the same way (JPEG XL files themselves are not a format terrio reads).
 
+Explicit JPEG 2000 colour roles are stored in channel-definition boxes. Three- and
+four-band data marked undefined retain that interpretation; RGB associations and
+alpha can appear in any component order. The multiple-component transform is enabled
+only for RGB in the first three components. Non-RGB files declare grayscale with one
+Y channel (a gray channel, else the first non-alpha component), as the format requires.
+An incomplete RGB colour set is rejected. Decoding preserves stored component order,
+as GDAL 3.13.3 does, instead of permuting BGR or ARGB samples into RGB order. Palette
+decoding keeps its existing expansion. As with GDAL, grayscale images of one or two
+components report gray for non-alpha channels; non-RGB images with more components
+report undefined. JPEG 2000 byte exports in Python and WebAssembly also preserve
+an absent source transform. Nodata and georeferencing follow the existing box/sidecar policy.
+
 `JP2OpenJPEG` (the driver `terrio.rio` names for `.jp2` paths), `JPEG2000`, `JP2KAK`, `JP2ECW` and
 `JP2MrSID` name the JP2 driver too, in any case: to write (`-f`, `driver=`), to read with a driver
 named, and in the allowed drivers. A file written with any of them reads back as `JP2`.

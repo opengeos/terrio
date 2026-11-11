@@ -3006,6 +3006,10 @@ class DatasetWriter(DatasetReader):
         compress = opts.pop("COMPRESS", None)
         band_md: list[dict[str, Any]] = []
         defaults = self._new_structure_defaults()
+        # JP2 needs the whole role vector: omitted roles otherwise inherit its RGB default.
+        explicit_jp2_roles = (
+            self._colorinterp_set and _terrio.canonical_driver_name(driver) == "JP2"
+        )
         for b in range(self._count):
             md: dict[str, Any] = {}
             if s.descriptions[b]:
@@ -3019,7 +3023,9 @@ class DatasetWriter(DatasetReader):
             if s.band_tags[b]:
                 md["items"] = dict(s.band_tags[b])
             ci = s.colorinterp[b]
-            if ci != defaults[b] and not (ci == ColorInterp.palette and s.colormap):
+            if (ci != defaults[b] or explicit_jp2_roles) and not (
+                ci == ColorInterp.palette and s.colormap
+            ):
                 md["color_interp"] = _tiff.COLOR_INTERP_NAMES.get(ci, "Undefined")
             band_md.append(md)
         colormap: list[tuple[int, int, int, int]] | None = None

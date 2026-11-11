@@ -191,6 +191,16 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
             return Err(Error::InvalidArgument(format!("cannot tell the output format of '{name}': give it explicitly")));
         }
     };
+    // JP2 byte exports, including WASM, retain the source's absent transform just as
+    // file conversion does. An explicit output transform/GEOREFERENCED still wins.
+    let mut jp2_options;
+    let options = if driver == RasterDriver::JP2 {
+        jp2_options = options.clone();
+        crate::drivers::common::keep_unreferenced(&mut jp2_options, name, ds.geotransform_present.unwrap_or(true));
+        &jp2_options
+    } else {
+        options
+    };
     // A Zarr store is a directory: written in memory and zipped, on every platform.
     if driver == RasterDriver::Zarr {
         let stem = std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("raster");
@@ -665,7 +675,12 @@ pub(crate) mod codec {
             RasterDriver::GPKG => crate::drivers::gpkg::to_bytes(&ds.raster, ds.nodata(), table, options.compression.as_deref()),
             #[cfg(feature = "jp2")]
             RasterDriver::JP2 => {
-                let jp2 = crate::drivers::jp2::to_bytes(&ds.raster, crate::drivers::common::georeferenced(&options.creation_options))?;
+                let inherited = options.inherited_from(ds, Some(driver));
+                let jp2 = crate::drivers::jp2::to_bytes(
+                    &ds.raster,
+                    crate::drivers::common::georeferenced(&inherited.creation_options),
+                    &inherited.band_metadata,
+                )?;
                 // The nodata value goes to a `.aux.xml` sidecar, the two files zipped as the file
                 // drivers' output is.
                 let Some(xml) = crate::drivers::common::pam_xml(None, ds.nodata(), ds.raster.bands) else { return Ok(jp2) };

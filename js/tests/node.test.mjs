@@ -4329,3 +4329,51 @@ test("vsi: listUrl refuses invalid depth before fetching", async () => {
     assert.equal(fetched, false);
   }
 });
+
+test("JP2 bytes retain BGR definitions and stored component order", { skip: needs("jp2") }, () => {
+  const width = 64, height = 48, count = width * height;
+  const values = Uint8Array.from({ length: count * 3 }, (_, i) => 11 + 31 * Math.floor(i / count) + i % 7);
+  const seed = terrio.rasterFromArray(values, width, height, [0, 1, 0, height, 0, -1]);
+  const bytes = Buffer.from(seed.toBytes("seed.jp2"));
+  seed.free();
+  const boxes = (buffer) => {
+    const result = [];
+    for (let pos = 0; pos < buffer.length;) {
+      const size = buffer.readUInt32BE(pos);
+      assert.ok(size >= 8 && pos + size <= buffer.length);
+      result.push([buffer.toString("ascii", pos + 4, pos + 8), buffer.subarray(pos + 8, pos + size)]);
+      pos += size;
+    }
+    return result;
+  };
+  const box = (type, payload) => {
+    const header = Buffer.alloc(8);
+    header.writeUInt32BE(payload.length + 8);
+    header.write(type, 4);
+    return Buffer.concat([header, payload]);
+  };
+  const definitions = Buffer.alloc(20);
+  definitions.writeUInt16BE(3);
+  for (let i = 0; i < 3; i++) {
+    definitions.writeUInt16BE(i, 2 + i * 6);
+    definitions.writeUInt16BE(0, 4 + i * 6);
+    definitions.writeUInt16BE(3 - i, 6 + i * 6);
+  }
+  const encoded = Buffer.concat(boxes(bytes).map(([type, payload]) => box(type,
+    type === "jp2h"
+      ? Buffer.concat([...boxes(payload).filter(([t]) => t !== "cdef").map(([t, p]) => box(t, p)), box("cdef", definitions)])
+      : payload)));
+  const source = terrio.open(encoded, "BGR.jp2");
+  for (let band = 1; band <= 3; band++) {
+    assert.deepEqual([...source.readBand(band)], [...values.subarray((band - 1) * count, band * count)]);
+  }
+  const output = Buffer.from(source.toBytes("BGR.jp2"));
+  const header = boxes(output).find(([type]) => type === "jp2h")[1];
+  assert.deepEqual(boxes(header).find(([type]) => type === "cdef")[1], definitions);
+  const again = terrio.open(output, "BGR.jp2");
+  for (let band = 1; band <= 3; band++) {
+    assert.deepEqual([...again.readBand(band)], [...values.subarray((band - 1) * count, band * count)]);
+  }
+  again.free();
+  source.free();
+});

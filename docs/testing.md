@@ -2681,3 +2681,20 @@ Bounds planning scans at most 512 corners at a time, including the final endpoin
 with roughly 17 KiB of coordinate/validity scratch rather than allocating an entire
 output-width row before memory-limit splitting. The polar regression starts off a
 global batch boundary and spans several batches; RPC batch membership stays global.
+
+
+## JPEG 2000 channel roles
+
+`python/tests/test_jp2_color_roles.py` checks UInt8/UInt16 path and MemoryFile writes,
+independent GDAL reads, exact masks and a GDAL-authored BGR/ARGB reader regression.
+It also checks inferred and alias drivers and absence of invented GeoJP2 transforms.
+The native test checks full and selected-window component order.
+
+The `jp2-colors` conformance suite writes real Landsat subsets through Python
+paths/bytes, CLI and Node/WASM when its package is available. GDAL independently
+checks exact values, types, masks, roles and absence of georeferencing; this does
+not claim compressed-byte identity with GDAL's encoder. Run with GDAL 3.13.3:
+
+```sh
+python scripts/conformance.py ../terrio-data --only jp2-colors --strict
+```
