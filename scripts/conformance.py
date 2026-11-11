@@ -3419,6 +3419,31 @@ def suite_oapif(ctx):
     return suite
 
 
+def _pytest_module_conformance(ctx, filename):
+    """Require the complete, unfiltered test module and its successful JUnit report."""
+    command = [sys.executable, "-m", "pytest", "-o", "addopts=", "-q",
+               str(ROOT / "python/tests" / filename)]
+    env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "PYTEST_ADDOPTS": ""}
+    code, collected, err = run(command + ["--collect-only"], env)
+    expected = sum("::" in line and Path(line.split("::", 1)[0]).name == filename
+                   for line in collected.splitlines())
+    if code or not expected or "deselected" in collected:
+        return False, "Could not collect the complete test module. " + tail(err or collected)
+    with tempfile.TemporaryDirectory(prefix="terrio-pytest-conformance-") as directory:
+        report = Path(directory) / "results.xml"
+        code, out, err = run(command + [f"--junitxml={report}"], env)
+        try:
+            cases = ET.parse(report).getroot().findall(".//testcase")
+            complete = len(cases) == expected and all(
+                case.find("failure") is None and case.find("error") is None and case.find("skipped") is None
+                for case in cases)
+            detail = f"{len(cases)} of {expected} collected tests reported. "
+        except (OSError, ET.ParseError) as error:
+            complete = False
+            detail = f"Pytest report unavailable: {error}. "
+    return code == 0 and complete and "deselected" not in out, detail + tail(err or out)
+
+
 def suite_jp2_writer(ctx):
     code, version, _ = run([sys.executable, "-c", "import rasterio; print(rasterio.__gdal_version__)"])
     reference = f"GDAL {version.strip()} (rasterio)" if code == 0 else "GDAL (rasterio unavailable)"
@@ -3427,14 +3452,17 @@ def suite_jp2_writer(ctx):
                   "Lossy quality changes sizes and pixels; independent GDAL decoding, types, "
                   "georeferencing and reversibility match, including real Landsat RGB. "
                   "Rate targets are approximate; encoder byte identity is not claimed.")
-    code, out, err = run([sys.executable, "-m", "pytest", "-q",
-                          str(ROOT / "python/tests/test_jp2_writer.py")],
-                         {"TERRIO_TEST_DATA": str(ctx.data)})
+    missing = missing_modules("rasterio", "pytest", "terrio", "numpy")
+    if missing:
+        suite.skipped = "needs the Python modules " + ", ".join(missing)
+        return suite
+    complete, detail = _pytest_module_conformance(ctx, "test_jp2_writer.py")
     suite.cases.append(Case("JP2 GDAL decoding", "path/memory options and Landsat decoding",
-                            IDENTICAL if code == 0 and "skipped" not in out else DIFFERS,
+                            IDENTICAL if complete else DIFFERS,
                             "Exact decoding/metadata comparisons and creation-option assertions; "
-                            "GDAL encoder parity is not asserted. " + tail(err or out)))
+                            "GDAL encoder parity is not asserted. " + detail))
     return suite
+
 
 def suite_webp_writer(ctx):
     code, version, _ = run([sys.executable, "-c", "import rasterio; print(rasterio.__gdal_version__)"])
@@ -3447,32 +3475,11 @@ def suite_webp_writer(ctx):
     if missing:
         s.skipped = "needs the Python modules " + ", ".join(missing)
         return s
-    command = [sys.executable, "-m", "pytest", "-o", "addopts=", "-q",
-               str(ROOT / "python/tests/test_webp_writer.py")]
-    env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "PYTEST_ADDOPTS": ""}
-    code, collected, err = run(command + ["--collect-only"], env)
-    expected = sum("::" in line and Path(line.split("::", 1)[0]).name == "test_webp_writer.py"
-                   for line in collected.splitlines())
-    if code or not expected or "deselected" in collected:
-        s.cases.append(Case("WEBP GDAL decoding", "complete test collection", DIFFERS,
-                            "Could not collect the complete WebP test module. " + tail(err or collected)))
-        return s
-    with tempfile.TemporaryDirectory(prefix="terrio-webp-conformance-") as directory:
-        report = Path(directory) / "results.xml"
-        code, out, err = run(command + [f"--junitxml={report}"], env)
-        try:
-            cases = ET.parse(report).getroot().findall(".//testcase")
-            complete = len(cases) == expected and all(
-                case.find("failure") is None and case.find("error") is None and case.find("skipped") is None
-                for case in cases)
-            detail = f"{len(cases)} of {expected} collected tests reported. "
-        except (OSError, ET.ParseError) as error:
-            complete = False
-            detail = f"Pytest report unavailable: {error}. "
+    complete, detail = _pytest_module_conformance(ctx, "test_webp_writer.py")
     s.cases.append(Case("WEBP GDAL decoding", "path/memory options and Landsat decoding",
-                        IDENTICAL if code == 0 and complete and "deselected" not in out else DIFFERS,
+                        IDENTICAL if complete else DIFFERS,
                         "Exact decoding/alpha comparisons and creation-option assertions; "
-                        "GDAL encoder parity is not asserted. " + detail + tail(err or out)))
+                        "GDAL encoder parity is not asserted. " + detail))
     return s
 
 

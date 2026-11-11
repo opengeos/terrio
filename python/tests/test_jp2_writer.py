@@ -41,6 +41,7 @@ def encode(data, **options):
     [
         ({}, True),
         ({"quality": 100}, True),
+        ({"quality": "99.999999"}, False),
         ({"QUALITY": 10}, False),
         ({"QUALITY": 50, "REVERSIBLE": "NO"}, False),
         ({"REVERSIBLE": "NO"}, False),
@@ -82,7 +83,9 @@ def test_jp2_path_and_memory_options(tmp_path, options, lossless):
         assert np.any(expected != data)
 
 
-@pytest.mark.parametrize("quality", [0, -1, 101, "nan", "inf", "1e-40", "50,10", "25,25", ""])
+@pytest.mark.parametrize(
+    "quality", [0, -1, 101, "100.000001", "nan", "inf", "1e-40", "50,10", "25,25", ""]
+)
 def test_invalid_quality_is_refused(quality):
     with pytest.raises(RasterioIOError, match="QUALITY"):
         encode(np.zeros((3, 16, 16), dtype="uint8"), quality=quality)

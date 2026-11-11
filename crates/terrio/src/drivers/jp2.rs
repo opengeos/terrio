@@ -42,7 +42,7 @@ const GEOJP2_UUID: [u8; 16] = [0xb1, 0x4b, 0xf8, 0xbd, 0x08, 0x3d, 0x4b, 0x43, 0
 /// GDAL 3.13.3 QUALITY percentages map to OpenJPEG's compression ratios, not PSNR.
 #[derive(Debug)]
 struct EncodingOptions {
-    qualities: Vec<f32>,
+    qualities: Vec<f64>,
     reversible: bool,
 }
 
@@ -62,9 +62,9 @@ impl EncodingOptions {
             .transpose()?;
         let qualities = match get("QUALITY") {
             Some(value) => {
-                let values: Vec<f32> = value.split(',').map(|v| v.trim().parse::<f32>().unwrap_or(f32::NAN)).collect();
+                let values: Vec<f64> = value.split(',').map(|v| v.trim().parse::<f64>().unwrap_or(f64::NAN)).collect();
                 if values.len() > 100
-                    || values.iter().any(|v| !v.is_finite() || *v <= 0.0 || *v > 100.0 || !(100.0 / v).is_finite())
+                    || values.iter().any(|v| !v.is_finite() || *v <= 0.0 || *v > 100.0 || 100.0 / v > f64::from(f32::MAX))
                     || values.windows(2).any(|p| p[0] >= p[1])
                 {
                     return Err(Error::InvalidArgument(format!(
@@ -435,7 +435,7 @@ mod codec {
             opj_set_default_encoder_parameters(&mut params);
             params.tcp_numlayers = options.qualities.len() as i32;
             for (rate, quality) in params.tcp_rates.iter_mut().zip(&options.qualities) {
-                *rate = if *quality == 100.0 { 0.0 } else { 100.0 / quality };
+                *rate = if *quality == 100.0 { 0.0 } else { (100.0 / quality) as f32 };
             }
             params.cp_disto_alloc = 1;
             params.irreversible = i32::from(!options.reversible);
@@ -1372,6 +1372,18 @@ pub(crate) fn to_bytes(r: &Raster, georeferenced: bool, creation_options: &[(Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quality_boundaries_are_checked_before_codec_rounding() {
+        let quality = |value: &str| vec![("QUALITY".to_string(), value.to_string())];
+        assert!(EncodingOptions::from_creation_options(&quality("100.000001")).is_err());
+        let near = EncodingOptions::from_creation_options(&quality("99.999999")).unwrap();
+        assert!(!near.reversible && !near.lossless());
+        let mut options = quality("99.999999");
+        options.push(("REVERSIBLE".into(), "YES".into()));
+        let explicit = EncodingOptions::from_creation_options(&options).unwrap();
+        assert!(explicit.reversible && !explicit.lossless());
+    }
 
     #[test]
     fn requested_quality_changes_codestream_and_reversibility() {
