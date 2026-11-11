@@ -181,6 +181,29 @@ def test_top_level_json_arrays_are_refused_as_invalid_geojson():
         tpg.read_info(data)
 
 
+@pytest.mark.parametrize("form", ["path", "bytes", "file"])
+def test_archives_without_vector_datasets_have_a_clear_error(tmp_path, form):
+    """Ancillary files alone must not be accepted as an empty vector dataset.
+
+    Args:
+        tmp_path: Temporary archive directory.
+        form: Path, anonymous bytes or a file object.
+    """
+    path = tmp_path / "notes.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("README.txt", "About the data")
+        archive.writestr("LICENSE.txt", "License terms")
+    source = (
+        path
+        if form == "path"
+        else path.read_bytes()
+        if form == "bytes"
+        else io.BytesIO(path.read_bytes())
+    )
+    with pytest.raises(DataSourceError, match="no dataset found"):
+        tpg.read_info(source)
+
+
 @pytest.fixture
 def buffer_reference(sources, extension, driver):
     """Run reference setup separately so crashes and timeouts are pytest errors.
