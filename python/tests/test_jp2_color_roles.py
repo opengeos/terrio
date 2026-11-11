@@ -225,3 +225,26 @@ def test_gdal_mixed_precision_alpha_keeps_stored_band_order(tmp_path, gdal):
             [reference.GetRasterBand(i + 1).GetMaskBand().ReadAsArray() for i in range(len(roles))]
         )
         np.testing.assert_array_equal(native.read_masks(), expected_masks)
+
+
+@pytest.mark.parametrize("roles", [("Alpha",), ("Alpha", "Alpha")])
+def test_all_alpha_jp2_requires_a_colour_channel(tmp_path, roles):
+    with pytest.raises(RasterioIOError, match="requires a non-alpha channel"):
+        _write(tmp_path, roles, "uint8", False)
+
+
+def test_multiple_gray_components_normalize_to_one_y_channel(tmp_path, gdal):
+    roles = ("Gray",) * 3
+    values, path, raw = _write(tmp_path, roles, "uint8", False)
+    header = next(payload for kind, payload in _boxes(raw) if kind == b"jp2h")
+    definitions = next(payload for kind, payload in _boxes(header) if kind == b"cdef")
+    records = [struct.unpack_from(">HHH", definitions, 2 + 6 * i) for i in range(3)]
+    assert records == [(0, 0, 1), (1, 65535, 65535), (2, 65535, 65535)]
+    with rio.open(path) as source:
+        assert source.colorinterp == (ColorInterp.undefined,) * 3
+        np.testing.assert_array_equal(source.read(), values)
+    reference = gdal.Open(str(path))
+    assert [reference.GetRasterBand(i).GetColorInterpretation() for i in range(1, 4)] == [
+        gdal.GCI_Undefined
+    ] * 3
+    np.testing.assert_array_equal(reference.ReadAsArray(), values)

@@ -129,7 +129,12 @@ Explicit JPEG 2000 colour roles are stored in channel-definition boxes. Three- a
 four-band data marked undefined retain that interpretation; RGB associations and
 alpha can appear in any component order. The multiple-component transform is enabled
 only for RGB in the first three components. Non-RGB files declare grayscale with one
-Y channel (a gray channel, else the first non-alpha component), as the format requires.
+Y channel (the first gray channel, else the first non-alpha component), as the format requires.
+All-alpha inputs are rejected because they have no colour channel. Multiple gray roles
+are normalized to that one Y association; for three or more components, both Terrio
+and GDAL report these non-alpha components as undefined on readback. Explicit
+undefined three- and four-band inputs therefore declare grayscale rather than the
+previous inferred sRGB, which changes their display in colour-aware readers.
 One- and two-band RGB subsets write as grayscale. Larger RGB colour sets require
 exactly one red, green and blue channel; incomplete or duplicate sets are rejected.
 Decoding preserves stored component order,
