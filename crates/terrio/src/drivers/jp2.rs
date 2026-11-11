@@ -64,12 +64,17 @@ impl EncodingOptions {
             Some(value) => {
                 let values: Vec<f64> = value.split(',').map(|v| v.trim().parse::<f64>().unwrap_or(f64::NAN)).collect();
                 if values.len() > 100
-                    || values.iter().any(|v| !v.is_finite() || *v <= 0.0 || *v > 100.0 || 100.0 / v > f64::from(f32::MAX))
+                    || values.iter().any(|v| !v.is_finite() || *v <= 0.0 || *v > 100.0)
                     || values.windows(2).any(|p| p[0] >= p[1])
                 {
                     return Err(Error::InvalidArgument(format!(
                         "QUALITY={value} must contain 1 to 100 strictly increasing percentages greater than 0 and at most 100."
                     )));
+                }
+                // OpenJPEG multiplies the f32 rate by 8 before computing the byte budget.
+                // Reject overflow there as well: infinity would turn the budget into zero.
+                if values.iter().any(|quality| !((100.0 / quality) as f32 * 8.0).is_finite()) {
+                    return Err(Error::InvalidArgument(format!("QUALITY={value} is too small for the JPEG 2000 codec's rate arithmetic.")));
                 }
                 values
             }
@@ -1401,7 +1406,7 @@ mod tests {
         assert!(low.windows(b"LOSSY settings used".len()).any(|s| s == b"LOSSY settings used"));
         let progressive = to_bytes(&raster, false, &options("10,100")).unwrap();
         assert_eq!(read_bytes(&progressive).unwrap().raster.data.to_f64_vec(), raster.data.to_f64_vec());
-        for quality in ["", "0", "-1", "101", "nan", "inf", "1e-40", "25,10", "25,25"] {
+        for quality in ["", "0", "-1", "101", "nan", "inf", "1e-40", "1e-36", "25,10", "25,25"] {
             assert!(to_bytes(&raster, false, &options(quality)).unwrap_err().to_string().contains("QUALITY"));
         }
     }

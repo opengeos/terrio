@@ -2187,7 +2187,7 @@ test("JPEG 2000 quality and reversible options reach the WASM encoder", { skip: 
     const exact = terrio.open(image.toBytes("exact.jp2", { creationOptions: options }), "exact.jp2");
     for (let b = 1; b <= 3; b++) assert.deepEqual([...exact.readBand(b)], [...values.slice((b - 1) * n, b * n)]);
   }
-  for (const quality of ["nan", "100.000001"]) {
+  for (const quality of ["nan", "100.000001", "1e-36"]) {
     assert.throws(() => image.toBytes("bad.jp2", { creationOptions: { QUALITY: quality } }), /QUALITY/);
   }
   const almost = terrio.open(image.toBytes("almost.jp2", { creationOptions: { QUALITY: "99.999999" } }), "almost.jp2");

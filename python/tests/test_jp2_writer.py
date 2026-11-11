@@ -84,7 +84,7 @@ def test_jp2_path_and_memory_options(tmp_path, options, lossless):
 
 
 @pytest.mark.parametrize(
-    "quality", [0, -1, 101, "100.000001", "nan", "inf", "1e-40", "50,10", "25,25", ""]
+    "quality", [0, -1, 101, "100.000001", "nan", "inf", "1e-40", "1e-36", "50,10", "25,25", ""]
 )
 def test_invalid_quality_is_refused(quality):
     with pytest.raises(RasterioIOError, match="QUALITY"):
