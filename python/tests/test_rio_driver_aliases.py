@@ -1,4 +1,4 @@
-"""Driver aliases preserve TIFF policy and output; GDAL 3.13.3 is the reference."""
+"""Driver aliases write the same TIFF bytes and apply the same policy as canonical names."""
 
 import os
 

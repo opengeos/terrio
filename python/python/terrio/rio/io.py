@@ -2219,7 +2219,7 @@ class DatasetWriter(DatasetReader):
 
         Raises:
             TypeError: If the driver, size, count or dtype is missing or invalid.
-            DriverCapabilityError: If the driver name has whitespace around it.
+            DriverCapabilityError: If terrio cannot write the format.
             ValueError: If the nodata value does not fit the data type.
             RasterBlockError: If tile sizes are not multiples of 16.
         """
@@ -3440,8 +3440,8 @@ def get_writer_for_driver(driver: str) -> type[DatasetWriter]:
 
     Names are compared as the driver allow-list compares them (`canonical_driver_name`): in any
     case, and with the names of JPEG 2000 drivers, such as the `JP2OpenJPEG` that
-    `driver_from_extension` gives `.jp2` paths, as terrio's `JP2`. A name with whitespace around
-    it is refused, as the writer keeps the name it is given and compares it as written.
+    `driver_from_extension` gives `.jp2` paths, as terrio's `JP2`. Surrounding whitespace
+    and letter case are ignored, as in the driver allow-list.
 
     Args:
         driver: The driver's short name.
