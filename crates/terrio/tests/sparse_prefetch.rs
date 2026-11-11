@@ -1,5 +1,5 @@
-//! Sparse resampled reads prefetch every chunk of the source window before decoding, so a COG
-//! read costs one fetch round rather than one retry per chunk.
+//! Sparse resampled reads batch the chunks sampling visits before decoding, preserving lazy
+//! I/O and decoded-cache hits while avoiding one retry per chunk.
 
 use terrio::ResampledReadOptions;
 use terrio::ops::Resampling;
@@ -25,6 +25,23 @@ fn raster(cols: usize, rows: usize) -> terrio::RasterDataset {
     terrio::RasterDataset::new(r, true)
 }
 
+fn open_sparse(bytes: &[u8], file: &SparseFile) -> terrio::LazyRaster {
+    for _ in 0..64 {
+        match terrio::LazyRaster::from_sparse(file.clone()) {
+            Ok(Some(lazy)) => return lazy,
+            Ok(None) => panic!("a TIFF was not recognized"),
+            Err(error) if file.has_missing() => {
+                for (offset, length) in file.missing() {
+                    file.insert(offset, &bytes[offset as usize..(offset + length) as usize]);
+                }
+                assert!(!error.to_string().is_empty());
+            }
+            Err(error) => panic!("open failed: {error}"),
+        }
+    }
+    panic!("TIFF metadata still missing after 64 fetch rounds");
+}
+
 #[test]
 fn resampled_world_read_prefetches_all_chunks_in_one_round() {
     // The EUDEM pattern: 4x4 = 16 chunks in the overview chosen for a world read.
@@ -41,20 +58,7 @@ fn resampled_world_read_prefetches_all_chunks_in_one_round() {
     let file = SparseFile::new(bytes.len() as u64);
 
     // Open first, as a browser source does.
-    let mut r = loop {
-        match terrio::LazyRaster::from_sparse(file.clone()) {
-            Ok(Some(lazy)) => break lazy,
-            Ok(None) => panic!("a COG was not recognized as a TIFF"),
-            Err(error) if file.has_missing() => {
-                for (offset, length) in file.missing() {
-                    file.insert(offset, &bytes[offset as usize..(offset + length) as usize]);
-                }
-                // Avoid looping forever on a malformed file.
-                assert!(!error.to_string().is_empty());
-            }
-            Err(error) => panic!("open failed: {error}"),
-        }
-    };
+    let mut r = open_sparse(&bytes, &file);
     assert_eq!(r.overviews(), vec![(1024, 1024), (512, 512)]);
     assert_eq!(r.block_size(), Some((128, 128)));
 
@@ -100,18 +104,7 @@ fn resampled_world_read_prefetches_mask_chunks_too() {
     let bytes = terrio::memory::write_raster_bytes(&ds, "prefetch_mask.tif", &options).unwrap();
     let file = SparseFile::new(bytes.len() as u64);
 
-    let mut r = loop {
-        match terrio::LazyRaster::from_sparse(file.clone()) {
-            Ok(Some(lazy)) => break lazy,
-            Ok(None) => panic!("a COG was not recognized as a TIFF"),
-            Err(_) if file.has_missing() => {
-                for (offset, length) in file.missing() {
-                    file.insert(offset, &bytes[offset as usize..(offset + length) as usize]);
-                }
-            }
-            Err(error) => panic!("open failed: {error}"),
-        }
-    };
+    let mut r = open_sparse(&bytes, &file);
     assert!(r.has_mask());
 
     let read = ResampledReadOptions {
@@ -142,4 +135,121 @@ fn resampled_world_read_prefetches_mask_chunks_too() {
     let (want, want_mask) = whole.read_resampled_with_masks(&read).unwrap();
     assert_eq!(got.raster.data.to_f64_vec(), want.raster.data.to_f64_vec());
     assert_eq!(got_mask, want_mask);
+}
+
+/// Heavy nearest decimation must fetch the same data/mask blocks as its sampled pixel,
+/// rather than the entire source window. Zero stored overviews makes the distinction explicit.
+#[test]
+fn heavily_decimated_reads_fetch_only_sampled_blocks() {
+    for kind in ["pixels", "mask", "alpha"] {
+        let mut ds = raster(1024, 1024);
+        let mut options = terrio::RasterWriteOptions {
+            driver: Some(terrio::formats::RasterDriver::Cog),
+            compression: Some("NONE".into()),
+            tile_size: Some(128),
+            creation_options: vec![("OVERVIEW_COUNT".into(), "0".into())],
+            ..Default::default()
+        };
+        if kind == "mask" {
+            options.mask = Some((0..1024 * 1024).map(|i| if i % 3 == 0 { 0 } else { 255 }).collect());
+        } else if kind == "alpha" {
+            let cfg = terrio::RasterConfig { cols: 1024, rows: 1024, bands: 4, data_type: terrio::DataType::U16, ..Default::default() };
+            let values = (0..4 * 1024 * 1024).map(|i| (i % 65536) as u16).collect();
+            ds = terrio::RasterDataset::new(terrio::Raster::from_data_native(cfg, terrio::raster::RasterData::U16(values)).unwrap(), false);
+            options.band_metadata = ["Red", "Green", "Blue", "Alpha"]
+                .into_iter()
+                .map(|name| terrio::BandMetadata { color_interp: Some(name.into()), ..Default::default() })
+                .collect();
+        }
+        let bytes = terrio::memory::write_raster_bytes(&ds, "sampled.tif", &options).unwrap();
+        let file = SparseFile::with_block_size(bytes.len() as u64, 4096);
+        let mut lazy = open_sparse(&bytes, &file);
+        assert!(lazy.overviews().is_empty());
+        let before = file.fetched().0;
+        let read = ResampledReadOptions { bands: vec![1], size: (1, 1), resampling: Resampling::Nearest, ..Default::default() };
+        let (got, masks) = terrio::sparse::read_with(
+            &file,
+            3, // At most one fetch round for data and one more for a mask/UInt16 alpha.
+            |offset, len| Ok(bytes[offset as usize..(offset + len) as usize].to_vec()),
+            || lazy.read_resampled_with_masks(&read),
+        )
+        .unwrap();
+        let fetched = file.fetched().0 - before;
+        let point_file = SparseFile::with_block_size(bytes.len() as u64, 4096);
+        let mut point = open_sparse(&bytes, &point_file);
+        let before_point = point_file.fetched().0;
+        terrio::sparse::read_with(
+            &point_file,
+            64,
+            |offset, len| Ok(bytes[offset as usize..(offset + len) as usize].to_vec()),
+            || {
+                point.read_window(terrio::Window::new(512, 512, 1, 1), &terrio::WindowOptions { bands: vec![1], overview: None })?;
+                point.read_mask(terrio::Window::new(512, 512, 1, 1), None)
+            },
+        )
+        .unwrap();
+        let sampled_bytes = point_file.fetched().0 - before_point;
+        let mut memory = terrio::memory::open_raster_lazy_bytes(bytes, "sampled.tif").unwrap();
+        let (want, want_masks) = memory.read_resampled_with_masks(&read).unwrap();
+        assert_eq!(got.raster.data.to_f64_vec(), want.raster.data.to_f64_vec());
+        assert_eq!(masks, want_masks);
+        eprintln!("{kind}: resampled {fetched} bytes; direct sampled pixel {sampled_bytes} bytes");
+        assert_eq!(fetched, sampled_bytes, "{kind}: unused blocks were fetched");
+    }
+}
+
+#[test]
+fn malformed_unsampled_chunk_does_not_break_a_nearest_read() {
+    let options = terrio::RasterWriteOptions {
+        driver: Some(terrio::formats::RasterDriver::Cog),
+        tile_size: Some(128),
+        creation_options: vec![("OVERVIEW_COUNT".into(), "0".into())],
+        ..Default::default()
+    };
+    let mut bytes = terrio::memory::write_raster_bytes(&raster(1024, 1024), "unused.tif", &options).unwrap();
+    assert_eq!(&bytes[..4], b"II\x2a\0");
+    let ifd = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let entries = u16::from_le_bytes(bytes[ifd..ifd + 2].try_into().unwrap()) as usize;
+    let tag = (0..entries).map(|i| ifd + 2 + i * 12).find(|&i| u16::from_le_bytes(bytes[i..i + 2].try_into().unwrap()) == 324).unwrap();
+    assert_eq!(u16::from_le_bytes(bytes[tag + 2..tag + 4].try_into().unwrap()), 4);
+    let offsets = u32::from_le_bytes(bytes[tag + 8..tag + 12].try_into().unwrap()) as usize;
+    let invalid = bytes.len() as u32 + 4096;
+    bytes[offsets..offsets + 4].copy_from_slice(&invalid.to_le_bytes());
+    let file = SparseFile::with_block_size(bytes.len() as u64, 4096);
+    let mut lazy = open_sparse(&bytes, &file);
+    let read = ResampledReadOptions { bands: vec![1], size: (1, 1), resampling: Resampling::Nearest, ..Default::default() };
+    terrio::sparse::read_with(
+        &file,
+        64,
+        |offset, len| Ok(bytes[offset as usize..(offset + len) as usize].to_vec()),
+        || lazy.read_resampled_with_masks(&read),
+    )
+    .unwrap();
+}
+
+#[test]
+fn decoded_tiles_do_not_refetch_after_sparse_bytes_are_evicted() {
+    let options = terrio::RasterWriteOptions {
+        driver: Some(terrio::formats::RasterDriver::Cog),
+        tile_size: Some(128),
+        creation_options: vec![("OVERVIEW_COUNT".into(), "0".into())],
+        ..Default::default()
+    };
+    let bytes = terrio::memory::write_raster_bytes(&raster(1024, 1024), "warm.tif", &options).unwrap();
+    let file = SparseFile::with_block_size(bytes.len() as u64, 4096);
+    let mut lazy = open_sparse(&bytes, &file);
+    let read = ResampledReadOptions { bands: vec![1], size: (128, 128), resampling: Resampling::Nearest, ..Default::default() };
+    let (first, _) = terrio::sparse::read_with(
+        &file,
+        64,
+        |offset, len| Ok(bytes[offset as usize..(offset + len) as usize].to_vec()),
+        || lazy.read_resampled_with_masks(&read),
+    )
+    .unwrap();
+    file.trim(0);
+    let before = file.fetched();
+    let (again, _) = lazy.read_resampled_with_masks(&read).expect("decoded tiles must not request their compressed bytes again");
+    assert_eq!(first.raster.data.to_f64_vec(), again.raster.data.to_f64_vec());
+    assert!(!file.has_missing());
+    assert_eq!(file.fetched(), before);
 }

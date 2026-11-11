@@ -312,6 +312,11 @@ pub(crate) fn get(handle: u64, ifd: usize, chunk: u32) -> Option<Arc<CachedChunk
     found
 }
 
+/// Whether a chunk is decoded already, without changing its recency or lookup statistics.
+pub(crate) fn contains(handle: u64, ifd: usize, chunk: u32) -> bool {
+    cache().handles.get(&handle).is_some_and(|chunks| chunks.contains_key(&(ifd, chunk)))
+}
+
 /// Caches a decoded chunk, evicting the least recently used ones to stay within [`max_bytes`]. A
 /// chunk larger than the cache is dropped. The size is read under the same lock that stores the
 /// chunk, so no insert follows a completed [`set_max_bytes`] with a stale size.
