@@ -3073,10 +3073,13 @@ impl WarpContext<'_> {
                     if !(ok[i] && bok[i] && [xs[i], ys[i], bx[i], by[i]].iter().all(|v| v.is_finite())) {
                         continue;
                     }
-                    if self.regional_longitude_wrap(xs[i], bx[i], (dx + i) as f64 + 0.5, row as f64 + 0.5) {
-                        continue;
-                    }
-                    (xs[i].min(bx[i]).floor(), ys[i].min(by[i]).floor(), xs[i].max(bx[i]).ceil() + 1.0, ys[i].max(by[i]).ceil() + 1.0)
+                    // Every part of the footprint the kernel takes ([`Self::footprint_moves`]).
+                    let mut x = [xs[i], bx[i]];
+                    let moves = self.footprint_moves(&mut x, ((dx + i) as f64 + 0.5, row as f64 + 0.5));
+                    let (lo, hi) = (x[0].min(x[1]), x[0].max(x[1]));
+                    let (left, right) =
+                        moves.into_iter().flatten().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, r), s| (l.min(lo + s), r.max(hi + s)));
+                    (left.floor(), ys[i].min(by[i]).floor(), right.ceil() + 1.0, ys[i].max(by[i]).ceil() + 1.0)
                 } else {
                     let point = ok[i].then_some((xs[i], ys[i]));
                     let Some((x, y)) = self.source_point(point, (dx + i) as f64 + 0.5, row as f64 + 0.5, (0, 0, self.src_w, self.src_h))
@@ -3484,31 +3487,11 @@ impl WarpContext<'_> {
     /// Apply GDAL 3.12.1 axis-range or GDAL 3.13.3 transformed-square scale arithmetic
     /// locally. The per-pixel footprint policy is Terrio's rather than GDAL's chunk sampling.
     fn footprint_scales(&self, mut p: [(f64, f64); 4], output_center: Option<(f64, f64)>) -> (f64, f64) {
-        // Only reprojected footprints can cross a longitude cut. Affine edge vectors
-        // are continuous, even when a coarse pixel spans an entire longitude period.
-        if let Some(period) = self.t.src_longitude_period
-            && self.t.ct.is_some()
-            && self.t.src_gcp.is_none()
-            && self.t.src_gt[2] == 0.0
-            && self.t.src_gt[4] == 0.0
-        {
-            let pixels = period / self.t.src_gt[1].abs();
-            let (low, high) = p.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), point| (lo.min(point.0), hi.max(point.0)));
-            // A large corner jump alone is ambiguous: a continuous coarse pixel can
-            // span a full period too. Its exact midpoint lies between the endpoints;
-            // at a cut, one endpoint instead lies over half a period from that midpoint.
-            if high - low > pixels / 2.0
-                && high - low <= pixels * (1.0 + 1e-10)
-                && let Some((dx, dy)) = output_center
-                && let Some((middle, _)) = self.t.point(true, dx, dy)
-                && (middle < low - 1e-7 || middle > high + 1e-7)
-            {
-                for point in &mut p {
-                    let delta = point.0 - middle;
-                    if delta.abs() > pixels / 2.0 + 1e-7 {
-                        point.0 -= (delta / pixels).round() * pixels;
-                    }
-                }
+        if let (Some(turn), Some(centre)) = (self.longitude_turn(), output_center) {
+            let mut xs = p.map(|point| point.0);
+            self.unwrap_longitudes(&mut xs, turn, centre);
+            for (point, x) in p.iter_mut().zip(xs) {
+                point.0 = x;
             }
         }
         if self.kernel_version == KernelVersion::Gdal313 {
@@ -3577,7 +3560,7 @@ impl WarpContext<'_> {
                 let mut top = self.sum_corners(c, g * group, &mut batch);
                 for (j, mut out) in outs.into_iter().enumerate() {
                     let bottom = self.sum_corners(c, g * group + j + 1, &mut batch);
-                    self.warp_sum_row(c, &k, sink, (&top, &bottom), &mut out);
+                    self.warp_sum_row(c, &k, sink, (&top, &bottom), g * group + j, &mut out);
                     top = bottom;
                 }
             });
@@ -3701,32 +3684,72 @@ impl WarpContext<'_> {
         }
     }
 
-    /// Preserve empty regional pixels when wrapped corners would summarize the source's width.
-    /// A genuine coarse footprint can span over 180 degrees, so confirm the discontinuity using
-    /// an exact midpoint. Circular/global footprints remain a separate operation (#764).
-    fn regional_longitude_wrap(&self, ax: f64, bx: f64, dx: f64, dy: f64) -> bool {
-        let Some(period) = self.t.src_longitude_period else {
-            return false;
-        };
+    /// The source columns a turn of longitude spans, where the footprints of the output's pixels
+    /// can cross the source's longitude cut: on a geographic source with an unrotated grid,
+    /// warped through a change of CRS. Affine footprints, as those of a warp within the source's
+    /// CRS, are continuous, even where a coarse pixel spans a whole turn; GCPs place the source
+    /// otherwise.
+    fn longitude_turn(&self) -> Option<f64> {
+        let period = self.t.src_longitude_period?;
         let gt = self.t.src_gt;
-        if self.t.ct.is_none()
-            || self.t.src_gcp.is_some()
-            || gt[2] != 0.0
-            || gt[4] != 0.0
-            || (gt[1] * self.src_w as f64).abs() >= period * (1.0 - 1e-10)
-            || ((0.0..=self.src_w as f64).contains(&ax) && (0.0..=self.src_w as f64).contains(&bx))
+        (self.t.ct.is_some() && self.t.src_gcp.is_none() && gt[2] == 0.0 && gt[4] == 0.0 && gt[1] != 0.0).then(|| period / gt[1].abs())
+    }
+
+    /// Moves the source columns `xs` of an output pixel's footprint corners by whole turns of
+    /// longitude (`turn` columns each), so that the footprint does not cross the source's
+    /// longitude cut, and returns whether any moved. A large span alone is ambiguous: a coarse
+    /// pixel can span up to a whole turn too. Its exact centre (`centre`, in output pixels) lies
+    /// between its corners; at a cut, it lies outside their span, over half a turn from some of
+    /// them, which are moved toward it.
+    fn unwrap_longitudes(&self, xs: &mut [f64], turn: f64, (dx, dy): (f64, f64)) -> bool {
+        let (low, high) = xs.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| (lo.min(*x), hi.max(*x)));
+        let mut moved = false;
+        if high - low > turn / 2.0
+            && high - low <= turn * (1.0 + 1e-10)
+            && let Some((middle, _)) = self.t.point(true, dx, dy)
+            && (middle < low - 1e-7 || middle > high + 1e-7)
         {
-            return false;
+            for x in xs {
+                let delta = *x - middle;
+                if delta.abs() > turn / 2.0 + 1e-7 {
+                    *x -= (delta / turn).round() * turn;
+                    moved = true;
+                }
+            }
         }
-        let (a, b) = (gt[0] + ax * gt[1], gt[0] + bx * gt[1]);
-        if (a - b).abs() <= period / 2.0 {
-            return false;
-        }
-        let Some((mx, _)) = self.t.point(true, dx, dy) else {
-            return false;
+        moved
+    }
+
+    /// The moves along x, in source columns, that place the footprint of the output pixel whose
+    /// centre is `centre` (whose corners' source columns are `xs`) on the source, for the area
+    /// methods and `sum` to take the source inside each. Where the footprint can cross the
+    /// source's longitude cut ([`Self::longitude_turn`]), `xs` are first made continuous across
+    /// it ([`Self::unwrap_longitudes`]). A footprint across the cut is then moved by each whole
+    /// number of turns that makes it meet the source's columns: on a source that holds no
+    /// longitude twice, twice for one across the edges of a source of every longitude, once
+    /// otherwise. Any other footprint stays as it is, as the point kernels take the source: one
+    /// across an edge of a source whose edges lie off the cut, as those of a source from 0° to
+    /// 360° do, takes the source on the source's side of it.
+    fn footprint_moves(&self, xs: &mut [f64], centre: (f64, f64)) -> [Option<f64>; 2] {
+        let Some(turn) = self.longitude_turn() else {
+            return [Some(0.0), None];
         };
-        let mid = gt[0] + mx * gt[1];
-        (a - mid).abs() > period / 2.0 || (mid - b).abs() > period / 2.0
+        let w = self.src_w as f64;
+        if !self.unwrap_longitudes(xs, turn, centre) || w > turn * (1.0 + 1e-10) {
+            return [Some(0.0), None];
+        }
+        let (x0, x1) = xs.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| (lo.min(*x), hi.max(*x)));
+        // A footprint without width meets the column it lies on, each holding its left edge.
+        let meets = |s: f64| x0 + s < w && (x1 + s > 0.0 || (x0 == x1 && x0 + s >= 0.0));
+        let first = (-x1 / turn).floor() as i64;
+        let mut moves = [None; 2];
+        for (slot, s) in moves.iter_mut().zip((first..first + 3).map(|k| k as f64 * turn).filter(|s| meets(*s))) {
+            *slot = Some(s);
+        }
+        if moves[0].is_none() {
+            moves[0] = Some(0.0);
+        }
+        moves
     }
 
     /// The area-based methods other than `sum` (average, mode, min, max, quantiles, RMS): each
@@ -3748,19 +3771,16 @@ impl WarpContext<'_> {
             self.transform_row(&mut x1, &mut y1, &mut o1);
             self.transform_row(&mut x2, &mut y2, &mut o2);
             for i in 0..n {
-                let (mut ax, mut bx, mut ay, mut by) = (x1[i], x2[i], y1[i], y2[i]);
+                let (ax, bx, mut ay, mut by) = (x1[i], x2[i], y1[i], y2[i]);
                 // A corner that could not be transformed, or not to a finite position, leaves the
                 // pixel alone. The others may lie far beyond the window, as those of a pixel larger
                 // than the source do.
                 if !(o1[i] && o2[i] && [ax, bx, ay, by].iter().all(|v| v.is_finite())) {
                     continue;
                 }
-                if self.regional_longitude_wrap(ax, bx, (i + c.dx) as f64 + 0.5, (row + c.dy) as f64 + 0.5) {
-                    continue;
-                }
-                if ax > bx {
-                    std::mem::swap(&mut ax, &mut bx);
-                }
+                let mut xs = [ax, bx];
+                let moves = self.footprint_moves(&mut xs, ((i + c.dx) as f64 + 0.5, (row + c.dy) as f64 + 0.5));
+                let (ax, bx) = (xs[0].min(xs[1]), xs[0].max(xs[1]));
                 if ay > by {
                     std::mem::swap(&mut ay, &mut by);
                 }
@@ -3768,19 +3788,35 @@ impl WarpContext<'_> {
                 // alone. Of the others, the part inside the window counts; one without width or
                 // height takes the source pixel it lies on, each pixel holding its left and top
                 // edges: on the window's left or top edge, its first column or row; on its right or
-                // bottom edge, none.
-                let (fx0, fx1, fy0, fy1) = (ax - sxo, bx - sxo, ay - syo, by - syo);
+                // bottom edge, none. A footprint across the source's longitude cut counts on both
+                // of its sides ([`Self::footprint_moves`]).
                 const EPS: f64 = 1e-10;
                 let meets = |lo: f64, hi: f64, size: f64| lo < size - EPS && (hi > EPS || (hi - lo <= EPS && lo > -EPS));
-                if !(meets(fx0, fx1, sw) && meets(fy0, fy1, sh)) {
+                let (fy0, fy1) = (ay - syo, by - syo);
+                if !meets(fy0, fy1, sh) {
                     continue;
                 }
-                let (xmin, xmax, ymin, ymax) = (fx0.max(0.0), fx1.min(sw), fy0.max(0.0), fy1.min(sh));
-                let ix0 = (xmin + EPS).floor().max(0.0) as usize;
-                let mut ix1 = ((xmax - EPS).ceil().max(0.0) as usize).min(c.sw);
-                if ix0 == ix1 && ix1 < c.sw {
-                    ix1 += 1;
+                // Each part's columns, and its bounds along x.
+                let (mut parts, mut count) = ([(0, 0, 0.0, 0.0); 2], 0);
+                for s in moves.into_iter().flatten() {
+                    let (fx0, fx1) = (ax + s - sxo, bx + s - sxo);
+                    if !meets(fx0, fx1, sw) {
+                        continue;
+                    }
+                    let (xmin, xmax) = (fx0.max(0.0), fx1.min(sw));
+                    let ix0 = (xmin + EPS).floor().max(0.0) as usize;
+                    let mut ix1 = ((xmax - EPS).ceil().max(0.0) as usize).min(c.sw);
+                    if ix0 == ix1 && ix1 < c.sw {
+                        ix1 += 1;
+                    }
+                    parts[count] = (ix0, ix1, xmin, xmax);
+                    count += 1;
                 }
+                let parts = &parts[..count];
+                if parts.is_empty() {
+                    continue;
+                }
+                let (ymin, ymax) = (fy0.max(0.0), fy1.min(sh));
                 let iy0 = (ymin + EPS).floor().max(0.0) as usize;
                 let mut iy1 = ((ymax - EPS).ceil().max(0.0) as usize).min(c.sh);
                 if iy0 == iy1 && iy1 < c.sh {
@@ -3795,7 +3831,7 @@ impl WarpContext<'_> {
                         1.0
                     }
                 };
-                let wx = |x: usize, w: f64| {
+                let wx = |(ix0, ix1, xmin, xmax): (usize, usize, f64, f64), x: usize, w: f64| {
                     if x == ix0 {
                         if ix0 + 1 == ix1 { w } else { w * (1.0 - (xmin - ix0 as f64)) }
                     } else if x + 1 == ix1 {
@@ -3805,9 +3841,11 @@ impl WarpContext<'_> {
                     }
                 };
                 let mut found = false;
-                if self.resampling == Resampling::Average {
+                if let &[part] = parts
+                    && self.resampling == Resampling::Average
+                {
                     for (b, o) in out.iter_mut().enumerate() {
-                        if let Some(mean) = k.average(b, ix0..ix1, iy0..iy1, wy, wx) {
+                        if let Some(mean) = k.average(b, part.0..part.1, iy0..iy1, wy, |x, w| wx(part, x, w)) {
                             o[i] = sink.value(mean, b);
                             found = true;
                         }
@@ -3821,9 +3859,11 @@ impl WarpContext<'_> {
                     values.clear();
                     for y in iy0..iy1 {
                         let w = wy(y);
-                        for x in ix0..ix1 {
-                            if k.valid(b, x, y) {
-                                values.push((k.value(b, x, y), wx(x, w)));
+                        for &part in parts {
+                            for x in part.0..part.1 {
+                                if k.valid(b, x, y) {
+                                    values.push((k.value(b, x, y), wx(part, x, w)));
+                                }
                             }
                         }
                     }
@@ -3921,11 +3961,12 @@ impl WarpContext<'_> {
         k: &Kernel<T>,
         sink: &Sink,
         (top, bottom): (&CornerRow, &CornerRow),
+        row: usize,
         out: &mut [&mut [f64]],
     ) {
         let (mut areas, mut sums) = (Vec::new(), vec![(0.0, false); out.len()]);
         for i in 0..c.dw {
-            let Some(footprint) = self.sum_footprint(c, (top, bottom), i) else {
+            let Some(footprint) = self.sum_footprint(c, (top, bottom), i, row) else {
                 continue;
             };
             sums.fill((0.0, false));
@@ -3934,27 +3975,33 @@ impl WarpContext<'_> {
         }
     }
 
-    /// The footprint on a chunk's source window of pixel `i` of a row of the chunk, whose corners
-    /// are along `top` and `bottom` ([`Self::sum_corners`]); None for a pixel left alone.
-    fn sum_footprint(&self, c: &Chunk, (top, bottom): (&CornerRow, &CornerRow), i: usize) -> Option<SumFootprint> {
+    /// The footprint on a chunk's source window of pixel `i` of the chunk's row `row`, whose
+    /// corners are along `top` and `bottom` ([`Self::sum_corners`]); None for a pixel left alone.
+    /// A footprint across the source's longitude cut holds its parts on both sides of it
+    /// ([`Self::footprint_moves`]).
+    fn sum_footprint(&self, c: &Chunk, (top, bottom): (&CornerRow, &CornerRow), i: usize, row: usize) -> Option<SumFootprint> {
         if !(top.ok[i] && top.ok[i + 1] && bottom.ok[i + 1] && bottom.ok[i]) {
             return None;
         }
         let (sxo, syo) = (c.sx as f64, c.sy as f64);
-        // The quadrilateral, corner after corner, in the pixels of the chunk's source window.
-        let q = [
-            (top.x[i] - sxo, top.y[i] - syo),
-            (top.x[i + 1] - sxo, top.y[i + 1] - syo),
-            (bottom.x[i + 1] - sxo, bottom.y[i + 1] - syo),
-            (bottom.x[i] - sxo, bottom.y[i] - syo),
-        ];
+        // The quadrilateral, corner after corner, on the source grid.
+        let mut xs = [top.x[i], top.x[i + 1], bottom.x[i + 1], bottom.x[i]];
+        let ys = [top.y[i], top.y[i + 1], bottom.y[i + 1], bottom.y[i]];
         // A corner that is not a finite number leaves the pixel alone. The others may lie far
         // beyond the window, as those of a pixel much larger than the source do: only the
         // window's pixels within the quadrilateral's bounds are visited.
-        if !q.iter().all(|&(x, y)| x.is_finite() && y.is_finite()) {
+        if !xs.iter().chain(&ys).all(|v| v.is_finite()) {
             return None;
         }
-        SumFootprint::new(q, c.sw, c.sh)
+        let moves = self.footprint_moves(&mut xs, ((c.dx + i) as f64 + 0.5, (c.dy + row) as f64 + 0.5));
+        // In the pixels of the chunk's source window.
+        let mut parts = moves
+            .into_iter()
+            .flatten()
+            .filter_map(|s| SumFootprint::new(std::array::from_fn(|j| (xs[j] + s - sxo, ys[j] - syo)), c.sw, c.sh));
+        let mut footprint = parts.next()?;
+        footprint.next = parts.next().map(Box::new);
+        Some(footprint)
     }
 
     /// Stores the sums of pixel `i` of a row, one per band, each with whether a valid source pixel
@@ -3996,7 +4043,7 @@ impl WarpContext<'_> {
         let mut footprints = Vec::with_capacity(c.dw * c.dh);
         for y in 0..c.dh {
             let bottom = self.sum_corners(c, y + 1, &mut batch);
-            footprints.extend((0..c.dw).map(|i| self.sum_footprint(c, (&top, &bottom), i)));
+            footprints.extend((0..c.dw).map(|i| self.sum_footprint(c, (&top, &bottom), i, y)));
             top = bottom;
         }
         SumStrips { sums: vec![(0.0, false); footprints.len() * self.bands], footprints }
@@ -4121,6 +4168,9 @@ struct SumFootprint {
     cols: (usize, usize),
     rows: (usize, usize),
     shares: Shares,
+    /// The footprint's part on the other side of the source's longitude cut, a whole turn of
+    /// longitude along x, in the same rows ([`WarpContext::footprint_moves`]).
+    next: Option<Box<SumFootprint>>,
 }
 
 /// How the shares of a [`SumFootprint`]'s pixels are computed.
@@ -4165,7 +4215,7 @@ impl SumFootprint {
             // chunk, whichever source pixel the chunk's window starts at.
             Shares::General(QuadEdges::new(&q.map(|(x, y)| (x - cols.0 as f64, y - rows.0 as f64)), nx, ny))
         };
-        Some(Self { x: (x0, x1), y: (y0, y1), cols, rows, shares })
+        Some(Self { x: (x0, x1), y: (y0, y1), cols, rows, shares, next: None })
     }
 
     /// The shares of the footprint's pixels in the window's rows `rows.0..rows.1`, which are
@@ -4192,8 +4242,20 @@ impl SumFootprint {
     /// Adds each valid source pixel of the footprint in the window's rows `rows.0..rows.1` (which
     /// `k` holds), times its share, to its band's sum in `sums`, recording that one was added:
     /// row after row, from the left, as many rows at a time as [`SUM_SHARE_BYTES`] holds the
-    /// shares of. `areas` is scratch space.
+    /// shares of. `areas` is scratch space. A footprint in two parts adds them a row at a time,
+    /// the part it holds first, then the other: in the same order whichever rows are asked for.
     fn add<T: crate::pixel::Pixel>(&self, k: &Kernel<T>, rows: (usize, usize), areas: &mut Vec<f64>, sums: &mut [(f64, bool)]) {
+        let Some(next) = &self.next else {
+            return self.add_part(k, rows, areas, sums);
+        };
+        for y in rows.0..rows.1 {
+            self.add_part(k, (y, y + 1), areas, sums);
+            next.add_part(k, (y, y + 1), areas, sums);
+        }
+    }
+
+    /// [`Self::add`] for the footprint's first part alone.
+    fn add_part<T: crate::pixel::Pixel>(&self, k: &Kernel<T>, rows: (usize, usize), areas: &mut Vec<f64>, sums: &mut [(f64, bool)]) {
         let (x, nx) = (self.cols.0, self.cols.1 - self.cols.0);
         let step = (SUM_SHARE_BYTES / (8 * nx)).max(1);
         let mut y0 = rows.0;
@@ -5651,8 +5713,17 @@ mod tests {
         RasterDataset::new(Raster::from_data(cfg, data).unwrap(), false)
     }
 
+    /// Area methods into a longitude and latitude grid centred on 180° (41 columns of 40/41° from
+    /// 20° W of it), from a source of 1° pixels from 160° E to 180° holding their column number
+    /// plus one, in degrees, radians and grads, in both samplings, whole and in chunks: the column
+    /// across 180° takes the source inside it, west of 180° (the source's last column, 20), and
+    /// the column east of it, beyond the source, is left alone; the stable sampling plans to read
+    /// that last column for it. From the same pixels from 180° to 160° W, in the stable sampling,
+    /// the column across 180° takes the source's first column (1), and the column west of it is
+    /// left alone. A coarse pixel 300° wide, whose centre lies between its corners, keeps them and
+    /// takes the whole source; so does one in the source's own CRS, whose footprint crosses no cut.
     #[test]
-    fn regional_area_crossings_stay_empty_without_rejecting_coarse_footprints() {
+    fn an_area_pixel_across_180_takes_the_source_inside_it_and_a_coarse_one_keeps_its_corners() {
         let methods = [
             (Resampling::Average, 10.5),
             (Resampling::Rms, 143.5_f64.sqrt()),
@@ -5664,9 +5735,11 @@ mod tests {
             (Resampling::Q3, 15.0),
         ];
         let regional = raster(20, 4, [160., 1., 0., 2., 0., -1.], 4326, |c, _| c as f64 + 1.);
+        let eastern = raster(20, 4, [-180., 1., 0., 2., 0., -1.], 4326, |c, _| c as f64 + 1.);
         let coarse = raster(20, 4, [-10., 1., 0., 2., 0., -1.], 4326, |c, _| c as f64 + 1.);
         for (resampling, expected) in methods {
-            for memory_limit in [1024., 64. * 1024. * 1024.] {
+            for (grid_invariant, memory_limit) in [(true, 1024.), (true, 64. * 1024. * 1024.), (false, 1024.), (false, 64. * 1024. * 1024.)]
+            {
                 let o = WarpOptions {
                     dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180 +no_defs").unwrap()),
                     dst_transform: Some([-20., 40. / 41., 0., 2., 0., -1.]),
@@ -5676,12 +5749,14 @@ mod tests {
                     error_threshold: 0.,
                     memory_limit,
                     resampling,
+                    grid_invariant,
                     ..Default::default()
                 };
+                let label = format!("{resampling:?}, grid_invariant {grid_invariant}, {memory_limit} bytes");
                 let out = warp(&[&regional], &o).unwrap().raster.data.to_f64_vec();
-                assert_ne!(out[41 + 19], -999., "{resampling:?}");
-                assert_eq!(out[41 + 20], -999., "{resampling:?}");
-                assert_eq!(out[41 + 21], -999., "{resampling:?}");
+                assert_ne!(out[41 + 19], -999., "{label}");
+                assert!((out[41 + 20] - 20.).abs() < 1e-9, "{label}: {}", out[41 + 20]);
+                assert_eq!(out[41 + 21], -999., "{label}");
                 for (unit, radians, degrees) in [("radian", 1.0, 180.0 / std::f64::consts::PI), ("grad", std::f64::consts::PI / 200.0, 0.9)]
                 {
                     let wkt = format!(
@@ -5693,8 +5768,18 @@ mod tests {
                     source.set_geo_transform([160. / degrees, 1. / degrees, 0., 2. / degrees, 0., -1. / degrees]);
                     source.raster.crs = srs.to_crs_info();
                     let out = warp(&[&source], &o).unwrap().raster.data.to_f64_vec();
-                    assert_ne!(out[41 + 19], -999., "{unit} {resampling:?}");
-                    assert_eq!(out[41 + 20], -999., "{unit} {resampling:?}");
+                    assert_ne!(out[41 + 19], -999., "{unit}, {label}");
+                    assert!((out[41 + 20] - 20.).abs() < 1e-9, "{unit}, {label}: {}", out[41 + 20]);
+                    assert_eq!(out[41 + 21], -999., "{unit}, {label}");
+                }
+                // In the chunk-dependent sampling, a chunk's window is bounded by points sampled
+                // along its edges, and for this grid in one chunk it leaves out this source's first
+                // two columns, so that columns 20 and 21 stay empty, as they did before.
+                if grid_invariant {
+                    let out = warp(&[&eastern], &o).unwrap().raster.data.to_f64_vec();
+                    assert_eq!(out[41 + 19], -999., "from 180°, {label}");
+                    assert!((out[41 + 20] - 1.).abs() < 1e-9, "from 180°, {label}: {}", out[41 + 20]);
+                    assert_ne!(out[41 + 21], -999., "from 180°, {label}");
                 }
                 let o = WarpOptions {
                     dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=1 +no_defs").unwrap()),
@@ -5703,7 +5788,7 @@ mod tests {
                     ..o
                 };
                 let out = warp(&[&coarse], &o).unwrap().raster.data.to_f64_vec();
-                assert!((out[0] - expected).abs() < 1e-9, "{resampling:?}: {} vs {expected}", out[0]);
+                assert!((out[0] - expected).abs() < 1e-9, "{label}: {} vs {expected}", out[0]);
                 // A same-CRS affine footprint has no normalized longitude discontinuity,
                 // even when both halves span more than 180 degrees.
                 let o = WarpOptions {
@@ -5712,8 +5797,231 @@ mod tests {
                     ..o
                 };
                 let out = warp(&[&coarse], &o).unwrap().raster.data.to_f64_vec();
-                assert!((out[0] - expected).abs() < 1e-9, "continuous {resampling:?}: {}", out[0]);
+                assert!((out[0] - expected).abs() < 1e-9, "continuous {label}: {}", out[0]);
             }
+        }
+        // In the stable sampling, a region holding only the column across 180° reads the source's
+        // last column, where the column's footprint lies, and no other.
+        let grid = SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180 +no_defs").unwrap();
+        let region = RegionWarp::new(
+            (20, 4),
+            [160., 1., 0., 2., 0., -1.],
+            &SpatialRef::from_epsg(4326).unwrap(),
+            &grid,
+            [-20., 40. / 41., 0., 2., 0., -1.],
+            Resampling::Average,
+            0.,
+            DataType::F64,
+            vec![None],
+            None,
+        )
+        .unwrap()
+        .with_grid_invariance(true);
+        assert_eq!(region.source_window((20, 0, 1, 4)), Some((19, 0, 1, 4)));
+    }
+
+    /// A sum into a longitude and latitude grid centred on 180° (555 x 139 pixels from 20° W to
+    /// 20° E of it, and from 5° N to 5° S), from a source of ones of 0.05° pixels from 160° E to
+    /// 180° (#764), in both samplings, whole and in chunks: the column across 180° holds the area,
+    /// in source pixels, of its part west of 180°, and the columns west of it their whole area.
+    /// From ones from 180° to 160° W, it holds the area of its part east of 180°, and the columns
+    /// east of it their whole area.
+    #[test]
+    fn a_sum_across_180_adds_the_source_inside_it() {
+        let ones = raster(400, 200, [160., 0.05, 0., 5., 0., -0.05], 4326, |_, _| 1.);
+        let eastern = raster(400, 200, [-180., 0.05, 0., 5., 0., -0.05], 4326, |_, _| 1.);
+        let (width, height) = (40. / 555., 10. / 139.);
+        // Column 277 is centred on 180°: each of its halves lies on one of the sources.
+        let west = -(-20. + 277. * width);
+        let (whole, part) = (width / 0.05 * height / 0.05, west / 0.05 * height / 0.05);
+        for (grid_invariant, memory_limit) in [(true, 2e5), (true, 64. * 1024. * 1024.), (false, 2e5), (false, 64. * 1024. * 1024.)] {
+            let o = WarpOptions {
+                dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180 +no_defs").unwrap()),
+                dst_transform: Some([-20., width, 0., 5., 0., -height]),
+                size: Some((555, 139)),
+                output_type: Some(DataType::F64),
+                dst_nodata: Nodata::Values(vec![-999.]),
+                memory_limit,
+                resampling: Resampling::Sum,
+                grid_invariant,
+                ..Default::default()
+            };
+            let out = warp(&[&ones], &o).unwrap().raster.data.to_f64_vec();
+            let row = &out[69 * 555..70 * 555];
+            let label = format!("grid_invariant {grid_invariant}, {memory_limit} bytes");
+            assert!(
+                (row[276] - whole).abs() < 1e-9 && (row[277] - part).abs() < 1e-9,
+                "{label}: {:?}, not {whole} and {part}",
+                &row[275..279]
+            );
+            assert_eq!(row[278], -999., "{label}");
+            let out = warp(&[&eastern], &o).unwrap().raster.data.to_f64_vec();
+            let row = &out[69 * 555..70 * 555];
+            assert!(
+                (row[278] - whole).abs() < 1e-9 && (row[277] - part).abs() < 1e-9,
+                "from 180°, {label}: {:?}, not {part} and {whole}",
+                &row[276..280]
+            );
+            assert_eq!(row[276], -999., "from 180°, {label}");
+        }
+    }
+
+    /// A `sum` adds the parts of a footprint across 180° a row at a time, its part on the source's
+    /// first columns, then its part on the last ones, each from the left, so that its pixel is the
+    /// same, bit for bit, read whole and in strips of two heights, in both samplings: a pixel 4°
+    /// wide centred on 180° and 100° high, over a source of every longitude in Float64 pixels of
+    /// 1° x 0.5°, whose sum rounds, so that added in another order, it differs.
+    #[test]
+    fn a_sum_across_180_adds_its_parts_row_after_row_whatever_its_strips() {
+        let dir = tempfile::tempdir().unwrap();
+        let value = |c: usize, r: usize| ((c * 7 + r * 13) % 251) as f64 * 0.1 + 0.37;
+        let ds = typed_raster(DataType::F64, 360, 200, [-180., 1., 0., 50., 0., -0.5], 4326, value);
+        let path = dir.path().join("world.tif").to_str().unwrap().to_string();
+        crate::write_raster_dataset(&ds, &path, &Default::default()).unwrap();
+        // The source's columns 0 and 1, west of 178° W, and 358 and 359, east of 178° E.
+        let expected = (0..200).flat_map(|r| [0, 1, 358, 359].map(|c| value(c, r))).fold(0.0, |sum, v| sum + v);
+        for grid_invariant in [true, false] {
+            let warped = |memory_limit| {
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180 +no_defs").unwrap()),
+                    dst_transform: Some([-2., 4., 0., 50., 0., -100.]),
+                    size: Some((1, 1)),
+                    output_type: Some(DataType::F64),
+                    resampling: Resampling::Sum,
+                    memory_limit,
+                    grid_invariant,
+                    ..Default::default()
+                };
+                let mut lazy = crate::open_raster_lazy(&path).unwrap();
+                let mut counted = Counted { raster: &mut lazy, reads: Vec::new() };
+                let out = warp_sources(&mut [&mut counted], &o).unwrap();
+                (out.raster.data.to_f64_vec()[0], counted.reads.len())
+            };
+            let (whole, reads) = warped(64. * 1024. * 1024.);
+            assert_eq!(reads, 1, "grid_invariant {grid_invariant}: the whole window at once");
+            assert!((whole - expected).abs() < 1e-9 * expected, "grid_invariant {grid_invariant}: {whole}, not {expected}");
+            for memory_limit in [100_000., 20_000.] {
+                let (strips, reads) = warped(memory_limit);
+                let label = format!("grid_invariant {grid_invariant}, {memory_limit} bytes");
+                assert!(reads > 1, "{label}: {reads} reads");
+                assert_eq!(strips.to_bits(), whole.to_bits(), "{label}: {strips}, not {whole}");
+            }
+        }
+    }
+
+    /// A source of every longitude (1° pixels from 180° W and from 5° N to 5° S), holding 2 in
+    /// its last column, 4 in its first and 1 elsewhere, warped into a longitude and latitude grid
+    /// centred on 180° (81 columns of 40/81° from 20° W of it, 20 rows of 0.5°), in both samplings,
+    /// whole and in chunks: the column across 180° takes the source on both sides of it, about a
+    /// quarter of a source column's width from each, by `sum` and by each area method. A pixel
+    /// 179° wide across 180° takes the source on both sides; one 181° wide, whose corners lie less
+    /// than half a turn apart, keeps its corners, and takes the source between them, around 0°.
+    /// From the same pixels from 0° to 360°, a pixel across 0°, which crosses no cut, takes the
+    /// source east of 0° alone, by `sum` and by `average`, as the point kernels place it. From a
+    /// source of 361 columns, which holds the longitudes beside 180° twice, the column across 180°
+    /// adds the source once.
+    #[test]
+    fn a_pixel_across_180_takes_a_source_of_every_longitude_on_both_sides() {
+        let world = raster(360, 10, [-180., 1., 0., 5., 0., -1.], 4326, |c, _| match c {
+            359 => 2.,
+            0 => 4.,
+            _ => 1.,
+        });
+        let side = 20. / 81.;
+        let methods = [
+            (Resampling::Sum, (2. + 4.) * side * 0.5),
+            (Resampling::Average, 3.),
+            (Resampling::Rms, 10_f64.sqrt()),
+            (Resampling::Min, 2.),
+            (Resampling::Max, 4.),
+            (Resampling::Mode, f64::NAN),
+            (Resampling::Med, f64::NAN),
+            (Resampling::Q1, f64::NAN),
+            (Resampling::Q3, f64::NAN),
+        ];
+        for (resampling, expected) in methods {
+            for (grid_invariant, memory_limit) in [(true, 2048.), (true, 64. * 1024. * 1024.), (false, 2048.), (false, 64. * 1024. * 1024.)]
+            {
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180 +no_defs").unwrap()),
+                    dst_transform: Some([-20., 40. / 81., 0., 5., 0., -0.5]),
+                    size: Some((81, 20)),
+                    output_type: Some(DataType::F64),
+                    dst_nodata: Nodata::Values(vec![-999.]),
+                    memory_limit,
+                    resampling,
+                    grid_invariant,
+                    ..Default::default()
+                };
+                let out = warp(&[&world], &o).unwrap().raster.data.to_f64_vec();
+                let label = format!("{resampling:?}, grid_invariant {grid_invariant}, {memory_limit} bytes");
+                let v = out[5 * 81 + 40];
+                if expected.is_nan() {
+                    assert!(v == 2. || v == 4., "{label}: {v}");
+                } else {
+                    assert!((v - expected).abs() < 1e-9, "{label}: {v}, not {expected}");
+                }
+            }
+        }
+        // Pixels 179° and 181° wide centred on 180°, from a source holding the absolute value of
+        // the longitude of its pixels' centres: the average of |longitude| from 90.5° to 180°, and
+        // from 0° to 89.5°.
+        let lon = raster(360, 10, [-180., 1., 0., 5., 0., -1.], 4326, |c, _| (c as f64 - 179.5).abs());
+        for grid_invariant in [true, false] {
+            for (wide, mean) in [(179., (90.5 + 180.) / 2.), (181., 89.5 / 2.)] {
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180 +no_defs").unwrap()),
+                    dst_transform: Some([-wide / 2., wide, 0., 5., 0., -10.]),
+                    size: Some((1, 1)),
+                    output_type: Some(DataType::F64),
+                    dst_nodata: Nodata::Values(vec![-999.]),
+                    resampling: Resampling::Average,
+                    grid_invariant,
+                    ..Default::default()
+                };
+                let v = warp(&[&lon], &o).unwrap().raster.data.to_f64_vec()[0];
+                assert!((v - mean).abs() < 0.01, "{wide}° wide, grid_invariant {grid_invariant}: {v}, not {mean}");
+            }
+        }
+        let east = raster(360, 10, [0., 1., 0., 5., 0., -1.], 4326, |c, _| match c {
+            359 => 2.,
+            0 => 4.,
+            _ => 1.,
+        });
+        for (resampling, expected) in [(Resampling::Sum, 4. * side * 0.5), (Resampling::Average, 4.)] {
+            for grid_invariant in [true, false] {
+                // Column 40 of 81 columns of 40/81° from 20° W, in a grid centred on 90° E, is
+                // centred on 0°.
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=90 +no_defs").unwrap()),
+                    dst_transform: Some([-110., 40. / 81., 0., 5., 0., -0.5]),
+                    size: Some((81, 20)),
+                    output_type: Some(DataType::F64),
+                    dst_nodata: Nodata::Values(vec![-999.]),
+                    resampling,
+                    grid_invariant,
+                    ..Default::default()
+                };
+                let v = warp(&[&east], &o).unwrap().raster.data.to_f64_vec()[5 * 81 + 40];
+                assert!((v - expected).abs() < 1e-9, "from 0°, {resampling:?}, grid_invariant {grid_invariant}: {v}, not {expected}");
+            }
+        }
+        // A source of 361 columns from 180.5° W holds the longitudes beside 180° twice, in its
+        // first and last columns: the column across 180° adds its area of ones once.
+        let wider = raster(361, 10, [-180.5, 1., 0., 5., 0., -1.], 4326, |_, _| 1.);
+        for grid_invariant in [true, false] {
+            let o = WarpOptions {
+                dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180 +no_defs").unwrap()),
+                dst_transform: Some([-20., 40. / 81., 0., 5., 0., -0.5]),
+                size: Some((81, 20)),
+                output_type: Some(DataType::F64),
+                dst_nodata: Nodata::Values(vec![-999.]),
+                resampling: Resampling::Sum,
+                grid_invariant,
+                ..Default::default()
+            };
+            let v = warp(&[&wider], &o).unwrap().raster.data.to_f64_vec()[5 * 81 + 40];
+            assert!((v - 2. * side * 0.5).abs() < 1e-9, "361 columns, grid_invariant {grid_invariant}: {v}, not {}", 2. * side * 0.5);
         }
     }
 
