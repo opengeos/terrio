@@ -21,26 +21,14 @@ third-party intermediary when one calls Terrio on the application's behalf.
 
 `python/tests/test_pyogrio_datetime_filters.py` checks pandas 2 and 3 datetime parsing without
 Terrio changing warning filters, including invalid input after mixed offsets and pandas-only
-ISO forms. The pandas 2 pre-check visits every distinct string so an invalid value retains its
-original diagnostic; pandas 3 uses its parser directly. This adds a scan on pandas 2.
-On Linux with CPython 3.12.7 and pandas 2.2.3, three-run median times for one million timestamps
-were 0.0874 s before and 0.1364 s after for one repeated timestamp, and 6.5166 s before and
-7.3210 s after for distinct timestamps. Inputs used `+01:00`, with distinct values at one-second
-intervals starting 2024-01-01 and a 1,000-value warmup. This measures datetime conversion alone,
-excluding file I/O and dataframe construction, against the previous filter-based parser.
-It documents the additional CPU cost and is not a timing gate or an end-to-end read benchmark.
-The same method with nine-digit fractions measured 0.0938 s before and 0.1571 s after for
-repeated values, and 4.8862 s before and 6.2837 s after for one million distinct values at
-nanosecond intervals. On this Python version, `datetime.fromisoformat` accepts these fractions
-directly; the pre-check does not make singleton pandas calls for them.
-Reduced `YYYY`/`YYYY-MM` values are parsed as one timezone-free batch per conversion and
-cached by distinct value. In a million rows cycling through 1,200 distinct valid year-months,
-batching reduced the preceding adapter's median from 0.2935 s to 0.1279 s; with two offset
-timestamps prepended and offsets preserved, it changed 0.4471 s to 0.1274 s. The same warmup
-and three-run method applies. A regression checks fewer than ten pandas calls across 1,200
-distinct reduced dates in both offset modes. Invalid reduced batches retain the previous
-per-value diagnostic path; other pandas-only forms and missing strings keep the distinct-value
-fallback cache.
+ISO forms. Standard ISO strings with a uniform offset pass directly to pandas after a distinct
+value syntax scan. Other pandas 2 inputs inspect every distinct value so invalid strings retain
+their original diagnostic; pandas 3 uses its parser directly. Reduced `YYYY`/`YYYY-MM` values
+are parsed in a timezone-free batch. Python datetime output trims timestamp fractions to
+microseconds before stdlib parsing and attributes any precision warning to the caller.
+Regressions check bounded pandas calls for repeated and reduced-date inputs, the older stdlib
+precision path, and the uniform-offset shortcut. The additional scan has a CPU cost; it is
+not an end-to-end read benchmark or a timing gate.
 Each live buffer-reference comparison owns its GDAL and Arrow state in a child process. The
 GeoParquet case checks both ordinary buffers and Arrow dataframe reads with registered WKB
 extension types, keeping the reference driver's registrations out of other tests.

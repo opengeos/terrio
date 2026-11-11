@@ -1,5 +1,6 @@
 """Datetime parsing preserves values without Terrio changing warning filters, on pandas 2/3."""
 
+import datetime
 import functools
 import sys
 import warnings
@@ -10,6 +11,82 @@ import pytest
 pd = pytest.importorskip("pandas")
 
 import terrio.pyogrio as tpg  # noqa: E402
+
+
+def test_uniform_offsets_do_not_require_stdlib_preparse(monkeypatch):
+    """Uniform standard ISO timestamps pass straight to pandas.
+
+    Args:
+        monkeypatch: Scoped stdlib parser replacement.
+    """
+    calls = []
+
+    def observed(value):
+        """Record offset inspection calls.
+
+        Args:
+            value: ISO timestamp.
+
+        Returns:
+            datetime: Parsed timestamp.
+        """
+        calls.append(value)
+        return datetime.datetime.fromisoformat(value)
+
+    monkeypatch.setattr(
+        tpg, "_dt", SimpleNamespace(datetime=SimpleNamespace(fromisoformat=observed))
+    )
+    values = pd.Series(["2024-01-01T12:00:00+01:00", "2024-01-02T12:00:00+0100"])
+    result = tpg._parse_datetime(values, False, False)
+    assert len(result) == 2
+    assert calls == []
+
+
+def test_fractional_seconds_are_normalized_for_older_stdlib(monkeypatch):
+    """Python datetime output does not require singleton pandas calls for nanoseconds.
+
+    Args:
+        monkeypatch: Scoped external parser replacement.
+    """
+
+    def reject_pandas(*args, **kwargs):
+        """Fail if the stdlib output path falls back to pandas.
+
+        Args:
+            *args: Ignored parser arguments.
+            **kwargs: Ignored parser options.
+
+        Raises:
+            AssertionError: Always.
+        """
+        raise AssertionError("unexpected singleton pandas conversion")
+
+    def limited(value):
+        """Simulate a stdlib accepting at most six fractional digits.
+
+        Args:
+            value: ISO timestamp.
+
+        Returns:
+            datetime: Parsed timestamp.
+
+        Raises:
+            ValueError: More than six fractional digits remain.
+        """
+        if ".123456789" in value:
+            raise ValueError("unsupported precision")
+        return datetime.datetime.fromisoformat(value)
+
+    monkeypatch.setattr(
+        tpg, "_dt", SimpleNamespace(datetime=SimpleNamespace(fromisoformat=limited))
+    )
+    monkeypatch.setattr(pd, "to_datetime", reject_pandas)
+    with pytest.warns(UserWarning, match="Discarding nonzero nanoseconds") as caught:
+        result = tpg._parse_iso_datetime(
+            pd, "2024-01-01T12:00:00.123456789+01:00", warn_precision_loss=True
+        )
+    assert result.microsecond == 123456
+    assert caught[0].filename == __file__
 
 
 def test_precision_warning_from_pandas_fallback_points_at_caller(monkeypatch):

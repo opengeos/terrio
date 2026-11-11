@@ -328,6 +328,50 @@ def _read_geoparquet_dataframe(
 
 _SUBMICROSECOND_ISO = re.compile(r"[.,][0-9]{6}[0-9]*[1-9]")
 _REDUCED_ISO = re.compile(r"[0-9]{4}(?:-[0-9]{2})?")
+_STANDARD_ISO_OFFSET = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:[.,][0-9]+)?(?P<offset>Z|[+-][0-9]{2}:?[0-9]{2})?)?"
+)
+_DATETIME_FRACTION = re.compile(r"([T ][0-9]{2}:[0-9]{2}:[0-9]{2}[.,][0-9]{6})[0-9]+")
+
+
+def _same_iso_offset(pd, values):
+    """Recognize a uniform offset without parsing calendar values twice.
+
+    Args:
+        pd: The pandas module.
+        values: Distinct input values.
+
+    Returns:
+        bool: All nonmissing values use standard ISO syntax with the same offset.
+            Other syntax uses the full inspection path. Pandas still validates dates.
+    """
+    suffixes = None
+    initialized = False
+    for value in values:
+        if not isinstance(value, str):
+            if pd.isna(value):
+                continue
+            return False
+        if initialized:
+            if suffixes:
+                if not value.endswith(suffixes):
+                    return False
+            elif value.endswith("Z") or "+" in value[10:] or "-" in value[10:]:
+                return False
+            continue
+        match = _STANDARD_ISO_OFFSET.fullmatch(value)
+        if match is None:
+            return False
+        offset = match.group("offset")
+        if offset is not None:
+            offset = offset.replace(":", "")
+            if offset in {"Z", "+0000", "-0000"}:
+                suffixes = ("Z", "+0000", "+00:00", "-0000", "-00:00")
+            else:
+                suffixes = (offset, offset[:3] + ":" + offset[3:])
+        initialized = True
+    return True
 
 
 def _parse_reduced_iso_dates(pd, values):
@@ -371,7 +415,12 @@ def _parse_iso_datetime(pd, value: str, *, warn_precision_loss: bool = False) ->
         ValueError: The string is not a valid ISO datetime.
     """
     try:
-        parsed = _dt.datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+        # Python datetime output has microsecond precision on every supported version.
+        # Trim only timestamp fractions, keeping the original value for the diagnostic.
+        normalized = _DATETIME_FRACTION.sub(r"\1", value)
+        parsed = _dt.datetime.fromisoformat(
+            normalized[:-1] + "+00:00" if normalized.endswith("Z") else normalized
+        )
     except (AttributeError, TypeError, ValueError):
         # A singleton cannot mix offsets or emit the mixed-timezone warning.
         # The shared bridge below reports precision loss at the caller on both paths.
@@ -399,6 +448,8 @@ def _to_datetime_iso8601(pd, ser):
     if int(pd.__version__.split(".")[0]) < 3:
         offsets = set()
         unique = pd.unique(ser)
+        if _same_iso_offset(pd, unique):
+            return pd.to_datetime(ser, format="ISO8601")
         reduced = _parse_reduced_iso_dates(pd, unique)
         for value in unique:
             if pd.isna(value):

@@ -67,8 +67,9 @@ def _shapefiles(container: str, names: list[str], path) -> _Located:
 def _vsizip(archive: str, member: str | None) -> _Located:
     """`/vsizip/<archive>/<member>`; without a member, what GDAL opens for `/vsizip/<archive>`.
 
-    The only file of a single-file archive, else the top-level shapefiles, in the archive's order
-    (the archive is a directory to GDAL, which its Shapefile driver opens).
+    Use the only file of a single-file archive, or its top-level shapefiles in archive order.
+    With multiple entries and no top-level shapefile, let the core choose the main dataset
+    and its sidecars from the whole archive.
     """
     if member is None:
         try:
