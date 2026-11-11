@@ -909,7 +909,7 @@ pub fn export_schema_with_dims(
     let layers = layers
         .iter()
         .enumerate()
-        .map(|(i, l)| {
+        .map(|(layer_index, l)| {
             let fields = (0..l.schema.len())
                 .map(|i| {
                     let f = &l.schema.fields()[i];
@@ -928,11 +928,16 @@ pub fn export_schema_with_dims(
                     }
                 })
                 .collect();
-            let has_geometry =
-                l.geom_type.is_some() || l.features.iter().any(|f| f.geometry.is_some()) || !SpatialRef::from_layer(l).is_unknown();
+            let declared = declared_dims.get(layer_index).copied().flatten();
+            // A declared Z or M is evidence of a geometry field, even with no features, no type and no CRS.
+            let declares_geometry = matches!(declared, Some((z, m)) if z || m);
+            let has_geometry = l.geom_type.is_some()
+                || declares_geometry
+                || l.features.iter().any(|f| f.geometry.is_some())
+                || !SpatialRef::from_layer(l).is_unknown();
             let geometry_fields = if has_geometry {
                 let geom_type = l.geom_type.or_else(|| crate::drivers::vector::uniform_type(l));
-                let (z, m) = match declared_dims.get(i).copied().flatten() {
+                let (z, m) = match declared {
                     Some(dims) => dims,
                     None => l.features.iter().filter_map(|f| f.geometry.as_ref()).take(1000).fold((false, false), |(z, m), g| {
                         let (gz, gm) = crate::vector::geometry_dims(g);

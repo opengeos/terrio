@@ -1016,10 +1016,15 @@ mod tests {
 
     /// A point file with the declared dimensions and no features, so no geometry shows them.
     fn empty_dimension_fixture(has_z: bool, has_m: bool) -> Vec<u8> {
+        empty_typed_dimension_fixture(FgbType::Point, has_z, has_m)
+    }
+
+    /// An empty layer of `geometry_type` with no CRS, declaring Z and M as given.
+    fn empty_typed_dimension_fixture(geometry_type: FgbType, has_z: bool, has_m: bool) -> Vec<u8> {
         let mut b = FlatBufferBuilder::new();
         let h = Header::create(
             &mut b,
-            &HeaderArgs { features_count: 0, index_node_size: 0, has_z, has_m, geometry_type: FgbType::Point, ..Default::default() },
+            &HeaderArgs { features_count: 0, index_node_size: 0, has_z, has_m, geometry_type, ..Default::default() },
         );
         b.finish_size_prefixed(h, None);
         let mut bytes = MAGIC.to_vec();
@@ -1037,6 +1042,16 @@ mod tests {
     fn declared_dimensions_show_without_features() {
         assert_eq!(exported_geometry_type(&empty_dimension_fixture(true, false)), "PointZ");
         assert_eq!(exported_geometry_type(&empty_dimension_fixture(false, false)), "Point");
+    }
+
+    #[test]
+    fn declared_z_gives_a_geometry_field_for_an_unknown_type_without_crs() {
+        // No geometry type, no features and no CRS: only the declared Z says there is a geometry.
+        let bytes = empty_typed_dimension_fixture(FgbType::Unknown, true, false);
+        assert_eq!(exported_geometry_type(&bytes), "GeometryZ");
+        let undeclared = empty_typed_dimension_fixture(FgbType::Unknown, false, false);
+        let schema = crate::ops::vector_schema::export_schema_bytes(undeclared, "fixture.fgb", None).unwrap();
+        assert!(schema.layers[0].geometry_fields.is_empty());
     }
 
     #[test]
