@@ -2190,6 +2190,20 @@ test("JPEG 2000 quality and reversible options reach the WASM encoder", { skip: 
   assert.throws(() => image.toBytes("bad.jp2", { creationOptions: { QUALITY: "nan" } }), /QUALITY/);
 });
 
+test("WebP shared lossy encoder preserves TIFF alpha at different qualities", () => {
+  const n = 32 * 32;
+  const rgba = new Uint8Array(4 * n).map((_, i) => (i * 31 + Math.floor(i / 32)) % 256);
+  const image = terrio.rasterFromArray(rgba, 32, 32, [0, 1, 0, 32, 0, -1]);
+  const low = image.toBytes("low.tif", { compress: "WEBP", creationOptions: { QUALITY: "10" } });
+  const high = image.toBytes("high.tif", { compress: "WEBP", creationOptions: { QUALITY: "90" } });
+  assert.notDeepEqual(low, high);
+  for (const bytes of [low, high]) {
+    const decoded = terrio.open(bytes, "tile.tif");
+    assert.deepEqual([...decoded.readBand(4)], [...rgba.slice(3 * n)]);
+    assert.notDeepEqual([...decoded.readBand(1)], [...rgba.slice(0, n)]);
+  }
+});
+
 test("GDAL 3.13 terrain and native WebP creation options", () => {
   const values = new Float32Array([942.315, 946.702, 951.43, 945.132, 943.95, 959.37, 948.15, 954.318, 960.01]);
   const dem = terrio.rasterFromArray(values, 3, 3, [500000, 3.5, 0, 4100000, 0, -3.5], "EPSG:32610");

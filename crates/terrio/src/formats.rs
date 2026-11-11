@@ -60,7 +60,7 @@ pub enum RasterDriver {
     PNG,
     /// JPEG with a world file.
     JPEG,
-    /// WebP with a world file, written lossless (see `drivers::webp`).
+    /// WebP with a world file, written lossless or lossy (see `drivers::webp`).
     WEBP,
     /// XYZ ASCII grid.
     XYZ,
@@ -261,7 +261,7 @@ impl RasterDriver {
             Self::JP2 => ("JP2", "JPEG 2000", &["jp2", "j2k"], true, true),
             Self::PNG => ("PNG", "PNG with World File", &["png"], true, true),
             Self::JPEG => ("JPEG", "JPEG with World File", &["jpg", "jpeg"], true, true),
-            Self::WEBP => ("WEBP", "WebP with World File (written lossless)", &["webp"], true, true),
+            Self::WEBP => ("WEBP", "WebP with World File", &["webp"], true, true),
             Self::XYZ => ("XYZ", "XYZ ASCII Grid", &["xyz"], true, true),
             Self::Zarr => ("Zarr", "Zarr v2/v3", &["zarr"], true, true),
             Self::DTED => ("DTED", "DTED Elevation", &["dt0", "dt1", "dt2"], true, true),
