@@ -992,10 +992,11 @@ pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
     // A remote FlatGeobuf, or a zip whose member is one, is resolved once and opened, and its header
     // read, from that local copy: nothing is downloaded or extracted twice. Refused by name first.
     // A local archive's member takes the archived route below, not this one: `is_local` is false for it.
-    let remote = !location.is_local()
-        && crate::vfs::zip_member(&location).is_none()
-        && crate::formats::VectorDriver::for_extension(&location.file_name()) == Some(flatgeobuf);
-    let archived = crate::vfs::zip_member(&location).is_some_and(|m| crate::formats::VectorDriver::for_extension(&m) == Some(flatgeobuf));
+    // The archive's member is read once: for a local zip, that reads its listing.
+    let member = crate::vfs::zip_member(&location);
+    let remote =
+        !location.is_local() && member.is_none() && crate::formats::VectorDriver::for_extension(&location.file_name()) == Some(flatgeobuf);
+    let archived = member.is_some_and(|m| crate::formats::VectorDriver::for_extension(&m) == Some(flatgeobuf));
     if remote || archived {
         // The caller's asset read policy judges the path before any download. The downloaded copy is
         // not an asset of that policy, so the scope ends before the copy is opened, as on the general route.
