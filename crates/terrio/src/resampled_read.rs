@@ -212,7 +212,7 @@ impl LazyRaster {
     /// ```
     pub fn read_resampled(&mut self, options: &ResampledReadOptions) -> Result<RasterDataset> {
         let _scope = self.enter_asset_read()?;
-        let read = self.check_resampled(options)?;
+        let read = self.check_resampled(options, true)?;
         let kinds = self.mask_kinds(&read.bands);
         let data = self.resample_bands(&read, &kinds)?;
         self.resampled_dataset(&read, data)
@@ -237,8 +237,9 @@ impl LazyRaster {
     /// As [`LazyRaster::read_resampled`].
     pub fn read_resampled_masks(&mut self, options: &ResampledReadOptions) -> Result<Vec<u8>> {
         let _scope = self.enter_asset_read()?;
-        let read = self.check_resampled(options)?;
+        let read = self.check_resampled(options, false)?;
         let kinds = self.read_mask_kinds(&read);
+        self.check_resampled_mask_buffers(&read, &kinds, false)?;
         // A nodata mask band reads its band band by band, as a read of that band alone does.
         let mut nodata = Vec::with_capacity(read.bands.len());
         for (k, &b) in read.bands.iter().enumerate() {
@@ -259,8 +260,9 @@ impl LazyRaster {
     /// As [`LazyRaster::read_resampled`].
     pub fn read_resampled_with_masks(&mut self, options: &ResampledReadOptions) -> Result<(RasterDataset, Vec<u8>)> {
         let _scope = self.enter_asset_read()?;
-        let read = self.check_resampled(options)?;
+        let read = self.check_resampled(options, false)?;
         let kinds = self.read_mask_kinds(&read);
+        self.check_resampled_mask_buffers(&read, &kinds, true)?;
         let data = self.resample_bands(&read, &kinds)?;
         let n = read.buf.0 * read.buf.1;
         // GDAL reads bands with a nodata mask band by band, as the read did.
@@ -273,7 +275,7 @@ impl LazyRaster {
     /// resampled together.
     pub(crate) fn read_resampled_by_band(&mut self, options: &ResampledReadOptions) -> Result<RasterDataset> {
         let _scope = self.enter_asset_read()?;
-        let read = self.check_resampled(options)?;
+        let read = self.check_resampled(options, true)?;
         let kinds = self.mask_kinds(&read.bands);
         let n = read.buf.0 * read.buf.1;
         let mut data: Option<RasterData> = None;
@@ -292,7 +294,7 @@ impl LazyRaster {
     }
 
     /// Checks a read and resolves its bands and windows.
-    fn check_resampled(&self, o: &ResampledReadOptions) -> Result<Read> {
+    fn check_resampled(&self, o: &ResampledReadOptions, pixels: bool) -> Result<Read> {
         let bands = read_bands(&o.bands, self.band_count())?;
         let (bw, bh) = o.size;
         if bw == 0 || bh == 0 {
@@ -302,13 +304,12 @@ impl LazyRaster {
         // one the process cannot hold: allocated beyond the usable memory, it would kill the
         // process as its pages are written (a translation that does not stream reads its whole
         // output so).
-        let what = "a resampled read";
-        let output_type = crate::ops::vrt::common_type(bands.iter().map(|&b| self.band_data_type(b)));
-        let sample_bytes = output_type.size_bytes() * bands.len();
-        let bytes = fallible::len(&[sample_bytes.max(1), bw, bh], what)?;
-        fallible::check_usable(Some(bytes), || format!("{what} of {bw} x {bh} pixels in {} band(s) is too large to allocate", bands.len()))
-            .map_err(Error::ResourceLimit)?;
-        fallible::reserve(&mut Vec::<u8>::new(), bytes, what)?;
+        if pixels {
+            let what = "a resampled read";
+            let output_type = crate::ops::vrt::common_type(bands.iter().map(|&b| self.band_data_type(b)));
+            let sample_bytes = fallible::len(&[output_type.size_bytes(), bands.len()], what)?;
+            Self::check_resampled_buffer(o.size, bands.len(), sample_bytes, what)?;
+        }
         match o.resampling {
             Resampling::Nearest
             | Resampling::Bilinear
@@ -346,6 +347,54 @@ impl LazyRaster {
         let full = Request { level: None, size: (w, h), window, fwindow };
         let fixed = fixed_level(o.overview, &self.overviews(), bw);
         Ok(Read { bands, full, buf: o.size, resampling: o.resampling, fixed })
+    }
+
+    /// The output masks and the buffers retained while producing them. All-valid masks
+    /// need no pixels. Nodata-only reads keep each requested nodata band's pixel buffer;
+    /// combined reads reuse their pixel output. Dataset and alpha masks are cached once.
+    fn check_resampled_mask_buffers(&self, read: &Read, kinds: &[MaskKind], pixels: bool) -> Result<()> {
+        let what = "a resampled mask read";
+        let mut sample_bytes = read.bands.len();
+        if pixels {
+            let dtype = crate::ops::vrt::common_type(read.bands.iter().map(|&b| self.band_data_type(b)));
+            sample_bytes = sample_bytes
+                .checked_add(fallible::len(&[dtype.size_bytes(), read.bands.len()], what)?)
+                .ok_or_else(|| fallible::out_of_memory(None, what))?;
+        }
+        let (mut nodata, mut dataset, mut alpha, mut alpha_working) = (false, 0usize, 0usize, 0usize);
+        for (&kind, &band) in kinds.iter().zip(&read.bands) {
+            match kind {
+                MaskKind::AllValid => {}
+                MaskKind::Nodata => {
+                    nodata = true;
+                    if !pixels {
+                        sample_bytes = sample_bytes
+                            .checked_add(self.band_data_type(band).size_bytes())
+                            .ok_or_else(|| fallible::out_of_memory(None, what))?;
+                    }
+                }
+                MaskKind::PerDataset => dataset = 1,
+                MaskKind::Alpha(band) => {
+                    alpha = 1;
+                    // Byte alpha returns its resampled buffer directly. A copied UInt16
+                    // alpha holds the source and its byte conversion together; a resized
+                    // UInt16 alpha is rescaled to bytes before resampling, then copied.
+                    alpha_working = if self.band_data_type(band) == DataType::U8 {
+                        1
+                    } else if read.full.is_copy(read.buf) {
+                        3
+                    } else {
+                        2
+                    };
+                }
+            }
+        }
+        // The per-band nodata mask is temporary; previously produced alpha/dataset masks
+        // stay cached while it is appended. Alpha conversion and nodata conversion do not
+        // run simultaneously, so use their peak rather than summing those temporaries.
+        let working = dataset + alpha_working.max(alpha + usize::from(nodata));
+        sample_bytes = sample_bytes.checked_add(working).ok_or_else(|| fallible::out_of_memory(None, what))?;
+        Self::check_resampled_buffer(read.buf, read.bands.len(), sample_bytes, what)
     }
 
     /// GDAL's mask band of each band (see [`MaskKind`]).
@@ -648,6 +697,15 @@ impl LazyRaster {
                 })
             }
         }
+    }
+
+    /// Refuses an output/working set before its first buffer is allocated.
+    fn check_resampled_buffer((width, height): (usize, usize), bands: usize, sample_bytes: usize, what: &str) -> Result<()> {
+        let bytes = fallible::len(&[sample_bytes.max(1), width, height], what)?;
+        fallible::check_usable(Some(bytes), || format!("{what} of {width} x {height} pixels in {bands} band(s) is too large to allocate"))
+            .map_err(Error::ResourceLimit)?;
+        fallible::reserve(&mut Vec::<u8>::new(), bytes, what)?;
+        Ok(())
     }
 
     /// The geometry of `RasterIOResampled` for a request of pixels.
