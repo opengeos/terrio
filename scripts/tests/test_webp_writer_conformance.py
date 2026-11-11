@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 # SPDX-License-Identifier: MIT
-"""A partial pytest run must never certify the WebP writer's complete conformance."""
+"""A partial pytest run must never certify raster writers' complete conformance."""
 
 import sys
 from pathlib import Path
@@ -12,8 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import conformance  # noqa: E402
 
 
+@pytest.mark.parametrize("writer", ["webp", "jp2"])
 @pytest.mark.parametrize("outcome", ["complete", "partial", "skip", "failure", "missing-report"])
-def test_webp_conformance_requires_every_collected_case(monkeypatch, outcome):
+def test_writer_conformance_requires_every_collected_case(monkeypatch, outcome, writer):
     """Check report completeness independently of pytest's successful exit status."""
     monkeypatch.setattr(conformance, "missing_modules", lambda *args: [])
 
@@ -22,7 +23,7 @@ def test_webp_conformance_requires_every_collected_case(monkeypatch, outcome):
         if "-c" in args:
             return 0, "3.13.3", ""
         if "--collect-only" in args:
-            return 0, "python/tests/test_webp_writer.py::test_lossless\npython/tests/test_webp_writer.py::test_lossy\n\n2 tests collected", ""
+            return 0, f"python/tests/test_{writer}_writer.py::test_lossless\npython/tests/test_{writer}_writer.py::test_lossy\n\n2 tests collected", ""
         reports = [arg.removeprefix("--junitxml=") for arg in args if arg.startswith("--junitxml=")]
         if reports and outcome != "missing-report":
             element = {"skip": "<skipped/>", "failure": "<failure/>"}.get(outcome, "")
@@ -33,12 +34,13 @@ def test_webp_conformance_requires_every_collected_case(monkeypatch, outcome):
         return 0, "1 passed" if outcome == "partial" else "2 passed", ""
 
     monkeypatch.setattr(conformance, "run", run)
-    suite = conformance.suite_webp_writer(SimpleNamespace(data="data"))
+    suite = getattr(conformance, f"suite_{writer}_writer")(SimpleNamespace(data="data"))
     assert len(suite.cases) == 1
     assert suite.cases[0].status == (conformance.IDENTICAL if outcome == "complete" else conformance.DIFFERS)
 
 
-def test_webp_conformance_resolves_data_and_clears_selection(monkeypatch, tmp_path):
+@pytest.mark.parametrize("writer", ["webp", "jp2"])
+def test_writer_conformance_resolves_data_and_clears_selection(monkeypatch, tmp_path, writer):
     """A caller's cwd and PYTEST_ADDOPTS must not change which inputs/tests run."""
     monkeypatch.setattr(conformance, "missing_modules", lambda *args: [])
     monkeypatch.chdir(tmp_path)
@@ -53,9 +55,20 @@ def test_webp_conformance_resolves_data_and_clears_selection(monkeypatch, tmp_pa
         return 1, "", "collection failed"
 
     monkeypatch.setattr(conformance, "run", run)
-    conformance.suite_webp_writer(SimpleNamespace(data=Path("relative-data")))
+    getattr(conformance, f"suite_{writer}_writer")(SimpleNamespace(data=Path("relative-data")))
     assert pytest_runs
     for args, env in pytest_runs:
         assert env["TERRIO_TEST_DATA"] == str(tmp_path / "relative-data")
         assert env["PYTEST_ADDOPTS"] == ""
         assert "addopts=" in args
+
+
+@pytest.mark.parametrize("writer", ["webp", "jp2"])
+def test_missing_writer_prerequisites_are_skipped(monkeypatch, writer):
+    """Unavailable reference modules are not decoding differences."""
+    monkeypatch.setattr(conformance, "missing_modules", lambda *args: ["rasterio"])
+    monkeypatch.setattr(conformance, "run", lambda *args, **kwargs: (1, "", "module unavailable"))
+    suite = getattr(conformance, f"suite_{writer}_writer")(SimpleNamespace(data="data"))
+    assert "rasterio" in suite.skipped
+    assert not suite.cases
+    assert not suite.error

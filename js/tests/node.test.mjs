@@ -2209,6 +2209,25 @@ test("complex TIFF memory copies retain exact Int32 components and sample tags",
   }
 });
 
+test("JPEG 2000 quality and reversible options reach the WASM encoder", { skip: needs("jp2") }, () => {
+  const n = 64 * 64;
+  const values = new Uint8Array(3 * n).map((_, i) => (i * 37 + Math.floor(i / 64)) % 251);
+  const image = terrio.rasterFromArray(values, 64, 64, [0, 1, 0, 64, 0, -1]);
+  const low = image.toBytes("low.jp2", { creationOptions: { QUALITY: "10", REVERSIBLE: "NO" } });
+  const high = image.toBytes("high.jp2", { creationOptions: { quality: "50" } });
+  assert.notDeepEqual(low, high);
+  assert.notDeepEqual([...terrio.open(low, "low.jp2").readBand(1)], [...values.slice(0, n)]);
+  for (const options of [{}, { QUALITY: "100" }, { QUALITY: "10,100", REVERSIBLE: "YES" }]) {
+    const exact = terrio.open(image.toBytes("exact.jp2", { creationOptions: options }), "exact.jp2");
+    for (let b = 1; b <= 3; b++) assert.deepEqual([...exact.readBand(b)], [...values.slice((b - 1) * n, b * n)]);
+  }
+  for (const quality of ["nan", "100.000001", "1e-36"]) {
+    assert.throws(() => image.toBytes("bad.jp2", { creationOptions: { QUALITY: quality } }), /QUALITY/);
+  }
+  const almost = terrio.open(image.toBytes("almost.jp2", { creationOptions: { QUALITY: "99.999999" } }), "almost.jp2");
+  assert.notDeepEqual([...almost.readBand(1)], [...values.slice(0, n)]);
+});
+
 test("WebP shared lossy encoder preserves TIFF alpha at different qualities", () => {
   const n = 32 * 32;
   const rgba = new Uint8Array(4 * n).map((_, i) => (i * 31 + Math.floor(i / 32)) % 256);

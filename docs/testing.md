@@ -166,6 +166,15 @@ types and georeferencing against GDAL (locally validated with 3.13.3). Its real-
 case derives complex integer components from Landsat pixels and keeps the crop's CRS
 and transform. It checks samples and metadata, without claiming compressed byte identity.
 
+JPEG 2000 creation options are checked with
+`python scripts/conformance.py DATA --only jp2-writer --strict`, using the real
+`landsat7.tif` fixture, current Python bindings, pytest and rasterio. Path and memory
+writes check default lossless pixels, lossy quality/rate selection, reversible and
+irreversible filters, progressive quality layers, invalid options, georeferencing,
+types and independent GDAL decoding (reference: GDAL 3.13.3). Encoder byte identity
+with GDAL is not claimed. The corresponding JavaScript/WASM regression is in
+`js/tests/node.test.mjs`.
+
 Standalone WebP creation options are checked with
 `python scripts/conformance.py DATA --only webp-writer --strict`, using the
 `landsat7.tif` downloaded by `scripts/fetch_test_data.sh`. Current Python bindings,
