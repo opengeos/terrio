@@ -2190,6 +2190,31 @@ test("declared raster budgets apply to WASM byte opens and restore with their sc
   assert.deepEqual([...terrio.open(grid, "grid.asc").readBand(1)], [1, 2, 3, 4]);
 });
 
+test("ASCII byte opens enforce intrinsic allocation bounds with optional limits unset", () => {
+  for (const options of [{ TERRIO_MAX_DECLARED_BYTES: null, TERRIO_MAX_BANDS: null },
+    { TERRIO_MAX_DECLARED_BYTES: null, TERRIO_MAX_BANDS: "1" }]) {
+    terrio.pushConfig(options);
+    try {
+      for (const cols of [1000000000, 400000000]) {
+        const bytes = new TextEncoder().encode(`ncols ${cols}\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n0\n`);
+        assert.throws(() => terrio.open(bytes, "oversized.asc"), /too large to allocate/);
+      }
+    } finally { terrio.popConfig(); }
+  }
+});
+
+test("ASCII byte preflight preserves unknown null lines and later dimensions", () => {
+  for (const token of ["nan", "inf", "*"]) {
+    const header = `ncols 2\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n${token} ${"ignored".repeat(12000)}\nncols 3\n`;
+    terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: "23" });
+    try { assert.throws(() => terrio.open(new TextEncoder().encode(`${header}invalid pixels\n`), "grid.asc"), /TERRIO_MAX_DECLARED_BYTES/); }
+    finally { terrio.popConfig(); }
+    terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: "24" });
+    try { assert.deepEqual([...terrio.open(new TextEncoder().encode(`${header}1 2 3\n`), "grid.asc").readBand(1)], [1, 2, 3]); }
+    finally { terrio.popConfig(); }
+  }
+});
+
 test("ASCII byte limits precede invalid UTF-8 pixels", () => {
   const header = new TextEncoder().encode("ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n3 ");
   const bytes = new Uint8Array([...header, 0xff]);

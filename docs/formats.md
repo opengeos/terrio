@@ -103,7 +103,10 @@ A GeoTIFF read whole (`terrio::open_raster`, a lazy raster's `read`) or by windo
 with a resource error (Python's `ResourceLimitError`) before its buffer is allocated when the
 buffer is more than the memory the process can use (`terrio::usable_memory`: the physical memory,
 or less under the memory limit of the process's cgroup or its address-space or resident-set
-limit); the message gives both sizes. A window that fits is read. The GeoTIFF and COG writers that
+limit); the message gives both sizes. This usable-memory estimate currently reads Linux
+`/proc` files. On macOS, Windows and other systems without those files, there is no
+physical-memory refusal; allocation arithmetic, address-space checks and explicitly
+configured limits still apply. A window that fits is read. The GeoTIFF and COG writers that
 `translate`, `convert` and other operations stream their output to keep a row of their blocks of
 every band until the row is complete, and hold it twice while a strip is appended to it: a raster
 whose row cannot fit is refused when the writer is created, before its rows are gathered. A COG of
@@ -132,7 +135,11 @@ The sources a VRT or a catalog opens are rasters opened too: each is checked whe
 VRT's when a read first needs it. Readers that read a header first refuse a raster before decoding
 any of its pixels; the Imagine reader reads its whole file, without decoding it, before its header.
 Esri ASCII and GRASS ASCII grids, PCRaster, DTED and Esri binary grids preflight their headers
-before allocating or parsing pixels. XYZ grids infer their size and sample type from coordinate
+before allocating or parsing pixels. ASCII allocation bounds also apply when both
+options are unset. The fallback Esri reader uses Float64 samples; the GRASS reader
+uses a Float64 working buffer even when its output type is narrower. ASCII header
+scans retain bounded prefixes and stream longer fields; they may read arbitrarily
+long padding or unknown header lines to preserve the decoder's grammar. XYZ grids infer their size and sample type from coordinate
 records and check before allocating the dense grid. Operations
 that open a raster refuse it the same way, `info` included. These bounds and the checks above are
 independent of `TERRIO_TIFF_MAX_CHUNK_BYTES`, which bounds each decoded chunk, and of

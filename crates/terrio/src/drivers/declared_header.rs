@@ -24,7 +24,10 @@ pub(crate) fn check_fallback(path: &Path, driver: RasterDriver) -> Result<()> {
 }
 
 fn check_type(path: &Path, driver: RasterDriver, sample_type: Option<DataType>) -> Result<()> {
-    if crate::config::get("TERRIO_MAX_DECLARED_BYTES").is_none() && crate::config::get("TERRIO_MAX_BANDS").is_none() {
+    if !matches!(driver, RasterDriver::AAIGrid | RasterDriver::GRASSASCIIGrid)
+        && crate::config::get("TERRIO_MAX_DECLARED_BYTES").is_none()
+        && crate::config::get("TERRIO_MAX_BANDS").is_none()
+    {
         return Ok(());
     }
     // Validate the options even if this header cannot supply a shape.
@@ -36,7 +39,7 @@ fn check_type(path: &Path, driver: RasterDriver, sample_type: Option<DataType>) 
     };
     let Ok(file) = std::fs::File::open(header_path) else { return Ok(()) };
     let dimensions = if matches!(driver, RasterDriver::AAIGrid | RasterDriver::GRASSASCIIGrid) {
-        let lines = header_lines(BufReader::new(file), driver);
+        let lines = header_lines(BufReader::new(file), driver, sample_type.is_some());
         if sample_type.is_some() { fallback_ascii_shape(lines) } else { ascii_shape(lines, driver) }
     } else {
         let mut bytes = Vec::new();
@@ -47,16 +50,18 @@ fn check_type(path: &Path, driver: RasterDriver, sample_type: Option<DataType>) 
     };
     if let Some((cols, rows, data_type)) = dimensions {
         crate::declared::check(cols, rows, 1, sample_type.unwrap_or(data_type), false)?;
+        if matches!(driver, RasterDriver::AAIGrid | RasterDriver::GRASSASCIIGrid) {
+            // The GRASS fallback builds a Float64 working vector even for integer output.
+            let working_type = if driver == RasterDriver::GRASSASCIIGrid { DataType::F64 } else { sample_type.unwrap_or(data_type) };
+            check_ascii_allocation(cols, rows, working_type)?;
+        }
     }
     Ok(())
 }
 
-/// Match the fallback ASCII format detection without its unbounded line buffers. Only active
-/// under declaration limits; other names and PCRaster signatures keep the original detector.
+/// Match the fallback's first 32 raw lines with bounded memory, including unknown fields.
+/// Detection must not reuse the declaration parser's canonicalized numeric/type fields.
 pub(crate) fn detect_ascii(path: &str) -> Result<Option<wbraster::RasterFormat>> {
-    if crate::config::get("TERRIO_MAX_DECLARED_BYTES").is_none() && crate::config::get("TERRIO_MAX_BANDS").is_none() {
-        return Ok(None);
-    }
     let p = Path::new(path);
     if !p.is_file() || !matches!(crate::formats::extension(path).as_deref(), Some("asc" | "txt")) {
         return Ok(None);
@@ -68,32 +73,103 @@ pub(crate) fn detect_ascii(path: &str) -> Result<Option<wbraster::RasterFormat>>
         return Ok(Some(wbraster::RasterFormat::Pcraster));
     }
     file.rewind()?;
-    let mut esri = false;
+    detect_ascii_reader(BufReader::new(file)).map(Some)
+}
+
+fn detect_ascii_reader(mut reader: impl BufRead) -> Result<wbraster::RasterFormat> {
     let mut grass = false;
-    for line in header_lines(BufReader::new(file), RasterDriver::GRASSASCIIGrid).take(32) {
-        if let Some((key, _)) = wbraster::io_utils::parse_key_value(&line) {
-            esri |= super::aaigrid::HEADER_KEYS.contains(&key.as_str());
+    for _ in 0..32 {
+        let Some(line) = detection_line(&mut reader)? else { break };
+        if let Some((key, _)) = wbraster::io_utils::parse_key_value(&line)
+            && matches!(
+                key.as_str(),
+                "ncols" | "nrows" | "xllcorner" | "yllcorner" | "xllcenter" | "yllcenter" | "cellsize" | "nodata_value"
+            )
+        {
+            // An Esri key decides the result regardless of the following lines.
+            return Ok(wbraster::RasterFormat::EsriAscii);
         }
         if let Some((key, _)) = line.split_once(':') {
             grass |=
                 matches!(key.trim().to_ascii_lowercase().as_str(), "north" | "south" | "east" | "west" | "rows" | "cols" | "null" | "type");
         }
     }
-    Ok(Some(if grass && !esri { wbraster::RasterFormat::GrassAscii } else { wbraster::RasterFormat::EsriAscii }))
+    Ok(if grass { wbraster::RasterFormat::GrassAscii } else { wbraster::RasterFormat::EsriAscii })
+}
+
+/// Retain only a short significant prefix, compressing whitespace runs without changing
+/// whether they contain an ASCII key separator or the character preceding a hash comment.
+/// Consuming a long unknown line can require I/O, but never a line-sized allocation.
+fn detection_line(reader: &mut impl BufRead) -> std::io::Result<Option<String>> {
+    let mut line = String::new();
+    let (mut ascii_space, mut last_space) = (None, None);
+    let mut present = false;
+    while let Some(c) = read_char(reader)? {
+        present = true;
+        if c == '\n' {
+            break;
+        }
+        if line.len() >= 128 {
+            // The retained non-whitespace key prefix is already longer than every known key.
+            continue;
+        }
+        if c.is_whitespace() {
+            if !line.is_empty() {
+                if c.is_ascii_whitespace() {
+                    ascii_space = Some(c);
+                }
+                last_space = Some(c);
+            }
+        } else {
+            if let Some(space) = ascii_space.take() {
+                line.push(space);
+            }
+            if let Some(space) = last_space.take() {
+                line.push(space);
+            }
+            line.push(c);
+        }
+    }
+    Ok(present.then_some(line))
+}
+
+/// Read one UTF-8 character without buffering an arbitrarily padded line.
+fn read_char(reader: &mut impl BufRead) -> std::io::Result<Option<char>> {
+    let Some(&first) = reader.fill_buf()?.first() else { return Ok(None) };
+    reader.consume(1);
+    if first.is_ascii() {
+        return Ok(Some(char::from(first)));
+    }
+    let width = match first {
+        0xc2..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf4 => 4,
+        _ => return Err(std::io::ErrorKind::InvalidData.into()),
+    };
+    let mut bytes = [0; 4];
+    bytes[0] = first;
+    reader.read_exact(&mut bytes[1..width])?;
+    let text = std::str::from_utf8(&bytes[..width]).map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+    Ok(text.chars().next())
+}
+
+/// Intrinsic allocation bounds apply even when configurable declaration limits are unset.
+pub(crate) fn check_ascii_allocation(cols: usize, rows: usize, data_type: DataType) -> Result<()> {
+    let bytes = cols.checked_mul(rows).and_then(|n| n.checked_mul(data_type.size_bytes())).filter(|&n| n <= isize::MAX as usize);
+    crate::dataset::fallible::check_usable(bytes, || format!("an ASCII raster of {cols} x {rows} cells is too large to allocate"))
+        .map(|_| ())
+        .map_err(crate::Error::ResourceLimit)
 }
 
 /// The in-memory ASCII codec reads Float64 samples regardless of the values in its document.
 /// Keep that sample type while checking its header before the codec parses any pixel tokens.
 pub(crate) fn check_ascii_bytes(bytes: &[u8]) -> Result<()> {
-    if crate::config::get("TERRIO_MAX_DECLARED_BYTES").is_none() && crate::config::get("TERRIO_MAX_BANDS").is_none() {
-        return Ok(());
-    }
     crate::declared::check_bytes(0, 0, 0, 0, false)?;
-    // Check the bounded header independently of the pixel body's encoding. Invalid UTF-8
-    // later in the file must not hide an oversized declaration from the preflight.
-    let lines = header_lines(std::io::Cursor::new(bytes), RasterDriver::AAIGrid);
+    // Invalid UTF-8 later in the pixel body cannot hide an oversized valid header.
+    let lines = header_lines(std::io::Cursor::new(bytes), RasterDriver::AAIGrid, true);
     if let Some((cols, rows, data_type)) = fallback_ascii_shape(lines) {
         crate::declared::check(cols, rows, 1, data_type, false)?;
+        check_ascii_allocation(cols, rows, data_type)?;
     }
     Ok(())
 }
@@ -117,115 +193,157 @@ fn fallback_ascii_shape<S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Option
     Some((cols?, rows?, DataType::F64))
 }
 
-/// Keep the metadata prefix of a line, not a possibly enormous unwrapped pixel row.
-/// Long metadata lines are consumed without retaining their tails. GRASS dimensions and type
-/// are summarized while streaming so even long numeric/type fields keep their actual meaning.
-fn header_lines(mut reader: impl BufRead, driver: RasterDriver) -> impl Iterator<Item = String> {
+/// A streaming unsigned field, with the fallback Esri reader's inline comment rules.
+#[derive(Default)]
+struct AsciiNumber {
+    number: usize,
+    digits: bool,
+    plus: bool,
+    ended: bool,
+    invalid: bool,
+    comment: bool,
+    slash: bool,
+    previous: Option<char>,
+}
+
+impl AsciiNumber {
+    fn feed(&mut self, c: char, native: bool, esri: bool) {
+        if self.comment || (native && self.ended) {
+            return;
+        }
+        if esri {
+            if c == '/' && self.slash {
+                self.comment = true;
+                return;
+            }
+            if self.slash {
+                self.invalid = true;
+            }
+            self.slash = c == '/';
+            if self.slash {
+                return;
+            }
+            if c == '#' && self.previous.is_none_or(|v| matches!(v, ' ' | '\t')) {
+                self.comment = true;
+                return;
+            }
+            self.previous = Some(c);
+        }
+        if c.is_whitespace() {
+            self.ended |= self.digits || self.plus;
+        } else if esri && c == '=' && !self.digits && !self.plus && !self.ended {
+            // Separators can extend past the retained prefix.
+        } else if c == '+' && !self.plus && !self.digits && !self.ended {
+            self.plus = true;
+        } else if c.is_ascii_digit() && !self.ended {
+            self.digits = true;
+            match self.number.checked_mul(10).and_then(|n| n.checked_add(c as usize - '0' as usize)) {
+                Some(n) => self.number = n,
+                None => self.invalid = true,
+            }
+        } else {
+            self.invalid = true;
+        }
+    }
+
+    fn value(&self) -> Option<usize> {
+        (self.digits && !self.invalid && (!self.slash || self.comment)).then_some(self.number)
+    }
+}
+
+/// Keep a bounded metadata prefix and stream oversized numeric/type fields. Native Esri,
+/// fallback Esri and GRASS have different header boundaries; preserve each reader's rule.
+fn header_lines(mut reader: impl BufRead, driver: RasterDriver, fallback: bool) -> impl Iterator<Item = String> {
     let mut data = false;
     std::iter::from_fn(move || {
         if data {
             return None;
         }
-        const PREFIX: u64 = 64 << 10;
-        // Leading header padding must not consume the bounded prefix before its key is seen.
-        loop {
-            let part = reader.fill_buf().ok()?;
-            if part.is_empty() {
-                return None;
+        const PREFIX: usize = 64 << 10;
+        let first = loop {
+            let c = read_char(&mut reader).ok()??;
+            if c == '\n' || !c.is_whitespace() {
+                break c;
             }
-            let n = part.iter().take_while(|&&b| matches!(b, b' ' | b'\t' | b'\r')).count();
-            let more = n == part.len();
-            reader.consume(n);
-            if !more {
-                break;
-            }
+        };
+        let mut line = String::new();
+        line.push(first);
+        while line.len() < PREFIX && !line.ends_with('\n') {
+            let Some(c) = read_char(&mut reader).ok()? else { break };
+            line.push(c);
         }
-        let mut bytes = Vec::new();
-        reader.by_ref().take(PREFIX).read_until(b'\n', &mut bytes).ok()?;
-        if bytes.is_empty() {
-            return None;
-        }
-        let mut line = String::from_utf8_lossy(&bytes).into_owned();
-        if bytes.len() < PREFIX as usize || bytes.ends_with(b"\n") {
+        if line.len() < PREFIX || line.ends_with('\n') {
             return Some(line);
         }
+        let grass = driver == RasterDriver::GRASSASCIIGrid;
         let trimmed = line.trim_start();
-        // Numeric cells (or the standard ASCII null tokens) start the data, not another header.
-        if trimmed.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '+' || c == '*')
-            || trimmed.split_ascii_whitespace().next().is_some_and(|v| v.eq_ignore_ascii_case("nan") || v.eq_ignore_ascii_case("inf"))
-        {
+        let native = !grass && !fallback;
+        let numeric_data = trimmed.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '+');
+        let native_data =
+            !super::aaigrid::HEADER_KEYS.contains(&trimmed.split_whitespace().next().unwrap_or("").to_ascii_lowercase().as_str());
+        if !grass && (if native { native_data } else { numeric_data }) {
             data = true;
             return Some(line);
         }
-        let esri_pair = || trimmed.split_once(|c: char| c == '=' || c.is_ascii_whitespace());
-        let pair = if driver == RasterDriver::AAIGrid { esri_pair() } else { trimmed.split_once(':').or_else(esri_pair) };
-        let (key, value) =
-            pair.map_or_else(|| (trimmed.split_ascii_whitespace().next().unwrap_or(""), ""), |(k, v)| (k.trim(), v.trim_start()));
+        let split = |c: char| if native { c.is_whitespace() } else { c == '=' || c.is_ascii_whitespace() };
+        let (key, value, mut awaiting_colon) = if grass {
+            if let Some((k, v)) = trimmed.split_once(':') {
+                (k.trim(), v, false)
+            } else {
+                let (k, v) = trimmed.split_once(char::is_whitespace).unwrap_or((trimmed, ""));
+                (k, v, true)
+            }
+        } else {
+            let (k, v) = trimmed.split_once(split).unwrap_or((trimmed, ""));
+            (k.trim(), v, false)
+        };
         let key = key.to_ascii_lowercase();
-        let first_only = driver == RasterDriver::AAIGrid || matches!(key.as_str(), "ncols" | "nrows" | "nodata_value");
-        let value = if first_only { value.trim_start_matches(|c: char| c == '=' || c.is_ascii_whitespace()) } else { value };
-        let mut colon_seen = trimmed.contains(':');
-        let mut awaiting_colon = !first_only && driver == RasterDriver::GRASSASCIIGrid && !colon_seen;
-        let numeric = matches!(key.as_str(), "cols" | "rows" | "ncols" | "nrows");
-        let typed = driver == RasterDriver::GRASSASCIIGrid && key == "type";
-        let (mut number, mut started, mut ended, mut invalid) = (0usize, false, false, false);
+        let numeric = if grass { matches!(key.as_str(), "cols" | "rows") } else { matches!(key.as_str(), "ncols" | "nrows") };
+        let typed = grass && key == "type";
+        let mut number = AsciiNumber::default();
+        let (mut colon_seen, mut key_valid) = (grass && !awaiting_colon, true);
         let (mut double, mut float) = (false, false);
         let mut tail = [0u8; 6];
-        let mut feed = |part: &[u8]| {
-            colon_seen |= part.contains(&b':');
-            if !numeric && !typed {
+        let mut feed = |c: char| {
+            colon_seen |= c == ':';
+            if awaiting_colon {
+                if c == ':' {
+                    awaiting_colon = false;
+                } else if !c.is_whitespace() {
+                    key_valid = false;
+                }
                 return;
             }
-            for &b in part {
-                if awaiting_colon {
-                    if b == b':' {
-                        awaiting_colon = false;
-                    }
-                    continue;
-                }
-                if numeric && !(first_only && ended) {
-                    if b.is_ascii_digit() && !ended {
-                        started = true;
-                        match number.checked_mul(10).and_then(|v| v.checked_add(usize::from(b - b'0'))) {
-                            Some(v) => number = v,
-                            None => invalid = true,
-                        }
-                    } else if b.is_ascii_whitespace() {
-                        ended |= started;
-                    } else if first_only && !started && b == b'=' {
-                        // Esri's key/value separator may extend beyond the retained prefix.
-                    } else if b != b'+' || started || ended {
-                        invalid = true;
-                    }
-                }
-                if typed {
-                    tail.rotate_left(1);
-                    tail[5] = b.to_ascii_lowercase();
-                    double |= &tail == b"double";
-                    float |= &tail[1..] == b"float";
-                }
+            if numeric {
+                number.feed(c, native, fallback);
+            }
+            if typed {
+                tail.rotate_left(1);
+                tail[5] = if c.is_ascii() { c.to_ascii_lowercase() as u8 } else { 0 };
+                double |= &tail == b"double";
+                float |= &tail[1..] == b"float";
             }
         };
-        feed(value.as_bytes());
-        loop {
-            let part = reader.fill_buf().ok()?;
-            if part.is_empty() {
-                break;
-            }
-            let newline = part.iter().position(|&b| b == b'\n');
-            let n = newline.map_or(part.len(), |at| at + 1);
-            feed(&part[..n]);
-            reader.consume(n);
-            if newline.is_some() {
+        for c in value.chars() {
+            feed(c);
+        }
+        while let Some(c) = read_char(&mut reader).ok()? {
+            feed(c);
+            if c == '\n' {
                 break;
             }
         }
+        if grass && (!colon_seen || !key_valid) {
+            return Some(if colon_seen { "ignored: header".to_string() } else { "pixel data".to_string() });
+        }
         if numeric {
-            line = if started && !invalid {
-                format!("{key}{} {number}", if first_only { "" } else { ":" })
+            // A comment-only fallback line has no pair, and must not erase an earlier key.
+            if fallback && !number.digits && !number.plus && !number.invalid && (!number.slash || number.comment) {
+                line = "ignored header".to_string();
             } else {
-                format!("{key}{} invalid", if first_only { "" } else { ":" })
-            };
+                let value = number.value().map_or_else(|| "invalid".to_string(), |n| n.to_string());
+                line = format!("{key}{} {value}", if grass { ":" } else { "" });
+            }
         } else if typed {
             line = format!(
                 "type: {}",
@@ -237,12 +355,10 @@ fn header_lines(mut reader: impl BufRead, driver: RasterDriver) -> impl Iterator
                     "int"
                 }
             );
-        } else if !first_only && colon_seen && !trimmed.contains(':') {
-            // An unknown, very long metadata key is still a header line, not pixel data.
+        } else if grass {
             line = "ignored: header".to_string();
-        } else if first_only && key == "nodata_value" && !value.contains(char::is_whitespace) {
-            // An unusually long nodata token is left to the native ASCII parser, which repeats
-            // the declaration check with its exact type before allocating any pixel buffer.
+        } else if native && key == "nodata_value" && !value.trim().contains(char::is_whitespace) {
+            // The native decoder repeats the exact type and allocation checks before pixels.
             line = "nodata_value null".to_string();
         }
         Some(line)
@@ -294,7 +410,7 @@ fn ascii_shape<S: AsRef<str>>(lines: impl Iterator<Item = S>, driver: RasterDriv
             continue;
         }
         let (key, value) = if driver == RasterDriver::AAIGrid {
-            let mut fields = line.split_ascii_whitespace();
+            let mut fields = line.split_whitespace();
             let key = fields.next()?;
             if !super::aaigrid::HEADER_KEYS.contains(&key.to_ascii_lowercase().as_str()) {
                 break;
@@ -309,17 +425,23 @@ fn ascii_shape<S: AsRef<str>>(lines: impl Iterator<Item = S>, driver: RasterDriv
             break;
         }
         match key.as_str() {
-            "cols" | "ncols" => {
+            "cols" if driver == RasterDriver::GRASSASCIIGrid => {
+                cols = Some(value.parse().ok()?);
+            }
+            "ncols" if driver == RasterDriver::AAIGrid => {
                 if driver != RasterDriver::AAIGrid || cols.is_none() {
                     cols = Some(value.parse().ok()?);
                 }
             }
-            "rows" | "nrows" => {
+            "rows" if driver == RasterDriver::GRASSASCIIGrid => {
+                rows = Some(value.parse().ok()?);
+            }
+            "nrows" if driver == RasterDriver::AAIGrid => {
                 if driver != RasterDriver::AAIGrid || rows.is_none() {
                     rows = Some(value.parse().ok()?);
                 }
             }
-            "type" => {
+            "type" if driver == RasterDriver::GRASSASCIIGrid => {
                 let value = value.to_ascii_lowercase();
                 data_type = if value.contains("double") {
                     DataType::F64
@@ -329,7 +451,7 @@ fn ascii_shape<S: AsRef<str>>(lines: impl Iterator<Item = S>, driver: RasterDriv
                     DataType::I32
                 };
             }
-            "nodata_value" if !nodata_seen => {
+            "nodata_value" if driver == RasterDriver::AAIGrid && !nodata_seen => {
                 nodata_seen = true;
                 if let Some(v) = super::common::parse_f64(value) {
                     data_type = super::aaigrid::nodata_type(value, v);
@@ -357,5 +479,112 @@ mod tests {
             check_ascii_bytes(&bytes).unwrap();
             assert!(wbraster::formats::esri_ascii::parse(std::io::Cursor::new(&bytes), "pixels.asc").is_err());
         });
+    }
+
+    #[test]
+    fn byte_headers_enforce_intrinsic_allocation_bounds_without_options() {
+        crate::config::push_scope([("TERRIO_MAX_DECLARED_BYTES".into(), None), ("TERRIO_MAX_BANDS".into(), None)].into());
+        let text = format!("ncols {}\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n0\n", usize::MAX);
+        let result = check_ascii_bytes(text.as_bytes());
+        crate::config::pop_scope();
+        assert!(matches!(result, Err(crate::Error::ResourceLimit(_))), "{result:?}");
+    }
+
+    #[test]
+    fn fallback_headers_keep_unknown_null_lines_and_inline_comments() {
+        for token in ["nan", "inf", "*"] {
+            let text =
+                format!("ncols 2\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n{token} {}\nncols 3\n1 2 3\n", "ignored".repeat(12000));
+            let reference = wbraster::formats::esri_ascii::parse(std::io::Cursor::new(text.as_bytes()), "grid.asc").unwrap();
+            assert_eq!((reference.cols, reference.rows), (3, 1));
+            crate::config::with_options(&[("TERRIO_MAX_DECLARED_BYTES", "23")], || {
+                assert!(matches!(check_ascii_bytes(text.as_bytes()), Err(crate::Error::ResourceLimit(_))), "{token}");
+            });
+        }
+        for suffix in ["", "# ignored", "// ignored"] {
+            let text = format!("ncols 3\nncols {}{suffix}\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3\n", " ".repeat(128 << 10));
+            let reference = wbraster::formats::esri_ascii::parse(std::io::Cursor::new(text.as_bytes()), "grid.asc").unwrap();
+            assert_eq!(reference.cols, 3);
+            crate::config::with_options(&[("TERRIO_MAX_DECLARED_BYTES", "23")], || {
+                assert!(matches!(check_ascii_bytes(text.as_bytes()), Err(crate::Error::ResourceLimit(_))), "{suffix}");
+            });
+        }
+        let text = format!(
+            "ncols {}{}3// trailing comment\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3\n",
+            "\u{2003}".repeat(40000),
+            "0".repeat(70000)
+        );
+        let reference = wbraster::formats::esri_ascii::parse(std::io::Cursor::new(text.as_bytes()), "grid.asc").unwrap();
+        assert_eq!((reference.cols, reference.rows), (3, 1));
+        crate::config::with_options(&[("TERRIO_MAX_DECLARED_BYTES", "23")], || {
+            assert!(matches!(check_ascii_bytes(text.as_bytes()), Err(crate::Error::ResourceLimit(_))));
+        });
+    }
+
+    #[test]
+    fn grass_shape_ignores_esri_only_dimension_keys() {
+        let shape = ascii_shape(["rows: 1", "cols: 3", "type: double", "ncols: 0"].into_iter(), RasterDriver::GRASSASCIIGrid);
+        assert_eq!(shape, Some((3, 1, DataType::F64)));
+    }
+
+    #[test]
+    fn bounded_detection_matches_the_fallback_on_long_unknown_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grid.txt");
+        let esri = "ncols 3\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3\n";
+        let grass = "north: 1\nsouth: 0\neast: 3\nwest: 0\nrows: 1\ncols: 3\ntype: double\n1 2 3\n";
+        let mut cases: Vec<String> = [
+            format!("rows {}\n", "0".repeat(128 << 10)),
+            format!("type {}float\n", " ".repeat(128 << 10)),
+            format!("rows {}: ignored\n", "0".repeat(128 << 10)),
+        ]
+        .into_iter()
+        .map(|prefix| format!("{prefix}{}{esri}", "unknown header\n".repeat(32)))
+        .collect();
+        cases.push(format!("ncols:{}\n{grass}", "0".repeat(128 << 10)));
+        cases.push("DSAA\n3 1\n0 3\n0 1\n1 3\n1 2 3\n".to_string());
+        cases.push("arbitrary non-grid text\n".to_string());
+        for text in cases {
+            std::fs::write(&path, text).unwrap();
+            let reference = wbraster::RasterFormat::detect(path.to_str().unwrap()).unwrap();
+            for limit in [None, Some("24".to_string())] {
+                crate::config::push_scope([("TERRIO_MAX_DECLARED_BYTES".into(), limit), ("TERRIO_MAX_BANDS".into(), None)].into());
+                let actual = detect_ascii(path.to_str().unwrap()).unwrap();
+                crate::config::pop_scope();
+                assert_eq!(actual, Some(reference));
+            }
+        }
+    }
+    /// Detection stops after its first Esri header; measure logical and buffered I/O.
+    #[test]
+    fn esri_detection_stops_after_its_first_header_line() {
+        struct Counted<'a> {
+            remaining: &'a [u8],
+            bytes: usize,
+        }
+        impl Read for Counted<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.remaining.read(buf)?;
+                self.bytes += n;
+                Ok(n)
+            }
+        }
+        impl BufRead for Counted<'_> {
+            fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+                Ok(self.remaining)
+            }
+            fn consume(&mut self, n: usize) {
+                self.remaining = &self.remaining[n..];
+                self.bytes += n;
+            }
+        }
+        let text = format!("ncols 3\nnrows 1\n{}", "1 ".repeat(1 << 20));
+        let mut reader = Counted { remaining: text.as_bytes(), bytes: 0 };
+        assert_eq!(detect_ascii_reader(&mut reader).unwrap(), wbraster::RasterFormat::EsriAscii);
+        assert_eq!(reader.bytes, "ncols 3\n".len());
+        let mut reader = Counted { remaining: text.as_bytes(), bytes: 0 };
+        let buffered = BufReader::with_capacity(8192, &mut reader);
+        assert_eq!(detect_ascii_reader(buffered).unwrap(), wbraster::RasterFormat::EsriAscii);
+        assert_eq!(reader.bytes, 8192, "the buffer reads ahead, without fetching the remaining pixel rows");
     }
 }

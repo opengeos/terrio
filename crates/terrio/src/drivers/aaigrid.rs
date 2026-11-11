@@ -80,6 +80,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     if n > body.len() / 2 + 1 || body.split_ascii_whitespace().take(n).count() < n {
         return Err(short());
     }
+    super::declared_header::check_ascii_allocation(cols, rows, data_type)?;
     let mut tokens = body.split_ascii_whitespace();
     let data = match data_type {
         DataType::I32 => {

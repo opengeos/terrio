@@ -1504,3 +1504,30 @@ fn tiny_windows_refuse_unusable_decoded_chunks_with_unlimited_limits() {
         assert!(matches!(result, Err(terrio::Error::DecodedLimitExceeded { limit, .. }) if limit == 64 << 20), "{result:?}");
     }
 }
+
+/// Reference: GDAL 3.13.3; fallback-specific unknown-line rules are checked against wbraster.
+#[test]
+fn fallback_ascii_unknown_lines_cannot_hide_later_dimensions() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("unknown.txt");
+    for token in ["nan", "inf", "*"] {
+        let header = format!("ncols 2\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n{token} {}\nncols 3\n", "ignored".repeat(12000));
+        std::fs::write(&path, format!("{header}1 2 3\n")).unwrap();
+        scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "24")], || {
+            let out = terrio::open_raster(path.to_str().unwrap()).unwrap();
+            assert_eq!(out.raster.data.to_f64_vec(), vec![1., 2., 3.]);
+        });
+        std::fs::write(&path, format!("{header}invalid pixels\n")).unwrap();
+        scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "23")], || {
+            assert!(matches!(terrio::open_raster(path.to_str().unwrap()), Err(terrio::Error::ResourceLimit(_))), "{token}");
+        });
+    }
+    // GRASS accepts unknown colon-bearing lines, even when the colon is far into the line.
+    let header =
+        format!("north: 1\nsouth: 0\neast: 3\nwest: 0\nrows: 1\ncols: 2\n{}: ignored\ncols: 3\ntype: double\n", "0".repeat(128 << 10));
+    std::fs::write(&path, format!("{header}invalid pixels\n")).unwrap();
+    scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "23")], || {
+        assert!(matches!(terrio::open_raster(path.to_str().unwrap()), Err(terrio::Error::ResourceLimit(_))));
+    });
+}
