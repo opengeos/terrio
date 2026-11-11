@@ -10,13 +10,15 @@
 //     lib/deflate_constants.h
 //     lib/zlib_compress.c
 
-//! A zlib (RFC 1950) / Deflate (RFC 1951) compressor: libdeflate's level 6, giving the same bytes.
+//! A zlib (RFC 1950) / Deflate (RFC 1951) compressor derived from libdeflate.
 //! Lazy parsing with the hash-chains matchfinder (max_search_depth 35, nice_match_length 65),
 //! libdeflate's block splitting, length-limited Huffman codes and the stored / static / dynamic
 //! block choice. GDAL (3.12) built with libdeflate compresses GeoTIFF Deflate chunks at this level.
 //!
 //! The other levels, 1 to 9, change the parser and how far the matchfinder searches, with the
-//! parameters of libdeflate's `libdeflate_alloc_compressor_ex()` (see [`Level`]).
+//! parameters of libdeflate's `libdeflate_alloc_compressor_ex()` (see [`Level`]). Levels 6–9 also
+//! probe a few periodic-run boundaries for maximal matches; structured rasters can therefore
+//! compress more densely than libdeflate's ordinary hash-chain search.
 
 use std::cell::Cell;
 use std::hint::select_unpredictable;
@@ -775,12 +777,53 @@ unsafe fn lz_extend(a: *const u8, b: *const u8, mut len: u32, max_len: u32) -> u
     len
 }
 
+/// Probe a few earlier boundaries of a periodic run for a full-length match. A head hash inside a
+/// uniform run has many redundant candidates; the boundary's hash is more selective.
+/// All reads here are checked slices, and each candidate remains in the Deflate window.
+fn repeated_run_candidate(s: &[u8], at: usize, max_len: usize, base: usize, tab: &Matchfinder) -> Option<usize> {
+    const MIN_REPEAT: usize = 4;
+    if max_len <= MIN_REPEAT {
+        return None;
+    }
+    let input = &s[at..at + max_len];
+    let period = [8, 4, 2, 1].into_iter().find(|&period| 2 * period <= input.len() && input[..period] == input[period..2 * period])?;
+    let mut run = period;
+    while run + 8 <= max_len && input[run..run + 8] == input[run - period..run - period + 8] {
+        run += 8;
+    }
+    while run < max_len && input[run] == input[run - period] {
+        run += 1;
+    }
+    if run < MIN_REPEAT {
+        return None;
+    }
+    // Include the first byte after the prefix when it ends here. If it fills
+    // the entire match, anchor at the suffix instead: subtracting its offset
+    // jumps past redundant interior positions to a whole earlier occurrence.
+    let tail = if run == max_len { run - 4 } else { run - 3 };
+    let hash = lz_hash(u32::from_le_bytes(input[tail..tail + 4].try_into().unwrap()), HASH4_ORDER);
+    let mut node = tab[HASH4_TAB + hash];
+    for _ in 0..4 {
+        let Some(anchor) = base.checked_add_signed(node as isize) else { break };
+        let Some(start) = anchor.checked_sub(tail) else { break };
+        if start >= at || at - start >= WINDOW_SIZE as usize {
+            break;
+        }
+        if input == &s[start..start + max_len] {
+            return Some(start);
+        }
+        node = tab[NEXT_TAB + (node as usize & WINDOW_MASK)];
+    }
+    None
+}
+
 /// Position-relative matchfinder state: `base` is the input index that the
 /// i16 positions are relative to, `next_hashes` the hashes for the next byte.
 struct Mf<'t> {
     tab: &'t mut Matchfinder,
     base: usize,
     next_hashes: [usize; 2],
+    probe_repeats: bool,
 }
 
 impl Mf<'_> {
@@ -927,6 +970,16 @@ impl Mf<'_> {
                 }
             }
         }
+        // Only replace the ordinary result with a maximal match, preserving its
+        // short-match distance/lazy decisions. Literal-only searches need no probe.
+        if self.probe_repeats
+            && best_len >= 4
+            && best_len < max_len
+            && let Some(start) = repeated_run_candidate(s, in_next, max_len as usize, self.base, mf)
+        {
+            best_len = max_len;
+            best_match = s.as_ptr().wrapping_add(start);
+        }
         (best_len, (ip as usize - best_match as usize) as u32)
     }
 
@@ -1057,7 +1110,7 @@ fn compress_greedy<'a>(c: &mut Compressor, s: &[u8], mut w: BitWriter<'a>, level
     let mut max_len = MAX_MATCH_LEN;
     let mut nice_len = level.nice_match_length.min(max_len);
     let (mut tab, mut seqs) = scratch();
-    let mut mf = Mf { tab: &mut tab, base: 0, next_hashes: [0, 0] };
+    let mut mf = Mf { tab: &mut tab, base: 0, next_hashes: [0, 0], probe_repeats: level.level >= 6 };
 
     loop {
         let in_block_begin = in_next;
@@ -1103,7 +1156,7 @@ fn compress_lazy<'a>(c: &mut Compressor, s: &[u8], mut w: BitWriter<'a>, level: 
     let mut nice_len = level.nice_match_length.min(max_len);
     let depth = level.max_search_depth;
     let (mut tab, mut seqs) = scratch();
-    let mut mf = Mf { tab: &mut tab, base: 0, next_hashes: [0, 0] };
+    let mut mf = Mf { tab: &mut tab, base: 0, next_hashes: [0, 0], probe_repeats: level.level >= 6 };
 
     loop {
         let in_block_begin = in_next;
@@ -1187,9 +1240,10 @@ fn compress_lazy<'a>(c: &mut Compressor, s: &[u8], mut w: BitWriter<'a>, level: 
     }
 }
 
-/// zlib-wrapped DEFLATE of `input`, byte-for-byte what libdeflate 1.26
-/// produces at compression level 6.
-/// That is at [`Level::DEFAULT`]; another `level` searches as [`Level`] says.
+/// Zlib-wrapped DEFLATE of `input`, using libdeflate 1.26's parsing and coding.
+/// Levels 6–9 add bounded run-boundary probes, so compressed bytes can differ.
+/// Reference interoperability validation: GDAL 3.13.3.
+/// The default is [`Level::DEFAULT`]; another `level` searches as [`Level`] says.
 pub(crate) fn zlib_compress(input: &[u8], level: Level) -> Vec<u8> {
     let n = input.len();
     let passthrough = level.max_passthrough_size();
@@ -1277,6 +1331,52 @@ mod tests {
             let z = zlib_compress(&input, Level::DEFAULT);
             assert_eq!((z.len(), zlib_rs::crc32::crc32(0, &z)), (len, crc), "{name}");
         }
+    }
+
+    /// Three repeating rows: Terrio 0.7.0 used 18 bytes; allow one byte of encoding variation.
+    /// Reference validation of derived TIFF pixels uses GDAL 3.13.3.
+    #[test]
+    fn repeating_runs_reuse_the_previous_row() {
+        let mut row = vec![0u8; 64];
+        row.extend([1u8; 64]);
+        let input = row.repeat(3);
+        let encoded = zlib_compress(&input, Level::DEFAULT);
+        let mut decoded = vec![0u8; input.len() + 1];
+        let (decoded, status) = zlib_rs::decompress_slice(&mut decoded, &encoded, zlib_rs::InflateConfig::default());
+        assert_eq!(status, zlib_rs::ReturnCode::Ok);
+        assert_eq!(decoded, input);
+        assert!(encoded.len() <= 19, "384-byte repeating rows compressed to {} bytes", encoded.len());
+    }
+
+    /// Categorical Byte tiles with repeating rows: the regression patterns from issue #712.
+    /// GDAL 3.13.3 independently reads the corresponding TIFFs in the binding comparisons.
+    #[test]
+    fn periodic_class_tiles_keep_compact_matches_across_windows() {
+        for (columns, rows) in [(64, 64), (37, 53), (37, 512)] {
+            let input: Vec<u8> = (0..512).flat_map(|y| (0..512).map(move |x| ((x / columns + y / rows) % 10) as u8)).collect();
+            for level in (6..=9).map(|value| Level::new(value).unwrap()) {
+                let encoded = zlib_compress(&input, level);
+                let mut decoded = vec![0u8; input.len() + 1];
+                let (decoded, status) = zlib_rs::decompress_slice(&mut decoded, &encoded, zlib_rs::InflateConfig::default());
+                assert_eq!(status, zlib_rs::ReturnCode::Ok);
+                assert_eq!(decoded, input);
+                assert!(encoded.len() <= 2048, "{columns}×{rows} classes at {level:?}: {} bytes", encoded.len());
+            }
+        }
+    }
+
+    /// A periodic row whose width is not a multiple of its period crosses the 32 KiB window.
+    /// Reference interoperability validation uses GDAL 3.13.3 on the derived TIFF.
+    #[test]
+    fn periodic_rows_keep_compact_matches_with_unaligned_boundaries() {
+        let row: Vec<u8> = (0..513).map(|x| ((x / 4) % 2) as u8).collect();
+        let input = row.repeat(128);
+        let encoded = zlib_compress(&input, Level::DEFAULT);
+        let mut decoded = vec![0u8; input.len() + 1];
+        let (decoded, status) = zlib_rs::decompress_slice(&mut decoded, &encoded, zlib_rs::InflateConfig::default());
+        assert_eq!(status, zlib_rs::ReturnCode::Ok);
+        assert_eq!(decoded, input);
+        assert!(encoded.len() <= 360, "unaligned periodic rows: {} bytes", encoded.len());
     }
 
     /// Every level decompresses to `data`, within the stored-block bound.
