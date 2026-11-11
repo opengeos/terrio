@@ -2969,6 +2969,7 @@ impl WarpContext<'_> {
         }
     }
 
+    /// Retry/edge rules follow GDAL 3.13.3 `GWKCheckAndComputeSrcOffsets()`.
     /// The sample point is validated against the source, not a requested crop. Near-edge
     /// approximations use the same exact retry in a full warp and in a narrow window.
     fn source_point(&self, point: Option<(f64, f64)>, dx: f64, dy: f64, bounds: (usize, usize, usize, usize)) -> Option<(f64, f64)> {
@@ -3012,6 +3013,7 @@ impl WarpContext<'_> {
 
     /// Bounds the actual point kernels or area footprints. Geometry buffers are one row wide;
     /// no source pixels are read while planning. `sum` retains its exact polygon planner.
+    /// Scales are recomputed after the source read rather than retaining a chunk-sized matrix.
     #[allow(clippy::type_complexity)]
     fn source_window(&self, dx: usize, dy: usize, dw: usize, dh: usize) -> Option<(usize, usize, usize, usize, f64, f64, f64)> {
         if !self.grid_invariant || self.resampling == Resampling::Sum {
@@ -3037,10 +3039,10 @@ impl WarpContext<'_> {
                 }
             }
             ok.fill(false);
-            self.transform_row(&mut xs, &mut ys, &mut ok, false);
+            self.transform_row(&mut xs, &mut ys, &mut ok);
             if area {
                 bok.fill(false);
-                self.transform_row(&mut bx, &mut by, &mut bok, false);
+                self.transform_row(&mut bx, &mut by, &mut bok);
             }
             let scales = (!area && !nearest).then(|| self.pixel_scales_row(dx, row, dw));
             for i in 0..dw {
@@ -3410,7 +3412,7 @@ impl WarpContext<'_> {
     /// Transform complete, fixed spans of the output pixel lattice, independent of read bounds.
     /// Exact pointwise transforms need no extra anchors. The world-grid offset also keeps spans
     /// aligned when a separately requested tile changes only the destination origin.
-    fn transform_row(&self, x: &mut [f64], y: &mut [f64], ok: &mut [bool], exact: bool) {
+    fn transform_row(&self, x: &mut [f64], y: &mut [f64], ok: &mut [bool]) {
         if x.is_empty() {
             return;
         }
@@ -3418,7 +3420,7 @@ impl WarpContext<'_> {
             self.approx.transform(true, x, y, ok);
             return;
         }
-        let approx = Approx { base: self.t, max_error: if exact { 0.0 } else { self.approx.max_error } };
+        let approx = &self.approx;
         if (approx.max_error == 0.0 && self.t.pointwise(true)) || (self.t.ct.is_none() && self.t.src_gcp.is_none()) {
             self.t.transform(true, x, y, ok);
             return;
@@ -3455,7 +3457,8 @@ impl WarpContext<'_> {
         }
     }
 
-    /// The interpolation footprint is local to an output pixel, not to its surrounding chunk.
+    /// Apply GDAL 3.12.1 axis-range or GDAL 3.13.3 transformed-square scale arithmetic
+    /// locally. The per-pixel footprint policy is Terrio's rather than GDAL's chunk sampling.
     fn footprint_scales(&self, mut p: [(f64, f64); 4]) -> (f64, f64) {
         if let Some(period) = self.t.src_longitude_period
             && self.t.src_gcp.is_none()
@@ -3485,6 +3488,8 @@ impl WarpContext<'_> {
         (range(0), range(1))
     }
 
+    /// Transform pixel quadrilaterals under the configured approximation policy, then use
+    /// the GDAL 3.12.1/3.13.3 arithmetic in `footprint_scales` for their local kernel scales.
     fn pixel_scales_row(&self, dx: usize, dy: usize, width: usize) -> Vec<(f64, f64)> {
         if self.t.ct.is_none() && self.t.src_gcp.is_none() {
             let g = self.t.dst_gt;
@@ -3502,8 +3507,8 @@ impl WarpContext<'_> {
         // Use the same anchored approximation policy as the sample coordinates. An exact
         // threshold still transforms every corner exactly; approximate warps do not pay for
         // two full exact transformations per output pixel merely to size their kernels.
-        self.transform_row(&mut top_x, &mut top_y, &mut top_ok, false);
-        self.transform_row(&mut bottom_x, &mut bottom_y, &mut bottom_ok, false);
+        self.transform_row(&mut top_x, &mut top_y, &mut top_ok);
+        self.transform_row(&mut bottom_x, &mut bottom_y, &mut bottom_ok);
         (0..width)
             .map(|i| {
                 if !(top_ok[i] && top_ok[i + 1] && bottom_ok[i] && bottom_ok[i + 1]) {
@@ -3606,7 +3611,7 @@ impl WarpContext<'_> {
                 *x = i as f64 + 0.5 + c.dx as f64;
             }
             ys.iter_mut().for_each(|v| *v = y);
-            self.transform_row(&mut xs, &mut ys, &mut ok, false);
+            self.transform_row(&mut xs, &mut ys, &mut ok);
             for i in 0..c.dw {
                 let point = ok[i].then_some((xs[i], ys[i]));
                 let Some((px, py)) = self.source_point(
@@ -3702,8 +3707,8 @@ impl WarpContext<'_> {
                 x2[i] = (i + c.dx) as f64 + 1.0;
                 y2[i] = (row + c.dy) as f64 + 1.0;
             }
-            self.transform_row(&mut x1, &mut y1, &mut o1, false);
-            self.transform_row(&mut x2, &mut y2, &mut o2, false);
+            self.transform_row(&mut x1, &mut y1, &mut o1);
+            self.transform_row(&mut x2, &mut y2, &mut o2);
             for i in 0..n {
                 let (mut ax, mut bx, mut ay, mut by) = (x1[i], x2[i], y1[i], y2[i]);
                 // A corner that could not be transformed, or not to a finite position, leaves the

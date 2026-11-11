@@ -474,7 +474,7 @@ def classify_raster(r):
     return DIFFERS, detail
 
 
-def suite_json_ops(ctx, key, script, title, reference, criteria, group_words, extra=()):
+def suite_json_ops(ctx, key, script, title, reference, criteria, group_words, extra=(), warp_grid="GDAL"):
     """A suite of raster operations from a comparison script's JSON output.
 
     Args:
@@ -486,16 +486,16 @@ def suite_json_ops(ctx, key, script, title, reference, criteria, group_words, ex
         criteria: How cases are judged.
         group_words: How many words of a case's name name its operation.
         extra: Optional arguments passed to the comparison script.
+        warp_grid: GDAL sampling for pixel references, STABLE for grid consistency.
 
     Returns:
         The suite.
     """
     s = Suite(key, title, reference, criteria)
-    # These suites reproduce reference outputs; warp-grid explicitly clears this setting
-    # to check the default stable policy independently.
+    # Each suite declares whether it checks reference pixels or stable grid consistency.
     _code, out, err = run(
         [sys.executable, str(SCRIPTS / script), ctx.data, "--terrio", ctx.terrio, "--json", *extra],
-        {"TERRIO_WARP_GRID": "GDAL"},
+        {"TERRIO_WARP_GRID": warp_grid},
     )
     try:
         results = json.loads(out)
@@ -993,6 +993,7 @@ def suite_warp_grid(ctx):
         "whole-grid values in independent aligned tiles and WarpedVRT windows. "
         "Validity is exact, Float64 values use absolute tolerance 1e-7. The USGS crop "
         "includes an interior nodata hole. This is not pixel equality with GDAL warps.", 2,
+        warp_grid="STABLE",
     )
 
 

@@ -39,10 +39,15 @@ def check(actual, expected, record):
     valid = ~np.isnan(expected)
     mismatch = np.count_nonzero(valid != ~np.isnan(actual))
     record["valid_mismatch"] += int(mismatch)
-    differences = np.abs(actual[valid] - expected[valid])
+    both_valid = valid & ~np.isnan(actual)
+    differences = np.abs(actual[both_valid] - expected[both_valid])
     assert np.isfinite(differences).all(), "non-finite value difference"
     record["max_diff"] = max(record["max_diff"], float(differences.max(initial=0)))
-    record["differing"] += int(np.count_nonzero(differences))
+    record["compared"] += int(expected.size)
+    record["differing"] += int(np.count_nonzero(differences)) + int(mismatch)
+    record["outside_tol"] += int(np.count_nonzero(differences > 1e-7)) + int(mismatch)
+    record["exact"] = 1.0 - record["differing"] / record["compared"]
+    record["within_tol"] = 1.0 - record["outside_tol"] / record["compared"]
     assert mismatch == 0, "validity differs"
     assert record["max_diff"] <= 1e-7, record["max_diff"]
 
@@ -76,7 +81,7 @@ def main():
                     record = dict(name=f"terrain {method} {version} et={threshold}",
                                   reference_gdal=gdal.VersionInfo("RELEASE_NAME"),
                                   same_size=True, valid_mismatch=0, max_diff=0., differing=0,
-                                  within_tol=1.0, exact=0.0)
+                                  compared=0, outside_tol=0)
                     try:
                         options = dict(t_srs="EPSG:3857", tr=(38., 38.), ot="Float64",
                                        dstnodata=float("nan"), resampling=method,
