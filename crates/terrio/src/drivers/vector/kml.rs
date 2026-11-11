@@ -162,12 +162,11 @@ pub(crate) fn read_document_at<R: std::io::Read + std::io::Seek>(
 /// [`parse_kmz_styled`] from a reader of the archive: within the archive limits
 /// (`crate::vfs::ZipLimits`) and, for the main and layer documents, `TERRIO_KMZ_MAX_SIZE`.
 fn kmz_styled<R: std::io::Read + std::io::Seek>(reader: R, default_name: &str) -> Result<Styled> {
-    let mut zip = crate::vfs::LimitedZip::open(reader)?;
-    // The zip reader keeps one entry per name, the last: the first of two entries named `doc.kml`
-    // could not be read, nor told from the other.
-    if zip.archive().has_duplicate_names() {
-        return Err(Error::InvalidData(AMBIGUOUS_KMZ.into()));
-    }
+    // Preserve the KMZ diagnostic while the shared archive reader enforces uniqueness.
+    let mut zip = crate::vfs::LimitedZip::open(reader).map_err(|error| match error {
+        Error::InvalidData(message) if message == crate::vfs::AMBIGUOUS_ZIP => Error::InvalidData(AMBIGUOUS_KMZ.into()),
+        error => error,
+    })?;
     let names: Vec<String> = zip.archive().file_names().filter_map(|n| n.ok().map(|n| n.into_owned())).collect();
     let (main_index, main) = main_document(zip.archive())?;
     let mut documents_budget = max_kmz_document_bytes();

@@ -18,6 +18,11 @@ An archive named without a member opens its main dataset: the first file, by nam
 kind found among vector layers, rasters and point clouds (LAS, LAZ, COPC, PLY, E57), so
 `terrio info tile.las.zip` reads the LAS file inside.
 
+Archives with duplicate member names are refused as invalid data before reading or extracting
+members. This applies to whole archives, `/vsizip/` members, byte buffers, and XLSX or KMZ
+containers, including duplicate names outside the selected dataset. A later entry cannot silently
+replace an earlier one. The optional GDAL backend does not retry these ambiguous archives.
+
 ## Reading in place
 
 GeoTIFFs and COGs are opened lazily: `terrio info` fetches the header only, and window or overview
@@ -28,6 +33,17 @@ Zarr stores, JPEG 2000, GRIB, SRTM HGT, STAC tiled assets, COPC and EPT are read
 (`ESRIJSON`, `ESRIPBF`) are read page by page (see [Formats](formats.md#vectors)). Other formats are downloaded to a temporary
 directory first; a remote shapefile's `.shx`, `.dbf`, `.prj` and `.cpg`
 come with it.
+
+A full lazy TIFF open reads the image-directory chain, including overview and mask metadata.
+An unreadable directory or required next-directory pointer fails the open with its read cause;
+it does not silently return partial metadata. This can reject damaged TIFFs whose base image
+another reader can recover. File inventory, copy, rename and deletion use first-image metadata
+and do not require readable later directories. Failed HTTP directory reads, including short
+range responses, do not trigger a whole-file retry during translation.
+Best-effort metadata queries and eager first-image reads retain the metadata collected before
+a later directory fails. The native eager pixel decoder still requires the first directory's
+final pointer. Translation through the optional GDAL backend can recover a base image that
+GDAL can read despite that missing pointer.
 
 ```sh
 terrio info https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif
@@ -354,9 +370,19 @@ URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops the
   `JP2OpenJPEG`, `JPEG2000`, `JP2KAK`, `JP2ECW` and `JP2MRSID` all name `JP2`. Unset, it restricts
   nothing. Set but empty or blank, or to bytes that are not UTF-8, it allows no driver.
 - **Scope.** It applies to every kind of dataset, rasters, vectors and point clouds alike.
+- **Writes and appends.** The list restricts readers, not output encoders. Writing a new dataset
+  does not require its output driver to be allowed. An EPT append reads the existing dataset and
+  its tiles: EPT and, for LASzip tiles, LAZ must be allowed before locking the dataset or recovering
+  an interrupted update, including the codecs declared by committed staged metadata. Direct
+  GeoPackage encoder writes, including vector `convert --append`, do not consult the reader list.
+  That encoder updates SQLite tables directly, without opening the target through a Terrio dataset
+  reader. EPT append uses Terrio readers to inspect existing tiles, so the reader policy applies.
+  Operations that open the existing GeoPackage to rewrite it (`repack`, layer renames and
+  `edit_in_place`) do check the vector list. The list is not a filesystem write policy.
 - **With `set_allowed_drivers`.** When a list is also set with
   `terrio::formats::set_allowed_drivers` (Python: `terrio.set_allowed_drivers`), a driver must be
-  in both.
+  in both. That function keeps a list for each kind, rasters, vectors and point clouds, and a list
+  set without a kind applies to all three.
 - **Set for one thread** (Python's `terrio.rio.Env`, `terrio::config::push_scope`), it only narrows
   the list outside the scope, the environment's and an outer scope's: the scope allows the drivers
   both name. A scope that unsets the option leaves the list outside in force. The environment's

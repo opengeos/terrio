@@ -26,7 +26,7 @@
 
 use crate::crs::SpatialRef;
 use crate::formats::RasterDriver;
-use crate::geotiff::{ChunkTables, GeoTags, PatchedReader, read_geo_tags_from};
+use crate::geotiff::{ChunkTables, GeoTags, PatchedReader, try_read_geo_tags_from};
 use crate::vfs::{self, Location};
 use crate::{Error, RasterDataset, Result};
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -38,6 +38,21 @@ use wbraster::raster::RasterData;
 
 /// The most images (IFDs) looked at for overviews.
 const MAX_IMAGES: usize = 256;
+
+/// The bytes buffered over a [`crate::sparse::SparseFile`].
+///
+/// The TIFF decoder issues many small reads (tag values, predictors and codec streams).
+/// Buffering avoids a lock and lookup for every small decoder read. The buffer is at most one
+/// sparse block (and at most 64 KiB); SparseBlockReader also clips refills at block boundaries,
+/// so read-ahead cannot announce a following block that the decoder never requests.
+const SPARSE_BUFFER_BYTES: usize = 64 * 1024;
+
+/// The most chunks a single prefetch collects.
+///
+/// A whole-raster read of a file without overviews would otherwise list every strip at once (a
+/// very large file has hundreds of thousands). Above this, the read falls back to the existing
+/// progressive window reads and the caller's read-ahead.
+pub(crate) const MAX_PREFETCH_CHUNKS: usize = 4096;
 
 /// A rectangle of pixels: `width` columns and `height` rows from column `x`, row `y`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -803,7 +818,8 @@ impl LazyRaster {
     }
 
     fn from_sparse_using(file: crate::sparse::SparseFile, limits: impl FnOnce() -> Result<TiffReadLimits>) -> Result<Option<Self>> {
-        let mut source = Source::Sparse(file);
+        let capacity = file.block_size().min(SPARSE_BUFFER_BYTES as u64) as usize;
+        let mut source = Source::Sparse(BufReader::with_capacity(capacity, SparseBlockReader::new(file)));
         source.seek(SeekFrom::Start(0))?;
         let mut magic = [0u8; 4];
         source.read_exact(&mut magic)?;
@@ -1344,6 +1360,73 @@ impl LazyRaster {
         out.finish()
     }
 
+    /// Fetches the byte ranges of the chunks a window read needs, for sources whose bytes the
+    /// caller fetches (see [`crate::sparse`]). The next read of the window then decodes without
+    /// stopping at its first missing chunk. A no-op for sources read locally.
+    ///
+    /// # Errors
+    ///
+    /// When the window or band is invalid, or the source is a sparse one that still misses some
+    /// of the chunks: fetch them with [`crate::sparse::SparseFile::missing`] and try again.
+    pub fn prefetch_window(&mut self, window: Window, options: &WindowOptions) -> Result<()> {
+        self.prefetch_windows(&[window], options)
+    }
+
+    /// Prefetches one bounded batch of the windows the sampler actually reads.
+    pub(crate) fn prefetch_windows(&mut self, windows: &[Window], options: &WindowOptions) -> Result<()> {
+        let _scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
+        let (lw, lh) = self.level_size(options.overview)?;
+        for window in windows {
+            window.check(lw, lh)?;
+        }
+        let bands = read_bands(&options.bands, self.band_count())?;
+        match &mut self.inner {
+            Inner::Tiff(t) => t.prefetch_windows(options.overview.map_or(0, |i| i + 1), windows, &bands),
+            _ => Ok(()),
+        }
+    }
+
+    fn prefetch_mask_windows(&mut self, windows: &[Window], overview: Option<usize>) -> Result<()> {
+        let _scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
+        let (lw, lh) = self.level_size(overview)?;
+        for window in windows {
+            window.check(lw, lh)?;
+        }
+        if let Some(m) = self.sidecar_mask.as_mut() {
+            return prefetch_sidecar_masks(m, windows, (lw, lh));
+        }
+        if let Inner::Tiff(t) = &mut self.inner {
+            t.prefetch_mask_windows(overview.map_or(0, |i| i + 1), windows)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn prefetch_mask_band_window(&mut self, window: Window, overview: Option<usize>) -> Result<()> {
+        self.prefetch_mask_band_windows(&[window], overview)
+    }
+
+    /// Prefetches the own-mask windows selected by the mask sampler, without filling gaps
+    /// between distant sampled blocks.
+    pub(crate) fn prefetch_mask_band_windows(&mut self, windows: &[Window], overview: Option<usize>) -> Result<()> {
+        let _scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
+        let Some(j) = overview else {
+            return self.prefetch_mask_windows(windows, None);
+        };
+        let Some(size) = self.mask_band_overviews().get(j).copied() else {
+            return Ok(());
+        };
+        if let Some(m) = self.sidecar_mask.as_mut() {
+            return prefetch_sidecar_own_masks(m, windows, size);
+        }
+        let Some(level) = self.overviews().iter().position(|s| *s == size) else {
+            return Ok(());
+        };
+        if let Inner::Tiff(t) = &mut self.inner {
+            t.prefetch_own_mask_windows(level + 1, windows)?;
+        }
+        Ok(())
+    }
+
     /// Reads a window of some bands, at full resolution or from an overview, as a raster
     /// georeferenced to the window.
     ///
@@ -1875,6 +1958,49 @@ fn read_sidecar_own_mask(m: &mut LazyRaster, window: Window, (lw, lh): (usize, u
     read_sidecar_mask(m, window, m.level_size(level)?).map(Some)
 }
 
+/// Maps windows exactly as the nearest fallback in read_tiff_mask/read_sidecar_mask does.
+fn full_mask_windows(windows: &[Window], (lw, lh): (usize, usize), (fw, fh): (usize, usize)) -> Vec<Window> {
+    let (sx, sy) = (fw as f64 / lw as f64, fh as f64 / lh as f64);
+    let col = |c: usize| (((c as f64 + 0.5) * sx) as usize).min(fw - 1);
+    let row = |r: usize| (((r as f64 + 0.5) * sy) as usize).min(fh - 1);
+    windows
+        .iter()
+        .map(|w| {
+            let (x0, x1) = (col(w.x), col(w.x + w.width - 1));
+            let (y0, y1) = (row(w.y), row(w.y + w.height - 1));
+            Window::new(x0, y0, x1 - x0 + 1, y1 - y0 + 1)
+        })
+        .collect()
+}
+
+fn prefetch_sidecar_own_masks(m: &mut LazyRaster, windows: &[Window], size: (usize, usize)) -> Result<()> {
+    let overview = if (m.width(), m.height()) == size {
+        None
+    } else if let Some(i) = m.overviews().iter().position(|s| *s == size) {
+        Some(i)
+    } else {
+        return Ok(());
+    };
+    m.prefetch_windows(windows, &WindowOptions { bands: vec![1], overview })
+}
+
+fn prefetch_sidecar_masks(m: &mut LazyRaster, windows: &[Window], size: (usize, usize)) -> Result<()> {
+    if (m.width(), m.height()) == size || m.overviews().contains(&size) {
+        return prefetch_sidecar_own_masks(m, windows, size);
+    }
+    let windows = full_mask_windows(windows, size, (m.width(), m.height()));
+    m.prefetch_windows(&windows, &WindowOptions { bands: vec![1], overview: None })
+}
+
+/// The mask chunks touched by a bounded set of actual decoder windows.
+fn mask_prefetch_ranges(mask: &crate::tiff_mask::MaskImage, windows: &[Window]) -> Vec<(u64, u64)> {
+    let count = windows.iter().fold(0usize, |n, w| n.saturating_add(mask.chunk_count((w.x, w.y, w.width, w.height))));
+    if count > MAX_PREFETCH_CHUNKS {
+        return Vec::new();
+    }
+    windows.iter().flat_map(|w| mask.chunk_ranges((w.x, w.y, w.width, w.height))).collect()
+}
+
 /// Reads a window of a `.msk` sidecar's mask at a level of size `(lw, lh)`: the sidecar's own
 /// overview of that size, else its full-resolution mask sampled by nearest neighbour, as GDAL
 /// does. 255 for valid pixels, 0 for invalid ones.
@@ -1964,13 +2090,57 @@ enum Source {
     Memory(std::io::Cursor<SharedBytes>),
     #[cfg(remote)]
     Http(crate::http::RangeReader),
-    /// A remote file whose bytes the caller fetches (see [`crate::sparse`]).
-    Sparse(crate::sparse::SparseFile),
+    /// A remote file whose bytes the caller fetches (see [`crate::sparse`]). Buffered so the
+    /// decoder's many small reads do not each enter the sparse block store.
+    Sparse(BufReader<SparseBlockReader>),
     /// A zip archive member read in place: stored, or seek-optimized (SOZip).
     Zip(Box<crate::vsi::sozip::MemberReader>),
 }
 
+/// A buffered TIFF read may read ahead within the current held block, never into the next
+/// missing block. Direct SparseFile reads retain their multi-block request semantics.
+struct SparseBlockReader {
+    file: crate::sparse::SparseFile,
+    block_size: u64,
+}
+
+impl SparseBlockReader {
+    fn new(file: crate::sparse::SparseFile) -> Self {
+        let block_size = file.block_size();
+        Self { file, block_size }
+    }
+}
+
+impl Read for SparseBlockReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // BufReader bypasses its buffer for larger explicit reads. Those bytes are genuinely
+        // requested, so keep SparseFile's batched missing-range behavior for them.
+        if buf.len() as u64 > self.block_size {
+            return self.file.read(buf);
+        }
+        let pos = self.file.stream_position()?;
+        let len = (self.block_size - pos % self.block_size).min(buf.len() as u64) as usize;
+        self.file.read(&mut buf[..len])
+    }
+}
+
+impl Seek for SparseBlockReader {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        self.file.seek(position)
+    }
+}
+
 impl Source {
+    /// Whether reading needs [`Source::prefetch`]: a source whose bytes the caller fetches.
+    fn prefetches(&self) -> bool {
+        match self {
+            Source::Sparse(_) => true,
+            #[cfg(remote)]
+            Source::Http(_) => true,
+            _ => false,
+        }
+    }
+
     /// Fetches byte ranges `(offset, length)` ahead of reading them, when that saves requests.
     #[cfg_attr(not(remote), allow(unused_variables))]
     fn prefetch(&self, ranges: &[(u64, u64)]) -> Result<()> {
@@ -1978,7 +2148,7 @@ impl Source {
             Source::File(_) | Source::Memory(_) | Source::Zip(_) => Ok(()),
             #[cfg(remote)]
             Source::Http(r) => Ok(r.prefetch(ranges)?),
-            Source::Sparse(s) => Ok(s.prefetch(ranges)?),
+            Source::Sparse(r) => Ok(r.get_ref().file.prefetch(ranges)?),
         }
     }
 }
@@ -2115,7 +2285,7 @@ enum Reopened {
 fn tiff_err(e: tiff::TiffError) -> Error {
     match e {
         tiff::TiffError::LimitsExceeded => Error::ResourceLimit("TIFF: decoding limits exceeded (see TiffReadLimits)".into()),
-        tiff::TiffError::IoError(e) if e.kind() == std::io::ErrorKind::OutOfMemory => Error::Io(e),
+        tiff::TiffError::IoError(e) if e.kind() == std::io::ErrorKind::OutOfMemory || crate::error::is_http_io(&e) => Error::Io(e),
         e => Error::InvalidData(format!("TIFF: {e}")),
     }
 }
@@ -2126,7 +2296,18 @@ impl TiffRaster {
             Source::Zip(member) => member.reopen(),
             _ => None,
         };
-        let tags = read_geo_tags_from(&mut source).ok_or_else(|| Error::InvalidData("not a TIFF file".into()))?;
+        let uploaded = matches!(&source, Source::Memory(_));
+        let tags = try_read_geo_tags_from(&mut source)
+            .map_err(|error| {
+                // Invalid metadata is malformed input regardless of its source. An immutable
+                // buffer's EOF is malformed too; live EOF errors retain their I/O causes.
+                if error.kind() == std::io::ErrorKind::InvalidData || (uploaded && error.kind() == std::io::ErrorKind::UnexpectedEof) {
+                    Error::InvalidData(format!("TIFF: {error}"))
+                } else {
+                    Error::Io(error)
+                }
+            })?
+            .ok_or_else(|| Error::InvalidData("not a TIFF file".into()))?;
         // A directory libtiff cannot read is refused here, before any pixel is decoded.
         tags.check_structure()?;
         let masks = crate::tiff_mask::find_masks(&mut source)?;
@@ -2291,6 +2472,128 @@ impl TiffRaster {
             return Err(Error::InvalidData("CMYK samples that are not bytes".into()));
         };
         cmyk_to_rgba(&cmyk, w.width * w.height, bands)
+    }
+
+    /// Fetches the byte ranges of the chunks a window of some bands (numbered from 1) needs at a
+    /// level, before [`TiffRaster::read`] decodes them: one sparse fetch round for the whole
+    /// window instead of one per chunk.
+    fn prefetch_windows(&mut self, level: usize, windows: &[Window], bands: &[usize]) -> Result<()> {
+        // A level of an external `.ovr` is fetched from it.
+        if let Some(i) = self.levels[level].external
+            && let Some(ovr) = self.ovr.as_mut()
+        {
+            return ovr.prefetch_windows(i, windows, bands);
+        }
+        // CMYK is read as RGBA from all four samples, whatever bands were asked for.
+        let bands = if self.cmyk { &[1, 2, 3, 4][..] } else { bands };
+        let tiff_err = self.limits.error();
+        let ifd = self.levels[level].ifd;
+        let dec = &mut self.decoder;
+        if !dec.inner().get_ref().prefetches() {
+            return Ok(());
+        }
+        if self.current_ifd != ifd {
+            dec.seek_to_image(ifd).map_err(tiff_err)?;
+            self.current_ifd = ifd;
+        }
+        let (lw, lh) = (self.levels[level].width, self.levels[level].height);
+        let planar = dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).map_err(tiff_err)? == Some(2);
+        let (cw, ch) = dec.chunk_dimensions();
+        let (cw, ch) = (cw as usize, ch as usize);
+        let across = lw.div_ceil(cw);
+        let per_plane = across * lh.div_ceil(ch);
+        let tables = match &self.levels[level].tables {
+            Some(tables) => tables.clone(),
+            None => {
+                let tables = Arc::new(ChunkTables::read(dec).map_err(tiff_err)?);
+                self.levels[level].tables = Some(tables.clone());
+                tables
+            }
+        };
+        // The chunks of the planes the requested bands are stored in.
+        let parts = if self.complex { 2 } else { 1 };
+        let mut planes: Vec<usize> = if planar { bands.iter().map(|b| (b - 1) / parts).collect() } else { vec![0] };
+        planes.sort_unstable();
+        planes.dedup();
+        let what = "the TIFF chunk list";
+        let mut ranges = Vec::new();
+        let chunks = windows.iter().fold(0usize, |n, w| {
+            let rows = (w.y + w.height - 1) / ch - w.y / ch + 1;
+            let cols = (w.x + w.width - 1) / cw - w.x / cw + 1;
+            n.saturating_add(rows.saturating_mul(cols))
+        });
+        if planes.len().saturating_mul(chunks) > MAX_PREFETCH_CHUNKS {
+            return Ok(());
+        }
+        crate::dataset::fallible::reserve(&mut ranges, crate::dataset::fallible::len(&[planes.len(), chunks], what)?, what)?;
+        for &plane in &planes {
+            for w in windows {
+                for ty in w.y / ch..=(w.y + w.height - 1) / ch {
+                    for tx in w.x / cw..=(w.x + w.width - 1) / cw {
+                        let idx = plane * per_plane + ty * across + tx;
+                        if crate::block_cache::contains(self.cache_handle, ifd, idx as u32) {
+                            continue;
+                        }
+                        if let Some((offset, count)) = tables.get(idx)
+                            && count > 0
+                        {
+                            ranges.push((offset, count));
+                        }
+                    }
+                }
+            }
+        }
+        let compression = dec.find_tag_unsigned::<u16>(Tag::Compression).map_err(tiff_err)?.unwrap_or(1);
+        crate::geotiff::check_stored_chunks(compression, ranges.iter().copied(), self.file_len)?;
+        dec.inner().get_ref().prefetch(&ranges)
+    }
+
+    /// Fetches the byte ranges of a level's mask chunks a window needs: the level's own mask
+    /// image, else the full-resolution mask sampled at the window as [`read_tiff_mask`] does.
+    fn prefetch_mask_windows(&mut self, level: usize, windows: &[Window]) -> Result<()> {
+        if let Some(i) = self.levels[level].external
+            && let Some(ovr) = self.ovr.as_mut()
+        {
+            if let Some(mask) = self.ovr_mask.as_mut() {
+                return prefetch_sidecar_masks(mask, windows, (ovr.levels[i].width, ovr.levels[i].height));
+            }
+            return ovr.prefetch_mask_windows(i, windows);
+        }
+        if !self.decoder.inner().get_ref().prefetches() {
+            return Ok(());
+        }
+        let (lw, lh) = (self.levels[level].width, self.levels[level].height);
+        let (fw, fh) = (self.levels[0].width, self.levels[0].height);
+        let ranges = if let Some(mask) = self.masks.iter().find(|m| m.overview == (level > 0) && (m.width, m.height) == (lw, lh)) {
+            mask_prefetch_ranges(mask, windows)
+        } else if let Some(mask) = self.masks.iter().find(|m| !m.overview && (m.width, m.height) == (fw, fh)) {
+            mask_prefetch_ranges(mask, &full_mask_windows(windows, (lw, lh), (fw, fh)))
+        } else {
+            Vec::new()
+        };
+        self.decoder.inner().get_ref().prefetch(&ranges)
+    }
+
+    fn prefetch_own_mask_windows(&mut self, level: usize, windows: &[Window]) -> Result<()> {
+        if let Some(i) = self.levels[level].external
+            && let Some(ovr) = self.ovr.as_mut()
+        {
+            if let Some(mask) = self.ovr_mask.as_mut() {
+                return prefetch_sidecar_own_masks(mask, windows, (ovr.levels[i].width, ovr.levels[i].height));
+            }
+            return ovr.prefetch_own_mask_windows(i, windows);
+        }
+        if !self.decoder.inner().get_ref().prefetches() {
+            return Ok(());
+        }
+        let size = (self.levels[level].width, self.levels[level].height);
+        let ranges = self
+            .masks
+            .iter()
+            .find(|m| m.overview == (level > 0) && (m.width, m.height) == size)
+            .map(|mask| mask_prefetch_ranges(mask, windows))
+            .unwrap_or_default();
+        self.decoder.inner().get_ref().prefetch(&ranges)
     }
 
     /// Reads a window of some samples (numbered from 1) of a level, band-major, as stored.
@@ -2682,6 +2985,49 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn buffered_sparse_source_reads_seeks_and_prefetches_through_the_buffer() {
+        let data: Vec<u8> = (0..300_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        let file = crate::sparse::SparseFile::with_block_size(data.len() as u64, 4096);
+        file.insert(0, &data);
+
+        let mut source = Source::Sparse(BufReader::with_capacity(1024, SparseBlockReader::new(file)));
+        source.seek(SeekFrom::Start(150_000)).unwrap();
+        let mut buf = vec![0u8; 1000];
+        source.read_exact(&mut buf).unwrap();
+        assert_eq!(buf, data[150_000..151_000]);
+
+        let file = crate::sparse::SparseFile::with_block_size(data.len() as u64, 4096);
+        let source = Source::Sparse(BufReader::with_capacity(1024, SparseBlockReader::new(file.clone())));
+        // Prefetch reaches the SparseFile under the buffer and records whole blocks.
+        assert!(source.prefetch(&[(10_000, 100)]).is_err());
+        assert_eq!(file.missing(), [(8192, 4096)]);
+        file.insert(8192, &data[8192..12288]);
+        assert!(source.prefetch(&[(10_000, 100)]).is_ok());
+        assert!(file.missing().is_empty());
+    }
+
+    #[test]
+    fn sparse_read_ahead_stops_at_the_current_block_boundary() {
+        for block in [4096, 65536] {
+            let file = crate::sparse::SparseFile::with_block_size(4 * block, block);
+            let capacity = (block as usize).min(SPARSE_BUFFER_BYTES);
+            let mut source = Source::Sparse(BufReader::with_capacity(capacity, SparseBlockReader::new(file.clone())));
+            source.seek(SeekFrom::Start(block - 1)).unwrap();
+            assert!(source.read_exact(&mut [0]).is_err());
+            assert_eq!(file.missing(), [(0, block)]);
+        }
+    }
+
+    #[test]
+    fn explicit_large_sparse_reads_keep_batched_missing_ranges() {
+        let file = crate::sparse::SparseFile::with_block_size(100_000, 4096);
+        let mut source = Source::Sparse(BufReader::with_capacity(4096, SparseBlockReader::new(file.clone())));
+        source.seek(SeekFrom::Start(100)).unwrap();
+        assert!(source.read_exact(&mut [0; 16_384]).is_err());
+        assert_eq!(file.missing(), [(0, 5 * 4096)]);
+    }
 
     #[test]
     fn memory_header_preserves_metadata_without_pixels() {

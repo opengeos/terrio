@@ -26,7 +26,7 @@
 //! or with the kernels of `RasterIOResampled` ([`ResampledRead`]), invalid pixels weighted as
 //! GDAL's mask bands weight them.
 
-use crate::cog::read_bands;
+use crate::cog::{MAX_PREFETCH_CHUNKS, read_bands};
 use crate::dataset::fallible;
 use crate::drivers::gdal_overview::{Method, ResampledRead, Sample, nbits_max};
 use crate::ops::Resampling;
@@ -622,6 +622,9 @@ impl LazyRaster {
                     return Ok(data);
                 }
                 let block = self.level_block_size(request.level).unwrap_or((request.size.0, SAMPLE_ROWS));
+                if let Some(windows) = nearest_prefetch_windows(&cols, &rows, block) {
+                    self.prefetch_windows(&windows, &options)?;
+                }
                 sample_by_blocks(&cols, &rows, block, &mut |w| Ok(self.read_window(w, &options)?.raster.data))
             }
             How::Kernel { dataset } => {
@@ -762,6 +765,7 @@ impl LazyRaster {
         };
         let (x, y, w, h) = request.window;
         if request.is_copy(read.buf) {
+            self.prefetch_mask_band_window(Window::new(x, y, w, h), request.level)?;
             return self.read_mask_band(Window::new(x, y, w, h), request.level);
         }
         // The blocks of the level of the mask's size.
@@ -769,8 +773,12 @@ impl LazyRaster {
         let block = self.level_block_size(level).unwrap_or((request.size.0, SAMPLE_ROWS));
         let data = if read.resampling == Resampling::Nearest {
             let (cols, rows) = nearest_pixels(request.fwindow, read.buf, request.size);
+            if let Some(windows) = nearest_prefetch_windows(&cols, &rows, block) {
+                self.prefetch_mask_band_windows(&windows, request.level)?;
+            }
             sample_by_blocks(&cols, &rows, block, &mut |w| Ok(RasterData::U8(self.read_mask_band(w, request.level)?)))?
         } else {
+            self.prefetch_mask_band_window(Window::new(x, y, w, h), request.level)?;
             let max = self.mask_band_bits().and_then(|bits| nbits_max(u32::from(bits), DataType::U8));
             let resampled = resampled_read(read, request, false, block.0, max);
             resample(&resampled, &[None], 1, &mut |w| Ok((RasterData::U8(self.read_mask_band(w, request.level)?), vec![None])))?
@@ -795,15 +803,20 @@ impl LazyRaster {
         }
         let full = read.full;
         let options = WindowOptions { bands: vec![alpha], overview: None };
-        let rescaled = |data: RasterData| RasterData::U8(alpha_mask(&data));
         let (x, y, w, h) = full.window;
+        let rescaled = |data: RasterData| RasterData::U8(alpha_mask(&data));
         let data = if full.is_copy(read.buf) {
+            self.prefetch_window(Window::new(x, y, w, h), &options)?;
             rescaled(self.read_window(Window::new(x, y, w, h), &options)?.raster.data)
         } else if read.resampling == Resampling::Nearest {
             let (cols, rows) = nearest_pixels(full.fwindow, read.buf, full.size);
             let block = self.level_block_size(None).unwrap_or((full.size.0, SAMPLE_ROWS));
+            if let Some(windows) = nearest_prefetch_windows(&cols, &rows, block) {
+                self.prefetch_windows(&windows, &options)?;
+            }
             sample_by_blocks(&cols, &rows, block, &mut |w| Ok(rescaled(self.read_window(w, &options)?.raster.data)))?
         } else {
+            self.prefetch_window(Window::new(x, y, w, h), &options)?;
             let block_width = self.level_block_size(None).map_or(full.size.0, |b| b.0);
             let resampled = resampled_read(read, full, false, block_width, None);
             resample(&resampled, &[None], 1, &mut |w| Ok((rescaled(self.read_window(w, &options)?.raster.data), vec![None])))?
@@ -1022,17 +1035,13 @@ fn nearest_pixels(
     (cols, rows)
 }
 
-/// The pixels at columns `cols` of rows `rows` (each ascending), read through `read` a row of
-/// blocks of size `block` at a time, from the runs of blocks holding them alone:
-/// `(bands, rows, cols)`.
-fn sample_by_blocks(
-    cols: &[usize],
-    rows: &[usize],
+/// Actual decoder windows and their output row/column spans, shared by prefetch and sampling.
+fn sampled_windows<'a>(
+    cols: &'a [usize],
+    rows: &'a [usize],
     (block_w, block_h): (usize, usize),
-    read: &mut dyn FnMut(Window) -> Result<RasterData>,
-) -> Result<RasterData> {
+) -> impl Iterator<Item = (Window, Range<usize>, Range<usize>)> + 'a {
     let (block_w, block_h) = (block_w.max(1), block_h.max(1));
-    // Runs of output columns whose blocks are adjacent.
     let mut spans: Vec<Range<usize>> = Vec::new();
     for (c, &col) in cols.iter().enumerate() {
         match spans.last_mut() {
@@ -1040,26 +1049,49 @@ fn sample_by_blocks(
             _ => spans.push(c..c + 1),
         }
     }
+    let (mut r0, mut r1, mut at) = (0, 0, 0);
+    std::iter::from_fn(move || {
+        if r0 >= rows.len() {
+            return None;
+        }
+        if at == 0 {
+            r1 = r0 + 1;
+            while r1 < rows.len() && rows[r1] / block_h == rows[r0] / block_h {
+                r1 += 1;
+            }
+        }
+        let span = spans.get(at)?.clone();
+        let window = Window::new(cols[span.start], rows[r0], cols[span.end - 1] - cols[span.start] + 1, rows[r1 - 1] - rows[r0] + 1);
+        let result = (window, span, r0..r1);
+        at += 1;
+        if at == spans.len() {
+            at = 0;
+            r0 = r1;
+        }
+        Some(result)
+    })
+}
+
+fn nearest_prefetch_windows(cols: &[usize], rows: &[usize], block: (usize, usize)) -> Option<Vec<Window>> {
+    let windows: Vec<_> = sampled_windows(cols, rows, block).take(MAX_PREFETCH_CHUNKS + 1).map(|part| part.0).collect();
+    (windows.len() <= MAX_PREFETCH_CHUNKS).then_some(windows)
+}
+
+/// Samples only the blocks holding the selected pixels, in the same windows as prefetch.
+fn sample_by_blocks(
+    cols: &[usize],
+    rows: &[usize],
+    block: (usize, usize),
+    read: &mut dyn FnMut(Window) -> Result<RasterData>,
+) -> Result<RasterData> {
     let (bw, bh) = (cols.len(), rows.len());
     let mut out: Option<RasterData> = None;
-    let mut r0 = 0;
-    while r0 < bh {
-        // The output rows whose source rows are in the same row of blocks.
-        let mut r1 = r0 + 1;
-        while r1 < bh && rows[r1] / block_h == rows[r0] / block_h {
-            r1 += 1;
-        }
-        let (y0, y1) = (rows[r0], rows[r1 - 1]);
-        for span in &spans {
-            let (x0, x1) = (cols[span.start], cols[span.end - 1]);
-            let window = Window::new(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-            let part = read(window)?;
-            let n = window.width * window.height;
-            let bands = part.len() / n.max(1);
-            let out = out.get_or_insert_with(|| RasterData::new_filled(part.data_type(), bands * bw * bh, 0.0));
-            pick(out, &part, (bw, bh), window, (span.clone(), r0..r1), cols, rows)?;
-        }
-        r0 = r1;
+    for (window, col_span, row_span) in sampled_windows(cols, rows, block) {
+        let part = read(window)?;
+        let n = window.width * window.height;
+        let bands = part.len() / n.max(1);
+        let out = out.get_or_insert_with(|| RasterData::new_filled(part.data_type(), bands * bw * bh, 0.0));
+        pick(out, &part, (bw, bh), window, (col_span, row_span), cols, rows)?;
     }
     out.ok_or_else(|| Error::InvalidArgument("nothing to sample".into()))
 }

@@ -977,6 +977,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     let retry = match &e {
         Error::InvalidArgument(_) | Error::Http(_) => false,
         Error::InvalidData(message) if message.ends_with(crate::drivers::vector::kml::AMBIGUOUS_KMZ) => false,
+        Error::InvalidData(message) if message.ends_with(vfs::AMBIGUOUS_ZIP) => false,
         e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => vfs::is_gdal_name(path),
@@ -1037,6 +1038,15 @@ mod fallback_tests {
     fn ambiguous_kmz_archives_are_not_retried() {
         for path in ["input.kmz", "https://example.test/input.kmz?signature=secret"] {
             let error = naming_dataset(Error::InvalidData(crate::drivers::vector::kml::AMBIGUOUS_KMZ.into()), path, "input.kmz");
+            let result: Result<()> = gdal_fallback(path, Err(error), |_| panic!("duplicate-entry refusal retried through GDAL"));
+            assert!(matches!(result, Err(Error::InvalidData(_))));
+        }
+    }
+
+    #[test]
+    fn ambiguous_zip_archives_are_not_retried() {
+        for path in ["input.zip", "input.xlsx", "https://example.test/input.zip?signature=secret"] {
+            let error = naming_dataset(Error::InvalidData(vfs::AMBIGUOUS_ZIP.into()), path, "input.zip");
             let result: Result<()> = gdal_fallback(path, Err(error), |_| panic!("duplicate-entry refusal retried through GDAL"));
             assert!(matches!(result, Err(Error::InvalidData(_))));
         }

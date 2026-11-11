@@ -413,6 +413,26 @@ test("listCrs lists the registry CRSs", () => {
   assert.equal(terrio.describeCrs(`${albers.authority}:${albers.code}`).epsg, 3577);
 });
 
+test("polar inverses refuse non-finite coordinates", () => {
+  for (const code of [3413, 3995, 3411, 32661, 3031, 3976, 3412, 32761, 2985]) {
+    const crs = `EPSG:${code}`;
+    for (const [x, y] of [[Infinity, Infinity], [Infinity, 0], [-Infinity, Infinity], [0, -Infinity], [NaN, NaN]]) {
+      assert.throws(() => terrio.transformPoints([x], [y], crs, "EPSG:4326"), undefined, `${crs}: ${x}, ${y}`);
+    }
+  }
+});
+
+test("finite polar kilometre inputs preserve direction through normalization", () => {
+  const [xs, ys] = terrio.transformPoints([1e306], [2e306], "+proj=stere +lat_0=90 +R=6371000 +units=km", "+proj=longlat +R=6371000");
+  assert.ok(Math.abs(xs[0] - Math.atan2(1, -2) * 180 / Math.PI) < 1e-12);
+  assert.ok(Math.abs(ys[0] + 90) < 1e-12);
+});
+
+test("ZIP archives with duplicate member names are refused", () => {
+  const bytes = readFileSync(new URL("../../crates/terrio/tests/data/zip/duplicate_members.zip", import.meta.url));
+  assert.throws(() => terrio.open(bytes, "vector.zip"), /several entries with the same name/);
+});
+
 test("CRS transforms", () => {
   const [xs, ys] = terrio.transformPoints([0, 180], [0, 0], "EPSG:4326", "EPSG:3857");
   assert.ok(xs instanceof Float64Array);
@@ -3176,6 +3196,45 @@ test("dataset TIFF copies preserve bytes without loading pixel codecs", () => {
     assert.deepEqual(terrio.vsiRead(`${root}/copy.tif`), bytes);
     assert.throws(() => terrio.datasetRename(`${root}/source.tif`, `${root}/source.tif`, {overwrite:true}), /overlap/);
   } finally { raster.free(); terrio.vsiDelete(root, {recursive:true}); }
+});
+
+test("TIFF tag counts cannot truncate to the WebAssembly address width", () => {
+  const bytes = new Uint8Array(52);
+  const view = new DataView(bytes.buffer);
+  bytes.set([73, 73, 43, 0, 8, 0, 0, 0]);
+  view.setBigUint64(8, 16n, true);
+  view.setBigUint64(16, 1n, true);
+  view.setUint16(24, 33550, true); // ModelPixelScale, DOUBLE
+  view.setUint16(26, 12, true);
+  const count = BUILD === "terrio-js/memory64" ? (1n << 64n) - 1n : (1n << 32n) + 3n;
+  view.setBigUint64(28, count, true);
+  view.setBigUint64(36, 52n, true);
+  assert.throws(() => terrio.translate({bytes, filename: "huge-tag.tif"}, {}), /TIFF tag length overflow/);
+});
+
+test("dataset inventory does not require readable later TIFF directories", () => {
+  const root = "/vsimem/js-first-image-inventory";
+  const source = `${root}/source.tif`, copied = `${root}/copied.tif`, moved = `${root}/moved.tif`;
+  const raster = terrio.createRaster(null, {size: [2, 2], burn: [7], crs: "EPSG:4326", bbox: [0, 0, 2, 2]});
+  try {
+    const bytes = raster.toBytes("source.tif");
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const littleEndian = view.getUint16(0) === 0x4949;
+    assert.equal(view.getUint16(2, littleEndian), 42);
+    const first = view.getUint32(4, littleEndian);
+    const count = view.getUint16(first, littleEndian);
+    view.setUint32(first + 2 + count * 12, bytes.length + 4096, littleEndian);
+    terrio.vsiWrite(source, bytes);
+    terrio.vsiWrite(`${root}/source.tfw`, new TextEncoder().encode("unowned world file"));
+    assert.deepEqual(terrio.datasetFiles(source).files, [source]);
+    assert.throws(() => terrio.translate({bytes, filename: "source.tif"}, {}));
+    terrio.datasetCopy(source, copied);
+    assert.deepEqual(terrio.vsiRead(copied), bytes);
+    assert.equal(terrio.vsiStat(`${root}/copied.tfw`), null);
+    terrio.datasetRename(copied, moved);
+    terrio.datasetDelete([moved, source]);
+    assert.ok(terrio.vsiStat(`${root}/source.tfw`));
+  } finally { raster.free(); terrio.vsiDelete(root, {recursive: true}); }
 });
 
 test("dataset VRT references require explicit external scope permission", () => {

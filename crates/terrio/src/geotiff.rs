@@ -210,23 +210,44 @@ pub(crate) fn check_tiff_allowed(path: &std::path::Path, shown: &str) -> crate::
 }
 
 /// Reads the georeferencing tags of a TIFF stream's first image, and finds the palette images
-/// among all its images. Returns `None` when the stream is not a TIFF.
+/// among its readable images. Returns `None` when the stream is not a TIFF or its first image
+/// cannot be read. Later directory failures retain the collected metadata; use
+/// `try_read_geo_tags_from` when any directory read failure must be reported.
 pub(crate) fn read_geo_tags_from<R: Read + Seek>(f: R) -> Option<GeoTags> {
-    read_geo_tags_impl(f, false)
+    read_geo_tags_impl(f, false, ImageScope::BestEffort).ok().flatten()
+}
+
+/// Reads TIFF metadata while preserving read and seek failures for lazy opens.
+pub(crate) fn try_read_geo_tags_from<R: Read + Seek>(f: R) -> std::io::Result<Option<GeoTags>> {
+    read_geo_tags_impl(f, false, ImageScope::All)
+}
+
+/// First-image metadata for inventory, without reading the next-directory pointer or later IFDs.
+pub(crate) fn read_first_geo_tags_from<R: Read + Seek>(f: R) -> std::io::Result<Option<GeoTags>> {
+    read_geo_tags_impl(f, false, ImageScope::First)
 }
 
 /// Comparison-only TIFF metadata; ordinary lazy opens avoid its out-of-line reads.
 pub(crate) fn read_compare_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
-    read_geo_tags_impl(std::io::BufReader::new(std::fs::File::open(path).ok()?), true)
+    read_geo_tags_impl(std::io::BufReader::new(std::fs::File::open(path).ok()?), true, ImageScope::BestEffort).ok().flatten()
 }
 
-fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Option<GeoTags> {
+enum ImageScope {
+    /// Read only the base image's tags, without requiring a trailing directory pointer.
+    First,
+    /// Require the complete image chain for lazy decoding.
+    All,
+    /// Keep collected metadata if a later directory cannot be read.
+    BestEffort,
+}
+
+fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool, images: ImageScope) -> std::io::Result<Option<GeoTags>> {
     let mut header = [0u8; 16];
-    f.read_exact(&mut header[..8]).ok()?;
+    f.read_exact(&mut header[..8])?;
     let le = match &header[..2] {
         b"II" => true,
         b"MM" => false,
-        _ => return None,
+        _ => return Ok(None),
     };
     let u16_at = |b: &[u8]| if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) };
     let u32_at = |b: &[u8]| {
@@ -240,28 +261,28 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
     let big = match u16_at(&header[2..4]) {
         42 => false,
         43 => true,
-        _ => return None,
+        _ => return Ok(None),
     };
     let ifd_offset = if big {
-        f.read_exact(&mut header[8..16]).ok()?;
+        f.read_exact(&mut header[8..16])?;
         u64_at(&header[8..16])
     } else {
         u32_at(&header[4..8]) as u64
     };
 
-    f.seek(SeekFrom::Start(ifd_offset)).ok()?;
+    f.seek(SeekFrom::Start(ifd_offset))?;
     let count = if big {
         let mut b = [0u8; 8];
-        f.read_exact(&mut b).ok()?;
+        f.read_exact(&mut b)?;
         u64_at(&b)
     } else {
         let mut b = [0u8; 2];
-        f.read_exact(&mut b).ok()?;
+        f.read_exact(&mut b)?;
         u16_at(&b) as u64
     };
     let entry_len = if big { 20 } else { 12 };
-    let mut entries = vec![0u8; (count as usize).min(4096) * entry_len];
-    f.read_exact(&mut entries).ok()?;
+    let mut entries = vec![0u8; count.min(4096) as usize * entry_len];
+    f.read_exact(&mut entries)?;
 
     let mut tags: Vec<(u16, Values)> = Vec::new();
     let mut palette_offset = None;
@@ -280,7 +301,7 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
         if tag == PHOTOMETRIC && u16_at(&e[2..4]) == 3 {
             let value = &e[if big { 12 } else { 8 }..];
             if u16_at(value) == 3 {
-                let entry_start = f.stream_position().ok()? - entries.len() as u64;
+                let entry_start = f.stream_position()? - entries.len() as u64;
                 let index = (e.as_ptr() as usize - entries.as_ptr() as usize) as u64;
                 palette_offset = Some(entry_start + index + if big { 12 } else { 8 });
             }
@@ -336,7 +357,10 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
             12 => 8, // DOUBLE
             _ => continue,
         };
-        let len = (n as usize).checked_mul(size)?;
+        let len = usize::try_from(n)
+            .ok()
+            .and_then(|n| n.checked_mul(size))
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "TIFF tag length overflow"))?;
         if len > 1 << 24 {
             continue;
         }
@@ -344,11 +368,11 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
             inline[..len].to_vec()
         } else {
             let off = if big { u64_at(inline) } else { u32_at(inline) as u64 };
-            let pos = f.stream_position().ok()?;
-            f.seek(SeekFrom::Start(off)).ok()?;
+            let pos = f.stream_position()?;
+            f.seek(SeekFrom::Start(off))?;
             let mut d = vec![0u8; len];
-            f.read_exact(&mut d).ok()?;
-            f.seek(SeekFrom::Start(pos)).ok()?;
+            f.read_exact(&mut d)?;
+            f.seek(SeekFrom::Start(pos))?;
             d
         };
         let values = match typ {
@@ -362,11 +386,22 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
     }
     // The other images: overviews and masks.
     let mut palette_offsets: Vec<u64> = palette_offset.into_iter().collect();
-    let mut seen = vec![ifd_offset];
-    let mut next = read_offset(&mut f, big, le);
-    while let Some(offset) = next.filter(|o| *o != 0 && seen.len() < MAX_IFDS && !seen.contains(o)) {
-        seen.push(offset);
-        next = palette_offset_in_ifd(&mut f, offset, big, le, &mut palette_offsets);
+    if !matches!(images, ImageScope::First) {
+        let chain = (|| -> std::io::Result<()> {
+            let mut seen = vec![ifd_offset];
+            skip_remaining_ifd_entries(&mut f, count, entry_len)?;
+            let mut next = read_offset(&mut f, big, le)?;
+            while next != 0 && seen.len() < MAX_IFDS && !seen.contains(&next) {
+                let offset = next;
+                seen.push(offset);
+                next = palette_offset_in_ifd(&mut f, offset, big, le, &mut palette_offsets)?;
+            }
+            Ok(())
+        })();
+        // BestEffort deliberately retains the collected metadata when the chain walk fails.
+        if matches!(images, ImageScope::All) {
+            chain?;
+        }
     }
 
     let doubles = |t: u16| {
@@ -566,7 +601,7 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Optio
             g.line += 0.5;
         }
     }
-    Some(out)
+    Ok(Some(out))
 }
 
 /// Canonical GDAL band roles; unknown metadata roles map to Undefined as GDAL does.
@@ -753,40 +788,54 @@ impl GeoTags {
 }
 
 /// Reads a file offset (4 bytes, or 8 in a BigTIFF) at the stream's position.
-fn read_offset<R: Read>(f: &mut R, big: bool, le: bool) -> Option<u64> {
+fn read_offset<R: Read>(f: &mut R, big: bool, le: bool) -> std::io::Result<u64> {
     let mut b = [0u8; 8];
     if big {
-        f.read_exact(&mut b).ok()?;
-        Some(if le { u64::from_le_bytes(b) } else { u64::from_be_bytes(b) })
+        f.read_exact(&mut b)?;
+        Ok(if le { u64::from_le_bytes(b) } else { u64::from_be_bytes(b) })
     } else {
-        f.read_exact(&mut b[..4]).ok()?;
+        f.read_exact(&mut b[..4])?;
         let a = [b[0], b[1], b[2], b[3]];
-        Some(if le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) } as u64)
+        Ok(if le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) } as u64)
     }
+}
+
+/// Seeks past entries outside the bounded decoded prefix to the actual next-IFD pointer.
+fn skip_remaining_ifd_entries<R: Seek>(f: &mut R, count: u64, entry_len: usize) -> std::io::Result<()> {
+    if count > 4096 {
+        let position = f.stream_position()?;
+        let next = (count - 4096)
+            .checked_mul(entry_len as u64)
+            .and_then(|bytes| position.checked_add(bytes))
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "TIFF directory offset overflow"))?;
+        f.seek(SeekFrom::Start(next))?;
+    }
+    Ok(())
 }
 
 /// Looks for a palette `PhotometricInterpretation` in the IFD at `offset`, recording its value's
 /// offset. Returns the offset of the next IFD.
-fn palette_offset_in_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: bool, out: &mut Vec<u64>) -> Option<u64> {
+fn palette_offset_in_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: bool, out: &mut Vec<u64>) -> std::io::Result<u64> {
     let u16_at = |b: &[u8]| if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) };
-    f.seek(SeekFrom::Start(offset)).ok()?;
+    f.seek(SeekFrom::Start(offset))?;
     let count = if big {
         read_offset(f, true, le)?
     } else {
         let mut b = [0u8; 2];
-        f.read_exact(&mut b).ok()?;
+        f.read_exact(&mut b)?;
         u16_at(&b) as u64
     };
     let start = offset + if big { 8 } else { 2 };
     let entry_len = if big { 20 } else { 12 };
-    let mut entries = vec![0u8; (count as usize).min(4096) * entry_len];
-    f.read_exact(&mut entries).ok()?;
+    let mut entries = vec![0u8; count.min(4096) as usize * entry_len];
+    f.read_exact(&mut entries)?;
     for (i, e) in entries.chunks(entry_len).enumerate() {
         let value = if big { 12 } else { 8 };
         if u16_at(&e[0..2]) == PHOTOMETRIC && u16_at(&e[2..4]) == 3 && u16_at(&e[value..]) == 3 {
             out.push(start + (i * entry_len + value) as u64);
         }
     }
+    skip_remaining_ifd_entries(f, count, entry_len)?;
     read_offset(f, big, le)
 }
 
@@ -1627,6 +1676,210 @@ impl<R: Seek> Seek for PatchedReader<R> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn metadata_follows_large_ifd_chains_after_the_decoded_prefix() {
+        fn number(out: &mut Vec<u8>, value: u64, width: usize, little_endian: bool) {
+            if little_endian {
+                out.extend_from_slice(&value.to_le_bytes()[..width]);
+            } else {
+                out.extend_from_slice(&value.to_be_bytes()[8 - width..]);
+            }
+        }
+        for big in [false, true] {
+            for le in [false, true] {
+                let (header_len, count_len, entry_len, pointer_len, value_offset) = if big { (16, 8, 20, 8, 12) } else { (8, 2, 12, 4, 8) };
+                let count = 5000;
+                let second = header_len + count_len + count * entry_len + pointer_len;
+                let mut bytes = Vec::new();
+                bytes.extend_from_slice(if le { b"II" } else { b"MM" });
+                number(&mut bytes, if big { 43 } else { 42 }, 2, le);
+                if big {
+                    number(&mut bytes, 8, 2, le);
+                    number(&mut bytes, 0, 2, le);
+                }
+                number(&mut bytes, header_len as u64, pointer_len, le);
+                for next in [second, 0] {
+                    number(&mut bytes, count as u64, count_len, le);
+                    for entry in 0..count {
+                        let palette = entry == 0;
+                        number(&mut bytes, if palette { u64::from(PHOTOMETRIC) } else { 50000 }, 2, le);
+                        number(&mut bytes, if palette { 3 } else { 4 }, 2, le);
+                        number(&mut bytes, 1, if big { 8 } else { 4 }, le);
+                        // A SHORT is left-aligned in the inline field even in big-endian TIFFs.
+                        if palette {
+                            number(&mut bytes, 3, 2, le);
+                            bytes.resize(bytes.len() + pointer_len - 2, 0);
+                        } else {
+                            number(&mut bytes, 0, pointer_len, le);
+                        }
+                    }
+                    number(&mut bytes, next as u64, pointer_len, le);
+                }
+                let tags = try_read_geo_tags_from(std::io::Cursor::new(bytes)).unwrap().unwrap();
+                assert_eq!(
+                    tags.palette_photometric_offsets,
+                    [(header_len + count_len + value_offset) as u64, (second + count_len + value_offset) as u64],
+                    "big={big}, le={le}",
+                );
+            }
+        }
+        // A forged BigTIFF count cannot wrap the seek to an earlier file position.
+        let mut bytes = b"II\x2b\0\x08\0\0\0\x10\0\0\0\0\0\0\0".to_vec();
+        bytes.extend_from_slice(&u64::MAX.to_le_bytes());
+        bytes.resize(bytes.len() + 4096 * 20, 0);
+        let error = try_read_geo_tags_from(std::io::Cursor::new(bytes)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("directory offset overflow"));
+    }
+
+    #[test]
+    fn metadata_read_keeps_read_and_seek_errors() {
+        struct FailingReader {
+            bytes: std::io::Cursor<Vec<u8>>,
+            fail_at: u64,
+            fail_seek: bool,
+            read_bytes: usize,
+        }
+        impl Read for FailingReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.bytes.position() >= self.fail_at {
+                    return Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "directory request failed"));
+                }
+                let n = buffer.len().min((self.fail_at - self.bytes.position()) as usize);
+                let read = self.bytes.read(&mut buffer[..n])?;
+                self.read_bytes += read;
+                Ok(read)
+            }
+        }
+        impl Seek for FailingReader {
+            fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+                if self.fail_seek {
+                    return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "seek refused"));
+                }
+                self.bytes.seek(position)
+            }
+        }
+        // A classic TIFF with one out-of-line ModelPixelScale tag and a second IFD.
+        let mut bytes = b"II\x2a\0\x08\0\0\0".to_vec();
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&MODEL_PIXEL_SCALE.to_le_bytes());
+        bytes.extend_from_slice(&12u16.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&26u32.to_le_bytes());
+        bytes.extend_from_slice(&50u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 24]);
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        let mut first = FailingReader { bytes: std::io::Cursor::new(bytes.clone()), fail_at: 50, fail_seek: false, read_bytes: 0 };
+        assert!(read_first_geo_tags_from(&mut first).unwrap().is_some());
+        assert_eq!(first.read_bytes, 46, "first-image metadata does not read chain pointers or later directories");
+        let mut full = FailingReader { bytes: std::io::Cursor::new(bytes.clone()), fail_at: u64::MAX, fail_seek: false, read_bytes: 0 };
+        assert!(try_read_geo_tags_from(&mut full).unwrap().is_some());
+        assert_eq!(full.read_bytes, 56);
+        for fail_at in [0, 8, 10, 26, 50, 52] {
+            let source = FailingReader { bytes: std::io::Cursor::new(bytes.clone()), fail_at, fail_seek: false, read_bytes: 0 };
+            let error = try_read_geo_tags_from(source).expect_err("read failure must propagate");
+            assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+            assert_eq!(error.to_string(), "directory request failed");
+            let source = FailingReader { bytes: std::io::Cursor::new(bytes.clone()), fail_at, fail_seek: false, read_bytes: 0 };
+            assert_eq!(read_geo_tags_from(source).is_some(), fail_at >= 50, "best-effort first-image tags at {fail_at}");
+        }
+        let source = FailingReader { bytes: std::io::Cursor::new(bytes.clone()), fail_at: u64::MAX, fail_seek: true, read_bytes: 0 };
+        assert_eq!(try_read_geo_tags_from(source).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(try_read_geo_tags_from(std::io::Cursor::new(bytes)).unwrap().is_some());
+        assert!(try_read_geo_tags_from(std::io::Cursor::new(b"not tiff")).unwrap().is_none());
+    }
+
+    #[test]
+    #[cfg(fs)]
+    fn eager_reads_retain_first_image_metadata_after_directory_failures() {
+        use std::io::Cursor;
+        use tiff::tags::Tag;
+
+        let directory = tempfile::tempdir().unwrap();
+        for affine in [false, true] {
+            let mut cursor = Cursor::new(Vec::new());
+            {
+                let mut encoder = tiff::encoder::TiffEncoder::new(&mut cursor).unwrap();
+                let mut image = encoder.new_image::<tiff::encoder::colortype::Gray8>(2, 2).unwrap();
+                image.encoder().write_tag(Tag::GeoKeyDirectoryTag, &[1u16, 1, 0, 2, 1024, 0, 1, 2, 2048, 0, 1, 4326][..]).unwrap();
+                if affine {
+                    image.encoder().write_tag(Tag::ModelPixelScaleTag, &[2.0, 2.0, 0.0][..]).unwrap();
+                }
+                let tiepoints = [0.0, 0.0, 0.0, 10.0, 20.0, 0.0, 2.0, 0.0, 0.0, 14.0, 20.0, 0.0, 0.0, 2.0, 0.0, 10.0, 16.0, 0.0];
+                image.encoder().write_tag(Tag::ModelTiepointTag, &tiepoints[..if affine { 6 } else { 18 }]).unwrap();
+                image.write_data(&[1, 2, 3, 4]).unwrap();
+            }
+            let original = cursor.into_inner();
+            let path = directory.path().join(format!("base-{affine}.tif"));
+            std::fs::write(&path, &original).unwrap();
+            let expected = read_geotiff(&path).unwrap();
+            #[cfg(feature = "gdal")]
+            let gdal_expected = crate::gdal_backend::open_raster(path.to_str().unwrap()).unwrap();
+            assert_eq!(expected.raster.crs.epsg, Some(4326));
+            assert_eq!(expected.gcps.len(), if affine { 0 } else { 3 });
+            if affine {
+                assert_eq!(expected.geo_transform(), [10.0, 2.0, 0.0, 20.0, 0.0, -2.0]);
+            }
+            let first = u32::from_le_bytes(original[4..8].try_into().unwrap()) as usize;
+            let count = u16::from_le_bytes(original[first..first + 2].try_into().unwrap()) as usize;
+            let pointer = first + 2 + count * 12;
+            for missing_pointer in [false, true] {
+                let mut damaged = original.clone();
+                if missing_pointer {
+                    damaged.truncate(pointer);
+                } else {
+                    damaged[pointer..pointer + 4].copy_from_slice(&(original.len() as u32 + 4096).to_le_bytes());
+                }
+                std::fs::write(&path, &damaged).unwrap();
+                let path_str = path.to_str().unwrap();
+                assert!(crate::LazyRaster::open_tiff(path_str).is_err());
+                assert_eq!(crate::read_gcps(path_str).unwrap(), expected.gcps);
+                let eager = read_geotiff(&path);
+                let translated =
+                    crate::ops::translate::translate_path(path_str, &Default::default(), crate::ops::overview::OverviewSelection::Auto);
+                let recovered = if missing_pointer {
+                    // Metadata inspection recovers the first image, but the pixel decoder
+                    // requires its final pointer. The optional GDAL fallback can recover it.
+                    assert!(eager.is_err());
+                    #[cfg(not(feature = "gdal"))]
+                    {
+                        assert!(translated.is_err());
+                        continue;
+                    }
+                    #[cfg(feature = "gdal")]
+                    {
+                        // GDAL's fallback data model is compared with the same backend's
+                        // valid-file baseline, including its existing GCP limitations.
+                        vec![(translated.unwrap(), &gdal_expected)]
+                    }
+                } else {
+                    vec![(eager.unwrap(), &expected), (translated.unwrap(), &expected)]
+                };
+                for (read, expected) in recovered {
+                    assert_eq!(read.raster.crs.epsg, expected.raster.crs.epsg);
+                    assert_eq!(read.geo_transform(), expected.geo_transform());
+                    assert_eq!(read.gcps, expected.gcps);
+                    assert_eq!(read.raster.data.to_f64_vec(), [1.0, 2.0, 3.0, 4.0]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn metadata_refuses_unrepresentable_tag_lengths() {
+        let mut bytes = b"II\x2b\0\x08\0\0\0\x10\0\0\0\0\0\0\0".to_vec();
+        bytes.extend_from_slice(&1u64.to_le_bytes());
+        bytes.extend_from_slice(&MODEL_PIXEL_SCALE.to_le_bytes());
+        bytes.extend_from_slice(&12u16.to_le_bytes());
+        bytes.extend_from_slice(&u64::MAX.to_le_bytes());
+        bytes.extend_from_slice(&52u64.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        let error = try_read_geo_tags_from(std::io::Cursor::new(bytes)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("tag length overflow"));
+    }
 
     /// Reservations start with free capacity, stop at the cap, and release capacity on drop.
     /// A local counter keeps this deterministic even when other tests decode concurrently.
