@@ -769,6 +769,9 @@ impl Def {
 
     /// Geodetic coordinates (radians, east of Greenwich) of a point in this CRS.
     pub fn unproject(&self, u: f64, v: f64) -> Option<(f64, f64)> {
+        if !u.is_finite() || !v.is_finite() {
+            return None;
+        }
         let (e, n) = self.unaxis(u, v);
         let (lam, phi) = match &self.proj {
             None => {

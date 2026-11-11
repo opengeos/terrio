@@ -413,6 +413,15 @@ test("listCrs lists the registry CRSs", () => {
   assert.equal(terrio.describeCrs(`${albers.authority}:${albers.code}`).epsg, 3577);
 });
 
+test("polar inverses refuse non-finite coordinates", () => {
+  for (const code of [3413, 3995, 3411, 32661, 3031, 3976, 3412, 32761, 2985]) {
+    const crs = `EPSG:${code}`;
+    for (const [x, y] of [[Infinity, Infinity], [Infinity, 0], [-Infinity, Infinity], [0, -Infinity], [NaN, NaN]]) {
+      assert.throws(() => terrio.transformPoints([x], [y], crs, "EPSG:4326"), undefined, `${crs}: ${x}, ${y}`);
+    }
+  }
+});
+
 test("CRS transforms", () => {
   const [xs, ys] = terrio.transformPoints([0, 180], [0, 0], "EPSG:4326", "EPSG:3857");
   assert.ok(xs instanceof Float64Array);
