@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Zarr: the fill value of a region's missing chunks is repeated by doubling the filled part
+  rather than copied one element at a time; with a NaN fill that took 36 ms of a 40 MB read in
+  terrio-js.
 - A `Raster` read lazily from a file, such as a GeoTIFF (`open_raster(path, lazy=True)`,
   `rio.open`, the xarray backend), can be read from several Python threads at once: `read`,
   `read_mask` and `numpy.asarray` raised `RuntimeError: Already borrowed` when a read overlapped
