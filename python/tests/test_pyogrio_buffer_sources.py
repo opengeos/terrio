@@ -213,6 +213,20 @@ def test_property_text_cannot_override_the_document_format(data, extension):
     assert len(tpg.read_dataframe(data, layer=0)) == 1
 
 
+def test_root_type_after_large_features_is_not_relabelled_by_property_text():
+    """A root-last GeoJSON object can exceed the bounded identification header."""
+    import json
+
+    feature = {
+        "type": "Feature",
+        "properties": {"Topology": "x" * 20_000},
+        "geometry": {"type": "Point", "coordinates": [1, 2]},
+    }
+    data = json.dumps({"features": [feature], "type": "FeatureCollection"}).encode()
+    assert terrio._terrio.vector_byte_extension(data) == "geojson"
+    assert len(tpg.read_dataframe(data)) == 1
+
+
 @pytest.mark.parametrize("prefix", [b"", b"\xef\xbb\xbf", b" \n"])
 def test_osm_xml_buffers_have_an_xml_filename_hint(prefix):
     """An OSM XML upload uses the XML extension rather than the binary PBF suffix.

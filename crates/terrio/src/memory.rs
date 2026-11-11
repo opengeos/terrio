@@ -51,6 +51,30 @@ pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Dataset> {
 pub fn suggest_vector_extension(bytes: &[u8]) -> Option<&'static str> {
     let driver = crate::inspection::identify_bytes_unjudged(bytes, "")
         .and_then(|identified| crate::formats::VectorDriver::from_name(&identified.driver))
+        .or_else(|| {
+            // Anonymous buffers contain the complete document. A bounded header can end
+            // inside features before a root type placed last; inspect that root before
+            // falling back to format-like strings inside properties.
+            let prefix = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+            let first = prefix.iter().copied().take(16 * 1024).find(|byte| !byte.is_ascii_whitespace());
+            if !matches!(first, Some(b'{' | 0x1e)) {
+                return None;
+            }
+            let text = std::str::from_utf8(bytes).ok()?.trim_start_matches('\u{feff}').trim_start();
+            let sequence = text.starts_with('\u{1e}');
+            let json = text.trim_start_matches('\u{1e}').trim_start();
+            if !json.starts_with('{') {
+                return None;
+            }
+            use crate::formats::VectorDriver;
+            match crate::inspection::root_json_type(json)?.as_str() {
+                "Topology" => Some(VectorDriver::TopoJSON),
+                "CityJSON" => Some(VectorDriver::CityJSON),
+                "FeatureCollection" | "Feature" | "Point" | "MultiPoint" | "LineString" | "MultiLineString" | "Polygon"
+                | "MultiPolygon" | "GeometryCollection" => Some(if sequence { VectorDriver::GeoJSONSeq } else { VectorDriver::GeoJSON }),
+                _ => None,
+            }
+        })
         .or_else(|| crate::formats::identify_bytes("", bytes).by_content.as_deref().and_then(crate::formats::VectorDriver::from_name))
         .or_else(|| codec::vector_driver(bytes, ""))?;
     // Anonymous buffers contain the whole object. Require the binary envelope rather than
@@ -906,6 +930,15 @@ mod tests {
         ] {
             assert_eq!(suggest_vector_extension(bytes), extension, "{bytes:?}");
         }
+    }
+
+    #[test]
+    fn late_geojson_root_type_is_not_relabelled_by_property_text() {
+        let bytes = format!(
+            r#"{{"features":[{{"type":"Feature","properties":{{"Topology":"{}"}},"geometry":{{"type":"Point","coordinates":[1,2]}}}}],"type":"FeatureCollection"}}"#,
+            "x".repeat(20_000)
+        );
+        assert_eq!(suggest_vector_extension(bytes.as_bytes()), Some("geojson"));
     }
 
     #[test]

@@ -166,6 +166,9 @@ Datetime parsing preserves uniform UTC offsets, converts mixed offsets to UTC by
 preserves individual offsets with `mixed_offsets_as_utc=False`. Terrio does not change warning
 filters during parsing on pandas 2 or 3; pandas can still manage its own warning filters.
 Preserving individual offsets also accepts the ISO UTC suffix `Z` on Python 3.10.
+When naive and timezone-aware strings appear together, the default treats naive
+values as UTC before conversion. With `mixed_offsets_as_utc=False`, naive values
+remain naive and aware values retain their offsets in the object column.
 
 ### Streams
 
