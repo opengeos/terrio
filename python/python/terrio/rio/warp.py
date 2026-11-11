@@ -85,14 +85,13 @@ def _crs_text(crs: Any) -> str:
         return c._database
     # Keep authority-based operation selection for ordinary WKT and dataset CRSs.
     # Explicit WKT1/2 bound transformations belong to the caller's definition.
-    wkt = c.to_wkt()
     explicit = re.search(
         r"\b(?:TOWGS84|BOUNDCRS|ABRIDGEDTRANSFORMATION)\s*[\[(]",
-        f"{c.wkt}\n{wkt}",
+        c.wkt,
         re.IGNORECASE,
     )
     code = c.to_epsg()
-    return f"EPSG:{code}" if code is not None and not explicit else wkt
+    return f"EPSG:{code}" if code is not None and not explicit else c.to_wkt()
 
 
 def _transform_arrays(

@@ -81,6 +81,11 @@ impl Params {
                 return Err(crate::Error::Crs(format!("+{key} needs a boolean flag value")));
             }
         }
+        if self.str("init").is_some() && self.keys().any(|key| FLAGS.contains(&key) && !matches!(key, "no_defs" | "wktext")) {
+            return Err(crate::Error::Crs(
+                "boolean overrides combined with +init are not supported; use an expanded +proj definition".into(),
+            ));
+        }
         Ok(())
     }
 

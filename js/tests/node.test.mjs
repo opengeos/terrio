@@ -482,6 +482,11 @@ test("CRS boolean flags preserve UTM and UPS hemispheres", () => {
     }
   }
   assert.throws(() => terrio.describeCrs("+proj=utm +zone=33 +south=maybe"), /boolean flag/);
+  for (const flag of ["True", "False"]) {
+    const definition = `+init=epsg:32633 +south=${flag}`;
+    assert.throws(() => terrio.describeCrs(definition), /overrides.*init/);
+    assert.throws(() => terrio.transformPoints([15], [-30], "EPSG:4326", definition), /overrides.*init/);
+  }
 });
 
 test("CRS transforms with heights, epochs and grids", () => {

@@ -21,6 +21,7 @@ import os
 import re
 import warnings
 from collections.abc import Mapping
+from functools import lru_cache
 from typing import Any
 
 from terrio import _terrio
@@ -609,8 +610,9 @@ class CRS(Mapping[str, Any]):
     def to_proj4(self) -> str:
         """The CRS as a PROJ string, with enabled boolean flags written without values.
 
-        Named PROJ datums and explicit WKT TOWGS84 operations are retained. Other datum
-        identities and area-dependent operations cannot be represented by an ellipsoid alone;
+        Named PROJ datums are retained when representable. An explicit WKT TOWGS84 uses
+        its shift and ellipsoid instead of a datum name. Other datum identities and
+        area-dependent operations cannot be represented by an ellipsoid alone;
         use WKT, PROJJSON or an authority code to preserve them. Unsupported projections
         return an empty string.
 
@@ -622,7 +624,7 @@ class CRS(Mapping[str, Any]):
         """
         return " ".join(
             f"+{key}" if value is True else f"+{key}={value}"
-            for key, value in self.to_dict().items()
+            for key, value in self._proj_parameters().items()
             if value is not False
         )
 
@@ -683,6 +685,14 @@ class CRS(Mapping[str, Any]):
                 except Exception:  # noqa: BLE001 - rasterio returns {} when PROJ cannot
                     return {}
             return self._native_projjson()
+        return self._proj_parameters()
+
+    def _proj_parameters(self) -> dict[str, Any]:
+        """Export PROJ parameters without modifying the source definition.
+
+        Returns:
+            dict: The representable PROJ parameters.
+        """
         proj4 = self._info.get("proj4")
         if proj4:
             return _proj_dict(proj4)
@@ -698,7 +708,6 @@ class CRS(Mapping[str, Any]):
             # Authority constructors retain the WKT but do not populate their PROJ field.
             validated = _terrio.crs_info(self.wkt).get("proj4")
             if validated:
-                self._info["proj4"] = validated
                 return _proj_dict(validated)
         return _wkt_to_proj(root) if root is not None else {}
 
@@ -764,6 +773,21 @@ class CRS(Mapping[str, Any]):
                 category=UserWarning,
             )
             da, db = self.to_dict(), o.to_dict()
+        if da == db and not any(key in da for key in ("datum", "towgs84", "nadgrids")):
+            identities = []
+            for crs in (self, o):
+                root = crs._root
+                geog = (
+                    root
+                    if root and str(root[0]).upper() == "GEOGCS"
+                    else _child(root, "GEOGCS")
+                    if root
+                    else None
+                )
+                datum = _child(geog, "DATUM") if geog else None
+                identities.append(_norm(datum[1]) if datum else None)
+            if identities[0] != identities[1]:
+                return False
         return bool(da) and da == db
 
     def __hash__(self) -> int:
@@ -872,11 +896,10 @@ def _proj_dict(proj4: str) -> dict[str, Any]:
         part = part.lstrip("+")
         if not part:
             continue
-        if "=" in part:
-            k, v = part.split("=", 1)
-            if k in flags:
-                out[k] = flags[k]
-                continue
+        k, sep, v = part.partition("=")
+        if k in flags:
+            out[k] = flags[k]
+        elif sep:
             try:
                 num = float(v)
                 out[k] = int(num) if num.is_integer() and "." not in v else num
@@ -972,6 +995,25 @@ def _num(v: float) -> float | int:
     return int(v) if float(v).is_integer() else v
 
 
+@lru_cache(maxsize=16)
+def _datum_spheroid(name: str) -> tuple[float, float]:
+    """Read a named datum's canonical spheroid from the shared native CRS reader.
+
+    Args:
+        name: A supported PROJ datum name.
+
+    Returns:
+        tuple: Semi-major axis and inverse flattening.
+    """
+    root = _parse_wkt(_terrio.crs_info(f"+proj=longlat +datum={name}")["wkt"])
+    assert root is not None
+    datum = _child(root, "DATUM")
+    assert datum is not None
+    spheroid = _child(datum, "SPHEROID")
+    assert spheroid is not None
+    return float(spheroid[2]), float(spheroid[3])
+
+
 def _wkt_to_proj(root: list[Any]) -> dict[str, Any]:
     """PROJ parameters of a parsed WKT1 CRS, for common projections.
 
@@ -1023,10 +1065,16 @@ def _wkt_to_proj(root: list[Any]) -> dict[str, Any]:
     if datum is not None:
         dname = _norm(datum[1])
         shift = _child(datum, "TOWGS84")
-        if dname in _DATUMS and shift is None:
+        sph = _child(datum, "SPHEROID")
+        matches_datum = False
+        if dname in _DATUMS and sph is not None and len(sph) > 3:
+            a, rf = _datum_spheroid(_DATUMS[dname])
+            matches_datum = math.isclose(
+                float(sph[2]), a, rel_tol=0, abs_tol=1e-5
+            ) and math.isclose(float(sph[3]), rf, rel_tol=0, abs_tol=1e-8)
+        if matches_datum and shift is None:
             out["datum"] = _DATUMS[dname]
         else:
-            sph = _child(datum, "SPHEROID")
             if sph is not None and len(sph) > 3:
                 out["a"] = _num(sph[2])
                 rf = float(sph[3])
@@ -1042,7 +1090,7 @@ def _wkt_to_proj(root: list[Any]) -> dict[str, Any]:
                     "and its coordinate operations; use to_wkt() or an authority code "
                     "to preserve datum identity",
                     UserWarning,
-                    stacklevel=3,
+                    stacklevel=4,
                 )
     if kind == "PROJCS":
         unit = _child(root, "UNIT")

@@ -35,3 +35,12 @@ fn false_south_flags_preserve_northern_utm_and_ups() {
         assert!(SpatialRef::from_proj4(&format!("+init=epsg:32633 +south={value}")).is_err());
     }
 }
+
+#[test]
+fn init_boolean_overrides_fail_instead_of_silently_using_registry_defaults() {
+    for flag in ["+south", "+south=True", "+south=False", "+over=True"] {
+        let error = SpatialRef::from_proj4(&format!("+init=epsg:32633 {flag}")).unwrap_err();
+        assert!(error.to_string().contains("overrides combined with +init"), "{error}");
+    }
+    assert!(SpatialRef::from_proj4("+init=epsg:32633 +no_defs=True +wktext=False").is_ok());
+}

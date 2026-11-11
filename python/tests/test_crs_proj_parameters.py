@@ -4,11 +4,11 @@ import pickle
 import subprocess
 import sys
 import warnings
-from pathlib import Path
 
 import numpy as np
 import pytest
 
+import terrio
 from terrio.rio.crs import CRS
 from terrio.rio.warp import transform
 
@@ -61,6 +61,9 @@ def test_projection_parameters_preserve_coordinates(code, point, from_wkt):
     expected = coordinates(crs, point)
     exported = crs.to_proj4()
     assert exported
+    if code in (3031, 3976):
+        assert crs.to_dict()["lat_ts"] < 0
+        assert crs.to_dict()["lat_0"] == -90
     for back in [
         CRS.from_proj4(exported),
         CRS.from_user_input(exported),
@@ -111,6 +114,10 @@ def test_named_datums_keep_coordinate_operations(code, name, point):
     np.testing.assert_allclose(
         coordinates(back, point), coordinates(original, point), rtol=0, atol=1e-6
     )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="best coordinate operation needs a missing grid")
+        x, y = terrio.transform_points([point[0]], [point[1]], "EPSG:4326", original.to_proj4())
+    np.testing.assert_allclose((x[0], y[0]), coordinates(original, point), rtol=0, atol=1e-6)
 
 
 @pytest.mark.parametrize("code", [23031, 28992, 4258])
@@ -215,9 +222,14 @@ def test_equality_does_not_warn_about_implicit_parameter_exports():
         first.to_dict()
 
 
-def test_duplicate_flag_values_keep_native_precedence():
-    """Export and native coordinates both use the first occurrence of a boolean flag."""
-    crs = CRS.from_proj4("+proj=utm +zone=33 +datum=WGS84 +south=False +south=True +units=m")
+@pytest.mark.parametrize("later", ["+south=True", "+south"])
+def test_duplicate_flag_values_keep_native_precedence(later):
+    """Export and native coordinates both use the first occurrence of a boolean flag.
+
+    Args:
+        later: The second occurrence of the flag.
+    """
+    crs = CRS.from_proj4(f"+proj=utm +zone=33 +datum=WGS84 +south=False {later} +units=m")
     assert crs.to_dict()["south"] is False
     assert "+south" not in crs.to_proj4()
     np.testing.assert_allclose(
@@ -309,10 +321,9 @@ def test_cli_reads_boolean_flag_values(value, code):
         value: Explicit south flag.
         code: Expected UTM authority code.
     """
-    cli = Path(sys.executable).parent / "terrio"
     definition = f"+proj=utm +zone=33 +south={value} +datum=WGS84 +units=m"
     result = subprocess.run(
-        [str(cli), "crs", "EPSG:4326", "--to", definition, "15", "-30"],
+        [sys.executable, "-m", "terrio", "crs", "EPSG:4326", "--to", definition, "15", "-30"],
         check=True,
         text=True,
         capture_output=True,
@@ -323,3 +334,110 @@ def test_cli_reads_boolean_flag_values(value, code):
         rtol=0,
         atol=1e-7,
     )
+
+
+@pytest.mark.parametrize("value", ["False", "True"])
+def test_init_boolean_overrides_are_refused(value):
+    """An unsupported init override must not silently use the authority hemisphere.
+
+    Args:
+        value: A valid explicit boolean value.
+    """
+    with pytest.raises(ValueError, match="overrides.*init"):
+        CRS.from_proj4(f"+init=epsg:32633 +south={value}")
+
+
+def test_named_datum_with_custom_spheroid_warns_and_preserves_axes():
+    """A recognized datum name cannot replace a caller's custom ellipsoid."""
+    wkt = CRS.from_epsg(4326).to_wkt().replace("6378137", "6379000")
+    crs = CRS.from_wkt(wkt)
+    with pytest.warns(UserWarning, match="omit datum"):
+        params = crs.to_dict()
+    assert params["a"] == 6379000
+    assert "datum" not in params
+
+
+def test_distinct_unrepresentable_datums_are_not_equal():
+    """Equal ellipsoids do not erase distinct datum identities during equality."""
+    wkt = (
+        'GEOGCS["Custom",DATUM["First_unknown_datum",'
+        'SPHEROID["Bessel",6377397.155,299.1528128]],'
+        'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]'
+    )
+    first = CRS.from_wkt(wkt)
+    second = CRS.from_wkt(wkt.replace("First_unknown_datum", "Second_unknown_datum"))
+    assert first != second
+
+
+def test_authority_transform_does_not_export_wkt(monkeypatch):
+    """A copied authority CRS uses its code without exporting WKT.
+
+    Args:
+        monkeypatch: Pytest's attribute replacement fixture.
+    """
+    from terrio.rio.warp import _crs_text
+
+    crs = CRS(CRS.from_epsg(32633))
+
+    def refuse_export(self):
+        """Fail if authority selection invokes a WKT export.
+
+        Args:
+            self: The CRS whose export was requested.
+        """
+        raise AssertionError("unnecessary WKT export")
+
+    monkeypatch.setattr(CRS, "to_wkt", refuse_export)
+    assert _crs_text(crs) == "EPSG:32633"
+
+
+@pytest.mark.parametrize("method", ["to_dict", "to_proj4"])
+def test_datum_warning_points_at_public_caller(method):
+    """Both public parameter exporters attribute a lossy export warning to the caller.
+
+    Args:
+        method: The public export method.
+    """
+    crs = CRS.from_epsg(23031)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        getattr(crs, method)()
+    assert len(caught) == 1
+    assert caught[0].filename == __file__
+
+
+def test_parameter_getters_do_not_modify_crs_identity():
+    """Exporting a validated extension does not populate shared identity metadata."""
+    crs = CRS.from_epsg(3857)
+    before = dict(crs._info)
+    code = crs.to_epsg()
+    assert crs.to_dict()
+    assert crs.to_proj4()
+    assert crs._info == before
+    assert crs.to_epsg() == code
+
+
+@pytest.mark.parametrize("code,point", [(27700, (-0.1276, 51.5072)), (23031, (2, 48))])
+def test_gdal_wkt_with_authority_and_shift_keeps_the_explicit_operation(code, point):
+    """A GDAL-written shift remains authoritative even on a dataset CRS with an EPSG ID.
+
+    Args:
+        code: Authority definition used as the GDAL WKT source.
+        point: A longitude and latitude in the CRS's area.
+    """
+    osr = pytest.importorskip("osgeo.osr")
+    pyproj = pytest.importorskip("pyproj")
+
+    from terrio.rio.warp import _crs_text
+
+    reference = osr.SpatialReference()
+    reference.ImportFromEPSG(code)
+    reference.SetTOWGS84(10, 20, 30)
+    wkt = reference.ExportToWkt()
+    assert "TOWGS84[" in wkt
+    assert f'AUTHORITY["EPSG","{code}"]' in wkt
+    crs = CRS._from_dataset(CRS.from_wkt(wkt))
+    assert "TOWGS84[" in _crs_text(crs)
+    assert pyproj.CRS.from_wkt(wkt).is_bound
+    expected = pyproj.Transformer.from_crs(4326, wkt, always_xy=True).transform(*point)
+    np.testing.assert_allclose(coordinates(crs, point), expected, rtol=0, atol=1e-3)
