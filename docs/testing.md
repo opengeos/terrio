@@ -9,6 +9,14 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Python warning attribution
+
+`python/tests/test_native_warning_locations.py` checks warnings recorded in Rust
+through direct bindings and pyogrio wrappers. It verifies the caller's filename and
+line in functions and module-level code, module-specific error filters, and default
+once-per-location suppression. The shared warning bridge skips Terrio's Python
+frames using APIs available on Python 3.10 and later, without changing warning filters.
+
 ## Translate input-opening policy
 
 Translate input-opening policy is tested with `cargo test -p terrio --lib ops::translate::tests`
