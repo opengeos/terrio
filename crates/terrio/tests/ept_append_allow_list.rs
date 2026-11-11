@@ -54,11 +54,19 @@ fn interrupted_update(target: &Path, state: &str) {
     if state == "none" {
         return;
     }
+    if let Some(codec) = state.strip_prefix("live-") {
+        let mut metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(target).unwrap()).unwrap();
+        metadata["dataType"] = codec.into();
+        std::fs::write(target, serde_json::to_vec(&metadata).unwrap()).unwrap();
+    }
     let stage = target.parent().unwrap().join(".terrio-ept-append-0");
     std::fs::create_dir(&stage).unwrap();
-    if state == "committed" {
+    if state.starts_with("committed") {
         let mut metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(target).unwrap()).unwrap();
         metadata["recovered"] = true.into();
+        if let Some(codec) = state.strip_prefix("committed-") {
+            metadata["dataType"] = codec.into();
+        }
         std::fs::write(stage.join("ept.json"), serde_json::to_vec(&metadata).unwrap()).unwrap();
         std::fs::write(stage.join("COMMITTED"), b"").unwrap();
     } else {
@@ -93,11 +101,21 @@ fn append_respects_driver_policy_before_any_dataset_changes() {
     let source = dataset(dir.path(), "source", 50, EptDataType::Binary);
     let mut case = 0;
     for allowed in ["EPT", "EPT,LAS", "EPT,COPC", "LAS"] {
-        for state in ["none", "pending", "committed"] {
+        for (codec, state) in [
+            (EptDataType::Laszip, "none"),
+            (EptDataType::Laszip, "pending"),
+            (EptDataType::Laszip, "committed"),
+            (EptDataType::Binary, "committed-laszip"),
+            (EptDataType::Zstandard, "committed-laszip"),
+            (EptDataType::Binary, "committed-laz"),
+            (EptDataType::Binary, "committed-LASZIP"),
+            (EptDataType::Laszip, "live-laz"),
+            (EptDataType::Laszip, "live-LASZIP"),
+        ] {
             for convert in [false, true] {
                 for process in [false, true] {
                     case += 1;
-                    let target = dataset(dir.path(), &format!("target-{case}"), 100, EptDataType::Laszip);
+                    let target = dataset(dir.path(), &format!("target-{case}"), 100, codec);
                     interrupted_update(&target, state);
                     let before = snapshot(target.parent().unwrap());
                     if process {
@@ -122,7 +140,11 @@ fn append_respects_driver_policy_before_any_dataset_changes() {
                         assert!(matches!(result, Err(terrio::Error::Unsupported(_))), "{result:?}");
                     }
                     assert_eq!(snapshot(target.parent().unwrap()), before, "{allowed}, {state}, convert={convert}, process={process}");
-                    assert_eq!(pointcloud::read_points(target.to_str().unwrap(), &Default::default()).unwrap().len(), 100);
+                    // Alias spellings are invalid to the EPT reader, but policy must still
+                    // recognize the underlying codec before discarding a pending update.
+                    if !state.starts_with("live-") {
+                        assert_eq!(pointcloud::read_points(target.to_str().unwrap(), &Default::default()).unwrap().len(), 100);
+                    }
                 }
             }
         }

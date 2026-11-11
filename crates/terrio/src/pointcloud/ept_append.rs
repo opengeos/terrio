@@ -388,9 +388,8 @@ impl std::fmt::Debug for EptAppender {
     }
 }
 
-/// Completes the updates of a dataset interrupted while they were moved into place, and removes
-/// those interrupted before they were complete.
-fn recover(dir: &Path) -> Result<()> {
+/// Staged updates in publication order, including unfinished ones that recovery discards.
+fn staged_updates(dir: &Path) -> Result<Vec<PathBuf>> {
     let entries = std::fs::read_dir(dir).map_err(|e| io_err(dir, e))?;
     let mut staged: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
@@ -401,11 +400,34 @@ fn recover(dir: &Path) -> Result<()> {
     // In the order they were made: by their number, not their name (`-10` after `-9`).
     let number = |p: &PathBuf| p.file_name().and_then(|n| n.to_str()?.rsplit('-').next()?.parse::<u64>().ok()).unwrap_or(u64::MAX);
     staged.sort_by_key(number);
+    Ok(staged)
+}
+
+/// Checks both live and committed metadata before recovery can change any dataset file.
+fn check_append_drivers(dir: &Path, name: &str) -> Result<Vec<PathBuf>> {
+    super::read::check_driver("EPT", name)?;
+    let metadata = read_json(&dir.join("ept.json"))?;
+    check_tile_drivers(metadata["dataType"].as_str().unwrap_or("laszip"), name)?;
+    let staged = staged_updates(dir)?;
+    for stage in &staged {
+        let metadata = stage.join("ept.json");
+        // A partly published update can already have moved its metadata into the live dataset.
+        // An uncommitted update is discarded, so its incomplete metadata is not parsed.
+        if stage.join(COMMITTED).exists() && metadata.exists() {
+            let metadata = read_json(&metadata)?;
+            check_tile_drivers(metadata["dataType"].as_str().unwrap_or("laszip"), name)?;
+        }
+    }
+    Ok(staged)
+}
+
+/// Completes the checked updates interrupted while being published, and discards unfinished ones.
+fn recover(dir: &Path, staged: &[PathBuf]) -> Result<()> {
     for s in staged {
         if s.join(COMMITTED).exists() {
-            move_in(dir, &s)?;
+            move_in(dir, s)?;
         } else {
-            std::fs::remove_dir_all(&s).map_err(|e| io_err(&s, e))?;
+            std::fs::remove_dir_all(s).map_err(|e| io_err(s, e))?;
         }
     }
     Ok(())
@@ -493,7 +515,7 @@ const STATS_KEYS: [&str; 7] = ["count", "minimum", "maximum", "mean", "variance"
 
 /// LASzip EPT tiles require both access to the LAS-family parser and the LAZ driver.
 fn check_tile_drivers(data_type: &str, name: &str) -> Result<()> {
-    if data_type == "laszip" {
+    if EptDataType::parse(data_type)? == EptDataType::Laszip {
         super::read::check_las_allowed(name)?;
         super::read::check_driver("LAZ", name)?;
     }
@@ -513,13 +535,12 @@ impl EptAppender {
         if !dir.join("ept.json").exists() {
             return Err(Error::InvalidArgument(format!("'{}' is not an EPT dataset: it has no ept.json", dir.display())));
         }
-        // Refuse the dataset and its tile codec before taking the lock or publishing/discarding
-        // an interrupted update. Appends keep the dataset's data type unchanged.
-        super::read::check_driver("EPT", path)?;
-        let before = read_json(&dir.join("ept.json"))?;
-        check_tile_drivers(before["dataType"].as_str().unwrap_or("laszip"), path)?;
+        // Check staged metadata too: even an altered committed update must not publish a codec
+        // the caller disallows. Recheck while locked in case another append just finished.
+        check_append_drivers(&dir, path)?;
         let lock = Lock::take(&dir)?;
-        recover(&dir)?;
+        let staged = check_append_drivers(&dir, path)?;
+        recover(&dir, &staged)?;
         let json = read_json(&dir.join("ept.json"))?;
         // The dataset as the reader sees it: its schema, data type and CRS.
         let reader = super::ept::EptReader::open(&dir.join("ept.json").to_string_lossy())?;
