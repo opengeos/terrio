@@ -393,7 +393,12 @@ class CRS(Mapping[str, Any]):
         Returns:
             list | None: The root node.
         """
-        return _parse_wkt(self.wkt) if self.wkt else None
+        wkt = self.wkt
+        cached = self.__dict__.get("_parsed_root")
+        if cached is None or cached[0] != wkt:
+            cached = (wkt, _parse_wkt(wkt) if wkt else None)
+            self._parsed_root = cached
+        return cached[1]
 
     @property
     def is_valid(self) -> bool:
@@ -730,7 +735,11 @@ class CRS(Mapping[str, Any]):
             # Export that effective definition too, including when the caller changed
             # its spheroid but retained the outer authority. Explicit operations above
             # and validated PROJ extensions retain their own parameters.
-            root = _parse_wkt(_terrio.crs_info(f"EPSG:{code}")["wkt"])
+            cached = self.__dict__.get("_registry_root")
+            if cached is None or cached[0] != code:
+                cached = (code, _parse_wkt(_terrio.crs_info(f"EPSG:{code}")["wkt"]))
+                self._registry_root = cached
+            root = cached[1]
         return _wkt_to_proj(root) if root is not None else {}
 
     def _native_projjson(self) -> dict[str, Any]:

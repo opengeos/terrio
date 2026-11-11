@@ -420,6 +420,50 @@ def test_declared_projected_authority_exports_its_effective_spheroid():
         np.testing.assert_allclose(coordinates(back, (16, 30)), expected, rtol=0, atol=1e-6)
 
 
+def test_registry_parameter_exports_reuse_native_lookup(monkeypatch):
+    """Repeated parameter exports reuse their parsed registry definition.
+
+    Args:
+        monkeypatch: Scoped native metadata lookup replacement.
+    """
+    from terrio import _terrio
+
+    crs = CRS.from_wkt(CRS.from_epsg(32633).to_wkt())
+    original = _terrio.crs_info
+    calls = []
+
+    def observed(definition):
+        """Record only the registry lookup used for parameter export.
+
+        Args:
+            definition: Native CRS input.
+
+        Returns:
+            dict: Native metadata.
+        """
+        if definition == "EPSG:32633":
+            calls.append(definition)
+        return original(definition)
+
+    monkeypatch.setattr(_terrio, "crs_info", observed)
+    root = crs._root
+    for _ in range(100):
+        assert crs.to_dict()["zone"] == 33
+        assert "+zone=33" in crs.to_proj4()
+        assert crs._root is root
+    assert calls == ["EPSG:32633"]
+
+
+def test_etrs89_export_reports_loss_of_datum_identity():
+    """An ellipsoid-only ETRS89 export explicitly reports its omitted datum identity."""
+    crs = CRS.from_epsg(25832)
+    with pytest.warns(UserWarning, match="omit datum") as caught:
+        parameters = crs.to_dict()
+    assert len(caught) == 1
+    assert "datum" not in parameters
+    assert parameters["a"] == 6378137
+
+
 def test_distinct_unrepresentable_datums_are_not_equal():
     """Equal ellipsoids do not erase distinct datum identities during equality."""
     wkt = (
@@ -481,7 +525,7 @@ def test_parameter_getters_do_not_modify_crs_identity():
 
 
 @pytest.mark.parametrize("code,point", [(27700, (-0.1276, 51.5072)), (23031, (2, 48))])
-def test_gdal_wkt_with_authority_and_shift_keeps_the_explicit_operation(code, point):
+def test_gdal_serialized_synthetic_shift_keeps_the_explicit_operation(code, point):
     """A GDAL-written shift remains authoritative even on a dataset CRS with an EPSG ID.
 
     Args:

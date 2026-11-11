@@ -100,6 +100,7 @@ impl Params {
     }
 
     /// Whether a parameter is present, or a recognized boolean switch is enabled.
+    /// Call `validate_flags` first: invalid switch values otherwise read as disabled.
     pub fn has(&self, key: &str) -> bool {
         self.items
             .iter()

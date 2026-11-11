@@ -275,8 +275,10 @@ Transforms retain authority-based operation selection for unbound WKT and datase
 CRSs. WKT containing an explicit `TOWGS84`, `BOUNDCRS` or bound transformation keeps
 that operation even when it also declares an EPSG code. This follows PROJ's bound
 CRS interpretation and can differ from rasterio's authority normalization of
-GDAL-written WKT1. The GDAL-written EPSG:27700 and EPSG:23031 bound fixtures are
-checked against PROJ with a 1 mm tolerance.
+GDAL-written WKT1. Tests add synthetic shifts to EPSG:27700 and EPSG:23031,
+serialize the resulting WKT with GDAL and compare it against PROJ within 1 mm.
+These optional reference tests require both GDAL Python bindings and pyproj;
+the real-data CI job installs them, while the ordinary Python job can skip them.
 
 PROJ strings supplied as CRSs follow PROJ's CRS import rules. For polar
 `+proj=stere` with `+lat_0=90` or `-90`, an explicit `+lat_ts` selects the
