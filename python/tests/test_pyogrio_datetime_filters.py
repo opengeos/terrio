@@ -3,12 +3,43 @@
 import functools
 import sys
 import warnings
+from types import SimpleNamespace
 
 import pytest
 
 pd = pytest.importorskip("pandas")
 
 import terrio.pyogrio as tpg  # noqa: E402
+
+
+def test_precision_warning_from_pandas_fallback_points_at_caller(monkeypatch):
+    """Older stdlib parsers still report nanosecond loss at the public caller.
+
+    Args:
+        monkeypatch: Scoped replacement of Terrio's stdlib parser alias.
+    """
+
+    def reject(value):
+        """Simulate a stdlib parser that rejects this ISO representation.
+
+        Args:
+            value: The ISO string being parsed.
+
+        Raises:
+            ValueError: Always, to exercise the real pandas fallback.
+        """
+        raise ValueError(f"unsupported ISO representation: {value}")
+
+    monkeypatch.setattr(tpg, "_dt", SimpleNamespace(datetime=SimpleNamespace(fromisoformat=reject)))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        value = tpg._parse_iso_datetime(
+            pd, "2024-01-01T12:00:00.123456789+01:00", warn_precision_loss=True
+        )
+    assert value.microsecond == 123456
+    assert len(caught) == 1
+    assert "Discarding nonzero nanoseconds" in str(caught[0].message)
+    assert caught[0].filename == __file__
 
 
 def record_filter_changes(calls, frame, event, _argument):

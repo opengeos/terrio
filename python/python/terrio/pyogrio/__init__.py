@@ -347,7 +347,8 @@ def _parse_iso_datetime(pd, value: str, *, warn_precision_loss: bool = False) ->
         parsed = _dt.datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
     except (AttributeError, TypeError, ValueError):
         # A singleton cannot mix offsets or emit the mixed-timezone warning.
-        return pd.to_datetime([value], format="ISO8601")[0].to_pydatetime(warn=warn_precision_loss)
+        # The shared bridge below reports precision loss at the caller on both paths.
+        parsed = pd.to_datetime([value], format="ISO8601")[0].to_pydatetime(warn=False)
     if warn_precision_loss and _SUBMICROSECOND_ISO.search(value):
         # Offset inspection discards this temporary value; Python output must retain the
         # precision diagnostic that pandas' to_pydatetime gives for the same conversion.
