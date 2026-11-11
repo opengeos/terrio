@@ -584,7 +584,7 @@ fn judged_by_content(name: &str, generic: bool) -> bool {
 /// is replaced with the dataset's name (without its query, which may hold a signature); a message
 /// that names neither starts with it. The variant is kept, but for the format libraries' errors,
 /// which become [`Error::InvalidData`] (the Python class they already map to).
-fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
+pub(crate) fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
     if vfs::Location::parse(path).is_local() {
         return e;
     }

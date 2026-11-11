@@ -1063,6 +1063,21 @@ mod tests {
         assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "PointZM");
     }
 
+    #[cfg(remote)]
+    #[test]
+    fn remote_flatgeobuf_reports_declared_z_without_features() {
+        // The file is downloaded once; its header declares Z, and no feature can show it.
+        let bytes = empty_dimension_fixture(true, false);
+        let (base, opened) = crate::http::test_server(bytes.clone());
+        crate::open_vector(&format!("{base}/empty.fgb"), &Default::default()).unwrap();
+        let (base, exported) = crate::http::test_server(bytes);
+        let schema = crate::ops::vector_schema::export_schema_path(&format!("{base}/empty.fgb"), &[]).unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "PointZ");
+        // Requests as opening the file makes them: the schema route does not download it again.
+        assert!(!opened.lock().unwrap().is_empty());
+        assert_eq!(exported.lock().unwrap().len(), opened.lock().unwrap().len());
+    }
+
     #[test]
     fn header_reports_declared_dimensions() {
         for (has_z, has_m) in [(false, false), (true, false), (false, true), (true, true)] {

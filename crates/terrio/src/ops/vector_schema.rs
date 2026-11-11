@@ -984,8 +984,16 @@ pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
         return Ok(OgrSchema { layers: declared.iter().map(declared_schema).collect() });
     }
     let options = crate::VectorOpenOptions { layers: layers.to_vec(), ..Default::default() };
+    let flatgeobuf = crate::formats::VectorDriver::FlatGeobuf;
+    // A remote FlatGeobuf is downloaded once: it is opened, and its header read, from that local copy.
+    if !crate::vfs::Location::parse(path).is_local() && crate::formats::VectorDriver::for_extension(path) == Some(flatgeobuf) {
+        let local = crate::vfs::resolve(path)?;
+        let ds = crate::open_vector(local.as_str(), &options).map_err(|e| crate::dataset::naming_dataset(e, path, local.as_str()))?;
+        let declared = if ds.driver == flatgeobuf { path_declared_dims(local.as_str()) } else { Vec::new() };
+        return Ok(export_schema_with_dims(&ds.layers, Some(ds.driver), &declared));
+    }
     let ds = crate::open_vector(path, &options)?;
-    let declared = if ds.driver == crate::formats::VectorDriver::FlatGeobuf { path_declared_dims(path) } else { Vec::new() };
+    let declared = if ds.driver == flatgeobuf { path_declared_dims(path) } else { Vec::new() };
     Ok(export_schema_with_dims(&ds.layers, Some(ds.driver), &declared))
 }
 
