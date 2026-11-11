@@ -19,6 +19,17 @@ frames using APIs available on Python 3.10 and later, without changing warning f
 Attribution stops at the first frame outside the Terrio package, including a
 third-party intermediary when one calls Terrio on the application's behalf.
 
+`python/tests/test_pyogrio_datetime_filters.py` checks pandas 2 and 3 datetime parsing without
+Terrio changing warning filters, including invalid input after mixed offsets and pandas-only
+ISO forms. The pandas 2 pre-check visits every distinct string so an invalid value retains its
+original diagnostic; pandas 3 uses its parser directly. This adds a scan on pandas 2.
+On Linux with CPython 3.12.7 and pandas 2.2.3, three-run median times for one million timestamps
+were 0.0766 s before and 0.1208 s after for one repeated timestamp, and 5.2305 s before and
+6.1575 s after for distinct timestamps. Inputs used `+01:00`, with distinct values at one-second
+intervals starting 2024-01-01 and a 1,000-value warmup. This measures datetime conversion alone,
+excluding file I/O and dataframe construction, against the previous filter-based parser.
+It documents the additional CPU cost and is not a timing gate or an end-to-end read benchmark.
+
 ## Translate input-opening policy
 
 Translate input-opening policy is tested with `cargo test -p terrio --lib ops::translate::tests`

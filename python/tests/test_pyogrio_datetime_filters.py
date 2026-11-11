@@ -103,7 +103,7 @@ def test_invalid_mixed_datetime_retains_its_diagnostic_without_filter_changes():
     )
     calls = []
     previous = sys.getprofile()
-    with pytest.warns(UserWarning, match="Error parsing datetimes"):
+    with pytest.warns(UserWarning, match="Error parsing datetimes") as caught:
         sys.setprofile(functools.partial(record_filter_changes, calls))
         try:
             actual = tpg._parse_datetime(values, False, False)
@@ -111,6 +111,7 @@ def test_invalid_mixed_datetime_retains_its_diagnostic_without_filter_changes():
             sys.setprofile(previous)
     assert actual.equals(values)
     assert calls == []
+    assert not [warning for warning in caught if issubclass(warning.category, FutureWarning)]
 
 
 @pytest.mark.parametrize("extra", ["2024", "2024-01", "NaT", ""])

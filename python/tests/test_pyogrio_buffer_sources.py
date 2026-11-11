@@ -164,6 +164,13 @@ def test_signature_free_content_keeps_a_clear_refusal():
         tpg.read_dataframe(b"WKT,id\nPOINT (10 46),1\n")
 
 
+def test_top_level_json_arrays_are_refused_as_invalid_geojson():
+    """Shared identification keeps the existing GeoJSON diagnostic for a feature array."""
+    data = b'[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}]'
+    with pytest.raises(DataSourceError, match="GeoJSON: no type"):
+        tpg.read_dataframe(data)
+
+
 @pytest.mark.parametrize(
     "extension,driver", [("gpkg", "GPKG"), ("fgb", "FlatGeobuf"), ("parquet", "Parquet")]
 )
