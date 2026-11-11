@@ -104,7 +104,7 @@ DIFFERS = "differs"
 # A case whose reference values could not be computed (no coordinates to compare), reported apart.
 NOT_COMPARED = "not compared"
 
-GDAL_FREE_SUITES = frozenset(("pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write", "citygml-write", "xlsx-workbook"))
+GDAL_FREE_SUITES = frozenset(("webp-writer", "pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write", "citygml-write", "xlsx-workbook"))
 
 
 @dataclasses.dataclass
@@ -3266,16 +3266,19 @@ def suite_oapif(ctx):
 
 
 def suite_webp_writer(ctx):
-    s = Suite("webp-writer", "WebP creation options", "GDAL 3.13.3",
+    code, version, _ = run([sys.executable, "-c", "import rasterio; print(rasterio.__gdal_version__)"])
+    reference = f"GDAL {version.strip()} (rasterio)" if code == 0 else "GDAL (rasterio unavailable)"
+    s = Suite("webp-writer", "WebP creation options", reference,
               "Default/explicit lossless pixels are exact; lossy quality changes bytes and pixels, "
               "with exact alpha and independent GDAL decoding, including real Landsat RGB. "
               "Lossy encoder bytes, size and PSNR are not compared with libwebp.")
     code, out, err = run([sys.executable, "-m", "pytest", "-q",
                           str(ROOT / "python/tests/test_webp_writer.py")],
                          {"TERRIO_TEST_DATA": str(ctx.data)})
-    s.cases.append(Case("WEBP", "path/memory options and Landsat decoding",
+    s.cases.append(Case("WEBP GDAL decoding", "path/memory options and Landsat decoding",
                         IDENTICAL if code == 0 and "skipped" not in out else DIFFERS,
-                        tail(err or out)))
+                        "Exact decoding/alpha comparisons and creation-option assertions; "
+                        "GDAL encoder parity is not asserted. " + tail(err or out)))
     return s
 
 

@@ -53,7 +53,9 @@ with optimized Huffman tables. Other data types are rounded and saturated to Byt
 lossless, every sample kept, including RGB under fully transparent pixels. `LOSSLESS=NO`
 or `QUALITY` without `LOSSLESS=YES` selects lossy VP8 encoding; `QUALITY` ranges from 0 to
 100 (default 75). Explicit `LOSSLESS=YES` overrides quality. Alpha is kept exactly, including
-in lossy output. An alpha band that is opaque everywhere is left out, so the file reads back
+in lossy output. `LOSSLESS` accepts YES/NO, TRUE/FALSE, ON/OFF and 1/0, in any case;
+unrecognized values are refused, like GeoTIFF's `WEBP_LOSSLESS` (stricter than GDAL's parser).
+An alpha band that is opaque everywhere is left out, so the file reads back
 as 3 bands. Both encoders are pure Rust; the lossy encoder is shared with GeoTIFF WebP tiles.
 Its size and PSNR at a given quality differ from GDAL's libwebp. `EXACT` (0 or 1) is validated
 but does not change encoding: lossless output always keeps transparent RGB, and lossy RGB

@@ -3,7 +3,7 @@
 A tile server encodes its tiles with rasterio's writers, `MemoryFile().open(driver="WEBP", ...)`
 with the creation options `quality` and `lossless`. terrio had no WEBP writer, so every WEBP tile
 failed. Default and explicit lossless output retain exact pixels. Requested lossy output
-uses VP8 with exact alpha; GDAL independently decodes the files. GDAL 3.13.3 is the reference;
+uses VP8 with exact alpha; GDAL independently decodes the files. Locally validated with GDAL 3.13.3;
 lossy bytes and rate/distortion are not expected to match libwebp. Skipped without rasterio.
 """
 
@@ -133,7 +133,9 @@ def test_requested_lossy_quality_changes_bytes_and_keeps_alpha(tmp_path, rgba):
 def test_lossy_opaque_alpha_is_omitted():
     rgb, _, _ = _arrays()
     data = np.concatenate([rgb, np.full((1, 64, 64), 255, "uint8")])
-    decoded = _gdal_read(_encode(MemoryFile, "WEBP", data, lossless=False))
+    encoded = _encode(MemoryFile, "WEBP", data, lossless=False)
+    assert encoded[8:16] == b"WEBPVP8 "
+    decoded = _gdal_read(encoded)
     assert decoded.shape == rgb.shape
 
 

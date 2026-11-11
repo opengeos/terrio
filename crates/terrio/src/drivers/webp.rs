@@ -12,6 +12,8 @@
 //! encoder. QUALITY ranges from 0 to 100 (default 75); alpha is stored exactly in an ALPH chunk.
 //! Its rate/distortion tradeoff differs from GDAL's libwebp: equal quality settings do not
 //! imply equal bytes, size or PSNR.
+//! `LOSSLESS` accepts YES/NO, TRUE/FALSE, ON/OFF and 1/0 (case-insensitive); other values
+//! are argument errors, like GeoTIFF's WEBP_LOSSLESS. This is stricter than GDAL's boolean parser.
 //!
 //! - `EXACT` is checked as GDAL checks it (0 or 1) and has no effect: terrio always keeps the RGB
 //!   values under fully transparent pixels in lossless output, as GDAL does with `EXACT=1`. With GDAL's default,
@@ -126,6 +128,12 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, options: &[(St
 /// Encodes opaque RGB with VP8 and keeps any transparency in a separate ALPH chunk.
 /// Shared by standalone WebP files and GeoTIFF WebP tiles; GDAL 3.13.3 can read both.
 pub(crate) fn encode_lossy(mut rgba: Vec<u8>, width: usize, height: usize, quality: f32) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 || width > MAX_SIZE || height > MAX_SIZE {
+        return Err(Error::InvalidArgument("WebP dimensions must be between 1 and 16383".into()));
+    }
+    if rgba.len() != width * height * 4 {
+        return Err(Error::InvalidData("WebP RGBA buffer length differs from image dimensions".into()));
+    }
     let alpha = rgba.as_chunks::<4>().0.iter().any(|p| p[3] != 255).then(|| {
         rgba.as_chunks_mut::<4>()
             .0
@@ -240,6 +248,10 @@ mod tests {
             assert!(pixels.as_chunks::<4>().0.iter().enumerate().any(|(i, p)| p[..3] != [values[i], values[n + i], values[2 * n + i]]));
         }
         assert!(encode(&r, &co(&[("LOSSLESS", "maybe")])).unwrap_err().to_string().contains("LOSSLESS"));
+        assert_eq!(encode(&r, &co(&[("QUALITY", "nan")])).unwrap(), encode(&r, &co(&[("QUALITY", "75")])).unwrap());
+        assert!(encode_lossy(Vec::new(), 0, 1, 75.0).is_err());
+        assert!(encode_lossy(Vec::new(), 1, 0, 75.0).is_err());
+        assert!(encode_lossy(Vec::new(), 1, 1, 75.0).is_err());
     }
 
     /// A WebP file, not another format's bytes, holding the raster's exact RGB samples: the
