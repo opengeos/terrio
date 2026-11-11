@@ -2254,7 +2254,7 @@ impl TiffRaster {
             .map_err(|error| {
                 // An immutable byte buffer cannot suffer a transport failure: reaching its
                 // end while parsing metadata means malformed input. Live reads keep I/O causes.
-                if uploaded && error.kind() == std::io::ErrorKind::UnexpectedEof {
+                if uploaded && matches!(error.kind(), std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::InvalidData) {
                     Error::InvalidData(format!("TIFF: {error}"))
                 } else {
                     Error::Io(error)

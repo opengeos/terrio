@@ -12,6 +12,17 @@ fn malformed_uploaded_tiff_metadata_is_invalid_data() {
         assert!(matches!(error, terrio::Error::InvalidData(_)), "{error:?}");
         assert!(error.to_string().contains("TIFF:"), "{error}");
     }
+    // BigTIFF's declared directory count overflows its next-directory offset.
+    let mut overflow = b"II+\0\x08\0\0\0".to_vec();
+    overflow.extend(16u64.to_le_bytes());
+    overflow.extend(u64::MAX.to_le_bytes());
+    overflow.resize(24 + 4096 * 20, 0);
+    let error = match terrio::LazyRaster::from_tiff_bytes(overflow) {
+        Err(error) => error,
+        Ok(_) => panic!("overflowed directory must fail"),
+    };
+    assert!(matches!(error, terrio::Error::InvalidData(_)), "{error:?}");
+    assert!(error.to_string().contains("overflow"), "{error}");
 }
 
 #[cfg(fs)]
