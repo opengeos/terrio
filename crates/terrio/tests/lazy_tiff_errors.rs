@@ -5,6 +5,18 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
+use std::time::{Duration, Instant};
+
+#[test]
+fn short_non_tiff_inputs_are_not_matches() {
+    let dir = tempfile::tempdir().unwrap();
+    for bytes in [b"".as_slice(), b"abc"] {
+        let path = dir.path().join(format!("short-{}.tif", bytes.len()));
+        std::fs::write(&path, bytes).unwrap();
+        assert!(matches!(terrio::LazyRaster::open_tiff(path.to_str().unwrap()), Ok(None)));
+        assert!(matches!(terrio::LazyRaster::from_tiff_bytes(bytes.to_vec()), Ok(None)));
+    }
+}
 
 #[test]
 fn remote_directory_errors_keep_their_cause() {
@@ -17,10 +29,22 @@ fn remote_directory_errors_keep_their_cause() {
         ),
     ] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let url = format!("http://{}/image.tif", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
             for request in 0..2 {
-                let (mut stream, _) = listener.accept().unwrap();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        other => panic!("expected HTTP request {request}: {other:?}"),
+                    }
+                };
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 loop {
                     let mut line = String::new();

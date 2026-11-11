@@ -210,7 +210,8 @@ pub(crate) fn check_tiff_allowed(path: &std::path::Path, shown: &str) -> crate::
 }
 
 /// Reads the georeferencing tags of a TIFF stream's first image, and finds the palette images
-/// among all its images. Returns `None` when the stream is not a TIFF.
+/// among all its images. Returns `None` when the stream is not a TIFF or cannot be read;
+/// use `try_read_geo_tags_from` to distinguish these cases.
 pub(crate) fn read_geo_tags_from<R: Read + Seek>(f: R) -> Option<GeoTags> {
     try_read_geo_tags_from(f).ok().flatten()
 }
@@ -265,7 +266,7 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> std::
         u16_at(&b) as u64
     };
     let entry_len = if big { 20 } else { 12 };
-    let mut entries = vec![0u8; (count as usize).min(4096) * entry_len];
+    let mut entries = vec![0u8; count.min(4096) as usize * entry_len];
     f.read_exact(&mut entries)?;
 
     let mut tags: Vec<(u16, Values)> = Vec::new();
@@ -370,6 +371,7 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> std::
     // The other images: overviews and masks.
     let mut palette_offsets: Vec<u64> = palette_offset.into_iter().collect();
     let mut seen = vec![ifd_offset];
+    skip_remaining_ifd_entries(&mut f, count, entry_len)?;
     let mut next = read_offset(&mut f, big, le)?;
     while next != 0 && seen.len() < MAX_IFDS && !seen.contains(&next) {
         let offset = next;
@@ -773,6 +775,19 @@ fn read_offset<R: Read>(f: &mut R, big: bool, le: bool) -> std::io::Result<u64> 
     }
 }
 
+/// Seeks past entries outside the bounded decoded prefix to the actual next-IFD pointer.
+fn skip_remaining_ifd_entries<R: Seek>(f: &mut R, count: u64, entry_len: usize) -> std::io::Result<()> {
+    if count > 4096 {
+        let position = f.stream_position()?;
+        let next = (count - 4096)
+            .checked_mul(entry_len as u64)
+            .and_then(|bytes| position.checked_add(bytes))
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "TIFF directory offset overflow"))?;
+        f.seek(SeekFrom::Start(next))?;
+    }
+    Ok(())
+}
+
 /// Looks for a palette `PhotometricInterpretation` in the IFD at `offset`, recording its value's
 /// offset. Returns the offset of the next IFD.
 fn palette_offset_in_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: bool, out: &mut Vec<u64>) -> std::io::Result<u64> {
@@ -787,7 +802,7 @@ fn palette_offset_in_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: 
     };
     let start = offset + if big { 8 } else { 2 };
     let entry_len = if big { 20 } else { 12 };
-    let mut entries = vec![0u8; (count as usize).min(4096) * entry_len];
+    let mut entries = vec![0u8; count.min(4096) as usize * entry_len];
     f.read_exact(&mut entries)?;
     for (i, e) in entries.chunks(entry_len).enumerate() {
         let value = if big { 12 } else { 8 };
@@ -795,6 +810,7 @@ fn palette_offset_in_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: 
             out.push(start + (i * entry_len + value) as u64);
         }
     }
+    skip_remaining_ifd_entries(f, count, entry_len)?;
     read_offset(f, big, le)
 }
 
@@ -1628,6 +1644,62 @@ impl<R: Seek> Seek for PatchedReader<R> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn metadata_follows_large_ifd_chains_after_the_decoded_prefix() {
+        fn number(out: &mut Vec<u8>, value: u64, width: usize, little_endian: bool) {
+            if little_endian {
+                out.extend_from_slice(&value.to_le_bytes()[..width]);
+            } else {
+                out.extend_from_slice(&value.to_be_bytes()[8 - width..]);
+            }
+        }
+        for big in [false, true] {
+            for le in [false, true] {
+                let (header_len, count_len, entry_len, pointer_len, value_offset) = if big { (16, 8, 20, 8, 12) } else { (8, 2, 12, 4, 8) };
+                let count = 5000;
+                let second = header_len + count_len + count * entry_len + pointer_len;
+                let mut bytes = Vec::new();
+                bytes.extend_from_slice(if le { b"II" } else { b"MM" });
+                number(&mut bytes, if big { 43 } else { 42 }, 2, le);
+                if big {
+                    number(&mut bytes, 8, 2, le);
+                    number(&mut bytes, 0, 2, le);
+                }
+                number(&mut bytes, header_len as u64, pointer_len, le);
+                for next in [second, 0] {
+                    number(&mut bytes, count as u64, count_len, le);
+                    for entry in 0..count {
+                        let palette = entry == 0;
+                        number(&mut bytes, if palette { u64::from(PHOTOMETRIC) } else { 50000 }, 2, le);
+                        number(&mut bytes, if palette { 3 } else { 4 }, 2, le);
+                        number(&mut bytes, 1, if big { 8 } else { 4 }, le);
+                        // A SHORT is left-aligned in the inline field even in big-endian TIFFs.
+                        if palette {
+                            number(&mut bytes, 3, 2, le);
+                            bytes.resize(bytes.len() + pointer_len - 2, 0);
+                        } else {
+                            number(&mut bytes, 0, pointer_len, le);
+                        }
+                    }
+                    number(&mut bytes, next as u64, pointer_len, le);
+                }
+                let tags = try_read_geo_tags_from(std::io::Cursor::new(bytes)).unwrap().unwrap();
+                assert_eq!(
+                    tags.palette_photometric_offsets,
+                    [(header_len + count_len + value_offset) as u64, (second + count_len + value_offset) as u64],
+                    "big={big}, le={le}",
+                );
+            }
+        }
+        // A forged BigTIFF count cannot wrap the seek to an earlier file position.
+        let mut bytes = b"II\x2b\0\x08\0\0\0\x10\0\0\0\0\0\0\0".to_vec();
+        bytes.extend_from_slice(&u64::MAX.to_le_bytes());
+        bytes.resize(bytes.len() + 4096 * 20, 0);
+        let error = try_read_geo_tags_from(std::io::Cursor::new(bytes)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("directory offset overflow"));
+    }
 
     #[test]
     fn metadata_read_keeps_read_and_seek_errors() {
