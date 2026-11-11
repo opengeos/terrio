@@ -1128,6 +1128,20 @@ mod tests {
         assert!(!requests.lock().unwrap().is_empty());
     }
 
+    #[cfg(remote)]
+    #[test]
+    fn remote_flatgeobuf_with_query_reports_declared_z() {
+        // A signed URL keeps its extension before the query: the file is still read as FlatGeobuf.
+        let bytes = empty_dimension_fixture(true, false);
+        let (base, opened) = crate::http::test_server(bytes.clone());
+        crate::open_vector(&format!("{base}/empty.fgb?sig=abc"), &Default::default()).unwrap();
+        let (base, exported) = crate::http::test_server(bytes);
+        let schema = crate::ops::vector_schema::export_schema_path(&format!("{base}/empty.fgb?sig=abc"), &[]).unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "PointZ");
+        assert!(!opened.lock().unwrap().is_empty());
+        assert_eq!(exported.lock().unwrap().len(), opened.lock().unwrap().len());
+    }
+
     #[test]
     fn declared_dimensions_show_for_gdal_magic_bytes() {
         // GDAL writes the magic's version byte as 1 (terrio's MAGIC has 0): the bytes route reads its header too.
