@@ -1109,6 +1109,20 @@ mod tests {
 
     #[cfg(remote)]
     #[test]
+    fn remote_flatgeobuf_without_extension_keeps_the_general_route() {
+        // Known limit: a remote FlatGeobuf is recognised by its URL's file name extension. Without
+        // one, the download is named without an extension and no driver recognises it, for schema
+        // export as for open_vector.
+        let (base, _) = crate::http::test_server(empty_dimension_fixture(true, false));
+        let url = format!("{base}/layer?format=fgb");
+        let opened = crate::open_vector(&url, &Default::default()).unwrap_err().to_string();
+        let exported = crate::ops::vector_schema::export_schema_path(&url, &[]).unwrap_err().to_string();
+        assert!(exported.contains("format not recognized"), "{exported}");
+        assert!(opened.contains("format not recognized"), "{opened}");
+    }
+
+    #[cfg(remote)]
+    #[test]
     fn export_schema_path_honours_the_asset_read_policy() {
         // Under a remote STAC document, a cross-origin FlatGeobuf read with ambient credentials is
         // refused by open_vector; the schema route must refuse it the same way, before any download.

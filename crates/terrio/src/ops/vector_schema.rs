@@ -970,7 +970,10 @@ pub fn export_schema_with_dims(
 /// `gdal vector export-schema` exports it. Local GeoPackages are described from their tables'
 /// declarations (exact column types, `NOT NULL` and `UNIQUE` constraints and defaults, the
 /// geometry column and its Z/M flags); other datasets are read and described by
-/// [`export_schema`].
+/// [`export_schema`]. A local or remote FlatGeobuf, or a zip whose member is one, reports the Z and M
+/// its header declares, even with no features. A remote FlatGeobuf is recognised by its
+/// URL's file name extension: a URL without one (`layer?format=fgb`) is refused as an unrecognised
+/// format, as `open_vector` refuses it.
 pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
     #[cfg(feature = "sqlite")]
     if crate::formats::VectorDriver::for_extension(path) == Some(crate::formats::VectorDriver::GPKG)
