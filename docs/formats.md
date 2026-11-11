@@ -115,12 +115,13 @@ scope, whose value applies on its thread instead of the environment's; any other
 invalid argument naming the option. A raster they refuse is a resource error naming the option,
 raised when it is opened: by `open`, `open_raster`, `open_raster_lazy` and `LazyRaster::open`, the
 format constructors (`LazyRaster::open_tiff`, `from_tiff_bytes`, `from_tiff_shared_bytes`,
-`from_sparse`, `from_zarr_objects`, `from_tile_archive`, with or without explicit limits), the
-opens of bytes in `terrio::memory`, the VRT opens (pansharpened VRTs included, and
-`VrtDataset::materialize` before it reads any source), the catalog opens and the GDAL backend.
+`from_sparse`, `from_zarr_objects`, `from_tile_archive`, with or without explicit limits), a tile
+archive's own opens (`tiles::open_dataset`, `TileArchive::into_dataset`), the opens of bytes in
+`terrio::memory`, the VRT opens (pansharpened VRTs included, and `VrtDataset::materialize` before
+it reads any source), the catalog opens and the GDAL backend.
 The sources a VRT or a catalog opens are rasters opened too: each is checked when it is opened, a
 VRT's when a read first needs it. Readers that read a header first refuse a raster before decoding
-any of its pixels. Esri ASCII and GRASS ASCII grids, PCRaster, DTED and Esri binary grids are
+any of its pixels. Esri ASCII and GRASS ASCII grids, `.map` grids, DTED and Esri binary grids are
 refused once read, and so are XYZ grids, whose size is known only from their points. Operations
 that open a raster refuse it the same way, `info` included. These bounds and the checks above are
 independent of `TERRIO_TIFF_MAX_CHUNK_BYTES`, which bounds each decoded chunk, and of
