@@ -774,7 +774,11 @@ pub(crate) mod codec {
             RasterDriver::GPKG => crate::drivers::gpkg::to_bytes(&ds.raster, ds.nodata(), table, options.compression.as_deref()),
             #[cfg(feature = "jp2")]
             RasterDriver::JP2 => {
-                let jp2 = crate::drivers::jp2::to_bytes(&ds.raster, crate::drivers::common::georeferenced(&options.creation_options))?;
+                let jp2 = crate::drivers::jp2::to_bytes(
+                    &ds.raster,
+                    crate::drivers::common::georeferenced(&options.creation_options),
+                    &options.creation_options,
+                )?;
                 // The nodata value goes to a `.aux.xml` sidecar, the two files zipped as the file
                 // drivers' output is.
                 let Some(xml) = crate::drivers::common::pam_xml(None, ds.nodata(), ds.raster.bands) else { return Ok(jp2) };

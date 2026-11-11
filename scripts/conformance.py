@@ -106,7 +106,23 @@ DIFFERS = "differs"
 # A case whose reference values could not be computed (no coordinates to compare), reported apart.
 NOT_COMPARED = "not compared"
 
-GDAL_FREE_SUITES = frozenset(("webp-writer", "pyogrio-buffers", "pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write", "citygml-write", "xlsx-workbook"))
+GDAL_FREE_SUITES = frozenset(
+    (
+        "citygml",
+        "citygml-write",
+        "cityjson",
+        "cityjson-write",
+        "crs",
+        "grib",
+        "hecras",
+        "jp2-writer",
+        "pointclouds",
+        "pyogrio-buffers",
+        "vsi",
+        "webp-writer",
+        "xlsx-workbook",
+    )
+)
 
 
 @dataclasses.dataclass
@@ -3403,28 +3419,17 @@ def suite_oapif(ctx):
     return suite
 
 
-def suite_webp_writer(ctx):
-    code, version, _ = run([sys.executable, "-c", "import rasterio; print(rasterio.__gdal_version__)"])
-    reference = f"GDAL {version.strip()} (rasterio)" if code == 0 else "GDAL (rasterio unavailable)"
-    s = Suite("webp-writer", "WebP creation options", reference,
-              "Default/explicit lossless pixels are exact; lossy quality changes bytes and pixels, "
-              "with exact alpha and independent GDAL decoding, including real Landsat RGB. "
-              "Lossy encoder bytes, size and PSNR are not compared with libwebp.")
-    missing = missing_modules("rasterio", "pytest", "terrio", "numpy")
-    if missing:
-        s.skipped = "needs the Python modules " + ", ".join(missing)
-        return s
+def _pytest_module_conformance(ctx, filename):
+    """Require the complete, unfiltered test module and its successful JUnit report."""
     command = [sys.executable, "-m", "pytest", "-o", "addopts=", "-q",
-               str(ROOT / "python/tests/test_webp_writer.py")]
+               str(ROOT / "python/tests" / filename)]
     env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "PYTEST_ADDOPTS": ""}
     code, collected, err = run(command + ["--collect-only"], env)
-    expected = sum("::" in line and Path(line.split("::", 1)[0]).name == "test_webp_writer.py"
+    expected = sum("::" in line and Path(line.split("::", 1)[0]).name == filename
                    for line in collected.splitlines())
     if code or not expected or "deselected" in collected:
-        s.cases.append(Case("WEBP GDAL decoding", "complete test collection", DIFFERS,
-                            "Could not collect the complete WebP test module. " + tail(err or collected)))
-        return s
-    with tempfile.TemporaryDirectory(prefix="terrio-webp-conformance-") as directory:
+        return False, "Could not collect the complete test module. " + tail(err or collected)
+    with tempfile.TemporaryDirectory(prefix="terrio-pytest-conformance-") as directory:
         report = Path(directory) / "results.xml"
         code, out, err = run(command + [f"--junitxml={report}"], env)
         try:
@@ -3436,10 +3441,45 @@ def suite_webp_writer(ctx):
         except (OSError, ET.ParseError) as error:
             complete = False
             detail = f"Pytest report unavailable: {error}. "
+    return code == 0 and complete and "deselected" not in out, detail + tail(err or out)
+
+
+def suite_jp2_writer(ctx):
+    code, version, _ = run([sys.executable, "-c", "import rasterio; print(rasterio.__gdal_version__)"])
+    reference = f"GDAL {version.strip()} (rasterio)" if code == 0 else "GDAL (rasterio unavailable)"
+    suite = Suite("jp2-writer", "JPEG 2000 creation options", reference,
+                  "Lossless defaults and progressive final layers preserve exact pixels. "
+                  "Lossy quality changes sizes and pixels; independent GDAL decoding, types, "
+                  "georeferencing and reversibility match, including real Landsat RGB. "
+                  "Rate targets are approximate; encoder byte identity is not claimed.")
+    missing = missing_modules("rasterio", "pytest", "terrio", "numpy")
+    if missing:
+        suite.skipped = "needs the Python modules " + ", ".join(missing)
+        return suite
+    complete, detail = _pytest_module_conformance(ctx, "test_jp2_writer.py")
+    suite.cases.append(Case("JP2 GDAL decoding", "path/memory options and Landsat decoding",
+                            IDENTICAL if complete else DIFFERS,
+                            "Exact decoding/metadata comparisons and creation-option assertions; "
+                            "GDAL encoder parity is not asserted. " + detail))
+    return suite
+
+
+def suite_webp_writer(ctx):
+    code, version, _ = run([sys.executable, "-c", "import rasterio; print(rasterio.__gdal_version__)"])
+    reference = f"GDAL {version.strip()} (rasterio)" if code == 0 else "GDAL (rasterio unavailable)"
+    s = Suite("webp-writer", "WebP creation options", reference,
+              "Default/explicit lossless pixels are exact; lossy quality changes bytes and pixels, "
+              "with exact alpha and independent GDAL decoding, including real Landsat RGB. "
+              "Lossy encoder bytes, size and PSNR are not compared with libwebp.")
+    missing = missing_modules("rasterio", "pytest", "terrio", "numpy")
+    if missing:
+        s.skipped = "needs the Python modules " + ", ".join(missing)
+        return s
+    complete, detail = _pytest_module_conformance(ctx, "test_webp_writer.py")
     s.cases.append(Case("WEBP GDAL decoding", "path/memory options and Landsat decoding",
-                        IDENTICAL if code == 0 and complete and "deselected" not in out else DIFFERS,
+                        IDENTICAL if complete else DIFFERS,
                         "Exact decoding/alpha comparisons and creation-option assertions; "
-                        "GDAL encoder parity is not asserted. " + detail + tail(err or out)))
+                        "GDAL encoder parity is not asserted. " + detail))
     return s
 
 
@@ -3461,6 +3501,7 @@ SUITES = OrderedDict(
         ("shapefile-rings", suite_shapefile_rings),
         ("shapefile-deleted", suite_shapefile_deleted),
         ("raster-roundtrip", suite_raster_roundtrip),
+        ("jp2-writer", suite_jp2_writer),
         ("webp-writer", suite_webp_writer),
         ("deflate", suite_deflate),
         ("windows", suite_windows),
