@@ -2694,3 +2694,6 @@ unchanged. A present sidecar that cannot be read is diagnosed separately.
 The Node test uses tiny GDAL 3.13.3-authored geometry fixtures under
 `crates/terrio/tests/data/shapefile`, with deliberately non-UTF-8 projection bytes.
 These check native warning policy, not equality to GDAL's metadata encoding policy.
+A projection member with a deliberately wrong CRC checks the WASM memory codec's
+read-error diagnostic; native extraction retains its fatal checksum refusal.
+A separate native memory-codec regression keeps sidecar budget refusals terminal.

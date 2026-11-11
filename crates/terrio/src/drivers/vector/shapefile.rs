@@ -40,7 +40,7 @@ pub(crate) fn decode_prj(bytes: Vec<u8>, name: &str) -> Option<String> {
     match String::from_utf8(bytes) {
         Ok(text) => Some(text),
         Err(error) => {
-            let name: String = name.chars().map(|c| if quoted_as_space(c) { ' ' } else { c }).collect();
+            let name = quote_prj_text(name);
             crate::warnings::warn(format!("{name} is not UTF-8 text ({}): the layer is read without a CRS", error.utf8_error()));
             None
         }
@@ -52,11 +52,16 @@ pub(crate) fn read_prj(path: &Path) -> Option<String> {
     match std::fs::read(path) {
         Ok(bytes) => decode_prj(bytes, &path.display().to_string()),
         Err(error) => {
-            let name: String = path.to_string_lossy().chars().map(|c| if quoted_as_space(c) { ' ' } else { c }).collect();
-            crate::warnings::warn(format!("{name} cannot be read ({error}): the layer is read without a CRS"));
+            warn_prj_read_error(&path.to_string_lossy(), &error);
             None
         }
     }
+}
+
+/// Report a present sidecar whose payload cannot be read, including an archive member.
+pub(crate) fn warn_prj_read_error(name: &str, error: &impl std::fmt::Display) {
+    let name = quote_prj_text(name);
+    crate::warnings::warn(format!("{name} cannot be read ({error}): the layer is read without a CRS"));
 }
 
 /// How the rings of a polygon record make polygons: the methods of GDAL's
@@ -352,11 +357,10 @@ pub(crate) fn apply_prj(layer: &mut Layer, prj: Option<&str>) {
     // Validate WKT's entire form before identifying its EPSG code: identification reads only
     // the first root, so it must not bypass the check for trailing prose or unbalanced text.
     if !(is_crs_definition(prj) || (crs_wkt_opener(prj).is_none() && SpatialRef::parse_literal(prj).is_ok())) {
-        let quote = |s: &str| s.chars().map(|c| if quoted_as_space(c) { ' ' } else { c }).collect::<String>();
-        let quoted = quote(&prj.chars().take(80).collect::<String>());
+        let quoted = quote_prj_text(&prj.chars().take(80).collect::<String>());
         crate::warnings::warn(format!(
             "{}.prj holds no CRS definition terrio can read ('{quoted}'): the layer is read without a CRS",
-            quote(&layer.name)
+            quote_prj_text(&layer.name)
         ));
         return;
     }
@@ -372,6 +376,10 @@ pub(crate) fn apply_prj(layer: &mut Layer, prj: Option<&str>) {
 /// Quote whitespace, control codes and Unicode 15.1 General_Category=Cf format controls
 /// as spaces. The Cf ranges were checked against Python's unicodedata table; printable
 /// non-ASCII text is preserved, while terminal escapes, bidi controls and invisible tags are not.
+fn quote_prj_text(text: &str) -> String {
+    text.chars().map(|c| if quoted_as_space(c) { ' ' } else { c }).collect()
+}
+
 fn quoted_as_space(c: char) -> bool {
     c.is_whitespace()
         || c.is_control()

@@ -7,8 +7,10 @@ A `.prj` that holds no CRS definition gives its layer no CRS, with a warning, th
 `terrio.pyogrio` callers as `None`, with a warning, since a GeoDataFrame refuses it.
 """
 
+import io
 import json
 import sqlite3
+import struct
 import subprocess
 import sys
 import types
@@ -400,3 +402,42 @@ def test_stream_projection_warning_uses_caller_and_error_filter(tmp_path):
         warnings.simplefilter("error", UserWarning)
         with pytest.raises(UserWarning, match="not UTF-8 text"):
             terrio.open_stream(path)
+
+
+def _corrupt_prj_crc(data):
+    """Keep ZIP headers consistent but make the projection payload fail its CRC check."""
+    raw = bytearray(data)
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        info = archive.getinfo("pts.prj")
+        central = archive.start_dir
+    wrong = info.CRC ^ 1
+    struct.pack_into("<I", raw, info.header_offset + 14, wrong)
+    while raw[central : central + 4] == b"PK\x01\x02":
+        name_size, extra_size, comment_size = struct.unpack_from("<HHH", raw, central + 28)
+        name = raw[central + 46 : central + 46 + name_size]
+        if name == b"pts.prj":
+            struct.pack_into("<I", raw, central + 16, wrong)
+            return bytes(raw)
+        central += 46 + name_size + extra_size + comment_size
+    raise AssertionError("projection entry missing from central directory")
+
+
+@pytest.mark.parametrize("memory", [False, True])
+def test_native_archive_checksum_errors_remain_fatal(tmp_path, memory):
+    _shapefile(tmp_path, ESRI_WGS84)
+    data = io.BytesIO()
+    with zipfile.ZipFile(data, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in tmp_path.glob("pts.*"):
+            archive.write(path, path.name)
+    broken = _corrupt_prj_crc(data.getvalue())
+    path = tmp_path / "points.zip"
+    path.write_bytes(broken)
+    call = (
+        (lambda: terrio.open_bytes(broken, filename="points.zip")[0])
+        if memory
+        else (lambda: terrio.open_vector(str(path))[0])
+    )
+    # Native extraction refuses corrupt archive members before parsing the sidecar.
+    # The memory codec used by WASM instead diagnoses a failed optional sidecar read.
+    with pytest.raises(OSError, match="[Cc]hecksum|CRC"):
+        call()

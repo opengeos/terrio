@@ -2194,8 +2194,8 @@ test("geocentric XYZ coordinates and vector reprojection retain all three ordina
   for (const [i, expected] of [-3981230.6461390946, 2585441.4118733606, -4245670.74916175].entries()) assert.ok(Math.abs(point[i] - expected) < 0.001);
 });
 
-test("Shapefile ZIP warns when projection bytes are not UTF-8", () => {
-  for (const encoding of ["latin1", "utf16"]) {
+test("Shapefile ZIP reports unreadable projection sidecars", () => {
+  for (const encoding of ["latin1", "utf16", "bad_crc"]) {
     const bytes = readFileSync(new URL(`../../crates/terrio/tests/data/shapefile/prj_${encoding}.zip`, import.meta.url));
     terrio.takeWarnings();
     const ds = terrio.open(bytes, "points.zip");
@@ -2206,7 +2206,8 @@ test("Shapefile ZIP warns when projection bytes are not UTF-8", () => {
       assert.deepEqual(features.map(f => f.properties.id), [0,1,2]);
       const warnings = Array.from(terrio.takeWarnings());
       assert.equal(warnings.length, 1);
-      assert.match(warnings[0], /pts\.prj.*not UTF-8 text/);
+      assert.match(warnings[0], /pts\.prj/);
+      assert.match(warnings[0], encoding === "bad_crc" ? /cannot be read.*(?:checksum|crc)/i : /not UTF-8 text/);
     } finally { ds.free(); }
   }
 });

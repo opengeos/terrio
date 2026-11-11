@@ -1010,7 +1010,9 @@ reads it.
   `.prj` leaves it without one silently, as a missing `.prj` does, and a leading byte-order mark is
   skipped. A present `.prj` that cannot be read or is not UTF-8 warns with its filename
   and the reason, and leaves the layer without a CRS. Encodings are not guessed; this
-  applies to path, range, stream and archive byte reads.
+  applies to path, range, stream and archive byte reads. A memory-codec archive
+  member that fails its read is diagnosed too. Native archive integrity errors
+  can refuse the whole read; resource-budget refusals remain fatal on both paths.
   Trailing NUL or DOS EOF padding is ignored. Reference syntax does not prove that a
   code exists: a well-formed unknown code from a known authority is retained here; Python's
   pyogrio interface warns and returns no CRS if pyproj cannot parse that reference.
