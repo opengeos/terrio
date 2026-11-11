@@ -2,8 +2,6 @@
 
 ## Unreleased
 
-- Zarr: a window of an array whose columns are its last dimension is converted a row at a time
-  rather than an element at a time (12 ms of a 40 MB read in terrio-js).
 - A `Raster` read lazily from a file, such as a GeoTIFF (`open_raster(path, lazy=True)`,
   `rio.open`, the xarray backend), can be read from several Python threads at once: `read`,
   `read_mask` and `numpy.asarray` raised `RuntimeError: Already borrowed` when a read overlapped

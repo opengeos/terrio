@@ -1805,7 +1805,7 @@ impl Level {
                 for &offset in &band_offsets {
                     for r in 0..w.height {
                         if xs == 1 {
-                            // Columns are the last dimension: a row is contiguous, converted in one pass.
+                            // The column stride is one element, so a row of the window is contiguous: converted in one pass.
                             let i = index(offset, r, 0);
                             let row = bytes[i..i + w.width * size].chunks_exact(size);
                             out.extend(row.map(|e| <$t>::from_le_bytes(e.try_into().unwrap_or_default())));
