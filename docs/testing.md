@@ -2688,7 +2688,10 @@ global batch boundary and spans several batches; RPC batch membership stays glob
 `python/tests/test_jp2_color_roles.py` checks UInt8/UInt16 path and MemoryFile writes,
 independent GDAL reads, exact masks and a GDAL-authored BGR/ARGB reader regression.
 It also checks inferred and alias drivers and absence of invented GeoJP2 transforms.
-The native test checks full and selected-window component order.
+Encoded CDEF/COD checks cover channel associations and RGB component transforms;
+small RGB subsets remain grayscale and duplicate RGB associations are rejected.
+A GDAL-authored BGRA fixture checks stored 8/8/8/1-bit component precisions, alpha
+promotion and masks. The native test checks full and selected-window component order.
 
 The `jp2-colors` conformance suite writes real Landsat subsets through Python
 paths/bytes, CLI and Node/WASM when its package is available. GDAL independently

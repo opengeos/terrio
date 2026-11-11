@@ -130,7 +130,8 @@ four-band data marked undefined retain that interpretation; RGB associations and
 alpha can appear in any component order. The multiple-component transform is enabled
 only for RGB in the first three components. Non-RGB files declare grayscale with one
 Y channel (a gray channel, else the first non-alpha component), as the format requires.
-An incomplete RGB colour set is rejected. Decoding preserves stored component order,
+One- and two-band RGB subsets write as grayscale. Larger RGB colour sets require
+exactly one red, green and blue channel; incomplete or duplicate sets are rejected. Decoding preserves stored component order,
 as GDAL 3.13.3 does, instead of permuting BGR or ARGB samples into RGB order. Palette
 decoding keeps its existing expansion. As with GDAL, grayscale images of one or two
 components report gray for non-alpha channels; non-RGB images with more components

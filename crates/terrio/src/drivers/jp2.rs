@@ -249,10 +249,10 @@ mod codec {
     }
 
     /// Reads the main header of a JP2 file or a J2K codestream (`j2k`).
-    pub(super) fn read_header(r: &mut dyn ReadSeek, len: u64, j2k: bool) -> Result<Header> {
+    pub(super) fn read_header(r: &mut dyn ReadSeek, len: u64, j2k: bool, preserve_band_order: bool) -> Result<Header> {
         // SAFETY: the pointers are those `with_codec` passes, valid during the call.
         unsafe {
-            with_codec(r, len, j2k, false, |codec, _, image| {
+            with_codec(r, len, j2k, preserve_band_order, |codec, _, image| {
                 let img = &*image;
                 let comps = std::slice::from_raw_parts(img.comps, img.numcomps as usize);
                 if comps.is_empty() {
@@ -763,14 +763,14 @@ impl Jp2Window {
         let boxes_bytes = if j2k { Vec::new() } else { header_boxes(stream.as_mut())? };
         let (gt, crs) = georeferencing(&boxes_bytes);
         let alpha = alpha_channel(&boxes_bytes);
-        let header = codec::read_header(stream.as_mut(), len, j2k)?;
+        let palette =
+            boxes(&boxes_bytes).into_iter().find(|(t, _)| t == b"jp2h").is_some_and(|(_, p)| boxes(p).iter().any(|(t, _)| t == b"pclr"));
+        let header = codec::read_header(stream.as_mut(), len, j2k, !palette)?;
         if header.subsampled {
             return Err(Error::Unsupported("JPEG 2000 components with different sizes are not supported".into()));
         }
         let [x0, y0, x1, y1] = header.area;
         let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
-        let palette =
-            boxes(&boxes_bytes).into_iter().find(|(t, _)| t == b"jp2h").is_some_and(|(_, p)| boxes(p).iter().any(|(t, _)| t == b"pclr"));
         let mut header = header;
         let (bands, data_type) = if palette {
             // OpenJPEG applies the palette when decoding: the bands and type are those of a
@@ -1264,9 +1264,9 @@ fn channel_definitions(bands: usize, metadata: &[crate::BandMetadata]) -> Result
             metadata.get(band).and_then(|m| m.color_interp.as_deref()).map(crate::geotiff::color_interpretation).unwrap_or(default)
         })
         .collect();
-    let space = if roles.iter().any(|r| matches!(*r, "Red" | "Green" | "Blue")) { 16u32 } else { 17 };
-    if space == 16 && !["Red", "Green", "Blue"].iter().all(|role| roles.contains(role)) {
-        return Err(Error::Unsupported("JPEG 2000 RGB output requires red, green and blue channel roles".into()));
+    let space = if bands >= 3 && roles.iter().any(|r| matches!(*r, "Red" | "Green" | "Blue")) { 16u32 } else { 17 };
+    if space == 16 && !["Red", "Green", "Blue"].iter().all(|role| roles.iter().filter(|r| *r == role).count() == 1) {
+        return Err(Error::Unsupported("JPEG 2000 RGB output requires red, green and blue channel roles exactly once".into()));
     }
     // ITU-T T.800 I.5.3.6 requires every colour of the declared space to have
     // a channel. Non-RGB output uses one Y channel, even for undefined data.
@@ -1279,9 +1279,9 @@ fn channel_definitions(bands: usize, metadata: &[crate::BandMetadata]) -> Result
     definitions.extend((bands as u16).to_be_bytes());
     for (band, role) in roles.iter().enumerate() {
         let (kind, association): (u16, u16) = match *role {
-            "Red" => (0, 1),
-            "Green" => (0, 2),
-            "Blue" => (0, 3),
+            "Red" if space == 16 => (0, 1),
+            "Green" if space == 16 => (0, 2),
+            "Blue" if space == 16 => (0, 3),
             _ if space == 17 && Some(band) == gray => (0, 1),
             "Alpha" => (1, 0),
             _ => (u16::MAX, u16::MAX),

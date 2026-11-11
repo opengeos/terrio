@@ -162,3 +162,59 @@ def test_native_byte_export_retains_roles_and_absent_transform(tmp_path, gdal, r
 def test_partial_rgb_roles_are_rejected_without_an_incomplete_colour_space(tmp_path):
     with pytest.raises(RasterioIOError, match="requires red, green and blue"):
         _write(tmp_path, ("Red", "Undefined", "Undefined"), "uint8", False)
+
+
+@pytest.mark.parametrize(
+    "roles", [("Red",), ("Green",), ("Blue",), ("Red", "Green"), ("Red", "Alpha")]
+)
+def test_small_rgb_subsets_write_as_grayscale(tmp_path, gdal, roles):
+    values, path, _ = _write(tmp_path, roles, "uint8", False)
+    expected = tuple(ColorInterp.alpha if role == "Alpha" else ColorInterp.gray for role in roles)
+    with rio.open(path) as src:
+        assert src.colorinterp == expected
+        np.testing.assert_array_equal(src.read(), values)
+    reference = gdal.Open(str(path))
+    assert [
+        reference.GetRasterBand(i + 1).GetColorInterpretation() for i in range(len(roles))
+    ] == list(expected)
+
+
+def test_duplicate_rgb_roles_are_rejected(tmp_path):
+    with pytest.raises(RasterioIOError, match="roles exactly once"):
+        _write(tmp_path, ("Red", "Red", "Green", "Blue"), "uint8", False)
+
+
+def test_gdal_mixed_precision_alpha_keeps_stored_band_order(tmp_path, gdal):
+    # GDAL 3.13.3 only writes a 1-bit alpha when it is the last stored component.
+    roles = ("Blue", "Green", "Red", "Alpha")
+    values = _source(roles, "uint8")
+    alpha = roles.index("Alpha")
+    values[alpha] = np.where(np.indices((48, 64)).sum(axis=0) % 3 == 0, 0, 255)
+    source = gdal.GetDriverByName("MEM").Create("", 64, 48, len(roles), gdal.GDT_Byte)
+    for i, role in enumerate(roles):
+        band = source.GetRasterBand(i + 1)
+        band.WriteArray(values[i])
+        band.SetColorInterpretation(int(ColorInterp[role.lower()]))
+    path = tmp_path / "mixed-alpha.jp2"
+    output = gdal.Translate(
+        str(path),
+        source,
+        format="JP2OpenJPEG",
+        creationOptions=["REVERSIBLE=YES", "QUALITY=100", "1BIT_ALPHA=YES"],
+    )
+    output.FlushCache()
+    output = source = None
+    with rio.open(path) as native:
+        assert native.colorinterp == tuple(ColorInterp[name.lower()] for name in roles)
+        np.testing.assert_array_equal(native.read(), values)
+        np.testing.assert_array_equal(native.read(window=((9, 22), (7, 18))), values[:, 9:22, 7:18])
+    reference = gdal.Open(str(path))
+    header = next(payload for kind, payload in _boxes(path.read_bytes()) if kind == b"jp2h")
+    depths = next(payload for kind, payload in _boxes(header) if kind == b"bpcc")
+    assert [(depth & 0x7F) + 1 for depth in depths] == [1 if i == alpha else 8 for i in range(4)]
+    np.testing.assert_array_equal(reference.ReadAsArray(), values)
+    with rio.open(path) as native:
+        expected_masks = np.stack(
+            [reference.GetRasterBand(i + 1).GetMaskBand().ReadAsArray() for i in range(len(roles))]
+        )
+        np.testing.assert_array_equal(native.read_masks(), expected_masks)

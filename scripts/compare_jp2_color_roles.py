@@ -20,22 +20,30 @@ from terrio.rio.enums import ColorInterp
 def compare(path, values, roles):
     """GDAL and Native reads must retain the declared components, masks and absence of a grid."""
     reference = gdal.Open(str(path))
-    expected_roles = [gdal.GetColorInterpretationName(reference.GetRasterBand(i+1).GetColorInterpretation()) for i in range(len(roles))]
-    assert expected_roles == list(roles), (expected_roles, roles)
+    reference_roles = [gdal.GetColorInterpretationName(reference.GetRasterBand(i+1).GetColorInterpretation()) for i in range(len(roles))]
     actual = reference.ReadAsArray()
-    np.testing.assert_array_equal(actual, values)
-    assert actual.dtype == values.dtype
-    assert reference.GetGeoTransform(can_return_null=True) is None, ("unexpected grid", reference.GetGeoTransform())
     masks = np.stack([reference.GetRasterBand(i+1).GetMaskBand().ReadAsArray() for i in range(len(roles))])
     with rio.open(path) as native:
-        assert native.dtypes == (str(values.dtype),) * len(roles)
-        assert [role.name.lower() for role in native.colorinterp] == [role.lower() for role in roles]
-        np.testing.assert_array_equal(native.read(), values)
-        np.testing.assert_array_equal(native.read_masks(), masks)
+        native_types = native.dtypes
+        native_roles = [role.name.lower() for role in native.colorinterp]
+        native_values = native.read()
+        native_masks = native.read_masks()
+    same_size = actual.shape == values.shape == native_values.shape
+    assert same_size, (actual.shape, values.shape, native_values.shape)
+    assert native_masks.shape == masks.shape, (native_masks.shape, masks.shape)
+    differences = np.concatenate([(array.astype(np.int64) - values.astype(np.int64)).ravel()
+                                 for array in (actual, native_values)])
+    differing = int(np.count_nonzero(differences))
+    exact = 1.0 - differing / differences.size
+    result = dict(same_size=same_size,
+                  same_type=actual.dtype == values.dtype and native_types == (str(values.dtype),) * len(roles),
+                  same_metadata=reference_roles == list(roles) and native_roles == [role.lower() for role in roles],
+                  same_georeferencing=reference.GetGeoTransform(can_return_null=True) is None and
+                      not terrio.open_raster(str(path), lazy=True).has_transform,
+                  valid_mismatch=int(np.count_nonzero(native_masks != masks)), differing=differing,
+                  max_diff=float(np.abs(differences).max(initial=0)), within_tol=exact, exact=exact)
     reference = None
-    assert not terrio.open_raster(str(path), lazy=True).has_transform
-    return dict(same_size=True, same_type=True, same_metadata=True, same_georeferencing=True,
-                valid_mismatch=0, differing=0, max_diff=0.0, within_tol=1.0, exact=1.0)
+    return result
 
 
 def main():
@@ -99,12 +107,18 @@ source.free();
                 except Exception as error:
                     record["error"] = f"{type(error).__name__}: {error}"
                 records.append(record)
+    def passed(record):
+        return ("error" not in record and
+                all(record.get(key, False) for key in ("same_size", "same_type", "same_metadata", "same_georeferencing")) and
+                record.get("differing", 1) == 0 and record.get("valid_mismatch", 1) == 0)
+
     if args.json:
         print(json.dumps(records, indent=2))
     else:
         for record in records:
-            print(f"{record['name']}: {record.get('error', 'exact values, types, masks and roles')}")
-    return int(any("error" in record for record in records))
+            detail = "exact values, types, masks and roles" if passed(record) else json.dumps(record)
+            print(f"{record['name']}: {detail}")
+    return int(not all(passed(record) for record in records))
 
 
 if __name__ == "__main__":
