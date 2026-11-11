@@ -891,10 +891,10 @@ terrio.set_path_specific_option("/vsis3/my-bucket/", "AWS_REGION", "us-west-2")
 terrio.get_path_specific_option("/vsis3/my-bucket/a.tif", "AWS_REGION")  # "us-west-2"
 terrio.clear_path_specific_options()
 
-# Count what remote reads transfer, in total and by host and file.
+# Count what remote reads and writes transfer, in total and by host and file.
 terrio.reset_network_stats()
 terrio.info("https://example.com/cog.tif")
-terrio.network_stats()  # {"request_count": 1, "received_bytes": 16384, "hosts": {...}, ...}
+terrio.network_stats()  # {"request_count": 1, "received_bytes": 16384, "sent_bytes": 0, "hosts": {...}, ...}
 terrio.clear_http_cache()
 
 # The cache of decoded GeoTIFF/COG chunks (GDAL's GetCacheMax/SetCacheMax): TERRIO_CACHEMAX, else

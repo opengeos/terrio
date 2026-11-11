@@ -14,6 +14,9 @@
 //! Lazy parsing with the hash-chains matchfinder (max_search_depth 35, nice_match_length 65),
 //! libdeflate's block splitting, length-limited Huffman codes and the stored / static / dynamic
 //! block choice. GDAL (3.12) built with libdeflate compresses GeoTIFF Deflate chunks at this level.
+//!
+//! The other levels, 1 to 9, change the parser and how far the matchfinder searches, with the
+//! parameters of libdeflate's `libdeflate_alloc_compressor_ex()` (see [`Level`]).
 
 use std::cell::Cell;
 use std::hint::select_unpredictable;
@@ -29,9 +32,6 @@ const SEQ_STORE_LENGTH: usize = 50000;
 const MAX_LITLEN_CODEWORD_LEN: u32 = 14;
 const MAX_OFFSET_CODEWORD_LEN: u32 = 15;
 const MAX_PRE_CODEWORD_LEN: u32 = 7;
-const MAX_SEARCH_DEPTH: u32 = 35;
-const NICE_MATCH_LENGTH: u32 = 65;
-const MAX_PASSTHROUGH_SIZE: usize = 55 - 6 * 4;
 
 const MIN_MATCH_LEN: u32 = 3;
 const MAX_MATCH_LEN: u32 = 258;
@@ -40,6 +40,72 @@ const NUM_OFFSET_SYMS: usize = 32;
 const NUM_PRECODE_SYMS: usize = 19;
 const END_OF_BLOCK: usize = 256;
 const FIRST_LEN_SYM: usize = 257;
+
+/// The parser of a compression level.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Parser {
+    /// The longest match at each position (deflate_compress_greedy()).
+    Greedy,
+    /// A match is kept only if the next position has no better one (deflate_compress_lazy()).
+    Lazy,
+    /// As `Lazy`, looking two positions ahead (deflate_compress_lazy2()).
+    Lazy2,
+}
+
+/// How a compression level searches: its parser, how many hash-chain candidates the matchfinder
+/// examines at a position, and the match length that ends the search. Levels 2 to 9 take the
+/// parsers and parameters of libdeflate's `libdeflate_alloc_compressor_ex()`. Its level 1 is
+/// another compressor (a hash table of two entries per bucket, blocks of fixed length); here
+/// level 1 is the greedy parser over the hash chains, examining two candidates, with that
+/// level's nice match length (32).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Level {
+    level: u32,
+    parser: Parser,
+    max_search_depth: u32,
+    nice_match_length: u32,
+}
+
+impl Level {
+    /// The default level, 6.
+    pub(crate) const DEFAULT: Self = Self { level: 6, parser: Parser::Lazy, max_search_depth: 35, nice_match_length: 65 };
+
+    /// Level `level`, from 1 (the least search) to 9 (the most); `None` for another number.
+    pub(crate) fn new(level: u32) -> Option<Self> {
+        let (parser, max_search_depth, nice_match_length) = match level {
+            1 => (Parser::Greedy, 2, 32),
+            2 => (Parser::Greedy, 6, 10),
+            3 => (Parser::Greedy, 12, 14),
+            4 => (Parser::Greedy, 16, 30),
+            5 => (Parser::Lazy, 16, 30),
+            6 => return Some(Self::DEFAULT),
+            7 => (Parser::Lazy, 100, 130),
+            8 => (Parser::Lazy2, 300, MAX_MATCH_LEN),
+            9 => (Parser::Lazy2, 600, MAX_MATCH_LEN),
+            _ => return None,
+        };
+        Some(Self { level, parser, max_search_depth, nice_match_length })
+    }
+
+    /// The largest input written as a stored block without trying to compress it: the higher the
+    /// level, the smaller the inputs it compresses.
+    fn max_passthrough_size(self) -> usize {
+        55 - 4 * self.level as usize
+    }
+
+    /// The zlib header (CMF and FLG): a 32 KiB Deflate window, and the level's FLEVEL (fastest,
+    /// fast, default or slowest), with FCHECK making it a multiple of 31 (RFC 1950, section 2.2).
+    fn zlib_header(self) -> [u8; 2] {
+        let flevel = match self.level {
+            0..2 => 0,
+            2..6 => 1,
+            6..8 => 2,
+            _ => 3,
+        };
+        let hdr: u16 = 0x7800 | flevel << 6;
+        (hdr | (31 - hdr % 31)).to_be_bytes()
+    }
+}
 
 const LENGTH_SLOT_BASE: [u32; 29] =
     [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
@@ -906,16 +972,22 @@ impl Mf<'_> {
 
 /************************************ Parser **********************************/
 
-fn choose_min_match_len(num_used_literals: u32) -> u32 {
+fn choose_min_match_len(num_used_literals: u32, max_search_depth: u32) -> u32 {
     const MIN_LENS: [u8; 80] = [
         9, 9, 9, 9, 9, 9, 8, 8, 7, 7, 6, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
         5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
     ];
-    // max_search_depth (35) >= 16, so no further adjustment.
-    MIN_LENS.get(num_used_literals as usize).map_or(3, |&x| x as u32)
+    let min_len = MIN_LENS.get(num_used_literals as usize).map_or(3, |&x| x as u32);
+    // With a low max_search_depth, long matches are hard to find.
+    match max_search_depth {
+        0..5 => min_len.min(4),
+        5..10 => min_len.min(5),
+        10..16 => min_len.min(7),
+        _ => min_len,
+    }
 }
 
-fn calculate_min_match_len(data: &[u8]) -> u32 {
+fn calculate_min_match_len(data: &[u8], max_search_depth: u32) -> u32 {
     if data.len() < 512 {
         return MIN_MATCH_LEN;
     }
@@ -923,13 +995,13 @@ fn calculate_min_match_len(data: &[u8]) -> u32 {
     for &b in &data[..data.len().min(4096)] {
         used[b as usize] = true;
     }
-    choose_min_match_len(used.iter().filter(|&&u| u).count() as u32)
+    choose_min_match_len(used.iter().filter(|&&u| u).count() as u32, max_search_depth)
 }
 
-fn recalculate_min_match_len(freqs: &Freqs) -> u32 {
+fn recalculate_min_match_len(freqs: &Freqs, max_search_depth: u32) -> u32 {
     let literal_freq: u32 = freqs.litlen[..256].iter().sum();
     let cutoff = literal_freq >> 10;
-    choose_min_match_len(freqs.litlen[..256].iter().filter(|&&f| f > cutoff).count() as u32)
+    choose_min_match_len(freqs.litlen[..256].iter().filter(|&&f| f > cutoff).count() as u32, max_search_depth)
 }
 
 #[inline(always)]
@@ -950,45 +1022,106 @@ thread_local! {
     static SCRATCH: Cell<Option<(Box<Matchfinder>, Vec<Sequence>)>> = const { Cell::new(None) };
 }
 
-/// deflate_compress_lazy() (lazy2 = false).
-fn compress_lazy<'a>(c: &mut Compressor, s: &[u8], mut w: BitWriter<'a>) -> BitWriter<'a> {
-    let in_end = s.len();
-    let mut in_next = 0;
-    let mut max_len = MAX_MATCH_LEN;
-    let mut nice_len = NICE_MATCH_LENGTH.min(max_len);
-    let (mut tab, mut seqs) = SCRATCH.take().unwrap_or_else(|| {
+/// The scratch matchfinder and sequence store of this thread ([`SCRATCH`]), the matchfinder
+/// cleared.
+fn scratch() -> (Box<Matchfinder>, Vec<Sequence>) {
+    let (mut tab, seqs) = SCRATCH.take().unwrap_or_else(|| {
         let tab = vec![MF_INITVAL; MF_SIZE].into_boxed_slice().try_into().unwrap();
         (tab, Vec::with_capacity(SEQ_STORE_LENGTH + 1))
     });
     tab.fill(MF_INITVAL);
+    (tab, seqs)
+}
+
+/// The end of the block that starts at `in_block_begin`: at most SOFT_MAX_BLOCK_LENGTH bytes on,
+/// unless the rest would make a block shorter than MIN_BLOCK_LENGTH (choose_max_block_end()).
+fn max_block_end(in_block_begin: usize, in_end: usize) -> usize {
+    if in_end - in_block_begin < SOFT_MAX_BLOCK_LENGTH + MIN_BLOCK_LENGTH { in_end } else { in_block_begin + SOFT_MAX_BLOCK_LENGTH }
+}
+
+/// Starts a block: no literals or sequences yet, and no statistics.
+fn begin_block(c: &mut Compressor, seqs: &mut Vec<Sequence>) {
+    c.litrunlen = 0;
+    c.num_seqs = 0;
+    seqs.clear();
+    c.split_stats = SplitStats::default();
+    c.freqs.litlen.fill(0);
+    c.freqs.offset.fill(0);
+}
+
+/// deflate_compress_greedy(): the longest match at each position, with a length-3 match only
+/// within 4096 bytes.
+fn compress_greedy<'a>(c: &mut Compressor, s: &[u8], mut w: BitWriter<'a>, level: Level) -> BitWriter<'a> {
+    let in_end = s.len();
+    let mut in_next = 0;
+    let mut max_len = MAX_MATCH_LEN;
+    let mut nice_len = level.nice_match_length.min(max_len);
+    let (mut tab, mut seqs) = scratch();
     let mut mf = Mf { tab: &mut tab, base: 0, next_hashes: [0, 0] };
 
     loop {
         let in_block_begin = in_next;
-        let in_max_block_end = if in_end - in_block_begin < SOFT_MAX_BLOCK_LENGTH + MIN_BLOCK_LENGTH {
-            in_end
-        } else {
-            in_block_begin + SOFT_MAX_BLOCK_LENGTH
-        };
+        let in_max_block_end = max_block_end(in_block_begin, in_end);
+        begin_block(c, &mut seqs);
+        let min_len = calculate_min_match_len(&s[in_next..in_max_block_end], level.max_search_depth);
+
+        loop {
+            adjust_max_and_nice_len(&mut max_len, &mut nice_len, in_end - in_next);
+            // SAFETY: adjust_max_and_nice_len() keeps nice_len <= max_len <= in_end - in_next,
+            // and in_end == s.len().
+            let (length, offset) = unsafe { mf.longest_match(s, in_next, min_len - 1, max_len, nice_len, level.max_search_depth) };
+            if length >= min_len && (length > MIN_MATCH_LEN || offset <= 4096) {
+                c.choose_match(length, offset, &mut seqs);
+                mf.skip_bytes(s, in_next + 1, length - 1);
+                in_next += length as usize;
+            } else {
+                c.choose_literal(s[in_next]);
+                in_next += 1;
+            }
+            if in_next >= in_max_block_end
+                || c.num_seqs >= SEQ_STORE_LENGTH
+                || c.split_stats.should_end_block(in_block_begin, in_next, in_end)
+            {
+                break;
+            }
+        }
+        seqs.push(Sequence { litrunlen_and_length: c.litrunlen, offset: 0, offset_slot: 0 });
+        w = c.finish_block(w, &s[in_block_begin..in_next], &seqs, in_next == in_end);
+        if in_next == in_end {
+            SCRATCH.set(Some((tab, seqs)));
+            return w;
+        }
+    }
+}
+
+/// deflate_compress_lazy_generic(): deflate_compress_lazy(), or with `Parser::Lazy2`
+/// deflate_compress_lazy2(), which looks a second position ahead.
+fn compress_lazy<'a>(c: &mut Compressor, s: &[u8], mut w: BitWriter<'a>, level: Level) -> BitWriter<'a> {
+    let in_end = s.len();
+    let mut in_next = 0;
+    let mut max_len = MAX_MATCH_LEN;
+    let mut nice_len = level.nice_match_length.min(max_len);
+    let depth = level.max_search_depth;
+    let (mut tab, mut seqs) = scratch();
+    let mut mf = Mf { tab: &mut tab, base: 0, next_hashes: [0, 0] };
+
+    loop {
+        let in_block_begin = in_next;
+        let in_max_block_end = max_block_end(in_block_begin, in_end);
         let mut next_recalc_min_len = in_next + (in_end - in_next).min(10000);
-        c.litrunlen = 0;
-        c.num_seqs = 0;
-        seqs.clear();
-        c.split_stats = SplitStats::default();
-        c.freqs.litlen.fill(0);
-        c.freqs.offset.fill(0);
-        let mut min_len = calculate_min_match_len(&s[in_next..in_max_block_end]);
+        begin_block(c, &mut seqs);
+        let mut min_len = calculate_min_match_len(&s[in_next..in_max_block_end], depth);
 
         loop {
             if in_next >= next_recalc_min_len {
                 cold_path();
-                min_len = recalculate_min_match_len(&c.freqs);
+                min_len = recalculate_min_match_len(&c.freqs, depth);
                 next_recalc_min_len += (in_end - next_recalc_min_len).min(in_next - in_block_begin);
             }
             adjust_max_and_nice_len(&mut max_len, &mut nice_len, in_end - in_next);
             // SAFETY: adjust_max_and_nice_len() keeps nice_len <= max_len <= in_end - in_next,
             // and in_end == s.len().
-            let (mut cur_len, mut cur_offset) = unsafe { mf.longest_match(s, in_next, min_len - 1, max_len, nice_len, MAX_SEARCH_DEPTH) };
+            let (mut cur_len, mut cur_offset) = unsafe { mf.longest_match(s, in_next, min_len - 1, max_len, nice_len, depth) };
             if cur_len < min_len || (cur_len == MIN_MATCH_LEN && cur_offset > 8192) {
                 c.choose_literal(s[in_next]);
                 in_next += 1;
@@ -1004,14 +1137,33 @@ fn compress_lazy<'a>(c: &mut Compressor, s: &[u8], mut w: BitWriter<'a>) -> BitW
                     }
                     adjust_max_and_nice_len(&mut max_len, &mut nice_len, in_end - in_next);
                     // SAFETY: as above.
-                    let (next_len, next_offset) =
-                        unsafe { mf.longest_match(s, in_next, cur_len - 1, max_len, nice_len, MAX_SEARCH_DEPTH >> 1) };
+                    let (next_len, next_offset) = unsafe { mf.longest_match(s, in_next, cur_len - 1, max_len, nice_len, depth >> 1) };
                     in_next += 1;
                     if next_len >= cur_len && 4 * (next_len - cur_len) as i32 + (bsr32(cur_offset) - bsr32(next_offset)) > 2 {
                         c.choose_literal(s[in_next - 2]);
                         cur_len = next_len;
                         cur_offset = next_offset;
                         continue;
+                    }
+                    if level.parser == Parser::Lazy2 {
+                        // A much better match two positions ahead: two literals, then that match.
+                        adjust_max_and_nice_len(&mut max_len, &mut nice_len, in_end - in_next);
+                        // SAFETY: as above.
+                        let (next_len, next_offset) = unsafe { mf.longest_match(s, in_next, cur_len - 1, max_len, nice_len, depth >> 2) };
+                        in_next += 1;
+                        if next_len >= cur_len && 4 * (next_len - cur_len) as i32 + (bsr32(cur_offset) - bsr32(next_offset)) > 6 {
+                            c.choose_literal(s[in_next - 3]);
+                            c.choose_literal(s[in_next - 2]);
+                            cur_len = next_len;
+                            cur_offset = next_offset;
+                            continue;
+                        }
+                        c.choose_match(cur_len, cur_offset, &mut seqs);
+                        if cur_len > 3 {
+                            mf.skip_bytes(s, in_next, cur_len - 3);
+                            in_next += cur_len as usize - 3;
+                        }
+                        break;
                     }
                     c.choose_match(cur_len, cur_offset, &mut seqs);
                     mf.skip_bytes(s, in_next, cur_len - 2);
@@ -1037,22 +1189,23 @@ fn compress_lazy<'a>(c: &mut Compressor, s: &[u8], mut w: BitWriter<'a>) -> BitW
 
 /// zlib-wrapped DEFLATE of `input`, byte-for-byte what libdeflate 1.26
 /// produces at compression level 6.
-pub fn zlib_compress(input: &[u8]) -> Vec<u8> {
+/// That is at [`Level::DEFAULT`]; another `level` searches as [`Level`] says.
+pub(crate) fn zlib_compress(input: &[u8], level: Level) -> Vec<u8> {
     let n = input.len();
-    // Room for the header, a stored input of up to MAX_PASSTHROUGH_SIZE bytes and the trailer;
+    let passthrough = level.max_passthrough_size();
+    // Room for the header, a stored input of up to `passthrough` bytes and the trailer;
     // flush_block() grows it for each block.
-    let mut out = vec![0u8; 2 + 5 + MAX_PASSTHROUGH_SIZE + 4];
-    out[0] = 0x78; // CM = deflate, CINFO = 32K window
-    out[1] = 0x9C; // FLEVEL = default, FCHECK
+    let mut out = vec![0u8; 2 + 5 + passthrough + 4];
+    out[..2].copy_from_slice(&level.zlib_header());
     let mut pos = 2;
 
-    if n <= MAX_PASSTHROUGH_SIZE {
+    if n <= passthrough {
         // deflate_compress_none()
         if n == 0 {
             out[2..7].copy_from_slice(&[1, 0, 0, 0xFF, 0xFF]);
             pos += 5;
         } else {
-            out[2] = 1; // BFINAL, stored; n <= 31 fits one block
+            out[2] = 1; // BFINAL, stored; n <= 51 fits one block
             out[3..5].copy_from_slice(&(n as u16).to_le_bytes());
             out[5..7].copy_from_slice(&(!(n as u16)).to_le_bytes());
             out[7..7 + n].copy_from_slice(input);
@@ -1078,7 +1231,10 @@ pub fn zlib_compress(input: &[u8]) -> Vec<u8> {
             },
         };
         let w = BitWriter { out: &mut out, pos, bitbuf: 0, bitcount: 0 };
-        let mut w = compress_lazy(&mut c, input, w);
+        let mut w = match level.parser {
+            Parser::Greedy => compress_greedy(&mut c, input, w, level),
+            Parser::Lazy | Parser::Lazy2 => compress_lazy(&mut c, input, w, level),
+        };
         if w.bitcount != 0 {
             w.out[w.pos] = w.bitbuf as u8;
             w.pos += 1;
@@ -1094,7 +1250,7 @@ pub fn zlib_compress(input: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::zlib_compress;
+    use super::{Level, zlib_compress};
 
     /// The output equals libdeflate's at level 6 (`libdeflate_zlib_compress`), given by its length
     /// and CRC-32: text, incompressible bytes (stored blocks), a smooth Int16 tile of 512 KiB (several
@@ -1118,18 +1274,21 @@ mod tests {
             ("small", b"abcabcabc".repeat(3), 38, 0x5cbab911),
         ];
         for (name, input, len, crc) in cases {
-            let z = zlib_compress(&input);
+            let z = zlib_compress(&input, Level::DEFAULT);
             assert_eq!((z.len(), zlib_rs::crc32::crc32(0, &z)), (len, crc), "{name}");
         }
     }
 
+    /// Every level decompresses to `data`, within the stored-block bound.
     fn roundtrip(data: &[u8]) {
-        let z = zlib_compress(data);
-        let mut out = vec![0u8; data.len() + 1];
-        let (dec, rc) = zlib_rs::decompress_slice(&mut out, &z, zlib_rs::InflateConfig::default());
-        assert_eq!(rc, zlib_rs::ReturnCode::Ok, "len {}", data.len());
-        assert!(dec == data, "mismatch at len {}", data.len());
-        assert!(z.len() <= 6 + 5 * data.len().div_ceil(5000).max(1) + data.len());
+        for level in (1..=9).map(|l| Level::new(l).unwrap()) {
+            let z = zlib_compress(data, level);
+            let mut out = vec![0u8; data.len() + 1];
+            let (dec, rc) = zlib_rs::decompress_slice(&mut out, &z, zlib_rs::InflateConfig::default());
+            assert_eq!(rc, zlib_rs::ReturnCode::Ok, "len {}, {level:?}", data.len());
+            assert!(dec == data, "mismatch at len {}, {level:?}", data.len());
+            assert!(z.len() <= 6 + 5 * data.len().div_ceil(5000).max(1) + data.len(), "{level:?}");
+        }
     }
 
     fn lcg(n: usize, seed: u64, alphabet: u32) -> Vec<u8> {
@@ -1172,5 +1331,177 @@ mod tests {
             runs.push((i / 300) as u8);
         }
         roundtrip(&runs);
+    }
+
+    /// A smooth Int16 tile of 512 KiB, as in `output_matches_libdeflate`.
+    fn walk() -> Vec<u8> {
+        let mut v = 0i64;
+        lcg(512 * 512, 2, 256)
+            .into_iter()
+            .flat_map(|s| {
+                v += i64::from(s % 7) - 3;
+                (v.div_euclid(8) as u16).to_le_bytes()
+            })
+            .collect()
+    }
+
+    /// Levels 1 to 9, and no others. On an Int16 tile, each gives other bytes than its neighbours,
+    /// and a higher level no larger an output; the zlib header gives the level's FLEVEL; and an
+    /// input of at most 55 - 4 x level bytes is stored.
+    #[test]
+    fn each_level_trades_time_for_size() {
+        assert_eq!((Level::new(0), Level::new(10)), (None, None));
+        assert_eq!(Level::new(6), Some(Level::DEFAULT));
+        let walk = walk();
+        let outputs: Vec<Vec<u8>> = (1..=9).map(|l| zlib_compress(&walk, Level::new(l).unwrap())).collect();
+        let sizes: Vec<usize> = outputs.iter().map(Vec::len).collect();
+        for l in 1..9 {
+            assert_ne!(outputs[l - 1], outputs[l], "levels {l} and {}", l + 1);
+            assert!(sizes[l] <= sizes[l - 1], "level {} larger than level {l}: {sizes:?}", l + 1);
+        }
+        let headers: Vec<[u8; 2]> = outputs.iter().map(|z| [z[0], z[1]]).collect();
+        let (fastest, fast, default, slowest) = ([0x78, 0x01], [0x78, 0x5E], [0x78, 0x9C], [0x78, 0xDA]);
+        assert_eq!(headers, [fastest, fast, fast, fast, fast, default, default, slowest, slowest]);
+        // A stored input takes 11 bytes more: the zlib header and trailer, and the block's header.
+        for l in 1..=9 {
+            let stored = |n: usize| zlib_compress(&b"a".repeat(n), Level::new(l).unwrap()).len() == n + 11;
+            let at_most = 55 - 4 * l as usize;
+            assert!(stored(at_most) && !stored(at_most + 1), "level {l}");
+        }
+    }
+
+    /// The output of each level, 1 to 9, given by its length and CRC-32: on the Int16 tile; on
+    /// 40 bytes, stored up to level 3 and compressed from level 4, as the size under which an
+    /// input is stored shrinks with the level; on 300,000 bytes of 12 letters; on 100,000 bytes of
+    /// 5 letters, where the minimum match length that a level's search depth allows decides; on
+    /// matches of every length from 3 to 258, each with a longer one further back, where the
+    /// level's nice match length decides; and on noise with 3-byte strings repeated 6,000 bytes
+    /// later, where the greedy parser's 4,096-byte limit for length-3 matches decides (levels 1 to
+    /// 4 store it; the lazy parser's limit is 8,192). Level 6 gives the values of
+    /// `output_matches_libdeflate`.
+    #[test]
+    fn each_level_gives_these_outputs() {
+        // The length and CRC-32 of the output of levels 1 to 9.
+        type Outputs = [(usize, u32); 9];
+        // A 300-byte string, then, for each length k from 3 to 258, its first k bytes and the whole
+        // string again: there, the nearest match has length k, and the one before it 258.
+        let base = lcg(300, 11, 256);
+        let mut nice = base.clone();
+        for (k, seed) in (3..=258).zip((101..).step_by(2)) {
+            nice.extend(lcg(16, seed, 256));
+            nice.extend_from_slice(&base[..k]);
+            nice.push(!base[k]);
+            nice.extend(lcg(16, seed + 1, 256));
+            nice.extend_from_slice(&base[..260]);
+        }
+        // Noise of 256 letters (a minimum match length of 3 at every level), the 3 bytes at every
+        // 97th position repeated 6,000 bytes later.
+        let mut far = lcg(40_000, 3, 256);
+        let n = far.len();
+        for i in (0..).step_by(97).take_while(|i| i + 6003 <= n) {
+            let three = [far[i], far[i + 1], far[i + 2]];
+            far[i + 6000..i + 6003].copy_from_slice(&three);
+        }
+        let cases: [(&str, Vec<u8>, Outputs); 6] = [
+            (
+                "Int16 tile",
+                walk(),
+                [
+                    (68469, 0x5e59f553),
+                    (65923, 0x0bcfb63e),
+                    (63879, 0xeb7a5d27),
+                    (62142, 0x4cc90cf4),
+                    (61993, 0xf18206cd),
+                    (60719, 0xb685dbf7),
+                    (59340, 0xe28281a5),
+                    (58844, 0x4ccce4f1),
+                    (58484, 0xb22b2b14),
+                ],
+            ),
+            (
+                "40 bytes",
+                b"abcdefghij".repeat(4),
+                [
+                    (51, 0xed79f363),
+                    (51, 0xab3c1311),
+                    (51, 0xab3c1311),
+                    (21, 0xbaecab36),
+                    (21, 0xbaecab36),
+                    (21, 0x2e2b3d80),
+                    (21, 0x2e2b3d80),
+                    (21, 0x9ff00043),
+                    (21, 0x9ff00043),
+                ],
+            ),
+            (
+                "12 letters",
+                lcg(300_000, 7, 12),
+                [
+                    (149967, 0x6749d11b),
+                    (141927, 0x9d5633f7),
+                    (139619, 0x1ce17eed),
+                    (139619, 0x1ce17eed),
+                    (139618, 0x3ab80c37),
+                    (139618, 0x975f1e70),
+                    (139618, 0x975f1e70),
+                    (139618, 0x13a5e94b),
+                    (139618, 0x13a5e94b),
+                ],
+            ),
+            (
+                "5 letters",
+                lcg(100_000, 5, 5),
+                [
+                    (35163, 0x8fbb55a7),
+                    (34203, 0xc14c4b79),
+                    (31724, 0x073d02ea),
+                    (32204, 0x9cff22f6),
+                    (32204, 0xa42790c4),
+                    (32042, 0xa40c56ab),
+                    (31925, 0x089df2f7),
+                    (31925, 0x9d156be3),
+                    (31925, 0x9d156be3),
+                ],
+            ),
+            (
+                "nice lengths",
+                nice,
+                [
+                    (10915, 0xd81e36e8),
+                    (10937, 0xc3c75cdc),
+                    (10934, 0x34238382),
+                    (10917, 0xf4305c8a),
+                    (10914, 0x9fb22478),
+                    (10856, 0x7678b549),
+                    (10731, 0x9fc6ef29),
+                    (10435, 0x00934499),
+                    (10435, 0x00934499),
+                ],
+            ),
+            (
+                "3-byte strings 6,000 bytes back",
+                far,
+                [
+                    (40011, 0xa32dd0db),
+                    (40011, 0x8df33568),
+                    (40011, 0x8df33568),
+                    (40011, 0x8df33568),
+                    (39929, 0x5c237e89),
+                    (39929, 0x8ac4f6ff),
+                    (39929, 0x8ac4f6ff),
+                    (39929, 0x5d682a6c),
+                    (39929, 0x5d682a6c),
+                ],
+            ),
+        ];
+        for (name, input, want) in cases {
+            let got: Vec<(usize, u32)> = (1..=9)
+                .map(|l| {
+                    let z = zlib_compress(&input, Level::new(l).unwrap());
+                    (z.len(), zlib_rs::crc32::crc32(0, &z))
+                })
+                .collect();
+            assert_eq!(got, want, "{name}");
+        }
     }
 }

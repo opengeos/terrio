@@ -72,7 +72,9 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   is replaced with the completed output file; its former target is left unchanged.
   A copy whose source has a dataset mask, or overviews a COG copies, or that is compressed with
   JPEG, WebP, LERC or JPEG XL, holds the source's pixels until it is written, as a smaller
-  GeoTIFF does. GeoTIFFs are written with GDAL's
+  GeoTIFF does. A copy whose source fails to read leaves its destination as it was, held or
+  written in rows: an existing file keeps its content, and no file is left where there was none.
+  GeoTIFFs are written with GDAL's
   layout for the profile: strips or tiles (`tiled`, `blockxsize`, `blockysize`), pixel or band
   interleaving, compression (`lzw`, `deflate`, `zstd`, `packbits`) with predictors 2 and 3,
   photometric RGB and alpha bands as GDAL defaults to them, tags, band metadata, color tables,
