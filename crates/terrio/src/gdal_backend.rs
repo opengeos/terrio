@@ -1253,6 +1253,8 @@ fn value_from(v: GdalValue) -> FieldValue {
         GdalValue::RealValue(x) => FieldValue::Float(x),
         GdalValue::StringValue(s) => FieldValue::Text(s),
         GdalValue::DateValue(d) => FieldValue::Date(d.to_string()),
+        // layer_from intercepts every OFTDateTime before this converted-value match:
+        // only the original feature retains the timezone flag datetime_field needs.
         GdalValue::DateTimeValue(t) => FieldValue::DateTime(t.to_rfc3339()),
         GdalValue::IntegerListValue(v) => json(v.into_iter().map(Into::into).collect()),
         GdalValue::Integer64ListValue(v) => json(v.into_iter().map(Into::into).collect()),
@@ -1261,7 +1263,8 @@ fn value_from(v: GdalValue) -> FieldValue {
     }
 }
 
-/// GDAL 3.13.3's DateTimeEx API retains milliseconds and the raw timezone flag.
+/// Retain milliseconds and the raw timezone flag using GDAL's DateTimeEx API.
+/// Reference validation: GDAL 3.13.3; this API also exists in earlier GDAL releases.
 /// The gdal crate's DateTime conversion truncates seconds and conflates unknown zones with UTC.
 fn datetime_field(feature: &gdal::vector::Feature, field: usize) -> FieldValue {
     let Ok(index) = i32::try_from(field) else { return FieldValue::Null };
