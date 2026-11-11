@@ -4484,3 +4484,17 @@ test("coarse geographic warp footprints survive exact and approximate transforms
     source.free();
   }
 });
+
+test("default Deflate retains long matches across categorical runs", () => {
+  for (const [columns, rows] of [[64, 64], [37, 53], [37, 512]]) {
+    const values = new Uint8Array(512 * 512).map((_, i) =>
+      (Math.floor((i % 512) / columns) + Math.floor(Math.floor(i / 512) / rows)) % 10);
+    const src = terrio.rasterFromArray(values, 512, 512, [500000, 10, 0, 5800000, 0, -10], "EPSG:32633");
+    const bytes = src.toBytes("classes.tif", { compress: "DEFLATE", tileSize: 512 });
+    assert.ok(bytes.length <= 3000, `${columns}x${rows}: ${bytes.length} bytes`);
+    const back = terrio.open(bytes, "classes.tif");
+    assert.deepEqual(back.readBand(1), src.readBand(1));
+    assert.deepEqual([...back.transform], [...src.transform]);
+    assert.equal(back.crs, src.crs);
+  }
+});

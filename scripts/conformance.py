@@ -509,6 +509,27 @@ def suite_json_ops(ctx, key, script, title, reference, criteria, group_words, ex
     return s
 
 
+def suite_deflate(ctx):
+    """Categorical compression bounds and exact independent TIFF decoding."""
+    suite = Suite("deflate", "Categorical Deflate TIFFs", "GDAL TIFF decoder",
+                  "Exact samples, masks, Byte type, nodata, affine and CRS. The three repeating-class fixtures must each fit in 8500 bytes; no compressed-byte equality is claimed. Includes a WorldCover crop when available.")
+    missing = missing_modules("terrio", "numpy", "osgeo")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_deflate_with_gdal.py"), ctx.data, "--json"])
+    try:
+        rows = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for row in rows:
+        suite.cases.append(Case("Deflate", row["name"], IDENTICAL if row["status"] == "identical" else DIFFERS, row["detail"]))
+    if len(rows) < 5 or code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out) or "incomplete Deflate comparisons"
+    return suite
+
+
 def suite_shapefile_archives(ctx):
     """Filesystem-free Shapefile ZIPs cross-read with GDAL on real public geometry."""
     suite = Suite("shapefile-archives", "Shapefile ZIP archives", "GDAL/OGR",
@@ -3347,6 +3368,7 @@ SUITES = OrderedDict(
         ("shapefile-rings", suite_shapefile_rings),
         ("shapefile-deleted", suite_shapefile_deleted),
         ("raster-roundtrip", suite_raster_roundtrip),
+        ("deflate", suite_deflate),
         ("windows", suite_windows),
         ("ops", suite_ops),
         ("raster-masks", suite_raster_masks),
