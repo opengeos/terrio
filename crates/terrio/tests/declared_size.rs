@@ -333,10 +333,11 @@ fn the_issues_geotiffs_are_refused_by_what_they_declare_before_their_pixels() {
 /// the sizes; a window of it that fits (a band) is read. Where terrio cannot read the usable memory (no `/proc`:
 /// Windows, macOS), nothing is refused and the test is skipped.
 #[test]
+#[cfg(target_pointer_width = "64")]
 fn whole_reads_the_process_cannot_hold_are_refused_before_their_buffer() {
     let _serial = serial();
     let (w, h, bands) = (4096usize, 4096usize, 65535usize);
-    let declared = (w * h * bands) as u64;
+    let declared = w as u64 * h as u64 * bands as u64;
     let Some(usable) = terrio::usable_memory().filter(|m| *m < declared) else {
         eprintln!("skipped: the usable memory is not known here, or is more than {declared} bytes");
         return;
@@ -421,6 +422,8 @@ fn write(dir: &Path, name: &str, ds: &RasterDataset, driver: Option<RasterDriver
 /// The drivers no file is written for here, and why. The test fails for a readable driver that is
 /// neither sampled nor listed.
 const NOT_SAMPLED: &[(&str, &str)] = &[
+    #[cfg(not(feature = "flatgeobuf"))]
+    ("GTI", "the native index fixture requires FlatGeobuf"),
     #[cfg(not(feature = "gdal"))]
     ("HFA", "terrio writes Imagine files only through GDAL (the `gdal` feature), and the repository has none"),
 ];
@@ -489,6 +492,7 @@ fn sample(driver: RasterDriver, dir: &Path) -> Option<(String, Vec<(&'static str
             std::fs::write(&vrt, vrt_of(&tif, 1024, 1024, 3, (1024, 1024))).unwrap();
             (vrt.to_str().unwrap().to_string(), none)
         }
+        #[cfg(feature = "flatgeobuf")]
         RasterDriver::GTI => {
             write(dir, "gti/x.tif", &three(), None);
             let index = dir.join("gti/x.gti.fgb");
@@ -980,13 +984,19 @@ fn render_check_and_clip_templates_keep_a_rasters_refusal() {
     let dir = tempfile::tempdir().unwrap();
     let ds = raster(64, 48, 3, DataType::U8, 4326, (10.0, 48.0, 1.0 / 64.0));
     let tif = write(dir.path(), "x.tif", &ds, None);
+    #[cfg(feature = "sqlite")]
     let gpkg = write(dir.path(), "x.gpkg", &ds, Some(RasterDriver::GPKG));
     let opens: [PathOpen; 3] = [
         ("render::open_source", &|p| terrio::ops::render::open_source(p, &[], false).map(|_| ())),
         ("check::check_path", &|p| terrio::check::check_path(p, &Default::default()).map(|_| ())),
         ("ClipRegion::from_path", &|p| terrio::ops::vector_clip::ClipRegion::from_path(p, &Default::default()).map(|_| ())),
     ];
-    for path in [tif.as_str(), gpkg.as_str()] {
+    let paths = [
+        tif.as_str(),
+        #[cfg(feature = "sqlite")]
+        gpkg.as_str(),
+    ];
+    for path in paths {
         let r = terrio::open_raster_lazy(path).unwrap();
         let (w, h, bands) = (r.width(), r.height(), r.band_count());
         let declared = (w * h * bands * r.data_type().size_bytes()) as u128;
@@ -1103,6 +1113,7 @@ fn header(cols: usize, rows: usize, bands: usize) -> RasterDataset {
 /// The same raster written in one-row strips holds a row (twice), and its writer is created. Where
 /// terrio cannot read the usable memory (Windows, macOS), the test is skipped.
 #[test]
+#[cfg(target_pointer_width = "64")]
 fn the_streaming_writers_refuse_rows_they_cannot_hold() {
     let _serial = serial();
     let (cols, rows, bands) = (1usize << 20, 600usize, 2048usize);
@@ -1141,6 +1152,7 @@ fn the_streaming_writers_refuse_rows_they_cannot_hold() {
 /// cannot read the usable memory (Windows, macOS), or it is less than one such band, the test is
 /// skipped.
 #[test]
+#[cfg(target_pointer_width = "64")]
 fn a_writer_whose_rows_fit_once_but_not_twice_is_refused() {
     let _serial = serial();
     let (cols, rows) = (1usize << 20, 600usize);
@@ -1273,6 +1285,12 @@ fn fallback_ascii_detection_keeps_types_and_binary_signatures() {
     scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "31")], || {
         assert!(matches!(terrio::open_raster(path.to_str().unwrap()), Err(terrio::Error::ResourceLimit(_))));
     });
+    // The fallback grammar accepts '=' and numeric fields longer than the retained prefix.
+    let header = format!("ncols=={}2\nnrows=2\nxllcorner 0\nyllcorner 0\ncellsize 1\n", "0".repeat(128 << 10));
+    std::fs::write(&path, format!("{header}invalid pixels\n")).unwrap();
+    scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "31")], || {
+        assert!(matches!(terrio::open_raster(path.to_str().unwrap()), Err(terrio::Error::ResourceLimit(_))));
+    });
     let (source, _) = sample(RasterDriver::PCRaster, dir.path()).unwrap();
     let renamed = dir.path().join("binary.txt");
     std::fs::copy(source, &renamed).unwrap();
@@ -1283,4 +1301,95 @@ fn fallback_ascii_detection_keeps_types_and_binary_signatures() {
     scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "1")], || {
         assert!(matches!(terrio::open_raster(renamed.to_str().unwrap()), Err(terrio::Error::ResourceLimit(_))));
     });
+}
+
+/// Reference: GDAL 3.13.3. A tiny raster can request an enormous padded encoding tile.
+#[test]
+#[cfg(target_pointer_width = "64")]
+fn padded_tiles_are_refused_before_the_writer_creates_its_file() {
+    let _serial = serial();
+    let tile = 1u32 << 30;
+    let bytes = u64::from(tile) * u64::from(tile);
+    if !terrio::usable_memory().is_some_and(|m| m < bytes) {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let ds = header(16, 1, 1);
+    for driver in [RasterDriver::GTiff, RasterDriver::Cog] {
+        let path = dir.path().join(format!("{driver:?}.tif"));
+        let options = RasterWriteOptions { driver: Some(driver), tile_size: Some(tile), ..Default::default() };
+        let (result, largest) = largest_during(|| terrio::GeoTiffWriter::create(path.to_str().unwrap(), &ds, &options).map(|_| ()));
+        assert!(matches!(result, Err(terrio::Error::ResourceLimit(ref e)) if e.contains("a GeoTIFF tile")), "{result:?}");
+        assert!(largest < 1 << 20, "{largest} bytes requested");
+        assert!(!path.exists());
+    }
+}
+
+/// Reference: GDAL 3.13.3. Lazy source and eager VRT outputs are bounded with no options set.
+#[test]
+#[cfg(target_pointer_width = "64")]
+fn source_backed_windows_and_vrt_materialization_refuse_unusable_buffers() {
+    let _serial = serial();
+    let side = 1usize << 20;
+    let bytes = side as u64 * side as u64 * 16;
+    if !terrio::usable_memory().is_some_and(|m| m < bytes) {
+        return;
+    }
+    let xml = format!(
+        "<VRTDataset rasterXSize=\"{side}\" rasterYSize=\"{side}\"><VRTRasterBand dataType=\"Float64\" band=\"1\"/><VRTRasterBand dataType=\"Byte\" band=\"2\"/></VRTDataset>"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("large.vrt");
+    std::fs::write(&path, &xml).unwrap();
+    let mut source = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap();
+    let (result, largest) = largest_during(|| source.read().map(|_| ()));
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))), "{result:?}");
+    assert!(largest < 1 << 20);
+    let description = terrio::ops::vrt::VrtDataset::from_xml(&xml).unwrap();
+    let (result, largest) = largest_during(|| description.materialize(dir.path()).map(|_| ()));
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))), "{result:?}");
+    assert!(largest < 1 << 20);
+    // Mixed-band reads promote every returned sample to Float64 (16 bytes per pixel, not 9).
+    let options = terrio::ResampledReadOptions { size: (side, side), ..Default::default() };
+    let result = source.read_resampled(&options);
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(ref e)) if e.contains(&bytes.to_string())), "{result:?}");
+    let small = source.read_window(terrio::Window::full(2, 2), &Default::default()).unwrap();
+    assert_eq!(small.raster.data.len(), 8);
+}
+
+/// Reference: GDAL 3.13.3. Coordinate metadata is not read for a refused Zarr declaration.
+#[test]
+#[cfg(feature = "zarr")]
+fn zarr_declarations_precede_coordinate_array_reads() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".zgroup"), r#"{"zarr_format":2}"#).unwrap();
+    for (name, shape, chunks, dtype, dims) in [
+        ("image", "[2,1048576]", "[2,1024]", "|u1", "[\"y\",\"x\"]"),
+        ("x", "[1048576]", "[1048576]", "<f8", "[\"x\"]"),
+        ("y", "[2]", "[2]", "<f8", "[\"y\"]"),
+    ] {
+        let node = dir.path().join(name);
+        std::fs::create_dir(&node).unwrap();
+        std::fs::write(node.join(".zarray"), format!(r#"{{"zarr_format":2,"shape":{shape},"chunks":{chunks},"dtype":"{dtype}","compressor":null,"fill_value":0,"order":"C","filters":null}}"#)).unwrap();
+        std::fs::write(node.join(".zattrs"), format!(r#"{{"_ARRAY_DIMENSIONS":{dims}}}"#)).unwrap();
+    }
+    let path = dir.path().join("image");
+    let (result, largest) = largest_during(|| {
+        scoped(&[("TERRIO_MAX_DECLARED_BYTES", "1024")], || terrio::open_raster_lazy(path.to_str().unwrap()).map(|_| ()))
+    });
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))), "{result:?}");
+    assert!(largest < 1 << 20, "{largest} bytes requested before refusing the raster");
+}
+
+/// Reference: GDAL 3.13.3. CFloat16 is materialized as Float32 real and imaginary parts.
+#[test]
+#[cfg(feature = "gdal")]
+fn gdal_half_complex_declarations_count_promoted_components() {
+    let _serial = serial();
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/translate_complex_half.tif");
+    let open = || terrio::gdal_backend::open_raster(path).map(|_| ());
+    assert!(scoped(&[("TERRIO_MAX_DECLARED_BYTES", "1024")], open).is_ok());
+    let result = scoped(&[("TERRIO_MAX_DECLARED_BYTES", "1023")], open);
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(ref e)) if e.contains("1024 bytes")), "{result:?}");
 }

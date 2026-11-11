@@ -300,6 +300,8 @@ pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<Raste
             toffset = f(ta, row, "offset").unwrap_or(0.0);
         }
         let fill = if gridded { coverage.2.unwrap_or(0.0) } else { tile_nodata.unwrap_or(0.0) };
+        // A coverage obtains its actual band count from the decoded tile.
+        crate::declared::check(cols, rows, bands, if gridded { coverage.3 } else { DataType::U8 }, false)?;
         let (nb, out) = grid.get_or_insert_with(|| (bands, vec![fill; cols * rows * bands]));
         let nb = *nb;
         for y in 0..h.min(th) {
@@ -657,6 +659,27 @@ pub(crate) fn add_raster(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reference: GDAL 3.13.3. A coverage tile supplies the real count before the grid is allocated.
+    #[test]
+    fn coverage_limits_count_multiband_tiles_before_allocating_the_grid() {
+        let raster =
+            common::make_raster(1, 1, 3, RasterData::F32(vec![1., 2., 3.]), common::NO_GEOTRANSFORM, Default::default(), None).unwrap();
+        let tile = super::super::gtiff_write::encode(&raster, &Default::default()).unwrap();
+        let mut builder = super::super::vector::geopackage::Builder::new();
+        let extent = [0., 0., 1024., 1024.];
+        let ids = builder
+            .add_tiles("grid", "2d-gridded-coverage", 0, extent, extent, &[(0, 1024, 1024, 1, 1, 1., 1.)], vec![(0, 0, 0, tile)])
+            .unwrap();
+        builder.add_coverage("grid", ("float", 1., 0., None), vec![(ids[0], 1., 0., [None; 4])]);
+        let db = Db::new(builder.finish().unwrap()).unwrap();
+        for (key, value) in [("TERRIO_MAX_BANDS", "1"), ("TERRIO_MAX_DECLARED_BYTES", "8388608")] {
+            crate::config::with_options(&[(key, value)], || {
+                let result = read_db(&db, Some("grid"), Path::new("coverage.gpkg"));
+                assert!(matches!(result, Err(Error::ResourceLimit(_))), "{result:?}");
+            });
+        }
+    }
 
     #[test]
     fn optional_raster_metadata_distinguishes_absence_from_corrupt_records() {

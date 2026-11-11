@@ -69,7 +69,7 @@ pub struct VrtDataset {
 
 /// GDALDataTypeUnion-style common buffer type for bands with different native types.
 /// Float64 is required when Float32 cannot cover an integer type's precision/range.
-fn common_type(types: impl IntoIterator<Item = DataType>) -> DataType {
+pub(crate) fn common_type(types: impl IntoIterator<Item = DataType>) -> DataType {
     fn union(a: DataType, b: DataType) -> DataType {
         use DataType::*;
         if a == b {
@@ -349,6 +349,7 @@ impl VrtDataset {
         let data_type = common_type(self.bands.iter().map(|b| b.data_type));
         // What the VRT declares, before its output is allocated (see `crate::declared`).
         crate::declared::check(self.width, self.height, self.bands.len(), data_type, false)?;
+        crate::dataset::fallible::check_raster_buffer("a VRT", self.width, self.height, self.bands.len(), data_type)?;
         let mut cache: HashMap<PathBuf, RasterDataset> = HashMap::new();
         let n = self.width * self.height;
         let nodata = self.bands[0].nodata;

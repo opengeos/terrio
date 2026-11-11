@@ -2102,6 +2102,9 @@ impl TiffRows {
         };
         let planes = if planar { bands } else { 1 };
         check_rows_held(r, block_rows)?;
+        if plan.tile.is_some() {
+            crate::dataset::fallible::check_raster_buffer("a GeoTIFF tile", chunk_w, block_rows, chunk_spp, r.data_type)?;
+        }
         let mut layout = plan.layout;
         layout.rows_per_strip = Some(block_rows as u32);
         let raw = (cols * rows * bands * size) as u64;
@@ -2550,6 +2553,8 @@ impl CogWriter {
         let Plan { tile, layout, geo, color_map } = plan(raster, opts)?;
         let tile = tile.map_or(512, |(t, _)| t as usize);
         check_rows_held(raster, tile)?;
+        let chunk_spp = if layout.planar { layout.parts } else { raster.bands };
+        crate::dataset::fallible::check_raster_buffer("a GeoTIFF tile", tile, tile, chunk_spp, raster.data_type)?;
         let planes = if layout.planar { raster.bands / layout.parts } else { 1 };
         let mut sizes = vec![(raster.cols, raster.rows)];
         sizes.extend(gdal_overview::cog_sizes(raster.cols, raster.rows, tile, opts.overview_count));

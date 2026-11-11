@@ -303,7 +303,8 @@ impl LazyRaster {
         // process as its pages are written (a translation that does not stream reads its whole
         // output so).
         let what = "a resampled read";
-        let sample_bytes = bands.iter().map(|&b| self.band_data_type(b).size_bytes()).sum::<usize>();
+        let output_type = crate::ops::vrt::common_type(bands.iter().map(|&b| self.band_data_type(b)));
+        let sample_bytes = output_type.size_bytes() * bands.len();
         let bytes = fallible::len(&[sample_bytes.max(1), bw, bh], what)?;
         fallible::check_usable(Some(bytes), || format!("{what} of {bw} x {bh} pixels in {} band(s) is too large to allocate", bands.len()))
             .map_err(Error::ResourceLimit)?;

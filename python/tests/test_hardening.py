@@ -825,8 +825,9 @@ def test_a_zarr_store_declaring_a_huge_shape_is_read_decimated_and_refused_whole
         want = ds.read(out_shape=(1, 8, 8))
     assert got["decimated"] == want.tolist() and want.any(), (got["decimated"], want)
     refused = (
-        r"RAISED ResourceLimitError: .*a window of 2147483647x64 pixels in 1 band\(s\) "
-        r"is too large: \d+ bytes, more than the \d+ bytes of memory the process can use"
+        r"RAISED ResourceLimitError: .*a window of 2147483647\s*x\s*64 pixels in 1 band\(s\) "
+        r"(?:of 2-byte samples )?is too large(?: to allocate)?: \d+ bytes, "
+        r"more than the \d+ bytes of memory the process can use"
     )
     for stage in ("dataset_mask", "read"):
         assert re.match(refused, got[stage]), got[stage]

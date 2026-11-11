@@ -151,15 +151,17 @@ fn header_lines(mut reader: impl BufRead, driver: RasterDriver) -> impl Iterator
             data = true;
             return Some(line);
         }
-        let pair = if driver == RasterDriver::AAIGrid { trimmed.split_once(char::is_whitespace) } else { trimmed.split_once(':') };
+        let esri_pair = || trimmed.split_once(|c: char| c == '=' || c.is_ascii_whitespace());
+        let pair = if driver == RasterDriver::AAIGrid { esri_pair() } else { trimmed.split_once(':').or_else(esri_pair) };
         let (key, value) =
             pair.map_or_else(|| (trimmed.split_ascii_whitespace().next().unwrap_or(""), ""), |(k, v)| (k.trim(), v.trim_start()));
         let key = key.to_ascii_lowercase();
+        let first_only = driver == RasterDriver::AAIGrid || matches!(key.as_str(), "ncols" | "nrows" | "nodata_value");
+        let value = if first_only { value.trim_start_matches(|c: char| c == '=' || c.is_ascii_whitespace()) } else { value };
         let mut colon_seen = trimmed.contains(':');
-        let mut awaiting_colon = driver == RasterDriver::GRASSASCIIGrid && !colon_seen;
+        let mut awaiting_colon = !first_only && driver == RasterDriver::GRASSASCIIGrid && !colon_seen;
         let numeric = matches!(key.as_str(), "cols" | "rows" | "ncols" | "nrows");
         let typed = driver == RasterDriver::GRASSASCIIGrid && key == "type";
-        let first_only = driver == RasterDriver::AAIGrid;
         let (mut number, mut started, mut ended, mut invalid) = (0usize, false, false, false);
         let (mut double, mut float) = (false, false);
         let mut tail = [0u8; 6];
@@ -184,6 +186,8 @@ fn header_lines(mut reader: impl BufRead, driver: RasterDriver) -> impl Iterator
                         }
                     } else if b.is_ascii_whitespace() {
                         ended |= started;
+                    } else if first_only && !started && b == b'=' {
+                        // Esri's key/value separator may extend beyond the retained prefix.
                     } else if b != b'+' || started || ended {
                         invalid = true;
                     }

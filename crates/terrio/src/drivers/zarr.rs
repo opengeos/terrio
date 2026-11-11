@@ -1959,6 +1959,9 @@ fn open_node(node: &Node, list_subdatasets: bool) -> Result<(RasterDataset, Zarr
         return Err(bad(format!("{}: an empty dimension", array.node.display())));
     }
 
+    // Check the raster before coordinate or band arrays can allocate their metadata buffers.
+    crate::declared::check(cols, rows, bands, array.data_type, false)?;
+
     // Georeferencing: a grid mapping variable (xarray), or X/Y coordinate arrays (GDAL).
     let mut gt = geo.gt;
     let mut crs = geo.crs;

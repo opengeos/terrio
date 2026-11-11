@@ -204,11 +204,10 @@ fn complex_mem_dataset(r: &wbraster::Raster) -> Result<GdalDataset> {
     }
 }
 
-/// Reads the complex bands of a GDAL dataset as pairs of real and imaginary bands of the part
-/// type (`Int16` for `CInt16`...).
-fn read_complex(ds: &GdalDataset, t: gdal_sys::GDALDataType::Type, cols: usize, rows: usize, bands: usize) -> Result<RasterData> {
+/// The GDAL read type and stored component type, including Float16 promotion to Float32.
+fn complex_read_type(t: gdal_sys::GDALDataType::Type) -> (gdal_sys::GDALDataType::Type, wbraster::DataType) {
     use gdal_sys::GDALDataType::*;
-    let (ct, part) = if t == GDT_CInt16 {
+    if t == GDT_CInt16 {
         (GDT_CInt16, wbraster::DataType::I16)
     } else if t == GDT_CInt32 {
         (GDT_CInt32, wbraster::DataType::I32)
@@ -217,7 +216,12 @@ fn read_complex(ds: &GdalDataset, t: gdal_sys::GDALDataType::Type, cols: usize, 
     } else {
         // CFloat16 too, read as CFloat32.
         (GDT_CFloat32, wbraster::DataType::F32)
-    };
+    }
+}
+
+/// Reads complex samples in the component type selected by [`complex_read_type`].
+fn read_complex(ds: &GdalDataset, t: gdal_sys::GDALDataType::Type, cols: usize, rows: usize, bands: usize) -> Result<RasterData> {
+    let (ct, part) = complex_read_type(t);
     let size = part.size_bytes();
     let n = cols * rows;
     let mut raw = vec![0u8; n * 2 * size];
@@ -883,7 +887,8 @@ fn raster_from(ds: &GdalDataset, path: &str) -> Result<RasterDataset> {
     let (complex, size) = unsafe { (gdal_sys::GDALDataTypeIsComplex(raw_type) != 0, gdal_sys::GDALGetDataTypeSizeBytes(raw_type)) };
     let size = usize::try_from(size).unwrap_or(0);
     let parts = if complex { 2 } else { 1 };
-    crate::declared::check_bytes(cols, rows, bands * parts, size / parts, complex)?;
+    let sample_bytes = if complex { complex_read_type(raw_type).1.size_bytes() } else { size };
+    crate::declared::check_bytes(cols, rows, bands * parts, sample_bytes, complex)?;
     if complex {
         return complex_raster_from(ds, &first, raw_type, path);
     }
