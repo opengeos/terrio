@@ -118,3 +118,42 @@ def test_zlevel_reaches_the_other_python_writers(tmp_path, writer, driver):
         written[zlevel] = out.read_bytes()
     assert written[None] == written["6"]
     assert written["1"] != written["9"]
+
+
+@pytest.mark.parametrize("columns,rows", [(64, 64), (37, 53), (37, 1024)])
+@pytest.mark.parametrize("driver", ["GTiff", "COG"])
+def test_default_deflate_compacts_repeating_class_rows(tmp_path, columns, rows, driver):
+    """Default level 6 retains long matches across runs and the 32 KiB window.
+
+    GDAL 3.13.3 is the independent TIFF decoder used in conformance validation.
+    The size bound allows metadata/overview variation, but catches the original
+    12–20 KiB regression for these 1024-square categorical images.
+    """
+    y, x = np.mgrid[:1024, :1024]
+    values = ((x // columns + y // rows) % 10).astype("uint8")
+    path = tmp_path / "classes.tif"
+    with rio.open(
+        path,
+        "w",
+        driver=driver,
+        width=1024,
+        height=1024,
+        count=1,
+        dtype="uint8",
+        crs="EPSG:32633",
+        transform=from_origin(500000, 5800000, 10, 10),
+        compress="DEFLATE",
+        tiled=True,
+        blockxsize=512,
+        blockysize=512,
+        blocksize=512,
+    ) as dst:
+        dst.write(values, 1)
+    with rio.open(path) as src:
+        np.testing.assert_array_equal(src.read(1), values)
+        assert src.crs.to_epsg() == 32633
+        assert src.transform == from_origin(500000, 5800000, 10, 10)
+        assert src.nodata is None
+        assert src.dtypes == ("uint8",)
+        assert (src.read_masks(1) == 255).all()
+    assert path.stat().st_size <= (11000 if driver == "COG" else 8500)

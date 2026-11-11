@@ -1200,6 +1200,7 @@ def warp(
     geoloc: bool = False,
     geolocation: Mapping[str, Any] | None = None,
     kernel_version: str | None = None,
+    grid_invariant: bool | None = None,
     init: Raster | None = None,
     _sum_scale: float = 1.0,
 ) -> Raster: ...
@@ -1763,6 +1764,7 @@ class RegionWarp:
         rpc_options: Mapping[str, str] | None = None,
         kernel_version: str | None = None,
         sum_scale: float = 1.0,
+        grid_invariant: bool | None = None,
     ) -> RegionWarp: ...
     def source_window(self, region: _Window) -> _Window | None: ...
     def warp(
