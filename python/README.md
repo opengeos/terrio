@@ -94,6 +94,16 @@ red = terrio.open_raster('STACIT:"https://earth-search.aws.element84.com/v1/sear
 terrio.open_raster("landsat.tif").write("landsat.pmtiles")  # Byte rasters as tiles (or .mbtiles)
 ```
 
+Complex arrays can select physical storage with `Raster.from_array(...,
+complex_dtype="CInt32")`. The selector also accepts `complex_int32` as an alias;
+it names integer component storage, not a NumPy array dtype. Use a `complex128`
+input to retain every Int32 component exactly. The rasterio-compatible writer
+accepts its supported array dtype names and refuses `dtype="complex_int32"`;
+`terrio.rio.shutil.copy` preserves an existing CInt32 raster without that dtype
+selector. Default complex reads retain their existing dtype; request
+`read(out_dtype="complex128")` for exact Int32 components.
+
+
 ## Vector data
 
 ```python

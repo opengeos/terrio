@@ -43,7 +43,14 @@ from terrio.rio import _tiff
 from terrio.rio._resample import gdal_cast, is_nodata, raster_io
 from terrio.rio.coords import BoundingBox
 from terrio.rio.crs import CRS
-from terrio.rio.dtypes import _getnpdtype, check_dtype, dtype_fwd, in_dtype_range, typename_rev
+from terrio.rio.dtypes import (
+    _getnpdtype,
+    _is_complex_int,
+    check_dtype,
+    dtype_fwd,
+    in_dtype_range,
+    typename_rev,
+)
 from terrio.rio.enums import (
     ColorInterp,
     Compression,
@@ -2274,11 +2281,7 @@ class DatasetWriter(DatasetReader):
                 count = int(count)
             except (TypeError, ValueError):
                 raise TypeError("Integer band count is required.") from None
-            if (
-                isinstance(dtype, str)
-                and dtype.startswith("complex_int")
-                and dtype != "complex_int16"
-            ):
+            if _is_complex_int(dtype) and dtype != "complex_int16":
                 raise TypeError("unsupported complex integer dtype")
             try:
                 assert dtype is not None
