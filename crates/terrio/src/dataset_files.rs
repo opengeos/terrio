@@ -1511,6 +1511,51 @@ mod tests {
     }
     #[test]
     #[cfg(all(not(target_family = "wasm"), feature = "geotiff"))]
+    fn tiff_inventory_and_transfers_use_first_image_georeferencing() {
+        use std::io::Cursor;
+        let directory = tempfile::tempdir().unwrap();
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut encoder = tiff::encoder::TiffEncoder::new(&mut cursor).unwrap();
+            let mut image = encoder.new_image::<tiff::encoder::colortype::Gray8>(2, 2).unwrap();
+            image.encoder().write_tag(tiff::tags::Tag::ModelPixelScaleTag, &[2.0, 2.0, 0.0][..]).unwrap();
+            image.encoder().write_tag(tiff::tags::Tag::ModelTiepointTag, &[0.0, 0.0, 0.0, 10.0, 20.0, 0.0][..]).unwrap();
+            image.write_data(&[1; 4]).unwrap();
+        }
+        let mut original = cursor.into_inner();
+        let first = u32::from_le_bytes(original[4..8].try_into().unwrap()) as usize;
+        let count = u16::from_le_bytes(original[first..first + 2].try_into().unwrap()) as usize;
+        let pointer = first + 2 + count * 12;
+        let next = original.len() as u32 + 4096;
+        original[pointer..pointer + 4].copy_from_slice(&next.to_le_bytes());
+        // The base image is readable; only the following directory is unavailable.
+        let mut decoder = tiff::decoder::Decoder::new(Cursor::new(&original)).unwrap();
+        assert!(matches!(decoder.read_image().unwrap(), tiff::decoder::DecodingResult::U8(values) if values == [1; 4]));
+        for missing_pointer in [false, true] {
+            let bytes = if missing_pointer { &original[..pointer] } else { original.as_slice() };
+            let source = directory.path().join(format!("source-{missing_pointer}.tif"));
+            std::fs::write(&source, bytes).unwrap();
+            let world = source.with_extension("tfw");
+            std::fs::write(&world, b"not owned: the TIFF has internal georeferencing").unwrap();
+            let source = source.to_str().unwrap();
+            let files = file_list(source, None).unwrap();
+            assert_eq!(files.files, [source]);
+            assert!(matches!(crate::LazyRaster::from_tiff_bytes(bytes.to_vec()), Err(crate::Error::Io(_))));
+            let copied = directory.path().join(format!("copied-{missing_pointer}.tif"));
+            copy(source, copied.to_str().unwrap(), &Default::default()).unwrap();
+            assert_eq!(std::fs::read(&copied).unwrap(), bytes);
+            assert!(!copied.with_extension("tfw").exists());
+            let renamed = directory.path().join(format!("renamed-{missing_pointer}.tif"));
+            rename(copied.to_str().unwrap(), renamed.to_str().unwrap(), &Default::default()).unwrap();
+            delete(renamed.to_str().unwrap(), None).unwrap();
+            assert!(!renamed.exists());
+            delete(source, None).unwrap();
+            assert!(world.exists());
+        }
+    }
+
+    #[test]
+    #[cfg(all(not(target_family = "wasm"), feature = "geotiff"))]
     fn shared_rpc_and_world_files_require_every_raster_owner() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().to_str().unwrap();

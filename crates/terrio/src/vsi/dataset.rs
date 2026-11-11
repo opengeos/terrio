@@ -545,7 +545,7 @@ pub(crate) fn with_seekable<T>(path: &str, operation: impl FnOnce(&mut dyn ReadS
 }
 pub(crate) fn tiff_has_transform(path: &str) -> Result<bool> {
     with_seekable(path, |reader| {
-        crate::geotiff::read_geo_tags_from(reader)
+        crate::geotiff::read_first_geo_tags_from(reader)?
             .map(|tags| tags.geo_transform.is_some())
             .ok_or_else(|| Error::InvalidData("cannot read TIFF georeferencing tags".into()))
     })

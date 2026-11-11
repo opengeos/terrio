@@ -218,15 +218,25 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(f: R) -> Option<GeoTags> {
 
 /// Reads TIFF metadata while preserving read and seek failures for lazy opens.
 pub(crate) fn try_read_geo_tags_from<R: Read + Seek>(f: R) -> std::io::Result<Option<GeoTags>> {
-    read_geo_tags_impl(f, false)
+    read_geo_tags_impl(f, false, ImageScope::All)
+}
+
+/// First-image metadata for inventory, without reading the next-directory pointer or later IFDs.
+pub(crate) fn read_first_geo_tags_from<R: Read + Seek>(f: R) -> std::io::Result<Option<GeoTags>> {
+    read_geo_tags_impl(f, false, ImageScope::First)
 }
 
 /// Comparison-only TIFF metadata; ordinary lazy opens avoid its out-of-line reads.
 pub(crate) fn read_compare_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
-    read_geo_tags_impl(std::io::BufReader::new(std::fs::File::open(path).ok()?), true).ok().flatten()
+    read_geo_tags_impl(std::io::BufReader::new(std::fs::File::open(path).ok()?), true, ImageScope::All).ok().flatten()
 }
 
-fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> std::io::Result<Option<GeoTags>> {
+enum ImageScope {
+    First,
+    All,
+}
+
+fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool, images: ImageScope) -> std::io::Result<Option<GeoTags>> {
     let mut header = [0u8; 16];
     f.read_exact(&mut header[..8])?;
     let le = match &header[..2] {
@@ -342,8 +352,9 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> std::
             12 => 8, // DOUBLE
             _ => continue,
         };
-        let len = (n as usize)
-            .checked_mul(size)
+        let len = usize::try_from(n)
+            .ok()
+            .and_then(|n| n.checked_mul(size))
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "TIFF tag length overflow"))?;
         if len > 1 << 24 {
             continue;
@@ -370,13 +381,15 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> std::
     }
     // The other images: overviews and masks.
     let mut palette_offsets: Vec<u64> = palette_offset.into_iter().collect();
-    let mut seen = vec![ifd_offset];
-    skip_remaining_ifd_entries(&mut f, count, entry_len)?;
-    let mut next = read_offset(&mut f, big, le)?;
-    while next != 0 && seen.len() < MAX_IFDS && !seen.contains(&next) {
-        let offset = next;
-        seen.push(offset);
-        next = palette_offset_in_ifd(&mut f, offset, big, le, &mut palette_offsets)?;
+    if matches!(images, ImageScope::All) {
+        let mut seen = vec![ifd_offset];
+        skip_remaining_ifd_entries(&mut f, count, entry_len)?;
+        let mut next = read_offset(&mut f, big, le)?;
+        while next != 0 && seen.len() < MAX_IFDS && !seen.contains(&next) {
+            let offset = next;
+            seen.push(offset);
+            next = palette_offset_in_ifd(&mut f, offset, big, le, &mut palette_offsets)?;
+        }
     }
 
     let doubles = |t: u16| {
@@ -1707,6 +1720,7 @@ mod tests {
             bytes: std::io::Cursor<Vec<u8>>,
             fail_at: u64,
             fail_seek: bool,
+            read_bytes: usize,
         }
         impl Read for FailingReader {
             fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
@@ -1714,7 +1728,9 @@ mod tests {
                     return Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "directory request failed"));
                 }
                 let n = buffer.len().min((self.fail_at - self.bytes.position()) as usize);
-                self.bytes.read(&mut buffer[..n])
+                let read = self.bytes.read(&mut buffer[..n])?;
+                self.read_bytes += read;
+                Ok(read)
             }
         }
         impl Seek for FailingReader {
@@ -1736,16 +1752,36 @@ mod tests {
         bytes.extend_from_slice(&[0; 24]);
         bytes.extend_from_slice(&0u16.to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes());
+        let mut first = FailingReader { bytes: std::io::Cursor::new(bytes.clone()), fail_at: 50, fail_seek: false, read_bytes: 0 };
+        assert!(read_first_geo_tags_from(&mut first).unwrap().is_some());
+        assert_eq!(first.read_bytes, 46, "first-image metadata does not read chain pointers or later directories");
+        let mut full = FailingReader { bytes: std::io::Cursor::new(bytes.clone()), fail_at: u64::MAX, fail_seek: false, read_bytes: 0 };
+        assert!(try_read_geo_tags_from(&mut full).unwrap().is_some());
+        assert_eq!(full.read_bytes, 56);
         for fail_at in [0, 8, 10, 26, 50, 52] {
-            let source = FailingReader { bytes: std::io::Cursor::new(bytes.clone()), fail_at, fail_seek: false };
+            let source = FailingReader { bytes: std::io::Cursor::new(bytes.clone()), fail_at, fail_seek: false, read_bytes: 0 };
             let error = try_read_geo_tags_from(source).expect_err("read failure must propagate");
             assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
             assert_eq!(error.to_string(), "directory request failed");
         }
-        let source = FailingReader { bytes: std::io::Cursor::new(bytes.clone()), fail_at: u64::MAX, fail_seek: true };
+        let source = FailingReader { bytes: std::io::Cursor::new(bytes.clone()), fail_at: u64::MAX, fail_seek: true, read_bytes: 0 };
         assert_eq!(try_read_geo_tags_from(source).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
         assert!(try_read_geo_tags_from(std::io::Cursor::new(bytes)).unwrap().is_some());
         assert!(try_read_geo_tags_from(std::io::Cursor::new(b"not tiff")).unwrap().is_none());
+    }
+
+    #[test]
+    fn metadata_refuses_unrepresentable_tag_lengths() {
+        let mut bytes = b"II\x2b\0\x08\0\0\0\x10\0\0\0\0\0\0\0".to_vec();
+        bytes.extend_from_slice(&1u64.to_le_bytes());
+        bytes.extend_from_slice(&MODEL_PIXEL_SCALE.to_le_bytes());
+        bytes.extend_from_slice(&12u16.to_le_bytes());
+        bytes.extend_from_slice(&u64::MAX.to_le_bytes());
+        bytes.extend_from_slice(&52u64.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        let error = try_read_geo_tags_from(std::io::Cursor::new(bytes)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("tag length overflow"));
     }
 
     /// Reservations start with free capacity, stop at the cap, and release capacity on drop.

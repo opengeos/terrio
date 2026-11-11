@@ -1,12 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
 // SPDX-License-Identifier: MIT
 //! Lazy TIFF metadata must retain the cause of failed remote directory reads.
-#![cfg(remote)]
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
-use std::time::{Duration, Instant};
-
+#[cfg(fs)]
 #[test]
 fn short_non_tiff_inputs_are_not_matches() {
     let dir = tempfile::tempdir().unwrap();
@@ -19,13 +15,18 @@ fn short_non_tiff_inputs_are_not_matches() {
 }
 
 #[test]
+#[cfg(remote)]
 fn remote_directory_errors_keep_their_cause() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
     for (response, expected) in [
-        ("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "500"),
-        ("", "disconnected"),
+        ("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", Some("500")),
+        ("", None),
         (
             "HTTP/1.1 302 Found\r\nLocation: http://localhost:1/elsewhere.tif\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            "a redirect to another origin",
+            Some("a redirect to another origin"),
         ),
     ] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -74,7 +75,14 @@ fn remote_directory_errors_keep_their_cause() {
             Ok(_) => panic!("directory request must fail"),
         };
         assert!(matches!(error, terrio::Error::Io(_)), "{error:?}");
-        assert!(error.to_string().contains(expected), "{error}");
+        if let Some(expected) = expected {
+            assert!(error.to_string().contains(expected), "{error}");
+        } else if let terrio::Error::Io(ref io) = error {
+            assert!(
+                matches!(io.get_ref().and_then(|source| source.downcast_ref::<terrio::Error>()), Some(terrio::Error::Http(_))),
+                "{error:?}"
+            );
+        }
         server.join().unwrap();
     }
 }
