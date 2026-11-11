@@ -89,7 +89,7 @@ fn to_size(bytes: f64) -> Option<u64> {
 }
 
 /// A `TERRIO_CACHEMAX` value: bytes, with optional `K`, `M` or `G` suffixes.
-fn parse_terrio_cachemax(v: &str) -> Option<u64> {
+pub(crate) fn parse_byte_size(v: &str) -> Option<u64> {
     let (value, factor) = parse_number_and_unit(v)?;
     to_size(value * factor as f64)
 }
@@ -113,7 +113,7 @@ fn process_env(key: &str) -> Option<String> {
 /// The size from the process environment, else the default.
 fn default_max_bytes() -> u64 {
     process_env("TERRIO_CACHEMAX")
-        .and_then(|v| parse_terrio_cachemax(&v))
+        .and_then(|v| parse_byte_size(&v))
         .or_else(|| process_env("GDAL_CACHEMAX").and_then(|v| parse_gdal_cachemax(&v)))
         .unwrap_or(DEFAULT_MAX_BYTES)
 }
@@ -310,6 +310,11 @@ pub(crate) fn get(handle: u64, ifd: usize, chunk: u32) -> Option<Arc<CachedChunk
     #[cfg(test)]
     tests::count_lookup(found.is_some());
     found
+}
+
+/// Whether a chunk is decoded already, without changing its recency or lookup statistics.
+pub(crate) fn contains(handle: u64, ifd: usize, chunk: u32) -> bool {
+    cache().handles.get(&handle).is_some_and(|chunks| chunks.contains_key(&(ifd, chunk)))
 }
 
 /// Caches a decoded chunk, evicting the least recently used ones to stay within [`max_bytes`]. A
@@ -517,14 +522,14 @@ pub(crate) mod tests {
 
     #[test]
     fn terrio_cachemax_reads_bytes_and_suffixes() {
-        assert_eq!(parse_terrio_cachemax("1000"), Some(1000));
-        assert_eq!(parse_terrio_cachemax("512K"), Some(512 << 10));
-        assert_eq!(parse_terrio_cachemax("64M"), Some(64 << 20));
-        assert_eq!(parse_terrio_cachemax("2g"), Some(2 << 30));
-        assert_eq!(parse_terrio_cachemax("2GB"), Some(2 << 30));
-        assert_eq!(parse_terrio_cachemax("0"), Some(0));
-        assert_eq!(parse_terrio_cachemax("lots"), None);
-        assert_eq!(parse_terrio_cachemax("5%"), None);
+        assert_eq!(parse_byte_size("1000"), Some(1000));
+        assert_eq!(parse_byte_size("512K"), Some(512 << 10));
+        assert_eq!(parse_byte_size("64M"), Some(64 << 20));
+        assert_eq!(parse_byte_size("2g"), Some(2 << 30));
+        assert_eq!(parse_byte_size("2GB"), Some(2 << 30));
+        assert_eq!(parse_byte_size("0"), Some(0));
+        assert_eq!(parse_byte_size("lots"), None);
+        assert_eq!(parse_byte_size("5%"), None);
     }
 
     #[test]

@@ -101,7 +101,7 @@ pub(crate) struct Options<'a> {
     pub format: Option<&'a str>,
     /// `COMPRESS`: `NONE` or `DEFLATE` (netCDF-4 only: classic formats become `NC4C`, as in GDAL).
     pub compress: Option<&'a str>,
-    /// `ZLEVEL`: the deflate level, 1 to 9 (default 1).
+    /// `ZLEVEL`: the deflate level, 1 to 9 (default 1); another value is refused.
     pub zlevel: Option<&'a str>,
     /// `CHUNKING`: whether compressed variables are chunked by row (the default) or whole.
     pub chunking: Option<&'a str>,
@@ -432,10 +432,19 @@ fn version_of(options: &Options, groups: bool) -> Result<(Version, Option<u32>)>
     if groups && version != Version::Nc4 {
         return Err(Error::InvalidArgument("netCDF groups need the netCDF-4 format (FORMAT=NC4)".into()));
     }
+    // The level is checked whatever the compression, as the GeoTIFF and PNG writers check theirs.
+    let level = match options.zlevel {
+        None => 1,
+        Some(z) => z
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|z| (1..=9).contains(z))
+            .ok_or_else(|| Error::InvalidArgument(format!("invalid ZLEVEL '{z}' (1 to 9)")))?,
+    };
     let deflate = match options.compress.map(str::to_ascii_uppercase).as_deref() {
         None | Some("NONE") => None,
         Some("DEFLATE") => {
-            let level = options.zlevel.and_then(|z| z.trim().parse::<u32>().ok()).filter(|z| (1..=9).contains(z)).unwrap_or(1);
             // Compression needs netCDF-4: GDAL switches to its classic model.
             if !matches!(version, Version::Nc4 | Version::Nc4Classic) {
                 version = Version::Nc4Classic;
@@ -894,6 +903,21 @@ mod tests {
         assert_eq!(ds.raster.data.to_f64_vec(), r.data.to_f64_vec());
     }
 
+    /// `ZLEVEL` is the deflate level, 1 to 9: another value is refused, whatever the compression,
+    /// rather than replaced by the default.
+    #[test]
+    fn refuses_a_zlevel_out_of_range() {
+        for (compress, zlevel, ok) in
+            [(Some("DEFLATE"), "9", true), (Some("DEFLATE"), "0", false), (Some("DEFLATE"), "12", false), (None, "x", false)]
+        {
+            let o = Options { format: Some("NC4"), compress, zlevel: Some(zlevel), ..Default::default() };
+            match version_of(&o, false) {
+                Ok((_, deflate)) => assert!(ok && deflate == Some(9), "ZLEVEL {zlevel}: {deflate:?}"),
+                Err(e) => assert!(!ok && e.to_string().contains(&format!("invalid ZLEVEL '{zlevel}'")), "ZLEVEL {zlevel}: {e}"),
+            }
+        }
+    }
+
     #[test]
     fn writes_64_bit_offsets() {
         let dir = tempfile::tempdir().unwrap();
@@ -940,5 +964,24 @@ mod tests {
         write(&raster(DataType::I16, 1, 4326), None, &p, &Options { compress: Some("DEFLATE"), ..Default::default() }).unwrap();
         assert_eq!(&std::fs::read(&p).unwrap()[..4], b"\x89HDF");
         assert!(write(&raster(DataType::I16, 1, 4326), None, &p, &Options { format: Some("NC9"), ..Default::default() }).is_err());
+    }
+
+    /// A CRS on Polar Stereographic (variant C), whose false origin lies on its standard parallel,
+    /// gets CF's polar stereographic grid mapping on that parallel, with the false northing of the
+    /// pole: 200,000 m less ρF = 2,499,363.488 m for Petrels 1972 / Terre Adelie Polar
+    /// Stereographic (IOGP Guidance Note 7-2).
+    #[test]
+    fn a_variant_c_polar_stereographic_crs_gets_the_grid_mapping_of_its_pole() {
+        let (name, attrs) = grid_mapping(&crate::crs::SpatialRef::from_epsg(2985).unwrap());
+        let value = |key: &str| match attrs.iter().find(|(k, _)| k == key).map(|(_, a)| a) {
+            Some(Attr::Doubles(v)) if v.len() == 1 => v[0],
+            _ => panic!("{key} is not an attribute of one double"),
+        };
+        assert_eq!(name, "polar_stereographic");
+        assert_eq!(value("latitude_of_projection_origin"), -90.0);
+        assert_eq!(value("standard_parallel"), -67.0);
+        assert_eq!(value("straight_vertical_longitude_from_pole"), 140.0);
+        assert_eq!(value("false_easting"), 300_000.0);
+        assert!((value("false_northing") - (200_000.0 - 2_499_363.488)).abs() < 1e-3, "{}", value("false_northing"));
     }
 }

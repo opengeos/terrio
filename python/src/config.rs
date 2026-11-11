@@ -6,17 +6,21 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::HashMap;
 
+/// Registers the functions in the module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(config_push, m)?)?;
     m.add_function(wrap_pyfunction!(config_pop, m)?)?;
     m.add_function(wrap_pyfunction!(config_get, m)?)?;
+    m.add_function(wrap_pyfunction!(sidecars_disabled, m)?)?;
     m.add_function(wrap_pyfunction!(set_path_specific_option, m)?)?;
     m.add_function(wrap_pyfunction!(clear_path_specific_options, m)?)?;
     m.add_function(wrap_pyfunction!(get_path_specific_option, m)?)?;
     m.add_function(wrap_pyfunction!(set_allowed_drivers, m)?)?;
     m.add_function(wrap_pyfunction!(allowed_drivers, m)?)?;
     m.add_function(wrap_pyfunction!(check_drivers, m)?)?;
+    m.add_function(wrap_pyfunction!(canonical_driver_name, m)?)?;
     m.add_function(wrap_pyfunction!(identify_drivers, m)?)?;
+    m.add_function(wrap_pyfunction!(vector_byte_extension, m)?)?;
     m.add_function(wrap_pyfunction!(network_stats, m)?)?;
     m.add_function(wrap_pyfunction!(reset_network_stats, m)?)?;
     m.add_function(wrap_pyfunction!(clear_http_cache, m)?)?;
@@ -43,6 +47,13 @@ fn config_pop() -> bool {
 #[pyfunction]
 fn config_get(key: &str) -> Option<String> {
     terrio::config::get(key)
+}
+
+/// Whether `TERRIO_DISABLE_READDIR_ON_OPEN` (or its other name, `GDAL_DISABLE_READDIR_ON_OPEN`)
+/// is `EMPTY_DIR` for the calling thread, which asks that nothing next to a local dataset be read.
+#[pyfunction]
+fn sidecars_disabled() -> bool {
+    terrio::config::sidecars_disabled()
 }
 
 /// Binds an option to the files whose names start with `prefix` (GDAL's
@@ -80,20 +91,23 @@ fn get_path_specific_option(path: &str, key: &str) -> Option<String> {
     }
 }
 
-/// The kind of driver an allow-list applies to: `"raster"`, `"vector"`, or `None` for both.
+/// The kind of driver an allow-list applies to: `"raster"`, `"vector"`, `"pointcloud"`, or `None`
+/// for every kind.
 fn driver_kind(kind: Option<&str>) -> PyResult<Option<terrio::formats::Kind>> {
     match kind.map(str::to_ascii_lowercase).as_deref() {
         None => Ok(None),
         Some("raster") => Ok(Some(terrio::formats::Kind::Raster)),
         Some("vector") => Ok(Some(terrio::formats::Kind::Vector)),
-        Some(other) => Err(crate::invalid(format!("kind must be 'raster', 'vector' or None, not {other:?}"))),
+        Some("pointcloud") => Ok(Some(terrio::formats::Kind::PointCloud)),
+        Some(other) => Err(crate::invalid(format!("kind must be 'raster', 'vector', 'pointcloud' or None, not {other:?}"))),
     }
 }
 
-/// Restricts, process-wide, the drivers datasets of `kind` ("raster", "vector", or None for both)
-/// may be opened with (terrio or GDAL names). The first call for a kind sets its list; later calls
-/// intersect with it, so they narrow it but never re-enable a driver, as GDAL's de-registration
-/// lasts for the process. Lifting a list once set (`drivers=None`) raises InvalidArgumentError.
+/// Restricts, process-wide, the drivers datasets of `kind` ("raster", "vector", "pointcloud", or
+/// None for every kind) may be opened with (terrio or GDAL names). The first call for a kind sets
+/// its list; later calls intersect with it, so they narrow it but never re-enable a driver, as
+/// GDAL's de-registration lasts for the process. Lifting a list once set (`drivers=None`) raises
+/// InvalidArgumentError.
 #[pyfunction]
 #[pyo3(signature = (drivers, kind=None))]
 fn set_allowed_drivers(drivers: Option<Vec<String>>, kind: Option<&str>) -> PyResult<()> {
@@ -102,9 +116,10 @@ fn set_allowed_drivers(drivers: Option<Vec<String>>, kind: Option<&str>) -> PyRe
     terrio::formats::set_allowed_drivers(names.as_deref(), kind).py()
 }
 
-/// The drivers datasets of `kind` may be opened with (upper case), or None when nothing restricts
-/// them. For `kind=None` (a dataset whose kind is unknown until it is opened), a driver must be
-/// allowed by the list of each kind it serves.
+/// The drivers datasets of `kind` ("raster", "vector" or "pointcloud") may be opened with (upper
+/// case), or None when nothing restricts them. For `kind=None` (a dataset whose kind is unknown
+/// until it is opened: a raster or a vector, as point clouds are read by readers of their own), a
+/// driver must be allowed by the list of each of those kinds it serves.
 #[pyfunction]
 #[pyo3(signature = (kind=None))]
 fn allowed_drivers(kind: Option<&str>) -> PyResult<Option<Vec<String>>> {
@@ -119,6 +134,14 @@ fn check_drivers(py: Python<'_>, path: &str, drivers: Vec<String>) -> PyResult<(
     py.detach_result(|| terrio::formats::check_drivers(path, &drivers)).py()
 }
 
+/// A driver name as the allow-list, `check_drivers` and the raster writers read it: in upper case,
+/// without the whitespace around it, and with the names of JPEG 2000 drivers (`JP2OpenJPEG`,
+/// `JPEG2000`...) as `JP2`.
+#[pyfunction]
+fn canonical_driver_name(name: &str) -> String {
+    terrio::formats::canonical_driver_name(name)
+}
+
 /// What a dataset's name and first bytes say its format is, as the allow-list judges it:
 /// `(by_name, by_content)`. Not `terrio.identify`, which is format identification
 /// (`inspection.rs`). The first bytes are read without the GIL.
@@ -128,20 +151,34 @@ fn identify_drivers(py: Python<'_>, path: &str) -> PyResult<(Vec<String>, Option
     Ok((id.by_name, id.by_content))
 }
 
+/// Suggests a filename extension using the shared vector byte identifiers, without reading files.
+///
+/// Args:
+///     data: Bytes of a vector dataset.
+///
+/// Returns:
+///     str | None: The suggested extension, or None when a filename is needed.
+#[pyfunction]
+fn vector_byte_extension(data: &[u8]) -> Option<&'static str> {
+    terrio::memory::suggest_vector_extension(data)
+}
+
 /// The HTTP traffic of this process since the last reset, with GDAL's network-statistics counters
 /// (`VSINetworkStatsGetAsSerializedJSON`'s `downloaded_bytes`, `uploaded_bytes` and `count`):
-/// `{"request_count": n, "received_bytes": n, "sent_bytes": 0, "requests": n, "bytes": n,
+/// `{"request_count": n, "received_bytes": n, "sent_bytes": n, "requests": n, "bytes": n,
 /// "hosts": {host: {...}}, "files": {name: {...}}}`, with the same counters per host asked for
 /// (`host:port`) and per file, named as GDAL names them (`/vsiaz/container/blob`,
 /// `/vsicurl/<url>` without its query string). `requests` and `bytes` are the older names of
 /// `request_count` and `received_bytes`. Every response counts, error responses and their bodies
-/// included, as GDAL counts them; terrio sends no request bodies, so `sent_bytes` is 0.
+/// included, as GDAL counts them. A redirect is not counted, nor the body of its request.
+/// `sent_bytes` counts the bodies of the requests counted: uploads (`PUT`), batch deletes and
+/// `POST` requests such as STAC searches.
 #[pyfunction]
 fn network_stats(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    fn counters(d: &Bound<'_, PyDict>, requests: u64, bytes: u64) -> PyResult<()> {
+    fn counters(d: &Bound<'_, PyDict>, requests: u64, bytes: u64, sent: u64) -> PyResult<()> {
         d.set_item("request_count", requests)?;
         d.set_item("received_bytes", bytes)?;
-        d.set_item("sent_bytes", 0u64)?;
+        d.set_item("sent_bytes", sent)?;
         d.set_item("requests", requests)?;
         d.set_item("bytes", bytes)
     }
@@ -151,17 +188,17 @@ fn network_stats(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let total = terrio::http::fetch_stats();
-        counters(&out, total.requests, total.bytes)?;
+        counters(&out, total.requests, total.bytes, total.sent_bytes)?;
         for (map, stats) in [(&hosts, terrio::http::fetch_stats_by_host()), (&files, terrio::http::fetch_stats_by_file())] {
             for (key, s) in stats {
                 let d = PyDict::new(py);
-                counters(&d, s.requests, s.bytes)?;
+                counters(&d, s.requests, s.bytes, s.sent_bytes)?;
                 map.set_item(key, d)?;
             }
         }
     }
     #[cfg(target_arch = "wasm32")]
-    counters(&out, 0, 0)?;
+    counters(&out, 0, 0, 0)?;
     out.set_item("hosts", hosts)?;
     out.set_item("files", files)?;
     Ok(out)

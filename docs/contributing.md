@@ -254,6 +254,39 @@ to a Rust release less than six months old, and from 1.0 on only in a minor rele
   Add the project to `NOTICE` and [Acknowledgements](acknowledgements.md), and data files from
   elsewhere to `REUSE.toml`.
 
+## Changelog
+
+Pull requests do not edit `CHANGELOG.md`. Each one would add its entry at the top of the
+`Unreleased` section, so every merge left the other open pull requests in conflict there. Instead,
+open the pull request description with a paragraph stating the change a user sees, written the way
+a changelog entry reads: what behaves differently now, and what it did before when that was a bug.
+
+The release pull request (titled `Release X.Y.Z`) writes the version's section. Draft it from the
+pull requests merged since the last release, then edit the entries into the changelog's style:
+
+```sh
+python scripts/draft_changelog.py --version X.Y.Z
+```
+
+The script reads the pull request numbers from the commit subjects since the last `v*` tag, takes
+the first paragraph of each description, leaves out `ci`, `chore`, `build` and `test` pull
+requests, and groups the rest by the type of their title. It needs an authenticated `gh` and a
+clone with full history and tags. Rename `Unreleased` to the version's heading, merge the draft
+into it, and drop drafted entries that an entry already there covers: pull requests merged before
+this rule still wrote their own entries. The `Changelog` CI check fails a pull request that changes
+`CHANGELOG.md` unless its title is `Release X.Y.Z`.
+
+The release pull request also brings `fuzz/Cargo.lock`, the fuzz targets' lockfile, to the versions
+of `Cargo.lock`, so that the targets fuzz the dependencies the release ships:
+
+```sh
+cp Cargo.lock fuzz/Cargo.lock
+cargo update --manifest-path fuzz/Cargo.toml --workspace
+```
+
+Dependency updates can leave it at older versions in between: CI fails it only when it no longer
+matches the manifests or pins a vulnerable version.
+
 ## Release notes
 
 The release workflow publishes notes generated from the merged pull requests. Edit the release

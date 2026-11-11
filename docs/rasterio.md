@@ -51,12 +51,30 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
 - **Metadata.** Profiles, tags, band descriptions, scales, offsets, units, color interpretation,
   color tables, block shapes, overviews and mask flags are read from the TIFF tags as GDAL reads
   them (`GDAL_METADATA`, `GDAL_NODATA`, `TIFFTAG_*` items, the `IMAGE_STRUCTURE` domain), and from
-  `.aux.xml` sidecars.
+  `.aux.xml` sidecars. Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` (or
+  `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`), in the environment or an `Env`, the `.aux.xml`,
+  `.ovr`, `.msk`, world and RPC files of a local dataset are not read, and `files` lists none of
+  them, nor a `.hdr` other than the header of an ENVI or EHdr raster.
 - **Writing.** Writers (`w`, `w+`, `r+`) hold their pixels in memory and write the file when
   closed: incremental and windowed writes work in any order. Rasters larger than
   `TERRIO_RIO_IN_MEMORY_LIMIT` bytes (512 MB by default) keep their pixels in a temporary file
   next to the output instead, mapped in memory, and GeoTIFFs are then written in rows of blocks
-  (`terrio.GeoTiffWriter`), without the raster in RAM. GeoTIFFs are written with GDAL's
+  (`terrio.GeoTiffWriter`), without the raster in RAM. `shutil.copy` writes such a GeoTIFF, and a
+  COG, from its source as it writes them, a row of a COG's tiles at a time, the COG's overviews
+  computed as the rows come, without an unbounded source array or temporary pixel staging file.
+  Taller source blocks are read in slabs of up to 16 MiB (at least one output tile row), aligned
+  to source and output rows when that fits, then fed to the COG writer one tile row at a time.
+  Whole-image strips taller than an output tile row are split into at least two reads; smaller
+  images can fit in one bounded slab. Blocks or row alignments exceeding the
+  slab budget may
+  still be decoded repeatedly. Streamed output is published only after writing succeeds, and
+  copying onto a symlink or hardlink of the source is refused. An unrelated destination symlink
+  is replaced with the completed output file; its former target is left unchanged.
+  A copy whose source has a dataset mask, or overviews a COG copies, or that is compressed with
+  JPEG, WebP, LERC or JPEG XL, holds the source's pixels until it is written, as a smaller
+  GeoTIFF does. A copy whose source fails to read leaves its destination as it was, held or
+  written in rows: an existing file keeps its content, and no file is left where there was none.
+  GeoTIFFs are written with GDAL's
   layout for the profile: strips or tiles (`tiled`, `blockxsize`, `blockysize`), pixel or band
   interleaving, compression (`lzw`, `deflate`, `zstd`, `packbits`) with predictors 2 and 3,
   photometric RGB and alpha bands as GDAL defaults to them, tags, band metadata, color tables,
@@ -70,6 +88,10 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   under `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, as GDAL). `driver="COG"` writes a Cloud
   Optimized GeoTIFF whose overviews are GDAL's COG driver's, pixel for pixel: the same levels
   (`overview_count`), and the same resampling (`overview_resampling` or `resampling`, by default
+  `cubic`, `nearest` for paletted rasters). A COG takes no `photometric` option: three Byte bands,
+  or four compressed with WebP, are red, green and blue by default, and any other color
+  interpretation set on the dataset, or copied by `shutil.copy`, is kept, as it is by an `r+`
+  update.
   `cubic`, `nearest` for paletted rasters).
 - **Raster type.** A GeoTIFF's raster type is read as the `AREA_OR_POINT` tag and written back:
   a PixelIsPoint raster (`AREA_OR_POINT=Point`, read from a file or set with `update_tags`) stays
@@ -88,7 +110,7 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
 
 | Module | Covered |
 |---|---|
-| `rio.open` | modes `r`, `r+`, `w`, `w+`; paths, `pathlib.Path`, URLs, file objects, `MemoryFile`; creation options as keywords |
+| `rio.open` | modes `r`, `r+`, `w`, `w+`; paths, `pathlib.Path`, URLs, file objects, `MemoryFile`; creation options as keywords; for writing, the driver of the extension when none is given (`driver_from_extension`: `JP2OpenJPEG` for `.jp2`), and the names of JPEG 2000 drivers for terrio's `JP2` |
 | datasets | `name`, `mode`, `closed`, `driver`, `width`, `height`, `count`, `shape`, `dtypes`, `nodata`, `nodatavals`, `crs`, `transform`, `bounds`, `res`, `profile`, `meta`, `indexes`, `block_shapes`, `block_windows`, `block_window`, `overviews()`, `tags()`, `update_tags`, `descriptions`, `set_band_description`, `colorinterp`, `colormap`, `write_colormap`, `scales`, `offsets`, `units`, `set_band_unit`, `mask_flag_enums`, `compression`, `interleaving`, `photometric`, `read` (`indexes`, `window`, `out`, `out_shape`, `resampling`, `masked`, `boundless`, `fill_value`, `out_dtype`), `read_masks`, `dataset_mask`, `write` (`indexes`, `window`, masked arrays), `write_mask`, `sample`, `index`, `xy`, `window`, `window_transform`, `window_bounds`, `build_overviews`, `statistics`, `stats`, `checksum`, `lnglat`, `close` |
 | `rio.crs` | `CRS.from_epsg`, `from_string`, `from_wkt`, `from_proj4`, `from_dict`, `from_user_input`, `from_authority`; `to_epsg`, `to_authority`, `to_wkt`, `to_string`, `to_proj4`, `to_dict`; `is_geographic`, `is_projected`, `is_valid`, `linear_units`, `linear_units_factor`, `units_factor`; equality with CRSs, strings and codes |
 | `rio.transform` | `Affine`, `from_origin`, `from_bounds`, `from_gcps`, `array_bounds`, `rowcol`, `xy` (affine transforms, GCPs or RPCs, with `rpc_options`), `AffineTransformer`, `GCPTransformer`, `RPCTransformer` (context manager, `close`, `closed`), `get_transformer`, `guard_transform`, `IDENTITY` |

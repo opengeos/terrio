@@ -259,16 +259,16 @@ def test_a_reduced_read_of_a_gcp_sum_warped_vrt_keeps_the_total(tmp_path):
 
 
 def test_a_sum_over_its_memory_budget_is_refused_before_its_source_is_read(tmp_path, monkeypatch):
-    # 32 x 32 Float32 ones with an overview at 4. A `sum` holds 4 bytes per source pixel and 8 of
-    # shares: 12,288 bytes at full resolution, 768 for the overview; two sources, both whole and the
-    # shares, 16,384 at full resolution.
+    # 32 x 32 Float32 ones with an overview at 4. A `sum` holds the 4 bytes of each source pixel:
+    # 4,096 bytes at full resolution, 256 for the overview; two sources, both whole, 8,192 at full
+    # resolution.
     path = str(tmp_path / "ones.tif")
     terrio.Raster.from_array(np.ones((32, 32), "float32"), GT, crs="EPSG:3857").write(
         path, overviews=[4], overview_resampling="average"
     )
-    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "10000")
+    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "4000")
     refused = (
-        r"TERRIO_WARP_SUM_MAX_BYTES=10000: sum an overview level instead, with `--overview n` "
+        r"TERRIO_WARP_SUM_MAX_BYTES=4000: sum an overview level instead, with `--overview n` "
         r"\(`overview=n` for `terrio\.warp`, or a source opened with `overview_level=n` in "
         r"`terrio\.rio`\)"
     )
@@ -317,16 +317,15 @@ def test_a_sum_over_its_memory_budget_is_refused_before_its_source_is_read(tmp_p
 
 
 def test_a_sum_counts_the_bytes_of_every_band(tmp_path, monkeypatch):
-    # 32 x 32 Float32 ones summed into 1 x 1. Each band holds 4 bytes per pixel and the shares 8:
-    # under 14,000 bytes one band (12,288) fits and two (16,384) do not. Two sources are held
-    # whole with the shares of one window: under 20,000, one band each (16,384) fits and two
-    # (24,576) do not.
+    # 32 x 32 Float32 ones summed into 1 x 1. Each band holds 4 bytes per pixel: under 6,000 bytes
+    # one band (4,096) fits and two (8,192) do not. Two sources are held whole: under 12,000, one
+    # band each (8,192) fits and two (16,384) do not.
     one, two = str(tmp_path / "one.tif"), str(tmp_path / "two.tif")
     terrio.Raster.from_array(np.ones((32, 32), "float32"), GT, crs="EPSG:3857").write(one)
     terrio.Raster.from_array(np.ones((2, 32, 32), "float32"), GT, crs="EPSG:3857").write(two)
     pixel = {"dst_transform": from_origin(0, 32, 32, 32), "dst_crs": "EPSG:3857"}
-    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "14000")
-    refused = r"about 16384 bytes .*TERRIO_WARP_SUM_MAX_BYTES=14000"
+    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "6000")
+    refused = r"about 8192 bytes .*TERRIO_WARP_SUM_MAX_BYTES=6000"
     with pytest.raises(terrio.ResourceLimitError, match=refused):
         terrio.warp(two, ts=(1, 1), resampling="sum")
     assert terrio.warp(one, ts=(1, 1), resampling="sum", ot="Float64").read(1).sum() == 1024.0
@@ -346,8 +345,8 @@ def test_a_sum_counts_the_bytes_of_every_band(tmp_path, monkeypatch):
             )
         reproject(terrio.rio.band(src, 1), reprojected, resampling=Resampling.sum, **pixel)
     assert reprojected.sum() == 1024.0
-    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "20000")
-    with pytest.raises(terrio.ResourceLimitError, match=r"about 24576 bytes"):
+    monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "12000")
+    with pytest.raises(terrio.ResourceLimitError, match=r"about 16384 bytes"):
         terrio.warp([two, two], ts=(1, 1), resampling="sum")
     mosaic = terrio.warp([one, one], ts=(1, 1), resampling="sum", ot="Float64")
     assert mosaic.read(1).sum() == 1024.0
@@ -356,16 +355,15 @@ def test_a_sum_counts_the_bytes_of_every_band(tmp_path, monkeypatch):
 def test_a_sum_counts_the_working_type_of_a_warped_vrt(tmp_path, monkeypatch):
     # Two bands of 32 x 32 ones read through a `WarpedVRT` summed into 1 x 1, under 20,000
     # bytes. Float64 converted to a float32 working type, a window is held in both types at once:
-    # 8 + 4 bytes per band and pixel, 32,768 with the shares. Float32 in a float64 working type,
-    # which holds every float32 value, is not converted: 4 bytes per band (16,384), and it fits,
-    # as in float32.
+    # 8 + 4 bytes per band and pixel, 24,576. Float32 in a float64 working type, which holds every
+    # float32 value, is not converted: 4 bytes per band (8,192), and it fits, as in float32.
     path, f64 = str(tmp_path / "two.tif"), str(tmp_path / "f64.tif")
     terrio.Raster.from_array(np.ones((2, 32, 32), "float32"), GT, crs="EPSG:3857").write(path)
     terrio.Raster.from_array(np.ones((2, 32, 32), "float64"), GT, crs="EPSG:3857").write(f64)
     monkeypatch.setenv("TERRIO_WARP_SUM_MAX_BYTES", "20000")
     with terrio.rio.open(f64) as src:
         with WarpedVRT(src, resampling=Resampling.sum, dtype="float32") as vrt:
-            with pytest.raises(terrio.ResourceLimitError, match=r"about 32768 bytes"):
+            with pytest.raises(terrio.ResourceLimitError, match=r"about 24576 bytes"):
                 vrt.read(out_shape=(2, 1, 1))
     with terrio.rio.open(path) as src:
         with WarpedVRT(src, resampling=Resampling.sum, dtype="float64") as vrt:

@@ -690,6 +690,7 @@ def reproject(
     tolerance: float = 0.125,
     warp_mem_limit: int = 0,
     src_geoloc_array: Any = None,
+    grid_invariant: bool | None = None,
     **kwargs: Any,
 ) -> tuple[Any, Affine]:
     """Reprojects a raster array (or band) into another grid.
@@ -727,6 +728,8 @@ def reproject(
         tolerance: The approximate transformer's maximum error, in pixels.
         warp_mem_limit: Unused.
         src_geoloc_array: Unsupported.
+        grid_invariant: Keep values independent of tiles (default); False selects GDAL's
+            chunk-dependent sampling. None follows TERRIO_WARP_GRID.
         **kwargs: GDAL transformer options: `MAX_GCP_ORDER` and `SRC_METHOD` (`GCP_POLYNOMIAL`,
             `GCP_TPS` or `GCP_HOMOGRAPHY`) with GCPs; `RPC_HEIGHT`, `RPC_HEIGHT_SCALE`, `RPC_DEM`
             (warped with exact transformations, as rasterio), `RPC_DEMINTERPOLATION`,
@@ -934,6 +937,7 @@ def reproject(
         # As rasterio: exact transformations with an RPC DEM.
         et=0.0 if "to" in rpc_kw and "RPC_DEM" in rpc_kw["to"] else tolerance,
         wo=_warp_extras(kwargs),
+        grid_invariant=grid_invariant,
         **gcp_kw,
         **rpc_kw,
     )

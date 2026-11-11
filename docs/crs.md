@@ -28,6 +28,17 @@ as PROJ strings with typical parameters and as pyproj's WKT1 and WKT2 of them:
 `vandg2` and others) rather than computing something else. The known difference is
 Krovak off Bessel's ellipsoid, where PROJ's inverse is not the inverse of its forward.
 
+Polar Stereographic (variant C), EPSG method 9830, puts its false origin on the standard parallel
+φF rather than at the pole, and no `+proj=` string names it. terrio reads it, from EPSG:2985 and
+EPSG:2986 (Petrels 1972 and Perroud 1950 / Terre Adelie Polar Stereographic) and from WKT1, WKT2
+and PROJJSON definitions that name it, in both configurations of `terrio-crs`, as variant B on the
+same standard parallel, whose pole lies at the northing at the false origin minus
+ρF = a cos φF / (1 − e² sin² φF)^0.5 (plus ρF for the north pole case). For EPSG:2985 this is a
+false northing of −2,299,363.488 m. `to_projjson` writes the CRS as variant B with this false
+northing, and `to_gdal_projjson` refuses method 9830. Definitions must supply a finite standard parallel
+within −90° to 90°, longitude of origin, and easting and northing at false origin. Incomplete
+definitions and invalid parameter values are refused.
+
 Mollweide and Wagner IV/V use Terrio's own ports of PROJ's formulas, including
 PROJ's finite Mollweide pole approximation. Their inverses judge antimeridian
 rounding on the normalized projected ellipse, allowing its radius up to
@@ -56,6 +67,15 @@ deriving conversions are errors.
 
 Coordinates are always in GIS order: x (easting, longitude) first, then y (northing, latitude),
 whatever the axis order the authority defines.
+
+Inverse projections refuse non-finite input coordinates before evaluating their formulas.
+In particular, a failed transform's `(inf, inf)` marker cannot become a valid-looking opposite
+pole through a polar stereographic inverse. Finite distant coordinates remain valid where the
+projection permits them. If conversion to metres overflows before normalization by the
+ellipsoid radius, the inverse combines those scale factors to preserve finite normalized
+coordinates and their direction. Unrepresentable normalized coordinates are refused.
+This is stricter than GDAL 3.13.3 for some infinity pairs, such as
+`(0, -inf)` in EPSG:3413, which GDAL accepts as a pole.
 
 ## Standalone Rust crate
 
@@ -308,8 +328,20 @@ the grid, the next best transformation is used, as PROJ does. Grids are looked u
    it.
 
 The search directories and network access can also be set from code
-(`terrio::crs::set_grid_search_paths`, `set_network_enabled`, and the same functions in Python),
-as PROJ's `proj_context_set_search_paths` and `proj_context_set_enable_network`.
+(`terrio::crs::set_grid_search_paths`, `set_network_enabled`, and the same functions in Python), as
+PROJ's `proj_context_set_search_paths` and `proj_context_set_enable_network`. Grid names inside the
+search directories must use ordinary path components (`subdir/grid.gsb`): embedded `..` components
+are refused with a warning even when they would normalize inside a directory (`sub/../grid.gsb`).
+Only regular files of at most 2 GiB are read (a larger one is skipped with a warning).
+
+A grid named by a path (`+nadgrids=/data/a.gsb`, `./a.gsb`) is read from that path by default, as
+PROJ does, but once search paths are set from code it is treated as missing, with a warning, so a
+CRS definition from untrusted input cannot read grid files from other paths. Add its directory to
+the search paths, or register the grid, instead.
+
+A local entry refused for its type or size is treated as missing. With network access enabled, a
+plain grid name can therefore use its CDN copy instead; path-named grids never use the CDN. The
+search-directory boundary is lexical: symlinks inside trusted search directories are followed.
 
 ```sh
 TERRIO_NETWORK=ON terrio crs EPSG:4267 --to EPSG:4269 -100 40   # reads the NADCON5 grid by range
