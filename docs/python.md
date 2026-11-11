@@ -380,6 +380,8 @@ as `gdal_translate -ovr`: `"AUTO"` (the default, the overview GDAL's RasterIO ch
 size), `"AUTO-n"`, `"NONE"` (full resolution) or a level from 0. A `Raster` in memory is
 translated at full resolution: open it with `terrio.open_raster(path, lazy=True)` for its
 overviews to be used, since `open_raster(path)` reads it into memory without them.
+Whatever its source, a window read at its own size at a fractional offset is resampled there by
+`resampling`, as `terrio translate` describes.
 With `"AUTO-n"` and no `outsize` or `tr`, the output keeps the full-resolution window size,
 matching GDAL 3.13.3; explicit level numbers use the selected level's resolution.
 `"AUTO-0"` is `"AUTO"` in translate and all other resampled readers, including whole-read
@@ -909,10 +911,12 @@ terrio.allowed_drivers("raster")  # ["GTIFF"]
 ```
 
 `set_allowed_drivers` lasts for the process: later calls narrow the list, and lifting it with
-`None` raises `InvalidArgumentError`. `GDAL_HTTP_HEADERS` set for a prefix is sent only to that
-prefix, never to another host a redirect leads to. `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO`, in the
-environment or in an `Env`, keeps reads from following a redirect to another origin at all. See
-[Remote Data](remote-data.md) for the options themselves.
+`None` raises `InvalidArgumentError`. Without `kind`, the list applies to every kind of dataset:
+rasters, vectors and point clouds (`kind` is `"raster"`, `"vector"` or `"pointcloud"`).
+`GDAL_HTTP_HEADERS` set for a prefix is sent only to that prefix, never to another host a redirect
+leads to. `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO`, in the environment or in an `Env`, keeps reads from
+following a redirect to another origin at all. See [Remote Data](remote-data.md) for the options
+themselves.
 
 The `TERRIO_ALLOWED_DRIVERS` option limits the drivers too, in the environment or in an `Env`. A
 driver must then be in both lists, and `allowed_drivers()` gives the drivers both allow. The
