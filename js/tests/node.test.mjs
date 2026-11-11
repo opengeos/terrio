@@ -516,8 +516,9 @@ test("errors", () => {
   assert.throws(() => terrio.describeCrs("nonsense"), /cannot parse/);
   const ds = terrio.fromGeoJSON(SQUARES);
   assert.throws(() => ds.readBand(1), /not a raster/);
-  assert.throws(() => ds.toBytes("x.mif"), /\.mif\.zip/);
-  assert.throws(() => ds.toBytes("x.mif.zip"), /cannot be written to memory/);
+  for (const name of ["x.mif", "x.tab", "x.mif.zip", "x.tab.zip"]) {
+    assert.throws(() => ds.toBytes(name), /MapInfo byte output is unavailable in WebAssembly/);
+  }
   ds.free();
 });
 

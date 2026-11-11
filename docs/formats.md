@@ -1240,8 +1240,9 @@ and vector tiles) are read from and written to bytes; MVT tiles are read from by
 GML byte output is a standalone XML document on native and WebAssembly builds.
 `layer.to_bytes("places.gml")` reads back through
 `terrio.open_bytes(data, "places.gml")` under the same filename. The bytes omit
-the `.xsd` sidecar; readers infer field types from the document. Filesystem
-output with `layer.write("places.gml")` still writes the schema beside the GML.
+the `.xsd` sidecar; readers infer field types from the document, so the original
+types are not guaranteed without the schema. Filesystem output with
+`layer.write("places.gml")` writes the schema beside the GML.
 `.gml.zip` byte output is refused with a hint to use a document filename.
 
 Native MapInfo byte output requires an explicit **`.mif.zip`** or **`.tab.zip`**

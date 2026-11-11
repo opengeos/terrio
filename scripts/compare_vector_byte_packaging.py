@@ -20,6 +20,20 @@ from osgeo import ogr, osr
 import terrio
 
 
+def require(condition, message):
+    """Keep conformance failures active under optimized Python execution.
+
+    Args:
+        condition: Whether the comparison succeeded.
+        message: Failure diagnostic.
+
+    Raises:
+        AssertionError: The condition is false.
+    """
+    if not condition:
+        raise AssertionError(message)
+
+
 def check(data, directory, suffix):
     """Compare one byte output with OGR and Terrio using real public point coordinates.
 
@@ -68,27 +82,36 @@ def check(data, directory, suffix):
             )
         }
         with zipfile.ZipFile(io.BytesIO(encoded)) as archive:
-            assert set(archive.namelist()) == members
+            require(
+                set(archive.namelist()) == members,
+                f"unexpected archive members: {archive.namelist()}",
+            )
         reference_path = f"/vsizip/{path}/places.{extension}"
     else:
-        assert encoded.startswith(b"<?xml")
-        assert not zipfile.is_zipfile(io.BytesIO(encoded))
+        require(encoded.startswith(b"<?xml"), "GML output must be an XML document")
+        require(
+            not zipfile.is_zipfile(io.BytesIO(encoded)),
+            "GML document must not be a ZIP",
+        )
         reference_path = str(path)
     reference = ogr.Open(reference_path)
-    assert reference is not None
+    require(reference is not None, f"GDAL could not open {reference_path}")
     output = reference.GetLayer(0)
-    assert output.GetFeatureCount() == len(features)
+    require(output.GetFeatureCount() == len(features), "GDAL feature count differs")
     actual_crs = output.GetSpatialRef().Clone()
     actual_crs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-    assert actual_crs.IsSame(crs)
+    require(actual_crs.IsSame(crs), "GDAL CRS differs from EPSG:4326")
     restored_layer = terrio.open_bytes(encoded, filename)[0]
-    assert restored_layer.crs == "EPSG:4326"
+    require(restored_layer.crs == "EPSG:4326", "Terrio CRS differs from EPSG:4326")
     native = restored_layer.to_geojson()["features"]
     largest = 0.0
     for expected, actual, restored in zip(features, output, native, strict=True):
         for field, value in expected["properties"].items():
-            assert actual.GetField(field) == value
-            assert restored["properties"][field] == value
+            require(actual.GetField(field) == value, f"GDAL attribute {field} differs")
+            require(
+                restored["properties"][field] == value,
+                f"Terrio attribute {field} differs",
+            )
         before = expected["geometry"]["coordinates"]
         after = actual.GetGeometryRef().GetPoint_2D()
         own = restored["geometry"]["coordinates"]
@@ -98,7 +121,7 @@ def check(data, directory, suffix):
             for values in (after, own)
         )
         largest = max(largest, error)
-    assert largest <= 1e-6, f"coordinate error {largest} exceeds 1e-6 degrees"
+    require(largest <= 1e-6, f"coordinate error {largest} exceeds 1e-6 degrees")
     return {
         "name": filename,
         "status": "within tolerance" if largest else "identical",

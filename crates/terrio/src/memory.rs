@@ -260,10 +260,14 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
         crate::formats::check_driver_allowed(driver.name(), name, Kind::Vector)?;
         return codec::write_vector(layers, driver, options);
     }
+    #[cfg(target_family = "wasm")]
+    if driver == VectorDriver::MapInfo {
+        return Err(Error::Unsupported("MapInfo byte output is unavailable in WebAssembly".into()));
+    }
     if driver == VectorDriver::MapInfo && !name.to_ascii_lowercase().ends_with(".zip") {
         let extension = if crate::formats::extension(name).as_deref() == Some("tab") { "tab" } else { "mif" };
         return Err(Error::InvalidArgument(format!(
-            "MapInfo bytes are a ZIP archive: use a .{extension}.zip filename (MIME application/zip); byte output requires a native build"
+            "MapInfo bytes are a ZIP archive: use a .{extension}.zip filename (MIME application/zip)"
         )));
     }
     if driver == VectorDriver::Shapefile {
@@ -282,9 +286,8 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
     {
         let dir = native::temp_dir()?;
         let member_name = if driver == VectorDriver::MapInfo {
-            let member = &name[..name.len() - 4];
-            let extension = if crate::formats::extension(member).as_deref() == Some("tab") { "tab" } else { "mif" };
-            std::path::Path::new(member).with_extension(extension).to_string_lossy().into_owned()
+            let member = native::file_name(&name[..name.len() - 4], "mif");
+            if matches!(crate::formats::extension(&member).as_deref(), Some("mif" | "tab")) { member } else { format!("{member}.mif") }
         } else {
             name.to_string()
         };
@@ -795,6 +798,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_family = "wasm"))]
     fn mapinfo_bytes_require_explicit_archive_filenames() {
         for extension in ["mif", "tab"] {
             let error = write_vector_bytes(&[packaging_layer()], &format!("points.{extension}"), &Default::default()).unwrap_err();

@@ -117,16 +117,38 @@ def test_packaged_vectors_retain_attributes_geometry_and_crs(points, suffix):
         )
 
 
-def test_explicit_mapinfo_driver_uses_a_mif_member_in_an_unnamed_zip(points):
+@pytest.mark.parametrize("filename", ["points.zip", "points.v2.zip"])
+def test_explicit_mapinfo_driver_uses_a_mif_member_in_an_unnamed_zip(points, filename):
     """A driver-selected .zip uses the default MIF format for its members.
 
     Args:
         points: A point layer.
+        filename: An archive filename, including a dotted stem.
     """
-    data = points.to_bytes("points.zip", driver="MapInfo File")
+    stem = filename.removesuffix(".zip")
+    data = points.to_bytes(filename, driver="MapInfo File")
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        assert set(archive.namelist()) == {"points.mif", "points.mid"}
-    assert len(terrio.open_bytes(data, "points.zip")[0]) == 3
+        assert set(archive.namelist()) == {f"{stem}.mif", f"{stem}.mid"}
+    restored = terrio.open_bytes(data, filename)[0]
+    assert restored.name == stem
+    assert len(restored) == 3
+
+
+def test_gml_document_preserves_fractional_values_and_date_text(points):
+    """Schema-free GML retains fractional values and lexical date values.
+
+    Args:
+        points: A point layer.
+    """
+    document = points.to_geojson()
+    for i, feature in enumerate(document["features"]):
+        feature["properties"].update({"value": i + 0.25, "survey_date": "2024-01-02"})
+    layer = terrio.Layer.from_geojson(document, name="typed", crs="EPSG:4326")
+    restored = terrio.open_bytes(layer.to_bytes("typed.gml"), "typed.gml")[0].to_geojson()
+    for before, after in zip(document["features"], restored["features"], strict=True):
+        assert after["properties"]["survey_date"] == before["properties"]["survey_date"]
+        assert after["properties"]["value"] == before["properties"]["value"]
+        assert isinstance(after["properties"]["value"], float)
 
 
 def test_gml_zip_output_is_refused_with_a_document_filename_hint(points):

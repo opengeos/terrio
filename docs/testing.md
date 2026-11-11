@@ -32,7 +32,7 @@ checks GML documents, archive refusals and unsupported MapInfo byte writing.
 MIF/TAB ZIP archives with GDAL/OGR on 16 real Natural Earth populated places.
 Counts, original scalar attributes, archive members and EPSG:4326 agree exactly;
 GML also exposes its generated `gml_id` field, which the Python regression checks.
-coordinates allow 1e-6 degrees for MapInfo's storage grid. The script reports
+Coordinates allow 1e-6 degrees for MapInfo's storage grid. The script reports
 the measured maximum and distinguishes exact coordinates from agreement within
 that tolerance. The reference is GDAL 3.13.3 for local validation.
 
