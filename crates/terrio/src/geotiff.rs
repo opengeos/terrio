@@ -1329,10 +1329,27 @@ fn decode_chunk<R: Read + Seek>(
     limit: usize,
     err: &(dyn Fn(tiff::TiffError) -> crate::Error + Sync),
 ) -> crate::Result<DecodedChunk> {
-    let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read_chunk(dec, codec, idx, limit)));
+    let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let bytes = match codec {
+            Some(codec) => codec.allocation_bytes(dec, idx).map_err(err)?,
+            None => {
+                let bytes = dec.image_chunk_buffer_layout(idx).map_err(err)?.len;
+                if bytes > limit {
+                    return Err(err(tiff::TiffError::LimitsExceeded));
+                }
+                bytes
+            }
+        };
+        // Even unlimited chunk limits cannot make an unusable allocation safe: a one-pixel
+        // window can require a whole tile. Check before any decoder fills its chunk buffer.
+        let addressable = (bytes <= isize::MAX as usize).then_some(bytes);
+        crate::dataset::fallible::check_usable(addressable, || format!("decoded TIFF chunk {idx} is too large to allocate"))
+            .map_err(crate::Error::ResourceLimit)?;
+        read_chunk(dec, codec, idx, limit).map_err(err)
+    }));
     match decoded {
         Ok(chunk) => {
-            let chunk = chunk.map_err(err)?;
+            let chunk = chunk?;
             let (w, h) = dec.chunk_data_dimensions(idx);
             Ok((idx, chunk, (w as usize, h as usize)))
         }
@@ -1885,6 +1902,18 @@ impl<R: Seek> Seek for PatchedReader<R> {
 
 #[cfg(test)]
 mod tests {
+    /// Reference: GDAL 3.13.3 reads this GDAL-authored CFloat16 fixture through the optional
+    /// backend. Both native entry points must preserve Unsupported rather than guess its type.
+    #[test]
+    fn unsupported_tiff_sample_errors_are_preserved_for_eager_and_lazy_reads() {
+        let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/translate_complex_half.tif"));
+        let limits = crate::TiffReadLimits::unlimited();
+        let eager = super::read_geotiff_with_limits(path, limits).map(|_| ()).unwrap_err();
+        let lazy = crate::LazyRaster::open_tiff_with_limits(path.to_str().unwrap(), limits).map(|_| ()).unwrap_err();
+        assert!(matches!(&eager, crate::Error::Unsupported(_)), "{eager:?}");
+        assert!(matches!(&lazy, crate::Error::Unsupported(_)), "{lazy:?}");
+        assert_eq!(eager.to_string(), lazy.to_string());
+    }
 
     #[test]
     fn metadata_follows_large_ifd_chains_after_the_decoded_prefix() {

@@ -182,7 +182,8 @@ impl TiffReadLimits {
         }
     }
 
-    /// No limit: a malformed header can make a read attempt an allocation of any size.
+    /// No configured chunk/tag limit. Decoded chunk buffers must still fit the process's
+    /// usable memory, independently of this limit.
     pub fn unlimited() -> Self {
         Self { chunk_bytes: usize::MAX }
     }
@@ -652,7 +653,7 @@ impl LazyRaster {
         if let Some(t) = crate::tiles::raster::open_lazy(path)? {
             return Ok(Self::from_tiles(t));
         }
-        // `LazyRaster::open` checks what it declares once its sidecars are attached.
+        // `LazyRaster::open` checks what it declares before looking for a sidecar mask.
         match Self::open_tiff_unchecked(path)? {
             Some(r) => Ok(r),
             // A local VRT whatever its name, as GDAL's VRT driver identifies it by its content,
@@ -683,7 +684,7 @@ impl LazyRaster {
     }
 
     /// [`LazyRaster::open_tiff`] whatever the GeoTIFF declares: for [`LazyRaster::open`], which
-    /// checks it once its sidecars are attached, and for terrio's own files, the copy of a GeoTIFF
+    /// checks it before looking for a sidecar mask, and for terrio's own files, the copy of a GeoTIFF
     /// an update wrote, read back to refresh its overviews (`ops::update`).
     pub(crate) fn open_tiff_unchecked(path: &str) -> Result<Option<Self>> {
         Self::open_tiff_using(path, TiffReadLimits::from_config)

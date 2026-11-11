@@ -1420,3 +1420,87 @@ fn memory_windows_refuse_repeated_bands_before_allocating_output() {
     let small = source.read_window(terrio::Window::full(2, 2), &terrio::WindowOptions { bands: vec![1, 1], ..Default::default() }).unwrap();
     assert_eq!(small.raster.data.to_f64_vec(), vec![7.0; 8]);
 }
+
+/// Reference: GDAL 3.13.3. A tiny window still needs its tile's decoded buffer.
+#[test]
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+fn tiny_windows_refuse_unusable_decoded_chunks_with_unlimited_limits() {
+    const CHILD: &str = "TERRIO_TEST_TIFF_CHUNK_MEMORY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tiny_windows_refuse_unusable_decoded_chunks_with_unlimited_limits"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(child.status.success(), "{}\n{}", String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
+        return;
+    }
+    let _serial = serial();
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: both calls use a valid rlimit pointer and change only this child process's policy.
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_RSS, &mut limit), 0);
+        limit.rlim_cur = limit.rlim_max.min(128 << 20);
+        assert_eq!(libc::setrlimit(libc::RLIMIT_RSS, &limit), 0);
+    }
+    assert!(terrio::usable_memory().is_some_and(|m| m <= 128 << 20));
+    let original = declaring_tiff(16, 16, 1, 8, 1, Some((16, 16)));
+    let mut small =
+        terrio::LazyRaster::from_tiff_bytes_with_limits(original.clone(), terrio::TiffReadLimits::unlimited()).unwrap().unwrap();
+    assert_eq!(small.read_window(terrio::Window::full(1, 1), &Default::default()).unwrap().raster.data.to_f64_vec(), [0.0]);
+    // A valid padded edge tile must keep the existing Deflate fallback. LERC and JPEG XL
+    // may use Float64 working samples without changing the configured decoded-byte limit.
+    let mut dataset = small.read().unwrap();
+    dataset.raster.crs = Default::default();
+    dataset.raster.metadata.clear();
+    dataset.band_metadata.clear();
+    dataset.metadata_domains.clear();
+    let compressions = ["DEFLATE", "JXL"].into_iter().chain(cfg!(feature = "lerc").then_some("LERC"));
+    for compression in compressions {
+        let options = terrio::RasterWriteOptions {
+            compression: Some(compression.into()),
+            tile_size: Some(64),
+            creation_options: vec![("GEOREFERENCED".into(), "NO".into())],
+            ..Default::default()
+        };
+        let bytes = terrio::memory::write_raster_bytes(&dataset, "small.tif", &options).unwrap();
+        let chunk_bytes = if compression == "DEFLATE" { 256 } else { 4096 };
+        let mut source = terrio::LazyRaster::from_tiff_bytes_with_limits(bytes, terrio::TiffReadLimits { chunk_bytes }).unwrap().unwrap();
+        let got = source.read_window(terrio::Window::full(1, 1), &Default::default()).unwrap();
+        assert_eq!(got.raster.data.to_f64_vec(), [0.0], "{compression}");
+    }
+    // Keep the tiny payload: the oversized declaration must be refused before decoding it.
+    // Compression NONE exercises the standard decoder; Deflate exercises Terrio's codec.
+    for compression in [1u32, 8] {
+        let mut bytes = original.clone();
+        let ifd = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let entries = u16::from_le_bytes(bytes[ifd..ifd + 2].try_into().unwrap()) as usize;
+        for i in 0..entries {
+            let at = ifd + 2 + i * 12;
+            let tag = u16::from_le_bytes(bytes[at..at + 2].try_into().unwrap());
+            let value = match tag {
+                256 | 322 => Some(32768u32),
+                257 | 323 => Some(8192u32),
+                259 => Some(compression),
+                _ => None,
+            };
+            if let Some(value) = value {
+                bytes[at + 8..at + 12].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        let mut source =
+            terrio::LazyRaster::from_tiff_bytes_with_limits(bytes.clone(), terrio::TiffReadLimits::unlimited()).unwrap().unwrap();
+        assert_eq!((source.width(), source.height()), (32768, 8192));
+        let (result, largest) = largest_during(|| source.read_window(terrio::Window::full(1, 1), &Default::default()).map(|_| ()));
+        assert!(
+            matches!(result, Err(terrio::Error::ResourceLimit(ref e)) if e.contains("TIFF chunk")),
+            "compression {compression}: {result:?}"
+        );
+        assert!(largest < 1 << 20, "compression {compression}: {largest} bytes requested before refusal");
+        // An explicit configured limit keeps its own diagnostic, even below usable memory.
+        let limits = terrio::TiffReadLimits { chunk_bytes: 64 << 20 };
+        let mut source = terrio::LazyRaster::from_tiff_bytes_with_limits(bytes, limits).unwrap().unwrap();
+        let result = source.read_window(terrio::Window::full(1, 1), &Default::default());
+        assert!(matches!(result, Err(terrio::Error::DecodedLimitExceeded { limit, .. }) if limit == 64 << 20), "{result:?}");
+    }
+}

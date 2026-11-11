@@ -148,3 +148,67 @@ print("MASK_BUDGET_OK")
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "MASK_BUDGET_OK" in result.stdout
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="uses the Linux usable-memory policy")
+@pytest.mark.parametrize("surface", ["native", "rio"])
+def test_window_checks_decoded_chunk_with_unlimited_config(tmp_path, gdal, surface):
+    """Reference: GDAL 3.13.3. One pixel still requires a 256 MiB decoded tile."""
+    path = tmp_path / "large-tile.tif"
+    output = gdal.GetDriverByName("GTiff").Create(
+        str(path),
+        32768,
+        8192,
+        1,
+        gdal.GDT_Byte,
+        options=[
+            "TILED=YES",
+            "BLOCKXSIZE=32768",
+            "BLOCKYSIZE=8192",
+            "COMPRESS=DEFLATE",
+            "NUM_THREADS=1",
+        ],
+    )
+    output.GetRasterBand(1).Fill(0)
+    output = None
+    assert 1000 < path.stat().st_size < 1 << 20
+    reference = gdal.Open(str(path))
+    assert reference.GetRasterBand(1).GetBlockSize() == [32768, 8192]
+    assert reference.ReadAsArray(0, 0, 1, 1)[0, 0] == 0
+    reference = None
+    script = """
+import resource
+import sys
+import terrio
+import terrio.rio
+resource.setrlimit(resource.RLIMIT_RSS, (128 << 20, 128 << 20))
+try:
+    if sys.argv[2] == "native":
+        raster = terrio.open_raster(sys.argv[1], lazy=True)
+        raster.read(window=(0, 0, 1, 1))
+    else:
+        with terrio.rio.open(sys.argv[1]) as raster:
+            raster.read(window=((0, 1), (0, 1)))
+except terrio.ResourceLimitError as error:
+    assert "decoded TIFF chunk" in str(error), str(error)
+    print("CHUNK_RESOURCE_LIMIT", error)
+else:
+    raise AssertionError("unlimited chunk configuration bypassed usable memory")
+"""
+    env = dict(
+        os.environ,
+        OPENBLAS_NUM_THREADS="1",
+        RAYON_NUM_THREADS="2",
+        TERRIO_TIFF_MAX_CHUNK_BYTES=str((1 << 63) - 1),
+    )
+    for option in ("TERRIO_MAX_DECLARED_BYTES", "TERRIO_MAX_BANDS"):
+        env.pop(option, None)
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(path), surface],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "CHUNK_RESOURCE_LIMIT" in result.stdout
