@@ -1080,6 +1080,55 @@ mod tests {
     }
 
     #[test]
+    fn declared_z_survives_a_zip_archive() {
+        // The archive's member is read, not the archive: its declared Z shows with no features.
+        let member = empty_typed_dimension_fixture(FgbType::Unknown, true, false);
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            zip.start_file("empty.fgb", zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut zip, &member).unwrap();
+            zip.finish().unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("archive.zip");
+        std::fs::write(&path, buf.into_inner()).unwrap();
+        let schema = crate::ops::vector_schema::export_schema_path(path.to_str().unwrap(), &[]).unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "GeometryZ");
+        // The layer is named as opening the archive names it.
+        let opened = crate::open_vector(path.to_str().unwrap(), &Default::default()).unwrap();
+        let names: Vec<_> = schema.layers.iter().map(|l| l.name.clone()).collect();
+        assert_eq!(names, opened.layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn disallowed_remote_flatgeobuf_is_refused_before_download() {
+        // Refused by the allow-list before any request: the file is not downloaded.
+        let (base, requests) = crate::http::test_server(empty_dimension_fixture(true, false));
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_ALLOWED_DRIVERS".to_string(), Some("GTiff".to_string()))]));
+        let result = crate::ops::vector_schema::export_schema_path(&format!("{base}/empty.fgb"), &[]);
+        crate::config::pop_scope();
+        let err = result.unwrap_err().to_string();
+        assert!(err.to_lowercase().contains("flatgeobuf driver is not allowed"), "{err}");
+        assert!(requests.lock().unwrap().is_empty(), "the disallowed file was requested");
+    }
+
+    #[test]
+    fn allowed_remote_flatgeobuf_keeps_declared_z() {
+        // Guard: with FlatGeobuf allowed, the remote declared Z still shows with no features.
+        let (base, requests) = crate::http::test_server(empty_dimension_fixture(true, false));
+        crate::config::push_scope(std::collections::HashMap::from([(
+            "TERRIO_ALLOWED_DRIVERS".to_string(),
+            Some("FlatGeobuf".to_string()),
+        )]));
+        let result = crate::ops::vector_schema::export_schema_path(&format!("{base}/empty.fgb"), &[]);
+        crate::config::pop_scope();
+        let schema = result.unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "PointZ");
+        assert!(!requests.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn declared_dimensions_show_for_gdal_magic_bytes() {
         // GDAL writes the magic's version byte as 1 (terrio's MAGIC has 0): the bytes route reads its header too.
         let mut bytes = empty_dimension_fixture(true, false);

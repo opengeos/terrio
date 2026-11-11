@@ -985,8 +985,17 @@ pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
     }
     let options = crate::VectorOpenOptions { layers: layers.to_vec(), ..Default::default() };
     let flatgeobuf = crate::formats::VectorDriver::FlatGeobuf;
-    // A remote FlatGeobuf is downloaded once: it is opened, and its header read, from that local copy.
-    if !crate::vfs::Location::parse(path).is_local() && crate::formats::VectorDriver::for_extension(path) == Some(flatgeobuf) {
+    let location = crate::vfs::Location::parse(path);
+    // A remote FlatGeobuf, or a zip whose member is one, is resolved once and opened, and its header
+    // read, from that local copy: nothing is downloaded or extracted twice. Refused by name first.
+    let remote = !location.is_local() && crate::formats::VectorDriver::for_extension(path) == Some(flatgeobuf);
+    let archived = crate::vfs::zip_member(&location).is_some_and(|m| crate::formats::VectorDriver::for_extension(&m) == Some(flatgeobuf));
+    if remote || archived {
+        if remote {
+            crate::formats::check_driver_allowed("FlatGeobuf", path, crate::formats::Kind::Vector)?;
+        } else {
+            crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
+        }
         let local = crate::vfs::resolve(path)?;
         let ds = crate::open_vector(local.as_str(), &options).map_err(|e| crate::dataset::naming_dataset(e, path, local.as_str()))?;
         let declared = if ds.driver == flatgeobuf { path_declared_dims(local.as_str()) } else { Vec::new() };
