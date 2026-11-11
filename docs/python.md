@@ -46,6 +46,10 @@ tiles = terrio.open_raster("https://example.com/tiles.pmtiles", lazy=True)
 # JPEG 2000 (Sentinel-2 bands) too: resolution levels are overviews, windows decode their tiles.
 b04 = terrio.open_raster("T10SEG_20240630T185919_B04.jp2", lazy=True)
 patch = b04.read(1, window=(2000, 6000, 1024, 1024))
+# A VRT too: it has its first source's overviews, each read from its sources' own (see
+# cli.md#serialized-virtual-rasters).
+mosaic = terrio.open_raster("mosaic.vrt", lazy=True)
+preview = mosaic.read_resampled((512, 512), resampling="average")
 mask = terrio.open_raster("masked.tif", lazy=True).read_mask()  # a GeoTIFF's internal mask, or None
 
 # A GeoTIFF larger than memory, written in rows (band after band, from the top).
@@ -136,6 +140,35 @@ terrio.render("map.geojson", layers=["map"])           # filename alias works
 terrio.render(ds, layers=["roads"])                   # actual name on a dataset
 # terrio.render(ds, layers=["map"]) raises: no layer named map (layers: roads)
 ```
+
+### pyogrio inputs
+
+`terrio.pyogrio` accepts bytes, byte arrays, memory views and readable file objects for recognized
+vector formats, including GeoPackage, FlatGeobuf, GeoParquet, GeoJSON and recognized XML formats
+such as KML, GML, GPX and OSM. The core's byte identifiers choose the temporary filename; the
+ordinary reader validates the dataset and applies the same driver restrictions as a named file.
+Content without a recognizable signature, such as CSV, still needs a named file. For formats
+whose layer name comes from the filename, such as GeoParquet, anonymous buffers use `data`.
+
+```python
+import io
+from pathlib import Path
+from terrio import pyogrio
+
+data = Path("roads.gpkg").read_bytes()
+frame = pyogrio.read_dataframe(io.BytesIO(data))
+layers = pyogrio.list_layers("published.zip")  # dataset beside a README or license
+```
+
+Archives without a member use the core's main-dataset selection, so ancillary files do not hide
+the dataset. Collections of root-level shapefiles still expose one layer per shapefile.
+Datetime parsing preserves uniform UTC offsets, converts mixed offsets to UTC by default, and
+preserves individual offsets with `mixed_offsets_as_utc=False`. Terrio does not change warning
+filters during parsing on pandas 2 or 3; pandas can still manage its own warning filters.
+Preserving individual offsets also accepts the ISO UTC suffix `Z` on Python 3.10.
+When naive and timezone-aware strings appear together, the default treats naive
+values as UTC before conversion. With `mixed_offsets_as_utc=False`, naive values
+remain naive and aware values retain their offsets in the object column.
 
 ### Streams
 
@@ -337,7 +370,7 @@ eq = terrio.enhance("image.tif", "eq.tif", equalize=True)  # or config="lut.txt"
 xs, ys = terrio.transform_points([699960], [3900000], "EPSG:32610", "EPSG:4326")
 xs, ys, hs = terrio.transform_points([-100], [40], "EPSG:4979", "EPSG:4326+5773", [100])  # EGM96
 xs, ys, hs = terrio.transform_points([135], [-25], "EPSG:7912", "EPSG:7843", [0], s_coord_epoch=2010.0)
-terrio.set_grid_search_paths(["/data/proj-grids"])  # where datum shift grids are looked up
+terrio.set_grid_search_paths(["/data/proj-grids"])  # grids are then read only from these (and registered ones)
 albers = terrio.list_crs("albers", authority="EPSG", kind="projected")  # registry CRSs, for a CRS picker
 
 data = open("dem.tif", "rb").read()
@@ -376,6 +409,8 @@ as `gdal_translate -ovr`: `"AUTO"` (the default, the overview GDAL's RasterIO ch
 size), `"AUTO-n"`, `"NONE"` (full resolution) or a level from 0. A `Raster` in memory is
 translated at full resolution: open it with `terrio.open_raster(path, lazy=True)` for its
 overviews to be used, since `open_raster(path)` reads it into memory without them.
+Whatever its source, a window read at its own size at a fractional offset is resampled there by
+`resampling`, as `terrio translate` describes.
 With `"AUTO-n"` and no `outsize` or `tr`, the output keeps the full-resolution window size,
 matching GDAL 3.13.3; explicit level numbers use the selected level's resolution.
 `"AUTO-0"` is `"AUTO"` in translate and all other resampled readers, including whole-read
@@ -413,11 +448,30 @@ full resolution exactly. The estimate's accuracy is described under
 [Warp source overviews](cli.md#warp-source-overviews): exact up to rounding for an `average`
 overview of floating-point data without nodata when the footprint covers complete overview
 cells. Cropping through those cells makes even the total approximate; rounded integer means,
-partly nodata blocks and other overview resamplings also introduce approximation. Give a coarse `sum` a floating-point `ot`: a
-`"UInt16"` output stores 65535 for any larger sum. A `sum` whose source window, estimated
-with 8 bytes per pixel for the pixels' shares, would hold more than 4 GiB raises
-`ResourceLimitError` (a `MemoryError`) before it is read, and so do a `sum` read of a
-`WarpedVRT` and a `sum` `terrio.rio.warp.reproject` of a band or dataset: `overview=n` sums a
+partly nodata blocks and other overview resamplings also introduce approximation.
+In a partly valid average-overview block, the valid-pixel mean is also applied to
+invalid pixels; small nodata holes can disappear into it. The measured 1.4% to 2.6%
+excess in the CLI guide is not a bound: the separate raster in
+[#707](https://github.com/opengeos/terrio/issues/707) has 7.9% nodata and overcounts by
+7.1% at ×64, versus 0.03% at ×8. An internal mask has the same limitation when its
+overview stores only binary validity, without the fraction of valid source pixels. For
+complete cells holding exact averages of constant positive valid values, an invalid
+fraction `p` wholly in partly valid cells gives relative excess `p / (1 - p)` over the
+valid total, rather than `p`; with variable values the nodata fraction alone does not
+bound the relative error. Output pixels can also become valid where a full-resolution
+sum has no valid source contribution. Select a finer `overview=n` (zero is the first
+and finest overview) or `"AUTO-n"`, which can reduce the effect, or `overview="NONE"` for valid
+totals and full-resolution nodata coverage. Finer independently built overviews need not
+improve the error monotonically when values vary. The mean-based formulas do not apply
+to nearest overviews, which may select nodata from a partly valid block.
+
+Give a coarse `sum` a floating-point `ot`: a
+`"UInt16"` output stores 65535 for any larger sum. For paths and lazy inputs, a `sum` of one source without a cutline
+reads the window of an output too coarse to be split into chunks a strip of rows at a time, as
+`terrio warp` does (see [Warp source overviews](cli.md#warp-source-overviews)). The working-memory estimate applies per strip, with at least one row; two strips overlap during reading and computation, in addition to output and decoder buffers. An unmasked, already loaded `Raster` reuses its resident pixels and does not use strip reads or this source-read budget. For paths and lazy inputs, a `sum` whose
+source pixels held at once would exceed 4 GiB, as several sources or a cutline hold every source
+whole, raises `ResourceLimitError` (a `MemoryError`) before they are read, and so do a `sum` read
+of a `WarpedVRT` and a `sum` `terrio.rio.warp.reproject` of a band or dataset: `overview=n` sums a
 level (for the `terrio.rio` ones, a source opened with `overview_level=n`, whose pixels count
 the same way), and the `TERRIO_WARP_SUM_MAX_BYTES` environment variable, a positive integer
 byte count, changes the budget. A `sum` read of a `WarpedVRT` warps a region whose source
@@ -588,7 +642,9 @@ Their keyword options follow the CLI, including compression, partial refresh,
 clipping geometry and overview updates. Local writable little-endian GeoTIFFs
 are required for in-place changes; external overview updates can fail after the
 base update commits. External overviews (`external=True`) write only the `.ovr`
-sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`. Overviews are
+sidecar, so the GeoTIFF may be read-only, as with `gdaladdo -ro`. They read that
+`.ovr` under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` too; the `.msk`, `.aux.xml`
+and `.ovr.msk` beside the GeoTIFF still follow the option. Overviews are
 managed for GeoTIFFs only.
 
 `add_overviews(..., progress=callback)` calls `callback(fraction)` as the
@@ -881,10 +937,10 @@ terrio.set_path_specific_option("/vsis3/my-bucket/", "AWS_REGION", "us-west-2")
 terrio.get_path_specific_option("/vsis3/my-bucket/a.tif", "AWS_REGION")  # "us-west-2"
 terrio.clear_path_specific_options()
 
-# Count what remote reads transfer, in total and by host and file.
+# Count what remote reads and writes transfer, in total and by host and file.
 terrio.reset_network_stats()
 terrio.info("https://example.com/cog.tif")
-terrio.network_stats()  # {"request_count": 1, "received_bytes": 16384, "hosts": {...}, ...}
+terrio.network_stats()  # {"request_count": 1, "received_bytes": 16384, "sent_bytes": 0, "hosts": {...}, ...}
 terrio.clear_http_cache()
 
 # The cache of decoded GeoTIFF/COG chunks (GDAL's GetCacheMax/SetCacheMax): TERRIO_CACHEMAX, else
@@ -901,9 +957,35 @@ terrio.allowed_drivers("raster")  # ["GTIFF"]
 ```
 
 `set_allowed_drivers` lasts for the process: later calls narrow the list, and lifting it with
-`None` raises `InvalidArgumentError`. `GDAL_HTTP_HEADERS` set for a prefix is sent only to that
-prefix, never to another host a redirect leads to. See [Remote Data](remote-data.md) for the
-options themselves.
+`None` raises `InvalidArgumentError`. Without `kind`, the list applies to every kind of dataset:
+rasters, vectors and point clouds (`kind` is `"raster"`, `"vector"` or `"pointcloud"`).
+`GDAL_HTTP_HEADERS` set for a prefix is sent only to that prefix, never to another host a redirect
+leads to. `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO`, in the environment or in an `Env`, keeps reads from
+following a redirect to another origin at all. See [Remote Data](remote-data.md) for the options
+themselves.
+
+The `TERRIO_ALLOWED_DRIVERS` option limits the drivers too, in the environment or in an `Env`. A
+driver must then be in both lists, and `allowed_drivers()` gives the drivers both allow. The
+option's value is a comma-separated list of driver names in any case. Set but empty, it allows no
+driver. In an `Env` it only narrows the list outside, and unset there, it leaves that list in
+force. `allowed_drivers()` is the way to see what the option allows: `terrio.pyogrio`'s
+`get_gdal_config_option` reports a set but empty value as unset (`None`), and `config_options()`
+shows only the values `Env` scopes hold, `''` where a scope allows nothing. See
+[Allowed drivers](remote-data.md#allowed-drivers).
+
+GeoTIFF readers refuse a tile or strip that decodes to more than 256 MiB
+(`ResourceLimitError`), a bound on what a malformed header can make a read allocate. A
+pixel-interleaved file of many bands reaches it with ordinary tiles. For trusted files, the
+`TERRIO_TIFF_MAX_CHUNK_BYTES` option, a positive number of bytes, raises it for the rasters
+opened while it is set, in the environment or an `Env`. Size it to the file's chunks (tile
+width x height x bands x bytes per sample when pixel-interleaved), not to an unbounded value:
+a read may hold about the limit times the chunks it decodes in parallel. The refusal names the
+option:
+
+```python
+with Env(TERRIO_TIFF_MAX_CHUNK_BYTES=str(1 << 30)):
+    da = terrio.xarray.open_rasterio("pixel_interleaved_1488_bands.tif")
+```
 
 ## Typing
 

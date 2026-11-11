@@ -355,7 +355,55 @@ pub(crate) fn prefetch() {
 
 /// The table's entry for an EPSG code.
 pub(crate) fn get(code: u32) -> Option<&'static Entry> {
-    table().entry(code)
+    table().entry(code).or_else(|| variant_c(code))
+}
+
+/// EPSG's CRSs on Polar Stereographic (variant C), method 9830, which no `+proj=` string names:
+/// the generated table, which holds each CRS's conversion as one, leaves them out. Their name and
+/// geographic CRS, and the latitude of the standard parallel, longitude of origin, and easting and
+/// northing at the false origin of their projection (in degrees and metres).
+const VARIANT_C: [(u32, &str, u32, [f64; 4]); 2] = [
+    (2985, "Petrels 1972 / Terre Adelie Polar Stereographic", 4636, [-67.0, 140.0, 300_000.0, 200_000.0]),
+    (2986, "Perroud 1950 / Terre Adelie Polar Stereographic", 4637, [-67.0, 140.0, 300_000.0, 200_000.0]),
+];
+
+/// The entry of a CRS of [`VARIANT_C`]: its geographic CRS's datum, transformations and area of
+/// use, with the WKT 1 of its definition and the PROJ string the WKT 1 reader gives it.
+fn variant_c(code: u32) -> Option<&'static Entry> {
+    static ENTRIES: OnceLock<Vec<(u32, Option<Entry>)>> = OnceLock::new();
+    let entries = ENTRIES.get_or_init(|| {
+        VARIANT_C
+            .iter()
+            .map(|&(code, name, geog, [lat_ts, lon_0, fe, fn_])| {
+                let entry = table().entry(geog).and_then(|g| {
+                    // The geographic CRS's WKT without its axes, as a projected CRS's holds it.
+                    let mut geogcs = g.wkt.clone();
+                    while let Some(i) = geogcs.find(",AXIS[") {
+                        let len = geogcs[i..].find(']')?;
+                        geogcs.replace_range(i..i + len + 1, "");
+                    }
+                    let wkt = format!(
+                        r#"PROJCS["{name}",{geogcs},PROJECTION["Polar_Stereographic_(variant_C)"],PARAMETER["Latitude of standard parallel",{lat_ts}],PARAMETER["Longitude of origin",{lon_0}],PARAMETER["Easting at false origin",{fe}],PARAMETER["Northing at false origin",{fn_}],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AUTHORITY["EPSG","{code}"]]"#
+                    );
+                    let proj = super::wkt1::to_proj(&super::wkt1::parse(&wkt)?)?.proj;
+                    Some(Entry {
+                        name: name.to_string(),
+                        datum: g.datum,
+                        geog,
+                        ops: g.ops.clone(),
+                        grid_ops: g.grid_ops.clone(),
+                        dynamic: g.dynamic,
+                        three_d: false,
+                        area: g.area,
+                        proj,
+                        wkt,
+                    })
+                });
+                (code, entry)
+            })
+            .collect()
+    });
+    entries.iter().find(|(c, _)| *c == code)?.1.as_ref()
 }
 
 /// The table's entry for an ESRI code.

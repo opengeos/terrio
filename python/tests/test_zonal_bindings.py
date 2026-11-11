@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 import terrio
+import terrio.rio as trio
 
 
 def feature_ids(layer, path):
@@ -265,6 +266,30 @@ def test_unweighted_statistics_do_not_open_unused_weight_paths(tmp_path):
     zones, values = inputs()
     out = terrio.zonal_stats(zones, values, stats=["count"], weights=str(tmp_path / "missing.tif"))
     assert out.to_geojson()["features"][0]["properties"]["raster1_b1_count"] > 0
+
+
+@pytest.mark.parametrize("count", [1, 4, 8])
+def test_zonal_stats_opens_raster_paths_under_an_env_driver_allow_list(tmp_path, count):
+    """An Env's driver allow-list applies to every raster path, however many there are (#761)."""
+    wgs84 = (
+        'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],'
+        'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]'
+    )
+    paths = []
+    for i in range(count):
+        path = tmp_path / f"g{i}.asc"
+        path.write_text("ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n3 4\n")
+        path.with_suffix(".prj").write_text(wgs84)
+        paths.append(str(path))
+    zone = {"type": "Polygon", "coordinates": [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]]}
+    with trio.Env(TERRIO_ALLOWED_DRIVERS="GTiff,AAIGrid"):
+        out = terrio.zonal_stats(zone, paths, stats=["sum"])
+    sums = out.to_geojson()["features"][0]["properties"]
+    assert [sums[f"raster{i}_b1_sum"] for i in range(1, count + 1)] == [10] * count
+    refusal = r"the AAIGRID driver is not allowed \(allowed: GTIFF\)"
+    with trio.Env(TERRIO_ALLOWED_DRIVERS="GTiff"):
+        with pytest.raises(terrio.UnsupportedError, match=refusal):
+            terrio.zonal_stats(zone, paths, stats=["sum"])
 
 
 def test_zonal_labelled_inputs_dicts_and_dataframe(tmp_path):

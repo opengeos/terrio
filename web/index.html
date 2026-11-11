@@ -270,7 +270,7 @@ function field(arg, id) {
   if (arg.required) label.append(el("span", { className: "required", textContent: " *", "aria-hidden": "true" }));
   if (arg.position == null && arg.value_names.length) label.append(el("span", { className: "flag mono", textContent: name }));
   if (arg.choices.length && multi) help.append(`${arg.description ? "\n" : ""}One of: ${arg.choices.join(", ")}`);
-  const control = arg.type === "path" ? pathField(input) : input;
+  const control = arg.type === "path" ? pathField(input, arg) : input;
   return { arg, node: el("div", { className: "field" }, label, control, help), read: () => input.value, input };
 }
 

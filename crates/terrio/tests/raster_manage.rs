@@ -1,7 +1,7 @@
 //! Managing rasters in place: overviews (`gdaladdo`), with the safety of the updates (a failure
 //! leaves the file as it was; read-only, remote and COG inputs are refused).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use terrio::ops::Resampling;
 use terrio::ops::overview::{
     DeleteOptions, OverviewOptions, RefreshOptions, add_overviews, add_overviews_to_bytes, delete_overviews, refresh_overviews,
@@ -514,6 +514,92 @@ fn external_overviews_cannot_be_refreshed_over_an_extent_beside_internal_ones() 
     let bbox = vec![[500000.0, 4090000.0, 500300.0, 4100000.0]];
     assert!(refresh_overviews(&b, &RefreshOptions { external: true, bbox, ..Default::default() }).is_err());
     assert!(refresh_overviews(&b, &RefreshOptions { external: true, ..Default::default() }).is_ok());
+}
+
+/// Commands that manage an external `.ovr` read it under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`
+/// (or `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`), which keeps ordinary opens from reading it: a
+/// refresh over an extent keeps the `.ovr`'s pixels outside it, and writes the same `.ovr` as
+/// without the option.
+#[test]
+fn external_overviews_are_refreshed_over_an_extent_under_empty_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = write(dir.path(), "a.tif", &sample(256, 192), &tiled());
+    add_overviews(&a, &OverviewOptions { levels: vec![2], external: true, ..Default::default() }).unwrap();
+    let copy = |name: &str| {
+        let path = write(dir.path(), name, &sample(256, 192), &tiled());
+        std::fs::copy(format!("{a}.ovr"), format!("{path}.ovr")).unwrap();
+        path
+    };
+    // Nearest-neighbour overviews, refreshed by average over overview columns 50..100 only.
+    let bbox = vec![[500000.0 + 30.0 * 100.0, 4094240.0, 500000.0 + 30.0 * 200.0, 4100000.0]];
+    let refresh = RefreshOptions { external: true, bbox, resampling: Some(Resampling::Average), ..Default::default() };
+    let plain = copy("plain.tif");
+    assert_eq!(refresh_overviews(&plain, &refresh).unwrap(), vec![(128, 96)]);
+    let expected = std::fs::read(format!("{plain}.ovr")).unwrap();
+    assert_ne!(expected, std::fs::read(format!("{a}.ovr")).unwrap());
+    for key in ["TERRIO_DISABLE_READDIR_ON_OPEN", "GDAL_DISABLE_READDIR_ON_OPEN"] {
+        let path = copy(&format!("{key}.tif"));
+        terrio::config::push_scope(HashMap::from([(key.to_string(), Some("EMPTY_DIR".to_string()))]));
+        let refreshed = refresh_overviews(&path, &refresh);
+        terrio::config::pop_scope();
+        assert_eq!(refreshed.unwrap(), vec![(128, 96)], "{key}");
+        assert_eq!(std::fs::read(format!("{path}.ovr")).unwrap(), expected, "{key}");
+    }
+}
+
+/// Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, a refresh over an extent reads the `.ovr` it
+/// refreshes and nothing else beside the GeoTIFF: a `.msk` and an `.aux.xml` (nodata 7), which
+/// change the `.ovr` written without the option, leave it as for the GeoTIFF alone, and so does
+/// an `.ovr.msk`.
+#[test]
+fn external_overviews_refreshed_under_empty_dir_read_no_other_sidecar() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = write(dir.path(), "a.tif", &sample(256, 192), &tiled());
+    add_overviews(&a, &OverviewOptions { levels: vec![2], external: true, ..Default::default() }).unwrap();
+    // A per-dataset mask of `cols` x `rows`, invalid where `invalid` says.
+    let mask = |path: String, cols: usize, rows: usize, invalid: &dyn Fn(usize, usize) -> bool| {
+        let cfg = terrio::RasterConfig { cols, rows, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let values = (0..cols * rows).map(|i| if invalid(i % cols, i / cols) { 0.0 } else { 255.0 }).collect();
+        let ds = RasterDataset::new(terrio::Raster::from_data(cfg, values).unwrap(), false);
+        std::fs::rename(write(dir.path(), "mask.tif", &ds, &RasterWriteOptions::default()), path).unwrap();
+    };
+    // A copy of `a.tif` and its `.ovr`, with the sidecars `sidecars`.
+    let copy = |name: &str, sidecars: &[&str]| {
+        let path = write(dir.path(), name, &sample(256, 192), &tiled());
+        std::fs::copy(format!("{a}.ovr"), format!("{path}.ovr")).unwrap();
+        for sidecar in sidecars {
+            let file = format!("{path}{sidecar}");
+            match *sidecar {
+                ".msk" => mask(file, 256, 192, &|c, r| (120..180).contains(&c) && (48..144).contains(&r)),
+                ".ovr.msk" => mask(file, 128, 96, &|c, _| c % 3 == 0),
+                _ => {
+                    std::fs::write(file, r#"<PAMDataset><PAMRasterBand band="1"><NoDataValue>7</NoDataValue></PAMRasterBand></PAMDataset>"#)
+                        .unwrap()
+                }
+            }
+        }
+        path
+    };
+    let bbox = vec![[500000.0 + 30.0 * 100.0, 4094240.0, 500000.0 + 30.0 * 200.0, 4100000.0]];
+    let refresh = RefreshOptions { external: true, bbox, resampling: Some(Resampling::Average), ..Default::default() };
+    let refreshed = |path: String, option: bool| {
+        if option {
+            terrio::config::push_scope(HashMap::from([("TERRIO_DISABLE_READDIR_ON_OPEN".to_string(), Some("EMPTY_DIR".to_string()))]));
+        }
+        let sizes = refresh_overviews(&path, &refresh);
+        if option {
+            terrio::config::pop_scope();
+        }
+        assert_eq!(sizes.unwrap(), vec![(128, 96)]);
+        std::fs::read(format!("{path}.ovr")).unwrap()
+    };
+    let alone = refreshed(copy("alone.tif", &[]), true);
+    for (k, sidecars) in [&[".msk"][..], &[".aux.xml"][..], &[".ovr.msk"][..], &[".msk", ".aux.xml", ".ovr.msk"][..]].iter().enumerate() {
+        assert_eq!(refreshed(copy(&format!("under{k}.tif"), sidecars), true), alone, "{sidecars:?} under the option");
+    }
+    for (k, sidecars) in [&[".msk"][..], &[".aux.xml"][..]].iter().enumerate() {
+        assert_ne!(refreshed(copy(&format!("read{k}.tif"), sidecars), false), alone, "{sidecars:?} without the option");
+    }
 }
 
 #[test]

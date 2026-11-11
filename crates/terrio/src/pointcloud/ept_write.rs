@@ -250,7 +250,7 @@ fn type_name(t: ValueType) -> (&'static str, usize) {
 fn schema(header: &LasHeader, layout: &Layout) -> Result<Vec<SchemaDim>> {
     // The dimensions terrio reads from these records: those of an empty file of them.
     let empty = las_bytes(header, layout, &[], false)?;
-    let reader = super::read::open_points_bytes(empty, "schema.las")?;
+    let reader = super::read::open_encoded_las(empty, "schema.las")?;
     let legacy = header.point_format < 6;
     let mut out = Vec::new();
     for (name, t) in reader.dimensions() {
@@ -356,7 +356,7 @@ impl NodeSink for EptSink<'_> {
         let bytes = match t.data_type {
             EptDataType::Laszip => las_bytes(self.header, self.layout, records, true)?,
             kind => {
-                let cloud = super::read::open_points_bytes(las_bytes(self.header, self.layout, records, false)?, "node.las")?
+                let cloud = super::read::open_encoded_las(las_bytes(self.header, self.layout, records, false)?, "node.las")?
                     .read(&Default::default())?;
                 let cols: Vec<Values> = self
                     .schema

@@ -416,6 +416,20 @@ fn copies_large_http_binary_without_content_type() {
     assert_eq!(std::fs::read(dir.path().join("output")).unwrap(), data);
 }
 
+/// `--stats` reports the bytes an upload sends.
+#[test]
+fn an_upload_reports_the_bytes_it_sent() {
+    let (endpoint, store) = serve();
+    let dir = tempfile::tempdir().unwrap();
+    let data = vec![7u8; 10_000];
+    std::fs::write(dir.path().join("local.bin"), &data).unwrap();
+    let output = terrio(&endpoint, dir.path(), &["vsi", "copy", "local.bin", "s3://bkt/uploaded.bin", "--stats"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains(&format!("byte(s) received, {} byte(s) sent", data.len())), "{stderr}");
+    assert_eq!(store.lock().unwrap().objects.get("bkt/uploaded.bin").map(|(d, _)| d.clone()), Some(data));
+}
+
 #[test]
 fn empty_s3_directories_and_absolute_trees() {
     let (endpoint, store) = serve();

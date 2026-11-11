@@ -218,12 +218,13 @@ def _ensure_nodata_dtype(original_nodata: Any, new_dtype: Any) -> Any:
     )
     message = f"Unable to convert nodata value ({original}) to new dtype ({new_dtype})."
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", RuntimeWarning)
+        # NumPy's floating-point error state, not a warning filter: changing the process's warning
+        # filters would make Python show again the warnings it has shown, and is not thread-safe.
+        with np.errstate(divide="raise", over="raise", invalid="raise"):
             nodata = new_dtype.type(original)
     except ValueError as error:
         raise ValueError(message) from error
-    except (OverflowError, RuntimeWarning) as error:
+    except (OverflowError, FloatingPointError) as error:
         raise OverflowError(message) from error
     if not np.isnan(nodata) and original != nodata:
         raise OverflowError(message)
