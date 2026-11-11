@@ -1131,3 +1131,33 @@ fn the_streaming_writers_refuse_rows_they_cannot_hold() {
         assert!(terrio::GeoTiffWriter::create(path.to_str().unwrap(), &ds, &striped).is_ok(), "a writer in one-row strips");
     }
 }
+
+/// The row a writer holds is counted twice, as it is held while a strip is appended: a row of
+/// 512-row tiles of 2^20 pixels in as many 1-byte bands as fit once in the usable memory (at least
+/// one, 512 MiB) does not fit twice, and its writer is refused when it is created. Where terrio
+/// cannot read the usable memory (Windows, macOS), or it is less than one such band, the test is
+/// skipped.
+#[test]
+fn a_writer_whose_rows_fit_once_but_not_twice_is_refused() {
+    let _serial = serial();
+    let (cols, rows) = (1usize << 20, 600usize);
+    let band_row = 512 * cols;
+    let Some(usable) = terrio::usable_memory().and_then(|m| usize::try_from(m).ok()).filter(|m| *m >= band_row) else {
+        eprintln!("skipped: the usable memory is not known here, or is less than {band_row} bytes");
+        return;
+    };
+    let bands = usable / band_row;
+    let once = band_row * bands;
+    assert!(once <= usable && 2 * once > usable, "{bands} band(s): {once} bytes once, {usable} usable");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tiled.tif");
+    let options = RasterWriteOptions { driver: Some(RasterDriver::GTiff), tile_size: Some(512), ..Default::default() };
+    let message = format!(
+        "the rows a GeoTIFF writer holds (512 rows of {cols} pixels in {bands} band(s) of 1-byte samples, a row of its blocks, twice \
+         while a strip is appended) are too large to allocate: {} bytes, more than the {usable} bytes of memory the process can use",
+        2 * once
+    );
+    let result = terrio::GeoTiffWriter::create(path.to_str().unwrap(), &header(cols, rows, bands), &options).map(|_| ());
+    assert!(refused(result.as_ref().map(|_| ()).map_err(clone_error), &message), "{result:?}");
+    assert!(!path.exists(), "the refused writer left its file");
+}
