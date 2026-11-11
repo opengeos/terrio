@@ -57,6 +57,14 @@ try:
         terrio.vsi_read(path)
     elif action == "tiles":
         terrio.open_raster(path, lazy=True).write(path + ".pmtiles")
+    elif action == "translate":
+        terrio.translate(path, path + ".cog.tif", format="COG")
+    elif action == "translate_cli":
+        from terrio._terrio import cli_main
+
+        args = ["terrio", "translate", path, path + ".cog.tif", "-f", "COG"]
+        code = cli_main(args, [sys.executable])
+        print(f"EXIT {code}")
     else:
         terrio.open_raster(path)
     print("OPENED")
@@ -148,6 +156,154 @@ def png_declaring(width, height):
         + chunk(b"IDAT", zlib.compress(b"\0" * 64))
         + chunk(b"IEND", b"")
     )
+
+
+def declaring_tiff(width, height, bands, bits, sample_format, block=None, rows_per_strip=None):
+    """A little-endian TIFF of `bands` bands of `bits`-bit samples (`sample_format` 1 for unsigned
+    integers, 3 for floats) declaring `width` x `height` pixels, as #724 writes its files:
+    band-separate strips of the whole height (`ExtraSamples` for every band but the first), strips
+    of `rows_per_strip` rows, or pixel-interleaved tiles of `block`; every strip or tile points to
+    the same deflated block of zeros."""
+    bw, bh = block or (width, rows_per_strip or height)
+    per_band = -(-width // bw) * -(-height // bh)
+    data = zlib.compress(bytes(bw * bh * bits // 8 * (bands if block else 1)), 9)
+    count = per_band * (1 if block else bands)
+    planar = 2 if bands > 1 and not block else 1
+    tags = {
+        256: (4, [width]),
+        257: (4, [height]),
+        258: (3, [bits] * bands),
+        259: (3, [8]),
+        262: (3, [1]),
+        277: (3, [bands]),
+        284: (3, [planar]),
+        339: (3, [sample_format] * bands),
+        33550: (12, [360.0 / width, 180.0 / height, 0.0]),
+        33922: (12, [0.0, 0.0, 0.0, -180.0, 90.0, 0.0]),
+        34735: (3, [1, 1, 0, 3, 1024, 0, 1, 2, 1025, 0, 1, 1, 2048, 0, 1, 4326]),
+    }
+    if bands > 1:
+        tags[338] = (3, [0] * (bands - 1))
+    if block is None:
+        tags[278], offsets, counts = (4, [bh]), 273, 279
+    else:
+        tags[322], tags[323], offsets, counts = (3, [bw]), (3, [bh]), 324, 325
+    tags[offsets], tags[counts] = (4, [8] * count), (4, [len(data)] * count)
+    ifd_at = 8 + len(data) + (len(data) & 1)
+    extra_at = ifd_at + 2 + 12 * len(tags) + 4
+    ifd, extra = bytearray(struct.pack("<H", len(tags))), bytearray()
+    for tag, (kind, values) in sorted(tags.items()):
+        code = {3: "H", 4: "I", 12: "d"}[kind]
+        packed = struct.pack(f"<{len(values)}{code}", *values)
+        if len(packed) <= 4:
+            ifd += struct.pack("<HHI", tag, kind, len(values)) + packed.ljust(4, b"\0")
+        else:
+            ifd += struct.pack("<HHII", tag, kind, len(values), extra_at + len(extra))
+            extra += packed + b"\0" * (len(packed) & 1)
+    head = b"II*\0" + struct.pack("<I", ifd_at) + data + b"\0" * (len(data) & 1)
+    return head + ifd + b"\0\0\0\0" + extra
+
+
+# The memory budget of whole reads (#724): what the process cannot hold is refused before it is
+# allocated, by the usable-memory check rather than by the allocation.
+USABLE = "bytes of memory the process can use"
+
+
+def test_whole_reads_the_process_cannot_hold_raise_before_allocating(tmp_path):
+    """#724's Float32 file (16,384 bands of 256 x 256 pixels, 4 GiB in 225 KiB) and its tiled one
+    (65,536 x 65,536 pixels, 4 GiB in 129 KiB), read whole through `terrio.rio` and
+    `terrio.open_raster`, by a process whose address space cannot hold them: refused, naming the
+    sizes, before the buffer is allocated, where a cgroup's limit would have killed the process as
+    its pages were written."""
+    files = {
+        "bands-f32.tif": declaring_tiff(256, 256, 16384, 32, 3),
+        "giant-u8.tif": declaring_tiff(65536, 65536, 1, 8, 1, block=(512, 512)),
+    }
+    for name, data in files.items():
+        path = tmp_path / name
+        path.write_bytes(data)
+        for action, what in (("read", "a window"), ("eager", "the raster")):
+            p = read_limited(action, path)
+            assert_raises_allocation_error(p)
+            assert f"{what} of " in p.stdout and USABLE in p.stdout, (name, action, p.stdout)
+
+
+def test_translate_refuses_what_it_would_hold_but_cannot(tmp_path):
+    """Translating to a COG a raster of 8,388,608 x 256 UInt8 pixels in strips of a row (2 GiB
+    declared, 4 GiB in its COG writer's row of 512-row tiles, held twice while strips are appended)
+    by a process whose address space cannot hold it: `terrio translate` streams the output and is
+    refused when its writer is created, after the first strip, instead of aborting once the rows
+    outgrow it; `terrio.translate`, which reads the whole output, is refused before reading it."""
+    path = tmp_path / "wide.tif"
+    path.write_bytes(declaring_tiff(1 << 23, 256, 1, 8, 1, rows_per_strip=1))
+    p = read_limited("translate_cli", path)
+    assert p.returncode == 0, f"the process died (exit code {p.returncode}): {p.stderr[-600:]}"
+    assert "EXIT 1" in p.stdout, p.stdout + p.stderr[-600:]
+    writer = "the rows a GeoTIFF writer holds (256 rows of 8388608 pixels"
+    assert writer in p.stderr, p.stderr[-600:]
+    assert USABLE in p.stderr, p.stderr[-600:]
+    p = read_limited("translate", path)
+    assert_raises_allocation_error(p)
+    assert "a resampled read of 8388608 x 256 pixels in 1 band(s)" in p.stdout, p.stdout
+    assert USABLE in p.stdout, p.stdout
+
+
+def test_the_declared_size_options_refuse_a_raster_at_open(tmp_path, monkeypatch):
+    """`TERRIO_MAX_DECLARED_BYTES` and `TERRIO_MAX_BANDS`, in the environment or an `Env`, refuse
+    a raster declaring more when it is opened, eagerly, lazily, by `convert` and `translate` and
+    through `terrio.rio`, with `ResourceLimitError` naming the option (a `RasterioIOError` from it
+    in `terrio.rio`); an `Env` value applies instead of the environment's; anything but a positive
+    integer is an `InvalidArgumentError` naming the option."""
+    path = tmp_path / "x.tif"
+    profile = dict(driver="GTiff", width=64, height=48, count=3, dtype="uint8", crs="EPSG:4326")
+    with rio.open(path, "w", **profile) as dst:
+        dst.write(np.zeros((3, 48, 64), "uint8"))
+    for option in ("TERRIO_MAX_DECLARED_BYTES", "TERRIO_MAX_BANDS"):
+        monkeypatch.delenv(option, raising=False)
+    opens = (
+        lambda: terrio.open_raster(str(path)),
+        lambda: terrio.open_raster(str(path), lazy=True),
+        lambda: terrio.convert(str(path), str(tmp_path / "converted.tif")),
+        lambda: terrio.translate(str(path), str(tmp_path / "translated.tif")),
+    )
+    for open_ in opens:
+        open_()
+    bytes_refusal = (
+        "the raster declares 64 x 48 pixels in 3 band(s), 9216 bytes, "
+        "more than TERRIO_MAX_DECLARED_BYTES=9215"
+    )
+    bands_refusal = "the raster declares 3 bands, more than TERRIO_MAX_BANDS=2"
+    for option, value, refusal in (
+        ("TERRIO_MAX_DECLARED_BYTES", "9215", bytes_refusal),
+        ("TERRIO_MAX_BANDS", "2", bands_refusal),
+    ):
+        monkeypatch.setenv(option, value)
+        for open_ in opens:
+            with pytest.raises(terrio.errors.ResourceLimitError, match=f"^{re.escape(refusal)}$"):
+                open_()
+        with pytest.raises(RasterioIOError, match=re.escape(refusal)) as raised:
+            rio.open(path)
+        assert isinstance(raised.value.__cause__, terrio.errors.ResourceLimitError)
+        # An `Env` value applies on its thread instead of the environment's.
+        within = "9216" if option == "TERRIO_MAX_DECLARED_BYTES" else "3"
+        with rio.Env(**{option: within}):
+            for open_ in opens:
+                open_()
+            with rio.open(path) as src:
+                assert src.read().shape == (3, 48, 64)
+        monkeypatch.delenv(option)
+        with rio.Env(**{option: value}):
+            for open_ in opens:
+                with pytest.raises(
+                    terrio.errors.ResourceLimitError, match=f"^{re.escape(refusal)}$"
+                ):
+                    open_()
+        monkeypatch.setenv(option, "4 GiB")
+        with pytest.raises(
+            terrio.errors.InvalidArgumentError, match=f"^{option} must be a positive integer"
+        ):
+            terrio.open_raster(str(path), lazy=True)
+        monkeypatch.delenv(option)
 
 
 def test_a_tiff_chunk_too_large_to_allocate_raises(tmp_path):
