@@ -35,6 +35,9 @@ it does not silently return partial metadata. This can reject damaged TIFFs whos
 another reader can recover. File inventory, copy, rename and deletion use first-image metadata
 and do not require readable later directories. Failed HTTP directory reads, including short
 range responses, do not trigger a whole-file retry during translation.
+Best-effort metadata queries and eager first-image reads retain the metadata collected before
+a later directory fails. Pixel decoding still requires a complete first directory, including
+its required final pointer.
 
 ```sh
 terrio info https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif

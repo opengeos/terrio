@@ -1509,6 +1509,7 @@ mod tests {
         assert!(!exists(&csv).unwrap() && !exists(&shp).unwrap() && !exists(&prj).unwrap());
         assert!(exists(&replacement).unwrap());
     }
+
     #[test]
     #[cfg(all(not(target_family = "wasm"), feature = "geotiff"))]
     fn tiff_inventory_and_transfers_use_first_image_georeferencing() {

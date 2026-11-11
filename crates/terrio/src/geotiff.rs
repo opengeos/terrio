@@ -210,10 +210,11 @@ pub(crate) fn check_tiff_allowed(path: &std::path::Path, shown: &str) -> crate::
 }
 
 /// Reads the georeferencing tags of a TIFF stream's first image, and finds the palette images
-/// among all its images. Returns `None` when the stream is not a TIFF or cannot be read;
-/// use `try_read_geo_tags_from` to distinguish these cases.
+/// among its readable images. Returns `None` when the stream is not a TIFF or its first image
+/// cannot be read. Later directory failures retain the collected metadata; use
+/// `try_read_geo_tags_from` when any directory read failure must be reported.
 pub(crate) fn read_geo_tags_from<R: Read + Seek>(f: R) -> Option<GeoTags> {
-    try_read_geo_tags_from(f).ok().flatten()
+    read_geo_tags_impl(f, false, ImageScope::BestEffort).ok().flatten()
 }
 
 /// Reads TIFF metadata while preserving read and seek failures for lazy opens.
@@ -228,12 +229,13 @@ pub(crate) fn read_first_geo_tags_from<R: Read + Seek>(f: R) -> std::io::Result<
 
 /// Comparison-only TIFF metadata; ordinary lazy opens avoid its out-of-line reads.
 pub(crate) fn read_compare_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
-    read_geo_tags_impl(std::io::BufReader::new(std::fs::File::open(path).ok()?), true, ImageScope::All).ok().flatten()
+    read_geo_tags_impl(std::io::BufReader::new(std::fs::File::open(path).ok()?), true, ImageScope::BestEffort).ok().flatten()
 }
 
 enum ImageScope {
     First,
     All,
+    BestEffort,
 }
 
 fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool, images: ImageScope) -> std::io::Result<Option<GeoTags>> {
@@ -381,14 +383,20 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool, images: 
     }
     // The other images: overviews and masks.
     let mut palette_offsets: Vec<u64> = palette_offset.into_iter().collect();
-    if matches!(images, ImageScope::All) {
-        let mut seen = vec![ifd_offset];
-        skip_remaining_ifd_entries(&mut f, count, entry_len)?;
-        let mut next = read_offset(&mut f, big, le)?;
-        while next != 0 && seen.len() < MAX_IFDS && !seen.contains(&next) {
-            let offset = next;
-            seen.push(offset);
-            next = palette_offset_in_ifd(&mut f, offset, big, le, &mut palette_offsets)?;
+    if !matches!(images, ImageScope::First) {
+        let chain = (|| -> std::io::Result<()> {
+            let mut seen = vec![ifd_offset];
+            skip_remaining_ifd_entries(&mut f, count, entry_len)?;
+            let mut next = read_offset(&mut f, big, le)?;
+            while next != 0 && seen.len() < MAX_IFDS && !seen.contains(&next) {
+                let offset = next;
+                seen.push(offset);
+                next = palette_offset_in_ifd(&mut f, offset, big, le, &mut palette_offsets)?;
+            }
+            Ok(())
+        })();
+        if matches!(images, ImageScope::All) {
+            chain?;
         }
     }
 
@@ -1763,11 +1771,76 @@ mod tests {
             let error = try_read_geo_tags_from(source).expect_err("read failure must propagate");
             assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
             assert_eq!(error.to_string(), "directory request failed");
+            let source = FailingReader { bytes: std::io::Cursor::new(bytes.clone()), fail_at, fail_seek: false, read_bytes: 0 };
+            assert_eq!(read_geo_tags_from(source).is_some(), fail_at >= 50, "best-effort first-image tags at {fail_at}");
         }
         let source = FailingReader { bytes: std::io::Cursor::new(bytes.clone()), fail_at: u64::MAX, fail_seek: true, read_bytes: 0 };
         assert_eq!(try_read_geo_tags_from(source).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
         assert!(try_read_geo_tags_from(std::io::Cursor::new(bytes)).unwrap().is_some());
         assert!(try_read_geo_tags_from(std::io::Cursor::new(b"not tiff")).unwrap().is_none());
+    }
+
+    #[test]
+    #[cfg(fs)]
+    fn eager_reads_retain_first_image_metadata_after_directory_failures() {
+        use std::io::Cursor;
+        use tiff::tags::Tag;
+
+        let directory = tempfile::tempdir().unwrap();
+        for affine in [false, true] {
+            let mut cursor = Cursor::new(Vec::new());
+            {
+                let mut encoder = tiff::encoder::TiffEncoder::new(&mut cursor).unwrap();
+                let mut image = encoder.new_image::<tiff::encoder::colortype::Gray8>(2, 2).unwrap();
+                image.encoder().write_tag(Tag::GeoKeyDirectoryTag, &[1u16, 1, 0, 2, 1024, 0, 1, 2, 2048, 0, 1, 4326][..]).unwrap();
+                if affine {
+                    image.encoder().write_tag(Tag::ModelPixelScaleTag, &[2.0, 2.0, 0.0][..]).unwrap();
+                }
+                let tiepoints = [0.0, 0.0, 0.0, 10.0, 20.0, 0.0, 2.0, 0.0, 0.0, 14.0, 20.0, 0.0, 0.0, 2.0, 0.0, 10.0, 16.0, 0.0];
+                image.encoder().write_tag(Tag::ModelTiepointTag, &tiepoints[..if affine { 6 } else { 18 }]).unwrap();
+                image.write_data(&[1, 2, 3, 4]).unwrap();
+            }
+            let original = cursor.into_inner();
+            let path = directory.path().join(format!("base-{affine}.tif"));
+            std::fs::write(&path, &original).unwrap();
+            let expected = read_geotiff(&path).unwrap();
+            assert_eq!(expected.raster.crs.epsg, Some(4326));
+            assert_eq!(expected.gcps.len(), if affine { 0 } else { 3 });
+            if affine {
+                assert_eq!(expected.geo_transform(), [10.0, 2.0, 0.0, 20.0, 0.0, -2.0]);
+            }
+            let first = u32::from_le_bytes(original[4..8].try_into().unwrap()) as usize;
+            let count = u16::from_le_bytes(original[first..first + 2].try_into().unwrap()) as usize;
+            let pointer = first + 2 + count * 12;
+            for missing_pointer in [false, true] {
+                let mut damaged = original.clone();
+                if missing_pointer {
+                    damaged.truncate(pointer);
+                } else {
+                    damaged[pointer..pointer + 4].copy_from_slice(&(original.len() as u32 + 4096).to_le_bytes());
+                }
+                std::fs::write(&path, &damaged).unwrap();
+                let path_str = path.to_str().unwrap();
+                assert!(crate::LazyRaster::open_tiff(path_str).is_err());
+                assert_eq!(crate::read_gcps(path_str).unwrap(), expected.gcps);
+                let eager = read_geotiff(&path);
+                let translated =
+                    crate::ops::translate::translate_path(path_str, &Default::default(), crate::ops::overview::OverviewSelection::Auto);
+                if missing_pointer {
+                    // Metadata inspection recovers the first image, but the pixel decoder
+                    // requires its final pointer. Keep that existing decoding error.
+                    assert!(eager.is_err());
+                    assert!(translated.is_err());
+                    continue;
+                }
+                for read in [eager.unwrap(), translated.unwrap()] {
+                    assert_eq!(read.raster.crs.epsg, expected.raster.crs.epsg);
+                    assert_eq!(read.geo_transform(), expected.geo_transform());
+                    assert_eq!(read.gcps, expected.gcps);
+                    assert_eq!(read.raster.data.to_f64_vec(), [1.0, 2.0, 3.0, 4.0]);
+                }
+            }
+        }
     }
 
     #[test]
