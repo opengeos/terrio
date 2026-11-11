@@ -12,6 +12,8 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   including in GML and CityGML metadata. Compound URNs require exactly two
   components: a two-dimensional horizontal CRS followed by a vertical CRS.
   Unsupported authorities, missing components and invalid component roles are errors.
+  A GML document declaring an unsupported compound CRS now fails to read; it does
+  not open with only one component or with silently discarded CRS metadata.
   Terrio retains the compound metadata in GML; GDAL requires
   [`GML_REPORT_COMPD_CS=YES`](https://github.com/OSGeo/gdal/blob/v3.13.3/ogr/ogrsf_frmts/gml/ogrgmldatasource.cpp#L1601)
   to report both GML components;
@@ -161,6 +163,8 @@ The [standalone benchmark validation](crs-benchmark-validation.md) records the
 direct native/fallback results against both pinned upstream suites.
 
 Canonical EPSG references use one parser in both standalone configurations.
+The legacy `urn:x-ogc:def:crs:EPSG:4326` form remains supported without a version;
+versioned X-OGC forms remain unsupported. Use the modern versioned OGC URN below.
 Versioned URNs/URLs resolve the code separately from the authority version
 (`urn:ogc:def:crs:EPSG:6.6:4326` resolves EPSG:4326). The fallback retains its
 legacy numeric suffix handling only after a recognized authority prefix fails
