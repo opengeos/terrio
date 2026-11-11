@@ -101,7 +101,9 @@ input to retain every Int32 component exactly. The rasterio-compatible writer
 accepts its supported array dtype names and refuses `dtype="complex_int32"`;
 `terrio.rio.shutil.copy` preserves an existing CInt32 raster without that dtype
 selector. Default complex reads retain their existing dtype; request
-`read(out_dtype="complex128")` for exact Int32 components.
+`read(out_dtype="complex128")` for exact Int32 components. An explicit real
+`out_dtype`, such as `float32`, follows NumPy casting: it keeps the real component
+and emits `ComplexWarning`. Select a complex dtype to preserve both components.
 
 
 ## Vector data
