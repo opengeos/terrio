@@ -2681,3 +2681,16 @@ Bounds planning scans at most 512 corners at a time, including the final endpoin
 with roughly 17 KiB of coordinate/validity scratch rather than allocating an entire
 output-width row before memory-limit splitting. The polar regression starts off a
 global batch boundary and spans several batches; RPC batch membership stays global.
+
+## Shapefile projection decoding warnings
+
+`python/tests/test_pyogrio_prj.py` checks invalid Latin-1 and UTF-16 sidecars through
+whole, range, stream, ZIP path and ZIP byte reads. Reads retain their geometries
+and attributes, leave the CRS absent, and issue one warning naming the sidecar
+and the decoding reason. CLI inspection and conversion report the same warning.
+Existing tests keep valid UTF-8 (including a BOM), empty and missing sidecars
+unchanged. A present sidecar that cannot be read is diagnosed separately.
+
+The Node test uses tiny GDAL 3.13.3-authored geometry fixtures under
+`crates/terrio/tests/data/shapefile`, with deliberately non-UTF-8 projection bytes.
+These check native warning policy, not equality to GDAL's metadata encoding policy.

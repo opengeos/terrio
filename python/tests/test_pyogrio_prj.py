@@ -13,6 +13,7 @@ import subprocess
 import sys
 import types
 import warnings
+import zipfile
 
 import pytest
 
@@ -311,3 +312,91 @@ def test_pyproj_checks_only_an_epsg_code_terrio_does_not_know(
     info, messages = _warned(lambda: tpg.read_info(_shapefile(tmp_path, prj)))
     warning = f"the layer's CRS definition cannot be parsed ('{prj}'): it is read without a CRS"
     assert (info["crs"], len(parsed), messages) == (crs, calls, [] if crs else [warning])
+
+
+@pytest.mark.parametrize("encoding", ["latin-1", "utf-16"])
+@pytest.mark.parametrize("reader", ["path", "range", "info", "stream", "zip-path", "zip-bytes"])
+def test_undecodable_prj_warns_with_filename_and_reason(tmp_path, encoding, reader):
+    path = _shapefile(tmp_path, ESRI_WGS84)
+    text = CUSTOM_TM.replace("custom", "Réseau local") if encoding == "latin-1" else ESRI_WGS84
+    (tmp_path / "pts.prj").write_bytes(text.encode(encoding))
+    if reader.startswith("zip-"):
+        archive = tmp_path / "points.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            for member in tmp_path.glob("pts.*"):
+                output.write(member, member.name)
+    calls = {
+        "path": lambda: terrio.open_vector(path)[0],
+        "info": lambda: tpg.read_info(path),
+        "range": lambda: terrio._terrio.pyogrio_read(path, skip_features=1, max_features=1),
+        "stream": lambda: terrio.open_stream(path, batch_size=1).read_all(),
+        "zip-path": lambda: terrio.open_vector(str(archive))[0],
+        "zip-bytes": lambda: terrio.open_bytes(archive.read_bytes(), filename="points.zip")[0],
+    }
+    result, messages = _warned(calls[reader])
+    crs = result["crs"] if reader in ("info", "range") else result.crs
+    assert crs is None
+    assert len(messages) == 1
+    assert "pts.prj" in messages[0]
+    assert "not UTF-8 text" in messages[0]
+    assert "invalid utf-8" in messages[0]
+    assert "read without a CRS" in messages[0]
+    if reader == "range":
+        assert result["feature_count"] == 1
+        assert result["columns"] == [[1]]
+    elif reader != "info":
+        assert len(result) == 3
+
+
+def test_unreadable_present_prj_warns_instead_of_looking_missing(tmp_path):
+    path = _shapefile(tmp_path, ESRI_WGS84)
+    sidecar = tmp_path / "pts.prj"
+    sidecar.unlink()
+    sidecar.mkdir()
+    layer, messages = _warned(lambda: terrio.open_vector(path)[0])
+    assert layer.crs is None
+    assert len(layer) == 3
+    assert len(messages) == 1
+    assert str(sidecar) in messages[0]
+    assert "cannot be read" in messages[0]
+
+
+@pytest.mark.parametrize("encoding", ["latin-1", "utf-16"])
+def test_cli_warns_for_undecodable_prj_and_omits_it_from_conversion(tmp_path, encoding):
+    path = _shapefile(tmp_path, ESRI_WGS84)
+    text = CUSTOM_TM.replace("custom", "Réseau local") if encoding == "latin-1" else ESRI_WGS84
+    (tmp_path / "pts.prj").write_bytes(text.encode(encoding))
+    done = subprocess.run(
+        [sys.executable, "-m", "terrio", "info", "--json", path], capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout)["layers"][0]["crs"] == {
+        "epsg": None,
+        "name": None,
+        "wkt": None,
+    }
+    assert done.stderr.count("terrio: warning:") == 1
+    assert "pts.prj" in done.stderr and "not UTF-8 text" in done.stderr
+    output = tmp_path / "copy.shp"
+    done = subprocess.run(
+        [sys.executable, "-m", "terrio", "convert", path, str(output)],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    assert "not UTF-8 text" in done.stderr
+    assert not output.with_suffix(".prj").exists()
+    assert len(terrio.open_vector(str(output))[0]) == 3
+
+
+def test_stream_projection_warning_uses_caller_and_error_filter(tmp_path):
+    path = _shapefile(tmp_path, ESRI_WGS84)
+    (tmp_path / "pts.prj").write_bytes(b"\xff\xfe")
+    with pytest.warns(UserWarning, match="not UTF-8 text") as caught:
+        stream = terrio.open_stream(path)
+    assert caught[0].filename == __file__
+    assert len(stream.read_all()) == 3
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        with pytest.raises(UserWarning, match="not UTF-8 text"):
+            terrio.open_stream(path)
