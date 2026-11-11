@@ -90,20 +90,23 @@ fn get_path_specific_option(path: &str, key: &str) -> Option<String> {
     }
 }
 
-/// The kind of driver an allow-list applies to: `"raster"`, `"vector"`, or `None` for both.
+/// The kind of driver an allow-list applies to: `"raster"`, `"vector"`, `"pointcloud"`, or `None`
+/// for every kind.
 fn driver_kind(kind: Option<&str>) -> PyResult<Option<terrio::formats::Kind>> {
     match kind.map(str::to_ascii_lowercase).as_deref() {
         None => Ok(None),
         Some("raster") => Ok(Some(terrio::formats::Kind::Raster)),
         Some("vector") => Ok(Some(terrio::formats::Kind::Vector)),
-        Some(other) => Err(crate::invalid(format!("kind must be 'raster', 'vector' or None, not {other:?}"))),
+        Some("pointcloud") => Ok(Some(terrio::formats::Kind::PointCloud)),
+        Some(other) => Err(crate::invalid(format!("kind must be 'raster', 'vector', 'pointcloud' or None, not {other:?}"))),
     }
 }
 
-/// Restricts, process-wide, the drivers datasets of `kind` ("raster", "vector", or None for both)
-/// may be opened with (terrio or GDAL names). The first call for a kind sets its list; later calls
-/// intersect with it, so they narrow it but never re-enable a driver, as GDAL's de-registration
-/// lasts for the process. Lifting a list once set (`drivers=None`) raises InvalidArgumentError.
+/// Restricts, process-wide, the drivers datasets of `kind` ("raster", "vector", "pointcloud", or
+/// None for every kind) may be opened with (terrio or GDAL names). The first call for a kind sets
+/// its list; later calls intersect with it, so they narrow it but never re-enable a driver, as
+/// GDAL's de-registration lasts for the process. Lifting a list once set (`drivers=None`) raises
+/// InvalidArgumentError.
 #[pyfunction]
 #[pyo3(signature = (drivers, kind=None))]
 fn set_allowed_drivers(drivers: Option<Vec<String>>, kind: Option<&str>) -> PyResult<()> {
@@ -112,9 +115,10 @@ fn set_allowed_drivers(drivers: Option<Vec<String>>, kind: Option<&str>) -> PyRe
     terrio::formats::set_allowed_drivers(names.as_deref(), kind).py()
 }
 
-/// The drivers datasets of `kind` may be opened with (upper case), or None when nothing restricts
-/// them. For `kind=None` (a dataset whose kind is unknown until it is opened), a driver must be
-/// allowed by the list of each kind it serves.
+/// The drivers datasets of `kind` ("raster", "vector" or "pointcloud") may be opened with (upper
+/// case), or None when nothing restricts them. For `kind=None` (a dataset whose kind is unknown
+/// until it is opened: a raster or a vector, as point clouds are read by readers of their own), a
+/// driver must be allowed by the list of each of those kinds it serves.
 #[pyfunction]
 #[pyo3(signature = (kind=None))]
 fn allowed_drivers(kind: Option<&str>) -> PyResult<Option<Vec<String>>> {

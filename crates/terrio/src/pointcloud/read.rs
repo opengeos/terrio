@@ -218,8 +218,9 @@ impl std::fmt::Debug for PointCloudReader {
 }
 
 /// Refuses a point cloud `driver` is about to open when the allow-list of point clouds leaves the
-/// driver out: `TERRIO_ALLOWED_DRIVERS`, which applies to every kind (point clouds have no list of
-/// their own, see [`crate::formats::allowed_drivers`]), as a de-registered driver opens nothing.
+/// driver out: the process-wide list set for point clouds or for every kind, and
+/// `TERRIO_ALLOWED_DRIVERS`, which applies to every kind (see
+/// [`crate::formats::allowed_drivers`]), as a de-registered driver opens nothing.
 pub(super) fn check_driver(driver: &str, name: &str) -> Result<()> {
     crate::formats::check_driver_allowed(driver, name, crate::formats::Kind::PointCloud)
 }
@@ -318,6 +319,17 @@ pub fn open_points_bytes(bytes: Vec<u8>, name: &str) -> Result<PointCloudReader>
         let header = read_las_header(&mut source, name)?;
         Box::new(LasReader::new(source, header, None, None)?)
     };
+    Ok(PointCloudReader { inner, name: name.to_string() })
+}
+
+/// Opens LAS records terrio has just encoded from points it holds, for the EPT writer, which reads
+/// them back to describe or convert them. They are not a dataset from outside, so the allow-list
+/// of point clouds (see [`check_driver`]) does not apply: a list that leaves the LAS family out
+/// does not stop a dataset of another format from being written.
+pub(super) fn open_encoded_las(bytes: Vec<u8>, name: &str) -> Result<PointCloudReader> {
+    let mut source = Source::Memory(Cursor::new(bytes));
+    let header = LasHeader::read(&mut source)?;
+    let inner: Box<dyn FormatReader> = Box::new(LasReader::new(source, header, None, None)?);
     Ok(PointCloudReader { inner, name: name.to_string() })
 }
 
