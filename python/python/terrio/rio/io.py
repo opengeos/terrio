@@ -3006,7 +3006,8 @@ class DatasetWriter(DatasetReader):
         compress = opts.pop("COMPRESS", None)
         band_md: list[dict[str, Any]] = []
         defaults = self._new_structure_defaults()
-        # JP2 needs the whole role vector: omitted roles otherwise inherit its RGB default.
+        # JP2 needs the whole role vector: once any role is written, omitted entries mean
+        # Undefined rather than the band-count default, so every role is sent explicitly.
         explicit_jp2_roles = (
             self._colorinterp_set and _terrio.canonical_driver_name(driver) == "JP2"
         )

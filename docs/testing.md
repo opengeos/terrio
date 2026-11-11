@@ -2682,7 +2682,6 @@ with roughly 17 KiB of coordinate/validity scratch rather than allocating an ent
 output-width row before memory-limit splitting. The polar regression starts off a
 global batch boundary and spans several batches; RPC batch membership stays global.
 
-
 ## JPEG 2000 channel roles
 
 `python/tests/test_jp2_color_roles.py` checks UInt8/UInt16 path and MemoryFile writes,
