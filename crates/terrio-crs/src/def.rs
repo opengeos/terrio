@@ -312,6 +312,7 @@ impl Def {
     pub fn from_proj(s: &str) -> Result<Self> {
         let p = Params::parse(s);
         p.validate_quoting()?;
+        p.validate_flags()?;
         if let Some(init) = p.str("init") {
             let code = init.to_ascii_lowercase().strip_prefix("epsg:").and_then(|c| c.parse().ok());
             if let Some(code) = code {

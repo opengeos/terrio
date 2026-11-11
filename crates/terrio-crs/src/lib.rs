@@ -357,6 +357,7 @@ impl SpatialRef {
     pub fn from_proj4(proj4: &str) -> Result<Self> {
         let p = params::Params::parse(proj4);
         p.validate_quoting()?;
+        p.validate_flags()?;
         if let Some(code) = p.str("init").and_then(|i| i.to_ascii_lowercase().strip_prefix("epsg:").and_then(|c| c.parse().ok())) {
             return Self::from_epsg(code);
         }

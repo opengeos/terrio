@@ -237,6 +237,23 @@ CRS with GDAL 3.13.2's list (PROJ 9.8.1), field by field: all are identical.
 
 ## PROJ string interpretation changes
 
+Recognized boolean switches, including UTM and UPS `south`, accept a bare flag
+or an explicit case-insensitive value: `true`, `t`, `yes`, `y`, `on`, `1` enable
+it; `false`, `f`, `no`, `n`, `off`, `0` disable it. Other values are refused.
+This differs from treating every supplied value as an enabled flag. Python's
+`terrio.rio.CRS.to_proj4()` writes enabled flags as `+flag` and omits disabled
+ones; `to_dict()` keeps boolean types.
+
+PROJ parameter exports preserve projection-specific standard parallels, the
+validated PROJ4 extension of a WKT definition (including Web Mercator), named
+PROJ datums and explicit WKT `TOWGS84` operations. A datum with neither a PROJ
+name nor an explicit shift is exported as an ellipsoid with a warning that
+its identity and coordinate operations are omitted. An ellipsoid is not a
+datum: a round trip can then select a ballpark operation and move points.
+Use `to_wkt()`, PROJJSON or the authority code to preserve such datums and
+their area-dependent or grid-based operation selection. Unsupported projection
+exports remain empty rather than describing another projection.
+
 PROJ strings supplied as CRSs follow PROJ's CRS import rules. For polar
 `+proj=stere` with `+lat_0=90` or `-90`, an explicit `+lat_ts` selects the
 hemisphere: negative selects south, and zero or positive selects north. For

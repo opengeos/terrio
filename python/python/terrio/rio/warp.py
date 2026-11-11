@@ -80,8 +80,9 @@ def _crs_text(crs: Any) -> str:
     if crs is None:
         raise CRSError("A CRS is required")
     c = CRS.from_user_input(crs)
-    code = c.to_epsg()
-    return f"EPSG:{code}" if code is not None else c.to_wkt()
+    # A WKT can identify an authority CRS while binding it to a specific TOWGS84 operation.
+    # Replacing that WKT with its code discards the operation chosen by the caller.
+    return c._database if c._database is not None else c.to_wkt()
 
 
 def _transform_arrays(

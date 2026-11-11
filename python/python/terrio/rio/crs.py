@@ -271,11 +271,14 @@ class CRS(Mapping[str, Any]):
 
         Returns:
             CRS: The CRS.
+
+        Raises:
+            CRSError: The definition is invalid, including a non-boolean value on a flag.
         """
         m = re.search(r"\+init=epsg:(\d+)", proj, re.IGNORECASE)
         if m:
             # GDAL hands `+init=` to PROJ, whose PROJJSON differs from the EPSG code's.
-            crs = cls.from_epsg(m.group(1))
+            crs = cls._from(proj)
             crs._database = proj.strip()
             return crs
         return cls._from(proj)
@@ -604,12 +607,24 @@ class CRS(Mapping[str, Any]):
         return self.to_wkt() or self.to_proj4()
 
     def to_proj4(self) -> str:
-        """The CRS as a PROJ string.
+        """The CRS as a PROJ string, with enabled boolean flags written without values.
+
+        Named PROJ datums and explicit WKT TOWGS84 operations are retained. Other datum
+        identities and area-dependent operations cannot be represented by an ellipsoid alone;
+        use WKT, PROJJSON or an authority code to preserve them. Unsupported projections
+        return an empty string.
 
         Returns:
             str: The PROJ string.
+
+        Warns:
+            UserWarning: A named datum is reduced to its ellipsoid without its operations.
         """
-        return " ".join(f"+{k}={v}" for k, v in self.to_dict().items())
+        return " ".join(
+            f"+{key}" if value is True else f"+{key}={value}"
+            for key, value in self.to_dict().items()
+            if value is not False
+        )
 
     def to_projjson(self) -> str:
         """The CRS as PROJJSON v0.7.
@@ -640,7 +655,13 @@ class CRS(Mapping[str, Any]):
                 (PROJ 9.7.1) does, for the geographic and projected CRSs it models.
 
         Returns:
-            dict: The parameters, or the PROJJSON document.
+            dict: The parameters, or the PROJJSON document. An unsupported projection gives
+                an empty parameter dictionary. Named PROJ datums and explicit WKT TOWGS84
+                operations are kept; other datums may retain only their ellipsoid. Use WKT,
+                PROJJSON or an authority code to retain their identity and operation selection.
+
+        Warns:
+            UserWarning: PROJ parameter export omits a named datum's identity and operations.
 
         Raises:
             CRSError: If PROJJSON is asked for, pyproj is not installed, and terrio cannot write
@@ -666,6 +687,19 @@ class CRS(Mapping[str, Any]):
         if proj4:
             return _proj_dict(proj4)
         root = self._root
+        if root is not None and any(
+            isinstance(node, list)
+            and len(node) > 2
+            and str(node[0]).upper() == "EXTENSION"
+            and str(node[1]).upper() == "PROJ4"
+            for node in root[1:]
+        ):
+            # Use only an extension the native reader validates against the entire WKT.
+            # Authority constructors retain the WKT but do not populate their PROJ field.
+            validated = _terrio.crs_info(self.wkt).get("proj4")
+            if validated:
+                self._info["proj4"] = validated
+                return _proj_dict(validated)
         return _wkt_to_proj(root) if root is not None else {}
 
     def _native_projjson(self) -> dict[str, Any]:
@@ -817,6 +851,13 @@ class CRS(Mapping[str, Any]):
         return len(self.data)
 
 
+_PROJ_FLAGS = frozenset(
+    "south no_defs wktext over approx geoc R_A R_C R_V R_a R_g R_h "
+    "no_rot no_uoff no_off czech guam hyperbolic exact transpose no_z_transform "
+    "inv omit_fwd omit_inv".split()
+)
+
+
 def _proj_dict(proj4: str) -> dict[str, Any]:
     """PROJ parameters from a PROJ string.
 
@@ -833,6 +874,13 @@ def _proj_dict(proj4: str) -> dict[str, Any]:
             continue
         if "=" in part:
             k, v = part.split("=", 1)
+            if k in _PROJ_FLAGS:
+                if v.lower() in {"true", "t", "yes", "y", "on", "1"}:
+                    out[k] = True
+                    continue
+                if v.lower() in {"false", "f", "no", "n", "off", "0"}:
+                    out[k] = False
+                    continue
             try:
                 num = float(v)
                 out[k] = int(num) if num.is_integer() and "." not in v else num
@@ -884,6 +932,21 @@ _DATUMS = {
     "nad83": "NAD83",
     "northamericandatum1927": "NAD27",
     "nad27": "NAD27",
+    "ordnancesurveyofgreatbritain1936": "OSGB36",
+    "osgb1936": "OSGB36",
+    "osgb36": "OSGB36",
+    "deutscheshauptdreiecksnetz": "potsdam",
+    "dhdn": "potsdam",
+    "potsdam": "potsdam",
+    "greekgeodeticreferencesystem1987": "GGRS87",
+    "ggrs87": "GGRS87",
+    "carthage": "carthage",
+    "militargeographischeinstitut": "hermannskogel",
+    "hermannskogel": "hermannskogel",
+    "ireland1965": "ire65",
+    "tm65": "ire65",
+    "newzealand1949": "nzgd49",
+    "newzealandgeodeticdatum1949": "nzgd49",
 }
 _UNITS = {"metre": "m", "meter": "m", "ussurveyfoot": "us-ft", "footus": "us-ft", "foot": "ft"}
 
@@ -938,6 +1001,12 @@ def _wkt_to_proj(root: list[Any]) -> dict[str, Any]:
                     out[key] = _num(c[2])
         if name == "lambertconformalconic1sp":
             out["lat_1"] = out.get("lat_0", 0)
+        if name == "polarstereographic" and abs(float(out.get("lat_0", 0))) != 90:
+            parallel = out.get("lat_0", 0)
+            out["lat_ts"] = parallel
+            out["lat_0"] = -90 if float(parallel) < 0 else 90
+        if name in {"mercator2sp", "equirectangular", "platecarree"} and "lat_1" in out:
+            out["lat_ts"] = out.pop("lat_1")
         if (
             out["proj"] == "tmerc"
             and out.get("k") == 0.9996
@@ -957,7 +1026,8 @@ def _wkt_to_proj(root: list[Any]) -> dict[str, Any]:
     datum = _child(geog, "DATUM") if geog else None
     if datum is not None:
         dname = _norm(datum[1])
-        if dname in _DATUMS:
+        shift = _child(datum, "TOWGS84")
+        if dname in _DATUMS and shift is None:
             out["datum"] = _DATUMS[dname]
         else:
             sph = _child(datum, "SPHEROID")
@@ -968,6 +1038,16 @@ def _wkt_to_proj(root: list[Any]) -> dict[str, Any]:
                     out["rf"] = _num(rf)
                 else:
                     out["b"] = _num(sph[2])
+            if shift is not None:
+                out["towgs84"] = ",".join(f"{float(value):.15g}" for value in shift[1:])
+            elif dname not in {"unknown", "unnamed", "undefined"}:
+                warnings.warn(
+                    f"PROJ parameters retain the ellipsoid but omit datum '{datum[1]}' "
+                    "and its coordinate operations; use to_wkt() or an authority code "
+                    "to preserve datum identity",
+                    UserWarning,
+                    stacklevel=3,
+                )
     if kind == "PROJCS":
         unit = _child(root, "UNIT")
         to_meter = 1.0
