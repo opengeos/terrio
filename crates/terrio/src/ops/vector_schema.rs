@@ -894,10 +894,22 @@ fn driver_columns(driver: Option<crate::formats::VectorDriver>) -> (&'static str
 /// GDAL reports): GDAL's field types (see [`ogr_type`]), widths, precisions and nullability, the
 /// geometry type and CRS (`authid` when the CRS has an authority code, otherwise its WKT).
 pub fn export_schema(layers: &[Layer], driver: Option<crate::formats::VectorDriver>) -> OgrSchema {
+    export_schema_with_dims(layers, driver, &[])
+}
+
+/// [`export_schema`] with the Z and M a layer's header declares: `declared_dims[i]` is the
+/// `(has_z, has_m)` of `layers[i]`, when known. A declared pair replaces the feature scan for that
+/// layer, so a file declared Z with no features still reports `PointZ`. A missing entry keeps the scan.
+pub fn export_schema_with_dims(
+    layers: &[Layer],
+    driver: Option<crate::formats::VectorDriver>,
+    declared_dims: &[Option<(bool, bool)>],
+) -> OgrSchema {
     let (geom_name, fid) = driver_columns(driver);
     let layers = layers
         .iter()
-        .map(|l| {
+        .enumerate()
+        .map(|(i, l)| {
             let fields = (0..l.schema.len())
                 .map(|i| {
                     let f = &l.schema.fields()[i];
@@ -919,14 +931,17 @@ pub fn export_schema(layers: &[Layer], driver: Option<crate::formats::VectorDriv
             let has_geometry =
                 l.geom_type.is_some() || l.features.iter().any(|f| f.geometry.is_some()) || !SpatialRef::from_layer(l).is_unknown();
             let geometry_fields = if has_geometry {
-                let declared = l.geom_type.or_else(|| crate::drivers::vector::uniform_type(l));
-                let (z, m) = l.features.iter().filter_map(|f| f.geometry.as_ref()).take(1000).fold((false, false), |(z, m), g| {
-                    let (gz, gm) = crate::vector::geometry_dims(g);
-                    (z || gz, m || gm)
-                });
+                let geom_type = l.geom_type.or_else(|| crate::drivers::vector::uniform_type(l));
+                let (z, m) = match declared_dims.get(i).copied().flatten() {
+                    Some(dims) => dims,
+                    None => l.features.iter().filter_map(|f| f.geometry.as_ref()).take(1000).fold((false, false), |(z, m), g| {
+                        let (gz, gm) = crate::vector::geometry_dims(g);
+                        (z || gz, m || gm)
+                    }),
+                };
                 vec![SchemaGeometryField {
                     name: geom_name.into(),
-                    geometry_type: geometry_type_name(declared, z, m),
+                    geometry_type: geometry_type_name(geom_type, z, m),
                     nullable: Some(true),
                     coordinate_system: Some(crs_json(&SpatialRef::from_layer(l))),
                     extra: Default::default(),
@@ -965,7 +980,55 @@ pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
     }
     let options = crate::VectorOpenOptions { layers: layers.to_vec(), ..Default::default() };
     let ds = crate::open_vector(path, &options)?;
-    Ok(export_schema(&ds.layers, Some(ds.driver)))
+    let declared = if ds.driver == crate::formats::VectorDriver::FlatGeobuf { path_declared_dims(path) } else { Vec::new() };
+    Ok(export_schema_with_dims(&ds.layers, Some(ds.driver), &declared))
+}
+
+/// [`export_schema_path`] for a dataset held in memory, named `name` (its file name, which the
+/// driver is judged by). `layers` keeps the named layers, as the bindings do; `None` keeps all.
+pub fn export_schema_bytes(bytes: Vec<u8>, name: &str, layers: Option<&[String]>) -> Result<OgrSchema> {
+    let declared_bytes = bytes_declared_dims(&bytes);
+    let mut ds = crate::memory::open_vector_bytes(bytes, name, &Default::default())?;
+    if let Some(names) = layers {
+        ds.layers.retain(|l| names.contains(&l.name));
+    }
+    let declared = if ds.driver == crate::formats::VectorDriver::FlatGeobuf { vec![declared_bytes] } else { Vec::new() };
+    Ok(export_schema_with_dims(&ds.layers, Some(ds.driver), &declared))
+}
+
+/// The declared Z and M of the one layer of a local FlatGeobuf file, read from its header alone.
+/// Remote paths, and builds without FlatGeobuf, declare nothing.
+#[cfg(feature = "flatgeobuf")]
+fn path_declared_dims(path: &str) -> Vec<Option<(bool, bool)>> {
+    if !crate::vfs::Location::parse(path).is_local() {
+        return Vec::new();
+    }
+    let Ok(mut file) = std::fs::File::open(path) else { return Vec::new() };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    // Unbuffered: the header is read in its exact size, so no feature bytes are read.
+    match crate::drivers::vector::flatgeobuf::read_header(&mut file, len) {
+        Ok((info, _)) => vec![Some((info.has_z, info.has_m))],
+        Err(_) => Vec::new(),
+    }
+}
+
+#[cfg(not(feature = "flatgeobuf"))]
+fn path_declared_dims(_path: &str) -> Vec<Option<(bool, bool)>> {
+    Vec::new()
+}
+
+/// The declared Z and M of FlatGeobuf bytes, from their header; `None` for other bytes.
+#[cfg(feature = "flatgeobuf")]
+fn bytes_declared_dims(bytes: &[u8]) -> Option<(bool, bool)> {
+    if !crate::drivers::vector::flatgeobuf::has_magic(bytes) {
+        return None;
+    }
+    crate::drivers::vector::flatgeobuf::declared_dims_bytes(bytes).ok()
+}
+
+#[cfg(not(feature = "flatgeobuf"))]
+fn bytes_declared_dims(_bytes: &[u8]) -> Option<(bool, bool)> {
+    None
 }
 
 /// The OGR type GDAL's GeoPackage driver gives a declared column type.

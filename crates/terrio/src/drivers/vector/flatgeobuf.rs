@@ -27,6 +27,17 @@ pub fn read(path: &str) -> Result<Layer> {
     parse(&std::fs::read(path)?)
 }
 
+/// The Z and M flags a FlatGeobuf header declares, read from the header alone.
+pub(crate) fn declared_dims_bytes(buf: &[u8]) -> Result<(bool, bool)> {
+    let (_, header) = parse_header(buf)?;
+    Ok((header.has_z, header.has_m))
+}
+
+/// Whether `buf` starts with the FlatGeobuf magic bytes.
+pub(crate) fn has_magic(buf: &[u8]) -> bool {
+    buf.starts_with(&MAGIC)
+}
+
 fn bad(what: &str) -> Error {
     Error::InvalidData(format!("FlatGeobuf: {what}"))
 }
@@ -263,6 +274,10 @@ pub struct FlatGeobufInfo {
     pub header_size: u64,
     /// The size of the spatial index.
     pub index_size: u64,
+    /// Whether the header declares Z coordinates for every geometry.
+    pub has_z: bool,
+    /// Whether the header declares M coordinates for every geometry.
+    pub has_m: bool,
 }
 
 /// Reads a FlatGeobuf file's header, and the features whose bounding box intersects `bbox`
@@ -324,6 +339,8 @@ impl PreparedIndex {
             index_node_size: header.index_node_size,
             header_size: size as u64,
             index_size: data_start - size as u64,
+            has_z: header.has_z,
+            has_m: header.has_m,
         };
         Ok(Self { info, layer, metadata, header, file_len })
     }
@@ -995,6 +1012,50 @@ mod tests {
         assert!(!accepts(&dimension_fixture(false, true, None, Some(&[]))));
         let extra = parse(&dimension_fixture(true, false, Some(&[5.0, 6.0]), None)).unwrap();
         assert_eq!(extra.features[0].geometry.as_ref().unwrap().all_coords()[0].z, Some(5.0));
+    }
+
+    /// A point file with the declared dimensions and no features, so no geometry shows them.
+    fn empty_dimension_fixture(has_z: bool, has_m: bool) -> Vec<u8> {
+        let mut b = FlatBufferBuilder::new();
+        let h = Header::create(
+            &mut b,
+            &HeaderArgs { features_count: 0, index_node_size: 0, has_z, has_m, geometry_type: FgbType::Point, ..Default::default() },
+        );
+        b.finish_size_prefixed(h, None);
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(b.finished_data());
+        bytes
+    }
+
+    /// The geometry type `export_schema_bytes` reports for the one geometry field of a file.
+    fn exported_geometry_type(bytes: &[u8]) -> String {
+        let schema = crate::ops::vector_schema::export_schema_bytes(bytes.to_vec(), "fixture.fgb", None).unwrap();
+        schema.layers[0].geometry_fields[0].geometry_type.clone()
+    }
+
+    #[test]
+    fn declared_dimensions_show_without_features() {
+        assert_eq!(exported_geometry_type(&empty_dimension_fixture(true, false)), "PointZ");
+        assert_eq!(exported_geometry_type(&empty_dimension_fixture(false, false)), "Point");
+    }
+
+    #[test]
+    fn declared_dimensions_show_without_features_from_a_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.fgb");
+        std::fs::write(&path, empty_dimension_fixture(true, true)).unwrap();
+        let schema = crate::ops::vector_schema::export_schema_path(path.to_str().unwrap(), &[]).unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "PointZM");
+    }
+
+    #[test]
+    fn header_reports_declared_dimensions() {
+        for (has_z, has_m) in [(false, false), (true, false), (false, true), (true, true)] {
+            let bytes = empty_dimension_fixture(has_z, has_m);
+            let (info, _) = read_header(&mut std::io::Cursor::new(&bytes), bytes.len() as u64).unwrap();
+            assert_eq!((info.has_z, info.has_m), (has_z, has_m));
+            assert_eq!(declared_dims_bytes(&bytes).unwrap(), (has_z, has_m));
+        }
     }
 
     #[test]

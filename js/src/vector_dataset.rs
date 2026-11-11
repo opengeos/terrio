@@ -203,6 +203,13 @@ struct SchemaArgs {
 #[wasm_bindgen(js_name = exportSchema)]
 pub fn export_schema(src: JsValue, options: JsValue) -> Result<JsValue, JsError> {
     let a: SchemaArgs = parse_options(&options)?;
+    // File bytes keep the dimensions their header declares; datasets already in memory do not.
+    if Dataset::lookup(&src).is_none()
+        && let Some((bytes, name)) = file_bytes(&src)
+    {
+        let schema = vs::export_schema_bytes(bytes, &name, a.layers.as_deref()).map_err(js_err)?;
+        return to_js(&schema);
+    }
     let (mut layers, driver) = source(&src)?;
     if let Some(names) = &a.layers {
         layers.retain(|l| names.contains(&l.name));
