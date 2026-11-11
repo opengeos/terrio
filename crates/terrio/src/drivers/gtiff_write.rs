@@ -58,11 +58,24 @@ pub(crate) struct CodecParams {
     pub jpeg_ycbcr: bool,
     pub webp_quality: u8,
     pub webp_lossless: bool,
+    /// Deflate and LERC_DEFLATE: the level (`ZLEVEL`, 1 to 9, default 6).
+    pub deflate_level: crate::deflate_compress::Level,
+    /// ZSTD and LERC_ZSTD: the level (`ZSTD_LEVEL`, 1 to 22, default 9), which only the
+    /// `libzstd` feature's encoder honours.
+    pub zstd_level: i32,
 }
 
 impl Default for CodecParams {
     fn default() -> Self {
-        Self { max_z_error: 0.0, jpeg_quality: 75, jpeg_ycbcr: false, webp_quality: 75, webp_lossless: false }
+        Self {
+            max_z_error: 0.0,
+            jpeg_quality: 75,
+            jpeg_ycbcr: false,
+            webp_quality: 75,
+            webp_lossless: false,
+            deflate_level: crate::deflate_compress::Level::DEFAULT,
+            zstd_level: 9,
+        }
     }
 }
 
@@ -140,12 +153,12 @@ impl Compression {
             Self::Lzw => weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)
                 .encode(&data)
                 .map_err(|e| Error::InvalidData(format!("LZW: {e}")))?,
-            Self::Deflate => deflate(&data)?,
+            Self::Deflate => deflate(&data, p.deflate_level)?,
             Self::PackBits => packbits(&data),
-            Self::Zstd => zstd_compress(&data)?,
+            Self::Zstd => zstd_compress(&data, p.zstd_level)?,
             Self::Lerc => lerc_encode(&data, c, p.max_z_error)?,
-            Self::LercDeflate => deflate(&lerc_encode(&data, c, p.max_z_error)?)?,
-            Self::LercZstd => zstd_compress(&lerc_encode(&data, c, p.max_z_error)?)?,
+            Self::LercDeflate => deflate(&lerc_encode(&data, c, p.max_z_error)?, p.deflate_level)?,
+            Self::LercZstd => zstd_compress(&lerc_encode(&data, c, p.max_z_error)?, p.zstd_level)?,
             Self::Jxl => jxl_encode(data, c)?,
             Self::Jpeg => jpeg_encode(&data, c, p.jpeg_quality, p.jpeg_ycbcr)?,
             Self::WebP => webp_encode(data, c, p)?,
@@ -159,8 +172,9 @@ fn lerc_encode(_data: &[u8], _c: &ChunkInfo, _max_z_error: f64) -> Result<Vec<u8
 }
 
 /// A Deflate chunk as GDAL 3.12 built with libdeflate writes it: libdeflate's level 6, the same bytes.
-fn deflate(data: &[u8]) -> Result<Vec<u8>> {
-    Ok(crate::deflate_compress::zlib_compress(data))
+/// At another `level` (`ZLEVEL`), the chunk that level's search gives.
+fn deflate(data: &[u8], level: crate::deflate_compress::Level) -> Result<Vec<u8>> {
+    Ok(crate::deflate_compress::zlib_compress(data, level))
 }
 
 /// Encodes a chunk (little-endian samples, interleaved) as a LERC blob of `spp` values per pixel,
@@ -354,8 +368,9 @@ fn jpeg_encode(data: &[u8], c: &ChunkInfo, quality: u8, ycbcr: bool) -> Result<V
     Ok(out)
 }
 
-fn zstd_compress(data: &[u8]) -> Result<Vec<u8>> {
-    Ok(crate::zstandard::compress(data, 9)?)
+/// A Zstandard chunk at `level` (with the `libzstd` feature; without it, `ruzstd`'s fastest level).
+fn zstd_compress(data: &[u8], level: i32) -> Result<Vec<u8>> {
+    Ok(crate::zstandard::compress(data, level)?)
 }
 
 /// PackBits run-length encoding, as TIFF defines it.
@@ -722,6 +737,23 @@ impl TiffOptions {
                 "3" => 3,
                 other => return Err(Error::InvalidArgument(format!("invalid PREDICTOR '{other}' (1, 2, 3)"))),
             };
+        }
+        // The levels are checked whatever the compression, as the qualities are.
+        if let Some(v) = co("ZLEVEL") {
+            o.codec.deflate_level = v
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .and_then(crate::deflate_compress::Level::new)
+                .ok_or_else(|| Error::InvalidArgument(format!("invalid ZLEVEL '{v}' (1 to 9)")))?;
+        }
+        if let Some(v) = co("ZSTD_LEVEL") {
+            o.codec.zstd_level = v
+                .trim()
+                .parse::<i32>()
+                .ok()
+                .filter(|l| (1..=22).contains(l))
+                .ok_or_else(|| Error::InvalidArgument(format!("invalid ZSTD_LEVEL '{v}' (1 to 22)")))?;
         }
         if let Some(v) = co("MAX_Z_ERROR") {
             o.codec.max_z_error = v
@@ -3567,6 +3599,171 @@ mod tests {
                 _ => false,
             };
             assert!(same, "{co:?}");
+        }
+    }
+
+    /// `ZLEVEL` (1 to 9) sets the Deflate level of DEFLATE and LERC_DEFLATE chunks, in GeoTIFFs and
+    /// COGs, written whole or streamed, 6 when it is not given, and `ZSTD_LEVEL` (1 to 22) the
+    /// level of ZSTD and LERC_ZSTD chunks, which only the `libzstd` feature's encoder honours (9
+    /// when it is not given). Every level reads back to the raster. Both are checked whatever the
+    /// compression, as the qualities are: a level out of range is refused.
+    #[test]
+    fn compression_levels_change_the_chunks_and_are_checked() {
+        // A gradient with noise, 256 x 256.
+        let cfg = wbraster::RasterConfig { cols: 256, rows: 256, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let mut x = 7u64;
+        let data = (0..256 * 256)
+            .map(|i| {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((i % 256) / 4 + (i / 256) / 4 + (x >> 61) as usize) as u8
+            })
+            .collect();
+        let r = Raster::from_data_native(cfg, RasterData::U8(data)).unwrap();
+        // LERC's blob of that gradient is about as large compressed as not, at any level: the
+        // LERC checks take 64 x 64 Float32 values drawn from 16, whose blob the second stage
+        // compresses.
+        let lerc_cfg = wbraster::RasterConfig { cols: 64, rows: 64, bands: 1, data_type: DataType::F32, ..Default::default() };
+        let lerc_data = (0..64 * 64)
+            .map(|_| {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (x >> 60) as f32 / 8.0 + 0.1
+            })
+            .collect();
+        let lerc_raster = Raster::from_data_native(lerc_cfg, RasterData::F32(lerc_data)).unwrap();
+        let encode_raster = |r: &Raster, compression: &str, cog: bool, co: &[(&str, &str)]| {
+            let options = crate::RasterWriteOptions {
+                compression: Some(compression.into()),
+                creation_options: co.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                ..Default::default()
+            };
+            TiffOptions::from_write_options(&options, cog, None).map(|o| encode(r, &o.unwrap()).unwrap())
+        };
+        let encode_cog = |compression: &str, cog: bool, co: &[(&str, &str)]| encode_raster(&r, compression, cog, co);
+        let encode_with = |compression: &str, co: &[(&str, &str)]| encode_cog(compression, false, co);
+        let read_back = |bytes: &[u8]| {
+            crate::cog::LazyRaster::from_tiff_bytes(bytes.to_vec()).unwrap().unwrap().read().unwrap().raster.data.to_f64_vec()
+        };
+        let deflate: Vec<Vec<u8>> = (1..=9).map(|l| encode_with("DEFLATE", &[("ZLEVEL", &l.to_string())]).unwrap()).collect();
+        assert_eq!(encode_with("DEFLATE", &[]).unwrap(), deflate[5]);
+        // On this raster, levels 1, 6 and 9 give other bytes, each no larger than the one before.
+        let sizes: Vec<usize> = deflate.iter().map(Vec::len).collect();
+        assert!(deflate[0] != deflate[5] && deflate[5] != deflate[8], "{sizes:?}");
+        assert!(sizes[8] <= sizes[5] && sizes[5] <= sizes[0], "{sizes:?}");
+        for (l, bytes) in deflate.iter().enumerate() {
+            assert_eq!(read_back(bytes), r.data.to_f64_vec(), "ZLEVEL {}", l + 1);
+        }
+        // A COG's Deflate chunks, and LERC_DEFLATE's Deflate stage, take the level too.
+        let (one, nine) =
+            (encode_cog("DEFLATE", true, &[("ZLEVEL", "1")]).unwrap(), encode_cog("DEFLATE", true, &[("ZLEVEL", "9")]).unwrap());
+        assert_ne!(one, nine, "COG");
+        assert_eq!(read_back(&nine), r.data.to_f64_vec(), "COG");
+        let lerc = |compression: &str, co: &[(&str, &str)]| encode_raster(&lerc_raster, compression, false, co).unwrap();
+        if cfg!(feature = "lerc") {
+            let (one, nine) = (lerc("LERC_DEFLATE", &[("ZLEVEL", "1")]), lerc("LERC_DEFLATE", &[("ZLEVEL", "9")]));
+            // Not only the zlib header's FLEVEL: the Deflate stage's output differs.
+            assert!(nine.len() < one.len(), "LERC_DEFLATE: {} >= {}", nine.len(), one.len());
+            assert_eq!(read_back(&nine), lerc_raster.data.to_f64_vec(), "LERC_DEFLATE");
+        }
+        // The streaming writer, for a GeoTIFF and for a COG, reads ZLEVEL as well.
+        let header = crate::RasterDataset::new(r.clone(), false);
+        let dir = tempfile::tempdir().unwrap();
+        let streamed = |driver: crate::formats::RasterDriver, zlevel: &str| {
+            let p = dir.path().join(format!("{driver:?}{zlevel}.tif"));
+            let options = crate::RasterWriteOptions {
+                driver: Some(driver),
+                compression: Some("DEFLATE".into()),
+                creation_options: vec![("ZLEVEL".into(), zlevel.into())],
+                ..Default::default()
+            };
+            let mut w = GeoTiffWriter::create(p.to_str().unwrap(), &header, &options).unwrap();
+            w.write_rows(&r.data, r.rows, None).unwrap();
+            w.finish().unwrap();
+            std::fs::read(&p).unwrap()
+        };
+        for driver in [crate::formats::RasterDriver::GTiff, crate::formats::RasterDriver::Cog] {
+            assert_ne!(streamed(driver, "1"), streamed(driver, "9"), "streamed {driver:?}");
+        }
+        let libzstd = cfg!(all(feature = "libzstd", not(target_family = "wasm")));
+        let zstd = |level: &str| encode_with("ZSTD", &[("ZSTD_LEVEL", level)]).unwrap();
+        assert_eq!(zstd("9"), encode_with("ZSTD", &[]).unwrap());
+        assert_eq!(zstd("1") != zstd("22"), libzstd);
+        assert_eq!(read_back(&zstd("22")), r.data.to_f64_vec());
+        if cfg!(feature = "lerc") {
+            let lerc_zstd = |level: &str| lerc("LERC_ZSTD", &[("ZSTD_LEVEL", level)]);
+            assert_eq!(lerc_zstd("9"), lerc("LERC_ZSTD", &[]));
+            assert_eq!(lerc_zstd("1") != lerc_zstd("22"), libzstd);
+            assert_eq!(read_back(&lerc_zstd("22")), lerc_raster.data.to_f64_vec(), "LERC_ZSTD");
+        }
+        for (compression, key, value) in [
+            ("DEFLATE", "ZLEVEL", "0"),
+            ("DEFLATE", "ZLEVEL", "10"),
+            ("LZW", "ZLEVEL", "fast"),
+            ("ZSTD", "ZSTD_LEVEL", "0"),
+            ("ZSTD", "ZSTD_LEVEL", "23"),
+            ("NONE", "ZSTD_LEVEL", "-1"),
+        ] {
+            let error = encode_with(compression, &[(key, value)]).unwrap_err().to_string();
+            assert!(error.contains(&format!("invalid {key} '{value}'")), "{error}");
+        }
+    }
+
+    /// `ZLEVEL` reaches the Deflate encoder through each write of a GeoTIFF or COG: whole
+    /// (`write_raster`, `write_raster_dataset`), to bytes (`memory::write_raster_bytes`, and the
+    /// in-memory codec of WebAssembly builds) and in strips (an operation's `StripWriter`).
+    #[test]
+    fn zlevel_reaches_the_encoder_through_each_write() {
+        let cfg = wbraster::RasterConfig { cols: 64, rows: 64, bands: 1, data_type: DataType::U8, nodata: 0.0, ..Default::default() };
+        let mut x = 7u64;
+        let data = (0..64 * 64)
+            .map(|i| {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((i % 64) / 4 + (i / 64) / 4 + (x >> 61) as usize) as u8
+            })
+            .collect();
+        let r = Raster::from_data_native(cfg, RasterData::U8(data)).unwrap();
+        let ds = crate::RasterDataset::new(r.clone(), false);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.tif");
+        let p = path.to_str().unwrap();
+        let read = || std::fs::read(&path).unwrap();
+        type Write<'a> = Box<dyn Fn(&crate::RasterWriteOptions) -> Vec<u8> + 'a>;
+        let writes: [(&str, Write); 5] = [
+            (
+                "write_raster",
+                Box::new(|o| {
+                    crate::write_raster(&r, p, o).unwrap();
+                    read()
+                }),
+            ),
+            (
+                "write_raster_dataset",
+                Box::new(|o| {
+                    crate::write_raster_dataset(&ds, p, o).unwrap();
+                    read()
+                }),
+            ),
+            ("memory::write_raster_bytes", Box::new(|o| crate::memory::write_raster_bytes(&ds, "a.tif", o).unwrap())),
+            ("the in-memory codec", Box::new(|o| crate::memory::codec::write_raster(&ds, o.driver.unwrap(), o, "a").unwrap())),
+            (
+                "StripWriter",
+                Box::new(|o| {
+                    let mut w = crate::ops::strips::StripWriter::create(&ds, p, o).unwrap();
+                    w.write(r.data.clone(), r.rows).unwrap();
+                    w.finish().unwrap();
+                    read()
+                }),
+            ),
+        ];
+        for driver in [crate::formats::RasterDriver::GTiff, crate::formats::RasterDriver::Cog] {
+            let options = |zlevel: &str| crate::RasterWriteOptions {
+                driver: Some(driver),
+                compression: Some("DEFLATE".into()),
+                creation_options: vec![("ZLEVEL".into(), zlevel.into())],
+                ..Default::default()
+            };
+            for (name, write) in &writes {
+                assert_ne!(write(&options("1")), write(&options("9")), "{name}, {driver:?}");
+            }
         }
     }
 
