@@ -3206,8 +3206,9 @@ impl WarpContext<'_> {
     }
 
     /// GDAL's `ComputeSourceWindow()`: the source window a destination window reads, with room for
-    /// the kernel, and the fill ratio. The window also reaches the poles of the source's CRS that
-    /// the points sampled along its edges cannot bound ([`WarpContext::poles`]).
+    /// the kernel, and the fill ratio. In the chunk-dependent sampling, the window of a kernel
+    /// other than `sum` also reaches the poles of the source's CRS that the points sampled along
+    /// its edges cannot bound ([`WarpContext::poles`]).
     #[allow(clippy::type_complexity)]
     fn estimate_source_window(&self, dx: usize, dy: usize, dw: usize, dh: usize) -> Option<(usize, usize, usize, usize, f64, f64, f64)> {
         let (dxf, dyf, dwf, dhf) = (dx as f64, dy as f64, dw as f64, dh as f64);
@@ -3371,7 +3372,11 @@ impl WarpContext<'_> {
         // pole than any of them (and which the edges' points bound wherever their spacing is small
         // beside their distance to the pole). A pole the output has as a line, as a cylindrical
         // projection has, lies on the edge of its domain, where the window's edges reach it.
-        for pole in self.poles() {
+        // The stable sampling bounds each pixel's own kernel or footprint instead
+        // ([`WarpContext::source_window`]), and a `sum` every corner of its footprints (above):
+        // only the chunk-dependent sampling's other kernels need the poles.
+        let poles: &[Vec<[f64; 4]>] = if self.grid_invariant || self.resampling == Resampling::Sum { &[] } else { self.poles() };
+        for pole in poles {
             let Some(&[_, _, ox, oy]) = pole.first() else { continue };
             if pole.iter().any(|p| (p[2] - ox).hypot(p[3] - oy) > 0.5) {
                 continue;
@@ -6613,8 +6618,9 @@ mod tests {
     }
 
     /// The two samplings a warp plans its source windows in: the default, stable one, and the
-    /// chunk-dependent one of `grid_invariant: false`, whose windows are bounded by points sampled
-    /// along their edges and by the poles of the source's CRS (`estimate_source_window`).
+    /// chunk-dependent one of `grid_invariant: false`, whose windows (but a `sum`'s) are bounded by
+    /// points sampled along their edges and by the poles of the source's CRS
+    /// (`estimate_source_window`).
     const SAMPLINGS: [(bool, &str); 2] = [(true, "stable"), (false, "chunk-dependent")];
 
     /// A warp of a longitude and latitude source of `res`-degree pixels from latitude `north` to
