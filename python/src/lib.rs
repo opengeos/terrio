@@ -214,8 +214,8 @@ pub(crate) fn with_warnings<T: Send>(py: Python<'_>, f: impl FnOnce() -> terrio:
     let result = py.detach_result(f).py();
     let mut warned = Ok(());
     for w in terrio::warnings::take() {
-        let message = std::ffi::CString::new(w.replace('\0', " ")).expect("no NUL bytes left");
-        warned = warned.and(PyErr::warn(py, &py.get_type::<pyo3::exceptions::PyUserWarning>(), &message, 2));
+        warned = warned
+            .and(py.import("terrio._warnings").and_then(|module| module.call_method1("warn_user", (w.replace('\0', " "),))).map(|_| ()));
     }
     let value = result?;
     warned.map(|()| value)

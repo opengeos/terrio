@@ -70,10 +70,11 @@ jobs:
       - uses: actions/checkout@v7
       - uses: fsfe/reuse-action@v6
 
-  # Known vulnerabilities (RustSec advisories) in the crates Cargo.lock pins, on every pull request
-  # and push: advisories are published without the code changing. Unmaintained and unsound crates
-  # are listed without failing it. It compiles nothing and fetches the advisory database on each
-  # run, so it has no cache.
+  # Known vulnerabilities (RustSec advisories) in the crates Cargo.lock and fuzz/Cargo.lock (the
+  # lockfile of the fuzz targets, a workspace of their own) pin, on every pull request and push:
+  # advisories are published without the code changing. Unmaintained and unsound crates are listed
+  # without failing it. It compiles nothing and fetches the advisory database on each run, so it has
+  # no cache.
   audit:
     name: RustSec advisories
     runs-on: ubuntu-latest
@@ -86,21 +87,44 @@ jobs:
           tool: cargo-audit
       # With .cargo/audit.toml, which ignores five advisories of wbraster's dependencies.
       - run: cargo audit
+      - run: cargo audit --no-fetch --file fuzz/Cargo.lock
       # cargo audit ignores an advisory by its ID, in every version of the crate. Without the
-      # config (read from the working directory), the only vulnerabilities may be those five, in
-      # zip 8.6.0 and ruzstd 0.8.3: another crate or version, or a new advisory for these two, fails.
+      # config (read from the working directory), the only vulnerabilities in either lockfile may be
+      # those five, in zip 8.6.0 and ruzstd 0.8.3: another crate or version, or a new advisory for
+      # these two, fails.
       - name: The ignored advisories are only wbraster's
         working-directory: ${{ runner.temp }}
         run: |
-          cargo audit --no-fetch --json --file "$GITHUB_WORKSPACE/Cargo.lock" > audit.json || true
-          jq -e '.vulnerabilities.list' audit.json > /dev/null
-          found=$(jq -r '.vulnerabilities.list[] | "\(.package.name)@\(.package.version) \(.advisory.id)"' audit.json)
-          echo "$found"
-          unexpected=$(echo "$found" | grep -vxE 'zip@8\.6\.0 RUSTSEC-2026-0(367|368|369|429)|ruzstd@0\.8\.3 RUSTSEC-2026-0344' || true)
-          if [ -n "$unexpected" ]; then
-            echo "::error::Vulnerabilities other than wbraster's five (zip 8.6.0, ruzstd 0.8.3): ${unexpected//$'\n'/, }"
-            exit 1
-          fi
+          failed=0
+          for lock in Cargo.lock fuzz/Cargo.lock; do
+            cargo audit --no-fetch --json --file "$GITHUB_WORKSPACE/$lock" > audit.json || true
+            jq -e '.vulnerabilities.list' audit.json > /dev/null
+            found=$(jq -r '.vulnerabilities.list[] | "\(.package.name)@\(.package.version) \(.advisory.id)"' audit.json)
+            echo "$lock:"
+            echo "$found"
+            unexpected=$(echo "$found" | grep -vxE 'zip@8\.6\.0 RUSTSEC-2026-0(367|368|369|429)|ruzstd@0\.8\.3 RUSTSEC-2026-0344' || true)
+            if [ -n "$unexpected" ]; then
+              echo "::error::$lock: vulnerabilities other than wbraster's five (zip 8.6.0, ruzstd 0.8.3): ${unexpected//$'\n'/, }"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+  # The fuzz targets (fuzz/), which only `cargo fuzz` builds, with a nightly toolchain: checked
+  # against their own lockfile as it is (--locked), so that a change to terrio that breaks them, or
+  # a dependency change fuzz/Cargo.lock does not follow, fails. To bring that lockfile to the
+  # versions of the root one: cp Cargo.lock fuzz/Cargo.lock, then
+  # cargo update --manifest-path fuzz/Cargo.toml --workspace.
+  fuzz:
+    name: Fuzz targets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - run: cargo check --manifest-path fuzz/Cargo.toml --locked --bins
 
   # Linux only: macOS and Windows run in ci-platforms.yml, on every push to main and, for pull
   # requests, by hand or with the label ci:macos, ci:windows or ci:all.
@@ -424,7 +448,7 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: wheel-ubuntu-latest
           path: dist

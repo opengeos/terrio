@@ -84,7 +84,7 @@ fn serves_the_page_without_the_token_and_the_api_only_with_it() {
     let (status, _, catalog) = ui.send("GET", "/api/catalog", &token, "");
     assert_eq!(status, 200);
     let catalog: Value = serde_json::from_str(&catalog).unwrap();
-    assert_eq!(catalog["catalog"]["schema_version"], "0.1.2");
+    assert_eq!(catalog["catalog"]["schema_version"], "0.1.4");
     let names: Vec<&str> =
         catalog["catalog"]["command"]["subcommands"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"warp") && names.contains(&"vsi"));

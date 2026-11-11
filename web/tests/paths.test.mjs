@@ -102,3 +102,31 @@ test("the page's form code is the same as terrio ui's", () => {
     ["translate", "--of=GTiff", "in.tif"],
   );
 });
+
+
+test("local file patterns avoid exponential backtracking and match Unicode characters", () => {
+  const { patternMatcher } = definitions(readFileSync(new URL("../../crates/terrio-cli/src/ui.html", import.meta.url), "utf8"), ["patternMatcher"]);
+  const matcher = new Function("separator", `${patternMatcher}\nreturn patternMatcher;`)("/");
+  assert.equal(matcher("*a*a*a*a*a*b").test("a".repeat(10000)), false);
+  assert.equal(matcher("?.tif").test("🌍.tif"), true);
+  assert.equal(matcher("*.tif").test("a\nb.tif"), true);
+  assert.equal(matcher("[a]*.tif").test("[a]1.tif"), true);
+  assert.equal(matcher("*.tif").test("a.TIF"), false);
+  const windows = new Function("separator", `${patternMatcher}\nreturn patternMatcher;`)("\\");
+  assert.equal(windows("*.tif").test("a.TIF"), true);
+});
+
+
+test("local file pattern counts exclude non-files", () => {
+  const source = definitions(readFileSync(new URL("../../crates/terrio-cli/src/ui.html", import.meta.url), "utf8"), ["patternMatcher", "matchingEntries"]);
+  const entries = [
+    { name: "regular.tif", dir: false, size: 0 },
+    { name: "dangling.tif", dir: false, size: null },
+    { name: "pipe.tif", dir: false, size: null },
+    { name: "folder.tif", dir: true, size: null },
+  ];
+  const matches = new Function("browsing", "byId", "separator", `${source.patternMatcher}\n${source.matchingEntries}\nreturn matchingEntries();`)(
+    { entries }, () => ({ value: "*.tif" }), "/",
+  );
+  assert.deepEqual(matches.map((entry) => entry.name), ["regular.tif"]);
+});

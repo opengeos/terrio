@@ -4,6 +4,17 @@
 
 - Zarr: Blosc's bit unshuffle transposes 8 x 8 bit blocks rather than moving a bit at a time;
   4.7 MB of int8 TESSERA embeddings took about 100 ms to unshuffle in WebAssembly before.
+- A `Raster` read lazily from a file, such as a GeoTIFF (`open_raster(path, lazy=True)`,
+  `rio.open`, the xarray backend), can be read from several Python threads at once: `read`,
+  `read_mask` and `numpy.asarray` raised `RuntimeError: Already borrowed` when a read overlapped
+  another. An overlapping read takes another reader of the same path, opened from the process-wide
+  caches (its first bytes are not requested again) and kept, up to four, for the next overlapping
+  read. Each reader has its own file handle, and their decoded chunks are cached separately under
+  the one block-cache byte cap. A relative path is resolved when the raster opens, so a later
+  `os.chdir` does not change the file read, and a reader opened on another thread takes the options
+  of the thread that opened the raster (an `Env` such as `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`).
+  Other rasters, including those decoded whole when they open (formats read whole and local VRTs),
+  and the other methods, are still one call at a time.
 - A VRT source with fractional `SrcRect` or `DstRect` offsets is read within its rectangles (#702).
   A window with as many source pixels as output pixels was copied one for one whatever its offsets,
   so `bilinear`, `cubic` and `average` returned the source pixels a fraction of a pixel from where
