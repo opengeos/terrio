@@ -60,6 +60,7 @@ from terrio.rio.dtypes import dtype_fwd, typename_rev
 from terrio.rio.enums import ColorInterp, MaskFlags, Resampling
 from terrio.rio.errors import RasterioIOError, WarpedVRTError, WarpOptionsError
 from terrio.rio.io import _READER_READ_LEVEL, DatasetReader, _sum_scale
+from terrio.rio.transform import compose
 from terrio.rio.warp import (
     _WARP_NAMES,
     _crs_text,
@@ -198,6 +199,7 @@ class WarpedVRT(DatasetReader):
         add_alpha: bool = False,
         warp_mem_limit: int = 0,
         dtype: Any = None,
+        grid_invariant: bool | None = None,
         **warp_extras: Any,
     ) -> None:
         """Creates the view.
@@ -220,6 +222,8 @@ class WarpedVRT(DatasetReader):
             add_alpha: Add an alpha band to the output (and drop the output nodata value).
             warp_mem_limit: The warp's memory limit, in MB (0: GDAL's default, 64 MB).
             dtype: The working and output data type; by default, the source's.
+            grid_invariant: Keep values independent of windows (default); False reproduces
+                GDAL's chunk-dependent sampling. None follows TERRIO_WARP_GRID.
             **warp_extras: GDAL warp options; `init_dest` is honoured, others are ignored.
                 GDAL's transformer options too: a source with neither a geotransform nor GCPs
                 is warped by its RPCs (`SRC_METHOD="RPC"` forces them), with the `RPC_*`
@@ -248,6 +252,7 @@ class WarpedVRT(DatasetReader):
         self.driver = "VRT"
         self.resampling = rs
         self.tolerance = tolerance
+        self.grid_invariant = grid_invariant
         self.src_crs = CRS.from_user_input(src_crs) if src_crs is not None else src_dataset.crs
         self.src_transform = src_transform or src_dataset.transform
         # A source georeferenced by GCPs alone: rasterio takes their CRS when none is given.
@@ -362,9 +367,12 @@ class WarpedVRT(DatasetReader):
         elif transform is not None and width and height:
             t, w, h = transform, int(width), int(height)
         elif transform is None and self.src_crs == self.dst_crs:
-            t = self.src_transform * Affine.scale(
-                src_dataset.width / width,
-                src_dataset.height / height,  # type: ignore[operator]
+            t = compose(
+                self.src_transform,
+                Affine.scale(
+                    src_dataset.width / width,
+                    src_dataset.height / height,  # type: ignore[operator]
+                ),
             )
             w, h = int(width), int(height)  # type: ignore[arg-type]
         elif transform is None and rpc_georef:
@@ -378,7 +386,7 @@ class WarpedVRT(DatasetReader):
                 rpcs=src_rpcs,
                 **rpc_options,
             )
-            t = t * Affine.scale(dw / width, dh / height)  # type: ignore[operator]
+            t = compose(t, Affine.scale(dw / width, dh / height))  # type: ignore[operator]
             w, h = int(width), int(height)  # type: ignore[arg-type]
         elif transform is None:
             left, bottom, right, top = src_dataset.bounds
@@ -392,7 +400,7 @@ class WarpedVRT(DatasetReader):
                 right,
                 top,
             )
-            t = t * Affine.scale(dw / width, dh / height)  # type: ignore[operator]
+            t = compose(t, Affine.scale(dw / width, dh / height))  # type: ignore[operator]
             w, h = int(width), int(height)  # type: ignore[arg-type]
         else:
             # A transform without a size (rasterio raises): the suggested size, on that transform.
@@ -624,6 +632,7 @@ class WarpedVRT(DatasetReader):
                 list(self._warp_src_nodata),
                 self._warp_dst_nodata,
                 sum_scale=grid.scale,
+                grid_invariant=self.grid_invariant,
                 **(
                     {}
                     if gcps is None
@@ -683,6 +692,7 @@ class WarpedVRT(DatasetReader):
             rpc=rpc,
             rpc_options=options,
             sum_scale=grid.scale,
+            grid_invariant=self.grid_invariant,
         )
         if len(self._warpers) > 32:
             self._warpers.clear()

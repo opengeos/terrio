@@ -38,7 +38,7 @@ GDAL's drivers (the formats marked * are written that way): see
 | ERS | ER Mapper | ✓ | ✓ | ers |
 | PNG | PNG with world file | ✓ | ✓ | png |
 | JPEG | JPEG with world file | ✓ | ✓ | jpg, jpeg |
-| WEBP | WebP with world file (written lossless) | ✓ | ✓ | webp |
+| WEBP | WebP with world file | ✓ | ✓ | webp |
 | XYZ | XYZ ASCII grid | ✓ | ✓ | xyz |
 | DTED | DTED elevation | ✓ | ✓ | dt0, dt1, dt2 |
 | SRTMHGT | SRTM HGT tiles (`N37W120.hgt`, zipped or not; NASADEM `.hgts`, `.err`, `.img`, `.num` and water body `.raw`, `.swb` read) | ✓ | ✓ | hgt |
@@ -49,16 +49,48 @@ YCbCr with 4:2:0 chroma subsampling (each 2 x 2 block's chroma averaged, as libj
 quantized at the `QUALITY` creation option (1 to 100, default 75) as libjpeg scales its tables,
 with optimized Huffman tables. Other data types are rounded and saturated to Byte; GDAL's 4-band
 (CMYK) and 12-bit JPEGs are not written. WebP files hold 3 (RGB) or 4 (RGBA) Byte bands of at most
-16383 x 16383 pixels, as GDAL's WEBP driver requires, and are always lossless (encoded in Rust,
-without libwebp), every sample kept: `LOSSLESS=NO`, GDAL's default, still gives a lossless file,
-not the size of GDAL's lossy one, and `QUALITY` (checked to be 0 to 100) and `EXACT` (0 or 1) have
-no effect. The RGB values under fully transparent pixels are kept, as GDAL keeps them with `EXACT=1`;
-with GDAL's default, `EXACT=0`, libwebp writes values of its own choosing there. An alpha band
-that is opaque everywhere is left out, so the file reads back as 3 bands, in GDAL as in terrio.
+16383 x 16383 pixels, as GDAL's WEBP driver requires. With no lossy options, files are
+lossless, every sample kept, including RGB under fully transparent pixels. `LOSSLESS=NO`
+or `QUALITY` without `LOSSLESS=YES` selects lossy VP8 encoding; `QUALITY` ranges from 0 to
+100 (default 75). Explicit `LOSSLESS=YES` overrides quality. Alpha is kept exactly, including
+in lossy output. `LOSSLESS` accepts YES/NO, TRUE/FALSE, ON/OFF and 1/0, in any case;
+unrecognized values are refused, like GeoTIFF's `WEBP_LOSSLESS` (stricter than GDAL's parser).
+The standalone default is lossless; GeoTIFF WebP tiles instead default to lossy. Whitespace
+around `LOSSLESS` is ignored. Alpha in lossy files is compressed losslessly when that is
+smaller, with raw storage as a fallback (one byte per pixel, plus ALPH headers and padding).
+An alpha band that is opaque everywhere is left out, so the file reads back
+as 3 bands. Both encoders are pure Rust; the lossy encoder is shared with GeoTIFF WebP tiles.
+Its size and PSNR at a given quality differ from GDAL's libwebp. `EXACT` (0 or 1) is validated
+but does not change encoding: lossless output always keeps transparent RGB, and lossy RGB
+is approximate even under transparent pixels. Other libwebp tuning options remain ignored.
 WebP files are read lossless or lossy, as 3 bands, or 4 with an alpha channel.
 
-Native TIFF readers limit each decoded tile or strip to 256 MiB by default. For trusted
-files with larger chunks, use `TiffReadLimits` with `LazyRaster::open_tiff_with_limits`
+PNG image data is compressed at the `ZLEVEL` creation option, the Deflate level, from 1 (the
+least effort) to 9 (the most), 6 by default; another value is refused.
+
+A raster without a geotransform and without a CRS (`GEOREFERENCED=NO`, which `terrio.rio`,
+`translate`, `convert` and pipelines give a source without a geotransform) is written to PNG,
+JPEG and WebP without a world file, and to JPEG 2000 without a GeoJP2 box. A world file an earlier
+write left at that path is removed after the image is successfully written: world files are named after the
+image's stem, so `a.png` and `a.jpg` share `a.wld`. A CRS without a geotransform is written as
+before. Every format that keeps a CRS or a nodata value in a `.aux.xml` sidecar (PNG, JPEG, WebP,
+JPEG 2000 and the others that write one) also removes a sidecar an earlier write left at that path
+when the new raster has neither, after the image is written: the sidecar is named after the whole
+file name (`a.png.aux.xml`), and what it holds would be read as the new image's. If stale PAM
+metadata cannot be removed, the new output is removed or invalidated before returning the error;
+failures to invalidate it are included in the error.
+
+Native TIFF readers limit each decoded tile or strip to 256 MiB by default. A
+pixel-interleaved GeoTIFF of many bands can exceed it with ordinary tiles: a 256 x 256 tile
+of 1,488 Float32 bands decodes to 390 MB. For trusted files with larger chunks, set the
+`TERRIO_TIFF_MAX_CHUNK_BYTES` option to a positive number of bytes, in the environment or an
+`Env` scope, for every reader opened without explicit limits (the command line, Python,
+`terrio.rio` and `terrio.xarray` included); a raster keeps the limit it was opened with. Size
+it to the chunk (tile width x height x bands x bytes per sample for a pixel-interleaved file)
+rather than to an unbounded value: a header can declare a chunk up to the limit, and a read
+decodes several chunks at once, so it may hold about the limit times the chunks decoded in
+parallel, besides the window it returns. In
+Rust, use `TiffReadLimits` with `LazyRaster::open_tiff_with_limits`
 (or its bytes/sparse counterparts), or `terrio::open_raster_with_tiff_limits` for an
 eager read. The override applies to parallel decoders too. It limits decoded chunks;
 callers still choose the size of the returned raster/window allocation. The limit
@@ -81,11 +113,36 @@ under every compression terrio reads: terrio decodes them itself (the `tiff` cra
 8 bits and more uncompressed or under LZW, Deflate and PackBits, and refuses some), and
 `terrio.rio` gives those of at most 16 bits GDAL's inverted gray color table.
 
+GeoTIFF and COG Deflate chunks (`DEFLATE`, `LERC_DEFLATE`) are compressed at the `ZLEVEL`
+creation option, from 1 (the least effort) to 9 (the most), 6 by default, and Zstandard chunks
+(`ZSTD`, `LERC_ZSTD`) at `ZSTD_LEVEL`, from 1 to 22, 9 by default. `ZSTD_LEVEL` has an effect only
+with the `libzstd` feature: without it, as in the default build and in WebAssembly, Zstandard
+chunks are compressed at the one level their encoder has. A level out of range is refused,
+whatever the compression.
+
+Deflate levels 6–9 supplement the bounded hash-chain search with up to four
+run-boundary candidates. This keeps long matches across repeating categorical
+rows instead of encoding each short uniform run separately. It can change the
+compressed bytes and CPU cost; the decoded pixels are unchanged. Levels 1–5
+retain their existing search. Compressed bytes need not match libdeflate or GDAL.
+
 JPEG 2000 is decoded and encoded with the Rust port of OpenJPEG, the codec of GDAL's JP2OpenJPEG
 driver, so pixels are GDAL's (Sentinel-2 L1C and L2A bands included). Georeferencing comes from
 the GeoJP2 box or the GMLJP2 box (Sentinel-2's), a 1-bit alpha channel is promoted to 0 and 255 as
-GDAL does, and files are written losslessly with a GeoJP2 box, the nodata value in a `.aux.xml`
-sidecar. Files are read in place by window and resolution level, as GDAL reads them: the resolution
+GDAL does. Files default to lossless output with a GeoJP2 box, and nodata in a `.aux.xml`
+sidecar. `QUALITY` is a percentage of uncompressed size, as in
+[GDAL's JP2OpenJPEG driver](https://gdal.org/en/stable/drivers/raster/jp2openjpeg.html#creation-options),
+not a PSNR target: 25 requests roughly one quarter of the uncompressed size. Supply one
+percentage or up to 100 strictly increasing comma-separated percentages for progressive
+quality layers, each greater than 0 and at most 100. Targets are approximate and exclude
+container overhead. Distinct percentages very close together may round to the same codec rate;
+the ordering rule applies to the requested percentages. Rates that overflow the codec's
+intermediate arithmetic are refused. The final quality defaults to 100; `REVERSIBLE=NO` alone instead uses
+25. A final quality below 100 defaults to irreversible 9/7, while a final quality of 100
+defaults to reversible 5/3. `REVERSIBLE=YES` explicitly selects 5/3 but is still lossy when
+rate-limited below 100. Only reversible output ending at quality 100 is lossless.
+Path and memory writes expose the same options, including JavaScript/WASM. Files are read in
+place by window and resolution level, as GDAL reads them: the resolution
 levels are the overviews (each halving the size, down to about 128 pixels, with GDAL's block
 sizes), and a window decodes only the tiles, precincts and code blocks it covers, its tiles in
 parallel, from local files, bytes or HTTP range requests. On a 10980 x 10980 Sentinel-2 band, a
@@ -188,7 +245,7 @@ netCDF files are written as GDAL writes rasters, with its creation options:
 |---|---|
 | `FORMAT` | `NC` (CDF-1, the default), `NC2` (CDF-2), `NC5` (CDF-5), `NC4` (netCDF-4) or `NC4C` (netCDF-4, classic model) |
 | `COMPRESS` | `NONE` or `DEFLATE` (with the shuffle filter, as GDAL sets it; a classic format becomes `NC4C`, as in GDAL) |
-| `ZLEVEL` | The deflate level, 1 (the default) to 9 |
+| `ZLEVEL` | The deflate level, 1 (the default) to 9; another value is refused |
 | `CHUNKING` | `YES` (compressed variables chunked by row, GDAL's default) or `NO` (one chunk per band) |
 | `GROUP` | A netCDF-4 group for the variables, such as `/science/grid` (terrio's option; groups are created as needed, `FORMAT` defaults to `NC4`) |
 | `APPEND_SUBDATASET` | `YES`: add the raster to an existing file (in its `GROUP`), as GDAL's option adds a variable. The file is written again with its rasters and the new one (one raster per group; its other variables and attributes, and its rasters' chunking and compression, are not kept: the creation options of this write apply to all) |
@@ -403,6 +460,16 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | PMTiles | PMTiles v3 vector tiles (MVT) | ✓ | ✓ | pmtiles |
 | MBTiles | MBTiles vector tiles (MVT) | ✓ | ✓ | mbtiles |
 | MVT | Mapbox Vector Tiles: a tile, or a directory of tiles | ✓ | ✓ | mvt, z/x/y.pbf |
+
+A local vector file whose name points to no driver (`data`, `data.txt`, `data.xml`) is identified
+by its first 16 KiB. A JSON root `type` of `FeatureCollection`, `Feature` or a geometry type is
+read as GeoJSON, and an XML root element `FeatureCollection` as GML, as a remote response under
+such a name is; CityJSON, CityGML, ESRI JSON and ESRI protocol buffers are read by their drivers.
+Other content under such a name is not recognized: JSON whose root `type` is missing or lies past
+those 16 KiB, and GPX, KML, OSM XML, TopoJSON and GeoJSON text sequences, which need their
+extension. An allow-list judges the format the file holds: content whose driver it leaves out is
+refused, naming that format. JSON without a root `type` in its first 16 KiB is named GeoJSON
+too, so a list without GeoJSON refuses it as GeoJSON.
 
 ### CityJSON
 
@@ -956,12 +1023,31 @@ reads it.
   counter-clockwise ring a hole of the clockwise ring before it, and `SKIP` makes every ring a
   polygon. With every method, a ring of a multi-part record that touches itself at a vertex to
   enclose a hole is first split into its exterior and holes, as GDAL 3.13 does.
+- **Shapefile `.prj`** files give the layer the EPSG CRS they are identified as (see
+  [Identification](crs.md#identification)), otherwise the definition they hold, as it is: one that
+  has the form of a definition, which is WKT whose first keyword is a CRS's (WKT 1 or 2, such as
+  `LOCAL_CS` or `ENGCRS`) with its brackets and quotes balanced and nothing after it but another
+  definition (on the next line, or after a comma, as in `PROJCS[...],VERTCS[...]`), an OGC URN of a
+  CRS (`urn:ogc:def:crs:IGNF::LAMB93`, or a combined one), or a single `AUTHORITY:CODE` of a known
+  authority (EPSG, ESRI, IAU_2015, IGNF, NKG, NRCAN, OGC or PROJ), in either case, such as
+  `IGNF:LAMB93`; or another definition terrio reads (see [Defining a CRS](crs.md#defining-a-crs)),
+  such as a PROJ string. Any other text (prose, a URL, unbalanced WKT, WKT followed by prose; a file
+  it names is not read) leaves the layer without a CRS, with a warning that quotes it. An empty
+  `.prj` leaves it without one silently, as a missing `.prj` does, and a leading byte-order mark is
+  skipped. Trailing NUL or DOS EOF padding is ignored. Reference syntax does not prove that a
+  code exists: a well-formed unknown code from a known authority is retained here; Python's
+  pyogrio interface warns and returns no CRS if pyproj cannot parse that reference.
 - **OSM XML** (`.osm`) gives the same five layers as PBF, with tags in the file's order.
 - **KMZ archives** are written as GDAL writes them, a `doc.kml` linking to one document per
   layer under `layers/`. Files given as KMZ resources (Rust `KmzOptions::resources`, CLI
   `--kmz-resource`, Python `kmz_resources`, JavaScript `kmzResources`), such as the icon images
   of `SYMBOL` styles, are packed beside those documents, so relative icon links resolve inside
   the archive.
+- **A KMZ archive's main document** is its first KML file at the root of the archive, in the
+  order of its entries, whatever its name (OGC KML 2.3, Annex C.1); a KML file in a folder is
+  the main document only when the root holds none. An archive holding two entries with the same
+  name is refused as invalid data (`InvalidDataError` in Python): which of them is meant is
+  ambiguous.
 - **KMZ archives are read within limits**, whether opened from a file or from memory: the zip
   archive limits of `/vsizip/` (`TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO`,
   `TERRIO_ZIP_MAX_SIZE`), and 512 MiB of decompressed text for the main document and the layer
@@ -1174,6 +1260,32 @@ its `.aux.xml` sidecar), and GeoTIFFs in every compression above are read. Forma
 of several files (Shapefile, MapInfo MIF and TAB) are read from zip archives of their files;
 OSM is read from PBF or XML bytes. GeoPackage (layers and rasters), PMTiles and MBTiles (raster
 and vector tiles) are read from and written to bytes; MVT tiles are read from bytes.
+
+## GML and MapInfo byte output
+
+GML byte output is a standalone XML document on native and WebAssembly builds.
+`layer.to_bytes("places.gml")` reads back through
+`terrio.open_bytes(data, "places.gml")` under the same filename. The bytes omit
+the `.xsd` sidecar; readers infer field types from the document, so the original
+types are not guaranteed without the schema. Filesystem output with
+`layer.write("places.gml")` writes the schema beside the GML.
+`.gml.zip` byte output is refused with a hint to use a document filename.
+
+Native MapInfo byte output requires an explicit **`.mif.zip`** or **`.tab.zip`**
+filename. These archives contain the MIF/MID or TAB/DAT/MAP/ID members and use
+MIME type `application/zip`. A `.zip` filename with an explicit MapInfo driver
+defaults to MIF members. Bare `.mif` and `.tab` byte output is refused, while
+filesystem writes retain their separate members. MapInfo byte writing remains
+unavailable in WebAssembly; reading its archives is supported.
+
+```python
+data = layer.to_bytes("places.tab.zip")
+restored = terrio.open_bytes(data, "places.tab.zip")
+```
+
+ZIP input labeled `.gml`, `.mif` or `.tab` is refused with a `.zip` filename
+hint. This prevents a ZIP from being interpreted as an empty MIF layer or
+malformed XML/TAB document. KMZ and XLSX retain their intrinsic ZIP packaging.
 
 ## Shapefile ZIP output in memory
 
