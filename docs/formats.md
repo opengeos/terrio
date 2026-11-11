@@ -121,7 +121,7 @@ archive's own opens (`tiles::open_dataset`, `TileArchive::into_dataset`), the op
 it reads any source), the catalog opens and the GDAL backend.
 The sources a VRT or a catalog opens are rasters opened too: each is checked when it is opened, a
 VRT's when a read first needs it. Readers that read a header first refuse a raster before decoding
-any of its pixels. Esri ASCII and GRASS ASCII grids, `.map` grids, DTED and Esri binary grids are
+any of its pixels. Esri ASCII and GRASS ASCII grids, PCRaster, DTED and Esri binary grids are
 refused once read, and so are XYZ grids, whose size is known only from their points. Operations
 that open a raster refuse it the same way, `info` included. These bounds and the checks above are
 independent of `TERRIO_TIFF_MAX_CHUNK_BYTES`, which bounds each decoded chunk, and of
