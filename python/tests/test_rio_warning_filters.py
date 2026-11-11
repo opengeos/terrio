@@ -189,9 +189,7 @@ def test_read_dataframe_parses_date_times_and_terrio_changes_no_warning_filter(
     # pandas itself changes the filters (`pandas_dtype` enters `catch_warnings`): only terrio's
     # own changes are counted.
     pytest.importorskip("geopandas")
-    pd = pytest.importorskip("pandas")
-    if int(pd.__version__.split(".")[0]) < 3:
-        pytest.skip("terrio silences pandas 2's warning about mixed time zones with a filter")
+    pytest.importorskip("pandas")
     path = tmp_path / "t.geojson"
     path.write_text(
         '{"type": "FeatureCollection", "features": ['

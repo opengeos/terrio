@@ -156,6 +156,35 @@ terrio.render(ds, layers=["roads"])                   # actual name on a dataset
 # terrio.render(ds, layers=["map"]) raises: no layer named map (layers: roads)
 ```
 
+### pyogrio inputs
+
+`terrio.pyogrio` accepts bytes, byte arrays, memory views and readable file objects for recognized
+vector formats, including GeoPackage, FlatGeobuf, GeoParquet, GeoJSON and recognized XML formats
+such as KML, GML, GPX and OSM. The core's byte identifiers choose the temporary filename; the
+ordinary reader validates the dataset and applies the same driver restrictions as a named file.
+Content without a recognizable signature, such as CSV, still needs a named file. For formats
+whose layer name comes from the filename, such as GeoParquet, anonymous buffers use `data`.
+
+```python
+import io
+from pathlib import Path
+from terrio import pyogrio
+
+data = Path("roads.gpkg").read_bytes()
+frame = pyogrio.read_dataframe(io.BytesIO(data))
+layers = pyogrio.list_layers("published.zip")  # dataset beside a README or license
+```
+
+Archives without a member use the core's main-dataset selection, so ancillary files do not hide
+the dataset. Collections of root-level shapefiles still expose one layer per shapefile.
+Datetime parsing preserves uniform UTC offsets, converts mixed offsets to UTC by default, and
+preserves individual offsets with `mixed_offsets_as_utc=False`. Terrio does not change warning
+filters during parsing on pandas 2 or 3; pandas can still manage its own warning filters.
+Preserving individual offsets also accepts the ISO UTC suffix `Z` on Python 3.10.
+When naive and timezone-aware strings appear together, the default treats naive
+values as UTC before conversion. With `mixed_offsets_as_utc=False`, naive values
+remain naive and aware values retain their offsets in the object column.
+
 ### Streams
 
 Layers larger than memory are read a chunk of features at a time with `terrio.open_stream`
