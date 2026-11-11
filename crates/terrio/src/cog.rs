@@ -1588,7 +1588,10 @@ impl LazyRaster {
         self.sidecar_mask.is_some()
             || match &self.inner {
                 Inner::Source(_, source) => source.has_mask(),
-                Inner::Tiff(t) => t.masks.iter().any(|m| !m.overview && (m.width, m.height) == (t.levels[0].width, t.levels[0].height)),
+                Inner::Tiff(t) => t
+                    .masks
+                    .iter()
+                    .any(|m| m.overview == t.levels[0].reduced && (m.width, m.height) == (t.levels[0].width, t.levels[0].height)),
                 _ => false,
             }
     }
@@ -1651,7 +1654,7 @@ impl LazyRaster {
     pub fn has_overview_mask(&self, overview: usize) -> bool {
         let Inner::Tiff(t) = &self.inner else { return false };
         let Some(l) = t.levels.get(overview + 1) else { return false };
-        t.masks.iter().any(|m| m.overview && (m.width, m.height) == (l.width, l.height))
+        t.masks.iter().any(|m| m.overview == l.reduced && (m.width, m.height) == (l.width, l.height))
     }
 
     /// Reads a window of the per-dataset mask of the full-resolution image or of an overview as
@@ -1690,7 +1693,7 @@ impl LazyRaster {
         {
             return match (&t.ovr_mask, &t.ovr) {
                 (Some(m), _) => (m.width(), m.height()) == size || m.overviews().contains(&size),
-                (None, Some(ovr)) => ovr.masks.iter().any(|m| m.overview == (i > 0) && (m.width, m.height) == size),
+                (None, Some(ovr)) => ovr.masks.iter().any(|m| m.overview == ovr.levels[i].reduced && (m.width, m.height) == size),
                 (None, None) => false,
             };
         }
@@ -1854,12 +1857,12 @@ fn read_tiff_mask(t: &mut TiffRaster, window: Window, level: usize) -> Result<Op
     let w = (window.x, window.y, window.width, window.height);
     let limit = t.limits.chunk_bytes;
     // The masks are borrowed, not copied with their chunk tables.
-    let own = t.masks.iter().find(|m| m.overview == (level > 0) && (m.width, m.height) == (lw, lh));
+    let own = t.masks.iter().find(|m| m.overview == t.levels[level].reduced && (m.width, m.height) == (lw, lh));
     let reader = t.decoder.inner();
     if let Some(m) = own {
         return crate::tiff_mask::read_mask(reader, m, w, limit).map(Some);
     }
-    let Some(full) = t.masks.iter().find(|m| !m.overview && (m.width, m.height) == (fw, fh)) else { return Ok(None) };
+    let Some(full) = t.masks.iter().find(|m| m.overview == t.levels[0].reduced && (m.width, m.height) == (fw, fh)) else { return Ok(None) };
     // Nearest neighbour from the full-resolution mask.
     let (sx, sy) = (fw as f64 / lw as f64, fh as f64 / lh as f64);
     let col = |c: usize| (((c as f64 + 0.5) * sx) as usize).min(fw - 1);
@@ -1892,7 +1895,7 @@ fn read_tiff_own_mask(t: &mut TiffRaster, window: Window, level: usize) -> Resul
     let (lw, lh) = (t.levels[level].width, t.levels[level].height);
     let w = (window.x, window.y, window.width, window.height);
     let limit = t.limits.chunk_bytes;
-    let own = t.masks.iter().find(|m| m.overview == (level > 0) && (m.width, m.height) == (lw, lh));
+    let own = t.masks.iter().find(|m| m.overview == t.levels[level].reduced && (m.width, m.height) == (lw, lh));
     let reader = t.decoder.inner();
     own.map(|m| crate::tiff_mask::read_mask(reader, m, w, limit)).transpose()
 }
@@ -2149,6 +2152,8 @@ struct Level {
     ifd: usize,
     width: usize,
     height: usize,
+    /// The image's own reduced-resolution bit, independent of its position in the file.
+    reduced: bool,
     /// The tile or strip size.
     block: (usize, usize),
     /// The level of the `.ovr` file (see [`TiffRaster::ovr`]) this one is, rather than an image
@@ -2272,9 +2277,11 @@ impl TiffRaster {
             .is_some_and(|sample| matches!(sample, 1 | 2))
             .then_some(bands);
         let bits = dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
+        let reduced = dec.find_tag_unsigned::<u32>(Tag::NewSubfileType).map_err(tiff_err)?.unwrap_or(0) & 1 != 0;
         let (cw, ch) = dec.chunk_dimensions();
         let mut levels = vec![Level {
             ifd: 0,
+            reduced,
             width: w as usize,
             height: h as usize,
             block: (cw as usize, ch as usize),
@@ -2298,6 +2305,7 @@ impl TiffRaster {
                     let block = (cw as usize, ch as usize);
                     levels.push(Level {
                         ifd,
+                        reduced: subfile & 1 != 0,
                         width: ow as usize,
                         height: oh as usize,
                         block,
@@ -2365,6 +2373,7 @@ impl TiffRaster {
             // Read through the `.ovr`'s own levels, which keep their tables.
             self.levels.push(Level {
                 ifd: l.ifd,
+                reduced: l.reduced,
                 width: l.width,
                 height: l.height,
                 block: l.block,
@@ -2506,13 +2515,14 @@ impl TiffRaster {
         }
         let (lw, lh) = (self.levels[level].width, self.levels[level].height);
         let (fw, fh) = (self.levels[0].width, self.levels[0].height);
-        let ranges = if let Some(mask) = self.masks.iter().find(|m| m.overview == (level > 0) && (m.width, m.height) == (lw, lh)) {
-            mask_prefetch_ranges(mask, windows)
-        } else if let Some(mask) = self.masks.iter().find(|m| !m.overview && (m.width, m.height) == (fw, fh)) {
-            mask_prefetch_ranges(mask, &full_mask_windows(windows, (lw, lh), (fw, fh)))
-        } else {
-            Vec::new()
-        };
+        let ranges =
+            if let Some(mask) = self.masks.iter().find(|m| m.overview == self.levels[level].reduced && (m.width, m.height) == (lw, lh)) {
+                mask_prefetch_ranges(mask, windows)
+            } else if let Some(mask) = self.masks.iter().find(|m| m.overview == self.levels[0].reduced && (m.width, m.height) == (fw, fh)) {
+                mask_prefetch_ranges(mask, &full_mask_windows(windows, (lw, lh), (fw, fh)))
+            } else {
+                Vec::new()
+            };
         self.decoder.inner().get_ref().prefetch(&ranges)
     }
 
@@ -2532,7 +2542,7 @@ impl TiffRaster {
         let ranges = self
             .masks
             .iter()
-            .find(|m| m.overview == (level > 0) && (m.width, m.height) == size)
+            .find(|m| m.overview == self.levels[level].reduced && (m.width, m.height) == size)
             .map(|mask| mask_prefetch_ranges(mask, windows))
             .unwrap_or_default();
         self.decoder.inner().get_ref().prefetch(&ranges)

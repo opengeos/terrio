@@ -2089,6 +2089,33 @@ def suite_lazy_geotiff(ctx):
     return suite
 
 
+def suite_reduced_first_masks(ctx):
+    suite = Suite("reduced-first-masks", "Reduced first-image TIFF masks", "GDAL",
+                  "Landsat-derived images and masks match an equivalent ordinary-first-image "
+                  "GDAL control before and after bounded external refresh. GDAL 3.13.3 also "
+                  "ignores first-image masks marked 5; Terrio intentionally follows the image flag.")
+    missing = missing_modules("pytest", "osgeo", "numpy", "terrio")
+    if missing:
+        suite.skipped = "needs the Python modules " + ", ".join(missing)
+        return suite
+    if not (Path(ctx.data) / "landsat7.tif").is_file():
+        suite.skipped = "needs landsat7.tif"
+        return suite
+    code, version, err = run([sys.executable, "-c",
+                             "from osgeo import gdal; print(gdal.VersionInfo('RELEASE_NAME'))"])
+    if code:
+        suite.error = tail(err)
+        return suite
+    suite.reference = "GDAL " + version.strip()
+    code, out, err = run([sys.executable, "-m", "pytest", "-q",
+                         str(ROOT / "python/tests/test_reduced_first_mask.py")],
+                        {"TERRIO_TEST_DATA": str(ctx.data)})
+    suite.cases.append(Case("TIFF masks", "Landsat reads and external refresh",
+                            IDENTICAL if code == 0 and "skipped" not in out else DIFFERS,
+                            tail(err or out)))
+    return suite
+
+
 def suite_crs(ctx):
     """Every EPSG CRS's transformations against GDAL's (crates/terrio-crs/tests/epsg_accuracy.rs)."""
     s = Suite(
@@ -3349,6 +3376,7 @@ SUITES = OrderedDict(
         ("grib", suite_grib),
         ("pointclouds", suite_pointclouds),
         ("lazy-geotiff", suite_lazy_geotiff),
+        ("reduced-first-masks", suite_reduced_first_masks),
         ("hecras", suite_hecras),
         ("crs", suite_crs),
         ("geocentric", suite_geocentric),

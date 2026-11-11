@@ -2671,3 +2671,13 @@ Bounds planning scans at most 512 corners at a time, including the final endpoin
 with roughly 17 KiB of coordinate/validity scratch rather than allocating an entire
 output-width row before memory-limit splitting. The polar regression starts off a
 global batch boundary and spans several batches; RPC batch membership stays global.
+
+The `reduced-first-masks` conformance suite checks `NewSubfileType` mask association
+for ordinary and reduced-resolution first TIFF images. Using a Landsat-derived
+external overview pyramid, it compares pixels and masks before and after an
+extent-limited external overview refresh with an equivalent ordinary-first-image
+GDAL control. GDAL 3.13.3 itself ignores first-image masks marked 5; Terrio deliberately
+uses the image's own reduced-resolution flag rather than its position in the file,
+following [TIFF 6.0 NewSubfileType](https://www.itu.int/itudoc/itu-t/com16/tiff-fx/docs/tiff6.pdf). Local validation uses
+GDAL 3.13.3. The `lazy-geotiff` suite also checks own-mask detection and full-image
+mask fallback when the smaller image has no mask.
