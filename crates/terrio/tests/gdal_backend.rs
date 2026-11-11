@@ -644,3 +644,34 @@ fn date_time_fields_read_as_iso_8601_with_their_zone_or_none() {
         [text("2024-03-15T10:30:05"), text("2024-03-15T10:30:05+02:00"), text("1999-12-31T23:59:59-03:30")]
     );
 }
+
+/// GDAL 3.13.3 DateTime values retain millisecond precision and distinguish UTC
+/// from an unspecified zone. Both byte and prefixed-path entry points share this reader.
+#[test]
+fn date_time_fields_keep_milliseconds_and_explicit_utc() {
+    let geojson = r#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},
+        "properties":{"east":"2024-03-15T10:30:05.250+02:00","z":"2024-03-15T10:30:05Z","utc":"2024-03-15T10:30:05+00:00","plain":"2024-03-15T10:30:05.001","west":"1999-12-31T23:59:59.999-03:30","quarter":"2024-03-15T10:30:05.125+05:45"}},
+        {"type":"Feature","geometry":null,"properties":{"east":null,"z":null,"utc":null,"plain":null,"west":null,"quarter":null}}]}"#;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("times.geojson");
+    std::fs::write(&path, geojson).unwrap();
+    let from_bytes = terrio::gdal_backend::open_vector_bytes(geojson.as_bytes().to_vec(), "times.geojson", &Default::default()).unwrap();
+    let from_path = terrio::open_vector(&format!("GDAL:{}", path.display()), &Default::default()).unwrap();
+    for dataset in [from_bytes, from_path] {
+        let layer = &dataset.layers[0];
+        assert!(layer.schema.fields().iter().all(|field| field.field_type == terrio::FieldType::DateTime));
+        let text = |s: &str| FieldValue::DateTime(s.to_string());
+        assert_eq!(
+            layer.features[0].attributes,
+            [
+                text("2024-03-15T10:30:05.250+02:00"),
+                text("2024-03-15T10:30:05Z"),
+                text("2024-03-15T10:30:05Z"),
+                text("2024-03-15T10:30:05.001"),
+                text("1999-12-31T23:59:59.999-03:30"),
+                text("2024-03-15T10:30:05.125+05:45"),
+            ]
+        );
+        assert_eq!(layer.features[1].attributes, vec![FieldValue::Null; 6]);
+    }
+}
