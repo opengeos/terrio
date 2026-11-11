@@ -312,7 +312,7 @@ class CRS(Mapping[str, Any]):
             else:
                 parts.append(f"+{k}={v}")
         proj = " ".join(parts)
-        if "init" in params and params.keys() <= {"init", "no_defs", "wktext"}:
+        if "init" in params:
             try:
                 _terrio.proj_boolean_parameters(proj)
             except Exception as err:
@@ -720,6 +720,17 @@ class CRS(Mapping[str, Any]):
             validated = cached[1]
             if validated:
                 return _proj_dict(validated)
+        code = self.to_epsg()
+        if code is not None and not re.search(
+            r"\b(?:TOWGS84|BOUNDCRS|ABRIDGEDTRANSFORMATION)\s*[\[(]",
+            self.wkt,
+            re.IGNORECASE,
+        ):
+            # Ordinary authority-tagged WKT transforms through the registry definition.
+            # Export that effective definition too, including when the caller changed
+            # its spheroid but retained the outer authority. Explicit operations above
+            # and validated PROJ extensions retain their own parameters.
+            root = _parse_wkt(_terrio.crs_info(f"EPSG:{code}")["wkt"])
         return _wkt_to_proj(root) if root is not None else {}
 
     def _native_projjson(self) -> dict[str, Any]:

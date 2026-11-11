@@ -258,8 +258,12 @@ their area-dependent or grid-based operation selection. Unsupported projection
 exports remain empty rather than describing another projection.
 An explicit `TOWGS84` operation takes precedence over a named datum and exports
 as the ellipsoid plus that shift. A recognized datum name with a custom spheroid
-also exports the supplied ellipsoid with a warning, rather than replacing it
-with the datum's standard spheroid.
+and no effective registry identity exports the supplied ellipsoid with a warning.
+An ordinary WKT retaining an outer EPSG identity uses the registry definition
+for both transformations and parameter exports, even if its nodes were edited.
+Remove that identity when defining a custom spheroid. Mapping constructors with
+`init` retain the authority and ignore non-switch parameters for compatibility;
+recognized boolean overrides are still validated and refused as described above.
 
 Python's existing WKT-to-parameter adapter handles these rasterio-compatible
 dictionary exports. Its canonical datum spheroids come from the shared native

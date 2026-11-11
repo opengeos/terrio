@@ -393,11 +393,31 @@ def test_init_mapping_metadata_flag_errors_use_the_public_exception(authority):
 def test_named_datum_with_custom_spheroid_warns_and_preserves_axes():
     """A recognized datum name cannot replace a caller's custom ellipsoid."""
     wkt = CRS.from_epsg(4326).to_wkt().replace("6378137", "6379000")
+    wkt = wkt.removesuffix(',AUTHORITY["EPSG","4326"]]') + "]"
     crs = CRS.from_wkt(wkt)
     with pytest.warns(UserWarning, match="omit datum"):
         params = crs.to_dict()
     assert params["a"] == 6379000
     assert "datum" not in params
+
+
+@pytest.mark.parametrize("authority", ["EPSG:32633", "ESRI:102003", "OGC:CRS84"])
+def test_init_mapping_non_switch_parameters_keep_authority(authority):
+    """Legacy init mappings retain their authority despite ignored numeric parameters.
+
+    Args:
+        authority: Registry initialization.
+    """
+    assert CRS.from_dict({"init": authority, "units": "m"}) == CRS.from_user_input(authority)
+
+
+def test_declared_projected_authority_exports_its_effective_spheroid():
+    """A conflicting WKT spheroid cannot change coordinates after a PROJ round trip."""
+    crs = CRS.from_wkt(CRS.from_epsg(32633).to_wkt().replace("6378137", "6379000"))
+    assert crs.to_epsg() == 32633
+    expected = coordinates(crs, (16, 30))
+    for back in [CRS.from_dict(crs.to_dict()), CRS.from_proj4(crs.to_proj4())]:
+        np.testing.assert_allclose(coordinates(back, (16, 30)), expected, rtol=0, atol=1e-6)
 
 
 def test_distinct_unrepresentable_datums_are_not_equal():
