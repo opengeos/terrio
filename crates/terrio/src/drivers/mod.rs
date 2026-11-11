@@ -375,6 +375,7 @@ pub(crate) fn write(
     #[cfg_attr(not(any(feature = "netcdf-hdf5", feature = "sqlite", feature = "zarr")), allow(unused_variables))]
     let compression = options.compression.as_deref();
     let co = |key: &str| options.creation_options.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
+    let georeferenced = common::georeferenced(&options.creation_options);
     Some(match driver {
         RasterDriver::ENVI => envi::write(r, nodata, p),
         RasterDriver::EHdr => ehdr::write(r, nodata, p),
@@ -385,13 +386,13 @@ pub(crate) fn write(
         RasterDriver::SAGA => saga::write(r, nodata, p),
         RasterDriver::XYZ => xyz::write(r, p),
         RasterDriver::RST => rst::write(r, nodata, p),
-        RasterDriver::PNG => png::write(r, nodata, p),
-        RasterDriver::JPEG => png::write_jpeg(r, p, co("QUALITY")),
+        RasterDriver::PNG => png::write(r, nodata, p, co("ZLEVEL"), georeferenced),
+        RasterDriver::JPEG => png::write_jpeg(r, p, co("QUALITY"), georeferenced),
         RasterDriver::WEBP => webp::write(r, nodata, p, &options.creation_options),
         #[cfg(feature = "grib")]
         RasterDriver::GRIB => grib::write::write(r, nodata, p, options),
         #[cfg(feature = "jp2")]
-        RasterDriver::JP2 => jp2::write(r, nodata, p),
+        RasterDriver::JP2 => jp2::write(r, nodata, p, georeferenced, &options.creation_options),
         #[cfg(feature = "zarr")]
         RasterDriver::Zarr => zarr::write_with(r, nodata, p, compression, &options.creation_options, &options.band_metadata),
         #[cfg(feature = "netcdf-hdf5")]

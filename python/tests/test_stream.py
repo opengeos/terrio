@@ -138,7 +138,9 @@ def test_streams_select_columns_and_rows(tmp_path):
         with pytest.raises(terrio.InvalidArgumentError):
             terrio.open_stream(p, columns=["nope"])
         # names match without case, on both outputs, with the values of an unfiltered read
-        whole_i = [f["properties"]["i"] for f in terrio.open_vector(p)[0].__geo_interface__["features"]]
+        whole_i = [
+            f["properties"]["i"] for f in terrio.open_vector(p)[0].__geo_interface__["features"]
+        ]
         table = pa.table(terrio.open_stream(p, columns=["I"]))
         assert table.column_names[0] == "i", ext
         assert table["i"].to_pylist() == whole_i, ext

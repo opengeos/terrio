@@ -2,8 +2,8 @@
 //! a binary of its own because a list once set cannot be lifted: under a raster list with PMTiles
 //! and Zarr and a vector list without them, rasters read from a PMTiles archive and Zarr stores
 //! (under any name) open as before, while the tiles API, whose archives may hold vector tiles,
-//! refuses the archive; a point cloud, which only `TERRIO_ALLOWED_DRIVERS` restricts, is described
-//! by `info_path` as before; the multidimensional API refuses a netCDF file. Format identification
+//! refuses the archive; a point cloud, which neither list restricts, is described by `info_path`
+//! as before; the multidimensional API refuses a netCDF file. Format identification
 //! judges a driver by the list of every kind it belongs to, as `open` does: PMTiles identifies
 //! nothing, and the content check, which reads an archive through the tiles API, refuses it; the
 //! Zarr store and the point cloud are identified; netCDF is neither identified nor checked.
