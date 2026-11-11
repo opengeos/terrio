@@ -7,6 +7,7 @@ import pytest
 
 import terrio.rio as rio
 from terrio.rio.io import DatasetWriter
+from terrio.rio.shutil import copy
 from terrio.rio.transform import from_origin
 
 
@@ -70,4 +71,22 @@ def test_aliases_preserve_domains_internal_masks_and_spilling(
                 "COG" if canonical == "COG" else None
             )
         outputs.append(path.read_bytes())
+    assert all(output == outputs[0] for output in outputs)
+
+
+@pytest.mark.parametrize("canonical", ["GTiff", "COG"])
+def test_copy_normalizes_aliases_before_multiband_layout_policy(tmp_path, canonical):
+    source = tmp_path / "source.tif"
+    pixels = np.arange(3 * 32 * 32, dtype="uint8").reshape(3, 32, 32)
+    with rio.open(
+        source, "w", driver="GTiff", width=32, height=32, count=3, dtype="uint8", interleave="band"
+    ) as dst:
+        dst.write(pixels)
+    outputs = []
+    for index, driver in enumerate([canonical, canonical.lower(), f" {canonical} "]):
+        target = tmp_path / f"copy-{index}.tif"
+        copy(source, target, driver=driver)
+        with rio.open(target) as src:
+            np.testing.assert_array_equal(src.read(), pixels)
+        outputs.append(target.read_bytes())
     assert all(output == outputs[0] for output in outputs)
