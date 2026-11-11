@@ -123,9 +123,11 @@ fn list<'a>(buf: &mut Vec<f64>, cs: impl Iterator<Item = &'a Coord> + Clone) -> 
     positions(buf, d)
 }
 
-/// A ring, closed: its first position repeated at its end.
+/// A ring, closed: its first position repeated at its end, unless it already ends there (as
+/// `arrow.rs`'s `push_ring` does).
 fn ring(buf: &mut Vec<f64>, r: &Ring) -> JsValue {
-    list(buf, r.0.iter().chain(r.0.first()))
+    let closed = r.0.len() > 1 && r.0.first().zip(r.0.last()).is_some_and(|(f, l)| f.x == l.x && f.y == l.y);
+    list(buf, r.0.iter().chain(r.0.first().filter(|_| !closed)))
 }
 
 fn polygon(buf: &mut Vec<f64>, exterior: &Ring, interiors: &[Ring]) -> JsValue {

@@ -208,7 +208,7 @@ test("CityJSON late root type retains vertical XYZ and unknown CRS", () => {
 });
 
 test("toGeoJSON escapes control characters and keeps feature order across parse chunks", () => {
-  // The text is parsed in chunks of about 8 MB: the long first feature ends one.
+  // The text is parsed in chunks of about 8 MB: the long second feature ends one.
   const props = [{ s: "a\u0001b\u001f\"q\"", n: 1.5 }, { s: "x".repeat(9 << 20), n: 2 }, { s: "last", n: -3 }];
   const ds = terrio.fromGeoJSON({
     type: "FeatureCollection",
