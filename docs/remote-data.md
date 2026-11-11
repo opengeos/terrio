@@ -367,6 +367,22 @@ URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops the
 `terrio::formats::allowed_drivers` (Python: `terrio.allowed_drivers()`) gives the drivers allowed on
 the calling thread.
 
+## Declared sizes
+
+A file of a few hundred kilobytes can declare gigabytes of pixels. For files you do not trust,
+these options bound what a raster may declare; a raster that declares more is refused when it is
+opened, with a resource error (Python's `ResourceLimitError`) naming the option:
+
+| Variable | Refuses a raster declaring more than | Default |
+|---|---|---|
+| `TERRIO_MAX_DECLARED_BYTES` | this many bytes of pixels (width x height x bands x bytes per sample) | unset |
+| `TERRIO_MAX_BANDS` | this many bands | unset |
+
+Each is a positive integer, set in the environment or for one thread (Python's `terrio.rio.Env`,
+`terrio::config::push_scope`), where it applies instead of the environment's value. See
+[Rasters](formats.md#rasters) for the opens that apply them and the readers that refuse a raster
+only once read.
+
 ## Managing files
 
 `terrio vsi` lists, copies, synchronizes, moves and deletes files on these locations and in

@@ -1863,6 +1863,8 @@ class DatasetReader(DatasetBase):
 
         Raises:
             ValueError: If `out` and `out_shape` are both given, or `out` has the wrong shape.
+            RasterioIOError: If the read fails; from a `ResourceLimitError` when a GeoTIFF window
+                the process cannot hold is refused before it is allocated.
         """
         self._readable()
         idx, return2d, win, win_shape = self._prepare(indexes, window, boundless)

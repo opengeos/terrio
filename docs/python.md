@@ -937,6 +937,22 @@ with Env(TERRIO_TIFF_MAX_CHUNK_BYTES=str(1 << 30)):
     da = terrio.xarray.open_rasterio("pixel_interleaved_1488_bands.tif")
 ```
 
+A GeoTIFF read whole or by window (`terrio.open_raster`, `Raster.read`, `terrio.rio`'s `read`)
+raises `ResourceLimitError` before its buffer is allocated when the process cannot hold it (more
+than the physical memory, or than the limit of its cgroup or its address space), and so does
+`terrio.translate` or `convert` to a GeoTIFF or COG whose writer would hold a row of blocks of
+every band that cannot fit. `terrio.rio` raises `RasterioIOError` from it, as for other read
+errors. For files you do not trust, `TERRIO_MAX_DECLARED_BYTES` (width x height x bands x bytes
+per sample) and `TERRIO_MAX_BANDS`, positive integers in the environment or an `Env`, refuse a
+raster that declares more when it is opened, whatever its format, with `ResourceLimitError`
+naming the option. See [Rasters](formats.md#rasters) for the readers that refuse it only once
+read:
+
+```python
+with Env(TERRIO_MAX_DECLARED_BYTES=str(1 << 30), TERRIO_MAX_BANDS="64"):
+    src = rio.open("upload.tif")  # RasterioIOError (from ResourceLimitError) when it declares more
+```
+
 ## Typing
 
 The package ships type stubs (`py.typed`), checked with `mypy --strict` and `stubtest`:

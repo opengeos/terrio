@@ -85,10 +85,47 @@ parallel, besides the window it returns. In
 Rust, use `TiffReadLimits` with `LazyRaster::open_tiff_with_limits`
 (or its bytes/sparse counterparts), or `terrio::open_raster_with_tiff_limits` for an
 eager read. The override applies to parallel decoders too. It limits decoded chunks;
-callers still choose the size of the returned raster/window allocation. The limit
+callers still choose the size of the returned raster/window allocation, which the
+check below refuses when the process cannot hold it. The limit
 also bounds LERC Deflate/Zstandard inflation and the decoded size declared by
 embedded LERC and JPEG headers, before mask or pixel decoding. It is not a cap
 on total process memory or the codec's working buffers.
+
+A GeoTIFF read whole (`terrio::open_raster`, a lazy raster's `read`) or by window is refused
+with a resource error (Python's `ResourceLimitError`) before its buffer is allocated when the
+buffer is more than the memory the process can use (`terrio::usable_memory`: the physical memory,
+or less under the memory limit of the process's cgroup or its address-space or resident-set
+limit); the message gives both sizes. A window that fits is read. The GeoTIFF and COG writers that
+`translate`, `convert` and other operations stream their output to keep a row of their blocks of
+every band until the row is complete, and hold it twice while a strip is appended to it: a raster
+whose row cannot fit is refused when the writer is created, before its rows are gathered. A COG of
+a few rows and thousands of bands, whose 512-row tiles hold every band, is
+held whole. These checks refuse what cannot fit: a buffer about the size of the usable memory
+passes them and can still exhaust it, with what the process holds besides.
+
+For files you do not trust, two options bound what a raster may declare, whatever its driver:
+
+| Option | Refuses a raster that declares more than |
+|---|---|
+| `TERRIO_MAX_DECLARED_BYTES` | this many bytes of pixels: width x height x bands x bytes per sample, in the type terrio reads the samples as (8 for GRIB's Float64 bands) |
+| `TERRIO_MAX_BANDS` | this many bands (a complex band counts once) |
+
+Both are unset by default. Each is a positive integer, set in the environment or in an `Env`
+scope, whose value applies on its thread instead of the environment's; any other value is an
+invalid argument naming the option. A raster they refuse is a resource error naming the option,
+raised when it is opened: by `open`, `open_raster`, `open_raster_lazy` and `LazyRaster::open`, the
+format constructors (`LazyRaster::open_tiff`, `from_tiff_bytes`, `from_tiff_shared_bytes`,
+`from_sparse`, `from_zarr_objects`, `from_tile_archive`, with or without explicit limits), the
+opens of bytes in `terrio::memory`, the VRT opens (pansharpened VRTs included, and
+`VrtDataset::materialize` before it reads any source), the catalog opens and the GDAL backend.
+The sources a VRT or a catalog opens are rasters opened too: each is checked when it is opened, a
+VRT's when a read first needs it. Readers that read a header first refuse a raster before decoding
+any of its pixels. Esri ASCII and GRASS ASCII grids, PCRaster, DTED and Esri binary grids are
+refused once read, and so are XYZ grids, whose size is known only from their points. Operations
+that open a raster refuse it the same way, `info` included. These bounds and the checks above are
+independent of `TERRIO_TIFF_MAX_CHUNK_BYTES`, which bounds each decoded chunk, and of
+`TERRIO_WARP_SUM_MAX_BYTES`, which bounds what a `sum` warp holds: a read passes every one that
+applies.
 
 GeoTIFF compression: none, LZW, Deflate (including the legacy code), PackBits, JPEG, WebP,
 Zstandard, LZMA, LERC (alone, with Deflate or with Zstandard, lossless or not, with NaN masks) and
