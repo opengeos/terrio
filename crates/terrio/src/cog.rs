@@ -2286,7 +2286,7 @@ impl TiffRaster {
             .is_some_and(|sample| matches!(sample, 1 | 2))
             .then_some(bands);
         let bits = dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
-        let reduced = dec.find_tag_unsigned::<u32>(Tag::NewSubfileType).map_err(tiff_err)?.unwrap_or(0) & 1 != 0;
+        let reduced = dec.find_tag_unsigned::<u32>(Tag::NewSubfileType).ok().flatten().unwrap_or(0) & 1 != 0;
         let (cw, ch) = dec.chunk_dimensions();
         let mut levels = vec![Level {
             ifd: 0,

@@ -71,12 +71,19 @@ def test_reduced_first_masks_match_gdal_before_and_after_external_refresh(
     mark_image(level, 1, 4 | int(mask_reduced))
     for refresh in (False, True):
         if refresh:
+            # Update the base in place without refreshing its stored overview. The changed
+            # pixels lie behind the invalid block, inside the requested refresh extent.
+            changed = gdal.Open(str(base), gdal.GA_Update)
+            changed.GetRasterBand(1).WriteArray(
+                np.full((80, 130), 19, dtype=pixels.dtype), 120, 100
+            )
+            changed = None
             x, dx, _, y, _, dy = transform
             terrio.refresh_overviews(
                 str(base),
                 external=True,
                 resampling="average",
-                bbox=[[x, y + dy * 96, x + dx * 128, y]],
+                bbox=[[x + dx * 120, y + dy * 180, x + dx * 250, y + dy * 100]],
             )
         for path, overview in ((level, None), (base, 0), (base, 1)):
             # GDAL 3.13.3 also ignores a first-image mask marked 5. Compare decoding
@@ -94,6 +101,12 @@ def test_reduced_first_masks_match_gdal_before_and_after_external_refresh(
             expected = band.GetMaskBand().ReadAsArray()
             with rio.open(path, overview_level=overview) as src:
                 np.testing.assert_array_equal(src.dataset_mask(), expected)
-                np.testing.assert_array_equal(src.read(1), band.ReadAsArray())
+                actual = src.read(1)
+                np.testing.assert_array_equal(actual, band.ReadAsArray())
+                if refresh and reduced and overview != 1:
+                    assert np.all(actual[55:85, 65:120] == 19)
+                    # The existing refresh planner regenerates reduced mask images (5).
+                    # Legacy ordinary masks (4) retain their stored validity.
+                    assert np.all(expected[55:85, 65:120] == (255 if mask_reduced else 0))
             if not refresh and overview != 1:
                 assert np.count_nonzero(expected == 0) == 2600

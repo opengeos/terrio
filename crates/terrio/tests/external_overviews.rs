@@ -243,3 +243,55 @@ fn reduced_first_images_keep_their_masks_and_fallbacks() {
         }
     }
 }
+
+#[test]
+fn unreduced_first_images_ignore_reduced_masks_and_keep_nodata() {
+    use terrio::ops::overview::OverviewSelection;
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("image.tif");
+    write(&base, 64, 48, |_| 9, Vec::new());
+    let level = dir.path().join("image.tif.ovr");
+    let cfg = RasterConfig { cols: 32, rows: 24, bands: 1, data_type: DataType::U8, nodata: 255.0, ..Default::default() };
+    let values: Vec<u8> = (0..32 * 24).map(|i| if i % 32 < 12 { 255 } else { 7 }).collect();
+    let raster = terrio::Raster::from_data_native(cfg, RasterData::U8(values)).unwrap();
+    let options =
+        RasterWriteOptions { driver: Some(terrio::formats::RasterDriver::GTiff), mask: Some(vec![0; 32 * 24]), ..Default::default() };
+    terrio::write_raster_dataset(&RasterDataset::new(raster, true), level.to_str().unwrap(), &options).unwrap();
+    mark_image(&level, 0, 0);
+    mark_image(&level, 1, 5);
+    let expected: Vec<u8> = (0..32 * 24).map(|i| if i % 32 < 12 { 0 } else { 255 }).collect();
+    for (path, overview) in [(&level, None), (&base, Some(0))] {
+        let mut r = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        assert!(!r.has_mask());
+        assert!(r.read_mask(Window::full(32, 24), overview).unwrap().is_none());
+        if let Some(level) = overview {
+            assert!(!r.level_has_own_mask(level));
+        }
+        let options = ResampledReadOptions {
+            size: (32, 24),
+            overview: overview.map_or(OverviewSelection::None, OverviewSelection::Level),
+            ..Default::default()
+        };
+        assert_eq!(r.read_resampled_masks(&options).unwrap(), expected);
+    }
+}
+
+#[test]
+fn an_unreadable_first_image_subfile_type_keeps_ordinary_decoding() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("image.tif");
+    write(&path, 8, 6, |_| 7, Vec::new());
+    mark_image(&path, 0, 0);
+    let mut bytes = std::fs::read(&path).unwrap();
+    let ifd = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let count = u16::from_le_bytes(bytes[ifd..ifd + 2].try_into().unwrap()) as usize;
+    let tag = (0..count).map(|i| ifd + 2 + 12 * i).find(|&i| bytes[i..i + 2] == 254u16.to_le_bytes()).unwrap();
+    // An ASCII tag is a valid TIFF field but cannot be read as an unsigned flag.
+    bytes[tag + 2..tag + 4].copy_from_slice(&2u16.to_le_bytes());
+    bytes[tag + 4..tag + 8].copy_from_slice(&2u32.to_le_bytes());
+    bytes[tag + 8..tag + 12].copy_from_slice(b"x\0\0\0");
+    std::fs::write(&path, bytes).unwrap();
+    let mut raster = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap();
+    let read = raster.read_window(Window::full(8, 6), &WindowOptions::default()).unwrap();
+    assert_eq!(read.raster.data.to_f64_vec(), vec![7.0; 48]);
+}

@@ -57,6 +57,16 @@ fn cases() -> Vec<Case> {
     let file = std::fs::File::open(dir().join("expected_mask_control.json.gz")).unwrap();
     flate2::read::GzDecoder::new(file).read_to_string(&mut text).unwrap();
     let controls: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
+    assert_eq!(controls.len(), 1, "one frozen reduced-first-image control is required");
+    for control in &controls {
+        let matches = expected
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|raw| ["file", "bands", "window", "size", "resampling", "overview"].iter().all(|&key| control[key] == raw[key]))
+            .count();
+        assert_eq!(matches, 1, "mask control must match exactly one historical case: {control}");
+    }
     let numbers = |v: &serde_json::Value| -> Vec<usize> { v.as_array().unwrap().iter().map(|n| n.as_u64().unwrap() as usize).collect() };
     expected
         .as_array()
