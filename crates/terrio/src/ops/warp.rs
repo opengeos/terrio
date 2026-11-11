@@ -216,7 +216,7 @@ impl Default for KernelVersion {
     }
 }
 
-/// GDAL's chunk-dependent sampling is an explicit reference-reproduction mode.
+/// GDAL 3.13.3 samples chunk by chunk; this is an explicit reference-reproduction mode.
 pub(crate) fn grid_invariant_configured() -> bool {
     crate::config::get("TERRIO_WARP_GRID").is_none_or(|value| {
         let selected = value.trim();
