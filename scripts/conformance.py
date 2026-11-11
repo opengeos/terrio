@@ -3429,9 +3429,12 @@ def suite_complex_writes(ctx):
     if missing:
         suite.skipped = "needs the Python modules " + ", ".join(missing)
         return suite
-    code, version, err = run([sys.executable, "-c", "from osgeo import gdal; print(gdal.VersionInfo('RELEASE_NAME'))"])
+    code, version, err = run([sys.executable, "-c", "from osgeo import gdal, gdal_array; print(gdal.VersionInfo('RELEASE_NAME'))"])
     if code:
-        suite.error = tail(err)
+        suite.skipped = "needs GDAL's NumPy bindings (osgeo.gdal_array): " + tail(err)
+        return suite
+    if not (Path(ctx.data) / "landsat7.tif").is_file():
+        suite.skipped = "needs landsat7.tif to run the complete complex-write comparison module"
         return suite
     suite.reference = "GDAL " + version.strip()
     passed, detail = _pytest_module_conformance(ctx, "test_rio_complex_writer.py")

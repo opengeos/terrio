@@ -478,10 +478,7 @@ class _VRT:
             return got[0]
         bands = self.bands if band in self.bands else [band]
         nodata = ds.nodatavals[band - 1]
-        wide = (
-            np.dtype(dtype).name == "complex128"
-            and getattr(ds._raster, "data_type", None) == "CInt32"
-        )
+        wide = np.dtype(dtype).name == "complex128" and ds._exact_complex_read()
         read_level = partial(ds._read_level, out_dtype="complex128") if wide else ds._read_level
         got = np.asarray(
             raster_io(
@@ -859,7 +856,8 @@ def boundless_read(
         out_dtype: A wider complex working type when requested.
 
     Returns:
-        tuple: The pixels `(bands, h, w)` in the dataset's data type, and the mask (True where
+        tuple: The pixels `(bands, h, w)` in the requested working type (the dataset's type
+            by default), and the mask (True where
         invalid) or None.
     """
     nodataval = fill_value if fill_value is not None else ndv
