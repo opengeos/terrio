@@ -1355,6 +1355,7 @@ def test_missing_grid_points(tmp_path, template, missing):
 
 
 @pytest.mark.parametrize("grid", ["grib2-wgs84", "grib2-sphere-angle", "grib1-rotated-angle"])
+@pytest.mark.usefixtures("gdal_warp_grid")
 def test_rotated_grid_reprojects_as_gdal(tmp_path, grid):
     """Catches a rotated-pole CRS transformed unlike PROJ (a tile server reprojects every asset to
     WebMercatorQuad): bounds, warped grids and nearest-neighbour pixels in EPSG:3857 and 4326."""

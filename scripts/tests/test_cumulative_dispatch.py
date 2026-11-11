@@ -10,7 +10,7 @@ import conformance
 def test_dem_calc_forwards_skip_without_affecting_histograms(monkeypatch):
     calls = []
 
-    def run(arguments):
+    def run(arguments, env=None):
         calls.append(arguments)
         return 0, "[]", ""
 
