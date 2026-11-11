@@ -2,9 +2,6 @@
 
 ## Unreleased
 
-- GeoParquet: WKB geometries are decoded from the column's bytes, without copying each value,
-  by the reader the GeoPackage driver already used, now in `drivers/vector/wkb.rs` so builds
-  without SQLite have it. Decoding took 0.82 s of a 3.0 s read of 90k polygons in terrio-js.
 - A `Raster` read lazily from a file, such as a GeoTIFF (`open_raster(path, lazy=True)`,
   `rio.open`, the xarray backend), can be read from several Python threads at once: `read`,
   `read_mask` and `numpy.asarray` raised `RuntimeError: Already borrowed` when a read overlapped

@@ -5,13 +5,19 @@ use wbvector::{Coord, Geometry, Ring};
 /// Decodes WKB as `Geometry::from_wkb` does (the same geometries, and `None` where it fails),
 /// reading from the slice directly and allocating coordinate vectors at their final size.
 pub(crate) fn from_wkb(b: &[u8]) -> Option<Geometry> {
-    Wkb { b, pos: 0 }.geometry()
+    Wkb { b, pos: 0, depth: 0 }.geometry()
 }
+
+/// Collections nested deeper than this fail: each level recurses, and a crafted column of a few
+/// bytes per level would otherwise overflow the stack (an abort in WebAssembly).
+const MAX_DEPTH: u32 = 64;
 
 /// A WKB reader.
 struct Wkb<'a> {
     b: &'a [u8],
     pos: usize,
+    /// Collections entered.
+    depth: u32,
 }
 
 impl Wkb<'_> {
@@ -65,11 +71,16 @@ impl Wkb<'_> {
     /// The members of a collection, each a WKB geometry, mapped by `f`.
     fn members<T>(&mut self, le: bool, f: impl Fn(Geometry) -> Option<T>) -> Option<Vec<T>> {
         let n = self.u32(le)? as usize;
+        if self.depth == MAX_DEPTH {
+            return None;
+        }
+        self.depth += 1;
         // Each member takes at least 5 bytes.
         let mut out = Vec::with_capacity(n.min((self.b.len() - self.pos) / 5));
         for _ in 0..n {
             out.push(f(self.geometry()?)?);
         }
+        self.depth -= 1;
         Some(out)
     }
 
@@ -166,5 +177,21 @@ mod tests {
             ewkb.extend(v.to_le_bytes());
         }
         assert_eq!(from_wkb(&ewkb), Geometry::from_wkb(&ewkb).ok());
+    }
+
+    #[test]
+    fn deeply_nested_collections_fail_without_overflowing() {
+        let nested = |levels: usize| {
+            let mut b = Vec::new();
+            for _ in 0..levels {
+                b.extend([1, 7, 0, 0, 0, 1, 0, 0, 0]); // a collection of one member
+            }
+            b.extend([1, 1, 0, 0, 0]); // the point inside
+            b.extend([0u8; 16]);
+            b
+        };
+        assert!(from_wkb(&nested(MAX_DEPTH as usize)).is_some());
+        assert_eq!(from_wkb(&nested(MAX_DEPTH as usize + 1)), None);
+        assert_eq!(from_wkb(&nested(100_000)), None);
     }
 }
