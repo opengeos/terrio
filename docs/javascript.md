@@ -447,6 +447,11 @@ For ZIP archives, selection uses the main dataset member's filename (for example
 HEC-RAS, WFS and OAPIF retain their driver-specific selection rules and error
 messages. HEC-RAS requires stored layer names; it does not accept filename aliases.
 
+`openVector` also accepts `skipFeatures` and `maxFeatures`, applying the range
+once to each selected layer. `maxFeatures: 0` retains its schema with no features.
+In-memory files refuse OAPIF service open options, including when their filename
+label starts with `OAPIF:`. Use `openOapif` for a service.
+
 `openVector(bytes, filename, {layers})` and operations receiving `{bytes, filename}`
 can use the filename alias. Bare `Uint8Array` inputs use the implicit filename
 `data`, so a single layer also answers to `data`; pass `{bytes, filename}` to give

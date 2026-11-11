@@ -9,6 +9,29 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Vector source ranges
+
+`cargo test -p terrio --test vector_stream_ranges` checks eager/streamed ranges,
+STAC asset forwarding and MVT directories/tiles. The memory range tests exercise
+filesystem-free codecs, including multi-layer and archive readers. Ranges count
+live features after a driver's candidate filtering, once per selected layer.
+Zero retains an empty layer with its schema. Pyogrio's compatibility facade
+retains its separate convention that `max_features=0` means unbounded.
+
+The Linux CSV regression measures the number of live input handles and the file
+cursor after bounded and full reads. Schema discovery still scans the file;
+the feature reader stops after its prefetched prefix for a bounded range. A
+portable source counter also checks that a zero limit decodes no feature batches
+and a satisfied limit never requests another batch.
+
+`python scripts/conformance.py DATA --only vector-ranges --strict` compares
+GeoJSON and multi-layer GeoPackage STAC assets with GDAL/OGR using 16 real Natural
+Earth populated places. It checks 12 selected-layer/range combinations: order,
+scalar values and EPSG:4326 exactly, and point coordinates within 1e-9 degrees.
+Local validation uses GDAL 3.13.3 and finds zero coordinate difference.
+The public Python tests also exercise archives and CLI layer selection; Node
+checks byte ranges and rejects service options for in-memory files.
+
 ## Python warning attribution
 
 `python/tests/test_native_warning_locations.py` checks warnings recorded in Rust

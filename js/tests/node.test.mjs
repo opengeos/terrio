@@ -4261,6 +4261,27 @@ test("single named layer accepts the file stem across readers and operations", (
   ]) assert.throws(call, /no layer named missing \(layers: roads\)/);
 });
 
+test("vector byte ranges apply once and service options are refused", () => {
+  const source = terrio.fromGeoJSON({type: "FeatureCollection", features: Array.from({length: 5}, (_, i) => ({
+    type: "Feature", properties: {sequence: i}, geometry: {type: "Point", coordinates: [10 + i, 46]},
+  }))});
+  for (const filename of ["points.geojson", "points.gml", "points.kml", "points.kmz", "points.csv", "points.fgb", "points.parquet", "points.gpkg", "points.shp.zip"]) {
+    const bytes = source.toBytes(filename);
+    const full = terrio.openVector(bytes, filename, {});
+    const expected = full.toGeoJSON().features.map(feature => feature.properties.sequence);
+    full.free();
+    for (const [skipFeatures, maxFeatures] of [[0, 0], [1, 2], [4, undefined], [99, 1]]) {
+      const dataset = terrio.openVector(bytes, filename, {skipFeatures, maxFeatures});
+      assert.deepEqual(dataset.toGeoJSON().features.map(feature => feature.properties.sequence),
+        expected.slice(skipFeatures, maxFeatures === undefined ? undefined : skipFeatures + maxFeatures), filename);
+      dataset.free();
+    }
+    assert.throws(() => terrio.openVector(bytes, filename, {openOptions: {DATETIME: "2024-01-01"}}), /OAPIF/);
+    assert.throws(() => terrio.openVector(bytes, "OAPIF:https://example.invalid/points", {openOptions: {DATETIME: "2024-01-01"}}), /OAPIF/);
+  }
+  source.free();
+});
+
 test("ZIP layer selection uses the member name rather than the archive name", () => {
   const source = terrio.fromGeoJSON({type: "FeatureCollection", features: [{
     type: "Feature", properties: {}, geometry: {type: "Point", coordinates: [1, 2]},
