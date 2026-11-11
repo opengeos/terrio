@@ -106,7 +106,7 @@ DIFFERS = "differs"
 # A case whose reference values could not be computed (no coordinates to compare), reported apart.
 NOT_COMPARED = "not compared"
 
-GDAL_FREE_SUITES = frozenset(("pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write", "citygml-write", "xlsx-workbook", "pyogrio-buffers"))
+GDAL_FREE_SUITES = frozenset(("webp-writer", "pyogrio-buffers", "pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write", "citygml-write", "xlsx-workbook"))
 
 
 @dataclasses.dataclass
@@ -3403,6 +3403,46 @@ def suite_oapif(ctx):
     return suite
 
 
+def suite_webp_writer(ctx):
+    code, version, _ = run([sys.executable, "-c", "import rasterio; print(rasterio.__gdal_version__)"])
+    reference = f"GDAL {version.strip()} (rasterio)" if code == 0 else "GDAL (rasterio unavailable)"
+    s = Suite("webp-writer", "WebP creation options", reference,
+              "Default/explicit lossless pixels are exact; lossy quality changes bytes and pixels, "
+              "with exact alpha and independent GDAL decoding, including real Landsat RGB. "
+              "Lossy encoder bytes, size and PSNR are not compared with libwebp.")
+    missing = missing_modules("rasterio", "pytest", "terrio", "numpy")
+    if missing:
+        s.skipped = "needs the Python modules " + ", ".join(missing)
+        return s
+    command = [sys.executable, "-m", "pytest", "-o", "addopts=", "-q",
+               str(ROOT / "python/tests/test_webp_writer.py")]
+    env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "PYTEST_ADDOPTS": ""}
+    code, collected, err = run(command + ["--collect-only"], env)
+    expected = sum("::" in line and Path(line.split("::", 1)[0]).name == "test_webp_writer.py"
+                   for line in collected.splitlines())
+    if code or not expected or "deselected" in collected:
+        s.cases.append(Case("WEBP GDAL decoding", "complete test collection", DIFFERS,
+                            "Could not collect the complete WebP test module. " + tail(err or collected)))
+        return s
+    with tempfile.TemporaryDirectory(prefix="terrio-webp-conformance-") as directory:
+        report = Path(directory) / "results.xml"
+        code, out, err = run(command + [f"--junitxml={report}"], env)
+        try:
+            cases = ET.parse(report).getroot().findall(".//testcase")
+            complete = len(cases) == expected and all(
+                case.find("failure") is None and case.find("error") is None and case.find("skipped") is None
+                for case in cases)
+            detail = f"{len(cases)} of {expected} collected tests reported. "
+        except (OSError, ET.ParseError) as error:
+            complete = False
+            detail = f"Pytest report unavailable: {error}. "
+    s.cases.append(Case("WEBP GDAL decoding", "path/memory options and Landsat decoding",
+                        IDENTICAL if code == 0 and complete and "deselected" not in out else DIFFERS,
+                        "Exact decoding/alpha comparisons and creation-option assertions; "
+                        "GDAL encoder parity is not asserted. " + detail + tail(err or out)))
+    return s
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -3421,6 +3461,7 @@ SUITES = OrderedDict(
         ("shapefile-rings", suite_shapefile_rings),
         ("shapefile-deleted", suite_shapefile_deleted),
         ("raster-roundtrip", suite_raster_roundtrip),
+        ("webp-writer", suite_webp_writer),
         ("deflate", suite_deflate),
         ("windows", suite_windows),
         ("ops", suite_ops),
