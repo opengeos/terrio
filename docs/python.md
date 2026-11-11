@@ -79,6 +79,9 @@ For explicit integer-complex output, use `dtype="complex_int16"` in `terrio.rio`
 Integer components are rounded and saturated, as GDAL 3.13.3 converts them.
 `raster.read(out_dtype="complex128")` (and `np.asarray(raster, dtype="complex128")`)
 preserves every Int32 component; the default complex dtype remains compatible with rasterio.
+Updates retain the physical complex sample type. A readable CInt32 writer keeps precise
+components in complex128 buffers, including when it is copied; memory and spill-file slab
+accounting includes their 16 bytes per complex sample.
 Complex output supports NONE, LZW, DEFLATE, PACKBITS and ZSTD compression.
 
 ## Vector data

@@ -1364,7 +1364,11 @@ class DatasetReader(DatasetBase):
         self.height = raster.height
         self._count = raster.count
         self._dtype = raster.dtype
-        self._complex_int = getattr(raster, "data_type", None) == "CInt16"
+        sample_type = getattr(raster, "data_type", None)
+        self._complex_sample = (
+            sample_type if sample_type in {"CInt16", "CInt32", "CFloat32", "CFloat64"} else None
+        )
+        self._complex_int = sample_type == "CInt16"
         self._nodata = raster.nodata
         crs = raster.crs_wkt or raster.crs
         if crs:
@@ -2363,13 +2367,18 @@ class DatasetWriter(DatasetReader):
                 arr[..., y : y + n, :] = fill
         return arr
 
+    @property
+    def _buffer_dtype(self) -> str:
+        """Hold every Int32 component exactly without changing ordinary read defaults."""
+        return "complex128" if getattr(self, "_complex_sample", None) == "CInt32" else self._dtype
+
     def _slabs(self) -> Iterator[tuple[int, int]]:
         """Rows of blocks of about 16 MB.
 
         Yields:
             tuple: `(first row, number of rows)`.
         """
-        row = max(1, self.width * max(self._count, 1) * np.dtype(self._dtype).itemsize)
+        row = max(1, self.width * max(self._count, 1) * np.dtype(self._buffer_dtype).itemsize)
         n = max(1, (16 << 20) // row)
         block = self.structure.block_shape[0] if self._structure is not None else 1
         n = max(block, n - n % max(block, 1))
@@ -2517,15 +2526,17 @@ class DatasetWriter(DatasetReader):
         assert raster is not None
         try:
             shape = (self._count, self.height, self.width)
-            if self._streams(shape, self._dtype):
+            storage_dtype = self._buffer_dtype
+            read_options = {"out_dtype": "complex128"} if self._complex_sample == "CInt32" else {}
+            if self._streams(shape, storage_dtype):
                 # Copied into a file-backed array, block row by block row.
-                self._data = self._allocate(shape, self._dtype, 0)
+                self._data = self._allocate(shape, storage_dtype, 0)
                 for y, n in self._slabs():
                     self._data[:, y : y + n, :] = np.asarray(
-                        raster.read(window=(0, y, self.width, n))
+                        raster.read(window=(0, y, self.width, n), **read_options)
                     )
             else:
-                self._data = np.asarray(raster.read())
+                self._data = np.asarray(raster.read(**read_options))
         except Exception as err:
             raise RasterioIOError(f"Read failed: {err}") from err
         self._out_driver = self.driver
@@ -2560,6 +2571,12 @@ class DatasetWriter(DatasetReader):
         self._overview_sizes = []
 
     # Reading back what was written.
+
+    def _read_for_copy(self, window: Any = None) -> np.ndarray:
+        """Copy a readable writer using its component-preserving buffer type."""
+        if getattr(self, "_complex_sample", None) == "CInt32":
+            return self.read(window=window, out_dtype="complex128")
+        return self.read(window=window)
 
     def _read_level(
         self, bands: Sequence[int], window: tuple[int, int, int, int], level: int | None
@@ -2860,7 +2877,7 @@ class DatasetWriter(DatasetReader):
         for b in idx:
             if b not in self.indexes:
                 raise IndexError(f"band index {b} out of range (not in {self.indexes})")
-        arr = np.require(arr, dtype=self._dtype)
+        arr = np.require(arr, dtype=self._buffer_dtype)
         if window:
             if isinstance(window, tuple):
                 window = Window.from_slices(window[0], window[1], self.height, self.width)
@@ -3021,7 +3038,7 @@ class DatasetWriter(DatasetReader):
         if self._copy_of is not None and not streaming:
             # A copy given its source to write from no longer writes in rows (unreachable from
             # `shutil.copy`, which gives none with a mask): its pixels, then, whole.
-            self._data = np.require(self._copy_of._read_for_copy(), dtype=self._dtype)
+            self._data = np.require(self._copy_of._read_for_copy(), dtype=self._buffer_dtype)
             self._copy_of = None
         raster: Any = None
         if not streaming:
@@ -3279,7 +3296,7 @@ class DatasetWriter(DatasetReader):
             if step and source is not None:
                 block_rows = max(shape[0] for shape in source.block_shapes)
                 if block_rows > step:
-                    row_bytes = self.width * self.count * np.dtype(self._dtype).itemsize
+                    row_bytes = self.width * self.count * np.dtype(self._buffer_dtype).itemsize
                     budget_rows = max(step, ((16 * 1024 * 1024 // row_bytes) // step) * step)
                     wanted = math.lcm(step, *(shape[0] for shape in source.block_shapes))
                     if block_rows >= self.height:
@@ -3295,7 +3312,7 @@ class DatasetWriter(DatasetReader):
                     rows = np.ascontiguousarray(self._data[:, y : y + n, :])
                 else:
                     part = source._read_for_copy(window=Window(0, y, self.width, n))
-                    rows = np.ascontiguousarray(np.require(part, dtype=self._dtype))
+                    rows = np.ascontiguousarray(np.require(part, dtype=self._buffer_dtype))
                 m = (
                     None
                     if self._mask is None or sidecar_mask

@@ -176,3 +176,51 @@ def test_unsupported_integer_complex_dtype_has_a_specific_error(tmp_path, dtype)
             tmp_path / "invalid.tif", "w", driver="GTiff", width=1, height=1, count=1, dtype=dtype
         )
     assert not (tmp_path / "invalid.tif").exists()
+
+
+@pytest.mark.parametrize("driver", ["GTiff", "COG"])
+@pytest.mark.parametrize("limit", ["1", "100000000"])
+def test_integer_complex_update_and_copy_keep_exact_components(
+    tmp_path, monkeypatch, gdal, driver, limit
+):
+    """A readable writer retains CInt32 storage while ordinary reads stay complex64."""
+    monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", limit)
+    values = (np.arange(2 * 19 * 37).reshape(2, 19, 37).astype("float64") + 2**24 + 1) * (1 - 1j)
+    values[0, 0, 0] = (2**31 - 1) - (2**31) * 1j
+    source = tmp_path / "update.tif"
+    ds = gdal.GetDriverByName("GTiff").Create(str(source), 37, 19, 2, gdal.GDT_CInt32)
+    ds.SetGeoTransform(GT)
+    ds.SetProjection(CRS.from_epsg(32633).to_wkt())
+    for band in range(2):
+        ds.GetRasterBand(band + 1).WriteArray(values[band])
+    ds = None
+    target = tmp_path / "copy.tif"
+    with rio.open(source, "r+") as src:
+        assert src.read().dtype == np.dtype("complex64")
+        np.testing.assert_array_equal(src.read(out_dtype="complex128"), values)
+        replacement = np.array([[16777219 - 16777223j]], dtype="complex128")
+        src.write(replacement, 2, window=Window(3, 2, 1, 1))
+        values[1, 2, 3] = replacement[0, 0]
+        copy(src, target, driver=driver, compress="deflate")
+    for path in (source, target):
+        actual, ds = read_precise(gdal, path)
+        assert ds.RasterCount == 2
+        assert ds.GetRasterBand(1).DataType == gdal.GDT_CInt32
+        assert ds.GetGeoTransform() == GT
+        np.testing.assert_array_equal(actual, values)
+
+
+@pytest.mark.parametrize("kind", ["CInt16", "CInt32", "CFloat32", "CFloat64"])
+def test_complex_update_keeps_the_declared_sample_type(tmp_path, gdal, kind):
+    values = (np.arange(15).reshape(3, 5) - 7) * (1 - 1j)
+    if kind.startswith("CFloat"):
+        values = values * 0.25
+    source = tmp_path / "complex-update.tif"
+    ds = gdal.GetDriverByName("GTiff").Create(str(source), 5, 3, 1, getattr(gdal, "GDT_" + kind))
+    ds.GetRasterBand(1).WriteArray(values)
+    ds = None
+    with rio.open(source, "r+") as dst:
+        dst.update_tags(review="preserved sample type")
+    actual, ds = read_precise(gdal, source)
+    assert ds.GetRasterBand(1).DataType == getattr(gdal, "GDT_" + kind)
+    np.testing.assert_array_equal(actual, values)
