@@ -6,6 +6,7 @@ import pytest
 import terrio
 import terrio.rio as rio
 from terrio.rio.crs import CRS
+from terrio.rio.io import DatasetWriter
 from terrio.rio.shutil import copy
 from terrio.rio.windows import Window
 
@@ -166,3 +167,12 @@ def test_integer_complex_copy_from_an_overview_keeps_precision(tmp_path, gdal):
     actual, ds = read_precise(gdal, target)
     np.testing.assert_array_equal(actual, expected)
     assert ds.RasterCount == 1 and ds.GetRasterBand(1).DataType == gdal.GDT_CInt32
+
+
+@pytest.mark.parametrize("dtype", ["complex_int32", "complex_int8"])
+def test_unsupported_integer_complex_dtype_has_a_specific_error(tmp_path, dtype):
+    with pytest.raises(TypeError, match="unsupported complex integer dtype"):
+        DatasetWriter(
+            tmp_path / "invalid.tif", "w", driver="GTiff", width=1, height=1, count=1, dtype=dtype
+        )
+    assert not (tmp_path / "invalid.tif").exists()

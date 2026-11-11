@@ -2274,14 +2274,14 @@ class DatasetWriter(DatasetReader):
                 count = int(count)
             except (TypeError, ValueError):
                 raise TypeError("Integer band count is required.") from None
+            if (
+                isinstance(dtype, str)
+                and dtype.startswith("complex_int")
+                and dtype != "complex_int16"
+            ):
+                raise TypeError("unsupported complex integer dtype")
             try:
                 assert dtype is not None
-                if (
-                    isinstance(dtype, str)
-                    and dtype.startswith("complex_int")
-                    and dtype != "complex_int16"
-                ):
-                    raise TypeError("unsupported complex integer dtype")
                 dt = _getnpdtype(dtype).name
             except Exception:
                 raise TypeError("A valid dtype is required.") from None
