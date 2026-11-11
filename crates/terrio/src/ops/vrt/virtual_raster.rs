@@ -256,9 +256,12 @@ impl VirtualRaster {
         };
         // A warped VRT is resampled by whoever reads it, with the version configured there (as
         // GDAL's warped VRTs, with the reader's GDAL): a different explicit one cannot be kept.
-        if options.kernel_version != crate::ops::warp::KernelVersion::configured() || options.transform_options != Default::default() {
+        if options.kernel_version != crate::ops::warp::KernelVersion::configured()
+            || options.grid_invariant != crate::ops::warp::grid_invariant_configured()
+            || options.transform_options != Default::default()
+        {
             return Err(crate::Error::Unsupported(
-                "versioned kernels and strict coordinate-operation options require a materialized warp output".into(),
+                "non-configured kernel versions or grid policies and strict coordinate-operation options require a materialized warp output".into(),
             ));
         }
         let mut extra_options = String::new();

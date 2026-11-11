@@ -26,7 +26,7 @@
 
 use crate::crs::SpatialRef;
 use crate::formats::RasterDriver;
-use crate::geotiff::{ChunkTables, GeoTags, PatchedReader, read_geo_tags_from};
+use crate::geotiff::{ChunkTables, GeoTags, PatchedReader, try_read_geo_tags_from};
 use crate::vfs::{self, Location};
 use crate::{Error, RasterDataset, Result};
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -2252,7 +2252,7 @@ enum Reopened {
 fn tiff_err(e: tiff::TiffError) -> Error {
     match e {
         tiff::TiffError::LimitsExceeded => Error::ResourceLimit("TIFF: decoding limits exceeded (see TiffReadLimits)".into()),
-        tiff::TiffError::IoError(e) if e.kind() == std::io::ErrorKind::OutOfMemory => Error::Io(e),
+        tiff::TiffError::IoError(e) if e.kind() == std::io::ErrorKind::OutOfMemory || crate::error::is_http_io(&e) => Error::Io(e),
         e => Error::InvalidData(format!("TIFF: {e}")),
     }
 }
@@ -2263,7 +2263,18 @@ impl TiffRaster {
             Source::Zip(member) => member.reopen(),
             _ => None,
         };
-        let tags = read_geo_tags_from(&mut source).ok_or_else(|| Error::InvalidData("not a TIFF file".into()))?;
+        let uploaded = matches!(&source, Source::Memory(_));
+        let tags = try_read_geo_tags_from(&mut source)
+            .map_err(|error| {
+                // Invalid metadata is malformed input regardless of its source. An immutable
+                // buffer's EOF is malformed too; live EOF errors retain their I/O causes.
+                if error.kind() == std::io::ErrorKind::InvalidData || (uploaded && error.kind() == std::io::ErrorKind::UnexpectedEof) {
+                    Error::InvalidData(format!("TIFF: {error}"))
+                } else {
+                    Error::Io(error)
+                }
+            })?
+            .ok_or_else(|| Error::InvalidData("not a TIFF file".into()))?;
         // A directory libtiff cannot read is refused here, before any pixel is decoded.
         tags.check_structure()?;
         let masks = crate::tiff_mask::find_masks(&mut source)?;

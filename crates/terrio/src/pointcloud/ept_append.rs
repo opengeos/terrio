@@ -388,9 +388,8 @@ impl std::fmt::Debug for EptAppender {
     }
 }
 
-/// Completes the updates of a dataset interrupted while they were moved into place, and removes
-/// those interrupted before they were complete.
-fn recover(dir: &Path) -> Result<()> {
+/// Staged updates in publication order, including unfinished ones that recovery discards.
+fn staged_updates(dir: &Path) -> Result<Vec<PathBuf>> {
     let entries = std::fs::read_dir(dir).map_err(|e| io_err(dir, e))?;
     let mut staged: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
@@ -401,11 +400,37 @@ fn recover(dir: &Path) -> Result<()> {
     // In the order they were made: by their number, not their name (`-10` after `-9`).
     let number = |p: &PathBuf| p.file_name().and_then(|n| n.to_str()?.rsplit('-').next()?.parse::<u64>().ok()).unwrap_or(u64::MAX);
     staged.sort_by_key(number);
+    Ok(staged)
+}
+
+/// Checks both live and committed metadata before recovery can change any dataset file.
+fn check_append_drivers(dir: &Path, name: &str) -> Result<Vec<PathBuf>> {
+    super::read::check_driver("EPT", name)?;
+    let metadata = read_json(&dir.join("ept.json"))?;
+    check_tile_drivers(metadata["dataType"].as_str().unwrap_or("laszip"), name)?;
+    let staged = staged_updates(dir)?;
+    for stage in &staged {
+        let metadata = stage.join("ept.json");
+        // A partly published update can already have moved its metadata into the live dataset.
+        // An uncommitted update is discarded, so its incomplete metadata is not parsed.
+        if stage.join(COMMITTED).exists() {
+            match read_json(&metadata) {
+                Ok(metadata) => check_tile_drivers(metadata["dataType"].as_str().unwrap_or("laszip"), name)?,
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(staged)
+}
+
+/// Completes the checked updates interrupted while being published, and discards unfinished ones.
+fn recover(dir: &Path, staged: &[PathBuf]) -> Result<()> {
     for s in staged {
         if s.join(COMMITTED).exists() {
-            move_in(dir, &s)?;
+            move_in(dir, s)?;
         } else {
-            std::fs::remove_dir_all(&s).map_err(|e| io_err(&s, e))?;
+            std::fs::remove_dir_all(s).map_err(|e| io_err(s, e))?;
         }
     }
     Ok(())
@@ -491,6 +516,15 @@ fn bounds6(v: &Value) -> Option<[f64; 6]> {
 /// The statistics keys of a schema dimension.
 const STATS_KEYS: [&str; 7] = ["count", "minimum", "maximum", "mean", "variance", "stddev", "counts"];
 
+/// LASzip EPT tiles require the LAZ driver before invoking a tile parser.
+fn check_tile_drivers(data_type: &str, name: &str) -> Result<()> {
+    let codec = EptDataType::parse(data_type).map_err(|_| Error::Unsupported(format!("EPT data type '{data_type}'")))?;
+    if codec == EptDataType::Laszip {
+        super::read::check_driver("LAZ", name)?;
+    }
+    Ok(())
+}
+
 impl EptAppender {
     /// Opens an EPT dataset to append points to: its `ept.json`, its directory, or an `ept://`
     /// path. An update interrupted earlier is completed (or discarded) first. Of `options`,
@@ -504,8 +538,12 @@ impl EptAppender {
         if !dir.join("ept.json").exists() {
             return Err(Error::InvalidArgument(format!("'{}' is not an EPT dataset: it has no ept.json", dir.display())));
         }
+        // Refuse before taking the lock, so a disallowed append creates no lock file. Check
+        // committed staged metadata too, then recheck under the lock in case another append finished.
+        check_append_drivers(&dir, path)?;
         let lock = Lock::take(&dir)?;
-        recover(&dir)?;
+        let staged = check_append_drivers(&dir, path)?;
+        recover(&dir, &staged)?;
         let json = read_json(&dir.join("ept.json"))?;
         // The dataset as the reader sees it: its schema, data type and CRS.
         let reader = super::ept::EptReader::open(&dir.join("ept.json").to_string_lossy())?;
@@ -546,7 +584,7 @@ impl EptAppender {
                     .map(|(k, _)| *k)
                     .ok_or_else(|| Error::InvalidArgument("the EPT dataset has no points to append to: write it anew".into()))?;
                 let bytes = std::fs::read(tile_path(&dir, key, data_type)).map_err(|e| io_err(&tile_path(&dir, key, data_type), e))?;
-                let header = LasHeader::read(&mut Cursor::new(&bytes))?;
+                let header = super::read::read_las_header(&mut Cursor::new(&bytes), &tile_path(&dir, key, data_type).to_string_lossy())?;
                 let layout = Layout::new(&header);
                 let origin = layout.fields.iter().find(|f| is_origin(&f.name)).and_then(|f| match f.field {
                     super::las::Field::Extra(o) | super::las::Field::Plain(o) => Some((o, f.value_type)),
@@ -1050,7 +1088,7 @@ impl EptAppender {
         let bytes = std::fs::read(&path).map_err(|e| io_err(&path, e))?;
         let records = match (&self.codec, self.data_type) {
             (Codec::Las { header, layout }, _) => {
-                let h = LasHeader::read(&mut Cursor::new(&bytes))?;
+                let h = super::read::read_las_header(&mut Cursor::new(&bytes), &path.to_string_lossy())?;
                 if h.point_format != header.point_format || h.point_record_length as usize != layout.record_len {
                     return Err(Error::InvalidData(format!(
                         "EPT: tile {} has point format {} ({} bytes), the dataset's tiles {} ({} bytes)",

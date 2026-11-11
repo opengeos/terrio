@@ -60,6 +60,9 @@ def _both(src, res, resampling, src_alpha=4, dst_alpha=4, count=4):
     return out
 
 
+pytestmark = pytest.mark.usefixtures("gdal_warp_grid")
+
+
 @pytest.mark.parametrize("res", [6.0, 14.0, 40.0])
 @pytest.mark.parametrize("holes", [True, False])
 @pytest.mark.parametrize("dtype", ["float32", "uint8"])

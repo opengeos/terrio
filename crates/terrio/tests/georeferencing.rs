@@ -79,7 +79,9 @@ fn rotated_and_south_up_round_trip_and_warp_as_gdal() {
             &[249028, 249092, 249156],
         ),
     ];
-    for (name, gt, o, out_gt, size, expected) in cases {
+    for (name, gt, mut o, out_gt, size, expected) in cases {
+        // These frozen pixel sums reproduce GDAL 3.12's chunk-dependent sampling.
+        o.grid_invariant = false;
         let path = dir.path().join(format!("{name}.tif"));
         let p = path.to_str().unwrap();
         let ds = small(gt);
@@ -173,6 +175,7 @@ fn gcps_round_trip_and_warp_as_gdalwarp() {
         let src = terrio::open_raster(p).unwrap();
         assert_eq!(src.crs().epsg, Some(32611));
         let o = WarpOptions {
+            grid_invariant: false,
             gcps: read,
             gcp_method: method,
             order,

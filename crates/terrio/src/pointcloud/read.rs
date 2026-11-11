@@ -228,12 +228,8 @@ pub(super) fn check_driver(driver: &str, name: &str) -> Result<()> {
 /// Reads the header (with its VLRs) of a file of the LAS family, which LAS, LAZ and COPC share:
 /// only if the allow-list of point clouds has one of them, and then refused unless it has the one
 /// the header shows (COPC, by its information record; LAZ, by its compressed points; else LAS).
-fn read_las_header<R: Read + Seek>(r: &mut R, name: &str) -> Result<LasHeader> {
-    if let Some(list) = crate::formats::allowed_drivers(Some(crate::formats::Kind::PointCloud))
-        && !["LAS", "LAZ", "COPC"].iter().any(|d| list.iter().any(|a| a == d))
-    {
-        check_driver("LAS", name)?;
-    }
+pub(super) fn read_las_header<R: Read + Seek>(r: &mut R, name: &str) -> Result<LasHeader> {
+    check_las_allowed(name)?;
     let header = LasHeader::read(r)?;
     check_driver(
         if Copc::is_copc(&header) {
@@ -246,6 +242,16 @@ fn read_las_header<R: Read + Seek>(r: &mut R, name: &str) -> Result<LasHeader> {
         name,
     )?;
     Ok(header)
+}
+
+/// Refuses the LAS-family parser before reading a header when none of its drivers is allowed.
+pub(super) fn check_las_allowed(name: &str) -> Result<()> {
+    if let Some(list) = crate::formats::allowed_drivers(Some(crate::formats::Kind::PointCloud))
+        && !["LAS", "LAZ", "COPC"].iter().any(|d| list.iter().any(|a| a == d))
+    {
+        check_driver("LAS", name)?;
+    }
+    Ok(())
 }
 
 /// The point cloud format of a path, by its name: `ept.json` (or an `ept://` path) is EPT,
