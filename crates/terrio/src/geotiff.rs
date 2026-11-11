@@ -233,8 +233,11 @@ pub(crate) fn read_compare_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
 }
 
 enum ImageScope {
+    /// Read only the base image's tags, without requiring a trailing directory pointer.
     First,
+    /// Require the complete image chain for lazy decoding.
     All,
+    /// Keep collected metadata if a later directory cannot be read.
     BestEffort,
 }
 

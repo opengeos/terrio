@@ -50,6 +50,25 @@ fn malformed_uploaded_tiff_metadata_is_invalid_data() {
 
 #[cfg(fs)]
 #[test]
+fn inventory_tag_length_overflow_is_invalid_data() {
+    let mut bytes = b"II+\0\x08\0\0\0".to_vec();
+    bytes.extend(16u64.to_le_bytes());
+    bytes.extend(1u64.to_le_bytes());
+    bytes.extend(33550u16.to_le_bytes());
+    bytes.extend(12u16.to_le_bytes());
+    bytes.extend(u64::MAX.to_le_bytes());
+    bytes.extend(0u64.to_le_bytes());
+    bytes.extend(0u64.to_le_bytes());
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("tag-overflow.tif");
+    std::fs::write(&path, bytes).unwrap();
+    let error = terrio::dataset_files::file_list(path.to_str().unwrap(), Some("GTiff")).unwrap_err();
+    assert!(matches!(error, terrio::Error::InvalidData(_)), "{error:?}");
+    assert!(error.to_string().contains("tag length overflow"), "{error}");
+}
+
+#[cfg(fs)]
+#[test]
 fn short_non_tiff_inputs_are_not_matches() {
     let dir = tempfile::tempdir().unwrap();
     for bytes in [b"".as_slice(), b"abc"] {
