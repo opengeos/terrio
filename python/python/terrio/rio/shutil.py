@@ -175,7 +175,20 @@ def _copy_dataset(
     for k in ("blockxsize", "blockysize", "tiled", "compress", "interleave", "photometric"):
         profile.pop(k, None)
     profile["driver"] = driver
-    if driver.upper() in ("GTIFF", "COG"):
+    requested = {k.lower(): v for k, v in creation_options.items()}
+    packed_compression = str(requested.get("compress", "NONE")).upper() in (
+        "NONE",
+        "LZW",
+        "DEFLATE",
+        "ZIP",
+        "PACKBITS",
+        "ZSTD",
+    )
+    if (
+        driver.upper() in ("GTIFF", "COG")
+        and packed_compression
+        and str(requested.get("predictor", "1")) == "1"
+    ):
         widths = {src.tags(band, ns="IMAGE_STRUCTURE").get("NBITS") for band in src.indexes}
         output_dtype = next(
             (str(v) for k, v in creation_options.items() if k.lower() == "dtype"),

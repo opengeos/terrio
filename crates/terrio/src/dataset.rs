@@ -159,6 +159,13 @@ impl Geolocation {
 impl RasterDataset {
     /// Retain packed unsigned widths in IMAGE_STRUCTURE, as GDAL 3.13.3 reports NBITS.
     pub(crate) fn set_sample_bits(&mut self, bits: u16) {
+        // A selected overview or an AUTO read can replace the base image's stored width.
+        for (band, domain, items) in &mut self.metadata_domains {
+            if band.is_some() && domain == "IMAGE_STRUCTURE" {
+                items.retain(|(key, _)| key != "NBITS");
+            }
+        }
+        self.metadata_domains.retain(|(_, _, items)| !items.is_empty());
         if matches!(self.raster.data_type, wbraster::DataType::U8 | wbraster::DataType::U16 | wbraster::DataType::U32)
             && bits > 0
             && usize::from(bits) < self.raster.data_type.size_bytes() * 8
@@ -1964,6 +1971,8 @@ impl RasterWriteOptions {
         let mut creation_options = self.creation_options.clone();
         if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog))
             && co("NBITS").is_none()
+            && co("PREDICTOR").is_none_or(|v| v.trim() == "1")
+            && matches!(compression.to_ascii_uppercase().as_str(), "" | "NONE" | "LZW" | "DEFLATE" | "ZIP" | "PACKBITS" | "ZSTD")
             && matches!(ds.raster.data_type, wbraster::DataType::U8 | wbraster::DataType::U16 | wbraster::DataType::U32)
         {
             let bits = |band| {

@@ -853,7 +853,17 @@ fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelec
         assign_ullr: o.assign_ullr,
         ..Default::default()
     };
-    let sample_bits = o.output_type.is_none_or(|t| t == source_type).then(|| src.level_sample_bits(level)).flatten();
+    let sample_bits = o
+        .output_type
+        .is_none_or(|t| t == source_type)
+        .then(|| {
+            if !copy && matches!(selection, OverviewSelection::Auto | OverviewSelection::AutoOffset(_)) {
+                src.widest_sample_bits()
+            } else {
+                src.level_sample_bits(level)
+            }
+        })
+        .flatten();
     Ok(Planned::Read(LazyRead { read, together, gt: geom.gt, gcps, whole, by_strips, copy, sample_bits, values }))
 }
 

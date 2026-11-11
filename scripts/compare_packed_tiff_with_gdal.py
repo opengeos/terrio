@@ -101,6 +101,8 @@ def main():
                 rows.append(dict(name="WorldCover palette", status="identical", detail=detail + "; exact first 128 palette entries"))
             except Exception as error:
                 rows.append(dict(name="WorldCover palette", status="differs", detail=str(error)))
+        else:
+            rows.append(dict(name="WorldCover palette", status="not compared", detail="esa_worldcover_colormap.tif is unavailable"))
     print(json.dumps(rows, indent=2) if args.json else "\n".join(f"{r['name']}: {r['status']}: {r['detail']}" for r in rows))
     return int(any(row["status"] == "differs" for row in rows))
 

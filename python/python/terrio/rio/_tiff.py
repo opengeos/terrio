@@ -434,6 +434,8 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
         s.layout_path = path
     # libtiff's default BitsPerSample is 1, as the reader's.
     bits = _first(t.get(BITS), 1)
+    base = getattr(raster, "_base", raster)
+    bits = base._sample_bits(getattr(raster, "_level", None)) or bits
     tables = t.get(JPEG_TABLES)
     if code == 7 and isinstance(tables, (bytes, list)):
         # The JPEG quality and tables mode GDAL guesses from the JPEGTables tag.

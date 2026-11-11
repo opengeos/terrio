@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+"""Missing real-data comparisons must remain visible beside synthetic successes."""
+
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import conformance  # noqa: E402
+
+
+def test_missing_worldcover_is_not_reported_as_a_difference(monkeypatch):
+    """Keep every synthetic result and the unavailable optional palette comparison."""
+    rows = [dict(name=str(i), status="identical", detail="exact") for i in range(12)]
+    rows.append(dict(name="WorldCover palette", status="not compared", detail="fixture unavailable"))
+    monkeypatch.setattr(conformance, "missing_modules", lambda *args: [])
+    monkeypatch.setattr(conformance, "run", lambda *args: (0, json.dumps(rows), ""))
+    suite = conformance.suite_packed_tiff(SimpleNamespace(data="missing", terrio="terrio"))
+    assert not suite.error
+    assert [case.status for case in suite.cases] == [conformance.IDENTICAL] * 12 + [conformance.NOT_COMPARED]

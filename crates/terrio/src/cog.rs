@@ -953,16 +953,20 @@ impl LazyRaster {
     }
 
     /// The bits of a sample of a level (full resolution, or an overview) as stored: an external
-    /// overview's own (its `.ovr` file is a dataset of its own, with its own `NBITS`), else
-    /// [`LazyRaster::sample_bits`].
-    pub(crate) fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
-        if let Inner::Tiff(t) = &self.inner
-            && overview.and_then(|i| t.levels.get(i + 1)).is_some_and(|l| l.external.is_some())
-            && let Some(ovr) = &t.ovr
-        {
-            return Some(ovr.bits);
+    /// or internal overview's own BitsPerSample, rather than the base image's width.
+    pub fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
+        match &self.inner {
+            Inner::Tiff(t) => t.levels.get(overview.map_or(0, |i| i + 1)).map(|l| l.bits),
+            _ => self.sample_bits(),
         }
-        self.sample_bits()
+    }
+
+    /// A width that can retain samples from every stored level an AUTO read can select.
+    pub(crate) fn widest_sample_bits(&self) -> Option<u16> {
+        match &self.inner {
+            Inner::Tiff(t) => t.levels.iter().map(|level| level.bits).max(),
+            _ => self.sample_bits(),
+        }
     }
 
     /// The driver.
@@ -2155,6 +2159,8 @@ fn overview_resampling_metadata<R: Read + Seek>(decoder: &mut Decoder<R>) -> tif
 
 /// One image of a TIFF: the full-resolution image or an overview.
 struct Level {
+    /// BitsPerSample of this image, which can differ from the full-resolution image.
+    bits: u16,
     /// The image's index in the file.
     ifd: usize,
     width: usize,
@@ -2295,6 +2301,7 @@ impl TiffRaster {
         let bits = dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
         let (cw, ch) = dec.chunk_dimensions();
         let mut levels = vec![Level {
+            bits,
             ifd: 0,
             width: w as usize,
             height: h as usize,
@@ -2317,7 +2324,13 @@ impl TiffRaster {
                     let (ow, oh) = dec.dimensions().map_err(tiff_err)?;
                     let (cw, ch) = dec.chunk_dimensions();
                     let block = (cw as usize, ch as usize);
+                    let bits = dec
+                        .find_tag_unsigned_vec::<u16>(Tag::BitsPerSample)
+                        .map_err(tiff_err)?
+                        .and_then(|v| v.first().copied())
+                        .unwrap_or(1);
                     levels.push(Level {
+                        bits,
                         ifd,
                         width: ow as usize,
                         height: oh as usize,
@@ -2385,6 +2398,7 @@ impl TiffRaster {
             // equal-sized and larger images; there is no reduction-factor gate.
             // Read through the `.ovr`'s own levels, which keep their tables.
             self.levels.push(Level {
+                bits: l.bits,
                 ifd: l.ifd,
                 width: l.width,
                 height: l.height,

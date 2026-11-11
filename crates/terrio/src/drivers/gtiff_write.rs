@@ -929,6 +929,9 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
         if packed && opts.predictor != 1 {
             return Err(Error::Unsupported("packed NBITS samples require PREDICTOR=1".into()));
         }
+        if packed && opts.nodata.is_some_and(|v| !v.is_finite() || v < 0.0 || v > ((1u64 << bits) - 1) as f64 || v.fract() != 0.0) {
+            return Err(Error::InvalidArgument(format!("nodata {:?} cannot be represented by NBITS={bits}", opts.nodata.unwrap())));
+        }
     }
     let tile = if opts.cog {
         let t = opts.tile_size.unwrap_or(512);
@@ -1250,6 +1253,20 @@ fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels
     let block = gdal_overview::ovr_block(opts.source_block);
     for (i, (w, h)) in sizes.into_iter().enumerate() {
         let level = src.read_window(crate::Window::full(w, h), &crate::WindowOptions { bands: Vec::new(), overview: Some(i) })?;
+        if let Some(bits) = opts.nbits {
+            let max = (1u64 << bits) - 1;
+            let fits = match &level.raster.data {
+                RasterData::U8(v) => v.iter().all(|&v| u64::from(v) <= max),
+                RasterData::U16(v) => v.iter().all(|&v| u64::from(v) <= max),
+                RasterData::U32(v) => v.iter().all(|&v| u64::from(v) <= max),
+                _ => true,
+            };
+            if !fits {
+                return Err(Error::InvalidArgument(format!(
+                    "source overview {i} has values that exceed NBITS={bits}; choose a wider output NBITS"
+                )));
+            }
+        }
         if !masks.is_empty() {
             let m = if own_masks {
                 src.read_mask(crate::Window::full(w, h), Some(i))?.unwrap_or_else(|| vec![255; w * h])

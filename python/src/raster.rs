@@ -782,6 +782,12 @@ impl PyRaster {
         })
     }
 
+    /// Internal stored sample-width metadata, including a selected overview, without pixel I/O.
+    #[pyo3(signature = (overview=None))]
+    fn _sample_bits(&self, overview: Option<usize>) -> Option<u16> {
+        self.inner.level_sample_bits(overview)
+    }
+
     /// Internal overview metadata from the native mask discovery, without reading pixels.
     fn _overview_has_mask(&self, overview: usize) -> PyResult<bool> {
         self.inner.overviews().get(overview).ok_or_else(|| invalid(format!("no overview {overview}")))?;
