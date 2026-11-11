@@ -33,9 +33,10 @@ pub(crate) fn declared_dims_bytes(buf: &[u8]) -> Result<(bool, bool)> {
     Ok((header.has_z, header.has_m))
 }
 
-/// Whether `buf` starts with the FlatGeobuf magic bytes.
+/// Whether `buf` starts with the FlatGeobuf magic bytes. The version byte is not compared: GDAL
+/// writes 1 where [`MAGIC`] has 0, and [`header_len`] reads such files too.
 pub(crate) fn has_magic(buf: &[u8]) -> bool {
-    buf.starts_with(&MAGIC)
+    header_len(buf).is_ok()
 }
 
 fn bad(what: &str) -> Error {
@@ -1076,6 +1077,15 @@ mod tests {
         // Requests as opening the file makes them: the schema route does not download it again.
         assert!(!opened.lock().unwrap().is_empty());
         assert_eq!(exported.lock().unwrap().len(), opened.lock().unwrap().len());
+    }
+
+    #[test]
+    fn declared_dimensions_show_for_gdal_magic_bytes() {
+        // GDAL writes the magic's version byte as 1 (terrio's MAGIC has 0): the bytes route reads its header too.
+        let mut bytes = empty_dimension_fixture(true, false);
+        bytes[7] = 1;
+        assert!(has_magic(&bytes));
+        assert_eq!(exported_geometry_type(&bytes), "PointZ");
     }
 
     #[test]
