@@ -3745,6 +3745,8 @@ mod tests {
             (256, 64, 3, DataType::U8, 768),
             (128, 40, 1, DataType::U16, 256),
             (100, 7, 2, DataType::F32, 800),
+            // An internal mask's chunk, as `mask_image` passes it: 512 one-bit pixels a row, packed
+            // in 64 bytes.
             (512, 16, 1, DataType::U8, 64),
         ] {
             // Groups of 4 equal rows: three quarters of a row of three values in turn, then bytes of

@@ -838,15 +838,12 @@ impl Mf<'_> {
     /// hc_matchfinder_longest_match(): returns (length, offset); length is
     /// `best_len` and offset 0 if nothing longer than `best_len` was found.
     ///
-    /// Then, unlike libdeflate, the position one row back (`row`, when the input has rows), whose
-    /// match is taken when it is longer than the best of the hash chains and, at levels 6 to 9, of
-    /// the periodic-run probe before it, which takes only a match of `max_len`. A chain holds every
-    /// position of a run of one value, one byte apart, newest first. At the start of a run, when
-    /// the run above has more such positions than `max_search_depth`, the search ends before it
-    /// reaches the first of them, whose match continues through the rows that repeat it (runs of
-    /// 64 bytes at level 6, which examines 35 positions); and a match to an earlier run of the row
-    /// ends the search once it reaches `nice_len`, although a longer one is a row back. A match one
-    /// row back only as long as the chains' best is not taken: the nearer one stays.
+    /// Then, unlike libdeflate, when the input has rows, the position one row back (`row`, at most
+    /// 32,767 bytes back, within the window): its match is taken only when it is longer than the
+    /// best of the hash chains and, at levels 6 to 9, of the periodic-run probe; one only as long is
+    /// not taken, so the nearer match stays. The chains can miss it: their search ends after
+    /// `max_search_depth` positions, before the start of a long run above, or once a match reaches
+    /// `nice_len`.
     ///
     /// # Safety
     /// `in_next + max_len <= s.len()` and `nice_len <= max_len`: the input

@@ -57,7 +57,7 @@ def write(path, pixels, **options):
 
 
 @pytest.mark.parametrize("name", list(BLOCKS))
-def test_a_raster_of_uniform_blocks_is_written_as_copies_of_its_rows(tmp_path, name):
+def test_uniform_blocks_stay_within_their_size_bound(tmp_path, name):
     pixels, options, bound = BLOCKS[name]
     assert write(tmp_path / "blocks.tif", pixels, **options) <= bound
 
