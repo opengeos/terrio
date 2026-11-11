@@ -345,12 +345,13 @@ impl Fetcher {
 
     /// Reads a response's body with a reader held in `readers` while it reads, so that a failed
     /// request elsewhere can cancel it (see [`Fetcher::fetch_objects`]): a cancelled read ends
-    /// early, with the bytes read so far.
+    /// early, with the bytes read so far. A response without a stream body is read whole.
     async fn read_body(&self, response: &JsValue, readers: &RefCell<Vec<JsValue>>) -> Result<Vec<u8>, JsError> {
         let mut data = Vec::new();
         let body = get(response, "body");
-        if !body.is_null() && !body.is_undefined() {
-            let reader = call(&body, "getReader", &[])?;
+        // A response from a custom `fetch` may have no stream body: read whole, as before.
+        let reader = if body.is_null() || body.is_undefined() { None } else { call(&body, "getReader", &[]).ok() };
+        if let Some(reader) = reader {
             readers.borrow_mut().push(reader.clone());
             let read: Result<(), JsError> = async {
                 loop {
@@ -359,12 +360,18 @@ impl Fetcher {
                     if get(&chunk, "done").is_truthy() {
                         return Ok(());
                     }
-                    data.extend_from_slice(&js_sys::Uint8Array::new(&get(&chunk, "value")).to_vec());
+                    let bytes = js_sys::Uint8Array::new(&get(&chunk, "value"));
+                    let start = data.len();
+                    data.resize(start + bytes.length() as usize, 0);
+                    bytes.copy_to(&mut data[start..]);
                 }
             }
             .await;
             readers.borrow_mut().retain(|r| r != &reader);
             read?;
+        } else {
+            let promise = call(response, "arrayBuffer", &[])?.dyn_into::<js_sys::Promise>().map_err(|_| JsError::new("no body"))?;
+            data = js_sys::Uint8Array::new(&JsFuture::from(promise).await.map_err(js_error)?).to_vec();
         }
         self.requests.set(self.requests.get() + 1);
         self.bytes.set(self.bytes.get() + data.len() as u64);
