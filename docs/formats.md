@@ -1026,7 +1026,10 @@ reads it.
   archive limits of `/vsizip/` (`TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO`,
   `TERRIO_ZIP_MAX_SIZE`), and 512 MiB of decompressed text for the main document and the layer
   documents it links to together. Repeated links to a document read it once and emit its layers once.
-  Existing document and folder names are preserved; the first link supplies the default name
+  Existing document and folder names are used; collisions receive the first free
+  ` (2)`, ` (3)` suffix across the complete dataset, in main-document order followed
+  by linked documents in link order. This also makes every layer selectable by name
+  and avoids duplicate table names when converting to GeoPackage. The first link supplies the default name
   for an unnamed root, or the member stem when that link is unnamed. Set `TERRIO_KMZ_MAX_SIZE`
   to a byte count to change that budget;
   reading a KML document takes at least twice its size in memory, so in WebAssembly, whose
