@@ -9,6 +9,37 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Python warning attribution
+
+`python/tests/test_native_warning_locations.py` checks warnings recorded in Rust
+through direct bindings and pyogrio wrappers. It verifies the caller's filename and
+line in functions and module-level code, module-specific error filters, and default
+once-per-location suppression. The shared warning bridge skips Terrio's Python
+frames using APIs available on Python 3.10 and later, without changing warning filters.
+Attribution stops at the first frame outside the Terrio package, including a
+third-party intermediary when one calls Terrio on the application's behalf.
+
+## Vector byte packaging
+
+`python/tests/test_vector_byte_packaging.py` reads default vector byte outputs
+under their original filenames, checks explicit multi-file output names and
+refuses ZIP input mislabeled as a standalone GML/MIF/TAB document. The Rust
+memory tests also exercise the filesystem-free readers directly, and Node
+checks GML documents, archive refusals and unsupported MapInfo byte writing.
+
+`scripts/compare_vector_byte_packaging.py DATA --json`, registered as the
+`vector-byte-packaging` conformance suite, compares GML documents and explicit
+MIF/TAB ZIP archives with GDAL/OGR on 16 real Natural Earth populated places.
+Counts, original scalar attributes, archive members and EPSG:4326 agree exactly;
+GML also exposes its generated `gml_id` field, which the Python regression checks.
+Coordinates allow 1e-6 degrees for MapInfo's storage grid. The script reports
+the measured maximum and distinguishes exact coordinates from agreement within
+that tolerance. The reference is GDAL 3.13.3 for local validation.
+
+Run `python scripts/conformance.py DATA --only vector-byte-packaging --strict`
+to execute this suite and fail on differences or suite errors. Check its report
+for skipped comparisons when reference dependencies or data are unavailable.
+
 ## Translate input-opening policy
 
 Translate input-opening policy is tested with `cargo test -p terrio --lib ops::translate::tests`
@@ -53,6 +84,39 @@ a `ci.yml`-only version bump would make their keys diverge.
 Coordinate upgrades with the PROJ reference and any regenerated reference data. Keep
 historical GDAL version annotations attached to the results they describe; update
 current-reference documentation and tests only after validating the new oracle.
+
+## Warp grid consistency
+
+The default warp policy retains pixels and validity across aligned independent tiles,
+VRT windows and memory chunks. `python/tests/test_warp_grid_invariance.py` covers
+all 14 resamplers, both kernel versions, exact/default approximate transforms,
+interior nodata holes, dataset masks, binary alpha, masked arrays and explicit
+configuration overrides. Rust's
+`reprojected_samples_are_invariant_to_memory_chunks` checks a polar reprojection
+with three working memory limits.
+
+The `warp-grid` conformance suite uses a 256 × 256 crop of real USGS terrain,
+prepared by GDAL with an interior nodata hole. It compares independent tiles and
+WarpedVRT windows with their whole-grid output, requiring exact validity and an
+absolute Float64 tolerance of 1e-7:
+
+```sh
+python scripts/conformance.py ../terrio-data --only warp-grid --strict
+```
+
+These are consistency checks, not comparisons with GDAL's chunk-dependent warp
+values. Exact GDAL warp reference tests and the JSON raster conformance comparisons explicitly
+select `TERRIO_WARP_GRID=GDAL`; the standalone rasterio/rioxarray comparison scripts
+select that policy unless explicitly configured otherwise.
+The default policy remains covered separately. Kernel version selects arithmetic
+independently of grid policy. See [warp sampling](cli.md#warp) for per-call options.
+
+Additional regressions check nearest centres next to integer boundaries and
+300/360-degree output pixels through geographic and Web Mercator destinations,
+with exact and default approximate transforms. Wide-footprint bilinear values use
+analytic weights with absolute tolerance 1e-9. A fixed subpixel probe detects
+periodic transforms that alias the primary approximation anchors; exact midpoint
+checks distinguish longitude cuts from continuous coarse footprints.
 
 ## Test data
 
@@ -2680,3 +2744,24 @@ Bounds planning scans at most 512 corners at a time, including the final endpoin
 with roughly 17 KiB of coordinate/validity scratch rather than allocating an entire
 output-width row before memory-limit splitting. The polar regression starts off a
 global batch boundary and spans several batches; RPC batch membership stays global.
+
+## Categorical Deflate output
+
+Run `python scripts/conformance.py ../data --only deflate --strict` with current
+Python bindings and GDAL. The five issue #712 patterns check the exact decoded
+samples, mask, Byte type, nodata, affine and CRS through GDAL (locally validated
+with GDAL 3.13.3). Three repeating-class TIFFs have an 8,500-byte ceiling; this
+catches the previous 12–20 KiB outputs without asserting compressed-byte equality.
+An available `esa_worldcover_colormap.tif` contributes a real-data crop, whose
+pixel and georeferencing preservation is checked without a compression-ratio
+promise. Palette preservation is outside this encoder comparison.
+
+The native codec tests retain the original libdeflate byte goldens and add size
+bounds for repeating rows, odd row widths and 32 KiB window crossings. Python
+checks the default GTiff and COG writers; Node checks the WASM TIFF writer.
+CPU timing is a measurement, not a CI threshold: compare repeated optimized
+encodes on the same inputs. On a local 512-square tile benchmark, the new search
+reduced squares from 4,870 to 1,220 compressed bytes and about 0.93 to 0.45 ms CPU;
+a WorldCover tile stayed at 27,597 bytes and took about 2.62 versus 3.47 ms.
+A half-zero/half-noise UInt16 control grew 72 bytes out of about 265 KiB. These
+measurements describe the size/CPU tradeoff and are not universal speed claims.

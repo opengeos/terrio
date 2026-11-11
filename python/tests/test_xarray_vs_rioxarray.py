@@ -17,6 +17,8 @@ pytest.importorskip("xarray")
 pytest.importorskip("dask")
 pytest.importorskip("rioxarray")
 
+pytestmark = pytest.mark.usefixtures("gdal_warp_grid")
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "compare_xarray_with_rioxarray.py"
 if not SCRIPT.exists():
     pytest.skip("the comparison script is not available", allow_module_level=True)

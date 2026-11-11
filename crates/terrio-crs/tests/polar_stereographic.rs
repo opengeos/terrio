@@ -181,6 +181,39 @@ fn cases() -> Vec<Case> {
 
 const LONGITUDES: [f64; 7] = [-180.0, -135.0, -45.0, 0.0, 30.0, 90.0, 180.0];
 
+/// Non-finite coordinates have no inverse. A failed
+/// transform's infinity marker must never become an apparently valid opposite pole.
+#[test]
+fn polar_stereographic_inverse_refuses_nonfinite_coordinates() {
+    for c in cases() {
+        let inv = Transformer::new(&c.crs, &c.geographic).unwrap();
+        for (x, y) in [
+            (f64::INFINITY, f64::INFINITY),
+            (f64::INFINITY, 0.0),
+            (f64::NEG_INFINITY, f64::INFINITY),
+            (0.0, f64::NEG_INFINITY),
+            (f64::NAN, f64::NAN),
+            (0.0, f64::NAN),
+        ] {
+            assert!(inv.transform(x, y).is_err(), "{}: ({x}, {y}) has no inverse", c.name);
+        }
+    }
+}
+
+/// Finite distant points remain valid, converging to the opposite pole. Refusing
+/// non-finite input must not impose an arbitrary finite coordinate cutoff.
+#[test]
+fn polar_stereographic_inverse_keeps_distant_finite_coordinates() {
+    for c in cases() {
+        let inv = Transformer::new(&c.crs, &c.geographic).unwrap();
+        for (distance, tolerance) in [(1e9, 2.0), (1e12, 0.002), (1e20, 1e-8), (1e300, 1e-8)] {
+            let diagonal = distance / 2_f64.sqrt();
+            let (lon, lat) = inv.transform(diagonal, diagonal).unwrap_or_else(|e| panic!("{}: {distance}: {e}", c.name));
+            assert!(lon.is_finite() && (lat + c.pole).abs() < tolerance, "{}: {distance}: ({lon}, {lat})", c.name);
+        }
+    }
+}
+
 /// The pole a CRS is centred on projects to its false origin, from any longitude, and the false
 /// origin is that pole, on the CRS's central meridian. In binary floating point, 90° is 6.1e-17
 /// radians short of the pole (under a nanometre on the ground), so the pole lands within 1e-6 m.

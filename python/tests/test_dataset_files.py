@@ -1,9 +1,34 @@
 """Dataset file sets through the public API, including real GDAL sidecars."""
 
+import struct
+
 import numpy as np
 import pytest
 
 import terrio
+
+
+def test_malformed_tiff_tag_lengths_are_invalid_data(tmp_path):
+    """File inventory and mutations retain the malformed-structure exception class.
+
+    Args:
+        tmp_path: Temporary dataset directory.
+    """
+    source = tmp_path / "malformed.tif"
+    source.write_bytes(
+        b"II+\0\x08\0\0\0" + struct.pack("<QQHHQQQ", 16, 1, 33550, 12, 2**64 - 1, 0, 0)
+    )
+    target = tmp_path / "target.tif"
+    for operation in (
+        lambda: terrio.dataset_files(source, format="GTiff"),
+        lambda: terrio.dataset_copy(source, target, format="GTiff"),
+        lambda: terrio.dataset_rename(source, target, format="GTiff"),
+        lambda: terrio.dataset_delete(source, format="GTiff"),
+    ):
+        with pytest.raises(terrio.InvalidDataError, match="TIFF tag length overflow"):
+            operation()
+        assert source.exists()
+        assert not target.exists()
 
 
 def test_copy_rename_delete_paths_and_batch_preflight(tmp_path):

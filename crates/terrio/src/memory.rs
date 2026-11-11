@@ -4,9 +4,9 @@
 //! A file name goes with the bytes: its extension tells the format, as a path's does, and its stem
 //! names vector layers.
 //!
-//! In native builds, the bytes go through a temporary directory and the file drivers, so every
-//! format reads and writes exactly as from files. WebAssembly builds have no file system and use
-//! in-memory codecs instead, for the formats that have one:
+//! Native reads use a temporary directory and the file drivers. Byte writes use shared codecs
+//! where needed to keep a standalone document or an explicit archive; other native writes use
+//! temporary files. WebAssembly uses in-memory codecs for the formats that have one:
 //!
 //! - reading: GeoTIFF, Esri ASCII grid, JPEG 2000 (JP2 and J2K), GeoPackage (vector layers and rasters), PMTiles and
 //!   MBTiles (raster and vector tiles), MVT tiles, GeoJSON, TopoJSON,
@@ -16,8 +16,8 @@
 //!   layers and rasters), PMTiles and MBTiles, GeoJSON, TopoJSON, FlatGeobuf, CSV, XLSX, GeoParquet, KML, KMZ, GML (without
 //!   its schema), GPX, DWG, DXF and Shapefile ZIP archives (`.shp.zip`).
 //!
-//! Formats made of several files (a shapefile's `.shp`, `.dbf`, `.prj`...) are written as a zip
-//! archive of them.
+//! Shapefile output requires `.shp.zip`; native MapInfo output requires `.mif.zip` or `.tab.zip`.
+//! GML byte output is a standalone document without its schema sidecar on every build.
 //!
 //! With the `gdal` feature, what terrio cannot read is opened by GDAL from memory, through its
 //! `/vsimem/` file system, and extensions terrio has no driver for are written by the GDAL
@@ -51,6 +51,7 @@ fn open_bytes_of_kind(bytes: Vec<u8>, name: &str, kind: Option<Kind>) -> Result<
     {
         let (_dir, path) = native::spill(&bytes, name)?;
         crate::formats::check_allowed(&path, kind)?;
+        check_vector_archive_filename(&bytes, name)?;
         let result = crate::dataset::open_native(&path);
         // What terrio cannot read, GDAL reads from memory (`/vsimem/`).
         #[cfg(feature = "gdal")]
@@ -147,6 +148,7 @@ pub fn open_vector_bytes(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions
     {
         let (_dir, path) = native::spill(&bytes, name)?;
         crate::formats::check_allowed(&path, Some(Kind::Vector))?;
+        check_vector_archive_filename(&bytes, name)?;
         let result = crate::dataset::open_vector_native(&path, options);
         #[cfg(feature = "gdal")]
         let result = crate::dataset::gdal_fallback(&path, result, |_| crate::gdal_backend::open_vector_bytes(bytes, name, options));
@@ -160,6 +162,16 @@ pub fn open_vector_bytes(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions
         Dataset::Vector(v) => Ok(v),
         Dataset::Raster(_) => Err(Error::Unsupported(format!("'{name}' is a raster, not a vector dataset"))),
     }
+}
+
+/// Refuses a multi-file archive mislabeled as a single vector document.
+fn check_vector_archive_filename(bytes: &[u8], name: &str) -> Result<()> {
+    if codec::is_zip(bytes) && matches!(crate::formats::extension(name).as_deref(), Some("gml" | "mif" | "tab")) {
+        return Err(Error::InvalidArgument(format!(
+            "'{name}' contains a ZIP archive: use a .zip filename to read its dataset and sidecars"
+        )));
+    }
+    Ok(())
 }
 
 /// Writes rasters into one netCDF-4 file in memory, each in its group, as
@@ -214,9 +226,20 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
 /// Shapefile driver). The result is `application/zip` on native and WASM alike.
 /// Bare `.shp` names are refused: use [`crate::write_vector`] for filesystem members.
 /// See [`write_shapefile_zip_bytes`] for supported data and refusals.
+/// GML bytes are one XML document without an XSD sidecar; use a `.gml` filename.
+/// Native MapInfo bytes require `.mif.zip` or `.tab.zip`. A `.zip` name with the MapInfo driver
+/// defaults to MIF members. MapInfo byte writing remains unavailable in WebAssembly.
 pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOptions) -> Result<Vec<u8>> {
+    let archive = name.to_ascii_lowercase().ends_with(".zip");
     let driver = match options.driver.or_else(|| {
-        if name.to_ascii_lowercase().ends_with(".shp.zip") { Some(VectorDriver::Shapefile) } else { VectorDriver::for_extension(name) }
+        if archive {
+            match VectorDriver::for_extension(&name[..name.len() - 4]) {
+                Some(driver @ (VectorDriver::Shapefile | VectorDriver::MapInfo | VectorDriver::GML)) => Some(driver),
+                _ => VectorDriver::for_extension(name),
+            }
+        } else {
+            VectorDriver::for_extension(name)
+        }
     }) {
         Some(d) => d,
         None => {
@@ -229,8 +252,27 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
         }
     };
     crate::dataset::ensure_vector_options_apply(options, Some(driver))?;
+    if driver == VectorDriver::GML {
+        if archive {
+            return Err(Error::InvalidArgument(
+                "GML byte output is one XML document: use a .gml filename; use write_vector for a schema sidecar".into(),
+            ));
+        }
+        crate::formats::check_driver_allowed(driver.name(), name, Kind::Vector)?;
+        return codec::write_vector(layers, driver, options);
+    }
+    #[cfg(target_family = "wasm")]
+    if driver == VectorDriver::MapInfo {
+        return Err(Error::Unsupported("MapInfo byte output is unavailable in WebAssembly".into()));
+    }
+    if driver == VectorDriver::MapInfo && !archive {
+        let extension = if crate::formats::extension(name).as_deref() == Some("tab") { "tab" } else { "mif" };
+        return Err(Error::InvalidArgument(format!(
+            "MapInfo bytes are a ZIP archive: use a .{extension}.zip filename (MIME application/zip)"
+        )));
+    }
     if driver == VectorDriver::Shapefile {
-        if !name.to_ascii_lowercase().ends_with(".zip") {
+        if !archive {
             return Err(Error::InvalidArgument("Shapefile bytes are a ZIP archive: use a .shp.zip filename (MIME application/zip)".into()));
         }
         let [layer] = layers else {
@@ -244,7 +286,14 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
     #[cfg(not(target_family = "wasm"))]
     {
         let dir = native::temp_dir()?;
-        let path = dir.path().join(native::file_name(name, driver.info().extensions.first().copied().unwrap_or("dat")));
+        let member_name = if driver == VectorDriver::MapInfo {
+            let stem = &name[..name.len() - 4];
+            let member = native::file_name(stem, "mif");
+            if matches!(crate::formats::extension(&member).as_deref(), Some("mif" | "tab")) { member } else { format!("{member}.mif") }
+        } else {
+            name.to_string()
+        };
+        let path = dir.path().join(native::file_name(&member_name, driver.info().extensions.first().copied().unwrap_or("dat")));
         let path = path.to_str().ok_or_else(|| Error::InvalidArgument(format!("invalid file name '{name}'")))?;
         crate::write_vector(layers, path, &VectorWriteOptions { driver: Some(driver), ..options.clone() })?;
         native::collect(dir.path(), path)
@@ -287,7 +336,7 @@ mod native {
     }
 
     /// The bytes of what a driver wrote: the file itself, or a zip archive of every file written
-    /// when there are several (a shapefile and its sidecars).
+    /// when there are several (a MapInfo table and its sidecars).
     pub(super) fn collect(dir: &Path, main: &str) -> Result<Vec<u8>> {
         let mut files = Vec::new();
         for entry in std::fs::read_dir(dir)? {
@@ -324,7 +373,7 @@ pub(crate) mod codec {
         matches!(b.get(..4), Some(b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+"))
     }
 
-    fn is_zip(b: &[u8]) -> bool {
+    pub(super) fn is_zip(b: &[u8]) -> bool {
         b.starts_with(b"PK\x03\x04") || b.starts_with(b"PK\x05\x06")
     }
 
@@ -390,6 +439,7 @@ pub(crate) mod codec {
 
     /// Opens a dataset from bytes with the in-memory codecs.
     pub(crate) fn open(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions) -> Result<Dataset> {
+        check_vector_archive_filename(&bytes, name)?;
         // Formats this build leaves out, by their extension.
         if let Some(feature) = RasterDriver::for_extension(name).and_then(RasterDriver::missing_feature) {
             return Err(Error::disabled(feature));
@@ -735,6 +785,70 @@ mod tests {
     use wbraster::raster::RasterData;
     use wbraster::{DataType, Raster};
 
+    fn packaging_layer() -> Layer {
+        parse_geojson_layer(
+            br#"{"type":"FeatureCollection","name":"points","features":[{"type":"Feature","properties":{"name":"first","n":1},"geometry":{"type":"Point","coordinates":[10,46]}},{"type":"Feature","properties":{"name":"second","n":2},"geometry":{"type":"Point","coordinates":[11,46]}}]}"#,
+            "points",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn gml_bytes_are_a_document_under_their_filename() {
+        let bytes = write_vector_bytes(&[packaging_layer()], "points.gml", &Default::default()).unwrap();
+        assert!(!bytes.starts_with(b"PK"), "a .gml filename must contain a GML document");
+        let back = open_vector_bytes(bytes.clone(), "points.gml", &Default::default()).unwrap();
+        assert_eq!(back.layers[0].features.len(), 2);
+        let Dataset::Vector(back) = codec::open(bytes, "points.gml", &Default::default()).unwrap() else { panic!() };
+        assert_eq!(back.layers[0].features.len(), 2);
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn mapinfo_bytes_require_explicit_archive_filenames() {
+        for extension in ["mif", "tab"] {
+            let error = write_vector_bytes(&[packaging_layer()], &format!("points.{extension}"), &Default::default()).unwrap_err();
+            assert!(matches!(error, Error::InvalidArgument(_)), "{error}");
+            assert!(error.to_string().contains(&format!(".{extension}.zip")), "{error}");
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn named_mapinfo_archives_round_trip_through_each_reader() {
+        for extension in ["mif", "tab"] {
+            let name = format!("points.{extension}.zip");
+            let bytes = write_vector_bytes(&[packaging_layer()], &name, &Default::default()).unwrap();
+            assert!(bytes.starts_with(b"PK"));
+            let back = open_vector_bytes(bytes.clone(), &name, &Default::default()).unwrap();
+            assert_eq!(back.layers[0].features.len(), 2);
+            let Dataset::Vector(back) = codec::open(bytes, &name, &Default::default()).unwrap() else { panic!() };
+            assert_eq!(back.layers[0].features.len(), 2);
+        }
+    }
+
+    #[test]
+    fn mislabeled_vector_archives_are_refused_instead_of_decoded_as_documents() {
+        use std::io::Write;
+
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file("points.geojson", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(br#"{"type":"FeatureCollection","features":[]}"#).unwrap();
+        let bytes = zip.finish().unwrap().into_inner();
+        for extension in ["gml", "mif", "tab"] {
+            let name = format!("points.{extension}");
+            for error in [
+                open_bytes(bytes.clone(), &name).unwrap_err(),
+                open_vector_bytes(bytes.clone(), &name, &Default::default()).unwrap_err(),
+                codec::open(bytes.clone(), &name, &Default::default()).unwrap_err(),
+            ] {
+                assert!(matches!(error, Error::InvalidArgument(_)), "{error}");
+                assert!(error.to_string().contains("ZIP"), "{error}");
+                assert!(error.to_string().contains(".zip"), "{error}");
+            }
+        }
+    }
+
     #[test]
     fn a_misspelled_layer_name_is_refused_in_memory() {
         let bytes = br#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
@@ -823,7 +937,7 @@ mod tests {
     fn zip_layer_selection_uses_member_names_through_each_reader() {
         let bytes = br#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
         let source = open_vector_bytes(bytes.to_vec(), "source.geojson", &Default::default()).unwrap();
-        for filename in ["member.shp.zip", "member.mif"] {
+        for filename in ["member.shp.zip", "member.mif.zip"] {
             let bytes = write_vector_bytes(&source.layers, filename, &Default::default()).unwrap();
             let member = VectorOpenOptions { layers: vec!["member".into()], ..Default::default() };
             let Dataset::Vector(codec) = codec::open(bytes.clone(), "archive.zip", &member).unwrap() else { panic!() };
@@ -1383,7 +1497,7 @@ mod tests {
             {"type":"Feature","properties":{"id":7,"name":"Zürich"},"geometry":{"type":"Point","coordinates":[8.5,47.4]}},
             {"type":"Feature","properties":{"id":8,"name":"b"},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
         let v = open_vector_bytes(gj.as_bytes().to_vec(), "p.geojson", &Default::default()).unwrap();
-        for name in ["p.shp.zip", "p.mif"] {
+        for name in ["p.shp.zip", "p.mif.zip"] {
             let zip = write_vector_bytes(&v.layers, name, &Default::default()).unwrap();
             // The in-memory codecs (what WebAssembly builds use), and the native path.
             let Dataset::Vector(back) = codec::open(zip.clone(), "p.zip", &Default::default()).unwrap() else { panic!() };
