@@ -442,7 +442,8 @@ fn sample(driver: RasterDriver, dir: &Path) -> Option<(String, Vec<(&'static str
         RasterDriver::EHdr => (write(dir, "ehdr/x.bil", &three(), None), none),
         RasterDriver::GRASSASCIIGrid => (write(dir, "grass/x.txt", &one(), Some(driver)), vec![("TERRIO_WBRASTER_FALLBACK", "YES")]),
         RasterDriver::GSBG => (write(dir, "gsbg/x.grd", &raster(1024, 1024, 1, DataType::F32, 4326, wgs84), None), none),
-        RasterDriver::PCRaster => (write(dir, "pcraster/x.map", &one(), None), none),
+        // `.map` grids, by their extension.
+        d if RasterDriver::for_extension("x.map") == Some(d) => (write(dir, "map/x.map", &one(), None), none),
         RasterDriver::SAGA => (write(dir, "saga/x.sdat", &one(), None), none),
         RasterDriver::RST => (write(dir, "rst/x.rst", &one(), None), none),
         RasterDriver::ERS => (write(dir, "ers/x.ers", &three(), None), none),
@@ -577,7 +578,7 @@ fn stac_items(items: &[(&str, f64)], cols: usize, rows: usize) -> String {
 /// `RasterDriver::ALL` that this build reads: each needs a sample in [`sample`] or a reason in
 /// [`NOT_SAMPLED`]. The largest allocation of each refused open of a sample of at least a MiB of
 /// pixels tells whether it was refused before its pixels were decoded: the opens refused only
-/// after are [`DECODED_FIRST`].
+/// after are [`decoded_first_opens`].
 #[test]
 fn every_driver_is_refused_by_what_its_rasters_declare() {
     let _serial = serial();
@@ -644,37 +645,21 @@ fn every_driver_is_refused_by_what_its_rasters_declare() {
     }
     eprintln!("largest allocations of the refused opens:\n{}", measured.join("\n"));
     if COUNTED {
-        assert_eq!(decoded_first, DECODED_FIRST, "the opens refused only after their pixels were decoded");
+        assert_eq!(decoded_first, decoded_first_opens(), "the opens refused only after their pixels were decoded");
     }
 }
 
 /// The opens of [`every_driver_is_refused_by_what_its_rasters_declare`] refused only after their
-/// pixels were decoded: Esri ASCII grids, whose reader reads every value before it knows their
-/// type, and the formats read by `wbraster` (Esri binary grids, GRASS ASCII grids, PCRaster, DTED),
-/// which decodes the whole raster before terrio sees its size. (Not measured: XYZ grids, whose size
-/// is known only from their points, and samples of less than a MiB.)
-const DECODED_FIRST: &[&str] = &[
-    "AAIGrid eager",
-    "AAIGrid lazy",
-    "AAIGrid generic",
-    "AAIGrid info",
-    "AIG eager",
-    "AIG lazy",
-    "AIG generic",
-    "AIG info",
-    "GRASSASCIIGrid eager",
-    "GRASSASCIIGrid lazy",
-    "GRASSASCIIGrid generic",
-    "GRASSASCIIGrid info",
-    "PCRaster eager",
-    "PCRaster lazy",
-    "PCRaster generic",
-    "PCRaster info",
-    "DTED eager",
-    "DTED lazy",
-    "DTED generic",
-    "DTED info",
-];
+/// pixels were decoded: each of the four opens of these drivers, Esri ASCII grids, whose reader
+/// reads every value before it knows their type, and the formats read by `wbraster` (Esri binary
+/// grids, GRASS ASCII grids, `.map` grids, DTED), which decodes the whole raster before terrio sees
+/// its size. (Not measured: XYZ grids, whose size is known only from their points, and samples of
+/// less than a MiB.)
+fn decoded_first_opens() -> Vec<String> {
+    let map_grids = RasterDriver::for_extension("x.map").expect("the driver of `.map` grids");
+    let drivers = [RasterDriver::AAIGrid, RasterDriver::AIG, RasterDriver::GRASSASCIIGrid, map_grids, RasterDriver::DTED];
+    drivers.iter().flat_map(|d| ["eager", "lazy", "generic", "info"].map(|how| format!("{} {how}", d.name()))).collect()
+}
 
 // ─── Every public entry point ───────────────────────────────────────────────────────────────────
 
