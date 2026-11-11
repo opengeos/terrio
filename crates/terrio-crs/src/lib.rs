@@ -182,18 +182,23 @@ fn epsg_reference(s: &str) -> Option<u32> {
             }
             let starts_with_code = |text: &str| text.as_bytes().first().is_some_and(u8::is_ascii_digit);
             let mut reference = upper.strip_prefix('+').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-            reference |= upper.strip_prefix("EPSG:").is_some_and(|rest| starts_with_code(rest.trim_start_matches(':')));
+            reference |= upper.strip_prefix("EPSG:").is_some_and(|rest| {
+                let code = rest.trim_start_matches(':');
+                let end = code.bytes().take_while(u8::is_ascii_digit).count();
+                end > 0 && !code[end..].starts_with(['.', ':'])
+            });
             reference |= upper
                 .strip_prefix("URN:OGC:DEF:CRS:EPSG:")
-                .is_some_and(|rest| rest.split_once(':').is_some_and(|(_, code)| starts_with_code(code)));
+                .is_some_and(|rest| rest.split_once(':').is_some_and(|(version, code)| version.is_empty() && starts_with_code(code)));
             for prefix in [
                 "HTTP://WWW.OPENGIS.NET/DEF/CRS/EPSG/",
                 "HTTPS://WWW.OPENGIS.NET/DEF/CRS/EPSG/",
                 "HTTP://OPENGIS.NET/DEF/CRS/EPSG/",
                 "HTTPS://OPENGIS.NET/DEF/CRS/EPSG/",
             ] {
-                reference |=
-                    upper.strip_prefix(prefix).is_some_and(|rest| rest.split_once('/').is_some_and(|(_, code)| starts_with_code(code)));
+                reference |= upper.strip_prefix(prefix).is_some_and(|rest| {
+                    rest.split_once('/').is_some_and(|(version, code)| (version.is_empty() || version == "0") && starts_with_code(code))
+                });
             }
             for prefix in [
                 "HTTP://WWW.OPENGIS.NET/GML/SRS/EPSG.XML#",
@@ -381,16 +386,22 @@ impl SpatialRef {
     /// `EPSG:4326+5773`.
     pub fn compound(horizontal: u32, vertical: u32) -> Result<Self> {
         let h = Self::from_epsg(horizontal)?;
+        let v = epsg::vertical(vertical).ok_or_else(|| Error::Crs(format!("EPSG:{vertical} is not a vertical CRS")))?;
+        let name = format!("{} + {}", h.name().unwrap_or_default(), v.name);
+        let wkt = format!("COMPD_CS[\"{name}\",{},{}]", h.to_wkt().unwrap_or_default(), v.wkt);
+        Ok(Self { wkt: Some(wkt), ..Default::default() })
+    }
+
+    /// Validate string-reference component roles without changing metadata composition callers.
+    fn compound_reference(horizontal: u32, vertical: u32) -> Result<Self> {
+        let h = Self::from_epsg(horizontal)?;
         if epsg::vertical(horizontal).is_some()
             || epsg::compound(horizontal).is_some()
             || Def::new(&h).is_ok_and(|d| d.is_geocentric() || d.has_height())
         {
             return Err(Error::Crs(format!("EPSG:{horizontal} is not a two-dimensional horizontal CRS")));
         }
-        let v = epsg::vertical(vertical).ok_or_else(|| Error::Crs(format!("EPSG:{vertical} is not a vertical CRS")))?;
-        let name = format!("{} + {}", h.name().unwrap_or_default(), v.name);
-        let wkt = format!("COMPD_CS[\"{name}\",{},{}]", h.to_wkt().unwrap_or_default(), v.wkt);
-        Ok(Self { wkt: Some(wkt), ..Default::default() })
+        Self::compound(horizontal, vertical)
     }
 
     /// A CRS from a PROJ string such as `+proj=utm +zone=33 +datum=WGS84`.
@@ -483,14 +494,14 @@ impl SpatialRef {
                 }
                 code.parse().map_err(|_| Error::Crs(format!("invalid compound CRS code '{code}'")))
             };
-            return Self::compound(code(horizontal)?, code(vertical)?);
+            return Self::compound_reference(code(horizontal)?, code(vertical)?);
         }
         // `EPSG:4326+5773`: a horizontal and a vertical CRS.
         if let Some(rest) = upper.strip_prefix("EPSG:")
             && let Some((h, v)) = rest.split_once('+')
             && let (Ok(h), Ok(v)) = (h.trim().parse::<u32>(), v.trim().parse::<u32>())
         {
-            return Self::compound(h, v);
+            return Self::compound_reference(h, v);
         }
         if looks_like_wkt(s) {
             // As GDAL's `importFromWkt`: WKT its reader refuses (unbalanced, nested deeper than
@@ -2248,6 +2259,9 @@ mod tests {
             "PREFIX[ID[\"EPSG\",4326]]",
             "EPSG:2154+garbage",
             "EPSG:2154+5720junk",
+            "EPSG:4326.0:3857",
+            "urn:ogc:def:crs:EPSG:4326:3857junk",
+            "https://www.opengis.net/def/crs/EPSG/4326/3857junk",
             "urn:ogc:def:crs:EPSG::2154,crs:EPSG::5720",
             "urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720",
             "urn:ogc:def:crs,crs:EPSG::2154",
@@ -2265,7 +2279,9 @@ mod tests {
     #[test]
     fn compound_components_must_have_horizontal_and_vertical_roles() {
         for (horizontal, vertical) in [(5720, 5713), (4978, 5720), (4979, 5720), (7405, 5720), (2154, 4326)] {
-            assert!(SpatialRef::compound(horizontal, vertical).is_err(), "{horizontal}+{vertical}");
+            for text in [format!("EPSG:{horizontal}+{vertical}"), format!("urn:ogc:def:crs,crs:EPSG::{horizontal},crs:EPSG::{vertical}")] {
+                assert!(SpatialRef::parse_literal(&text).is_err(), "{text}");
+            }
         }
     }
 

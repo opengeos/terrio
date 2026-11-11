@@ -79,6 +79,8 @@ fn compound_urns_use_shared_case_insensitive_parsing() {
     assert!(layer.crs_wkt().unwrap().contains("5713"));
     let Geometry::Point(c) = layer.features[0].geometry.as_ref().unwrap() else { panic!() };
     assert_eq!((c.x, c.y, c.z), (4.0, 52.0, Some(30.0)));
+    // The optional GDAL backend can read authorities outside the native parser's scope.
+    #[cfg(not(feature = "gdal"))]
     assert!(read(&model("3.0", body, "urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720"), "point.gml").is_err());
 }
 

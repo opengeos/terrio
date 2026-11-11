@@ -448,7 +448,8 @@ test("compound CRS URNs preserve both components and GML XYZ", () => {
       assert.deepEqual(ds.toGeoJSON().features[0].geometry.coordinates, [...xy,35]);
     } finally { ds.free(); }
   }
-  for (const name of ["not EPSG:4326", "urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720", "EPSG:4979+5720"]) {
+  for (const name of ["not EPSG:4326", "urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720", "EPSG:4979+5720",
+    "EPSG:4326.0:3857", "urn:ogc:def:crs:EPSG:4326:3857junk", "https://www.opengis.net/def/crs/EPSG/4326/3857junk"]) {
     assert.throws(() => terrio.describeCrs(name));
   }
   const bad = `<FeatureCollection><featureMember><p><geom><Point srsName="urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720"><pos>1 2</pos></Point></geom></p></featureMember></FeatureCollection>`;

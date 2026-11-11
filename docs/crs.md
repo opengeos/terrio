@@ -12,8 +12,11 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   including in GML and CityGML metadata. Compound URNs require exactly two
   components: a two-dimensional horizontal CRS followed by a vertical CRS.
   Unsupported authorities, missing components and invalid component roles are errors.
-  A GML document declaring an unsupported compound CRS now fails to read; it does
-  not open with only one component or with silently discarded CRS metadata.
+  The native GML reader rejects a document declaring an unsupported compound CRS; it does
+  not open with only one component or with silently discarded CRS metadata. The optional
+  GDAL fallback can read additional authorities and follows GDAL's driver settings.
+  WFS service metadata retains its existing permissive handling of unrecognized CRSs;
+  the strict unsupported-compound refusal here applies to native GML/CityGML reads.
   Terrio retains the compound metadata in GML; GDAL requires
   [`GML_REPORT_COMPD_CS=YES`](https://github.com/OSGeo/gdal/blob/v3.13.3/ogr/ogrsf_frmts/gml/ogrgmldatasource.cpp#L1601)
   to report both GML components;

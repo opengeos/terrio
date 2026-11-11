@@ -1478,6 +1478,11 @@ mod tests {
     use super::test_data::{FACE, model};
 
     #[test]
+    fn native_compound_reference_does_not_drop_unsupported_components() {
+        assert!(super::parse_crs("urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720").is_err());
+    }
+
+    #[test]
     fn anonymous_objects_avoid_declared_logical_ids_in_both_document_orders() {
         let mut layer = wbvector::Layer::new("ordinary");
         layer.push(wbvector::Feature { fid: 0, attributes: vec![], geometry: None });

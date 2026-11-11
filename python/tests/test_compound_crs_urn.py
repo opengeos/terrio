@@ -75,6 +75,9 @@ def test_gml_path_and_bytes_keep_compound_axes(tmp_path, horizontal, vertical, p
     "text",
     [
         "not EPSG:4326",
+        "EPSG:4326.0:3857",
+        "urn:ogc:def:crs:EPSG:4326:3857junk",
+        "https://www.opengis.net/def/crs/EPSG/4326/3857junk",
         "urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720",
         "urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::999999999",
         "urn:ogc:def:crs,crs:EPSG::2154",
