@@ -135,7 +135,7 @@ def test_explicit_mapinfo_driver_uses_a_mif_member_in_an_unnamed_zip(points, fil
 
 
 def test_gml_document_preserves_fractional_values_and_date_text(points):
-    """Schema-free GML retains fractional values and lexical date values.
+    """Pin current inference of fractional values and lexical date text without a schema.
 
     Args:
         points: A point layer.

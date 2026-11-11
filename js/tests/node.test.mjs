@@ -4239,6 +4239,21 @@ test("single named layer accepts the file stem across readers and operations", (
   ]) assert.throws(call, /no layer named missing \(layers: roads\)/);
 });
 
+test("MapInfo MIF archives read in WebAssembly", () => {
+  // Native Terrio fixture: points.mif and points.mid, one EPSG:4326 point with label=site.
+  const bytes = new Uint8Array(Buffer.from(
+    "UEsDBBQAAAAIAAAAIQCmDPwxCQAAAAcAAAAKAAAAcG9pbnRzLm1pZFMqzixJVeICAFBLAwQUAAAACAAAACEAVyyj2nAAAAB5AAAACgAAAHBvaW50cy5taWYVzE0KwjAQBtD9nOIjK4UKiVZxn+q64M8+6kBT0gxMxoW3lx7gvSdry1Jx8J7ilLSxwT3u193Z0cAlL9lY4TpHUUQ/t1/DJalNGFVmfttqQ4fge4pSvkttCASU9OKCNdzsj/2WhmSJaJRcDcGjP9EfUEsBAhQDFAAAAAgAAAAhAKYM/DEJAAAABwAAAAoAAAAAAAAAAAAAAKSBAAAAAHBvaW50cy5taWRQSwECFAMUAAAACAAAACEAVyyj2nAAAAB5AAAACgAAAAAAAAAAAAAApIExAAAAcG9pbnRzLm1pZlBLBQYAAAAAAgACAHAAAADJAAAAAAA=",
+    "base64",
+  ));
+  const dataset = terrio.openVector(bytes, "points.mif.zip", {});
+  assert.deepEqual(dataset.layerNames(), ["points"]);
+  const features = dataset.toGeoJSON().features;
+  assert.equal(features.length, 1);
+  assert.equal(features[0].properties.label, "site");
+  assert.deepEqual(features[0].geometry.coordinates, [10, 46]);
+  dataset.free();
+});
+
 test("ZIP layer selection uses the member name rather than the archive name", () => {
   const source = terrio.fromGeoJSON({type: "FeatureCollection", features: [{
     type: "Feature", properties: {}, geometry: {type: "Point", coordinates: [1, 2]},
