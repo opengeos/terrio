@@ -270,10 +270,11 @@ impl Store {
 
     /// Reads the consolidated metadata at the root, when there is some: v2's `.zmetadata`, or the
     /// `consolidated_metadata` of a v3 root group. For a store whose objects the caller fetches,
-    /// the `zarr.json` of the node at `node` (below the root, `""` for none) is asked for in the
-    /// same round as the root's documents, the first: a v3 store without consolidated metadata
-    /// otherwise asks for it in the next round (a round trip; with consolidated metadata, one
-    /// request in vain). Not its `.zarray`: v2 stores nearly always have consolidated metadata.
+    /// the `zarr.json` of the node at `node` (below the root, `""` for none) is requested in the
+    /// first round, with the root's documents, so that a v3 store without consolidated metadata
+    /// does not request it in a later round (a round trip). With consolidated metadata it is one
+    /// request in vain, and a v2 node always pays it: its `.zarray` is not requested early, as v2
+    /// stores nearly always have consolidated metadata.
     fn load_consolidated(&mut self, node: &str) -> Result<()> {
         let mut map = HashMap::new();
         // Both looked for at once: on a remote store, each is a round trip.
@@ -282,8 +283,8 @@ impl Store {
         let found = crate::par::map_range(2, |i| {
             crate::config::with_thread_options(options.clone(), || this.probe([".zmetadata", "zarr.json"][i]))
         });
-        // Root documents not fetched yet (the first round): the node's are missed with them. Their
-        // results are not used here; the lookups that need them read them in later rounds.
+        // The first round (the root's documents not fetched yet): the node's `zarr.json` is
+        // requested with them. Its result is not used here; the lookups that need it read it later.
         if self.is_sparse() && !node.is_empty() && found.iter().any(Result::is_err) {
             let _ = self.probe(&join_key(node, "zarr.json"));
         }
