@@ -343,11 +343,14 @@ impl VrtDataset {
     }
 
     /// Reads the pixels of the virtual raster. `base` is the directory relative source paths are
-    /// relative to.
+    /// relative to. Refused, before any source is read, when the VRT declares more than
+    /// `TERRIO_MAX_DECLARED_BYTES` or `TERRIO_MAX_BANDS` allow.
     pub fn materialize(&self, base: &Path) -> Result<RasterDataset> {
+        let data_type = common_type(self.bands.iter().map(|b| b.data_type));
+        // What the VRT declares, before its output is allocated (see `crate::declared`).
+        crate::declared::check(self.width, self.height, self.bands.len(), data_type, false)?;
         let mut cache: HashMap<PathBuf, RasterDataset> = HashMap::new();
         let n = self.width * self.height;
-        let data_type = common_type(self.bands.iter().map(|b| b.data_type));
         let nodata = self.bands[0].nodata;
         // The output in its type, values converted as they are stored.
         let mut out = RasterData::new_filled(data_type, n * self.bands.len(), 0.0);

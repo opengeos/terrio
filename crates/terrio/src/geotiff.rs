@@ -1455,6 +1455,13 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     if chunk_count > u32::MAX as usize {
         return Err(Error::InvalidData(format!("{}: {chunk_count} chunks", path.display())));
     }
+    // What the header declares, then the buffer it asks for, refused before any chunk is decoded:
+    // a file of a few hundred kilobytes can declare gigabytes (every chunk pointing to the same
+    // compressed block), and a buffer allocated beyond the usable memory kills the process as its
+    // pages are written.
+    let data_type = crate::cog::sample_type(&mut dec).map_or(wbraster::DataType::U8, |(t, _)| t);
+    crate::declared::check(w, h, samples * parts, data_type, complex)?;
+    crate::dataset::fallible::check_raster_buffer("the raster", w, h, samples * parts, data_type)?;
     let spp = if planar { parts } else { samples * parts };
     let window = Window::full(w, h);
     // Each sample of a chunk (each part of a complex one) goes to its band.

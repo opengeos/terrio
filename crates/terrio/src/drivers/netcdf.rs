@@ -533,6 +533,19 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     // A compound of two members of the same numeric type: GDAL's complex bands (`CInt16`,
     // `CInt32`, `CFloat32`, `CFloat64`), read as pairs of real and imaginary bands.
     let complex = complex_part(var.dtype());
+    // What the variable declares, before its values are read (see `crate::declared`).
+    match complex {
+        Some(part) => crate::declared::check(cols, rows, bands * 2, part, true)?,
+        None => {
+            let size = match var.dtype() {
+                NcType::Byte | NcType::UByte | NcType::Char => 1,
+                NcType::Short | NcType::UShort => 2,
+                NcType::Int | NcType::UInt | NcType::Float => 4,
+                _ => 8,
+            };
+            crate::declared::check_bytes(cols, rows, bands, size, false)?;
+        }
+    }
     let data = match (var.dtype(), unsigned) {
         _ if complex.is_some() => {
             let part = complex.unwrap_or(wbraster::DataType::F32);

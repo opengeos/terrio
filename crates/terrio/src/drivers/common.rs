@@ -197,6 +197,8 @@ impl RawRaster {
 
     /// Reads every sample: the dataset as read whole.
     pub(crate) fn read(self) -> Result<RasterDataset> {
+        // What the header declares, before the samples are read (see `crate::declared`).
+        crate::declared::check_dataset(&self.header)?;
         let mut ds = self.header;
         let l = &self.window.layout;
         let all: Vec<usize> = (1..=l.bands).collect();

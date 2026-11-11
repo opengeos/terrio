@@ -2154,6 +2154,8 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
 
 fn read_node(node: &Node) -> Result<RasterDataset> {
     let (mut header, mut source) = open_node(node, false)?;
+    // What the array declares, before any chunk is read (see `crate::declared`).
+    crate::declared::check_dataset(&header)?;
     let r = &header.raster;
     let bands: Vec<usize> = (1..=r.bands).collect();
     header.raster.data = crate::cog::WindowSource::read(&mut source, 0, crate::Window::full(r.cols, r.rows), &bands)?;

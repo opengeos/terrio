@@ -143,6 +143,8 @@ impl StripWriter {
             return Ok(Self { inner: Some(inner), path: path.to_string(), rows, bands, width, nodata_pam, source_mask });
         }
         let mut ds = header.clone();
+        // The whole output, held until it is written: refused when the process cannot hold it.
+        crate::dataset::fallible::check_raster_buffer("the output gathered whole", width, rows, bands, r.data_type)?;
         ds.raster.data = RasterData::new_filled(r.data_type, width * rows * bands, 0.0);
         Ok(Self {
             inner: Some(Inner::Whole { ds: Box::new(ds), options: Box::new(options.clone()), done: 0 }),
@@ -474,6 +476,29 @@ mod tests {
     use crate::crs::SpatialRef;
     use crate::ops::{Grid, raster_header};
     use wbraster::DataType;
+
+    /// An output gathered whole (a format other than GeoTIFF and COG) that the process cannot hold
+    /// is refused when its writer is created, before it is allocated: 2^20 x 2^20 pixels of 2,048
+    /// bands (2 TiB). Where the usable memory is not known (no `/proc`), nothing is refused.
+    #[test]
+    fn an_output_gathered_whole_the_process_cannot_hold_is_refused() {
+        let (cols, rows, bands) = (1usize << 20, 1usize << 20, 2048usize);
+        let bytes = cols * rows * bands;
+        let Some(usable) = crate::usable_memory().filter(|m| (*m as u128) < bytes as u128) else { return };
+        let grid = Grid { width: cols, height: rows, geo_transform: [0.0, 1.0, 0.0, 0.0, 0.0, -1.0] };
+        let header = raster_header(grid, DataType::U8, bands, None, &SpatialRef::default()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("whole.png");
+        let refused = StripWriter::create(&header, path.to_str().unwrap(), &Default::default()).map(|_| ()).unwrap_err();
+        assert!(matches!(refused, Error::ResourceLimit(_)), "{refused:?}");
+        assert_eq!(
+            refused.to_string(),
+            format!(
+                "the output gathered whole of {cols} x {rows} pixels in {bands} band(s) of 1-byte samples is too large to allocate: \
+                 {bytes} bytes, more than the {usable} bytes of memory the process can use"
+            )
+        );
+    }
 
     #[test]
     fn strips_align_to_rows_of_blocks_of_at_most_2_gb() {

@@ -877,7 +877,14 @@ fn raster_from(ds: &GdalDataset, path: &str) -> Result<RasterDataset> {
     let first = ds.rasterband(1).map_err(gdal_err)?;
     // SAFETY: plain queries of a valid band handle and a data type.
     let raw_type = unsafe { gdal_sys::GDALGetRasterDataType(first.c_rasterband()) };
-    if unsafe { gdal_sys::GDALDataTypeIsComplex(raw_type) } != 0 {
+    // What the dataset declares, before its bands are read: a complex band is two parts of half
+    // its size (`GDALGetDataTypeSizeBytes` counts both).
+    // SAFETY: plain queries of a data type.
+    let (complex, size) = unsafe { (gdal_sys::GDALDataTypeIsComplex(raw_type) != 0, gdal_sys::GDALGetDataTypeSizeBytes(raw_type)) };
+    let size = usize::try_from(size).unwrap_or(0);
+    let parts = if complex { 2 } else { 1 };
+    crate::declared::check_bytes(cols, rows, bands * parts, size / parts, complex)?;
+    if complex {
         return complex_raster_from(ds, &first, raw_type, path);
     }
     let band_type = first.band_type();

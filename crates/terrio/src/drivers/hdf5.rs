@@ -699,6 +699,10 @@ fn read_dataset(
         return Err(err(path, format!("{}: its dimensions do not name distinct columns, rows and bands", e.path)));
     }
     let (cols, rows, bands) = (shape[x], y.map_or(1, |y| shape[y]), other.map_or(1, |o| shape[o]));
+    // What the dataset declares, before it is read (see `crate::declared`): a complex band is two
+    // parts.
+    let parts_of = if t.complex.is_some() { 2 } else { 1 };
+    crate::declared::check(cols, rows, bands * parts_of, t.data_type, t.complex.is_some())?;
     let standard = x == nd - 1 && y == nd.checked_sub(2) && (other.is_none() || other == Some(0));
     // Bound every simultaneously live pixel buffer before the first whole read. Using the
     // whole shape for the selected output conservatively covers omitted dimensions too.

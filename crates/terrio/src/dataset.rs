@@ -427,9 +427,19 @@ pub fn open(path: &str) -> Result<Dataset> {
     result
 }
 
+/// [`open`] with terrio's own drivers: a raster it opens declaring more than the options allow
+/// (see [`crate::declared`]) is refused, after it is read when its reader reads it whole at once.
 pub(crate) fn open_native(path: &str) -> Result<Dataset> {
+    let ds = open_native_unchecked(path)?;
+    if let Dataset::Raster(r) = &ds {
+        crate::declared::check_dataset(r)?;
+    }
+    Ok(ds)
+}
+
+fn open_native_unchecked(path: &str) -> Result<Dataset> {
     if let Some(result) = crate::catalog::open_lazy(path) {
-        return result?.read().map(Dataset::Raster);
+        return read_lazy_whole(result?).map(Dataset::Raster);
     }
     if let Some(result) = crate::stac::open(path) {
         return result;
@@ -451,6 +461,12 @@ pub(crate) fn open_native(path: &str) -> Result<Dataset> {
 }
 
 /// Opens a raster dataset, reading it into memory.
+///
+/// A GeoTIFF the process cannot hold (more than [`crate::usable_memory`]) is refused with
+/// [`Error::ResourceLimit`] before its buffer is allocated. A raster that declares more than the
+/// options `TERRIO_MAX_DECLARED_BYTES` (width x height x bands x bytes per sample) or
+/// `TERRIO_MAX_BANDS` allow, when they are set, is refused with [`Error::ResourceLimit`] naming
+/// the option, from its headers where its reader reads them first, else once it is read.
 ///
 /// With the `gdal` feature, paths starting with `GDAL:` are opened by GDAL, and so are those
 /// terrio's own drivers cannot open.
@@ -489,8 +505,21 @@ pub fn open_raster_with_tiff_limits(path: &str, limits: crate::TiffReadLimits) -
 }
 
 fn open_raster_native(path: &str) -> Result<RasterDataset> {
+    let ds = read_raster_native(path)?;
+    crate::declared::check_dataset(&ds)?;
+    Ok(ds)
+}
+
+/// A raster opened to be read by window (an indexed raster catalog, a STAC mosaic or tiled item),
+/// read whole once what it declares is allowed (see [`crate::declared`]).
+pub(crate) fn read_lazy_whole(mut r: crate::LazyRaster) -> Result<RasterDataset> {
+    crate::declared::check_lazy(&r)?;
+    r.read()
+}
+
+fn read_raster_native(path: &str) -> Result<RasterDataset> {
     if let Some(result) = crate::catalog::open_lazy(path) {
-        return result?.read();
+        return read_lazy_whole(result?);
     }
     if let Some(result) = crate::stac::open_raster(path) {
         return match result? {
@@ -2071,6 +2100,19 @@ pub(crate) mod fallible {
             }
             _ => Ok(b),
         }
+    }
+
+    /// [`check_usable`] for a raster buffer of `width` x `height` pixels in `bands` bands of
+    /// `data_type` samples, `what` (the raster read whole, a window), refused as an
+    /// [`crate::Error::ResourceLimit`].
+    pub(crate) fn check_raster_buffer(what: &str, width: usize, height: usize, bands: usize, data_type: DataType) -> crate::Result<()> {
+        let size = data_type.size_bytes();
+        let bytes = [width, height, bands, size].iter().try_fold(1usize, |n, &d| n.checked_mul(d));
+        check_usable(bytes, || {
+            format!("{what} of {width} x {height} pixels in {bands} band(s) of {size}-byte samples is too large to allocate")
+        })
+        .map(|_| ())
+        .map_err(crate::Error::ResourceLimit)
     }
 
     /// [`RasterData::new_filled`], fallibly.

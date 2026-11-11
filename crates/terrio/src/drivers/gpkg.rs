@@ -271,6 +271,9 @@ pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<Raste
         coverage.2 = Some(-32768.0);
     }
     let null_raw = if gridded && coverage.3 == DataType::I16 { Some(65535.0) } else { coverage.2 };
+    // What the tile matrix declares, before any tile is decoded (see `crate::declared`); a
+    // coverage's bands come from its tiles, one by default.
+    crate::declared::check(cols, rows, band_count.unwrap_or(1), if gridded { coverage.3 } else { DataType::U8 }, false)?;
 
     let tiles = db.table(&name)?;
     let mut grid: Option<(usize, Vec<f64>)> = None;

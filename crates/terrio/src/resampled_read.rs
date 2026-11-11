@@ -298,10 +298,15 @@ impl LazyRaster {
         if bw == 0 || bh == 0 {
             return Err(Error::InvalidArgument(format!("the output size {bw}x{bh} is empty")));
         }
-        // An output no allocator can hold is refused before any buffer is sized from it.
+        // An output no allocator can hold is refused before any buffer is sized from it, and so is
+        // one the process cannot hold: allocated beyond the usable memory, it would kill the
+        // process as its pages are written (a translation that does not stream reads its whole
+        // output so).
         let what = "a resampled read";
         let sample_bytes = bands.iter().map(|&b| self.band_data_type(b).size_bytes()).sum::<usize>();
         let bytes = fallible::len(&[sample_bytes.max(1), bw, bh], what)?;
+        fallible::check_usable(Some(bytes), || format!("{what} of {bw} x {bh} pixels in {} band(s) is too large to allocate", bands.len()))
+            .map_err(Error::ResourceLimit)?;
         fallible::reserve(&mut Vec::<u8>::new(), bytes, what)?;
         match o.resampling {
             Resampling::Nearest

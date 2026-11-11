@@ -1984,8 +1984,10 @@ impl GeoTiffWriter {
     ///
     /// # Errors
     /// For explicit overview factors, a source's overviews to copy, and compressions
-    /// terrio's own writer does not encode (WEBP...), which need the whole raster; and when the
-    /// file cannot be created.
+    /// terrio's own writer does not encode (WEBP...), which need the whole raster; when the
+    /// file cannot be created; and, before it is created, [`Error::ResourceLimit`] when the rows
+    /// the writer holds, a row of its blocks of every band (twice while rows are appended to
+    /// it), cannot fit in the memory the process can use ([`crate::usable_memory`]).
     pub fn create(path: &str, header: &crate::RasterDataset, options: &crate::RasterWriteOptions) -> Result<Self> {
         let inner = if options.driver == Some(crate::formats::RasterDriver::Cog) {
             RowWriter::Cog(Box::new(std::sync::Mutex::new(cog_rows(path, header, options)?)))
@@ -2099,6 +2101,7 @@ impl TiffRows {
             }
         };
         let planes = if planar { bands } else { 1 };
+        check_rows_held(r, block_rows)?;
         let mut layout = plan.layout;
         layout.rows_per_strip = Some(block_rows as u32);
         let raw = (cols * rows * bands * size) as u64;
@@ -2372,6 +2375,27 @@ fn slice_rows(data: &RasterData, total: usize, range: std::ops::Range<usize>, co
 }
 
 /// The `a_rows` rows of `a` followed by the `b_rows` rows of `b`, band after band.
+/// Refuses, before its file is created, a row writer ([`TiffRows`], [`CogWriter`]) of a raster
+/// whose rows it would hold cannot fit in the memory the process can use
+/// ([`crate::dataset::fallible::check_usable`]): it keeps the rows of a row of its blocks
+/// (`block_rows` rows, or the raster's rows when it has fewer) of every band until the row is
+/// complete, and holds them twice while a strip is appended to them ([`append_rows`] copies them
+/// with the strip into a new buffer). A raster of a few rows and thousands of bands written as a
+/// COG, whose 512-row tiles hold every band, is held whole.
+fn check_rows_held(r: &Raster, block_rows: usize) -> Result<()> {
+    let (rows, size) = (block_rows.min(r.rows), r.data_type.size_bytes());
+    let bytes = [r.cols, rows, r.bands, size, 2].iter().try_fold(1usize, |n, &d| n.checked_mul(d));
+    crate::dataset::fallible::check_usable(bytes, || {
+        format!(
+            "the rows a GeoTIFF writer holds ({rows} rows of {} pixels in {} band(s) of {size}-byte samples, a row of its blocks, \
+             twice while a strip is appended) are too large to allocate",
+            r.cols, r.bands
+        )
+    })
+    .map(|_| ())
+    .map_err(Error::ResourceLimit)
+}
+
 fn append_rows(a: &RasterData, a_rows: usize, b: &RasterData, b_rows: usize, cols: usize, bands: usize) -> Result<RasterData> {
     macro_rules! join {
         ($($v:ident),*) => {
@@ -2525,6 +2549,7 @@ impl CogWriter {
         }
         let Plan { tile, layout, geo, color_map } = plan(raster, opts)?;
         let tile = tile.map_or(512, |(t, _)| t as usize);
+        check_rows_held(raster, tile)?;
         let planes = if layout.planar { raster.bands / layout.parts } else { 1 };
         let mut sizes = vec![(raster.cols, raster.rows)];
         sizes.extend(gdal_overview::cog_sizes(raster.cols, raster.rows, tile, opts.overview_count));

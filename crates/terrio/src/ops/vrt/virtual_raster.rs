@@ -285,9 +285,12 @@ impl VirtualRaster {
     }
 
     /// Open with an explicit source map. Keys match SourceFilename/SourceDataset exactly.
-    /// This supports uploaded sources in WebAssembly without a filesystem.
+    /// This supports uploaded sources in WebAssembly without a filesystem. Refused when the VRT
+    /// declares more than `TERRIO_MAX_DECLARED_BYTES` or `TERRIO_MAX_BANDS` allow.
     pub fn into_lazy(self, base: &Path, sources: HashMap<String, LazyRaster>) -> Result<LazyRaster> {
-        self.into_lazy_reference(&base.join("__vrt__.vrt").to_string_lossy(), sources)
+        let r = self.into_lazy_reference(&base.join("__vrt__.vrt").to_string_lossy(), sources)?;
+        crate::declared::check_lazy(&r)?;
+        Ok(r)
     }
 
     fn into_lazy_reference(self, base: &str, sources: HashMap<String, LazyRaster>) -> Result<LazyRaster> {
@@ -346,13 +349,17 @@ impl VirtualRaster {
     }
 }
 
-/// Open a local, archived or remote VRT and resolve relative sources from its location.
+/// Open a local, archived or remote VRT and resolve relative sources from its location. Refused
+/// when the VRT declares more than `TERRIO_MAX_DECLARED_BYTES` or `TERRIO_MAX_BANDS` allow, before
+/// any source is opened; each source is checked when a read first opens it.
 pub fn open_virtual_raster(path: &str) -> Result<LazyRaster> {
     // Opened as a VRT, by its name or by its caller: only if the VRT driver is allowed.
     crate::formats::check_driver_allowed("VRT", path, crate::formats::Kind::Raster)?;
     let local = crate::vfs::resolve(path)?;
     let text = String::from_utf8(crate::memfs::read(local.path())?).map_err(|e| invalid(&format!("invalid XML encoding: {e}")))?;
-    VirtualRaster::from_xml(&text)?.into_lazy_reference(path, HashMap::new())
+    let r = VirtualRaster::from_xml(&text)?.into_lazy_reference(path, HashMap::new())?;
+    crate::declared::check_lazy(&r)?;
+    Ok(r)
 }
 
 #[derive(Default)]

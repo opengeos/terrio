@@ -417,6 +417,8 @@ impl RasterCatalog {
         };
         let mut header = RasterDataset::with_driver(raster, crate::formats::RasterDriver::GTI, nodata.is_some());
         header.set_geo_transform([bounds.0, resolution.0, 0.0, bounds.3, 0.0, -resolution.1]);
+        // What the catalog declares, before any of its sources is read for pixels.
+        crate::declared::check_dataset(&header)?;
         catalog.header = header;
         Ok(catalog)
     }

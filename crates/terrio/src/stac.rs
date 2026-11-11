@@ -1862,15 +1862,17 @@ pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
 }
 
 fn open_document(path: &str, as_raster: bool) -> Option<Result<Dataset>> {
+    // Rasters read by window, read whole once what they declare is allowed.
+    let whole = crate::dataset::read_lazy_whole;
     if let Some(r) = crate::stacta::open_named_or_local(path) {
-        return Some(r.and_then(|mut r| r.read()).map(Dataset::Raster));
+        return Some(r.and_then(whole).map(Dataset::Raster));
     }
     match parse_name(path) {
         Some(Name::Asset { item, asset }) => {
             return Some(asset_target(&item, &asset).and_then(|(href, item)| with_asset_read(&item, &href, || crate::open(&href))));
         }
         Some(Name::Mosaic { .. }) => {
-            return Some(open_lazy(path)?.and_then(|mut r| r.read()).map(Dataset::Raster));
+            return Some(open_lazy(path)?.and_then(whole).map(Dataset::Raster));
         }
         None => {}
     }
@@ -1883,7 +1885,7 @@ fn open_document(path: &str, as_raster: bool) -> Option<Result<Dataset>> {
             keep_remote_refusal(path, footprint_dataset(doc, &location, DEFAULT_MAX_ITEMS).map(|(v, _)| Dataset::Vector(v)))
         }
         Ok(Probe::Stacta(item)) => {
-            keep_remote_refusal(path, crate::stacta::open_first(*item, None, None).and_then(|mut r| r.read()).map(Dataset::Raster))
+            keep_remote_refusal(path, crate::stacta::open_first(*item, None, None).and_then(whole).map(Dataset::Raster))
         }
         Ok(Probe::Other(ds)) => Ok(*ds),
         Err(e) => Err(e),
@@ -2007,9 +2009,13 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
             })();
             return Some(match several {
                 Ok(Some(i)) => Ok(i),
-                Ok(None) => {
-                    open_lazy(path)?.and_then(|mut r| crate::info::lazy_raster_info(&mut r, options)).map(|r| Info::Raster(Box::new(r)))
-                }
+                Ok(None) => open_lazy(path)?
+                    .and_then(|mut r| {
+                        // Refused as an open refuses it (see `crate::declared`).
+                        crate::declared::check_lazy(&r)?;
+                        crate::info::lazy_raster_info(&mut r, options)
+                    })
+                    .map(|r| Info::Raster(Box::new(r))),
                 Err(e) => Err(e),
             });
         }

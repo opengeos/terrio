@@ -1229,6 +1229,8 @@ pub(crate) fn read_bytes(bytes: &[u8]) -> Result<RasterDataset> {
 fn read_source(source: StreamSource) -> Result<RasterDataset> {
     use crate::cog::WindowSource;
     let (mut reader, mut ds) = Jp2Window::open(source)?;
+    // What the headers declare, before any tile is decoded (see `crate::declared`).
+    crate::declared::check_dataset(&ds)?;
     let (w, h, bands) = (ds.raster.cols, ds.raster.rows, ds.raster.bands);
     let all: Vec<usize> = (1..=bands).collect();
     ds.raster.data = reader.read(0, crate::Window::full(w, h), &all)?;
