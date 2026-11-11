@@ -23,6 +23,7 @@ Suites:
                       (compare_catalogs_with_gdal.py)
     vrt               serialized warped/derived/kernel VRTs, masks and lazy windows
     overviews         source overview selection and HTTP COG bytes vs gdalwarp -ovr
+    warp-grid         aligned warp tiles and windows on real terrain
     sum-overviews     extensive sum estimates and exact NONE controls vs GDAL
     translate-overviews  resized reads from overviews and HTTP COG bytes vs gdal_translate
                       -outsize/-ovr (compare_translate_overviews_with_gdal.py)
@@ -975,6 +976,18 @@ def suite_overviews(ctx):
         "Synthetic level markers and real USGS terrain exercise AUTO, AUTO-n, NONE and forced levels. "
         "A real COG served over HTTP must transfer less than half as many raster bytes with AUTO as NONE.",
         2,
+    )
+
+
+def suite_warp_grid(ctx):
+    """Aligned tiles and windows retain real terrain values and validity."""
+    return suite_json_ops(
+        ctx, "warp-grid", "compare_warp_grid_invariance.py", "Warp grid consistency",
+        "Terrio whole-grid sampling; GDAL prepares real terrain fixtures",
+        "All 14 resamplers, both kernel versions and thresholds 0/0.125 must retain "
+        "whole-grid values in independent aligned tiles and WarpedVRT windows. "
+        "Validity is exact, Float64 values use absolute tolerance 1e-7. The USGS crop "
+        "includes an interior nodata hole. This is not pixel equality with GDAL warps.", 2,
     )
 
 
@@ -3290,6 +3303,7 @@ SUITES = OrderedDict(
         ("catalogs", suite_catalogs),
         ("vrt", suite_vrt),
         ("overviews", suite_overviews),
+        ("warp-grid", suite_warp_grid),
         ("sum-overviews", suite_sum_overviews),
         ("translate-overviews", suite_translate_overviews),
         ("raster-manage", suite_raster_manage),

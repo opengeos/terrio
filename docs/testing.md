@@ -54,6 +54,30 @@ Coordinate upgrades with the PROJ reference and any regenerated reference data. 
 historical GDAL version annotations attached to the results they describe; update
 current-reference documentation and tests only after validating the new oracle.
 
+## Warp grid consistency
+
+The default warp policy retains pixels and validity across aligned independent tiles,
+VRT windows and memory chunks. `python/tests/test_warp_grid_invariance.py` covers
+all 14 resamplers, both kernel versions, exact/default approximate transforms,
+interior nodata holes, dataset masks, binary alpha, masked arrays and explicit
+configuration overrides. Rust's
+`reprojected_samples_are_invariant_to_memory_chunks` checks a polar reprojection
+with three working memory limits.
+
+The `warp-grid` conformance suite uses a 256 × 256 crop of real USGS terrain,
+prepared by GDAL with an interior nodata hole. It compares independent tiles and
+WarpedVRT windows with their whole-grid output, requiring exact validity and an
+absolute Float64 tolerance of 1e-7:
+
+```sh
+python scripts/conformance.py ../terrio-data --only warp-grid --strict
+```
+
+These are consistency checks, not comparisons with GDAL's chunk-dependent warp
+values. Exact GDAL warp reference tests explicitly select `TERRIO_WARP_GRID=GDAL`;
+the default policy remains covered separately. Kernel version selects arithmetic
+independently of grid policy. See [warp sampling](cli.md#warp) for per-call options.
+
 ## Test data
 
 `scripts/fetch_test_data.sh DIR` downloads public data and derives copies in other formats with

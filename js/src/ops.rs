@@ -254,6 +254,7 @@ struct WarpArgs {
     allow_ballpark: Option<bool>,
     only_best: bool,
     kernel_version: Option<String>,
+    grid_invariant: Option<bool>,
     geoloc: bool,
     s_srs: Option<String>,
     t_srs: Option<String>,
@@ -299,6 +300,7 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     let mut o = WarpOptions {
         transform_options: terrio::crs::TransformOptions { allow_ballpark: a.allow_ballpark, only_best: a.only_best, ..Default::default() },
         kernel_version: terrio::ops::warp::KernelVersion::parse_or_configured(a.kernel_version.as_deref()).map_err(js_err)?,
+        grid_invariant: a.grid_invariant.unwrap_or(true),
         geoloc: a.geoloc,
         src_srs: srs(a.s_srs.as_deref())?,
         dst_srs: srs(a.t_srs.as_deref())?,

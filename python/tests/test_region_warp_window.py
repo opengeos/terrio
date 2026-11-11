@@ -175,7 +175,8 @@ print(json.dumps([window.nbytes, borrowed, peak() - base]))
 """
     )
     nbytes, borrowed, copied = grown
-    assert nbytes == 8192 * 4096 * 2
+    # Nearest samples centers 16..8176 and 16..4080, excluding unused edge pixels.
+    assert nbytes == (8192 - 31) * (4096 - 31) * 2
     assert borrowed < nbytes / 4, grown
     assert copied > nbytes * 3 / 4, grown
 

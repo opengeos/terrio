@@ -1209,14 +1209,23 @@ datum transformations change them, as GDAL does after `PromoteTo3D` on both CRSs
 Point-cloud reprojection currently rejects `--ct-opt` because it does not support
 these controls.
 
+Warp sampling defaults to a grid-invariant policy: aligned tiles, VRT windows and
+memory chunks use the same coordinate approximation spans and local kernel footprints.
+This applies to all resamplers, including with the default approximation threshold.
+It changes values where GDAL's chunk-dependent approximation or kernel scales would
+change them. It does not promise pixel-identical results with GDAL's default warper.
+
 GDAL 3.13 changed warp kernel scales and the bilinear/cubic downsampling threshold.
-Use `warp --kernel-version 3.13` to reproduce that behavior. Without the option, warp
-follows the `TERRIO_GDAL_COMPAT` configuration option (`3.12` or `3.13`), else `3.12`,
-which retains Terrio's earlier results and the repository's GDAL 3.12 conformance
-baseline. Both modes keep lazy window/overview reads. A serialized warped VRT is
-resampled with the reader's configured version, as GDAL's warped VRTs are with the
-reader's GDAL: a different explicit version or explicit coordinate-operation policies
-require materialized output.
+`warp --kernel-version 3.13` selects that arithmetic; without the option, warp follows
+`TERRIO_GDAL_COMPAT` (`3.12` or `3.13`), else `3.12`. To reproduce the corresponding
+GDAL chunk-dependent sampling, also pass `--grid-invariant false`, or set
+`TERRIO_WARP_GRID=GDAL`. An explicit `--grid-invariant true` overrides that setting.
+Both policies retain lazy window/overview reads. Python's `warp` and `WarpedVRT`
+accept `grid_invariant=True|False`; JavaScript's `warp` accepts `gridInvariant`.
+
+A serialized warped VRT uses the reader's configured kernel version and grid policy.
+A different explicit policy or coordinate-operation selection requires materialized
+output to preserve those choices across readers.
 
 `TERRIO_GDAL_COMPAT=3.13` reproduces the other GDAL 3.13 behaviors terrio follows
 where releases differ:

@@ -960,12 +960,12 @@ const GDAL_OPS = [
   ["translate outsize", "translate_outsize.tif", (r) => terrio.translate(r("las_vegas_dem.tif"), { outsize: ["25%", "25%"] })],
   ["translate bands and type", "translate_bands.tif", (r) => terrio.translate(r("landsat.tif"), { bands: [3, 1], ot: "Int16" })],
   ["translate scale", "translate_scale.tif", (r) => terrio.translate(r("usgs_dem.tif"), { ot: "Byte", scale: [1000, 4000, 0, 255] })],
-  ["warp to EPSG:4326 with nodata", "warp_4326.tif", (r) => terrio.warp(r("las_vegas_dem.tif"), { tSrs: "EPSG:4326", srcNodata: 0, dstNodata: -1 })],
-  ["warp to EPSG:3857", "warp_3857.tif", (r) => terrio.warp(r("usgs_dem.tif"), { tSrs: "EPSG:3857" })],
+  ["warp to EPSG:4326 with nodata", "warp_4326.tif", (r) => terrio.warp(r("las_vegas_dem.tif"), { gridInvariant: false, tSrs: "EPSG:4326", srcNodata: 0, dstNodata: -1 })],
+  ["warp to EPSG:3857", "warp_3857.tif", (r) => terrio.warp(r("usgs_dem.tif"), { gridInvariant: false, tSrs: "EPSG:3857" })],
   [
     "warp with a cutline",
     "warp_cutline.tif",
-    (r) => terrio.warp(r("las_vegas_dem.tif"), { cutline: JSON.parse(readFileSync(join(DATA, "wasm_refs", "cutline.geojson"), "utf8")), cropToCutline: true, dstNodata: -9999 }),
+    (r) => terrio.warp(r("las_vegas_dem.tif"), { gridInvariant: false, cutline: JSON.parse(readFileSync(join(DATA, "wasm_refs", "cutline.geojson"), "utf8")), cropToCutline: true, dstNodata: -9999 }),
   ],
   ["mosaic", "mosaic.tif", (r) => terrio.mosaic([r("wasm_refs/part2.tif"), r("wasm_refs/part1.tif")])],
   ...["hillshade", "slope", "aspect", "TRI", "TPI", "roughness"].map((m) => [`dem ${m}`, `dem_${m}.tif`, (r) => terrio.dem(r("srtm_sub.tif"), m)]),
@@ -4323,4 +4323,46 @@ test("vsi: listUrl refuses invalid depth before fetching", async () => {
     }), /depth must be a non-negative integer/);
     assert.equal(fetched, false);
   }
+});
+
+test("warp aligned tiles retain whole-grid values with either kernel version", () => {
+  const values = Float64Array.from({ length: 256 * 256 }, (_, i) => {
+    const x = i % 256, y = Math.floor(i / 256);
+    return x > 70 && x < 130 && y > 40 && y < 180
+      ? NaN : 500 + 300 * Math.sin(x / 37) * Math.cos(y / 53);
+  });
+  const source = terrio.rasterFromArray(values, 256, 256,
+    [447000, 10, 0, 6022000, 0, -10], "EPSG:32633", NaN);
+  for (const kernelVersion of ["3.12", "3.13"]) {
+    for (const et of [0, 0.125]) {
+      for (const resampling of ["near", "bilinear", "cubic", "cubicspline", "lanczos",
+        "average", "rms", "mode", "min", "max", "med", "q1", "q3", "sum"]) {
+        const options = { tSrs: "EPSG:3857", tr: [38, 38], ot: "Float64",
+          dstNodata: NaN, resampling, kernelVersion, et };
+        const whole = terrio.warp(source, options);
+        const expected = whole.readBand(1), gt = whole.transform;
+        const xs = [0, Math.floor(whole.width / 3), whole.width];
+        const ys = [0, Math.floor(whole.height / 3), whole.height];
+        for (let yi = 0; yi < 2; yi++) for (let xi = 0; xi < 2; xi++) {
+          const [x0, x1] = xs.slice(xi, xi + 2), [y0, y1] = ys.slice(yi, yi + 2);
+          const tile = terrio.warp(source, { ...options, te: [gt[0] + x0 * gt[1],
+            gt[3] + y1 * gt[5], gt[0] + x1 * gt[1], gt[3] + y0 * gt[5]] });
+          assert.deepEqual([tile.width, tile.height], [x1 - x0, y1 - y0]);
+          const actual = tile.readBand(1);
+          for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+            const a = actual[(y-y0) * tile.width + x-x0], b = expected[y * whole.width + x];
+            assert.equal(Number.isNaN(a), Number.isNaN(b));
+            if (!Number.isNaN(b)) assert.ok(Math.abs(a-b) <= 1e-7,
+              `${kernelVersion} ${resampling} et=${et} at ${x},${y}: ${a} != ${b}`);
+          }
+          tile.free();
+        }
+        const explicit = terrio.warp(source, { ...options, gridInvariant: true });
+        assert.deepEqual(explicit.readBand(1), expected);
+        explicit.free();
+        whole.free();
+      }
+    }
+  }
+  source.free();
 });
