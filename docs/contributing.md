@@ -276,6 +276,17 @@ into it, and drop drafted entries that an entry already there covers: pull reque
 this rule still wrote their own entries. The `Changelog` CI check fails a pull request that changes
 `CHANGELOG.md` unless its title is `Release X.Y.Z`.
 
+The release pull request also brings `fuzz/Cargo.lock`, the fuzz targets' lockfile, to the versions
+of `Cargo.lock`, so that the targets fuzz the dependencies the release ships:
+
+```sh
+cp Cargo.lock fuzz/Cargo.lock
+cargo update --manifest-path fuzz/Cargo.toml --workspace
+```
+
+Dependency updates can leave it at older versions in between: CI fails it only when it no longer
+matches the manifests or pins a vulnerable version.
+
 ## Release notes
 
 The release workflow publishes notes generated from the merged pull requests. Edit the release

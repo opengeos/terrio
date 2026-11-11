@@ -546,13 +546,27 @@ Actions. Add
 
 The RustSec advisories job (`audit` in `ci.yml`) runs on every pull request and
 on pushes to `main`: advisories are published without the code changing. It runs
-`cargo audit` on `Cargo.lock` with `.cargo/audit.toml`, which ignores the five
+`cargo audit` on `Cargo.lock` and on `fuzz/Cargo.lock`, the fuzz targets'
+lockfile, with `.cargo/audit.toml`, which ignores the five
 advisories of wbraster's zip 8.6.0 and ruzstd 0.8.3 and says why, then again
 without that file: since an ignore covers its advisory in every version of a
 crate, any vulnerability other than those five, in those two versions, fails the
 job. Unmaintained and unsound crates are listed without failing it. Run
 `cargo audit` locally from the repository root: it reads the same file, so it
 ignores those advisories in every version, and only the job checks the versions.
+`cargo audit --file fuzz/Cargo.lock` audits the fuzz targets' lockfile.
+
+The fuzz targets job (`fuzz` in `ci.yml`) checks the targets in `fuzz/`, a
+workspace of their own that `cargo fuzz` builds with a nightly toolchain, against
+their lockfile as it is (`cargo check --locked`): a change that breaks a target,
+or a dependency change that `fuzz/Cargo.lock` does not follow, fails it. To bring
+that lockfile up to date, copy the root one over it and let Cargo remove what the
+targets do not use, which keeps the crates the two share at the root's versions:
+
+```sh
+cp Cargo.lock fuzz/Cargo.lock
+cargo update --manifest-path fuzz/Cargo.toml --workspace
+```
 
 ## Benchmark harness regressions
 
