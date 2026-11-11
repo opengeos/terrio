@@ -356,7 +356,9 @@ pub fn read_with<T>(
 /// rather than a request per block or two.
 pub fn grow_ranges(ranges: &[(u64, u64)], least: u64, block: u64, len: u64) -> Vec<(u64, u64)> {
     let least = least.div_ceil(block.max(1)) * block.max(1);
-    let mut spans: Vec<(u64, u64)> = ranges.iter().map(|&(o, n)| (o, o.saturating_add(n.max(least)).min(len))).collect();
+    // Ranges starting at or past the end hold nothing to fetch.
+    let mut spans: Vec<(u64, u64)> =
+        ranges.iter().filter(|&&(o, _)| o < len).map(|&(o, n)| (o, o.saturating_add(n.max(least)).min(len))).collect();
     spans.sort_unstable();
     let mut out: Vec<(u64, u64)> = Vec::with_capacity(spans.len());
     for (start, end) in spans {
@@ -443,6 +445,8 @@ mod tests {
         assert_eq!(grow_ranges(&[(2 * k, k), (0, k), (18 * k, k)], 3 * k + 512, k, 20 * k), [(0, 6 * k), (18 * k, 2 * k)]);
         // Longer than the least: unchanged.
         assert_eq!(grow_ranges(&[(0, 8 * k)], 2 * k, k, 20 * k), [(0, 8 * k)]);
+        // Past the end: dropped, not an underflowing length.
+        assert_eq!(grow_ranges(&[(25 * k, k), (20 * k, k)], 2 * k, k, 20 * k), []);
     }
 }
 
