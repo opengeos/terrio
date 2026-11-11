@@ -96,6 +96,23 @@ fn refused(result: terrio::Result<()>, allowed: &str) {
 }
 
 #[test]
+fn unknown_append_codec_is_unsupported_before_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dataset(dir.path(), "source", 50, EptDataType::Binary);
+    for convert in [false, true] {
+        for state in ["live-unknown", "committed-unknown"] {
+            let target = dataset(dir.path(), &format!("{state}-{convert}"), 100, EptDataType::Binary);
+            interrupted_update(&target, state);
+            let before = snapshot(target.parent().unwrap());
+            let error = append(&target, &source, convert).unwrap_err();
+            assert!(matches!(error, terrio::Error::Unsupported(_)), "{error:?}");
+            assert!(error.to_string().contains("EPT data type 'unknown'"), "{error}");
+            assert_eq!(snapshot(target.parent().unwrap()), before);
+        }
+    }
+}
+
+#[test]
 fn append_respects_driver_policy_before_any_dataset_changes() {
     // Exercise the process option in children, without mutating this process's environment.
     if let Ok(target) = std::env::var("TERRIO_TEST_EPT_TARGET") {

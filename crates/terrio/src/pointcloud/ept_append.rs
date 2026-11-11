@@ -518,7 +518,8 @@ const STATS_KEYS: [&str; 7] = ["count", "minimum", "maximum", "mean", "variance"
 
 /// LASzip EPT tiles require the LAZ driver before invoking a tile parser.
 fn check_tile_drivers(data_type: &str, name: &str) -> Result<()> {
-    if EptDataType::parse(data_type)? == EptDataType::Laszip {
+    let codec = EptDataType::parse(data_type).map_err(|_| Error::Unsupported(format!("EPT data type '{data_type}'")))?;
+    if codec == EptDataType::Laszip {
         super::read::check_driver("LAZ", name)?;
     }
     Ok(())
