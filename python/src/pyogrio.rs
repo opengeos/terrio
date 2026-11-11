@@ -12,26 +12,30 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-/// Reads the first layer of a vector dataset, keeping the features `skip_features` to
-/// `skip_features + max_features`.
+/// Reads one layer of a vector dataset, keeping the features `skip_features` to
+/// `skip_features + max_features`: the layer named `layer` (as `terrio.list_layers` names it), or
+/// the first.
 ///
-/// Returns a dict: `crs` (`"EPSG:xxxx"`, WKT or None), `crs_wkt`, `driver`, `layer`,
+/// Returns a dict: `crs` (`"EPSG:xxxx"`, WKT or None), `crs_wkt`, `driver`, `layer`, `layers`
+/// (the names of the layers read: every layer of the dataset when `layer` is None),
 /// `feature_count` (of the range), `fields` (`(name, type, width, precision)` per field),
 /// `columns` (a list of values per field: int, float, bool, str or None), `wkb` (ISO WKB per
 /// feature, without M values, None for no geometry; None when `read_geometry` is false), `fids`,
 /// and `geometry_type`: the layer geometry type GDAL's GeoJSON drivers declare for a GeoJSON or
 /// GeoJSONSeq layer (as pyogrio names it), None for other drivers.
 #[pyfunction]
-#[pyo3(signature = (path, skip_features=0, max_features=None, read_geometry=true))]
+#[pyo3(signature = (path, skip_features=0, max_features=None, read_geometry=true, layer=None))]
 fn pyogrio_read<'py>(
     py: Python<'py>,
     path: &str,
     skip_features: usize,
     max_features: Option<usize>,
     read_geometry: bool,
+    layer: Option<String>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    // The range is read by the driver: the Shapefile driver decodes only those records.
-    let options = VectorOpenOptions { skip_features, max_features, ..Default::default() };
+    // The range is read by the driver: the Shapefile driver decodes only those records. A named
+    // layer is the only one read, and the range is that layer's.
+    let options = VectorOpenOptions { skip_features, max_features, layers: layer.iter().cloned().collect(), ..Default::default() };
     let (ds, declared) = terrio::vector::with_declared_geometry_types(|| crate::with_warnings(py, || terrio::open_vector(path, &options)));
     let mut ds = ds?;
     ds.resolve_styles();
@@ -41,8 +45,16 @@ fn pyogrio_read<'py>(
         _ => None,
     };
     let driver = ds.driver.name().to_string();
-    let Some(layer) = ds.layers.into_iter().next() else {
-        return Err(crate::invalid(format!("'{path}' has no layer")));
+    let names: Vec<String> = ds.layers.iter().map(|l| l.name.clone()).collect();
+    // The layer named, found by its name among the layers read (a `STAC:` asset reads them all
+    // whatever is asked); else the first.
+    let index = match &layer {
+        Some(name) => names.iter().position(|n| n == name),
+        None => Some(0),
+    };
+    let named = layer.map(|n| format!(" named {n}")).unwrap_or_default();
+    let Some(layer) = index.and_then(|i| ds.layers.into_iter().nth(i)) else {
+        return Err(crate::invalid(format!("'{path}' has no layer{named}")));
     };
     let total = layer.features.len();
 
@@ -52,6 +64,7 @@ fn pyogrio_read<'py>(
     out.set_item("crs_wkt", layer.crs_wkt())?;
     out.set_item("driver", driver)?;
     out.set_item("layer", &layer.name)?;
+    out.set_item("layers", names)?;
     out.set_item("feature_count", total)?;
     out.set_item("geometry_type", geometry_type)?;
     let fields: Vec<(String, &str, usize, usize)> =

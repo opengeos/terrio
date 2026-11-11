@@ -899,6 +899,7 @@ def pyogrio_read(
     skip_features: int = 0,
     max_features: int | None = None,
     read_geometry: bool = True,
+    layer: str | None = None,
 ) -> dict[str, Any]: ...
 def open_bytes(
     data: bytes | bytearray, filename: str, lazy: bool = False

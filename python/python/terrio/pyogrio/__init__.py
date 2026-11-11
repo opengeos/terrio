@@ -25,6 +25,11 @@ Datasets open through `terrio.open_vector`, so `terrio.set_allowed_drivers` rest
 restricts every terrio open; bytes and file objects are first written to a private temporary
 file, as pyogrio writes them to GDAL's `/vsimem/`.
 
+A dataset of several layers (the tables of a GeoPackage, the folders of a KML document, the
+layers of a GPX file, the shapefiles of a directory or a zip archive...) is read a layer at a
+time: `list_layers` lists them, `layer=` names one (in any case) or numbers it from 0, and
+without `layer` the first is read, with a warning naming the others.
+
 Not provided (they raise `NotImplementedError`): `where`, `sql`, `fids`, `encoding` (set the
 `SHAPE_ENCODING` option instead), dataset open options, writing any driver but GeoJSON, and
 `force_2d` and `mask` of `read_arrow` and `open_arrow` (`read_dataframe` takes both).
@@ -46,7 +51,9 @@ import numpy as np
 
 from terrio import _terrio
 from terrio.pyogrio import errors
+from terrio.pyogrio._read import _Source
 from terrio.pyogrio._read import read as _read
+from terrio.pyogrio._read import read_source as _read_source
 from terrio.pyogrio.errors import DataSourceError
 
 __version__ = "0.13.0"
@@ -382,22 +389,8 @@ def read_info(
         meta, _, geometry, field_data = _read(path_or_buffer, layer=layer, read_geometry=True)
     import shapely
 
-    geoms = (
-        shapely.from_wkb(geometry, on_invalid="ignore")
-        if geometry is not None
-        else np.array([], dtype=object)
-    )
-    present = geoms[~shapely.is_missing(geoms)] if len(geoms) else geoms
-    # GDAL's GeoJSON drivers declare the layer type from the features' geometry objects (the
-    # first position's values, a collection's first member, type names without case), which the
-    # geometries read do not always show: the declared type when there is one.
-    geometry_type = meta["geometry_type"]
-    if geometry_type is None:
-        types = {g.geom_type for g in present}
-        has_z = bool(len(present)) and bool(shapely.has_z(present).any())
-        geometry_type = types.pop() if len(types) == 1 else ("Unknown" if types else None)
-        if geometry_type is not None and has_z:
-            geometry_type += " Z"
+    present = _present(geometry)
+    geometry_type = _geometry_type(meta, present)
     bounds = tuple(shapely.total_bounds(present)) if len(present) else None
     return {
         "layer_name": meta["layer"],
@@ -425,15 +418,61 @@ def read_info(
     }
 
 
+def _present(geometry):
+    """The geometries of a layer read, as shapely objects, without the missing ones."""
+    import shapely
+
+    if geometry is None:
+        return np.array([], dtype=object)
+    geoms = shapely.from_wkb(geometry, on_invalid="ignore")
+    return geoms[~shapely.is_missing(geoms)] if len(geoms) else geoms
+
+
+def _geometry_type(meta, present) -> str | None:
+    """`read_info`'s `geometry_type` of a layer read (`present`: its geometries)."""
+    import shapely
+
+    # GDAL's GeoJSON drivers declare the layer type from the features' geometry objects (the
+    # first position's values, a collection's first member, type names without case), which the
+    # geometries read do not always show: the declared type when there is one.
+    geometry_type = meta["geometry_type"]
+    if geometry_type is None:
+        types = {g.geom_type for g in present}
+        has_z = bool(len(present)) and bool(shapely.has_z(present).any())
+        geometry_type = types.pop() if len(types) == 1 else ("Unknown" if types else None)
+        if geometry_type is not None and has_z:
+            geometry_type += " Z"
+    return geometry_type
+
+
 def read_bounds(*args, **kwargs):
     """Not provided."""
     raise NotImplementedError("terrio.pyogrio does not support read_bounds")
 
 
 def list_layers(path_or_buffer, /):
-    """The layers of a dataset and their geometry types, as an array of `[name, type]` rows."""
-    info = read_info(path_or_buffer)
-    return np.array([[info["layer_name"], info["geometry_type"]]], dtype=object)
+    """The layers of a dataset and their geometry types, as an array of `[name, type]` rows.
+
+    Every layer, in the dataset's order (as `terrio.list_layers` lists them; the shapefiles of a
+    directory or a zip archive), each with the geometry type `read_info` gives it, from its
+    features: each layer is read.
+    """
+    rows = []
+    with _scope(), _Source(path_or_buffer) as source:
+        # A loop, not a comprehension: before Python 3.12 one is a frame of its own.
+        for name in source.layer_names():
+            rows.append([name, _layer_geometry_type(source, name)])
+    return np.array(rows, dtype=object).reshape(len(rows), 2)
+
+
+def _layer_geometry_type(source, name: str) -> str | None:
+    """`read_info`'s `geometry_type` of the layer `name` of an open source.
+
+    A frame of its own, as `read` is for `read_info`, so that the read's warnings point at the
+    call of `list_layers`.
+    """
+    meta, _, geometry, _ = _read_source(source, name, [], True, 0, None, False)
+    return _geometry_type(meta, _present(geometry))
 
 
 def write_dataframe(
