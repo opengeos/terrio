@@ -822,6 +822,7 @@ fn every_public_entry_point_is_refused_by_what_a_raster_declares() {
     #[cfg(feature = "tiles")]
     {
         let (a, b) = (archive.clone(), archive.clone());
+        let archive_bytes = std::fs::read(&archive).unwrap();
         openers.push(row("LazyRaster::from_tile_archive", move || {
             terrio::LazyRaster::from_tile_archive(terrio::tiles::TileArchive::open(&a)?).map(|r| lazy_dims(&r))
         }));
@@ -829,6 +830,25 @@ fn every_public_entry_point_is_refused_by_what_a_raster_declares() {
             terrio::tiles::TileArchive::open(&b)?.into_dataset("x.pmtiles", &Default::default()).map(any_dims)
         }));
         openers.push(row("tiles::open_dataset", move || terrio::tiles::open_dataset(&archive, &Default::default()).map(any_dims)));
+        // Bytes read by window by their own reader, not through the opens of files (as are JPEG
+        // 2000 and GRIB bytes, below).
+        openers.push(row("memory::open_raster_lazy_bytes, PMTiles", move || {
+            terrio::memory::open_raster_lazy_bytes(archive_bytes.clone(), "x.pmtiles").map(|r| lazy_dims(&r))
+        }));
+    }
+    #[cfg(feature = "jp2")]
+    {
+        let jp2 = std::fs::read(write(dir.path(), "x.jp2", &ds, None)).unwrap();
+        openers.push(row("memory::open_raster_lazy_bytes, JPEG 2000", move || {
+            terrio::memory::open_raster_lazy_bytes(jp2.clone(), "x.jp2").map(|r| lazy_dims(&r))
+        }));
+    }
+    #[cfg(feature = "grib")]
+    {
+        let grib = std::fs::read(write(dir.path(), "x.grb2", &ds, None)).unwrap();
+        openers.push(row("memory::open_raster_lazy_bytes, GRIB", move || {
+            terrio::memory::open_raster_lazy_bytes(grib.clone(), "x.grb2").map(|r| lazy_dims(&r))
+        }));
     }
     #[cfg(feature = "zarr")]
     let (objects, store_files) = {
