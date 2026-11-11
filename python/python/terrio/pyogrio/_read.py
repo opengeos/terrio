@@ -67,8 +67,9 @@ def _shapefiles(container: str, names: list[str], path) -> _Located:
 def _vsizip(archive: str, member: str | None) -> _Located:
     """`/vsizip/<archive>/<member>`; without a member, what GDAL opens for `/vsizip/<archive>`.
 
-    The only file of a single-file archive, else the top-level shapefiles, in the archive's order
-    (the archive is a directory to GDAL, which its Shapefile driver opens).
+    Use the only file of a single-file archive, or its top-level shapefiles in archive order.
+    With multiple entries and no top-level shapefile, let the core choose the main dataset
+    and its sidecars from the whole archive.
     """
     if member is None:
         try:
@@ -81,7 +82,9 @@ def _vsizip(archive: str, member: str | None) -> _Located:
         else:
             shapefiles = [n for n in names if "/" not in n and n.lower().endswith(".shp")]
             if not shapefiles:
-                raise DataSourceError(_NOT_RECOGNIZED.format(f"/vsizip/{archive}"))
+                # The core chooses the main dataset and its sidecars. Other files such as a
+                # README do not turn an otherwise readable archive into a shapefile container.
+                return f"/vsizip/{archive}", None
             return _shapefiles(archive, shapefiles, lambda n: f"/vsizip/{archive}/{n}")
     return f"/vsizip/{archive}/{member.lstrip('/')}", None
 
@@ -122,13 +125,20 @@ def _local_path(path: str) -> _Located:
 def _spill_name(data: bytes) -> str:
     """A file name telling terrio the format of bytes, from their content.
 
-    As GDAL identifies `/vsimem/` files: zip archives and GeoJSON.
+    Args:
+        data: Uploaded bytes, identified without opening a file or decoding a dataset.
+
+    Returns:
+        str: A filename derived from the core's shared vector identifiers.
+
+    Raises:
+        DataSourceError: Content cannot be identified without a filename.
     """
     if data[:4] == b"PK\x03\x04":
         return "data.zip"
-    head = data[:64].lstrip(b"\xef\xbb\xbf").lstrip()
-    if head[:1] in (b"{", b"["):
-        return "data.geojson"
+    extension = _terrio.vector_byte_extension(data)
+    if extension is not None:
+        return f"data.{extension}"
     raise DataSourceError(_NOT_RECOGNIZED.format("/vsimem/pyogrio"))
 
 
