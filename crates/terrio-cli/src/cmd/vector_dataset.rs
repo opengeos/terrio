@@ -28,7 +28,7 @@ fn driver(format: Option<&str>) -> Result<Option<VectorDriver>> {
 #[derive(clap::Args)]
 pub struct ConcatArgs {
     /// The input vector datasets, then the output dataset. `@FILE` reads input paths from FILE,
-    /// one per line.
+    /// one per line, and a file name with `*` or `?` matches the files of its folder.
     #[arg(required = true, num_args = 2.., value_name = "INPUT... OUTPUT")]
     paths: Vec<String>,
     /// Read only this layer of each input (repeat for several). By default, every layer.

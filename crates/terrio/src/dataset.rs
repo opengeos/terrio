@@ -45,6 +45,10 @@ pub struct RasterDataset {
     /// cannot hold (they then hold the extent of its footprint); `None` for north-up rasters.
     /// Set it with [`RasterDataset::set_geo_transform`].
     pub affine: Option<[f64; 6]>,
+    /// Whether the source explicitly reports an affine geotransform. `None` for an in-memory
+    /// raster or a driver that does not report presence separately from its fallback pixel grid.
+    /// GDAL-backed whole reads preserve this distinction; setting a transform marks it present.
+    pub geotransform_present: Option<bool>,
     /// Whether the bands hold complex numbers, as GDAL's `CInt16`, `CInt32`, `CFloat32` and
     /// `CFloat64` bands: each complex band is two bands of `raster`, its real parts then its
     /// imaginary parts, of the parts' type (`Int16` for `CInt16`). Band `k` (from 0) of the
@@ -152,6 +156,7 @@ impl RasterDataset {
     /// or south-up one is kept in [`RasterDataset::affine`], the raster's origin and cell sizes
     /// then describing the bounding box of its footprint. Clears any inherited GCPs.
     pub fn set_geo_transform(&mut self, gt: [f64; 6]) {
+        self.geotransform_present = Some(true);
         self.gcps.clear();
         let r = &mut self.raster;
         if is_north_up(&gt) {
@@ -185,6 +190,7 @@ impl RasterDataset {
             band_metadata: Vec::new(),
             gcps: Vec::new(),
             affine: None,
+            geotransform_present: None,
             complex: false,
             geolocation: None,
             metadata_domains: Vec::new(),
@@ -696,7 +702,7 @@ fn open_remote_vector_response(url: &str, options: &VectorOpenOptions) -> Option
     };
     let driver = remote_vector_response_driver(&head)?;
     let result = crate::formats::check_driver_allowed(driver.name(), url, crate::formats::Kind::Vector)
-        .and_then(|()| crate::http::get_file(&remote, crate::http::Redirects::Any))
+        .and_then(|()| crate::http::get_file(&remote, crate::http::Redirects::for_reads()))
         .and_then(|bytes| read_vector_answer(url, bytes, driver, options));
     #[cfg(feature = "gdal")]
     let result = gdal_fallback(url, result, |path| crate::gdal_backend::open_vector(path, options));
@@ -941,6 +947,8 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     }
     let retry = match &e {
         Error::InvalidArgument(_) | Error::Http(_) => false,
+        Error::InvalidData(message) if message.ends_with(crate::drivers::vector::kml::AMBIGUOUS_KMZ) => false,
+        Error::InvalidData(message) if message.ends_with(vfs::AMBIGUOUS_ZIP) => false,
         e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => vfs::is_gdal_name(path),
@@ -952,6 +960,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     // Keep an asset-policy refusal terminal and visible, rather than replacing it with the
     // native format error when a remote STAC-selected raster needs the optional backend.
     crate::stac::check_gdal_asset_read()?;
+    crate::gdal_backend::check_redirect_policy()?;
     gdal(path).map_err(|gdal_error| if gdal_error.is_resource_refusal() { gdal_error } else { e })
 }
 
@@ -994,6 +1003,36 @@ mod fallback_tests {
             });
             assert!(matches!(result, Err(Error::InvalidData(_))));
         }
+    }
+
+    #[test]
+    fn ambiguous_kmz_archives_are_not_retried() {
+        for path in ["input.kmz", "https://example.test/input.kmz?signature=secret"] {
+            let error = naming_dataset(Error::InvalidData(crate::drivers::vector::kml::AMBIGUOUS_KMZ.into()), path, "input.kmz");
+            let result: Result<()> = gdal_fallback(path, Err(error), |_| panic!("duplicate-entry refusal retried through GDAL"));
+            assert!(matches!(result, Err(Error::InvalidData(_))));
+        }
+    }
+
+    #[test]
+    fn ambiguous_zip_archives_are_not_retried() {
+        for path in ["input.zip", "input.xlsx", "https://example.test/input.zip?signature=secret"] {
+            let error = naming_dataset(Error::InvalidData(vfs::AMBIGUOUS_ZIP.into()), path, "input.zip");
+            let result: Result<()> = gdal_fallback(path, Err(error), |_| panic!("duplicate-entry refusal retried through GDAL"));
+            assert!(matches!(result, Err(Error::InvalidData(_))));
+        }
+    }
+
+    #[test]
+    fn origin_only_reads_do_not_use_opaque_gdal_fallbacks() {
+        crate::config::with_options(&[("TERRIO_HTTP_FOLLOW_CROSS_ORIGIN", "NO")], || {
+            for error in [Error::InvalidData("wrapped remote read failure".into()), std::io::Error::other("remote read failure").into()] {
+                let result: Result<()> = gdal_fallback("local.vrt", Err(error), |_| panic!("origin policy bypassed through GDAL"));
+                assert!(matches!(result, Err(Error::InvalidArgument(ref message)) if message.contains("TERRIO_HTTP_FOLLOW_CROSS_ORIGIN")));
+            }
+            let result = crate::gdal_backend::open_raster("GDAL:local.vrt");
+            assert!(matches!(result, Err(Error::InvalidArgument(ref message)) if message.contains("TERRIO_HTTP_FOLLOW_CROSS_ORIGIN")));
+        });
     }
 
     #[test]
@@ -1061,15 +1100,22 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         #[cfg(not(feature = "sqlite"))]
         return Err(Error::disabled("sqlite"));
     }
-    // City-model documents, ESRI JSON and protocol buffers with no recognized extension (a downloaded
-    // query result) use a bounded root probe, as does `.pbf`, which a query's protocol buffer shares
-    // with OpenStreetMap.
+    // The error of the reader of a GeoJSON or GML document that goes on to the `wbvector` fallback
+    // below: reported if the fallback cannot read the document either.
+    #[cfg_attr(target_family = "wasm", allow(unused_mut))]
+    let mut reader_error = None;
+    // A file whose name points to no driver is identified by a bounded probe of its root, as a
+    // remote response under such a name is (`open_remote_vector_response`); so is `.pbf`, which a
+    // query's protocol buffer shares with OpenStreetMap. The probe sees only allowed drivers; with
+    // the `gdal` feature, what a reader refuses goes to GDAL from the entry points.
     #[cfg(not(target_family = "wasm"))]
     let pbf =
         VectorDriver::for_extension(path) == Some(VectorDriver::OSM) && ext == "pbf" && !path.to_ascii_lowercase().ends_with(".osm.pbf");
     #[cfg(not(target_family = "wasm"))]
     if (VectorDriver::for_extension(path).is_none() || pbf) && RasterDriver::for_extension(path).is_none() && !Path::new(path).is_dir() {
-        let driver = crate::inspection::identify(path, false).ok().flatten().and_then(|identified| match identified.driver.as_str() {
+        let identified = crate::inspection::identify(path, false).ok().flatten();
+        let found = identified.as_ref().map(|identified| identified.driver.as_str());
+        let driver = found.and_then(|found| match found {
             "ESRIPBF" => Some(VectorDriver::ESRIPBF),
             _ if pbf => None,
             "CityGML" => Some(VectorDriver::CityGML),
@@ -1077,10 +1123,21 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
             // Its first bytes show ESRI JSON, but a root `type` further on can say GeoJSON: the JSON
             // reader decides on the whole document.
             "ESRIJSON" => Some(VectorDriver::GeoJSON),
+            "GeoJSON" => Some(VectorDriver::GeoJSON),
+            "GML" => Some(VectorDriver::GML),
             _ => None,
         });
         if let Some(driver) = driver {
-            return read_vector_local(path, driver, options).map(Dataset::Vector);
+            let result = read_vector_local(path, driver, options);
+            // A GeoJSON or GML document its reader refuses goes on to the `wbvector` fallback when
+            // that is allowed.
+            let to_fallback = matches!(found, Some("GeoJSON" | "GML"))
+                && wbvector_fallback_allowed()
+                && result.as_ref().is_err_and(|e| !e.is_resource_refusal());
+            match result {
+                Err(e) if to_fallback => reader_error = Some(e),
+                result => return result.map(Dataset::Vector),
+            }
         }
         // Its name also names this driver, which an allow-list may have let it through for: the
         // driver that reads it is the one to judge.
@@ -1134,22 +1191,29 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
             Ok(format) => {
                 // Found by its content (an XML element anywhere in its first 4 KiB, a SQLite
                 // database as a GeoPackage...): read only if the driver of that format is allowed.
-                let driver = VectorDriver::ALL.iter().find(|d| d.to_wb().as_ref() == Some(&format)).map_or("unknown", |d| d.name());
-                crate::formats::check_driver_allowed(driver, path, crate::formats::Kind::Vector)?;
-                wbvector_dataset(wbvector::read(path)?, path, options)
+                let driver = VectorDriver::ALL.iter().find(|d| d.to_wb().as_ref() == Some(&format)).copied();
+                if let Err(refused) =
+                    crate::formats::check_driver_allowed(driver.map_or("unknown", |d| d.name()), path, crate::formats::Kind::Vector)
+                {
+                    return Err(reader_error.unwrap_or(refused));
+                }
+                match wbvector::read(path) {
+                    Ok(layer) => wbvector_dataset(layer, path, options, driver.unwrap_or(VectorDriver::GeoJSON)),
+                    Err(e) => Err(reader_error.unwrap_or_else(|| e.into())),
+                }
             }
-            Err(_) => Err(Error::Unsupported(format!("'{path}': format not recognized ({raster_err})"))),
+            Err(_) => Err(reader_error.unwrap_or_else(|| Error::Unsupported(format!("'{path}': format not recognized ({raster_err})")))),
         },
     }
 }
 
-/// The dataset of a layer read by the `wbvector` fallback.
-fn wbvector_dataset(layer: Layer, path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
-    let layers = select_layers(vec![layer], path, options)?;
-    Ok(Dataset::Vector(VectorDataset::new(
-        layers.into_iter().map(|l| fix_layer(l, path, VectorDriver::GeoJSON)).collect(),
-        VectorDriver::GeoJSON,
-    )))
+/// The dataset of a layer read by the `wbvector` fallback: the range of features `options` asks
+/// for (`skip_features`, `max_features`), as a driver's read keeps it, and the driver of the format
+/// the fallback found.
+fn wbvector_dataset(layer: Layer, path: &str, options: &VectorOpenOptions, driver: VectorDriver) -> Result<Dataset> {
+    let mut layers = select_layers(vec![layer], path, options)?;
+    layers.iter_mut().for_each(|l| options.keep_range(l));
+    Ok(Dataset::Vector(finish_vector(layers, path, driver)))
 }
 
 /// Whether the `wbvector` fallback reads a file as KMZ: a zip archive, whatever its name (a zip
@@ -2329,13 +2393,16 @@ mod content_allow_list_tests {
         assert!(read.as_ref().is_err_and(|e| !e.contains("not allowed")), "read as the vector archive it is: {read:?}");
     }
 
-    /// With `TERRIO_WBVECTOR_FALLBACK=YES`, `wbvector` detects a file named for no driver by its
-    /// content, as KML when `<kml` is anywhere in its first 4 KiB, where `sniff` saw a GeoJSON
-    /// document: the format it finds is read only if its driver is allowed.
+    /// With `TERRIO_WBVECTOR_FALLBACK=YES`, `wbvector` detects a file named for no driver that
+    /// terrio's drivers do not read by its content, as KML when `<kml` is anywhere in its first
+    /// 4 KiB, where `sniff` saw a GeoJSON document (any JSON object): the format it finds is read
+    /// only if its driver is allowed. A GeoJSON document is read as GeoJSON before the fallback.
     #[test]
     fn the_wbvector_fallback_reads_only_allowed_drivers() {
         let dir = tempfile::tempdir().unwrap();
-        let geojson = dir.path().join("q.dat2");
+        let json = dir.path().join("q.dat2");
+        std::fs::write(&json, r#"{"features":[],"name":"<kml"}"#).unwrap();
+        let geojson = dir.path().join("g.dat2");
         std::fs::write(&geojson, r#"{"type":"FeatureCollection","features":[],"name":"<kml"}"#).unwrap();
         let kml = dir.path().join("k.dat2");
         let doc = r#"<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>
@@ -2345,12 +2412,13 @@ mod content_allow_list_tests {
             let options = [("TERRIO_ALLOWED_DRIVERS", drivers), ("TERRIO_WBVECTOR_FALLBACK", "YES")];
             with(&options, || open(path.to_str().unwrap())).map(|d| matches!(d, Dataset::Vector(_))).map_err(|e| e.to_string())
         };
-        assert_refused(open_with(&geojson, "GeoJSON"), "KML", "a GeoJSON document holding '<kml'");
+        assert_refused(open_with(&json, "GeoJSON"), "KML", "a JSON document holding '<kml'");
+        assert_eq!(open_with(&geojson, "GeoJSON"), Ok(true), "a GeoJSON document holding '<kml'");
         assert_eq!(open_with(&kml, "KML"), Ok(true));
     }
 
     /// With `TERRIO_WBVECTOR_FALLBACK=YES`, a zip archive named for no driver is read as KMZ: its
-    /// `doc.kml` in any case, else its first `.kml` member, its members stored or deflated. A zip
+    /// first `.kml` entry at the root, here `DOC.KML`, its members stored or deflated. A zip
     /// archive is never XML, so one named `.xml` is read as KMZ too, even with `<kml` in its first
     /// 4 KiB: only a path without an extension beside a `.shp` file is read as the shapefile.
     // Without the GDAL backend: with it, what terrio refuses goes on to GDAL (gdal_fallback).
@@ -2372,7 +2440,7 @@ mod content_allow_list_tests {
             zip.finish().unwrap().into_inner()
         };
         let main = kml("main", &[point("10.5,47.25"), point("11.5,46.5")].concat());
-        let members = [("notes.txt", "-".to_string()), ("a.kml", kml("first", &point("1,2"))), ("DOC.KML", main)];
+        let members = [("notes.txt", "-".to_string()), ("DOC.KML", main), ("a.kml", kml("first", &point("1,2")))];
         let (stored, deflated) = (archive(zip::CompressionMethod::Stored, &members), archive(zip::CompressionMethod::Deflated, &members));
         let shows_kml = |bytes: &[u8]| bytes[..bytes.len().min(4096)].windows(4).any(|w| w == b"<kml");
         assert_eq!((shows_kml(&stored), shows_kml(&deflated)), (true, false), "<kml in the first 4 KiB: (stored, deflated)");
@@ -2536,11 +2604,11 @@ mod content_allow_list_tests {
     }
 
     /// With `TERRIO_WBVECTOR_FALLBACK=YES`, a zip archive named for no driver is read as the same
-    /// archive named `.kmz` is: from its first member named `doc.kml` (in any case) at the
-    /// archive's root, else its first `.kml` member. An archive with two `doc.kml` members reads the
-    /// last one (zip keeps one entry per name, the last), and a member that cannot be opened
-    /// (encrypted) stops the read only if it is the one read. The document is decoded as Latin-1
-    /// when it is not UTF-8.
+    /// archive named `.kmz` is: from its first `.kml` member at the archive's root, whatever its
+    /// name, else its first `.kml` member. An archive with two `doc.kml` members is refused (zip
+    /// keeps one entry per name, the last, so the first cannot be read), and a member that cannot
+    /// be opened (encrypted) stops the read only if it is the one read. The document is decoded as
+    /// Latin-1 when it is not UTF-8.
     #[cfg(not(feature = "gdal"))]
     #[test]
     fn the_wbvector_fallback_reads_the_kmz_member_the_kmz_driver_reads() {
@@ -2553,14 +2621,17 @@ mod content_allow_list_tests {
         // A document in Latin-1 (é is the byte 0xE9), not UTF-8.
         let latin1: Vec<u8> =
             format!(r#"<?xml version="1.0" encoding="ISO-8859-1"?>{}"#, kml("caf\u{e9}")).chars().map(|c| c as u8).collect();
-        let cases: [(&str, &[Member], &str); 7] = [
-            ("twice", &[("doc.kml", first, 0), ("doc.kml", last, 0)], "last"),
-            ("cases", &[("DOC.KML", upper, 0), ("doc.kml", last, 0)], "upper"),
-            ("no_doc", &[("notes.txt", b"-", 0), ("b.kml", b, 0), ("a.kml", a, 0)], "b"),
-            ("nested", &[("b.kml", b, 0), ("files/doc.kml", a, 0)], "b"),
-            ("locked_before", &[("secret.txt", b"-", 1), ("doc.kml", last, 0)], "last"),
-            ("locked_after", &[("doc.kml", last, 0), ("secret.txt", b"-", 1)], "last"),
-            ("latin1", &[("doc.kml", &latin1, 0)], "caf\u{e9}"),
+        let ambiguous =
+            r#"Err(InvalidData("KMZ: the archive holds several entries with the same name, so its main document is ambiguous"))"#;
+        let cases: [(&str, &[Member], std::result::Result<&str, &str>); 8] = [
+            ("twice", &[("doc.kml", first, 0), ("doc.kml", last, 0)], Err(ambiguous)),
+            ("cases", &[("DOC.KML", upper, 0), ("doc.kml", last, 0)], Ok("upper")),
+            ("before_doc", &[("a.kml", a, 0), ("doc.kml", last, 0)], Ok("a")),
+            ("no_doc", &[("notes.txt", b"-", 0), ("b.kml", b, 0), ("a.kml", a, 0)], Ok("b")),
+            ("nested", &[("b.kml", b, 0), ("files/doc.kml", a, 0)], Ok("b")),
+            ("locked_before", &[("secret.txt", b"-", 1), ("doc.kml", last, 0)], Ok("last")),
+            ("locked_after", &[("doc.kml", last, 0), ("secret.txt", b"-", 1)], Ok("last")),
+            ("latin1", &[("doc.kml", &latin1, 0)], Ok("caf\u{e9}")),
         ];
         let dir = tempfile::tempdir().unwrap();
         let read = cases.map(|(name, members, _)| {
@@ -2575,7 +2646,10 @@ mod content_allow_list_tests {
             });
             (name, read)
         });
-        let expected = cases.map(|(name, _, layer)| (name, [Ok(layer.to_string()), Ok(layer.to_string())]));
+        let expected = cases.map(|(name, _, layer)| {
+            let layer = layer.map(str::to_string).map_err(str::to_string);
+            (name, [layer.clone(), layer])
+        });
         assert_eq!(read, expected, "the layer read from each archive: [by the fallback, by the KMZ driver]");
     }
 }

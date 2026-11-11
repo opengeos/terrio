@@ -25,7 +25,6 @@ terrio-crs = { workspace = true, features = ["wbprojection-fallback"] }
 wbraster.workspace = true
 wbvector.workspace = true
 wbprojection.workspace = true
-geographiclib-rs.workspace = true
 geo.workspace = true
 rstar.workspace = true
 spade.workspace = true
@@ -48,11 +47,10 @@ arrow-select = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 quick-xml.workspace = true
 encoding_rs.workspace = true
-osmpbfreader = { workspace = true, optional = true }
 half.workspace = true
 flate2.workspace = true
 # Adler-32 for the zlib streams of `deflate_compress`.
-zlib-rs = "0.6"
+zlib-rs.workspace = true
 fdeflate.workspace = true
 weezl.workspace = true
 png.workspace = true
@@ -82,7 +80,7 @@ rayon.workspace = true
 rusty_av1d = { workspace = true, optional = true }
 lzma-rust2 = { workspace = true, optional = true }
 # GRIB2's CCSDS packing (template 5.42): a pure-Rust decoder of CCSDS 121.0-B-3 (libaec's format).
-rust-aec = { version = "0.1.1", optional = true }
+rust-aec = { workspace = true, optional = true }
 
 # The optional GDAL backend: opens what GDAL can when terrio has no driver for it. Needs GDAL
 # (3.4 or later) installed, found with pkg-config or GDAL_HOME.
@@ -124,7 +122,7 @@ hecras = ["netcdf-hdf5", "dep:ras-commander-fast-hdf"]
 ## XLSX and XLSM workbooks as vector layers (pure Rust).
 xlsx = []
 ## OpenStreetMap PBF and XML.
-osm = ["dep:osmpbfreader"]
+osm = ["dep:memmap2"]
 ## LZMA-compressed GeoTIFFs.
 lzma = ["dep:lzma-rust2"]
 ## FlatGeobuf.
@@ -142,7 +140,7 @@ tiles = ["sqlite"]
 ## Zarr v2 and v3.
 zarr = ["dep:lz4_flex"]
 ## GeoPackage (vector and raster tiles), SQLite/SpatiaLite and the SQLite store of MBTiles.
-sqlite = []
+sqlite = ["dep:memmap2"]
 ## Zstandard (GeoTIFF chunks and EPT tiles) with the zstd C library, natively: it decodes faster
 ## and compresses better than `ruzstd`, used without it and in WebAssembly, which writes at its
 ## fastest level (about zstd's 1) whatever level is asked for. terrio decodes every ZSTD GeoTIFF
@@ -159,8 +157,9 @@ gdal = ["dep:gdal", "dep:gdal-sys", "dep:chrono"]
 ndarray = ["dep:ndarray"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+# Memory-mapped reads of SQLite files (`sqlite`) and OSM PBF files (`osm`).
+memmap2 = { workspace = true, optional = true }
 # `libzstd`: EPT tiles' Zstandard, natively (without it, and in WebAssembly, `ruzstd`).
-memmap2.workspace = true
 zstd = { workspace = true, optional = true }
 tempfile.workspace = true
 # Listing and extracting tar archives (`terrio::vsi`).
@@ -186,12 +185,16 @@ ureq = { workspace = true, optional = true, features = ["rustls"] }
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 # Windows file identity (including hard links) for dataset destination guards.
 same-file.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+# The bounded-memory test of compressed XLSX workbooks maps its input.
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+memmap2.workspace = true
 
 [[example]]
 name = "xlsx_workbook"

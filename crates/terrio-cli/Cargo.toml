@@ -45,15 +45,15 @@ pkg-fmt = "zip"
 terrio.workspace = true
 clap.workspace = true
 serde_json.workspace = true
-getrandom = "0.4"
+getrandom.workspace = true
 tempfile.workspace = true
 
 # Silencing drivers' prints (`cmd::quiet`): WASI has no file descriptors to redirect.
 [target.'cfg(not(target_os = "wasi"))'.dependencies]
-gag = "1"
+gag.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc.workspace = true
 
 [dev-dependencies]
 sha2.workspace = true

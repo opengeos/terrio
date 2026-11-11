@@ -336,9 +336,11 @@ pub(crate) fn archive_dataset(mut archive: TileArchive, name: &str, options: &cr
         };
         let names: Vec<String> = layers.iter().map(|l| l.name.clone()).collect();
         let mut ds = crate::dataset::finish_vector(layers, name, driver);
-        // Every layer keeps the name the tiles give it.
+        // Every layer keeps the name the tiles give it, and the range of features asked for
+        // (`skip_features`, `max_features`), after the spatial filter.
         for (l, n) in ds.layers.iter_mut().zip(names) {
             l.name = n;
+            options.keep_range(l);
         }
         return Ok(crate::Dataset::Vector(ds));
     }
@@ -825,4 +827,64 @@ pub(crate) fn layer_names(path: &str) -> Result<Vec<String>> {
         };
     }
     Ok(names)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::formats::VectorDriver;
+    use crate::{VectorOpenOptions, VectorWriteOptions};
+
+    /// The names of a layer's features: the `name` field of the points written.
+    fn names(layer: &crate::Layer) -> Vec<String> {
+        let i = layer.schema.fields().iter().position(|f| f.name == "name").unwrap();
+        layer.features.iter().map(|f| f.attributes[i].as_str().unwrap_or_default().to_string()).collect()
+    }
+
+    /// `skip_features` and `max_features` keep those features of each layer of a vector MBTiles or
+    /// PMTiles archive, read whole or by layer, from a file or from bytes.
+    #[test]
+    fn a_feature_range_keeps_those_features_of_each_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let layer = |name: &str, n: usize, x0: f64| {
+            let features: Vec<String> = (0..n)
+                .map(|i| {
+                    format!(
+                        r#"{{"type":"Feature","properties":{{"name":"{name}{i}"}},"geometry":{{"type":"Point","coordinates":[{},{}]}}}}"#,
+                        x0 + i as f64,
+                        0.5 * i as f64
+                    )
+                })
+                .collect();
+            let path = dir.path().join(format!("{name}.geojson"));
+            std::fs::write(&path, format!(r#"{{"type":"FeatureCollection","features":[{}]}}"#, features.join(","))).unwrap();
+            crate::open_vector(path.to_str().unwrap(), &VectorOpenOptions::default()).unwrap().layers.remove(0)
+        };
+        let two = [layer("five", 5, 0.0), layer("three", 3, 10.0)];
+        for (file, driver) in [("two.mbtiles", VectorDriver::MBTiles), ("two.pmtiles", VectorDriver::PMTiles)] {
+            let path = dir.path().join(file);
+            let path = path.to_str().unwrap();
+            let mut o = VectorWriteOptions { driver: Some(driver), ..Default::default() };
+            o.tiles.max_zoom = Some(2);
+            crate::write_vector(&two, path, &o).unwrap();
+            let whole: Vec<Vec<String>> =
+                crate::open_vector(path, &VectorOpenOptions::default()).unwrap().layers.iter().map(names).collect();
+            assert!(whole.iter().all(|l| l.len() >= 3), "{file}: {whole:?}");
+            let bytes = std::fs::read(path).unwrap();
+            for (layers, skip, max) in [(vec![], 1, Some(2)), (vec!["three".to_string()], 1, Some(1)), (vec![], 2, None)] {
+                let options = VectorOpenOptions { layers: layers.clone(), skip_features: skip, max_features: max, ..Default::default() };
+                for read in
+                    [crate::open_vector(path, &options).unwrap(), crate::memory::open_vector_bytes(bytes.clone(), file, &options).unwrap()]
+                {
+                    let got: Vec<(String, Vec<String>)> = read.layers.iter().map(|l| (l.name.clone(), names(l))).collect();
+                    let want: Vec<(String, Vec<String>)> = ["five", "three"]
+                        .iter()
+                        .zip(&whole)
+                        .filter(|(n, _)| layers.is_empty() || layers.iter().any(|l| l == *n))
+                        .map(|(n, all)| (n.to_string(), all.iter().skip(skip).take(max.unwrap_or(usize::MAX)).cloned().collect()))
+                        .collect();
+                    assert_eq!(got, want, "{file}, layers {layers:?}, skip {skip}, max {max:?}");
+                }
+            }
+        }
+    }
 }

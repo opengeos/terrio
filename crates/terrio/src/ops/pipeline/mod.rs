@@ -409,7 +409,9 @@ impl PipelineResult {
                 Artifact::Data { spec, data } => match data {
                     PipelineData::Raster(r) => {
                         let mut options = raster_options(spec)?;
-                        keep_unreferenced(r, &mut options, &spec.path);
+                        // An unreferenced output stays so; only pipeline outputs, so other writers
+                        // that share `prepare_output_mask` (such as `palette`) keep theirs.
+                        r.keep_unreferenced(&mut options, &spec.path);
                         r.prepare_output_mask(&spec.path, &mut options, Window::full(r.width(), r.height()), None)?;
                         crate::memory::write_raster_bytes(&r.read()?, &spec.path, &options)?
                     }
@@ -465,7 +467,9 @@ impl PipelineResult {
                 Artifact::Data { spec, data } => match data {
                     PipelineData::Raster(r) => {
                         let mut options = raster_options(spec)?;
-                        keep_unreferenced(r, &mut options, &spec.path);
+                        // An unreferenced output stays so; only pipeline outputs, so other writers
+                        // that share `prepare_output_mask` (such as `palette`) keep theirs.
+                        r.keep_unreferenced(&mut options, &spec.path);
                         r.prepare_output_mask(&spec.path, &mut options, Window::full(r.width(), r.height()), None)?;
                         if options.mask.is_some() && options.driver == Some(RasterDriver::Cog) {
                             crate::write_raster_dataset(&r.read()?, &spec.path, &options)?;
@@ -489,18 +493,6 @@ impl PipelineResult {
             }
         }
         Ok(())
-    }
-}
-/// Keeps an unreferenced GeoTIFF/COG output unreferenced. Applied only to pipeline outputs, so
-/// other writers that share `prepare_output_mask` (such as `palette`) keep their own output.
-fn keep_unreferenced(raster: &LazyRaster, options: &mut crate::RasterWriteOptions, path: &str) {
-    let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
-    if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog))
-        && !raster.geotransform_present()
-        && options.geo_transform.is_none()
-        && !options.creation_options.iter().any(|(key, _)| key.eq_ignore_ascii_case("GEOREFERENCED"))
-    {
-        options.creation_options.push(("GEOREFERENCED".into(), "NO".into()));
     }
 }
 fn raster_options(spec: &WriteSpec) -> Result<crate::RasterWriteOptions> {
@@ -1172,7 +1164,7 @@ mod tests {
             assert!(!reader.geotransform_present());
             let output = dir.path().join(format!("copy-{with_gcps}.tif"));
             let mut options = crate::RasterWriteOptions::default();
-            keep_unreferenced(&reader, &mut options, output.to_str().unwrap());
+            reader.keep_unreferenced(&mut options, output.to_str().unwrap());
             reader.prepare_output_mask(output.to_str().unwrap(), &mut options, Window::full(2, 2), None).unwrap();
             reader.write(output.to_str().unwrap(), &options).unwrap();
             let mut copy = LazyRaster::open(output.to_str().unwrap()).unwrap();
