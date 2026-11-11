@@ -152,18 +152,20 @@ fn identify_drivers(py: Python<'_>, path: &str) -> PyResult<(Vec<String>, Option
 
 /// The HTTP traffic of this process since the last reset, with GDAL's network-statistics counters
 /// (`VSINetworkStatsGetAsSerializedJSON`'s `downloaded_bytes`, `uploaded_bytes` and `count`):
-/// `{"request_count": n, "received_bytes": n, "sent_bytes": 0, "requests": n, "bytes": n,
+/// `{"request_count": n, "received_bytes": n, "sent_bytes": n, "requests": n, "bytes": n,
 /// "hosts": {host: {...}}, "files": {name: {...}}}`, with the same counters per host asked for
 /// (`host:port`) and per file, named as GDAL names them (`/vsiaz/container/blob`,
 /// `/vsicurl/<url>` without its query string). `requests` and `bytes` are the older names of
 /// `request_count` and `received_bytes`. Every response counts, error responses and their bodies
-/// included, as GDAL counts them; terrio sends no request bodies, so `sent_bytes` is 0.
+/// included, as GDAL counts them. A redirect is not counted, nor the body of its request.
+/// `sent_bytes` counts the bodies of the requests counted: uploads (`PUT`), batch deletes and
+/// `POST` requests such as STAC searches.
 #[pyfunction]
 fn network_stats(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    fn counters(d: &Bound<'_, PyDict>, requests: u64, bytes: u64) -> PyResult<()> {
+    fn counters(d: &Bound<'_, PyDict>, requests: u64, bytes: u64, sent: u64) -> PyResult<()> {
         d.set_item("request_count", requests)?;
         d.set_item("received_bytes", bytes)?;
-        d.set_item("sent_bytes", 0u64)?;
+        d.set_item("sent_bytes", sent)?;
         d.set_item("requests", requests)?;
         d.set_item("bytes", bytes)
     }
@@ -173,17 +175,17 @@ fn network_stats(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let total = terrio::http::fetch_stats();
-        counters(&out, total.requests, total.bytes)?;
+        counters(&out, total.requests, total.bytes, total.sent_bytes)?;
         for (map, stats) in [(&hosts, terrio::http::fetch_stats_by_host()), (&files, terrio::http::fetch_stats_by_file())] {
             for (key, s) in stats {
                 let d = PyDict::new(py);
-                counters(&d, s.requests, s.bytes)?;
+                counters(&d, s.requests, s.bytes, s.sent_bytes)?;
                 map.set_item(key, d)?;
             }
         }
     }
     #[cfg(target_arch = "wasm32")]
-    counters(&out, 0, 0)?;
+    counters(&out, 0, 0, 0)?;
     out.set_item("hosts", hosts)?;
     out.set_item("files", files)?;
     Ok(out)
