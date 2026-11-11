@@ -537,8 +537,8 @@ impl EptAppender {
         if !dir.join("ept.json").exists() {
             return Err(Error::InvalidArgument(format!("'{}' is not an EPT dataset: it has no ept.json", dir.display())));
         }
-        // Check staged metadata too: even an altered committed update must not publish a codec
-        // the caller disallows. Recheck while locked in case another append just finished.
+        // Refuse before taking the lock, so a disallowed append creates no lock file. Check
+        // committed staged metadata too, then recheck under the lock in case another append finished.
         check_append_drivers(&dir, path)?;
         let lock = Lock::take(&dir)?;
         let staged = check_append_drivers(&dir, path)?;
@@ -550,7 +550,6 @@ impl EptAppender {
         let crs = super::read::FormatReader::crs(&reader).horizontal.clone();
         drop(reader);
         let data_type = EptDataType::parse(&info.data_type)?;
-        check_tile_drivers(&info.data_type, path)?;
         let span = info.span;
         if span == 0 {
             return Err(Error::InvalidData("EPT: a span of 0".into()));

@@ -359,6 +359,8 @@ URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops the
   its tiles: EPT and, for LASzip tiles, LAZ must be allowed before locking the dataset or recovering
   an interrupted update, including the codecs declared by committed staged metadata. Direct
   GeoPackage encoder writes, including vector `convert --append`, do not consult the reader list.
+  That encoder updates SQLite tables directly, without opening the target through a Terrio dataset
+  reader. EPT append uses Terrio readers to inspect existing tiles, so the reader policy applies.
   Operations that open the existing GeoPackage to rewrite it (`repack`, layer renames and
   `edit_in_place`) do check the vector list. The list is not a filesystem write policy.
 - **With `set_allowed_drivers`.** When a list is also set with
