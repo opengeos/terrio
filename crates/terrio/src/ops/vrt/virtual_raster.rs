@@ -354,7 +354,9 @@ impl VirtualRaster {
 
 /// Open a local, archived or remote VRT and resolve relative sources from its location. Refused
 /// when the VRT declares more than `TERRIO_MAX_DECLARED_BYTES` or `TERRIO_MAX_BANDS` allow, before
-/// any source is opened; each source is checked when a read first opens it.
+/// pixel decoding. Plain and warped VRTs defer their source opens until a read needs them.
+/// Pansharpened VRTs may open source headers to infer their output grid; each source is checked
+/// when it is opened.
 pub fn open_virtual_raster(path: &str) -> Result<LazyRaster> {
     // Opened as a VRT, by its name or by its caller: only if the VRT driver is allowed.
     crate::formats::check_driver_allowed("VRT", path, crate::formats::Kind::Raster)?;

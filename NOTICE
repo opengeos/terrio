@@ -1694,6 +1694,7 @@ wbraster 0.2.1 (https://github.com/jblindsay/whitebox_next_gen)
 -------------------------------------------------------------------------------
 
 crates/terrio/src/drivers/declared_header.rs adapts header layouts from
-src/formats/dted.rs, pcraster.rs, esri_binary.rs and grass_ascii.rs.
+src/formats/dted.rs, pcraster.rs, esri_binary.rs and grass_ascii.rs;
+ASCII format detection adapts src/formats/mod.rs.
 Copyright (c) 2024 Whitebox Geospatial Inc.
 Licensed under the MIT License (see LICENSES/MIT.txt).

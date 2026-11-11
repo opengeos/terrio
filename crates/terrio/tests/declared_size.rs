@@ -1200,3 +1200,87 @@ fn long_ascii_headers_are_checked_before_the_pixel_tokens() {
         assert!(matches!(terrio::open_raster(path.to_str().unwrap()), Err(terrio::Error::ResourceLimit(_))));
     });
 }
+
+/// Reading an ASCII header must not collect an entire unwrapped pixel row before refusing it.
+#[test]
+fn ascii_declaration_refusal_does_not_allocate_a_long_pixel_line() {
+    use std::io::Write;
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    for (name, header) in [
+        ("long-row.asc", "ncols 1024\nnrows 16384\nxllcorner 0\nyllcorner 0\ncellsize 1\n"),
+        ("long-row.txt", "north: 1\nsouth: 0\neast: 1\nwest: 0\nrows: 16384\ncols: 1024\ntype: int\n"),
+    ] {
+        let path = dir.path().join(name);
+        let mut file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+        file.write_all(header.as_bytes()).unwrap();
+        let cells = "7 ".repeat(4096);
+        for _ in 0..4096 {
+            file.write_all(cells.as_bytes()).unwrap();
+        }
+        drop(file);
+        let (result, largest) = largest_during(|| {
+            scoped(&[("TERRIO_MAX_DECLARED_BYTES", "16777216"), ("TERRIO_WBRASTER_FALLBACK", "YES")], || {
+                terrio::open_raster(path.to_str().unwrap())
+            })
+        });
+        assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))), "{name}");
+        if COUNTED {
+            assert!(largest < 1 << 20, "{name}: the header check requested a {largest}-byte buffer for the pixel line");
+        }
+    }
+}
+
+/// Bounding line buffers must still read the complete meaning of long header values.
+#[test]
+fn long_ascii_header_values_keep_their_dimensions_and_sample_type() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("long-values.txt");
+    let header = format!(
+        "north: 1\nsouth: 0\neast: 1\nwest: 0\n{}rows{}: {}1\ncols: 2\ntype{}: {}double\n",
+        " ".repeat(128 << 10),
+        " ".repeat(128 << 10),
+        "0".repeat(128 << 10),
+        " ".repeat(128 << 10),
+        " ".repeat(128 << 10)
+    );
+    std::fs::write(&path, format!("{header}1.5 2.5\n")).unwrap();
+    scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "16")], || {
+        let out = terrio::open_raster(path.to_str().unwrap()).unwrap();
+        assert_eq!((out.raster.cols, out.raster.rows), (2, 1));
+        assert_eq!(out.raster.data.to_f64_vec(), vec![1.5, 2.5]);
+    });
+    scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "15")], || {
+        assert!(matches!(terrio::open_raster(path.to_str().unwrap()), Err(terrio::Error::ResourceLimit(_))));
+    });
+}
+
+/// The bounded detector retains the fallback reader's sample type and binary signature priority.
+#[test]
+fn fallback_ascii_detection_keeps_types_and_binary_signatures() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("esri.txt");
+    let header = "unknown extension\nncols=2\nnrows=2\nxllcorner 0\nyllcorner 0\ncellsize 1\n";
+    std::fs::write(&path, format!("{header}1 2 3 4\n")).unwrap();
+    scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "32")], || {
+        let out = terrio::open_raster(path.to_str().unwrap()).unwrap();
+        assert_eq!(out.raster.data_type, DataType::F64);
+        assert_eq!(out.raster.data.to_f64_vec(), vec![1., 2., 3., 4.]);
+    });
+    std::fs::write(&path, format!("{header}invalid pixels\n")).unwrap();
+    scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "31")], || {
+        assert!(matches!(terrio::open_raster(path.to_str().unwrap()), Err(terrio::Error::ResourceLimit(_))));
+    });
+    let (source, _) = sample(RasterDriver::PCRaster, dir.path()).unwrap();
+    let renamed = dir.path().join("binary.txt");
+    std::fs::copy(source, &renamed).unwrap();
+    scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "1048576")], || {
+        let out = terrio::open_raster(renamed.to_str().unwrap()).unwrap();
+        assert_eq!((out.raster.cols, out.raster.rows, out.raster.data_type), (1024, 1024, DataType::U8));
+    });
+    scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "1")], || {
+        assert!(matches!(terrio::open_raster(renamed.to_str().unwrap()), Err(terrio::Error::ResourceLimit(_))));
+    });
+}

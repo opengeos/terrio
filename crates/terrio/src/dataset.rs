@@ -1302,16 +1302,19 @@ fn read_raster_local(path: &str) -> Result<RasterDataset> {
         // No `wbraster` format: GRIB in a build with `gdal` and without `grib`, read by the GDAL backend.
         Some(driver) => match driver.to_wb() {
             Some(format) => {
-                crate::drivers::declared_header::check(Path::new(path), driver)?;
+                crate::drivers::declared_header::check_fallback(Path::new(path), driver)?;
                 (Raster::read_with_format(path, format)?, driver)
             }
             None => return Err(Error::Unsupported(format!("'{path}': no {} reader in this build", driver.name()))),
         },
         None if wbraster_fallback_allowed() => {
-            let fmt = wbraster::RasterFormat::detect(path)?;
+            let fmt = match crate::drivers::declared_header::detect_ascii(path)? {
+                Some(format) => format,
+                None => wbraster::RasterFormat::detect(path)?,
+            };
             // Found by its content or the files beside it: read only if its driver is allowed.
             crate::drivers::check_recognised(RasterDriver::from_wb(fmt), path)?;
-            crate::drivers::declared_header::check(Path::new(path), RasterDriver::from_wb(fmt))?;
+            crate::drivers::declared_header::check_fallback(Path::new(path), RasterDriver::from_wb(fmt))?;
             (fmt.read(path)?, RasterDriver::from_wb(fmt))
         }
         None => {

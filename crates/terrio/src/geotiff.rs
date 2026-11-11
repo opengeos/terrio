@@ -1491,7 +1491,7 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     let planar = dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).map_err(tiff_err)? == Some(2);
     // Complex samples are two bands each, their real then their imaginary parts, which a chunk
     // holds as two samples (see `RasterDataset::complex`).
-    let complex = crate::cog::sample_type(&mut dec).is_ok_and(|(_, complex)| complex);
+    let (data_type, complex) = crate::cog::sample_type(&mut dec)?;
     let parts = if complex { 2 } else { 1 };
     let (cw, ch) = dec.chunk_dimensions();
     let (cw, ch) = (cw as usize, ch as usize);
@@ -1508,7 +1508,6 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     // a file of a few hundred kilobytes can declare gigabytes (every chunk pointing to the same
     // compressed block), and a buffer allocated beyond the usable memory kills the process as its
     // pages are written.
-    let data_type = crate::cog::sample_type(&mut dec).map_or(wbraster::DataType::U8, |(t, _)| t);
     crate::declared::check(w, h, samples * parts, data_type, complex)?;
     crate::dataset::fallible::check_raster_buffer("the raster", w, h, samples * parts, data_type)?;
     let spp = if planar { parts } else { samples * parts };
