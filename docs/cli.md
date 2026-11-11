@@ -1001,6 +1001,12 @@ terrio translate INPUT OUTPUT [options]
 (`--ovr`), `--a-nodata`, `--a-srs`, `--a-ullr`, and the output format options. Type conversion
 rounds and clamps as GDAL does.
 
+A window read at its own size is copied pixel for pixel only on whole-pixel offsets, or by
+`nearest` from the pixel holding each output pixel's centre (a `--projwin` read by `nearest` starts
+on a whole pixel). At a fractional offset it is resampled there by `-r`, its kernels and areas
+reaching the pixels around it, whether the input is read whole (a format such as an Esri ASCII
+grid) or by window.
+
 An input without a geotransform of its own (an unreferenced GeoTIFF or JPEG 2000 file) gives an
 output without one, unless `--a-ullr` assigns bounds: a GeoTIFF or COG without a tie point, a JPEG
 2000 file without a GeoJP2 box, and a PNG, JPEG or WebP file without a world file. A CRS alone

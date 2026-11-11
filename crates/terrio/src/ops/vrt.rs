@@ -554,7 +554,8 @@ pub(crate) struct SourceRead<'a> {
     /// source pixels that meet `src_rect`, and writes a destination pixel only from the part of
     /// it inside `dst_rect` (a method sampling a point, only when the pixel's centre is inside).
     /// Otherwise, as for a window of one raster, kernels and areas reach the source pixels
-    /// around `src_rect`, and a window copies whenever it has as many pixels as it writes.
+    /// around `src_rect`. Either way, a window is copied one for one only as [`Self::copies`]
+    /// says, and resampled at its offset otherwise.
     pub within_rects: bool,
 }
 
@@ -668,31 +669,27 @@ impl SourceRead<'_> {
         Ok(Some(PlainCopy { src, dst_x: w.out_off.0 + c0, cols, dst_rows: dst_y..dst_y + rows }))
     }
 
-    /// Whether a read through `w` copies source pixels one for one: when it requests as many
-    /// source pixels as it writes, except that a `sum` copies only a window of whole source
-    /// pixels and otherwise shares each source pixel by the area inside each destination pixel.
-    /// Within its rectangles, a read copies only a window of the same scale: `nearest` when each
-    /// destination pixel's centre is nearest to the source pixel copied, the other methods on
-    /// whole offsets only, and a `sum` only into destination pixels wholly inside `dst_rect`.
+    /// Whether a read through `w` copies source pixels one for one: only a window of the same
+    /// scale, which requests as many source pixels as it writes, by `nearest` when each
+    /// destination pixel's centre is in the source pixel copied, and by the other methods on
+    /// whole offsets only. Within its rectangles, a `sum` copies only into destination pixels
+    /// wholly inside `dst_rect`. Another window is resampled at its offset: a `sum` shares each
+    /// source pixel by the area inside each destination pixel.
     fn copies(&self, w: &Window) -> bool {
         const EPSILON: f64 = 1e-10;
         let whole = |f: f64, i: usize| (f - i as f64).abs() <= EPSILON;
         let same_scale = whole(w.dreq_size.0, w.out_size.0) && whole(w.dreq_size.1, w.out_size.1);
         let aligned = whole(w.dreq_off.0, w.req_off.0) && whole(w.dreq_off.1, w.req_off.1);
-        if w.req_size != w.out_size {
+        if w.req_size != w.out_size || !same_scale {
             return false;
-        }
-        if !self.within_rects {
-            return self.resampling != Resampling::Sum || same_scale && aligned;
         }
         // The source pixel holding the first destination pixel's centre.
         let nearest = |f: f64, i: usize| (f + 0.5 + EPSILON).floor() == i as f64;
-        same_scale
-            && match self.resampling {
-                Resampling::Nearest => nearest(w.dreq_off.0, w.req_off.0) && nearest(w.dreq_off.1, w.req_off.1),
-                Resampling::Sum => aligned && self.inside(w),
-                _ => aligned,
-            }
+        match self.resampling {
+            Resampling::Nearest => nearest(w.dreq_off.0, w.req_off.0) && nearest(w.dreq_off.1, w.req_off.1),
+            Resampling::Sum => aligned && (!self.within_rects || self.inside(w)),
+            _ => aligned,
+        }
     }
 
     /// Whether each destination pixel of `w` is wholly inside `dst_rect`.

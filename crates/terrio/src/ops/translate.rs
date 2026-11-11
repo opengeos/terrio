@@ -14,7 +14,10 @@
 //! As in GDAL, the output is a window of the source (`srcwin`, or `projwin` in georeferenced
 //! coordinates) read into an output of the same or another size, band by band, through the
 //! windowing of VRT sources, the window being part of its raster rather than a source's
-//! rectangles: kernels and areas reach the pixels around it. Values are then optionally rescaled
+//! rectangles: kernels and areas reach the pixels around it. A window read at its own size is
+//! copied pixel for pixel only on whole-pixel offsets, or by nearest neighbour from the pixel
+//! holding each output pixel's centre; at a fractional offset it is resampled there by its
+//! method, whether the raster is read whole or by window. Values are then optionally rescaled
 //! and converted to the output type with GDAL's rounding and clamping.
 
 use super::Ct as Transformer;
@@ -1430,6 +1433,215 @@ mod tests {
         for (v, e) in out.iter().zip(expected) {
             let e = f32::from_bits(e);
             assert!(if e.is_nan() { v.is_nan() } else { *v as f32 == e }, "{v} vs {e}");
+        }
+    }
+
+    /// A raster of 12 x 8 float64 pixels of 1 m from (0, 8), in EPSG:32610, holding
+    /// `value(column, row)`.
+    fn grid(value: impl Fn(usize, usize) -> f64) -> RasterDataset {
+        typed_grid(DataType::F64, value)
+    }
+
+    /// [`grid`], of `data_type` pixels.
+    fn typed_grid(data_type: DataType, value: impl Fn(usize, usize) -> f64) -> RasterDataset {
+        let cfg = RasterConfig {
+            cols: 12,
+            rows: 8,
+            bands: 1,
+            x_min: 0.0,
+            y_min: 0.0,
+            cell_size: 1.0,
+            cell_size_y: Some(1.0),
+            nodata: -9999.0,
+            data_type,
+            crs: wbraster::CrsInfo::from_epsg(32610),
+            metadata: vec![],
+        };
+        let data = (0..96).map(|i| value(i % 12, i / 12)).collect();
+        RasterDataset::new(Raster::from_data(cfg, data).unwrap(), false)
+    }
+
+    /// Whole values from 0 to 999 in no order, a different one in each pixel.
+    fn uneven_values(c: usize, r: usize) -> f64 {
+        ((c + 12 * r) * 7919 % 1000) as f64
+    }
+
+    /// Windows of 6 x 4 pixels from a fractional offset in x, in y and in both, each as a
+    /// `srcwin` and as the `projwin` of the same bounds, with their offset in pixels.
+    fn fractional_windows() -> Vec<(TranslateOptions, (f64, f64))> {
+        let mut windows = Vec::new();
+        for (x, y) in [(2.25, 1.0), (2.0, 1.25), (2.25, 1.75)] {
+            windows.push((TranslateOptions { src_win: Some((x, y, 6.0, 4.0)), ..Default::default() }, (x, y)));
+            windows.push((TranslateOptions { proj_win: Some((x, 8.0 - y, x + 6.0, 4.0 - y)), ..Default::default() }, (x, y)));
+        }
+        windows
+    }
+
+    /// A window at a fractional offset, read at its own size, is resampled at that offset, from
+    /// a `srcwin` or a `projwin`, in x, in y and in both. On a ramp of ten per column and a
+    /// hundred per row, a bilinear, cubic or cubic spline kernel, an average and a sum give each
+    /// output pixel the ramp's value at its centre. On uneven values, each area statistic is that
+    /// of the source pixels the output pixel overlaps; on 2 x 2 blocks of equal values, so is
+    /// their most frequent value, which is not always the first pixel's. Nearest neighbour takes
+    /// the pixel holding each output pixel's centre (a `projwin` read by it starts on a whole
+    /// pixel).
+    #[test]
+    fn fractional_windows_read_at_their_size_are_resampled_at_their_offset() {
+        let ramp = grid(|c, r| 10.0 * c as f64 + 100.0 * r as f64);
+        let uneven = grid(uneven_values);
+        for (window, (x, y)) in fractional_windows() {
+            let by = |m: Resampling| TranslateOptions { resampling: Some(m), ..window.clone() };
+            for m in [Resampling::Bilinear, Resampling::Cubic, Resampling::CubicSpline, Resampling::Average, Resampling::Sum] {
+                let out = translate(&ramp, &by(m)).unwrap();
+                assert_eq!(out.geo_transform(), [x, 1.0, 0.0, 8.0 - y, 0.0, -1.0], "{m:?} {window:?}");
+                let v = out.raster.data.to_f64_vec();
+                for (k, value) in v.iter().enumerate() {
+                    let (i, j) = ((k % 6) as f64, (k / 6) as f64);
+                    let centre = 10.0 * (x + i) + 100.0 * (y + j);
+                    assert!((value - centre).abs() < 1e-9, "{m:?} {window:?}: pixel ({i}, {j}) is {value}, not {centre}");
+                }
+            }
+            for m in [
+                Resampling::Average,
+                Resampling::Rms,
+                Resampling::Mode,
+                Resampling::Min,
+                Resampling::Max,
+                Resampling::Med,
+                Resampling::Q1,
+                Resampling::Q3,
+                Resampling::Sum,
+            ] {
+                let v = translate(&uneven, &by(m)).unwrap().raster.data.to_f64_vec();
+                for (k, value) in v.iter().enumerate() {
+                    // The source pixels output pixel (i, j) overlaps, by row, each weighted by its
+                    // area inside the output pixel for an average, RMS or sum, else by 1.
+                    let (x0, y0) = (x + (k % 6) as f64, y + (k / 6) as f64);
+                    let mut overlapped = Vec::new();
+                    for r in y0.floor() as usize..(y0 + 1.0).ceil() as usize {
+                        for c in x0.floor() as usize..(x0 + 1.0).ceil() as usize {
+                            let area =
+                                ((x0 + 1.0).min(c as f64 + 1.0) - x0.max(c as f64)) * ((y0 + 1.0).min(r as f64 + 1.0) - y0.max(r as f64));
+                            let weighted = matches!(m, Resampling::Average | Resampling::Rms | Resampling::Sum);
+                            overlapped.push((uneven_values(c, r), if weighted { area } else { 1.0 }));
+                        }
+                    }
+                    let expected = crate::ops::warp::area_value(m, &mut overlapped, true).unwrap();
+                    assert!((value - expected).abs() < 1e-9, "{m:?} {window:?}: pixel {k} is {value}, not {expected}");
+                }
+            }
+        }
+        // Each output pixel of a window fractional in x and y overlaps 2 x 2 source pixels, which
+        // the blocks give a most frequent value other than the first pixel's in places.
+        let block = |c: usize, r: usize| (c / 2 + r / 2) as f64;
+        let blocks = grid(block);
+        for (window, (x, y)) in fractional_windows().into_iter().filter(|(_, (x, y))| x.fract() != 0.0 && y.fract() != 0.0) {
+            let v = translate(&blocks, &TranslateOptions { resampling: Some(Resampling::Mode), ..window.clone() })
+                .unwrap()
+                .raster
+                .data
+                .to_f64_vec();
+            let (mut expected, mut first) = (Vec::new(), Vec::new());
+            for k in 0..24 {
+                let (c, r) = ((x + (k % 6) as f64) as usize, (y + (k / 6) as f64) as usize);
+                let mut overlapped = [(c, r), (c + 1, r), (c, r + 1), (c + 1, r + 1)].map(|(c, r)| (block(c, r), 1.0));
+                expected.push(crate::ops::warp::area_value(Resampling::Mode, &mut overlapped, true).unwrap());
+                first.push(block(c, r));
+            }
+            assert_ne!(expected, first, "{window:?}: a most frequent value other than the first pixel's");
+            assert_eq!(v, expected, "Mode {window:?}");
+        }
+        for (x, y) in [(2.25, 1.0), (2.75, 1.0), (2.0, 1.25), (2.0, 1.75), (2.25, 1.75)] {
+            let o = TranslateOptions { src_win: Some((x, y, 6.0, 4.0)), resampling: Some(Resampling::Nearest), ..Default::default() };
+            let v = translate(&uneven, &o).unwrap().raster.data.to_f64_vec();
+            let holding = |k: usize| uneven_values((x + (k % 6) as f64 + 0.5) as usize, (y + (k / 6) as f64 + 0.5) as usize);
+            assert_eq!(v, (0..24).map(holding).collect::<Vec<_>>(), "nearest from ({x}, {y})");
+        }
+    }
+
+    /// A window at a fractional offset translates to the values the raster in memory gives from
+    /// a GeoTIFF read by window, and from a file of a format read whole (an Esri ASCII grid,
+    /// whose values are float32), by each method a GeoTIFF's window is resampled by, from a
+    /// `srcwin` and a `projwin`, in x, in y and in both, and at a fractional size. A read whole
+    /// gives them exactly; a read by window to within 1e-14 of each value, as it sums a kernel's
+    /// or an area's terms in another order.
+    #[test]
+    fn fractional_windows_translate_alike_from_memory_from_a_whole_read_and_by_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let (memory, memory_f32) = (grid(uneven_values), typed_grid(DataType::F32, uneven_values));
+        let (tif, asc) = (dir.path().join("uneven.tif"), dir.path().join("uneven.asc"));
+        let (tif, asc) = (tif.to_str().unwrap(), asc.to_str().unwrap());
+        crate::write_raster_dataset(&memory, tif, &crate::RasterWriteOptions::default()).unwrap();
+        crate::write_raster_dataset(&memory_f32, asc, &crate::RasterWriteOptions::default()).unwrap();
+        let mut windows: Vec<TranslateOptions> = fractional_windows().into_iter().map(|(w, _)| w).collect();
+        // 6.5 x 4 pixels into 7 x 4, 6.5 x 3.5 pixels from a fractional offset into 7 x 4, and
+        // 7.4 x 3.4 into 8 x 4.
+        windows.push(TranslateOptions { src_win: Some((2.0, 1.0, 6.5, 4.0)), ..Default::default() });
+        windows.push(TranslateOptions { src_win: Some((2.6, 1.6, 6.5, 3.5)), ..Default::default() });
+        windows.push(TranslateOptions { src_win: Some((2.0, 1.25, 7.4, 3.4)), ..Default::default() });
+        for window in &windows {
+            for m in [
+                Resampling::Nearest,
+                Resampling::Bilinear,
+                Resampling::Cubic,
+                Resampling::CubicSpline,
+                Resampling::Lanczos,
+                Resampling::Average,
+                Resampling::Rms,
+                Resampling::Mode,
+            ] {
+                let o = TranslateOptions { resampling: Some(m), ..window.clone() };
+                let mut lazy = crate::open_raster_lazy(tif).unwrap();
+                assert!(matches!(plan_lazy(&mut lazy, &o, OverviewSelection::Auto).unwrap(), Planned::Read(_)), "{m:?} {window:?}");
+                let read_whole = match open_path(asc, OverviewSelection::Auto).unwrap() {
+                    OpenedRaster::Whole(_) => true,
+                    OpenedRaster::Lazy(mut s) => matches!(plan_lazy(&mut s, &o, OverviewSelection::Auto).unwrap(), Planned::Translated(_)),
+                };
+                assert!(read_whole, "{m:?} {window:?}");
+                let (expected, by_window) = (translate(&memory, &o).unwrap(), translate_path(tif, &o, OverviewSelection::Auto).unwrap());
+                assert_eq!(by_window.geo_transform(), expected.geo_transform(), "{m:?} {window:?}");
+                for (k, (a, b)) in by_window.raster.data.to_f64_vec().iter().zip(expected.raster.data.to_f64_vec()).enumerate() {
+                    assert!((a - b).abs() <= 1e-14 * b.abs().max(1.0), "{m:?} {window:?}: pixel {k} is {a} by window, {b} in memory");
+                }
+                let (expected, whole) = (translate(&memory_f32, &o).unwrap(), translate_path(asc, &o, OverviewSelection::Auto).unwrap());
+                assert_eq!(whole.geo_transform(), expected.geo_transform(), "{m:?} {window:?}");
+                assert_eq!(whole.raster.data_type, DataType::F32, "{m:?} {window:?}");
+                assert_eq!(whole.raster.data.to_f64_vec(), expected.raster.data.to_f64_vec(), "{m:?} {window:?}");
+            }
+        }
+    }
+
+    /// A window at whole offsets, read at its own size, is the source's pixels copied, by every
+    /// method, from a `srcwin` and from a `projwin`.
+    #[test]
+    fn whole_windows_read_at_their_size_are_copied_by_every_method() {
+        let src = grid(uneven_values);
+        let windows = [
+            TranslateOptions { src_win: Some((2.0, 1.0, 6.0, 4.0)), ..Default::default() },
+            TranslateOptions { proj_win: Some((2.0, 7.0, 8.0, 3.0)), ..Default::default() },
+        ];
+        let copied: Vec<f64> = (0..24).map(|k| uneven_values(2 + k % 6, 1 + k / 6)).collect();
+        for window in &windows {
+            for m in [
+                Resampling::Nearest,
+                Resampling::Bilinear,
+                Resampling::Cubic,
+                Resampling::CubicSpline,
+                Resampling::Lanczos,
+                Resampling::Average,
+                Resampling::Rms,
+                Resampling::Mode,
+                Resampling::Min,
+                Resampling::Max,
+                Resampling::Med,
+                Resampling::Q1,
+                Resampling::Q3,
+                Resampling::Sum,
+            ] {
+                let out = translate(&src, &TranslateOptions { resampling: Some(m), ..window.clone() }).unwrap();
+                assert_eq!(out.geo_transform(), [2.0, 1.0, 0.0, 7.0, 0.0, -1.0], "{m:?} {window:?}");
+                assert_eq!(out.raster.data.to_f64_vec(), copied, "{m:?} {window:?}");
+            }
         }
     }
 }

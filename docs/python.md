@@ -380,6 +380,8 @@ as `gdal_translate -ovr`: `"AUTO"` (the default, the overview GDAL's RasterIO ch
 size), `"AUTO-n"`, `"NONE"` (full resolution) or a level from 0. A `Raster` in memory is
 translated at full resolution: open it with `terrio.open_raster(path, lazy=True)` for its
 overviews to be used, since `open_raster(path)` reads it into memory without them.
+Whatever its source, a window read at its own size at a fractional offset is resampled there by
+`resampling`, as `terrio translate` describes.
 With `"AUTO-n"` and no `outsize` or `tr`, the output keeps the full-resolution window size,
 matching GDAL 3.13.3; explicit level numbers use the selected level's resolution.
 `"AUTO-0"` is `"AUTO"` in translate and all other resampled readers, including whole-read
