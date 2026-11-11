@@ -68,7 +68,7 @@ if (threads) {
   // replaced by RUSTFLAGS, so they are repeated.
   const link = ["--allow-undefined", "--shared-memory", "--max-memory=4294967296", "--import-memory"];
   link.push(...["__wasm_init_tls", "__tls_size", "__tls_align", "__tls_base"].map((s) => `--export=${s}`));
-  const rustflags = ["-C", "target-feature=+atomics,+bulk-memory", ...link.flatMap((a) => ["-C", `link-arg=${a}`])];
+  const rustflags = ["-C", "target-feature=+atomics,+bulk-memory,+simd128", ...link.flatMap((a) => ["-C", `link-arg=${a}`])];
   wasmPack(join(out, "threads"), ["--no-pack"], ["--features", "threads", "-Z", "build-std=panic_abort,std"], {
     RUSTFLAGS: rustflags.join(" "),
     // Its own target directory: the standard library rebuilt with atomics.
@@ -175,7 +175,7 @@ function buildMemory64(outDir) {
   const link = ["--allow-undefined", "--max-memory=17179869184"].flatMap((a) => ["-C", `link-arg=${a}`]);
   // zlib-rs's SIMD for wasm64 (core::arch::wasm64) is unstable; ahash seeds with getrandom, whose
   // wasm64 backend js/src/lib.rs defines.
-  const rustflags = ["-Zcrate-attr=feature(simd_wasm64)", "--cfg", 'getrandom_backend="custom"', ...link];
+  const rustflags = ["-Zcrate-attr=feature(simd_wasm64)", "-C", "target-feature=+simd128", "--cfg", 'getrandom_backend="custom"', ...link];
   try {
     execFileSync("rustup", ["run", NIGHTLY, "cargo", "build", "-p", "terrio-js", "--target", target, ...profile, "-Z", "build-std=panic_abort,std", ...patches], {
       cwd: crate,
