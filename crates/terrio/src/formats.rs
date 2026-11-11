@@ -60,7 +60,7 @@ pub enum RasterDriver {
     PNG,
     /// JPEG with a world file.
     JPEG,
-    /// WebP with a world file, written lossless (see `drivers::webp`).
+    /// WebP with a world file, written lossless or lossy (see `drivers::webp`).
     WEBP,
     /// XYZ ASCII grid.
     XYZ,
@@ -261,7 +261,7 @@ impl RasterDriver {
             Self::JP2 => ("JP2", "JPEG 2000", &["jp2", "j2k"], true, true),
             Self::PNG => ("PNG", "PNG with World File", &["png"], true, true),
             Self::JPEG => ("JPEG", "JPEG with World File", &["jpg", "jpeg"], true, true),
-            Self::WEBP => ("WEBP", "WebP with World File (written lossless)", &["webp"], true, true),
+            Self::WEBP => ("WEBP", "WebP with World File", &["webp"], true, true),
             Self::XYZ => ("XYZ", "XYZ ASCII Grid", &["xyz"], true, true),
             Self::Zarr => ("Zarr", "Zarr v2/v3", &["zarr"], true, true),
             Self::DTED => ("DTED", "DTED Elevation", &["dt0", "dt1", "dt2"], true, true),
@@ -628,12 +628,12 @@ pub(crate) fn extension(path: &str) -> Option<String> {
 // allowed drivers of `GDALOpenEx`, for code that opens untrusted files.
 // ---------------------------------------------------------------------------------------------
 
-/// The process-wide lists set with [`set_allowed_drivers`], upper case: the rasters', then the
-/// vectors'. `None` until the first call for that kind.
-static ALLOWED: std::sync::RwLock<AllowLists> = std::sync::RwLock::new([None, None]);
+/// The process-wide lists set with [`set_allowed_drivers`], upper case: the rasters', the vectors',
+/// then the point clouds'. `None` until the first call for that kind.
+static ALLOWED: std::sync::RwLock<AllowLists> = std::sync::RwLock::new([None, None, None]);
 
-/// An allow-list per kind of driver: rasters, then vectors.
-type AllowLists = [Option<Vec<String>>; 2];
+/// An allow-list per kind of driver: rasters, vectors, then point clouds.
+type AllowLists = [Option<Vec<String>>; 3];
 
 /// A driver name as terrio names it, in upper case. Whitespace around the name is ignored, and
 /// GDAL's names for formats terrio names differently are accepted (`JP2OpenJPEG` is `JP2`).
@@ -645,26 +645,26 @@ pub fn canonical_driver_name(name: &str) -> String {
     }
 }
 
-/// The slots of [`AllowLists`] a kind names: both for `None`.
-fn allow_list_slots(kind: Option<Kind>) -> crate::Result<&'static [usize]> {
+/// The slots of [`AllowLists`] a kind names: every one for `None`.
+fn allow_list_slots(kind: Option<Kind>) -> &'static [usize] {
     match kind {
-        None => Ok(&[0, 1]),
-        Some(Kind::Raster) => Ok(&[0]),
-        Some(Kind::Vector) => Ok(&[1]),
-        Some(other) => Err(crate::Error::InvalidArgument(format!("{other:?} drivers have no allow-list: use Raster, Vector or None"))),
+        None => &[0, 1, 2],
+        Some(Kind::Raster) => &[0],
+        Some(Kind::Vector) => &[1],
+        Some(Kind::PointCloud) => &[2],
     }
 }
 
-/// Restricts the drivers datasets of `kind` may be opened with, process-wide: rasters, vectors, or
-/// both (`None`). It is the counterpart of de-registering GDAL's other drivers, and like a
-/// de-registration it lasts for the process: the first call for a kind sets its list, later calls
-/// intersect with it, so they narrow it but never re-enable a driver, and lifting a list once set
-/// (`drivers: None`) is refused. Names are terrio's or GDAL's. With a restriction, a dataset opens
-/// only if every driver its name and its content point to is allowed (see [`check_drivers`]);
-/// pointer formats (VRT, STAC, STACIT, Zarr) must be named. The entry points that read a dataset
-/// with one driver whatever its name (the multidimensional, VRT, tile archive, caller-fetched and
-/// point cloud readers, `LazyRaster::open_tiff` and `from_tiff_bytes`, the GDAL backend) read it
-/// only if that driver is allowed.
+/// Restricts the drivers datasets of `kind` may be opened with, process-wide: rasters, vectors,
+/// point clouds, or every kind (`None`). It is the counterpart of de-registering GDAL's other
+/// drivers, and like a de-registration it lasts for the process: the first call for a kind sets its
+/// list, later calls intersect with it, so they narrow it but never re-enable a driver, and lifting
+/// a list once set (`drivers: None`) is refused. Names are terrio's or GDAL's. With a restriction, a
+/// dataset opens only if every driver its name and its content point to is allowed (see
+/// [`check_drivers`]); pointer formats (VRT, STAC, STACIT, Zarr) must be named. The entry points
+/// that read a dataset with one driver whatever its name (the multidimensional, VRT, tile archive,
+/// caller-fetched and point cloud readers, `LazyRaster::open_tiff` and `from_tiff_bytes`, the GDAL
+/// backend) read it only if that driver is allowed: a point cloud by the list of point clouds.
 pub fn set_allowed_drivers(drivers: Option<&[&str]>, kind: Option<Kind>) -> crate::Result<()> {
     crate::par::fork_safe();
     let mut lists = ALLOWED.write().unwrap_or_else(|e| e.into_inner());
@@ -683,7 +683,7 @@ pub(crate) fn hold_for_fork(held: &mut Vec<Box<dyn std::any::Any>>) {
 /// [`set_allowed_drivers`] on `lists`: sets the list of each kind `kind` names that has none, and
 /// intersects the others with `drivers`. Nothing changes when it fails.
 fn narrow_allow_lists(lists: &mut AllowLists, drivers: Option<&[&str]>, kind: Option<Kind>) -> crate::Result<()> {
-    let slots = allow_list_slots(kind)?;
+    let slots = allow_list_slots(kind);
     let Some(drivers) = drivers else {
         if slots.iter().any(|&i| lists[i].is_some()) {
             return Err(crate::Error::InvalidArgument(
@@ -709,22 +709,56 @@ fn narrow_allow_lists(lists: &mut AllowLists, drivers: Option<&[&str]>, kind: Op
     Ok(())
 }
 
+/// The option that restricts the drivers of every kind (see [`allowed_drivers`]).
+pub(crate) const ALLOWED_DRIVERS_OPTION: &str = "TERRIO_ALLOWED_DRIVERS";
+
+/// The drivers a value of `TERRIO_ALLOWED_DRIVERS` names, canonical: none for an empty or blank
+/// value, which allows no driver.
+fn option_drivers(value: &str) -> Vec<String> {
+    value.split(',').map(canonical_driver_name).filter(|n| !n.is_empty()).collect()
+}
+
+/// The value a scope of options gives `TERRIO_ALLOWED_DRIVERS` (see [`crate::config::push_scope`]),
+/// which only narrows the value outside the scope, `outer`: the drivers of `value` that `outer`
+/// allows too, and `outer` itself for a scope that unsets the option.
+pub(crate) fn scoped_allowed_drivers(outer: Option<&str>, value: Option<&str>) -> Option<String> {
+    match (outer, value) {
+        (outer, None) => outer.map(str::to_string),
+        (None, value) => value.map(str::to_string),
+        (Some(outer), Some(value)) => {
+            let outer = option_drivers(outer);
+            Some(option_drivers(value).into_iter().filter(|d| outer.contains(d)).collect::<Vec<_>>().join(","))
+        }
+    }
+}
+
 /// The drivers datasets of `kind` may be opened with: its list from [`set_allowed_drivers`] and the
 /// comma-separated `TERRIO_ALLOWED_DRIVERS` option (see [`crate::config`]), which applies to every
-/// kind; when both are set, a driver must be in both. For `None` (a dataset whose kind is not
-/// known before it is opened), a driver must be allowed by each kind it belongs to. `None` when
-/// nothing restricts them.
+/// kind; when both are set, a driver must be in both. The option, set but empty or blank, allows
+/// no driver; a thread's scope can only narrow it (see [`crate::config::push_scope`]), and the
+/// environment's value applies too, should it have been set after the scope. For `None` (a dataset
+/// whose kind is not known before it is opened: a raster or a vector, as point clouds are read by
+/// readers of their own), a driver must be allowed by the list of each of those kinds it belongs
+/// to. `None` when nothing restricts them.
 pub fn allowed_drivers(kind: Option<Kind>) -> Option<Vec<String>> {
     crate::par::fork_safe();
     let lists = ALLOWED.read().unwrap_or_else(|e| e.into_inner()).clone();
     let set = match kind {
         Some(Kind::Raster) => lists[0].clone(),
         Some(Kind::Vector) => lists[1].clone(),
-        Some(_) => None,
+        Some(Kind::PointCloud) => lists[2].clone(),
         None => allowed_by_every_kind(&lists),
     };
-    let option = crate::config::get("TERRIO_ALLOWED_DRIVERS")
-        .map(|v| v.split(',').map(canonical_driver_name).filter(|n| !n.is_empty()).collect::<Vec<_>>());
+    // The environment's list applies under a scope too, so it is read again after the scope's. A
+    // value that is not UTF-8 is read as empty: it allows no driver, even where part of it names
+    // one. Without a scoped value, get_including_empty reads the same environment value;
+    // intersecting it again is intentional so both paths use the same restriction logic.
+    let environment = std::env::var_os(ALLOWED_DRIVERS_OPTION).map(|v| v.into_string().unwrap_or_default());
+    let option = [crate::config::get_including_empty(ALLOWED_DRIVERS_OPTION), environment]
+        .into_iter()
+        .flatten()
+        .map(|v| option_drivers(&v))
+        .reduce(|a, b| a.into_iter().filter(|d| b.contains(d)).collect());
     match (set, option) {
         (Some(a), Some(b)) => Some(a.into_iter().filter(|d| b.contains(d)).collect()),
         (a, b) => a.or(b),
@@ -732,15 +766,18 @@ pub fn allowed_drivers(kind: Option<Kind>) -> Option<Vec<String>> {
 }
 
 /// The drivers allowed by the list of every kind they belong to, as GDAL drops a driver that serves
-/// both kinds (GPKG) when either kind's de-registration drops it. A name terrio lists under neither
-/// kind counts as both. `None` when neither kind has a list.
+/// both kinds (GPKG) when either kind's de-registration drops it, for a dataset that is a raster or
+/// a vector: the list of point clouds, which their own readers judge them by, does not enter. A
+/// name terrio lists under neither kind counts as both. `None` when neither kind has a list.
 fn allowed_by_every_kind(lists: &AllowLists) -> Option<Vec<String>> {
-    if lists.iter().all(Option::is_none) {
+    let [raster_list, vector_list, _] = lists;
+    if raster_list.is_none() && vector_list.is_none() {
         return None;
     }
     let raster: Vec<String> = RasterDriver::ALL.iter().map(|d| canonical_driver_name(d.info().name)).collect();
     let vector: Vec<String> = VectorDriver::ALL.iter().map(|d| canonical_driver_name(d.info().name)).collect();
-    let mut names: Vec<String> = raster.iter().chain(&vector).chain(lists.iter().flatten().flatten()).cloned().collect();
+    let listed = [raster_list, vector_list].into_iter().flatten().flatten();
+    let mut names: Vec<String> = raster.iter().chain(&vector).chain(listed).cloned().collect();
     names.sort();
     names.dedup();
     let allows = |list: &Option<Vec<String>>, name: &String| list.as_ref().is_none_or(|l| l.contains(name));
@@ -749,7 +786,7 @@ fn allowed_by_every_kind(lists: &AllowLists) -> Option<Vec<String>> {
             (false, false) => (true, true),
             kinds => kinds,
         };
-        (!is_raster || allows(&lists[0], n)) && (!is_vector || allows(&lists[1], n))
+        (!is_raster || allows(raster_list, n)) && (!is_vector || allows(vector_list, n))
     });
     Some(names)
 }
@@ -1257,6 +1294,11 @@ fn opened_as_tiff_by_content(id: &Identified, allowed: &[String]) -> bool {
         && !id.by_name.iter().any(|d| BY_NAME.contains(&d.as_str()))
 }
 
+/// An allowed list as a refusal names it: `none` for a list that allows nothing.
+pub(crate) fn allowed_text(allowed: &[String]) -> String {
+    if allowed.is_empty() { "none".to_string() } else { allowed.join(", ") }
+}
+
 /// [`check_drivers`] on what [`identify`] or [`identify_bytes`] found for `path`.
 fn check_identified(path: &str, id: &Identified, allowed: &[String]) -> crate::Result<()> {
     let allowed: Vec<String> = allowed.iter().map(|n| canonical_driver_name(n)).collect();
@@ -1265,7 +1307,7 @@ fn check_identified(path: &str, id: &Identified, allowed: &[String]) -> crate::R
         return Err(crate::Error::Unsupported(format!(
             "'{shown}': the {} driver is not allowed (allowed: {})",
             id.by_name.join("/"),
-            allowed.join(", ")
+            allowed_text(&allowed)
         )));
     }
     if let Some(content) = &id.by_content
@@ -1273,7 +1315,7 @@ fn check_identified(path: &str, id: &Identified, allowed: &[String]) -> crate::R
     {
         return Err(crate::Error::Unsupported(format!(
             "'{shown}' holds {content} data, and the {content} driver is not allowed (allowed: {})",
-            allowed.join(", ")
+            allowed_text(&allowed)
         )));
     }
     if id.by_name.is_empty() && id.by_content.is_none() {
@@ -1308,7 +1350,7 @@ pub fn check_driver_allowed(driver: &str, path: &str, kind: Kind) -> crate::Resu
             let shown = path.split(['?', '#']).next().unwrap_or(path);
             Err(crate::Error::Unsupported(format!(
                 "'{shown}' holds {driver} data, and the {driver} driver is not allowed (allowed: {})",
-                list.join(", ")
+                allowed_text(&list)
             )))
         }
         _ => Ok(()),
@@ -1363,7 +1405,7 @@ fn check_query_readable(path: &str, kind: Option<Kind>, allowed: &[String]) -> c
     Err(crate::Error::Unsupported(format!(
         "'{shown}': the drivers that read its answer ({}{or_raster}) are not allowed (allowed: {})",
         readers.join(", "),
-        allowed.join(", ")
+        allowed_text(allowed)
     )))
 }
 
@@ -1560,6 +1602,59 @@ mod allow_list_tests {
         assert!(check_allowed(&vrt, Some(Kind::Raster)).is_ok(), "no restriction without the option");
     }
 
+    /// The option's drivers on the calling thread, scoped to `value` (unset for `None`).
+    fn scoped(value: Option<&str>) -> Option<Vec<String>> {
+        crate::config::push_scope(std::collections::HashMap::from([(ALLOWED_DRIVERS_OPTION.to_string(), value.map(str::to_string))]));
+        let allowed = allowed_drivers(None);
+        crate::config::pop_scope();
+        allowed
+    }
+
+    #[test]
+    fn the_option_set_but_empty_allows_no_driver() {
+        let (_d, tif) = temp("a.tif", b"II*\0\x08\0\0\0");
+        for value in ["", " ", ",", " , "] {
+            assert_eq!(scoped(Some(value)), Some(Vec::new()), "{value:?}");
+            let refused = crate::config::with_options(&[(ALLOWED_DRIVERS_OPTION, value)], || check_allowed(&tif, Some(Kind::Raster)));
+            assert!(refused.is_err_and(|e| e.to_string().ends_with("driver is not allowed (allowed: none)")), "{value:?}");
+        }
+        assert_eq!(scoped(None), None, "unset, it restricts nothing");
+    }
+
+    #[test]
+    fn a_scope_only_narrows_the_option_outside_it() {
+        let names = |n: &[&str]| Some(n.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        crate::config::with_options(&[(ALLOWED_DRIVERS_OPTION, "GTiff, png")], || {
+            assert_eq!(allowed_drivers(None), names(&["GTIFF", "PNG"]));
+            for (value, allowed) in [
+                (Some("PNG, AAIGrid"), names(&["PNG"])),
+                (Some("AAIGrid"), names(&[])),
+                (Some(""), names(&[])),
+                (Some(" "), names(&[])),
+                (None, names(&["GTIFF", "PNG"])),
+            ] {
+                assert_eq!(scoped(value), allowed, "{value:?}");
+            }
+            // A scope inside a narrower one cannot regain what that one left out.
+            let nested = crate::config::with_options(&[(ALLOWED_DRIVERS_OPTION, "PNG,AAIGrid")], || scoped(Some("GTiff,AAIGrid,PNG")));
+            assert_eq!(nested, names(&["PNG"]));
+            assert_eq!(allowed_drivers(None), names(&["GTIFF", "PNG"]), "the list outside the scopes is as it was");
+        });
+    }
+
+    #[test]
+    fn a_narrowed_option_follows_work_handed_to_another_thread() {
+        let (here, there) = crate::config::with_options(&[(ALLOWED_DRIVERS_OPTION, "GTiff,PNG")], || {
+            crate::config::with_options(&[(ALLOWED_DRIVERS_OPTION, "PNG,AAIGrid")], || {
+                let options = crate::config::thread_options();
+                let there = std::thread::spawn(move || crate::config::with_thread_options(options, || allowed_drivers(None)));
+                (allowed_drivers(None), there.join().unwrap())
+            })
+        });
+        assert_eq!(here, Some(vec!["PNG".to_string()]));
+        assert_eq!(there, here);
+    }
+
     // The process-wide lists last for the process, so these tests run the narrowing on lists of
     // their own; `tests/allow_list.rs` checks the process-wide wiring in a process of its own.
 
@@ -1569,36 +1664,40 @@ mod allow_list_tests {
 
     #[test]
     fn a_later_broader_call_narrows_and_never_re_enables() {
-        let mut lists: AllowLists = [None, None];
+        let mut lists: AllowLists = [None, None, None];
         narrow_allow_lists(&mut lists, Some(&["GTiff", "COG", "PNG"]), Some(Kind::Raster)).unwrap();
-        assert_eq!(lists, [list(&["GTIFF", "COG", "PNG"]), None], "the first call sets the raster list only");
+        assert_eq!(lists, [list(&["GTIFF", "COG", "PNG"]), None, None], "the first call sets the raster list only");
         narrow_allow_lists(&mut lists, Some(&["GTiff", "PNG", "VRT", "JPEG"]), Some(Kind::Raster)).unwrap();
         assert_eq!(lists[0], list(&["GTIFF", "PNG"]), "VRT and JPEG are not re-enabled; COG is dropped");
-        narrow_allow_lists(&mut lists, Some(&["GeoJSON", "ESRI Shapefile", "GTiff"]), None).unwrap();
-        assert_eq!(lists, [list(&["GTIFF"]), list(&["GEOJSON", "ESRI SHAPEFILE", "GTIFF"])], "None narrows both kinds");
+        narrow_allow_lists(&mut lists, Some(&["GeoJSON", "ESRI Shapefile", "GTiff", "LAS"]), None).unwrap();
+        let every = list(&["GEOJSON", "ESRI SHAPEFILE", "GTIFF", "LAS"]);
+        assert_eq!(lists, [list(&["GTIFF"]), every.clone(), every], "None narrows every kind");
+        narrow_allow_lists(&mut lists, Some(&["LAS", "PLY"]), Some(Kind::PointCloud)).unwrap();
+        assert_eq!(lists[2], list(&["LAS"]), "the point cloud list narrows alone; PLY is not added");
         narrow_allow_lists(&mut lists, Some(&[]), Some(Kind::Vector)).unwrap();
-        assert_eq!(lists, [list(&["GTIFF"]), list(&[])], "an empty list refuses every driver of its kind");
+        assert_eq!(lists, [list(&["GTIFF"]), list(&[]), list(&["LAS"])], "an empty list refuses every driver of its kind");
     }
 
     #[test]
     fn lifting_a_set_list_is_refused_and_changes_nothing() {
-        let mut lists: AllowLists = [None, None];
+        let mut lists: AllowLists = [None, None, None];
         narrow_allow_lists(&mut lists, None, None).unwrap();
-        assert_eq!(lists, [None, None], "lifting no list is a no-op");
+        assert_eq!(lists, [None, None, None], "lifting no list is a no-op");
         narrow_allow_lists(&mut lists, Some(&["GeoJSON"]), Some(Kind::Vector)).unwrap();
         narrow_allow_lists(&mut lists, None, Some(Kind::Raster)).unwrap();
-        for kind in [Some(Kind::Vector), None] {
+        narrow_allow_lists(&mut lists, None, Some(Kind::PointCloud)).unwrap();
+        narrow_allow_lists(&mut lists, Some(&["E57"]), Some(Kind::PointCloud)).unwrap();
+        for kind in [Some(Kind::Vector), Some(Kind::PointCloud), None] {
             let err = narrow_allow_lists(&mut lists, None, kind).unwrap_err().to_string();
             assert!(err.contains("cannot be lifted"), "{err}");
         }
-        assert!(narrow_allow_lists(&mut lists, Some(&["GTiff"]), Some(Kind::PointCloud)).is_err());
-        assert_eq!(lists, [None, list(&["GEOJSON"])]);
+        assert_eq!(lists, [None, list(&["GEOJSON"]), list(&["E57"])]);
     }
 
     #[test]
     fn a_dataset_of_unknown_kind_needs_every_kind_of_its_driver() {
         // GPKG serves rasters and vectors: dropped from either list, it is gone for both.
-        let lists: AllowLists = [list(&["GTIFF", "PNG", "VRT"]), None];
+        let lists: AllowLists = [list(&["GTIFF", "PNG", "VRT"]), None, None];
         let both = allowed_by_every_kind(&lists).unwrap();
         for name in ["GTIFF", "PNG", "VRT", "GEOJSON", "ESRI SHAPEFILE"] {
             assert!(both.contains(&name.to_string()), "{name}");
@@ -1606,12 +1705,16 @@ mod allow_list_tests {
         for name in ["GPKG", "JPEG", "NETCDF", "MBTILES", "STACIT"] {
             assert!(!both.contains(&name.to_string()), "{name}");
         }
-        let lists: AllowLists = [list(&["GTIFF", "GPKG", "MEM"]), list(&["GEOJSON"])];
+        let lists: AllowLists = [list(&["GTIFF", "GPKG", "MEM"]), list(&["GEOJSON"]), None];
         let both = allowed_by_every_kind(&lists).unwrap();
         assert!(both.contains(&"GTIFF".to_string()) && both.contains(&"GEOJSON".to_string()));
         assert!(!both.contains(&"GPKG".to_string()), "the vector list drops GPKG");
         assert!(!both.contains(&"MEM".to_string()), "a name of neither kind needs both lists");
-        assert_eq!(allowed_by_every_kind(&[None, None]), None);
+        assert_eq!(allowed_by_every_kind(&[None, None, None]), None);
+        // A dataset of unknown kind is a raster or a vector: the point cloud list does not enter.
+        assert_eq!(allowed_by_every_kind(&[None, None, list(&["LAS"])]), None);
+        let lists: AllowLists = [list(&["GTIFF"]), list(&["GTIFF"]), list(&[])];
+        assert_eq!(allowed_by_every_kind(&lists), list(&["GTIFF"]));
     }
 
     #[cfg(remote)]

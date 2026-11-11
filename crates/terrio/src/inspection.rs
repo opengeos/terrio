@@ -29,9 +29,9 @@ pub struct Identification {
 /// is the counterpart of de-registering the drivers it leaves out (`formats::set_allowed_drivers`),
 /// so a disallowed driver identifies nothing. A dataset's kind is not known before it is
 /// identified: a driver must be allowed by the list of each kind it belongs to, as `open` judges a
-/// dataset (`formats::allowed_drivers(None)`); a point-cloud driver by `TERRIO_ALLOWED_DRIVERS`,
-/// the only list that restricts them. The public functions return judged identifications; the
-/// content check dispatches on unjudged ones and opens with the openers, which judge the list.
+/// dataset (`formats::allowed_drivers(None)`); a point-cloud driver by the list of point clouds,
+/// as its reader judges it. The public functions return judged identifications; the content check
+/// dispatches on unjudged ones and opens with the openers, which judge the list.
 fn judged(found: Option<Identification>) -> Option<Identification> {
     let kind = |found: &Identification| (found.kinds == [Kind::PointCloud]).then_some(Kind::PointCloud);
     found.filter(|found| {

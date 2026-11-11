@@ -1,5 +1,10 @@
 //! Errors returned by terrio.
 
+/// Whether an I/O adapter retained a failed Terrio HTTP request as its cause.
+pub(crate) fn is_http_io(error: &std::io::Error) -> bool {
+    matches!(error.get_ref().and_then(|source| source.downcast_ref::<Error>()), Some(Error::Http(_)))
+}
+
 /// A terrio error.
 ///
 /// New variants may be added in minor releases: match with a wildcard arm.
@@ -35,7 +40,7 @@ pub enum Error {
     /// (`PmTilesReadLimits`), a GeoTIFF chunk or tag value (`TiffReadLimits`), or a
     /// bounded VSI file read (after archive decompression). This refusal is never retried
     /// through the optional GDAL fallback.
-    #[error("{resource} exceeds decoded-byte limit {limit}")]
+    #[error("{resource} exceeds decoded-byte limit {limit}{}", decoded_limit_hint(.resource))]
     DecodedLimitExceeded {
         /// The payload kind (directory, metadata, tile, TIFF chunk/tag, or VSI file).
         resource: &'static str,
@@ -48,6 +53,16 @@ pub enum Error {
     /// The operation was cancelled by its progress callback.
     #[error("the operation was cancelled")]
     Cancelled,
+}
+
+/// What raises the limit of a [`Error::DecodedLimitExceeded`] refusal, when an option does: a GeoTIFF
+/// chunk's limit is `TERRIO_TIFF_MAX_CHUNK_BYTES` for readers opened without explicit limits.
+fn decoded_limit_hint(resource: &str) -> &'static str {
+    if resource == crate::cog::TIFF_CHUNK_RESOURCE {
+        "; for a trusted file, raise it with the TERRIO_TIFF_MAX_CHUNK_BYTES option (a byte count) when opened without explicit limits; otherwise raise TiffReadLimits"
+    } else {
+        ""
+    }
 }
 
 impl Error {

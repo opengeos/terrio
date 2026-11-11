@@ -144,8 +144,11 @@ from it.
 
 terrio's GeoTIFF and COG writers compress Deflate chunks with a Rust port of
 [libdeflate](https://github.com/ebiggers/libdeflate)'s level 6 compressor
-(`crates/terrio/src/deflate_compress.rs`, copyright 2016 Eric Biggers, MIT): the chunks are
-libdeflate's, byte for byte, as GDAL writes them when built with libdeflate (GDAL 3.12).
+(`crates/terrio/src/deflate_compress.rs`, copyright 2016 Eric Biggers, MIT). The level parameters,
+parsers, block splitting and coding follow that implementation. Levels 6–9 also probe a bounded
+number of periodic-run boundaries to improve repeating categorical rasters. Compressed bytes can
+therefore differ from libdeflate's; decoded raster values and metadata are checked independently
+with GDAL 3.13.3.
 
 ## fdlibm
 
@@ -178,7 +181,6 @@ terrio reads and writes its formats with these crates, among others:
 | [`flatgeobuf`](https://crates.io/crates/flatgeobuf) | FlatGeobuf |
 | [Apache Arrow and Parquet](https://github.com/apache/arrow-rs) | GeoParquet and Arrow |
 | [`netcdf-reader`](https://crates.io/crates/netcdf-reader), [`hdf5-reader`](https://crates.io/crates/hdf5-reader) | netCDF and HDF5 |
-| [`osmpbfreader`](https://crates.io/crates/osmpbfreader) | OpenStreetMap PBF |
 | [`quick-xml`](https://crates.io/crates/quick-xml) | KML, GPX and other XML formats |
 | [`laz`](https://crates.io/crates/laz) | LAZ and COPC, a port of [LASzip](https://laszip.org) |
 | [`e57`](https://crates.io/crates/e57) | E57 laser scans |

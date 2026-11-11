@@ -401,3 +401,90 @@ fn mask_chunks_over_the_limit_are_errors_at_every_level() {
     assert_eq!(r.read_mask(Window::new(0, 0, 4, 4), None).unwrap(), Some(vec![255; 16]));
     assert_eq!(r.read_mask(Window::new(0, 0, 2, 2), Some(0)).unwrap(), Some(vec![255; 4]));
 }
+
+/// Runs `f` with `TERRIO_TIFF_MAX_CHUNK_BYTES` set to `value` for the calling thread only, so that
+/// tests running at the same time keep the default.
+fn with_chunk_option<T>(value: &str, f: impl FnOnce() -> T) -> T {
+    terrio::config::push_scope([("TERRIO_TIFF_MAX_CHUNK_BYTES".to_string(), Some(value.to_string()))].into());
+    struct Scope;
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            terrio::config::pop_scope();
+        }
+    }
+    let _scope = Scope;
+    f()
+}
+
+#[test]
+fn the_chunk_option_sets_the_limit_of_readers_opened_without_limits() {
+    // A valid 4 x 4 Float64 strip: 128 bytes decoded, read lazily by path, from bytes, from a
+    // sparse file, and eagerly.
+    let bytes = single_strip(4, 4, 128, false);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("strip.tif");
+    std::fs::write(&path, &bytes).unwrap();
+    let path = path.to_str().unwrap();
+    let lazy = || terrio::open_raster_lazy(path)?.read_window(Window::full(4, 4), &band1()).map(|ds| ds.raster.data.len());
+    let in_memory =
+        || LazyRaster::from_tiff_bytes(bytes.clone())?.unwrap().read_window(Window::full(4, 4), &band1()).map(|ds| ds.raster.data.len());
+    let sparse = || {
+        let file = SparseFile::new(bytes.len() as u64);
+        let fetch = |o: u64, n: u64| Ok(bytes[o as usize..(o + n) as usize].to_vec());
+        let mut r = read_with(&file, 8, fetch, || Ok(LazyRaster::from_sparse(file.clone())?.unwrap()))?;
+        read_with(&file, 8, fetch, || r.read_window(Window::full(4, 4), &band1())).map(|ds| ds.raster.data.len())
+    };
+    let eager = || terrio::open_raster(path).map(|ds| ds.raster.data.len());
+    let reads: [(&str, &dyn Fn() -> terrio::Result<usize>); 4] =
+        [("lazy", &lazy), ("in memory", &in_memory), ("sparse", &sparse), ("eager", &eager)];
+    for (name, read) in reads {
+        assert_eq!(read().unwrap(), 16, "{name}: the default");
+        assert_eq!(with_chunk_option("128", read).unwrap(), 16, "{name}");
+        let e = with_chunk_option(" 127 ", read).unwrap_err();
+        assert!(matches!(e, terrio::Error::DecodedLimitExceeded { limit: 127, .. }), "{name}: {e}");
+        // The refusal names the option that raises it.
+        assert!(
+            e.to_string().contains("limit 127; for a trusted file, raise it with the TERRIO_TIFF_MAX_CHUNK_BYTES option"),
+            "{name}: {e}"
+        );
+    }
+    // A raster opened under the option keeps its limit for later reads, outside the scope.
+    let mut r = with_chunk_option("127", || terrio::open_raster_lazy(path)).unwrap();
+    assert!(matches!(r.read_window(Window::full(4, 4), &band1()), Err(terrio::Error::DecodedLimitExceeded { limit: 127, .. })));
+    // Explicit limits are not overridden by the option.
+    let explicit = with_chunk_option("127", || {
+        LazyRaster::from_tiff_bytes_with_limits(bytes.clone(), TiffReadLimits { chunk_bytes: 128 })
+            .unwrap()
+            .unwrap()
+            .read_window(Window::full(4, 4), &band1())
+            .map(|ds| ds.raster.data.len())
+    });
+    assert_eq!(explicit.unwrap(), 16);
+}
+
+#[test]
+fn a_chunk_option_that_is_not_a_positive_integer_is_an_error() {
+    let bytes = single_strip(4, 4, 128, false);
+    for value in ["0", "-1", "256MB", "1.5"] {
+        let e = with_chunk_option(value, || LazyRaster::from_tiff_bytes(bytes.clone()).map(|_| ())).unwrap_err();
+        assert!(matches!(&e, terrio::Error::InvalidArgument(m) if m.contains("TERRIO_TIFF_MAX_CHUNK_BYTES")), "{value}: {e}");
+    }
+    // Empty or blank counts as unset, as for every option.
+    assert!(with_chunk_option(" ", || LazyRaster::from_tiff_bytes(bytes.clone())).unwrap().is_some());
+}
+
+#[test]
+fn non_tiff_probes_ignore_invalid_tiff_configuration() {
+    let bytes = b"not a TIFF file".to_vec();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("other.bin");
+    std::fs::write(&path, &bytes).unwrap();
+    with_chunk_option("invalid", || {
+        assert!(LazyRaster::open_tiff(path.to_str().unwrap()).unwrap().is_none());
+        assert!(LazyRaster::from_tiff_bytes(bytes.clone()).unwrap().is_none());
+        assert!(LazyRaster::from_tiff_shared_bytes(std::sync::Arc::new(bytes.clone())).unwrap().is_none());
+        let file = SparseFile::new(bytes.len() as u64);
+        let fetch = |o: u64, n: u64| Ok(bytes[o as usize..(o + n) as usize].to_vec());
+        assert!(read_with(&file, 8, fetch, || LazyRaster::from_sparse(file.clone())).unwrap().is_none());
+    });
+}

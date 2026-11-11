@@ -355,7 +355,8 @@ enum Filter {
     },
     /// Merge point clouds into one (PDAL's filters.merge).
     Merge {
-        /// The point clouds, then the output. `@FILE` reads input paths from FILE, one per line.
+        /// The point clouds, then the output. `@FILE` reads input paths from FILE, one per line,
+        /// and a file name with `*` or `?` matches the files of its folder.
         #[arg(num_args = 2.., required = true)]
         paths: Vec<String>,
         /// Assign this CRS to the points, without reprojecting (when the files have none or a

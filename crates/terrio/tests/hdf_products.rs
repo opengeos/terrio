@@ -9,7 +9,8 @@
 //! tests skip themselves without `TERRIO_TEST_DATA` or the files. The trailing `bands` files are in
 //! `tests/data/netcdf_bands` (`scripts/make_netcdf_bands_fixtures.py`), the `_Unsigned` ones in
 //! `tests/data/netcdf_unsigned` and `tests/data/netcdf_int64_unsigned`
-//! (`scripts/make_netcdf_unsigned_fixtures.py`, `scripts/make_netcdf_int64_unsigned_fixtures.py`).
+//! (`scripts/make_netcdf_unsigned_fixtures.py`, `scripts/make_netcdf_int64_unsigned_fixtures.py`),
+//! the variable order ones in `tests/data/netcdf_order` (`scripts/make_netcdf_order_fixtures.py`).
 
 // Geotransforms as `gdalinfo` prints them, digit for digit.
 #![allow(clippy::excessive_precision)]
@@ -240,6 +241,56 @@ fn netcdf_trailing_bands() {
             e["geolocation"].as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string())).collect();
         assert_eq!(items, gdal, "{case}");
     }
+}
+
+/// netCDF-4 variables and groups (`scripts/make_netcdf_order_fixtures.py`): defined in reverse
+/// name order with object headers out of that order, listed in definition order; written without
+/// link creation order, listed in name order. The subdatasets as GDAL 3.12.2 lists them, in
+/// `expected.json`.
+#[test]
+fn netcdf4_variable_order() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_order");
+    let text = std::fs::read_to_string(dir.join("expected.json")).unwrap();
+    let expected: serde_json::Value = serde_json::from_str(&text).unwrap();
+    for (file, gdal) in expected.as_object().unwrap() {
+        let path = dir.join(file).to_string_lossy().into_owned();
+        let terrio::info::Info::Raster(info) = terrio::info::info_path(&path, &Default::default()).unwrap() else {
+            panic!("{file}: not a raster")
+        };
+        let names: Vec<&str> = info.subdatasets.iter().map(|s| s.name.rsplit(':').next().unwrap()).collect();
+        let gdal: Vec<&str> = gdal.as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(names, gdal, "{file}");
+    }
+}
+
+/// Classic formats retain netCDF variable-ID order. Classic and 64-bit offset were checked
+/// against GDAL 3.13.3; it does not recognize this CDF5 fixture, checked against netCDF4's IDs.
+#[test]
+fn classic_netcdf_variables_keep_definition_order() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_order");
+    for name in ["classic_order.nc", "offset64_order.nc", "cdf5_order.nc"] {
+        let path = dir.join(name).to_string_lossy().into_owned();
+        let terrio::info::Info::Raster(info) = terrio::info::info_path(&path, &Default::default()).unwrap() else {
+            panic!("{name}: not a raster")
+        };
+        let names: Vec<_> = info.subdatasets.iter().map(|s| s.name.rsplit(':').next().unwrap()).collect();
+        assert_eq!(names, ["zulu", "alpha", "middle"], "{name}");
+    }
+}
+
+/// An unqualified multi-variable open selects the first data variable in listing order.
+/// GDAL 3.13.3 exposes only a zero-band container for this file; Terrio intentionally also
+/// provides the first raster. Its samples and nodata match GDAL's explicit `zulu` subdataset.
+#[test]
+fn netcdf_default_raster_follows_definition_order() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_order/definition_order.nc");
+    let implicit = open(&path.to_string_lossy());
+    let explicit = open(&format!("NETCDF:\"{}\":zulu", path.display()));
+    assert_eq!(implicit.nodata(), Some(-1.0));
+    assert_eq!(implicit.raster.data.to_f64_vec(), vec![2.0, 3.0, 0.0, 1.0]);
+    assert_eq!(implicit.raster.data.to_f64_vec(), explicit.raster.data.to_f64_vec());
+    assert_eq!(implicit.geo_transform(), explicit.geo_transform());
+    assert_eq!(implicit.crs().epsg, explicit.crs().epsg);
 }
 
 /// `Short` variables flagged `_Unsigned` whose `valid_range`, or `valid_min` and `valid_max`, hold

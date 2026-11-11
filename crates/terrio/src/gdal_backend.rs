@@ -807,7 +807,20 @@ fn gdal_name(path: &str) -> String {
     name(&Location::parse(path)).unwrap_or_else(|| path.to_string())
 }
 
+/// GDAL's opaque nested reads cannot enforce the native origin-only redirect policy.
+pub(crate) fn check_redirect_policy() -> Result<()> {
+    if crate::config::get("TERRIO_HTTP_FOLLOW_CROSS_ORIGIN")
+        .is_some_and(|v| !v.trim().is_empty() && !matches!(v.trim().to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1"))
+    {
+        return Err(Error::InvalidArgument(
+            "TERRIO_HTTP_FOLLOW_CROSS_ORIGIN: GDAL reads cannot enforce origin-only redirects; use a native reader or enable cross-origin redirects".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn gdal_open(path: &str, flags: GdalOpenFlags) -> Result<GdalDataset> {
+    check_redirect_policy()?;
     crate::stac::check_gdal_asset_read()?;
     // Every dataset GDAL opens (a `GDAL:` name, the fallback for what terrio's drivers cannot read,
     // bytes through `/vsimem/`) is opened by the GDAL backend, whose own drivers pick the format:
@@ -950,6 +963,7 @@ fn finish_raster(
     }
     let mut out = RasterDataset::with_driver(raster, RasterDriver::Gdal, has_nodata);
     out.complex = complex;
+    out.geotransform_present = Some(ds.geo_transform().is_ok());
     let geolocation: Vec<(String, String)> = ds
         .metadata_domain("GEOLOCATION")
         .unwrap_or_default()

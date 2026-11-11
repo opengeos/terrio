@@ -219,7 +219,7 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
         key_values(&a.raster_options)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     creation_options.extend(a.minzoom.map(|z| ("MINZOOM".to_string(), z.to_string())));
     creation_options.extend(a.maxzoom.map(|z| ("MAXZOOM".to_string(), z.to_string())));
-    let options = RasterWriteOptions {
+    let mut options = RasterWriteOptions {
         driver,
         compression: a.compress.clone(),
         tile_size: a.tile_size,
@@ -227,6 +227,7 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
         creation_options,
         ..Default::default()
     };
+    r.keep_unreferenced(&mut options, &a.output);
     Ok(Some((r, options)))
 }
 
@@ -260,6 +261,8 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
         return r.write(&a.output, &options);
     }
     let mut output_mask = None;
+    // The raster's lazy reader, which tells whether it has a geotransform of its own.
+    let mut source_reader = None;
     let ds = if a.srcwin.is_some() || a.overview.is_some() {
         let mut r = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
         let opts = WindowOptions { bands: Vec::new(), overview: a.overview };
@@ -276,7 +279,9 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
             }
         };
         output_mask = r.read_mask(window, a.overview)?;
-        Dataset::Raster(r.read_window(window, &opts)?)
+        let ds = Dataset::Raster(r.read_window(window, &opts)?);
+        source_reader = Some(r);
+        ds
     } else if a.layers.is_empty()
         && a.open_options.is_empty()
         && a.vector.spatial_hint(&a.input).is_none()
@@ -289,6 +294,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
             if source.has_mask() {
                 output_mask = source.read_mask(Window::full(r.raster.cols, r.raster.rows), None)?;
             }
+            source_reader = Some(source);
         }
         ds
     } else {
@@ -386,7 +392,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                     "this output format does not preserve dataset masks; write GeoTIFF or COG".into(),
                 ));
             }
-            let opts = RasterWriteOptions {
+            let mut opts = RasterWriteOptions {
                 driver,
                 compression: a.compress,
                 tile_size: a.tile_size,
@@ -395,6 +401,10 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 mask: output_mask,
                 ..Default::default()
             };
+            // A source without a geotransform gives an output without one, unless reprojected.
+            if let Some(source) = source_reader.filter(|_| a.t_srs.is_none()) {
+                source.keep_unreferenced(&mut opts, &a.output);
+            }
             terrio::write_raster_dataset(&r, &a.output, &opts)
         }
         Dataset::Vector(v) => {
