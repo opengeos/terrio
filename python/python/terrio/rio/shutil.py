@@ -239,7 +239,8 @@ def _copy_dataset(
             dst.write_colormap(1, cmap)
         if dst._copy_of is not None:
             return
-        rows = max(1, min(src.height, (64 << 20) // max(1, src.width * src.count * 8)))
+        itemsize = 16 if sample in ("CInt32", "CFloat64") else 8
+        rows = max(1, min(src.height, (64 << 20) // max(1, src.width * src.count * itemsize)))
         for y in range(0, src.height, rows):
             w = Window(0, y, src.width, min(rows, src.height - y))
             dst.write(src._read_for_copy(window=w), window=w)

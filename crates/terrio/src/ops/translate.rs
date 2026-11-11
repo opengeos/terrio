@@ -448,6 +448,8 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
     res.raster.metadata = ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     res.band_metadata = if res.complex {
         bands.as_chunks::<2>().0.iter().map(|p| ds.band_metadata.get((p[0] - 1) / 2).cloned().unwrap_or_default()).collect()
+    } else if ds.complex {
+        bands.iter().map(|&b| ds.band_metadata.get((b - 1) / 2).cloned().unwrap_or_default()).collect()
     } else {
         bands.iter().map(|&b| ds.band_metadata.get(b - 1).cloned().unwrap_or_default()).collect()
     };

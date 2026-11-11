@@ -231,6 +231,15 @@ fn complex_path_copies_keep_pairs_across_block_rows() {
         assert!(translated.complex, "in-memory translation {name}");
         assert_eq!(translated.band_metadata, expected.band_metadata);
         assert_eq!(translated.raster.data.to_f64_vec(), expected.raster.data.to_f64_vec());
+        for component in [2, 3] {
+            let options = terrio::ops::translate::TranslateOptions { bands: vec![component], ..Default::default() };
+            let partial = terrio::ops::translate::translate(&expected, &options).unwrap();
+            assert!(!partial.complex);
+            assert_eq!(partial.band_metadata, [expected.band_metadata[(component - 1) / 2].clone()]);
+            let plane = expected.raster.cols * expected.raster.rows;
+            assert_eq!(partial.raster.data.to_f64_vec(), expected.raster.data.to_f64_vec()[(component - 1) * plane..component * plane]);
+        }
+
         for interleave in ["PIXEL", "BAND"] {
             let target = dir.path().join(format!("copy-{name}-{interleave}.tif"));
             let options = RasterWriteOptions {
