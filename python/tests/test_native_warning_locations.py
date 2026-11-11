@@ -85,3 +85,14 @@ def test_native_warning_default_filter_suppresses_repeated_client_locations(
         ("warning_client.py", 1),
         ("warning_client.py", 2),
     ]
+
+
+@pytest.mark.parametrize("call", [terrio.open_vector, tpg.read_info])
+def test_native_warning_stops_at_an_external_intermediary(malformed_crs_shapefile, call):
+    bridge = {"__name__": "example_bridge", "call": call}
+    exec(compile("def relay(path):\n    return call(path)\n", "example_bridge.py", "exec"), bridge)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        bridge["relay"](malformed_crs_shapefile)
+    native = [w for w in caught if "holds no CRS definition" in str(w.message)]
+    assert [(w.filename, w.lineno) for w in native] == [("example_bridge.py", 2)]

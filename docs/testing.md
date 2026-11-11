@@ -16,6 +16,8 @@ through direct bindings and pyogrio wrappers. It verifies the caller's filename 
 line in functions and module-level code, module-specific error filters, and default
 once-per-location suppression. The shared warning bridge skips Terrio's Python
 frames using APIs available on Python 3.10 and later, without changing warning filters.
+Attribution stops at the first frame outside the Terrio package, including a
+third-party intermediary when one calls Terrio on the application's behalf.
 
 ## Translate input-opening policy
 

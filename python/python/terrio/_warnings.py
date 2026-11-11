@@ -6,7 +6,7 @@ from types import FrameType
 
 
 def warn_user(message: str) -> None:
-    """Skip Terrio wrapper frames on Python 3.10 and later."""
+    """Attribute a UserWarning to the first Python frame outside Terrio."""
     frame: FrameType | None = sys._getframe(1)
     stacklevel = 2
     while frame is not None:
