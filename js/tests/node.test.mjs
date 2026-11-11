@@ -413,6 +413,21 @@ test("listCrs lists the registry CRSs", () => {
   assert.equal(terrio.describeCrs(`${albers.authority}:${albers.code}`).epsg, 3577);
 });
 
+test("polar inverses refuse non-finite coordinates", () => {
+  for (const code of [3413, 3995, 3411, 32661, 3031, 3976, 3412, 32761, 2985]) {
+    const crs = `EPSG:${code}`;
+    for (const [x, y] of [[Infinity, Infinity], [Infinity, 0], [-Infinity, Infinity], [0, -Infinity], [NaN, NaN]]) {
+      assert.throws(() => terrio.transformPoints([x], [y], crs, "EPSG:4326"), undefined, `${crs}: ${x}, ${y}`);
+    }
+  }
+});
+
+test("finite polar kilometre inputs preserve direction through normalization", () => {
+  const [xs, ys] = terrio.transformPoints([1e306], [2e306], "+proj=stere +lat_0=90 +R=6371000 +units=km", "+proj=longlat +R=6371000");
+  assert.ok(Math.abs(xs[0] - Math.atan2(1, -2) * 180 / Math.PI) < 1e-12);
+  assert.ok(Math.abs(ys[0] + 90) < 1e-12);
+});
+
 test("ZIP archives with duplicate member names are refused", () => {
   const bytes = readFileSync(new URL("../../crates/terrio/tests/data/zip/duplicate_members.zip", import.meta.url));
   assert.throws(() => terrio.open(bytes, "vector.zip"), /several entries with the same name/);
