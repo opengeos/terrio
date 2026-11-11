@@ -405,7 +405,11 @@ def test_stream_projection_warning_uses_caller_and_error_filter(tmp_path):
 
 
 def _corrupt_prj_crc(data):
-    """Keep ZIP headers consistent but make the projection payload fail its CRC check."""
+    """Corrupt the projection CRC in this module's small, non-ZIP64 test archives.
+
+    These fixtures have no prepended data; ZipFile.start_dir and header_offset
+    therefore index the original bytes directly. This is not a general ZIP editor.
+    """
     raw = bytearray(data)
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         info = archive.getinfo("pts.prj")

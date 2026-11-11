@@ -373,13 +373,14 @@ pub(crate) fn apply_prj(layer: &mut Layer, prj: Option<&str>) {
     }
 }
 
-/// Quote whitespace, control codes and Unicode 15.1 General_Category=Cf format controls
-/// as spaces. The Cf ranges were checked against Python's unicodedata table; printable
-/// non-ASCII text is preserved, while terminal escapes, bidi controls and invisible tags are not.
+/// Quotes diagnostic text using the whitespace/control policy of [`quoted_as_space`].
 fn quote_prj_text(text: &str) -> String {
     text.chars().map(|c| if quoted_as_space(c) { ' ' } else { c }).collect()
 }
 
+/// Quote whitespace, control codes and Unicode 15.1 General_Category=Cf format controls
+/// as spaces. The Cf ranges were checked against Python's unicodedata table; printable
+/// non-ASCII text is preserved, while terminal escapes, bidi controls and invisible tags are not.
 fn quoted_as_space(c: char) -> bool {
     c.is_whitespace()
         || c.is_control()
