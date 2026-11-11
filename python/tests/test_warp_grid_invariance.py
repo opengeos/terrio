@@ -161,6 +161,7 @@ def test_reproject_validity_retains_whole_grid_samples(
         src_crs="EPSG:32633",
         dst_crs="EPSG:3857",
         resampling=METHODS[method],
+        tolerance=error_threshold,
         grid_invariant=True,
     )
     if validity == "masked":
@@ -226,3 +227,37 @@ def test_small_remote_warp_window_keeps_range_reads_bounded(tmp_path, monkeypatc
     print(
         f"remote warp bytes (GDAL grid / stable): {transferred}; file bytes: {path.stat().st_size}"
     )
+
+
+@pytest.mark.parametrize("version", ["3.12", "3.13"])
+def test_nearest_rounding_retains_centres_and_selected_taps(monkeypatch, version):
+    monkeypatch.setenv("TERRIO_GDAL_COMPAT", version)
+    y, x = np.mgrid[:8, :8]
+    raster = terrio.Raster.from_array(
+        (x + y * 10).astype("float64"), (0, 1, 0, 8, 0, -1), crs="EPSG:4326"
+    )
+    edge = 0.49999999995
+    options = dict(
+        resampling="near", ot="Float64", dstnodata=float("nan"), et=0, grid_invariant=True
+    )
+    whole = terrio.warp(
+        raster, te=(edge, 8 - edge - 3, edge + 3, 8 - edge), ts=(3, 3), **options
+    ).read(1)
+    tile = terrio.warp(
+        raster, te=(edge + 1, 8 - edge - 2, edge + 2, 8 - edge - 1), ts=(1, 1), **options
+    ).read(1)
+    np.testing.assert_array_equal(whole, (x + y * 10)[1:4, 1:4])
+    np.testing.assert_array_equal(tile, whole[1:2, 1:2])
+
+
+@pytest.mark.parametrize("version", ["3.12", "3.13"])
+def test_affine_global_pixel_keeps_full_longitude_footprint(monkeypatch, version):
+    monkeypatch.setenv("TERRIO_GDAL_COMPAT", version)
+    y, x = np.mgrid[:4, :360]
+    values = np.where((x < 60) | (x >= 300), 1000.0, 0.0)
+    raster = terrio.Raster.from_array(values, (-180, 1, 0, 2, 0, -1), crs="EPSG:4326")
+    options = dict(ts=(1, 2), resampling="bilinear", ot="Float64", et=0)
+    stable = terrio.warp(raster, grid_invariant=True, **options).read(1)
+    reference = terrio.warp(raster, grid_invariant=False, **options).read(1)
+    assert np.all(reference > 100), reference
+    np.testing.assert_allclose(stable, reference, rtol=0, atol=1e-9)

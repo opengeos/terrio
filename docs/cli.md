@@ -1214,6 +1214,9 @@ memory chunks use the same coordinate approximation spans and local kernel footp
 This applies to all resamplers, including with the default approximation threshold.
 It changes values where GDAL's chunk-dependent approximation or kernel scales would
 change them. It does not promise pixel-identical results with GDAL's default warper.
+The shared warper also uses this default for reprojection inside tiles, retile,
+mosaic, catalogs and update operations. Those paths use `TERRIO_WARP_GRID=GDAL`
+to select the historical sampling policy.
 
 GDAL 3.13 changed warp kernel scales and the bilinear/cubic downsampling threshold.
 `warp --kernel-version 3.13` selects that arithmetic; without the option, warp follows

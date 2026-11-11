@@ -3062,8 +3062,9 @@ impl WarpContext<'_> {
                         continue;
                     };
                     if nearest {
-                        let (x, y) = ((x + 1e-10).floor(), (y + 1e-10).floor());
-                        (x, y, x + 1.0, y + 1.0)
+                        // Sampling validates the unrounded centre, then selects its
+                        // epsilon-rounded tap. Keep both when they straddle an integer.
+                        (x.floor(), y.floor(), (x + 1e-10).floor() + 1.0, (y + 1e-10).floor() + 1.0)
                     } else {
                         let (sx, sy) = scales.as_ref().unwrap()[i];
                         let four = matches!(self.resampling, Resampling::Bilinear | Resampling::Cubic)
@@ -3461,7 +3462,10 @@ impl WarpContext<'_> {
     /// Apply GDAL 3.12.1 axis-range or GDAL 3.13.3 transformed-square scale arithmetic
     /// locally. The per-pixel footprint policy is Terrio's rather than GDAL's chunk sampling.
     fn footprint_scales(&self, mut p: [(f64, f64); 4]) -> (f64, f64) {
+        // Only reprojected footprints can cross a longitude cut. Affine edge vectors
+        // are continuous, even when a coarse pixel spans an entire longitude period.
         if let Some(period) = self.t.src_longitude_period
+            && self.t.ct.is_some()
             && self.t.src_gcp.is_none()
             && self.t.src_gt[2] == 0.0
             && self.t.src_gt[4] == 0.0
