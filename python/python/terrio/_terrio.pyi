@@ -126,6 +126,7 @@ __all__ = [
     "tiff_infers_cog_layout",
     "gdal_compat",
     "crs_info",
+    "proj_boolean_parameters",
     "crs_to_projjson",
     "suggested_grid",
     "warped_vrt_type",
