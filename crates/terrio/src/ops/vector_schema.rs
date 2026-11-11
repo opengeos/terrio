@@ -971,8 +971,9 @@ pub fn export_schema_with_dims(
 /// declarations (exact column types, `NOT NULL` and `UNIQUE` constraints and defaults, the
 /// geometry column and its Z/M flags); other datasets are read and described by
 /// [`export_schema`]. A local or remote FlatGeobuf, or a local zip whose member is one, reports the Z and
-/// M its header declares, even with no features. A remote zip's member is read by the general route,
-/// which does not read its declared Z or M. A remote FlatGeobuf is recognised by its URL's file name
+/// M its header declares, even with no features. A remote zip's named FlatGeobuf member (`a.zip!x.fgb`)
+/// takes the same route as a remote FlatGeobuf and reports its declared Z and M. A remote zip with no
+/// member named is read by the general route, which does not read its declared Z or M. A remote FlatGeobuf is recognised by its URL's file name
 /// extension: a URL without one (`layer?format=fgb`) is refused as an unrecognised format, as
 /// `open_vector` refuses it when GDAL is not built in; a build with GDAL reads it through GDAL.
 pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
@@ -997,8 +998,9 @@ pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
     };
     // A remote FlatGeobuf, or a local zip whose member is one, is judged by its name, then resolved once:
     // the download or extraction is the only read of the file, and the header is read from that copy.
-    // A local archive's member is judged by its content, as the archive is. A remote archive's member
-    // keeps the general route.
+    // A local archive's member is judged by its content, as the archive is. A remote archive's named
+    // member is judged by its name too, as a remote FlatGeobuf is; a remote archive with no member named
+    // keeps the general route, since its main member is only known from its listing.
     let remote =
         !location.is_local() && member.is_none() && crate::formats::VectorDriver::for_extension(&location.file_name()) == Some(flatgeobuf);
     let archived = member.is_some_and(|m| crate::formats::VectorDriver::for_extension(&m) == Some(flatgeobuf));

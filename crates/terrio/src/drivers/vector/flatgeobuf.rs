@@ -1064,6 +1064,50 @@ mod tests {
         assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "PointZM");
     }
 
+    #[test]
+    fn declared_header_replaces_the_feature_scan_for_non_empty_layers() {
+        // A header that declares no Z wins over Z on a feature, as GDAL reads the header flag.
+        let bytes = dimension_fixture(false, false, Some(&[3.0]), None);
+        assert_eq!(exported_geometry_type(&bytes), "Point");
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_zip_named_flatgeobuf_member_reports_declared_z_without_features() {
+        // A remote zip's named member takes the remote FlatGeobuf route: its declared Z shows with no features.
+        let archive = zip_bytes("empty.fgb", &empty_dimension_fixture(true, false));
+        let (base, requests) = crate::http::test_server(archive);
+        let schema = crate::ops::vector_schema::export_schema_path(&format!("{base}/a.zip!empty.fgb"), &[]).unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "PointZ");
+        assert!(!requests.lock().unwrap().is_empty());
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn disallowed_remote_zip_named_flatgeobuf_member_is_refused_before_download() {
+        let archive = zip_bytes("empty.fgb", &empty_dimension_fixture(true, false));
+        let (base, requests) = crate::http::test_server(archive);
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_ALLOWED_DRIVERS".to_string(), Some("GTiff".to_string()))]));
+        let result = crate::ops::vector_schema::export_schema_path(&format!("{base}/a.zip!empty.fgb"), &[]);
+        crate::config::pop_scope();
+        let err = result.unwrap_err().to_string();
+        assert!(err.to_lowercase().contains("flatgeobuf driver is not allowed"), "{err}");
+        assert!(requests.lock().unwrap().is_empty(), "the disallowed archive was requested");
+    }
+
+    /// A zip archive holding one member `name` with `bytes`, as its file contents.
+    #[cfg(remote)]
+    fn zip_bytes(name: &str, bytes: &[u8]) -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut zip, bytes).unwrap();
+            zip.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
     #[cfg(remote)]
     #[test]
     fn remote_flatgeobuf_reports_declared_z_without_features() {
