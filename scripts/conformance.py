@@ -491,7 +491,12 @@ def suite_json_ops(ctx, key, script, title, reference, criteria, group_words, ex
         The suite.
     """
     s = Suite(key, title, reference, criteria)
-    _code, out, err = run([sys.executable, str(SCRIPTS / script), ctx.data, "--terrio", ctx.terrio, "--json", *extra])
+    # These suites reproduce reference outputs; warp-grid explicitly clears this setting
+    # to check the default stable policy independently.
+    _code, out, err = run(
+        [sys.executable, str(SCRIPTS / script), ctx.data, "--terrio", ctx.terrio, "--json", *extra],
+        {"TERRIO_WARP_GRID": "GDAL"},
+    )
     try:
         results = json.loads(out)
     except json.JSONDecodeError:
@@ -3479,6 +3484,8 @@ def markdown(suites, ctx, vers):
             "**within tolerance** (the suite says which), an **expected rejection**, **not compared**, "
             "or **differs**. Regenerate this page with:"
         ),
+        "",
+        "Warp reference comparisons select `TERRIO_WARP_GRID=GDAL`; the separate warp-grid suite checks the default stable policy.",
         "",
         "```sh",
         "cargo build --release",

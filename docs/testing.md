@@ -84,8 +84,10 @@ python scripts/conformance.py ../terrio-data --only warp-grid --strict
 ```
 
 These are consistency checks, not comparisons with GDAL's chunk-dependent warp
-values. Exact GDAL warp reference tests explicitly select `TERRIO_WARP_GRID=GDAL`;
-the default policy remains covered separately. Kernel version selects arithmetic
+values. Exact GDAL warp reference tests and the JSON raster conformance comparisons explicitly
+select `TERRIO_WARP_GRID=GDAL`; the standalone rasterio/rioxarray comparison scripts
+select that policy unless explicitly configured otherwise.
+The default policy remains covered separately. Kernel version selects arithmetic
 independently of grid policy. See [warp sampling](cli.md#warp) for per-call options.
 
 ## Test data
