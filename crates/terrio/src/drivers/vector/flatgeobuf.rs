@@ -1107,6 +1107,22 @@ mod tests {
         assert_eq!(names, opened.layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>());
     }
 
+    #[test]
+    fn local_zip_member_is_refused_by_its_data_and_reads_as_geometry_z() {
+        // Guard for the local archive route: a disallowed member is refused by the data it holds, and an
+        // allowed one reads with its declared Z. The route change itself has no observable difference here.
+        let member = empty_typed_dimension_fixture(FgbType::Unknown, true, false);
+        let (_dir, path) = zip_with_member("empty.fgb", &member);
+        let path = path.to_str().unwrap();
+        let refused = crate::config::with_options(&[("TERRIO_ALLOWED_DRIVERS", "GTiff")], || {
+            crate::ops::vector_schema::export_schema_path(path, &[])
+        });
+        let err = refused.unwrap_err().to_string();
+        assert!(err.contains("holds FLATGEOBUF data"), "{err}");
+        let schema = crate::ops::vector_schema::export_schema_path(path, &[]).unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "GeometryZ");
+    }
+
     #[cfg(remote)]
     #[test]
     fn remote_flatgeobuf_under_a_remote_policy_reports_declared_z() {
