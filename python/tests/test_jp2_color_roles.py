@@ -248,3 +248,29 @@ def test_multiple_gray_components_normalize_to_one_y_channel(tmp_path, gdal):
         gdal.GCI_Undefined
     ] * 3
     np.testing.assert_array_equal(reference.ReadAsArray(), values)
+
+
+@pytest.mark.parametrize("memory", [False, True])
+def test_inherited_geotiff_roles_are_not_replaced_with_rgb(tmp_path, gdal, memory):
+    values = _source(("Gray", "Undefined", "Undefined"), "uint8")
+    source = tmp_path / "source.tif"
+    reference = gdal.GetDriverByName("GTiff").Create(
+        str(source), 64, 48, 3, gdal.GDT_Byte, options=["PHOTOMETRIC=MINISBLACK"]
+    )
+    for band in range(3):
+        reference.GetRasterBand(band + 1).WriteArray(values[band])
+    reference = None
+    raster = terrio.open_raster(str(source), lazy=True)
+    path = tmp_path / "inherited.jp2"
+    if memory:
+        path.write_bytes(raster.to_bytes("inherited.jp2"))
+    else:
+        raster.write(str(path))
+    with rio.open(path) as result:
+        assert result.colorinterp == (ColorInterp.undefined,) * 3
+        np.testing.assert_array_equal(result.read(), values)
+    reference = gdal.Open(str(path))
+    assert [reference.GetRasterBand(i).GetColorInterpretation() for i in range(1, 4)] == [
+        gdal.GCI_Undefined
+    ] * 3
+    np.testing.assert_array_equal(reference.ReadAsArray(), values)

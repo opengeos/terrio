@@ -125,18 +125,20 @@ thread) and 1.7 GB, and the smallest overview 0.05 s (GDAL: 0.09 s, 1.1 s and 0.
 window and overview is identical to GDAL's. GeoTIFFs compressed with JPEG XL are read tile by tile
 the same way (JPEG XL files themselves are not a format terrio reads).
 
-Explicit JPEG 2000 colour roles are stored in channel-definition boxes. Three- and
+Supplied JPEG 2000 colour roles, including roles inherited from source files, are stored in channel-definition boxes. Three- and
 four-band data marked undefined retain that interpretation; RGB associations and
 alpha can appear in any component order. The multiple-component transform is enabled
 only for RGB in the first three components. Non-RGB files declare grayscale with one
 Y channel (the first gray channel, else the first non-alpha component), as the format requires.
 All-alpha inputs are rejected because they have no colour channel. Multiple gray roles
 are normalized to that one Y association; for three or more components, both Terrio
-and GDAL report these non-alpha components as undefined on readback. Explicit
-undefined three- and four-band inputs therefore declare grayscale rather than the
+and GDAL report these non-alpha components as undefined on readback. Undefined
+three- and four-band inputs, including inherited roles, therefore declare grayscale rather than the
 previous inferred sRGB, which changes their display in colour-aware readers.
 One- and two-band RGB subsets write as grayscale. Larger RGB colour sets require
 exactly one red, green and blue channel; incomplete or duplicate sets are rejected.
+When any roles are supplied, omitted entries are unspecified. When none are supplied,
+the existing band-count defaults apply (RGB for three or four components).
 Decoding preserves stored component order,
 as GDAL 3.13.3 does, instead of permuting BGR or ARGB samples into RGB order. Palette
 decoding keeps its existing expansion. As with GDAL, grayscale images of one or two

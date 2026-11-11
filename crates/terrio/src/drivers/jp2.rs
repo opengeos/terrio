@@ -1252,16 +1252,11 @@ fn channel_definitions(bands: usize, metadata: &[crate::BandMetadata]) -> Result
     if metadata.iter().all(|band| band.color_interp.is_none()) {
         return Ok((default_space, None, default_space == 16));
     }
+    // Once roles are supplied, missing entries are unspecified; do not invent RGB
+    // channels around an explicit Undefined or Gray component.
     let roles: Vec<&str> = (0..bands)
         .map(|band| {
-            let default = if default_space == 16 && band < 3 {
-                ["Red", "Green", "Blue"][band]
-            } else if bands <= 2 {
-                "Gray"
-            } else {
-                "Undefined"
-            };
-            metadata.get(band).and_then(|m| m.color_interp.as_deref()).map(crate::geotiff::color_interpretation).unwrap_or(default)
+            metadata.get(band).and_then(|m| m.color_interp.as_deref()).map(crate::geotiff::color_interpretation).unwrap_or("Undefined")
         })
         .collect();
     let space = if bands >= 3 && roles.iter().any(|r| matches!(*r, "Red" | "Green" | "Blue")) { 16u32 } else { 17 };
@@ -1474,6 +1469,22 @@ mod tests {
         let (gt, crs) = gml_georeferencing(xml);
         assert_eq!(gt.unwrap(), [300000.0, 10.0, 0.0, 5000040.0, 0.0, -10.0]);
         assert_eq!(crs.unwrap().epsg, Some(32633));
+    }
+
+    #[test]
+    fn partial_channel_metadata_does_not_invent_rgb_roles() {
+        let metadata = [crate::BandMetadata { color_interp: Some("Undefined".into()), ..Default::default() }];
+        let (space, definitions, mct) = channel_definitions(3, &metadata).unwrap();
+        assert_eq!(space, 17);
+        assert!(!mct);
+        let definitions = definitions.unwrap();
+        assert_eq!(&definitions[2..8], &[0, 0, 0, 0, 0, 1]);
+        assert_eq!(&definitions[8..14], &[0, 1, 255, 255, 255, 255]);
+        assert_eq!(&definitions[14..20], &[0, 2, 255, 255, 255, 255]);
+        let no_roles = vec![crate::BandMetadata::default(); 3];
+        assert_eq!(channel_definitions(3, &no_roles).unwrap(), (16, None, true));
+        let red = [crate::BandMetadata { color_interp: Some("Red".into()), ..Default::default() }];
+        assert!(channel_definitions(3, &red).is_err());
     }
 
     #[test]
