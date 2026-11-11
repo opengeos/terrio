@@ -51,3 +51,12 @@ def test_failed_forward_transform_stays_failed_after_inverse(crs, pole):
     assert xs == [math.inf] and ys == [math.inf]
     lons, lats = transform(crs, "EPSG:4326", xs, ys)
     assert lons == [math.inf] and lats == [math.inf]
+
+
+def test_finite_kilometre_coordinates_keep_their_direction_after_normalization():
+    """Finite inputs retain the analytic polar limit despite intermediate metre overflow."""
+    source = "+proj=stere +lat_0=90 +R=6371000 +units=km"
+    target = "+proj=longlat +R=6371000"
+    xs, ys = terrio.transform_points([1e306], [2e306], source, target)
+    assert xs[0] == pytest.approx(math.degrees(math.atan2(1, -2)), abs=1e-12)
+    assert ys[0] == pytest.approx(-90, abs=1e-12)
