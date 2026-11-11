@@ -61,6 +61,11 @@ fn interrupted_update(target: &Path, state: &str) {
     }
     let stage = target.parent().unwrap().join(".terrio-ept-append-0");
     std::fs::create_dir(&stage).unwrap();
+    if state == "committed-moved" {
+        // Publication has already moved ept.json, but has not removed the staging directory.
+        std::fs::write(stage.join("COMMITTED"), b"").unwrap();
+        return;
+    }
     if state.starts_with("committed") {
         let mut metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(target).unwrap()).unwrap();
         metadata["recovered"] = true.into();
@@ -83,10 +88,11 @@ fn append(target: &Path, source: &Path, convert: bool) -> terrio::Result<()> {
     }
 }
 
-fn refused(target: &Path, source: &Path, convert: bool) {
-    let error = append(target, source, convert).unwrap_err();
+fn refused(result: terrio::Result<()>, allowed: &str) {
+    let error = result.unwrap_err();
     assert!(matches!(error, terrio::Error::Unsupported(_)), "{error:?}");
-    assert!(error.to_string().contains("driver is not allowed"), "{error}");
+    let missing = if allowed.split(',').any(|driver| driver == "EPT") { "LAZ" } else { "EPT" };
+    assert!(error.to_string().contains(&format!("the {missing} driver is not allowed")), "{error}");
 }
 
 #[test]
@@ -94,7 +100,8 @@ fn append_respects_driver_policy_before_any_dataset_changes() {
     // Exercise the process option in children, without mutating this process's environment.
     if let Ok(target) = std::env::var("TERRIO_TEST_EPT_TARGET") {
         let source = std::env::var("TERRIO_TEST_EPT_SOURCE").unwrap();
-        refused(Path::new(&target), Path::new(&source), std::env::var("TERRIO_TEST_EPT_CONVERT").unwrap() == "true");
+        let allowed = std::env::var("TERRIO_ALLOWED_DRIVERS").unwrap();
+        refused(append(Path::new(&target), Path::new(&source), std::env::var("TERRIO_TEST_EPT_CONVERT").unwrap() == "true"), &allowed);
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -137,11 +144,18 @@ fn append_respects_driver_policy_before_any_dataset_changes() {
                         terrio::config::push_scope([("TERRIO_ALLOWED_DRIVERS".into(), Some(allowed.into()))].into());
                         let result = append(&target, &source, convert);
                         terrio::config::pop_scope();
-                        assert!(matches!(result, Err(terrio::Error::Unsupported(_))), "{result:?}");
+                        refused(result, allowed);
                     }
-                    assert_eq!(snapshot(target.parent().unwrap()), before, "{allowed}, {state}, convert={convert}, process={process}");
-                    // Alias spellings are invalid to the EPT reader, but policy must still
-                    // recognize the underlying codec before discarding a pending update.
+                    let after = snapshot(target.parent().unwrap());
+                    for path in before.keys().chain(after.keys()) {
+                        assert!(
+                            before.get(path) == after.get(path),
+                            "changed {path:?}: {allowed}, {state}, convert={convert}, process={process}"
+                        );
+                    }
+                    // Standard metadata remains readable with the original count. Live alias
+                    // spellings are deliberately invalid to the EPT reader, so only their
+                    // unchanged snapshot is checked above.
                     if !state.starts_with("live-") {
                         assert_eq!(pointcloud::read_points(target.to_str().unwrap(), &Default::default()).unwrap().len(), 100);
                     }
@@ -151,7 +165,7 @@ fn append_respects_driver_policy_before_any_dataset_changes() {
     }
     // Allowed reads still append and recover normally for all supported tile codecs.
     for (codec, allowed) in [(EptDataType::Laszip, "EPT,LAZ"), (EptDataType::Binary, "EPT"), (EptDataType::Zstandard, "EPT")] {
-        for state in ["none", "pending", "committed"] {
+        for state in ["none", "pending", "committed", "committed-moved"] {
             case += 1;
             let target = dataset(dir.path(), &format!("target-{case}"), 100, codec);
             interrupted_update(&target, state);

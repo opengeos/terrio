@@ -413,9 +413,12 @@ fn check_append_drivers(dir: &Path, name: &str) -> Result<Vec<PathBuf>> {
         let metadata = stage.join("ept.json");
         // A partly published update can already have moved its metadata into the live dataset.
         // An uncommitted update is discarded, so its incomplete metadata is not parsed.
-        if stage.join(COMMITTED).exists() && metadata.exists() {
-            let metadata = read_json(&metadata)?;
-            check_tile_drivers(metadata["dataType"].as_str().unwrap_or("laszip"), name)?;
+        if stage.join(COMMITTED).exists() {
+            match read_json(&metadata) {
+                Ok(metadata) => check_tile_drivers(metadata["dataType"].as_str().unwrap_or("laszip"), name)?,
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
         }
     }
     Ok(staged)
@@ -513,10 +516,9 @@ fn bounds6(v: &Value) -> Option<[f64; 6]> {
 /// The statistics keys of a schema dimension.
 const STATS_KEYS: [&str; 7] = ["count", "minimum", "maximum", "mean", "variance", "stddev", "counts"];
 
-/// LASzip EPT tiles require both access to the LAS-family parser and the LAZ driver.
+/// LASzip EPT tiles require the LAZ driver before invoking a tile parser.
 fn check_tile_drivers(data_type: &str, name: &str) -> Result<()> {
     if EptDataType::parse(data_type)? == EptDataType::Laszip {
-        super::read::check_las_allowed(name)?;
         super::read::check_driver("LAZ", name)?;
     }
     Ok(())
