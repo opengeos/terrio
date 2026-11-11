@@ -305,7 +305,7 @@ test("GML projected authority axes keep GIS XY through byte reads and writes", (
       const expected = [...xy, 7];
       assert.deepEqual(source.toGeoJSON().features[0].geometry.coordinates, expected, name);
       const bytes = source.toBytes("output.gml");
-      // The WASM codec returns raw XML; the native writer bundles its XSD sidecar as ZIP.
+      // Native and WASM byte output both contain the standalone XML document.
       assert.match(new TextDecoder().decode(bytes), /^<\?xml/);
       const restored = terrio.open(bytes, "output.gml");
       assert.deepEqual(restored.toGeoJSON().features[0].geometry.coordinates, expected, name);
@@ -516,7 +516,24 @@ test("errors", () => {
   assert.throws(() => terrio.describeCrs("nonsense"), /cannot parse/);
   const ds = terrio.fromGeoJSON(SQUARES);
   assert.throws(() => ds.readBand(1), /not a raster/);
-  assert.throws(() => ds.toBytes("x.mif"), /cannot be written to memory/);
+  for (const name of ["x.mif", "x.tab", "x.mif.zip", "x.tab.zip"]) {
+    assert.throws(() => ds.toBytes(name), /MapInfo byte output is unavailable in WebAssembly/);
+  }
+  ds.free();
+});
+
+test("vector byte filenames match their document or archive", () => {
+  const source = terrio.fromGeoJSON({type: "FeatureCollection", features: [{type: "Feature", properties: {name: "first", n: 1}, geometry: {type: "Point", coordinates: [10, 46]}}]});
+  const bytes = source.toBytes("points.gml");
+  assert.match(new TextDecoder().decode(bytes), /^<\?xml/);
+  const restored = terrio.open(bytes, "points.gml");
+  assert.deepEqual(restored.toGeoJSON().features[0].geometry.coordinates, [10, 46]);
+  const archive = source.toBytes("points.shp.zip");
+  for (const extension of ["gml", "mif", "tab"]) {
+    assert.throws(() => terrio.open(archive, `points.${extension}`), /ZIP archive.*\.zip/);
+  }
+  restored.free();
+  source.free();
 });
 
 /** GDAL's statistics of a band, from the .aux.xml file it wrote next to the raster. */
@@ -4259,6 +4276,21 @@ test("single named layer accepts the file stem across readers and operations", (
     () => terrio.render(file, {layers: ["roads", "missing"]}),
     () => terrio.vectorGrid(file, {layers: ["roads", "missing"]}),
   ]) assert.throws(call, /no layer named missing \(layers: roads\)/);
+});
+
+test("MapInfo MIF archives read in WebAssembly", () => {
+  // Native Terrio fixture: points.mif and points.mid, one EPSG:4326 point with label=site.
+  const bytes = new Uint8Array(Buffer.from(
+    "UEsDBBQAAAAIAAAAIQCmDPwxCQAAAAcAAAAKAAAAcG9pbnRzLm1pZFMqzixJVeICAFBLAwQUAAAACAAAACEAVyyj2nAAAAB5AAAACgAAAHBvaW50cy5taWYVzE0KwjAQBtD9nOIjK4UKiVZxn+q64M8+6kBT0gxMxoW3lx7gvSdry1Jx8J7ilLSxwT3u193Z0cAlL9lY4TpHUUQ/t1/DJalNGFVmfttqQ4fge4pSvkttCASU9OKCNdzsj/2WhmSJaJRcDcGjP9EfUEsBAhQDFAAAAAgAAAAhAKYM/DEJAAAABwAAAAoAAAAAAAAAAAAAAKSBAAAAAHBvaW50cy5taWRQSwECFAMUAAAACAAAACEAVyyj2nAAAAB5AAAACgAAAAAAAAAAAAAApIExAAAAcG9pbnRzLm1pZlBLBQYAAAAAAgACAHAAAADJAAAAAAA=",
+    "base64",
+  ));
+  const dataset = terrio.openVector(bytes, "points.mif.zip", {});
+  assert.deepEqual(dataset.layerNames(), ["points"]);
+  const features = dataset.toGeoJSON().features;
+  assert.equal(features.length, 1);
+  assert.equal(features[0].properties.label, "site");
+  assert.deepEqual(features[0].geometry.coordinates, [10, 46]);
+  dataset.free();
 });
 
 test("ZIP layer selection uses the member name rather than the archive name", () => {

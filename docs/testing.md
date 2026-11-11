@@ -19,6 +19,27 @@ frames using APIs available on Python 3.10 and later, without changing warning f
 Attribution stops at the first frame outside the Terrio package, including a
 third-party intermediary when one calls Terrio on the application's behalf.
 
+## Vector byte packaging
+
+`python/tests/test_vector_byte_packaging.py` reads default vector byte outputs
+under their original filenames, checks explicit multi-file output names and
+refuses ZIP input mislabeled as a standalone GML/MIF/TAB document. The Rust
+memory tests also exercise the filesystem-free readers directly, and Node
+checks GML documents, archive refusals and unsupported MapInfo byte writing.
+
+`scripts/compare_vector_byte_packaging.py DATA --json`, registered as the
+`vector-byte-packaging` conformance suite, compares GML documents and explicit
+MIF/TAB ZIP archives with GDAL/OGR on 16 real Natural Earth populated places.
+Counts, original scalar attributes, archive members and EPSG:4326 agree exactly;
+GML also exposes its generated `gml_id` field, which the Python regression checks.
+Coordinates allow 1e-6 degrees for MapInfo's storage grid. The script reports
+the measured maximum and distinguishes exact coordinates from agreement within
+that tolerance. The reference is GDAL 3.13.3 for local validation.
+
+Run `python scripts/conformance.py DATA --only vector-byte-packaging --strict`
+to execute this suite and fail on differences or suite errors. Check its report
+for skipped comparisons when reference dependencies or data are unavailable.
+
 ## Translate input-opening policy
 
 Translate input-opening policy is tested with `cargo test -p terrio --lib ops::translate::tests`
