@@ -54,19 +54,31 @@ fn short_non_tiff_inputs_are_not_matches() {
 fn remote_directory_errors_keep_their_cause() {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
-    for (response, expected) in [
-        ("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", Some("500")),
-        ("", None),
+    for (response, expected, translate) in [
+        ("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", Some("500"), false),
+        ("", None, false),
         (
             "HTTP/1.1 302 Found\r\nLocation: http://localhost:1/elsewhere.tif\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
             Some("a redirect to another origin"),
+            false,
+        ),
+        ("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", Some("500"), true),
+        ("", None, true),
+        (
+            "HTTP/1.1 302 Found\r\nLocation: http://localhost:1/elsewhere.tif\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            Some("a redirect to another origin"),
+            true,
         ),
     ] {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("http://{}/image.tif", listener.local_addr().unwrap());
+        let finished = Arc::new(AtomicBool::new(false));
+        let client_finished = finished.clone();
         let server = std::thread::spawn(move || {
             for request in 0..2 {
                 let deadline = Instant::now() + Duration::from_secs(10);
@@ -100,11 +112,30 @@ fn remote_directory_errors_keep_their_cause() {
                     stream.write_all(response.as_bytes()).unwrap();
                 }
             }
+            // Count all requests until the caller returns, including a whole-object fallback.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !client_finished.load(Ordering::Relaxed) && Instant::now() < deadline {
+                match listener.accept() {
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(5)),
+                    other => panic!("unexpected request after the directory failure: {other:?}"),
+                }
+            }
+            assert!(client_finished.load(Ordering::Relaxed), "client did not finish after the directory failure");
         });
         terrio::config::push_scope(
             [("TERRIO_HTTP_FOLLOW_CROSS_ORIGIN".into(), Some("NO".into())), ("TERRIO_HTTP_MAX_RETRY".into(), Some("0".into()))].into(),
         );
-        let result = terrio::LazyRaster::open_tiff(&url);
+        let result = if translate {
+            terrio::ops::translate::translate_path(
+                &url,
+                &terrio::ops::translate::TranslateOptions::default(),
+                terrio::ops::overview::OverviewSelection::Auto,
+            )
+            .map(|_| ())
+        } else {
+            terrio::LazyRaster::open_tiff(&url).map(|_| ())
+        };
+        finished.store(true, Ordering::Relaxed);
         terrio::config::pop_scope();
         let error = match result {
             Err(error) => error,

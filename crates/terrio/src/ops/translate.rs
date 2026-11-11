@@ -98,6 +98,7 @@ pub fn translate_bytes(bytes: Vec<u8>, name: &str, options: &TranslateOptions, o
 /// Whether a failed lazy open must not be retried as a whole read.
 fn terminal_open_error(error: &Error, name: &str) -> bool {
     matches!(error, Error::InvalidArgument(_) | Error::Http(_))
+        || matches!(error, Error::Io(e) if matches!(e.get_ref().and_then(|source| source.downcast_ref::<Error>()), Some(Error::Http(_))))
         || error.is_resource_refusal()
         || matches!(error, Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound && !crate::vfs::is_gdal_name(name))
 }
@@ -947,6 +948,7 @@ mod tests {
         for error in [
             Error::InvalidArgument("invalid option".into()),
             Error::Http("request refused".into()),
+            Error::Io(std::io::Error::other(Error::Http("directory request refused".into()))),
             Error::ResourceLimit("memory budget".into()),
             Error::DecodedLimitExceeded { resource: "TIFF tag", limit: 1 },
             Error::Io(std::io::Error::from(std::io::ErrorKind::OutOfMemory)),
