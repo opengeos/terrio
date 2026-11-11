@@ -135,7 +135,11 @@ pub struct WindowOptions {
 /// Nor do the limits bound the chunk tables a reader keeps: after a level's first window read,
 /// its chunk offsets and byte counts (about 16 bytes per chunk) are kept for the reader's
 /// lifetime, so a file with very many small chunks keeps that memory in use while the reader is
-/// open.
+/// open. A reader that decodes on several threads also keeps their decoders between window reads,
+/// each with its own copy of those tables: the open readers of the process keep these copies
+/// within 256 MiB together, closing the least recently used decoders of the other readers first,
+/// or keep those of one reader when they alone take more. A reader whose decoders were closed
+/// opens them again on its next such read, which reads the tables once more for each thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TiffReadLimits {
     /// The most bytes one decoded chunk may take, whichever codec decodes it, and the most a
@@ -3451,6 +3455,13 @@ mod tests {
             (Window::new(3, 5, 120, 100), None),
         ];
         let mut reader = LazyRaster::open(path).unwrap();
+        // A budget of its own: the readers of the tests running alongside close none of its decoders.
+        match &mut reader.inner {
+            Inner::Tiff(t) => {
+                t.workers = crate::geotiff::DecoderPool::sharing(Box::leak(Box::new(crate::geotiff::SpareDecoders::new(1 << 20))))
+            }
+            _ => panic!("a GeoTIFF reader"),
+        }
         let opened = |r: &LazyRaster| match &r.inner {
             Inner::Tiff(t) => t.workers.opened.load(std::sync::atomic::Ordering::Relaxed),
             _ => panic!("a GeoTIFF reader"),
@@ -3464,7 +3475,7 @@ mod tests {
             }
         }
         assert_eq!(read_f64(&mut reader, reads[0].0, &[1, 2, 3], reads[0].1), first);
-        // A decoder is opened only while all the others are busy, whatever order the workers run
+        // A decoder is opened only when the pool has none to spare, whatever order the workers run
         // in; opening one per worker would open one per thread on every one of these 20 reads.
         let most = if threads > 1 { threads } else { 0 };
         assert!(opened(&reader) <= most, "{} decoders opened on {threads} threads", opened(&reader));
@@ -3478,6 +3489,59 @@ mod tests {
             Inner::Tiff(t) => assert!(t.workers.len() <= most),
             _ => unreachable!(),
         }
+    }
+
+    /// The open rasters keep the spare decoders of their workers within one budget. With a budget
+    /// that holds none, only the raster read last keeps its own: the others open theirs again on
+    /// their next read, and read the same values. A raster that is closed gives up its share.
+    #[test]
+    fn open_rasters_keep_their_spare_decoders_within_one_budget() {
+        // Off, so that every read decodes its chunks and needs the workers.
+        let _serial = crate::block_cache::tests::cache_test_guard(0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiled.tif");
+        write_tiled_tiff(&path, (96, 96, 1), sequence(DataType::U8, 96 * 96, 5), &[]);
+        let path = path.to_str().unwrap();
+        // A budget of their own, apart from the rasters of the tests running alongside.
+        let spares: &'static crate::geotiff::SpareDecoders = Box::leak(Box::new(crate::geotiff::SpareDecoders::new(0)));
+        let mut readers: Vec<LazyRaster> = (0..3)
+            .map(|_| {
+                let mut r = LazyRaster::open(path).unwrap();
+                match &mut r.inner {
+                    Inner::Tiff(t) => t.workers = crate::geotiff::DecoderPool::sharing(spares),
+                    _ => panic!("a GeoTIFF reader"),
+                }
+                r
+            })
+            .collect();
+        let kept = |readers: &[LazyRaster]| -> Vec<usize> {
+            let of = |r: &LazyRaster| match &r.inner {
+                Inner::Tiff(t) => t.workers.len(),
+                _ => unreachable!(),
+            };
+            readers.iter().map(of).collect()
+        };
+        // What one spare decoder counts for: the fixed part and the tables of 6 x 6 tiles.
+        let each = crate::geotiff::SPARE_DECODER_OVERHEAD + 16 * 36;
+        let w = Window::new(1, 2, 90, 90);
+        let fresh = read_f64(&mut LazyRaster::open(path).unwrap(), w, &[1], None);
+        for _ in 0..3 {
+            for i in 0..readers.len() {
+                assert_eq!(read_f64(&mut readers[i], w, &[1], None), fresh);
+                // The decoders this read gave back closed those of the other rasters. No lower
+                // bound on how many it gave back: the decode workers are shared by the whole
+                // process, and a read that finds none free decodes alone.
+                let kept = kept(&readers);
+                assert!(kept.iter().filter(|&&n| n > 0).count() <= 1, "{kept:?} after reading raster {i}");
+                assert!(kept[i] <= crate::par::threads(), "{kept:?}");
+                assert_eq!(spares.bytes(), kept.iter().sum::<usize>() as u64 * each);
+            }
+        }
+        while let Some(reader) = readers.pop() {
+            drop(reader);
+            assert_eq!(spares.bytes(), kept(&readers).iter().sum::<usize>() as u64 * each);
+        }
+        assert_eq!(spares.bytes(), 0);
     }
 
     /// Window reads on several threads at once share one budget of decode workers: never more
