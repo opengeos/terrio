@@ -8,6 +8,7 @@ import zipfile
 import pytest
 
 import terrio
+import terrio.rio
 from terrio.errors import InvalidArgumentError, NotFoundError, ResourceLimitError, TerrioIOError
 
 
@@ -221,3 +222,59 @@ def test_sozip(tmp_path):
     gdal = pytest.importorskip("osgeo.gdal")
     # GDAL reads terrio's seek-optimized member and its index.
     assert gdal.GetFileMetadata(f"/vsizip/{archive}/big.csv", "ZIP").get("SOZIP_VALID") == "YES"
+
+
+def test_network_stats_count_the_bytes_an_upload_sends(tmp_path):
+    """`network_stats()` counts the body of an upload as sent, in total, for the host it went to
+    and for the file, and `reset_network_stats()` sets it back to 0. An S3 endpoint on this
+    machine accepts the `PUT` and answers 404 to the other requests."""
+    received = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args):
+            pass
+
+        def reply(self, status):
+            self.send_response(status)
+            if status == 200:
+                self.send_header("ETag", '"0"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_PUT(self):
+            received.append(len(self.rfile.read(int(self.headers.get("Content-Length", "0")))))
+            self.reply(200)
+
+        def do_HEAD(self):
+            self.reply(404)
+
+        def do_GET(self):
+            self.reply(404)
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    local = tmp_path / "upload.bin"
+    local.write_bytes(os.urandom(65_822))
+    options = {
+        "AWS_S3_ENDPOINT": f"127.0.0.1:{server.server_port}",
+        "AWS_HTTPS": "NO",
+        "AWS_VIRTUAL_HOSTING": "FALSE",
+        "AWS_ACCESS_KEY_ID": "key",
+        "AWS_SECRET_ACCESS_KEY": "secret",
+        "AWS_REGION": "us-east-1",
+    }
+    try:
+        terrio.reset_network_stats()
+        with terrio.rio.Env(**options):
+            terrio.vsi_copy(str(local), "s3://bucket/upload.bin")
+        stats = terrio.network_stats()
+    finally:
+        server.shutdown()
+    assert received == [65_822]
+    assert stats["sent_bytes"] == 65_822
+    assert stats["hosts"][f"127.0.0.1:{server.server_port}"]["sent_bytes"] == 65_822
+    assert stats["files"]["/vsis3/bucket/upload.bin"]["sent_bytes"] == 65_822
+    terrio.reset_network_stats()
+    assert terrio.network_stats()["sent_bytes"] == 0

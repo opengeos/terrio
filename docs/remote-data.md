@@ -18,6 +18,11 @@ An archive named without a member opens its main dataset: the first file, by nam
 kind found among vector layers, rasters and point clouds (LAS, LAZ, COPC, PLY, E57), so
 `terrio info tile.las.zip` reads the LAS file inside.
 
+Archives with duplicate member names are refused as invalid data before reading or extracting
+members. This applies to whole archives, `/vsizip/` members, byte buffers, and XLSX or KMZ
+containers, including duplicate names outside the selected dataset. A later entry cannot silently
+replace an earlier one. The optional GDAL backend does not retry these ambiguous archives.
+
 ## Reading in place
 
 GeoTIFFs and COGs are opened lazily: `terrio info` fetches the header only, and window or overview
@@ -28,6 +33,17 @@ Zarr stores, JPEG 2000, GRIB, SRTM HGT, STAC tiled assets, COPC and EPT are read
 (`ESRIJSON`, `ESRIPBF`) are read page by page (see [Formats](formats.md#vectors)). Other formats are downloaded to a temporary
 directory first; a remote shapefile's `.shx`, `.dbf`, `.prj` and `.cpg`
 come with it.
+
+A full lazy TIFF open reads the image-directory chain, including overview and mask metadata.
+An unreadable directory or required next-directory pointer fails the open with its read cause;
+it does not silently return partial metadata. This can reject damaged TIFFs whose base image
+another reader can recover. File inventory, copy, rename and deletion use first-image metadata
+and do not require readable later directories. Failed HTTP directory reads, including short
+range responses, do not trigger a whole-file retry during translation.
+Best-effort metadata queries and eager first-image reads retain the metadata collected before
+a later directory fails. The native eager pixel decoder still requires the first directory's
+final pointer. Translation through the optional GDAL backend can recover a base image that
+GDAL can read despite that missing pointer.
 
 ```sh
 terrio info https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif
@@ -268,9 +284,34 @@ The GDAL variable is read when the terrio one is not set.
 Transient errors (connection failures, HTTP 429, 500, 502, 503, 504) are retried with backoff.
 Signatures and SAS tokens are hidden in logs and error messages.
 
+Redirects are followed, up to 10 of them. `TERRIO_HTTP_FOLLOW_CROSS_ORIGIN=NO` keeps the
+requests of a read on the origin of its URL (scheme, host and port): a redirect to another origin
+is refused before anything is sent there, by an error naming the option, and redirects within the
+origin are still followed. Any other value does the same, except `YES` (`TRUE`, `ON`, `1`) and an
+empty or blank value: these, and the option unset (the default), follow redirects to any origin.
+S3 bucket-region discovery also obeys this rule: set `AWS_REGION` to the bucket's region
+before opening a non-default-region bucket under `NO`, since changing from the global Amazon
+endpoint to its regional host changes the origin.
+The optional GDAL backend cannot enforce this policy for its opaque nested reads. While
+origin-only redirects are selected, GDAL reads (including automatic fallbacks and explicit
+`GDAL:` opens) are refused; native readers continue to work.
+The option applies to every request a read sends: ranged reads, files and documents fetched
+whole, listings of object stores, WFS and feature-service requests, and the token fetch that
+signs STAC assets. It is read when a file is opened or fetched, from the environment (the CLI)
+or, for the calling thread, from `terrio.rio.Env` or `config::push_scope`. A STAC link follows
+`TERRIO_STAC_FOLLOW_CROSS_ORIGIN` ([STAC](#stac)); with `YES`, it follows redirects as a read
+does, so this option keeps it on its origin too. OGC API Features requests stay on their origin
+either way. In WebAssembly, `openUrl` sends its requests through the host's `fetch`, which
+follows redirects itself; a `fetch` that refuses them (`redirect: "error"`) keeps reads on their
+origin.
+
 The first request of a remote file asks for its first 16,384 bytes, as GDAL's `/vsicurl/` does:
 a file that is not what its name says (64 MiB of noise named `.tif`, say) is refused after them,
-not downloaded. A remote `.json` or `.geojson` document opened as a raster is identified by its
+not downloaded. A feature-service query (`f=json`, `f=pjson`, `f=pbf` or `resultRecordCount=`)
+or a WFS `GetFeature` URL is not requested at all when no allowed driver could read its answer:
+for a vector open, when the list leaves out the ESRIJSON, ESRIPBF, GeoJSON and GML drivers (and
+GDAL, with the `gdal` feature), and for `open` and `info`, every raster driver too. A remote
+`.json` or `.geojson` document opened as a raster is identified by its
 first 32,768 bytes, as GDAL's STACTA and STACIT drivers identify one: unless they show a STAC
 document, it is refused after them rather than fetched whole to be read as GeoJSON. A remote file
 opened as a raster whose name points to no raster driver (`x`, `x.bin`, `dir.json/x`, a vector
@@ -300,6 +341,22 @@ an object store's listing (remote Zarr groups) at 64 MiB, a STAC signing token r
 
 ## Decoded block cache
 
+Native parallel TIFF reads also retain spare decoders so that later windows avoid rereading
+their chunk tables. This is separate from the decoded block cache. All readers share a
+256 MiB spare-decoder budget by default. Set `TERRIO_TIFF_SPARE_CACHEMAX` before the first
+window read to change it (bytes, optional `K`, `M`, or `G` suffixes); `0` disables spare
+retention. Invalid values use the default. This process-wide setting ignores thread-local
+`terrio.rio.Env` options. A larger budget can avoid repeatedly reopening decoders when several
+large rasters are read in turn, at the cost of retaining more memory.
+
+Positive budgets retain one reader's own spares even when they alone exceed the budget,
+up to one per worker thread. Idle decoders of other readers are evicted least recently used
+first. Each spare is charged for its chunk tables, retained JPEG coding tables and a fixed
+16 KiB overhead. Accounting uses loaded directory metadata without copying or rereading
+the JPEG table payload. Active decoders, the reader's primary decoder, archive buffers and other allocations
+are outside this budget; it does not cap total process memory. An uncountable decoder is
+dropped rather than retained without its chunk tables being charged.
+
 The decoded tiles and strips of lazy GeoTIFF and COG reads, remote or local, are kept in memory
 process-wide, as GDAL's block cache keeps the blocks it decodes. A window read again decodes only
 the chunks no longer in the cache: the least recently used are dropped first when the cache is
@@ -320,6 +377,37 @@ old pixels with chunks decoded from the new ones, so close its readers before ch
 and open them again afterwards. A remote file
 opened again decodes its chunks anew, but from the bytes the HTTP cache above may still hold for its
 URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops them.
+
+## Allowed drivers
+
+`TERRIO_ALLOWED_DRIVERS` limits the drivers datasets may be opened with, for files you do not trust:
+
+- **Value.** A comma-separated list of driver names, in any case (`GTiff`, `gtiff`), where
+  `JP2OpenJPEG`, `JPEG2000`, `JP2KAK`, `JP2ECW` and `JP2MRSID` all name `JP2`. Unset, it restricts
+  nothing. Set but empty or blank, or to bytes that are not UTF-8, it allows no driver.
+- **Scope.** It applies to every kind of dataset, rasters, vectors and point clouds alike.
+- **Writes and appends.** The list restricts readers, not output encoders. Writing a new dataset
+  does not require its output driver to be allowed. An EPT append reads the existing dataset and
+  its tiles: EPT and, for LASzip tiles, LAZ must be allowed before locking the dataset or recovering
+  an interrupted update, including the codecs declared by committed staged metadata. Direct
+  GeoPackage encoder writes, including vector `convert --append`, do not consult the reader list.
+  That encoder updates SQLite tables directly, without opening the target through a Terrio dataset
+  reader. EPT append uses Terrio readers to inspect existing tiles, so the reader policy applies.
+  Operations that open the existing GeoPackage to rewrite it (`repack`, layer renames and
+  `edit_in_place`) do check the vector list. The list is not a filesystem write policy.
+- **With `set_allowed_drivers`.** When a list is also set with
+  `terrio::formats::set_allowed_drivers` (Python: `terrio.set_allowed_drivers`), a driver must be
+  in both. That function keeps a list for each kind, rasters, vectors and point clouds, and a list
+  set without a kind applies to all three.
+- **Set for one thread** (Python's `terrio.rio.Env`, `terrio::config::push_scope`), it only narrows
+  the list outside the scope, the environment's and an outer scope's: the scope allows the drivers
+  both name. A scope that unsets the option leaves the list outside in force. The environment's
+  list applies even when it is set after the scope. Zonal statistics applies the calling
+  thread's scoped options when it opens and reads raster paths on helper threads. A read of an
+  EPT point cloud applies them when it fetches and reads the nodes.
+
+`terrio::formats::allowed_drivers` (Python: `terrio.allowed_drivers()`) gives the drivers allowed on
+the calling thread.
 
 ## Managing files
 

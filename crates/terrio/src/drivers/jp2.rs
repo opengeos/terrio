@@ -794,6 +794,7 @@ impl Jp2Window {
         // Without georeferencing, unit pixels with the image's bottom at y = 0, as terrio's other
         // readers do.
         ds.set_geo_transform(gt.unwrap_or([0.0, 1.0, 0.0, h as f64, 0.0, -1.0]));
+        ds.geotransform_present = Some(gt.is_some());
         let reversibility = reversibility(source.open()?.as_mut(), len, j2k).unwrap_or(None);
         ds.metadata_domains = image_structure(&header.precisions, alpha, reversibility);
         if !palette {
@@ -1234,14 +1235,16 @@ fn read_source(source: StreamSource) -> Result<RasterDataset> {
     Ok(ds)
 }
 
-/// Writes a lossless JP2 with a GeoJP2 box; nodata goes to a `.aux.xml` sidecar.
-pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> {
-    common::write_replacing(path, to_bytes(r)?)?;
+/// Writes a lossless JP2 with a GeoJP2 box (see [`to_bytes`]); nodata goes to a `.aux.xml`
+/// sidecar.
+pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, georeferenced: bool) -> Result<()> {
+    common::write_replacing(path, to_bytes(r, georeferenced)?)?;
     common::write_pam_with(path, None, nodata, r.bands)
 }
 
-/// Encodes a raster as a lossless JP2 file with a GeoJP2 box.
-pub(crate) fn to_bytes(r: &Raster) -> Result<Vec<u8>> {
+/// Encodes a raster as a lossless JP2 file with a GeoJP2 box, unless it has neither a
+/// geotransform (`georeferenced` false, `GEOREFERENCED=NO`) nor a CRS.
+pub(crate) fn to_bytes(r: &Raster, georeferenced: bool) -> Result<Vec<u8>> {
     let (precision, signed) = match r.data_type {
         DataType::U8 => (8, false),
         DataType::I8 => (8, true),
@@ -1293,23 +1296,25 @@ pub(crate) fn to_bytes(r: &Raster) -> Result<Vec<u8>> {
     jp2h.extend(&colr);
     put(b"jp2h", &jp2h);
     // GeoJP2: a 1x1 GeoTIFF carrying the georeferencing of the full image.
-    let tiny_cfg = wbraster::RasterConfig {
-        cols: 1,
-        rows: 1,
-        bands: 1,
-        x_min: r.x_min,
-        y_min: r.y_max() - r.cell_size_y,
-        cell_size: r.cell_size_x,
-        cell_size_y: Some(r.cell_size_y),
-        data_type: DataType::U8,
-        crs: r.crs.clone(),
-        ..Default::default()
-    };
-    let tiny = Raster::from_data_native(tiny_cfg, RasterData::U8(vec![0]))?;
-    let tiff = super::gtiff_write::encode(&tiny, &Default::default())?;
-    let mut uuid = GEOJP2_UUID.to_vec();
-    uuid.extend(tiff);
-    put(b"uuid", &uuid);
+    if common::writes_georeferencing(r, georeferenced) {
+        let tiny_cfg = wbraster::RasterConfig {
+            cols: 1,
+            rows: 1,
+            bands: 1,
+            x_min: r.x_min,
+            y_min: r.y_max() - r.cell_size_y,
+            cell_size: r.cell_size_x,
+            cell_size_y: Some(r.cell_size_y),
+            data_type: DataType::U8,
+            crs: r.crs.clone(),
+            ..Default::default()
+        };
+        let tiny = Raster::from_data_native(tiny_cfg, RasterData::U8(vec![0]))?;
+        let tiff = super::gtiff_write::encode(&tiny, &Default::default())?;
+        let mut uuid = GEOJP2_UUID.to_vec();
+        uuid.extend(tiff);
+        put(b"uuid", &uuid);
+    }
     put(b"jp2c", &codestream);
     Ok(out)
 }
@@ -1350,7 +1355,7 @@ mod tests {
         .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("t.jp2");
-        write(&r, Some(-1500.0), &p).unwrap();
+        write(&r, Some(-1500.0), &p, true).unwrap();
         let ds = read(&p).unwrap();
         assert_eq!(ds.raster.data_i16().unwrap(), &data[..]);
         assert_eq!(ds.crs().epsg, Some(32611));
@@ -1372,7 +1377,7 @@ mod tests {
             let gt = [500000.0, 10.0, 0.0, 4100000.0, 0.0, -10.0];
             let r = common::make_raster(w, h, bands, data, gt, CrsInfo::from_epsg(32611), None).unwrap();
             let src = path(&format!("{name}.jp2"));
-            write(&r, Some(0.0), Path::new(&src)).unwrap();
+            write(&r, Some(0.0), Path::new(&src), true).unwrap();
             let Dataset::Raster(whole) = crate::open(&src).unwrap() else { panic!("not a raster") };
             for driver in [D::Cog, D::GTiff] {
                 let options = RasterWriteOptions { driver: Some(driver), compression: Some("DEFLATE".into()), ..Default::default() };

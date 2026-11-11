@@ -99,6 +99,10 @@ _IN_MEMORY_LIMIT = 512 * 1024 * 1024
 # The drivers of files that can hold subdatasets (several variables or arrays).
 _SUBDATASET_DRIVERS = frozenset({"netCDF", "HDF5", "HDF4", "Zarr", "STACIT", "STACTA", "GPKG"})
 
+# The drivers that read a `.hdr` beside the data: their header, read under
+# `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` too.
+_HEADER_DRIVERS = frozenset({"ENVI", "EHdr"})
+
 
 def _in_memory_limit() -> int:
     """The size above which writers keep their pixels on disk.
@@ -272,7 +276,8 @@ def _sidecars_allowed(path: str) -> bool:
     """Whether to read sidecar files (`.aux.xml`, `_RPC.TXT`, `.RPB`) next to a dataset.
 
     Never for remote datasets, whose sidecars terrio does not request, and not when
-    `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` tells GDAL to treat the dataset's directory as empty.
+    `TERRIO_DISABLE_READDIR_ON_OPEN`, or its other name `GDAL_DISABLE_READDIR_ON_OPEN`, is
+    `EMPTY_DIR` for the calling thread: the decision the core takes for its own sidecars.
     (A true value only stops GDAL listing the directory; it still probes each sidecar.)
 
     Args:
@@ -283,7 +288,7 @@ def _sidecars_allowed(path: str) -> bool:
     """
     if _is_remote(path):
         return False
-    return _option("GDAL_DISABLE_READDIR_ON_OPEN") != "EMPTY_DIR"
+    return not _terrio.sidecars_disabled()
 
 
 def _check_driver(path: str, name: str, driver: Any) -> None:
@@ -1202,6 +1207,10 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
     def files(self) -> list[str]:
         """The files of the dataset.
 
+        Under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR` (or `GDAL_DISABLE_READDIR_ON_OPEN`),
+        which keeps them from being read, its `.aux.xml`, `.ovr`, `.msk`, world and RPC files are
+        not listed, nor a `.hdr` other than an ENVI or EHdr raster's header.
+
         Returns:
             list: The paths.
         """
@@ -1210,18 +1219,24 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
         out = [self.name]
         stem, ext = os.path.splitext(self.name)
         world = "." + ext[1:2] + ext[-1:] + "w" if len(ext) > 2 else ".wld"
-        sidecars = [
-            self.name + ".aux.xml",
-            self.name + ".ovr",
-            self.name + ".msk",
-            stem + world,
-            stem + ".wld",
-            stem + "_rpc.txt",
-            stem + "_RPC.TXT",
-            stem + ".RPB",
-            stem + ".rpb",
-            stem + ".hdr",
-        ]
+        allowed = _sidecars_allowed(self.name)
+        sidecars = (
+            [
+                self.name + ".aux.xml",
+                self.name + ".ovr",
+                self.name + ".msk",
+                stem + world,
+                stem + ".wld",
+                stem + "_rpc.txt",
+                stem + "_RPC.TXT",
+                stem + ".RPB",
+                stem + ".rpb",
+            ]
+            if allowed
+            else []
+        )
+        if allowed or self.driver in _HEADER_DRIVERS:
+            sidecars.append(stem + ".hdr")
         for f in sidecars:
             if f not in out and os.path.isfile(f):
                 out.append(f)
@@ -2160,12 +2175,16 @@ class Statistics:
 class DatasetWriter(DatasetReader):
     """A dataset opened for writing (`w`, `w+`) or updating (`r+`).
 
-    The pixels are held in memory; the file is written when the dataset is closed.
+    Pixels are held in memory or a mapped staging file; streamed copies read their source
+    directly instead. The file is written when the dataset is closed.
     """
 
     # Whether the mask written is another dataset's mask band, as a copy's is (GDAL's CreateCopy
     # regenerates the overviews of its source's mask), rather than a MEM dataset's.
     _mask_has_dataset = False
+    # A copy's source (`shutil.copy`), whose pixels the file is written from as it is written,
+    # when it is written in rows: they are then not held (see `_streams_on_flush`).
+    _copy_of: Any = None
 
     def __init__(
         self,
@@ -2200,6 +2219,7 @@ class DatasetWriter(DatasetReader):
 
         Raises:
             TypeError: If the driver, size, count or dtype is missing or invalid.
+            DriverCapabilityError: If the driver name has whitespace around it.
             ValueError: If the nodata value does not fit the data type.
             RasterBlockError: If tile sizes are not multiples of 16.
         """
@@ -2221,9 +2241,14 @@ class DatasetWriter(DatasetReader):
         kwargs.pop("thread_safe", None)
         gcps = kwargs.pop("gcps", None)
         rpcs = kwargs.pop("rpcs", None)
+        copy_of = kwargs.pop("_copy_of", None)
         if mode in ("w", "w+"):
             if not isinstance(driver, str):
                 raise TypeError("A driver name string is required.")
+            if driver != driver.strip():
+                # The name is compared with `GTiff` and `COG` as written, here and when the file
+                # is written, while the core writer would read it without the whitespace.
+                raise DriverCapabilityError(f"Writer does not exist for driver: {driver}")
             try:
                 width, height = int(width), int(height)
             except (TypeError, ValueError):
@@ -2249,9 +2274,14 @@ class DatasetWriter(DatasetReader):
             self.width, self.height, self._count, self._dtype = width, height, count, dt
             self._nodata = None if nodata is None else float(nodata)
             self._options = self._creation_options(kwargs)
-            fill = self._nodata if self._nodata is not None else 0
-            with np.errstate(invalid="ignore"):
-                self._data = self._allocate((count, height, width), dt, fill)
+            shape = (count, height, width)
+            if copy_of is not None and self._streams_on_flush(self._streams(shape, dt)):
+                self._copy_of = copy_of
+                self._data = np.empty((0, 0, 0), dt)
+            else:
+                fill = self._nodata if self._nodata is not None else 0
+                with np.errstate(invalid="ignore"):
+                    self._data = self._allocate(shape, dt, fill)
             self._structure = self._new_structure()
             if transform is not None:
                 self._transform = guard_transform(transform)
@@ -2416,12 +2446,7 @@ class DatasetWriter(DatasetReader):
             block = (1, self.width)
         s = _tiff.Structure(count=n, width=self.width, height=self.height, block_shape=block)
         s.tiled = tiled
-        ci = [ColorInterp.gray] + [ColorInterp.undefined] * (n - 1)
-        if o.get("PHOTOMETRIC", "").upper() == "RGB" and n >= 3:
-            ci[:3] = [ColorInterp.red, ColorInterp.green, ColorInterp.blue]
-        if o.get("ALPHA", "").upper() in ("YES", "NON-PREMULTIPLIED", "PREMULTIPLIED") and n > 1:
-            ci[-1] = ColorInterp.alpha
-        s.colorinterp = ci
+        s.colorinterp = self._new_structure_defaults()
         s.band_tags = [{} for _ in range(n)]
         s.descriptions = [None] * n
         s.scales = [1.0] * n
@@ -2898,8 +2923,37 @@ class DatasetWriter(DatasetReader):
             if self._dirty and self.mode in ("w", "w+", "r+"):
                 self._flush()
         finally:
+            self._copy_of = None
             self._release_spill()
             DatasetBase.close(self)
+
+    def _streams_on_flush(self, file_backed: bool | None = None) -> bool:
+        """Whether the file is written in rows of blocks (`_write_streaming`) rather than whole.
+
+        A GeoTIFF is, when its pixels are held in a file (larger than the in-memory limit); a
+        COG is, without a mask, the source's overviews to copy, or overviews built, and with a
+        compression the row writers take.
+
+        Args:
+            file_backed: Whether the pixels are held in a file: by default, whether they are
+                (a copy written from its source is so only when they would be).
+
+        Returns:
+            bool: True when the file is written in rows.
+        """
+        if file_backed is None:
+            file_backed = isinstance(self._data, np.memmap) or self._copy_of is not None
+        cog = self._out_driver == "COG"
+        return (
+            (file_backed or cog)
+            and (
+                self._out_driver == "GTiff"
+                or (cog and self._mask is None and "@COPY_SRC_OVERVIEWS" not in self._options)
+            )
+            and not self._overview_factors
+            and str(self._options.get("COMPRESS", "NONE")).upper()
+            in ("NONE", "LZW", "DEFLATE", "ZIP", "ZSTD", "PACKBITS")
+        )
 
     def _flush(self) -> None:
         """Writes the dataset to its file.
@@ -2933,17 +2987,12 @@ class DatasetWriter(DatasetReader):
                 f"{self._nodata} will be used for all bands on re-opening",
                 stacklevel=3,
             )
-        cog = self._out_driver == "COG"
-        streaming = (
-            (isinstance(self._data, np.memmap) or cog)
-            and (
-                self._out_driver == "GTiff"
-                or (cog and self._mask is None and "@COPY_SRC_OVERVIEWS" not in self._options)
-            )
-            and not self._overview_factors
-            and str(self._options.get("COMPRESS", "NONE")).upper()
-            in ("NONE", "LZW", "DEFLATE", "ZIP", "ZSTD", "PACKBITS")
-        )
+        streaming = self._streams_on_flush()
+        if self._copy_of is not None and not streaming:
+            # A copy given its source to write from no longer writes in rows (unreachable from
+            # `shutil.copy`, which gives none with a mask): its pixels, then, whole.
+            self._data = np.require(self._copy_of.read(), dtype=self._dtype)
+            self._copy_of = None
         raster: Any = None
         if not streaming:
             try:
@@ -3009,7 +3058,7 @@ class DatasetWriter(DatasetReader):
                 # then regenerated otherwise than a file's (`mask_levels` in gtiff_write.rs).
                 opts["@MASK_WITHOUT_DATASET"] = "YES"
         tmp = self._path + f".tmp-{uuid.uuid4().hex}"
-        target = tmp if self.mode == "r+" else self._path
+        target = tmp if self.mode == "r+" or streaming else self._path
         # The sidecar mask is written first beside its place, then both files are put in place
         # once the dataset is written: a failure while writing leaves the dataset and its mask as
         # they were (only between the two renames could the dataset be new and its mask old).
@@ -3186,18 +3235,49 @@ class DatasetWriter(DatasetReader):
             **kw,
         )
         try:
-            for y, n in self._slabs():
-                rows = np.ascontiguousarray(self._data[:, y : y + n, :])
+            source = self._copy_of
+            # Read taller source blocks together within a 16 MiB slab budget (or one output
+            # tile row), then feed the COG writer a tile row at a time. A whole-image strip
+            # taller than a tile row is split in half or smaller. Small images can fit in one slab.
+            write_step = self.structure.block_shape[0] if cog and source is not None else 0
+            step = write_step
+            if step and source is not None:
+                block_rows = max(shape[0] for shape in source.block_shapes)
+                if block_rows > step:
+                    row_bytes = self.width * self.count * np.dtype(self._dtype).itemsize
+                    budget_rows = max(step, ((16 * 1024 * 1024 // row_bytes) // step) * step)
+                    wanted = math.lcm(step, *(shape[0] for shape in source.block_shapes))
+                    if block_rows >= self.height:
+                        wanted = max(step, (self.height // 2 // step) * step)
+                    step = min(wanted, budget_rows)
+            slabs = (
+                ((y, min(step, self.height - y)) for y in range(0, self.height, step))
+                if step
+                else self._slabs()
+            )
+            for y, n in slabs:
+                if source is None:
+                    rows = np.ascontiguousarray(self._data[:, y : y + n, :])
+                else:
+                    part = source.read(window=Window(0, y, self.width, n))
+                    rows = np.ascontiguousarray(np.require(part, dtype=self._dtype))
                 m = (
                     None
                     if self._mask is None or sidecar_mask
                     else np.ascontiguousarray(self._mask[y : y + n])
                 )
                 if m is None:
-                    w.write(rows)
+                    if write_step:
+                        for start in range(0, n, write_step):
+                            w.write(np.ascontiguousarray(rows[:, start : start + write_step, :]))
+                    else:
+                        w.write(rows)
                 else:
                     # A GeoTiffWriter: a COG streams only without a mask.
                     w.write(rows, m)  # type: ignore[call-arg]
+                del rows
+                if source is not None:
+                    del part
         except BaseException:
             # Closing an incomplete writer fails too ("N rows written of M"): keep the first
             # error, which says what went wrong.
@@ -3207,7 +3287,13 @@ class DatasetWriter(DatasetReader):
         w.close()
 
     def _new_structure_defaults(self) -> list[ColorInterp]:
-        """The color interpretations GDAL derives from the creation options.
+        """The color interpretations the writer gives the bands when it is not told otherwise.
+
+        For a GeoTIFF or a COG they are the GeoTIFF writer's. `PHOTOMETRIC=RGB` or `YCBCR` makes
+        the first three bands red, green and blue. Without `PHOTOMETRIC`, so do three Byte bands,
+        or four compressed with WebP: a COG takes none (`_creation_options` drops it), and an
+        update passes one only for an RGB file. `ALPHA` makes the last band alpha. `_flush` sends
+        the writer each band's interpretation that differs from these.
 
         Returns:
             list: One per band.
@@ -3215,7 +3301,15 @@ class DatasetWriter(DatasetReader):
         n = self._count
         ci = [ColorInterp.gray] + [ColorInterp.undefined] * (n - 1)
         o = self._options
-        if o.get("PHOTOMETRIC", "").upper() == "RGB" and n >= 3:
+        photometric = o.get("PHOTOMETRIC", "").upper()
+        rgb = photometric == "RGB"
+        if self._out_driver.upper() in ("GTIFF", "COG"):
+            if photometric:
+                rgb = photometric in ("RGB", "YCBCR")
+            else:
+                webp = o.get("COMPRESS", "").upper() == "WEBP"
+                rgb = self._dtype == "uint8" and (n == 3 or (n == 4 and webp))
+        if rgb and n >= 3:
             ci[:3] = [ColorInterp.red, ColorInterp.green, ColorInterp.blue]
         if o.get("ALPHA", "").upper() in ("YES", "NON-PREMULTIPLIED", "PREMULTIPLIED") and n > 1:
             ci[-1] = ColorInterp.alpha
@@ -3332,6 +3426,11 @@ class MemPointerDataset(DatasetWriter):
 def get_writer_for_driver(driver: str) -> type[DatasetWriter]:
     """The writer class for a driver.
 
+    Names are compared as the driver allow-list compares them (`canonical_driver_name`): in any
+    case, and with the names of JPEG 2000 drivers, such as the `JP2OpenJPEG` that
+    `driver_from_extension` gives `.jp2` paths, as terrio's `JP2`. A name with whitespace around
+    it is refused, as the writer keeps the name it is given and compares it as written.
+
     Args:
         driver: The driver's short name.
 
@@ -3339,11 +3438,18 @@ def get_writer_for_driver(driver: str) -> type[DatasetWriter]:
         type: The writer class.
 
     Raises:
-        DriverCapabilityError: If terrio cannot write the format.
+        DriverCapabilityError: If terrio cannot write the format, or the name has whitespace
+            around it.
     """
-    names = {d["name"].upper(): d for d in _terrio.drivers() if d.get("kind") == "raster"}
-    d = names.get(driver.upper())
-    if driver.upper() != "COG" and (d is None or not d.get("write", True)):
+    name = _terrio.canonical_driver_name(driver)
+    writes = {
+        _terrio.canonical_driver_name(d["name"]): d.get("write", True)
+        for d in _terrio.drivers()
+        if d.get("kind") == "raster"
+    }
+    # `canonical_driver_name` ignores the whitespace around a name, which `DatasetWriter` refuses:
+    # it compares the name with `GTiff` and `COG` as written.
+    if driver != driver.strip() or (name != "COG" and not writes.get(name, False)):
         raise DriverCapabilityError(f"Writer does not exist for driver: {driver}")
     return DatasetWriter
 

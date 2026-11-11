@@ -58,11 +58,24 @@ pub(crate) struct CodecParams {
     pub jpeg_ycbcr: bool,
     pub webp_quality: u8,
     pub webp_lossless: bool,
+    /// Deflate and LERC_DEFLATE: the level (`ZLEVEL`, 1 to 9, default 6).
+    pub deflate_level: crate::deflate_compress::Level,
+    /// ZSTD and LERC_ZSTD: the level (`ZSTD_LEVEL`, 1 to 22, default 9), which only the
+    /// `libzstd` feature's encoder honours.
+    pub zstd_level: i32,
 }
 
 impl Default for CodecParams {
     fn default() -> Self {
-        Self { max_z_error: 0.0, jpeg_quality: 75, jpeg_ycbcr: false, webp_quality: 75, webp_lossless: false }
+        Self {
+            max_z_error: 0.0,
+            jpeg_quality: 75,
+            jpeg_ycbcr: false,
+            webp_quality: 75,
+            webp_lossless: false,
+            deflate_level: crate::deflate_compress::Level::DEFAULT,
+            zstd_level: 9,
+        }
     }
 }
 
@@ -140,12 +153,12 @@ impl Compression {
             Self::Lzw => weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)
                 .encode(&data)
                 .map_err(|e| Error::InvalidData(format!("LZW: {e}")))?,
-            Self::Deflate => deflate(&data)?,
+            Self::Deflate => deflate(&data, p.deflate_level)?,
             Self::PackBits => packbits(&data),
-            Self::Zstd => zstd_compress(&data)?,
+            Self::Zstd => zstd_compress(&data, p.zstd_level)?,
             Self::Lerc => lerc_encode(&data, c, p.max_z_error)?,
-            Self::LercDeflate => deflate(&lerc_encode(&data, c, p.max_z_error)?)?,
-            Self::LercZstd => zstd_compress(&lerc_encode(&data, c, p.max_z_error)?)?,
+            Self::LercDeflate => deflate(&lerc_encode(&data, c, p.max_z_error)?, p.deflate_level)?,
+            Self::LercZstd => zstd_compress(&lerc_encode(&data, c, p.max_z_error)?, p.zstd_level)?,
             Self::Jxl => jxl_encode(data, c)?,
             Self::Jpeg => jpeg_encode(&data, c, p.jpeg_quality, p.jpeg_ycbcr)?,
             Self::WebP => webp_encode(data, c, p)?,
@@ -159,8 +172,9 @@ fn lerc_encode(_data: &[u8], _c: &ChunkInfo, _max_z_error: f64) -> Result<Vec<u8
 }
 
 /// A Deflate chunk as GDAL 3.12 built with libdeflate writes it: libdeflate's level 6, the same bytes.
-fn deflate(data: &[u8]) -> Result<Vec<u8>> {
-    Ok(crate::deflate_compress::zlib_compress(data))
+/// At another `level` (`ZLEVEL`), the chunk that level's search gives.
+fn deflate(data: &[u8], level: crate::deflate_compress::Level) -> Result<Vec<u8>> {
+    Ok(crate::deflate_compress::zlib_compress(data, level))
 }
 
 /// Encodes a chunk (little-endian samples, interleaved) as a LERC blob of `spp` values per pixel,
@@ -234,56 +248,13 @@ fn webp_encode(data: Vec<u8>, chunk: &ChunkInfo, options: &CodecParams) -> Resul
     if data.len() != chunk.w * chunk.h * chunk.spp {
         return Err(Error::InvalidData("WebP sample buffer length differs from chunk dimensions".into()));
     }
-    let mut rgba = if chunk.spp == 4 { data } else { data.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect() };
-    // The pure Rust VP8 encoder accepts opaque RGB. Preserve alpha in the WebP
-    // container's independent, uncompressed ALPH chunk instead of ignoring quality.
-    let alpha = (!options.webp_lossless && chunk.spp == 4 && rgba.as_chunks::<4>().0.iter().any(|p| p[3] != 255)).then(|| {
-        rgba.as_chunks_mut::<4>()
-            .0
-            .iter_mut()
-            .map(|p| {
-                let a = p[3];
-                p[3] = 255;
-                a
-            })
-            .collect::<Vec<_>>()
-    });
+    let rgba = if chunk.spp == 4 { data } else { data.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect() };
+    if !options.webp_lossless {
+        return super::webp::encode_lossy(rgba, chunk.w, chunk.h, options.webp_quality as f32);
+    }
     let image = webp_rust::ImageBuffer { width: chunk.w, height: chunk.h, rgba };
-    let encoded = if options.webp_lossless {
-        webp_rust::encode_lossless_with_config(&image, &webp_rust::LosslessEncodingConfig { z_level: 2 }, None)
-    } else {
-        webp_rust::encode_lossy_with_config(
-            &image,
-            &webp_rust::LossyEncodingConfig { quality: options.webp_quality as f32, method: 0, ..Default::default() },
-            None,
-        )
-    }
-    .map_err(|error| Error::InvalidData(format!("WebP: {error}")))?;
-    let Some(alpha) = alpha else { return Ok(encoded) };
-    if encoded.get(..4) != Some(b"RIFF") || encoded.get(8..16) != Some(b"WEBPVP8 ") {
-        return Err(Error::InvalidData("WebP encoder did not return a simple VP8 container".into()));
-    }
-    let mut body = b"WEBP".to_vec();
-    let mut append = |tag: &[u8; 4], payload: &[u8]| {
-        body.extend_from_slice(tag);
-        body.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        body.extend_from_slice(payload);
-        if !payload.len().is_multiple_of(2) {
-            body.push(0);
-        }
-    };
-    let mut extended = vec![0x10, 0, 0, 0];
-    extended.extend_from_slice(&((chunk.w - 1) as u32).to_le_bytes()[..3]);
-    extended.extend_from_slice(&((chunk.h - 1) as u32).to_le_bytes()[..3]);
-    append(b"VP8X", &extended);
-    let mut alpha_chunk = vec![0]; // uncompressed, unfiltered alpha
-    alpha_chunk.extend_from_slice(&alpha);
-    append(b"ALPH", &alpha_chunk);
-    body.extend_from_slice(&encoded[12..]);
-    let mut output = b"RIFF".to_vec();
-    output.extend_from_slice(&(body.len() as u32).to_le_bytes());
-    output.extend_from_slice(&body);
-    Ok(output)
+    webp_rust::encode_lossless_with_config(&image, &webp_rust::LosslessEncodingConfig { z_level: 2 }, None)
+        .map_err(|error| Error::InvalidData(format!("WebP: {error}")))
 }
 
 /// Encodes a chunk as a lossless JPEG XL codestream: 1 to 4 channels (gray, gray and alpha, RGB,
@@ -354,8 +325,9 @@ fn jpeg_encode(data: &[u8], c: &ChunkInfo, quality: u8, ycbcr: bool) -> Result<V
     Ok(out)
 }
 
-fn zstd_compress(data: &[u8]) -> Result<Vec<u8>> {
-    Ok(crate::zstandard::compress(data, 9)?)
+/// A Zstandard chunk at `level` (with the `libzstd` feature; without it, `ruzstd`'s fastest level).
+fn zstd_compress(data: &[u8], level: i32) -> Result<Vec<u8>> {
+    Ok(crate::zstandard::compress(data, level)?)
 }
 
 /// PackBits run-length encoding, as TIFF defines it.
@@ -711,7 +683,7 @@ impl TiffOptions {
                 }
             });
         }
-        o.georeferenced = !co("GEOREFERENCED").is_some_and(|v| !yes(v));
+        o.georeferenced = super::common::georeferenced(&options.creation_options);
         let src_mdd: Vec<&str> =
             options.creation_options.iter().filter(|(k, _)| k.eq_ignore_ascii_case("SRC_MDD")).map(|(_, v)| v.as_str()).collect();
         (o.domains, o.drop_default_items) = MetadataDomain::parse(co("@METADATA_DOMAINS"), cog, co("COPY_SRC_MDD"), &src_mdd)?;
@@ -722,6 +694,23 @@ impl TiffOptions {
                 "3" => 3,
                 other => return Err(Error::InvalidArgument(format!("invalid PREDICTOR '{other}' (1, 2, 3)"))),
             };
+        }
+        // The levels are checked whatever the compression, as the qualities are.
+        if let Some(v) = co("ZLEVEL") {
+            o.codec.deflate_level = v
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .and_then(crate::deflate_compress::Level::new)
+                .ok_or_else(|| Error::InvalidArgument(format!("invalid ZLEVEL '{v}' (1 to 9)")))?;
+        }
+        if let Some(v) = co("ZSTD_LEVEL") {
+            o.codec.zstd_level = v
+                .trim()
+                .parse::<i32>()
+                .ok()
+                .filter(|l| (1..=22).contains(l))
+                .ok_or_else(|| Error::InvalidArgument(format!("invalid ZSTD_LEVEL '{v}' (1 to 22)")))?;
         }
         if let Some(v) = co("MAX_Z_ERROR") {
             o.codec.max_z_error = v
@@ -2366,11 +2355,46 @@ type ChunkSpool = std::fs::File;
 #[cfg(target_family = "wasm")]
 type ChunkSpool = std::io::Cursor<Vec<u8>>;
 
-fn chunk_spool() -> Result<ChunkSpool> {
+/// The directory of a COG's chunk spools, which together hold about as many bytes as the COG.
+/// As GDAL's COG driver places its temporary files (`GetTmpFilename`), this is the directory of
+/// the file the output names (a symbolic link or a redirected `/dev/stdout` resolved), so the
+/// spools stay on the output's drive; `TERRIO_TMPDIR` or `CPL_TMPDIR` names another. An output
+/// that is not a regular file (a pipe or a device) has no directory to spool beside, so the
+/// system's temporary directory is used.
+///
+/// Reference: GDAL v3.12.1 `frmts/gtiff/cogdriver.cpp` (`GetTmpFilename`).
+fn spool_dir(path: &str) -> std::path::PathBuf {
+    if let Some(dir) = crate::config::get_any(&["TERRIO_TMPDIR", "CPL_TMPDIR"]) {
+        return dir.into();
+    }
+    if std::fs::metadata(path).is_ok_and(|m| !m.is_file()) {
+        return std::env::temp_dir();
+    }
+    // `/dev/stdout` names a regular file when stdout is redirected to one: spool beside that file.
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| {
+        // canonicalize requires the final file to exist. Follow a dangling link too, since
+        // opening the output will create its target. Bound traversal just as file opening does.
+        let mut target = std::path::PathBuf::from(path);
+        for _ in 0..40 {
+            let Ok(next) = std::fs::read_link(&target) else { break };
+            target = if next.is_absolute() { next } else { target.parent().unwrap_or(std::path::Path::new(".")).join(next) };
+        }
+        target
+    });
+    match resolved.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => ".".into(),
+    }
+}
+
+fn chunk_spool(dir: &std::path::Path) -> Result<ChunkSpool> {
     #[cfg(not(target_family = "wasm"))]
-    return Ok(tempfile::tempfile()?);
+    return tempfile::tempfile_in(dir).map_err(Error::Io);
     #[cfg(target_family = "wasm")]
-    Ok(Default::default())
+    {
+        let _ = dir;
+        Ok(Default::default())
+    }
 }
 
 /// One resolution level of a [`CogWriter`].
@@ -2472,6 +2496,7 @@ impl CogWriter {
                 CogBuild { level, src, plan, buf, buf_row0: 0, buf_rows: 0, next_y: 0, mask: Vec::new(), mask_plan }
             })
             .collect();
+        let dir = spool_dir(path);
         let levels = sizes
             .into_iter()
             .map(|(cols, rows)| {
@@ -2481,11 +2506,11 @@ impl CogWriter {
                     received: 0,
                     pending: RasterData::new_filled(raster.data_type, 0, 0.0),
                     pending_rows: 0,
-                    spools: (0..planes).map(|_| chunk_spool()).collect::<Result<_>>()?,
+                    spools: (0..planes).map(|_| chunk_spool(&dir)).collect::<Result<_>>()?,
                     sizes: vec![Vec::new(); planes],
                     tags: Vec::new(),
                     mask: if opts.mask.is_some() {
-                        Some(CogMask { pending: Vec::new(), spool: chunk_spool()?, sizes: Vec::new(), tags: Vec::new() })
+                        Some(CogMask { pending: Vec::new(), spool: chunk_spool(&dir)?, sizes: Vec::new(), tags: Vec::new() })
                     } else {
                         None
                     },
@@ -3163,6 +3188,134 @@ mod tests {
         }
     }
 
+    /// A COG's chunks wait next to the output, on its drive, not in the system's temporary
+    /// directory (#767); `TERRIO_TMPDIR` or `CPL_TMPDIR` moves them, as `CPL_TMPDIR` does GDAL's.
+    #[test]
+    fn cog_chunks_spool_beside_the_output() {
+        use std::collections::HashMap;
+        let unset = || HashMap::from([("TERRIO_TMPDIR".to_string(), None), ("CPL_TMPDIR".to_string(), None)]);
+        crate::config::push_scope(unset());
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(spool_dir(&format!("out{sep}mosaic.tif")), std::path::Path::new("out"));
+        assert_eq!(spool_dir("mosaic.tif"), std::path::Path::new("."));
+        crate::config::pop_scope();
+
+        let raster = overview_fixture(1, DataType::U8, RasterData::U8((0..65 * 35).map(|i| (i % 251) as u8).collect()));
+        let opts = TiffOptions { cog: true, tile_size: Some(16), ..Default::default() };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spooled.tif");
+        let missing = dir.path().join("missing").to_str().unwrap().to_string();
+        for key in ["TERRIO_TMPDIR", "CPL_TMPDIR"] {
+            // The option is read: a directory that does not exist fails the write before it starts.
+            let mut scope = unset();
+            scope.insert(key.into(), Some(missing.clone()));
+            crate::config::push_scope(scope);
+            let refused = CogWriter::create(path.to_str().unwrap(), &raster, &opts);
+            crate::config::pop_scope();
+            match refused {
+                Err(Error::Io(e)) => {
+                    assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{key}: {e}");
+                    assert!(e.raw_os_error().is_some(), "{key}: lost the OS error code");
+                }
+                other => panic!("{key}: {:?}", other.err()),
+            }
+        }
+        // A spool opened in a configured directory is there while the COG is written.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let mut scope = unset();
+        scope.insert("TERRIO_TMPDIR".into(), Some(elsewhere.path().to_str().unwrap().into()));
+        crate::config::push_scope(scope);
+        let writer = CogWriter::create(dir.path().join("elsewhere.tif").to_str().unwrap(), &raster, &opts).unwrap();
+        crate::config::pop_scope();
+        assert_spooled_in(&writer, elsewhere.path());
+        drop(writer);
+        std::fs::remove_file(dir.path().join("elsewhere.tif")).unwrap();
+
+        crate::config::push_scope(unset());
+        let mut writer = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
+        crate::config::pop_scope();
+        assert_spooled_in(&writer, dir.path());
+        writer.write_rows(raster.data.clone(), 35).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), encode(&raster, &opts).unwrap());
+        // The spools were unnamed: nothing but the COG is left beside it.
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    /// Where the writer's spools are open, read from the file descriptors on Linux (other systems
+    /// have no portable way to name an unnamed file).
+    fn assert_spooled_in(writer: &CogWriter, dir: &std::path::Path) {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            let dir = std::fs::canonicalize(dir).unwrap();
+            for spool in writer.levels.iter().flat_map(|l| &l.spools) {
+                let target = std::fs::read_link(format!("/proc/self/fd/{}", spool.as_raw_fd())).unwrap();
+                assert!(target.starts_with(&dir), "{} is not in {}", target.display(), dir.display());
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (writer, dir);
+    }
+
+    /// An output that is a symbolic link (as `/dev/stdout` redirected to a file is) spools beside
+    /// the file it names, not in the link's directory.
+    #[cfg(unix)]
+    #[test]
+    fn cog_through_a_link_spools_beside_its_target() {
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_TMPDIR".to_string(), None), ("CPL_TMPDIR".to_string(), None)]));
+        let (links, files) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let target = files.path().join("out.tif");
+        std::fs::write(&target, b"").unwrap();
+        let link = links.path().join("out.tif");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let spooled = spool_dir(link.to_str().unwrap());
+        crate::config::pop_scope();
+        assert_eq!(spooled, std::fs::canonicalize(files.path()).unwrap());
+    }
+
+    /// A dangling output link still names the directory where opening will create the COG.
+    #[cfg(unix)]
+    #[test]
+    fn cog_through_dangling_links_spools_beside_its_target() {
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_TMPDIR".to_string(), None), ("CPL_TMPDIR".to_string(), None)]));
+        let dir = tempfile::tempdir().unwrap();
+        let files = dir.path().join("files");
+        let links = dir.path().join("links");
+        std::fs::create_dir(&files).unwrap();
+        std::fs::create_dir(&links).unwrap();
+        // The temporary directory itself may be a link (macOS: /var -> /private/var), so
+        // compare against the resolved directory.
+        let files = std::fs::canonicalize(&files).unwrap();
+        let target = files.join("out.tif");
+        let absolute = links.join("absolute.tif");
+        let relative = links.join("relative.tif");
+        std::os::unix::fs::symlink(&target, &absolute).unwrap();
+        std::os::unix::fs::symlink("absolute.tif", &relative).unwrap();
+        for link in [&absolute, &relative] {
+            assert_eq!(std::fs::canonicalize(spool_dir(link.to_str().unwrap())).unwrap(), files);
+        }
+        let direct = links.join("direct.tif");
+        std::os::unix::fs::symlink("../files/out.tif", &direct).unwrap();
+        assert_eq!(std::fs::canonicalize(spool_dir(direct.to_str().unwrap())).unwrap(), files);
+        assert!(!target.exists());
+        crate::config::pop_scope();
+    }
+
+    /// A COG written to a device spools in the system's temporary directory, not `/dev`.
+    #[cfg(unix)]
+    #[test]
+    fn cog_to_a_device_spools_in_the_temporary_directory() {
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_TMPDIR".to_string(), None), ("CPL_TMPDIR".to_string(), None)]));
+        assert_eq!(spool_dir("/dev/null"), std::env::temp_dir());
+        let raster = overview_fixture(1, DataType::U8, RasterData::U8((0..65 * 35).map(|i| (i % 251) as u8).collect()));
+        let opts = TiffOptions { cog: true, tile_size: Some(16), ..Default::default() };
+        let mut writer = CogWriter::create("/dev/null", &raster, &opts).unwrap();
+        crate::config::pop_scope();
+        writer.write_rows(raster.data.clone(), 35).unwrap();
+        writer.finish().unwrap();
+    }
+
     /// COGs written a few rows at a time are those written from the whole raster, byte for
     /// byte: odd sizes, several overview levels, all resampling methods, alpha and nodata,
     /// interleaved and planar bands, and rows given one at a time or in uneven runs.
@@ -3403,6 +3556,171 @@ mod tests {
                 _ => false,
             };
             assert!(same, "{co:?}");
+        }
+    }
+
+    /// `ZLEVEL` (1 to 9) sets the Deflate level of DEFLATE and LERC_DEFLATE chunks, in GeoTIFFs and
+    /// COGs, written whole or streamed, 6 when it is not given, and `ZSTD_LEVEL` (1 to 22) the
+    /// level of ZSTD and LERC_ZSTD chunks, which only the `libzstd` feature's encoder honours (9
+    /// when it is not given). Every level reads back to the raster. Both are checked whatever the
+    /// compression, as the qualities are: a level out of range is refused.
+    #[test]
+    fn compression_levels_change_the_chunks_and_are_checked() {
+        // A gradient with noise, 256 x 256.
+        let cfg = wbraster::RasterConfig { cols: 256, rows: 256, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let mut x = 7u64;
+        let data = (0..256 * 256)
+            .map(|i| {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((i % 256) / 4 + (i / 256) / 4 + (x >> 61) as usize) as u8
+            })
+            .collect();
+        let r = Raster::from_data_native(cfg, RasterData::U8(data)).unwrap();
+        // LERC's blob of that gradient is about as large compressed as not, at any level: the
+        // LERC checks take 64 x 64 Float32 values drawn from 16, whose blob the second stage
+        // compresses.
+        let lerc_cfg = wbraster::RasterConfig { cols: 64, rows: 64, bands: 1, data_type: DataType::F32, ..Default::default() };
+        let lerc_data = (0..64 * 64)
+            .map(|_| {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (x >> 60) as f32 / 8.0 + 0.1
+            })
+            .collect();
+        let lerc_raster = Raster::from_data_native(lerc_cfg, RasterData::F32(lerc_data)).unwrap();
+        let encode_raster = |r: &Raster, compression: &str, cog: bool, co: &[(&str, &str)]| {
+            let options = crate::RasterWriteOptions {
+                compression: Some(compression.into()),
+                creation_options: co.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                ..Default::default()
+            };
+            TiffOptions::from_write_options(&options, cog, None).map(|o| encode(r, &o.unwrap()).unwrap())
+        };
+        let encode_cog = |compression: &str, cog: bool, co: &[(&str, &str)]| encode_raster(&r, compression, cog, co);
+        let encode_with = |compression: &str, co: &[(&str, &str)]| encode_cog(compression, false, co);
+        let read_back = |bytes: &[u8]| {
+            crate::cog::LazyRaster::from_tiff_bytes(bytes.to_vec()).unwrap().unwrap().read().unwrap().raster.data.to_f64_vec()
+        };
+        let deflate: Vec<Vec<u8>> = (1..=9).map(|l| encode_with("DEFLATE", &[("ZLEVEL", &l.to_string())]).unwrap()).collect();
+        assert_eq!(encode_with("DEFLATE", &[]).unwrap(), deflate[5]);
+        // On this raster, levels 1, 6 and 9 give other bytes, each no larger than the one before.
+        let sizes: Vec<usize> = deflate.iter().map(Vec::len).collect();
+        assert!(deflate[0] != deflate[5] && deflate[5] != deflate[8], "{sizes:?}");
+        assert!(sizes[8] <= sizes[5] && sizes[5] <= sizes[0], "{sizes:?}");
+        for (l, bytes) in deflate.iter().enumerate() {
+            assert_eq!(read_back(bytes), r.data.to_f64_vec(), "ZLEVEL {}", l + 1);
+        }
+        // A COG's Deflate chunks, and LERC_DEFLATE's Deflate stage, take the level too.
+        let (one, nine) =
+            (encode_cog("DEFLATE", true, &[("ZLEVEL", "1")]).unwrap(), encode_cog("DEFLATE", true, &[("ZLEVEL", "9")]).unwrap());
+        assert_ne!(one, nine, "COG");
+        assert_eq!(read_back(&nine), r.data.to_f64_vec(), "COG");
+        let lerc = |compression: &str, co: &[(&str, &str)]| encode_raster(&lerc_raster, compression, false, co).unwrap();
+        if cfg!(feature = "lerc") {
+            let (one, nine) = (lerc("LERC_DEFLATE", &[("ZLEVEL", "1")]), lerc("LERC_DEFLATE", &[("ZLEVEL", "9")]));
+            // Not only the zlib header's FLEVEL: the Deflate stage's output differs.
+            assert!(nine.len() < one.len(), "LERC_DEFLATE: {} >= {}", nine.len(), one.len());
+            assert_eq!(read_back(&nine), lerc_raster.data.to_f64_vec(), "LERC_DEFLATE");
+        }
+        // The streaming writer, for a GeoTIFF and for a COG, reads ZLEVEL as well.
+        let header = crate::RasterDataset::new(r.clone(), false);
+        let dir = tempfile::tempdir().unwrap();
+        let streamed = |driver: crate::formats::RasterDriver, zlevel: &str| {
+            let p = dir.path().join(format!("{driver:?}{zlevel}.tif"));
+            let options = crate::RasterWriteOptions {
+                driver: Some(driver),
+                compression: Some("DEFLATE".into()),
+                creation_options: vec![("ZLEVEL".into(), zlevel.into())],
+                ..Default::default()
+            };
+            let mut w = GeoTiffWriter::create(p.to_str().unwrap(), &header, &options).unwrap();
+            w.write_rows(&r.data, r.rows, None).unwrap();
+            w.finish().unwrap();
+            std::fs::read(&p).unwrap()
+        };
+        for driver in [crate::formats::RasterDriver::GTiff, crate::formats::RasterDriver::Cog] {
+            assert_ne!(streamed(driver, "1"), streamed(driver, "9"), "streamed {driver:?}");
+        }
+        let libzstd = cfg!(all(feature = "libzstd", not(target_family = "wasm")));
+        let zstd = |level: &str| encode_with("ZSTD", &[("ZSTD_LEVEL", level)]).unwrap();
+        assert_eq!(zstd("9"), encode_with("ZSTD", &[]).unwrap());
+        assert_eq!(zstd("1") != zstd("22"), libzstd);
+        assert_eq!(read_back(&zstd("22")), r.data.to_f64_vec());
+        if cfg!(feature = "lerc") {
+            let lerc_zstd = |level: &str| lerc("LERC_ZSTD", &[("ZSTD_LEVEL", level)]);
+            assert_eq!(lerc_zstd("9"), lerc("LERC_ZSTD", &[]));
+            assert_eq!(lerc_zstd("1") != lerc_zstd("22"), libzstd);
+            assert_eq!(read_back(&lerc_zstd("22")), lerc_raster.data.to_f64_vec(), "LERC_ZSTD");
+        }
+        for (compression, key, value) in [
+            ("DEFLATE", "ZLEVEL", "0"),
+            ("DEFLATE", "ZLEVEL", "10"),
+            ("LZW", "ZLEVEL", "fast"),
+            ("ZSTD", "ZSTD_LEVEL", "0"),
+            ("ZSTD", "ZSTD_LEVEL", "23"),
+            ("NONE", "ZSTD_LEVEL", "-1"),
+        ] {
+            let error = encode_with(compression, &[(key, value)]).unwrap_err().to_string();
+            assert!(error.contains(&format!("invalid {key} '{value}'")), "{error}");
+        }
+    }
+
+    /// `ZLEVEL` reaches the Deflate encoder through each write of a GeoTIFF or COG: whole
+    /// (`write_raster`, `write_raster_dataset`), to bytes (`memory::write_raster_bytes`, and the
+    /// in-memory codec of WebAssembly builds) and in strips (an operation's `StripWriter`).
+    #[test]
+    fn zlevel_reaches_the_encoder_through_each_write() {
+        let cfg = wbraster::RasterConfig { cols: 64, rows: 64, bands: 1, data_type: DataType::U8, nodata: 0.0, ..Default::default() };
+        let mut x = 7u64;
+        let data = (0..64 * 64)
+            .map(|i| {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((i % 64) / 4 + (i / 64) / 4 + (x >> 61) as usize) as u8
+            })
+            .collect();
+        let r = Raster::from_data_native(cfg, RasterData::U8(data)).unwrap();
+        let ds = crate::RasterDataset::new(r.clone(), false);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.tif");
+        let p = path.to_str().unwrap();
+        let read = || std::fs::read(&path).unwrap();
+        type Write<'a> = Box<dyn Fn(&crate::RasterWriteOptions) -> Vec<u8> + 'a>;
+        let writes: [(&str, Write); 5] = [
+            (
+                "write_raster",
+                Box::new(|o| {
+                    crate::write_raster(&r, p, o).unwrap();
+                    read()
+                }),
+            ),
+            (
+                "write_raster_dataset",
+                Box::new(|o| {
+                    crate::write_raster_dataset(&ds, p, o).unwrap();
+                    read()
+                }),
+            ),
+            ("memory::write_raster_bytes", Box::new(|o| crate::memory::write_raster_bytes(&ds, "a.tif", o).unwrap())),
+            ("the in-memory codec", Box::new(|o| crate::memory::codec::write_raster(&ds, o.driver.unwrap(), o, "a").unwrap())),
+            (
+                "StripWriter",
+                Box::new(|o| {
+                    let mut w = crate::ops::strips::StripWriter::create(&ds, p, o).unwrap();
+                    w.write(r.data.clone(), r.rows).unwrap();
+                    w.finish().unwrap();
+                    read()
+                }),
+            ),
+        ];
+        for driver in [crate::formats::RasterDriver::GTiff, crate::formats::RasterDriver::Cog] {
+            let options = |zlevel: &str| crate::RasterWriteOptions {
+                driver: Some(driver),
+                compression: Some("DEFLATE".into()),
+                creation_options: vec![("ZLEVEL".into(), zlevel.into())],
+                ..Default::default()
+            };
+            for (name, write) in &writes {
+                assert_ne!(write(&options("1")), write(&options("9")), "{name}, {driver:?}");
+            }
         }
     }
 
