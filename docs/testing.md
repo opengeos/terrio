@@ -75,6 +75,14 @@ GDAL:
 
 ## The conformance suite
 
+Complex TIFF writes are checked with
+`python scripts/conformance.py DATA --only complex-writes --strict`, using current
+bindings and `landsat7.tif`. The suite checks whole/streamed GTiff/COG paths, complex
+integer copies without Float32 precision loss, component rounding/saturation, masks,
+types and georeferencing against GDAL (locally validated with 3.13.3). Its real-data
+case derives complex integer components from Landsat pixels and keeps the crop's CRS
+and transform. It checks samples and metadata, without claiming compressed byte identity.
+
 CityJSON uses its published schemas and specifications as the reference because
 GDAL 3.13.3 has no CityJSON driver. Prepare the real CityJSON 1.1 Den Haag and 2.0
 Delft/Rotterdam fixtures and versioned schemas outside the repository, then run:

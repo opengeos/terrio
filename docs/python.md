@@ -69,6 +69,18 @@ red = terrio.open_raster('STACIT:"https://earth-search.aws.element84.com/v1/sear
 terrio.open_raster("landsat.tif").write("landsat.pmtiles")  # Byte rasters as tiles (or .mbtiles)
 ```
 
+Complex GeoTIFF/COG writes accept NumPy `complex64` and `complex128` through
+`terrio.rio.open`, `Raster.from_array`, and the row writers. Each complex band remains
+one TIFF band, with paired real and imaginary components. `terrio.rio.shutil.copy`
+preserves CInt16 and CInt32 sample types as well; its CInt32 copy reads precise
+components before the normal rasterio-compatible `complex64` conversion can round them.
+For explicit integer-complex output, use `dtype="complex_int16"` in `terrio.rio`, or
+`Raster.from_array(array, transform, complex_dtype="CInt16")` / `"CInt32"`.
+Integer components are rounded and saturated, as GDAL 3.13.3 converts them.
+`raster.read(out_dtype="complex128")` (and `np.asarray(raster, dtype="complex128")`)
+preserves every Int32 component; the default complex dtype remains compatible with rasterio.
+Complex output supports NONE, LZW, DEFLATE, PACKBITS and ZSTD compression.
+
 ## Vector data
 
 ```python

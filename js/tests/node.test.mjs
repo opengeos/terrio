@@ -2138,6 +2138,40 @@ test("coordinate operation safeguards and warnings", () => {
   assert.ok(Array.from(terrio.takeWarnings()).some((w) => w.includes("missing grid")));
 });
 
+test("complex TIFF memory copies retain exact Int32 components and sample tags", () => {
+  // Independent baseline TIFF: two CInt32 pixels, one complex sample per pixel.
+  const tags = [[256,3,2],[257,3,1],[258,3,64],[259,3,1],[262,3,1],
+    [273,4,0],[277,3,1],[278,4,1],[279,4,16],[284,3,1],[339,3,5]];
+  const pixelsAt = 8 + 2 + 12 * tags.length + 4;
+  tags.find(t => t[0] === 273)[2] = pixelsAt;
+  const input = new Uint8Array(pixelsAt + 16);
+  const view = new DataView(input.buffer);
+  input.set([73,73,42,0]); view.setUint32(4,8,true); view.setUint16(8,tags.length,true);
+  tags.forEach(([tag,type,value],i) => {
+    const at = 10 + 12*i;
+    view.setUint16(at,tag,true); view.setUint16(at+2,type,true); view.setUint32(at+4,1,true);
+    if (type === 3) view.setUint16(at+8,value,true); else view.setUint32(at+8,value,true);
+  });
+  [16777217,-16777221,-16777219,16777223].forEach((v,i) => view.setInt32(pixelsAt+4*i,v,true));
+  const source = terrio.open(input,"complex.tif");
+  for (const format of ["GTiff","COG"]) {
+    const bytes = source.toBytes("copy.tif", { format });
+    const out = new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+    const ifd = out.getUint32(4,true), n = out.getUint16(ifd,true);
+    const value = tag => {
+      for (let i=0; i<n; i++) {
+        const at = ifd + 2 + 12*i;
+        if (out.getUint16(at,true) === tag) return out.getUint16(at+8,true);
+      }
+      assert.fail(`missing tag ${tag}`);
+    };
+    assert.equal(value(277),1); assert.equal(value(258),64); assert.equal(value(339),5);
+    const copy = terrio.open(bytes,"copy.tif");
+    assert.deepEqual([...copy.readBand(1)],[16777217,-16777219]);
+    assert.deepEqual([...copy.readBand(2)],[-16777221,16777223]);
+  }
+});
+
 test("GDAL 3.13 terrain and native WebP creation options", () => {
   const values = new Float32Array([942.315, 946.702, 951.43, 945.132, 943.95, 959.37, 948.15, 954.318, 960.01]);
   const dem = terrio.rasterFromArray(values, 3, 3, [500000, 3.5, 0, 4100000, 0, -3.5], "EPSG:32610");

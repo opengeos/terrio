@@ -3265,6 +3265,30 @@ def suite_oapif(ctx):
     return suite
 
 
+def suite_complex_writes(ctx):
+    suite = Suite("complex-writes", "Complex GeoTIFF writes", "GDAL",
+                  "Exact sample types, values, nodata, masks, CRS and transforms for complex "
+                  "whole/streamed writes and copies; CInt32 values above 2^24, integer saturation "
+                  "and a real Landsat-derived complex grid are included. Compressed byte identity "
+                  "with GDAL is not asserted.")
+    missing = missing_modules("pytest", "osgeo", "numpy", "terrio")
+    if missing:
+        suite.skipped = "needs the Python modules " + ", ".join(missing)
+        return suite
+    code, version, err = run([sys.executable, "-c", "from osgeo import gdal; print(gdal.VersionInfo('RELEASE_NAME'))"])
+    if code:
+        suite.error = tail(err)
+        return suite
+    suite.reference = "GDAL " + version.strip()
+    code, out, err = run([sys.executable, "-m", "pytest", "-q",
+                          str(ROOT / "python/tests/test_rio_complex_writer.py")],
+                         {"TERRIO_TEST_DATA": str(ctx.data)})
+    suite.cases.append(Case("Complex GDAL decoding", "write and copy assertions including Landsat",
+                            IDENTICAL if code == 0 and "skipped" not in out else DIFFERS,
+                            tail(err or out)))
+    return suite
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -3281,6 +3305,7 @@ SUITES = OrderedDict(
         ("shapefile-rings", suite_shapefile_rings),
         ("shapefile-deleted", suite_shapefile_deleted),
         ("raster-roundtrip", suite_raster_roundtrip),
+        ("complex-writes", suite_complex_writes),
         ("windows", suite_windows),
         ("ops", suite_ops),
         ("raster-masks", suite_raster_masks),

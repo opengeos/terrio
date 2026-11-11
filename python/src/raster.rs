@@ -159,7 +159,17 @@ impl PyRaster {
 /// parts are bands `2k` and `2k + 1`), as a NumPy array of `complex64` (`complex128` for
 /// 64-bit floats) of the given shape.
 fn complex_to_numpy<'py>(py: Python<'py>, data: RasterData, plane: usize, shape: &[usize]) -> PyResult<Bound<'py, PyAny>> {
-    let double = data.data_type() == DataType::F64;
+    complex_to_numpy_as(py, data, plane, shape, false)
+}
+
+fn complex_to_numpy_as<'py>(
+    py: Python<'py>,
+    data: RasterData,
+    plane: usize,
+    shape: &[usize],
+    force_double: bool,
+) -> PyResult<Bound<'py, PyAny>> {
+    let double = force_double || data.data_type() == DataType::F64;
     let v = data.to_f64_vec();
     let bands = v.len() / (2 * plane).max(1);
     let pairs = (0..bands).flat_map(|b| (0..plane).map(move |i| (b, i)));
@@ -214,6 +224,56 @@ pub(crate) fn from_numpy(array: &Bound<'_, PyUntypedArray>) -> PyResult<RasterDa
         return Ok(RasterData::U8(a.as_array().iter().map(|b| *b as u8).collect()));
     }
     Err(invalid(format!("unsupported array dtype {dtype}: use an integer or float32/float64 array")))
+}
+
+/// The physical component type selected by a complex NumPy/GDAL sample name.
+pub(crate) fn complex_dtype(dtype: &str) -> Option<DataType> {
+    match dtype.to_ascii_lowercase().as_str() {
+        "complex_int16" | "cint16" => Some(DataType::I16),
+        "complex_int32" | "cint32" => Some(DataType::I32),
+        "complex64" | "cfloat32" => Some(DataType::F32),
+        "complex128" | "cfloat64" => Some(DataType::F64),
+        _ => None,
+    }
+}
+
+/// Complex band-major arrays become adjacent real/imaginary component planes.
+pub(crate) fn raster_array_data(array: &Bound<'_, PyUntypedArray>, target: Option<DataType>) -> PyResult<(RasterData, bool)> {
+    let py = array.py();
+    let dtype = array.dtype();
+    let shape = array.shape();
+    if shape.len() < 2 {
+        return Err(invalid("expected nonempty raster rows and columns"));
+    }
+    let plane = shape[shape.len() - 2] * shape[shape.len() - 1];
+    macro_rules! complex {
+        ($c:ty, $variant:ident) => {
+            if dtype.is_equiv_to(&numpy::dtype::<$c>(py)) {
+                let contiguous = py.import("numpy")?.call_method1("ascontiguousarray", (array,))?;
+                let readonly = contiguous.cast::<PyArrayDyn<$c>>()?.readonly();
+                let values = readonly.as_slice().map_err(|e| invalid(e.to_string()))?;
+                let mut parts = Vec::with_capacity(values.len() * 2);
+                if plane != 0 {
+                    for band in values.chunks_exact(plane) {
+                        parts.extend(band.iter().map(|v| v.re));
+                        parts.extend(band.iter().map(|v| v.im));
+                    }
+                }
+                let data = RasterData::$variant(parts);
+                let data = match target {
+                    Some(t) => terrio::convert_complex_components(data, t).py()?,
+                    None => data,
+                };
+                return Ok((data, true));
+            }
+        };
+    }
+    complex!(numpy::Complex32, F32);
+    complex!(numpy::Complex64, F64);
+    if target.is_some() {
+        return Err(invalid("a complex sample type requires a complex NumPy array"));
+    }
+    Ok((from_numpy(array)?, false))
 }
 
 /// Runs `f` on a NumPy array's values in C order, read where they are when the array is
@@ -500,6 +560,7 @@ impl PyRaster {
     ///     window: The pixels to read, `(col_off, row_off, width, height)`, or `None` for the
     ///         whole image. With `overview`, in the overview's pixels.
     ///     overview: Read this overview (0 is the largest) instead of the full resolution.
+    ///     out_dtype: NumPy output dtype. complex128 preserves every Int32 complex component.
     ///
     /// Returns:
     ///     numpy.ndarray: An array of shape `(rows, cols)` when `band` is an int, otherwise
@@ -507,14 +568,17 @@ impl PyRaster {
     ///
     /// Raises:
     ///     InvalidArgumentError: If a band, the window or the overview does not exist.
-    #[pyo3(signature = (band=None, window=None, overview=None))]
+    #[pyo3(signature = (band=None, window=None, overview=None, *, out_dtype=None))]
     fn read<'py>(
         slf: &Bound<'py, Self>,
         band: Option<&Bound<'py, PyAny>>,
         window: Option<(usize, usize, usize, usize)>,
         overview: Option<usize>,
+        out_dtype: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let py = slf.py();
+        let out_dtype: Option<String> =
+            out_dtype.map(|d| py.import("numpy")?.call_method1("dtype", (d,))?.getattr("name")?.extract()).transpose()?;
         let (mut bands, single) = parse_bands(band)?;
         Self::with_reader(slf, |inner| {
             let complex = inner.is_complex();
@@ -549,10 +613,18 @@ impl PyRaster {
             let r = ds.raster;
             if complex {
                 let shape = if single { vec![r.rows, r.cols] } else { vec![r.bands / 2, r.rows, r.cols] };
-                return complex_to_numpy(py, r.data, r.rows * r.cols, &shape);
+                let array = complex_to_numpy_as(py, r.data, r.rows * r.cols, &shape, out_dtype.as_deref() == Some("complex128"))?;
+                return match &out_dtype {
+                    Some(d) => array.call_method1("astype", (d,)),
+                    None => Ok(array),
+                };
             }
             let shape = if single { vec![r.rows, r.cols] } else { vec![r.bands, r.rows, r.cols] };
-            to_numpy(py, r.data, &shape)
+            let array = to_numpy(py, r.data, &shape)?;
+            match &out_dtype {
+                Some(d) => array.call_method1("astype", (d,)),
+                None => Ok(array),
+            }
         })
     }
 
@@ -815,8 +887,10 @@ impl PyRaster {
     /// Creates a raster from a NumPy array.
     ///
     /// Args:
-    ///     array: A 2-D `(rows, cols)` or 3-D `(bands, rows, cols)` array of an integer or float
-    ///         dtype (booleans are stored as uint8).
+    ///     array: A 2-D `(rows, cols)` or 3-D `(bands, rows, cols)` integer, float or complex
+    ///         array (booleans are stored as uint8). Complex bands count once.
+    ///     complex_dtype: Optional CInt16, CInt32, CFloat32 or CFloat64 output sample type for
+    ///         complex input; integer components are rounded and saturated as GDAL 3.13.3 does.
     ///     transform: The GDAL-style geotransform `(x_origin, pixel_width, row_rotation,
     ///         y_origin, column_rotation, pixel_height)`: north-up, rotated or south-up.
     ///     crs: The CRS: `"EPSG:4326"`, WKT or a PROJ string. `None` leaves it unknown.
@@ -831,13 +905,14 @@ impl PyRaster {
     ///     InvalidArgumentError: If the array is not supported or the transform not invertible.
     ///     CRSError: If the CRS cannot be parsed.
     #[staticmethod]
-    #[pyo3(signature = (array, transform, crs=None, nodata=None, metadata=None))]
+    #[pyo3(signature = (array, transform, crs=None, nodata=None, metadata=None, *, complex_dtype=None))]
     fn from_array(
         array: &Bound<'_, PyUntypedArray>,
         transform: [f64; 6],
         crs: Option<&str>,
         nodata: Option<f64>,
         metadata: Option<&Bound<'_, PyAny>>,
+        complex_dtype: Option<&str>,
     ) -> PyResult<Self> {
         let metadata = metadata.map(string_pairs).transpose()?.unwrap_or_default();
         let shape = array.shape().to_vec();
@@ -854,11 +929,14 @@ impl PyRaster {
             return Err(invalid("the transform is not invertible"));
         }
         let crs = crs.map(SpatialRef::parse).transpose().py()?.unwrap_or_default();
-        let data = from_numpy(array)?;
+        let target = complex_dtype
+            .map(|name| self::complex_dtype(name).ok_or_else(|| invalid(format!("unsupported complex sample type {name}"))))
+            .transpose()?;
+        let (data, complex) = raster_array_data(array, target)?;
         let cfg = terrio::RasterConfig {
             cols,
             rows,
-            bands,
+            bands: bands * if complex { 2 } else { 1 },
             nodata: nodata.unwrap_or(-9999.0),
             data_type: data.data_type(),
             crs: crs.to_crs_info(),
@@ -867,6 +945,7 @@ impl PyRaster {
         };
         let raster = terrio::raster_from_data(cfg, data).py()?;
         let mut ds = RasterDataset::new(raster, nodata.is_some());
+        ds.complex = complex;
         ds.set_geo_transform(g);
         Ok(Self::from_dataset(ds))
     }
@@ -991,11 +1070,9 @@ impl PyRaster {
     #[pyo3(signature = (dtype=None, copy=None))]
     fn __array__<'py>(slf: &Bound<'py, Self>, dtype: Option<&Bound<'py, PyAny>>, copy: Option<bool>) -> PyResult<Bound<'py, PyAny>> {
         let _ = copy;
-        let a = Self::read(slf, None, None, None)?;
-        match dtype {
-            Some(d) => a.call_method1("astype", (d,)),
-            None => Ok(a),
-        }
+        let dtype: Option<String> =
+            dtype.map(|d| slf.py().import("numpy")?.call_method1("dtype", (d,))?.getattr("name")?.extract()).transpose()?;
+        Self::read(slf, None, None, None, dtype.as_deref())
     }
 
     /// The raster as a PNG of up to 512 pixels a side, which notebooks display; `None` when it
@@ -1136,6 +1213,7 @@ pub struct PyGeoTiffWriter {
     width: usize,
     count: usize,
     data_type: DataType,
+    complex: bool,
 }
 
 #[pymethods]
@@ -1170,18 +1248,23 @@ impl PyGeoTiffWriter {
         if width == 0 || height == 0 || count == 0 {
             return Err(invalid("the raster is empty"));
         }
-        let data_type = match dtype {
-            "uint8" | "bool" => DataType::U8,
-            "int8" => DataType::I8,
-            "uint16" => DataType::U16,
-            "int16" => DataType::I16,
-            "uint32" => DataType::U32,
-            "int32" => DataType::I32,
-            "uint64" => DataType::U64,
-            "int64" => DataType::I64,
-            "float32" => DataType::F32,
-            "float64" => DataType::F64,
-            other => return Err(invalid(format!("unsupported dtype {other}"))),
+        let component = complex_dtype(dtype);
+        let complex = component.is_some();
+        let data_type = match component {
+            Some(t) => t,
+            None => match dtype {
+                "uint8" | "bool" => DataType::U8,
+                "int8" => DataType::I8,
+                "uint16" => DataType::U16,
+                "int16" => DataType::I16,
+                "uint32" => DataType::U32,
+                "int32" => DataType::I32,
+                "uint64" => DataType::U64,
+                "int64" => DataType::I64,
+                "float32" => DataType::F32,
+                "float64" => DataType::F64,
+                other => return Err(invalid(format!("unsupported dtype {other}"))),
+            },
         };
         let crs = crs.map(SpatialRef::parse).transpose().py()?.unwrap_or_default();
         let cfg = terrio::RasterConfig {
@@ -1197,9 +1280,10 @@ impl PyGeoTiffWriter {
         let mut raster = terrio::Raster::new(cfg);
         raster.cols = width;
         raster.rows = height;
-        raster.bands = count;
+        raster.bands = count * if complex { 2 } else { 1 };
         raster.data = RasterData::new_filled(data_type, 0, 0.0);
         let mut header = RasterDataset::new(raster, nodata.is_some());
+        header.complex = complex;
         header.set_geo_transform(transform);
         let mut o = write_options(Some("GTiff"), compress, tile_size, bigtiff)?;
         o.creation_options = validated_creation_options(options)?;
@@ -1211,7 +1295,7 @@ impl PyGeoTiffWriter {
             o.mask = Some(Vec::new());
         }
         let inner = terrio::GeoTiffWriter::create(path, &header, &o).py()?;
-        Ok(Self { inner: Some(inner), width, count, data_type })
+        Ok(Self { inner: Some(inner), width, count, data_type, complex })
     }
 
     /// The number of rows written so far.
@@ -1240,8 +1324,8 @@ impl PyGeoTiffWriter {
         if bands != self.count || cols != self.width {
             return Err(invalid(format!("expected {} bands of {} columns, got {bands} of {cols}", self.count, self.width)));
         }
-        let data = from_numpy(array)?;
-        if data.data_type() != self.data_type {
+        let (data, complex) = raster_array_data(array, self.complex.then_some(self.data_type))?;
+        if complex != self.complex || data.data_type() != self.data_type {
             return Err(invalid("the array's dtype is not the writer's"));
         }
         let mask: Option<Vec<u8>> = mask.map(|m| m.as_array().iter().copied().collect());

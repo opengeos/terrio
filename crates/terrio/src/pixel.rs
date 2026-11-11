@@ -87,6 +87,37 @@ macro_rules! with_data {
 }
 pub(crate) use with_data;
 
+/// Converts samples using GDAL 3.13.3's rounded, saturated integer conversion.
+/// Complex components are Int16, Int32, Float32 or Float64; unchanged types reuse their buffer.
+///
+/// # Errors
+/// When either type cannot represent a complex sample component.
+pub fn convert_complex_components(
+    data: wbraster::raster::RasterData,
+    target: wbraster::DataType,
+) -> crate::Result<wbraster::raster::RasterData> {
+    use wbraster::DataType;
+    use wbraster::raster::RasterData;
+    if !matches!(data.data_type(), DataType::I16 | DataType::I32 | DataType::F32 | DataType::F64)
+        || !matches!(target, DataType::I16 | DataType::I32 | DataType::F32 | DataType::F64)
+    {
+        return Err(crate::Error::InvalidArgument("complex components must be Int16, Int32, Float32 or Float64".into()));
+    }
+    if data.data_type() == target {
+        return Ok(data);
+    }
+    macro_rules! cast {
+        ($t:ty, $v:ident) => { RasterData::$v(with_data!(&data, values => values.iter().map(|v| <$t as Pixel>::from_f64(v.to_f64())).collect())) };
+    }
+    Ok(match target {
+        DataType::I16 => cast!(i16, I16),
+        DataType::I32 => cast!(i32, I32),
+        DataType::F32 => cast!(f32, F32),
+        DataType::F64 => cast!(f64, F64),
+        _ => unreachable!(),
+    })
+}
+
 /// Builds a `RasterData` of the variant of `like` from a function generic over the sample type.
 macro_rules! map_data {
     ($data:expr, $v:ident => $body:expr) => {

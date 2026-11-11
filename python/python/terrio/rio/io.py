@@ -199,6 +199,8 @@ _SUPPORTED_DTYPES = {
     "int64",
     "float32",
     "float64",
+    "complex64",
+    "complex128",
 }
 
 
@@ -1481,6 +1483,20 @@ class DatasetReader(DatasetBase):
         except Exception as err:
             raise RasterioIOError(f"Read failed: {err}") from err
 
+    def _read_for_copy(self, window: Any = None) -> np.ndarray:
+        """Read integer-complex copies before conversion to complex64 rounds Int32 values."""
+        if type(self) is DatasetReader and getattr(self._raster, "data_type", None) == "CInt32":
+            self._check_open()
+            region = (
+                None
+                if window is None
+                else tuple(
+                    int(v) for v in (window.col_off, window.row_off, window.width, window.height)
+                )
+            )
+            return np.asarray(self._raster.read(None, window=region, out_dtype="complex128"))
+        return self.read(window=window)
+
     def _sample_level(
         self, bands: Sequence[int], cols: np.ndarray, rows: np.ndarray, level: int | None
     ) -> np.ndarray | None:
@@ -2242,6 +2258,7 @@ class DatasetWriter(DatasetReader):
         gcps = kwargs.pop("gcps", None)
         rpcs = kwargs.pop("rpcs", None)
         copy_of = kwargs.pop("_copy_of", None)
+        complex_sample = kwargs.pop("_complex_dtype", None)
         if mode in ("w", "w+"):
             if not isinstance(driver, str):
                 raise TypeError("A driver name string is required.")
@@ -2259,6 +2276,12 @@ class DatasetWriter(DatasetReader):
                 raise TypeError("Integer band count is required.") from None
             try:
                 assert dtype is not None
+                if (
+                    isinstance(dtype, str)
+                    and dtype.startswith("complex_int")
+                    and dtype != "complex_int16"
+                ):
+                    raise TypeError("unsupported complex integer dtype")
                 dt = _getnpdtype(dtype).name
             except Exception:
                 raise TypeError("A valid dtype is required.") from None
@@ -2273,6 +2296,10 @@ class DatasetWriter(DatasetReader):
             self._out_driver = driver
             self.width, self.height, self._count, self._dtype = width, height, count, dt
             self._nodata = None if nodata is None else float(nodata)
+            self._complex_sample = complex_sample or (
+                "CInt16" if dtype == "complex_int16" else None
+            )
+            self._complex_int = self._complex_sample == "CInt16"
             self._options = self._creation_options(kwargs)
             shape = (count, height, width)
             if copy_of is not None and self._streams_on_flush(self._streams(shape, dt)):
@@ -2991,13 +3018,18 @@ class DatasetWriter(DatasetReader):
         if self._copy_of is not None and not streaming:
             # A copy given its source to write from no longer writes in rows (unreachable from
             # `shutil.copy`, which gives none with a mask): its pixels, then, whole.
-            self._data = np.require(self._copy_of.read(), dtype=self._dtype)
+            self._data = np.require(self._copy_of._read_for_copy(), dtype=self._dtype)
             self._copy_of = None
         raster: Any = None
         if not streaming:
             try:
                 raster = _terrio.Raster.from_array(
-                    np.asarray(self._data), gt, crs or None, self._nodata, tags
+                    np.asarray(self._data),
+                    gt,
+                    crs or None,
+                    self._nodata,
+                    tags,
+                    complex_dtype=getattr(self, "_complex_sample", None),
                 )
             except Exception as err:
                 raise RasterioIOError(f"Write failed: {err}") from err
@@ -3221,7 +3253,7 @@ class DatasetWriter(DatasetReader):
             self.width,
             self.height,
             self._count,
-            self._dtype,
+            getattr(self, "_complex_sample", None) or self._dtype,
             tuple(gt),
             crs or None,
             self._nodata,
@@ -3259,7 +3291,7 @@ class DatasetWriter(DatasetReader):
                 if source is None:
                     rows = np.ascontiguousarray(self._data[:, y : y + n, :])
                 else:
-                    part = source.read(window=Window(0, y, self.width, n))
+                    part = source._read_for_copy(window=Window(0, y, self.width, n))
                     rows = np.ascontiguousarray(np.require(part, dtype=self._dtype))
                 m = (
                     None
