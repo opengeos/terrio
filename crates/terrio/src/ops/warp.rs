@@ -6142,6 +6142,54 @@ mod tests {
         }
     }
 
+    /// The polar aspect of the Lambert azimuthal equal-area projection takes the whole Earth onto a
+    /// disk whose rim is the opposite pole, and the default grid of a world warped into it is the
+    /// square around that disk, whose edges lie beyond the rim but where they touch it: the
+    /// pixels of its corners, more than a pixel beyond the rim, are left nodata, and every pixel
+    /// more than a pixel within it is written. A world of 1° pixels (3 along 90° N, 2 along 90° S,
+    /// 1 elsewhere) into the WGS 84 EASE-Grid 2.0 South (EPSG:6932) and the North Pole LAEA
+    /// Atlantic (EPSG:3574).
+    #[test]
+    fn world_warped_into_a_polar_lambert_azimuthal_equal_area_disk_fills_the_disk_only() {
+        let geographic = SpatialRef::from_epsg(4326).unwrap();
+        let world = raster(360, 180, [-180.0, 1.0, 0.0, 90.0, 0.0, -1.0], 4326, |_, r| match r {
+            0 => 3.0,
+            179 => 2.0,
+            _ => 1.0,
+        });
+        for (epsg, opposite) in [(6932, 90.0), (3574, -90.0)] {
+            let dst = SpatialRef::from_epsg(epsg).unwrap();
+            let (x, y) = Transformer::new(&geographic, &dst).unwrap().transform(0.0, opposite * 0.999_999_99).unwrap();
+            let rim = x.hypot(y);
+            let o = WarpOptions {
+                dst_srs: Some(dst),
+                resampling: Resampling::Nearest,
+                dst_nodata: Nodata::Values(vec![0.0]),
+                ..Default::default()
+            };
+            let out = warp(&[&world], &o).unwrap();
+            let (gt, w, h) = (out.geo_transform(), out.raster.cols, out.raster.rows);
+            let values = out.raster.data.to_f64_vec();
+            let (mut outside, mut written_outside, mut inside, mut written_inside) = (0, 0, 0, 0);
+            for r in 0..h {
+                for c in 0..w {
+                    let (x, y) = apply_gt(&gt, c as f64 + 0.5, r as f64 + 0.5);
+                    let written = usize::from(values[r * w + c] != 0.0);
+                    if x.hypot(y) > rim + gt[1] {
+                        (outside, written_outside) = (outside + 1, written_outside + written);
+                    } else if x.hypot(y) < rim - gt[1] {
+                        (inside, written_inside) = (inside + 1, written_inside + written);
+                    }
+                }
+            }
+            assert!(
+                outside > 0 && written_outside == 0 && written_inside == inside,
+                "EPSG:{epsg}: {w} x {h} pixels; {written_outside} of the {outside} beyond the rim written, {written_inside} \
+                 of the {inside} within it"
+            );
+        }
+    }
+
     /// Where a change of CRS bends the output's rows across the source's grid, the corners of a
     /// `sum`'s output pixels do not depend on the chunks the output is warped in: in two chunks,
     /// and in chunks of other shapes under smaller memory limits, the output is the same, bit for
