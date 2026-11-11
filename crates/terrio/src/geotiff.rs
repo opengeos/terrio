@@ -1063,7 +1063,7 @@ pub(crate) type Reopen<'a, D> = &'a (dyn Fn() -> crate::Result<tiff::decoder::De
 ///
 /// A decoder is opened only when the pool has none to spare, so the pool grows to the workers of
 /// the widest read so far and never past [`crate::par::threads`]. Each kept decoder holds the
-/// tables of its image, 16 bytes a chunk, so the pools of all the open readers keep their decoders
+/// tables of its image, 16 bytes a chunk plus retained JPEG coding tables, so all open readers keep their decoders
 /// within one budget ([`SPARE_DECODER_BYTES`], see [`SpareDecoders`]): a decoder given back past it
 /// closes the least recently used decoders of the other pools, which open theirs again when they
 /// are next read. A reader that is closed gives up its share. Every reader has a pool of its own,
@@ -1142,7 +1142,7 @@ impl Spares {
 }
 
 /// The spare decoders that the [`DecoderPool`]s of the open readers keep, within one budget of
-/// bytes: the tables each decoder holds (16 bytes a chunk) and a fixed part
+/// bytes: the tables each decoder holds (16 bytes a chunk plus JPEG coding tables) and a fixed part
 /// ([`SPARE_DECODER_OVERHEAD`]).
 ///
 /// A decoder kept past the budget closes the least recently used decoders of the other pools
@@ -1298,7 +1298,19 @@ impl<D: Read + Seek + Send + 'static> DecoderPool<D> {
         };
         // Offset and byte count, 8 bytes each.
         let Ok(chunks) = chunks else { return };
-        let cost = SPARE_DECODER_OVERHEAD + 16 * u64::from(chunks);
+        let mut cost = SPARE_DECODER_OVERHEAD + 16 * u64::from(chunks);
+        // Image's JPEG tables are an owned byte vector. Read only the loaded directory entry,
+        // not the tag's payload: accounting must not copy or reread a potentially large table.
+        if let Some(entry) = dec.image_ifd().find_entry(tiff::tags::Tag::JPEGTables) {
+            match dec.find_tag_unsigned::<u16>(tiff::tags::Tag::Compression) {
+                Ok(Some(7)) => {
+                    let Some(total) = cost.checked_add(entry.count()) else { return };
+                    cost = total;
+                }
+                Ok(_) => {} // Non-JPEG images do not retain the tag in their decoder state.
+                Err(_) => return,
+            }
+        }
         // Closed here, once `keep` has let the lock go.
         drop(self.spares.keep(self.id, ifd, cost, crate::par::threads(), Box::new(dec)));
     }
@@ -2775,6 +2787,86 @@ mod tests {
         pool.give_back(0, decoder);
         assert_eq!(pool.len(), 0);
         assert_eq!(spares.bytes(), 0);
+    }
+
+    /// JPEG comments form a large, valid tables stream; pixels remain constant gray.
+    /// GDAL 3.13.3 is the independent JPEG reference used by the conformance tests.
+    #[test]
+    fn spare_decoder_cost_includes_retained_jpeg_tables_without_rereading() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering::Relaxed},
+        };
+        use tiff::tags::Tag;
+        struct Observed {
+            bytes: std::io::Cursor<Vec<u8>>,
+            read: Arc<AtomicUsize>,
+        }
+        impl Read for Observed {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.bytes.read(bytes)?;
+                self.read.fetch_add(n, Relaxed);
+                Ok(n)
+            }
+        }
+        impl Seek for Observed {
+            fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+                self.bytes.seek(from)
+            }
+        }
+        let mut tables = vec![0xff, 0xd8];
+        for _ in 0..4 {
+            tables.extend_from_slice(&[0xff, 0xfe, 0x80, 0x02]);
+            tables.extend_from_slice(&[b'x'; 32768]);
+        }
+        tables.extend_from_slice(&[0xff, 0xd9]);
+        let spares = Box::leak(Box::new(SpareDecoders::new(64 << 10)));
+        let mut pools = Vec::new();
+        for compression in [1u16, 7] {
+            let mut payload = vec![7u8; 16 * 16];
+            if compression == 7 {
+                payload.clear();
+                jpeg_encoder::Encoder::new(&mut payload, 90).encode(&[7; 16 * 16], 16, 16, jpeg_encoder::ColorType::Luma).unwrap();
+            }
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            {
+                let mut encoder = tiff::encoder::TiffEncoder::new(&mut bytes).unwrap();
+                let mut directory = encoder.image_directory().unwrap();
+                let offset = directory.write_data(payload.as_slice()).unwrap();
+                for (tag, value) in [
+                    (Tag::ImageWidth, 16u32),
+                    (Tag::ImageLength, 16),
+                    (Tag::RowsPerStrip, 16),
+                    (Tag::StripOffsets, offset as u32),
+                    (Tag::StripByteCounts, payload.len() as u32),
+                ] {
+                    directory.write_tag(tag, value).unwrap();
+                }
+                for (tag, value) in [
+                    (Tag::BitsPerSample, 8u16),
+                    (Tag::SamplesPerPixel, 1),
+                    (Tag::PhotometricInterpretation, 1),
+                    (Tag::Compression, compression),
+                ] {
+                    directory.write_tag(tag, value).unwrap();
+                }
+                directory.write_tag(Tag::JPEGTables, tables.as_slice()).unwrap();
+                directory.finish().unwrap();
+            }
+            let data = bytes.into_inner();
+            let dataset = crate::memory::open_raster_bytes(data.clone(), "gray.tif").unwrap();
+            assert_eq!(dataset.raster.data.to_f64_vec(), vec![7.0; 16 * 16]);
+            let read = Arc::new(AtomicUsize::new(0));
+            let decoder = tiff::decoder::Decoder::new(Observed { bytes: std::io::Cursor::new(data), read: read.clone() }).unwrap();
+            let before = read.load(Relaxed);
+            let pool = DecoderPool::sharing(spares);
+            pool.give_back(0, decoder);
+            assert_eq!(read.load(Relaxed), before, "accounting must not reread the JPEG tables");
+            pools.push(pool);
+            let retained_tables = if compression == 7 { tables.len() as u64 } else { 0 };
+            assert_eq!(spares.bytes(), SPARE_DECODER_OVERHEAD + 16 + retained_tables);
+        }
+        assert_eq!((pools[0].len(), pools[1].len()), (0, 1));
     }
 
     /// A worker takes the most recently used spare decoder on its image, and one on another image

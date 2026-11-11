@@ -346,12 +346,14 @@ their chunk tables. This is separate from the decoded block cache. All readers s
 256 MiB spare-decoder budget by default. Set `TERRIO_TIFF_SPARE_CACHEMAX` before the first
 window read to change it (bytes, optional `K`, `M`, or `G` suffixes); `0` disables spare
 retention. Invalid values use the default. This process-wide setting ignores thread-local
-`terrio.Env` options. A larger budget can avoid repeatedly reopening decoders when several
+`terrio.rio.Env` options. A larger budget can avoid repeatedly reopening decoders when several
 large rasters are read in turn, at the cost of retaining more memory.
 
 Positive budgets retain one reader's own spares even when they alone exceed the budget,
 up to one per worker thread. Idle decoders of other readers are evicted least recently used
-first. Active decoders, the reader's primary decoder, archive buffers and other allocations
+first. Each spare is charged for its chunk tables, retained JPEG coding tables and a fixed
+16 KiB overhead. Accounting uses loaded directory metadata without copying or rereading
+the JPEG table payload. Active decoders, the reader's primary decoder, archive buffers and other allocations
 are outside this budget; it does not cap total process memory. An uncountable decoder is
 dropped rather than retained without its chunk tables being charged.
 
