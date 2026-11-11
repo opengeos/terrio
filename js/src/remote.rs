@@ -667,14 +667,14 @@ struct ReadArgs {
 }
 
 /// Keeps the features that intersect a rectangle, as `ogr2ogr -spat` does; without one, the
-/// layers as they are (not copied).
+/// layers as they are. The features are moved, not copied.
 #[cfg_attr(not(any(feature = "tiles", feature = "flatgeobuf", feature = "parquet")), allow(dead_code))]
 fn spatial_filter(layers: Vec<terrio::Layer>, bbox: Option<[f64; 4]>) -> terrio::Result<Vec<terrio::Layer>> {
     match bbox {
         None => Ok(layers),
         Some([a, b, c, d]) => {
             let o = terrio::ops::vector_filter::VectorTranslateOptions { spatial_filter: Some((a, b, c, d)), ..Default::default() };
-            terrio::ops::vector_filter::translate(&layers, &o)
+            terrio::ops::vector_filter::translate_owned(layers, &o)
         }
     }
 }
