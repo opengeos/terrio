@@ -18,6 +18,11 @@ An archive named without a member opens its main dataset: the first file, by nam
 kind found among vector layers, rasters and point clouds (LAS, LAZ, COPC, PLY, E57), so
 `terrio info tile.las.zip` reads the LAS file inside.
 
+Archives with duplicate member names are refused as invalid data before reading or extracting
+members. This applies to whole archives, `/vsizip/` members, byte buffers, and XLSX or KMZ
+containers, including duplicate names outside the selected dataset. A later entry cannot silently
+replace an earlier one. The optional GDAL backend does not retry these ambiguous archives.
+
 ## Reading in place
 
 GeoTIFFs and COGs are opened lazily: `terrio info` fetches the header only, and window or overview
@@ -354,6 +359,15 @@ URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops the
   `JP2OpenJPEG`, `JPEG2000`, `JP2KAK`, `JP2ECW` and `JP2MRSID` all name `JP2`. Unset, it restricts
   nothing. Set but empty or blank, or to bytes that are not UTF-8, it allows no driver.
 - **Scope.** It applies to every kind of dataset, rasters, vectors and point clouds alike.
+- **Writes and appends.** The list restricts readers, not output encoders. Writing a new dataset
+  does not require its output driver to be allowed. An EPT append reads the existing dataset and
+  its tiles: EPT and, for LASzip tiles, LAZ must be allowed before locking the dataset or recovering
+  an interrupted update, including the codecs declared by committed staged metadata. Direct
+  GeoPackage encoder writes, including vector `convert --append`, do not consult the reader list.
+  That encoder updates SQLite tables directly, without opening the target through a Terrio dataset
+  reader. EPT append uses Terrio readers to inspect existing tiles, so the reader policy applies.
+  Operations that open the existing GeoPackage to rewrite it (`repack`, layer renames and
+  `edit_in_place`) do check the vector list. The list is not a filesystem write policy.
 - **With `set_allowed_drivers`.** When a list is also set with
   `terrio::formats::set_allowed_drivers` (Python: `terrio.set_allowed_drivers`), a driver must be
   in both. That function keeps a list for each kind, rasters, vectors and point clouds, and a list

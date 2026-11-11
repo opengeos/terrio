@@ -428,6 +428,11 @@ test("finite polar kilometre inputs preserve direction through normalization", (
   assert.ok(Math.abs(ys[0] + 90) < 1e-12);
 });
 
+test("ZIP archives with duplicate member names are refused", () => {
+  const bytes = readFileSync(new URL("../../crates/terrio/tests/data/zip/duplicate_members.zip", import.meta.url));
+  assert.throws(() => terrio.open(bytes, "vector.zip"), /several entries with the same name/);
+});
+
 test("CRS transforms", () => {
   const [xs, ys] = terrio.transformPoints([0, 180], [0, 0], "EPSG:4326", "EPSG:3857");
   assert.ok(xs instanceof Float64Array);
