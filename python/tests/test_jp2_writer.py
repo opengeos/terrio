@@ -42,6 +42,7 @@ def encode(data, **options):
         ({}, True),
         ({"quality": 100}, True),
         ({"quality": "99.999999"}, False),
+        ({"quality": "99.999999,99.9999995"}, False),
         ({"QUALITY": 10}, False),
         ({"QUALITY": 50, "REVERSIBLE": "NO"}, False),
         ({"REVERSIBLE": "NO"}, False),

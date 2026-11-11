@@ -135,7 +135,9 @@ sidecar. `QUALITY` is a percentage of uncompressed size, as in
 not a PSNR target: 25 requests roughly one quarter of the uncompressed size. Supply one
 percentage or up to 100 strictly increasing comma-separated percentages for progressive
 quality layers, each greater than 0 and at most 100. Targets are approximate and exclude
-container overhead. The final quality defaults to 100; `REVERSIBLE=NO` alone instead uses
+container overhead. Distinct percentages very close together may round to the same codec rate;
+the ordering rule applies to the requested percentages. Rates that overflow the codec's
+intermediate arithmetic are refused. The final quality defaults to 100; `REVERSIBLE=NO` alone instead uses
 25. A final quality below 100 defaults to irreversible 9/7, while a final quality of 100
 defaults to reversible 5/3. `REVERSIBLE=YES` explicitly selects 5/3 but is still lossy when
 rate-limited below 100. Only reversible output ending at quality 100 is lossless.

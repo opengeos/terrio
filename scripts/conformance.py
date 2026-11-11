@@ -3502,7 +3502,6 @@ SUITES = OrderedDict(
         ("shapefile-deleted", suite_shapefile_deleted),
         ("raster-roundtrip", suite_raster_roundtrip),
         ("jp2-writer", suite_jp2_writer),
-
         ("webp-writer", suite_webp_writer),
         ("deflate", suite_deflate),
         ("windows", suite_windows),
