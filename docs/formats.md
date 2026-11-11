@@ -38,7 +38,7 @@ GDAL's drivers (the formats marked * are written that way): see
 | ERS | ER Mapper | ✓ | ✓ | ers |
 | PNG | PNG with world file | ✓ | ✓ | png |
 | JPEG | JPEG with world file | ✓ | ✓ | jpg, jpeg |
-| WEBP | WebP with world file (written lossless) | ✓ | ✓ | webp |
+| WEBP | WebP with world file | ✓ | ✓ | webp |
 | XYZ | XYZ ASCII grid | ✓ | ✓ | xyz |
 | DTED | DTED elevation | ✓ | ✓ | dt0, dt1, dt2 |
 | SRTMHGT | SRTM HGT tiles (`N37W120.hgt`, zipped or not; NASADEM `.hgts`, `.err`, `.img`, `.num` and water body `.raw`, `.swb` read) | ✓ | ✓ | hgt |
@@ -49,12 +49,15 @@ YCbCr with 4:2:0 chroma subsampling (each 2 x 2 block's chroma averaged, as libj
 quantized at the `QUALITY` creation option (1 to 100, default 75) as libjpeg scales its tables,
 with optimized Huffman tables. Other data types are rounded and saturated to Byte; GDAL's 4-band
 (CMYK) and 12-bit JPEGs are not written. WebP files hold 3 (RGB) or 4 (RGBA) Byte bands of at most
-16383 x 16383 pixels, as GDAL's WEBP driver requires, and are always lossless (encoded in Rust,
-without libwebp), every sample kept: `LOSSLESS=NO`, GDAL's default, still gives a lossless file,
-not the size of GDAL's lossy one, and `QUALITY` (checked to be 0 to 100) and `EXACT` (0 or 1) have
-no effect. The RGB values under fully transparent pixels are kept, as GDAL keeps them with `EXACT=1`;
-with GDAL's default, `EXACT=0`, libwebp writes values of its own choosing there. An alpha band
-that is opaque everywhere is left out, so the file reads back as 3 bands, in GDAL as in terrio.
+16383 x 16383 pixels, as GDAL's WEBP driver requires. With no lossy options, files are
+lossless, every sample kept, including RGB under fully transparent pixels. `LOSSLESS=NO`
+or `QUALITY` without `LOSSLESS=YES` selects lossy VP8 encoding; `QUALITY` ranges from 0 to
+100 (default 75). Explicit `LOSSLESS=YES` overrides quality. Alpha is kept exactly, including
+in lossy output. An alpha band that is opaque everywhere is left out, so the file reads back
+as 3 bands. Both encoders are pure Rust; the lossy encoder is shared with GeoTIFF WebP tiles.
+Its size and PSNR at a given quality differ from GDAL's libwebp. `EXACT` (0 or 1) is validated
+but does not change encoding: lossless output always keeps transparent RGB, and lossy RGB
+is approximate even under transparent pixels. Other libwebp tuning options remain ignored.
 WebP files are read lossless or lossy, as 3 bands, or 4 with an alpha channel.
 
 PNG image data is compressed at the `ZLEVEL` creation option, the Deflate level, from 1 (the

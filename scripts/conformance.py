@@ -3265,6 +3265,20 @@ def suite_oapif(ctx):
     return suite
 
 
+def suite_webp_writer(ctx):
+    s = Suite("webp-writer", "WebP creation options", "GDAL 3.13.3",
+              "Default/explicit lossless pixels are exact; lossy quality changes bytes and pixels, "
+              "with exact alpha and independent GDAL decoding, including real Landsat RGB. "
+              "Lossy encoder bytes, size and PSNR are not compared with libwebp.")
+    code, out, err = run([sys.executable, "-m", "pytest", "-q",
+                          str(ROOT / "python/tests/test_webp_writer.py")],
+                         {"TERRIO_TEST_DATA": str(ctx.data)})
+    s.cases.append(Case("WEBP", "path/memory options and Landsat decoding",
+                        IDENTICAL if code == 0 and "skipped" not in out else DIFFERS,
+                        tail(err or out)))
+    return s
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -3281,6 +3295,7 @@ SUITES = OrderedDict(
         ("shapefile-rings", suite_shapefile_rings),
         ("shapefile-deleted", suite_shapefile_deleted),
         ("raster-roundtrip", suite_raster_roundtrip),
+        ("webp-writer", suite_webp_writer),
         ("windows", suite_windows),
         ("ops", suite_ops),
         ("raster-masks", suite_raster_masks),
