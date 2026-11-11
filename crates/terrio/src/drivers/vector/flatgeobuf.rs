@@ -1079,20 +1079,26 @@ mod tests {
         assert_eq!(exported.lock().unwrap().len(), opened.lock().unwrap().len());
     }
 
-    #[test]
-    fn declared_z_survives_a_zip_archive() {
-        // The archive's member is read, not the archive: its declared Z shows with no features.
-        let member = empty_typed_dimension_fixture(FgbType::Unknown, true, false);
+    /// A zip archive at a temporary path, holding one member `name` with `bytes`.
+    fn zip_with_member(name: &str, bytes: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
         let mut buf = std::io::Cursor::new(Vec::new());
         {
             let mut zip = zip::ZipWriter::new(&mut buf);
-            zip.start_file("empty.fgb", zip::write::SimpleFileOptions::default()).unwrap();
-            std::io::Write::write_all(&mut zip, &member).unwrap();
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut zip, bytes).unwrap();
             zip.finish().unwrap();
         }
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("archive.zip");
         std::fs::write(&path, buf.into_inner()).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn declared_z_survives_a_zip_archive() {
+        // The archive's member is read, not the archive: its declared Z shows with no features.
+        let member = empty_typed_dimension_fixture(FgbType::Unknown, true, false);
+        let (_dir, path) = zip_with_member("empty.fgb", &member);
         let schema = crate::ops::vector_schema::export_schema_path(path.to_str().unwrap(), &[]).unwrap();
         assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "GeometryZ");
         // The layer is named as opening the archive names it.
@@ -1102,6 +1108,24 @@ mod tests {
     }
 
     #[cfg(remote)]
+    #[test]
+    fn export_schema_path_honours_the_asset_read_policy() {
+        // Under a remote STAC document, a cross-origin FlatGeobuf read with ambient credentials is
+        // refused by open_vector; the schema route must refuse it the same way, before any download.
+        let (base, requests) = crate::http::test_server(empty_typed_dimension_fixture(FgbType::Unknown, true, false));
+        let url = format!("{base}/empty.fgb");
+        crate::config::with_options(
+            &[("GDAL_HTTP_HEADERS", "Authorization: Bearer test-token"), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")],
+            || {
+                let _scope = crate::stac::AssetReadPolicy::for_tests("https://example.invalid/item.json", false).enter().unwrap();
+                let opened = crate::open_vector(&url, &Default::default()).unwrap_err().to_string();
+                let exported = crate::ops::vector_schema::export_schema_path(&url, &[]).unwrap_err().to_string();
+                assert_eq!(exported, opened);
+            },
+        );
+        assert!(requests.lock().unwrap().is_empty(), "the refused file was requested");
+    }
+
     #[test]
     fn disallowed_remote_flatgeobuf_is_refused_before_download() {
         // Refused by the allow-list before any request: the file is not downloaded.

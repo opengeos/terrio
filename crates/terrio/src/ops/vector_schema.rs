@@ -990,6 +990,8 @@ pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
     // read, from that local copy: nothing is downloaded or extracted twice. Refused by name first.
     let remote = !location.is_local() && crate::formats::VectorDriver::for_extension(&location.file_name()) == Some(flatgeobuf);
     let archived = crate::vfs::zip_member(&location).is_some_and(|m| crate::formats::VectorDriver::for_extension(&m) == Some(flatgeobuf));
+    // The asset read policy of the caller applies to the path as `open_vector` judges it, before any download.
+    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     if remote || archived {
         if remote {
             crate::formats::check_driver_allowed("FlatGeobuf", path, crate::formats::Kind::Vector)?;
