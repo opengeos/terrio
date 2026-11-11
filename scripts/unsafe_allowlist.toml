@@ -103,9 +103,9 @@ origin = "existing"
 reason = "The Arrow C stream and C data interfaces: arrays and streams moved out of PyCapsules"
 
 [files."crates/terrio/src/deflate_compress.rs"]
-count = 20
+count = 22
 origin = "added"
-reason = "The libdeflate port's match finder: unaligned 4- and 8-byte loads, match extension and prefetches by raw pointer, as libdeflate does, each bounded by its caller (the greedy, lazy and lazy2 parsers of levels 1 to 9)"
+reason = "The libdeflate port's match finder: unaligned 4- and 8-byte loads, match extension and prefetches by raw pointer, as libdeflate does, each bounded by its caller (the greedy, lazy and lazy2 parsers of levels 1 to 9); and the same load and extension at the position one row back, at most the row length before the current position"
 
 [files."python/src/hugepage_alloc.rs"]
 count = 11

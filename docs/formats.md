@@ -112,6 +112,11 @@ with the `libzstd` feature: without it, as in the default build and in WebAssemb
 chunks are compressed at the one level their encoder has. A level out of range is refused,
 whatever the compression.
 
+Within a `DEFLATE` chunk, the encoder also looks for a match one row back and takes it where it is
+longer than the matches its hash chains find, so rows that repeat the row above, as in rasters of
+uniform blocks such as land cover maps, classifications and masks, are coded as copies of whole
+rows.
+
 JPEG 2000 is decoded and encoded with the Rust port of OpenJPEG, the codec of GDAL's JP2OpenJPEG
 driver, so pixels are GDAL's (Sentinel-2 L1C and L2A bands included). Georeferencing comes from
 the GeoJP2 box or the GMLJP2 box (Sentinel-2's), a 1-bit alpha channel is promoted to 0 and 255 as

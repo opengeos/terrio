@@ -144,8 +144,8 @@ from it.
 
 terrio's GeoTIFF and COG writers compress Deflate chunks with a Rust port of
 [libdeflate](https://github.com/ebiggers/libdeflate)'s level 6 compressor
-(`crates/terrio/src/deflate_compress.rs`, copyright 2016 Eric Biggers, MIT): the chunks are
-libdeflate's, byte for byte, as GDAL writes them when built with libdeflate (GDAL 3.12).
+(`crates/terrio/src/deflate_compress.rs`, copyright 2016 Eric Biggers, MIT), whose searches also
+examine the position one row back in a chunk's rows.
 
 ## fdlibm
 
