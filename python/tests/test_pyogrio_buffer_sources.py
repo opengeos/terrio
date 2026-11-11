@@ -210,7 +210,7 @@ def test_property_text_cannot_override_the_document_format(data, extension):
         extension: Its correct filename hint.
     """
     assert terrio._terrio.vector_byte_extension(data) == extension
-    assert len(tpg.read_dataframe(data, layer=0)) == 1
+    assert tpg.read_info(data, layer=0)["features"] == 1
 
 
 def test_root_type_after_large_features_is_not_relabelled_by_property_text():
@@ -224,7 +224,7 @@ def test_root_type_after_large_features_is_not_relabelled_by_property_text():
     }
     data = json.dumps({"features": [feature], "type": "FeatureCollection"}).encode()
     assert terrio._terrio.vector_byte_extension(data) == "geojson"
-    assert len(tpg.read_dataframe(data)) == 1
+    assert tpg.read_info(data)["features"] == 1
 
 
 @pytest.mark.parametrize("prefix", [b"", b"\xef\xbb\xbf", b" \n"])
@@ -261,7 +261,7 @@ def test_flatgeobuf_supported_magic_versions_read_the_payload(version, sources):
     data = bytearray(sources["fgb"].read_bytes())
     data[3] = version
     assert terrio._terrio.vector_byte_extension(bytes(data)) == "fgb"
-    assert len(tpg.read_dataframe(data)) == 4
+    assert tpg.read_info(data)["features"] == 4
 
 
 @pytest.mark.parametrize("form", ["path", "bytes", "file"])
