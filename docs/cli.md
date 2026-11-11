@@ -1227,8 +1227,10 @@ Both policies retain lazy window/overview reads. Python's `warp` and `WarpedVRT`
 accept `grid_invariant=True|False`; JavaScript's `warp` accepts `gridInvariant`.
 
 A serialized warped VRT uses the reader's configured kernel version and grid policy.
-A different explicit policy or coordinate-operation selection requires materialized
-output to preserve those choices across readers.
+VRT creation rejects per-call policies that differ from the current configuration.
+Materialize output to preserve those choices across readers with different settings.
+The native `TERRIO_WARP_GRID` selector accepts `GDAL` or `STABLE`, ignoring case;
+an unknown value records a warning and selects stable sampling.
 
 `TERRIO_GDAL_COMPAT=3.13` reproduces the other GDAL 3.13 behaviors terrio follows
 where releases differ:

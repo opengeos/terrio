@@ -1518,7 +1518,7 @@ def suite_tile_publication(ctx):
     if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
         suite.skipped = "needs GDAL >= 3.13"
         return suite
-    code, out, err = run([sys.executable, str(SCRIPTS / "compare_tile_publication_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_tile_publication_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"], {"TERRIO_WARP_GRID": "GDAL"})
     try:
         results = json.loads(out)
     except json.JSONDecodeError:
@@ -3182,7 +3182,7 @@ def suite_pipeline(ctx):
     if not all(os.path.isfile(os.path.join(ctx.data, name)) for name in ["usgs_dem.tif", "TN_Counties.geojson"]):
         suite.skipped = "needs real DEM and counties (scripts/fetch_test_data.sh)"
         return suite
-    code, out, err = run([sys.executable, str(SCRIPTS / "compare_pipeline_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_pipeline_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"], {"TERRIO_WARP_GRID": "GDAL"})
     try:
         for row in json.loads(out):
             suite.cases.append(Case("pipeline", row["name"], row["status"], row["detail"]))

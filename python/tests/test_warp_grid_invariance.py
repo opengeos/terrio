@@ -276,3 +276,38 @@ def test_global_pixel_keeps_full_longitude_footprint(
     # A narrow reprojected pixel actually crossing the cut must still unwrap.
     edge = terrio.warp(raster, te=(179.4, -2, 180.4, 2), grid_invariant=True, **options).read(1)
     np.testing.assert_allclose(edge, 1000, rtol=0, atol=1e-9)
+
+
+@pytest.mark.parametrize("configured,policy", [(None, True), ("GDAL", False)])
+def test_serialized_vrt_requires_the_configured_grid_policy(
+    tmp_path, monkeypatch, configured, policy
+):
+    if configured is None:
+        monkeypatch.delenv("TERRIO_WARP_GRID", raising=False)
+    else:
+        monkeypatch.setenv("TERRIO_WARP_GRID", configured)
+    y, x = np.mgrid[:96, :120]
+    raster = terrio.Raster.from_array(
+        np.sin(x / 13) + np.cos(y / 17), (447000, 10, 0, 6022000, 0, -10), crs="EPSG:32633"
+    )
+    source = tmp_path / "source.tif"
+    raster.write(str(source))
+    options = dict(
+        t_srs="EPSG:3857", tr=(38.0, 38.0), resampling="bilinear", ot="Float64", dstnodata=-9999
+    )
+    rejected = tmp_path / "mismatched.vrt"
+    with pytest.raises(ValueError, match="grid polic.*materialized"):
+        terrio.warp(str(source), dst=str(rejected), grid_invariant=not policy, **options)
+    assert not rejected.exists()
+    accepted = tmp_path / "matching.vrt"
+    terrio.warp(str(source), dst=str(accepted), grid_invariant=policy, **options)
+    assert_same_pixels(
+        terrio.open_raster(str(accepted)).read(1),
+        terrio.warp(str(source), grid_invariant=policy, **options).read(1),
+    )
+    materialized = tmp_path / "explicit.tif"
+    terrio.warp(str(source), dst=str(materialized), grid_invariant=not policy, **options)
+    assert_same_pixels(
+        terrio.open_raster(str(materialized)).read(1),
+        terrio.warp(str(source), grid_invariant=not policy, **options).read(1),
+    )

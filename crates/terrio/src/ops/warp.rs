@@ -217,8 +217,18 @@ impl Default for KernelVersion {
 }
 
 /// GDAL's chunk-dependent sampling is an explicit reference-reproduction mode.
-fn grid_invariant_configured() -> bool {
-    crate::config::get("TERRIO_WARP_GRID").is_none_or(|v| !v.trim().eq_ignore_ascii_case("GDAL"))
+pub(crate) fn grid_invariant_configured() -> bool {
+    crate::config::get("TERRIO_WARP_GRID").is_none_or(|value| {
+        let selected = value.trim();
+        if selected.eq_ignore_ascii_case("GDAL") {
+            false
+        } else {
+            if !selected.eq_ignore_ascii_case("STABLE") {
+                crate::warnings::warn(format!("TERRIO_WARP_GRID={value} is not GDAL or STABLE: stable sampling is used"));
+            }
+            true
+        }
+    })
 }
 
 /// Options for [`warp`], named after `gdalwarp`'s.
@@ -674,9 +684,9 @@ impl Approx<'_> {
         }
         if self.check_aliasing && self.base.pointwise(inv) {
             let step = (x[n - 1] - x[0]) / (n - 1) as f64 / 2.0;
-            let midpoint = self.base.point(inv, x[0] + step, y[0]);
+            let probe = self.base.point(inv, x[0] + step, y[0]);
             let faithful =
-                midpoint.is_some_and(|(px, py)| (px - (xs[0] + dx * step)).abs() + (py - (ys[0] + dy * step)).abs() <= self.max_error);
+                probe.is_some_and(|(px, py)| (px - (xs[0] + dx * step)).abs() + (py - (ys[0] + dy * step)).abs() <= self.max_error);
             if !faithful {
                 return self.exact(inv, x, y, ok, 0..n, &need);
             }
@@ -6514,6 +6524,22 @@ mod tests {
                     differ.len(),
                     differ.iter().fold(0.0f64, |m, d| m.max(*d))
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn grid_configuration_warns_and_falls_back_for_unknown_values() {
+        for (value, expected, warns) in [("GDAL", false, false), (" gdal ", false, false), ("STABLE", true, false), ("gdl", true, true)] {
+            let _ = crate::warnings::take();
+            crate::config::push_scope(std::collections::HashMap::from([("TERRIO_WARP_GRID".into(), Some(value.into()))]));
+            let actual = grid_invariant_configured();
+            let warnings = crate::warnings::take();
+            crate::config::pop_scope();
+            assert_eq!(actual, expected, "{value}");
+            assert_eq!(!warnings.is_empty(), warns, "{value}: {warnings:?}");
+            if warns {
+                assert!(warnings[0].contains("not GDAL or STABLE"));
             }
         }
     }

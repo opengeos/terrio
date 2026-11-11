@@ -35,7 +35,8 @@ METHODS = {
 
 def check(actual, expected, record):
     """Accumulate exact validity and absolute value comparisons."""
-    assert actual.shape == expected.shape, (actual.shape, expected.shape)
+    record["same_size"] = record.get("same_size", True) and actual.shape == expected.shape
+    assert record["same_size"], (actual.shape, expected.shape)
     valid = ~np.isnan(expected)
     mismatch = np.count_nonzero(valid != ~np.isnan(actual))
     record["valid_mismatch"] += int(mismatch)
@@ -80,7 +81,7 @@ def main():
                 for method, resampling in METHODS.items():
                     record = dict(name=f"terrain {method} {version} et={threshold}",
                                   reference_gdal=gdal.VersionInfo("RELEASE_NAME"),
-                                  same_size=True, valid_mismatch=0, max_diff=0., differing=0,
+                                  valid_mismatch=0, max_diff=0., differing=0,
                                   compared=0, outside_tol=0)
                     try:
                         options = dict(t_srs="EPSG:3857", tr=(38., 38.), ot="Float64",

@@ -367,3 +367,23 @@ def test_a_source_window_preserves_the_sources_writeable_flag(tmp_path, monkeypa
         assert cached.flags.writeable
         assert not window.flags.writeable
         assert np.shares_memory(window, cached)
+
+
+def test_nearest_source_window_bounds_the_sampled_taps():
+    from terrio import _terrio
+
+    warp = _terrio.RegionWarp(
+        (8192, 4096),
+        (0, 1, 0, 4096, 0, -1),
+        "EPSG:3857",
+        "EPSG:3857",
+        (0, 32, 0, 4096, 0, -32),
+        "nearest",
+        0.125,
+        "uint16",
+        [None],
+        grid_invariant=True,
+    )
+    # Centres run from 16 to 8176/4080, inclusive; no unused source edges are needed.
+    assert warp.source_window((0, 0, 256, 128)) == (16, 16, 8161, 4065)
+    assert warp.source_window((1, 1, 1, 1)) == (48, 48, 1, 1)
