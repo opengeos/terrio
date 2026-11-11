@@ -1218,6 +1218,15 @@ The shared warper also uses this default for reprojection inside tiles, retile,
 mosaic, catalogs and update operations. Those paths use `TERRIO_WARP_GRID=GDAL`
 to select the historical sampling policy.
 
+Stable sampling spends additional CPU on local source-support planning. It recomputes
+bounded row scratch rather than retaining a scale matrix for a whole working chunk.
+For a 3612×3612 USGS DEM reprojected to 3121×4044 Float64 Web Mercator pixels,
+reading all 208 windows of up to 256×256 pixels through `WarpedVRT` took median
+process CPU times of 4.61 s stable versus 1.60 s reproduction for bilinear, and
+4.17/1.74 s for cubic. These are single-thread optimized local measurements at
+approximation threshold 0.125, after one warmup and over three measured runs;
+other grids, kernels and storage can have different costs.
+
 GDAL 3.13 changed warp kernel scales and the bilinear/cubic downsampling threshold.
 `warp --kernel-version 3.13` selects that arithmetic; without the option, warp follows
 `TERRIO_GDAL_COMPAT` (`3.12` or `3.13`), else `3.12`. To reproduce the corresponding
