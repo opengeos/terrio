@@ -62,12 +62,22 @@ fn remote_directory_errors_keep_their_cause() {
         ("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", Some("500"), false),
         ("", None, false),
         (
+            "HTTP/1.1 206 Partial Content\r\nContent-Length: 0\r\nContent-Range: bytes 524288-524561/524562\r\nConnection: close\r\n\r\n",
+            Some("unexpected response (status 206, 0 bytes)"),
+            false,
+        ),
+        (
             "HTTP/1.1 302 Found\r\nLocation: http://localhost:1/elsewhere.tif\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
             Some("a redirect to another origin"),
             false,
         ),
         ("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", Some("500"), true),
         ("", None, true),
+        (
+            "HTTP/1.1 206 Partial Content\r\nContent-Length: 0\r\nContent-Range: bytes 524288-524561/524562\r\nConnection: close\r\n\r\n",
+            Some("unexpected response (status 206, 0 bytes)"),
+            true,
+        ),
         (
             "HTTP/1.1 302 Found\r\nLocation: http://localhost:1/elsewhere.tif\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
             Some("a redirect to another origin"),

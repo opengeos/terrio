@@ -29,6 +29,13 @@ Zarr stores, JPEG 2000, GRIB, SRTM HGT, STAC tiled assets, COPC and EPT are read
 directory first; a remote shapefile's `.shx`, `.dbf`, `.prj` and `.cpg`
 come with it.
 
+A full lazy TIFF open reads the image-directory chain, including overview and mask metadata.
+An unreadable directory or required next-directory pointer fails the open with its read cause;
+it does not silently return partial metadata. This can reject damaged TIFFs whose base image
+another reader can recover. File inventory, copy, rename and deletion use first-image metadata
+and do not require readable later directories. Failed HTTP directory reads, including short
+range responses, do not trigger a whole-file retry during translation.
+
 ```sh
 terrio info https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif
 terrio convert https://.../B04.tif window.tif --srcwin 4096 4096 512 512
