@@ -576,13 +576,13 @@ fn stac_items(items: &[(&str, f64)], cols: usize, rows: usize) -> String {
 /// the option when it declares one byte or one band more. The drivers are those of
 /// `RasterDriver::ALL` that this build reads: each needs a sample in [`sample`] or a reason in
 /// [`NOT_SAMPLED`]. The largest allocation of each refused open of a sample of at least a MiB of
-/// pixels tells whether it was refused before its pixels were decoded: the opens refused only
-/// after are [`decoded_first_opens`].
+/// pixels tells whether it was refused before asking for what the raster declares: the opens
+/// refused only after are [`held_first_opens`].
 #[test]
 fn every_driver_is_refused_by_what_its_rasters_declare() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
-    let mut decoded_first = Vec::new();
+    let mut held_first = Vec::new();
     let mut measured = Vec::new();
     for &driver in RasterDriver::ALL {
         if !driver.info().read {
@@ -632,7 +632,7 @@ fn every_driver_is_refused_by_what_its_rasters_declare() {
             if COUNTED && declared >= 1 << 20 {
                 measured.push(format!("{name} {how}: {largest} of {declared}"));
                 if largest as u128 >= declared {
-                    decoded_first.push(format!("{name} {how}"));
+                    held_first.push(format!("{name} {how}"));
                 }
             }
             if shown > 1 {
@@ -644,18 +644,28 @@ fn every_driver_is_refused_by_what_its_rasters_declare() {
     }
     eprintln!("largest allocations of the refused opens:\n{}", measured.join("\n"));
     if COUNTED {
-        assert_eq!(decoded_first, decoded_first_opens(), "the opens refused only after their pixels were decoded");
+        assert_eq!(held_first, held_first_opens(), "the opens refused only after asking for what the raster declares");
     }
 }
 
-/// The opens of [`every_driver_is_refused_by_what_its_rasters_declare`] refused only after their
-/// pixels were decoded: each of the four opens of these drivers, Esri ASCII grids, whose reader
-/// reads every value before it knows their type, and the formats read by `wbraster` (Esri binary
-/// grids, GRASS ASCII grids, PCRaster, DTED), which decodes the whole raster before terrio sees its
-/// size. (Not measured: XYZ grids, whose size is known only from their points, and samples of less
-/// than a MiB.)
-fn decoded_first_opens() -> Vec<String> {
-    let drivers = [RasterDriver::AAIGrid, RasterDriver::AIG, RasterDriver::GRASSASCIIGrid, RasterDriver::PCRaster, RasterDriver::DTED];
+/// The opens of [`every_driver_is_refused_by_what_its_rasters_declare`] that asked for at least what
+/// the raster declares before refusing it: each of the four opens of these drivers. Esri ASCII
+/// grids, whose reader reads every value before it knows their type, and the formats read by
+/// `wbraster` (Esri binary grids, GRASS ASCII grids, PCRaster, DTED) decode the whole raster before
+/// terrio sees its size. The Imagine reader (sampled with the `gdal` feature, which writes the file)
+/// reads its whole file before its header, without decoding it: the sample is uncompressed, so its
+/// file is as large as its pixels. (Not measured: XYZ grids, whose size is known only from their
+/// points, and samples of less than a MiB.)
+fn held_first_opens() -> Vec<String> {
+    let drivers = [
+        RasterDriver::AAIGrid,
+        RasterDriver::AIG,
+        RasterDriver::GRASSASCIIGrid,
+        RasterDriver::PCRaster,
+        #[cfg(feature = "gdal")]
+        RasterDriver::HFA,
+        RasterDriver::DTED,
+    ];
     drivers.iter().flat_map(|d| ["eager", "lazy", "generic", "info"].map(|how| format!("{} {how}", d.name()))).collect()
 }
 
