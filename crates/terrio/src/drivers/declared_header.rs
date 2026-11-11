@@ -85,8 +85,14 @@ pub(crate) fn detect_ascii(path: &str) -> Result<Option<wbraster::RasterFormat>>
 /// The in-memory ASCII codec reads Float64 samples regardless of the values in its document.
 /// Keep that sample type while checking its header before the codec parses any pixel tokens.
 pub(crate) fn check_ascii_bytes(bytes: &[u8]) -> Result<()> {
-    let Ok(text) = std::str::from_utf8(bytes) else { return Ok(()) };
-    if let Some((cols, rows, data_type)) = fallback_ascii_shape(text.lines()) {
+    if crate::config::get("TERRIO_MAX_DECLARED_BYTES").is_none() && crate::config::get("TERRIO_MAX_BANDS").is_none() {
+        return Ok(());
+    }
+    crate::declared::check_bytes(0, 0, 0, 0, false)?;
+    // Check the bounded header independently of the pixel body's encoding. Invalid UTF-8
+    // later in the file must not hide an oversized declaration from the preflight.
+    let lines = header_lines(std::io::Cursor::new(bytes), RasterDriver::AAIGrid);
+    if let Some((cols, rows, data_type)) = fallback_ascii_shape(lines) {
         crate::declared::check(cols, rows, 1, data_type, false)?;
     }
     Ok(())
@@ -333,4 +339,23 @@ fn ascii_shape<S: AsRef<str>>(lines: impl Iterator<Item = S>, driver: RasterDriv
         }
     }
     Some((cols?, rows?, data_type))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reference: GDAL 3.13.3. Invalid pixel encoding cannot bypass a valid ASCII header.
+    #[test]
+    fn byte_header_limit_precedes_invalid_utf8_pixels() {
+        let mut bytes = b"ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n3 ".to_vec();
+        bytes.push(0xff);
+        crate::config::with_options(&[("TERRIO_MAX_DECLARED_BYTES", "31")], || {
+            assert!(matches!(check_ascii_bytes(&bytes), Err(crate::Error::ResourceLimit(_))));
+        });
+        crate::config::with_options(&[("TERRIO_MAX_DECLARED_BYTES", "32")], || {
+            check_ascii_bytes(&bytes).unwrap();
+            assert!(wbraster::formats::esri_ascii::parse(std::io::Cursor::new(&bytes), "pixels.asc").is_err());
+        });
+    }
 }

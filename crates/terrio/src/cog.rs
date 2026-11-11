@@ -1448,11 +1448,11 @@ impl LazyRaster {
         let (lw, lh) = self.level_size(options.overview)?;
         window.check(lw, lh)?;
         let bands = read_bands(&options.bands, self.band_count())?;
+        // Repeated bands can make even a small in-memory raster's output exceed usable memory.
+        // Check the returned buffer before dispatching to any reader or allocating band metadata.
+        crate::dataset::fallible::check_raster_buffer("a window", window.width, window.height, bands.len(), self.data_type())?;
         let band_nodata = self.level_band_nodata(&bands, options.overview);
         let gt = self.level_geo_transform(options.overview)?;
-        if matches!(self.inner, Inner::Source(..)) {
-            crate::dataset::fallible::check_raster_buffer("a window", window.width, window.height, bands.len(), self.data_type())?;
-        }
         let data = match &mut self.inner {
             Inner::Tiff(t) => t.read(options.overview.map_or(0, |i| i + 1), window, &bands)?,
             Inner::Memory(ds) => {

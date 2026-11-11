@@ -1393,3 +1393,30 @@ fn gdal_half_complex_declarations_count_promoted_components() {
     let result = scoped(&[("TERRIO_MAX_DECLARED_BYTES", "1023")], open);
     assert!(matches!(result, Err(terrio::Error::ResourceLimit(ref e)) if e.contains("1024 bytes")), "{result:?}");
 }
+
+/// Reference: GDAL 3.13.3. Repeated output bands are bounded even for an in-memory source.
+#[test]
+#[cfg(target_pointer_width = "64")]
+fn memory_windows_refuse_repeated_bands_before_allocating_output() {
+    let _serial = serial();
+    let side = 1024;
+    let pixels = side * side;
+    let mut ds = header(side, side, 1);
+    ds.raster.data = RasterData::new_filled(DataType::U8, pixels, 7.0);
+    let mut source = terrio::LazyRaster::from(ds);
+    let Some(usable) = terrio::usable_memory().and_then(|m| usize::try_from(m).ok()) else {
+        return;
+    };
+    // A source of one MiB needs only one requested band per MiB of available memory to
+    // exceed the budget. Keep this regression's band-index vector itself below eight MiB.
+    let count = usable / pixels + 2;
+    if count > 1 << 20 {
+        return;
+    }
+    let options = terrio::WindowOptions { bands: vec![1; count], ..Default::default() };
+    let (result, largest) = largest_during(|| source.read_window(terrio::Window::full(side, side), &options).map(|_| ()));
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(ref e)) if e.contains("a window")), "{result:?}");
+    assert!(largest < pixels * count, "the output buffer was requested before the refusal: {largest}");
+    let small = source.read_window(terrio::Window::full(2, 2), &terrio::WindowOptions { bands: vec![1, 1], ..Default::default() }).unwrap();
+    assert_eq!(small.raster.data.to_f64_vec(), vec![7.0; 8]);
+}

@@ -2190,6 +2190,17 @@ test("declared raster budgets apply to WASM byte opens and restore with their sc
   assert.deepEqual([...terrio.open(grid, "grid.asc").readBand(1)], [1, 2, 3, 4]);
 });
 
+test("ASCII byte limits precede invalid UTF-8 pixels", () => {
+  const header = new TextEncoder().encode("ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n3 ");
+  const bytes = new Uint8Array([...header, 0xff]);
+  terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: "31" });
+  try { assert.throws(() => terrio.open(bytes, "pixels.asc"), /TERRIO_MAX_DECLARED_BYTES/); }
+  finally { terrio.popConfig(); }
+  terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: "32" });
+  try { assert.throws(() => terrio.open(bytes, "pixels.asc"), /UTF-8/); }
+  finally { terrio.popConfig(); }
+});
+
 test("coordinate operation safeguards and warnings", () => {
   terrio.takeWarnings();
   const [x, y] = terrio.transformPoints([110], [35], "EPSG:4610", "EPSG:4326");
