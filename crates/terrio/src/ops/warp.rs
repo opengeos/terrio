@@ -3725,25 +3725,38 @@ impl WarpContext<'_> {
     /// methods and `sum` to take the source inside each. Where the footprint can cross the
     /// source's longitude cut ([`Self::longitude_turn`]), `xs` are first made continuous across
     /// it ([`Self::unwrap_longitudes`]). A footprint across the cut is then moved by each whole
-    /// number of turns that makes it meet the source's columns: on a source that holds no
-    /// longitude twice, twice for one across the edges of a source of every longitude, once
-    /// otherwise. Any other footprint stays as it is, as the point kernels take the source: one
+    /// number of turns that makes it meet the source's columns. As it spans less than a turn, at
+    /// most two do on a source no wider than a turn: two when it meets the source on both sides
+    /// of the cut, as near both edges of a source of every longitude, one when it meets it on one
+    /// side, and none when it lies beside it. A source wider than a turn holds some longitudes
+    /// twice: there, the footprint is moved once, by the turns that put the most of it on the
+    /// source. Any other footprint stays as it is, as the point kernels take the source: one
     /// across an edge of a source whose edges lie off the cut, as those of a source from 0° to
     /// 360° do, takes the source on the source's side of it.
     fn footprint_moves(&self, xs: &mut [f64], centre: (f64, f64)) -> [Option<f64>; 2] {
         let Some(turn) = self.longitude_turn() else {
             return [Some(0.0), None];
         };
-        let w = self.src_w as f64;
-        if !self.unwrap_longitudes(xs, turn, centre) || w > turn * (1.0 + 1e-10) {
+        if !self.unwrap_longitudes(xs, turn, centre) {
             return [Some(0.0), None];
         }
+        let w = self.src_w as f64;
         let (x0, x1) = xs.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| (lo.min(*x), hi.max(*x)));
         // A footprint without width meets the column it lies on, each holding its left edge.
         let meets = |s: f64| x0 + s < w && (x1 + s > 0.0 || (x0 == x1 && x0 + s >= 0.0));
+        // The moves that meet the source, of the three that can: the first leaves the footprint
+        // no further east than the source's first column, and the footprint, made continuous,
+        // spans less than a turn.
         let first = (-x1 / turn).floor() as i64;
+        let meeting = (first..first + 3).map(|k| k as f64 * turn).filter(|s| meets(*s));
+        if w > turn * (1.0 + 1e-10) {
+            let on = |s: f64| (x1 + s).min(w) - (x0 + s).max(0.0);
+            let best = meeting.reduce(|b, s| if on(s) > on(b) || (on(s) == on(b) && s.abs() < b.abs()) { s } else { b });
+            return [Some(best.unwrap_or(0.0)), None];
+        }
+        debug_assert!(meeting.clone().count() <= 2, "a footprint across the cut meets a source no wider than a turn at most twice");
         let mut moves = [None; 2];
-        for (slot, s) in moves.iter_mut().zip((first..first + 3).map(|k| k as f64 * turn).filter(|s| meets(*s))) {
+        for (slot, s) in moves.iter_mut().zip(meeting) {
             *slot = Some(s);
         }
         if moves[0].is_none() {
@@ -3816,6 +3829,11 @@ impl WarpContext<'_> {
                 if parts.is_empty() {
                     continue;
                 }
+                // The weights of a footprint in two parts add up across them, so that a part of one
+                // column weighs the width it covers, as each column of a wider part weighs its
+                // overlap. A footprint in one part weighs its pixels against each other only, and
+                // a column of its own weighs 1, as one without width does.
+                let split = parts.len() == 2;
                 let (ymin, ymax) = (fy0.max(0.0), fy1.min(sh));
                 let iy0 = (ymin + EPS).floor().max(0.0) as usize;
                 let mut iy1 = ((ymax - EPS).ceil().max(0.0) as usize).min(c.sh);
@@ -3833,7 +3851,13 @@ impl WarpContext<'_> {
                 };
                 let wx = |(ix0, ix1, xmin, xmax): (usize, usize, f64, f64), x: usize, w: f64| {
                     if x == ix0 {
-                        if ix0 + 1 == ix1 { w } else { w * (1.0 - (xmin - ix0 as f64)) }
+                        if ix0 + 1 != ix1 {
+                            w * (1.0 - (xmin - ix0 as f64))
+                        } else if split {
+                            w * (xmax - xmin)
+                        } else {
+                            w
+                        }
                     } else if x + 1 == ix1 {
                         w * (1.0 - (ix1 as f64 - xmax))
                     } else {
@@ -4242,15 +4266,39 @@ impl SumFootprint {
     /// Adds each valid source pixel of the footprint in the window's rows `rows.0..rows.1` (which
     /// `k` holds), times its share, to its band's sum in `sums`, recording that one was added:
     /// row after row, from the left, as many rows at a time as [`SUM_SHARE_BYTES`] holds the
-    /// shares of. `areas` is scratch space. A footprint in two parts adds them a row at a time,
-    /// the part it holds first, then the other: in the same order whichever rows are asked for.
+    /// shares of. `areas` is scratch space. A footprint in two parts takes the shares of both for
+    /// those rows, and adds them a row at a time, the part it holds first, then the other: in the
+    /// same order whichever rows are asked for, as the shares of a row do not depend on the rows
+    /// asked for with it.
     fn add<T: crate::pixel::Pixel>(&self, k: &Kernel<T>, rows: (usize, usize), areas: &mut Vec<f64>, sums: &mut [(f64, bool)]) {
         let Some(next) = &self.next else {
             return self.add_part(k, rows, areas, sums);
         };
-        for y in rows.0..rows.1 {
-            self.add_part(k, (y, y + 1), areas, sums);
-            next.add_part(k, (y, y + 1), areas, sums);
+        let (nx, mx) = (self.cols.1 - self.cols.0, next.cols.1 - next.cols.0);
+        let step = (SUM_SHARE_BYTES / (8 * (nx + mx))).max(1);
+        let mut others = Vec::new();
+        let mut y0 = rows.0;
+        while y0 < rows.1 {
+            let y1 = rows.1.min(y0 + step);
+            self.shares((y0, y1), areas);
+            next.shares((y0, y1), &mut others);
+            for (b, band) in sums.iter_mut().enumerate() {
+                let (values, valid) = (k.src.bands[b], k.src.valid[b].as_deref());
+                let (mut sum, mut any) = *band;
+                for (j, y) in (y0..y1).enumerate() {
+                    for (x, shares) in [(self.cols.0, &areas[j * nx..(j + 1) * nx]), (next.cols.0, &others[j * mx..(j + 1) * mx])] {
+                        let start = k.index(x, y);
+                        for (at, (w, v)) in (start..).zip(shares.iter().zip(&values[start..start + shares.len()])) {
+                            if *w > 0.0 && valid.is_none_or(|m| m[at]) {
+                                sum += crate::pixel::Pixel::to_f64(*v) * w;
+                                any = true;
+                            }
+                        }
+                    }
+                }
+                *band = (sum, any);
+            }
+            y0 = y1;
         }
     }
 
@@ -5919,7 +5967,9 @@ mod tests {
     /// From the same pixels from 0° to 360°, a pixel across 0°, which crosses no cut, takes the
     /// source east of 0° alone, by `sum` and by `average`, as the point kernels place it. From a
     /// source of 361 columns, which holds the longitudes beside 180° twice, the column across 180°
-    /// adds the source once.
+    /// adds the source once; from one starting at 179° W, a pixel whose footprint, made continuous,
+    /// lies west of the source's first column, takes the source a turn east of it; and a pixel that
+    /// lies on such a source whole at one move and in part at the other takes it whole.
     #[test]
     fn a_pixel_across_180_takes_a_source_of_every_longitude_on_both_sides() {
         let world = raster(360, 10, [-180., 1., 0., 5., 0., -1.], 4326, |c, _| match c {
@@ -6022,6 +6072,127 @@ mod tests {
             };
             let v = warp(&[&wider], &o).unwrap().raster.data.to_f64_vec()[5 * 81 + 40];
             assert!((v - 2. * side * 0.5).abs() < 1e-9, "361 columns, grid_invariant {grid_invariant}: {v}, not {}", 2. * side * 0.5);
+        }
+        // From one of 361 columns from 179° W, a pixel from 179.95° E to 179.55° W, whose centre
+        // lies at 179.8° W, is made continuous west of the source's first column: a turn east, on
+        // the source's last columns, it takes 0.5 of a column of ones by 10 rows.
+        let wider = raster(361, 10, [-179., 1., 0., 5., 0., -1.], 4326, |_, _| 1.);
+        for (resampling, expected) in [(Resampling::Sum, 5.), (Resampling::Average, 1.)] {
+            for grid_invariant in [true, false] {
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180 +no_defs").unwrap()),
+                    dst_transform: Some([-0.05, 0.5, 0., 5., 0., -10.]),
+                    size: Some((1, 1)),
+                    output_type: Some(DataType::F64),
+                    dst_nodata: Nodata::Values(vec![-999.]),
+                    resampling,
+                    grid_invariant,
+                    ..Default::default()
+                };
+                let v = warp(&[&wider], &o).unwrap().raster.data.to_f64_vec()[0];
+                let label = format!("361 columns from 179° W, {resampling:?}, grid_invariant {grid_invariant}");
+                assert!((v - expected).abs() < 1e-9, "{label}: {v}, not {expected}");
+            }
+        }
+        // From one of 361 columns from 180.5° W, which holds the longitudes from 179.5° E to
+        // 179.5° W twice, a pixel 1.4° wide from 179.5° E, or one to 179.5° W, lies on the source
+        // whole at one move and 1.0° of it at the other: it adds 1.4 columns of ones by 10 rows.
+        let wider = raster(361, 10, [-180.5, 1., 0., 5., 0., -1.], 4326, |_, _| 1.);
+        for west in [-0.5, -0.9] {
+            for grid_invariant in [true, false] {
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180 +no_defs").unwrap()),
+                    dst_transform: Some([west, 1.4, 0., 5., 0., -10.]),
+                    size: Some((1, 1)),
+                    output_type: Some(DataType::F64),
+                    dst_nodata: Nodata::Values(vec![-999.]),
+                    resampling: Resampling::Sum,
+                    grid_invariant,
+                    ..Default::default()
+                };
+                let v = warp(&[&wider], &o).unwrap().raster.data.to_f64_vec()[0];
+                let label = format!("361 columns from 180.5° W, a pixel from {west}° of 180°, grid_invariant {grid_invariant}");
+                assert!((v - 14.).abs() < 1e-9, "{label}: {v}, not 14");
+            }
+        }
+    }
+
+    /// The column across 180° of a longitude and latitude grid centred on 180° (81 columns of
+    /// 0.5°, 5 rows of 2° from 5° N), over a source of every longitude in 1° pixels holding 2 in its
+    /// last column, west of 180°, 4 in its first, east of it, and 1 elsewhere, covering 0.1° of the
+    /// one and 0.4° of the other, then 0.4° and 0.1°, in both samplings, whole and in chunks:
+    /// `average`, `rms` and `mode` weigh each side by the width the pixel covers of it, and `sum`
+    /// adds the area it covers of each. `min`, `max`, `med`, `q1` and `q3`, which take the values
+    /// of the source pixels whatever their weights (the quantiles by count), give the same for both.
+    #[test]
+    fn a_pixel_across_180_weighs_each_side_by_the_width_it_covers() {
+        let world = raster(360, 10, [-180., 1., 0., 5., 0., -1.], 4326, |c, _| match c {
+            359 => 2.,
+            0 => 4.,
+            _ => 1.,
+        });
+        for (west, east) in [(0.1_f64, 0.4_f64), (0.4, 0.1)] {
+            let methods = [
+                (Resampling::Average, (2. * west + 4. * east) / (west + east)),
+                (Resampling::Rms, ((4. * west + 16. * east) / (west + east)).sqrt()),
+                (Resampling::Mode, if west > east { 2. } else { 4. }),
+                // Two source rows.
+                (Resampling::Sum, 2. * (2. * west + 4. * east)),
+                (Resampling::Min, 2.),
+                (Resampling::Max, 4.),
+                (Resampling::Med, 2.),
+                (Resampling::Q1, 2.),
+                (Resampling::Q3, 4.),
+            ];
+            for (resampling, expected) in methods {
+                for (grid_invariant, memory_limit) in
+                    [(true, 2048.), (true, 64. * 1024. * 1024.), (false, 2048.), (false, 64. * 1024. * 1024.)]
+                {
+                    // Column 40 spans from `west`° west of 180° to `east`° east of it.
+                    let o = WarpOptions {
+                        dst_srs: Some(SpatialRef::parse("+proj=longlat +datum=WGS84 +lon_0=180 +no_defs").unwrap()),
+                        dst_transform: Some([-20. - west, 0.5, 0., 5., 0., -2.]),
+                        size: Some((81, 5)),
+                        output_type: Some(DataType::F64),
+                        dst_nodata: Nodata::Values(vec![-999.]),
+                        memory_limit,
+                        resampling,
+                        grid_invariant,
+                        ..Default::default()
+                    };
+                    let v = warp(&[&world], &o).unwrap().raster.data.to_f64_vec()[81 + 40];
+                    let label =
+                        format!("{west}° west, {east}° east, {resampling:?}, grid_invariant {grid_invariant}, {memory_limit} bytes");
+                    assert!((v - expected).abs() < 1e-9, "{label}: {v}, not {expected}");
+                }
+            }
+        }
+    }
+
+    /// A coarse pixel whose centre lies between its corners keeps them, even where one of them lies
+    /// more than half a turn from the centre: the one pixel of a sinusoidal grid on a sphere from
+    /// 3° west to 16° east of 0° at the equator, and from 89° N to the equator, whose corners lie
+    /// at 171.9° W (top left, at 89° N) and 16° E (bottom right) and whose centre lies at 9.1° E,
+    /// takes the source between its corners, around 0°, in both samplings.
+    #[test]
+    fn a_coarse_pixel_whose_centre_lies_between_its_corners_keeps_them() {
+        let lon = raster(360, 180, [-180., 1., 0., 90., 0., -1.], 4326, |c, _| c as f64 + 0.5 - 180.);
+        let degree = 6_371_000. * std::f64::consts::PI / 180.;
+        for grid_invariant in [true, false] {
+            for (resampling, expected) in [(Resampling::Min, -171.5), (Resampling::Max, 15.5)] {
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::parse("+proj=sinu +lon_0=0 +R=6371000 +units=m +no_defs").unwrap()),
+                    dst_transform: Some([-3. * degree, 19. * degree, 0., 89. * degree, 0., -89. * degree]),
+                    size: Some((1, 1)),
+                    output_type: Some(DataType::F64),
+                    dst_nodata: Nodata::Values(vec![-999.]),
+                    resampling,
+                    grid_invariant,
+                    ..Default::default()
+                };
+                let v = warp(&[&lon], &o).unwrap().raster.data.to_f64_vec()[0];
+                assert_eq!(v, expected, "{resampling:?}, grid_invariant {grid_invariant}");
+            }
         }
     }
 
