@@ -1648,6 +1648,11 @@ fn decode_in_threads<D: Read + Seek + Send + 'static>(
         }
         Ok(d)
     };
+    // A file that cannot be opened again (a remote file whose header the caller's cache dropped)
+    // leaves the chunks to the caller, as the native threads do.
+    if open().is_err() {
+        return Ok(0);
+    }
     // A batch at a time: decoding never runs far ahead of placing.
     for batch in chunks.chunks(workers * 4) {
         let decoded = crate::par::map_init(batch, open, |d, &idx| -> crate::Result<DecodedChunk> {

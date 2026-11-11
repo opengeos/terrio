@@ -2238,6 +2238,8 @@ enum Reopened {
     File(crate::geotiff::FileCursor),
     Memory(SharedBytes),
     Zip(crate::vsi::sozip::MemberReopen),
+    /// A remote file whose bytes the caller fetches: the chunks were prefetched before decoding.
+    Sparse(crate::sparse::SparseFile),
 }
 
 fn tiff_err(e: tiff::TiffError) -> Error {
@@ -2684,6 +2686,7 @@ impl TiffRaster {
             Source::File(f) => Some(Reopened::File(f.get_ref().clone())),
             Source::Memory(m) => Some(Reopened::Memory(m.get_ref().clone())),
             Source::Zip(member) => member.reopen().map(Reopened::Zip),
+            Source::Sparse(s) => Some(Reopened::Sparse(s.get_ref().file.clone())),
             _ => None,
         };
         let reopen = source.map(|source| {
@@ -2702,6 +2705,12 @@ impl TiffRaster {
                         let len = s.seek(SeekFrom::End(0))?;
                         s.seek(SeekFrom::Start(0))?;
                         (s, len)
+                    }
+                    Reopened::Sparse(file) => {
+                        let capacity = file.block_size().min(SPARSE_BUFFER_BYTES as u64) as usize;
+                        let mut s = Source::Sparse(BufReader::with_capacity(capacity, SparseBlockReader::new(file.clone())));
+                        s.seek(SeekFrom::Start(0))?;
+                        (s, file.len())
                     }
                 };
                 Ok(Decoder::new(PatchedReader::new(s, tags)).map_err(tiff_err)?.with_limits(limits.tiff_within(len)))
@@ -3583,6 +3592,37 @@ mod tests {
         let peak = crate::geotiff::PEAK_WORKERS.load(std::sync::atomic::Ordering::Relaxed);
         let limit = crate::geotiff::decode_worker_limit();
         assert!(peak <= limit, "{peak} decode workers at once, over the {limit} allowed");
+    }
+
+    /// A remote file read through a `SparseFile` (terrio-js's `openUrl`) decodes its tiles on the
+    /// workers, as a local file does, and reads the same values. With the TIFF's header dropped
+    /// from the sparse cache after a read, the next read still returns the same values.
+    #[test]
+    fn sparse_window_reads_decode_on_the_workers() {
+        let _serial = crate::block_cache::tests::cache_test_guard(0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiled.tif");
+        write_tiled_tiff(&path, (160, 144, 3), sequence(DataType::U8, 160 * 144 * 3, 5), &[]);
+        let bytes = std::fs::read(&path).unwrap();
+        let file = crate::sparse::SparseFile::new(bytes.len() as u64);
+        let fetch = |o: u64, n: u64| -> std::io::Result<Vec<u8>> { Ok(bytes[o as usize..(o + n) as usize].to_vec()) };
+        let mut r = crate::sparse::read_with(&file, 32, fetch, || Ok(LazyRaster::from_sparse(file.clone())?.unwrap())).unwrap();
+        let w = Window::new(3, 5, 120, 100);
+        let want = read_f64(&mut LazyRaster::open(path.to_str().unwrap()).unwrap(), w, &[1, 2, 3], None);
+        let opts = WindowOptions { bands: vec![1, 2, 3], overview: None };
+        let read = |r: &mut LazyRaster| {
+            crate::sparse::read_with(&file, 32, fetch, || Ok(r.read_window(w, &opts)?.raster.data.to_f64_vec())).unwrap()
+        };
+        assert_eq!(read(&mut r), want);
+        let opened = match &r.inner {
+            Inner::Tiff(t) => t.workers.opened.load(std::sync::atomic::Ordering::Relaxed),
+            _ => panic!("a GeoTIFF reader"),
+        };
+        if crate::par::threads() > 1 {
+            assert!(opened >= 1, "the read opens decoders for its workers over the sparse file");
+        }
+        file.trim(0);
+        assert_eq!(read(&mut r), want);
     }
 
     /// With the cache off, reads decode every time and look nothing up.
