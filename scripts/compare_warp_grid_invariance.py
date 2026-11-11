@@ -97,8 +97,8 @@ def main():
                         ) as vrt:
                             vrt_whole = vrt.read(1)
                             xs, ys = (0, width // 3, width), (0, height // 3, height)
-                            for y0, y1 in zip(ys[:-1], ys[1:]):
-                                for x0, x1 in zip(xs[:-1], xs[1:]):
+                            for y0, y1 in zip(ys[:-1], ys[1:], strict=True):
+                                for x0, x1 in zip(xs[:-1], xs[1:], strict=True):
                                     extent = (gt[0] + x0 * gt[1], gt[3] + y1 * gt[5],
                                               gt[0] + x1 * gt[1], gt[3] + y0 * gt[5])
                                     tile = terrio.warp(raster, te=extent, **options).read(1)

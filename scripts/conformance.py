@@ -486,7 +486,7 @@ def suite_json_ops(ctx, key, script, title, reference, criteria, group_words, ex
         criteria: How cases are judged.
         group_words: How many words of a case's name name its operation.
         extra: Optional arguments passed to the comparison script.
-        warp_grid: GDAL sampling for pixel references, STABLE for grid consistency.
+        warp_grid: GDAL sampling for pixel references; None tests the unconfigured default.
 
     Returns:
         The suite.
@@ -495,7 +495,7 @@ def suite_json_ops(ctx, key, script, title, reference, criteria, group_words, ex
     # Each suite declares whether it checks reference pixels or stable grid consistency.
     _code, out, err = run(
         [sys.executable, str(SCRIPTS / script), ctx.data, "--terrio", ctx.terrio, "--json", *extra],
-        {"TERRIO_WARP_GRID": warp_grid},
+        {"TERRIO_WARP_GRID": warp_grid} if warp_grid is not None else None,
     )
     try:
         results = json.loads(out)
@@ -896,7 +896,7 @@ def suite_raster_masks(ctx):
                   "difference and must also match GDAL -wt Float32 exactly. Cutlines use the same binary mask as alpha "
                   "because GDAL 3.13.2 drops a per-dataset mask when adding a cutline. "
                   "A local masked COG counts HTTP payload bytes and requires small windows to fetch less than whole conversion.")
-    code, out, err = run([sys.executable, str(SCRIPTS / "compare_raster_masks_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_raster_masks_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"], {"TERRIO_WARP_GRID": "GDAL"})
     try:
         results = json.loads(out)
     except json.JSONDecodeError:
@@ -993,7 +993,7 @@ def suite_warp_grid(ctx):
         "whole-grid values in independent aligned tiles and WarpedVRT windows. "
         "Validity is exact, Float64 values use absolute tolerance 1e-7. The USGS crop "
         "includes an interior nodata hole. This is not pixel equality with GDAL warps.", 2,
-        warp_grid="STABLE",
+        warp_grid=None,
     )
 
 
@@ -1544,7 +1544,7 @@ def suite_raster_tiles(ctx):
     if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
         suite.skipped = "needs GDAL >= 3.13"
         return suite
-    code, out, err = run([sys.executable, str(SCRIPTS / "compare_raster_tiles_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_raster_tiles_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"], {"TERRIO_WARP_GRID": "GDAL"})
     try:
         results = json.loads(out)
     except json.JSONDecodeError:
@@ -2421,7 +2421,7 @@ def suite_tiles(ctx):
         "areas and lengths by feature), invalid polygons GDAL repairs with GEOS's `MakeValid` or "
         "fails to clip (tiles read unclipped), and archives updated in place.",
     )
-    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_tiles_with_gdal.py"), ctx.data, "--terrio", ctx.terrio])
+    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_tiles_with_gdal.py"), ctx.data, "--terrio", ctx.terrio], {"TERRIO_WARP_GRID": "GDAL"})
     group, raster = "", ""
     for line in out.splitlines():
         if not line.startswith(" "):

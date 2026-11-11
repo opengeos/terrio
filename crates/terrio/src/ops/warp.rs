@@ -3410,6 +3410,7 @@ impl WarpContext<'_> {
     }
 
     /// Transform complete, fixed spans of the output pixel lattice, independent of read bounds.
+    /// All entries in `y` must describe the same row.
     /// Exact pointwise transforms need no extra anchors. The world-grid offset also keeps spans
     /// aligned when a separately requested tile changes only the destination origin.
     fn transform_row(&self, x: &mut [f64], y: &mut [f64], ok: &mut [bool]) {
