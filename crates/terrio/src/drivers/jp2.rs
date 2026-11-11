@@ -1401,7 +1401,7 @@ mod tests {
     #[test]
     fn palette_declarations_are_checked_before_the_pixel_probe() {
         let raster = common::make_raster(4, 4, 1, RasterData::U8(vec![0; 16]), common::NO_GEOTRANSFORM, Default::default(), None).unwrap();
-        let original = to_bytes(&raster, false).unwrap();
+        let original = to_bytes(&raster, false, &[]).unwrap();
         let mut bytes = Vec::new();
         let put = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
             out.extend(((data.len() + 8) as u32).to_be_bytes());
