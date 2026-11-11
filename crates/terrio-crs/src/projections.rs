@@ -1109,6 +1109,15 @@ impl Proj for Laea {
                     return Some((0.0, self.phi0));
                 }
                 let a = 1.0 - q / self.qp;
+                // In Guidance Note 7-2's reverse for the polar aspect, β' = ±asin(1 − ρ²/(a² qP)):
+                // the sine is within [−1, 1] up to ρ = a √(2 qP), the rim of the disk the whole
+                // ellipsoid projects onto, which is the opposite pole. Beyond the rim, by more than
+                // the rounding of coordinates projected from points at it (1e-14 of the sine, as
+                // `aasin_checked` allows), and for infinite or NaN coordinates, there is no point
+                // of the ellipsoid, as on a sphere.
+                if a.is_nan() || a.abs() > 1.0 + 1e-14 {
+                    return None;
+                }
                 ab = if self.mode == Mode::SPole { -a } else { a };
             }
         }
@@ -1255,7 +1264,11 @@ impl Proj for Stere {
                     coslam = -coslam;
                     sinphi = -sinphi;
                 }
-                if (phi - HALFPI).abs() < 1e-15 {
+                // φ is the latitude with its sign reversed for the south pole case, so φ = 90° is
+                // the pole the projection is centred on in both cases, where t is 0: the origin.
+                // t grows without bound towards φ = -90°, the opposite pole, which no coordinates
+                // represent. The spherical case refuses within the same 1e-8 rad.
+                if (phi + HALFPI).abs() < 1e-8 {
                     return None;
                 }
                 let x = self.akm1 * tsfn(phi, sinphi, self.e);

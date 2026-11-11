@@ -25,6 +25,11 @@ Datasets open through `terrio.open_vector`, so `terrio.set_allowed_drivers` rest
 restricts every terrio open; bytes and file objects are first written to a private temporary
 file, as pyogrio writes them to GDAL's `/vsimem/`.
 
+A dataset of several layers (the tables of a GeoPackage, the folders of a KML document, the
+layers of a GPX file, the shapefiles of a directory or a zip archive...) is read a layer at a
+time: `list_layers` lists them, `layer=` names one (in any case) or numbers it from 0, and
+without `layer` the first is read, with a warning naming the others.
+
 Not provided (they raise `NotImplementedError`): `where`, `sql`, `fids`, `encoding` (set the
 `SHAPE_ENCODING` option instead), dataset open options, writing any driver but GeoJSON, and
 `force_2d` and `mask` of `read_arrow` and `open_arrow` (`read_dataframe` takes both).
@@ -38,15 +43,21 @@ of other formats are not provided, and `use_arrow=True` reads them by the regula
 from __future__ import annotations
 
 import contextlib
+import datetime as _dt
 import json
 import os
+import re
 import warnings
+from typing import Any
 
 import numpy as np
 
 from terrio import _terrio
+from terrio._warnings import warn_user
 from terrio.pyogrio import errors
+from terrio.pyogrio._read import _Source
 from terrio.pyogrio._read import read as _read
+from terrio.pyogrio._read import read_source as _read_source
 from terrio.pyogrio.errors import DataSourceError
 
 __version__ = "0.13.0"
@@ -295,9 +306,13 @@ def _read_geoparquet_dataframe(
     name = meta["geometry_name"]
     if not read_geometry or not name:
         return table.to_pandas(**kwargs)
-    storage = table.schema.field(name).type
+    column = table[name]
+    storage = column.type
+    if getattr(storage, "extension_name", "") == "geoarrow.wkb":
+        storage = storage.storage_type
+        column = pa.chunked_array([chunk.storage for chunk in column.chunks], type=storage)
     if pa.types.is_binary(storage) or pa.types.is_large_binary(storage):
-        geometry = shapely.from_wkb(table[name].to_numpy(zero_copy_only=False))
+        geometry = shapely.from_wkb(column.to_numpy(zero_copy_only=False))
         df = table.drop_columns([name]).to_pandas(**kwargs)
         gdf = gp.GeoDataFrame(
             df, geometry=gp.GeoSeries(geometry, index=df.index, name=name), crs=meta["crs"]
@@ -311,23 +326,166 @@ def _read_geoparquet_dataframe(
     return gdf
 
 
+_SUBMICROSECOND_ISO = re.compile(r"[.,][0-9]{6}[0-9]*[1-9]")
+_REDUCED_ISO = re.compile(r"[0-9]{4}(?:-[0-9]{2})?")
+_STANDARD_ISO_OFFSET = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:[.,][0-9]+)?(?P<offset>Z|[+-][0-9]{2}:?[0-9]{2})?)?"
+)
+_DATETIME_FRACTION = re.compile(r"([T ][0-9]{2}:[0-9]{2}:[0-9]{2}[.,])([0-9]+)")
+
+
+def _same_iso_offset(pd, values):
+    """Recognize a uniform offset without parsing calendar values twice.
+
+    Args:
+        pd: The pandas module.
+        values: Distinct input values.
+
+    Returns:
+        bool: All nonmissing values use standard ISO syntax with the same offset.
+            Other syntax uses the full inspection path. Pandas still validates dates.
+    """
+    suffixes = None
+    initialized = False
+    for value in values:
+        if not isinstance(value, str):
+            if pd.isna(value):
+                continue
+            return False
+        if initialized:
+            if suffixes:
+                if not value.endswith(suffixes):
+                    return False
+            elif value.endswith("Z") or "+" in value[10:] or "-" in value[10:]:
+                return False
+            continue
+        match = _STANDARD_ISO_OFFSET.fullmatch(value)
+        if match is None:
+            return False
+        offset = match.group("offset")
+        if offset is not None:
+            offset = offset.replace(":", "")
+            if offset in {"Z", "+0000", "-0000"}:
+                suffixes = ("Z", "+0000", "+00:00", "-0000", "-00:00")
+            else:
+                suffixes = (offset, offset[:3] + ":" + offset[3:])
+        initialized = True
+    return True
+
+
+def _parse_reduced_iso_dates(pd, values):
+    """Batch the timezone-free reduced forms that the stdlib does not accept.
+
+    Args:
+        pd: The pandas module.
+        values: Distinct input values.
+
+    Returns:
+        dict: Valid reduced dates parsed in a batch. Rejected positions retain
+            their existing per-value diagnostic path without discarding valid results.
+    """
+    candidates = [
+        value for value in values if isinstance(value, str) and _REDUCED_ISO.fullmatch(value)
+    ]
+    if not candidates:
+        return {}
+    try:
+        parsed = pd.to_datetime(candidates, format="ISO8601", errors="coerce")
+    except (TypeError, ValueError):
+        return {}
+    return {
+        value: timestamp.to_pydatetime(warn=False)
+        for value, timestamp in zip(candidates, parsed, strict=True)
+        if not pd.isna(timestamp)
+    }
+
+
+def _parse_iso_datetime(pd, value: str, *, warn_precision_loss: bool = False) -> Any:
+    """Parse one ISO datetime for offset inspection or Python datetime output.
+
+    Args:
+        pd: The pandas module.
+        value: An ISO date-time string.
+        warn_precision_loss: Report sub-microsecond loss when producing Python datetime output.
+
+    Returns:
+        datetime: A value preserving its UTC offset, or pandas' NaT for missing strings.
+
+    Raises:
+        ValueError: The string is not a valid ISO datetime.
+    """
+    try:
+        # Python datetime output has microsecond precision on every supported version.
+        # Trim only timestamp fractions, keeping the original value for the diagnostic.
+        normalized = _DATETIME_FRACTION.sub(
+            lambda match: match[1] + match[2][:6].ljust(6, "0"), value
+        )
+        parsed = _dt.datetime.fromisoformat(
+            normalized[:-1] + "+00:00" if normalized.endswith("Z") else normalized
+        )
+    except (AttributeError, TypeError, ValueError):
+        # A singleton cannot mix offsets or emit the mixed-timezone warning.
+        # The shared bridge below reports precision loss at the caller on both paths.
+        parsed = pd.to_datetime([value], format="ISO8601")[0].to_pydatetime(warn=False)
+    if warn_precision_loss and _SUBMICROSECOND_ISO.search(value):
+        # Offset inspection discards this temporary value; Python output must retain the
+        # precision diagnostic that pandas' to_pydatetime gives for the same conversion.
+        warn_user("Discarding nonzero nanoseconds in conversion.")
+    return parsed
+
+
+def _to_datetime_iso8601(pd, ser):
+    """Parse ISO date-times without changing process-wide warning filters.
+
+    Args:
+        pd: The pandas module.
+        ser: A series of date-time strings and missing values.
+
+    Returns:
+        Series: Parsed values for a uniform timezone or naive input.
+
+    Raises:
+        ValueError: Timezones are mixed, or pandas refuses an invalid input.
+    """
+    if int(pd.__version__.split(".")[0]) < 3:
+        offsets = set()
+        unique = pd.unique(ser)
+        if _same_iso_offset(pd, unique):
+            return pd.to_datetime(ser, format="ISO8601")
+        reduced = _parse_reduced_iso_dates(pd, unique)
+        for value in unique:
+            if pd.isna(value):
+                continue
+            try:
+                parsed = reduced[value] if value in reduced else _parse_iso_datetime(pd, value)
+                if parsed is pd.NaT:
+                    continue
+                offset = parsed.utcoffset()
+            except (AttributeError, TypeError, ValueError):
+                # Let pandas retain its own invalid-input diagnostic.
+                break
+            if len(offsets) < 2:
+                offsets.add(offset)
+        else:
+            if len(offsets) > 1:
+                # Match pandas 3's error before pandas 2 can emit its FutureWarning. The caller
+                # already handles both UTC conversion and per-value offset preservation.
+                raise ValueError("Mixed timezones detected")
+    return pd.to_datetime(ser, format="ISO8601")
+
+
 def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
     """Date and date-time strings to datetime64[ms], as pyogrio 0.13 parses them with pandas."""
-    import datetime
-
     import pandas as pd
 
     if datetime_as_string:
         return ser
     warning = "Error parsing datetimes, original strings are returned: {message}"
     try:
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", ".*parsing datetimes with mixed time zones will raise.*", FutureWarning
-            )
-            res = pd.to_datetime(ser, format="ISO8601")
-            if not mixed_offsets_as_utc and res.dtype == "object":
-                res = res.map(lambda x: x.to_pydatetime(), na_action="ignore")
+        res = _to_datetime_iso8601(pd, ser)
+        if not mixed_offsets_as_utc and res.dtype == "object":
+            res = res.map(lambda x: x.to_pydatetime(), na_action="ignore")
     except Exception as ex:
         if isinstance(ex, ValueError) and "Mixed timezones detected" in str(ex):
             if mixed_offsets_as_utc:
@@ -338,7 +496,16 @@ def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
                     return ser
             else:
                 try:
-                    res = ser.map(datetime.datetime.fromisoformat, na_action="ignore")
+                    unique = pd.unique(ser)
+                    reduced = _parse_reduced_iso_dates(pd, unique)
+                    values = {
+                        value: reduced[value]
+                        if value in reduced
+                        else _parse_iso_datetime(pd, value, warn_precision_loss=True)
+                        for value in unique
+                        if not pd.isna(value)
+                    }
+                    res = ser.map(values, na_action="ignore")
                 except Exception as ex2:
                     warnings.warn(warning.format(message=str(ex2)), stacklevel=3)
                     return ser
@@ -370,22 +537,8 @@ def read_info(
         meta, _, geometry, field_data = _read(path_or_buffer, layer=layer, read_geometry=True)
     import shapely
 
-    geoms = (
-        shapely.from_wkb(geometry, on_invalid="ignore")
-        if geometry is not None
-        else np.array([], dtype=object)
-    )
-    present = geoms[~shapely.is_missing(geoms)] if len(geoms) else geoms
-    # GDAL's GeoJSON drivers declare the layer type from the features' geometry objects (the
-    # first position's values, a collection's first member, type names without case), which the
-    # geometries read do not always show: the declared type when there is one.
-    geometry_type = meta["geometry_type"]
-    if geometry_type is None:
-        types = {g.geom_type for g in present}
-        has_z = bool(len(present)) and bool(shapely.has_z(present).any())
-        geometry_type = types.pop() if len(types) == 1 else ("Unknown" if types else None)
-        if geometry_type is not None and has_z:
-            geometry_type += " Z"
+    present = _present(geometry)
+    geometry_type = _geometry_type(meta, present)
     bounds = tuple(shapely.total_bounds(present)) if len(present) else None
     return {
         "layer_name": meta["layer"],
@@ -413,15 +566,61 @@ def read_info(
     }
 
 
+def _present(geometry):
+    """The geometries of a layer read, as shapely objects, without the missing ones."""
+    import shapely
+
+    if geometry is None:
+        return np.array([], dtype=object)
+    geoms = shapely.from_wkb(geometry, on_invalid="ignore")
+    return geoms[~shapely.is_missing(geoms)] if len(geoms) else geoms
+
+
+def _geometry_type(meta, present) -> str | None:
+    """`read_info`'s `geometry_type` of a layer read (`present`: its geometries)."""
+    import shapely
+
+    # GDAL's GeoJSON drivers declare the layer type from the features' geometry objects (the
+    # first position's values, a collection's first member, type names without case), which the
+    # geometries read do not always show: the declared type when there is one.
+    geometry_type = meta["geometry_type"]
+    if geometry_type is None:
+        types = {g.geom_type for g in present}
+        has_z = bool(len(present)) and bool(shapely.has_z(present).any())
+        geometry_type = types.pop() if len(types) == 1 else ("Unknown" if types else None)
+        if geometry_type is not None and has_z:
+            geometry_type += " Z"
+    return geometry_type
+
+
 def read_bounds(*args, **kwargs):
     """Not provided."""
     raise NotImplementedError("terrio.pyogrio does not support read_bounds")
 
 
 def list_layers(path_or_buffer, /):
-    """The layers of a dataset and their geometry types, as an array of `[name, type]` rows."""
-    info = read_info(path_or_buffer)
-    return np.array([[info["layer_name"], info["geometry_type"]]], dtype=object)
+    """The layers of a dataset and their geometry types, as an array of `[name, type]` rows.
+
+    Every layer, in the dataset's order (as `terrio.list_layers` lists them; the shapefiles of a
+    directory or a zip archive), each with the geometry type `read_info` gives it, from its
+    features: each layer is read.
+    """
+    rows = []
+    with _scope(), _Source(path_or_buffer) as source:
+        # A loop, not a comprehension: before Python 3.12 one is a frame of its own.
+        for name in source.layer_names():
+            rows.append([name, _layer_geometry_type(source, name)])
+    return np.array(rows, dtype=object).reshape(len(rows), 2)
+
+
+def _layer_geometry_type(source, name: str) -> str | None:
+    """`read_info`'s `geometry_type` of the layer `name` of an open source.
+
+    A frame of its own, as `read` is for `read_info`, so that the read's warnings point at the
+    call of `list_layers`.
+    """
+    meta, _, geometry, _ = _read_source(source, name, [], True, 0, None, False)
+    return _geometry_type(meta, _present(geometry))
 
 
 def write_dataframe(
@@ -565,6 +764,7 @@ def open_arrow(
         f.name
         for f in reader.schema
         if (f.metadata or {}).get(b"ARROW:extension:name", b"").startswith(b"geoarrow.")
+        or getattr(f.type, "extension_name", "").startswith("geoarrow.")
     ]
     meta["geometry_name"] = geometry[0] if geometry else ""
     if not read_geometry and geometry:

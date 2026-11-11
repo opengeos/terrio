@@ -53,51 +53,54 @@ _NOT_RECOGNIZED = (
 )
 
 
-def _zip_main_member(archive: str) -> str | None:
-    """The member GDAL opens for `/vsizip/<archive>` without a member.
+# A dataset terrio opens, and the shapefiles of a directory or a zip archive of shapefiles:
+# `(path, None)`, or `(path of the first shapefile, (directory or archive, [(name, path), ...]))`.
+_Located = tuple[str, tuple[str, list[tuple[str, str]]] | None]
 
-    The only file of a single-file archive, else the first top-level shapefile (the archive is a
-    directory to GDAL, which its Shapefile driver opens).
+
+def _shapefiles(container: str, names: list[str], path) -> _Located:
+    """The shapefiles `names` of a directory or an archive: a layer each, named by its stem."""
+    layers = [(Path(n).stem, path(n)) for n in names]
+    return layers[0][1], (container, layers)
+
+
+def _vsizip(archive: str, member: str | None) -> _Located:
+    """`/vsizip/<archive>/<member>`; without a member, what GDAL opens for `/vsizip/<archive>`.
+
+    Use the only file of a single-file archive, or its top-level shapefiles in archive order.
+    With multiple entries and no top-level shapefile, let the core choose the main dataset
+    and its sidecars from the whole archive.
     """
-    try:
-        with zipfile.ZipFile(archive) as z:
-            names = [n for n in z.namelist() if not n.endswith("/")]
-    except (OSError, zipfile.BadZipFile) as e:
-        raise DataSourceError(f"{archive}: {e}") from None
-    if len(names) == 1:
-        return names[0]
-    shapefiles = [n for n in names if "/" not in n and n.lower().endswith(".shp")]
-    return shapefiles[0] if shapefiles else None
+    if member is None:
+        try:
+            with zipfile.ZipFile(archive) as z:
+                names = [n for n in z.namelist() if not n.endswith("/")]
+        except (OSError, zipfile.BadZipFile) as e:
+            raise DataSourceError(f"{archive}: {e}") from None
+        if len(names) == 1:
+            member = names[0]
+        else:
+            shapefiles = [n for n in names if "/" not in n and n.lower().endswith(".shp")]
+            if not shapefiles:
+                # The core chooses the main dataset and its sidecars. Other files such as a
+                # README do not turn an otherwise readable archive into a shapefile container.
+                return f"/vsizip/{archive}", None
+            return _shapefiles(archive, shapefiles, lambda n: f"/vsizip/{archive}/{n}")
+    return f"/vsizip/{archive}/{member.lstrip('/')}", None
 
 
-def _directory_layer(directory: str) -> str:
-    """The shapefile GDAL's Shapefile driver opens as the first layer of a directory.
+def _directory(directory: str) -> _Located:
+    """The shapefiles of a directory, a layer each.
 
     Sorted by name here; GDAL takes the order the file system lists them in.
     """
     names = sorted(n for n in os.listdir(directory) if n.lower().endswith(".shp"))
     if not names:
         raise DataSourceError(_NOT_RECOGNIZED.format(directory))
-    if len(names) > 1:
-        others = ", ".join(f"'{Path(n).stem}'" for n in names[1:])
-        warnings.warn(
-            f"More than one layer found in '{os.path.basename(directory)}': "
-            f"'{Path(names[0]).stem}' (default), {others}. "
-            "Specify layer parameter to avoid this warning.",
-            stacklevel=4,
-        )
-    return os.path.join(directory, names[0])
+    return _shapefiles(directory, names, lambda n: os.path.join(directory, n))
 
 
-def _vsizip(archive: str, member: str | None) -> str:
-    if member is None:
-        member = _zip_main_member(archive)
-        if member is None:
-            raise DataSourceError(_NOT_RECOGNIZED.format(f"/vsizip/{archive}"))
-    return f"/vsizip/{archive}/{member.lstrip('/')}"
-
-
-def _local_path(path: str) -> str:
+def _local_path(path: str) -> _Located:
     """The path terrio opens for a path as pyogrio's `vsi_path` and GDAL's open read it."""
     if path.startswith("zip://"):
         archive, _, member = path[len("zip://") :].partition("!")
@@ -110,33 +113,47 @@ def _local_path(path: str) -> str:
             return _vsizip(rest, None)
         if end >= 0:
             return _vsizip(rest[: end + 4], rest[end + 5 :] or None)
-        return path
+        return path, None
     if path.split("!")[0].lower().endswith(".zip") and "://" not in path:
         archive, _, member = path.partition("!")
         return _vsizip(archive, member or None)
     if os.path.isdir(path):
-        return _directory_layer(path)
-    return path
+        return _directory(path)
+    return path, None
 
 
 def _spill_name(data: bytes) -> str:
     """A file name telling terrio the format of bytes, from their content.
 
-    As GDAL identifies `/vsimem/` files: zip archives and GeoJSON.
+    Args:
+        data: Uploaded bytes, identified without opening a file or decoding a dataset.
+
+    Returns:
+        str: A filename derived from the core's shared vector identifiers.
+
+    Raises:
+        DataSourceError: Content cannot be identified without a filename.
     """
     if data[:4] == b"PK\x03\x04":
         return "data.zip"
-    head = data[:64].lstrip(b"\xef\xbb\xbf").lstrip()
-    if head[:1] in (b"{", b"["):
-        return "data.geojson"
+    extension = _terrio.vector_byte_extension(data)
+    if extension is not None:
+        return f"data.{extension}"
     raise DataSourceError(_NOT_RECOGNIZED.format("/vsimem/pyogrio"))
 
 
 class _Source:
-    """A dataset to read: a path, or bytes spilled into a temporary directory removed on close."""
+    """A dataset to read: a path, or bytes spilled into a temporary directory removed on close.
+
+    `shapefiles` is the directory or the archive of shapefiles the dataset is, and its layers,
+    `(name, path)` each; None for other datasets, whose layers terrio lists.
+    """
+
+    _names: list[str] | None
 
     def __init__(self, path_or_buffer):
         self._tmp = None
+        self._names = None
         if isinstance(path_or_buffer, Path):
             path_or_buffer = str(path_or_buffer)
         if hasattr(path_or_buffer, "read") and not isinstance(path_or_buffer, (str, bytes)):
@@ -153,11 +170,34 @@ class _Source:
             spilled = os.path.join(self._tmp.name, name)
             with open(spilled, "wb") as f:
                 f.write(data)
-            self.path = _local_path(spilled)
+            self.path, self.shapefiles = _local_path(spilled)
             return
         if not isinstance(path_or_buffer, str):
             path_or_buffer = str(path_or_buffer)
-        self.path = _local_path(path_or_buffer)
+        self.path, self.shapefiles = _local_path(path_or_buffer)
+
+    def layer_names(self) -> list[str]:
+        """The dataset's layers, in its order.
+
+        The shapefiles, or the layers `terrio.list_layers` lists, which reads no feature of a
+        GeoPackage or a tile archive.
+        """
+        if self._names is None:
+            if self.shapefiles is not None:
+                self._names = [name for name, _ in self.shapefiles[1]]
+            else:
+                try:
+                    self._names = _terrio.list_layers(self.path)
+                except _terrio_errors.NotFoundError as e:
+                    raise DataSourceError(f"{self.path}: No such file or directory") from e
+                except _terrio_errors.TerrioError as e:
+                    raise DataSourceError(str(e)) from e
+        return self._names
+
+    def name(self) -> str:
+        """The dataset's file name, as the warnings quote it."""
+        container = self.shapefiles[0] if self.shapefiles is not None else self.path
+        return os.path.basename(os.path.normpath(container))
 
     def close(self):
         if self._tmp is not None:
@@ -171,9 +211,54 @@ class _Source:
         self.close()
 
 
-def _open(path: str, skip_features: int, max_features: int | None, read_geometry: bool) -> dict:
+def _select_layer(names: list[str], layer, path: str) -> str:
+    """The layer of `names` that `layer` designates.
+
+    An int (a bool too) numbers the layers from 0. A str is a layer's name as written, else in
+    any case of its ASCII letters; a dataset of one layer also answers to its file's stem, as
+    terrio's own reads do.
+
+    Raises:
+        DataLayerError: If `layer` designates no layer.
+        ValueError: If `layer` is neither a str nor an int.
+    """
+    if isinstance(layer, int):
+        if 0 <= layer < len(names):
+            return names[layer]
+    elif isinstance(layer, str):
+        if layer in names:
+            return layer
+        folded = layer.encode("utf-8").lower()
+        for name in names:
+            if name.encode("utf-8").lower() == folded:
+                return name
+        if len(names) == 1 and layer == Path(path).stem:
+            return names[0]
+    else:
+        raise ValueError(f"'layer' parameter must be a str or int, got {type(layer)}")
+    raise DataLayerError(f"Layer '{layer}' could not be opened")
+
+
+def _warn_first_layer(dataset: str, names: list[str]) -> None:
+    """Warns that a dataset of several layers is read without `layer`, naming the others."""
+    others = ", ".join(f"'{n}'" for n in names[1:])
+    # stacklevel: the call of read_dataframe or read_info (geopandas adds a frame).
+    warnings.warn(
+        f"More than one layer found in '{dataset}': '{names[0]}' (default), {others}. "
+        "Specify layer parameter to avoid this warning.",
+        stacklevel=5,
+    )
+
+
+def _open(
+    path: str,
+    skip_features: int,
+    max_features: int | None,
+    read_geometry: bool,
+    layer: str | None = None,
+) -> dict:
     try:
-        return _terrio.pyogrio_read(path, skip_features, max_features, read_geometry)
+        return _terrio.pyogrio_read(path, skip_features, max_features, read_geometry, layer)
     except _terrio_errors.NotFoundError as e:
         raise DataSourceError(f"{path}: No such file or directory") from e
     except _terrio_errors.TerrioError as e:
@@ -393,15 +478,42 @@ def _crs(crs: str | None) -> str | None:
 
     `EPSG:<code>` when GDAL identifies an EPSG code, otherwise GDAL's WKT1 (here PROJ's
     `WKT1_GDAL` export, which names axes as GDAL does).
+
+    An `EPSG:<code>` that terrio knows is given as it is, without pyproj. A definition pyproj
+    cannot parse, an `EPSG:<code>` neither knows included, is `None`, with a warning that quotes
+    it, since a GeoDataFrame refuses it; without pyproj, or with one that fails to import, the
+    definition is given as it is.
     """
-    if crs is None or crs.startswith("EPSG:"):
+    if crs is None:
         return crs
+    # terrio identified the code, or a `.prj` names one terrio knows: no need for pyproj. An
+    # `EPSG:<digits>` reference is looked up in terrio's database, never read as a file name.
+    if re.fullmatch(r"EPSG:[0-9]{1,9}", crs):
+        try:
+            _terrio.crs_info(crs)
+        except _terrio_errors.CRSError:
+            pass
+        else:
+            return crs
     try:
         from pyproj import CRS
-
-        return CRS.from_user_input(crs).to_wkt("WKT1_GDAL")
     except Exception:  # noqa: BLE001
         return crs
+    try:
+        parsed = CRS.from_user_input(crs)
+        return crs if crs.startswith("EPSG:") else parsed.to_wkt("WKT1_GDAL")
+    except Exception:  # noqa: BLE001
+        # Non-printable characters (whitespace other than the space, and control characters such
+        # as ESC) are quoted as spaces, so that the quote is one line and sends a terminal no
+        # escape sequence.
+        quoted = "".join(c if c.isprintable() else " " for c in crs.strip()[:80])
+        # stacklevel: the call of read_info, read_dataframe or list_layers. A wrapper such as
+        # geopandas adds another frame, so this may point into the wrapper.
+        warnings.warn(
+            f"the layer's CRS definition cannot be parsed ('{quoted}'): it is read without a CRS",
+            stacklevel=5,
+        )
+        return None
 
 
 def read(
@@ -428,13 +540,38 @@ def read(
             "or non-empty"
         )
     with _Source(path_or_buffer) as source:
-        raw = _open(source.path, skip_features, max_features or None, read_geometry)
-    if (
-        layer is not None
-        and layer not in (0, raw["layer"])
-        and not (isinstance(layer, str) and layer == Path(source.path).stem)
-    ):
-        raise DataLayerError(f"Layer '{layer}' could not be opened")
+        return read_source(
+            source, layer, columns, read_geometry, skip_features, max_features, return_fids
+        )
+
+
+def read_source(
+    source: _Source,
+    layer,
+    columns,
+    read_geometry: bool,
+    skip_features: int,
+    max_features: int | None,
+    return_fids: bool,
+):
+    """`read` of an open `_Source`: the layer `layer` designates, or the first.
+
+    Without `layer`, a dataset of several layers is read whole and its first layer kept, with a
+    warning naming the others; with one, the layer is the only one read.
+    """
+    if layer is None:
+        path, layer_name = source.path, None
+    else:
+        layer_name = _select_layer(source.layer_names(), layer, source.path)
+        path = source.path
+        if source.shapefiles is not None:
+            # The shapefile is that layer alone.
+            path, layer_name = dict(source.shapefiles[1])[layer_name], None
+    raw = _open(path, skip_features, max_features or None, read_geometry, layer_name)
+    if layer is None:
+        names = source.layer_names() if source.shapefiles is not None else raw["layers"]
+        if len(names) > 1:
+            _warn_first_layer(source.name(), names)
     driver = raw["driver"]
     fields = []
     for (name, ftype, width, _precision), values in zip(raw["fields"], raw["columns"], strict=True):

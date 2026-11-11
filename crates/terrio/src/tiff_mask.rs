@@ -171,6 +171,34 @@ pub(crate) fn find_masks<R: Read + Seek>(f: &mut R) -> Result<Vec<MaskImage>> {
     Ok(out)
 }
 
+impl MaskImage {
+    /// The number of chunks a window `(x, y, width, height)` of this mask image reads.
+    pub(crate) fn chunk_count(&self, (x, y, w, h): (usize, usize, usize, usize)) -> usize {
+        let (bw, bh) = self.block;
+        let rows = (y + h).div_ceil(bh) - y / bh;
+        let cols = (x + w).div_ceil(bw) - x / bw;
+        if self.tiled { rows.saturating_mul(cols) } else { rows }
+    }
+
+    /// The byte ranges `(offset, length)` of the chunks a window `(x, y, width, height)` of this
+    /// mask image reads, for a caller that fetches them ahead of the read.
+    pub(crate) fn chunk_ranges(&self, (x, y, w, h): (usize, usize, usize, usize)) -> Vec<(u64, u64)> {
+        let (bw, bh) = self.block;
+        let across = self.width.div_ceil(bw);
+        let mut out = Vec::new();
+        for by in y / bh..(y + h).div_ceil(bh) {
+            for bx in x / bw..(x + w).div_ceil(bw) {
+                let idx = if self.tiled { by * across + bx } else { by };
+                let (Some(&offset), Some(&count)) = (self.offsets.get(idx), self.counts.get(idx)) else { continue };
+                if count > 0 {
+                    out.push((offset, count));
+                }
+            }
+        }
+        out
+    }
+}
+
 /// Decompresses a chunk into at most `size` bytes, the chunk's decoded size: a stream that would
 /// expand further is cut there, however far it would go.
 fn decompress(raw: Vec<u8>, compression: u16, size: usize) -> Result<Vec<u8>> {
@@ -231,7 +259,7 @@ pub(crate) fn read_mask<R: Read + Seek>(f: &mut R, m: &MaskImage, window: (usize
     let row_bytes = bw.div_ceil(8);
     let size = crate::dataset::fallible::len(&[row_bytes, bh], "a TIFF mask chunk")?;
     if size > limit {
-        return Err(Error::DecodedLimitExceeded { resource: "TIFF chunk or tag value", limit });
+        return Err(Error::DecodedLimitExceeded { resource: crate::cog::TIFF_CHUNK_RESOURCE, limit });
     }
     let what = "the mask";
     let mut out = crate::dataset::fallible::filled(crate::dataset::fallible::len(&[w, h], what)?, 0u8, what)?;

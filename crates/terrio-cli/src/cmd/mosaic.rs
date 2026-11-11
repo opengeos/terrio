@@ -15,7 +15,8 @@ use terrio::ops::warp::Nodata;
 #[derive(clap::Args)]
 pub struct Args {
     /// The input rasters, then the output path. A `.vrt` output is a virtual mosaic referencing
-    /// the inputs, as `gdalbuildvrt` writes. `@FILE` reads input paths from FILE, one per line.
+    /// the inputs, as `gdalbuildvrt` writes. `@FILE` reads input paths from FILE, one per line,
+    /// and a file name with `*` or `?` (quoted: `'tiles/*.tif'`) matches the files of its folder.
     #[arg(required = true, num_args = 2..)]
     paths: Vec<String>,
     /// The resolution: highest, lowest, average, or user (with `--tr`).

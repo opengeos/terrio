@@ -96,7 +96,7 @@ fn open_stream(
         .detach_result(|| {
             let reader = pick(terrio::stream::open_layers(path, &options, batch_size)?, layer)?;
             match &columns {
-                Some(columns) => reader.select_fields(columns),
+                Some(columns) => reader.select_fields(columns, batch_size),
                 None => Ok(reader),
             }
         })
@@ -218,7 +218,7 @@ impl PyFeatureStream {
                 let profile = if terrio::arrow::ArrowEncoder::needs_profile(reader.layer(), &arrow) {
                     let mut first = pick(terrio::stream::open_layers(&path, &options, arrow.batch_size)?, Some(&name))?;
                     if let Some(columns) = &columns {
-                        first = first.select_fields(columns)?;
+                        first = first.select_fields(columns, arrow.batch_size)?;
                     }
                     let mut p = terrio::stream::LayerProfile::new(first.layer());
                     while let Some(c) = first.read_chunk(arrow.batch_size)? {

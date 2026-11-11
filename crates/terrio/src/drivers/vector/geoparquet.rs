@@ -253,6 +253,19 @@ fn parse_source<R: parquet::file::reader::ChunkReader + 'static>(
     ParquetStream::open(open, name, row_groups, bbox, 65536, prefetch, None)?.read_all()
 }
 
+/// Opens a remote file to be read by range requests, and the prefetcher that announces the byte
+/// ranges of each window of row groups to its block cache: a window of at most half the cache at
+/// a time.
+#[cfg(remote)]
+pub(crate) fn open_remote_file(remote: &crate::http::Remote) -> Result<(crate::http::RangeReader, Prefetcher)> {
+    let options = crate::http::HttpOptions::from_env();
+    let budget = (options.cache_size / 2).max(1);
+    let file = crate::http::RangeReader::open_with(remote, options)?;
+    let prefetcher = file.clone();
+    let prefetch: Prefetcher = (Box::new(move |ranges: &[(u64, u64)]| Ok(prefetcher.prefetch(ranges)?)), budget);
+    Ok((file, prefetch))
+}
+
 /// A remote GeoParquet file (a URL whose file name ends in `.parquet` or `.geoparquet`) opened to
 /// be read by range requests: its footer, the covering column of the row groups a filter keeps,
 /// then the column chunks of each window of row groups, fetched in parallel through the block
@@ -266,9 +279,7 @@ pub(crate) fn open_remote(path: &str, bbox: Option<(f64, f64, f64, f64)>, batch_
         return Ok(None);
     }
     crate::formats::check_driver_allowed("Parquet", path, crate::formats::Kind::Vector)?;
-    let options = crate::http::HttpOptions::from_env();
-    let budget = (options.cache_size / 2).max(1);
-    let file = crate::http::RangeReader::open_with(&remote, options)?;
+    let (file, remote_prefetch) = open_remote_file(&remote)?;
     let name = std::path::Path::new(&file_name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer").to_string();
     // The covering column of the row groups a filter keeps is fetched at once, when the stream
     // opens; their data chunks are announced a window at a time (`with_prefetcher`), not all at
@@ -281,8 +292,7 @@ pub(crate) fn open_remote(path: &str, bbox: Option<(f64, f64, f64, f64)>, batch_
         Ok(())
     };
     let stream = ParquetStream::open(|| Ok(file.clone()), &name, None, bbox, batch_size, Some(&prefetch), None)?;
-    let prefetcher = file.clone();
-    Ok(Some(stream.with_prefetcher((Box::new(move |ranges: &[(u64, u64)]| Ok(prefetcher.prefetch(ranges)?)), budget))))
+    Ok(Some(stream.with_prefetcher(remote_prefetch)))
 }
 
 /// The features of a GeoParquet file, read a record batch at a time.

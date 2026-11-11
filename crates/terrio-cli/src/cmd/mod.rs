@@ -98,11 +98,20 @@ pub const MAX_FILE_LIST: u64 = 64 << 20;
 /// MCP tool calls (`TERRIO_MCP_TOOL` set) refuse lists before touching the file: errors name the
 /// inputs that fail to open, so a client could otherwise read any text file back line by line.
 /// They pass their inputs as an array instead.
+///
+/// An input given directly whose file name holds `*` or `?` is replaced by the files of its
+/// folder that match, in name order (see [`expand_wildcards`]), for the terrio UI, MCP clients and
+/// Windows shells, which do not expand wildcards themselves. MCP callers may enumerate matching
+/// file names this way, as through the other local filesystem tools; file contents are not read
+/// as argument lists.
 pub fn expand_file_lists(inputs: &[String]) -> terrio::Result<Vec<String>> {
     let mut out = Vec::with_capacity(inputs.len());
     for input in inputs {
         let Some(list) = input.strip_prefix('@') else {
-            out.push(input.clone());
+            match expand_wildcards(input)? {
+                Some(matches) => out.extend(matches),
+                None => out.push(input.clone()),
+            }
             continue;
         };
         let text = read_list_text(list, "@FILE lists")?;
@@ -150,6 +159,87 @@ pub fn read_list_text(list: &str, what: &str) -> terrio::Result<String> {
     Ok(text.strip_prefix('\u{feff}').map(String::from).unwrap_or(text))
 }
 
+/// The local files matching `input` when its file name (the part after the last separator) holds
+/// the wildcards `*` (any run of characters) or `?` (one character); `None` for any other input.
+///
+/// Only regular files match (symbolic links are followed), not folders: a folder dataset such as a
+/// Zarr store is named directly. As in a POSIX shell, names beginning with `.` match only a pattern
+/// that does too, and the matches are sorted by name. A matching name that is not valid Unicode is
+/// an error rather than left out, as is a failure while listing the folder, so that a pattern never
+/// stands for part of its matches. Wildcards in folder names are not expanded. Matching ignores case on
+/// Windows, as its file systems do. An input that exists as written, URLs (`://`) and `/vsi` paths
+/// are taken literally, so that `?` in a query string or a file name is left alone. A pattern that
+/// matches nothing is an error, rather than being passed on to fail to open.
+pub fn expand_wildcards(input: &str) -> terrio::Result<Option<Vec<String>>> {
+    let separator = if cfg!(windows) { &['/', '\\'][..] } else { &['/'][..] };
+    let split = input.rfind(separator).map_or(0, |i| i + 1);
+    let (folder, pattern) = input.split_at(split);
+    if !pattern.contains(['*', '?']) || terrio::vfs::is_gdal_name(input) || std::path::Path::new(input).exists() {
+        return Ok(None);
+    }
+    let dir = std::path::Path::new(if folder.is_empty() { "." } else { folder });
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| terrio::Error::InvalidArgument(format!("cannot list {} for {input}: {e}", dir.display())))?;
+    let fold = |s: &str| if cfg!(windows) { s.to_lowercase() } else { s.to_string() };
+    let pattern_chars: Vec<char> = fold(pattern).chars().collect();
+    let listing_error = |e: std::io::Error| terrio::Error::InvalidArgument(format!("cannot list {} for {input}: {e}", dir.display()));
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(listing_error)?;
+        let os_name = entry.file_name();
+        let lossy = os_name.to_string_lossy();
+        if (lossy.starts_with('.') && !pattern.starts_with('.'))
+            || !wildcard_match(&pattern_chars, &fold(&lossy).chars().collect::<Vec<_>>())
+            || !std::fs::metadata(entry.path()).is_ok_and(|m| m.is_file())
+        {
+            continue;
+        }
+        match os_name.into_string() {
+            Ok(name) => names.push(name),
+            Err(name) => {
+                return Err(terrio::Error::InvalidArgument(format!(
+                    "{} matches {input} but its name is not valid Unicode: name it on its own",
+                    dir.join(name).display()
+                )));
+            }
+        }
+    }
+    if names.is_empty() {
+        return Err(terrio::Error::InvalidArgument(format!("no files match {input}")));
+    }
+    names.sort();
+    Ok(Some(names.into_iter().map(|name| format!("{folder}{name}")).collect()))
+}
+
+/// Whether `name` matches `pattern`, where `*` stands for any run of characters and `?` for one.
+fn wildcard_match(pattern: &[char], name: &[char]) -> bool {
+    // Greedy matching that backtracks to the last `*` only: linear in practice, and quadratic at
+    // worst, never exponential.
+    let (mut p, mut n) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while n < name.len() {
+        match pattern.get(p) {
+            Some('*') => {
+                star = Some((p, n));
+                p += 1;
+            }
+            Some(&c) if c == '?' || c == name[n] => {
+                p += 1;
+                n += 1;
+            }
+            _ => match star {
+                Some((sp, sn)) => {
+                    p = sp + 1;
+                    n = sn + 1;
+                    star = Some((sp, sn + 1));
+                }
+                None => return false,
+            },
+        }
+    }
+    pattern[p..].iter().all(|&c| c == '*')
+}
+
 /// The error for an `@FILE` input whose list cannot be used, because of `why`.
 fn unreadable(list: &str, why: impl std::fmt::Display) -> terrio::Error {
     terrio::Error::InvalidArgument(format!("cannot read the file list {list}: {why}"))
@@ -175,3 +265,40 @@ pub mod gpkg;
 pub mod pipeline;
 
 pub mod rpftoc;
+
+#[cfg(test)]
+mod tests {
+    use super::wildcard_match;
+
+    fn matches(pattern: &str, name: &str) -> bool {
+        wildcard_match(&pattern.chars().collect::<Vec<_>>(), &name.chars().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn driver_names_with_wildcards_remain_literal() {
+        for name in [r#"NETCDF:"file?.nc":var"#, "PG:dbname=a?b", "ODBC:table*", "gdal:input?.tif"] {
+            assert_eq!(super::expand_file_lists(&[name.into()]).unwrap(), [name]);
+        }
+        assert!(!terrio::vfs::is_gdal_name("C:*.tif"));
+        assert!(!terrio::vfs::is_gdal_name(r"\\?\C:\tiles\*.tif"));
+    }
+
+    #[test]
+    fn wildcards_match_runs_and_single_characters() {
+        assert!(matches("*.tif", "a.tif"));
+        assert!(matches("*.tif", ".tif"));
+        assert!(!matches("*.tif", "a.tiff"));
+        assert!(matches("*.tif*", "a.tiff"));
+        assert!(matches("tile_??.tif", "tile_01.tif"));
+        assert!(!matches("tile_??.tif", "tile_1.tif"));
+        assert!(matches("*_*_b4.tif", "lc08_2024_b4.tif"));
+        assert!(!matches("*_*_b4.tif", "lc08_b4.tif"));
+        assert!(matches("*", ""));
+        assert!(matches("a*b*c", "aXbYbZc"));
+        // Non-ASCII names match by character, not by byte.
+        assert!(matches("??.tif", "éè.tif"));
+        // Backtracking stays quadratic at worst.
+        let long = "a".repeat(5000);
+        assert!(!matches("*a*a*a*a*a*b", &long));
+    }
+}

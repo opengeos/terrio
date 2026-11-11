@@ -765,6 +765,13 @@ fn config() -> &'static Mutex<Config> {
 /// of the environment (`TERRIO_GRID_DIR`, `PROJ_DATA`, `PROJ_LIB`, PROJ's user directory and
 /// terrio's download cache); `None` goes back to the environment's. As PROJ's
 /// `proj_context_set_search_paths`. Transformers created afterwards use them.
+///
+/// While search paths are set this way, grids are read only from them, from grids registered with
+/// [`register_grid`] and, with the network on, from the PROJ CDN: a grid named by a path in a CRS
+/// definition (`+nadgrids=/data/a.gsb`, `./a.gsb`, `../a.gsb`) is treated as missing, with a
+/// warning, so a definition from untrusted input cannot read grid files from arbitrary paths.
+/// Add the grid's directory to the search paths or register it instead. Unlike
+/// PROJ, which reads such paths whatever its search paths are.
 pub fn set_grid_search_paths(paths: Option<Vec<std::path::PathBuf>>) {
     {
         let mut c = config().lock().unwrap_or_else(PoisonError::into_inner);
@@ -915,23 +922,109 @@ fn machine_search_dirs() -> Vec<std::path::PathBuf> {
     dirs
 }
 
+/// The largest grid file read, larger than any grid on the PROJ CDN.
+#[cfg(not(target_family = "wasm"))]
+const MAX_GRID_BYTES: u64 = 2 << 30;
+
+/// Whether file metadata is that of a grid file that can be read: a regular file of at most
+/// [`MAX_GRID_BYTES`].
+#[cfg(not(target_family = "wasm"))]
+fn readable_grid(meta: &std::fs::Metadata) -> bool {
+    meta.is_file() && meta.len() <= MAX_GRID_BYTES
+}
+
+/// Whether a path is a grid file that [`read_grid_file`] reads.
+#[cfg(not(target_family = "wasm"))]
+fn is_grid_file(p: &std::path::Path) -> bool {
+    std::fs::metadata(p).is_ok_and(|m| readable_grid(&m))
+}
+
+/// The bytes of a regular file of at most [`MAX_GRID_BYTES`]: devices, FIFOs and directories are
+/// never read, and a file growing while it is read is cut off rather than read without bound.
+#[cfg(not(target_family = "wasm"))]
+fn read_grid_file(p: &std::path::Path) -> Option<Arc<[u8]>> {
+    use std::io::Read;
+    let meta = std::fs::metadata(p).ok()?;
+    if meta.is_file() && meta.len() > MAX_GRID_BYTES {
+        crate::warnings::warn(format!("grid file {} is not read: larger than {MAX_GRID_BYTES} bytes", p.display()));
+        return None;
+    }
+    if !readable_grid(&meta) {
+        return None;
+    }
+    // The file may have been replaced since: open without blocking (a FIFO waits for a writer
+    // otherwise), then check what was opened.
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+    let file = options.open(p).ok()?;
+    let meta = file.metadata().ok()?;
+    if !readable_grid(&meta) {
+        return None;
+    }
+    // read_to_end grows the buffer as needed; reserve only a modest part of the claimed size.
+    let mut buf = Vec::with_capacity(usize::try_from(meta.len().min(64 << 20)).ok()?);
+    file.take(MAX_GRID_BYTES + 1).read_to_end(&mut buf).ok()?;
+    (buf.len() as u64 <= MAX_GRID_BYTES).then(|| Arc::from(buf))
+}
+
+/// Where a grid name is looked for on disk.
+#[cfg(not(target_family = "wasm"))]
+enum GridLocation<'a> {
+    /// A path (absolute, or starting with `./` or `../`), read as given.
+    Path(&'a std::path::Path),
+    /// A name relative to the search directories, such as `us_noaa_conus.tif` or
+    /// `subdir/grid.gsb`: every component is a plain name, so it stays inside them.
+    InSearchDirs,
+    /// Neither: a path while the search paths are set from code (which confine grids to them), or
+    /// a relative name that leaves the search directories (`a/../../etc/hosts`).
+    Refused,
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn grid_location(name: &str) -> GridLocation<'_> {
+    use std::path::Component;
+    let p = std::path::Path::new(name);
+    let first = p.components().next();
+    if p.is_absolute() || p.has_root() || matches!(first, Some(Component::Prefix(_) | Component::CurDir | Component::ParentDir)) {
+        // As PROJ, a grid named by a path is read from it, unless the search paths were set
+        // from code: those then bound what is read, so a CRS definition from untrusted input
+        // cannot name any file the process can see.
+        if config().lock().unwrap_or_else(PoisonError::into_inner).paths.is_some() {
+            let shown: String = name.chars().take(120).collect();
+            crate::warnings::warn(format!(
+                "grid {shown} named by a path is not read: grid search paths are set, so grids are read only from them"
+            ));
+            return GridLocation::Refused;
+        }
+        return GridLocation::Path(p);
+    }
+    if first.is_some() && p.components().all(|c| matches!(c, Component::Normal(_))) {
+        GridLocation::InSearchDirs
+    } else {
+        let shown: String = name.chars().take(120).collect();
+        crate::warnings::warn(format!("grid {shown} is not read: relative grid names must contain only ordinary path components"));
+        GridLocation::Refused
+    }
+}
+
 /// The bytes of a grid file, by name or path, from memory or the local directories.
 fn find_local(name: &str) -> Option<Arc<[u8]>> {
     if let Some(b) = registered().lock().unwrap_or_else(PoisonError::into_inner).get(name) {
         return Some(b.clone());
     }
     #[cfg(not(target_family = "wasm"))]
-    {
-        let p = std::path::Path::new(name);
-        if p.is_absolute() || name.starts_with("./") || name.starts_with("../") {
-            return std::fs::read(p).ok().map(Arc::from);
-        }
-        for d in search_dirs() {
-            let f = d.join(name);
-            if f.is_file() {
-                return std::fs::read(f).ok().map(Arc::from);
+    match grid_location(name) {
+        GridLocation::Path(p) => return read_grid_file(p),
+        GridLocation::InSearchDirs => {
+            for d in search_dirs() {
+                if let Some(b) = read_grid_file(&d.join(name)) {
+                    return Some(b);
+                }
             }
         }
+        GridLocation::Refused => {}
     }
     None
 }
@@ -943,23 +1036,29 @@ fn present_locally(name: &str) -> bool {
     }
     #[cfg(not(target_family = "wasm"))]
     {
-        let p = std::path::Path::new(name);
-        if p.is_absolute() {
-            return p.is_file();
-        }
         let dirs = search_dirs();
         let mut names = vec![name.to_string()];
         names.extend(old_names(name));
-        return names.iter().any(|n| dirs.iter().any(|d| d.join(n).is_file()));
+        return names.iter().any(|n| match grid_location(n) {
+            GridLocation::Path(p) => is_grid_file(p),
+            GridLocation::InSearchDirs => dirs.iter().any(|d| is_grid_file(&d.join(n))),
+            GridLocation::Refused => false,
+        });
     }
     #[allow(unreachable_code)]
     false
 }
 
+/// Whether a grid name is a single ordinary file component on this platform.
+fn single_file_name(name: &str) -> bool {
+    let mut parts = std::path::Path::new(name).components();
+    matches!(parts.next(), Some(std::path::Component::Normal(_))) && parts.next().is_none() && !name.contains(['/', '\\'])
+}
+
 /// The URL of a grid on the PROJ CDN.
 #[cfg(remote)]
 fn cdn_url(name: &str) -> Option<String> {
-    if name.contains(['/', '\\']) || !name.ends_with(".tif") {
+    if !single_file_name(name) || !name.ends_with(".tif") {
         return None;
     }
     let endpoint =
@@ -995,7 +1094,7 @@ fn download(name: &str) -> Option<Arc<[u8]>> {
     }
     let path = dir.join(name);
     std::fs::rename(&tmp, &path).ok()?;
-    std::fs::read(path).ok().map(Arc::from)
+    read_grid_file(&path)
 }
 
 /// The grid file of a name, read once.
@@ -1020,8 +1119,14 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
     }
     // Read in place; a grid that cannot be read so (a server without range requests, a failed
     // request) is downloaded instead, unless the CDN does not have it.
+    // Only a single file name can be on the CDN. Anything else (a path, a name with directories,
+    // a Windows drive prefix) is missing, not a network failure, so the transformation can fall
+    // back to another operation. Plain names the CDN cannot serve (non-`.tif` names such as `.gsb`)
+    // are recorded as fetch failures without a request.
     #[cfg(remote)]
-    if bytes.is_none() && network_enabled() && !download_whole() {
+    let fetch = bytes.is_none() && network_enabled() && single_file_name(name);
+    #[cfg(remote)]
+    if fetch && !download_whole() {
         match open_remote(name) {
             Ok(file) => {
                 let file = Arc::new(file);
@@ -1038,7 +1143,7 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
     }
     #[cfg(remote)]
     let bytes = match bytes {
-        None if network_enabled() => {
+        None if fetch => {
             let got = download(name);
             if got.is_none() {
                 fetch_failures().lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string());
@@ -1098,7 +1203,7 @@ pub(crate) fn available(name: &str) -> bool {
     {
         return a;
     }
-    let a = present_locally(name) || (network_enabled() && name.ends_with(".tif") && !name.contains(['/', '\\']));
+    let a = present_locally(name) || (network_enabled() && name.ends_with(".tif") && single_file_name(name));
     {
         let mut m = availability().lock().unwrap_or_else(PoisonError::into_inner);
         if generation == cache_generation() {
@@ -2188,5 +2293,18 @@ mod tests {
         let set = Arc::new(GridSet { grids: vec![Grid { ext, src, usage: Use::V { sample: 0 }, children: Vec::new() }] });
         // At lat = 0.0 (south edge), the two southern corners are NaN and the two northern corners have weight 0.
         assert_eq!(vgrid_value(&[set], 0.5, 0.0, 1.0), None);
+    }
+    #[test]
+    fn cdn_names_are_single_ordinary_file_components() {
+        assert!(single_file_name("grid.tif"));
+        for name in ["", ".", "..", "sub/grid.tif", r"sub\grid.tif", "./grid.tif", "../grid.tif"] {
+            assert!(!single_file_name(name), "{name}");
+        }
+        #[cfg(windows)]
+        for name in ["C:grid.tif", r"C:\grid.tif", r"\\host\grid.tif"] {
+            assert!(!single_file_name(name), "{name}");
+        }
+        #[cfg(unix)]
+        assert!(single_file_name("C:grid.tif"));
     }
 }
