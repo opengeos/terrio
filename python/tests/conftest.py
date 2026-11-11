@@ -165,3 +165,9 @@ def _fresh_http_cache():
     """
     terrio.clear_http_cache()
     yield
+
+
+@pytest.fixture
+def gdal_warp_grid(monkeypatch):
+    """Use GDAL's chunk-dependent grid for tests of exact GDAL reproduction."""
+    monkeypatch.setenv("TERRIO_WARP_GRID", "GDAL")
