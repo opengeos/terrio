@@ -24,6 +24,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from terrio import _terrio
+from terrio.errors import CRSError as _NativeCRSError
 from terrio.rio.enums import WktVersion
 from terrio.rio.errors import CRSError
 
@@ -737,9 +738,28 @@ class CRS(Mapping[str, Any]):
             # and validated PROJ extensions retain their own parameters.
             cached = self.__dict__.get("_registry_root")
             if cached is None or cached[0] != code:
-                cached = (code, _parse_wkt(_terrio.crs_info(f"EPSG:{code}")["wkt"]))
+                try:
+                    registry = _terrio.crs_info(f"EPSG:{code}")
+                except _NativeCRSError:
+                    # WKT can retain an unknown declared code. No registry definition
+                    # then exists to export consistently with that effective identity.
+                    cached = (code, None, None)
+                else:
+                    registry_root = _parse_wkt(registry["wkt"])
+                    registry_proj4 = registry.get("proj4")
+                    if registry_root is not None and any(
+                        isinstance(node, list)
+                        and len(node) > 2
+                        and str(node[0]).upper() == "EXTENSION"
+                        and str(node[1]).upper() == "PROJ4"
+                        for node in registry_root[1:]
+                    ):
+                        registry_proj4 = _terrio.crs_info(registry["wkt"]).get("proj4")
+                    cached = (code, registry_root, registry_proj4)
                 self._registry_root = cached
             root = cached[1]
+            if cached[2]:
+                return _proj_dict(cached[2])
         return _wkt_to_proj(root) if root is not None else {}
 
     def _native_projjson(self) -> dict[str, Any]:

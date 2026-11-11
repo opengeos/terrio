@@ -454,6 +454,33 @@ def test_registry_parameter_exports_reuse_native_lookup(monkeypatch):
     assert calls == ["EPSG:32633"]
 
 
+def test_unknown_declared_authority_has_safe_parameter_exports():
+    """An unregistered authority does not break parameter or mapping inspection."""
+    wkt = (
+        CRS.from_epsg(32633)
+        .to_wkt()
+        .replace('AUTHORITY["EPSG","32633"]', 'AUTHORITY["EPSG","999999"]')
+    )
+    crs = CRS.from_wkt(wkt)
+    assert crs.to_epsg() == 999999
+    assert crs.to_dict() == {}
+    assert crs.to_proj4() == ""
+    assert list(crs) == []
+
+
+def test_wkt2_mercator_registry_export_retains_spherical_extension():
+    """A WKT2 import uses Web Mercator's registry extension in its literal export."""
+    pyproj = pytest.importorskip("pyproj")
+    crs = CRS.from_wkt(pyproj.CRS.from_epsg(3857).to_wkt())
+    exported = crs.to_proj4()
+    np.testing.assert_allclose(
+        coordinates(CRS.from_proj4(exported), (10, 50)),
+        coordinates("EPSG:3857", (10, 50)),
+        rtol=0,
+        atol=1e-6,
+    )
+
+
 def test_etrs89_export_reports_loss_of_datum_identity():
     """An ellipsoid-only ETRS89 export explicitly reports its omitted datum identity."""
     crs = CRS.from_epsg(25832)
