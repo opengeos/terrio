@@ -137,7 +137,8 @@ pub struct WindowOptions {
 /// lifetime, so a file with very many small chunks keeps that memory in use while the reader is
 /// open. A reader that decodes on several threads also keeps their decoders between window reads,
 /// each with its own copy of those tables: the open readers of the process keep these copies
-/// within 256 MiB together, closing the least recently used decoders of the other readers first,
+/// within 256 MiB together (`TERRIO_TIFF_SPARE_CACHEMAX` changes that process-wide budget,
+/// or disables spare retention at 0), closing the least recently used decoders of the other readers first,
 /// or keep those of one reader when they alone take more. A reader whose decoders were closed
 /// opens them again on its next such read, which reads the tables once more for each thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3492,7 +3493,7 @@ mod tests {
     }
 
     /// The open rasters keep the spare decoders of their workers within one budget. With a budget
-    /// that holds none, only the raster read last keeps its own: the others open theirs again on
+    /// that holds no complete decoder, only the raster read last keeps its own: the others open theirs again on
     /// their next read, and read the same values. A raster that is closed gives up its share.
     #[test]
     fn open_rasters_keep_their_spare_decoders_within_one_budget() {
@@ -3503,7 +3504,7 @@ mod tests {
         write_tiled_tiff(&path, (96, 96, 1), sequence(DataType::U8, 96 * 96, 5), &[]);
         let path = path.to_str().unwrap();
         // A budget of their own, apart from the rasters of the tests running alongside.
-        let spares: &'static crate::geotiff::SpareDecoders = Box::leak(Box::new(crate::geotiff::SpareDecoders::new(0)));
+        let spares: &'static crate::geotiff::SpareDecoders = Box::leak(Box::new(crate::geotiff::SpareDecoders::new(1)));
         let mut readers: Vec<LazyRaster> = (0..3)
             .map(|_| {
                 let mut r = LazyRaster::open(path).unwrap();
