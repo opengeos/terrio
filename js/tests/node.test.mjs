@@ -3198,6 +3198,45 @@ test("dataset TIFF copies preserve bytes without loading pixel codecs", () => {
   } finally { raster.free(); terrio.vsiDelete(root, {recursive:true}); }
 });
 
+test("TIFF tag counts cannot truncate to the WebAssembly address width", () => {
+  const bytes = new Uint8Array(52);
+  const view = new DataView(bytes.buffer);
+  bytes.set([73, 73, 43, 0, 8, 0, 0, 0]);
+  view.setBigUint64(8, 16n, true);
+  view.setBigUint64(16, 1n, true);
+  view.setUint16(24, 33550, true); // ModelPixelScale, DOUBLE
+  view.setUint16(26, 12, true);
+  const count = BUILD === "terrio-js/memory64" ? (1n << 64n) - 1n : (1n << 32n) + 3n;
+  view.setBigUint64(28, count, true);
+  view.setBigUint64(36, 52n, true);
+  assert.throws(() => terrio.translate({bytes, filename: "huge-tag.tif"}, {}), /TIFF tag length overflow/);
+});
+
+test("dataset inventory does not require readable later TIFF directories", () => {
+  const root = "/vsimem/js-first-image-inventory";
+  const source = `${root}/source.tif`, copied = `${root}/copied.tif`, moved = `${root}/moved.tif`;
+  const raster = terrio.createRaster(null, {size: [2, 2], burn: [7], crs: "EPSG:4326", bbox: [0, 0, 2, 2]});
+  try {
+    const bytes = raster.toBytes("source.tif");
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const littleEndian = view.getUint16(0) === 0x4949;
+    assert.equal(view.getUint16(2, littleEndian), 42);
+    const first = view.getUint32(4, littleEndian);
+    const count = view.getUint16(first, littleEndian);
+    view.setUint32(first + 2 + count * 12, bytes.length + 4096, littleEndian);
+    terrio.vsiWrite(source, bytes);
+    terrio.vsiWrite(`${root}/source.tfw`, new TextEncoder().encode("unowned world file"));
+    assert.deepEqual(terrio.datasetFiles(source).files, [source]);
+    assert.throws(() => terrio.translate({bytes, filename: "source.tif"}, {}));
+    terrio.datasetCopy(source, copied);
+    assert.deepEqual(terrio.vsiRead(copied), bytes);
+    assert.equal(terrio.vsiStat(`${root}/copied.tfw`), null);
+    terrio.datasetRename(copied, moved);
+    terrio.datasetDelete([moved, source]);
+    assert.ok(terrio.vsiStat(`${root}/source.tfw`));
+  } finally { raster.free(); terrio.vsiDelete(root, {recursive: true}); }
+});
+
 test("dataset VRT references require explicit external scope permission", () => {
   const root = "/vsimem/js-vrt-reference-scope";
   const source = `${root}/inputs/source.vrt`, output = `${root}/copy.vrt`;
