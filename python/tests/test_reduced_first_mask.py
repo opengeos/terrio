@@ -30,9 +30,9 @@ def mark_image(path, index, subfile):
     path.write_bytes(data)
 
 
-@pytest.mark.parametrize("reduced", [False, True])
+@pytest.mark.parametrize("reduced,mask_reduced", [(False, False), (True, True), (True, False)])
 def test_reduced_first_masks_match_gdal_before_and_after_external_refresh(
-    tmp_path, data_dir, gdal, reduced
+    tmp_path, data_dir, gdal, reduced, mask_reduced
 ):
     source = data_dir / "landsat7.tif"
     if not source.is_file():
@@ -68,7 +68,7 @@ def test_reduced_first_masks_match_gdal_before_and_after_external_refresh(
             dst.write_mask(validity)
     terrio.add_overviews(str(level), [2])
     mark_image(level, 0, int(reduced))
-    mark_image(level, 1, 4 | int(reduced))
+    mark_image(level, 1, 4 | int(mask_reduced))
     for refresh in (False, True):
         if refresh:
             x, dx, _, y, _, dy = transform
@@ -76,7 +76,7 @@ def test_reduced_first_masks_match_gdal_before_and_after_external_refresh(
                 str(base),
                 external=True,
                 resampling="average",
-                bbox=[[x, y + dy * 192, x + dx * 256, y]],
+                bbox=[[x, y + dy * 96, x + dx * 128, y]],
             )
         for path, overview in ((level, None), (base, 0), (base, 1)):
             # GDAL 3.13.3 also ignores a first-image mask marked 5. Compare decoding

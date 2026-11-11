@@ -2676,8 +2676,17 @@ The `reduced-first-masks` conformance suite checks `NewSubfileType` mask associa
 for ordinary and reduced-resolution first TIFF images. Using a Landsat-derived
 external overview pyramid, it compares pixels and masks before and after an
 extent-limited external overview refresh with an equivalent ordinary-first-image
-GDAL control. GDAL 3.13.3 itself ignores first-image masks marked 5; Terrio deliberately
+GDAL control. A reduced first image with a legacy mask marked 4 is also covered.
+A unique size-matching first-image mask remains usable when flags disagree.
+GDAL 3.13.3 itself ignores first-image masks marked 5; Terrio deliberately
 uses the image's own reduced-resolution flag rather than its position in the file,
 following [TIFF 6.0 NewSubfileType](https://www.itu.int/itudoc/itu-t/com16/tiff-fx/docs/tiff6.pdf). Local validation uses
 GDAL 3.13.3. The `lazy-geotiff` suite also checks own-mask detection and full-image
 mask fallback when the smaller image has no mask.
+
+The stored masked-external cubic 26×41 resampled-read case uses the separate
+`expected_mask_control.json.gz` reference. Regenerate it with
+`python scripts/make_resampled_reads_fixtures.py --mask-control` and GDAL 3.13.3.
+The control changes only first-image/mask flags from 1/5 to 0/4, so GDAL weights the
+stored mask. Its pixels match Terrio exactly; 488 samples differ from the historical
+raw GDAL reference, which remains unchanged in `expected.json.gz`.

@@ -208,7 +208,7 @@ fn mark_image(path: &std::path::Path, index: usize, subfile: u32) {
 fn reduced_first_images_keep_their_masks_and_fallbacks() {
     // TIFF 6.0: mask association follows the image's own reduced-resolution bit.
     // GDAL 3.13.3 controls use ordinary first-image flags (see the Python comparison).
-    for reduced in [false, true] {
+    for (reduced, mask_reduced) in [(false, false), (true, true), (true, false), (false, true)] {
         for own_overview_mask in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let base = dir.path().join("image.tif");
@@ -225,7 +225,7 @@ fn reduced_first_images_keep_their_masks_and_fallbacks() {
             };
             terrio::write_raster_dataset(&RasterDataset::new(data, false), level.to_str().unwrap(), &options).unwrap();
             mark_image(&level, 0, u32::from(reduced));
-            mark_image(&level, 1, 4 | u32::from(reduced));
+            mark_image(&level, 1, 4 | u32::from(mask_reduced));
             if !own_overview_mask {
                 mark_image(&level, 3, 0);
             }

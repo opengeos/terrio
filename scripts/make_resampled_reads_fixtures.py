@@ -4,6 +4,7 @@ into outputs of other sizes.
 Usage:
     python scripts/make_resampled_reads_fixtures.py
     python scripts/make_resampled_reads_fixtures.py --check-rasterio
+    python scripts/make_resampled_reads_fixtures.py --mask-control
 
 The rasters are small GeoTIFFs with overviews: Byte RGB with an internal mask whose overviews have
 masks of their own, and the same with overviews built before the mask (none has one); UInt16 of odd
@@ -25,6 +26,10 @@ With `--check-rasterio`, the files and `expected.json.gz` are only read: each `A
 with rasterio's `read(window=..., out_shape=..., resampling=...)` and `read_masks`, which needs
 rasterio rather than GDAL's bindings.
 
+The `--mask-control` mode writes a separate GDAL 3.13.3 control for the masked external
+cubic 26×41 case. Only its first image/mask flags are normalized from 1/5 to 0/4,
+so GDAL uses the stored mask. Historical raw references are kept unchanged.
+
 Generation requires GDAL 3.13.3 and refreshes only the RGB, mixed-metadata and masked external
 fixtures plus the mixed internal fixture. Existing GDAL 3.13.2 cases and their TIFFs are kept
 unchanged. Every case records its oracle version; reproducing the historical cases requires
@@ -37,6 +42,7 @@ import argparse
 import gzip
 import json
 import shutil
+import struct
 import sys
 import tempfile
 from pathlib import Path
@@ -414,10 +420,47 @@ def check_rasterio(expected: list[dict[str, Any]]) -> int:
     return differ
 
 
+def write_mask_control(gdal: Any) -> None:
+    """Pin the one resampled case whose first-image mask GDAL otherwise ignores."""
+    cases = json.loads(gzip.decompress((OUT / "expected.json.gz").read_bytes()))
+    case = next(c for c in cases if c["file"] == "masked_external_overviews.tif"
+                and c["size"] == [26, 41] and c["resampling"] == "cubic"
+                and c["overview"] == "AUTO" and not c["bands"] and c["window"] is None)
+    with tempfile.TemporaryDirectory(prefix="terrio-mask-control-") as temporary:
+        path = Path(temporary) / case["file"]
+        shutil.copyfile(OUT / case["file"], path)
+        overview = Path(str(path) + ".ovr")
+        data = bytearray((OUT / (case["file"] + ".ovr")).read_bytes())
+        assert data[:4] == b"II*\0"
+        offset = struct.unpack_from("<I", data, 4)[0]
+        directories = []
+        while offset:
+            count = struct.unpack_from("<H", data, offset)[0]
+            tags = {struct.unpack_from("<H", data, offset + 2 + i * 12)[0]: offset + 2 + i * 12
+                    for i in range(count)}
+            directories.append(tags)
+            offset = struct.unpack_from("<I", data, offset + 2 + count * 12)[0]
+        def value(tags, tag):
+            return struct.unpack_from("<I", data, tags[tag] + 8)[0]
+        image, mask = directories[0], directories[2]
+        assert (value(image, 254), value(mask, 254), value(mask, 262)) == (1, 5, 4)
+        assert [value(image, tag) for tag in (256, 257)] == [value(mask, tag) for tag in (256, 257)]
+        struct.pack_into("<I", data, image[254] + 8, 0)
+        struct.pack_into("<I", data, mask[254] + 8, 4)
+        overview.write_bytes(data)
+        control = gdal_case(gdal, RasterIO(gdal), dict(case, file=str(path)))
+    control["file"] = case["file"]
+    control["gdal_version"] = gdal.__version__
+    control["reference_control"] = "Equivalent first image/mask flags 0/4 instead of 1/5; stored pixels and mask unchanged"
+    text = json.dumps([control], separators=(",", ":")) + "\n"
+    (OUT / "expected_mask_control.json.gz").write_bytes(gzip.compress(text.encode(), mtime=0))
+
+
 def main() -> int:
     global OUT
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--check-rasterio", action="store_true")
+    parser.add_argument("--mask-control", action="store_true")
     args = parser.parse_args()
     if args.check_rasterio:
         expected = json.loads(gzip.decompress((OUT / "expected.json.gz").read_bytes()))
@@ -430,6 +473,9 @@ def main() -> int:
     if gdal.__version__ != "3.13.3":
         print(f"GDAL 3.13.3 is the pinned generator reference, not {gdal.__version__}", file=sys.stderr)
         return 1
+    if args.mask_control:
+        write_mask_control(gdal)
+        return 0
     destination = OUT
     reference = destination / "expected.json.gz"
     if not reference.is_file():

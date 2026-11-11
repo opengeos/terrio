@@ -6,7 +6,9 @@
 //! several bands, as rasterio reads them, the band's for one) and masks through `GetMaskBand()`,
 //! or, for a level read alone, the pixels `gdal_translate -ovr` writes. Values are compared bit
 //! for bit, any NaN matching any NaN, but for roundings of fused multiply-adds (see
-//! [`difference`]).
+//! [`difference`]). The masked external cubic 26×41 case uses a separate GDAL 3.13.3
+//! control with equivalent first-image/mask flags 0/4: GDAL ignores that mask with 1/5.
+//! `--mask-control` regenerates it without changing the historical raw references.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -51,12 +53,20 @@ fn cases() -> Vec<Case> {
     let file = std::fs::File::open(dir().join("expected.json.gz")).unwrap();
     flate2::read::GzDecoder::new(file).read_to_string(&mut text).unwrap();
     let expected: serde_json::Value = serde_json::from_str(&text).unwrap();
+    text.clear();
+    let file = std::fs::File::open(dir().join("expected_mask_control.json.gz")).unwrap();
+    flate2::read::GzDecoder::new(file).read_to_string(&mut text).unwrap();
+    let controls: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
     let numbers = |v: &serde_json::Value| -> Vec<usize> { v.as_array().unwrap().iter().map(|n| n.as_u64().unwrap() as usize).collect() };
     expected
         .as_array()
         .unwrap()
         .iter()
-        .map(|c| {
+        .map(|raw| {
+            let c = controls
+                .iter()
+                .find(|control| ["file", "bands", "window", "size", "resampling", "overview"].iter().all(|&key| control[key] == raw[key]))
+                .unwrap_or(raw);
             let window = c["window"].as_array().map(|w| {
                 let w: Vec<f64> = w.iter().map(|v| v.as_f64().unwrap()).collect();
                 (w[0], w[1], w[2], w[3])
