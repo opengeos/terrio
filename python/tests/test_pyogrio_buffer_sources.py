@@ -162,7 +162,14 @@ def test_dataset_beside_readme_opens_as_the_core_does(tmp_path, sources, extensi
 
 
 @pytest.mark.parametrize(
-    "data", [b"WKT,id\nPOINT (10 46),1\n", b"fgb_id,lat,lon\n1,2,3\n", b"PAR1_id,lat,lon\n1,2,3\n"]
+    "data",
+    [
+        b"WKT,id\nPOINT (10 46),1\n",
+        b"fgb_id,lat,lon\n1,2,3\n",
+        b"PAR1_id,lat,lon\n1,2,3\n",
+        b"PAR1,id\nx,PAR1",
+        b"fgb,fgb,name\n1,2,3\n",
+    ],
 )
 def test_signature_free_content_keeps_a_clear_refusal(data):
     """Unsigned CSV bytes still require a filename, including weak binary-prefix collisions.
@@ -179,6 +186,16 @@ def test_top_level_json_arrays_are_refused_as_invalid_geojson():
     data = b'[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}]'
     with pytest.raises(DataSourceError, match="GeoJSON: no type"):
         tpg.read_info(data)
+
+
+@pytest.mark.parametrize("prefix", [b"", b"\xef\xbb\xbf", b" \n"])
+def test_osm_xml_buffers_have_an_xml_filename_hint(prefix):
+    """An OSM XML upload uses the XML extension rather than the binary PBF suffix.
+
+    Args:
+        prefix: A supported XML byte prefix.
+    """
+    assert terrio._terrio.vector_byte_extension(prefix + b'<osm version="0.6"/>') == "osm"
 
 
 @pytest.mark.parametrize("form", ["path", "bytes", "file"])

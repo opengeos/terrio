@@ -58,11 +58,23 @@ pub fn suggest_vector_extension(bytes: &[u8]) -> Option<&'static str> {
     // a prefix that could also be a CSV column name; the reader still validates the payload.
     match driver {
         crate::formats::VectorDriver::FlatGeobuf
-            if bytes.len() < 8 || !bytes.starts_with(b"fgb") || bytes.get(4..7) != Some(b"fgb".as_slice()) =>
+            if bytes.len() < 8
+                || !bytes.starts_with(b"fgb")
+                || !matches!(bytes[3], 2 | 3)
+                || bytes.get(4..7) != Some(b"fgb".as_slice()) =>
         {
             return None;
         }
-        crate::formats::VectorDriver::Parquet if bytes.len() < 12 || !bytes.ends_with(b"PAR1") => return None,
+        crate::formats::VectorDriver::Parquet => {
+            if bytes.len() < 12 || !bytes.starts_with(b"PAR1") || !bytes.ends_with(b"PAR1") {
+                return None;
+            }
+            let metadata_length = u32::from_le_bytes(bytes[bytes.len() - 8..bytes.len() - 4].try_into().ok()?);
+            if usize::try_from(metadata_length).ok()? > bytes.len() - 12 {
+                return None;
+            }
+        }
+        crate::formats::VectorDriver::OSM if crate::drivers::vector::citygml::is_xml_prefix(bytes) => return Some("osm"),
         _ => {}
     }
     driver.info().extensions.first().copied()
@@ -765,11 +777,14 @@ mod tests {
             (br#"{"type":"FeatureCollection","features":[]}"#.as_slice(), Some("geojson")),
             (b"<kml/>".as_slice(), Some("kml")),
             (b"<gpx/>".as_slice(), Some("gpx")),
-            (br#"<osm version="0.6"/>"#.as_slice(), Some("pbf")),
+            (br#"<osm version="0.6"/>"#.as_slice(), Some("osm")),
+            (b"\0\0\0\x0b\x0a\x09OSMHeader".as_slice(), Some("pbf")),
             (b"<gml:FeatureCollection/>".as_slice(), Some("gml")),
             (b"WKT,id\nPOINT (1 2),1\n".as_slice(), None),
             (b"fgb_id,lat,lon\n1,2,3\n".as_slice(), None),
             (b"PAR1_id,lat,lon\n1,2,3\n".as_slice(), None),
+            (b"PAR1,id\nx,PAR1".as_slice(), None),
+            (b"fgb,fgb,name\n1,2,3\n".as_slice(), None),
             (b"PAR1".as_slice(), None),
             (b"II*\0".as_slice(), None),
             (b"".as_slice(), None),

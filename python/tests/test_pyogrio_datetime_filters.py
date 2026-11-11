@@ -218,6 +218,39 @@ def test_repeated_iso_forms_do_not_parse_each_row_with_pandas(monkeypatch, extra
 
 
 @pytest.mark.parametrize("as_utc", [False, True])
+def test_distinct_reduced_dates_use_batch_fallback(monkeypatch, as_utc):
+    """Many distinct reduced dates use bounded pandas calls in both offset modes.
+
+    Args:
+        monkeypatch: Scoped external parser replacement.
+        as_utc: Whether to convert mixed offsets to UTC.
+    """
+    reduced = pd.date_range("2000-01-01", periods=1200, freq="MS").strftime("%Y-%m").tolist()
+    values = pd.Series(["2024-01-01T12:00:00+01:00", "2024-01-02T12:00:00+02:00", *reduced])
+    original = pd.to_datetime
+    calls = []
+
+    def counted(*args, **kwargs):
+        """Record pandas conversion batches.
+
+        Args:
+            *args: Positional conversion arguments.
+            **kwargs: Keyword conversion arguments.
+
+        Returns:
+            object: The original pandas conversion result.
+        """
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pd, "to_datetime", counted)
+    result = tpg._parse_datetime(values, False, as_utc)
+    assert result.iloc[2].year == 2000
+    assert result.iloc[-1].year == 2099
+    assert len(calls) < 10
+
+
+@pytest.mark.parametrize("as_utc", [False, True])
 def test_submicrosecond_precision_keeps_the_conversion_diagnostic(as_utc):
     """Preserving offsets retains pandas' precision warning; UTC output uses milliseconds.
 

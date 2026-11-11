@@ -327,6 +327,33 @@ def _read_geoparquet_dataframe(
 
 
 _SUBMICROSECOND_ISO = re.compile(r"[.,][0-9]{6}[0-9]*[1-9]")
+_REDUCED_ISO = re.compile(r"[0-9]{4}(?:-[0-9]{2})?")
+
+
+def _parse_reduced_iso_dates(pd, values):
+    """Batch the timezone-free reduced forms that the stdlib does not accept.
+
+    Args:
+        pd: The pandas module.
+        values: Distinct input values.
+
+    Returns:
+        dict: Parsed reduced dates, or an empty cache if pandas rejects the batch.
+            Rejected inputs retain their existing per-value diagnostic path.
+    """
+    candidates = [
+        value for value in values if isinstance(value, str) and _REDUCED_ISO.fullmatch(value)
+    ]
+    if not candidates:
+        return {}
+    try:
+        parsed = pd.to_datetime(candidates, format="ISO8601")
+    except (TypeError, ValueError):
+        return {}
+    return {
+        value: timestamp.to_pydatetime(warn=False)
+        for value, timestamp in zip(candidates, parsed, strict=True)
+    }
 
 
 def _parse_iso_datetime(pd, value: str, *, warn_precision_loss: bool = False) -> Any:
@@ -371,11 +398,13 @@ def _to_datetime_iso8601(pd, ser):
     """
     if int(pd.__version__.split(".")[0]) < 3:
         offsets = set()
-        for value in pd.unique(ser):
+        unique = pd.unique(ser)
+        reduced = _parse_reduced_iso_dates(pd, unique)
+        for value in unique:
             if pd.isna(value):
                 continue
             try:
-                parsed = _parse_iso_datetime(pd, value)
+                parsed = reduced[value] if value in reduced else _parse_iso_datetime(pd, value)
                 if parsed is pd.NaT:
                     continue
                 offset = parsed.utcoffset()
@@ -413,9 +442,13 @@ def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
                     return ser
             else:
                 try:
+                    unique = pd.unique(ser)
+                    reduced = _parse_reduced_iso_dates(pd, unique)
                     values = {
-                        value: _parse_iso_datetime(pd, value, warn_precision_loss=True)
-                        for value in pd.unique(ser)
+                        value: reduced[value]
+                        if value in reduced
+                        else _parse_iso_datetime(pd, value, warn_precision_loss=True)
+                        for value in unique
                         if not pd.isna(value)
                     }
                     res = ser.map(values, na_action="ignore")
