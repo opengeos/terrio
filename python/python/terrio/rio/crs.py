@@ -301,17 +301,24 @@ class CRS(Mapping[str, Any]):
         params.update(kwargs)
         if not params:
             raise CRSError("CRS is empty or invalid")
-        if "init" in params:
-            return cls.from_user_input(str(params["init"]))
         parts = []
         for k, v in params.items():
             if v is True:
                 parts.append(f"+{k}")
             elif v is False:
+                if "init" in params:
+                    parts.append(f"+{k}=False")
                 continue
             else:
                 parts.append(f"+{k}={v}")
-        return cls.from_proj4(" ".join(parts))
+        proj = " ".join(parts)
+        if "init" in params and params.keys() <= {"init", "no_defs", "wktext"}:
+            try:
+                _terrio.proj_boolean_parameters(proj)
+            except Exception as err:
+                raise CRSError(f"Invalid CRS initialization flags: {err}") from err
+            return cls.from_user_input(str(params["init"]))
+        return cls.from_proj4(proj)
 
     @classmethod
     def from_string(cls, value: str, morph_from_esri_dialect: bool = False) -> CRS:

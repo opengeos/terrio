@@ -10,6 +10,7 @@ import pytest
 
 import terrio
 from terrio.rio.crs import CRS
+from terrio.rio.errors import CRSError
 from terrio.rio.warp import transform
 
 
@@ -345,6 +346,48 @@ def test_init_boolean_overrides_are_refused(value):
     """
     with pytest.raises(ValueError, match="overrides.*init"):
         CRS.from_proj4(f"+init=epsg:32633 +south={value}")
+
+
+@pytest.mark.parametrize("authority", ["epsg:32633", "ESRI:102003", "OGC:CRS84"])
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("constructor", ["dict", "kwargs"])
+def test_init_mapping_overrides_are_not_silently_dropped(authority, enabled, constructor):
+    """Mapping constructors refuse unsupported init overrides like PROJ-string inputs.
+
+    Args:
+        authority: Registry initialization.
+        enabled: An explicit hemisphere flag value.
+        constructor: Mapping or keyword constructor.
+    """
+    params = {"init": authority, "south": enabled}
+    with pytest.raises(ValueError, match="overrides.*init"):
+        if constructor == "dict":
+            CRS.from_dict(params)
+        else:
+            CRS(**params)
+
+
+@pytest.mark.parametrize("authority", ["epsg:32633", "ESRI:102003", "OGC:CRS84"])
+def test_init_mapping_metadata_flags_preserve_authority_support(authority):
+    """Inert metadata switches retain support for non-EPSG initialization too.
+
+    Args:
+        authority: Registry initialization.
+    """
+    assert CRS.from_dict(
+        {"init": authority, "no_defs": False, "wktext": True}
+    ) == CRS.from_user_input(authority)
+
+
+@pytest.mark.parametrize("authority", ["epsg:32633", "ESRI:102003"])
+def test_init_mapping_metadata_flag_errors_use_the_public_exception(authority):
+    """Invalid metadata flags retain the compatibility API's CRS error class.
+
+    Args:
+        authority: Registry initialization.
+    """
+    with pytest.raises(CRSError, match="boolean flag"):
+        CRS.from_dict({"init": authority, "no_defs": "maybe"})
 
 
 def test_named_datum_with_custom_spheroid_warns_and_preserves_axes():
