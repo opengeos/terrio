@@ -230,8 +230,9 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
 /// Native MapInfo bytes require `.mif.zip` or `.tab.zip`. A `.zip` name with the MapInfo driver
 /// defaults to MIF members. MapInfo byte writing remains unavailable in WebAssembly.
 pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOptions) -> Result<Vec<u8>> {
+    let archive = name.to_ascii_lowercase().ends_with(".zip");
     let driver = match options.driver.or_else(|| {
-        if name.to_ascii_lowercase().ends_with(".zip") {
+        if archive {
             match VectorDriver::for_extension(&name[..name.len() - 4]) {
                 Some(driver @ (VectorDriver::Shapefile | VectorDriver::MapInfo | VectorDriver::GML)) => Some(driver),
                 _ => VectorDriver::for_extension(name),
@@ -252,7 +253,7 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
     };
     crate::dataset::ensure_vector_options_apply(options, Some(driver))?;
     if driver == VectorDriver::GML {
-        if name.to_ascii_lowercase().ends_with(".zip") {
+        if archive {
             return Err(Error::InvalidArgument(
                 "GML byte output is one XML document: use a .gml filename; use write_vector for a schema sidecar".into(),
             ));
@@ -264,14 +265,14 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
     if driver == VectorDriver::MapInfo {
         return Err(Error::Unsupported("MapInfo byte output is unavailable in WebAssembly".into()));
     }
-    if driver == VectorDriver::MapInfo && !name.to_ascii_lowercase().ends_with(".zip") {
+    if driver == VectorDriver::MapInfo && !archive {
         let extension = if crate::formats::extension(name).as_deref() == Some("tab") { "tab" } else { "mif" };
         return Err(Error::InvalidArgument(format!(
             "MapInfo bytes are a ZIP archive: use a .{extension}.zip filename (MIME application/zip)"
         )));
     }
     if driver == VectorDriver::Shapefile {
-        if !name.to_ascii_lowercase().ends_with(".zip") {
+        if !archive {
             return Err(Error::InvalidArgument("Shapefile bytes are a ZIP archive: use a .shp.zip filename (MIME application/zip)".into()));
         }
         let [layer] = layers else {
@@ -286,7 +287,8 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
     {
         let dir = native::temp_dir()?;
         let member_name = if driver == VectorDriver::MapInfo {
-            let member = native::file_name(&name[..name.len() - 4], "mif");
+            let stem = &name[..name.len() - 4];
+            let member = native::file_name(stem, "mif");
             if matches!(crate::formats::extension(&member).as_deref(), Some("mif" | "tab")) { member } else { format!("{member}.mif") }
         } else {
             name.to_string()

@@ -36,6 +36,10 @@ Coordinates allow 1e-6 degrees for MapInfo's storage grid. The script reports
 the measured maximum and distinguishes exact coordinates from agreement within
 that tolerance. The reference is GDAL 3.13.3 for local validation.
 
+Run `python scripts/conformance.py DATA --only vector-byte-packaging --strict`
+to execute this suite and fail on differences or suite errors. Check its report
+for skipped comparisons when reference dependencies or data are unavailable.
+
 ## Translate input-opening policy
 
 Translate input-opening policy is tested with `cargo test -p terrio --lib ops::translate::tests`

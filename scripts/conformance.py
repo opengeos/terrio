@@ -551,7 +551,9 @@ def suite_vector_byte_packaging(ctx):
         suite.error = tail(err or out)
         return suite
     for result in results:
-        suite.cases.append(Case("Vector bytes", result["name"], result["status"], result["detail"]))
+        status = {"identical": IDENTICAL, "within tolerance": TOLERANCE,
+                  "not compared": NOT_COMPARED}.get(result["status"], DIFFERS)
+        suite.cases.append(Case("Vector bytes", result["name"], status, result["detail"]))
     if code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out) or f"exit {code}"
     return suite
