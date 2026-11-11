@@ -24,11 +24,14 @@ Terrio changing warning filters, including invalid input after mixed offsets and
 ISO forms. The pandas 2 pre-check visits every distinct string so an invalid value retains its
 original diagnostic; pandas 3 uses its parser directly. This adds a scan on pandas 2.
 On Linux with CPython 3.12.7 and pandas 2.2.3, three-run median times for one million timestamps
-were 0.0766 s before and 0.1208 s after for one repeated timestamp, and 5.2305 s before and
-6.1575 s after for distinct timestamps. Inputs used `+01:00`, with distinct values at one-second
+were 0.0928 s before and 0.1469 s after for one repeated timestamp, and 5.2873 s before and
+6.0990 s after for distinct timestamps. Inputs used `+01:00`, with distinct values at one-second
 intervals starting 2024-01-01 and a 1,000-value warmup. This measures datetime conversion alone,
 excluding file I/O and dataframe construction, against the previous filter-based parser.
 It documents the additional CPU cost and is not a timing gate or an end-to-end read benchmark.
+Each live buffer-reference comparison owns its GDAL and Arrow state in a child process. The
+GeoParquet case checks both ordinary buffers and Arrow dataframe reads with registered WKB
+extension types, keeping the reference driver's registrations out of other tests.
 
 ## Translate input-opening policy
 

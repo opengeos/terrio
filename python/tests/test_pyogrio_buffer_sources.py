@@ -1,7 +1,10 @@
 """Buffer recognition and archive selection use the same readers as named vector files."""
 
 import io
+import subprocess
+import sys
 import zipfile
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -182,16 +185,42 @@ def test_signed_buffers_match_gdal(sources, extension, driver):
         extension: Signed vector format.
         driver: GDAL driver required by the reference.
     """
+    # GDAL's Parquet driver registers C++ Arrow types. Keep those registrations out of
+    # the parent process, where unrelated tests exercise third-party Arrow consumers.
+    result = subprocess.run(
+        [sys.executable, __file__, str(sources[extension]), extension, driver],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 77:
+        pytest.skip(result.stdout.strip())
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _compare_signed_buffer_with_gdal(path, extension, driver):
+    """Compare a buffer in a process that owns the reference driver's Arrow registrations.
+
+    Args:
+        path: Generated vector dataset.
+        extension: Signed vector format.
+        driver: Required GDAL reference driver.
+    """
     reference = pytest.importorskip("pyogrio")
     if reference is tpg or getattr(reference, "__terrio_version__", None):
         pytest.skip("reference pyogrio resolves to the Terrio compatibility adapter")
     if driver not in reference.list_drivers():
         pytest.skip(f"GDAL's {driver} driver is unavailable in pyogrio")
+    pytest.importorskip("geopandas")
     from geopandas.testing import assert_geodataframe_equal
 
-    data = sources[extension].read_bytes()
+    data = path.read_bytes()
     expected = reference.read_dataframe(io.BytesIO(data))
     assert_geodataframe_equal(tpg.read_dataframe(data), expected)
+    if extension == "parquet":
+        # GDAL registers geoarrow.wkb globally, consuming extension field metadata on import.
+        meta, _table = tpg.read_arrow(path)
+        assert meta["geometry_name"] == "geometry"
+        assert_geodataframe_equal(tpg.read_dataframe(path, use_arrow=True), expected)
 
 
 @pytest.mark.parametrize("extension", ["gpkg", "fgb", "parquet", "kml"])
@@ -207,3 +236,11 @@ def test_buffer_readers_keep_the_native_driver_policy(sources, extension):
     with rio.Env(TERRIO_ALLOWED_DRIVERS="GeoJSON"):
         with pytest.raises(DataSourceError, match="driver is not allowed"):
             tpg.read_info(sources[extension].read_bytes(), layer=0)
+
+
+if __name__ == "__main__":
+    try:
+        _compare_signed_buffer_with_gdal(Path(sys.argv[1]), sys.argv[2], sys.argv[3])
+    except pytest.skip.Exception as error:
+        print(str(error))
+        raise SystemExit(77) from None

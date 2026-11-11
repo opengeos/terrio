@@ -303,9 +303,13 @@ def _read_geoparquet_dataframe(
     name = meta["geometry_name"]
     if not read_geometry or not name:
         return table.to_pandas(**kwargs)
-    storage = table.schema.field(name).type
+    column = table[name]
+    storage = column.type
+    if getattr(storage, "extension_name", "") == "geoarrow.wkb":
+        storage = storage.storage_type
+        column = pa.chunked_array([chunk.storage for chunk in column.chunks], type=storage)
     if pa.types.is_binary(storage) or pa.types.is_large_binary(storage):
-        geometry = shapely.from_wkb(table[name].to_numpy(zero_copy_only=False))
+        geometry = shapely.from_wkb(column.to_numpy(zero_copy_only=False))
         df = table.drop_columns([name]).to_pandas(**kwargs)
         gdf = gp.GeoDataFrame(
             df, geometry=gp.GeoSeries(geometry, index=df.index, name=name), crs=meta["crs"]
@@ -319,19 +323,24 @@ def _read_geoparquet_dataframe(
     return gdf
 
 
-def _parse_iso_datetime(value: str) -> _dt.datetime:
-    """Parse an ISO datetime, including trailing Z on Python 3.10.
+def _parse_iso_datetime(pd, value: str) -> _dt.datetime:
+    """Parse one ISO datetime, using pandas for reduced dates and missing strings.
 
     Args:
+        pd: The pandas module.
         value: An ISO date-time string.
 
     Returns:
-        datetime: A value preserving its UTC offset or lack of one.
+        datetime: A value preserving its UTC offset, or pandas' NaT for missing strings.
 
     Raises:
         ValueError: The string is not a valid ISO datetime.
     """
-    return _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    try:
+        return _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError):
+        # A singleton cannot mix offsets or emit the mixed-timezone warning.
+        return pd.to_datetime([value], format="ISO8601")[0].to_pydatetime(warn=False)
 
 
 def _to_datetime_iso8601(pd, ser):
@@ -353,18 +362,13 @@ def _to_datetime_iso8601(pd, ser):
             if pd.isna(value):
                 continue
             try:
-                offset = _parse_iso_datetime(value).utcoffset()
+                parsed = _parse_iso_datetime(pd, value)
+                if parsed is pd.NaT:
+                    continue
+                offset = parsed.utcoffset()
             except (AttributeError, TypeError, ValueError):
-                try:
-                    # Pandas also accepts reduced dates and missing strings such as "NaT".
-                    # A singleton cannot mix offsets or emit the mixed-timezone warning.
-                    parsed = pd.to_datetime([value], format="ISO8601")[0]
-                    if pd.isna(parsed):
-                        continue
-                    offset = parsed.utcoffset()
-                except (AttributeError, TypeError, ValueError):
-                    # Let pandas retain its own invalid-input diagnostic.
-                    break
+                # Let pandas retain its own invalid-input diagnostic.
+                break
             if len(offsets) < 2:
                 offsets.add(offset)
         else:
@@ -396,7 +400,7 @@ def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
                     return ser
             else:
                 try:
-                    res = ser.map(_parse_iso_datetime, na_action="ignore")
+                    res = ser.map(lambda value: _parse_iso_datetime(pd, value), na_action="ignore")
                 except Exception as ex2:
                     warnings.warn(warning.format(message=str(ex2)), stacklevel=3)
                     return ser
@@ -655,6 +659,7 @@ def open_arrow(
         f.name
         for f in reader.schema
         if (f.metadata or {}).get(b"ARROW:extension:name", b"").startswith(b"geoarrow.")
+        or getattr(f.type, "extension_name", "").startswith("geoarrow.")
     ]
     meta["geometry_name"] = geometry[0] if geometry else ""
     if not read_geometry and geometry:

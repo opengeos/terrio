@@ -349,8 +349,10 @@ def suite_pyogrio_buffers(ctx):
     for case in cases:
         name = case.get("name", "buffer comparison")
         failure = case.find("failure")
-        if failure is None:
-            failure = case.find("error")
+        error = case.find("error")
+        if error is not None:
+            suite.error = tail(error.text or error.get("message", "pytest error"))
+            return suite
         skipped = case.find("skipped")
         if failure is not None:
             status, detail = DIFFERS, tail(failure.text or failure.get("message", "comparison failed"))
