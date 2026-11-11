@@ -1001,6 +1001,12 @@ terrio translate INPUT OUTPUT [options]
 (`--ovr`), `--a-nodata`, `--a-srs`, `--a-ullr`, and the output format options. Type conversion
 rounds and clamps as GDAL does.
 
+A window read at its own size is copied pixel for pixel only on whole-pixel offsets, or by
+`nearest` from the pixel holding each output pixel's centre (a `--projwin` read by `nearest` starts
+on a whole pixel). At a fractional offset it is resampled there by `-r`, its kernels and areas
+reaching the pixels around it, whether the input is read whole (a format such as an Esri ASCII
+grid) or by window.
+
 An input without a geotransform of its own (an unreferenced GeoTIFF or JPEG 2000 file) gives an
 output without one, unless `--a-ullr` assigns bounds: a GeoTIFF or COG without a tie point, a JPEG
 2000 file without a GeoJP2 box, and a PNG, JPEG or WebP file without a world file. A CRS alone
@@ -1203,14 +1209,37 @@ datum transformations change them, as GDAL does after `PromoteTo3D` on both CRSs
 Point-cloud reprojection currently rejects `--ct-opt` because it does not support
 these controls.
 
+Warp sampling defaults to a grid-invariant policy: aligned tiles, VRT windows and
+memory chunks use the same coordinate approximation spans and local kernel footprints.
+This applies to all resamplers, including with the default approximation threshold.
+It changes values where GDAL's chunk-dependent approximation or kernel scales would
+change them. It does not promise pixel-identical results with GDAL's default warper.
+The shared warper also uses this default for reprojection inside tiles, retile,
+mosaic, catalogs and update operations. Those paths use `TERRIO_WARP_GRID=GDAL`
+to select the historical sampling policy.
+
+Stable sampling spends additional CPU on local source-support planning. It recomputes
+bounded row scratch rather than retaining a scale matrix for a whole working chunk.
+For a 3612×3612 USGS DEM reprojected to 3121×4044 Float64 Web Mercator pixels,
+reading all 208 windows of up to 256×256 pixels through `WarpedVRT` took median
+process CPU times of 4.61 s stable versus 1.60 s reproduction for bilinear, and
+4.17/1.74 s for cubic. These are single-thread optimized local measurements at
+approximation threshold 0.125, after one warmup and over three measured runs;
+other grids, kernels and storage can have different costs.
+
 GDAL 3.13 changed warp kernel scales and the bilinear/cubic downsampling threshold.
-Use `warp --kernel-version 3.13` to reproduce that behavior. Without the option, warp
-follows the `TERRIO_GDAL_COMPAT` configuration option (`3.12` or `3.13`), else `3.12`,
-which retains Terrio's earlier results and the repository's GDAL 3.12 conformance
-baseline. Both modes keep lazy window/overview reads. A serialized warped VRT is
-resampled with the reader's configured version, as GDAL's warped VRTs are with the
-reader's GDAL: a different explicit version or explicit coordinate-operation policies
-require materialized output.
+`warp --kernel-version 3.13` selects that arithmetic; without the option, warp follows
+`TERRIO_GDAL_COMPAT` (`3.12` or `3.13`), else `3.12`. To reproduce the corresponding
+GDAL chunk-dependent sampling, also pass `--grid-invariant false`, or set
+`TERRIO_WARP_GRID=GDAL`. An explicit `--grid-invariant true` overrides that setting.
+Both policies retain lazy window/overview reads. Python's `warp` and `WarpedVRT`
+accept `grid_invariant=True|False`; JavaScript's `warp` accepts `gridInvariant`.
+
+A serialized warped VRT uses the reader's configured kernel version and grid policy.
+VRT creation rejects per-call policies that differ from the current configuration.
+Materialize output to preserve those choices across readers with different settings.
+The native `TERRIO_WARP_GRID` selector accepts `GDAL` or `STABLE`, ignoring case;
+an unknown value records a warning and selects stable sampling.
 
 `TERRIO_GDAL_COMPAT=3.13` reproduces the other GDAL 3.13 behaviors terrio follows
 where releases differ:
@@ -4045,7 +4074,7 @@ for one command and its descendants. Required dataset arguments may be omitted;
 metadata requests open no datasets or output files. The Python package supports
 identical requests with `python -m terrio`.
 
-The payload has `schema_version: "0.1.3"`, `unstable: true`, the program/version,
+The payload has `schema_version: "0.1.4"`, `unstable: true`, the program/version,
 and a recursive `command` object. Each command records its canonical name/path,
 aliases, description, arguments and subcommands. Arguments include flags and
 aliases, positional index, type, raw default tokens, choices, required status,

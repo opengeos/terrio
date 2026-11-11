@@ -22,6 +22,8 @@ from terrio.rio.enums import Resampling as TR  # noqa: E402
 from terrio.rio.vrt import WarpedVRT  # noqa: E402
 from terrio.rio.windows import Window as TW  # noqa: E402
 
+pytestmark = pytest.mark.usefixtures("gdal_warp_grid")
+
 
 @pytest.fixture(scope="module")
 def utm(tmp_path_factory):
