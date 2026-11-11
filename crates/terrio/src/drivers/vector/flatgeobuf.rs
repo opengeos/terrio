@@ -1153,6 +1153,7 @@ mod tests {
         assert!(requests.lock().unwrap().is_empty(), "the refused file was requested");
     }
 
+    #[cfg(remote)]
     #[test]
     fn disallowed_remote_flatgeobuf_is_refused_before_download() {
         // Refused by the allow-list before any request: the file is not downloaded.
