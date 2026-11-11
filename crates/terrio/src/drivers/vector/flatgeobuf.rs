@@ -1136,7 +1136,7 @@ mod tests {
         assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "GeometryZ");
     }
 
-    #[cfg(remote)]
+    #[cfg(all(remote, not(feature = "gdal")))]
     #[test]
     fn remote_flatgeobuf_without_extension_keeps_the_general_route() {
         // Known limit: a remote FlatGeobuf is recognised by its URL's file name extension. Without
