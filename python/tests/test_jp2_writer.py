@@ -23,10 +23,12 @@ from terrio.rio.io import MemoryFile  # noqa: E402
 TRANSFORM = from_origin(500000, 4600000, 10, 10)
 
 MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
-# The irreversible 9/7 wavelet is computed in float32. The macOS arm64 OpenJPEG build fuses
-# multiply-adds, so a dequantized sample that lands on a rounding boundary can decode one
-# step away from terrio's. The bitstream is identical (see the byte checks); only the
-# float rounding in the inverse transform differs. Other platforms stay exact.
+# The irreversible 9/7 wavelet is computed in float32. Both decoders read the same payload, yet
+# on macOS arm64 a few samples decode one step apart from GDAL's. That the OpenJPEG build in
+# rasterio's wheel fuses multiply-adds is inferred, as in `test_resampled_reads.py`, not
+# measured. Linux, Windows and the reversible 5/3 path stay exact everywhere. The worst case
+# seen was 41 of 4096 samples (1.0%) for a uint16 band; low-quality 9/7 output leaves far more
+# samples near a rounding boundary than the resampling cases there, so the bound is 2%.
 IRREVERSIBLE_FMA_MAX_FRACTION = 0.02
 
 
@@ -37,8 +39,9 @@ def assert_decodes_as_gdal(actual, expected, *, irreversible):
         return
     assert actual.dtype == expected.dtype and actual.shape == expected.shape
     difference = np.abs(actual.astype("int64") - expected.astype("int64"))
-    assert difference.max(initial=0) <= 1
-    assert np.mean(difference != 0) <= IRREVERSIBLE_FMA_MAX_FRACTION
+    assert difference.max(initial=0) <= 1, f"max difference {difference.max()}"
+    fraction = np.mean(difference != 0)
+    assert fraction <= IRREVERSIBLE_FMA_MAX_FRACTION, f"{fraction:.4%} of samples differ"
 
 
 def encode(data, **options):
@@ -94,8 +97,9 @@ def test_jp2_path_and_memory_options(tmp_path, options, lossless):
     with GdalMemoryFile(payload) as mem, mem.open() as oracle, rio.open(path) as actual:
         expected = oracle.read()
         # Lossy output is the float 9/7 transform unless REVERSIBLE=YES keeps the integer 5/3.
-        reversible = str(options.get("REVERSIBLE", options.get("reversible", ""))).upper() == "YES"
-        assert_decodes_as_gdal(actual.read(), expected, irreversible=not lossless and not reversible)
+        upper = {key.upper(): str(value).upper() for key, value in options.items()}
+        irreversible = not lossless and upper.get("REVERSIBLE") != "YES"
+        assert_decodes_as_gdal(actual.read(), expected, irreversible=irreversible)
         assert actual.transform == oracle.transform == TRANSFORM
         assert actual.crs.to_epsg() == oracle.crs.to_epsg() == 32631
         assert actual.dtypes == oracle.dtypes == ("uint8",) * 3
