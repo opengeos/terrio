@@ -906,10 +906,11 @@ fn repeated(fill: &[u8], n: usize, what: &str) -> Result<Vec<u8>> {
     }
     let mut out = Vec::new();
     crate::dataset::fallible::reserve(&mut out, len, what)?;
-    // Doubling: a few large copies rather than one per element.
-    if n > 0 {
-        out.extend_from_slice(fill);
+    if n == 0 {
+        return Ok(out);
     }
+    // Doubling: a few large copies rather than one per element.
+    out.extend_from_slice(fill);
     while out.len() < len {
         out.extend_from_within(..out.len().min(len - out.len()));
     }
