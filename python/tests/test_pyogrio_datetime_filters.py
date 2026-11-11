@@ -203,5 +203,7 @@ def test_submicrosecond_precision_keeps_the_conversion_diagnostic(as_utc):
         warning for warning in caught if "Discarding nonzero nanoseconds" in str(warning.message)
     ]
     assert bool(precision) == (not as_utc)
+    if precision:
+        assert precision[0].filename == __file__
     assert not [warning for warning in caught if issubclass(warning.category, FutureWarning)]
     assert result.iloc[0].microsecond == (123000 if as_utc else 123456)

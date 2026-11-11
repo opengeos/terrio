@@ -181,26 +181,82 @@ def test_top_level_json_arrays_are_refused_as_invalid_geojson():
         tpg.read_info(data)
 
 
-@pytest.mark.parametrize(
-    "extension,driver", [("gpkg", "GPKG"), ("fgb", "FlatGeobuf"), ("parquet", "Parquet")]
-)
-def test_signed_buffers_match_gdal(sources, extension, driver):
-    """Compare signed buffer reads with the installed Pyogrio/GDAL reference.
+@pytest.fixture
+def buffer_reference(sources, extension, driver):
+    """Run reference setup separately so crashes and timeouts are pytest errors.
 
     Args:
         sources: Dataset paths.
         extension: Signed vector format.
         driver: GDAL driver required by the reference.
+
+    Returns:
+        CompletedProcess: The comparison subprocess result.
+    """
+    return _run_buffer_reference(sources[extension], extension, driver)
+
+
+def _run_buffer_reference(path, extension, driver):
+    """Run an isolated comparison with distinct mismatch, skip and setup outcomes.
+
+    Args:
+        path: Dataset to compare.
+        extension: Signed vector format.
+        driver: Required GDAL driver.
+
+    Returns:
+        CompletedProcess: A successful comparison or an assertion mismatch.
     """
     # GDAL's Parquet driver registers C++ Arrow types. Keep those registrations out of
     # the parent process, where unrelated tests exercise third-party Arrow consumers.
     result = subprocess.run(
-        [sys.executable, __file__, str(sources[extension]), extension, driver],
+        [sys.executable, __file__, str(path), extension, driver],
         capture_output=True,
         text=True,
+        timeout=60,
     )
     if result.returncode == 77:
         pytest.skip(result.stdout.strip())
+    if result.returncode not in (0, 79):
+        raise RuntimeError(
+            f"buffer reference failed ({result.returncode}): {result.stdout}{result.stderr}"
+        )
+    return result
+
+
+@pytest.mark.parametrize("status", [0, 79, 77, 1, 78, -11])
+def test_buffer_reference_process_outcomes(monkeypatch, tmp_path, status):
+    """Only explicit comparison assertions become data differences.
+
+    Args:
+        monkeypatch: Scoped process replacement.
+        tmp_path: Temporary dataset directory.
+        status: Child exit code or signal.
+    """
+    result = subprocess.CompletedProcess([], status, "oracle output", "oracle diagnostic")
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: result)
+    if status == 77:
+        with pytest.raises(pytest.skip.Exception):
+            _run_buffer_reference(tmp_path / "data.fgb", "fgb", "FlatGeobuf")
+    elif status not in (0, 79):
+        with pytest.raises(RuntimeError, match="buffer reference failed"):
+            _run_buffer_reference(tmp_path / "data.fgb", "fgb", "FlatGeobuf")
+    else:
+        assert _run_buffer_reference(tmp_path / "data.fgb", "fgb", "FlatGeobuf") is result
+
+
+@pytest.mark.parametrize(
+    "extension,driver", [("gpkg", "GPKG"), ("fgb", "FlatGeobuf"), ("parquet", "Parquet")]
+)
+def test_signed_buffers_match_gdal(extension, driver, buffer_reference):
+    """Compare signed buffers after the reference process initialized successfully.
+
+    Args:
+        extension: Signed vector format.
+        driver: Required reference driver.
+        buffer_reference: The reference comparison result.
+    """
+    result = buffer_reference
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -251,3 +307,13 @@ if __name__ == "__main__":
     except pytest.skip.Exception as error:
         print(str(error))
         raise SystemExit(77) from None
+    except AssertionError:
+        import traceback
+
+        traceback.print_exc()
+        raise SystemExit(79) from None
+    except Exception:
+        import traceback
+
+        traceback.print_exc()
+        raise SystemExit(78) from None

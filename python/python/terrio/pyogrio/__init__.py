@@ -48,10 +48,12 @@ import json
 import os
 import re
 import warnings
+from typing import Any
 
 import numpy as np
 
 from terrio import _terrio
+from terrio._warnings import warn_user
 from terrio.pyogrio import errors
 from terrio.pyogrio._read import _Source
 from terrio.pyogrio._read import read as _read
@@ -327,7 +329,7 @@ def _read_geoparquet_dataframe(
 _SUBMICROSECOND_ISO = re.compile(r"[.,][0-9]{6}[0-9]*[1-9]")
 
 
-def _parse_iso_datetime(pd, value: str, *, warn_precision_loss: bool = False) -> _dt.datetime:
+def _parse_iso_datetime(pd, value: str, *, warn_precision_loss: bool = False) -> Any:
     """Parse one ISO datetime for offset inspection or Python datetime output.
 
     Args:
@@ -342,14 +344,14 @@ def _parse_iso_datetime(pd, value: str, *, warn_precision_loss: bool = False) ->
         ValueError: The string is not a valid ISO datetime.
     """
     try:
-        parsed = _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = _dt.datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
     except (AttributeError, TypeError, ValueError):
         # A singleton cannot mix offsets or emit the mixed-timezone warning.
         return pd.to_datetime([value], format="ISO8601")[0].to_pydatetime(warn=warn_precision_loss)
     if warn_precision_loss and _SUBMICROSECOND_ISO.search(value):
         # Offset inspection discards this temporary value; Python output must retain the
         # precision diagnostic that pandas' to_pydatetime gives for the same conversion.
-        warnings.warn("Discarding nonzero nanoseconds in conversion.", UserWarning, stacklevel=3)
+        warn_user("Discarding nonzero nanoseconds in conversion.")
     return parsed
 
 

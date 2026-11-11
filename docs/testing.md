@@ -29,9 +29,17 @@ were 0.0781 s before and 0.1216 s after for one repeated timestamp, and 4.7764 s
 intervals starting 2024-01-01 and a 1,000-value warmup. This measures datetime conversion alone,
 excluding file I/O and dataframe construction, against the previous filter-based parser.
 It documents the additional CPU cost and is not a timing gate or an end-to-end read benchmark.
+The same method with nine-digit fractions measured 0.0951 s before and 0.1506 s after for
+repeated values, and 6.0201 s before and 5.8743 s after for one million distinct values at
+nanosecond intervals. On this Python version, `datetime.fromisoformat` accepts these fractions
+directly; the pre-check does not make singleton pandas calls for them. Reduced dates and
+missing strings use the pandas fallback, with preserved output cached by distinct value.
 Each live buffer-reference comparison owns its GDAL and Arrow state in a child process. The
 GeoParquet case checks both ordinary buffers and Arrow dataframe reads with registered WKB
 extension types, keeping the reference driver's registrations out of other tests.
+An explicit child assertion is a comparison difference; skipped references stay skipped.
+Other exit codes, signals and the 60-second timeout are fixture setup errors, which the
+conformance reporter records as suite errors instead of data differences.
 
 ## Translate input-opening policy
 
