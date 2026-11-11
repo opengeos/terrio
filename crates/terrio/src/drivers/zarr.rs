@@ -2983,7 +2983,7 @@ mod tests {
             s as u8
         };
         for typesize in [1usize, 2, 3, 4, 8, 16] {
-            for nelems in [8, 16, 24, 64, 1000, 4096, 4101] {
+            for nelems in [1, 3, 7, 8, 16, 24, 64, 1000, 4096, 4101] {
                 for extra in [0, 1, typesize.saturating_sub(1)] {
                     let bsize = nelems * typesize + extra;
                     let block: Vec<u8> = (0..bsize).map(|_| next()).collect();

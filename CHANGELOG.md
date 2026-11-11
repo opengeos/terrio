@@ -2,8 +2,6 @@
 
 ## Unreleased
 
-- Zarr: Blosc's bit unshuffle transposes 8 x 8 bit blocks rather than moving a bit at a time;
-  4.7 MB of int8 TESSERA embeddings took about 100 ms to unshuffle in WebAssembly before.
 - A `Raster` read lazily from a file, such as a GeoTIFF (`open_raster(path, lazy=True)`,
   `rio.open`, the xarray backend), can be read from several Python threads at once: `read`,
   `read_mask` and `numpy.asarray` raised `RuntimeError: Already borrowed` when a read overlapped
