@@ -224,3 +224,35 @@ def test_complex_update_keeps_the_declared_sample_type(tmp_path, gdal, kind):
     actual, ds = read_precise(gdal, source)
     assert ds.GetRasterBand(1).DataType == getattr(gdal, "GDT_" + kind)
     np.testing.assert_array_equal(actual, values)
+
+
+@pytest.mark.parametrize("mode", ["whole", "window", "nearest", "out", "boundless"])
+def test_read_only_cint32_wide_output_keeps_integer_components(tmp_path, gdal, mode):
+    """GDAL 3.13.3 CInt32 components survive a requested complex128 output buffer."""
+    values = (np.arange(2 * 19 * 37).reshape(2, 19, 37).astype("float64") + 2**24 + 1) * (1 - 1j)
+    values[0, 0, 0] = (2**31 - 1) - (2**31) * 1j
+    path = tmp_path / "read-only.tif"
+    ds = gdal.GetDriverByName("GTiff").Create(str(path), 37, 19, 2, gdal.GDT_CInt32)
+    ds.SetGeoTransform(GT)
+    for band in range(2):
+        ds.GetRasterBand(band + 1).WriteArray(values[band])
+    ds = None
+    expected, oracle = read_precise(gdal, path)
+    np.testing.assert_array_equal(expected, values)
+    options = {"out_dtype": "complex128"}
+    if mode == "window":
+        options["window"] = Window(3, 2, 5, 4)
+        expected = values[:, 2:6, 3:8]
+    elif mode == "nearest":
+        options["out_shape"] = (2, 5, 7)
+        expected = oracle.ReadAsArray(buf_xsize=7, buf_ysize=5, buf_type=gdal.GDT_CFloat64)
+    elif mode == "out":
+        options = {"out": np.empty_like(values)}
+    elif mode == "boundless":
+        options.update(window=Window(-2, -1, 41, 21), boundless=True)
+        expected = np.pad(values, ((0, 0), (1, 1), (2, 2)))
+    with rio.open(path) as source:
+        assert source.read().dtype == np.dtype("complex64")
+        actual = source.read(**options)
+    assert actual.dtype == np.dtype("complex128")
+    np.testing.assert_array_equal(actual, expected)

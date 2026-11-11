@@ -33,6 +33,7 @@ import warnings
 import weakref
 from collections.abc import Iterator, Sequence
 from contextlib import ExitStack
+from functools import partial
 from typing import Any
 
 import numpy as np
@@ -1473,7 +1474,12 @@ class DatasetReader(DatasetBase):
     # Reading.
 
     def _read_level(
-        self, bands: Sequence[int], window: tuple[int, int, int, int], level: int | None
+        self,
+        bands: Sequence[int],
+        window: tuple[int, int, int, int],
+        level: int | None,
+        *,
+        out_dtype: Any = None,
     ) -> np.ndarray:
         """Reads an integer window of a level.
 
@@ -1481,6 +1487,7 @@ class DatasetReader(DatasetBase):
             bands: The bands, from 1.
             window: `(x, y, w, h)`.
             level: None for full resolution, else an overview index.
+            out_dtype: An optional core output type, before component precision is lost.
 
         Returns:
             numpy.ndarray: `(bands, h, w)`.
@@ -1490,7 +1497,10 @@ class DatasetReader(DatasetBase):
         """
         self._check_open()
         try:
-            return np.asarray(self._raster.read(list(bands), window=window, overview=level))
+            options = {"out_dtype": out_dtype} if out_dtype is not None else {}
+            return np.asarray(
+                self._raster.read(list(bands), window=window, overview=level, **options)
+            )
         except Exception as err:
             raise RasterioIOError(f"Read failed: {err}") from err
 
@@ -1553,6 +1563,8 @@ class DatasetReader(DatasetBase):
         window: Window | None,
         buf: tuple[int, int],
         resampling: Resampling,
+        *,
+        out_dtype: Any = None,
     ) -> np.ndarray:
         """Reads bands of a window (inside the raster) into a buffer.
 
@@ -1561,6 +1573,7 @@ class DatasetReader(DatasetBase):
             window: The window, or None for the whole raster.
             buf: The output `(height, width)`.
             resampling: The resampling method.
+            out_dtype: A wider core read type when exact integer-complex output is requested.
 
         Returns:
             numpy.ndarray: `(bands, height, width)` in the dataset's data type.
@@ -1595,10 +1608,15 @@ class DatasetReader(DatasetBase):
                 return np.asarray(self._raster.read_resampled(band=list(indexes), **core))
             except Exception as err:
                 raise RasterioIOError(f"Read failed: {err}") from err
+        read_level = (
+            partial(self._read_level, out_dtype=out_dtype)
+            if out_dtype is not None
+            else self._read_level
+        )
         nodata = self.nodatavals[0] if self._count else None
         if resampling == Resampling.nearest:
             return raster_io(
-                self._read_level,
+                read_level,
                 indexes,
                 (self.width, self.height),
                 self._overview_sizes,
@@ -1628,7 +1646,7 @@ class DatasetReader(DatasetBase):
         groups = [(list(indexes[:shared]), True), (list(indexes[shared:]), False)]
         parts = [
             raster_io(
-                self._read_level,
+                read_level,
                 group,
                 (self.width, self.height),
                 self._overview_sizes,
@@ -1909,6 +1927,12 @@ class DatasetReader(DatasetBase):
             buf = (int(out_shape[-2]), int(out_shape[-1]))
         else:
             buf = win_shape
+        precise = (
+            dtype == np.dtype("complex128")
+            and type(self)._read_level is DatasetReader._read_level
+            and getattr(self._raster, "data_type", None) == "CInt32"
+        )
+        read_options = {"out_dtype": "complex128"} if precise else {}
         nodatavals = [self.nodatavals[b - 1] for b in idx]
         fill = None if not nodatavals else nodatavals[-1]
         if fill is not None and not np.isnan(fill):
@@ -1921,7 +1945,7 @@ class DatasetReader(DatasetBase):
             ]
 
         if not boundless or win is None:
-            data = self._io(idx, win, buf, resampling)
+            data = self._io(idx, win, buf, resampling, **read_options)
             arr = gdal_cast(data, dtype)
             if masked or fill_value is not None:
                 if all(f == MaskFlags.all_valid.value for f in self._mask_flags()):
@@ -1946,7 +1970,15 @@ class DatasetReader(DatasetBase):
             from terrio.rio._boundless import boundless_read
 
             data, invalid = boundless_read(
-                self, idx, win, buf, int(Resampling(resampling)), fill_value, fill, masked
+                self,
+                idx,
+                win,
+                buf,
+                int(Resampling(resampling)),
+                fill_value,
+                fill,
+                masked,
+                out_dtype="complex128" if precise else None,
             )
             result = gdal_cast(data, dtype)
             if masked:
@@ -1958,7 +1990,14 @@ class DatasetReader(DatasetBase):
                 result = np.ma.array(result, **kwds)
         else:
             background = fill_value if fill_value is not None else fill
-            data, inside = self._boundless(idx, win, buf, resampling, background)
+            data, inside = self._boundless(
+                idx,
+                win,
+                buf,
+                resampling,
+                background,
+                out_dtype=dtype if dtype == np.dtype("complex128") else None,
+            )
             arr = gdal_cast(data, dtype)
             result = arr
             if masked:
@@ -1992,6 +2031,8 @@ class DatasetReader(DatasetBase):
         buf: tuple[int, int],
         resampling: Resampling,
         background: Any,
+        *,
+        out_dtype: Any = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Reads a window that may extend past the raster.
 
@@ -2001,6 +2042,7 @@ class DatasetReader(DatasetBase):
             buf: The output `(height, width)`.
             resampling: The resampling method.
             background: The value of pixels outside the raster (None for 0).
+            out_dtype: A wider complex buffer type when requested.
 
         Returns:
             tuple: The pixels `(bands, h, w)` and where they are inside the raster.
@@ -2012,7 +2054,11 @@ class DatasetReader(DatasetBase):
         cy = win.row_off + (np.arange(bh) + 0.5) * sy
         inx = (cx >= 0) & (cx < self.width)
         iny = (cy >= 0) & (cy < self.height)
-        out = np.full((len(idx), bh, bw), background if background is not None else 0, self._dtype)
+        out = np.full(
+            (len(idx), bh, bw),
+            background if background is not None else 0,
+            out_dtype or self._dtype,
+        )
         inside = np.zeros((len(idx), bh, bw), bool)
         if inx.any() and iny.any():
             c0, c1 = int(np.argmax(inx)), int(len(inx) - np.argmax(inx[::-1]))
@@ -2579,7 +2625,12 @@ class DatasetWriter(DatasetReader):
         return self.read(window=window)
 
     def _read_level(
-        self, bands: Sequence[int], window: tuple[int, int, int, int], level: int | None
+        self,
+        bands: Sequence[int],
+        window: tuple[int, int, int, int],
+        level: int | None,
+        *,
+        out_dtype: Any = None,
     ) -> np.ndarray:
         """Reads an integer window of the pixels in memory.
 
@@ -2587,6 +2638,7 @@ class DatasetWriter(DatasetReader):
             bands: The bands, from 1.
             window: `(x, y, w, h)`.
             level: Unused: the dataset in memory has no overviews.
+            out_dtype: Unused: the writer buffer already retains its component precision.
 
         Returns:
             numpy.ndarray: `(bands, h, w)`.

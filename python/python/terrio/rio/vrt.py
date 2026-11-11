@@ -1107,6 +1107,8 @@ class WarpedVRT(DatasetReader):
         window: Any,
         buf: tuple[int, int],
         resampling: Resampling,
+        *,
+        out_dtype: Any = None,
     ) -> np.ndarray:
         """Reads bands of a window into a buffer, as rasterio's read through GDAL's `RasterIO`.
 
@@ -1115,6 +1117,7 @@ class WarpedVRT(DatasetReader):
             window: The window, or None for the whole raster.
             buf: The output `(height, width)`.
             resampling: The resampling method.
+            out_dtype: Unused: VRT pixels use their own working type before conversion.
 
         Returns:
             numpy.ndarray: `(bands, height, width)` in the VRT's data type.
