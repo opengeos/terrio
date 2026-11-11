@@ -61,7 +61,11 @@ fn open_bytes_of_kind(bytes: Vec<u8>, name: &str, kind: Option<Kind>) -> Result<
     #[cfg(target_family = "wasm")]
     {
         crate::formats::check_allowed_bytes(name, &bytes, kind)?;
-        codec::open(bytes, name, &VectorOpenOptions::default())
+        let ds = codec::open(bytes, name, &VectorOpenOptions::default())?;
+        if let Dataset::Raster(raster) = &ds {
+            crate::declared::check_dataset(raster)?;
+        }
+        Ok(ds)
     }
 }
 
@@ -537,6 +541,7 @@ pub(crate) mod codec {
             return open_zip(&bytes, name, options);
         }
         if RasterDriver::for_extension(name) == Some(RasterDriver::AAIGrid) {
+            crate::drivers::declared_header::check_ascii_bytes(&bytes)?;
             let raster = wbraster::formats::esri_ascii::parse(Cursor::new(&bytes), name)?;
             return Ok(Dataset::Raster(RasterDataset::with_driver(raster, RasterDriver::AAIGrid, true)));
         }

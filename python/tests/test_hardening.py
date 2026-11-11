@@ -251,8 +251,8 @@ def test_translate_refuses_what_it_would_hold_but_cannot(tmp_path):
 def test_the_declared_size_options_refuse_a_raster_at_open(tmp_path, monkeypatch):
     """`TERRIO_MAX_DECLARED_BYTES` and `TERRIO_MAX_BANDS`, in the environment or an `Env`, refuse
     a raster declaring more when it is opened, eagerly, lazily, by `convert` and `translate` and
-    through `terrio.rio`, with `ResourceLimitError` naming the option (a `RasterioIOError` from it
-    in `terrio.rio`); an `Env` value applies instead of the environment's; anything but a positive
+    through `terrio.rio`, with `ResourceLimitError` naming the option; an `Env` value applies
+    instead of the environment's; anything but a positive
     integer is an `InvalidArgumentError` naming the option."""
     path = tmp_path / "x.tif"
     profile = dict(driver="GTiff", width=64, height=48, count=3, dtype="uint8", crs="EPSG:4326")
@@ -281,9 +281,8 @@ def test_the_declared_size_options_refuse_a_raster_at_open(tmp_path, monkeypatch
         for open_ in opens:
             with pytest.raises(terrio.errors.ResourceLimitError, match=f"^{re.escape(refusal)}$"):
                 open_()
-        with pytest.raises(RasterioIOError, match=re.escape(refusal)) as raised:
+        with pytest.raises(terrio.errors.ResourceLimitError, match=re.escape(refusal)):
             rio.open(path)
-        assert isinstance(raised.value.__cause__, terrio.errors.ResourceLimitError)
         # An `Env` value applies on its thread instead of the environment's.
         within = "9216" if option == "TERRIO_MAX_DECLARED_BYTES" else "3"
         with rio.Env(**{option: within}):
@@ -434,7 +433,7 @@ def test_vsi_functions_keep_the_zip_limits_of_a_raster_open(tmp_path, monkeypatc
     message = re.escape(
         "zip: 'z.bin' and its files hold more than the 1000000 bytes allowed (TERRIO_ZIP_MAX_SIZE)"
     )
-    with pytest.raises(RasterioIOError, match=message):
+    with pytest.raises(terrio.errors.ResourceLimitError, match=message):
         rio.open(member)
     with pytest.raises(terrio.ResourceLimitError, match=f"^{message}$"):
         terrio.vsi_read(member)
@@ -826,7 +825,7 @@ def test_a_zarr_store_declaring_a_huge_shape_is_read_decimated_and_refused_whole
         want = ds.read(out_shape=(1, 8, 8))
     assert got["decimated"] == want.tolist() and want.any(), (got["decimated"], want)
     refused = (
-        r"RAISED RasterioIOError: Read failed: .*a window of 2147483647x64 pixels in 1 band\(s\) "
+        r"RAISED ResourceLimitError: .*a window of 2147483647x64 pixels in 1 band\(s\) "
         r"is too large: \d+ bytes, more than the \d+ bytes of memory the process can use"
     )
     for stage in ("dataset_mask", "read"):
@@ -905,7 +904,7 @@ def test_a_zarr_chunk_of_1_gib_is_read_or_refused_never_aborted(zarr_1_gib_chunk
     else:
         for stage in ("window", "decimated"):
             refused = got[stage]
-            assert refused.startswith("RAISED RasterioIOError"), got
+            assert refused.startswith("RAISED ResourceLimitError"), got
             assert "cannot allocate" in refused, got
 
 

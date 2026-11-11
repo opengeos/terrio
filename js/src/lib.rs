@@ -444,6 +444,21 @@ impl Dataset {
     }
 }
 
+/// Pushes configuration overrides for this module's calling thread. Values are strings; null
+/// unsets an option in this scope. Pair with `popConfig` in `finally`. Scopes also apply to
+/// subsequent reads and nested source opens; they are shared by calls on the same thread.
+#[wasm_bindgen(js_name = pushConfig)]
+pub fn push_config(options: JsValue) -> Result<(), JsError> {
+    terrio::config::push_scope(parse_options::<HashMap<String, Option<String>>>(&options)?);
+    Ok(())
+}
+
+/// Removes the calling thread's innermost configuration scope; returns whether one existed.
+#[wasm_bindgen(js_name = popConfig)]
+pub fn pop_config() -> bool {
+    terrio::config::pop_scope()
+}
+
 /// Opens serialized VRT XML with a map of source file names to Uint8Array bytes.
 /// Source GeoTIFFs and VRT pixel windows are read lazily, including in WebAssembly.
 #[wasm_bindgen(js_name = openVrt)]

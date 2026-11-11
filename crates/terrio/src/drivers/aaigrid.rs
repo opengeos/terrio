@@ -21,6 +21,7 @@ pub(crate) const HEADER_KEYS: &[&str] =
     &["ncols", "nrows", "xllcorner", "yllcorner", "xllcenter", "yllcenter", "cellsize", "dx", "dy", "nodata_value"];
 
 pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
+    super::declared_header::check(path, RasterDriver::AAIGrid)?;
     let text = std::fs::read_to_string(path)?;
     let bad = |what: &str| Error::InvalidData(format!("{}: {what}", path.display()));
     // The header is the lines that start with a known keyword; the values follow.
@@ -71,6 +72,8 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     if data_type == DataType::I32 && body.bytes().any(|b| matches!(b, b'.' | b',' | b'e' | b'E')) {
         data_type = DataType::F32;
     }
+
+    crate::declared::check(cols, rows, 1, data_type, false)?;
 
     // A resource refusal, which the GDAL fallback does not retry.
     let n = cols

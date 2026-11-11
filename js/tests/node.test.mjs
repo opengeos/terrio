@@ -2164,6 +2164,32 @@ test("HEC-RAS plans from memory as vector layers, with open options", { skip: ne
   assert.throws(() => terrio.openVector(plan, "x.hdf", { openOptions: { NO_SUCH_OPTION: "1" } }));
 });
 
+test("declared raster budgets apply to WASM byte opens and restore with their scope", () => {
+  const grid = new TextEncoder().encode("ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n3 4\n");
+  const source = terrio.rasterFromArray(new Uint8Array(12).fill(7), 2, 2, [0, 1, 0, 2, 0, -1]);
+  const tiff = source.toBytes("rgb.tif");
+  const cases = [[grid, "grid.asc", 32, 1], [tiff, "rgb.tif", 12, 3]];
+  for (const [bytes, name, declared, bands] of cases) {
+    terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: String(declared), TERRIO_MAX_BANDS: String(bands) });
+    try {
+      assert.ok(terrio.open(bytes, name));
+      terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: String(declared - 1) });
+      try { assert.throws(() => terrio.open(bytes, name), /TERRIO_MAX_DECLARED_BYTES/); }
+      finally { assert.equal(terrio.popConfig(), true); }
+      assert.ok(terrio.open(bytes, name));
+    } finally { assert.equal(terrio.popConfig(), true); }
+  }
+  terrio.pushConfig({ TERRIO_MAX_BANDS: "2" });
+  try { assert.throws(() => terrio.open(tiff, "rgb.tif"), /TERRIO_MAX_BANDS/); }
+  finally { terrio.popConfig(); }
+  // The grid is refused from its declaration, before its deliberately invalid cells are parsed.
+  const corrupt = new TextEncoder().encode("ncols=200\n# header comment\nunknown ignored\nnrows=200\ncellsize 1\ninvalid pixels\n");
+  terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: "16" });
+  try { assert.throws(() => terrio.open(corrupt, "bad.asc"), /TERRIO_MAX_DECLARED_BYTES/); }
+  finally { terrio.popConfig(); }
+  assert.deepEqual([...terrio.open(grid, "grid.asc").readBand(1)], [1, 2, 3, 4]);
+});
+
 test("coordinate operation safeguards and warnings", () => {
   terrio.takeWarnings();
   const [x, y] = terrio.transformPoints([110], [35], "EPSG:4610", "EPSG:4326");

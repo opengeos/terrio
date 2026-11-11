@@ -648,23 +648,13 @@ fn every_driver_is_refused_by_what_its_rasters_declare() {
     }
 }
 
-/// The opens of [`every_driver_is_refused_by_what_its_rasters_declare`] that asked for at least what
-/// the raster declares before refusing it: each of the four opens of these drivers. Esri ASCII
-/// grids, whose reader reads every value before it knows their type, and the formats read by
-/// `wbraster` (Esri binary grids, GRASS ASCII grids, PCRaster, DTED) decode the whole raster before
-/// terrio sees its size. The Imagine reader (sampled with the `gdal` feature, which writes the file)
-/// reads its whole file before its header, without decoding it: the sample is uncompressed, so its
-/// file is as large as its pixels. (Not measured: XYZ grids, whose size is known only from their
-/// points, and samples of less than a MiB.)
+/// Only Imagine reads its entire uncompressed file before its declaration is available.
+/// ASCII and fallback binary readers now preflight their headers before reading pixel buffers.
+/// XYZ infers its grid from the coordinate records and checks before allocating the dense grid.
 fn held_first_opens() -> Vec<String> {
-    let drivers = [
-        RasterDriver::AAIGrid,
-        RasterDriver::AIG,
-        RasterDriver::GRASSASCIIGrid,
-        RasterDriver::PCRaster,
+    let drivers: &[RasterDriver] = &[
         #[cfg(feature = "gdal")]
         RasterDriver::HFA,
-        RasterDriver::DTED,
     ];
     drivers.iter().flat_map(|d| ["eager", "lazy", "generic", "info"].map(|how| format!("{} {how}", d.name()))).collect()
 }
@@ -1173,4 +1163,40 @@ fn a_writer_whose_rows_fit_once_but_not_twice_is_refused() {
     let result = terrio::GeoTiffWriter::create(path.to_str().unwrap(), &header(cols, rows, bands), &options).map(|_| ());
     assert!(refused(result.as_ref().map(|_| ()).map_err(clone_error), &message), "{result:?}");
     assert!(!path.exists(), "the refused writer left its file");
+}
+
+/// Header limits must win over corrupt pixel tokens, rather than decode the grid first.
+/// Reference: independently specified Esri ASCII grid header; GDAL 3.13.3 reads the valid control.
+#[test]
+fn ascii_declarations_are_checked_before_pixel_parsing() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bad.asc");
+    let text = "ncols 200\nnrows 200\ncellsize 1\ninvalid pixels\n";
+    std::fs::write(&path, text).unwrap();
+    scoped(&[("TERRIO_MAX_DECLARED_BYTES", "16")], || {
+        assert!(matches!(terrio::open_raster(path.to_str().unwrap()), Err(terrio::Error::ResourceLimit(_))));
+        assert!(matches!(terrio::memory::open_raster_bytes(text.as_bytes().to_vec(), "bad.asc"), Err(terrio::Error::ResourceLimit(_))));
+    });
+}
+
+/// Header scanning must reach the final GRASS type even beyond an arbitrary prefix boundary.
+#[test]
+fn long_ascii_headers_are_checked_before_the_pixel_tokens() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("grid.txt");
+    let header = format!(
+        "north: 1\nsouth: 0\neast: 1\nwest: 0\nrows: 1\ncols: 1\ntype: int\n{}type: double\n",
+        "ignored: header extension\n".repeat(4096)
+    );
+    std::fs::write(&path, format!("{header}1.5\n")).unwrap();
+    scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "8")], || {
+        let r = terrio::open_raster(path.to_str().unwrap()).unwrap();
+        assert_eq!(r.raster.data.to_f64_vec(), vec![1.5]);
+    });
+    std::fs::write(&path, format!("{header}invalid pixels\n")).unwrap();
+    scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "4")], || {
+        assert!(matches!(terrio::open_raster(path.to_str().unwrap()), Err(terrio::Error::ResourceLimit(_))));
+    });
 }

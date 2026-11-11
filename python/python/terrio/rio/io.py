@@ -39,6 +39,7 @@ import numpy as np
 from affine import Affine
 
 from terrio import _terrio
+from terrio.errors import ResourceLimitError
 from terrio.rio import _tiff
 from terrio.rio._resample import gdal_cast, is_nodata, raster_io
 from terrio.rio.coords import BoundingBox
@@ -175,14 +176,14 @@ def _check_buffer(count: int, height: int, width: int, itemsize: int) -> None:
         itemsize: The bytes of a pixel.
 
     Raises:
-        RasterioIOError: If the buffer takes more bytes than the process can use.
+        ResourceLimitError: If the buffer takes more bytes than the process can use.
     """
     nbytes = count * height * width * itemsize
     if nbytes <= 1 << 24:
         return
     most = _terrio.usable_memory()
     if most is not None and nbytes > most:
-        raise RasterioIOError(
+        raise ResourceLimitError(
             f"Read failed: a window of {width}x{height} pixels in {count} band(s) is too large: "
             f"{nbytes} bytes, more than the {most} bytes of memory the process can use"
         )
@@ -1318,6 +1319,8 @@ class DatasetReader(DatasetBase):
         raster: _terrio.Raster | _OverviewRaster
         try:
             raster = _terrio.open_raster(self._path, lazy=True)
+        except MemoryError:
+            raise
         except Exception as err:
             raise _to_error(err, self.name) from err
         level = kwargs.get("overview_level")
@@ -1478,6 +1481,8 @@ class DatasetReader(DatasetBase):
         self._check_open()
         try:
             return np.asarray(self._raster.read(list(bands), window=window, overview=level))
+        except MemoryError:
+            raise
         except Exception as err:
             raise RasterioIOError(f"Read failed: {err}") from err
 
@@ -1506,6 +1511,8 @@ class DatasetReader(DatasetBase):
             got = self._raster.read_sampled(
                 list(bands), cols.tolist(), rows.tolist(), overview=level
             )
+        except MemoryError:
+            raise
         except Exception as err:
             raise RasterioIOError(f"Read failed: {err}") from err
         return None if got is None else np.asarray(got)
@@ -1566,6 +1573,8 @@ class DatasetReader(DatasetBase):
         if core is not None:
             try:
                 return np.asarray(self._raster.read_resampled(band=list(indexes), **core))
+            except MemoryError:
+                raise
             except Exception as err:
                 raise RasterioIOError(f"Read failed: {err}") from err
         nodata = self.nodatavals[0] if self._count else None
@@ -1767,6 +1776,8 @@ class DatasetReader(DatasetBase):
             # The per-dataset mask is every band's mask band: band 1's, from its own overviews.
             try:
                 return np.asarray(raster.read_resampled_masks(band=1, **core))
+            except MemoryError:
+                raise
             except Exception as err:
                 raise RasterioIOError(f"Read failed: {err}") from err
         out: np.ndarray = np.asarray(
@@ -2498,6 +2509,8 @@ class DatasetWriter(DatasetReader):
                     )
             else:
                 self._data = np.asarray(raster.read())
+        except MemoryError:
+            raise
         except Exception as err:
             raise RasterioIOError(f"Read failed: {err}") from err
         self._out_driver = self.driver
