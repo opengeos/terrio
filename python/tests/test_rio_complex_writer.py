@@ -6,7 +6,7 @@ import pytest
 import terrio
 import terrio.rio as rio
 from terrio.rio.crs import CRS
-from terrio.rio.io import DatasetWriter
+from terrio.rio.io import DatasetReader, DatasetWriter
 from terrio.rio.shutil import copy
 from terrio.rio.windows import Window
 
@@ -278,3 +278,24 @@ def test_numpy_dtype_casts_keep_requested_byte_order(byteorder, complex_input):
     ):
         assert actual.dtype == dtype
         np.testing.assert_array_equal(actual, values)
+
+
+@pytest.mark.parametrize("driver", ["GTiff", "COG"])
+def test_reader_subclass_copy_keeps_exact_integer_components(tmp_path, gdal, driver):
+    """An inherited native reader preserves CInt32 components as its base reader does."""
+
+    class Reader(DatasetReader):
+        pass
+
+    values = np.array([[2**24 + 1 - (2**24 + 3) * 1j]], dtype="complex128")
+    path = tmp_path / "subclass-source.tif"
+    source = gdal.GetDriverByName("GTiff").Create(str(path), 1, 1, 1, gdal.GDT_CInt32)
+    source.GetRasterBand(1).WriteArray(values)
+    source = None
+    target = tmp_path / "subclass-copy.tif"
+    with Reader(path) as reader:
+        np.testing.assert_array_equal(reader.read(1, out_dtype="complex128"), values)
+        copy(reader, target, driver=driver)
+    actual, dataset = read_precise(gdal, target)
+    assert dataset.GetRasterBand(1).DataType == gdal.GDT_CInt32
+    np.testing.assert_array_equal(actual, values)

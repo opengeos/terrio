@@ -1504,9 +1504,21 @@ class DatasetReader(DatasetBase):
         except Exception as err:
             raise RasterioIOError(f"Read failed: {err}") from err
 
+    def _exact_complex_read(self) -> bool:
+        """Whether native reads can retain Int32 components before conversion to complex64.
+
+        Inherited native readers qualify. VRTs compute pixels in their own working type,
+        so overriding `_read_level` must not be bypassed to read the underlying raster.
+        Writers use `_buffer_dtype` instead: their pixels already live in a typed buffer.
+        """
+        return (
+            type(self)._read_level is DatasetReader._read_level
+            and getattr(self._raster, "data_type", None) == "CInt32"
+        )
+
     def _read_for_copy(self, window: Any = None) -> np.ndarray:
         """Read integer-complex copies before conversion to complex64 rounds Int32 values."""
-        if type(self) is DatasetReader and getattr(self._raster, "data_type", None) == "CInt32":
+        if self._exact_complex_read():
             self._check_open()
             region = (
                 None
@@ -1927,11 +1939,7 @@ class DatasetReader(DatasetBase):
             buf = (int(out_shape[-2]), int(out_shape[-1]))
         else:
             buf = win_shape
-        precise = (
-            dtype.name == "complex128"
-            and type(self)._read_level is DatasetReader._read_level
-            and getattr(self._raster, "data_type", None) == "CInt32"
-        )
+        precise = dtype.name == "complex128" and self._exact_complex_read()
         read_options = {"out_dtype": "complex128"} if precise else {}
         nodatavals = [self.nodatavals[b - 1] for b in idx]
         fill = None if not nodatavals else nodatavals[-1]
