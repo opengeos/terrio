@@ -2735,3 +2735,20 @@ Bounds planning scans at most 512 corners at a time, including the final endpoin
 with roughly 17 KiB of coordinate/validity scratch rather than allocating an entire
 output-width row before memory-limit splitting. The polar regression starts off a
 global batch boundary and spans several batches; RPC batch membership stays global.
+
+## Packed unsigned TIFF output
+
+`python scripts/conformance.py ../data --only packed-tiff --strict` checks GTiff
+and COG writes and their Python/CLI copies against GDAL's TIFF decoder. The
+reference is locally validated with GDAL 3.13.3. Twelve synthetic cases cover
+1, 4, 7, 12, 24 and 31 bits, partial bytes, tile edges and generated COG overviews.
+An available `esa_worldcover_colormap.tif` adds a real 7-bit palette COG crop,
+checking exact base samples, masks, nodata, affine, CRS and the first 128 palette
+entries. Native and GDAL readers also compare every stored overview's samples.
+These are exact decoding/metadata checks, not compressed-byte or file-size claims.
+
+Native tests check MSB order, padding at every row boundary, clipping at 31 bits,
+and round trips at all widths 1–32 through stripes/tiles and pixel/band interleaving.
+Python regressions check bit-width preservation, bilevel palette copies, explicit
+width overrides and refusals. Node verifies the stored TIFF tags and values through
+explicit exports and copies that inherit the source width.

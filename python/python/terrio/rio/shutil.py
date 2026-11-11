@@ -175,6 +175,18 @@ def _copy_dataset(
     for k in ("blockxsize", "blockysize", "tiled", "compress", "interleave", "photometric"):
         profile.pop(k, None)
     profile["driver"] = driver
+    if driver.upper() in ("GTIFF", "COG"):
+        widths = {src.tags(band, ns="IMAGE_STRUCTURE").get("NBITS") for band in src.indexes}
+        output_dtype = next(
+            (str(v) for k, v in creation_options.items() if k.lower() == "dtype"),
+            src.dtypes[0],
+        )
+        capacity = {"uint8": 8, "uint16": 16, "uint32": 32}.get(output_dtype, 0)
+        minimum = {"uint8": 1, "uint16": 9, "uint32": 17}.get(output_dtype, 1)
+        if len(widths) == 1 and None not in widths:
+            width = next(iter(widths))
+            if width.isascii() and width.isdecimal() and minimum <= int(width) <= capacity:
+                profile["nbits"] = width
     profile.update({k.lower(): v for k, v in creation_options.items()})
     if driver.upper() in ("GTIFF", "COG") and src.count > 1 and "interleave" not in profile:
         # GDALDriver::CreateCopy (gcore/gdaldriver.cpp): without INTERLEAVE, and without a

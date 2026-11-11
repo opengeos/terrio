@@ -112,6 +112,18 @@ with the `libzstd` feature: without it, as in the default build and in WebAssemb
 chunks are compressed at the one level their encoder has. A level out of range is refused,
 whatever the compression.
 
+`NBITS` writes unsigned samples packed into 1–8 bits for Byte, 9–16 bits for
+UInt16 and 17–32 bits for UInt32. Rows begin on byte boundaries; bits are stored
+most significant first. GTiff supports strips or tiles and COG is tiled. Both support pixel/band
+interleaving and NONE, LZW, DEFLATE, PACKBITS or ZSTD compression. Packed samples require
+`PREDICTOR=1`; signed, floating-point and complex `NBITS` requests are refused.
+Values above the stored unsigned maximum are clipped, as in GDAL 3.13.3. Palettes
+have exactly `2**NBITS` entries. Copies retain a compatible source bit width unless
+the caller overrides `NBITS`; a bilevel palette therefore stays a two-entry palette.
+This applies to Rust, CLI/MCP, Python and JavaScript writes. Creating or refreshing
+overviews later with the standalone overview tools still refuses packed samples;
+a COG writer can generate its packed overviews while writing the new file.
+
 JPEG 2000 is decoded and encoded with the Rust port of OpenJPEG, the codec of GDAL's JP2OpenJPEG
 driver, so pixels are GDAL's (Sentinel-2 L1C and L2A bands included). Georeferencing comes from
 the GeoJP2 box or the GMLJP2 box (Sentinel-2's), a 1-bit alpha channel is promoted to 0 and 255 as

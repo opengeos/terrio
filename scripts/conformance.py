@@ -1005,6 +1005,27 @@ def suite_vrt(ctx):
     )
 
 
+def suite_packed_tiff(ctx):
+    """Packed raster creation and preservation through copies."""
+    suite = Suite("packed-tiff", "Packed unsigned TIFF output", "GDAL TIFF decoder",
+                  "GTiff/COG writes, Python copies and CLI copies: exact base/overview samples, bit widths, container types, masks, nodata, affine and CRS. An available WorldCover crop also checks the first 128 palette entries. Compressed bytes are not compared.")
+    missing = missing_modules("terrio", "numpy", "osgeo")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_packed_tiff_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        rows = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for row in rows:
+        suite.cases.append(Case("packed TIFF", row["name"], IDENTICAL if row["status"] == "identical" else DIFFERS, row["detail"]))
+    if len(rows) < 12 or code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out) or "incomplete packed TIFF comparisons"
+    return suite
+
+
 def suite_overviews(ctx):
     """Stored source levels and HTTP COG transfers against gdalwarp."""
     return suite_json_ops(
@@ -3356,6 +3377,7 @@ SUITES = OrderedDict(
         ("catalogs", suite_catalogs),
         ("vrt", suite_vrt),
         ("overviews", suite_overviews),
+        ("packed-tiff", suite_packed_tiff),
         ("warp-grid", suite_warp_grid),
         ("sum-overviews", suite_sum_overviews),
         ("translate-overviews", suite_translate_overviews),

@@ -1486,6 +1486,8 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     let mut dec = file_decoder(file, &tags, limits, path)?;
     let (w, h) = dec.dimensions().map_err(tiff_err)?;
     check_open(&mut dec, tiff_err)?;
+    let stored_bits =
+        dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).map_err(tiff_err)?.and_then(|bits| bits.first().copied()).unwrap_or(1);
     let (w, h) = (w as usize, h as usize);
     let samples = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).map_err(tiff_err)?.unwrap_or(1).max(1) as usize;
     let planar = dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).map_err(tiff_err)? == Some(2);
@@ -1595,6 +1597,7 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     let has_nodata = tags.nodata.is_some();
     let mut ds = crate::RasterDataset::with_driver(raster, crate::formats::RasterDriver::GTiff, has_nodata);
     ds.complex = complex;
+    ds.set_sample_bits(stored_bits);
     ds.band_metadata = tags.band_properties.clone();
     ds.color_table = tags.color_table.clone();
     ds.gcps = tags.gcps.clone();

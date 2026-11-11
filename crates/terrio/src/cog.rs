@@ -1161,6 +1161,9 @@ impl LazyRaster {
         };
         let mut ds = RasterDataset::with_driver(raster, self.driver(), self.nodata().is_some());
         ds.complex = self.is_complex();
+        if let Some(bits) = self.sample_bits() {
+            ds.set_sample_bits(bits);
+        }
         ds.band_nodata = (1..=self.band_count()).map(|b| self.band_nodata(b)).collect();
         let first_nodata = ds.band_nodata.first().copied().flatten();
         ds.has_nodata = first_nodata.is_some();
@@ -1420,7 +1423,11 @@ impl LazyRaster {
         let (full_cols, full_rows) = (self.width() as f64, self.height() as f64);
         let gcp = |pixel: f64, line: f64| (pixel * lw as f64 / full_cols - x, line * lh as f64 / full_rows - y);
         let whole = options.overview.is_none() && window == Window::full(lw, lh);
-        self.window_dataset(&bands, band_nodata, data, (window.width, window.height), geo_transform, gcp, whole)
+        let mut dataset = self.window_dataset(&bands, band_nodata, data, (window.width, window.height), geo_transform, gcp, whole)?;
+        if let Some(bits) = self.level_sample_bits(options.overview) {
+            dataset.set_sample_bits(bits);
+        }
+        Ok(dataset)
     }
 
     /// The nodata values of some bands (numbered from 1) at full resolution or of an overview,
@@ -1483,6 +1490,9 @@ impl LazyRaster {
             })
             .collect();
         ds.band_metadata = self.bands_metadata(bands);
+        if ds.raster.data_type == self.data_type() {
+            ds.metadata_domains = crate::dataset::selected_nbits(self.metadata_domains(), bands);
+        }
         ds.band_nodata = band_nodata;
         ds.complex = self.reads_complex(bands);
         if bands == [1] {

@@ -1725,6 +1725,39 @@ test("netCDF, HDF5 and Zarr in memory; LERC, JPEG XL and JPEG GeoTIFFs", { skip:
   assert.throws(() => floats.toBytes("j.tif", { compress: "JPEG" }), /JPEG is written for/);
 });
 
+test("packed unsigned TIFF exports retain bit width and row-edge samples", () => {
+  for (const [bits, ArrayType] of [[1, Uint8Array], [4, Uint8Array], [7, Uint8Array],
+    [9, Uint16Array], [15, Uint16Array], [17, Uint32Array], [24, Uint32Array], [31, Uint32Array]]) {
+    const values = ArrayType.from({ length: 37 * 19 }, (_, i) => (i * 104729 + Math.floor(i / 37) * 15485863) % (2 ** bits));
+    const source = terrio.rasterFromArray(values, 37, 19, [500000, 10, 0, 5800000, 0, -10], "EPSG:32633");
+    for (const format of ["GTiff", "COG"]) {
+      const bytes = source.toBytes("packed.tif", { format, tileSize: 16, compress: "DEFLATE", creationOptions: { NBITS: String(bits) } });
+      const tags = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      const ifd = tags.getUint32(4, true), count = tags.getUint16(ifd, true);
+      let storedBits;
+      for (let i = 0; i < count; i++) {
+        const entry = ifd + 2 + i * 12;
+        if (tags.getUint16(entry, true) === 258) storedBits = tags.getUint16(entry + 8, true);
+      }
+      assert.equal(storedBits, bits, `${format} BitsPerSample`);
+      const back = terrio.open(bytes, "packed.tif");
+      assert.deepEqual(back.readBand(1), source.readBand(1));
+      assert.deepEqual([...back.transform], [...source.transform]);
+      const copy = back.toBytes("copy.tif", { compress: "DEFLATE" });
+      const copyTags = new DataView(copy.buffer, copy.byteOffset, copy.byteLength);
+      const copyIfd = copyTags.getUint32(4, true), copyCount = copyTags.getUint16(copyIfd, true);
+      let copiedBits;
+      for (let i = 0; i < copyCount; i++) {
+        const entry = copyIfd + 2 + i * 12;
+        if (copyTags.getUint16(entry, true) === 258) copiedBits = copyTags.getUint16(entry + 8, true);
+      }
+      assert.equal(copiedBits, bits, "copy inherits NBITS");
+      back.free();
+    }
+    source.free();
+  }
+});
+
 test("rasters written into netCDF-4 groups", { skip: needs("netcdf-hdf5") }, () => {
   const a = terrio.rasterFromArray(new Float32Array(30 * 20).map((_, i) => i / 7), 30, 20, [500000, 30, 0, 4100000, 0, -30], "EPSG:32610");
   const b = terrio.rasterFromArray(new Int16Array(8 * 6).map((_, i) => i - 9), 8, 6, [-105, 0.5, 0, 40, 0, -0.5], "EPSG:4326", -9999);

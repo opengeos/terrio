@@ -71,6 +71,22 @@ pub struct RasterDataset {
 /// domain and its items (see [`RasterDataset::metadata_domains`]).
 pub type MetadataDomain = (Option<usize>, String, Vec<(String, String)>);
 
+/// Select and renumber per-band packing metadata without retaining unrelated source domains.
+pub(crate) fn selected_nbits(domains: &[MetadataDomain], bands: &[usize]) -> Vec<MetadataDomain> {
+    bands
+        .iter()
+        .enumerate()
+        .flat_map(|(output, &input)| {
+            domains.iter().filter(move |(band, domain, _)| *band == Some(input - 1) && domain == "IMAGE_STRUCTURE").filter_map(
+                move |(_, domain, items)| {
+                    let items: Vec<_> = items.iter().filter(|(key, _)| key == "NBITS").cloned().collect();
+                    (!items.is_empty()).then(|| (Some(output), domain.clone(), items))
+                },
+            )
+        })
+        .collect()
+}
+
 /// Where the longitude and latitude of each pixel of a raster are, as GDAL describes geolocation
 /// arrays (its `GEOLOCATION` metadata domain, RFC 4): two rasters (`x_dataset`, `y_dataset`),
 /// sampled every `pixel_step` columns from `pixel_offset` and every `line_step` rows from
@@ -141,6 +157,18 @@ impl Geolocation {
 }
 
 impl RasterDataset {
+    /// Retain packed unsigned widths in IMAGE_STRUCTURE, as GDAL 3.13.3 reports NBITS.
+    pub(crate) fn set_sample_bits(&mut self, bits: u16) {
+        if matches!(self.raster.data_type, wbraster::DataType::U8 | wbraster::DataType::U16 | wbraster::DataType::U32)
+            && bits > 0
+            && usize::from(bits) < self.raster.data_type.size_bytes() * 8
+        {
+            self.metadata_domains.extend(
+                (0..self.raster.bands).map(|band| (Some(band), "IMAGE_STRUCTURE".into(), vec![("NBITS".into(), bits.to_string())])),
+            );
+        }
+    }
+
     /// Wraps a raster created in memory.
     pub fn new(raster: Raster, has_nodata: bool) -> Self {
         Self::with_driver(raster, RasterDriver::GTiff, has_nodata)
@@ -1933,11 +1961,38 @@ impl RasterWriteOptions {
                 }
             }
         }
+        let mut creation_options = self.creation_options.clone();
+        if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog))
+            && co("NBITS").is_none()
+            && matches!(ds.raster.data_type, wbraster::DataType::U8 | wbraster::DataType::U16 | wbraster::DataType::U32)
+        {
+            let bits = |band| {
+                ds.metadata_domains
+                    .iter()
+                    .find(|(b, domain, _)| *b == Some(band) && domain == "IMAGE_STRUCTURE")
+                    .and_then(|(_, _, items)| items.iter().find(|(key, _)| key == "NBITS").map(|(_, value)| value.as_str()))
+            };
+            let minimum = match ds.raster.data_type {
+                wbraster::DataType::U16 => 9,
+                wbraster::DataType::U32 => 17,
+                _ => 1,
+            };
+            if let Some(first) = bits(0)
+                && first
+                    .parse::<u16>()
+                    .ok()
+                    .is_some_and(|bits| bits >= minimum && usize::from(bits) <= ds.raster.data_type.size_bytes() * 8)
+                && (1..ds.raster.bands).all(|band| bits(band) == Some(first))
+            {
+                creation_options.push(("NBITS".into(), first.into()));
+            }
+        }
         Self {
             geo_transform: self.geo_transform.or(ds.affine),
             gcps: self.inherited_gcps(ds, driver),
             color_table,
             band_metadata,
+            creation_options,
             ..self.clone()
         }
     }

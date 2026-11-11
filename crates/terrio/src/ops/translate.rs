@@ -444,6 +444,10 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
     let mut res = super::build_raster_data(grid, out, bands.len(), out_nodata.first().copied().flatten(), &srs)?;
     res.raster.metadata = ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     res.band_metadata = bands.iter().map(|&b| ds.band_metadata.get(b - 1).cloned().unwrap_or_default()).collect();
+    if out_type == r.data_type && o.scale.is_none() && o.exponent.is_none() {
+        res.metadata_domains = crate::dataset::selected_nbits(&ds.metadata_domains, &bands);
+    }
+
     if win != (0., 0., w, h)
         || ow != r.cols
         || oh != r.rows
@@ -604,6 +608,8 @@ struct LazyRead {
     by_strips: bool,
     /// Whether the output copies a window of the source, pixel for pixel.
     copy: bool,
+    /// The selected TIFF image's packed width, retained while values stay in their type.
+    sample_bits: Option<u16>,
     /// The conversion of the values read: type, nodata and georeferencing.
     values: TranslateOptions,
 }
@@ -624,6 +630,9 @@ impl LazyRead {
             ResampledReadOptions { window, size: (ow, h), ..self.read.clone() }
         };
         let mut resized = if self.together { src.read_resampled(&read)? } else { src.read_resampled_by_band(&read)? };
+        if let Some(bits) = self.sample_bits {
+            resized.set_sample_bits(bits);
+        }
         let mut gt = self.gt;
         gt[0] += y as f64 * gt[2];
         gt[3] += y as f64 * gt[5];
@@ -844,7 +853,8 @@ fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelec
         assign_ullr: o.assign_ullr,
         ..Default::default()
     };
-    Ok(Planned::Read(LazyRead { read, together, gt: geom.gt, gcps, whole, by_strips, copy, values }))
+    let sample_bits = o.output_type.is_none_or(|t| t == source_type).then(|| src.level_sample_bits(level)).flatten();
+    Ok(Planned::Read(LazyRead { read, together, gt: geom.gt, gcps, whole, by_strips, copy, sample_bits, values }))
 }
 
 /// A value within 0.001 of a whole number, rounded to it, as `gdal_translate`'s VRT source rounds

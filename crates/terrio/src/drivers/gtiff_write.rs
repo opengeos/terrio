@@ -469,6 +469,8 @@ pub(crate) struct TiffOptions {
     /// The raster's bands are pairs of real and imaginary parts (a complex dataset): written as
     /// complex samples (`SampleFormat` 5 or 6, GDAL's `CInt16`... `CFloat64`).
     pub complex: bool,
+    /// Stored unsigned sample width (`NBITS`), rather than the container type width.
+    pub nbits: Option<u16>,
     /// Metadata domains other than the default one (`@METADATA_DOMAINS`), those GDAL writes.
     pub domains: Vec<MetadataDomain>,
     /// Leave out the dataset's and the bands' default-domain items, as GDAL's `CreateCopy` does
@@ -569,6 +571,7 @@ impl Default for TiffOptions {
             rpc: Vec::new(),
             codec: CodecParams::default(),
             complex: false,
+            nbits: None,
             domains: Vec::new(),
             drop_default_items: (false, false),
         }
@@ -673,6 +676,9 @@ impl TiffOptions {
             rpc: options.rpc.clone(),
             ..Default::default()
         };
+        if let Some(bits) = size("NBITS")? {
+            o.nbits = Some(u16::try_from(bits).map_err(|_| Error::InvalidArgument(format!("invalid NBITS '{bits}'")))?);
+        }
         if cog {
             if let Some(b) = size("BLOCKSIZE")? {
                 o.tile_size = Some(b);
@@ -895,6 +901,35 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
     if raster.cols == 0 || raster.rows == 0 || raster.bands == 0 {
         return Err(Error::InvalidArgument("cannot write an empty raster".into()));
     }
+    let native_bits = (raster.data_type.size_bytes() * 8) as u16;
+    let minimum_bits = match raster.data_type {
+        DataType::U16 => 9,
+        DataType::U32 => 17,
+        _ => 1,
+    };
+    let packed = opts.nbits.is_some_and(|bits| bits != native_bits);
+    if let Some(bits) = opts.nbits {
+        if !matches!(raster.data_type, DataType::U8 | DataType::U16 | DataType::U32)
+            || opts.complex
+            || bits < minimum_bits
+            || bits > native_bits
+        {
+            return Err(Error::InvalidArgument(format!(
+                "NBITS={bits} requires unsigned Byte, UInt16 or UInt32 samples and {minimum_bits}..={native_bits} bits"
+            )));
+        }
+        if packed
+            && !matches!(
+                opts.compression,
+                Compression::None | Compression::Lzw | Compression::Deflate | Compression::PackBits | Compression::Zstd
+            )
+        {
+            return Err(Error::Unsupported("packed NBITS samples support NONE, LZW, DEFLATE, PACKBITS or ZSTD compression".into()));
+        }
+        if packed && opts.predictor != 1 {
+            return Err(Error::Unsupported("packed NBITS samples require PREDICTOR=1".into()));
+        }
+    }
     let tile = if opts.cog {
         let t = opts.tile_size.unwrap_or(512);
         Some((t, t))
@@ -975,8 +1010,16 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
     // The colour interpretations GDAL reads from the photometric and extra samples written
     // (`GTiffRasterBand`): GDAL_METADATA holds only the bands' others (see [`geo_tags`]).
     let implied: Vec<&str> = (0..samples).map(|i| implied_color_interp(photometric, &extra, base_samples, i)).collect();
-    let layout =
-        Layout { tile, rows_per_strip: opts.rows_per_strip, planar: opts.planar && samples > 1, photometric, extra, predictor, parts };
+    let layout = Layout {
+        tile,
+        rows_per_strip: opts.rows_per_strip,
+        planar: opts.planar && samples > 1,
+        photometric,
+        extra,
+        predictor,
+        parts,
+        nbits: opts.nbits,
+    };
     // GDAL's COG driver records the resampling of the overviews it makes (`@OVERVIEW_RESAMPLING`,
     // an IMAGE_STRUCTURE item): the option as given, else `GetResampling`'s; for overviews it
     // copies, the source's `RESAMPLING` item.
@@ -1045,7 +1088,7 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
         }
         geo.push((50844, Value::Doubles(opts.rpc.clone())));
     }
-    let color_map = (photometric == 3).then(|| color_map_tag(&opts.color_table, raster.data_type));
+    let color_map = (photometric == 3).then(|| color_map_tag(&opts.color_table, opts.nbits.unwrap_or(native_bits)));
     Ok(Plan { tile, layout, geo, color_map })
 }
 
@@ -1318,8 +1361,8 @@ pub(crate) fn mask_image(mask: &[u8], cols: usize, rows: usize, block: (usize, u
 }
 
 /// The `ColorMap` tag of a color table: every red value, then green, then blue, as 16 bits.
-fn color_map_tag(table: &[[u8; 4]], t: DataType) -> Value {
-    let n = if t == DataType::U16 { 65536 } else { 256 };
+fn color_map_tag(table: &[[u8; 4]], bits: u16) -> Value {
+    let n = 1usize << bits;
     let mut v = vec![0u16; 3 * n];
     for (i, e) in table.iter().take(n).enumerate() {
         for c in 0..3 {
@@ -1344,6 +1387,7 @@ pub(crate) struct Layout {
     pub(crate) predictor: u16,
     /// The bands per TIFF sample: 2 for complex samples (real and imaginary parts), else 1.
     pub(crate) parts: usize,
+    pub(crate) nbits: Option<u16>,
 }
 
 /// One resolution level's pixels, band-major: the raster's own, or an overview's.
@@ -1387,6 +1431,8 @@ impl<'a> Level<'a> {
         };
         let per_plane = across * down;
         let band_len = self.cols * self.rows;
+        let clipped = std::sync::atomic::AtomicBool::new(false);
+        let packed_bits = layout.nbits.filter(|&bits| bits != (size * 8) as u16);
         let chunks = crate::par::map_range_coarse(planes * per_plane, |i| {
             let (plane, j) = (i / per_plane, i % per_plane);
             let (x0, y0) = ((j % across) * chunk_w, (j / across) * chunk_h);
@@ -1399,11 +1445,23 @@ impl<'a> Level<'a> {
             } else {
                 with_data!(self.data.as_ref(), v => chunk_bytes(v, self.cols, self.rows, spp * parts, x0, y0, chunk_w, h))
             };
-            apply_predictor(&mut buf, layout.predictor, chunk_w * chunk_spp, chunk_spp, size);
+            if let Some(bits) = packed_bits {
+                let (packed, did_clip) = pack_unsigned_rows(&buf, chunk_w * chunk_spp, size, bits);
+                buf = packed;
+                if did_clip && bits > 1 {
+                    clipped.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            } else {
+                apply_predictor(&mut buf, layout.predictor, chunk_w * chunk_spp, chunk_spp, size);
+            }
             compression.compress(buf, &ChunkInfo { w: chunk_w, h, spp: chunk_spp, t }, codec)
         });
         let chunks = chunks.into_iter().collect::<Result<Vec<_>>>()?;
+        if clipped.load(std::sync::atomic::Ordering::Relaxed) {
+            crate::warnings::warn(format!("One or more pixels clipped to fit {} bit domain.", packed_bits.unwrap()));
+        }
         let (bits, format) = sample_format(t);
+        let bits = layout.nbits.unwrap_or(bits);
         // Complex samples: twice the bits, `SampleFormat` 5 (integers) or 6 (floats).
         let (bits, format) = if parts == 2 { (bits * 2, format + 3) } else { (bits, format) };
         let mut tags = vec![
@@ -1565,6 +1623,40 @@ fn chunk_bytes<T: Pixel>(data: &[T], cols: usize, rows: usize, spp: usize, x0: u
         }
     }
     buf
+}
+
+/// Pack unsigned little-endian samples MSB first, padding each row to a byte boundary.
+/// GDAL 3.13.3 clips values to the stored unsigned domain, rather than masking high bits.
+fn pack_unsigned_rows(input: &[u8], row_samples: usize, size: usize, bits: u16) -> (Vec<u8>, bool) {
+    let bits = usize::from(bits);
+    let maximum = (1u64 << bits) - 1;
+    // Packed rows fit in the existing native row; avoid overflowing a bit-count intermediate.
+    let row_bytes = row_samples / 8 * bits + (row_samples % 8 * bits).div_ceil(8);
+    let mut output = Vec::with_capacity(row_bytes * (input.len() / (row_samples * size)));
+    let mut clipped = false;
+    for row in input.chunks_exact(row_samples * size) {
+        let (mut accumulator, mut pending) = (0u64, 0usize);
+        for sample in row.chunks_exact(size) {
+            let value = match size {
+                1 => u64::from(sample[0]),
+                2 => u64::from(u16::from_le_bytes(sample.try_into().unwrap())),
+                4 => u64::from(u32::from_le_bytes(sample.try_into().unwrap())),
+                _ => unreachable!("packed samples have 1, 2 or 4 byte containers"),
+            };
+            clipped |= value > maximum;
+            accumulator = (accumulator << bits) | value.min(maximum);
+            pending += bits;
+            while pending >= 8 {
+                pending -= 8;
+                output.push((accumulator >> pending) as u8);
+            }
+            accumulator &= (1u64 << pending) - 1;
+        }
+        if pending != 0 {
+            output.push((accumulator << (8 - pending)) as u8);
+        }
+    }
+    (output, clipped)
 }
 
 fn sample_format(t: DataType) -> (u16, u16) {
@@ -3085,6 +3177,79 @@ mod tests {
                 assert_eq!(std::fs::read(&link).unwrap(), expected, "{driver:?}, streamed {streamed}");
             }
         }
+    }
+
+    /// TIFF row padding and MSB order, independently cross-read with GDAL 3.13.3.
+    #[test]
+    fn packed_rows_use_msb_order_and_restart_at_byte_boundaries() {
+        assert_eq!(pack_unsigned_rows(&[0, 1, 1, 0, 1, 0, 0, 1, 1], 9, 1, 1), (vec![0x69, 0x80], false));
+        let input: Vec<u8> = [0xabcu16, 0x123, 0xdef, 0x456, 0x789, 0xabc].into_iter().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(pack_unsigned_rows(&input, 3, 2, 12), (vec![0xab, 0xc1, 0x23, 0xde, 0xf0, 0x45, 0x67, 0x89, 0xab, 0xc0], false));
+        assert_eq!(pack_unsigned_rows(&u32::MAX.to_le_bytes(), 1, 4, 31), (vec![255, 255, 255, 254], true));
+    }
+
+    /// Packed unsigned sample widths round-trip through the independent TIFF decoder.
+    /// GDAL 3.13.3 checks these layouts through the binding conformance comparisons.
+    #[test]
+    fn packed_unsigned_tiffs_roundtrip_tiles_strips_and_band_planes() {
+        for bits in 1u16..=32 {
+            let data_type = if bits <= 8 {
+                DataType::U8
+            } else if bits <= 16 {
+                DataType::U16
+            } else {
+                DataType::U32
+            };
+            let maximum = (1u64 << bits) - 1;
+            let values: Vec<f64> = (0..37 * 19 * 3).map(|i| (i as u64 * 2654435761 % (maximum + 1)) as f64).collect();
+            let cfg = wbraster::RasterConfig { cols: 37, rows: 19, bands: 3, data_type, ..Default::default() };
+            let raster = Raster::from_data_native(cfg, RasterData::from_f64_vec(data_type, values.clone())).unwrap();
+            for tile_size in [None, Some(16)] {
+                for planar in [false, true] {
+                    let options =
+                        TiffOptions { nbits: Some(bits), tile_size, planar, compression: Compression::Deflate, ..Default::default() };
+                    let bytes = encode(&raster, &options).unwrap();
+                    let mut read = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap();
+                    assert_eq!(read.sample_bits(), Some(bits));
+                    assert_eq!(
+                        read.read_window(crate::Window::full(37, 19), &Default::default()).unwrap().raster.data.to_f64_vec(),
+                        values
+                    );
+                }
+            }
+        }
+    }
+
+    /// GDAL 3.13.3 retains the packed width when copying an unchanged unsigned band.
+    #[test]
+    fn packed_tiff_translates_keep_the_source_width() {
+        use crate::ops::translate::{TranslateOptions, translate, translate_lazy, translate_path_to_file};
+        let cfg = wbraster::RasterConfig { cols: 37, rows: 19, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let raster = Raster::from_data_native(cfg, RasterData::U8((0..37 * 19).map(|i| (i % 16) as u8).collect())).unwrap();
+        let bytes = encode(&raster, &TiffOptions { nbits: Some(4), ..Default::default() }).unwrap();
+        let mut source = crate::LazyRaster::from_tiff_bytes(bytes.clone()).unwrap().unwrap();
+        let whole = source.read_window(crate::Window::full(37, 19), &Default::default()).unwrap();
+        let translated = translate(&whole, &TranslateOptions::default()).unwrap();
+        let lazy = translate_lazy(&mut source, &TranslateOptions::default(), crate::ops::overview::OverviewSelection::None).unwrap();
+        for result in [whole, translated, lazy] {
+            let options = crate::RasterWriteOptions::default().inherited_from(&result, Some(crate::formats::RasterDriver::GTiff));
+            let options = TiffOptions::from_write_options(&options, false, None).unwrap().unwrap();
+            let read = crate::LazyRaster::from_tiff_bytes(encode(&result.raster, &options).unwrap()).unwrap().unwrap();
+            assert_eq!(read.sample_bits(), Some(4));
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("source.tif");
+        let output = directory.path().join("copy.tif");
+        std::fs::write(&input, bytes).unwrap();
+        translate_path_to_file(
+            input.to_str().unwrap(),
+            &Default::default(),
+            crate::ops::overview::OverviewSelection::Auto,
+            output.to_str().unwrap(),
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(crate::LazyRaster::open(output.to_str().unwrap()).unwrap().sample_bits(), Some(4));
     }
 
     #[test]
