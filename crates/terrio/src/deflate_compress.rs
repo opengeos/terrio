@@ -21,8 +21,9 @@
 //! compress more densely than libdeflate's ordinary hash-chain search.
 //!
 //! [`zlib_compress_rows`] compresses the rows of an image, such as a GeoTIFF chunk: after the hash
-//! chains, each search also examines the position one row back, which libdeflate's matchfinder does
-//! not, so its output differs from [`zlib_compress`]'s where that position gives a longer match.
+//! chains (and, at levels 6 to 9, the periodic-run probe), each search also examines the position
+//! one row back, which libdeflate's matchfinder does not, so its output differs from
+//! [`zlib_compress`]'s where that position gives a longer match.
 
 use std::cell::Cell;
 use std::hint::select_unpredictable;
@@ -838,7 +839,8 @@ impl Mf<'_> {
     /// `best_len` and offset 0 if nothing longer than `best_len` was found.
     ///
     /// Then, unlike libdeflate, the position one row back (`row`, when the input has rows), whose
-    /// match is taken when it is longer than the best of the hash chains. A chain holds every
+    /// match is taken when it is longer than the best of the hash chains and, at levels 6 to 9, of
+    /// the periodic-run probe before it, which takes only a match of `max_len`. A chain holds every
     /// position of a run of one value, one byte apart, newest first. At the start of a run, when
     /// the run above has more such positions than `max_search_depth`, the search ends before it
     /// reaches the first of them, whose match continues through the rows that repeat it (runs of
@@ -1279,10 +1281,10 @@ pub(crate) fn zlib_compress(input: &[u8], level: Level) -> Vec<u8> {
 
 /// zlib-wrapped DEFLATE of `input`, the rows of an image, each `row_len` bytes long (a GeoTIFF
 /// chunk's): [`zlib_compress`], where each search also examines the position one row back and
-/// takes its match when it is longer than the hash chains' best (see [`Mf::longest_match`]). So a
-/// tile whose rows repeat the row above, as uniform blocks of a class do, is coded as copies of
-/// those rows. With `row_len` 0, or over 32,767 bytes (farther back than the matchfinder reaches),
-/// the output is [`zlib_compress`]'s.
+/// takes its match when it is longer than the best of the hash chains (and, at levels 6 to 9, of
+/// the periodic-run probe; see [`Mf::longest_match`]). So a tile whose rows repeat the row above,
+/// as uniform blocks of a class do, is coded as copies of those rows. With `row_len` 0, or over
+/// 32,767 bytes (farther back than the matchfinder reaches), the output is [`zlib_compress`]'s.
 pub(crate) fn zlib_compress_rows(input: &[u8], row_len: usize, level: Level) -> Vec<u8> {
     let row = if row_len < WINDOW_SIZE as usize { row_len } else { 0 };
     let n = input.len();
@@ -1515,9 +1517,12 @@ mod tests {
 
     /// Tiles of uniform blocks, whose rows repeat the row above, are coded as copies of whole rows
     /// when their rows are given, at every level, with pixels of 1 to 4 bytes (3, RGB, interleaved):
-    /// each compresses to at most its bound, where at level 6 the hash chains alone give at least
-    /// twice as much (2.4 to 4.4 times). The palette-like tile, of blobs with irregular edges, has a
-    /// bound too, and at level 6 compresses to 4,764 bytes with its rows, 6,000 without.
+    /// each compresses to at most its bound. At level 5 the hash chains alone give at least twice as
+    /// much (3.3 to 6.4 times). At level 6, whose periodic-run probe also finds copies of runs of 1-,
+    /// 2- and 4-byte pixels, the rows never give more, and still at most a third of the RGB tile's
+    /// bytes without rows and two thirds of the Float32 tile's. The palette-like tile, of blobs with
+    /// irregular edges, has a bound too, and at level 6 compresses to 4,671 bytes with its rows, 5,124
+    /// without.
     #[test]
     fn rows_that_repeat_the_row_above_are_copied_from_it() {
         let squares = |x: usize, y: usize| ((x / 64 + y / 64) % 10) as u8;
@@ -1536,10 +1541,19 @@ mod tests {
                 let (rows, chains) = (zlib_compress_rows(&input, row_len, level), zlib_compress(&input, level));
                 assert!(decompresses_to(&rows, &input), "{name}, level {l}");
                 assert!(rows.len() <= bound, "{name}, level {l}: {} bytes", rows.len());
-                if l == 6 && name == "palette-like" {
-                    assert_eq!((rows.len(), chains.len()), (4764, 6000), "{name}");
-                } else if l == 6 {
+                if name == "palette-like" {
+                    if l == 6 {
+                        assert_eq!((rows.len(), chains.len()), (4671, 5124), "{name}");
+                    }
+                } else if l == 5 {
                     assert!(chains.len() >= 2 * rows.len(), "{name}: {} < 2 x {}", chains.len(), rows.len());
+                } else if l == 6 {
+                    let at_least = match name {
+                        "37 x 53 blocks, RGB" => 3.0,
+                        "37 x 53 blocks, Float32" => 1.5,
+                        _ => 1.0,
+                    };
+                    assert!(chains.len() as f64 >= at_least * rows.len() as f64, "{name}: {} < {at_least} x {}", chains.len(), rows.len());
                 }
             }
         }
@@ -1561,16 +1575,18 @@ mod tests {
     }
 
     /// The row back is at most 32,767 bytes back, as far as the matchfinder reaches: two equal rows
-    /// of 32,767 bytes compress otherwise with their rows given, at every level (smaller at level
-    /// 6); rows of 32,768 bytes, as without rows.
+    /// of 32,767 bytes compress otherwise with their rows given at levels 1 to 5 (smaller at level
+    /// 5), and the same at levels 6 to 9, whose periodic-run probe finds copies as long; rows of
+    /// 32,768 bytes, as without rows, at every level.
     #[test]
     fn the_row_back_is_at_most_32767_bytes_back() {
         let (near, far) = (two_rows_of_runs(32767), two_rows_of_runs(32768));
         for l in 1..=9 {
             let level = Level::new(l).unwrap();
             let (rows, chains) = (zlib_compress_rows(&near, 32767, level), zlib_compress(&near, level));
-            assert!(rows != chains && decompresses_to(&rows, &near), "32,767, level {l}");
-            if l == 6 {
+            assert!(decompresses_to(&rows, &near), "32,767, level {l}");
+            assert_eq!(rows != chains, l <= 5, "32,767, level {l}");
+            if l == 5 {
                 assert!(rows.len() < chains.len(), "{} >= {}", rows.len(), chains.len());
             }
             assert!(zlib_compress_rows(&far, 32768, level) == zlib_compress(&far, level), "32,768, level {l}");
@@ -1806,7 +1822,7 @@ mod tests {
                     (1330, 0x7451e108),
                     (1336, 0xd2d79c22),
                     (1257, 0x262f9659),
-                    (1257, 0x59b1ed56),
+                    (1220, 0x5c812e4e),
                     (1211, 0x731e1a2f),
                     (1211, 0x92fc235b),
                     (1211, 0x92fc235b),
@@ -1822,9 +1838,9 @@ mod tests {
                     (5589, 0x72c7a17b),
                     (5719, 0xabaff489),
                     (4907, 0x59766daa),
-                    (4764, 0xd9019897),
-                    (4539, 0xda42b141),
-                    (4410, 0x315a3c41),
+                    (4671, 0xe7c60c56),
+                    (4487, 0x7065f2fa),
+                    (4398, 0x37baff9a),
                     (4449, 0x074d465a),
                 ],
             ),
@@ -1838,8 +1854,8 @@ mod tests {
                     (18312, 0x014c13db),
                     (18317, 0xf0ec6ead),
                     (18249, 0x6045d5e9),
-                    (18249, 0x4f242ee5),
-                    (18249, 0x4f242ee5),
+                    (18274, 0xad50cdc3),
+                    (18274, 0xad50cdc3),
                     (18274, 0x812271a5),
                     (18274, 0x812271a5),
                 ],

@@ -3772,8 +3772,8 @@ mod tests {
     /// A Deflate chunk is compressed in its rows, as long as its width's samples of its data type:
     /// each search examines the position that many bytes back, in a tile or a strip (whatever its
     /// height), of one sample or of interleaved ones, and in a 1-bit mask's rows of packed bits.
-    /// Rows that repeat the one above, each a long run of one value and then bytes of its own,
-    /// change the chunk.
+    /// Rows that repeat the one above, each a long run of three values in turn (a period that the
+    /// periodic-run probe does not take) and then bytes of its own, change the chunk.
     #[test]
     fn a_deflate_chunk_is_compressed_in_its_rows() {
         let codec = CodecParams::default();
@@ -3785,12 +3785,13 @@ mod tests {
             (100, 7, 2, DataType::F32, 800),
             (512, 16, 1, DataType::U8, 64),
         ] {
-            // Groups of 4 equal rows: three quarters of a row of one value, then bytes of its own.
+            // Groups of 4 equal rows: three quarters of a row of three values in turn, then bytes of
+            // its own.
             let data: Vec<u8> = (0..h * row)
                 .map(|i| {
                     let (group, x) = (i / row / 4, i % row);
                     let own = ((group * row + x) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56;
-                    if x < row * 3 / 4 { (group % 7) as u8 + 1 } else { own as u8 }
+                    if x < row * 3 / 4 { (group % 7) as u8 + 1 + (x % 3) as u8 * 10 } else { own as u8 }
                 })
                 .collect();
             let chunk = Compression::Deflate.compress(data.clone(), &ChunkInfo { w, h, spp, t }, &codec).unwrap();
@@ -3830,16 +3831,18 @@ mod tests {
     /// An image's Deflate chunks are compressed in their rows through `Level::image`, which the
     /// writers of TIFF chunks call: in tiles, and in strips whose last one is shorter, of pixel- or
     /// band-interleaved bands. Each chunk is the one its rows give, and in each short last strip it
-    /// differs from the one without rows.
+    /// differs from the one without rows: its rows repeat the row above, each three quarters of a
+    /// run of three values in turn, a period that the periodic-run probe does not take.
     #[test]
     fn an_image_is_compressed_in_its_rows_in_tiles_and_strips() {
         let (cols, rows, bands) = (300, 70, 2);
-        // Groups of 4 equal rows: three quarters of a row of one value, then values of its own.
+        // Groups of 4 equal rows: three quarters of a row of three values in turn, then values of
+        // its own.
         let data: Vec<u16> = (0..cols * rows * bands)
             .map(|i| {
                 let (band, group, x) = (i / (cols * rows), i / cols % rows / 4, i % cols);
                 let own = (((band * rows + group) * cols + x) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 48;
-                if x < cols * 3 / 4 { (group % 7 + 1) as u16 * 257 } else { own as u16 }
+                if x < cols * 3 / 4 { (group % 7 + 1) as u16 * 257 + (x % 3) as u16 } else { own as u16 }
             })
             .collect();
         let level = Level { cols, rows, bands, data: std::borrow::Cow::Owned(RasterData::U16(data)) };
