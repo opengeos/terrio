@@ -970,10 +970,11 @@ pub fn export_schema_with_dims(
 /// `gdal vector export-schema` exports it. Local GeoPackages are described from their tables'
 /// declarations (exact column types, `NOT NULL` and `UNIQUE` constraints and defaults, the
 /// geometry column and its Z/M flags); other datasets are read and described by
-/// [`export_schema`]. A local or remote FlatGeobuf, or a zip whose member is one, reports the Z and M
-/// its header declares, even with no features. A remote FlatGeobuf is recognised by its
-/// URL's file name extension: a URL without one (`layer?format=fgb`) is refused as an unrecognised
-/// format, as `open_vector` refuses it.
+/// [`export_schema`]. A local or remote FlatGeobuf, or a local zip whose member is one, reports the Z and
+/// M its header declares, even with no features. A remote zip's member is read by the general route,
+/// which does not read its declared Z or M. A remote FlatGeobuf is recognised by its URL's file name
+/// extension: a URL without one (`layer?format=fgb`) is refused as an unrecognised format, as
+/// `open_vector` refuses it when GDAL is not built in; a build with GDAL reads it through GDAL.
 pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
     #[cfg(feature = "sqlite")]
     if crate::formats::VectorDriver::for_extension(path) == Some(crate::formats::VectorDriver::GPKG)
@@ -989,17 +990,21 @@ pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
     let options = crate::VectorOpenOptions { layers: layers.to_vec(), ..Default::default() };
     let flatgeobuf = crate::formats::VectorDriver::FlatGeobuf;
     let location = crate::vfs::Location::parse(path);
-    // A remote FlatGeobuf, or a zip whose member is one, is resolved once and opened, and its header
-    // read, from that local copy: nothing is downloaded or extracted twice. Refused by name first.
-    // A local archive's member takes the archived route below, not this one: `is_local` is false for it.
-    // The archive's member is read once: for a local zip, that reads its listing.
-    let member = crate::vfs::zip_member(&location);
+    // The caller's asset read policy judges the path before a local archive's listing is read.
+    let member = {
+        let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
+        crate::vfs::zip_member(&location)
+    };
+    // A remote FlatGeobuf, or a local zip whose member is one, is judged by its name, then resolved once:
+    // the download or extraction is the only read of the file, and the header is read from that copy.
+    // A local archive's member is judged by its content, as the archive is. A remote archive's member
+    // keeps the general route.
     let remote =
         !location.is_local() && member.is_none() && crate::formats::VectorDriver::for_extension(&location.file_name()) == Some(flatgeobuf);
     let archived = member.is_some_and(|m| crate::formats::VectorDriver::for_extension(&m) == Some(flatgeobuf));
     if remote || archived {
-        // The caller's asset read policy judges the path before any download. The downloaded copy is
-        // not an asset of that policy, so the scope ends before the copy is opened, as on the general route.
+        // The policy judges the path before any download or extraction. The copy is not an asset of that
+        // policy, so the scope ends before the copy is opened, as on the general route.
         let local = {
             let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
             if remote {
@@ -1009,12 +1014,14 @@ pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
             }
             crate::vfs::resolve(path)?
         };
-        // The copy is judged by its content, as `open_vector` judges a file, then read without the policy:
-        // the policy judged the download above, and the copy is not an asset of it.
+        // The copy is judged by its content, as `open_vector` judges a file, then read without the policy.
         crate::formats::check_allowed(local.as_str(), Some(crate::formats::Kind::Vector))
             .map_err(|e| crate::dataset::naming_dataset(e, path, local.as_str()))?;
-        let ds = crate::dataset::open_vector_native(local.as_str(), &options)
-            .map_err(|e| crate::dataset::naming_dataset(e, path, local.as_str()))?;
+        let opened = crate::dataset::open_vector_native(local.as_str(), &options);
+        // As `open_vector` does, GDAL reads what the native reader refuses, when GDAL is built in.
+        #[cfg(feature = "gdal")]
+        let opened = crate::dataset::gdal_fallback(local.as_str(), opened, |p| crate::gdal_backend::open_vector(p, &options));
+        let ds = opened.map_err(|e| crate::dataset::naming_dataset(e, path, local.as_str()))?;
         let declared = if ds.driver == flatgeobuf { path_declared_dims(local.as_str()) } else { Vec::new() };
         return Ok(export_schema_with_dims(&ds.layers, Some(ds.driver), &declared));
     }
