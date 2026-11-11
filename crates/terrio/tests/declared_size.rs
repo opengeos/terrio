@@ -3,10 +3,10 @@
 //! A GeoTIFF of a few hundred kilobytes can declare gigabytes of pixels: every strip or tile
 //! points to the same small compressed block. These tests check that:
 //!
-//! - `TERRIO_MAX_DECLARED_BYTES` and `TERRIO_MAX_BANDS`, set for a thread (as `terrio.Env` sets
-//!   them) or in the process environment, refuse such a raster when it is opened, whatever its
-//!   driver and whatever public entry point opens it, before any of its pixels is decoded where its
-//!   reader reads a header first;
+//! - `TERRIO_MAX_DECLARED_BYTES` and `TERRIO_MAX_BANDS`, set for a thread (as Python's
+//!   `terrio.rio.Env` sets them) or in the process environment, refuse such a raster when it is
+//!   opened, whatever its driver and whatever public entry point opens it, before any of its pixels
+//!   is decoded where its reader reads a header first;
 //! - a whole read of a GeoTIFF that the process cannot hold is refused before its buffer is
 //!   allocated, while a window of it that fits is read;
 //! - the GeoTIFF and COG writers that operations stream to refuse a raster whose rows they would
@@ -127,7 +127,7 @@ fn largest_during<T>(f: impl FnOnce() -> T) -> (T, usize) {
     (out, LARGEST.load(Ordering::Relaxed))
 }
 
-/// `f` with `options` set on the calling thread, as `terrio.Env` sets them.
+/// `f` with `options` set on the calling thread, as Python's `terrio.rio.Env` sets them.
 fn scoped<T>(options: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
     struct Pop;
     impl Drop for Pop {
