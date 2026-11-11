@@ -1218,7 +1218,7 @@ impl LazyRaster {
         ds
     }
 
-    /// Reads the whole full-resolution image. A GeoTIFF's that the process cannot hold (more than
+    /// Reads the whole full-resolution image. A GeoTIFF that the process cannot hold (more than
     /// [`crate::usable_memory`]) is refused with [`Error::ResourceLimit`] before it is allocated,
     /// as any of its windows is.
     pub fn read(&mut self) -> Result<RasterDataset> {

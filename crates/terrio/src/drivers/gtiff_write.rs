@@ -2374,7 +2374,6 @@ fn slice_rows(data: &RasterData, total: usize, range: std::ops::Range<usize>, co
     })
 }
 
-/// The `a_rows` rows of `a` followed by the `b_rows` rows of `b`, band after band.
 /// Refuses, before its file is created, a row writer ([`TiffRows`], [`CogWriter`]) of a raster
 /// whose rows it would hold cannot fit in the memory the process can use
 /// ([`crate::dataset::fallible::check_usable`]): it keeps the rows of a row of its blocks
@@ -2396,6 +2395,7 @@ fn check_rows_held(r: &Raster, block_rows: usize) -> Result<()> {
     .map_err(Error::ResourceLimit)
 }
 
+/// The `a_rows` rows of `a` followed by the `b_rows` rows of `b`, band after band.
 fn append_rows(a: &RasterData, a_rows: usize, b: &RasterData, b_rows: usize, cols: usize, bands: usize) -> Result<RasterData> {
     macro_rules! join {
         ($($v:ident),*) => {
