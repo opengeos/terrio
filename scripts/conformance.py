@@ -3414,13 +3414,32 @@ def suite_webp_writer(ctx):
     if missing:
         s.skipped = "needs the Python modules " + ", ".join(missing)
         return s
-    code, out, err = run([sys.executable, "-m", "pytest", "-q",
-                          str(ROOT / "python/tests/test_webp_writer.py")],
-                         {"TERRIO_TEST_DATA": str(ctx.data)})
+    command = [sys.executable, "-m", "pytest", "-o", "addopts=", "-q",
+               str(ROOT / "python/tests/test_webp_writer.py")]
+    env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "PYTEST_ADDOPTS": ""}
+    code, collected, err = run(command + ["--collect-only"], env)
+    expected = sum("::" in line and Path(line.split("::", 1)[0]).name == "test_webp_writer.py"
+                   for line in collected.splitlines())
+    if code or not expected or "deselected" in collected:
+        s.cases.append(Case("WEBP GDAL decoding", "complete test collection", DIFFERS,
+                            "Could not collect the complete WebP test module. " + tail(err or collected)))
+        return s
+    with tempfile.TemporaryDirectory(prefix="terrio-webp-conformance-") as directory:
+        report = Path(directory) / "results.xml"
+        code, out, err = run(command + [f"--junitxml={report}"], env)
+        try:
+            cases = ET.parse(report).getroot().findall(".//testcase")
+            complete = len(cases) == expected and all(
+                case.find("failure") is None and case.find("error") is None and case.find("skipped") is None
+                for case in cases)
+            detail = f"{len(cases)} of {expected} collected tests reported. "
+        except (OSError, ET.ParseError) as error:
+            complete = False
+            detail = f"Pytest report unavailable: {error}. "
     s.cases.append(Case("WEBP GDAL decoding", "path/memory options and Landsat decoding",
-                        IDENTICAL if code == 0 and "skipped" not in out else DIFFERS,
+                        IDENTICAL if code == 0 and complete and "deselected" not in out else DIFFERS,
                         "Exact decoding/alpha comparisons and creation-option assertions; "
-                        "GDAL encoder parity is not asserted. " + tail(err or out)))
+                        "GDAL encoder parity is not asserted. " + detail + tail(err or out)))
     return s
 
 

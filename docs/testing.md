@@ -166,7 +166,8 @@ requested lossy output changes with quality, keeps alpha exactly, and is decoded
 independently with GDAL (validated locally with GDAL 3.13.3). Path and memory
 outputs agree. Lossy byte streams, size and PSNR are not claimed to match libwebp.
 The shared lossy encoder is also checked through WebAssembly GeoTIFF tiles in
-`js/tests/node.test.mjs`; standalone WebP byte I/O is not exposed in that build.
+`js/tests/node.test.mjs`. General `toBytes` and `open` do not support WebP in that
+build; `rasterTiles` can emit standalone WebP bytes through its callback.
 
 CityJSON uses its published schemas and specifications as the reference because
 GDAL 3.13.3 has no CityJSON driver. Prepare the real CityJSON 1.1 Den Haag and 2.0
