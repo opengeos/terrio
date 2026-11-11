@@ -441,3 +441,63 @@ def test_gdal_wkt_with_authority_and_shift_keeps_the_explicit_operation(code, po
     assert pyproj.CRS.from_wkt(wkt).is_bound
     expected = pyproj.Transformer.from_crs(4326, wkt, always_xy=True).transform(*point)
     np.testing.assert_allclose(coordinates(crs, point), expected, rtol=0, atol=1e-3)
+
+
+def test_validated_extension_is_cached_without_changing_identity(monkeypatch):
+    """Repeated exports validate one captured WKT once and keep identity metadata intact.
+
+    Args:
+        monkeypatch: Scoped native call replacement.
+    """
+    from terrio import _terrio
+
+    crs = CRS.from_epsg(3857)
+    before = dict(crs._info)
+    original = _terrio.crs_info
+    calls = []
+
+    def record(definition):
+        """Record native validation calls.
+
+        Args:
+            definition: The CRS being validated.
+
+        Returns:
+            dict: Native CRS metadata.
+        """
+        calls.append(definition)
+        return original(definition)
+
+    monkeypatch.setattr(_terrio, "crs_info", record)
+    assert crs.to_dict() == crs.to_dict()
+    assert crs.to_proj4()
+    assert calls == [crs.wkt]
+    assert crs._info == before
+
+
+@pytest.mark.parametrize("code", [27700, 23031])
+def test_gdal_written_authority_dataset_keeps_unbound_selection(tmp_path, code):
+    """Standard GDAL WKT1 exports have no shift and retain authority operation selection.
+
+    Locally verified with GDAL 3.13.3.
+
+    Args:
+        tmp_path: Temporary GeoTIFF directory.
+        code: Projected authority CRS.
+    """
+    gdal = pytest.importorskip("osgeo.gdal")
+    osr = pytest.importorskip("osgeo.osr")
+    import terrio.rio as rio
+    from terrio.rio.warp import _crs_text
+
+    crs = osr.SpatialReference()
+    crs.ImportFromEPSG(code)
+    wkt = crs.ExportToWkt()
+    assert "TOWGS84" not in wkt
+    path = tmp_path / "authority.tif"
+    dataset = gdal.GetDriverByName("GTiff").Create(str(path), 2, 2, 1, gdal.GDT_Byte)
+    dataset.SetProjection(wkt)
+    dataset.SetGeoTransform((0, 1, 0, 2, 0, -1))
+    dataset = None
+    with rio.open(path) as opened:
+        assert _crs_text(opened.crs) == f"EPSG:{code}"

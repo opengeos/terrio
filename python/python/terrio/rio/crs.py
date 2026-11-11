@@ -21,7 +21,6 @@ import os
 import re
 import warnings
 from collections.abc import Mapping
-from functools import lru_cache
 from typing import Any
 
 from terrio import _terrio
@@ -706,7 +705,12 @@ class CRS(Mapping[str, Any]):
         ):
             # Use only an extension the native reader validates against the entire WKT.
             # Authority constructors retain the WKT but do not populate their PROJ field.
-            validated = _terrio.crs_info(self.wkt).get("proj4")
+            wkt = self.wkt
+            cached = self.__dict__.get("_validated_proj4")
+            if cached is None or cached[0] != wkt:
+                cached = (wkt, _terrio.crs_info(wkt).get("proj4"))
+                self._validated_proj4 = cached
+            validated = cached[1]
             if validated:
                 return _proj_dict(validated)
         return _wkt_to_proj(root) if root is not None else {}
@@ -995,7 +999,9 @@ def _num(v: float) -> float | int:
     return int(v) if float(v).is_integer() else v
 
 
-@lru_cache(maxsize=16)
+_DATUM_SPHEROIDS: dict[str, tuple[float, float]] = {}
+
+
 def _datum_spheroid(name: str) -> tuple[float, float]:
     """Read a named datum's canonical spheroid from the shared native CRS reader.
 
@@ -1005,13 +1011,18 @@ def _datum_spheroid(name: str) -> tuple[float, float]:
     Returns:
         tuple: Semi-major axis and inverse flattening.
     """
-    root = _parse_wkt(_terrio.crs_info(f"+proj=longlat +datum={name}")["wkt"])
-    assert root is not None
-    datum = _child(root, "DATUM")
-    assert datum is not None
-    spheroid = _child(datum, "SPHEROID")
-    assert spheroid is not None
-    return float(spheroid[2]), float(spheroid[3])
+    if name not in _DATUM_SPHEROIDS:
+        root = _parse_wkt(_terrio.crs_info(f"+proj=longlat +datum={name}")["wkt"])
+        if root is None:
+            raise CRSError(f"The native reader returned no WKT for datum {name}")
+        datum = _child(root, "DATUM")
+        if datum is None:
+            raise CRSError(f"The native reader returned no DATUM for {name}")
+        spheroid = _child(datum, "SPHEROID")
+        if spheroid is None or len(spheroid) < 4:
+            raise CRSError(f"The native reader returned no complete SPHEROID for datum {name}")
+        _DATUM_SPHEROIDS[name] = float(spheroid[2]), float(spheroid[3])
+    return _DATUM_SPHEROIDS[name]
 
 
 def _wkt_to_proj(root: list[Any]) -> dict[str, Any]:
