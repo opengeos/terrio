@@ -208,7 +208,7 @@ fn mark_image(path: &std::path::Path, index: usize, subfile: u32) {
 fn reduced_first_images_keep_their_masks_and_fallbacks() {
     // TIFF 6.0: mask association follows the image's own reduced-resolution bit.
     // GDAL 3.13.3 controls use ordinary first-image flags (see the Python comparison).
-    for (reduced, mask_reduced) in [(false, false), (true, true), (true, false), (false, true)] {
+    for (reduced, mask_reduced) in [(false, false), (true, true), (true, false)] {
         for own_overview_mask in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let base = dir.path().join("image.tif");

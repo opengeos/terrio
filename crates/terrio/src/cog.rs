@@ -1843,7 +1843,7 @@ impl From<RasterDataset> for LazyRaster {
 fn mask_for_image<'a>(masks: &'a [crate::tiff_mask::MaskImage], image: &Level) -> Option<&'a crate::tiff_mask::MaskImage> {
     let same_size = |m: &&crate::tiff_mask::MaskImage| (m.width, m.height) == (image.width, image.height);
     masks.iter().filter(same_size).find(|m| m.overview == image.reduced).or_else(|| {
-        if image.ifd != 0 {
+        if image.ifd != 0 || !image.reduced {
             return None;
         }
         let mut matches = masks.iter().filter(same_size);
