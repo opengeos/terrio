@@ -155,7 +155,10 @@ impl Compression {
                 .map_err(|e| Error::InvalidData(format!("LZW: {e}")))?,
             // The chunk's `h` rows, each of the same length: each search also examines the position
             // one row back.
-            Self::Deflate => crate::deflate_compress::zlib_compress_rows(&data, data.len() / c.h.max(1), p.deflate_level),
+            Self::Deflate => {
+                debug_assert_eq!(data.len() % c.h.max(1), 0, "a Deflate chunk of {} bytes is not {} whole rows", data.len(), c.h);
+                crate::deflate_compress::zlib_compress_rows(&data, data.len() / c.h.max(1), p.deflate_level)
+            }
             Self::PackBits => packbits(&data),
             Self::Zstd => zstd_compress(&data, p.zstd_level)?,
             Self::Lerc => lerc_encode(&data, c, p.max_z_error)?,
@@ -173,8 +176,10 @@ fn lerc_encode(_data: &[u8], _c: &ChunkInfo, _max_z_error: f64) -> Result<Vec<u8
     Err(Error::disabled("lerc"))
 }
 
-/// A Deflate chunk as GDAL 3.12 built with libdeflate writes it: libdeflate's level 6, the same bytes.
-/// At another `level` (`ZLEVEL`), the chunk that level's search gives.
+/// The Deflate stage of a `LERC_DEFLATE` chunk: the LERC blob, zlib-wrapped at `level` (`ZLEVEL`,
+/// 6 by default) by `zlib_compress`, whose compressor is derived from libdeflate's and also probes
+/// periodic-run boundaries at levels 6 to 9. A blob has no rows, so no search looks one row back:
+/// `DEFLATE` chunks are compressed in their rows by `zlib_compress_rows` instead.
 fn deflate(data: &[u8], level: crate::deflate_compress::Level) -> Result<Vec<u8>> {
     Ok(crate::deflate_compress::zlib_compress(data, level))
 }

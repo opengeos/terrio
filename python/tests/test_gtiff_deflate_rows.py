@@ -13,7 +13,7 @@ import pytest
 import terrio.rio as rio
 from terrio.rio.transform import from_origin
 
-_yy, _xx = np.mgrid[0:1024, 0:1024]
+_yy, _xx = np.mgrid[0:1024, 0:1024].astype(np.int64)
 # 10 classes, one per block of 37 x 53 pixels, from the block's number.
 _block = (_yy // 53) * 28 + _xx // 37
 CLASSES = ((_block * 1103515245 + 12345) // 65536 % 10).astype(np.uint8)

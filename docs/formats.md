@@ -116,7 +116,7 @@ Deflate levels 6–9 supplement the bounded hash-chain search with up to four
 run-boundary candidates. This keeps long matches across repeating categorical
 rows instead of encoding each short uniform run separately. It can change the
 compressed bytes and CPU cost; the decoded pixels are unchanged. Levels 1–5
-retain their existing search. Compressed bytes need not match libdeflate or GDAL.
+add no run-boundary candidates. Compressed bytes need not match libdeflate or GDAL.
 
 Within a `DEFLATE` chunk, at every level, the encoder also looks for a match one row back and takes
 it where it is longer than the matches its hash chains (and, at levels 6–9, its run-boundary
