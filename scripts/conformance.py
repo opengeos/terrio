@@ -2132,13 +2132,16 @@ def suite_crs(ctx):
 # The PROJ definitions without an EPSG code that the tests check, by test file and test.
 PROJ_CASES = {
     "polar_stereographic": {
-        "polar_stereographic_inverse_refuses_nonfinite_coordinates":
-            "Polar stereographic variants A/B/C: all non-finite inverse input refused "
-            "(GDAL 3.13.3 refuses the reported infinity pairs, but accepts some other infinity pairs)",
+        "polar_stereographic_inverse_refuses_nonfinite_coordinates": (
+            "Polar stereographic variants A/B/C: non-finite inverse input", EXPECTED_REJECTION,
+            "Terrio refuses every non-finite pair; intentionally stricter than GDAL 3.13.3, "
+            "which accepts some pairs such as (0, -inf) in EPSG:3413 as a pole",
+        ),
         "polar_stereographic_inverse_keeps_distant_finite_coordinates": (
-            "Polar stereographic: finite distant points remain valid", TOLERANCE,
-            "same-datum inverse converges to the opposite pole: <2 degrees at 1e9 m, "
-            "<0.002 degrees at 1e12 m, <1e-8 degrees at 1e20 and 1e300 m",
+            "Polar stereographic: finite distant points remain valid", NOT_COMPARED,
+            "analytic limit checked, not a GDAL coordinate comparison: same-datum inverse "
+            "converges to the opposite pole within 2 degrees at 1e9 m, 0.002 degrees at 1e12 m "
+            "and 1e-8 degrees at 1e20 and 1e300 m",
         ),
     },
     "crs_benchmark": {
