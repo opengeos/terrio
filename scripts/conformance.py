@@ -335,6 +335,9 @@ def suite_pyogrio_buffers(ctx):
         suite.skipped = "needs " + ", ".join(missing)
         return suite
     import pyogrio
+    if hasattr(pyogrio, "__terrio_version__"):
+        suite.skipped = "needs the independent Pyogrio/GDAL reference, not Terrio's compatibility adapter"
+        return suite
     suite.reference = f"GDAL {'.'.join(map(str, pyogrio.__gdal_version__))} via pyogrio {pyogrio.__version__}"
     with tempfile.TemporaryDirectory(prefix="terrio-buffer-conformance-") as directory:
         report = Path(directory) / "results.xml"

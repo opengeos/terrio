@@ -223,6 +223,33 @@ def test_osm_xml_buffers_have_an_xml_filename_hint(prefix):
     assert terrio._terrio.vector_byte_extension(prefix + b'<osm version="0.6"/>') == "osm"
 
 
+@pytest.mark.parametrize("prefix", [b"", b"\xef\xbb\xbf", b"  \n"])
+def test_geojson_buffer_prefixes_preserve_identification(prefix, sources):
+    """GeoJSON byte-order marks and leading whitespace retain the anonymous read path.
+
+    Args:
+        prefix: Supported text prefix.
+        sources: Real vector fixtures.
+    """
+    data = prefix + sources["geojson"].read_bytes()
+    assert terrio._terrio.vector_byte_extension(data) == "geojson"
+    assert tpg.read_info(data)["features"] == 4
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_flatgeobuf_supported_magic_versions_read_the_payload(version, sources):
+    """Hints retain older magic versions accepted by the underlying FlatGeobuf reader.
+
+    Args:
+        version: Header version accepted by the codec.
+        sources: Valid FlatGeobuf payload.
+    """
+    data = bytearray(sources["fgb"].read_bytes())
+    data[3] = version
+    assert terrio._terrio.vector_byte_extension(bytes(data)) == "fgb"
+    assert len(tpg.read_dataframe(data)) == 4
+
+
 @pytest.mark.parametrize("form", ["path", "bytes", "file"])
 def test_archives_without_vector_datasets_have_a_clear_error(tmp_path, form):
     """Ancillary files alone must not be accepted as an empty vector dataset.

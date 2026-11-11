@@ -12,6 +12,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import conformance  # noqa: E402
 
 
+def test_buffer_oracle_refuses_terrio_as_its_own_reference(monkeypatch):
+    """A compatibility module is an unavailable reference, not a broken comparison.
+
+    Args:
+        monkeypatch: Scoped dependency replacement.
+    """
+    monkeypatch.setattr(conformance, "missing_modules", lambda *args: [])
+    monkeypatch.setitem(
+        sys.modules, "pyogrio", SimpleNamespace(__terrio_version__="test")
+    )
+    suite = conformance.suite_pyogrio_buffers(SimpleNamespace())
+    assert suite.skipped
+    assert not suite.error
+    assert not suite.cases
+
+
 @pytest.mark.parametrize(
     "outcome", ["match", "difference", "fixture-error", "skip", "malformed"]
 )
