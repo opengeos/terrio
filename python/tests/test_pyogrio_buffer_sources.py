@@ -161,14 +161,14 @@ def test_dataset_beside_readme_opens_as_the_core_does(tmp_path, sources, extensi
 def test_signature_free_content_keeps_a_clear_refusal():
     """Unsigned CSV bytes still require a filename, instead of an arbitrary driver guess."""
     with pytest.raises(DataSourceError, match="/vsimem/pyogrio.*not recognized"):
-        tpg.read_dataframe(b"WKT,id\nPOINT (10 46),1\n")
+        tpg.read_info(b"WKT,id\nPOINT (10 46),1\n")
 
 
 def test_top_level_json_arrays_are_refused_as_invalid_geojson():
     """Shared identification keeps the existing GeoJSON diagnostic for a feature array."""
     data = b'[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}]'
     with pytest.raises(DataSourceError, match="GeoJSON: no type"):
-        tpg.read_dataframe(data)
+        tpg.read_info(data)
 
 
 @pytest.mark.parametrize(
