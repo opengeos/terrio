@@ -2707,11 +2707,11 @@ impl Shared {
                     return Ok(true);
                 }
                 status => {
-                    return Err(io::Error::other(format!(
+                    return Err(io::Error::other(Error::Http(format!(
                         "{}: bytes {from}-{last}: unexpected response (status {status}, {} bytes)",
                         redact(&self.client.url),
                         fetched.data.len()
-                    )));
+                    ))));
                 }
             }
         }

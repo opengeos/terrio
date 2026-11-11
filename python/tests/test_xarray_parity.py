@@ -22,6 +22,8 @@ import terrio.rio as trio  # noqa: E402
 import terrio.xarray  # noqa: E402,F401
 from terrio.rio.enums import Resampling as TR  # noqa: E402
 
+pytestmark = pytest.mark.usefixtures("gdal_warp_grid")
+
 E = {"semi_major_axis": 6378137.0, "inverse_flattening": 298.257223563}
 DAYMET = {
     "grid_mapping_name": "lambert_conformal_conic",
