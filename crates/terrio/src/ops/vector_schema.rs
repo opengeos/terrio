@@ -993,16 +993,24 @@ pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
     // read, from that local copy: nothing is downloaded or extracted twice. Refused by name first.
     let remote = !location.is_local() && crate::formats::VectorDriver::for_extension(&location.file_name()) == Some(flatgeobuf);
     let archived = crate::vfs::zip_member(&location).is_some_and(|m| crate::formats::VectorDriver::for_extension(&m) == Some(flatgeobuf));
-    // The asset read policy of the caller applies to the path as `open_vector` judges it, before any download.
-    let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
     if remote || archived {
-        if remote {
-            crate::formats::check_driver_allowed("FlatGeobuf", path, crate::formats::Kind::Vector)?;
-        } else {
-            crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
-        }
-        let local = crate::vfs::resolve(path)?;
-        let ds = crate::open_vector(local.as_str(), &options).map_err(|e| crate::dataset::naming_dataset(e, path, local.as_str()))?;
+        // The caller's asset read policy judges the path before any download. The downloaded copy is
+        // not an asset of that policy, so the scope ends before the copy is opened, as on the general route.
+        let local = {
+            let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
+            if remote {
+                crate::formats::check_driver_allowed("FlatGeobuf", path, crate::formats::Kind::Vector)?;
+            } else {
+                crate::formats::check_allowed(path, Some(crate::formats::Kind::Vector))?;
+            }
+            crate::vfs::resolve(path)?
+        };
+        // The copy is judged by its content, as `open_vector` judges a file, then read without the policy:
+        // the policy judged the download above, and the copy is not an asset of it.
+        crate::formats::check_allowed(local.as_str(), Some(crate::formats::Kind::Vector))
+            .map_err(|e| crate::dataset::naming_dataset(e, path, local.as_str()))?;
+        let ds = crate::dataset::open_vector_native(local.as_str(), &options)
+            .map_err(|e| crate::dataset::naming_dataset(e, path, local.as_str()))?;
         let declared = if ds.driver == flatgeobuf { path_declared_dims(local.as_str()) } else { Vec::new() };
         return Ok(export_schema_with_dims(&ds.layers, Some(ds.driver), &declared));
     }

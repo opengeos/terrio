@@ -1109,6 +1109,19 @@ mod tests {
 
     #[cfg(remote)]
     #[test]
+    fn remote_flatgeobuf_under_a_remote_policy_reports_declared_z() {
+        // A permitted remote FlatGeobuf reads under a remote document's policy on both routes: the
+        // downloaded copy is not an asset of that document, so the schema route must not judge it as one.
+        let (base, _) = crate::http::test_server(empty_typed_dimension_fixture(FgbType::Unknown, true, false));
+        let url = format!("{base}/empty.fgb");
+        let _scope = crate::stac::AssetReadPolicy::for_tests("https://example.invalid/item.json", false).enter().unwrap();
+        crate::open_vector(&url, &Default::default()).unwrap();
+        let schema = crate::ops::vector_schema::export_schema_path(&url, &[]).unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "GeometryZ");
+    }
+
+    #[cfg(remote)]
+    #[test]
     fn remote_flatgeobuf_without_extension_keeps_the_general_route() {
         // Known limit: a remote FlatGeobuf is recognised by its URL's file name extension. Without
         // one, the download is named without an extension and no driver recognises it, for schema
