@@ -785,8 +785,20 @@ pub(crate) mod codec {
             #[cfg(feature = "jp2")]
             RasterDriver::JP2 => {
                 let inherited = options.inherited_from(ds, Some(driver));
+                let mut transformed;
+                let raster = match inherited.geo_transform {
+                    Some(gt) => {
+                        if !crate::is_north_up(&gt) {
+                            return Err(Error::Unsupported("the JP2 writer cannot store rotated or south-up geotransforms".into()));
+                        }
+                        transformed = RasterDataset::with_driver(ds.raster.clone(), driver, false);
+                        transformed.set_geo_transform(gt);
+                        &transformed.raster
+                    }
+                    None => &ds.raster,
+                };
                 let jp2 = crate::drivers::jp2::to_bytes(
-                    &ds.raster,
+                    raster,
                     crate::drivers::common::georeferenced(&inherited.creation_options),
                     &inherited.band_metadata,
                     &inherited.creation_options,
@@ -852,6 +864,34 @@ pub(crate) mod codec {
 
 #[cfg(test)]
 mod tests {
+    /// Reference: GDAL 3.13.3. The WASM codec and native writer use the requested output grid.
+    #[test]
+    #[cfg(feature = "jp2")]
+    fn jp2_codec_applies_explicit_output_transform() {
+        let raster = crate::Raster::from_data_native(
+            crate::RasterConfig { cols: 32, rows: 24, bands: 1, data_type: crate::DataType::U8, ..Default::default() },
+            crate::raster::RasterData::U8(vec![7; 32 * 24]),
+        )
+        .unwrap();
+        let mut ds = crate::RasterDataset::new(raster, false);
+        ds.geotransform_present = Some(false);
+        let transform = [500000.0, 10.0, 0.0, 4600000.0, 0.0, -10.0];
+        let options = crate::RasterWriteOptions { geo_transform: Some(transform), ..Default::default() };
+        let codec_bytes = super::codec::write_raster(&ds, crate::formats::RasterDriver::JP2, &options, "grid").unwrap();
+        let file_bytes = super::write_raster_bytes(&ds, "grid.jp2", &options).unwrap();
+        for bytes in [codec_bytes, file_bytes] {
+            let output = crate::drivers::jp2::read_bytes(&bytes).unwrap();
+            assert_eq!(output.geotransform_present, Some(true));
+            assert_eq!(output.geo_transform(), transform);
+            assert_eq!(output.raster.data.to_f64_vec(), vec![7.0; 32 * 24]);
+        }
+        let rotated = crate::RasterWriteOptions { geo_transform: Some([500000.0, 10.0, 1.0, 4600000.0, 0.0, -10.0]), ..Default::default() };
+        assert!(matches!(
+            super::codec::write_raster(&ds, crate::formats::RasterDriver::JP2, &rotated, "grid"),
+            Err(crate::Error::Unsupported(_))
+        ));
+    }
+
     use super::*;
     use wbraster::raster::RasterData;
     use wbraster::{DataType, Raster};

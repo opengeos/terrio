@@ -2499,6 +2499,13 @@ class DatasetWriter(DatasetReader):
         except Exception as err:
             raise RasterioIOError(f"Read failed: {err}") from err
         self._out_driver = self.driver
+        # GDAL reports every non-alpha band of a two-band gray JP2 as Gray. Keep its
+        # actual Y association separately so an update does not choose another component.
+        self._jp2_associations = (
+            [m.get("color_association") for m in raster.band_metadata]
+            if _terrio.canonical_driver_name(self.driver) == "JP2"
+            else []
+        )
         s = self.structure
         opts: dict[str, str] = {}
         if s.compression:
@@ -3008,9 +3015,12 @@ class DatasetWriter(DatasetReader):
         defaults = self._new_structure_defaults()
         # JP2 needs the whole role vector: once any role is written, omitted entries mean
         # Undefined rather than the band-count default, so every role is sent explicitly.
-        explicit_jp2_roles = (
-            self._colorinterp_set and _terrio.canonical_driver_name(driver) == "JP2"
+        inherited_associations = (
+            getattr(self, "_jp2_associations", []) if not self._colorinterp_set else []
         )
+        explicit_jp2_roles = (
+            self._colorinterp_set or bool(inherited_associations)
+        ) and _terrio.canonical_driver_name(driver) == "JP2"
         for b in range(self._count):
             md: dict[str, Any] = {}
             if s.descriptions[b]:
@@ -3028,6 +3038,8 @@ class DatasetWriter(DatasetReader):
                 ci == ColorInterp.palette and s.colormap
             ):
                 md["color_interp"] = _tiff.COLOR_INTERP_NAMES.get(ci, "Undefined")
+            if b < len(inherited_associations) and inherited_associations[b] is not None:
+                md["color_association"] = inherited_associations[b]
             band_md.append(md)
         colormap: list[tuple[int, int, int, int]] | None = None
         if s.colormap:

@@ -156,7 +156,9 @@ four-band data marked undefined retain that interpretation; RGB associations and
 alpha can appear in any component order. The multiple-component transform is enabled
 only for RGB in the first three components. Non-RGB files declare grayscale with one
 Y channel (the first gray channel, else the first non-alpha component), as the format requires.
-All-alpha inputs are rejected because they have no colour channel. Multiple gray roles
+All-alpha inputs are rejected because they have no colour channel. Multiple alpha roles and signed
+alpha samples are rejected; JPEG 2000 opacity requires an unsigned component. Updates and copies
+retain the stored Y association even when both bands report Gray. Multiple gray roles
 are normalized to that one Y association; for three or more components, both Terrio
 and GDAL report these non-alpha components as undefined on readback. Undefined
 three- and four-band inputs, including inherited roles, therefore declare grayscale rather than the

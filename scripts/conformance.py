@@ -1098,7 +1098,7 @@ def suite_vrt(ctx):
 def suite_jp2_colors(ctx):
     """Real Landsat component values, channel roles and masks through each writer."""
     package = ROOT / "js/pkg-node/terrio.js"
-    extra = ("--node-package", str(package)) if package.is_file() else ()
+    extra = ("--node-package", str(package)) if node_exports_available(package, ["open"]) else ()
     return suite_json_ops(
         ctx, "jp2-colors", "compare_jp2_color_roles.py", "JPEG 2000 channel roles",
         "GDAL JP2OpenJPEG reader",

@@ -274,3 +274,62 @@ def test_inherited_geotiff_roles_are_not_replaced_with_rgb(tmp_path, gdal, memor
         gdal.GCI_Undefined
     ] * 3
     np.testing.assert_array_equal(reference.ReadAsArray(), values)
+
+
+@pytest.mark.parametrize(
+    "roles", [("Gray", "Alpha", "Alpha"), ("Red", "Green", "Blue", "Alpha", "Alpha")]
+)
+def test_duplicate_alpha_roles_are_rejected(tmp_path, roles):
+    with pytest.raises(RasterioIOError, match="at most one alpha"):
+        _write(tmp_path, roles, "uint8", False)
+
+
+@pytest.mark.parametrize("dtype", ["int8", "int16"])
+def test_signed_alpha_roles_are_rejected(tmp_path, dtype):
+    with pytest.raises(RasterioIOError, match="unsigned"):
+        _write(tmp_path, ("Gray", "Alpha"), dtype, False)
+
+
+@pytest.mark.parametrize("surface", ["update", "path", "memory"])
+@pytest.mark.parametrize("y_band", [0, 1])
+def test_gray_update_preserves_original_y_association(tmp_path, gdal, y_band, surface):
+    values, path, raw = _write(tmp_path, ("Gray", "Gray"), "uint8", False)
+    raw = bytearray(raw)
+    offset = raw.index(b"cdef") + 6
+    for band in range(2):
+        struct.pack_into(
+            ">HHH",
+            raw,
+            offset + 6 * band,
+            band,
+            0 if band == y_band else 65535,
+            1 if band == y_band else 65535,
+        )
+    path.write_bytes(raw)
+    reference = gdal.Open(str(path))
+    expected = reference.ReadAsArray()
+    reference = None
+    if surface == "update":
+        values[:, 3, 7] += 1
+        expected[:, 3, 7] += 1
+        with rio.open(path, "r+") as dst:
+            assert dst.colorinterp == (ColorInterp.gray, ColorInterp.gray)
+            dst.write(values)
+    else:
+        raster = terrio.open_raster(str(path), lazy=True)
+        assert raster.band_metadata[y_band]["color_association"] == 1
+        path = tmp_path / "copied.jp2"
+        if surface == "path":
+            raster.write(str(path))
+        else:
+            path.write_bytes(raster.to_bytes(path.name))
+    header = next(payload for kind, payload in _boxes(path.read_bytes()) if kind == b"jp2h")
+    definitions = next(payload for kind, payload in _boxes(header) if kind == b"cdef")
+    assert [struct.unpack_from(">HHH", definitions, 2 + 6 * band) for band in range(2)] == [
+        (band, 0, 1) if band == y_band else (band, 65535, 65535) for band in range(2)
+    ]
+    with rio.open(path) as result:
+        assert result.colorinterp == (ColorInterp.gray, ColorInterp.gray)
+        np.testing.assert_array_equal(result.read(), values)
+    reference = gdal.Open(str(path))
+    np.testing.assert_array_equal(reference.ReadAsArray(), expected)

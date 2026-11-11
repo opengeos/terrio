@@ -4579,3 +4579,50 @@ test("default Deflate retains long matches across categorical runs", () => {
     assert.equal(back.crs, src.crs);
   }
 });
+
+
+test("JP2 byte copies preserve either grayscale Y component", { skip: needs("jp2") }, () => {
+  const boxes = (raw) => {
+    const found = [];
+    for (let p = 0; p < raw.length;) {
+      const n = raw.readUInt32BE(p);
+      assert.ok(n >= 8 && p + n <= raw.length);
+      found.push([raw.toString("ascii", p + 4, p + 8), raw.subarray(p + 8, p + n)]);
+      p += n;
+    }
+    return found;
+  };
+  const box = (kind, payload) => {
+    const header = Buffer.alloc(8);
+    header.writeUInt32BE(8 + payload.length);
+    header.write(kind, 4);
+    return Buffer.concat([header, payload]);
+  };
+  const values = Uint8Array.from({ length: 32 * 24 * 2 }, (_, i) => 11 + 31 * Math.floor(i / (32 * 24)) + i % 7);
+  const seed = terrio.rasterFromArray(values, 32, 24, [0, 1, 0, 24, 0, -1]);
+  const original = Buffer.from(seed.toBytes("seed.jp2"));
+  seed.free();
+  for (const yBand of [0, 1]) {
+    const definitions = Buffer.alloc(14);
+    definitions.writeUInt16BE(2);
+    for (let band = 0; band < 2; band++) {
+      definitions.writeUInt16BE(band, 2 + 6 * band);
+      definitions.writeUInt16BE(band === yBand ? 0 : 65535, 4 + 6 * band);
+      definitions.writeUInt16BE(band === yBand ? 1 : 65535, 6 + 6 * band);
+    }
+    const raw = Buffer.concat(boxes(original).map(([kind, data]) => box(kind,
+      kind === "jp2h"
+        ? Buffer.concat([...boxes(data).filter(([k]) => k !== "cdef").map(([k, p]) => box(k, p)), box("cdef", definitions)])
+        : data)));
+    const source = terrio.open(raw, "gray.jp2");
+    const bytes = Buffer.from(source.toBytes("copy.jp2"));
+    const header = boxes(bytes).find(([k]) => k === "jp2h")[1];
+    assert.deepEqual(boxes(header).find(([k]) => k === "cdef")[1], definitions);
+    const copy = terrio.open(bytes, "copy.jp2");
+    for (let band = 1; band <= 2; band++) {
+      assert.deepEqual([...copy.readBand(band)], [...values.subarray((band - 1) * 32 * 24, band * 32 * 24)]);
+    }
+    copy.free();
+    source.free();
+  }
+});

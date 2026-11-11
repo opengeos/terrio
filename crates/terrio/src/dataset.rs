@@ -1500,6 +1500,10 @@ pub struct BandMetadata {
     pub unit: Option<String>,
     /// The color interpretation, as GDAL names it: `Gray`, `Red`, `Alpha`, `Palette`...
     pub color_interp: Option<String>,
+    /// A stored JPEG 2000 colour association (T.800 I.5.3.6), when present. This preserves
+    /// the Y component of grayscale datasets whose bands all report `Gray` in GDAL.
+    /// A caller changing colour roles should leave this unset to choose their association anew.
+    pub color_association: Option<u16>,
     /// Metadata items (GDAL's band metadata, default domain).
     pub items: Vec<(String, String)>,
 }

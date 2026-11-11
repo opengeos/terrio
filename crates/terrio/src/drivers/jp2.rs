@@ -860,9 +860,15 @@ impl Jp2Window {
         let reversibility = reversibility(source.open()?.as_mut(), len, j2k).unwrap_or(None);
         ds.metadata_domains = image_structure(&header.precisions, alpha, reversibility);
         if !palette {
+            let associations = color_associations(&boxes_bytes, bands);
             ds.band_metadata = color_interpretation(&boxes_bytes, bands)
                 .into_iter()
-                .map(|c| crate::BandMetadata { color_interp: Some(c.to_string()), ..Default::default() })
+                .zip(associations)
+                .map(|(c, association)| crate::BandMetadata {
+                    color_interp: Some(c.to_string()),
+                    color_association: association,
+                    ..Default::default()
+                })
                 .collect();
         }
         Ok((Self { referenced: gt.is_some(), source, len, j2k, header, alpha, preserve_band_order: !palette, overviews, block }, ds))
@@ -880,6 +886,25 @@ impl Jp2Window {
 /// red, green and blue (the `cdef` box's, else the first three) in the sRGB and sYCC spaces
 /// (`colr` box enumerations 16, 18, 20 and 21; 17 is greyscale); undefined otherwise, codestreams
 /// without a JP2 header included.
+/// Stored colour associations, independent of GDAL's normalized interpretation names.
+fn color_associations(b: &[u8], bands: usize) -> Vec<Option<u16>> {
+    let mut associations = vec![None; bands];
+    let header = boxes(b).into_iter().find(|(t, _)| t == b"jp2h").map(|(_, p)| boxes(p)).unwrap_or_default();
+    if let Some((_, c)) = header.iter().find(|(t, _)| t == b"cdef") {
+        for e in c.get(2..).unwrap_or_default().as_chunks::<6>().0 {
+            let band = u16::from_be_bytes([e[0], e[1]]) as usize;
+            if let Some(association) = associations.get_mut(band) {
+                // Only colour channels can select the Y component; opacity may also be
+                // associated with a particular colour, but must not replace it.
+                if u16::from_be_bytes([e[2], e[3]]) == 0 {
+                    *association = Some(u16::from_be_bytes([e[4], e[5]]));
+                }
+            }
+        }
+    }
+    associations
+}
+
 fn color_interpretation(b: &[u8], bands: usize) -> Vec<&'static str> {
     #[derive(PartialEq)]
     enum Space {
@@ -1319,9 +1344,18 @@ fn channel_definitions(bands: usize, metadata: &[crate::BandMetadata]) -> Result
     }
     // ITU-T T.800 I.5.3.6 requires every colour of the declared space to have
     // a channel. Non-RGB output uses one Y channel, even for undefined data.
-    let gray = roles.iter().position(|role| *role == "Gray").or_else(|| roles.iter().position(|role| *role != "Alpha"));
+    let gray = metadata
+        .iter()
+        .take(bands)
+        .enumerate()
+        .find_map(|(i, m)| (m.color_association == Some(1) && roles[i] != "Alpha").then_some(i))
+        .or_else(|| roles.iter().position(|role| *role == "Gray"))
+        .or_else(|| roles.iter().position(|role| *role != "Alpha"));
     if space == 17 && gray.is_none() {
         return Err(Error::Unsupported("JPEG 2000 grayscale output requires a non-alpha channel".into()));
+    }
+    if roles.iter().filter(|role| **role == "Alpha").count() > 1 {
+        return Err(Error::Unsupported("JPEG 2000 output allows at most one alpha channel role".into()));
     }
     let rgb = roles.starts_with(&["Red", "Green", "Blue"]);
     let mut definitions = Vec::with_capacity(2 + bands * 6);
@@ -1377,6 +1411,13 @@ pub(crate) fn to_bytes(
             )));
         }
     };
+    let (enumcs, definitions, rgb) = channel_definitions(r.bands, band_metadata)?;
+    // T.800 I.5.3.6: all opacity channels must be mapped from unsigned components.
+    if signed
+        && band_metadata.iter().any(|m| m.color_interp.as_deref().is_some_and(|role| crate::geotiff::color_interpretation(role) == "Alpha"))
+    {
+        return Err(Error::Unsupported("JPEG 2000 alpha channels require unsigned samples".into()));
+    }
     let n = r.cols * r.rows;
     let band = |b: usize| -> Vec<i32> {
         let range = b * n..(b + 1) * n;
@@ -1389,7 +1430,6 @@ pub(crate) fn to_bytes(
         }
     };
     let comps: Vec<Component> = (0..r.bands).map(|b| Component { precision, signed, data: band(b) }).collect();
-    let (enumcs, definitions, rgb) = channel_definitions(r.bands, band_metadata)?;
     let codestream = encode(r.cols, r.rows, &comps, rgb, &options)?;
 
     let mut out = Vec::new();
