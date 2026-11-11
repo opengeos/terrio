@@ -29,7 +29,7 @@ MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
 # measured. Linux, Windows and the reversible 5/3 path stay exact everywhere. The worst case
 # seen was 41 of 4096 samples (1.0%) for a uint16 band; low-quality 9/7 output leaves far more
 # samples near a rounding boundary than the resampling cases there, so the bound is 2%.
-IRREVERSIBLE_FMA_MAX_FRACTION = 0.02
+IRREVERSIBLE_ONE_STEP_MAX_FRACTION = 0.02
 
 
 def assert_decodes_as_gdal(actual, expected, *, irreversible):
@@ -41,7 +41,37 @@ def assert_decodes_as_gdal(actual, expected, *, irreversible):
     difference = np.abs(actual.astype("int64") - expected.astype("int64"))
     assert difference.max(initial=0) <= 1, f"max difference {difference.max()}"
     fraction = np.mean(difference != 0)
-    assert fraction <= IRREVERSIBLE_FMA_MAX_FRACTION, f"{fraction:.4%} of samples differ"
+    assert fraction <= IRREVERSIBLE_ONE_STEP_MAX_FRACTION, f"{fraction:.4%} of samples differ"
+
+
+@pytest.mark.parametrize(
+    "changed,step,irreversible,passes",
+    [
+        (40, 1, True, True),
+        (120, 1, True, False),
+        (1, 2, True, False),
+        (1, 1, False, False),
+    ],
+)
+def test_one_step_tolerance_on_macos_arm(monkeypatch, changed, step, irreversible, passes):
+    """The macOS arm64 tolerance admits sparse one-step 9/7 drift and nothing else."""
+    monkeypatch.setitem(globals(), "MACOS_ARM", True)
+    expected = np.full(4096, 1000, dtype="uint16")
+    actual = expected.copy()
+    actual[:changed] += step
+    if passes:
+        assert_decodes_as_gdal(actual, expected, irreversible=irreversible)
+    else:
+        with pytest.raises(AssertionError):
+            assert_decodes_as_gdal(actual, expected, irreversible=irreversible)
+
+
+def test_one_step_tolerance_requires_matching_dtype(monkeypatch):
+    """A decode of the wrong type fails even inside the tolerance."""
+    monkeypatch.setitem(globals(), "MACOS_ARM", True)
+    expected = np.zeros(16, dtype="uint16")
+    with pytest.raises(AssertionError):
+        assert_decodes_as_gdal(expected.astype("int16"), expected, irreversible=True)
 
 
 def encode(data, **options):
