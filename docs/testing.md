@@ -75,6 +75,15 @@ GDAL:
 
 ## The conformance suite
 
+JPEG 2000 creation options are checked with
+`python scripts/conformance.py DATA --only jp2-writer --strict`, using the real
+`landsat7.tif` fixture, current Python bindings, pytest and rasterio. Path and memory
+writes check default lossless pixels, lossy quality/rate selection, reversible and
+irreversible filters, progressive quality layers, invalid options, georeferencing,
+types and independent GDAL decoding (reference: GDAL 3.13.3). Encoder byte identity
+with GDAL is not claimed. The corresponding JavaScript/WASM regression is in
+`js/tests/node.test.mjs`.
+
 CityJSON uses its published schemas and specifications as the reference because
 GDAL 3.13.3 has no CityJSON driver. Prepare the real CityJSON 1.1 Den Haag and 2.0
 Delft/Rotterdam fixtures and versioned schemas outside the repository, then run:

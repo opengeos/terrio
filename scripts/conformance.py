@@ -104,7 +104,7 @@ DIFFERS = "differs"
 # A case whose reference values could not be computed (no coordinates to compare), reported apart.
 NOT_COMPARED = "not compared"
 
-GDAL_FREE_SUITES = frozenset(("pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write", "citygml-write", "xlsx-workbook"))
+GDAL_FREE_SUITES = frozenset(("jp2-writer", "pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write", "citygml-write", "xlsx-workbook"))
 
 
 @dataclasses.dataclass
@@ -3265,6 +3265,22 @@ def suite_oapif(ctx):
     return suite
 
 
+def suite_jp2_writer(ctx):
+    suite = Suite("jp2-writer", "JPEG 2000 creation options", "GDAL 3.13.3",
+                  "Lossless defaults and progressive final layers preserve exact pixels. "
+                  "Lossy quality changes sizes and pixels; independent GDAL decoding, types, "
+                  "georeferencing and reversibility match, including real Landsat RGB. "
+                  "Rate targets are approximate; encoder byte identity is not claimed.")
+    code, out, err = run([sys.executable, "-m", "pytest", "-q",
+                          str(ROOT / "python/tests/test_jp2_writer.py")],
+                         {"TERRIO_TEST_DATA": str(ctx.data)})
+    suite.cases.append(Case("JP2 GDAL decoding", "path/memory options and Landsat decoding",
+                            IDENTICAL if code == 0 and "skipped" not in out else DIFFERS,
+                            "Exact decoding/metadata comparisons and creation-option assertions; "
+                            "GDAL encoder parity is not asserted. " + tail(err or out)))
+    return suite
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -3281,6 +3297,7 @@ SUITES = OrderedDict(
         ("shapefile-rings", suite_shapefile_rings),
         ("shapefile-deleted", suite_shapefile_deleted),
         ("raster-roundtrip", suite_raster_roundtrip),
+        ("jp2-writer", suite_jp2_writer),
         ("windows", suite_windows),
         ("ops", suite_ops),
         ("raster-masks", suite_raster_masks),

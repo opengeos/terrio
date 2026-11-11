@@ -2138,6 +2138,21 @@ test("coordinate operation safeguards and warnings", () => {
   assert.ok(Array.from(terrio.takeWarnings()).some((w) => w.includes("missing grid")));
 });
 
+test("JPEG 2000 quality and reversible options reach the WASM encoder", { skip: needs("jp2") }, () => {
+  const n = 64 * 64;
+  const values = new Uint8Array(3 * n).map((_, i) => (i * 37 + Math.floor(i / 64)) % 251);
+  const image = terrio.rasterFromArray(values, 64, 64, [0, 1, 0, 64, 0, -1]);
+  const low = image.toBytes("low.jp2", { creationOptions: { QUALITY: "10", REVERSIBLE: "NO" } });
+  const high = image.toBytes("high.jp2", { creationOptions: { quality: "50" } });
+  assert.notDeepEqual(low, high);
+  assert.notDeepEqual([...terrio.open(low, "low.jp2").readBand(1)], [...values.slice(0, n)]);
+  for (const options of [{}, { QUALITY: "100" }, { QUALITY: "10,100", REVERSIBLE: "YES" }]) {
+    const exact = terrio.open(image.toBytes("exact.jp2", { creationOptions: options }), "exact.jp2");
+    for (let b = 1; b <= 3; b++) assert.deepEqual([...exact.readBand(b)], [...values.slice((b - 1) * n, b * n)]);
+  }
+  assert.throws(() => image.toBytes("bad.jp2", { creationOptions: { QUALITY: "nan" } }), /QUALITY/);
+});
+
 test("GDAL 3.13 terrain and native WebP creation options", () => {
   const values = new Float32Array([942.315, 946.702, 951.43, 945.132, 943.95, 959.37, 948.15, 954.318, 960.01]);
   const dem = terrio.rasterFromArray(values, 3, 3, [500000, 3.5, 0, 4100000, 0, -3.5], "EPSG:32610");

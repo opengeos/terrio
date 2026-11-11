@@ -115,8 +115,17 @@ whatever the compression.
 JPEG 2000 is decoded and encoded with the Rust port of OpenJPEG, the codec of GDAL's JP2OpenJPEG
 driver, so pixels are GDAL's (Sentinel-2 L1C and L2A bands included). Georeferencing comes from
 the GeoJP2 box or the GMLJP2 box (Sentinel-2's), a 1-bit alpha channel is promoted to 0 and 255 as
-GDAL does, and files are written losslessly with a GeoJP2 box, the nodata value in a `.aux.xml`
-sidecar. Files are read in place by window and resolution level, as GDAL reads them: the resolution
+GDAL does. Files default to lossless output with a GeoJP2 box, and nodata in a `.aux.xml`
+sidecar. `QUALITY` is a percentage of uncompressed size, as in
+[GDAL's JP2OpenJPEG driver](https://gdal.org/en/stable/drivers/raster/jp2openjpeg.html#creation-options),
+not a PSNR target: 25 requests roughly one quarter of the uncompressed size. Supply one
+percentage or up to 100 strictly increasing comma-separated percentages for progressive
+quality layers, each greater than 0 and at most 100. Targets are approximate and exclude
+container overhead. The final quality defaults to 100; `REVERSIBLE=NO` alone instead uses
+25. A final quality below 100 defaults to irreversible 9/7, while a final quality of 100
+defaults to reversible 5/3. `REVERSIBLE=YES` explicitly selects 5/3 but is still lossy when
+rate-limited below 100. Only reversible output ending at quality 100 is lossless.
+Path and memory writes expose the same options, including JavaScript/WASM. Files are read in place by window and resolution level, as GDAL reads them: the resolution
 levels are the overviews (each halving the size, down to about 128 pixels, with GDAL's block
 sizes), and a window decodes only the tiles, precincts and code blocks it covers, its tiles in
 parallel, from local files, bytes or HTTP range requests. On a 10980 x 10980 Sentinel-2 band, a
