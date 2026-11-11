@@ -54,6 +54,17 @@ pub fn suggest_vector_extension(bytes: &[u8]) -> Option<&'static str> {
         .as_deref()
         .and_then(crate::formats::VectorDriver::from_name)
         .or_else(|| codec::vector_driver(bytes, ""))?;
+    // Anonymous buffers contain the whole object. Require the binary envelope rather than
+    // a prefix that could also be a CSV column name; the reader still validates the payload.
+    match driver {
+        crate::formats::VectorDriver::FlatGeobuf
+            if bytes.len() < 8 || !bytes.starts_with(b"fgb") || bytes.get(4..7) != Some(b"fgb".as_slice()) =>
+        {
+            return None;
+        }
+        crate::formats::VectorDriver::Parquet if bytes.len() < 12 || !bytes.ends_with(b"PAR1") => return None,
+        _ => {}
+    }
     driver.info().extensions.first().copied()
 }
 
@@ -749,13 +760,17 @@ mod tests {
         for (bytes, extension) in [
             (b"SQLite format 3\0".as_slice(), Some("gpkg")),
             (b"fgb\x03fgb\0".as_slice(), Some("fgb")),
-            (b"PAR1".as_slice(), Some("parquet")),
+            (b"fgb\x02fgb\0".as_slice(), Some("fgb")),
+            (b"PAR1\0\0\0\0PAR1".as_slice(), Some("parquet")),
             (br#"{"type":"FeatureCollection","features":[]}"#.as_slice(), Some("geojson")),
             (b"<kml/>".as_slice(), Some("kml")),
             (b"<gpx/>".as_slice(), Some("gpx")),
             (br#"<osm version="0.6"/>"#.as_slice(), Some("pbf")),
             (b"<gml:FeatureCollection/>".as_slice(), Some("gml")),
             (b"WKT,id\nPOINT (1 2),1\n".as_slice(), None),
+            (b"fgb_id,lat,lon\n1,2,3\n".as_slice(), None),
+            (b"PAR1_id,lat,lon\n1,2,3\n".as_slice(), None),
+            (b"PAR1".as_slice(), None),
             (b"II*\0".as_slice(), None),
             (b"".as_slice(), None),
         ] {

@@ -46,6 +46,7 @@ import contextlib
 import datetime as _dt
 import json
 import os
+import re
 import warnings
 
 import numpy as np
@@ -323,12 +324,16 @@ def _read_geoparquet_dataframe(
     return gdf
 
 
-def _parse_iso_datetime(pd, value: str) -> _dt.datetime:
-    """Parse one ISO datetime, using pandas for reduced dates and missing strings.
+_SUBMICROSECOND_ISO = re.compile(r"[.,][0-9]{6}[0-9]*[1-9]")
+
+
+def _parse_iso_datetime(pd, value: str, *, warn_precision_loss: bool = False) -> _dt.datetime:
+    """Parse one ISO datetime for offset inspection or Python datetime output.
 
     Args:
         pd: The pandas module.
         value: An ISO date-time string.
+        warn_precision_loss: Report sub-microsecond loss when producing Python datetime output.
 
     Returns:
         datetime: A value preserving its UTC offset, or pandas' NaT for missing strings.
@@ -337,10 +342,15 @@ def _parse_iso_datetime(pd, value: str) -> _dt.datetime:
         ValueError: The string is not a valid ISO datetime.
     """
     try:
-        return _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
     except (AttributeError, TypeError, ValueError):
         # A singleton cannot mix offsets or emit the mixed-timezone warning.
-        return pd.to_datetime([value], format="ISO8601")[0].to_pydatetime(warn=False)
+        return pd.to_datetime([value], format="ISO8601")[0].to_pydatetime(warn=warn_precision_loss)
+    if warn_precision_loss and _SUBMICROSECOND_ISO.search(value):
+        # Offset inspection discards this temporary value; Python output must retain the
+        # precision diagnostic that pandas' to_pydatetime gives for the same conversion.
+        warnings.warn("Discarding nonzero nanoseconds in conversion.", UserWarning, stacklevel=3)
+    return parsed
 
 
 def _to_datetime_iso8601(pd, ser):
@@ -400,7 +410,12 @@ def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
                     return ser
             else:
                 try:
-                    res = ser.map(lambda value: _parse_iso_datetime(pd, value), na_action="ignore")
+                    values = {
+                        value: _parse_iso_datetime(pd, value, warn_precision_loss=True)
+                        for value in pd.unique(ser)
+                        if not pd.isna(value)
+                    }
+                    res = ser.map(values, na_action="ignore")
                 except Exception as ex2:
                     warnings.warn(warning.format(message=str(ex2)), stacklevel=3)
                     return ser

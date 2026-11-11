@@ -161,10 +161,17 @@ def test_dataset_beside_readme_opens_as_the_core_does(tmp_path, sources, extensi
     assert terrio.list_layers(str(path)) == [row[0] for row in tpg.list_layers(path)]
 
 
-def test_signature_free_content_keeps_a_clear_refusal():
-    """Unsigned CSV bytes still require a filename, instead of an arbitrary driver guess."""
+@pytest.mark.parametrize(
+    "data", [b"WKT,id\nPOINT (10 46),1\n", b"fgb_id,lat,lon\n1,2,3\n", b"PAR1_id,lat,lon\n1,2,3\n"]
+)
+def test_signature_free_content_keeps_a_clear_refusal(data):
+    """Unsigned CSV bytes still require a filename, including weak binary-prefix collisions.
+
+    Args:
+        data: CSV content that lacks a binary format signature.
+    """
     with pytest.raises(DataSourceError, match="/vsimem/pyogrio.*not recognized"):
-        tpg.read_info(b"WKT,id\nPOINT (10 46),1\n")
+        tpg.read_info(data)
 
 
 def test_top_level_json_arrays_are_refused_as_invalid_geojson():

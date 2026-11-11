@@ -143,3 +143,65 @@ def test_pandas_iso_dates_do_not_bypass_mixed_offset_detection(extra, as_utc):
             dtype="object",
         )
     pd.testing.assert_series_equal(result, expected)
+
+
+@pytest.mark.parametrize(
+    "extra,expected",
+    [
+        ("2024", "2024-01-01T00:00:00"),
+        ("2024-01-01T12:00:00.123456789+03:00", "2024-01-01T12:00:00.123456+03:00"),
+    ],
+)
+def test_repeated_iso_forms_do_not_parse_each_row_with_pandas(monkeypatch, extra, expected):
+    """Preserving mixed offsets parses repeated ISO forms a bounded number of times.
+
+    Args:
+        monkeypatch: Scoped replacement of the external pandas parser.
+        extra: Repeated reduced date or nanosecond timestamp.
+        expected: Expected Python datetime representation.
+    """
+    original = pd.to_datetime
+    calls = []
+
+    def counted(*args, **kwargs):
+        """Record external parser calls without changing the parsing result.
+
+        Args:
+            *args: Positional pandas parser arguments.
+            **kwargs: Keyword pandas parser arguments.
+
+        Returns:
+            object: The original pandas parser result.
+        """
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pd, "to_datetime", counted)
+    values = pd.Series(["2024-01-01T12:00:00+01:00", "2024-01-02T12:00:00+02:00", extra] * 1000)
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        result = tpg._parse_datetime(values, False, False)
+    assert len(result) == 3000
+    assert result.iloc[2].isoformat() == expected
+    assert len(calls) < 10
+
+
+@pytest.mark.parametrize("as_utc", [False, True])
+def test_submicrosecond_precision_keeps_the_conversion_diagnostic(as_utc):
+    """Preserving offsets retains pandas' precision warning; UTC output uses milliseconds.
+
+    Args:
+        as_utc: Whether to convert mixed offsets to the documented millisecond UTC dtype.
+    """
+    values = pd.Series(
+        ["2024-01-01T12:00:00.123456789+01:00", "2024-01-02T12:00:00.123456789+02:00"]
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = tpg._parse_datetime(values, False, as_utc)
+    precision = [
+        warning for warning in caught if "Discarding nonzero nanoseconds" in str(warning.message)
+    ]
+    assert bool(precision) == (not as_utc)
+    assert not [warning for warning in caught if issubclass(warning.category, FutureWarning)]
+    assert result.iloc[0].microsecond == (123000 if as_utc else 123456)
