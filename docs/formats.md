@@ -55,6 +55,9 @@ or `QUALITY` without `LOSSLESS=YES` selects lossy VP8 encoding; `QUALITY` ranges
 100 (default 75). Explicit `LOSSLESS=YES` overrides quality. Alpha is kept exactly, including
 in lossy output. `LOSSLESS` accepts YES/NO, TRUE/FALSE, ON/OFF and 1/0, in any case;
 unrecognized values are refused, like GeoTIFF's `WEBP_LOSSLESS` (stricter than GDAL's parser).
+The standalone default is lossless; GeoTIFF WebP tiles instead default to lossy. Whitespace
+around `LOSSLESS` is ignored. Alpha in lossy files is compressed losslessly when that is
+smaller, with raw storage as a fallback (one byte per pixel, plus ALPH headers and padding).
 An alpha band that is opaque everywhere is left out, so the file reads back
 as 3 bands. Both encoders are pure Rust; the lossy encoder is shared with GeoTIFF WebP tiles.
 Its size and PSNR at a given quality differ from GDAL's libwebp. `EXACT` (0 or 1) is validated

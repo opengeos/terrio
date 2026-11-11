@@ -3272,6 +3272,10 @@ def suite_webp_writer(ctx):
               "Default/explicit lossless pixels are exact; lossy quality changes bytes and pixels, "
               "with exact alpha and independent GDAL decoding, including real Landsat RGB. "
               "Lossy encoder bytes, size and PSNR are not compared with libwebp.")
+    missing = missing_modules("rasterio", "pytest", "terrio", "numpy")
+    if missing:
+        s.skipped = "needs the Python modules " + ", ".join(missing)
+        return s
     code, out, err = run([sys.executable, "-m", "pytest", "-q",
                           str(ROOT / "python/tests/test_webp_writer.py")],
                          {"TERRIO_TEST_DATA": str(ctx.data)})

@@ -8,6 +8,7 @@ lossy bytes and rate/distortion are not expected to match libwebp. Skipped witho
 """
 
 import re
+import struct
 
 import numpy as np
 import pytest
@@ -152,6 +153,37 @@ def test_real_landsat_webp_quality(data_dir):
         expected = _gdal_read(encoded)
         with MemoryFile(encoded, ext=".webp") as mem, mem.open() as actual:
             np.testing.assert_array_equal(actual.read(), expected)
+
+
+@pytest.mark.parametrize("alpha_mode", ["feathered", "noise"])
+def test_real_rgba_alpha_payload_is_exact_and_no_larger_than_raw(data_dir, alpha_mode):
+    with rasterio.open(data_dir / "landsat7.tif") as src:
+        rgb = src.read([1, 2, 3], window=rasterio.windows.Window(500, 500, 128, 128))
+    if alpha_mode == "noise":
+        alpha = np.random.default_rng(31).integers(0, 256, (128, 128), dtype="uint8")
+    else:
+        alpha = np.full((128, 128), 255, dtype="uint8")
+        alpha[:, :16] = 0
+        alpha[:, 16:32] = 128
+    data = np.concatenate([rgb, alpha[None]])
+    encoded = _encode(MemoryFile, "WEBP", data, quality=75)
+    offset = 12
+    while offset + 8 <= len(encoded):
+        tag = encoded[offset : offset + 4]
+        size = struct.unpack_from("<I", encoded, offset + 4)[0]
+        if tag == b"ALPH":
+            payload = encoded[offset + 8 : offset + 8 + size]
+            break
+        offset += 8 + size + (size & 1)
+    else:
+        pytest.fail("missing ALPH chunk")
+    assert len(payload) <= alpha.size + 1
+    if alpha_mode == "feathered":
+        assert payload[0] == 1 and len(payload) < alpha.size // 10
+    expected = _gdal_read(encoded)
+    np.testing.assert_array_equal(expected[3], alpha)
+    with MemoryFile(encoded, ext=".webp") as mem, mem.open() as actual:
+        np.testing.assert_array_equal(actual.read(), expected)
 
 
 def test_a_webp_written_by_terrio_reads_back_as_gdal_reads_it(tmp_path):
