@@ -251,13 +251,28 @@ def test_nearest_rounding_retains_centres_and_selected_taps(monkeypatch, version
 
 
 @pytest.mark.parametrize("version", ["3.12", "3.13"])
-def test_affine_global_pixel_keeps_full_longitude_footprint(monkeypatch, version):
+@pytest.mark.parametrize("source_crs", ["EPSG:4326", "EPSG:4269"])
+@pytest.mark.parametrize("right", [120, 180])
+@pytest.mark.parametrize("error_threshold", [0.0, 0.125])
+def test_global_pixel_keeps_full_longitude_footprint(
+    monkeypatch, version, source_crs, right, error_threshold
+):
     monkeypatch.setenv("TERRIO_GDAL_COMPAT", version)
     y, x = np.mgrid[:4, :360]
     values = np.where((x < 60) | (x >= 300), 1000.0, 0.0)
-    raster = terrio.Raster.from_array(values, (-180, 1, 0, 2, 0, -1), crs="EPSG:4326")
-    options = dict(ts=(1, 2), resampling="bilinear", ot="Float64", et=0)
-    stable = terrio.warp(raster, grid_invariant=True, **options).read(1)
-    reference = terrio.warp(raster, grid_invariant=False, **options).read(1)
-    assert np.all(reference > 100), reference
-    np.testing.assert_allclose(stable, reference, rtol=0, atol=1e-9)
+    raster = terrio.Raster.from_array(values, (-180, 1, 0, 2, 0, -1), crs=source_crs)
+    options = dict(
+        t_srs="EPSG:4326", ts=(1, 2), resampling="bilinear", ot="Float64", et=error_threshold
+    )
+    stable = terrio.warp(raster, te=(-180, -2, right, 2), grid_invariant=True, **options).read(1)
+    # Exact bilinear downsampling weights for this continuous, axis-aligned footprint.
+    width = right + 180
+    weights = np.maximum(0, 1 - np.abs(np.arange(360) + 0.5 - width / 2) / width)
+    expected = np.dot(values[0], weights) / weights.sum()
+    np.testing.assert_allclose(stable, expected, rtol=0, atol=1e-9)
+    if right == 180:
+        reference = terrio.warp(raster, grid_invariant=False, **options).read(1)
+        np.testing.assert_allclose(stable, reference, rtol=0, atol=1e-9)
+    # A narrow reprojected pixel actually crossing the cut must still unwrap.
+    edge = terrio.warp(raster, te=(179.4, -2, 180.4, 2), grid_invariant=True, **options).read(1)
+    np.testing.assert_allclose(edge, 1000, rtol=0, atol=1e-9)

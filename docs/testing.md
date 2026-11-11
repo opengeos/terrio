@@ -90,6 +90,13 @@ select that policy unless explicitly configured otherwise.
 The default policy remains covered separately. Kernel version selects arithmetic
 independently of grid policy. See [warp sampling](cli.md#warp) for per-call options.
 
+Additional regressions check nearest centres next to integer boundaries and
+300/360-degree output pixels through geographic and Web Mercator destinations,
+with exact and default approximate transforms. Wide-footprint bilinear values use
+analytic weights with absolute tolerance 1e-9. A fixed subpixel probe detects
+periodic transforms that alias the primary approximation anchors; exact midpoint
+checks distinguish longitude cuts from continuous coarse footprints.
+
 ## Test data
 
 `scripts/fetch_test_data.sh DIR` downloads public data and derives copies in other formats with

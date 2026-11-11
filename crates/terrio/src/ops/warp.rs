@@ -546,6 +546,9 @@ fn same_crs(a: &SpatialRef, b: &SpatialRef) -> bool {
 struct Approx<'a> {
     base: &'a GenImgProj,
     max_error: f64,
+    /// Stable-grid sampling checks an extra fixed subpixel point before accepting
+    /// interpolation, so periodic transforms cannot alias all three primary anchors.
+    check_aliasing: bool,
 }
 
 impl Approx<'_> {
@@ -668,6 +671,15 @@ impl Approx<'_> {
                 anchors(x, y, ok, &[(mid, 1), (n - 1, 2)]);
             }
             return true;
+        }
+        if self.check_aliasing && self.base.pointwise(inv) {
+            let step = (x[n - 1] - x[0]) / (n - 1) as f64 / 2.0;
+            let midpoint = self.base.point(inv, x[0] + step, y[0]);
+            let faithful =
+                midpoint.is_some_and(|(px, py)| (px - (xs[0] + dx * step)).abs() + (py - (ys[0] + dy * step)).abs() <= self.max_error);
+            if !faithful {
+                return self.exact(inv, x, y, ok, 0..n, &need);
+            }
         }
         for i in need.rev() {
             let d = x[i] - x[0];
@@ -1561,7 +1573,7 @@ impl<'a> Plan<'a> {
             kernel_version: o.kernel_version,
             grid_invariant: o.grid_invariant,
             t,
-            approx: Approx { base: t, max_error: o.error_threshold },
+            approx: Approx { base: t, max_error: o.error_threshold, check_aliasing: o.grid_invariant },
             src_w: s.grid.width,
             src_h: s.grid.height,
             resampling: o.resampling,
@@ -3461,7 +3473,7 @@ impl WarpContext<'_> {
 
     /// Apply GDAL 3.12.1 axis-range or GDAL 3.13.3 transformed-square scale arithmetic
     /// locally. The per-pixel footprint policy is Terrio's rather than GDAL's chunk sampling.
-    fn footprint_scales(&self, mut p: [(f64, f64); 4]) -> (f64, f64) {
+    fn footprint_scales(&self, mut p: [(f64, f64); 4], output_center: Option<(f64, f64)>) -> (f64, f64) {
         // Only reprojected footprints can cross a longitude cut. Affine edge vectors
         // are continuous, even when a coarse pixel spans an entire longitude period.
         if let Some(period) = self.t.src_longitude_period
@@ -3471,9 +3483,22 @@ impl WarpContext<'_> {
             && self.t.src_gt[4] == 0.0
         {
             let pixels = period / self.t.src_gt[1].abs();
-            let anchor = p[0].0;
-            for point in &mut p[1..] {
-                point.0 -= ((point.0 - anchor) / pixels).round() * pixels;
+            let (low, high) = p.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), point| (lo.min(point.0), hi.max(point.0)));
+            // A large corner jump alone is ambiguous: a continuous coarse pixel can
+            // span a full period too. Its exact midpoint lies between the endpoints;
+            // at a cut, one endpoint instead lies over half a period from that midpoint.
+            if high - low > pixels / 2.0
+                && high - low <= pixels * (1.0 + 1e-10)
+                && let Some((dx, dy)) = output_center
+                && let Some((middle, _)) = self.t.point(true, dx, dy)
+                && (middle < low - 1e-7 || middle > high + 1e-7)
+            {
+                for point in &mut p {
+                    let delta = point.0 - middle;
+                    if delta.abs() > pixels / 2.0 + 1e-7 {
+                        point.0 -= (delta / pixels).round() * pixels;
+                    }
+                }
             }
         }
         if self.kernel_version == KernelVersion::Gdal313 {
@@ -3501,7 +3526,7 @@ impl WarpContext<'_> {
             let inv = self.t.src_inv;
             let a = (inv[1] * g[1] + inv[2] * g[4], inv[4] * g[1] + inv[5] * g[4]);
             let b = (inv[1] * g[2] + inv[2] * g[5], inv[4] * g[2] + inv[5] * g[5]);
-            return vec![self.footprint_scales([(0.0, 0.0), a, b, (a.0 + b.0, a.1 + b.1)]); width];
+            return vec![self.footprint_scales([(0.0, 0.0), a, b, (a.0 + b.0, a.1 + b.1)], None); width];
         }
         let mut top_x: Vec<f64> = (dx..=dx + width).map(|i| i as f64).collect();
         let mut top_y = vec![dy as f64; width + 1];
@@ -3519,12 +3544,10 @@ impl WarpContext<'_> {
                 if !(top_ok[i] && top_ok[i + 1] && bottom_ok[i] && bottom_ok[i + 1]) {
                     return (1.0, 1.0);
                 }
-                self.footprint_scales([
-                    (top_x[i], top_y[i]),
-                    (top_x[i + 1], top_y[i + 1]),
-                    (bottom_x[i], bottom_y[i]),
-                    (bottom_x[i + 1], bottom_y[i + 1]),
-                ])
+                self.footprint_scales(
+                    [(top_x[i], top_y[i]), (top_x[i + 1], top_y[i + 1]), (bottom_x[i], bottom_y[i]), (bottom_x[i + 1], bottom_y[i + 1])],
+                    Some(((dx + i) as f64 + 0.5, dy as f64 + 0.5)),
+                )
             })
             .collect()
     }
@@ -5281,7 +5304,7 @@ impl RegionWarp {
     fn context(&self) -> WarpContext<'_> {
         WarpContext {
             t: &self.t,
-            approx: Approx { base: &self.t, max_error: self.error_threshold },
+            approx: Approx { base: &self.t, max_error: self.error_threshold, check_aliasing: self.grid_invariant },
             src_w: self.src_w,
             src_h: self.src_h,
             resampling: self.resampling,
@@ -7133,7 +7156,7 @@ mod tests {
         let dst = SpatialRef::from_epsg(4326).unwrap();
         let mut t = GenImgProj::new([500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], &src, &dst).unwrap();
         t.set_dst_gt([-123.0, 0.0003, 0.0, 36.2, 0.0, -0.0003]);
-        let a = Approx { base: &t, max_error: 0.125 };
+        let a = Approx { base: &t, max_error: 0.125, check_aliasing: false };
         let n = 1000;
         let mut xs: Vec<f64> = (0..n).map(|i| i as f64 + 0.5).collect();
         let mut ys = vec![10.5; n];
@@ -7159,7 +7182,7 @@ mod tests {
         let n = SUM_CORNER_BATCH + 1;
         let row = || ((0..n).map(|i| i as f64).collect::<Vec<f64>>(), vec![30.0; n], vec![false; n]);
         for max_error in [0.125, 4.0, 0.0] {
-            let a = Approx { base: &t, max_error };
+            let a = Approx { base: &t, max_error, check_aliasing: false };
             let (mut wx, mut wy, mut wok) = row();
             a.transform(true, &mut wx, &mut wy, &mut wok);
             for need in [0..1, 0..n, 3..40, 100..101, 200..n, n - 2..n, 255..258] {
@@ -7195,7 +7218,7 @@ mod tests {
         let n = SUM_CORNER_BATCH + 1;
         let row = || ((0..n).map(|i| i as f64).collect::<Vec<f64>>(), vec![0.0; n], vec![false; n]);
         for max_error in [0.0, 0.125, 4.0] {
-            let a = Approx { base: &t, max_error };
+            let a = Approx { base: &t, max_error, check_aliasing: false };
             let (mut wx, mut wy, mut wok) = row();
             a.transform(true, &mut wx, &mut wy, &mut wok);
             for need in [3..8, 0..1, 0..n, 3..40, 100..101, 200..n, n - 2..n, 255..258] {

@@ -4366,3 +4366,30 @@ test("warp aligned tiles retain whole-grid values with either kernel version", (
   }
   source.free();
 });
+
+
+test("coarse geographic warp footprints survive exact and approximate transforms", () => {
+  const values = Float64Array.from({ length: 360 * 4 }, (_, i) => i % 360 < 60 || i % 360 >= 300 ? 1000 : 0);
+  for (const crs of ["EPSG:4326", "EPSG:4269"]) {
+    const source = terrio.rasterFromArray(values, 360, 4, [-180, 1, 0, 2, 0, -1], crs);
+    for (const kernelVersion of ["3.12", "3.13"]) for (const et of [0, 0.125]) {
+      for (const right of [120, 180]) {
+        const width = right + 180;
+        let total = 0, weight = 0;
+        for (let x = 0; x < 360; x++) {
+          const w = Math.max(0, 1 - Math.abs(x + 0.5 - width / 2) / width);
+          total += values[x] * w; weight += w;
+        }
+        const result = terrio.warp(source, { tSrs: "EPSG:4326", te: [-180, -2, right, 2], ts: [1, 2],
+          resampling: "bilinear", ot: "Float64", kernelVersion, et, gridInvariant: true });
+        for (const v of result.readBand(1)) assert.ok(Math.abs(v - total / weight) < 1e-9, `${crs} ${kernelVersion} et=${et}: ${v}`);
+        result.free();
+      }
+      const projected = terrio.warp(source, { tSrs: "EPSG:3857", te: [-20037508.342789244, -200000, 20037508.342789244, 200000],
+        ts: [1, 2], resampling: "bilinear", ot: "Float64", kernelVersion, et, gridInvariant: true });
+      for (const v of projected.readBand(1)) assert.ok(Math.abs(v - 259.2592592592594) < 1e-9, `${crs} projected et=${et}: ${v}`);
+      projected.free();
+    }
+    source.free();
+  }
+});
