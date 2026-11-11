@@ -90,6 +90,10 @@ def test_stac_dataframe_ranges_match_direct_assets(sources, extension, skip, lim
     through_item = tpg.read_dataframe(sources[f"stac-{extension}"], **options)
     assert through_item["sequence"].tolist() == direct["sequence"].tolist()
     assert through_item.crs == direct.crs
+    if limit == 0:
+        # The compatibility facade treats zero as unbounded; native zero means empty.
+        native = _terrio.pyogrio_read(sources[f"stac-{extension}"], skip, 0, True)
+        assert len(native["fids"]) == 0
 
 
 @pytest.mark.parametrize("source", ["mbtiles", "pmtiles", "mvt", "tile"])

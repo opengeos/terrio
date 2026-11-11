@@ -84,7 +84,7 @@ fn filesystem_free_ranges_slice_each_selected_layer_once() {
             assert_eq!(actual.layers.len(), full.layers.len(), "{name}");
             for (actual, source) in actual.layers.iter().zip(&full.layers) {
                 let mut expected = source.clone();
-                options.keep_range(&mut expected);
+                expected.features = source.features.iter().skip(skip_features).take(max_features.unwrap_or(usize::MAX)).cloned().collect();
                 assert_eq!(actual.features.len(), expected.features.len(), "{name}: skip {skip_features}, max {max_features:?}");
                 for (actual, expected) in actual.features.iter().zip(&expected.features) {
                     assert_eq!(actual.attributes, expected.attributes, "{name}");

@@ -4282,7 +4282,11 @@ test("vector byte ranges apply once and service options are refused", () => {
   const source = terrio.fromGeoJSON({type: "FeatureCollection", features: Array.from({length: 5}, (_, i) => ({
     type: "Feature", properties: {sequence: i}, geometry: {type: "Point", coordinates: [10 + i, 46]},
   }))});
-  for (const filename of ["points.geojson", "points.gml", "points.kml", "points.kmz", "points.csv", "points.fgb", "points.parquet", "points.gpkg", "points.shp.zip"]) {
+  const filenames = ["points.geojson", "points.gml", "points.kml", "points.kmz", "points.csv", "points.shp.zip"];
+  for (const [feature, filename] of [["flatgeobuf", "points.fgb"], ["parquet", "points.parquet"], ["sqlite", "points.gpkg"]]) {
+    if (!needs(feature)) filenames.push(filename);
+  }
+  for (const filename of filenames) {
     const bytes = source.toBytes(filename);
     const full = terrio.openVector(bytes, filename, {});
     const expected = full.toGeoJSON().features.map(feature => feature.properties.sequence);

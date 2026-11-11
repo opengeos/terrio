@@ -23,6 +23,8 @@ cursor after bounded and full reads. Schema discovery still scans the file;
 the feature reader stops after its prefetched prefix for a bounded range. A
 portable source counter also checks that a zero limit decodes no feature batches
 and a satisfied limit never requests another batch.
+Skipping still decodes and discards the skipped live features, so its work grows
+with the requested offset; this wrapper does not add indexed seeks for pagination.
 
 `python scripts/conformance.py DATA --only vector-ranges --strict` compares
 GeoJSON and multi-layer GeoPackage STAC assets with GDAL/OGR using 16 real Natural
