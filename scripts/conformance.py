@@ -526,6 +526,37 @@ def suite_shapefile_archives(ctx):
     return suite
 
 
+def suite_vector_byte_packaging(ctx):
+    """Cross-read GML documents and explicit MapInfo byte archives with GDAL.
+
+    Args:
+        ctx: Conformance run context.
+
+    Returns:
+        Suite: Three document/archive comparisons.
+    """
+    suite = Suite("vector-byte-packaging", "Vector byte packaging", "GDAL/OGR",
+                  "16 Natural Earth populated places; feature count, scalar attributes, archive members and CRS exact; coordinates within 1e-6 degrees for MapInfo's grid.")
+    missing = missing_modules("terrio", "osgeo")
+    if missing:
+        suite.skipped = "needs the Python modules " + ", ".join(missing)
+        return suite
+    if not os.path.exists(os.path.join(ctx.data, "ne_places/ne_10m_populated_places_simple.shp")):
+        suite.skipped = "needs the Natural Earth populated places fixture"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_vector_byte_packaging.py"), ctx.data, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("Vector bytes", result["name"], result["status"], result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out) or f"exit {code}"
+    return suite
+
+
 def suite_indexes(ctx):
     """Footprint catalogs and GTI virtual mosaics against GDAL 3.13."""
     suite = Suite("indexes", "Raster/vector indexes and GTI creation", "GDAL 3.13.3",
@@ -3291,6 +3322,7 @@ SUITES = OrderedDict(
         ("citygml", suite_citygml),
         ("shapefile-archives", suite_shapefile_archives),
         ("vsi", suite_vsi),
+        ("vector-byte-packaging", suite_vector_byte_packaging),
         ("shapefile-rings", suite_shapefile_rings),
         ("shapefile-deleted", suite_shapefile_deleted),
         ("raster-roundtrip", suite_raster_roundtrip),

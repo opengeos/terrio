@@ -475,6 +475,8 @@ impl PyLayer {
     ///     return a ZIP archive (MIME `application/zip`) with geometry, index, attributes,
     ///     encoding and CRS members. Bare `.shp` names and unsupported DBF values
     ///     (including text over 254 UTF-8 bytes) raise an error.
+    ///     GML is a standalone XML document without its XSD sidecar. Native MapInfo
+    ///     output requires `.mif.zip` or `.tab.zip`; bare `.mif` and `.tab` are refused.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (filename="layer.geojson", driver=None, *, kmz_resources=None, style_table=None, preserve_declared_geometry_type=false, cityjson_version=None, citygml_version=None, citygml_lod0_surface=None))]
     fn to_bytes<'py>(

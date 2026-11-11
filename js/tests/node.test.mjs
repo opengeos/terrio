@@ -305,7 +305,7 @@ test("GML projected authority axes keep GIS XY through byte reads and writes", (
       const expected = [...xy, 7];
       assert.deepEqual(source.toGeoJSON().features[0].geometry.coordinates, expected, name);
       const bytes = source.toBytes("output.gml");
-      // The WASM codec returns raw XML; the native writer bundles its XSD sidecar as ZIP.
+      // Native and WASM byte output both contain the standalone XML document.
       assert.match(new TextDecoder().decode(bytes), /^<\?xml/);
       const restored = terrio.open(bytes, "output.gml");
       assert.deepEqual(restored.toGeoJSON().features[0].geometry.coordinates, expected, name);
@@ -516,7 +516,23 @@ test("errors", () => {
   assert.throws(() => terrio.describeCrs("nonsense"), /cannot parse/);
   const ds = terrio.fromGeoJSON(SQUARES);
   assert.throws(() => ds.readBand(1), /not a raster/);
-  assert.throws(() => ds.toBytes("x.mif"), /cannot be written to memory/);
+  assert.throws(() => ds.toBytes("x.mif"), /\.mif\.zip/);
+  assert.throws(() => ds.toBytes("x.mif.zip"), /cannot be written to memory/);
+  ds.free();
+});
+
+test("vector byte filenames match their document or archive", () => {
+  const source = terrio.fromGeoJSON({type: "FeatureCollection", features: [{type: "Feature", properties: {name: "first", n: 1}, geometry: {type: "Point", coordinates: [10, 46]}}]});
+  const bytes = source.toBytes("points.gml");
+  assert.match(new TextDecoder().decode(bytes), /^<\?xml/);
+  const restored = terrio.open(bytes, "points.gml");
+  assert.deepEqual(restored.toGeoJSON().features[0].geometry.coordinates, [10, 46]);
+  const archive = source.toBytes("points.shp.zip");
+  for (const extension of ["gml", "mif", "tab"]) {
+    assert.throws(() => terrio.open(archive, `points.${extension}`), /ZIP archive.*\.zip/);
+  }
+  restored.free();
+  source.free();
 });
 
 /** GDAL's statistics of a band, from the .aux.xml file it wrote next to the raster. */
