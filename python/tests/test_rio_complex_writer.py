@@ -299,3 +299,28 @@ def test_reader_subclass_copy_keeps_exact_integer_components(tmp_path, gdal, dri
     actual, dataset = read_precise(gdal, target)
     assert dataset.GetRasterBand(1).DataType == gdal.GDT_CInt32
     np.testing.assert_array_equal(actual, values)
+
+
+@pytest.mark.parametrize("layout", ["c", "fortran", "strided", "transposed"])
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("kind", ["CInt16", "CInt32"])
+def test_integer_complex_array_layouts_match_gdal(tmp_path, gdal, layout, dtype, kind):
+    """Direct component conversion preserves layout, rounding and saturation against GDAL 3.13.3."""
+    parts = np.array([-40000.25, -32768.6, -1.5, -0.5, 0.5, 32767.6, 40000.25, 2**24 + 1])
+    values = ((parts + 1j * parts[::-1]).reshape(2, 4) * np.ones((2, 1, 1))).astype(dtype)
+    if layout == "fortran":
+        values = np.asfortranarray(values)
+    elif layout == "strided":
+        values = values[:, :, ::2]
+    elif layout == "transposed":
+        values = values.transpose(0, 2, 1)
+    count, rows, cols = values.shape
+    path = tmp_path / "layout-reference.tif"
+    reference = gdal.GetDriverByName("GTiff").Create(
+        str(path), cols, rows, count, getattr(gdal, "GDT_" + kind)
+    )
+    for index in range(count):
+        reference.GetRasterBand(index + 1).WriteArray(values[index])
+    expected = reference.ReadAsArray(buf_type=gdal.GDT_CFloat64)
+    actual = terrio.Raster.from_array(values, GT, complex_dtype=kind).read(out_dtype="complex128")
+    np.testing.assert_array_equal(actual, expected)

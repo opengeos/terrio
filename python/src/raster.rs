@@ -237,6 +237,27 @@ pub(crate) fn complex_dtype(dtype: &str) -> Option<DataType> {
     }
 }
 
+/// The physical storage type and complex flag shared by both TIFF row writers.
+pub(crate) fn storage_type(dtype: &str) -> PyResult<(DataType, bool)> {
+    if let Some(component) = complex_dtype(dtype) {
+        return Ok((component, true));
+    }
+    let data_type = match dtype {
+        "uint8" | "bool" => DataType::U8,
+        "int8" => DataType::I8,
+        "uint16" => DataType::U16,
+        "int16" => DataType::I16,
+        "uint32" => DataType::U32,
+        "int32" => DataType::I32,
+        "uint64" => DataType::U64,
+        "int64" => DataType::I64,
+        "float32" => DataType::F32,
+        "float64" => DataType::F64,
+        other => return Err(invalid(format!("unsupported dtype {other}"))),
+    };
+    Ok((data_type, false))
+}
+
 /// Complex band-major arrays become adjacent real/imaginary component planes.
 pub(crate) fn raster_array_data(array: &Bound<'_, PyUntypedArray>, target: Option<DataType>) -> PyResult<(RasterData, bool)> {
     let py = array.py();
@@ -247,11 +268,19 @@ pub(crate) fn raster_array_data(array: &Bound<'_, PyUntypedArray>, target: Optio
     }
     let plane = shape[shape.len() - 2] * shape[shape.len() - 1];
     macro_rules! complex {
-        ($c:ty, $variant:ident) => {
+        ($c:ty, $variant:ident, $to_f64:expr) => {
             if dtype.is_equiv_to(&numpy::dtype::<$c>(py)) {
                 let contiguous = py.import("numpy")?.call_method1("ascontiguousarray", (array,))?;
                 let readonly = contiguous.cast::<PyArrayDyn<$c>>()?.readonly();
                 let values = readonly.as_slice().map_err(|e| invalid(e.to_string()))?;
+                if let Some(target) = target {
+                    let components = (0..values.len() * 2).map(|i| {
+                        let band = i / (2 * plane);
+                        let value = values[band * plane + i % plane];
+                        $to_f64(if (i / plane) % 2 == 0 { value.re } else { value.im })
+                    });
+                    return Ok((terrio::complex_components_from_iter(components, target).py()?, true));
+                }
                 let mut parts = Vec::with_capacity(values.len() * 2);
                 if plane != 0 {
                     for band in values.chunks_exact(plane) {
@@ -260,16 +289,12 @@ pub(crate) fn raster_array_data(array: &Bound<'_, PyUntypedArray>, target: Optio
                     }
                 }
                 let data = RasterData::$variant(parts);
-                let data = match target {
-                    Some(t) => terrio::convert_complex_components(data, t).py()?,
-                    None => data,
-                };
                 return Ok((data, true));
             }
         };
     }
-    complex!(numpy::Complex32, F32);
-    complex!(numpy::Complex64, F64);
+    complex!(numpy::Complex32, F32, f64::from);
+    complex!(numpy::Complex64, F64, std::convert::identity::<f64>);
     if target.is_some() {
         return Err(invalid("a complex sample type requires a complex NumPy array"));
     }
@@ -578,7 +603,8 @@ impl PyRaster {
     ) -> PyResult<Bound<'py, PyAny>> {
         let py = slf.py();
         let out_dtype = out_dtype.map(|d| py.import("numpy")?.call_method1("dtype", (d,))).transpose()?;
-        let double = out_dtype.as_ref().map(|d| d.getattr("name")?.extract::<String>()).transpose()?.as_deref() == Some("complex128");
+        let dtype_name = out_dtype.as_ref().map(|d| d.getattr("name")?.extract::<String>()).transpose()?;
+        let double = dtype_name.as_deref() == Some("complex128");
         let (mut bands, single) = parse_bands(band)?;
         Self::with_reader(slf, |inner| {
             let complex = inner.is_complex();
@@ -611,16 +637,10 @@ impl PyRaster {
             let options = WindowOptions { bands, overview };
             let ds = py.detach_result(|| inner.read_window(window, &options)).py()?;
             let r = ds.raster;
-            if complex {
-                let shape = if single { vec![r.rows, r.cols] } else { vec![r.bands / 2, r.rows, r.cols] };
-                let array = complex_to_numpy_as(py, r.data, r.rows * r.cols, &shape, double)?;
-                return match &out_dtype {
-                    Some(d) => array.call_method1("astype", (d,)),
-                    None => Ok(array),
-                };
-            }
-            let shape = if single { vec![r.rows, r.cols] } else { vec![r.bands, r.rows, r.cols] };
-            let array = to_numpy(py, r.data, &shape)?;
+            let count = if complex { r.bands / 2 } else { r.bands };
+            let shape = if single { vec![r.rows, r.cols] } else { vec![count, r.rows, r.cols] };
+            let array =
+                if complex { complex_to_numpy_as(py, r.data, r.rows * r.cols, &shape, double)? } else { to_numpy(py, r.data, &shape)? };
             match &out_dtype {
                 Some(d) => array.call_method1("astype", (d,)),
                 None => Ok(array),
@@ -1246,24 +1266,7 @@ impl PyGeoTiffWriter {
         if width == 0 || height == 0 || count == 0 {
             return Err(invalid("the raster is empty"));
         }
-        let component = complex_dtype(dtype);
-        let complex = component.is_some();
-        let data_type = match component {
-            Some(t) => t,
-            None => match dtype {
-                "uint8" | "bool" => DataType::U8,
-                "int8" => DataType::I8,
-                "uint16" => DataType::U16,
-                "int16" => DataType::I16,
-                "uint32" => DataType::U32,
-                "int32" => DataType::I32,
-                "uint64" => DataType::U64,
-                "int64" => DataType::I64,
-                "float32" => DataType::F32,
-                "float64" => DataType::F64,
-                other => return Err(invalid(format!("unsupported dtype {other}"))),
-            },
-        };
+        let (data_type, complex) = storage_type(dtype)?;
         let crs = crs.map(SpatialRef::parse).transpose().py()?.unwrap_or_default();
         let cfg = terrio::RasterConfig {
             cols: 1,

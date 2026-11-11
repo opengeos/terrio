@@ -1,7 +1,7 @@
 //! The COG writer that writes a few rows at a time: `terrio.rio`'s COG writes stream through it.
 
 use crate::Detach;
-use crate::raster::{GcpTuple, complex_dtype, parse_band_metadata, parse_gcps, raster_array_data, string_pairs, write_options};
+use crate::raster::{GcpTuple, parse_band_metadata, parse_gcps, raster_array_data, string_pairs, write_options};
 use crate::{PyResultExt, invalid};
 use numpy::{PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::prelude::*;
@@ -78,24 +78,7 @@ impl PyCogWriter {
         if width == 0 || height == 0 || count == 0 {
             return Err(invalid("the raster is empty"));
         }
-        let component = complex_dtype(dtype);
-        let complex = component.is_some();
-        let data_type = match component {
-            Some(t) => t,
-            None => match dtype {
-                "uint8" | "bool" => DataType::U8,
-                "int8" => DataType::I8,
-                "uint16" => DataType::U16,
-                "int16" => DataType::I16,
-                "uint32" => DataType::U32,
-                "int32" => DataType::I32,
-                "uint64" => DataType::U64,
-                "int64" => DataType::I64,
-                "float32" => DataType::F32,
-                "float64" => DataType::F64,
-                other => return Err(invalid(format!("unsupported dtype {other}"))),
-            },
-        };
+        let (data_type, complex) = crate::raster::storage_type(dtype)?;
         let crs = crs.map(SpatialRef::parse).transpose().py()?.unwrap_or_default();
         let cfg = terrio::RasterConfig {
             cols: 1,

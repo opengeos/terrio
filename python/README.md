@@ -106,7 +106,8 @@ selector. Default complex reads retain their existing dtype; request
 and emits `ComplexWarning`. CInt32 components pass through complex64 first, so values
 above 2^24 may round even with `out_dtype="float64"`; use
 `read(out_dtype="complex128").real` for exact real components. Select a complex dtype
-to preserve both components.
+to preserve both components. Complex `terrio.rio` reads support unresampled windows and
+nearest-neighbour resampling; non-nearest complex interpolation remains unsupported.
 
 
 ## Vector data

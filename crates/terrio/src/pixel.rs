@@ -106,15 +106,30 @@ pub fn convert_complex_components(
     if data.data_type() == target {
         return Ok(data);
     }
+    with_data!(&data, values => complex_components_from_iter(values.iter().map(|v| v.to_f64()), target))
+}
+
+/// Collect real/imaginary component planes directly in their storage type, without a temporary
+/// floating-point buffer. Integer conversion is rounded and saturated as in GDAL 3.13.3.
+///
+/// # Errors
+/// When the target is not a supported complex component type.
+pub fn complex_components_from_iter(
+    components: impl Iterator<Item = f64>,
+    target: wbraster::DataType,
+) -> crate::Result<wbraster::raster::RasterData> {
+    use wbraster::{DataType, raster::RasterData};
     macro_rules! cast {
-        ($t:ty, $v:ident) => { RasterData::$v(with_data!(&data, values => values.iter().map(|v| <$t as Pixel>::from_f64(v.to_f64())).collect())) };
+        ($t:ty, $v:ident) => {
+            RasterData::$v(components.map(<$t as Pixel>::from_f64).collect())
+        };
     }
     Ok(match target {
         DataType::I16 => cast!(i16, I16),
         DataType::I32 => cast!(i32, I32),
         DataType::F32 => cast!(f32, F32),
         DataType::F64 => cast!(f64, F64),
-        _ => unreachable!(),
+        _ => return Err(crate::Error::InvalidArgument("complex components must be Int16, Int32, Float32 or Float64".into())),
     })
 }
 

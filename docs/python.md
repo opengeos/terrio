@@ -85,6 +85,8 @@ exact real components.
 Updates retain the physical complex sample type. A readable CInt32 writer keeps precise
 components in complex128 buffers, including when it is copied; memory and spill-file slab
 accounting includes their 16 bytes per complex sample.
+Complex `terrio.rio` reads support unresampled windows and nearest-neighbour resampling;
+non-nearest interpolation of complex source arrays remains unsupported.
 Complex output supports NONE, LZW, DEFLATE, PACKBITS and ZSTD compression.
 
 ## Vector data
