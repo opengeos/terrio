@@ -425,7 +425,7 @@ impl VrtDataset {
                     }
                 };
                 crate::pixel::with_data!(&mut out, v => {
-                    req.read(self.width, self.height, &mut v[bi * n..(bi + 1) * n], |x| convert_value(value(x), band.data_type) as _);
+                    req.read(self.width, self.height, &mut v[bi * n..(bi + 1) * n], |x| convert_value(value(x), band.data_type) as _)?;
                 });
             }
         }
@@ -566,13 +566,26 @@ pub(crate) struct SourceRead<'a> {
 impl SourceRead<'_> {
     /// Reads into a destination `out` of `dw × dh` pixels, setting each valid destination pixel
     /// the source covers to `f(value)`. Rows are read in parallel.
-    pub fn read<T: Send>(&self, dw: usize, dh: usize, out: &mut [T], f: impl Fn(f64) -> T + Sync + Send) {
-        let Some(w) = self.window(dw as f64, dh as f64, dw, dh) else { return };
+    pub fn read<T: Send>(&self, dw: usize, dh: usize, out: &mut [T], f: impl Fn(f64) -> T + Sync + Send) -> Result<()> {
+        self.read_with_retained(dw, dh, out, 0, f)
+    }
+
+    /// Also account for buffers retained by a caller while this source is resampled.
+    pub fn read_with_retained<T: Send>(
+        &self,
+        dw: usize,
+        dh: usize,
+        out: &mut [T],
+        retained: usize,
+        f: impl Fn(f64) -> T + Sync + Send,
+    ) -> Result<()> {
+        let Some(w) = self.window(dw as f64, dh as f64, dw, dh) else { return Ok(()) };
         let (ow, oh) = (w.out_size.0, w.out_size.1);
         if ow == 0 || oh == 0 {
-            return;
+            return Ok(());
         }
         let is_valid = |i: usize| self.valid.is_none_or(|m| m[i]);
+        let output_bytes = std::mem::size_of_val(out);
         // The destination rows the source covers.
         let start = (w.out_off.1 * dw).min(out.len());
         let end = ((w.out_off.1 + oh) * dw).min(out.len());
@@ -591,13 +604,13 @@ impl SourceRead<'_> {
                     }
                 }
             });
-            return;
+            return Ok(());
         }
         // The destination pixels written, relative to the window, and the source pixels read.
         let [c0, r0, c1, r1] = self.written(&w);
         let [sx0, sy0, sx1, sy1] = self.cover();
         if sx1 <= sx0 || sy1 <= sy0 {
-            return;
+            return Ok(());
         }
         let (fx, fy, fw, fh) = (w.dreq_off.0, w.dreq_off.1, w.dreq_size.0, w.dreq_size.1);
         if self.resampling == Resampling::Nearest {
@@ -622,13 +635,16 @@ impl SourceRead<'_> {
                     }
                 }
             });
-            return;
+            return Ok(());
         }
+        let retained = retained
+            .checked_add(output_bytes)
+            .ok_or_else(|| Error::ResourceLimit("a resampling working set is too large to allocate".into()))?;
         let res = if self.resampling == Resampling::Average {
-            gdal_average(self, w.req_off, (fx, fy, fw, fh), (ow, oh))
+            gdal_average(self, w.req_off, (fx, fy, fw, fh), (ow, oh), retained)
         } else {
-            resample_window(self, (fx, fy, fw, fh), (ow, oh))
-        };
+            resample_window(self, (fx, fy, fw, fh), (ow, oh), retained)
+        }?;
         // A `sum` adds shares of source pixels, which neither the source type's precision nor its
         // range holds: it is passed on as it is, for `f` to store in the output's type.
         let keep = self.working_float || self.resampling == Resampling::Sum;
@@ -647,6 +663,7 @@ impl SourceRead<'_> {
                 }
             }
         });
+        Ok(())
     }
 
     /// How a read of the whole destination of `dw × dh` pixels copies source pixels, when it
@@ -1024,13 +1041,37 @@ fn gdal_chunks(
     chunks
 }
 
+/// Reserve optional Float64 source-resampling samples (reference: GDAL 3.13.3).
+/// They coexist with the destination and borrowed source/mask buffers.
+fn resampling_values(s: &SourceRead, width: usize, height: usize, retained: usize) -> Result<Vec<Option<f64>>> {
+    let what = "a source resampling working set";
+    let n = crate::dataset::fallible::len(&[width, height], what)?;
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let bytes = n
+        .checked_mul(std::mem::size_of::<Option<f64>>())
+        .filter(|&n| n <= isize::MAX as usize)
+        .and_then(|n| n.checked_add(retained))
+        .and_then(|n| n.checked_add(s.values.byte_len()))
+        .and_then(|n| n.checked_add(s.valid.map_or(0, |v| v.len())));
+    crate::dataset::fallible::check_usable(bytes, || format!("{what} is too large to allocate")).map_err(Error::ResourceLimit)?;
+    Ok(crate::dataset::fallible::filled(n, None, what)?)
+}
+
 /// Averages a source window into `out` pixels with the arithmetic of GDAL's overview code
 /// (`GDALResampleChunk_AverageOrRMS_T()`, through `GDALRasterBand::RasterIOResampled()`): per
 /// chunk, a weighted sum scaled by the pixel count where the chunk has no nodata pixel (and, at a
 /// factor of two, GDAL's sum of quarters in the work type), a sum over the valid pixels otherwise,
 /// in the work type of the source's data type; `None` where no pixel is valid.
-pub(crate) fn gdal_average(s: &SourceRead, req_off: (usize, usize), win: (f64, f64, f64, f64), out: (usize, usize)) -> Vec<Option<f64>> {
-    gdal_average_with_origin(s, req_off, win, out, None)
+pub(crate) fn gdal_average(
+    s: &SourceRead,
+    req_off: (usize, usize),
+    win: (f64, f64, f64, f64),
+    out: (usize, usize),
+    retained: usize,
+) -> Result<Vec<Option<f64>>> {
+    gdal_average_with_origin(s, req_off, win, out, None, retained)
 }
 
 /// Average with an explicit RasterIO reference frame, preserving virtual-output offsets.
@@ -1040,12 +1081,13 @@ pub(crate) fn gdal_average_with_origin(
     win: (f64, f64, f64, f64),
     out: (usize, usize),
     origin: Option<[f64; 8]>,
-) -> Vec<Option<f64>> {
+    retained: usize,
+) -> Result<Vec<Option<f64>>> {
     let (fx, fy, fw, fh) = win;
     let (ow, oh) = out;
-    let mut res = vec![None; ow * oh];
+    let mut res = resampling_values(s, ow, oh, retained)?;
     if ow == 0 || oh == 0 {
-        return res;
+        return Ok(res);
     }
     let ratio = (fw / ow as f64, fh / oh as f64);
     // Offsets are relative to the request's integer origin, as in GDAL.
@@ -1293,21 +1335,21 @@ pub(crate) fn gdal_average_with_origin(
             }
         }
     }
-    res
+    Ok(res)
 }
 
 /// Resamples a floating-point source window to `out` pixels as GDAL's overview code does
 /// (`GDALRasterIOResampled()`): separable convolution kernels stretched when downsampling,
 /// coverage-weighted averages, or the most frequent value. A `sum` adds each valid source pixel
 /// times the share of its area inside the destination pixel.
-fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize)) -> Vec<Option<f64>> {
+fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize), retained: usize) -> Result<Vec<Option<f64>>> {
     let (fx, fy, fw, fh) = win;
     let (ow, oh) = out;
     let (rx, ry) = (fw / ow as f64, fh / oh as f64);
     let is_valid = |i: usize| s.valid.is_none_or(|m| m[i]);
-    let mut res = vec![None; ow * oh];
+    let mut res = resampling_values(s, ow, oh, retained)?;
     if ow == 0 {
-        return res;
+        return Ok(res);
     }
     match s.resampling {
         Resampling::Average
@@ -1442,7 +1484,7 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
             });
         }
     }
-    res
+    Ok(res)
 }
 
 // ─── A small XML reader ─────────────────────────────────────────────────────────────────────────
@@ -1688,14 +1730,14 @@ mod tests {
             within_rects: true,
         };
         let mut out = vec![-1.0; 48];
-        r.read(8, 6, &mut out, |v| v);
+        r.read(8, 6, &mut out, |v| v).unwrap();
         assert_eq!(out[8 + 2], 0.0);
         assert_eq!(out[4 * 8 + 5], 15.0);
         assert_eq!(out[0], -1.0);
         // Downsampling by 2 with average.
         let r = SourceRead { dst_rect: [0.0, 0.0, 2.0, 2.0], resampling: Resampling::Average, ..r };
         let mut out = vec![-1.0; 4];
-        r.read(2, 2, &mut out, |v| v);
+        r.read(2, 2, &mut out, |v| v).unwrap();
         assert_eq!(out, vec![2.5, 4.5, 10.5, 12.5]);
     }
 
@@ -1724,7 +1766,7 @@ mod tests {
                 within_rects: true,
             };
             let mut out = vec![f64::NAN; 1600];
-            r.read(40, 40, &mut out, |v| v);
+            r.read(40, 40, &mut out, |v| v).unwrap();
             out
         };
         // The 16 pixels whose bilinear kernel reaches the nodata pixel, rows 13 to 16 and
@@ -1769,7 +1811,7 @@ mod tests {
             within_rects: true,
         };
         let mut out = vec![-1.0; 16];
-        r.read(4, 4, &mut out, |v| v);
+        r.read(4, 4, &mut out, |v| v).unwrap();
         let quarters: Vec<f64> =
             [1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 3.0, 3.0, 4.0, 4.0].iter().map(|v| v / 4.0).collect();
         assert_eq!(out, quarters);
@@ -1783,7 +1825,7 @@ mod tests {
             ..r
         };
         let mut out = vec![-1.0; 4];
-        r.read(2, 2, &mut out, |v| v);
+        r.read(2, 2, &mut out, |v| v).unwrap();
         assert_eq!(out, vec![5.25, 8.25, 14.25, 17.25]);
     }
 
@@ -1818,7 +1860,7 @@ mod tests {
         for src_rect in [[0.25, 0.0, 2.0, 2.0], [0.0, 0.25, 2.0, 2.0], [0.0, 0.0, 2.25, 2.0], [0.0, 0.0, 2.0, 2.25]] {
             let r = SourceRead { src_rect, ..base };
             let mut out = vec![-1.0; 4];
-            r.read(2, 2, &mut out, |v| v);
+            r.read(2, 2, &mut out, |v| v).unwrap();
             let [x, y, w, h] = src_rect;
             let (sx, sy) = (w / 2.0, h / 2.0);
             let expected: Vec<f64> = (0..4)
@@ -1833,7 +1875,7 @@ mod tests {
         // `[10, 20, 30]` read from x = 0.25.
         let r = SourceRead { src_rect: [0.25, 0.0, 2.0, 2.0], ..base };
         let mut out = vec![-1.0; 4];
-        r.read(2, 2, &mut out, |v| v);
+        r.read(2, 2, &mut out, |v| v).unwrap();
         assert_eq!(out[..2], [12.5, 22.5]);
         let r = SourceRead { src_rect: [1.0, 1.0, 2.0, 2.0], ..base };
         assert_eq!(r.plain_copy(2, 2), Ok(Some(PlainCopy { src: (1, 1), dst_x: 0, cols: 2, dst_rows: 0..2 })));
@@ -1860,7 +1902,7 @@ mod tests {
             within_rects: true,
         };
         let mut quarters = vec![-1.0; 4];
-        r.read(2, 2, &mut quarters, |v| v);
+        r.read(2, 2, &mut quarters, |v| v).unwrap();
         let two_hundreds = [200.0; 4];
         let r = SourceRead {
             values: crate::ops::BandView::F64(&two_hundreds),
@@ -1871,7 +1913,7 @@ mod tests {
             ..r
         };
         let mut total = vec![-1.0; 1];
-        r.read(1, 1, &mut total, |v| convert_value(v, DataType::U16));
+        r.read(1, 1, &mut total, |v| convert_value(v, DataType::U16)).unwrap();
         assert_eq!((quarters, total), (vec![0.25; 4], vec![800.0]));
     }
 
@@ -1917,7 +1959,7 @@ mod tests {
                     within_rects: true,
                 };
                 let mut out = vec![-1.0; 3];
-                r.read(dw, dh, &mut out, |v| v);
+                r.read(dw, dh, &mut out, |v| v).unwrap();
                 let case = format!("{resampling:?} {src_rect:?} at {dst_rect:?}");
                 assert_eq!(out, expected, "{case}");
                 assert_eq!(r.plain_copy(dw, dh), copied.map(|n| Some(copy(n))).ok_or(()), "{case}");
@@ -1946,7 +1988,7 @@ mod tests {
             within_rects: true,
         };
         let mut out = vec![-1.0; 3];
-        r.read(3, 1, &mut out, |v| v);
+        r.read(3, 1, &mut out, |v| v).unwrap();
         assert_eq!(out, [10.0; 3]);
     }
 

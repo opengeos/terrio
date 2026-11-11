@@ -505,6 +505,22 @@ impl<'a> BandView<'a> {
         crate::par::map_range(self.len(), |i| !is_nodata(self.get(i), nodata))
     }
 
+    /// The storage occupied by the borrowed samples, independent of working precision.
+    pub(crate) fn byte_len(self) -> usize {
+        match self {
+            Self::U8(v) => std::mem::size_of_val(v),
+            Self::I8(v) => std::mem::size_of_val(v),
+            Self::U16(v) => std::mem::size_of_val(v),
+            Self::I16(v) => std::mem::size_of_val(v),
+            Self::U32(v) => std::mem::size_of_val(v),
+            Self::I32(v) => std::mem::size_of_val(v),
+            Self::U64(v) => std::mem::size_of_val(v),
+            Self::I64(v) => std::mem::size_of_val(v),
+            Self::F32(v) => std::mem::size_of_val(v),
+            Self::F64(v) => std::mem::size_of_val(v),
+        }
+    }
+
     /// The number of values.
     pub(crate) fn len(self) -> usize {
         match self {

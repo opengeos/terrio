@@ -1319,7 +1319,7 @@ class DatasetReader(DatasetBase):
         raster: _terrio.Raster | _OverviewRaster
         try:
             raster = _terrio.open_raster(self._path, lazy=True)
-        except MemoryError:
+        except ResourceLimitError:
             raise
         except Exception as err:
             raise _to_error(err, self.name) from err
@@ -1481,7 +1481,7 @@ class DatasetReader(DatasetBase):
         self._check_open()
         try:
             return np.asarray(self._raster.read(list(bands), window=window, overview=level))
-        except MemoryError:
+        except ResourceLimitError:
             raise
         except Exception as err:
             raise RasterioIOError(f"Read failed: {err}") from err
@@ -1511,7 +1511,7 @@ class DatasetReader(DatasetBase):
             got = self._raster.read_sampled(
                 list(bands), cols.tolist(), rows.tolist(), overview=level
             )
-        except MemoryError:
+        except ResourceLimitError:
             raise
         except Exception as err:
             raise RasterioIOError(f"Read failed: {err}") from err
@@ -1573,7 +1573,7 @@ class DatasetReader(DatasetBase):
         if core is not None:
             try:
                 return np.asarray(self._raster.read_resampled(band=list(indexes), **core))
-            except MemoryError:
+            except ResourceLimitError:
                 raise
             except Exception as err:
                 raise RasterioIOError(f"Read failed: {err}") from err
@@ -1776,7 +1776,7 @@ class DatasetReader(DatasetBase):
             # The per-dataset mask is every band's mask band: band 1's, from its own overviews.
             try:
                 return np.asarray(raster.read_resampled_masks(band=1, **core))
-            except MemoryError:
+            except ResourceLimitError:
                 raise
             except Exception as err:
                 raise RasterioIOError(f"Read failed: {err}") from err
@@ -2510,7 +2510,7 @@ class DatasetWriter(DatasetReader):
                     )
             else:
                 self._data = np.asarray(raster.read())
-        except MemoryError:
+        except ResourceLimitError:
             raise
         except Exception as err:
             raise RasterioIOError(f"Read failed: {err}") from err

@@ -1646,7 +1646,7 @@ impl WindowSource for Mosaic {
                     invalid_value: None,
                     within_rects: false,
                 };
-                req.read(dw, dh, buf, |v| v);
+                req.read(dw, dh, buf, |v| v)?;
             }
         }
         Ok(RasterData::from_f64_vec(self.data_type, out.concat()))

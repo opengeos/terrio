@@ -9,6 +9,7 @@
 
 use super::{VrtDataset, VrtSource, xml};
 use crate::cog::WindowSource;
+use crate::dataset::fallible;
 use crate::ops::warp::{Nodata, WarpOptions};
 use crate::ops::{BandView, Grid, Resampling};
 use crate::{Error, LazyRaster, Result, Window, WindowOptions};
@@ -644,11 +645,13 @@ impl Reader {
         window: Window,
         output_type: DataType,
         level: (usize, usize),
+        retained: usize,
     ) -> Result<Vec<Option<f64>>> {
         let valid_rect = |r: &[f64; 4]| r.iter().all(|v| v.is_finite()) && r[2] > 0. && r[3] > 0.;
         if !valid_rect(&src.dst_rect) || (!src.src_rect[0].is_nan() && !valid_rect(&src.src_rect)) {
             return Err(invalid("invalid source/destination rectangle"));
         }
+        let mut out = source_buffer(window, retained)?;
         let full = (self.description.layout.width, self.description.layout.height);
         let overview = level != full;
         let dst = if overview {
@@ -664,7 +667,7 @@ impl Reader {
         let [dx, dy, dw, dh] = dst;
         let (wx, wy) = (window.x as f64, window.y as f64);
         if wx >= dx + dw || wy >= dy + dh || wx + window.width as f64 <= dx || wy + window.height as f64 <= dy {
-            return Ok(vec![None; window.width * window.height]);
+            return Ok(out);
         }
         let source = self.source(&src.filename, src.relative_to_vrt)?;
         let (width, height) = (source.width(), source.height());
@@ -715,13 +718,27 @@ impl Reader {
         let y0 = (mapy(window.y as f64).floor() - pad as f64).max(0.).min(height as f64) as usize;
         let x1 = (mapx((window.x + window.width) as f64).ceil() + pad as f64).max(0.).min(width as f64) as usize;
         let y1 = (mapy((window.y + window.height) as f64).ceil() + pad as f64).max(0.).min(height as f64) as usize;
-        let mut out = vec![None; window.width * window.height];
         if x1 <= x0 || y1 <= y0 {
             return Ok(out);
         }
         let area = Window::new(x0, y0, x1 - x0, y1 - y0);
         let mask_band = element.child("SourceBand").is_some_and(|e| e.text.trim().starts_with("mask,"));
-        let ds = source.read_window(area, &WindowOptions { bands: vec![src.band], overview: source_level })?;
+        let use_mask = element.child("UseMaskBand").is_some_and(|e| e.text.trim().eq_ignore_ascii_case("true") || e.text.trim() == "1");
+        let owned = mask_band || kernel.is_some();
+        let transient = if kernel.is_some() {
+            24 + usize::from(mask_band) * 8
+        } else if mask_band {
+            9
+        } else {
+            0
+        };
+        let validity = usize::from(owned) * 8 + usize::from(use_mask || (src.complex && src.nodata.is_some())) * 2;
+        let options = WindowOptions { bands: crate::cog::read_bands(&[src.band], source.band_count())?, overview: source_level };
+        let source_sample = source.band_data_type(src.band).size_bytes() + transient.max(validity);
+        let out_bytes = std::mem::size_of_val(out.as_slice());
+        let area_bytes = area.width.checked_mul(area.height).and_then(|n| n.checked_mul(source_sample));
+        check_working_set(area_bytes.and_then(|b| b.checked_add(out_bytes)).and_then(|b| b.checked_add(retained)))?;
+        let ds = source.read_window(area, &options)?;
         let mut data = if mask_band {
             let mask = source.read_mask(area, source_level)?.unwrap_or_else(|| {
                 let values = ds.raster.data.to_f64_vec();
@@ -731,28 +748,26 @@ impl Reader {
                     .map(|v| v as u8)
                     .collect()
             });
-            RasterData::F64(mask.into_iter().map(f64::from).collect())
+            Some(RasterData::F64(mask.into_iter().map(f64::from).collect()))
         } else {
-            ds.raster.data.clone()
+            None
         };
         if let Some(kernel) = kernel {
-            data = RasterData::F64(filter(
-                &data.to_f64_vec(),
+            data = Some(RasterData::F64(filter(
+                &data.as_ref().unwrap_or(&ds.raster.data).to_f64_vec(),
                 area.width,
                 area.height,
                 kernel,
                 src.nodata.or(ds.nodata()),
                 element.child("Function"),
-            )?);
+            )?));
         }
         let values = match &data {
-            RasterData::F64(v) => BandView::F64(v),
+            Some(RasterData::F64(v)) => BandView::F64(v),
             _ => BandView::of(&ds.raster, 0),
         };
         let mut valid = src.nodata.filter(|_| src.complex).map(|nd| values.valid(nd));
-        if element.child("UseMaskBand").is_some_and(|e| e.text.trim().eq_ignore_ascii_case("true") || e.text.trim() == "1")
-            && let Some(mask) = source.read_mask(area, source_level)?
-        {
+        if use_mask && let Some(mask) = source.read_mask(area, source_level)? {
             let v = valid.get_or_insert_with(|| vec![true; area.width * area.height]);
             for (valid, mask) in v.iter_mut().zip(mask) {
                 *valid &= mask != 0;
@@ -773,7 +788,18 @@ impl Reader {
         };
         let double = super::is_float_working(ds.raster.data_type)
             || matches!(output_type, DataType::I32 | DataType::U32 | DataType::I64 | DataType::U64 | DataType::F64);
-        req.read(window.width, window.height, &mut out, |v| {
+        // If samples are transformed into an owned buffer, the original read stays live too.
+        let retained = if data.is_some() {
+            ds.raster
+                .data
+                .len()
+                .checked_mul(ds.raster.data.data_type().size_bytes())
+                .and_then(|b| b.checked_add(retained))
+                .ok_or_else(working_overflow)?
+        } else {
+            retained
+        };
+        req.read_with_retained(window.width, window.height, &mut out, retained, |v| {
             let value = if let Some((offset, ratio)) = src.scale {
                 let value = v * ratio + offset;
                 if super::is_float_working(ds.raster.data_type) { value } else { value as f32 as f64 }
@@ -792,7 +818,7 @@ impl Reader {
             } else {
                 value
             })
-        });
+        })?;
         Ok(out)
     }
 
@@ -1192,6 +1218,31 @@ impl WindowSource for Reader {
     }
 }
 
+/// Check a known VRT working set before its next buffer is allocated (GDAL 3.13.3 reference).
+fn check_working_set(bytes: Option<usize>) -> Result<()> {
+    fallible::check_usable(bytes, || "a VRT working set is too large to allocate".into()).map(|_| ()).map_err(Error::ResourceLimit)
+}
+
+fn working_overflow() -> Error {
+    Error::ResourceLimit("a VRT working set is too large to allocate".into())
+}
+
+fn retained_buffers(values: &Vec<f64>, out: &Vec<f64>, inputs: &[Vec<f64>]) -> Result<usize> {
+    std::iter::once(values.capacity())
+        .chain(std::iter::once(out.capacity()))
+        .chain(inputs.iter().map(Vec::capacity))
+        .try_fold(0usize, |sum, n| n.checked_mul(8).and_then(|n| sum.checked_add(n)))
+        .ok_or_else(working_overflow)
+}
+
+fn source_buffer(window: Window, retained: usize) -> Result<Vec<Option<f64>>> {
+    let n = fallible::len(&[window.width, window.height], "a VRT source window")?;
+    let bytes =
+        n.checked_mul(std::mem::size_of::<Option<f64>>()).filter(|&n| n <= isize::MAX as usize).and_then(|n| n.checked_add(retained));
+    check_working_set(bytes)?;
+    Ok(fallible::filled(n, None, "a VRT source window")?)
+}
+
 impl Reader {
     fn read_description(
         &mut self,
@@ -1200,7 +1251,18 @@ impl Reader {
         bands: &[usize],
         level: (usize, usize),
     ) -> Result<RasterData> {
-        let mut values = Vec::with_capacity(window.width * window.height * bands.len());
+        let n = fallible::len(&[window.width, window.height], "a VRT window")?;
+        let len = fallible::len(&[n, bands.len()], "a VRT window")?;
+        let data_type = super::common_type(bands.iter().map(|&b| description.layout.bands[b - 1].data_type));
+        // The accumulated Float64 capacity coexists with a band's Float64 working array.
+        // At the end it coexists with the converted output, except when Float64 is moved.
+        let floats = len.checked_mul(8).filter(|&n| n <= isize::MAX as usize);
+        let conversion = if data_type == DataType::F64 { Some(0) } else { len.checked_mul(data_type.size_bytes()) };
+        let peak =
+            floats.zip(n.checked_mul(8)).zip(conversion).and_then(|((floats, band), conversion)| floats.checked_add(band.max(conversion)));
+        check_working_set(peak)?;
+        let mut values = Vec::new();
+        fallible::reserve(&mut values, len, "a VRT window")?;
         let elements = description.root.children.iter().filter(|e| e.name == "VRTRasterBand").collect::<Vec<_>>();
         for b in bands {
             let layout = description.layout.bands[*b - 1].clone();
@@ -1210,19 +1272,29 @@ impl Reader {
                 .iter()
                 .filter(|e| matches!(e.name.as_str(), "SimpleSource" | "ComplexSource" | "AveragedSource" | "KernelFilteredSource"))
                 .collect::<Vec<_>>();
-            let mut inputs = Vec::new();
-            let mut out = vec![layout.nodata.unwrap_or(0.); window.width * window.height];
+            let mut inputs: Vec<Vec<f64>> = Vec::new();
+            let mut out = fallible::filled(n, layout.nodata.unwrap_or(0.), "a VRT band window")?;
             for (source, xml) in layout.sources.iter().zip(sources) {
-                let input = self.source_values(source, xml, window, layout.data_type, level)?;
+                let retained = retained_buffers(&values, &out, &inputs)?;
+                let input = self.source_values(source, xml, window, layout.data_type, level, retained)?;
                 if element.attr("subClass") == Some("VRTDerivedRasterBand") {
                     let transfer = element
                         .child("SourceTransferType")
                         .map(|e| crate::ops::parse_data_type(e.text.trim()))
                         .transpose()?
                         .unwrap_or(layout.data_type);
-                    inputs.push(
-                        input.into_iter().map(|v| crate::ops::convert_value(v.unwrap_or(layout.nodata.unwrap_or(0.)), transfer)).collect(),
-                    );
+                    check_working_set(
+                        input
+                            .capacity()
+                            .checked_mul(std::mem::size_of::<Option<f64>>())
+                            .and_then(|b| b.checked_add(retained))
+                            .and_then(|b| n.checked_mul(8).and_then(|n| b.checked_add(n))),
+                    )?;
+                    let mut converted = Vec::new();
+                    fallible::reserve(&mut converted, n, "a VRT derived input")?;
+                    converted
+                        .extend(input.into_iter().map(|v| crate::ops::convert_value(v.unwrap_or(layout.nodata.unwrap_or(0.)), transfer)));
+                    inputs.push(converted);
                 } else {
                     for (dst, value) in out.iter_mut().zip(input) {
                         if let Some(value) = value {
@@ -1232,12 +1304,15 @@ impl Reader {
                 }
             }
             if element.attr("subClass") == Some("VRTDerivedRasterBand") {
+                let retained = retained_buffers(&values, &out, &inputs)?;
+                check_working_set(n.checked_mul(8).and_then(|b| b.checked_add(retained)))?;
                 out = derived(element, &inputs, out.len())?;
             }
             values.extend(out.into_iter().map(|v| crate::ops::convert_value(v, layout.data_type)));
         }
-        let data_type = super::common_type(bands.iter().map(|&b| description.layout.bands[b - 1].data_type));
-        let values = values.into_iter().map(|v| crate::ops::convert_value(v, data_type)).collect();
+        for value in &mut values {
+            *value = crate::ops::convert_value(*value, data_type);
+        }
         Ok(RasterData::from_f64_vec(data_type, values))
     }
 }
@@ -1429,7 +1504,8 @@ fn derived(element: &xml::Element, inputs: &[Vec<f64>], length: usize) -> Result
     if matches!(name, "diff" | "div") && inputs.len() != 2 {
         return Err(invalid("pixel function requires two sources"));
     }
-    let mut output = Vec::with_capacity(length);
+    let mut output = Vec::new();
+    fallible::reserve(&mut output, length, "a VRT derived output")?;
     let mut values = Vec::with_capacity(inputs.len() + 1);
     for i in 0..length {
         values.clear();

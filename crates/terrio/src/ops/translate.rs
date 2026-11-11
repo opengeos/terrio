@@ -436,7 +436,7 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
         crate::pixel::with_data!(&mut out, v => {
             let band = &mut v[k * n..(k + 1) * n];
             band.iter_mut().for_each(|x| *x = fill as _);
-            read.read(ow, oh, band, |x| convert_value(scaled(x), out_type) as _);
+            read.read(ow, oh, band, |x| convert_value(scaled(x), out_type) as _)?;
         });
     }
     let grid = Grid { width: ow, height: oh, geo_transform: gt };

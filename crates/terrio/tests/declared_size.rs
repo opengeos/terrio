@@ -1577,3 +1577,53 @@ fn empty_resampled_windows_allocate_only_their_output_type() {
         }
     }
 }
+
+/// Reference: GDAL 3.13.3. Narrow VRT/translation output does not bound Float64 working arrays.
+#[test]
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+fn vrt_and_source_resampling_check_their_working_arrays() {
+    const CHILD: &str = "TERRIO_TEST_VRT_WORKING_MEMORY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "vrt_and_source_resampling_check_their_working_arrays"])
+            .env(CHILD, "1")
+            .env_remove("TERRIO_MAX_DECLARED_BYTES")
+            .env_remove("TERRIO_MAX_BANDS")
+            .output()
+            .unwrap();
+        assert!(child.status.success(), "{}\n{}", String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
+        return;
+    }
+    let _serial = serial();
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: valid pointers; only this child process's usable-memory policy is constrained.
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_RSS, &mut limit), 0);
+        limit.rlim_cur = limit.rlim_max.min(128 << 20);
+        assert_eq!(libc::setrlimit(libc::RLIMIT_RSS, &limit), 0);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let vrt = dir.path().join("empty.vrt");
+    std::fs::write(&vrt, "<VRTDataset rasterXSize=\"3000\" rasterYSize=\"3000\"><VRTRasterBand dataType=\"Byte\" band=\"1\"><NoDataValue>7</NoDataValue></VRTRasterBand></VRTDataset>").unwrap();
+    let mut source = terrio::open_raster_lazy(vrt.to_str().unwrap()).unwrap();
+    let small = source.read_window(terrio::Window::full(16, 16), &Default::default()).unwrap();
+    assert_eq!(small.raster.data.to_f64_vec(), vec![7.; 256]);
+    let (result, largest) = largest_during(|| source.read().map(|_| ()));
+    let vrt_refused = matches!(result, Err(terrio::Error::ResourceLimit(_))) && largest < 1 << 20;
+    let vrt_result = format!("{result:?}, largest={largest}");
+
+    use terrio::ops::translate::{Size, TranslateOptions};
+    let mut data = header(1, 1, 1);
+    data.raster.data = RasterData::U8(vec![11]);
+    let options = TranslateOptions {
+        out_size: Some((Size::Pixels(16), Size::Pixels(16))),
+        resampling: Some(terrio::ops::Resampling::Average),
+        ..Default::default()
+    };
+    let small = terrio::ops::translate::translate(&data, &options).unwrap();
+    assert_eq!(small.raster.data.to_f64_vec(), vec![11.; 256]);
+    let options = TranslateOptions { out_size: Some((Size::Pixels(3000), Size::Pixels(3000))), ..options };
+    let (result, largest) = largest_during(|| terrio::ops::translate::translate(&data, &options).map(|_| ()));
+    let source_refused = matches!(result, Err(terrio::Error::ResourceLimit(_))) && largest < 16 << 20;
+    assert!(vrt_refused && source_refused, "VRT {vrt_result}; source {result:?}, largest={largest}");
+}

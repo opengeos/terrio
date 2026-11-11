@@ -455,7 +455,8 @@ fn process_aligned(
                     (rect[0], rect[1], rect[2], rect[3]),
                     (grid.width, grid.height),
                     Some(geometry.origin),
-                );
+                    std::mem::size_of_val(out.as_slice()),
+                )?;
                 for (target, value) in out.iter_mut().zip(averaged) {
                     *target = convert_value(convert_value(value.unwrap_or(source_nodata.unwrap_or(0.0)), ds.raster.data_type), work);
                 }

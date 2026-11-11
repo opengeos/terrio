@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 import terrio
 
 
@@ -110,3 +112,102 @@ def test_archive_policy_refusal_is_terminal(tmp_path, monkeypatch):
     monkeypatch.setenv("TERRIO_ZIP_MAX_ENTRIES", "1")
     with pytest.raises(terrio.ResourceLimitError, match="entries"):
         terrio.open_vector(f"/vsizip/{path}/a.geojson")
+
+
+@pytest.fixture
+def io_failure_dataset(tmp_path, gdal):
+    path = tmp_path / "io-errors.tif"
+    dataset = gdal.GetDriverByName("GTiff").Create(str(path), 2, 2, 1, gdal.GDT_Byte)
+    dataset.SetGeoTransform([0, 1, 0, 2, 0, -1])
+    dataset.GetRasterBand(1).Fill(11)
+    dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
+    dataset.GetRasterBand(1).GetMaskBand().Fill(255)
+    dataset = None
+    return path
+
+
+@pytest.mark.parametrize("surface", ["open", "integer", "sampled", "resampled", "mask", "update"])
+@pytest.mark.parametrize(
+    "error_type", [MemoryError, terrio.ResourceLimitError], ids=["allocation", "policy"]
+)
+def test_rio_distinguishes_policy_refusals_from_other_memory_errors(
+    io_failure_dataset, monkeypatch, surface, error_type
+):
+    """Policy errors keep their identity; unrelated allocation errors keep I/O wrapping."""
+    import terrio.rio as rio
+    from terrio.rio import io
+    from terrio.rio.errors import RasterioIOError
+
+    injected = error_type("injected allocation refusal")
+
+    def fail(*args, **kwargs):
+        raise injected
+
+    if surface == "open":
+        monkeypatch.setattr(io._terrio, "open_raster", fail)
+    else:
+        method = {
+            "integer": "read",
+            "sampled": "read_sampled",
+            "resampled": "read_resampled",
+            "mask": "read_resampled_masks",
+            "update": "read",
+        }[surface]
+        monkeypatch.setattr(io._terrio.Raster, method, fail)
+        if surface == "sampled":
+            # Exercise the fallback used by reads whose level/format bypasses core resampling.
+            monkeypatch.setattr(io.DatasetReader, "_core_resampled", lambda *args: None)
+
+    expected = error_type if error_type is terrio.ResourceLimitError else RasterioIOError
+    with pytest.raises(expected) as caught:
+        with rio.open(io_failure_dataset, "r+" if surface == "update" else "r") as dataset:
+            if surface == "integer":
+                dataset.read()
+            elif surface == "sampled":
+                dataset.read(out_shape=(1, 1, 1))
+            elif surface == "resampled":
+                dataset.read(out_shape=(1, 4, 4))
+            elif surface == "mask":
+                dataset.read_masks(out_shape=(1, 4, 4))
+    if error_type is terrio.ResourceLimitError:
+        assert caught.value is injected
+    else:
+        assert caught.value.__cause__ is injected
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="uses the Linux usable-memory policy")
+def test_vrt_working_memory_refusal_reaches_python(tmp_path):
+    """A small Byte window fits while full-size Float64 VRT work does not."""
+    path = tmp_path / "working.vrt"
+    path.write_text(
+        '<VRTDataset rasterXSize="3000" rasterYSize="3000">'
+        '<VRTRasterBand dataType="Byte" band="1"><NoDataValue>7</NoDataValue>'
+        "</VRTRasterBand></VRTDataset>"
+    )
+    script = """
+import resource
+import sys
+import terrio
+soft, hard = resource.getrlimit(resource.RLIMIT_RSS)
+resource.setrlimit(resource.RLIMIT_RSS, (min(hard, 128 << 20) if hard >= 0 else 128 << 20, hard))
+raster = terrio.open_raster(sys.argv[1], lazy=True)
+small = raster.read(1, window=(0, 0, 16, 16))
+assert small.dtype.name == "uint8" and (small == 7).all()
+try:
+    raster.read()
+except terrio.ResourceLimitError as error:
+    assert "VRT working set" in str(error), str(error)
+else:
+    raise AssertionError("VRT working arrays exceeded the usable-memory policy")
+"""
+    environment = dict(os.environ)
+    for option in ("TERRIO_MAX_DECLARED_BYTES", "TERRIO_MAX_BANDS"):
+        environment.pop(option, None)
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(path)],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
