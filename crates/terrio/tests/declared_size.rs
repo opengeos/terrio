@@ -478,6 +478,9 @@ fn sample(driver: RasterDriver, dir: &Path) -> Option<(String, Vec<(&'static str
         // Imagine files are written through GDAL, and read by terrio's own reader.
         #[cfg(feature = "gdal")]
         RasterDriver::HFA => (write(dir, "hfa/x.img", &three(), None), none),
+        // The GDAL backend, by its prefix: a GeoTIFF read by GDAL.
+        #[cfg(feature = "gdal")]
+        RasterDriver::Gdal => (format!("GDAL:{}", write(dir, "gdal/x.tif", &three(), None)), none),
         // UInt8 bands, written with simple packing: the file is smaller than its Float64 bands.
         RasterDriver::GRIB => (write(dir, "grib/x.grb2", &three(), None), none),
         RasterDriver::VRT => {
