@@ -1080,16 +1080,14 @@ const MAX_RUN: usize = 1 << 20;
 /// [`MAX_RUN`] for a local store, read without round trips.
 const MAX_LOCAL_RUN: usize = 16 << 20;
 
-/// The requests the runs of one shard of a read of `total` chunks are split into, at least, for a
-/// store whose objects the caller fetches and that asks reads to fill its requests in flight
-/// ([`crate::sparse::SparseObjects::set_parallel_requests`]): those shared by the chunks, as runs
-/// of up to [`MAX_RUN`] would leave some unused. Over a long round trip, a few long runs arrive
-/// slowly while their connections' windows grow: 128 bands of a 192 x 192 window of the TESSERA
-/// embeddings (4.3 MB in 36 inner chunks of one shard, across the Atlantic) came in 6 requests in
-/// a median 4.86 s in Node.js, in 16 requests (12 at once) in 2.29 s. Not in browsers, which queue
-/// them on 6 connections to S3: 4.56 s in 6 requests, 6.30 s in 16, in Chromium. `None` for other
-/// stores: a native read keeps its own requests in flight ([`read_plan`]), and a local one has no
-/// round trips.
+/// The least number of requests the runs of one shard are split into, in a read of `total`
+/// chunks, when the store's caller fetches the objects and asks reads to fill the requests it
+/// keeps in flight ([`crate::sparse::SparseObjects::set_parallel_requests`]): its parallel
+/// requests shared among the chunks. Runs of up to [`MAX_RUN`] alone would leave some of those
+/// requests idle, and over a long round trip a few long runs arrive slowly while their
+/// connections' windows grow. Browsers, which queue requests on a few connections, don't ask for
+/// it. `None` for other stores: a native read keeps its own requests in flight ([`read_plan`]),
+/// and a local one has no round trips.
 fn run_slots(a: &Array, total: usize) -> Option<usize> {
     a.node.parallel_requests().map(|n| (n / total.max(1)).max(1))
 }
@@ -1295,8 +1293,8 @@ fn decode_chunk(
     let mut runs: Vec<(usize, usize)> = Vec::new();
     let mut max_run = if a.node.is_remote() { MAX_RUN } else { MAX_LOCAL_RUN };
     if let Some(slots) = slots {
-        let wanted: u64 = chosen.iter().map(|w| w.1 - w.0).sum();
-        max_run = max_run.min(usize::try_from(wanted.div_ceil(slots.max(1) as u64)).unwrap_or(usize::MAX));
+        let bytes: u64 = chosen.iter().map(|w| w.1 - w.0).sum();
+        max_run = max_run.min(usize::try_from(bytes.div_ceil(slots.max(1) as u64)).unwrap_or(usize::MAX));
     }
     for (k, w) in chosen.iter().enumerate() {
         match runs.last_mut() {

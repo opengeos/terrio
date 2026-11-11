@@ -437,10 +437,12 @@ pub struct RemoteDataset {
 
 /// Whether this runs in a server runtime (Node.js, Bun, Deno), whose `fetch` opens as many
 /// connections to a host as requests in flight, rather than in a browser, which keeps 6 to an
-/// HTTP/1.1 server and queues the rest.
+/// HTTP/1.1 server and queues the rest. An Electron renderer has Node's `process` but a browser's
+/// `document` and connections: not a server.
 fn server_runtime() -> bool {
     let global = js_sys::global();
-    get(&get(&get(&global, "process"), "versions"), "node").is_string() || !get(&global, "Deno").is_undefined()
+    (get(&get(&get(&global, "process"), "versions"), "node").is_string() || !get(&global, "Deno").is_undefined())
+        && get(&global, "document").is_undefined()
 }
 
 /// The format of a file, from its name or first bytes.
