@@ -5,6 +5,14 @@
 use terrio_crs::{SpatialRef, Transformer};
 
 #[test]
+fn boolean_metadata_uses_the_same_values_and_precedence_as_the_parser() {
+    let parameters = terrio_crs::proj_boolean_parameters(r#"+proj=utm +south=False +south=True +no_defs +over="YES" +lat_0=0"#).unwrap();
+    assert_eq!(parameters, [("south".into(), false), ("no_defs".into(), true), ("over".into(), true)]);
+    assert!(terrio_crs::proj_boolean_parameters("+south=maybe").is_err());
+    assert!(terrio_crs::proj_boolean_parameters("+no_defs=\"true").is_err());
+}
+
+#[test]
 fn false_south_flags_preserve_northern_utm_and_ups() {
     let source = SpatialRef::from_epsg(4326).unwrap();
     for (proj, north, south, point) in [("utm +zone=33", 32633, 32733, (15.0, -30.0)), ("ups", 32661, 32761, (0.0, 85.0))] {

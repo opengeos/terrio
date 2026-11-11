@@ -1,5 +1,6 @@
 """PROJ parameter round trips against GDAL, locally validated with GDAL 3.13.3."""
 
+import pickle
 import subprocess
 import sys
 import warnings
@@ -127,13 +128,19 @@ def test_unrepresentable_datum_export_warns(code):
         assert crs.to_proj4()
 
 
-def test_explicit_shift_survives_wkt_export():
-    """WKT TOWGS84 parameters survive even when the datum also has a PROJ name."""
+@pytest.mark.parametrize("whitespace", ["", " "])
+def test_explicit_shift_survives_wkt_export(whitespace):
+    """WKT TOWGS84 parameters survive even when the datum also has a PROJ name.
+
+    Args:
+        whitespace: Whitespace before the operation's opening bracket.
+    """
     wkt = CRS.from_epsg(27700).to_wkt()
     # Insert an explicit operation at the datum's end, before the prime meridian.
     wkt = wkt.replace(
         "]],PRIMEM[", "],TOWGS84[446.448,-125.157,542.06,0.15,0.247,0.842,-20.489]],PRIMEM[", 1
     )
+    wkt = wkt.replace("TOWGS84[", f"TOWGS84{whitespace}[")
     crs = CRS.from_wkt(wkt)
     assert "towgs84" in crs.to_dict()
     back = CRS.from_dict(crs.to_dict())
@@ -144,6 +151,77 @@ def test_explicit_shift_survives_wkt_export():
         coordinates(crs, (-0.1276, 51.5072)),
         rtol=0,
         atol=1e-3,
+    )
+
+
+@pytest.mark.parametrize(
+    "code,point", [(27700, (-0.1276, 51.5072)), (31467, (9, 50)), (2100, (23, 38))]
+)
+def test_ordinary_wkt_and_dataset_crs_keep_authority_operations(tmp_path, code, point):
+    """WKT, dataset, copied and unpickled CRSs keep authority-based operation selection.
+
+    Args:
+        tmp_path: Temporary directory.
+        code: Projected CRS with a named datum.
+        point: Longitude and latitude in the CRS area.
+    """
+    from affine import Affine
+
+    import terrio.rio as rio
+    from terrio.rio.warp import _crs_text
+
+    authority = CRS.from_epsg(code)
+    path = tmp_path / "datum.tif"
+    with rio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=2,
+        height=2,
+        count=1,
+        dtype="uint8",
+        crs=authority,
+        transform=Affine(1, 0, 0, 0, -1, 2),
+    ) as dataset:
+        dataset.write(np.ones((1, 2, 2), dtype="uint8"))
+    with rio.open(path) as dataset:
+        from_dataset = dataset.crs
+    for crs in [
+        CRS.from_wkt(authority.to_wkt()),
+        from_dataset,
+        CRS(from_dataset),
+        pickle.loads(pickle.dumps(from_dataset)),
+    ]:
+        assert _crs_text(crs) == f"EPSG:{code}"
+        np.testing.assert_allclose(
+            coordinates(crs, point), coordinates(authority, point), rtol=0, atol=1e-6
+        )
+
+
+def test_equality_does_not_warn_about_implicit_parameter_exports():
+    """Equality stays quiet while explicit export warns about an unrepresentable datum."""
+    wkt = (
+        'PROJCS["A",GEOGCS["ED50",DATUM["European_Datum_1950",'
+        'SPHEROID["International 1924",6378388,297]],PRIMEM["Greenwich",0],'
+        'UNIT["degree",0.0174532925199433]],PROJECTION["Equirectangular"],'
+        'PARAMETER["standard_parallel_1",30],UNIT["metre",1]]'
+    )
+    first, second = CRS.from_wkt(wkt), CRS.from_wkt(wkt.replace('PROJCS["A"', 'PROJCS["B"'))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert first == second
+    assert not caught
+    with pytest.warns(UserWarning, match="omit datum"):
+        first.to_dict()
+
+
+def test_duplicate_flag_values_keep_native_precedence():
+    """Export and native coordinates both use the first occurrence of a boolean flag."""
+    crs = CRS.from_proj4("+proj=utm +zone=33 +datum=WGS84 +south=False +south=True +units=m")
+    assert crs.to_dict()["south"] is False
+    assert "+south" not in crs.to_proj4()
+    np.testing.assert_allclose(
+        coordinates(crs, (15, 30)), coordinates("EPSG:32633", (15, 30)), rtol=0, atol=1e-7
     )
 
 

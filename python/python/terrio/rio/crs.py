@@ -757,7 +757,13 @@ class CRS(Mapping[str, Any]):
             return a == b
         if self.wkt and self.wkt == o.wkt:
             return True
-        da, db = self.to_dict(), o.to_dict()
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="PROJ parameters retain the ellipsoid but omit datum",
+                category=UserWarning,
+            )
+            da, db = self.to_dict(), o.to_dict()
         return bool(da) and da == db
 
     def __hash__(self) -> int:
@@ -851,13 +857,6 @@ class CRS(Mapping[str, Any]):
         return len(self.data)
 
 
-_PROJ_FLAGS = frozenset(
-    "south no_defs wktext over approx geoc R_A R_C R_V R_a R_g R_h "
-    "no_rot no_uoff no_off czech guam hyperbolic exact transpose no_z_transform "
-    "inv omit_fwd omit_inv".split()
-)
-
-
 def _proj_dict(proj4: str) -> dict[str, Any]:
     """PROJ parameters from a PROJ string.
 
@@ -868,19 +867,16 @@ def _proj_dict(proj4: str) -> dict[str, Any]:
         dict: The parameters, numbers converted.
     """
     out: dict[str, Any] = {}
+    flags = dict(_terrio.proj_boolean_parameters(proj4))
     for part in proj4.split():
         part = part.lstrip("+")
         if not part:
             continue
         if "=" in part:
             k, v = part.split("=", 1)
-            if k in _PROJ_FLAGS:
-                if v.lower() in {"true", "t", "yes", "y", "on", "1"}:
-                    out[k] = True
-                    continue
-                if v.lower() in {"false", "f", "no", "n", "off", "0"}:
-                    out[k] = False
-                    continue
+            if k in flags:
+                out[k] = flags[k]
+                continue
             try:
                 num = float(v)
                 out[k] = int(num) if num.is_integer() and "." not in v else num

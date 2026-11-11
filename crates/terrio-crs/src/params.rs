@@ -84,6 +84,16 @@ impl Params {
         Ok(())
     }
 
+    /// Recognized boolean parameters, in definition order, with their normalized values.
+    pub fn boolean_parameters(&self) -> Vec<(String, bool)> {
+        let mut seen = std::collections::HashSet::new();
+        self.items
+            .iter()
+            .filter(|(key, _)| FLAGS.contains(&key.as_str()) && seen.insert(key.as_str()))
+            .filter_map(|(key, value)| flag_value(value.as_deref()).map(|value| (key.clone(), value)))
+            .collect()
+    }
+
     /// Whether a parameter is present, or a recognized boolean switch is enabled.
     pub fn has(&self, key: &str) -> bool {
         self.items

@@ -15,6 +15,7 @@ Rasters are warped by terrio's `warp`, which follows GDAL's warper (the default 
 
 from __future__ import annotations
 
+import re
 import warnings
 from collections.abc import Mapping
 from math import ceil, floor
@@ -80,9 +81,18 @@ def _crs_text(crs: Any) -> str:
     if crs is None:
         raise CRSError("A CRS is required")
     c = CRS.from_user_input(crs)
-    # A WKT can identify an authority CRS while binding it to a specific TOWGS84 operation.
-    # Replacing that WKT with its code discards the operation chosen by the caller.
-    return c._database if c._database is not None else c.to_wkt()
+    if c._database is not None:
+        return c._database
+    # Keep authority-based operation selection for ordinary WKT and dataset CRSs.
+    # Explicit WKT1/2 bound transformations belong to the caller's definition.
+    wkt = c.to_wkt()
+    explicit = re.search(
+        r"\b(?:TOWGS84|BOUNDCRS|ABRIDGEDTRANSFORMATION)\s*[\[(]",
+        f"{c.wkt}\n{wkt}",
+        re.IGNORECASE,
+    )
+    code = c.to_epsg()
+    return f"EPSG:{code}" if code is not None and not explicit else wkt
 
 
 def _transform_arrays(
