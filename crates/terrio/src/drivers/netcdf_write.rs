@@ -101,7 +101,7 @@ pub(crate) struct Options<'a> {
     pub format: Option<&'a str>,
     /// `COMPRESS`: `NONE` or `DEFLATE` (netCDF-4 only: classic formats become `NC4C`, as in GDAL).
     pub compress: Option<&'a str>,
-    /// `ZLEVEL`: the deflate level, 1 to 9 (default 1).
+    /// `ZLEVEL`: the deflate level, 1 to 9 (default 1); another value is refused.
     pub zlevel: Option<&'a str>,
     /// `CHUNKING`: whether compressed variables are chunked by row (the default) or whole.
     pub chunking: Option<&'a str>,
@@ -432,10 +432,19 @@ fn version_of(options: &Options, groups: bool) -> Result<(Version, Option<u32>)>
     if groups && version != Version::Nc4 {
         return Err(Error::InvalidArgument("netCDF groups need the netCDF-4 format (FORMAT=NC4)".into()));
     }
+    // The level is checked whatever the compression, as the GeoTIFF and PNG writers check theirs.
+    let level = match options.zlevel {
+        None => 1,
+        Some(z) => z
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|z| (1..=9).contains(z))
+            .ok_or_else(|| Error::InvalidArgument(format!("invalid ZLEVEL '{z}' (1 to 9)")))?,
+    };
     let deflate = match options.compress.map(str::to_ascii_uppercase).as_deref() {
         None | Some("NONE") => None,
         Some("DEFLATE") => {
-            let level = options.zlevel.and_then(|z| z.trim().parse::<u32>().ok()).filter(|z| (1..=9).contains(z)).unwrap_or(1);
             // Compression needs netCDF-4: GDAL switches to its classic model.
             if !matches!(version, Version::Nc4 | Version::Nc4Classic) {
                 version = Version::Nc4Classic;
@@ -892,6 +901,21 @@ mod tests {
         let ds = super::super::netcdf::read(&p, None).unwrap();
         assert_eq!(ds.raster.data_type, DataType::U32);
         assert_eq!(ds.raster.data.to_f64_vec(), r.data.to_f64_vec());
+    }
+
+    /// `ZLEVEL` is the deflate level, 1 to 9: another value is refused, whatever the compression,
+    /// rather than replaced by the default.
+    #[test]
+    fn refuses_a_zlevel_out_of_range() {
+        for (compress, zlevel, ok) in
+            [(Some("DEFLATE"), "9", true), (Some("DEFLATE"), "0", false), (Some("DEFLATE"), "12", false), (None, "x", false)]
+        {
+            let o = Options { format: Some("NC4"), compress, zlevel: Some(zlevel), ..Default::default() };
+            match version_of(&o, false) {
+                Ok((_, deflate)) => assert!(ok && deflate == Some(9), "ZLEVEL {zlevel}: {deflate:?}"),
+                Err(e) => assert!(!ok && e.to_string().contains(&format!("invalid ZLEVEL '{zlevel}'")), "ZLEVEL {zlevel}: {e}"),
+            }
+        }
     }
 
     #[test]

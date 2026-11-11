@@ -255,8 +255,19 @@ pub(crate) fn write_world_file(r: &Raster, path: &Path, georeferenced: bool) -> 
     Ok(())
 }
 
-/// Writes a PNG (Byte or UInt16, 1 to 4 bands), its world file and its CRS sidecar.
-pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, georeferenced: bool) -> Result<()> {
+/// Writes a PNG (Byte or UInt16, 1 to 4 bands), its world file and its CRS sidecar. `zlevel` is the
+/// `ZLEVEL` creation option: the Deflate level of the image data, from 1 (the least effort) to 9
+/// (the most), 6 when it is not given; another value is refused.
+pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, zlevel: Option<&str>, georeferenced: bool) -> Result<()> {
+    let level = match zlevel {
+        None => 6,
+        Some(z) => z
+            .trim()
+            .parse::<u8>()
+            .ok()
+            .filter(|z| (1..=9).contains(z))
+            .ok_or_else(|| Error::InvalidArgument(format!("invalid ZLEVEL '{z}' (1 to 9)")))?,
+    };
     let color = match r.bands {
         1 => png::ColorType::Grayscale,
         2 => png::ColorType::GrayscaleAlpha,
@@ -290,6 +301,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, georeferenced:
     let mut enc = png::Encoder::new(&mut file, r.cols as u32, r.rows as u32);
     enc.set_color(color);
     enc.set_depth(if sixteen { png::BitDepth::Sixteen } else { png::BitDepth::Eight });
+    enc.set_deflate_compression(png::DeflateCompression::Level(level));
     if let (Some(nd), png::ColorType::Grayscale) = (nodata, color)
         && nd >= 0.0
         && nd <= if sixteen { 65535.0 } else { 255.0 }
@@ -350,7 +362,7 @@ mod tests {
         // A grayscale PNG has no color table.
         let gray = common::make_raster(3, 2, 1, RasterData::U8(vec![0, 1, 2, 3, 4, 5]), common::NO_GEOTRANSFORM, Default::default(), None)
             .unwrap();
-        write(&gray, None, &p, true).unwrap();
+        write(&gray, None, &p, None, true).unwrap();
         let ds = read(&p).unwrap();
         assert!(ds.color_table.is_empty());
         assert!(ds.band_metadata.is_empty());
@@ -366,7 +378,7 @@ mod tests {
         for (bands, names) in (1..=4).zip(expected) {
             let r = common::make_raster(2, 2, bands, RasterData::U8(vec![7; 4 * bands]), common::NO_GEOTRANSFORM, Default::default(), None)
                 .unwrap();
-            write(&r, None, &p, true).unwrap();
+            write(&r, None, &p, None, true).unwrap();
             let ds = read(&p).unwrap();
             let got: Vec<&str> = ds.band_metadata.iter().filter_map(|m| m.color_interp.as_deref()).collect();
             assert_eq!(got, names, "{bands} bands");
@@ -538,6 +550,45 @@ mod tests {
             let RasterData::U8(got) = &back.raster.data else { panic!("Byte bands") };
             let mse = got.iter().zip(&v).map(|(a, b)| (*a as f64 - *b as f64).powi(2)).sum::<f64>() / v.len() as f64;
             assert!(10.0 * (255.0f64.powi(2) / mse.max(1e-9)).log10() > 30.0, "QUALITY={quality}: MSE {mse}");
+        }
+    }
+
+    /// Through the public write path: `ZLEVEL` sets the Deflate level of the image data, 1 to 9,
+    /// 6 when it is not given, and the pixels read back the same at every level. A level out of
+    /// range is refused.
+    #[test]
+    fn png_write_path_takes_the_zlevel_option() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cols, rows) = (96, 64);
+        let mut x = 11u64;
+        let v: Vec<u8> = (0..3 * cols * rows)
+            .map(|i| {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((i % cols) * 2 + (i / cols % rows) + (x >> 62) as usize) as u8
+            })
+            .collect();
+        let ds = RasterDataset::with_driver(rgb(cols, rows, v.clone()), RasterDriver::GTiff, false);
+        let write = |zlevel: Option<&str>| {
+            let p = dir.path().join("z.png");
+            let options = crate::RasterWriteOptions {
+                driver: Some(RasterDriver::PNG),
+                creation_options: zlevel.map(|z| ("zlevel".to_string(), z.to_string())).into_iter().collect(),
+                ..Default::default()
+            };
+            crate::write_raster_dataset(&ds, p.to_str().unwrap(), &options).map(|()| std::fs::read(&p).unwrap())
+        };
+        let levels: Vec<Vec<u8>> = (1..=9).map(|l| write(Some(&l.to_string())).unwrap()).collect();
+        assert_eq!(write(None).unwrap(), levels[5]);
+        assert_ne!(levels[0], levels[8]);
+        assert!(levels[8].len() <= levels[0].len());
+        for (l, bytes) in levels.iter().enumerate() {
+            let p = dir.path().join("back.png");
+            std::fs::write(&p, bytes).unwrap();
+            assert_eq!(read(&p).unwrap().raster.data.to_f64_vec(), ds.raster.data.to_f64_vec(), "ZLEVEL {}", l + 1);
+        }
+        for z in ["0", "10", "fast"] {
+            let error = write(Some(z)).unwrap_err().to_string();
+            assert!(error.contains(&format!("invalid ZLEVEL '{z}'")), "{error}");
         }
     }
 }
