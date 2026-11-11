@@ -12,8 +12,8 @@
 //! | `TERRIO_MAX_BANDS` | more than this many bands (a complex band counts once) |
 //!
 //! Both are unset by default, and read as the other options are ([`crate::config::get`]): from
-//! the calling thread's scope (`terrio.Env`, [`crate::config::push_scope`]), else the process
-//! environment. Each must be a positive integer. A raster they refuse is an
+//! the calling thread's scope (Python's `terrio.rio.Env`, [`crate::config::push_scope`]), else
+//! the process environment. Each must be a positive integer. A raster they refuse is an
 //! [`Error::ResourceLimit`] (Python's `ResourceLimitError`) naming the option, which the optional
 //! GDAL backend does not retry.
 
