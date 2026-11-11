@@ -93,16 +93,25 @@ fn call(obj: &JsValue, method: &str, args: &[JsValue]) -> Result<JsValue, JsErro
     f.apply(obj, &a).map_err(js_error)
 }
 
-/// Release an unused response without replacing the original request error.
-async fn cancel_body(response: &JsValue) {
-    let body = get(response, "body");
-    if body.is_null() || body.is_undefined() {
-        return;
+/// Lets a promise settle in the background with its rejection handled: an unhandled rejection
+/// ends a Node process, and waiting for it could hang on a stream whose cancellation never settles.
+fn settle(value: JsValue) {
+    if let Ok(promise) = value.dyn_into::<js_sys::Promise>() {
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = JsFuture::from(promise).await;
+        });
     }
-    if let Ok(value) = call(&body, "cancel", &[])
-        && let Ok(promise) = value.dyn_into::<js_sys::Promise>()
+}
+
+/// Release an unused response without replacing the original request error, and without waiting
+/// for the cancellation ([`settle`]).
+fn cancel_body(response: &JsValue) {
+    let body = get(response, "body");
+    if !body.is_null()
+        && !body.is_undefined()
+        && let Ok(value) = call(&body, "cancel", &[])
     {
-        let _ = JsFuture::from(promise).await;
+        settle(value);
     }
 }
 
@@ -237,12 +246,12 @@ impl Fetcher {
                 let request = self.request_to(&format!("{base}/{encoded}{query}"), header, false)?;
                 let response = JsFuture::from(request).await.map_err(js_error)?;
                 if failed.get() {
-                    cancel_body(&response).await;
+                    cancel_body(&response);
                     return Ok(());
                 }
                 let status = get(&response, "status").as_f64().unwrap_or(0.0) as u16;
                 if status != 200 && status != 206 {
-                    cancel_body(&response).await;
+                    cancel_body(&response);
                     self.requests.set(self.requests.get() + 1);
                     if status == 404
                         || (status == 403
@@ -254,7 +263,12 @@ impl Fetcher {
                     }
                     return Err(JsError::new(&format!("{base}/{key}: HTTP status {status}")));
                 }
-                let f = Fetched { status, total: None, data: self.read_body(&response, readers).await? };
+                let data = self.read_body(&response, readers).await?;
+                if failed.get() {
+                    // Cancelled by a failure elsewhere: the bytes read are cut short, not held.
+                    return Ok(());
+                }
+                let f = Fetched { status, total: None, data };
                 if f.status == 206 && !matches!(*range, ObjectRange::At(_, 0) | ObjectRange::Suffix(0)) {
                     // Browsers may hide Content-Range under CORS. When exposed, check
                     // position as well as length; a same-sized wrong range corrupts pixels.
@@ -319,7 +333,9 @@ impl Fetcher {
             .await;
             if result.is_err() && !failed.replace(true) {
                 for reader in readers.borrow_mut().drain(..) {
-                    let _ = call(&reader, "cancel", &[]);
+                    if let Ok(value) = call(&reader, "cancel", &[]) {
+                        settle(value);
+                    }
                 }
             }
             result

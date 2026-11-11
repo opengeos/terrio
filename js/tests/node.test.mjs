@@ -1593,6 +1593,24 @@ test("remote Zarr stores are read by window", { skip: needs("zarr") }, async () 
     await assert.rejects(failedBatch.readBand(1, [0, 0, 64, 64]), /403/);
     assert.equal(shardRequests, 4);
     assert.equal(cancelled, shardRequests);
+    // A body cancelled by another request's failure is cut short: it is not kept for later reads.
+    // Shard indexes are suffix reads, whose length is checked only when Content-Range is exposed.
+    let phase = 1;
+    const cutShort = await terrio.openUrl(server.url + "s.zarr", {
+      array: "a", cacheSize: 0,
+      fetch: async (url, options) => {
+        if (phase === 2 || !url.includes("/c/")) return fetch(url, options);
+        if (url.endsWith("/c/0/0")) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return new Response("", { status: 403 });
+        }
+        const bytes = new Uint8Array(await (await fetch(url, options)).arrayBuffer());
+        return new Response(new ReadableStream({ start(c) { c.enqueue(bytes.slice(0, 8)); } }), { status: 206 });
+      },
+    });
+    await assert.rejects(cutShort.readBand(1, [0, 0, 64, 64]), /403/);
+    phase = 2;
+    assert.equal((await cutShort.readBand(1, [40, 0, 1, 1]))[0], value(0, 40));
     const shortRange = await terrio.openUrl(server.url + "s.zarr", {
       array: "a", fetch: (url, options) => url.includes("/c/")
         ? Promise.resolve(new Response(new Uint8Array(1), { status: 206 })) : fetch(url, options),
