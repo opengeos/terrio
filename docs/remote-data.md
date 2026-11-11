@@ -354,6 +354,11 @@ URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops the
   `JP2OpenJPEG`, `JPEG2000`, `JP2KAK`, `JP2ECW` and `JP2MRSID` all name `JP2`. Unset, it restricts
   nothing. Set but empty or blank, or to bytes that are not UTF-8, it allows no driver.
 - **Scope.** It applies to every kind of dataset, rasters, vectors and point clouds alike.
+- **Writes and appends.** The list restricts readers, not output encoders. Writing a new dataset
+  does not require its output driver to be allowed. An EPT append reads the existing dataset and
+  its tiles: EPT and, for LASzip tiles, LAZ must be allowed before locking the dataset or recovering
+  an interrupted update. GeoPackage writes, including `convert --append`, use the writer directly
+  and are not restricted by this reader allow-list. The list is not a filesystem write policy.
 - **With `set_allowed_drivers`.** When a list is also set with
   `terrio::formats::set_allowed_drivers` (Python: `terrio.set_allowed_drivers`), a driver must be
   in both. That function keeps a list for each kind, rasters, vectors and point clouds, and a list

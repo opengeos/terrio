@@ -491,6 +491,15 @@ fn bounds6(v: &Value) -> Option<[f64; 6]> {
 /// The statistics keys of a schema dimension.
 const STATS_KEYS: [&str; 7] = ["count", "minimum", "maximum", "mean", "variance", "stddev", "counts"];
 
+/// LASzip EPT tiles require both access to the LAS-family parser and the LAZ driver.
+fn check_tile_drivers(data_type: &str, name: &str) -> Result<()> {
+    if data_type == "laszip" {
+        super::read::check_las_allowed(name)?;
+        super::read::check_driver("LAZ", name)?;
+    }
+    Ok(())
+}
+
 impl EptAppender {
     /// Opens an EPT dataset to append points to: its `ept.json`, its directory, or an `ept://`
     /// path. An update interrupted earlier is completed (or discarded) first. Of `options`,
@@ -504,6 +513,11 @@ impl EptAppender {
         if !dir.join("ept.json").exists() {
             return Err(Error::InvalidArgument(format!("'{}' is not an EPT dataset: it has no ept.json", dir.display())));
         }
+        // Refuse the dataset and its tile codec before taking the lock or publishing/discarding
+        // an interrupted update. Appends keep the dataset's data type unchanged.
+        super::read::check_driver("EPT", path)?;
+        let before = read_json(&dir.join("ept.json"))?;
+        check_tile_drivers(before["dataType"].as_str().unwrap_or("laszip"), path)?;
         let lock = Lock::take(&dir)?;
         recover(&dir)?;
         let json = read_json(&dir.join("ept.json"))?;
@@ -513,6 +527,7 @@ impl EptAppender {
         let crs = super::read::FormatReader::crs(&reader).horizontal.clone();
         drop(reader);
         let data_type = EptDataType::parse(&info.data_type)?;
+        check_tile_drivers(&info.data_type, path)?;
         let span = info.span;
         if span == 0 {
             return Err(Error::InvalidData("EPT: a span of 0".into()));
@@ -546,7 +561,7 @@ impl EptAppender {
                     .map(|(k, _)| *k)
                     .ok_or_else(|| Error::InvalidArgument("the EPT dataset has no points to append to: write it anew".into()))?;
                 let bytes = std::fs::read(tile_path(&dir, key, data_type)).map_err(|e| io_err(&tile_path(&dir, key, data_type), e))?;
-                let header = LasHeader::read(&mut Cursor::new(&bytes))?;
+                let header = super::read::read_las_header(&mut Cursor::new(&bytes), &tile_path(&dir, key, data_type).to_string_lossy())?;
                 let layout = Layout::new(&header);
                 let origin = layout.fields.iter().find(|f| is_origin(&f.name)).and_then(|f| match f.field {
                     super::las::Field::Extra(o) | super::las::Field::Plain(o) => Some((o, f.value_type)),
@@ -1050,7 +1065,7 @@ impl EptAppender {
         let bytes = std::fs::read(&path).map_err(|e| io_err(&path, e))?;
         let records = match (&self.codec, self.data_type) {
             (Codec::Las { header, layout }, _) => {
-                let h = LasHeader::read(&mut Cursor::new(&bytes))?;
+                let h = super::read::read_las_header(&mut Cursor::new(&bytes), &path.to_string_lossy())?;
                 if h.point_format != header.point_format || h.point_record_length as usize != layout.record_len {
                     return Err(Error::InvalidData(format!(
                         "EPT: tile {} has point format {} ({} bytes), the dataset's tiles {} ({} bytes)",
