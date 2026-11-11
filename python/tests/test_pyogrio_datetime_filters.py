@@ -1,0 +1,112 @@
+"""Datetime parsing preserves values without Terrio changing warning filters, on pandas 2/3."""
+
+import functools
+import sys
+
+import pytest
+
+pd = pytest.importorskip("pandas")
+
+import terrio.pyogrio as tpg  # noqa: E402
+
+
+def record_filter_changes(calls, frame, event, _argument):
+    """Profile warning-filter calls made directly by Terrio, excluding pandas' own calls.
+
+    Args:
+        calls: Collected changes.
+        frame: Profiled Python frame.
+        event: Profiling event.
+        _argument: Unused profiling payload.
+    """
+    if event != "call" or frame.f_globals.get("__name__") != "warnings":
+        return
+    name = frame.f_code.co_name
+    if name not in {"__enter__", "filterwarnings", "simplefilter", "resetwarnings"}:
+        return
+    caller = frame.f_back.f_globals.get("__name__", "") if frame.f_back is not None else ""
+    if caller.startswith("terrio."):
+        calls.append((caller, name))
+
+
+CASES = [
+    (
+        ["2024-01-01T12:00:00", "2024-01-02T12:00:00"],
+        ["2024-01-01T12:00:00", "2024-01-02T12:00:00"],
+        ["2024-01-01T12:00:00", "2024-01-02T12:00:00"],
+        False,
+    ),
+    (
+        ["2024-01-01T12:00:00+01:00", "2024-01-02T12:00:00+0100"],
+        ["2024-01-01T12:00:00+01:00", "2024-01-02T12:00:00+01:00"],
+        ["2024-01-01T12:00:00+01:00", "2024-01-02T12:00:00+01:00"],
+        False,
+    ),
+    (
+        ["2024-01-01T12:00:00Z", "2024-01-02T12:00:00+00:00"],
+        ["2024-01-01T12:00:00+00:00", "2024-01-02T12:00:00+00:00"],
+        ["2024-01-01T12:00:00+00:00", "2024-01-02T12:00:00+00:00"],
+        False,
+    ),
+    (
+        ["2024-01-01T12:00:00+01:00", "2024-01-02T12:00:00+02:00"],
+        ["2024-01-01T12:00:00+01:00", "2024-01-02T12:00:00+02:00"],
+        ["2024-01-01T11:00:00+00:00", "2024-01-02T10:00:00+00:00"],
+        True,
+    ),
+    (
+        ["2024-01-01T12:00:00", "2024-01-02T12:00:00+01:00"],
+        ["2024-01-01T12:00:00", "2024-01-02T12:00:00+01:00"],
+        ["2024-01-01T12:00:00+00:00", "2024-01-02T11:00:00+00:00"],
+        True,
+    ),
+    (
+        ["2024-01-01T12:00:00Z", None, "2024-01-02T12:00:00+01:00"],
+        ["2024-01-01T12:00:00+00:00", None, "2024-01-02T12:00:00+01:00"],
+        ["2024-01-01T12:00:00+00:00", None, "2024-01-02T11:00:00+00:00"],
+        True,
+    ),
+]
+
+
+@pytest.mark.parametrize("values,preserved,utc,mixed", CASES)
+@pytest.mark.parametrize("as_utc", [False, True])
+def test_datetime_values_without_terrio_filter_changes(values, preserved, utc, mixed, as_utc):
+    """Uniform, mixed, naive and missing dates retain the requested conversion semantics.
+
+    Args:
+        values: Input strings and missing values.
+        preserved: Expected values with their original offsets.
+        utc: Expected values when mixed offsets are converted to UTC.
+        mixed: Whether inputs mix distinct offsets or naive and aware values.
+        as_utc: Whether mixed values should become UTC datetimes.
+    """
+    calls = []
+    previous = sys.getprofile()
+    sys.setprofile(functools.partial(record_filter_changes, calls))
+    try:
+        result = tpg._parse_datetime(pd.Series(values, dtype="object"), False, as_utc)
+    finally:
+        sys.setprofile(previous)
+    assert calls == []
+    assert [None if pd.isna(value) else value.isoformat() for value in result] == (
+        utc if as_utc else preserved
+    )
+    assert result.dtype.kind == ("O" if mixed and not as_utc else "M")
+
+
+def test_invalid_mixed_datetime_retains_its_diagnostic_without_filter_changes():
+    """Invalid input retains its strings and diagnostic rather than a synthetic timezone error."""
+    values = pd.Series(
+        ["2024-01-01T12:00:00+01:00", "2024-01-02T12:00:00+02:00", "invalid"], dtype="object"
+    )
+    calls = []
+    previous = sys.getprofile()
+    with pytest.warns(UserWarning, match="Error parsing datetimes"):
+        sys.setprofile(functools.partial(record_filter_changes, calls))
+        try:
+            actual = tpg._parse_datetime(values, False, False)
+        finally:
+            sys.setprofile(previous)
+    assert actual.equals(values)
+    assert calls == []

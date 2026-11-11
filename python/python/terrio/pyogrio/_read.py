@@ -81,7 +81,9 @@ def _vsizip(archive: str, member: str | None) -> _Located:
         else:
             shapefiles = [n for n in names if "/" not in n and n.lower().endswith(".shp")]
             if not shapefiles:
-                raise DataSourceError(_NOT_RECOGNIZED.format(f"/vsizip/{archive}"))
+                # The core chooses the main dataset and its sidecars. Other files such as a
+                # README do not turn an otherwise readable archive into a shapefile container.
+                return f"/vsizip/{archive}", None
             return _shapefiles(archive, shapefiles, lambda n: f"/vsizip/{archive}/{n}")
     return f"/vsizip/{archive}/{member.lstrip('/')}", None
 
@@ -122,13 +124,20 @@ def _local_path(path: str) -> _Located:
 def _spill_name(data: bytes) -> str:
     """A file name telling terrio the format of bytes, from their content.
 
-    As GDAL identifies `/vsimem/` files: zip archives and GeoJSON.
+    Args:
+        data: Uploaded bytes, identified without opening a file or decoding a dataset.
+
+    Returns:
+        str: A filename derived from the core's shared vector identifiers.
+
+    Raises:
+        DataSourceError: Content cannot be identified without a filename.
     """
     if data[:4] == b"PK\x03\x04":
         return "data.zip"
-    head = data[:64].lstrip(b"\xef\xbb\xbf").lstrip()
-    if head[:1] in (b"{", b"["):
-        return "data.geojson"
+    extension = _terrio.vector_byte_extension(data)
+    if extension is not None:
+        return f"data.{extension}"
     raise DataSourceError(_NOT_RECOGNIZED.format("/vsimem/pyogrio"))
 
 

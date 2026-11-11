@@ -43,6 +43,7 @@ of other formats are not provided, and `use_arrow=True` reads them by the regula
 from __future__ import annotations
 
 import contextlib
+import datetime as _dt
 import json
 import os
 import warnings
@@ -318,26 +319,56 @@ def _read_geoparquet_dataframe(
     return gdf
 
 
-def _to_datetime_iso8601(pd, ser):
-    """`pd.to_datetime(ser, format="ISO8601")`, without pandas 2's warning about mixed time zones.
+def _iso_datetime(value: str) -> _dt.datetime:
+    """Parse an ISO datetime, including trailing Z on Python 3.10.
 
-    pandas 2 warns that parsing mixed time zones will raise, which only a change of the process's
-    warning filters silences, so they are changed for the call on pandas 2 only. pandas 3 raises
-    instead, which `_parse_datetime` handles, and the filters are left alone.
+    Args:
+        value: An ISO date-time string.
+
+    Returns:
+        datetime: A value preserving its UTC offset or lack of one.
+
+    Raises:
+        ValueError: The string is not a valid ISO datetime.
     """
-    if int(pd.__version__.split(".")[0]) >= 3:
-        return pd.to_datetime(ser, format="ISO8601")
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", ".*parsing datetimes with mixed time zones will raise.*", FutureWarning
-        )
-        return pd.to_datetime(ser, format="ISO8601")
+    return _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _to_datetime_iso8601(pd, ser):
+    """Parse ISO date-times without changing process-wide warning filters.
+
+    Args:
+        pd: The pandas module.
+        ser: A series of date-time strings and missing values.
+
+    Returns:
+        Series: Parsed values for a uniform timezone or naive input.
+
+    Raises:
+        ValueError: Timezones are mixed, or pandas refuses an invalid input.
+    """
+    if int(pd.__version__.split(".")[0]) < 3:
+        offsets = set()
+        for value in ser:
+            if pd.isna(value):
+                continue
+            try:
+                offset = _iso_datetime(value).utcoffset()
+            except (AttributeError, TypeError, ValueError):
+                # Let pandas retain its own invalid-input diagnostic.
+                break
+            if len(offsets) < 2:
+                offsets.add(offset)
+        else:
+            if len(offsets) > 1:
+                # Match pandas 3's error before pandas 2 can emit its FutureWarning. The caller
+                # already handles both UTC conversion and per-value offset preservation.
+                raise ValueError("Mixed timezones detected")
+    return pd.to_datetime(ser, format="ISO8601")
 
 
 def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
     """Date and date-time strings to datetime64[ms], as pyogrio 0.13 parses them with pandas."""
-    import datetime
-
     import pandas as pd
 
     if datetime_as_string:
@@ -357,7 +388,7 @@ def _parse_datetime(ser, datetime_as_string: bool, mixed_offsets_as_utc: bool):
                     return ser
             else:
                 try:
-                    res = ser.map(datetime.datetime.fromisoformat, na_action="ignore")
+                    res = ser.map(_iso_datetime, na_action="ignore")
                 except Exception as ex2:
                     warnings.warn(warning.format(message=str(ex2)), stacklevel=3)
                     return ser

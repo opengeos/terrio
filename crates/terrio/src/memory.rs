@@ -44,6 +44,19 @@ pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Dataset> {
     open_bytes_of_kind(bytes, name, None)
 }
 
+/// A vector filename extension suggested by the shared byte identifiers, without opening a
+/// dataset. Unrecognizable content, including unsigned CSV, needs a filename from the caller.
+/// Identification is only a hint: the ordinary reader still validates the data and driver policy.
+/// The pyogrio compatibility caller targets Pyogrio 0.13.0 / GDAL 3.12.2.
+pub fn suggest_vector_extension(bytes: &[u8]) -> Option<&'static str> {
+    let driver = crate::formats::identify_bytes("", bytes)
+        .by_content
+        .as_deref()
+        .and_then(crate::formats::VectorDriver::from_name)
+        .or_else(|| codec::vector_driver(bytes, ""))?;
+    driver.info().extensions.first().copied()
+}
+
 /// [`open_bytes`] for a dataset of `kind`: its name and content must pass that kind's allowed
 /// drivers (see [`crate::formats::set_allowed_drivers`]), as a file's must.
 fn open_bytes_of_kind(bytes: Vec<u8>, name: &str, kind: Option<Kind>) -> Result<Dataset> {
@@ -329,7 +342,7 @@ pub(crate) mod codec {
     }
 
     /// The vector driver of a file, by its extension or, without one, its first bytes.
-    fn vector_driver(bytes: &[u8], name: &str) -> Option<VectorDriver> {
+    pub(super) fn vector_driver(bytes: &[u8], name: &str) -> Option<VectorDriver> {
         let json = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes).trim_ascii_start();
         if json.starts_with(b"{")
             && let Ok(text) = std::str::from_utf8(json)
@@ -730,6 +743,25 @@ mod tests {
     use super::*;
     use wbraster::raster::RasterData;
     use wbraster::{DataType, Raster};
+
+    #[test]
+    fn vector_byte_hints_share_signatures_and_xml_probes() {
+        for (bytes, extension) in [
+            (b"SQLite format 3\0".as_slice(), Some("gpkg")),
+            (b"fgb\x03fgb\0".as_slice(), Some("fgb")),
+            (b"PAR1".as_slice(), Some("parquet")),
+            (br#"{"type":"FeatureCollection","features":[]}"#.as_slice(), Some("geojson")),
+            (b"<kml/>".as_slice(), Some("kml")),
+            (b"<gpx/>".as_slice(), Some("gpx")),
+            (br#"<osm version="0.6"/>"#.as_slice(), Some("pbf")),
+            (b"<gml:FeatureCollection/>".as_slice(), Some("gml")),
+            (b"WKT,id\nPOINT (1 2),1\n".as_slice(), None),
+            (b"II*\0".as_slice(), None),
+            (b"".as_slice(), None),
+        ] {
+            assert_eq!(suggest_vector_extension(bytes), extension, "{bytes:?}");
+        }
+    }
 
     #[test]
     fn a_misspelled_layer_name_is_refused_in_memory() {
