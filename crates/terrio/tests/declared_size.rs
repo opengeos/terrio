@@ -888,6 +888,112 @@ fn every_public_entry_point_is_refused_by_what_a_raster_declares() {
     }
 }
 
+// ─── What a VRT or a catalog opens ──────────────────────────────────────────────────────────────
+
+/// [`outcome`], with an error other than a resource refusal shown as such.
+fn refusal<T>(result: terrio::Result<T>) -> Result<(), String> {
+    result.map(|_| ()).map_err(|e| if e.is_resource_refusal() { e.to_string() } else { format!("not a resource refusal: {e}") })
+}
+
+/// The rasters a VRT or a catalog opens are bounded as they are opened. A VRT, or a catalog, of the
+/// 16 x 16 top-left corner of a 64 x 48 raster of three UInt8 bands declares 768 bytes, within a
+/// bound of 768 that its source's 9,216 exceed:
+/// - the VRT opened lazily opens, and its read is refused when it opens the source;
+/// - the VRT read whole, or materialized, is refused;
+/// - the catalog, which opens its first source to learn its grid, is refused when it is opened;
+///   given its grid, it opens, and its read is refused when it opens the source.
+///
+/// Each refusal is a resource refusal naming what the source declares; under a bound of 9,216
+/// bytes each is read. `VrtDataset::materialize` checks what its VRT declares before it opens any
+/// source: over a missing source, a VRT declaring more than the bound is refused for what it
+/// declares, and one within it fails for its missing source.
+#[test]
+fn the_rasters_a_vrt_or_a_catalog_opens_are_bounded_as_they_are_opened() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let tif = write(dir.path(), "x.tif", &raster(64, 48, 3, DataType::U8, 4326, (10.0, 48.0, 1.0 / 64.0)), None);
+    let vrt = dir.path().join("corner.vrt");
+    std::fs::write(&vrt, vrt_of(&tif, 16, 16, 3, (16, 16))).unwrap();
+    let vrt = vrt.to_str().unwrap();
+    let source = Err(too_many_bytes(64, 48, 3, 9216, 768));
+    let bound = |most: &str, f: &dyn Fn() -> Result<(), String>| scoped(&[("TERRIO_MAX_DECLARED_BYTES", most)], f);
+    let lazy = || terrio::open_raster_lazy(vrt);
+    assert_eq!(bound("768", &|| refusal(lazy())), Ok(()), "the VRT, opened lazily");
+    let read = || refusal(lazy().and_then(|mut r| r.read()));
+    let whole = || refusal(terrio::open_raster(vrt));
+    let materialized = || refusal(terrio::ops::vrt::VrtDataset::open(vrt).and_then(|v| v.materialize(dir.path())));
+    let mut opens: Vec<Open> = vec![("the VRT, read", &read), ("the VRT, read whole", &whole), ("the VRT, materialized", &materialized)];
+    #[cfg(feature = "flatgeobuf")]
+    let gti = {
+        let path = dir.path().join("corner.gti.fgb");
+        let index = footprint("x.tif", (10.0, 47.75, 10.25, 48.0));
+        terrio::write_vector(std::slice::from_ref(&index), path.to_str().unwrap(), &Default::default()).unwrap();
+        path.to_str().unwrap().to_string()
+    };
+    #[cfg(feature = "flatgeobuf")]
+    let grid = terrio::catalog::CatalogOptions { resolution: Some((1.0 / 64.0, 1.0 / 64.0)), bands: Some(3), ..Default::default() };
+    #[cfg(feature = "flatgeobuf")]
+    let catalog = || refusal(terrio::catalog::RasterCatalog::open(&gti, Default::default()));
+    #[cfg(feature = "flatgeobuf")]
+    let given = || terrio::catalog::RasterCatalog::open(&gti, grid.clone());
+    #[cfg(feature = "flatgeobuf")]
+    let given_read = || refusal(given().and_then(|mut c| c.read_window(terrio::Window::new(0, 0, 16, 16), &[])));
+    #[cfg(feature = "flatgeobuf")]
+    {
+        assert_eq!(bound("768", &|| refusal(given())), Ok(()), "the catalog given its grid, opened");
+        opens.push(("the catalog, opened", &catalog));
+        opens.push(("the catalog given its grid, read", &given_read));
+    }
+    for (name, open) in opens {
+        assert_eq!(bound("768", open), source, "{name}");
+        assert_eq!(bound("9216", open), Ok(()), "{name}, within the bound");
+    }
+    // What a VRT declares is checked before any of its sources is opened.
+    let missing = dir.path().join("missing.vrt");
+    std::fs::write(&missing, vrt_of(dir.path().join("absent.tif").to_str().unwrap(), 64, 48, 3, (128, 96))).unwrap();
+    let missing = missing.to_str().unwrap();
+    let materialize = || refusal(terrio::ops::vrt::VrtDataset::open(missing).and_then(|v| v.materialize(dir.path())));
+    assert_eq!(bound("36863", &materialize), Err(too_many_bytes(128, 96, 3, 36864, 36863)), "a VRT over a missing source");
+    let within = bound("36864", &materialize);
+    assert!(within.as_ref().is_err_and(|e| e.starts_with("not a resource refusal")), "a VRT over a missing source: {within:?}");
+}
+
+// ─── Operations that open a raster or a vector dataset ──────────────────────────────────────────
+
+/// An open of [`render_check_and_clip_templates_keep_a_rasters_refusal`].
+type PathOpen<'a> = (&'a str, &'a dyn Fn(&str) -> terrio::Result<()>);
+
+/// `render`, `check` and clip templates open a dataset as a raster or as a vector dataset, and
+/// keep a raster's refusal: of a 64 x 48 GeoTIFF of three UInt8 bands and of a GeoPackage of its
+/// tiles, each is refused one byte below what it declares with the resource refusal naming the
+/// option, and opened at what it declares. (`render` tries a raster, then a vector dataset;
+/// `check` and a clip template open an identified raster as one.)
+#[test]
+fn render_check_and_clip_templates_keep_a_rasters_refusal() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let ds = raster(64, 48, 3, DataType::U8, 4326, (10.0, 48.0, 1.0 / 64.0));
+    let tif = write(dir.path(), "x.tif", &ds, None);
+    let gpkg = write(dir.path(), "x.gpkg", &ds, Some(RasterDriver::GPKG));
+    let opens: [PathOpen; 3] = [
+        ("render::open_source", &|p| terrio::ops::render::open_source(p, &[], false).map(|_| ())),
+        ("check::check_path", &|p| terrio::check::check_path(p, &Default::default()).map(|_| ())),
+        ("ClipRegion::from_path", &|p| terrio::ops::vector_clip::ClipRegion::from_path(p, &Default::default()).map(|_| ())),
+    ];
+    for path in [tif.as_str(), gpkg.as_str()] {
+        let r = terrio::open_raster_lazy(path).unwrap();
+        let (w, h, bands) = (r.width(), r.height(), r.band_count());
+        let declared = (w * h * bands * r.data_type().size_bytes()) as u128;
+        let bound = |most: u128, open: &dyn Fn(&str) -> terrio::Result<()>| {
+            scoped(&[("TERRIO_MAX_DECLARED_BYTES", &most.to_string())], || refusal(open(path)))
+        };
+        for (name, open) in opens {
+            assert_eq!(bound(declared, open), Ok(()), "{name}, {path}, within the bound");
+            assert_eq!(bound(declared - 1, open), Err(too_many_bytes(w, h, bands, declared, declared - 1)), "{name}, {path}");
+        }
+    }
+}
+
 // ─── The process environment ────────────────────────────────────────────────────────────────────
 
 /// Names the child process's scenario: the directory of its samples.
