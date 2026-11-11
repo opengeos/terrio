@@ -1101,6 +1101,7 @@ mod tests {
         assert_eq!(names, opened.layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>());
     }
 
+    #[cfg(remote)]
     #[test]
     fn disallowed_remote_flatgeobuf_is_refused_before_download() {
         // Refused by the allow-list before any request: the file is not downloaded.
@@ -1113,6 +1114,7 @@ mod tests {
         assert!(requests.lock().unwrap().is_empty(), "the disallowed file was requested");
     }
 
+    #[cfg(remote)]
     #[test]
     fn allowed_remote_flatgeobuf_keeps_declared_z() {
         // Guard: with FlatGeobuf allowed, the remote declared Z still shows with no features.
