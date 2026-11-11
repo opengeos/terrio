@@ -1,4 +1,8 @@
-"""Protect polar-cap coverage restored by grid-invariant warps (#825, #847)."""
+"""Protect polar-cap coverage restored by grid-invariant warps (#825, #847).
+
+Reference stack: GDAL 3.13.3. Coverage follows inverse-transformed pixel centres,
+rather than the legacy chunk-dependent source-window estimate.
+"""
 
 import subprocess
 import sys
