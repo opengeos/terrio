@@ -68,6 +68,15 @@ deriving conversions are errors.
 Coordinates are always in GIS order: x (easting, longitude) first, then y (northing, latitude),
 whatever the axis order the authority defines.
 
+Inverse projections refuse non-finite input coordinates before evaluating their formulas.
+In particular, a failed transform's `(inf, inf)` marker cannot become a valid-looking opposite
+pole through a polar stereographic inverse. Finite distant coordinates remain valid where the
+projection permits them. If conversion to metres overflows before normalization by the
+ellipsoid radius, the inverse combines those scale factors to preserve finite normalized
+coordinates and their direction. Unrepresentable normalized coordinates are refused.
+This is stricter than GDAL 3.13.3 for some infinity pairs, such as
+`(0, -inf)` in EPSG:3413, which GDAL accepts as a pole.
+
 ## Standalone Rust crate
 
 Applications that only need coordinate systems can depend on `terrio-crs` rather

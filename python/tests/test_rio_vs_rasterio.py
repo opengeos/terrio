@@ -26,6 +26,8 @@ for _sub in ("features", "io", "mask", "merge", "vrt", "warp"):
 
 import terrio.rio as trio  # noqa: E402
 
+pytestmark = pytest.mark.usefixtures("gdal_warp_grid")
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "compare_rio_with_rasterio.py"
 if not SCRIPT.exists():
     pytest.skip("the comparison script is not available", allow_module_level=True)

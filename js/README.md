@@ -265,7 +265,10 @@ buffers and serialized cutline/alpha/geolocation warps are unsupported.
 heights (GDAL's `PromoteTo3D`). Vector conversions transform existing Z values
 and preserve 2D geometries as 2D. Read diagnostics
 with `takeWarnings()` after an operation. `warp` also accepts `kernelVersion: "3.13"`
-for GDAL 3.13 resampling; `"3.12"` remains the default. GeoTIFF/COG outputs preserve
+for GDAL 3.13 kernel arithmetic; `"3.12"` remains the default. Sampling uses
+grid-invariant coordinates and local footprints by default, so aligned output tiles
+retain whole-grid values. Set `gridInvariant: false` to reproduce GDAL's
+chunk-dependent sampling instead. GeoTIFF/COG outputs preserve
 PixelIsPoint metadata and corner georeferencing.
 
 `blend(color, overlay, {operator: "multiply", opacity: 75})` composes same-sized
