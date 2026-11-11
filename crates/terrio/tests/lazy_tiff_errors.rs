@@ -17,12 +17,24 @@ fn malformed_uploaded_tiff_metadata_is_invalid_data() {
     overflow.extend(16u64.to_le_bytes());
     overflow.extend(u64::MAX.to_le_bytes());
     overflow.resize(24 + 4096 * 20, 0);
-    let error = match terrio::LazyRaster::from_tiff_bytes(overflow) {
+    let error = match terrio::LazyRaster::from_tiff_bytes(overflow.clone()) {
         Err(error) => error,
         Ok(_) => panic!("overflowed directory must fail"),
     };
     assert!(matches!(error, terrio::Error::InvalidData(_)), "{error:?}");
     assert!(error.to_string().contains("overflow"), "{error}");
+    #[cfg(fs)]
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("overflow.tif");
+        std::fs::write(&path, overflow).unwrap();
+        let error = match terrio::LazyRaster::open_tiff(path.to_str().unwrap()) {
+            Err(error) => error,
+            Ok(_) => panic!("overflowed file directory must fail"),
+        };
+        assert!(matches!(error, terrio::Error::InvalidData(_)), "{error:?}");
+        assert!(error.to_string().contains("overflow"), "{error}");
+    }
 }
 
 #[cfg(fs)]

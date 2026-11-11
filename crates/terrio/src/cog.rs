@@ -2252,9 +2252,9 @@ impl TiffRaster {
         let uploaded = matches!(&source, Source::Memory(_));
         let tags = try_read_geo_tags_from(&mut source)
             .map_err(|error| {
-                // An immutable byte buffer cannot suffer a transport failure: reaching its
-                // end while parsing metadata means malformed input. Live reads keep I/O causes.
-                if uploaded && matches!(error.kind(), std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::InvalidData) {
+                // Invalid metadata is malformed input regardless of its source. An immutable
+                // buffer's EOF is malformed too; live EOF errors retain their I/O causes.
+                if error.kind() == std::io::ErrorKind::InvalidData || (uploaded && error.kind() == std::io::ErrorKind::UnexpectedEof) {
                     Error::InvalidData(format!("TIFF: {error}"))
                 } else {
                     Error::Io(error)
