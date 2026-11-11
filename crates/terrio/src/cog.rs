@@ -2239,6 +2239,8 @@ enum Reopened {
     Memory(SharedBytes),
     Zip(crate::vsi::sozip::MemberReopen),
     /// A remote file whose bytes the caller fetches: the chunks were prefetched before decoding.
+    /// Quiet ([`crate::sparse::SparseFile::quiet`]): a decoder that cannot be opened is done
+    /// without.
     Sparse(crate::sparse::SparseFile),
 }
 
@@ -2686,8 +2688,11 @@ impl TiffRaster {
             Source::File(f) => Some(Reopened::File(f.get_ref().clone())),
             Source::Memory(m) => Some(Reopened::Memory(m.get_ref().clone())),
             Source::Zip(member) => member.reopen().map(Reopened::Zip),
-            Source::Sparse(s) => Some(Reopened::Sparse(s.get_ref().file.clone())),
-            _ => None,
+            // Without recording what they miss: a header the caller's cache dropped would be
+            // fetched again for decoders the read does without.
+            Source::Sparse(s) => Some(Reopened::Sparse(s.get_ref().file.quiet())),
+            #[cfg(remote)]
+            Source::Http(_) => None,
         };
         let reopen = source.map(|source| {
             move || -> Result<Decoder<PatchedReader<Source>>> {
