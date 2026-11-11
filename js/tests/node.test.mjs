@@ -305,7 +305,7 @@ test("GML projected authority axes keep GIS XY through byte reads and writes", (
       const expected = [...xy, 7];
       assert.deepEqual(source.toGeoJSON().features[0].geometry.coordinates, expected, name);
       const bytes = source.toBytes("output.gml");
-      // The WASM codec returns raw XML; the native writer bundles its XSD sidecar as ZIP.
+      // Native and WASM byte output both contain the standalone XML document.
       assert.match(new TextDecoder().decode(bytes), /^<\?xml/);
       const restored = terrio.open(bytes, "output.gml");
       assert.deepEqual(restored.toGeoJSON().features[0].geometry.coordinates, expected, name);
@@ -413,6 +413,21 @@ test("listCrs lists the registry CRSs", () => {
   assert.equal(terrio.describeCrs(`${albers.authority}:${albers.code}`).epsg, 3577);
 });
 
+test("polar inverses refuse non-finite coordinates", () => {
+  for (const code of [3413, 3995, 3411, 32661, 3031, 3976, 3412, 32761, 2985]) {
+    const crs = `EPSG:${code}`;
+    for (const [x, y] of [[Infinity, Infinity], [Infinity, 0], [-Infinity, Infinity], [0, -Infinity], [NaN, NaN]]) {
+      assert.throws(() => terrio.transformPoints([x], [y], crs, "EPSG:4326"), undefined, `${crs}: ${x}, ${y}`);
+    }
+  }
+});
+
+test("finite polar kilometre inputs preserve direction through normalization", () => {
+  const [xs, ys] = terrio.transformPoints([1e306], [2e306], "+proj=stere +lat_0=90 +R=6371000 +units=km", "+proj=longlat +R=6371000");
+  assert.ok(Math.abs(xs[0] - Math.atan2(1, -2) * 180 / Math.PI) < 1e-12);
+  assert.ok(Math.abs(ys[0] + 90) < 1e-12);
+});
+
 test("ZIP archives with duplicate member names are refused", () => {
   const bytes = readFileSync(new URL("../../crates/terrio/tests/data/zip/duplicate_members.zip", import.meta.url));
   assert.throws(() => terrio.open(bytes, "vector.zip"), /several entries with the same name/);
@@ -501,7 +516,24 @@ test("errors", () => {
   assert.throws(() => terrio.describeCrs("nonsense"), /cannot parse/);
   const ds = terrio.fromGeoJSON(SQUARES);
   assert.throws(() => ds.readBand(1), /not a raster/);
-  assert.throws(() => ds.toBytes("x.mif"), /cannot be written to memory/);
+  for (const name of ["x.mif", "x.tab", "x.mif.zip", "x.tab.zip"]) {
+    assert.throws(() => ds.toBytes(name), /MapInfo byte output is unavailable in WebAssembly/);
+  }
+  ds.free();
+});
+
+test("vector byte filenames match their document or archive", () => {
+  const source = terrio.fromGeoJSON({type: "FeatureCollection", features: [{type: "Feature", properties: {name: "first", n: 1}, geometry: {type: "Point", coordinates: [10, 46]}}]});
+  const bytes = source.toBytes("points.gml");
+  assert.match(new TextDecoder().decode(bytes), /^<\?xml/);
+  const restored = terrio.open(bytes, "points.gml");
+  assert.deepEqual(restored.toGeoJSON().features[0].geometry.coordinates, [10, 46]);
+  const archive = source.toBytes("points.shp.zip");
+  for (const extension of ["gml", "mif", "tab"]) {
+    assert.throws(() => terrio.open(archive, `points.${extension}`), /ZIP archive.*\.zip/);
+  }
+  restored.free();
+  source.free();
 });
 
 /** GDAL's statistics of a band, from the .aux.xml file it wrote next to the raster. */
@@ -965,12 +997,12 @@ const GDAL_OPS = [
   ["translate outsize", "translate_outsize.tif", (r) => terrio.translate(r("las_vegas_dem.tif"), { outsize: ["25%", "25%"] })],
   ["translate bands and type", "translate_bands.tif", (r) => terrio.translate(r("landsat.tif"), { bands: [3, 1], ot: "Int16" })],
   ["translate scale", "translate_scale.tif", (r) => terrio.translate(r("usgs_dem.tif"), { ot: "Byte", scale: [1000, 4000, 0, 255] })],
-  ["warp to EPSG:4326 with nodata", "warp_4326.tif", (r) => terrio.warp(r("las_vegas_dem.tif"), { tSrs: "EPSG:4326", srcNodata: 0, dstNodata: -1 })],
-  ["warp to EPSG:3857", "warp_3857.tif", (r) => terrio.warp(r("usgs_dem.tif"), { tSrs: "EPSG:3857" })],
+  ["warp to EPSG:4326 with nodata", "warp_4326.tif", (r) => terrio.warp(r("las_vegas_dem.tif"), { gridInvariant: false, tSrs: "EPSG:4326", srcNodata: 0, dstNodata: -1 })],
+  ["warp to EPSG:3857", "warp_3857.tif", (r) => terrio.warp(r("usgs_dem.tif"), { gridInvariant: false, tSrs: "EPSG:3857" })],
   [
     "warp with a cutline",
     "warp_cutline.tif",
-    (r) => terrio.warp(r("las_vegas_dem.tif"), { cutline: JSON.parse(readFileSync(join(DATA, "wasm_refs", "cutline.geojson"), "utf8")), cropToCutline: true, dstNodata: -9999 }),
+    (r) => terrio.warp(r("las_vegas_dem.tif"), { gridInvariant: false, cutline: JSON.parse(readFileSync(join(DATA, "wasm_refs", "cutline.geojson"), "utf8")), cropToCutline: true, dstNodata: -9999 }),
   ],
   ["mosaic", "mosaic.tif", (r) => terrio.mosaic([r("wasm_refs/part2.tif"), r("wasm_refs/part1.tif")])],
   ...["hillshade", "slope", "aspect", "TRI", "TPI", "roughness"].map((m) => [`dem ${m}`, `dem_${m}.tif`, (r) => terrio.dem(r("srtm_sub.tif"), m)]),
@@ -3183,6 +3215,45 @@ test("dataset TIFF copies preserve bytes without loading pixel codecs", () => {
   } finally { raster.free(); terrio.vsiDelete(root, {recursive:true}); }
 });
 
+test("TIFF tag counts cannot truncate to the WebAssembly address width", () => {
+  const bytes = new Uint8Array(52);
+  const view = new DataView(bytes.buffer);
+  bytes.set([73, 73, 43, 0, 8, 0, 0, 0]);
+  view.setBigUint64(8, 16n, true);
+  view.setBigUint64(16, 1n, true);
+  view.setUint16(24, 33550, true); // ModelPixelScale, DOUBLE
+  view.setUint16(26, 12, true);
+  const count = BUILD === "terrio-js/memory64" ? (1n << 64n) - 1n : (1n << 32n) + 3n;
+  view.setBigUint64(28, count, true);
+  view.setBigUint64(36, 52n, true);
+  assert.throws(() => terrio.translate({bytes, filename: "huge-tag.tif"}, {}), /TIFF tag length overflow/);
+});
+
+test("dataset inventory does not require readable later TIFF directories", () => {
+  const root = "/vsimem/js-first-image-inventory";
+  const source = `${root}/source.tif`, copied = `${root}/copied.tif`, moved = `${root}/moved.tif`;
+  const raster = terrio.createRaster(null, {size: [2, 2], burn: [7], crs: "EPSG:4326", bbox: [0, 0, 2, 2]});
+  try {
+    const bytes = raster.toBytes("source.tif");
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const littleEndian = view.getUint16(0) === 0x4949;
+    assert.equal(view.getUint16(2, littleEndian), 42);
+    const first = view.getUint32(4, littleEndian);
+    const count = view.getUint16(first, littleEndian);
+    view.setUint32(first + 2 + count * 12, bytes.length + 4096, littleEndian);
+    terrio.vsiWrite(source, bytes);
+    terrio.vsiWrite(`${root}/source.tfw`, new TextEncoder().encode("unowned world file"));
+    assert.deepEqual(terrio.datasetFiles(source).files, [source]);
+    assert.throws(() => terrio.translate({bytes, filename: "source.tif"}, {}));
+    terrio.datasetCopy(source, copied);
+    assert.deepEqual(terrio.vsiRead(copied), bytes);
+    assert.equal(terrio.vsiStat(`${root}/copied.tfw`), null);
+    terrio.datasetRename(copied, moved);
+    terrio.datasetDelete([moved, source]);
+    assert.ok(terrio.vsiStat(`${root}/source.tfw`));
+  } finally { raster.free(); terrio.vsiDelete(root, {recursive: true}); }
+});
+
 test("dataset VRT references require explicit external scope permission", () => {
   const root = "/vsimem/js-vrt-reference-scope";
   const source = `${root}/inputs/source.vrt`, output = `${root}/copy.vrt`;
@@ -4207,6 +4278,21 @@ test("single named layer accepts the file stem across readers and operations", (
   ]) assert.throws(call, /no layer named missing \(layers: roads\)/);
 });
 
+test("MapInfo MIF archives read in WebAssembly", () => {
+  // Native Terrio fixture: points.mif and points.mid, one EPSG:4326 point with label=site.
+  const bytes = new Uint8Array(Buffer.from(
+    "UEsDBBQAAAAIAAAAIQCmDPwxCQAAAAcAAAAKAAAAcG9pbnRzLm1pZFMqzixJVeICAFBLAwQUAAAACAAAACEAVyyj2nAAAAB5AAAACgAAAHBvaW50cy5taWYVzE0KwjAQBtD9nOIjK4UKiVZxn+q64M8+6kBT0gxMxoW3lx7gvSdry1Jx8J7ilLSxwT3u193Z0cAlL9lY4TpHUUQ/t1/DJalNGFVmfttqQ4fge4pSvkttCASU9OKCNdzsj/2WhmSJaJRcDcGjP9EfUEsBAhQDFAAAAAgAAAAhAKYM/DEJAAAABwAAAAoAAAAAAAAAAAAAAKSBAAAAAHBvaW50cy5taWRQSwECFAMUAAAACAAAACEAVyyj2nAAAAB5AAAACgAAAAAAAAAAAAAApIExAAAAcG9pbnRzLm1pZlBLBQYAAAAAAgACAHAAAADJAAAAAAA=",
+    "base64",
+  ));
+  const dataset = terrio.openVector(bytes, "points.mif.zip", {});
+  assert.deepEqual(dataset.layerNames(), ["points"]);
+  const features = dataset.toGeoJSON().features;
+  assert.equal(features.length, 1);
+  assert.equal(features[0].properties.label, "site");
+  assert.deepEqual(features[0].geometry.coordinates, [10, 46]);
+  dataset.free();
+});
+
 test("ZIP layer selection uses the member name rather than the archive name", () => {
   const source = terrio.fromGeoJSON({type: "FeatureCollection", features: [{
     type: "Feature", properties: {}, geometry: {type: "Point", coordinates: [1, 2]},
@@ -4376,4 +4462,87 @@ test("JP2 bytes retain BGR definitions and stored component order", { skip: need
   }
   again.free();
   source.free();
+});
+
+test("warp aligned tiles retain whole-grid values with either kernel version", () => {
+  const values = Float64Array.from({ length: 256 * 256 }, (_, i) => {
+    const x = i % 256, y = Math.floor(i / 256);
+    return x > 70 && x < 130 && y > 40 && y < 180
+      ? NaN : 500 + 300 * Math.sin(x / 37) * Math.cos(y / 53);
+  });
+  const source = terrio.rasterFromArray(values, 256, 256,
+    [447000, 10, 0, 6022000, 0, -10], "EPSG:32633", NaN);
+  for (const kernelVersion of ["3.12", "3.13"]) {
+    for (const et of [0, 0.125]) {
+      for (const resampling of ["near", "bilinear", "cubic", "cubicspline", "lanczos",
+        "average", "rms", "mode", "min", "max", "med", "q1", "q3", "sum"]) {
+        const options = { tSrs: "EPSG:3857", tr: [38, 38], ot: "Float64",
+          dstNodata: NaN, resampling, kernelVersion, et };
+        const whole = terrio.warp(source, options);
+        const expected = whole.readBand(1), gt = whole.transform;
+        const xs = [0, Math.floor(whole.width / 3), whole.width];
+        const ys = [0, Math.floor(whole.height / 3), whole.height];
+        for (let yi = 0; yi < 2; yi++) for (let xi = 0; xi < 2; xi++) {
+          const [x0, x1] = xs.slice(xi, xi + 2), [y0, y1] = ys.slice(yi, yi + 2);
+          const tile = terrio.warp(source, { ...options, te: [gt[0] + x0 * gt[1],
+            gt[3] + y1 * gt[5], gt[0] + x1 * gt[1], gt[3] + y0 * gt[5]] });
+          assert.deepEqual([tile.width, tile.height], [x1 - x0, y1 - y0]);
+          const actual = tile.readBand(1);
+          for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+            const a = actual[(y-y0) * tile.width + x-x0], b = expected[y * whole.width + x];
+            assert.equal(Number.isNaN(a), Number.isNaN(b));
+            if (!Number.isNaN(b)) assert.ok(Math.abs(a-b) <= 1e-7,
+              `${kernelVersion} ${resampling} et=${et} at ${x},${y}: ${a} != ${b}`);
+          }
+          tile.free();
+        }
+        const explicit = terrio.warp(source, { ...options, gridInvariant: true });
+        assert.deepEqual(explicit.readBand(1), expected);
+        explicit.free();
+        whole.free();
+      }
+    }
+  }
+  source.free();
+});
+
+
+test("coarse geographic warp footprints survive exact and approximate transforms", () => {
+  const values = Float64Array.from({ length: 360 * 4 }, (_, i) => i % 360 < 60 || i % 360 >= 300 ? 1000 : 0);
+  for (const crs of ["EPSG:4326", "EPSG:4269"]) {
+    const source = terrio.rasterFromArray(values, 360, 4, [-180, 1, 0, 2, 0, -1], crs);
+    for (const kernelVersion of ["3.12", "3.13"]) for (const et of [0, 0.125]) {
+      for (const right of [120, 180]) {
+        const width = right + 180;
+        let total = 0, weight = 0;
+        for (let x = 0; x < 360; x++) {
+          const w = Math.max(0, 1 - Math.abs(x + 0.5 - width / 2) / width);
+          total += values[x] * w; weight += w;
+        }
+        const result = terrio.warp(source, { tSrs: "EPSG:4326", te: [-180, -2, right, 2], ts: [1, 2],
+          resampling: "bilinear", ot: "Float64", kernelVersion, et, gridInvariant: true });
+        for (const v of result.readBand(1)) assert.ok(Math.abs(v - total / weight) < 1e-9, `${crs} ${kernelVersion} et=${et}: ${v}`);
+        result.free();
+      }
+      const projected = terrio.warp(source, { tSrs: "EPSG:3857", te: [-20037508.342789244, -200000, 20037508.342789244, 200000],
+        ts: [1, 2], resampling: "bilinear", ot: "Float64", kernelVersion, et, gridInvariant: true });
+      for (const v of projected.readBand(1)) assert.ok(Math.abs(v - 259.2592592592594) < 1e-9, `${crs} projected et=${et}: ${v}`);
+      projected.free();
+    }
+    source.free();
+  }
+});
+
+test("default Deflate retains long matches across categorical runs", () => {
+  for (const [columns, rows] of [[64, 64], [37, 53], [37, 512]]) {
+    const values = new Uint8Array(512 * 512).map((_, i) =>
+      (Math.floor((i % 512) / columns) + Math.floor(Math.floor(i / 512) / rows)) % 10);
+    const src = terrio.rasterFromArray(values, 512, 512, [500000, 10, 0, 5800000, 0, -10], "EPSG:32633");
+    const bytes = src.toBytes("classes.tif", { compress: "DEFLATE", tileSize: 512 });
+    assert.ok(bytes.length <= 3000, `${columns}x${rows}: ${bytes.length} bytes`);
+    const back = terrio.open(bytes, "classes.tif");
+    assert.deepEqual(back.readBand(1), src.readBand(1));
+    assert.deepEqual([...back.transform], [...src.transform]);
+    assert.equal(back.crs, src.crs);
+  }
 });

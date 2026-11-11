@@ -1,5 +1,10 @@
 //! Errors returned by terrio.
 
+/// Whether an I/O adapter retained a failed Terrio HTTP request as its cause.
+pub(crate) fn is_http_io(error: &std::io::Error) -> bool {
+    matches!(error.get_ref().and_then(|source| source.downcast_ref::<Error>()), Some(Error::Http(_)))
+}
+
 /// A terrio error.
 ///
 /// New variants may be added in minor releases: match with a wildcard arm.
