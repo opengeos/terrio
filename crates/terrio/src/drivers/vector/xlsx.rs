@@ -1021,6 +1021,7 @@ pub(crate) fn parse_named(bytes: Vec<u8>, only: &[String], options: &XlsxOptions
         return Err(Error::InvalidArgument("XLSX: the last row to read is before the first".into()));
     }
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
+    crate::vfs::check_unique_zip_names(&zip)?;
     let WorkbookParts { sheets, date1904, strings: strings_part, styles: styles_part } = workbook_sheets(&mut zip)?;
     let names: Vec<&str> = sheets.iter().map(|(name, _)| name.as_str()).collect();
     let selected = crate::dataset::layer_selection(only, &names, path, false)?;

@@ -179,13 +179,16 @@ __all__ = [
     "config_push",
     "config_pop",
     "config_get",
+    "sidecars_disabled",
     "set_path_specific_option",
     "clear_path_specific_options",
     "get_path_specific_option",
     "set_allowed_drivers",
     "allowed_drivers",
     "check_drivers",
+    "canonical_driver_name",
     "identify_drivers",
+    "vector_byte_extension",
     "network_stats",
     "reset_network_stats",
     "clear_http_cache",
@@ -897,6 +900,7 @@ def pyogrio_read(
     skip_features: int = 0,
     max_features: int | None = None,
     read_geometry: bool = True,
+    layer: str | None = None,
 ) -> dict[str, Any]: ...
 def open_bytes(
     data: bytes | bytearray, filename: str, lazy: bool = False
@@ -1092,15 +1096,30 @@ def _set_http_retry_logger(callback: object) -> None: ...
 def _set_warp_nodata_logger(callback: object) -> None: ...
 def _panic_for_tests(message: str) -> None: ...
 def config_get(key: str) -> str | None: ...
+def sidecars_disabled() -> bool: ...
 def set_path_specific_option(prefix: str, key: str, value: str | None = None) -> None: ...
 def clear_path_specific_options(prefix: str | None = None) -> None: ...
 def get_path_specific_option(path: str, key: str) -> str | None: ...
 def set_allowed_drivers(
-    drivers: Sequence[str] | None, kind: Literal["raster", "vector"] | None = None
+    drivers: Sequence[str] | None, kind: Literal["raster", "vector", "pointcloud"] | None = None
 ) -> None: ...
-def allowed_drivers(kind: Literal["raster", "vector"] | None = None) -> list[str] | None: ...
+def allowed_drivers(
+    kind: Literal["raster", "vector", "pointcloud"] | None = None,
+) -> list[str] | None: ...
 def check_drivers(path: str, drivers: Sequence[str]) -> None: ...
+def canonical_driver_name(name: str) -> str: ...
 def identify_drivers(path: str) -> tuple[list[str], str | None]: ...
+def vector_byte_extension(data: bytes) -> str | None:
+    """Suggest an extension using shared byte identifiers.
+
+    Args:
+        data: Bytes of a vector dataset.
+
+    Returns:
+        str | None: An extension, or None when a filename is needed.
+    """
+    ...
+
 def network_stats() -> dict[str, Any]: ...
 def reset_network_stats() -> None: ...
 def clear_http_cache() -> None: ...
@@ -1189,6 +1208,7 @@ def warp(
     geoloc: bool = False,
     geolocation: Mapping[str, Any] | None = None,
     kernel_version: str | None = None,
+    grid_invariant: bool | None = None,
     init: Raster | None = None,
     _sum_scale: float = 1.0,
 ) -> Raster: ...
@@ -1752,6 +1772,7 @@ class RegionWarp:
         rpc_options: Mapping[str, str] | None = None,
         kernel_version: str | None = None,
         sum_scale: float = 1.0,
+        grid_invariant: bool | None = None,
     ) -> RegionWarp: ...
     def source_window(self, region: _Window) -> _Window | None: ...
     def warp(

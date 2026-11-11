@@ -8,7 +8,9 @@ import pytest
 
 import terrio
 import terrio.rio as trio
+from terrio.rio.enums import Resampling
 from terrio.rio.errors import RasterioIOError
+from terrio.rio.transform import from_origin
 from terrio.rio.windows import Window
 
 
@@ -145,3 +147,119 @@ def test_vrt_preserves_filename_whitespace_in_native_and_uploaded_sources(tmp_pa
         )
         for sources in source_maps:
             np.testing.assert_array_equal(terrio.open_vrt(xml, sources).read(1), [[expected]])
+
+
+@pytest.mark.parametrize(
+    ("values", "width", "src_x", "dst_x", "expected"),
+    [
+        # A quarter pixel into [10, 20, 30]: the source a quarter pixel on.
+        (
+            [10, 20, 30],
+            2,
+            0.25,
+            0,
+            {
+                "nearest": [10, 20],
+                "bilinear": [12.5, 22.5],
+                "average": [12.5, 22.5],
+                "sum": [12.5, 22.5],
+            },
+        ),
+        # [10, 20] a quarter pixel east: nothing of the 30 outside the SrcRect.
+        (
+            [10, 20, 30],
+            3,
+            0,
+            0.25,
+            {
+                "nearest": [10, 20, -1],
+                "bilinear": [10, 17.5, -1],
+                "average": [10, 17.5, 20],
+                "sum": [7.5, 17.5, 5],
+            },
+        ),
+        # [20, 30] half a pixel east: nothing of the 10 and the 40 outside the SrcRect.
+        (
+            [10, 20, 30, 40],
+            3,
+            1,
+            0.5,
+            {
+                "nearest": [20, 30, -1],
+                "bilinear": [20, 25, -1],
+                "average": [20, 25, 30],
+                "sum": [10, 25, 15],
+            },
+        ),
+    ],
+)
+def test_vrt_source_reads_its_src_rect_into_its_dst_rect(
+    tmp_path, values, width, src_x, dst_x, expected
+):
+    """A source with fractional rectangles reads only its SrcRect, placed only inside its DstRect.
+
+    -1, the band's nodata, marks the pixels the source does not write: those whose centres, the
+    points `nearest` and `bilinear` sample, are outside the DstRect.
+    """
+    path = tmp_path / "source.tif"
+    source = np.array([values], dtype="float32")
+    terrio.Raster.from_array(source, transform=(0, 1, 0, 1, 0, -1), crs="EPSG:3857").write(
+        str(path)
+    )
+    for method, row in expected.items():
+        xml = (
+            f'<VRTDataset rasterXSize="{width}" rasterYSize="1">'
+            '<VRTRasterBand dataType="Float32" band="1"><NoDataValue>-1</NoDataValue>'
+            f'<SimpleSource resampling="{method}">'
+            "<SourceFilename>{name}</SourceFilename><SourceBand>1</SourceBand>"
+            f'<SrcRect xOff="{src_x}" yOff="0" xSize="2" ySize="1"/>'
+            f'<DstRect xOff="{dst_x}" yOff="0" xSize="2" ySize="1"/>'
+            "</SimpleSource></VRTRasterBand></VRTDataset>"
+        )
+        uploaded = terrio.open_vrt(xml.format(name="upload.tif"), {"upload.tif": path.read_bytes()})
+        np.testing.assert_array_equal(uploaded.read(1), [row], err_msg=method)
+        by_pixel = [uploaded.read(1, window=(c, 0, 1, 1))[0, 0] for c in range(width)]
+        np.testing.assert_array_equal(by_pixel, row, err_msg=method)
+        vrt = tmp_path / f"{method}.vrt"
+        vrt.write_text(xml.format(name=path))
+        with trio.open(vrt) as ds:
+            np.testing.assert_array_equal(ds.read(1), [row], err_msg=method)
+
+
+def test_a_vrt_reads_a_reduced_resolution_from_its_source_s_overviews(tmp_path):
+    """A VRT that maps a GeoTIFF one for one has the GeoTIFF's overviews, and a reduced read of
+    it gives the GeoTIFF's pixels: those of an overview, not samples of the full resolution,
+    where every other pixel of every other row is 255 (#705)."""
+    n = 1024
+    img = ((np.arange(n)[None, :] * 7 + np.arange(n)[:, None] * 13) % 251).astype("uint8")
+    img[::2, ::2] = 255
+    with trio.open(
+        tmp_path / "base.tif",
+        "w",
+        driver="GTiff",
+        width=n,
+        height=n,
+        count=1,
+        dtype="uint8",
+        tiled=True,
+        blockxsize=256,
+        blockysize=256,
+        crs="EPSG:3857",
+        transform=from_origin(0, n, 1, 1),
+    ) as dst:
+        dst.write(img[None])
+        dst.build_overviews([2, 4, 8, 16], Resampling.average)
+    (tmp_path / "one.vrt").write_text(
+        f'<VRTDataset rasterXSize="{n}" rasterYSize="{n}"><VRTRasterBand dataType="Byte" band="1">'
+        '<SimpleSource><SourceFilename relativeToVRT="1">base.tif</SourceFilename>'
+        "<SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>"
+    )
+    with trio.open(tmp_path / "base.tif") as tif, trio.open(tmp_path / "one.vrt") as vrt:
+        assert vrt.overviews(1) == tif.overviews(1) == [2, 4, 8, 16]
+        for size in (64, 256):
+            want = tif.read(1, out_shape=(size, size), resampling=Resampling.nearest)
+            got = vrt.read(1, out_shape=(size, size), resampling=Resampling.nearest)
+            np.testing.assert_array_equal(got, want, err_msg=str(size))
+            assert (got == 255).mean() < 0.01
+    lazy = terrio.open_raster(str(tmp_path / "one.vrt"), lazy=True)
+    assert lazy.overviews == [(512, 512), (256, 256), (128, 128), (64, 64)]

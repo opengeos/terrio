@@ -281,8 +281,9 @@ pub struct SampleArgs {
     input: VectorInput,
     #[command(flatten)]
     output: VectorOutput,
-    /// An input raster (repeat for multiple rasters). `sample` loads each raster into memory;
-    /// `zonal-stats` reads them lazily, by block, and also takes `@FILE` lists of paths.
+    /// An input raster (repeat for multiple rasters), an `@FILE` list of paths, or a file name with
+    /// `*` or `?`, which matches the files of its folder. `sample` loads each raster into memory;
+    /// `zonal-stats` reads them lazily, by block.
     #[arg(long = "raster", value_name = "PATH")]
     rasters: Vec<String>,
     /// Bands from every raster, from 1, comma-separated. By default, band 1.
@@ -319,8 +320,9 @@ pub fn sample(a: SampleArgs) -> Result<()> {
 }
 
 fn sample_sources(a: &SampleArgs) -> Result<(Vec<terrio::RasterDataset>, Vec<String>)> {
-    let prefixes = sample_prefixes(&a.prefixes, &a.rasters)?;
-    let rasters = a.rasters.iter().map(|p| super::quiet(|| terrio::open_raster(p))).collect::<Result<Vec<_>>>()?;
+    let paths = super::expand_file_lists(&a.rasters)?;
+    let prefixes = sample_prefixes(&a.prefixes, &paths)?;
+    let rasters = paths.iter().map(|p| super::quiet(|| terrio::open_raster(p))).collect::<Result<Vec<_>>>()?;
     Ok((rasters, prefixes))
 }
 

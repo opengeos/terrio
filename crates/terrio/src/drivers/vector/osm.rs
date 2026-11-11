@@ -23,7 +23,11 @@
 
 use crate::ops::simplify::open_ring;
 use crate::{Error, Result};
-use osmpbfreader::{OsmId, OsmObj, OsmPbfReader, Tags};
+// Keep the decoder beside this driver while sharing its private protobuf reader
+// (Pb/pb_fields/unzigzag) and OSM member/relation model.
+#[path = "osm_pbf.rs"]
+mod pbf;
+use pbf::{Object as OsmObj, Tags};
 use std::collections::HashMap;
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
 
@@ -226,7 +230,7 @@ fn hstore(out: &mut String, s: &str) {
 }
 
 fn tag_list(tags: &Tags) -> Vec<(&str, &str)> {
-    tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+    tags.iter().map(|(k, v)| (k.as_ref(), v.as_ref())).collect()
 }
 
 fn is_area(tags: &[(&str, &str)]) -> bool {
@@ -266,8 +270,8 @@ enum Member {
 
 struct Relation {
     id: i64,
-    members: Vec<(Member, String)>,
-    tags: Vec<(String, String)>,
+    members: Vec<(Member, std::sync::Arc<str>)>,
+    tags: Vec<(std::sync::Arc<str>, std::sync::Arc<str>)>,
 }
 
 /// Collects nodes, ways and relations (from PBF or XML), then builds GDAL's five layers.
@@ -420,14 +424,14 @@ fn relation_feature<'a>(
     schemas: &[wbvector::Schema],
 ) -> (Option<(usize, Feature)>, Vec<i64>) {
     let mut outer = Vec::new();
-    let rtype = r.tags.iter().find(|(k, _)| k == "type").map(|(_, v)| v.as_str());
+    let rtype = r.tags.iter().find(|(k, _)| k.as_ref() == "type").map(|(_, v)| v.as_ref());
     if !wanted[relation_layer(rtype)] {
         return (None, outer);
     }
-    let tags: Vec<(&str, &str)> = r.tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let tags: Vec<(&str, &str)> = r.tags.iter().map(|(k, v)| (k.as_ref(), v.as_ref())).collect();
     let interesting = tags.iter().any(|(k, _)| *k != "type" && *k != "created_by");
-    let members: Vec<(&(Member, String), Option<MemberWay>)> =
-        r.members.iter().filter(|m| m.1 != "subarea").map(|m| (m, if let Member::Way(w) = m.0 { way(w) } else { None })).collect();
+    let members: Vec<_> =
+        r.members.iter().filter(|m| m.1.as_ref() != "subarea").map(|m| (m, if let Member::Way(w) = m.0 { way(w) } else { None })).collect();
     match rtype {
         Some("multipolygon" | "boundary") => {
             let way_members: Vec<_> = members.into_iter().filter(|(m, _)| matches!(m.0, Member::Way(_))).collect();
@@ -440,12 +444,12 @@ fn relation_feature<'a>(
             for (m, w) in way_members {
                 let Some(w) = w else { unreachable!() };
                 let cs = w.coords;
-                if first_outer_tags.is_none() && m.1 == "outer" {
+                if first_outer_tags.is_none() && m.1.as_ref() == "outer" {
                     first_outer_tags = Some(w.tags);
                 }
                 let closed = !cs.is_empty() && cs.first().map(|c| (c.x, c.y)) == cs.last().map(|c| (c.x, c.y));
                 if closed {
-                    if m.1 == "outer"
+                    if m.1.as_ref() == "outer"
                         && let Member::Way(id) = m.0
                     {
                         outer.push(id);
@@ -577,35 +581,20 @@ pub fn parse(bytes: Vec<u8>) -> Result<Vec<Layer>> {
 
 /// Parses a PBF file whatever the order of its objects, holding them all.
 fn parse_any_order(bytes: Vec<u8>) -> Result<Vec<Layer>> {
-    let mut reader = OsmPbfReader::new(std::io::Cursor::new(bytes));
+    let (spans, _) = blob_spans(&mut std::io::Cursor::new(&bytes))?;
     let mut b = Builder::new();
-    for obj in reader.iter() {
-        let obj = obj.map_err(|e| Error::InvalidData(format!("OSM PBF: {e}")))?;
-        match obj {
-            OsmObj::Node(n) => {
-                // GDAL's arithmetic: nanodegrees times 1e-9 for points, and its grid for vertices.
-                let nano = |d: i32| 1e-9 * (i64::from(d) * 100) as f64;
-                let c = Coord::xy(nano(n.decimicro_lon), nano(n.decimicro_lat));
-                b.node(n.id.0, c.clone(), Coord::xy(grid(c.x), grid(c.y)), &tag_list(&n.tags));
+    for span in spans {
+        pbf::decode(&bytes[span.start as usize..span.end as usize], &mut |obj| {
+            match obj {
+                OsmObj::Node(n) => {
+                    let (point, stored) = node_coords(n.decimicro_lon, n.decimicro_lat);
+                    b.node(n.id, point, stored, &tag_list(&n.tags));
+                }
+                OsmObj::Way(w) => b.way(w.id, w.nodes, &tag_list(&w.tags)),
+                OsmObj::Relation(r) => b.relations.push(r),
             }
-            OsmObj::Way(w) => b.way(w.id.0, w.nodes.iter().map(|n| n.0).collect(), &tag_list(&w.tags)),
-            OsmObj::Relation(r) => {
-                let members = r
-                    .refs
-                    .iter()
-                    .map(|m| {
-                        let id = match m.member {
-                            OsmId::Node(n) => Member::Node(n.0),
-                            OsmId::Way(w) => Member::Way(w.0),
-                            OsmId::Relation(r) => Member::Relation(r.0),
-                        };
-                        (id, m.role.to_string())
-                    })
-                    .collect();
-                let tags = r.tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-                b.relations.push(Relation { id: r.id.0, members, tags });
-            }
-        }
+            Ok(())
+        })?;
     }
     Ok(b.finish())
 }
@@ -706,7 +695,11 @@ fn finish_element(
             }
         }
         Some("way") => b.way(id, std::mem::take(refs), &t),
-        Some(_) => b.relations.push(Relation { id, members: std::mem::take(members), tags: std::mem::take(tags) }),
+        Some(_) => b.relations.push(Relation {
+            id,
+            members: std::mem::take(members).into_iter().map(|(m, role)| (m, role.into())).collect(),
+            tags: std::mem::take(tags).into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
+        }),
         None => {}
     }
 }
@@ -746,6 +739,9 @@ fn pb_varint(b: &[u8], i: &mut usize) -> Option<u64> {
     for shift in (0..64).step_by(7) {
         let byte = *b.get(*i)?;
         *i += 1;
+        if shift == 63 && byte > 1 {
+            return None;
+        }
         v |= u64::from(byte & 0x7f) << shift;
         if byte & 0x80 == 0 {
             return Some(v);
@@ -755,24 +751,59 @@ fn pb_varint(b: &[u8], i: &mut usize) -> Option<u64> {
 }
 
 /// The varint and length-delimited fields of a protobuf message, as `(number, value)`.
-fn pb_fields(b: &[u8]) -> Option<Vec<(u64, Pb<'_>)>> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < b.len() {
-        let key = pb_varint(b, &mut i)?;
-        match key & 7 {
-            0 => out.push((key >> 3, Pb::Int(pb_varint(b, &mut i)?))),
-            1 => i += 8,
-            2 => {
-                let n = usize::try_from(pb_varint(b, &mut i)?).ok()?;
-                out.push((key >> 3, Pb::Bytes(b.get(i..i.checked_add(n)?)?)));
-                i += n;
-            }
-            5 => i += 4,
-            _ => return None,
+#[derive(Clone)]
+struct PbFields<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> PbFields<'a> {
+    fn field(&mut self) -> Option<Option<(u64, Pb<'a>)>> {
+        let b = self.bytes;
+        let key = pb_varint(b, &mut self.at)?;
+        if key >> 3 == 0 || key >> 3 > 0x1fff_ffff {
+            return None;
         }
+        let value = match key & 7 {
+            0 => Pb::Int(pb_varint(b, &mut self.at)?),
+            2 => {
+                let n = usize::try_from(pb_varint(b, &mut self.at)?).ok()?;
+                let end = self.at.checked_add(n)?;
+                let bytes = b.get(self.at..end)?;
+                self.at = end;
+                Pb::Bytes(bytes)
+            }
+            1 | 5 => {
+                let end = self.at.checked_add(if key & 7 == 1 { 8 } else { 4 })?;
+                b.get(self.at..end)?;
+                self.at = end;
+                return Some(None);
+            }
+            _ => return None,
+        };
+        Some(Some((key >> 3, value)))
     }
-    Some(out)
+}
+
+impl<'a> Iterator for PbFields<'a> {
+    type Item = (u64, Pb<'a>);
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.at < self.bytes.len() {
+            if let Some(field) = self.field()? {
+                return Some(field);
+            }
+        }
+        None
+    }
+}
+
+/// Validate once, then iterate borrowed fields without allocating a field array.
+fn pb_fields(b: &[u8]) -> Option<PbFields<'_>> {
+    let mut fields = PbFields { bytes: b, at: 0 };
+    while fields.at < b.len() {
+        fields.field()?;
+    }
+    Some(PbFields { bytes: b, at: 0 })
 }
 
 /// A PBF file being read: in memory, or a file read a batch of blocks at a time.
@@ -780,11 +811,11 @@ pub(crate) trait PbfInput: std::io::Read + std::io::Seek {}
 impl<T: std::io::Read + std::io::Seek> PbfInput for T {}
 
 /// The spans of a PBF file's data blobs (each with its length prefix and header, as
-/// `OsmPbfReader` reads them), and whether its header says it is sorted by type then id. Only
+/// the block decoder reads them), and whether its header says it is sorted by type then id. Only
 /// the blob headers (and the file header) are read.
 fn blob_spans(r: &mut dyn PbfInput) -> Result<(Vec<std::ops::Range<u64>>, bool)> {
     use std::io::{Read, SeekFrom};
-    let bad = || Error::InvalidData("OSM PBF: bad blob".into());
+    let bad = pbf::bad;
     let len = r.seek(SeekFrom::End(0))?;
     r.seek(SeekFrom::Start(0))?;
     let mut r = std::io::BufReader::with_capacity(1 << 16, r);
@@ -796,19 +827,23 @@ fn blob_spans(r: &mut dyn PbfInput) -> Result<(Vec<std::ops::Range<u64>>, bool)>
         r.read_exact(&mut prefix).map_err(|_| bad())?;
         let header_len = u32::from_be_bytes(prefix) as usize;
         if header_len > 64 * 1024 {
-            return Err(bad());
+            return Err(Error::ResourceLimit("OSM PBF: blob header exceeds byte limit 65536".into()));
         }
         let mut header = vec![0u8; header_len];
         r.read_exact(&mut header).map_err(|_| bad())?;
-        let (mut kind, mut size) = (&[][..], 0u64);
+        let (mut kind, mut size) = (None, None);
         for (field, value) in pb_fields(&header).ok_or_else(bad)? {
             match (field, value) {
-                (1, Pb::Bytes(t)) => kind = t,
-                (3, Pb::Int(n)) => size = n,
+                (1, Pb::Bytes(t)) => kind = Some(t),
+                (3, Pb::Int(n)) => size = Some(n),
                 _ => {}
             }
         }
-        let start = o + 4 + header_len as u64;
+        let (kind, size) = (kind.ok_or_else(bad)?, size.ok_or_else(bad)?);
+        if size > pbf::MAX_BLOB as u64 {
+            return Err(Error::ResourceLimit(format!("OSM PBF: encoded blob exceeds byte limit {}", pbf::MAX_BLOB)));
+        }
+        let start = o.checked_add(4 + header_len as u64).ok_or_else(bad)?;
         let end = start.checked_add(size).filter(|&e| e <= len).ok_or_else(bad)?;
         match kind {
             b"OSMData" => {
@@ -817,8 +852,8 @@ fn blob_spans(r: &mut dyn PbfInput) -> Result<(Vec<std::ops::Range<u64>>, bool)>
             }
             b"OSMHeader" => {
                 let mut blob = vec![0u8; size as usize];
-                r.read_exact(&mut blob)?;
-                sorted = header_says_sorted(&blob).ok_or_else(bad)?;
+                r.read_exact(&mut blob).map_err(|_| bad())?;
+                sorted = pbf::header_sorted(&blob)?;
             }
             _ => r.seek_relative(size as i64)?,
         }
@@ -834,47 +869,6 @@ fn read_spans(r: &mut dyn PbfInput, spans: &[std::ops::Range<u64>]) -> Result<Ve
     r.seek(std::io::SeekFrom::Start(first.start))?;
     r.read_exact(&mut buf)?;
     Ok(buf)
-}
-
-/// Whether a header blob lists the `Sort.Type_then_ID` feature: nodes, then ways, then
-/// relations, each by increasing id (as osmium, Geofabrik and the planet files write them).
-fn header_says_sorted(blob: &[u8]) -> Option<bool> {
-    let mut header = Vec::new();
-    for (field, value) in pb_fields(blob)? {
-        match (field, value) {
-            (1, Pb::Bytes(raw)) => header = raw.to_vec(),
-            (3, Pb::Bytes(zlib)) => {
-                use std::io::Read;
-                flate2::read::ZlibDecoder::new(zlib).read_to_end(&mut header).ok()?;
-            }
-            _ => {}
-        }
-    }
-    let feature = b"Sort.Type_then_ID";
-    Some(header.windows(feature.len()).any(|w| w == feature))
-}
-
-fn decode_block(span: &[u8]) -> Result<osmpbfreader::osmformat::PrimitiveBlock> {
-    let err = |e: osmpbfreader::Error| Error::InvalidData(format!("OSM PBF: {e}"));
-    let blob = OsmPbfReader::new(span).blobs().next().ok_or_else(|| Error::InvalidData("OSM PBF: bad blob".into()))?.map_err(err)?;
-    osmpbfreader::primitive_block_from_blob(&blob).map_err(err)
-}
-
-fn relation(r: &osmpbfreader::Relation) -> Relation {
-    let members = r
-        .refs
-        .iter()
-        .map(|m| {
-            let id = match m.member {
-                OsmId::Node(n) => Member::Node(n.0),
-                OsmId::Way(w) => Member::Way(w.0),
-                OsmId::Relation(r) => Member::Relation(r.0),
-            };
-            (id, m.role.to_string())
-        })
-        .collect();
-    let tags = r.tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-    Relation { id: r.id.0, members, tags }
 }
 
 /// GDAL's coordinates of a node from its decimicro degrees: nanodegrees times 1e-9 for points,
@@ -1011,7 +1005,8 @@ impl NodeStore {
         }
         let (last_id, last_lon, last_lat) = self.last;
         let b = &mut self.bytes.buf;
-        put_varint(b, (id - last_id) as u64);
+        // An increasing signed id pair can have a difference as large as u64::MAX.
+        put_varint(b, (id as u64).wrapping_sub(last_id as u64));
         put_varint(b, zigzag(i64::from(lon) - i64::from(last_lon)));
         put_varint(b, zigzag(i64::from(lat) - i64::from(last_lat)));
         self.last = (id, lon, lat);
@@ -1035,8 +1030,8 @@ impl NodeStore {
             if i >= end {
                 return None;
             }
-            let d = pb_varint(data, &mut i)? as i64;
-            nid = if k == 0 { nid } else { nid + d };
+            let d = pb_varint(data, &mut i)?;
+            nid = if k == 0 { nid } else { (nid as u64).wrapping_add(d) as i64 };
             lon += unzigzag(pb_varint(data, &mut i)?);
             lat += unzigzag(pb_varint(data, &mut i)?);
             if nid == id {
@@ -1055,28 +1050,27 @@ impl NodeStore {
 struct Block {
     nodes: Vec<(i64, i32, i32)>,
     points: Vec<Feature>,
-    ways: Vec<osmpbfreader::Way>,
+    ways: Vec<pbf::Way>,
     has_nodes: bool,
     has_relations: bool,
     out_of_order: bool,
 }
 
 fn read_block(span: &[u8], points: bool, schema: &wbvector::Schema) -> Result<Block> {
-    let block = decode_block(span)?;
     let mut b =
         Block { nodes: Vec::new(), points: Vec::new(), ways: Vec::new(), has_nodes: false, has_relations: false, out_of_order: false };
-    for obj in osmpbfreader::blocks::iter(&block) {
+    pbf::decode(span, &mut |obj| {
         match obj {
             OsmObj::Node(nd) => {
                 b.out_of_order |= !b.ways.is_empty() || b.has_relations;
                 b.has_nodes = true;
-                b.nodes.push((nd.id.0, nd.decimicro_lon, nd.decimicro_lat));
+                b.nodes.push((nd.id, nd.decimicro_lon, nd.decimicro_lat));
                 if points {
                     let tags = tag_list(&nd.tags);
                     if tags.iter().any(|(k, _)| !POINT_INSIGNIFICANT.contains(k)) {
-                        let attrs = SPECS[0].attributes(schema, nd.id.0, false, &tags);
+                        let attrs = SPECS[0].attributes(schema, nd.id, false, &tags);
                         let point = node_coords(nd.decimicro_lon, nd.decimicro_lat).0;
-                        b.points.push(Feature { fid: nd.id.0 as u64, geometry: Some(Geometry::Point(point)), attributes: attrs });
+                        b.points.push(Feature { fid: nd.id as u64, geometry: Some(Geometry::Point(point)), attributes: attrs });
                     }
                 }
             }
@@ -1086,7 +1080,8 @@ fn read_block(span: &[u8], points: bool, schema: &wbvector::Schema) -> Result<Bl
             }
             OsmObj::Relation(_) => b.has_relations = true,
         }
-    }
+        Ok(())
+    })?;
     Ok(b)
 }
 
@@ -1152,13 +1147,13 @@ fn decode_member(b: &[u8], mut at: usize) -> Option<MemberWay<'_>> {
 
 /// What a way of a sorted file gives (see [`Builder::finish`], which this mirrors).
 fn way_out(
-    w: &osmpbfreader::Way,
+    w: &pbf::Way,
     nodes: &NodeStore,
     wanted: &[bool; 5],
     members: &std::collections::HashSet<i64>,
     schema: &wbvector::Schema,
 ) -> WayOut {
-    let id = w.id.0;
+    let id = w.id;
     let tags = tag_list(&w.tags);
     let closed = w.nodes.len() > 1 && w.nodes.first() == w.nodes.last();
     let area = closed && is_area(&tags);
@@ -1168,7 +1163,7 @@ fn way_out(
         return out;
     }
     let n = if area { w.nodes.len() - 1 } else { w.nodes.len() };
-    let mut raw: Vec<[i32; 2]> = w.nodes[..n].iter().filter_map(|n| nodes.get_raw(n.0)).collect();
+    let mut raw: Vec<[i32; 2]> = w.nodes[..n].iter().filter_map(|n| nodes.get_raw(*n)).collect();
     if area && !raw.is_empty() {
         raw.push(raw[0]);
     }
@@ -1268,7 +1263,7 @@ fn relation_chunks<'r>(
     // coordinates a chunk keeps that under about 150 MB, and parallel work does not need more.
     const MAX_COORDS: usize = 1 << 20;
     let size = |r: &Relation| -> usize {
-        let rtype = r.tags.iter().find(|(k, _)| k == "type").map(|(_, v)| v.as_str());
+        let rtype = r.tags.iter().find(|(k, _)| k.as_ref() == "type").map(|(_, v)| v.as_ref());
         if !wanted[relation_layer(rtype)] {
             return 0;
         }
@@ -1315,12 +1310,12 @@ pub(crate) fn is_sorted_pbf(input: &mut dyn PbfInput) -> bool {
                 _ => {}
             }
         }
-        if kind != b"OSMHeader" || size > 64 << 20 {
+        if kind != b"OSMHeader" || size > pbf::MAX_BLOB as u64 {
             return None;
         }
         let mut blob = vec![0u8; size as usize];
         input.read_exact(&mut blob).ok()?;
-        header_says_sorted(&blob)
+        pbf::header_sorted(&blob).ok()
     };
     header().unwrap_or(false)
 }
@@ -1361,15 +1356,15 @@ pub(crate) fn read_sorted_pbf(
     let mut last = spans.len();
     if need_relations {
         while last > 0 {
-            let block = decode_block(&read_spans(input, &spans[last - 1..last])?)?;
             let mut rels = Vec::new();
             let mut only_relations = true;
-            for obj in osmpbfreader::blocks::iter(&block) {
+            pbf::decode(&read_spans(input, &spans[last - 1..last])?, &mut |obj| {
                 match obj {
-                    OsmObj::Relation(r) => rels.push(relation(&r)),
+                    OsmObj::Relation(r) => rels.push(r),
                     _ => only_relations = false,
                 }
-            }
+                Ok(())
+            })?;
             tail.push(rels);
             if !only_relations {
                 break;
@@ -1512,6 +1507,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rejects_overflowing_and_truncated_protobuf() {
+        let mut index = 0;
+        assert!(pb_varint(&[255, 255, 255, 255, 255, 255, 255, 255, 255, 2], &mut index).is_none());
+        assert!(pb_fields(&[9, 0]).is_none());
+        assert!(pb_fields(&[13, 0]).is_none());
+        assert!(pb_fields(&[0, 0]).is_none());
+        assert!(pb_fields(&[10, 2, 0]).is_none());
+    }
+
+    #[test]
+    fn unsupported_informational_compression_is_rejected() {
+        // A valid Zstandard frame of an empty HeaderBlock (generated with Python's zstd).
+        // The legacy reader ignored such header compression and continued reading data.
+        let zstd = [0x28, 0xb5, 0x2f, 0xfd, 0x20, 0, 1, 0, 0];
+        let blob = Msg::default().bytes(7, &zstd).int(2, 0);
+        let file = fileblock("OSMHeader", &blob.0);
+        assert!(parse(file).err().unwrap().to_string().contains("unsupported blob compression"));
+    }
+
+    #[test]
+    fn empty_informational_headers_remain_unsorted() {
+        assert!(!pbf::header_sorted(&[]).unwrap());
+        let file = fileblock("OSMHeader", &[]);
+        assert!(!is_sorted_pbf(&mut std::io::Cursor::new(&file)));
+        assert_eq!(parse(file).unwrap().iter().map(Layer::len).collect::<Vec<_>>(), [0; 5]);
+        assert!(decoded(&fileblock("OSMData", &[])).is_err());
+    }
+
+    #[test]
+    fn unknown_members_are_skipped_after_accumulating_their_id_delta() {
+        let relation = Msg::default().int(1, 1).packed(8, &[999, 2]).packed(9, &[zz(5), zz(2)]).packed(10, &[99, 1]);
+        let block = primitive(Msg::default().bytes(4, &relation.0));
+        let objects = decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).unwrap();
+        let OsmObj::Relation(relation) = &objects[0] else { panic!() };
+        assert_eq!(relation.members.len(), 1);
+        assert!(relation.members[0].0 == Member::Way(7));
+        assert_eq!(relation.members[0].1.as_ref(), "city");
+    }
+
+    #[test]
+    fn stored_node_ids_span_the_full_signed_range() {
+        let mut store = NodeStore::default();
+        assert!(store.push(i64::MIN, 10, -10).unwrap());
+        assert!(store.push(i64::MAX, 20, -20).unwrap());
+        assert_eq!(store.get_raw(i64::MIN), Some([10, -10]));
+        assert_eq!(store.get_raw(i64::MAX), Some([20, -20]));
+        assert_eq!(store.get_raw(0), None);
+    }
+
+    #[test]
+    fn sorted_feature_is_a_complete_header_field() {
+        let header = Msg::default().bytes(5, b"prefix-Sort.Type_then_ID-suffix");
+        assert!(!pbf::header_sorted(&Msg::default().bytes(1, &header.0).0).unwrap());
+        let header = Msg::default().bytes(5, b"Sort.Type_then_ID");
+        assert!(pbf::header_sorted(&Msg::default().bytes(1, &header.0).0).unwrap());
+        assert!(pbf::header_sorted(&Msg::default().bytes(4, b"unsupported").0).is_err());
+    }
+
+    #[test]
     fn classifies_tags_like_gdal() {
         assert!(is_area(&[("building", "yes")]));
         assert!(!is_area(&[("building", "yes"), ("area", "no")]));
@@ -1614,6 +1668,318 @@ mod tests {
 
     fn zz(v: i64) -> u64 {
         ((v << 1) ^ (v >> 63)) as u64
+    }
+
+    fn fileblock(kind: &str, blob: &[u8]) -> Vec<u8> {
+        let header = Msg::default().bytes(1, kind.as_bytes()).int(3, blob.len() as u64).0;
+        let mut out = (header.len() as u32).to_be_bytes().to_vec();
+        out.extend(header);
+        out.extend(blob);
+        out
+    }
+
+    fn compressed(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(data).unwrap();
+        Msg::default().int(2, data.len() as u64).bytes(3, &z.finish().unwrap()).0
+    }
+
+    fn decoded(bytes: &[u8]) -> Result<Vec<OsmObj>> {
+        let mut out = Vec::new();
+        pbf::decode(bytes, &mut |o| {
+            out.push(o);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    fn primitive(group: Msg) -> Msg {
+        let table = Msg::default().bytes(1, b"").bytes(1, b"name").bytes(1, b"city").bytes(1, b"a");
+        Msg::default().bytes(1, &table.0).bytes(2, &group.0)
+    }
+
+    #[test]
+    fn decodes_dense_offsets_and_metadata_with_raw_zlib_parity() {
+        // Negative deltas; packed segments mixed with unpacked values.
+        let dense = Msg::default()
+            .packed(1, &[zz(7)])
+            .int(1, zz(-2))
+            .packed(8, &[zz(-12), zz(7)])
+            .packed(9, &[zz(9), zz(-3)])
+            .packed(10, &[1, 2, 0, 3, 2, 1, 3, 0])
+            .bytes(5, &Msg::default().packed(2, &[zz(100), zz(-1)]).0);
+        let group = Msg::default().bytes(2, &dense.0);
+        let block = primitive(group).int(17, 1000).int(18, 500).int(19, (-37i64) as u64).int(20, 93);
+        let raw = fileblock("OSMData", &Msg::default().bytes(1, &block.0).0);
+        let zlib = fileblock("OSMData", &compressed(&block.0));
+        for bytes in [&raw, &zlib] {
+            let objects = decoded(bytes).unwrap();
+            let OsmObj::Node(first) = &objects[0] else { panic!() };
+            let OsmObj::Node(second) = &objects[1] else { panic!() };
+            assert_eq!((first.id, first.decimicro_lon, first.decimicro_lat), (7, 90, -120));
+            assert_eq!((second.id, second.decimicro_lon, second.decimicro_lat), (5, 60, -50));
+            assert_eq!(tag_list(&first.tags), [("name", "city")]);
+            assert_eq!(tag_list(&second.tags), [("a", "city"), ("name", "a")]);
+        }
+    }
+
+    #[test]
+    fn decodes_simple_nodes_ways_relations_and_sorts_tags() {
+        let node = Msg::default()
+            .int(1, zz(-5))
+            .int(8, zz(3))
+            .int(9, zz(-8))
+            .int(2, 3)
+            .packed(2, &[1, 1])
+            .packed(3, &[2, 2, 3])
+            .bytes(4, &Msg::default().int(1, 7).int(2, 123).int(6, 0).0);
+        let way = Msg::default().int(1, (-3i64) as u64).packed(8, &[zz(5), zz(-10)]);
+        let relation = Msg::default().int(1, 10).packed(8, &[0, 2, 3]).packed(9, &[zz(5), zz(-8), zz(13)]).packed(10, &[0, 1, 2]);
+        let group = Msg::default().bytes(4, &relation.0).bytes(3, &way.0).bytes(1, &node.0);
+        let block = primitive(group);
+        let objects = decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).unwrap();
+        let OsmObj::Node(node) = &objects[0] else { panic!() };
+        assert_eq!(node.id, -5);
+        assert_eq!(tag_list(&node.tags), [("a", "city"), ("name", "city")]);
+        let OsmObj::Way(way) = &objects[1] else { panic!() };
+        assert_eq!((way.id, way.nodes.as_slice()), (-3, [5, -5].as_slice()));
+        let OsmObj::Relation(relation) = &objects[2] else { panic!() };
+        assert!(relation.members[0].0 == Member::Node(5));
+        assert!(relation.members[1].0 == Member::Way(-3));
+        assert!(relation.members[2].0 == Member::Relation(10));
+        assert_eq!(relation.members[1].1.as_ref(), "city");
+    }
+
+    #[test]
+    fn merges_dense_messages_and_replaces_invalid_utf8() {
+        let first = Msg::default().packed(1, &[zz(1)]).packed(8, &[0]).packed(9, &[0]);
+        let second = Msg::default().packed(1, &[zz(1)]).packed(8, &[0]).packed(9, &[0]);
+        let block = primitive(Msg::default().bytes(2, &first.0).bytes(2, &second.0));
+        let objects = decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).unwrap();
+        let OsmObj::Node(node) = &objects[1] else { panic!() };
+        assert_eq!(node.id, 2);
+        let table = Msg::default().bytes(1, b"").bytes(1, b"name").bytes(1, &[255]);
+        let node = Msg::default().int(1, 0).int(8, 0).int(9, 0).int(2, 1).int(3, 2);
+        let block = Msg::default().bytes(1, &table.0).bytes(2, &Msg::default().bytes(1, &node.0).0);
+        let objects = decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).unwrap();
+        let OsmObj::Node(node) = &objects[0] else { panic!() };
+        assert_eq!(tag_list(&node.tags), [("name", "\u{fffd}")]);
+    }
+
+    #[test]
+    fn rejects_bad_indices_parallel_arrays_and_delta_overflow() {
+        let node = || Msg::default().int(1, 0).int(8, 0).int(9, 0);
+        let groups = [
+            Msg::default().bytes(1, &node().int(2, 999).int(3, 1).0),
+            Msg::default().bytes(1, &node().int(2, 1).0),
+            Msg::default().bytes(1, &Msg::default().int(1, 0).0),
+            Msg::default().bytes(2, &Msg::default().packed(1, &[zz(1)]).0),
+            Msg::default().bytes(2, &Msg::default().packed(1, &[zz(i64::MAX), zz(1)]).packed(8, &[0, 0]).packed(9, &[0, 0]).0),
+            Msg::default().bytes(2, &Msg::default().packed(1, &[0]).packed(8, &[0]).packed(9, &[0]).packed(10, &[1]).0),
+            Msg::default().bytes(3, &Msg::default().int(1, 1).packed(8, &[zz(i64::MIN), zz(-1)]).0),
+            Msg::default().bytes(4, &Msg::default().int(1, 1).packed(8, &[0]).0),
+        ];
+        for group in groups {
+            let block = primitive(group);
+            assert!(decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).is_err());
+        }
+        let block = primitive(Msg::default().bytes(1, &node().int(8, zz(i64::MAX)).0)).int(17, 1000);
+        assert!(decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).is_err());
+    }
+
+    #[test]
+    fn rejects_truncated_and_oversized_blobs_without_claimed_allocations() {
+        let block = primitive(Msg::default());
+        let file = fileblock("OSMData", &compressed(&block.0));
+        for cut in 0..file.len() {
+            assert!(decoded(&file[..cut]).is_err(), "cut {cut}");
+        }
+        for field in 4..=7 {
+            let e = decoded(&fileblock("OSMData", &Msg::default().bytes(field, b"x").0));
+            assert!(e.err().unwrap().to_string().contains("unsupported blob compression"));
+        }
+        for blob in [
+            Msg::default().bytes(1, &block.0).int(2, u64::MAX),
+            Msg::default().bytes(1, &block.0).int(2, 999),
+            Msg::default().bytes(1, &block.0).bytes(3, b"x"),
+            Msg::default().bytes(3, b"not-zlib"),
+        ] {
+            assert!(decoded(&fileblock("OSMData", &blob.0)).is_err());
+        }
+        let header = Msg::default().bytes(1, b"OSMData").int(3, (pbf::MAX_BLOB + 1) as u64);
+        let mut file = (header.0.len() as u32).to_be_bytes().to_vec();
+        file.extend(header.0);
+        assert!(blob_spans(&mut std::io::Cursor::new(file)).is_err());
+        assert!(decoded(&65537u32.to_be_bytes()).is_err());
+        let bomb = compressed(&vec![0; pbf::MAX_BLOB + 1]);
+        let zlib = pb_fields(&bomb)
+            .unwrap()
+            .find_map(|(n, v)| match (n, v) {
+                (3, Pb::Bytes(b)) => Some(b),
+                _ => None,
+            })
+            .unwrap();
+        assert!(pbf::payload(&Msg::default().bytes(3, zlib).0).is_err());
+    }
+
+    #[test]
+    fn blob_size_refusals_are_terminal() {
+        fn terminal(error: Error) {
+            assert!(error.is_resource_refusal(), "{error}");
+            #[cfg(feature = "gdal")]
+            {
+                let result: Result<()> =
+                    crate::dataset::gdal_fallback("oversized.osm.pbf", Err(error), |_| panic!("OSM blob limit retried through GDAL"));
+                assert!(result.unwrap_err().is_resource_refusal());
+            }
+        }
+        // Refuse advertised sizes before reading or allocating the missing payload.
+        let header = Msg::default().bytes(1, b"OSMData").int(3, (pbf::MAX_BLOB + 1) as u64);
+        let mut file = (header.0.len() as u32).to_be_bytes().to_vec();
+        file.extend(header.0);
+        terminal(blob_spans(&mut std::io::Cursor::new(file)).unwrap_err());
+        terminal(blob_spans(&mut std::io::Cursor::new(65537u32.to_be_bytes())).unwrap_err());
+        terminal(pbf::payload(&Msg::default().bytes(1, b"x").int(2, (pbf::MAX_BLOB + 1) as u64).0).unwrap_err());
+        terminal(pbf::payload(&Msg::default().bytes(1, &vec![0; pbf::MAX_BLOB + 1]).0).unwrap_err());
+        // Probe actual decoded bytes as well: raw_size is absent in this compressed bomb.
+        let bomb = compressed(&vec![0; pbf::MAX_BLOB + 1]);
+        let zlib = pb_fields(&bomb)
+            .unwrap()
+            .find_map(|(n, v)| match (n, v) {
+                (3, Pb::Bytes(b)) => Some(b),
+                _ => None,
+            })
+            .unwrap();
+        terminal(pbf::payload(&Msg::default().bytes(3, zlib).0).unwrap_err());
+        // A wrong declared length or broken stream is malformed, not a budget refusal.
+        for blob in [Msg::default().bytes(1, b"x").int(2, 2), Msg::default().bytes(3, b"broken")] {
+            assert!(matches!(pbf::payload(&blob.0), Err(Error::InvalidData(_))));
+        }
+    }
+
+    /// A complete PBF fileblock must still reject a truncated inner zlib stream, including
+    /// a missing checksum after all plaintext was emitted, with or without raw_size.
+    #[test]
+    fn rejects_truncated_zlib_inside_complete_fileblocks() {
+        let block = primitive(Msg::default());
+        let blob = compressed(&block.0);
+        let zlib = pb_fields(&blob)
+            .unwrap()
+            .find_map(|(n, v)| match (n, v) {
+                (3, Pb::Bytes(b)) => Some(b),
+                _ => None,
+            })
+            .unwrap();
+        for cut in 0..zlib.len() {
+            for with_size in [false, true] {
+                let mut blob = Msg::default().bytes(3, &zlib[..cut]);
+                if with_size {
+                    blob = blob.int(2, block.0.len() as u64);
+                }
+                assert!(decoded(&fileblock("OSMData", &blob.0)).is_err(), "cut {cut}, raw_size={with_size}");
+            }
+        }
+        assert!(decoded(&fileblock("OSMData", &Msg::default().bytes(3, zlib).0)).is_ok());
+    }
+
+    #[test]
+    fn inflation_capacity_stays_within_the_blob_limit() {
+        let blob = compressed(&vec![0; pbf::MAX_BLOB]);
+        let zlib = pb_fields(&blob)
+            .unwrap()
+            .find_map(|(n, v)| match (n, v) {
+                (3, Pb::Bytes(b)) => Some(b),
+                _ => None,
+            })
+            .unwrap();
+        for blob in [&blob, &Msg::default().bytes(3, zlib).0] {
+            let bytes = pbf::payload(blob).unwrap().unwrap();
+            let std::borrow::Cow::Owned(bytes) = bytes else { panic!() };
+            assert_eq!(bytes.len(), pbf::MAX_BLOB);
+            assert!(bytes.capacity() <= pbf::MAX_BLOB);
+        }
+    }
+
+    #[test]
+    fn malformed_blob_errors_are_consistent() {
+        let file = fileblock("OSMData", &[]);
+        let mut truncated = &file[..file.len() - 1];
+        let framing = blob_spans(&mut std::io::Cursor::new(&mut truncated)).unwrap_err();
+        let payload = decoded(&file).err().unwrap();
+        assert_eq!(framing.to_string(), payload.to_string());
+    }
+
+    #[test]
+    fn rejects_nonpositive_and_out_of_range_block_scales() {
+        for field in [17, 18] {
+            for value in [0, u64::MAX, i32::MAX as u64 + 1, (1u64 << 32) + 37] {
+                let block = primitive(Msg::default()).int(field, value);
+                let error = decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).err().unwrap();
+                assert_eq!(error.to_string(), pbf::bad().to_string(), "field {field}, value {value}");
+            }
+            for value in [1, i32::MAX as u64] {
+                let block = primitive(Msg::default()).int(field, value);
+                assert!(decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn negative_coordinates_truncate_toward_zero_with_nondefault_scale_and_offsets() {
+        let node = Msg::default().int(1, zz(1)).int(8, zz(-3)).int(9, zz(-5));
+        let zero = Msg::default().int(1, zz(2)).int(8, 0).int(9, 0);
+        let block = primitive(Msg::default().bytes(1, &node.0).bytes(1, &zero.0))
+            .int(17, 37)
+            .int(18, 500)
+            .int(19, (-1i64) as u64)
+            .int(20, (-2i64) as u64);
+        let objects = decoded(&fileblock("OSMData", &Msg::default().bytes(1, &block.0).0)).unwrap();
+        let OsmObj::Node(node) = &objects[0] else { panic!() };
+        // (-1 + 37 * -3) / 100 = -1; (-2 + 37 * -5) / 100 = -1.
+        // Signed integer division truncates toward zero, not toward minus infinity.
+        assert_eq!((node.decimicro_lat, node.decimicro_lon), (-1, -1));
+        let OsmObj::Node(zero) = &objects[1] else { panic!() };
+        assert_eq!((zero.decimicro_lat, zero.decimicro_lon), (0, 0));
+    }
+
+    #[test]
+    fn truncated_informational_blob_uses_the_framing_error() {
+        struct CutPayload {
+            bytes: std::io::Cursor<Vec<u8>>,
+            cut: usize,
+        }
+        impl std::io::Read for CutPayload {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                let n = out.len().min(self.cut.saturating_sub(self.bytes.position() as usize));
+                std::io::Read::read(&mut self.bytes, &mut out[..n])
+            }
+        }
+        impl std::io::Seek for CutPayload {
+            fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+                std::io::Seek::seek(&mut self.bytes, position)
+            }
+        }
+        let file = fileblock("OSMHeader", &Msg::default().bytes(1, &[]).0);
+        let cut = file.len() - 1;
+        let mut input = CutPayload { bytes: std::io::Cursor::new(file), cut };
+        assert_eq!(blob_spans(&mut input).unwrap_err().to_string(), pbf::bad().to_string());
+    }
+
+    #[test]
+    fn header_features_and_bbox_remain_unexposed() {
+        let bbox = Msg::default().int(1, zz(-10)).int(2, zz(10)).int(3, zz(20)).int(4, zz(-20));
+        let header = Msg::default()
+            .bytes(1, &bbox.0)
+            .bytes(4, b"OsmSchema-V0.6")
+            .bytes(4, b"HistoricalInformation")
+            .bytes(4, b"unknown-required")
+            .bytes(5, b"unknown-optional")
+            .bytes(5, b"Sort.Type_then_ID");
+        assert!(pbf::header_sorted(&compressed(&header.0)).unwrap());
+        let file = fileblock("OSMHeader", &compressed(&header.0));
+        assert!(is_sorted_pbf(&mut std::io::Cursor::new(&file)));
+        assert_eq!(parse(file).unwrap().iter().map(Layer::len).collect::<Vec<_>>(), [0; 5]);
     }
 
     /// A PBF file of blocks, each a list of groups (nodes, ways or relations), sorted by type then

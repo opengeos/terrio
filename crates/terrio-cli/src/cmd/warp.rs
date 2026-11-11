@@ -14,7 +14,8 @@ use terrio::ops::{Resampling, parse_data_type};
 
 #[derive(clap::Args)]
 pub struct Args {
-    /// The input rasters, then the output path. `@FILE` reads input paths from FILE, one per line.
+    /// The input rasters, then the output path. `@FILE` reads input paths from FILE, one per line,
+    /// and a file name with `*` or `?` (quoted: `'tiles/*.tif'`) matches the files of its folder.
     #[arg(required = true, num_args = 2..)]
     paths: Vec<String>,
     /// The sources' CRS, overriding what they declare.
@@ -50,6 +51,9 @@ pub struct Args {
     /// GDAL resampling behavior to reproduce: 3.12 or 3.13; TERRIO_GDAL_COMPAT, else 3.12, by default.
     #[arg(long)]
     kernel_version: Option<String>,
+    /// Keep samples independent of tiles/chunks; false reproduces GDAL's chunk-dependent grid.
+    #[arg(long, action = clap::ArgAction::Set)]
+    grid_invariant: Option<bool>,
     /// Source overview: AUTO, AUTO-n, NONE, or a level numbered from 0. With `-r sum`, each pixel
     /// of an overview counts for the source pixels it stands for; NONE sums the full resolution.
     #[arg(long, alias = "ovr", default_value = "AUTO")]
@@ -152,6 +156,9 @@ pub fn run(a: Args) -> terrio::Result<()> {
         rpc_options,
         ..Default::default()
     };
+    if let Some(value) = a.grid_invariant {
+        o.grid_invariant = value;
+    }
     if o.target_aligned_pixels && o.resolution.is_none() {
         return Err(terrio::Error::InvalidArgument("--tap needs --tr".into()));
     }

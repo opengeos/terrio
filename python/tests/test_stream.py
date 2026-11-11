@@ -75,6 +75,11 @@ def test_arrow_stream_matches_table(path):
     if path.endswith(".parquet"):
         # a GeoParquet stream hands out the file's own types (`i` is written as int32)
         assert table.schema.field("i").type == pa.int32()
+        # each exported field has the type the file stores, so the cast below hides no change
+        pq = pytest.importorskip("pyarrow.parquet")
+        file_schema = pq.read_schema(path)
+        for field in table.schema:
+            assert field.type == file_schema.field(field.name).type, field.name
         whole = whole.cast(table.schema)
     assert table.equals(whole)
 
@@ -132,9 +137,17 @@ def test_streams_select_columns_and_rows(tmp_path):
         assert table["i"].to_pylist() == [f["properties"]["i"] for f in whole], ext
         with pytest.raises(terrio.InvalidArgumentError):
             terrio.open_stream(p, columns=["nope"])
-        # names match without case, on both outputs
-        assert pa.table(terrio.open_stream(p, columns=["I"])).column_names[0] == "i", ext
-        assert list(terrio.open_stream(p, columns=["I"]).fields) == ["i"], ext
+        # names match without case, on both outputs, with the values of an unfiltered read
+        whole_i = [
+            f["properties"]["i"] for f in terrio.open_vector(p)[0].__geo_interface__["features"]
+        ]
+        table = pa.table(terrio.open_stream(p, columns=["I"]))
+        assert table.column_names[0] == "i", ext
+        assert table["i"].to_pylist() == whole_i, ext
+        stream = terrio.open_stream(p, columns=["I"])
+        assert list(stream.fields) == ["i"], ext
+        features = stream.read_all().__geo_interface__["features"]
+        assert [f["properties"]["i"] for f in features] == whole_i, ext
 
 
 def test_geoparquet_streams_read_files_in_archives(tmp_path):

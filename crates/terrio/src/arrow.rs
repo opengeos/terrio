@@ -707,12 +707,7 @@ pub fn open_geoparquet(path: &str, options: &GeoParquetReadOptions) -> Result<Ge
         let _asset_scope = crate::stac::AssetReadPolicy::enter_nested(path)?;
         // The footer, then the column chunks of each window of row groups, in parallel requests
         // through the block cache, a window of at most half the cache at a time.
-        let options_http = crate::http::HttpOptions::from_env();
-        let budget = (options_http.cache_size / 2).max(1);
-        let file = crate::http::RangeReader::open_with(&remote, options_http)?;
-        let prefetcher = file.clone();
-        let prefetch: crate::drivers::vector::geoparquet_arrow::Prefetcher =
-            (Box::new(move |ranges: &[(u64, u64)]| Ok(prefetcher.prefetch(ranges)?)), budget);
+        let (file, prefetch) = gp::open_remote_file(&remote)?;
         return GeoParquetBatches::open(file, options, Some(prefetch));
     }
     // A file in an archive is extracted, as `open_vector` reads it.

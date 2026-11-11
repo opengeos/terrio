@@ -495,12 +495,13 @@ def test_a_complex_source_is_warped_from_its_real_parts_as_before(tmp_path, name
 
 @pytest.mark.parametrize("masked", [False, True], ids=["no mask", "internal mask"])
 def test_a_read_while_another_thread_reads_the_source_raises_as_a_read_does(tmp_path, masked):
-    # Another thread reads the source's Raster, which a read holds until it returns: a WarpedVRT
-    # read that needs the Raster meanwhile raises the RasterioIOError a read raises then, "Read
-    # failed: Already borrowed", with the RuntimeError as its cause; with an internal mask as
-    # well, whose presence the read does not ask the Raster. The other thread holds the Raster
-    # from before the WarpedVRT reads until after it has raised: the band it reads is an object
-    # whose `__index__`, which the read calls once it holds the Raster, waits until then.
+    # Another thread holds the source's Raster (a resampled read, which holds it until it
+    # returns; a plain `read` takes another reader instead): a WarpedVRT read that needs the
+    # Raster meanwhile raises the RasterioIOError a read raises then, "Read failed: Already
+    # borrowed", with the RuntimeError as its cause; with an internal mask as well, whose
+    # presence the read does not ask the Raster. The other thread holds the Raster from before
+    # the WarpedVRT reads until after it has raised: the band it reads is an object whose
+    # `__index__`, which the read calls once it holds the Raster, waits until then.
     n = 64
     mask = np.full((n, n), 255, "uint8") if masked else None
     path = write(tmp_path / "src.tif", values("float32", 1, n, n), mask=mask)
@@ -513,7 +514,9 @@ def test_a_read_while_another_thread_reads_the_source_raises_as_a_read_does(tmp_
             return 1
 
     with terrio.rio.open(path) as src, WarpedVRT(src, crs="EPSG:3857") as vrt:
-        thread = threading.Thread(target=src._raster.read, kwargs={"band": Band()})
+        thread = threading.Thread(
+            target=src._raster.read_resampled, args=((n, n),), kwargs={"band": Band()}
+        )
         thread.start()
         try:
             assert holding.wait(60), "the other thread never held the Raster"
