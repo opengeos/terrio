@@ -1804,6 +1804,8 @@ mod tests {
             let path = directory.path().join(format!("base-{affine}.tif"));
             std::fs::write(&path, &original).unwrap();
             let expected = read_geotiff(&path).unwrap();
+            #[cfg(feature = "gdal")]
+            let gdal_expected = crate::gdal_backend::open_raster(path.to_str().unwrap()).unwrap();
             assert_eq!(expected.raster.crs.epsg, Some(4326));
             assert_eq!(expected.gcps.len(), if affine { 0 } else { 3 });
             if affine {
@@ -1826,14 +1828,25 @@ mod tests {
                 let eager = read_geotiff(&path);
                 let translated =
                     crate::ops::translate::translate_path(path_str, &Default::default(), crate::ops::overview::OverviewSelection::Auto);
-                if missing_pointer {
+                let recovered = if missing_pointer {
                     // Metadata inspection recovers the first image, but the pixel decoder
-                    // requires its final pointer. Keep that existing decoding error.
+                    // requires its final pointer. The optional GDAL fallback can recover it.
                     assert!(eager.is_err());
-                    assert!(translated.is_err());
-                    continue;
-                }
-                for read in [eager.unwrap(), translated.unwrap()] {
+                    #[cfg(not(feature = "gdal"))]
+                    {
+                        assert!(translated.is_err());
+                        continue;
+                    }
+                    #[cfg(feature = "gdal")]
+                    {
+                        // GDAL's fallback data model is compared with the same backend's
+                        // valid-file baseline, including its existing GCP limitations.
+                        vec![(translated.unwrap(), &gdal_expected)]
+                    }
+                } else {
+                    vec![(eager.unwrap(), &expected), (translated.unwrap(), &expected)]
+                };
+                for (read, expected) in recovered {
                     assert_eq!(read.raster.crs.epsg, expected.raster.crs.epsg);
                     assert_eq!(read.geo_transform(), expected.geo_transform());
                     assert_eq!(read.gcps, expected.gcps);

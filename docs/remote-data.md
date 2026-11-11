@@ -36,8 +36,9 @@ another reader can recover. File inventory, copy, rename and deletion use first-
 and do not require readable later directories. Failed HTTP directory reads, including short
 range responses, do not trigger a whole-file retry during translation.
 Best-effort metadata queries and eager first-image reads retain the metadata collected before
-a later directory fails. Pixel decoding still requires a complete first directory, including
-its required final pointer.
+a later directory fails. The native eager pixel decoder still requires the first directory's
+final pointer. Translation through the optional GDAL backend can recover a base image that
+GDAL can read despite that missing pointer.
 
 ```sh
 terrio info https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif
