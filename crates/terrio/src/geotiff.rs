@@ -395,6 +395,7 @@ fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool, images: 
             }
             Ok(())
         })();
+        // BestEffort deliberately retains the collected metadata when the chain walk fails.
         if matches!(images, ImageScope::All) {
             chain?;
         }

@@ -11,6 +11,17 @@ fn malformed_uploaded_tiff_metadata_is_invalid_data() {
         };
         assert!(matches!(error, terrio::Error::InvalidData(_)), "{error:?}");
         assert!(error.to_string().contains("TIFF:"), "{error}");
+        #[cfg(fs)]
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("truncated.tif");
+            std::fs::write(&path, bytes).unwrap();
+            let error = match terrio::LazyRaster::open_tiff(path.to_str().unwrap()) {
+                Err(error) => error,
+                Ok(_) => panic!("truncated live metadata must fail"),
+            };
+            assert!(matches!(error, terrio::Error::Io(error) if error.kind() == std::io::ErrorKind::UnexpectedEof));
+        }
     }
     // BigTIFF's declared directory count overflows its next-directory offset.
     let mut overflow = b"II+\0\x08\0\0\0".to_vec();
@@ -51,14 +62,14 @@ fn short_non_tiff_inputs_are_not_matches() {
 
 #[test]
 #[cfg(remote)]
-fn remote_directory_errors_keep_their_cause() {
+fn remote_metadata_errors_keep_their_cause() {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
-    for (response, expected, translate) in [
+    let failures = [
         ("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", Some("500"), false),
         ("", None, false),
         (
@@ -83,7 +94,10 @@ fn remote_directory_errors_keep_their_cause() {
             Some("a redirect to another origin"),
             true,
         ),
-    ] {
+    ];
+    for (decoder_setup, (response, expected, translate)) in
+        [false, true].into_iter().flat_map(|decoder_setup| failures.into_iter().map(move |failure| (decoder_setup, failure)))
+    {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("http://{}/image.tif", listener.local_addr().unwrap());
@@ -112,9 +126,33 @@ fn remote_directory_errors_keep_their_cause() {
                     }
                 }
                 if request == 0 {
-                    // The TIFF header points to a directory beyond the first HTTP block.
+                    // Fail either the directory walk or the JPEG tables loaded by Decoder::new.
                     let mut body = vec![0; 16384];
-                    body[..8].copy_from_slice(b"II\x2a\0\0\0\x08\0");
+                    if decoder_setup {
+                        body[..8].copy_from_slice(b"II\x2a\0\x08\0\0\0");
+                        let entries = [
+                            (256u16, 4u16, 1u32, 1u32),
+                            (257, 4, 1, 1),
+                            (258, 3, 1, 8),
+                            (259, 3, 1, 7),
+                            (262, 3, 1, 1),
+                            (273, 4, 1, 1024),
+                            (277, 3, 1, 1),
+                            (278, 4, 1, 1),
+                            (279, 4, 1, 8),
+                            (347, 7, 8, 524288),
+                        ];
+                        body[8..10].copy_from_slice(&(entries.len() as u16).to_le_bytes());
+                        for (i, (tag, typ, count, value)) in entries.into_iter().enumerate() {
+                            let at = 10 + i * 12;
+                            body[at..at + 2].copy_from_slice(&tag.to_le_bytes());
+                            body[at + 2..at + 4].copy_from_slice(&typ.to_le_bytes());
+                            body[at + 4..at + 8].copy_from_slice(&count.to_le_bytes());
+                            body[at + 8..at + 12].copy_from_slice(&value.to_le_bytes());
+                        }
+                    } else {
+                        body[..8].copy_from_slice(b"II\x2a\0\0\0\x08\0");
+                    }
                     let header = "HTTP/1.1 206 Partial Content\r\nContent-Length: 16384\r\nContent-Range: bytes 0-16383/524562\r\nConnection: close\r\n\r\n";
                     stream.write_all(header.as_bytes()).unwrap();
                     stream.write_all(&body).unwrap();
