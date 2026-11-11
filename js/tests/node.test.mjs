@@ -1390,6 +1390,22 @@ test("translate AUTO-0 keeps the whole-read byte fallback", () => {
   assert.throws(() => terrio.translate(invalid, { overview: "AUTO-0" }), { message: autoError });
 });
 
+test("fixed empty resampled windows keep typed nodata and masks", () => {
+  for (const Type of [Uint8Array, Uint16Array, Float32Array, Float64Array]) {
+    const nodata = Type === Float32Array || Type === Float64Array ? 7.25 : 7;
+    const source = terrio.rasterFromArray(new Type(20000).fill(1), 100, 100,
+      [0, 1, 0, 100, 0, -1], "EPSG:4326", nodata);
+    const options = { bands: [2, 1, 2], size: [512, 512], window: [99.9999, 0, 0.0001, 100], overview: "NONE" };
+    const pixels = source.readResampled(options);
+    const masks = source.readResampledMasks(options);
+    assert.ok(pixels instanceof Type);
+    assert.equal(pixels.length, 3 * 512 * 512);
+    assert.ok(pixels.every((value) => value === nodata));
+    assert.equal(masks.length, pixels.length);
+    assert.ok(masks.every((value) => value === 0));
+  }
+});
+
 test("resampled reads from overviews, local and remote", async () => {
   const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");

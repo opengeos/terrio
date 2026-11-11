@@ -1531,3 +1531,49 @@ fn fallback_ascii_unknown_lines_cannot_hide_later_dimensions() {
         assert!(matches!(terrio::open_raster(path.to_str().unwrap()), Err(terrio::Error::ResourceLimit(_))));
     });
 }
+
+/// Reference: GDAL 3.13.3 fixed-level rounding. Terrio fills empty windows with band nodata.
+/// Filling narrow output must not first allocate eight bytes for every output sample.
+#[test]
+fn empty_resampled_windows_allocate_only_their_output_type() {
+    let _serial = serial();
+    use terrio::ops::overview::OverviewSelection;
+    let options = terrio::ResampledReadOptions {
+        size: (512, 512),
+        bands: vec![2, 1, 2],
+        window: Some((99.9999, 0.0, 0.0001, 100.0)),
+        overview: OverviewSelection::None,
+        ..Default::default()
+    };
+    for data_type in [
+        DataType::U8,
+        DataType::I8,
+        DataType::U16,
+        DataType::I16,
+        DataType::U32,
+        DataType::I32,
+        DataType::U64,
+        DataType::I64,
+        DataType::F32,
+        DataType::F64,
+    ] {
+        let mut ds = header(100, 100, 2);
+        ds.raster.data_type = data_type;
+        ds.raster.data = RasterData::new_filled(data_type, 20000, 1.0);
+        ds.band_nodata = vec![Some(7.0), Some(9.0)];
+        let mut source = terrio::LazyRaster::from(ds);
+        let (result, largest) = largest_during(|| source.read_resampled(&options));
+        let out = result.unwrap();
+        let n = 512 * 512;
+        let bytes = 3 * n * data_type.size_bytes();
+        assert_eq!(out.raster.data_type, data_type);
+        assert_eq!(out.band_nodata, vec![Some(9.0), Some(7.0), Some(9.0)]);
+        if COUNTED {
+            assert!(largest <= bytes, "{data_type:?}: requested {largest} bytes for {bytes} output bytes");
+        }
+        let values = out.raster.data.to_f64_vec();
+        for (band, expected) in [9.0, 7.0, 9.0].into_iter().enumerate() {
+            assert!(values[band * n..(band + 1) * n].iter().all(|&value| value == expected));
+        }
+    }
+}

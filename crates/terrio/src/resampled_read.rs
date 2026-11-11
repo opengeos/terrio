@@ -659,8 +659,7 @@ impl LazyRaster {
             How::Fill => {
                 let n = read.buf.0 * read.buf.1;
                 let nodata = self.level_band_nodata(&bands, request.level);
-                let values = nodata.iter().flat_map(|nd| std::iter::repeat_n(nd.unwrap_or(0.0), n)).collect();
-                Ok(RasterData::from_f64_vec(self.band_data_type(bands[0]), values))
+                filled_bands(self.band_data_type(bands[0]), n, &nodata)
             }
             How::Copy => {
                 let (x, y, w, h) = request.window;
@@ -1208,6 +1207,36 @@ fn resample(
         i = j;
     }
     out.ok_or_else(|| Error::InvalidArgument("nothing to resample".into()))
+}
+
+/// Fill selected bands directly in the output type, preserving the empty-window nodata
+/// policy without a full Float64 temporary. Casts match RasterData::from_f64_vec.
+/// Fixed-level window rounding reference: GDAL 3.13.3.
+fn filled_bands(data_type: DataType, n: usize, nodata: &[Option<f64>]) -> Result<RasterData> {
+    let what = "an empty resampled window";
+    let len = fallible::len(&[n, nodata.len()], what)?;
+    macro_rules! fill {
+        ($variant:ident, $sample:ty) => {{
+            let mut values = Vec::new();
+            fallible::reserve(&mut values, len, what)?;
+            for nd in nodata {
+                values.extend(std::iter::repeat_n(nd.unwrap_or(0.0) as $sample, n));
+            }
+            Ok(RasterData::$variant(values))
+        }};
+    }
+    match data_type {
+        DataType::U8 => fill!(U8, u8),
+        DataType::I8 => fill!(I8, i8),
+        DataType::U16 => fill!(U16, u16),
+        DataType::I16 => fill!(I16, i16),
+        DataType::U32 => fill!(U32, u32),
+        DataType::I32 => fill!(I32, i32),
+        DataType::U64 => fill!(U64, u64),
+        DataType::I64 => fill!(I64, i64),
+        DataType::F32 => fill!(F32, f32),
+        DataType::F64 => fill!(F64, f64),
+    }
 }
 
 /// Runs `$body` with `$a` and `$b` the values of two buffers of one type.
