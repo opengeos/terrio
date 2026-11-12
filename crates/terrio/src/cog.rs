@@ -3699,10 +3699,18 @@ mod tests {
         let path = dir.path().join("tiled.tif");
         write_tiled_tiff(&path, (160, 144, 3), sequence(DataType::U8, 160 * 144 * 3, 5), &[]);
         let bytes = std::fs::read(&path).unwrap();
-        let file = crate::sparse::SparseFile::new(bytes.len() as u64);
-        let fetch = |o: u64, n: u64| -> std::io::Result<Vec<u8>> { Ok(bytes[o as usize..(o + n) as usize].to_vec()) };
+        // Keep header and window data in different blocks so prefetch cannot restore
+        // the header incidentally after trimming.
+        let file = crate::sparse::SparseFile::with_block_size(bytes.len() as u64, 256);
+        let header_fetches = std::cell::Cell::new(0usize);
+        let fetch = |o: u64, n: u64| -> std::io::Result<Vec<u8>> {
+            if o == 0 {
+                header_fetches.set(header_fetches.get() + 1);
+            }
+            Ok(bytes[o as usize..(o + n) as usize].to_vec())
+        };
         let open = || crate::sparse::read_with(&file, 32, fetch, || Ok(LazyRaster::from_sparse(file.clone())?.unwrap())).unwrap();
-        let w = Window::new(3, 5, 120, 100);
+        let w = Window::new(20, 20, 120, 100);
         let want = read_f64(&mut LazyRaster::open(path.to_str().unwrap()).unwrap(), w, &[1, 2, 3], None);
         let opts = WindowOptions { bands: vec![1, 2, 3], overview: None };
         let read = |r: &mut LazyRaster| {
@@ -3727,12 +3735,15 @@ mod tests {
             assert!(opened(&r) >= 1, "no read opened decoders for its workers over the sparse file");
         }
         // Force the next read to reopen workers rather than reuse cached decoders.
-        let spares = Box::leak(Box::new(crate::geotiff::SpareDecoders::new(0)));
+        static SPARES: crate::geotiff::SpareDecoders = crate::geotiff::SpareDecoders::new(0);
         if let Inner::Tiff(t) = &mut r.inner {
-            t.workers = crate::geotiff::DecoderPool::sharing(spares);
+            t.workers = crate::geotiff::DecoderPool::sharing(&SPARES);
         }
         file.trim(0);
+        let before = header_fetches.get();
+        assert!(before > 0, "the opening read must fetch the TIFF header");
         assert_eq!(read(&mut r), want);
+        assert_eq!(header_fetches.get(), before, "worker reopening must not refetch the trimmed header");
     }
 
     /// `place` matches a pixel-by-pixel copy of each sample of pixel-interleaved chunks, over:
