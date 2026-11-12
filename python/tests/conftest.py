@@ -24,15 +24,21 @@ def _activate_proj_data():
     candidates = [Path(part) for part in configured.split(os.pathsep) if part]
     candidates.append(share / "proj")
     source = next((path for path in candidates if (path / "proj.db").is_file()), None)
-    if source is None:
-        return
     proj_dir = Path(tempfile.mkdtemp(prefix="terrio-proj-"))
     atexit.register(shutil.rmtree, proj_dir, ignore_errors=True)
-    for name in ("proj.db", "proj.ini"):
-        if (source / name).exists():
-            shutil.copy2(source / name, proj_dir)
-    os.environ["PROJ_DATA"] = str(proj_dir)
+    if source is not None:
+        for name in ("proj.db", "proj.ini"):
+            if (source / name).exists():
+                shutil.copy2(source / name, proj_dir)
+        os.environ["PROJ_DATA"] = str(proj_dir)
+    else:
+        # Optional reference wheels can use their own bundled database.
+        os.environ.pop("PROJ_DATA", None)
+    os.environ.pop("PROJ_LIB", None)
     os.environ["PROJ_NETWORK"] = "OFF"
+    os.environ["TERRIO_NETWORK"] = "OFF"
+    os.environ["TERRIO_GRID_DIR"] = str(proj_dir)
+    os.environ["TERRIO_GRID_CACHE"] = str(proj_dir / "grid-cache")
     os.environ["XDG_DATA_HOME"] = str(proj_dir / "user-data")
     if "GDAL_DATA" not in os.environ and (share / "gdal").is_dir():
         os.environ["GDAL_DATA"] = str(share / "gdal")

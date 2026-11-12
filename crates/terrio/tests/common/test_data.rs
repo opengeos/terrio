@@ -16,6 +16,8 @@ fn without_grids() {
 
 /// The path of `name` in `TERRIO_TEST_DATA`, or `None` when the variable is unset so that
 /// real-data tests pass without checking anything. Panics when the file is missing.
+/// The first lookup also disables process-wide grid search and networking. Binaries using
+/// this helper keep grid-policy tests in separate binaries so parallel tests do not reset it.
 pub fn data(name: &str) -> Option<String> {
     without_grids();
     let p = std::path::PathBuf::from(std::env::var_os("TERRIO_TEST_DATA")?).join(name);
