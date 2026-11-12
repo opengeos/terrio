@@ -19,8 +19,14 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 - PROJJSON v0.7 definitions in the [supported object subset](#projjson-definitions);
 - PROJ strings: `+proj=utm +zone=13 +datum=WGS84`, with `+nadgrids=` and `+geoidgrids=` for
   datum shift and geoid grids;
-- the path of a file holding one of these (`SpatialRef::parse_literal` in Rust parses the same
+- the path of a regular file holding one of these (`SpatialRef::parse_literal` in Rust parses the same
   definitions without reading file paths).
+
+Definition-file paths may be symlinks to regular files. Pipes (including shell process
+substitution) and devices are refused without reading them. Callers that intentionally
+read a stream can pass its text as a literal definition instead. Native file opens check
+the opened descriptor too; on Unix they use a nonblocking open to avoid waiting if a
+regular path was replaced by a FIFO.
 
 Engineering WKT roots (`LOCAL_CS`, `ENGCRS`, `ENGINEERINGCRS`) retain their local
 coordinate-system definitions without being assigned an unrelated EPSG code. Both
@@ -350,6 +356,14 @@ A grid named by a path (`+nadgrids=/data/a.gsb`, `./a.gsb`) is read from that pa
 PROJ does, but once search paths are set from code it is treated as missing, with a warning, so a
 CRS definition from untrusted input cannot read grid files from other paths. Add its directory to
 the search paths, or register the grid, instead.
+
+MCP tool processes make the host's effective search directories explicit before running
+commands. A grid named by an absolute or dot-relative path in a client-supplied CRS is
+therefore treated as missing. Put trusted grids in `TERRIO_GRID_DIR`, `PROJ_DATA` or
+`PROJ_LIB` and refer to them by name; the normal user/cache directories remain available.
+Direct CLI calls and library calls retain PROJ-compatible path-named grids by default.
+Rust hosts can use `confine_grid_search_paths()` to apply the MCP policy to their current
+directories, or set an explicit directory list with `set_grid_search_paths`.
 
 A local entry refused for its type or size is treated as missing. With network access enabled, a
 plain grid name can therefore use its CDN copy instead; path-named grids never use the CDN. The

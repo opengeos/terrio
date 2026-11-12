@@ -207,6 +207,25 @@ If the EPSG tests report a few hundred CRSs off by metres, or the warp or point-
 off by centimetres, check for grids in those directories (`projsync` leaves them in the user
 directory).
 
+### CRS definition files and MCP grid paths
+
+`cargo test -p terrio-crs --test definition_files --test grid_path_confinement`
+checks regular CRS files, symlinks, literal-only parsing and grid path rules. The
+FIFO definition regression runs the parser in a subprocess with a five-second
+deadline, so a blocking open fails deterministically and is terminated. It failed
+before the regular-file guard and now returns promptly.
+
+`cargo test -p terrio-cli --test mcp crs_tools_confine_grids_to_host_search_directories`
+uses the real MCP stdio server. An absolute path-named GTX grid is refused, while
+the same transformation succeeds with a grid name in the host's `TERRIO_GRID_DIR`.
+A direct CLI control retains the ordinary path-named grid behavior. This test
+failed before MCP tool processes made their effective search directories explicit.
+
+Independent local GDAL 3.13.3 controls identify a regular WKT file as EPSG:4979 and
+transform `(0.25, 0.5, 100)` to `(0.25, 0.5, 122.5)` with the tiny GTX fixture,
+exactly matching the direct CLI. The confinement policy deliberately differs from
+PROJ's default path lookup; it does not change interpolation or coordinate math.
+
 ## The conformance suite
 
 Complex TIFF writes are checked with

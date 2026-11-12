@@ -91,7 +91,7 @@ mod wkt2;
 
 pub use catalog::{AUTHORITIES, CrsEntry, CrsKind, CrsQuery, EPSG_VERSION, check_authorities, list_crs};
 pub(crate) use def::Def;
-pub use grid::{register_grid, reset_grid_cache, set_grid_search_paths, set_network_enabled};
+pub use grid::{confine_grid_search_paths, register_grid, reset_grid_cache, set_grid_search_paths, set_network_enabled};
 #[doc(hidden)]
 pub use wkt1_write::{Described, describe, epsg_ellipsoid, from_proj_on};
 
@@ -391,7 +391,9 @@ impl SpatialRef {
 
     /// Parses a user-supplied CRS: `EPSG:4326`, `4326`, `urn:ogc:def:crs:EPSG::4326`, an OGC URL,
     /// `OGC:CRS84`, `WGS84`, `ESRI:54009` (or `urn:ogc:def:crs:ESRI::54009`), a WKT definition,
-    /// a PROJ/PROJJSON string, or the path of a file holding one of these (such as a shapefile's `.prj`).
+    /// a PROJ/PROJJSON string, or the path of a regular file holding one of these (such as a
+    /// shapefile's `.prj`). Special files, including pipes and devices, are refused without
+    /// reading them. Use [`Self::parse_literal`] for text read by the caller.
     pub fn parse(s: &str) -> Result<Self> {
         Self::parse_definition(s, true)
     }
@@ -451,7 +453,7 @@ impl SpatialRef {
         // its text is a definition, never the path of another file (one naming itself recursed
         // until the stack overflowed).
         #[cfg(not(target_family = "wasm"))]
-        if files && let Ok(f) = std::fs::File::open(s) {
+        if files && let Some(f) = open_definition_file(s) {
             use std::io::Read;
             const MAX: u64 = 99_999;
             let mut bytes = Vec::new();
@@ -1057,6 +1059,21 @@ fn esri_reference(upper: &str) -> Option<u32> {
         .or_else(|| upper.strip_prefix("URN:OGC:DEF:CRS:ESRI:").map(|r| r.rsplit(':').next().unwrap_or(r)))
         .or_else(|| upper.split_once("/DEF/CRS/ESRI/").map(|(_, r)| r.rsplit('/').next().unwrap_or(r)))?;
     code.trim().parse().ok()
+}
+
+/// Open only regular definition files, checking the descriptor too in case the path changed.
+#[cfg(not(target_family = "wasm"))]
+fn open_definition_file(path: &str) -> Option<std::fs::File> {
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    // A path swapped for a FIFO must not wait for a writer before its type can be checked.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+    let file = options.open(path).ok()?;
+    file.metadata().ok()?.is_file().then_some(file)
 }
 
 fn looks_like_wkt(s: &str) -> bool {
