@@ -1510,6 +1510,25 @@ pub(crate) fn to_bytes(
 mod tests {
     use super::*;
 
+    /// Stored unsigned width copy policy; metadata vocabulary follows GDAL 3.13.3.
+    #[test]
+    fn windows_keep_stored_precision_when_copied_to_tiff() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("precision.j2k");
+        let values: Vec<i32> = (0..16 * 16).map(|index| index * 113).collect();
+        let components = [Component { precision: 15, signed: false, data: values }];
+        let bytes = encode(16, 16, &components, false, &EncodingOptions::from_creation_options(&[]).unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        let mut source = crate::LazyRaster::open(path.to_str().unwrap()).unwrap();
+        let window = source.read_window(crate::Window { x: 2, y: 3, width: 5, height: 4 }, &Default::default()).unwrap();
+        assert_eq!(window.band_sample_bits(0), Some(15));
+        let target = directory.path().join("copy.tif");
+        crate::write_raster_dataset(&window, target.to_str().unwrap(), &Default::default()).unwrap();
+        let mut copied = crate::LazyRaster::open(target.to_str().unwrap()).unwrap();
+        assert_eq!(copied.sample_bits(), Some(15));
+        assert_eq!(copied.read().unwrap().raster.data.to_f64_vec(), window.raster.data.to_f64_vec());
+    }
+
     /// Reference: GDAL 3.13.3. Palette output limits precede any pixel decoding probe.
     #[test]
     fn palette_declarations_are_checked_before_the_pixel_probe() {
