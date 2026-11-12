@@ -1963,14 +1963,15 @@ fn large_row_calls_keep_encoded_work_bounded() {
     let mut writer = terrio::GeoTiffWriter::create(path.to_str().unwrap(), &raster, &options).unwrap();
     writer.write_rows(&data, rows, None).unwrap();
     writer.finish().unwrap();
-    // Linux reports the process's peak resident set in KiB, including the caller's 72 MiB slab.
-    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
-    // SAFETY: getrusage initializes this valid output pointer on success.
-    let usage = unsafe {
-        assert_eq!(libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()), 0);
-        usage.assume_init()
-    };
-    assert!(usage.ru_maxrss < 128 * 1024, "{} KiB peak resident memory", usage.ru_maxrss);
+    // VmHWM measures this child's post-exec address space, including its 72 MiB input slab.
+    // getrusage can instead retain the parent's pre-exec peak when the test harness spawns us.
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let peak_kib = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmHWM:").and_then(|value| value.split_whitespace().next()))
+        .and_then(|value| value.parse::<u64>().ok())
+        .expect("Linux reports VmHWM in KiB");
+    assert!(peak_kib < 128 * 1024, "{peak_kib} KiB peak resident memory");
     let bytes = std::fs::metadata(&path).unwrap().len();
     assert!((72 << 20..73 << 20).contains(&bytes), "{bytes} output bytes");
 
