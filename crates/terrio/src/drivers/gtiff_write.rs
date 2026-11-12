@@ -1241,7 +1241,8 @@ fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels
     // GDAL 3.13.3 generates a missing mask pyramid only beyond the output tile.
     // Smaller sources retain all-valid missing masks even when image overviews exist.
     let has_overview_mask = (first..sizes.len()).any(|i| src.level_has_own_mask(i));
-    let preserve_level_masks = has_overview_mask || (has_base_mask && width <= tile && height <= tile);
+    let destination_only_mask = opts.mask.is_some() && !has_base_mask;
+    let preserve_level_masks = !destination_only_mask && (has_overview_mask || (has_base_mask && width <= tile && height <= tile));
     if masks.is_empty() && has_overview_mask {
         // Keep the level index aligned without introducing a base mask that would
         // override nodata or alpha validity.
@@ -4617,6 +4618,16 @@ mod tests {
             assert_eq!(masks.iter().map(Vec::len).collect::<Vec<_>>(), vec![if base_mask { 32 * 32 } else { 0 }, 16 * 16, 0]);
             assert!(masks[1].iter().all(|&value| value == 0));
             assert!(masks[2].is_empty());
+            if !base_mask {
+                // A caller-supplied mask replaces source validity at every level.
+                let supplied = vec![255; 32 * 32];
+                let options = TiffOptions { mask: Some(supplied.clone()), ..options };
+                let mut levels = vec![Level::from_raster(&raster)];
+                let mut masks = vec![supplied];
+                copy_source_overviews(path.to_str().unwrap(), &raster, &options, &mut levels, &mut masks).unwrap();
+                assert_eq!(masks.iter().map(Vec::len).collect::<Vec<_>>(), [32 * 32, 16 * 16, 8 * 8]);
+                assert!(masks.iter().flatten().all(|&value| value == 255));
+            }
         }
     }
 
