@@ -685,7 +685,7 @@ def test_selected_overview_missing_tags_raise_instead_of_using_base(tmp_path, mo
 )
 @pytest.mark.parametrize("bits", [4, None])
 def test_translate_matches_gdal_for_eager_lazy_and_path(tmp_path, gdal, kernel, mode, bits):
-    """GDAL 3.13.3 caps packed unsigned samples before scaling; float output keeps overshoot."""
+    """GDAL 3.13.3 caps unscaled unsigned samples; scaled and float work keeps overshoot."""
     import terrio
 
     source = tmp_path / "packed-interpolation.tif"
