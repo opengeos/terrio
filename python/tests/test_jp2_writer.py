@@ -25,14 +25,19 @@ TRANSFORM = from_origin(500000, 4600000, 10, 10)
 MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
 # The irreversible 9/7 wavelet is computed in float32. Both decoders read the same payload, yet
 # on macOS arm64 a few samples of some cases decode one step apart from GDAL's. That the OpenJPEG
-# build in rasterio's wheel fuses multiply-adds is inferred, not measured. Like
-# `FMA_ROUNDING_CASES` in `test_resampled_reads.py`, only the cases that differed get a limit,
-# each a few times the fraction measured on the macos-latest runner:
-#   uint8 QUALITY=10:        1 of 49152 samples  -> limit 0.1%
-#   uint8 REVERSIBLE=NO:     2 of 49152 samples  -> limit 0.1%
-#   int16 QUALITY=25 9/7:    3 of 4096 samples   -> limit 0.5%
-#   uint16 QUALITY=25 9/7:  41 of 4096 samples   -> limit 2%
-# Every other case, every case on Linux and Windows, and the reversible 5/3 path stay exact.
+# build in rasterio's wheel fuses multiply-adds is inferred, not measured. As with
+# `FMA_ROUNDING_CASES` in `test_resampled_reads.py`, only the cases that differed get a limit.
+# Measured on the macos-latest runner, with each limit's multiple of it:
+#   uint8 QUALITY=10:        1 of 49152 samples (0.002%) -> limit 0.1% (49 samples, 49x)
+#   uint8 REVERSIBLE=NO:     2 of 49152 samples (0.004%) -> limit 0.1% (49 samples, 25x)
+#   int16 QUALITY=25 9/7:    3 of 4096 samples  (0.07%)  -> limit 0.5% (20 samples, 7x)
+#   uint16 QUALITY=25 9/7:  41 of 4096 samples  (1.0%)   -> limit 2%   (81 samples, 2x)
+# The uint8 limits are 49 samples rather than a few, so a new runner image does not flake on a
+# handful of boundary samples. The limits are looser than that file's 1e-4 because 9/7 output
+# at these qualities sits on rounding boundaries far more often than smooth resampling does.
+# The trade-off: on macOS arm64 alone, a decoder change moving at most these many samples by
+# one step in these four cases would pass. Linux and Windows compare every case exactly, so it
+# would fail there. Every other case, and the reversible 5/3 path, stays exact everywhere.
 DRIFT_UINT8 = 0.001
 
 
@@ -164,6 +169,8 @@ def test_real_landsat_quality_controls_size(data_dir):
     with rasterio.open(data_dir / "landsat7.tif") as src:
         data = src.read([1, 2, 3], window=rasterio.windows.Window(500, 500, 128, 128))
     low, high, exact = (encode(data, quality=q) for q in (10, 50, 100))
+    # The quality 10 and 50 payloads are 9/7 decodes too. They matched GDAL exactly on macOS
+    # arm64, so they stay exact rather than take a limit that was never measured.
     assert len(low) < len(high) < len(exact)
     for payload in (low, high, exact):
         with GdalMemoryFile(payload) as mem, mem.open() as oracle:
