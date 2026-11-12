@@ -1529,7 +1529,10 @@ class DatasetReader(DatasetBase):
                     int(v) for v in (window.col_off, window.row_off, window.width, window.height)
                 )
             )
-            return np.asarray(self._raster.read(None, window=region, out_dtype="complex128"))
+            try:
+                return np.asarray(self._raster.read(None, window=region, out_dtype="complex128"))
+            except Exception as err:
+                raise RasterioIOError(f"Read failed: {err}") from err
         return self.read(window=window)
 
     def _sample_level(

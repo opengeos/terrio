@@ -446,3 +446,25 @@ def test_complex_writer_rejects_a_conflicting_physical_sample_selector(tmp_path,
             transform=rio.Affine.from_gdal(*GT),
         )
     assert not path.exists()
+
+
+def test_integer_complex_copy_reports_native_read_errors(tmp_path, monkeypatch, gdal):
+    """A failed precise CInt32 copy read uses the rio exception contract."""
+    from terrio.rio.errors import RasterioIOError
+
+    source = tmp_path / "source.tif"
+    ds = gdal.GetDriverByName("GTiff").Create(str(source), 2, 2, 1, gdal.GDT_CInt32)
+    ds.Close()
+    with rio.open(source) as reader:
+        native = reader._raster
+
+        class FailedRead:
+            def read(self, *args, **kwargs):
+                raise ValueError("injected read failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(reader, "_raster", FailedRead())
+            with pytest.raises(RasterioIOError, match="injected read failure") as caught:
+                reader._read_for_copy()
+            assert isinstance(caught.value.__cause__, ValueError)
+        assert reader._raster is native
