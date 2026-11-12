@@ -7,8 +7,28 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 - EPSG codes: `EPSG:32613`, `32613`, `urn:ogc:def:crs:EPSG::32613`,
   `http://www.opengis.net/def/crs/EPSG/0/32613`, including geographic 3D CRSs (`EPSG:4979`) and
   compound CRSs (`EPSG:5498`);
-- a horizontal and a vertical CRS, as GDAL builds them: `EPSG:4326+5773` (WGS 84 with EGM96
-  heights);
+- Horizontal plus vertical EPSG pairs: `EPSG:4326+5773` (WGS 84 with EGM96 heights), `EPSG:2154+5720` and
+  `urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::5720`. Both components are retained,
+  including in GML and CityGML metadata. Compound URNs require exactly two
+  components: a two-dimensional horizontal CRS followed by a vertical CRS.
+  Unsupported authorities, missing components and invalid component roles are errors.
+  This also rejects previously accepted strings with a 3D horizontal component such as
+  `EPSG:4979+5720`; string references require two horizontal axes before adding a height.
+  An unversioned URN component needs the empty version separator (`crs:EPSG::2154`);
+  the formerly accepted CityGML form `crs:EPSG:2154` is refused.
+  The native GML reader rejects an unsupported compound CRS when it is selected
+  for a layer, rather than keeping one component or silently discarding that metadata.
+  A geometry's `srsName` takes precedence over the collection envelope's reference;
+  an unused unsupported envelope CRS can therefore be ignored. The optional
+  GDAL fallback can read additional authorities and follows GDAL's driver settings.
+  WFS service metadata retains its existing permissive handling of unrecognized CRSs;
+  the strict unsupported-compound refusal here applies to native GML/CityGML reads.
+  GML layers refuse differing resolved geometry CRSs, including vertical-component
+  differences, instead of assigning the first geometry's metadata to every feature.
+  GML and WFS `srsName` values are parsed as literal metadata and never as local CRS files.
+  Terrio retains the compound metadata in GML; GDAL requires
+  [`GML_REPORT_COMPD_CS=YES`](https://github.com/OSGeo/gdal/blob/v3.13.3/ogr/ogrsf_frmts/gml/ogrgmldatasource.cpp#L1601)
+  to report both GML components;
 - `OGC:CRS84` and `WGS84`;
 - ESRI codes, the geographic and projected CRSs of PROJ's ESRI authority: `ESRI:54009` (World
   Mollweide), `esri:102003`, `urn:ogc:def:crs:ESRI::102003`. The few whose projection terrio
@@ -19,8 +39,14 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 - PROJJSON v0.7 definitions in the [supported object subset](#projjson-definitions);
 - PROJ strings: `+proj=utm +zone=13 +datum=WGS84`, with `+nadgrids=` and `+geoidgrids=` for
   datum shift and geoid grids;
-- the path of a file holding one of these (`SpatialRef::parse_literal` in Rust parses the same
+- the path of a regular file holding one of these (`SpatialRef::parse_literal` in Rust parses the same
   definitions without reading file paths).
+
+Definition-file paths may be symlinks to regular files. Pipes (including shell process
+substitution) and devices are refused without reading them. Callers that intentionally
+read a stream can pass its text as a literal definition instead. Native file opens check
+the opened descriptor too; on Unix they use a nonblocking open to avoid waiting if a
+regular path was replaced by a FIFO.
 
 Engineering WKT roots (`LOCAL_CS`, `ENGCRS`, `ENGINEERINGCRS`) retain their local
 coordinate-system definitions without being assigned an unrelated EPSG code. Both
@@ -167,9 +193,16 @@ The [standalone benchmark validation](crs-benchmark-validation.md) records the
 direct native/fallback results against both pinned upstream suites.
 
 Canonical EPSG references use one parser in both standalone configurations.
+The legacy unversioned `urn:x-ogc:def:crs:EPSG:4326` form is now accepted by both
+the native parser and the fallback;
+versioned X-OGC forms remain unsupported. Use the modern versioned OGC URN below.
+An unversioned modern OGC URN requires the empty version separator, as in
+`urn:ogc:def:crs:EPSG::4326`; the fallback now refuses the single-colon form
+`urn:ogc:def:crs:EPSG:4326` that its former free-form parser accepted.
 Versioned URNs/URLs resolve the code separately from the authority version
 (`urn:ogc:def:crs:EPSG:6.6:4326` resolves EPSG:4326). The fallback retains its
-legacy free-form authority extraction only after canonical parsing fails;
+legacy numeric suffix handling only after a recognized authority prefix fails
+canonical parsing; unrelated text is never searched for an EPSG code;
 inputs such as `EPSG:4326junk` are refused by the native default and retain the
 legacy acceptance with the fallback. Inputs beginning with `+` remain PROJ
 strings in every configuration.
@@ -257,6 +290,50 @@ The conformance suite `crs-list` (`scripts/compare_crs_list_with_gdal.py`) compa
 CRS with GDAL 3.13.2's list (PROJ 9.8.1), field by field: all are identical.
 
 ## PROJ string interpretation changes
+
+Recognized boolean switches, including UTM and UPS `south`, accept a bare flag
+or an explicit case-insensitive value: `true`, `t`, `yes`, `y`, `on`, `1` enable
+it; `false`, `f`, `no`, `n`, `off`, `0` disable it. Other values are refused.
+This differs from treating every supplied value as an enabled flag. Python's
+`terrio.rio.CRS.to_proj4()` writes enabled flags as `+flag` and omits disabled
+ones; `to_dict()` keeps boolean types.
+Flags combined with `+init=epsg:N`, except the metadata switches `no_defs` and
+`wktext`, are refused because that path cannot apply overrides to the registry
+definition. Use an expanded `+proj` definition when changing these flags.
+
+PROJ parameter exports preserve projection-specific standard parallels, the
+validated PROJ4 extension of a WKT definition (including Web Mercator), named
+PROJ datums and explicit WKT `TOWGS84` operations. A datum with neither a PROJ
+name nor an explicit shift is exported as an ellipsoid with a warning that
+its identity and coordinate operations are omitted. An ellipsoid is not a
+datum: a round trip can then select a ballpark operation and move points.
+Use `to_wkt()`, PROJJSON or the authority code to preserve such datums and
+their area-dependent or grid-based operation selection. Unsupported projection
+exports remain empty rather than describing another projection.
+An explicit `TOWGS84` operation takes precedence over a named datum and exports
+as the ellipsoid plus that shift. A recognized datum name with a custom spheroid
+and no effective registry identity exports the supplied ellipsoid with a warning.
+An ordinary WKT retaining an outer EPSG identity uses the registry definition
+for both transformations and parameter exports, even if its nodes were edited.
+Parameter exports warn when they detect WKT1 projection or datum parameters conflicting with that
+registry definition. Remove that identity when defining a custom CRS. Mapping constructors with
+`init` retain the authority and ignore non-switch parameters for compatibility;
+recognized boolean overrides are still validated and refused as described above.
+
+Python's existing WKT-to-parameter adapter handles these rasterio-compatible
+dictionary exports. Its canonical datum spheroids come from the shared native
+CRS reader and are cached in Python; projection and datum transformations remain
+in Rust. The adapter preserves WKT standard-parallel conventions when producing
+PROJ's parameter names, including negative southern polar standard parallels.
+
+Transforms retain authority-based operation selection for unbound WKT and dataset
+CRSs. WKT containing an explicit `TOWGS84`, `BOUNDCRS` or bound transformation keeps
+that operation even when it also declares an EPSG code. This follows PROJ's bound
+CRS interpretation and can differ from rasterio's authority normalization of
+GDAL-written WKT1. Tests add synthetic shifts to EPSG:27700 and EPSG:23031,
+serialize the resulting WKT with GDAL and compare it against PROJ within 1 mm.
+These optional reference tests require both GDAL Python bindings and pyproj;
+the real-data CI job installs them, while the ordinary Python job can skip them.
 
 PROJ strings supplied as CRSs follow PROJ's CRS import rules. For polar
 `+proj=stere` with `+lat_0=90` or `-90`, an explicit `+lat_ts` selects the
@@ -350,6 +427,14 @@ A grid named by a path (`+nadgrids=/data/a.gsb`, `./a.gsb`) is read from that pa
 PROJ does, but once search paths are set from code it is treated as missing, with a warning, so a
 CRS definition from untrusted input cannot read grid files from other paths. Add its directory to
 the search paths, or register the grid, instead.
+
+MCP tool processes make the host's effective search directories explicit before running
+commands. A grid named by an absolute or dot-relative path in a client-supplied CRS is
+therefore treated as missing. Put trusted grids in `TERRIO_GRID_DIR`, `PROJ_DATA` or
+`PROJ_LIB` and refer to them by name; the normal user/cache directories remain available.
+Direct CLI calls and library calls retain PROJ-compatible path-named grids by default.
+Rust hosts can use `confine_grid_search_paths()` to apply the MCP policy to their current
+directories, or set an explicit directory list with `set_grid_search_paths`.
 
 A local entry refused for its type or size is treated as missing. With network access enabled, a
 plain grid name can therefore use its CDN copy instead; path-named grids never use the CDN. The

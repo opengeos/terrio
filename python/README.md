@@ -94,6 +94,24 @@ red = terrio.open_raster('STACIT:"https://earth-search.aws.element84.com/v1/sear
 terrio.open_raster("landsat.tif").write("landsat.pmtiles")  # Byte rasters as tiles (or .mbtiles)
 ```
 
+Complex arrays can select physical storage with `Raster.from_array(...,
+complex_dtype="CInt32")`. The selector also accepts `complex_int32` as an alias;
+it names integer component storage, not a NumPy array dtype. Use a `complex128`
+input to retain every Int32 component exactly. The rasterio-compatible writer
+accepts its supported array dtype names and refuses `dtype="complex_int32"`;
+`terrio.rio.shutil.copy` preserves an existing CInt32 raster without that dtype
+selector. An explicit `dtype` creation option overrides the source sample type and
+can reduce component precision. Default complex reads retain their existing dtype; request
+`read(out_dtype="complex128")` for exact Int32 components. An explicit real
+`out_dtype`, such as `float32`, follows NumPy casting: it keeps the real component
+and emits `ComplexWarning`. Real outputs that hold every Int32 component, such as
+`float64` or `int32`, read them exactly; narrower ones, such as `float32`, pass through
+complex64 first, so values above 2^24 may round. Use
+`read(out_dtype="complex128").real` for exact real components. Select a complex dtype
+to preserve both components. Complex `terrio.rio` reads support unresampled windows and
+nearest-neighbour resampling. Other interpolation methods compute real and imaginary
+components separately; their complex results have not been validated against GDAL.
+
 ## Vector data
 
 ```python

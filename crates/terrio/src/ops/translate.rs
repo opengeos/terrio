@@ -450,8 +450,18 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
     let grid = Grid { width: ow, height: oh, geo_transform: gt };
     let srs = o.assign_srs.clone().unwrap_or_else(|| ds.crs());
     let mut res = super::build_raster_data(grid, out, bands.len(), out_nodata.first().copied().flatten(), &srs)?;
+    res.complex = ds.complex
+        && matches!(out_type, DataType::I16 | DataType::I32 | DataType::F32 | DataType::F64)
+        && bands.len().is_multiple_of(2)
+        && bands.as_chunks::<2>().0.iter().all(|p| p[0] % 2 == 1 && p[1] == p[0] + 1);
     res.raster.metadata = ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
-    res.band_metadata = bands.iter().map(|&b| ds.band_metadata.get(b - 1).cloned().unwrap_or_default()).collect();
+    res.band_metadata = if res.complex {
+        bands.as_chunks::<2>().0.iter().map(|p| ds.band_metadata.get((p[0] - 1) / 2).cloned().unwrap_or_default()).collect()
+    } else if ds.complex {
+        bands.iter().map(|&b| ds.band_metadata.get((b - 1) / 2).cloned().unwrap_or_default()).collect()
+    } else {
+        bands.iter().map(|&b| ds.band_metadata.get(b - 1).cloned().unwrap_or_default()).collect()
+    };
     if win != (0., 0., w, h)
         || ow != r.cols
         || oh != r.rows

@@ -69,6 +69,34 @@ red = terrio.open_raster('STACIT:"https://earth-search.aws.element84.com/v1/sear
 terrio.open_raster("landsat.tif").write("landsat.pmtiles")  # Byte rasters as tiles (or .mbtiles)
 ```
 
+Complex GeoTIFF/COG writes accept NumPy `complex64` and `complex128` through
+`terrio.rio.open`, `Raster.from_array`, and the row writers. Each complex band remains
+one TIFF band, with paired real and imaginary components. `terrio.rio.shutil.copy`
+preserves CInt16 and CInt32 sample types as well; its CInt32 copy reads precise
+components before the normal rasterio-compatible `complex64` conversion can round them.
+For explicit integer-complex output, use `dtype="complex_int16"` in `terrio.rio`, or
+`Raster.from_array(array, transform, complex_dtype="CInt16")` / `"CInt32"`.
+Integer components are rounded and saturated, as GDAL 3.13.3 converts them.
+`raster.read(out_dtype="complex128")` (and `np.asarray(raster, dtype="complex128")`)
+preserves every Int32 component on direct `Raster` and `terrio.rio` dataset reads;
+the default complex dtype remains compatible with rasterio. `WarpedVRT` currently
+does not support complex working dtypes, so this guarantee does not cover VRT reads.
+Converting CInt32 to `float64` or a 32-bit-or-wider integer output reads the components
+without a float32 intermediate. Unsigned outputs preserve exactly representable positive
+components; their final signed-to-unsigned conversion follows the existing cast policy.
+A narrower real dtype, such as `float32`, first passes through complex64, which can round Int32 components above 2^24. Use
+`raster.read(out_dtype="complex128").real` to retain exact real components of any type.
+Updates retain the physical complex sample type. Integer-complex writers keep components in complex128 buffers, so CInt16 output rounds
+once from the input precision and CInt32 output retains every integer component. Memory,
+spill-file selection and slab accounting include their 16 bytes per complex sample.
+`Raster.from_array` retains a native component buffer in addition to the input array;
+a non-contiguous complex input also needs a contiguous NumPy copy during construction.
+These constructor copies are not admitted against the read working-memory limit.
+Complex `terrio.rio` reads support unresampled windows and nearest-neighbour resampling;
+other interpolation methods compute real and imaginary components separately. Their complex
+results have not been validated against GDAL.
+Complex output supports NONE, LZW, DEFLATE, PACKBITS and ZSTD compression.
+
 ## Vector data
 
 ```python

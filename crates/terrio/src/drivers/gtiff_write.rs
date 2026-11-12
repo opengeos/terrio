@@ -2076,16 +2076,17 @@ impl TiffRows {
         }
         let mut options = options.inherited_from(header, Some(crate::formats::RasterDriver::GTiff));
         let with_mask = options.mask.take().is_some();
-        let opts = TiffOptions::from_write_options(&options, false, crate::dataset::tiff_nodata(header))?.ok_or_else(|| {
+        let mut opts = TiffOptions::from_write_options(&options, false, crate::dataset::tiff_nodata(header))?.ok_or_else(|| {
             let name = options.compression.as_deref().unwrap_or_default();
             Error::Unsupported(format!("{name} compression needs the whole raster"))
         })?;
+        opts.complex = header.complex;
         let r = &header.raster;
         let plan = plan(r, &opts)?;
         let (cols, rows, bands) = (r.cols, r.rows, r.bands);
         let size = r.data_type.size_bytes();
         let planar = plan.layout.planar;
-        let chunk_spp = if planar { 1 } else { bands };
+        let chunk_spp = if planar { plan.layout.parts } else { bands };
         let (chunk_w, block_rows, across, down) = match plan.tile {
             Some((tw, th)) => (tw as usize, th as usize, cols.div_ceil(tw as usize), rows.div_ceil(th as usize)),
             None => {
@@ -2093,7 +2094,7 @@ impl TiffRows {
                 (cols, per, 1, rows.div_ceil(per))
             }
         };
-        let planes = if planar { bands } else { 1 };
+        let planes = if planar { bands / plan.layout.parts } else { 1 };
         check_rows_held(r, block_rows)?;
         if plan.tile.is_some() {
             crate::dataset::fallible::check_raster_buffer("a GeoTIFF tile", chunk_w, block_rows, chunk_spp, r.data_type)?;

@@ -18,6 +18,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tiff_infers_cog_layout, m)?)?;
     m.add_function(wrap_pyfunction!(gdal_compat, m)?)?;
     m.add_function(wrap_pyfunction!(crs_info, m)?)?;
+    m.add_function(wrap_pyfunction!(proj_boolean_parameters, m)?)?;
     m.add_function(wrap_pyfunction!(crs_projjson, m)?)?;
     m.add_function(wrap_pyfunction!(crs_to_projjson, m)?)?;
     m.add_function(wrap_pyfunction!(suggested_grid, m)?)?;
@@ -312,6 +313,21 @@ fn crs_info<'py>(py: Python<'py>, crs: &str) -> PyResult<Bound<'py, PyDict>> {
     d.set_item("name", s.name())?;
     d.set_item("is_geographic", s.is_geographic())?;
     Ok(d)
+}
+
+/// Normalizes boolean PROJ parameters with the shared CRS parser.
+///
+/// Args:
+///     definition: A PROJ parameter string.
+///
+/// Returns:
+///     list: Parameter names and boolean values, in definition order.
+///
+/// Raises:
+///     CRSError: Quoting or a recognized flag's value is invalid.
+#[pyfunction]
+fn proj_boolean_parameters(definition: &str) -> PyResult<Vec<(String, bool)>> {
+    terrio::crs::proj_boolean_parameters(definition).py()
 }
 
 /// A CRS as PROJJSON, as GDAL (3.12.1, with PROJ 9.7.1) writes it, without PROJ.

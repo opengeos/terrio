@@ -2877,13 +2877,17 @@ pub(crate) fn place<T: Copy>(out: &mut [T], vals: &[T], g: &ChunkGeom, w: Window
             out[dst..dst + n].copy_from_slice(&vals[src..src + n]);
             continue;
         }
-        for col in c0..c1 {
-            let src = (src_row + col - g.x0) * g.spp;
-            let dst = dst_row + col - w.x;
-            for (sample, band) in map {
-                if let Some(v) = vals.get(src + sample) {
-                    out[band * band_len + dst] = *v;
-                }
+        // Each sample copied to its band, a band at a time; a chunk shorter than its rows (a
+        // truncated one) leaves the columns past its end as they are.
+        if c1 <= c0 {
+            continue;
+        }
+        let first = (src_row + c0 - g.x0) * g.spp;
+        let dst = dst_row + c0 - w.x;
+        for &(sample, band) in map {
+            let src = vals.get(first + sample..).unwrap_or_default().iter().step_by(g.spp);
+            for (o, v) in out[band * band_len + dst..][..c1 - c0].iter_mut().zip(src) {
+                *o = *v;
             }
         }
     }
@@ -3658,6 +3662,42 @@ mod tests {
         let peak = crate::geotiff::PEAK_WORKERS.load(std::sync::atomic::Ordering::Relaxed);
         let limit = crate::geotiff::decode_worker_limit();
         assert!(peak <= limit, "{peak} decode workers at once, over the {limit} allowed");
+    }
+
+    /// `place` matches a pixel-by-pixel copy of each sample of pixel-interleaved chunks, over:
+    /// samples sent to any bands, chunks cropped by the window on every side, a chunk not reaching
+    /// the window, and a truncated chunk, whose missing samples leave the output as it was.
+    #[test]
+    fn interleaved_chunks_are_placed_sample_by_sample() {
+        fn by_pixel(out: &mut [u16], vals: &[u16], g: &ChunkGeom, w: Window, map: &[(usize, usize)]) {
+            let stride = vals.len() / (g.dh * g.spp);
+            for row in g.y0.max(w.y)..(g.y0 + g.dh).min(w.y + w.height) {
+                for col in g.x0.max(w.x)..(g.x0 + g.dw).min(w.x + w.width) {
+                    let src = ((row - g.y0) * stride + col - g.x0) * g.spp;
+                    for &(sample, band) in map {
+                        if let Some(v) = vals.get(src + sample) {
+                            out[band * w.width * w.height + (row - w.y) * w.width + col - w.x] = *v;
+                        }
+                    }
+                }
+            }
+        }
+        let (dw, dh, spp) = (16, 12, 3);
+        let full: Vec<u16> = (0..(dw * dh * spp) as u16).collect();
+        let maps: [&[(usize, usize)]; 3] = [&[(0, 0), (1, 1), (2, 2)], &[(2, 0), (0, 1)], &[(1, 1)]];
+        let windows = [Window::new(0, 0, 16, 12), Window::new(5, 3, 20, 20), Window::new(10, 7, 4, 3), Window::new(18, 0, 4, 4)];
+        let g = ChunkGeom { x0: 2, y0: 1, dw, dh, spp };
+        for vals in [&full[..], &full[..full.len() - 50]] {
+            for map in maps {
+                for w in windows {
+                    let mut want = vec![u16::MAX; w.width * w.height * 3];
+                    let mut got = want.clone();
+                    by_pixel(&mut want, vals, &g, w, map);
+                    place(&mut got, vals, &g, w, map);
+                    assert_eq!(got, want, "{w:?} {map:?} {} samples", vals.len());
+                }
+            }
+        }
     }
 
     /// With the cache off, reads decode every time and look nothing up.

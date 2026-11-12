@@ -1,5 +1,5 @@
-//! A minimal read-only SQLite reader: whole-table scans of rowid tables, enough to read
-//! GeoPackage tile pyramids.
+//! A read-only SQLite reader: rowid-table scans, bounded row visitors and index lookups
+//! for GeoPackage features and tile pyramids.
 
 use crate::{Error, Result};
 
@@ -57,6 +57,66 @@ impl Table {
     }
 }
 
+/// A callback borrowing one encoded table record.
+type TableRecordVisitor<'a> = dyn FnMut(usize, i64, &[u8]) -> Result<bool> + 'a;
+
+/// A borrowed record whose attributes are decoded only after selection.
+pub(crate) struct TableRow<'a> {
+    db: &'a Db,
+    payload: &'a [u8],
+    rowid: i64,
+    rowid_col: Option<usize>,
+    columns: usize,
+}
+
+impl TableRow<'_> {
+    /// Materialize all values and restore an INTEGER PRIMARY KEY alias.
+    pub(crate) fn values(&self) -> Result<Vec<Value>> {
+        let mut values = self.db.decode_record(self.payload)?;
+        values.resize(self.columns.max(values.len()), Value::Null);
+        if let Some(c) = self.rowid_col
+            && values[c] == Value::Null
+        {
+            values[c] = Value::Int(self.rowid);
+        }
+        Ok(values)
+    }
+
+    /// Borrow one blob without decoding or allocating any other field, in any text encoding.
+    pub(crate) fn blob(&self, column: usize) -> Result<Option<&[u8]>> {
+        let (header, mut cursor) = varint(self.payload, 0).ok_or_else(|| bad("record header"))?;
+        let header =
+            usize::try_from(header).ok().filter(|&n| n >= cursor && n <= self.payload.len()).ok_or_else(|| bad("record header"))?;
+        let mut offset = header;
+        let mut index = 0;
+        while cursor < header {
+            let (kind, size) = varint(self.payload, cursor).filter(|&(_, n)| n <= header - cursor).ok_or_else(|| bad("record type"))?;
+            let len =
+                if kind >= 12 { usize::try_from((kind - 12) / 2).map_err(|_| bad("record value size"))? } else { Db::value_len(kind) };
+            if index == column {
+                if kind < 12 || kind % 2 != 0 {
+                    return Ok(None);
+                }
+                let end = offset.checked_add(len).ok_or_else(|| bad("record value"))?;
+                return self.payload.get(offset..end).map(Some).ok_or_else(|| bad("record value"));
+            }
+            offset = offset.checked_add(len).ok_or_else(|| bad("record value"))?;
+            cursor += size;
+            index += 1;
+        }
+        Ok(None)
+    }
+}
+
+/// State of an ordered, early-stopping rowid-table traversal.
+struct TableScan<'a> {
+    skip: usize,
+    remaining: Option<usize>,
+    ordinal: usize,
+    visited: PageSet,
+    visit: &'a mut TableRecordVisitor<'a>,
+}
+
 /// A schema entry: `(type, name, table, root page, sql)`.
 pub(crate) type SchemaEntry = (String, String, String, u32, String);
 
@@ -65,6 +125,8 @@ pub(crate) struct Db {
     data: Bytes,
     page_size: usize,
     usable: usize,
+    #[cfg(test)]
+    decoded_records: std::sync::atomic::AtomicUsize,
 }
 
 /// A database's bytes: in memory, or a file mapped into memory (native builds), which reads only
@@ -288,7 +350,13 @@ impl Db {
         };
         // SQLite requires at least 480 usable bytes a page.
         let usable = page_size.checked_sub(data[20] as usize).filter(|&u| u >= 480).ok_or_else(|| bad("invalid reserved space"))?;
-        Ok(Self { data, page_size, usable })
+        Ok(Self {
+            data,
+            page_size,
+            usable,
+            #[cfg(test)]
+            decoded_records: std::sync::atomic::AtomicUsize::new(0),
+        })
     }
 
     /// Whether the database is a file mapped into memory, not bytes read.
@@ -349,6 +417,53 @@ impl Db {
         }
         let right = u32::from_be_bytes(page[h + 8..h + 12].try_into().map_err(|_| bad("page"))?);
         self.leaves(right, out, visited, depth + 1)
+    }
+
+    /// Walk only as far as the requested rows. Skipped leaf cells do not read their payloads
+    /// or overflow chains, and reaching a limit does not visit subsequent tree branches.
+    fn walk_table(&self, root: u32, scan: &mut TableScan<'_>, depth: usize) -> Result<bool> {
+        if depth > 64 {
+            return Err(bad("b-tree too deep"));
+        }
+        scan.visited.insert(root)?;
+        let page = self.page(root)?;
+        let h = if root == 1 { 100 } else { 0 };
+        let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
+        match page[h] {
+            0x05 => {
+                for c in 0..cells {
+                    let off = cell_pointer(page, h + 12 + 2 * c)?;
+                    let child = u32::from_be_bytes(page.get(off..off + 4).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("cell"))?);
+                    if !self.walk_table(child, scan, depth + 1)? {
+                        return Ok(false);
+                    }
+                }
+                let right = u32::from_be_bytes(page[h + 8..h + 12].try_into().map_err(|_| bad("page"))?);
+                self.walk_table(right, scan, depth + 1)
+            }
+            0x0d => {
+                let skipped = scan.skip.min(cells);
+                scan.skip -= skipped;
+                scan.ordinal += skipped;
+                for c in skipped..cells {
+                    let off = cell_pointer(page, h + 8 + 2 * c)?;
+                    let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
+                    let (rowid, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
+                    let size = usize::try_from(size).map_err(|_| bad("cell"))?;
+                    let payload = self.payload(page, off + n1 + n2, size)?;
+                    let ordinal = scan.ordinal;
+                    scan.ordinal += 1;
+                    if let Some(left) = &mut scan.remaining {
+                        *left -= 1;
+                    }
+                    if !(scan.visit)(ordinal, rowid, &payload)? || scan.remaining == Some(0) {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            _ => Err(bad("unsupported page type")),
+        }
     }
 
     /// The first stored row of a table, descending only its leftmost b-tree branch.
@@ -747,6 +862,49 @@ impl Db {
         Ok(Table { columns, rows })
     }
 
+    /// Visit borrowed rows in table order, skipping payloads outside the range. Optional
+    /// rowids restrict the traversal to those lookups (in the supplied order). The callback
+    /// receives the ordinal including skipped rows (within the supplied sequence for rowid
+    /// lookups), and can stop before reading another record.
+    pub(crate) fn visit_table_rows(
+        &self,
+        name: &str,
+        rowids: Option<&[i64]>,
+        skip: usize,
+        maximum: Option<usize>,
+        visit: &mut dyn FnMut(usize, TableRow<'_>) -> Result<bool>,
+    ) -> Result<()> {
+        let (root, sql) = self.table_root(name)?;
+        let columns = columns(&sql);
+        let rowid_col = integer_primary_key(&sql, &columns);
+        if maximum == Some(0) {
+            return Ok(());
+        }
+        let mut decode =
+            |ordinal, rowid, payload: &[u8]| visit(ordinal, TableRow { db: self, payload, rowid, rowid_col, columns: columns.len() });
+        if let Some(ids) = rowids {
+            let mut ordinal = 0;
+            let mut kept = 0;
+            for &rowid in ids {
+                let Some(payload) = self.lookup(root, rowid)? else { continue };
+                let current = ordinal;
+                ordinal += 1;
+                if current < skip {
+                    continue;
+                }
+                kept += 1;
+                if !decode(current, rowid, &payload)? || maximum.is_some_and(|m| kept == m) {
+                    break;
+                }
+            }
+        } else {
+            let mut scan =
+                TableScan { skip, remaining: maximum, ordinal: 0, visited: PageSet::new(self.pages() as u64), visit: &mut decode };
+            self.walk_table(root, &mut scan, 0)?;
+        }
+        Ok(())
+    }
+
     /// The raw rows of a table: `(rowid, values)` with a rowid alias column left NULL, as
     /// stored. For rewriting a database: invalid text is an error, not rewritten as U+FFFD.
     pub(crate) fn stored_rows(&self, root: u32) -> Result<Vec<(i64, Vec<Value>)>> {
@@ -766,7 +924,15 @@ impl Db {
     /// Decodes a record for reading, its text in the database's encoding. Invalid text becomes
     /// U+FFFD, preserving the display reader's replacement policy; a malformed record is an error.
     pub(crate) fn decode_record(&self, payload: &[u8]) -> Result<Vec<Value>> {
+        #[cfg(test)]
+        self.decoded_records.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         super::sqlite_repack::decode_record_lossy(payload, self.text_encoding())
+    }
+
+    /// Actual decoder calls on this database, including calls from worker threads.
+    #[cfg(test)]
+    pub(crate) fn decoded_record_count(&self) -> usize {
+        self.decoded_records.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The text encoding of the database: 1 for UTF-8, 2 and 3 for UTF-16.
@@ -1219,6 +1385,94 @@ pub(crate) mod fixtures {
 mod tests {
     use super::fixtures::{database, interior, shared_children};
     use super::*;
+
+    /// GDAL 3.13.3 table order is preserved without decoding skipped overflow records.
+    #[test]
+    fn table_pages_preserve_row_ordinals_and_primary_keys() {
+        use crate::drivers::vector::sqlite as writer;
+        let table = writer::Table {
+            name: "records".into(),
+            sql: "CREATE TABLE records(fid INTEGER PRIMARY KEY,name TEXT,payload BLOB)".into(),
+            rows: (0..1800)
+                .map(|i| {
+                    (
+                        i * 3 + 11,
+                        vec![
+                            writer::Value::Null,
+                            writer::Value::Text(format!("café水-{i}")),
+                            writer::Value::Blob(vec![i as u8; if i % 7 == 0 { 8192 } else { 3 }]),
+                        ],
+                    )
+                })
+                .collect(),
+            autoindexes: vec![],
+        };
+        let db = Db::new(writer::write_database(&[table], &[], 0, 0).unwrap()).unwrap();
+        let all = db.table("records").unwrap();
+        let before_schema = db.decoded_record_count();
+        db.visit_table_rows("records", None, 0, Some(0), &mut |_, _| panic!("zero limit visited a record")).unwrap();
+        let schema_decodes = db.decoded_record_count() - before_schema;
+        assert_eq!(schema_decodes, 1, "even a zero limit reads the one-row schema to find the table");
+        for (skip, limit) in [(0, Some(0)), (1, Some(2)), (497, Some(5)), (1799, None), (1800, None), (usize::MAX, Some(usize::MAX))] {
+            let mut rows = Vec::new();
+            let mut ordinals = Vec::new();
+            let before = db.decoded_record_count();
+            db.visit_table_rows("records", None, skip, limit, &mut |ordinal, row| {
+                ordinals.push(ordinal);
+                rows.push(row.values()?);
+                Ok(true)
+            })
+            .unwrap();
+            let start = skip.min(all.rows.len());
+            let end = limit.map_or(all.rows.len(), |m| start.saturating_add(m).min(all.rows.len()));
+            assert_eq!(rows, all.rows[start..end]);
+            assert_eq!(ordinals, (start..end).collect::<Vec<_>>());
+            assert_eq!(db.decoded_record_count() - before - schema_decodes, end - start);
+        }
+        let mut rows = Vec::new();
+        db.visit_table_rows("records", Some(&[11, 14, 15, 35]), 1, Some(2), &mut |_, row| {
+            rows.push(row.values()?);
+            Ok(true)
+        })
+        .unwrap();
+        assert_eq!(rows, [all.rows[1].clone(), all.rows[8].clone()]);
+    }
+
+    /// Geometry projection does not materialize neighboring text, including UTF-16 databases.
+    #[test]
+    fn borrowed_blob_projection_leaves_other_values_undecoded() {
+        use crate::drivers::vector::sqlite as writer;
+        let payload = writer::record(&[
+            writer::Value::Text("café水".repeat(2000)),
+            writer::Value::Blob(vec![1, 2, 3, 255]),
+            writer::Value::Null,
+            writer::Value::Blob(Vec::new()),
+        ]);
+        for encoding in 1u32..=3 {
+            let mut bytes = database(2);
+            bytes[56..60].copy_from_slice(&encoding.to_be_bytes());
+            let db = Db::new(bytes).unwrap();
+            let row = TableRow { db: &db, payload: &payload, rowid: 1, rowid_col: None, columns: 4 };
+            let blob = row.blob(1).unwrap().unwrap();
+            assert_eq!(blob, &[1, 2, 3, 255]);
+            assert!(blob.as_ptr() >= payload.as_ptr() && blob.as_ptr() < payload.as_ptr_range().end);
+            assert!(row.blob(0).unwrap().is_none());
+            assert!(row.blob(2).unwrap().is_none());
+            assert_eq!(row.blob(3).unwrap(), Some([].as_slice()));
+            assert!(row.blob(4).unwrap().is_none());
+            assert_eq!(db.decoded_record_count(), 0);
+            let truncated = TableRow { payload: &payload[..payload.len() - 2], ..row };
+            assert!(truncated.blob(1).is_err());
+        }
+    }
+
+    #[test]
+    fn paged_table_walk_rejects_shared_children() {
+        let db = Db::new(shared_children(4)).unwrap();
+        let mut visit = |_, _, _: &[u8]| Ok(true);
+        let mut scan = TableScan { skip: 0, remaining: None, ordinal: 0, visited: PageSet::new(db.pages() as u64), visit: &mut visit };
+        assert!(db.walk_table(1, &mut scan, 0).is_err());
+    }
 
     /// Makes page 1 a table leaf with one cell at offset 200 of rowid 1 and payload `size`,
     /// returning where its local payload starts.

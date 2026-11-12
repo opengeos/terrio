@@ -1017,9 +1017,21 @@ impl ChunkCodec {
         if spp != self.spp || jw < w || jh < h {
             return Err(invalid(format!("JPEG: a {jw} x {jh} image of {spp} components for a {w} x {h} chunk of {} samples", self.spp)));
         }
+        // A JPEG as wide as the chunk (the usual case) is the chunk, past its last row.
+        if jw == w {
+            let mut pixels = pixels;
+            pixels.truncate(h * w * spp);
+            // A JPEG taller than its chunk: the block cache weighs chunks by their capacity.
+            if pixels.capacity() > pixels.len() {
+                pixels.shrink_to_fit();
+            }
+            return Ok(pixels);
+        }
         let mut out = Vec::new();
         fallible::reserve(&mut out, fallible::len(&[h, w, spp], "a TIFF chunk")?, "a TIFF chunk")?;
-        out.extend(pixels.chunks_exact(jw * spp).take(h).flat_map(|row| &row[..w * spp]));
+        for row in pixels.chunks_exact(jw * spp).take(h) {
+            out.extend_from_slice(&row[..w * spp]);
+        }
         Ok(out)
     }
 
