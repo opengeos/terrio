@@ -701,8 +701,8 @@ fn read_dataset(
     let (cols, rows, bands) = (shape[x], y.map_or(1, |y| shape[y]), other.map_or(1, |o| shape[o]));
     // What the dataset declares, before it is read (see `crate::declared`): a complex band is two
     // parts.
-    let parts_of = if t.complex.is_some() { 2 } else { 1 };
-    crate::declared::check(cols, rows, bands * parts_of, t.data_type, t.complex.is_some())?;
+    let raster_bands = crate::declared::component_band_count(bands, t.complex.is_some())?;
+    crate::declared::check(cols, rows, raster_bands, t.data_type, t.complex.is_some())?;
     let standard = x == nd - 1 && y == nd.checked_sub(2) && (other.is_none() || other == Some(0));
     // Bound every simultaneously live pixel buffer before the first whole read. Using the
     // whole shape for the selected output conservatively covers omitted dimensions too.
@@ -738,7 +738,7 @@ fn read_dataset(
                     }
                 }
             }
-            (decode_parts(&parts, t, cols, rows, bands * 2)?, bands * 2)
+            (decode_parts(&parts, t, cols, rows, raster_bands)?, raster_bands)
         }
         None => (decode_parts(&ordered, t, cols, rows, bands)?, bands),
     };

@@ -2858,3 +2858,11 @@ builds. With the optional GDAL backend, successful fallback reads are compared w
 a direct GDAL read for values, sample type, dimensions, georeferencing and nodata;
 GDAL 3.13.3 can interpret an invalid pixel token as zero. A one-byte declaration
 budget still refuses every such accepted fallback before decoding.
+
+
+Known native Esri header keys without a value are ignored during preflight just as
+in the native reader. The declaration regression checks bare `ncols`, `nrows` and
+`nodata_value` lines, preserving valid Int32 pixels at the exact bound while a
+one-byte bound refuses before allocating a 16 MiB encoded text row. HDF5/netCDF
+component-band counts use checked arithmetic before declaration checks; a shared
+boundary regression refuses complex-count overflow even with limits unset.

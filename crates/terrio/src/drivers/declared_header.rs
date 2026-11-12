@@ -420,7 +420,8 @@ fn ascii_shape<S: AsRef<str>>(lines: impl Iterator<Item = S>, driver: RasterDriv
             if !super::aaigrid::HEADER_KEYS.contains(&key.to_ascii_lowercase().as_str()) {
                 break;
             }
-            (key, fields.next()?)
+            let Some(value) = fields.next() else { continue };
+            (key, value)
         } else {
             let Some(pair) = line.split_once(':') else { break };
             (pair.0.trim(), pair.1.trim())

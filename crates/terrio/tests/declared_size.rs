@@ -1798,3 +1798,27 @@ fn resized_alpha_checks_the_source_and_conversion_together() {
     let (result, largest) = largest_during(|| source.read_resampled_masks(&options).map(|_| ()));
     assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))) && largest >= 16 << 20, "{result:?}, largest={largest}");
 }
+
+/// Reference grid: GDAL 3.13.3. Preserve the native Esri grammar for valueless known keys.
+#[test]
+fn bare_ascii_header_keys_keep_the_preflight_before_encoded_text_reads() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bare.asc");
+    for key in ["ncols", "nrows", "nodata_value"] {
+        let header = format!("{key}\nncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n");
+        std::fs::write(&path, format!("{header}1 2\n3 4\n")).unwrap();
+        scoped(&[("TERRIO_MAX_DECLARED_BYTES", "16")], || {
+            let actual = terrio::open_raster(path.to_str().unwrap()).unwrap();
+            assert_eq!(actual.raster.data_type, DataType::I32);
+            assert_eq!(actual.raster.data.to_f64_vec(), vec![1., 2., 3., 4.]);
+        });
+        let mut encoded = header.into_bytes();
+        encoded.extend(std::iter::repeat_n(b'0', 16 << 20));
+        std::fs::write(&path, encoded).unwrap();
+        scoped(&[("TERRIO_MAX_DECLARED_BYTES", "1")], || {
+            let (result, largest) = largest_during(|| terrio::open_raster(path.to_str().unwrap()));
+            assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))) && largest < 1 << 20, "{key}: {result:?}, largest={largest}");
+        });
+    }
+}

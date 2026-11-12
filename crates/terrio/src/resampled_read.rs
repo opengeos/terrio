@@ -312,7 +312,7 @@ impl LazyRaster {
         // output so).
         if pixels {
             let what = "a resampled read";
-            let output_type = crate::ops::vrt::common_type(bands.iter().map(|&b| self.band_data_type(b)));
+            let output_type = crate::ops::common_type(bands.iter().map(|&b| self.band_data_type(b)));
             let sample_bytes = fallible::len(&[output_type.size_bytes(), bands.len()], what)?;
             Self::check_resampled_buffer(o.size, bands.len(), sample_bytes, what)?;
         }
@@ -362,7 +362,7 @@ impl LazyRaster {
         let what = "a resampled mask read";
         let mut sample_bytes = read.bands.len();
         if pixels {
-            let dtype = crate::ops::vrt::common_type(read.bands.iter().map(|&b| self.band_data_type(b)));
+            let dtype = crate::ops::common_type(read.bands.iter().map(|&b| self.band_data_type(b)));
             sample_bytes = sample_bytes
                 .checked_add(fallible::len(&[dtype.size_bytes(), read.bands.len()], what)?)
                 .ok_or_else(|| fallible::out_of_memory(None, what))?;

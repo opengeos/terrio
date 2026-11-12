@@ -725,14 +725,23 @@ impl Reader {
         let mask_band = element.child("SourceBand").is_some_and(|e| e.text.trim().starts_with("mask,"));
         let use_mask = element.child("UseMaskBand").is_some_and(|e| e.text.trim().eq_ignore_ascii_case("true") || e.text.trim() == "1");
         let owned = mask_band || kernel.is_some();
+        const FLOAT_BYTES: usize = std::mem::size_of::<f64>();
+        const FILTER_BYTES: usize = std::mem::size_of::<f32>();
+        const MASK_BYTES: usize = std::mem::size_of::<u8>();
+        const VALID_BYTES: usize = std::mem::size_of::<bool>();
         let transient = if kernel.is_some() {
-            24 + usize::from(mask_band) * 8
+            // Float64 input/output and Float32 filter input/output; an owned mask
+            // conversion remains live too when filtering a mask-band source.
+            2 * FLOAT_BYTES + 2 * FILTER_BYTES + usize::from(mask_band) * FLOAT_BYTES
         } else if mask_band {
-            9
+            // Byte mask and its Float64 conversion.
+            FLOAT_BYTES + MASK_BYTES
         } else {
             0
         };
-        let validity = usize::from(owned) * 8 + usize::from(use_mask || (src.complex && src.nodata.is_some())) * 2;
+        // Retain owned Float64 samples alongside a Byte mask and Boolean validity plane.
+        let validity =
+            usize::from(owned) * FLOAT_BYTES + usize::from(use_mask || (src.complex && src.nodata.is_some())) * (MASK_BYTES + VALID_BYTES);
         let options = WindowOptions { bands: crate::cog::read_bands(&[src.band], source.band_count())?, overview: source_level };
         let source_sample = source.band_data_type(src.band).size_bytes() + transient.max(validity);
         let out_bytes = std::mem::size_of_val(out.as_slice());

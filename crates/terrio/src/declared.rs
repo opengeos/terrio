@@ -40,6 +40,14 @@ fn bound(name: &str, unit: &str) -> Result<Option<u64>> {
     }
 }
 
+/// GDAL 3.13.3 complex bands use paired real/imaginary component bands. Refuse an
+/// unrepresentable component count before an unchecked product can wrap or panic.
+pub(crate) fn component_band_count(bands: usize, complex: bool) -> Result<usize> {
+    bands
+        .checked_mul(if complex { 2 } else { 1 })
+        .ok_or_else(|| Error::ResourceLimit(format!("the raster's {bands} complex bands exceed the component address space")))
+}
+
 /// Refuses a raster of `cols` x `rows` pixels in `bands` bands of `data_type` samples (each part
 /// of a complex sample a band of its own, as [`RasterDataset::complex`] holds them) that declares
 /// more than [`MAX_BANDS_OPTION`] or [`MAX_DECLARED_BYTES_OPTION`] allow on the calling thread.
@@ -81,6 +89,13 @@ pub(crate) fn check_lazy(r: &LazyRaster) -> Result<()> {
 mod tests {
     use super::*;
     use crate::config::with_options;
+
+    #[test]
+    fn complex_component_counts_refuse_address_space_overflow() {
+        assert_eq!(component_band_count(usize::MAX, false).unwrap(), usize::MAX);
+        assert_eq!(component_band_count(usize::MAX / 2, true).unwrap(), usize::MAX - 1);
+        assert!(matches!(component_band_count(usize::MAX / 2 + 1, true), Err(Error::ResourceLimit(_))));
+    }
 
     /// Unset, nothing is refused; each option refuses what exceeds it and allows what equals it.
     #[test]

@@ -30,7 +30,7 @@ mod virtual_raster;
 pub(crate) use virtual_raster::{SourceInventoryScope, resolve_reference, source_input_paths, subdataset_parts};
 pub use virtual_raster::{VirtualRaster, open_virtual_raster};
 
-use super::{Grid, Resampling, convert_value, data_type_name, parse_data_type};
+use super::{Grid, Resampling, common_type, convert_value, data_type_name, parse_data_type};
 use crate::crs::SpatialRef;
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
@@ -65,47 +65,6 @@ pub struct VrtDataset {
     pub srs: Option<SpatialRef>,
     /// The bands.
     pub bands: Vec<VrtBand>,
-}
-
-/// GDALDataTypeUnion-style common buffer type for bands with different native types.
-/// Float64 is required when Float32 cannot cover an integer type's precision/range.
-pub(crate) fn common_type(types: impl IntoIterator<Item = DataType>) -> DataType {
-    fn union(a: DataType, b: DataType) -> DataType {
-        use DataType::*;
-        if a == b {
-            return a;
-        }
-        if a == F64 || b == F64 {
-            return F64;
-        }
-        if a == F32 || b == F32 {
-            let integer = if a == F32 { b } else { a };
-            return if integer.size_bytes() > 2 { F64 } else { F32 };
-        }
-        fn range(t: DataType) -> (i128, i128) {
-            match t {
-                U8 => (0, u8::MAX as i128),
-                I8 => (i8::MIN as i128, i8::MAX as i128),
-                U16 => (0, u16::MAX as i128),
-                I16 => (i16::MIN as i128, i16::MAX as i128),
-                U32 => (0, u32::MAX as i128),
-                I32 => (i32::MIN as i128, i32::MAX as i128),
-                U64 => (0, u64::MAX as i128),
-                I64 => (i64::MIN as i128, i64::MAX as i128),
-                F32 | F64 => unreachable!("integer types only"),
-            }
-        }
-        let (amin, amax) = range(a);
-        let (bmin, bmax) = range(b);
-        [U8, I8, U16, I16, U32, I32, U64, I64]
-            .into_iter()
-            .find(|&t| {
-                let (min, max) = range(t);
-                min <= amin.min(bmin) && max >= amax.max(bmax)
-            })
-            .unwrap_or(F64)
-    }
-    types.into_iter().reduce(union).unwrap_or(DataType::U8)
 }
 
 /// A band of a virtual raster.
