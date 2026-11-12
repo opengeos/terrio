@@ -1998,7 +1998,6 @@ class DatasetReader(DatasetBase):
         """
         bh, bw = buf
         _check_buffer(len(idx), bh, bw, np.dtype(self._dtype).itemsize)
-        _check_buffer(len(idx), bh, bw, 1)
         _check_buffer(1, 1, bw, 8)
         _check_buffer(1, 1, bh, 8)
         sx, sy = win.width / bw if bw else 1.0, win.height / bh if bh else 1.0

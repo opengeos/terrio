@@ -100,8 +100,8 @@ fn detect_ascii_reader(mut reader: impl BufRead) -> Result<wbraster::RasterForma
     Ok(if grass { wbraster::RasterFormat::GrassAscii } else { wbraster::RasterFormat::EsriAscii })
 }
 
-/// Retain only a short significant prefix, compressing whitespace runs without changing
-/// whether they contain an ASCII key separator or the character preceding a hash comment.
+/// Retain only a short significant prefix and at most two characters per whitespace run:
+/// an ASCII key separator, if present, and the character preceding a hash comment.
 /// Consuming a long unknown line can require I/O, but never a line-sized allocation.
 fn detection_line(reader: &mut impl BufRead) -> std::io::Result<Option<String>> {
     let mut line = String::new();

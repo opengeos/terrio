@@ -138,6 +138,7 @@ fn decode_tile(b: &[u8], mut check: impl FnMut(TileLayout) -> Result<()>) -> Res
         // Preserve that decoder's existing sample count rather than inventing extra bands.
         let pixels = fallible::len(&[w as usize, h as usize], "a GeoPackage TIFF tile")?;
         let bands = layout.len.div_ceil(bytes) / pixels.max(1);
+        // Float64 decoding already owns the output vector; other sample types need a conversion buffer.
         let raw = if matches!(layout.sample_type, Some(DecodingSampleType::F64)) { 0 } else { layout.len };
         check(TileLayout::new(w as usize, h as usize, bands, Some(raw), Some(0)))?;
         let values: Vec<f64> = match d.read_image().map_err(|e| err(&e))? {
