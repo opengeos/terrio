@@ -78,7 +78,9 @@ For explicit integer-complex output, use `dtype="complex_int16"` in `terrio.rio`
 `Raster.from_array(array, transform, complex_dtype="CInt16")` / `"CInt32"`.
 Integer components are rounded and saturated, as GDAL 3.13.3 converts them.
 `raster.read(out_dtype="complex128")` (and `np.asarray(raster, dtype="complex128")`)
-preserves every Int32 component; the default complex dtype remains compatible with rasterio.
+preserves every Int32 component on direct `Raster` and `terrio.rio` dataset reads;
+the default complex dtype remains compatible with rasterio. `WarpedVRT` currently
+does not support complex working dtypes, so this guarantee does not cover VRT reads.
 Converting CInt32 to `float64` or a 32-bit-or-wider integer output reads the components
 without a float32 intermediate. Unsigned outputs preserve exactly representable positive
 components; their final signed-to-unsigned conversion follows the existing cast policy.
@@ -87,6 +89,9 @@ A narrower real dtype, such as `float32`, first passes through complex64, which 
 Updates retain the physical complex sample type. Integer-complex writers keep components in complex128 buffers, so CInt16 output rounds
 once from the input precision and CInt32 output retains every integer component. Memory,
 spill-file selection and slab accounting include their 16 bytes per complex sample.
+`Raster.from_array` retains a native component buffer in addition to the input array;
+a non-contiguous complex input also needs a contiguous NumPy copy during construction.
+These constructor copies are not admitted against the read working-memory limit.
 Complex `terrio.rio` reads support unresampled windows and nearest-neighbour resampling;
 other interpolation methods compute real and imaginary components separately. Their complex
 results have not been validated against GDAL.
