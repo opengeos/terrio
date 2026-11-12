@@ -171,6 +171,32 @@ GDAL:
 - GeoTIFFs written by GDAL in each compression it offers beyond the common ones: JPEG (YCbCr and
   RGB), WebP, JPEG XL, LERC (with Deflate and Zstandard, lossy and with NaN masks) and LZMA
 
+### Datum shift grids and PROJ directories
+
+The real-data tests compare terrio with GDAL computed without datum shift grids, so the grid
+search is switched off for them (`crates/terrio/tests/common/test_data.rs`). The EPSG tests do the
+same, and the grid tests use only the `grids` directory of the test data. Grids found elsewhere
+change results by centimetres (NAD27 and NAD83) to metres: PROJ's user directory
+(`~/.local/share/proj`, which `projsync` and PROJ's network cache fill), `PROJ_DATA` and
+`PROJ_LIB`. Conda's `proj-data` package puts about 390 grids in the PROJ data directory, and
+GDAL reads them there. `scripts/gen_epsg_points.py` therefore searches a temporary directory
+holding only PROJ's `proj.db` and `proj.ini`, so that its references do not depend on which
+packages are installed. The Python grid test does the same for GDAL.
+
+Python's test setup also initializes GDAL and Rasterio with a database-only PROJ directory
+when a shared database is available, including when `PROJ_DATA` was already set. Without
+one, optional reference wheels retain their bundled databases. Networking and user/grid
+caches are isolated in both cases, including for CLI subprocesses, before either reference
+library is imported. Grid-specific tests explicitly select their own directories instead.
+
+Transformations in the real-data Rust test binaries must go through the `data()` helper first,
+which turns grid search and the network off. A test that transforms without calling `data()`
+can see the machine's grids, depending on test order. No current test does this.
+
+If the EPSG tests report a few hundred CRSs off by metres, or the warp or point-cloud tests are
+off by centimetres, check for grids in those directories (`projsync` leaves them in the user
+directory).
+
 ## The conformance suite
 
 JPEG 2000 creation options are checked with

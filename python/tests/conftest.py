@@ -6,6 +6,46 @@ from pathlib import Path
 
 import pytest
 
+
+def _activate_proj_data():
+    """Initialize offline, grid-free reference contexts before importing GDAL or Rasterio.
+
+    Copy the database and configuration from an existing PROJ_DATA/PROJ_LIB path or
+    the environment's share/proj directory. Activated environments also need this
+    isolation, since their directories and user caches may contain datum grids.
+    Grid-specific tests configure their own explicit search paths.
+    """
+    import atexit
+    import shutil
+    import tempfile
+
+    share = Path(sys.prefix) / "share"
+    configured = os.environ.get("PROJ_DATA", os.environ.get("PROJ_LIB", ""))
+    candidates = [Path(part) for part in configured.split(os.pathsep) if part]
+    candidates.append(share / "proj")
+    source = next((path for path in candidates if (path / "proj.db").is_file()), None)
+    proj_dir = Path(tempfile.mkdtemp(prefix="terrio-proj-"))
+    atexit.register(shutil.rmtree, proj_dir, ignore_errors=True)
+    if source is not None:
+        for name in ("proj.db", "proj.ini"):
+            if (source / name).exists():
+                shutil.copy2(source / name, proj_dir)
+        os.environ["PROJ_DATA"] = str(proj_dir)
+    else:
+        # Optional reference wheels can use their own bundled database.
+        os.environ.pop("PROJ_DATA", None)
+    os.environ.pop("PROJ_LIB", None)
+    os.environ["PROJ_NETWORK"] = "OFF"
+    os.environ["TERRIO_NETWORK"] = "OFF"
+    os.environ["TERRIO_GRID_DIR"] = str(proj_dir)
+    os.environ["TERRIO_GRID_CACHE"] = str(proj_dir / "grid-cache")
+    os.environ["XDG_DATA_HOME"] = str(proj_dir / "user-data")
+    if "GDAL_DATA" not in os.environ and (share / "gdal").is_dir():
+        os.environ["GDAL_DATA"] = str(share / "gdal")
+
+
+_activate_proj_data()
+
 # GDAL's bindings register their drivers before any test starts rasterio's. rasterio's pip wheel
 # bundles a second libgdal: once its environment has started in a process (`rasterio.Env`, or any
 # `rasterio.open`), a later first import of `osgeo.gdal` registers only the GDAL plugins, and
