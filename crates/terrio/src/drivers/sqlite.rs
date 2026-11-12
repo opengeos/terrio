@@ -60,6 +60,54 @@ impl Table {
 /// A callback borrowing one encoded table record.
 type TableRecordVisitor<'a> = dyn FnMut(usize, i64, &[u8]) -> Result<bool> + 'a;
 
+/// A borrowed record whose attributes are decoded only after selection.
+pub(crate) struct TableRow<'a> {
+    db: &'a Db,
+    payload: &'a [u8],
+    rowid: i64,
+    rowid_col: Option<usize>,
+    columns: usize,
+}
+
+impl TableRow<'_> {
+    /// Materialize all values and restore an INTEGER PRIMARY KEY alias.
+    pub(crate) fn values(&self) -> Result<Vec<Value>> {
+        let mut values = self.db.decode_record(self.payload)?;
+        values.resize(self.columns.max(values.len()), Value::Null);
+        if let Some(c) = self.rowid_col
+            && values[c] == Value::Null
+        {
+            values[c] = Value::Int(self.rowid);
+        }
+        Ok(values)
+    }
+
+    /// Borrow one blob without decoding or allocating any other field, in any text encoding.
+    pub(crate) fn blob(&self, column: usize) -> Result<Option<&[u8]>> {
+        let (header, mut cursor) = varint(self.payload, 0).ok_or_else(|| bad("record header"))?;
+        let header =
+            usize::try_from(header).ok().filter(|&n| n >= cursor && n <= self.payload.len()).ok_or_else(|| bad("record header"))?;
+        let mut offset = header;
+        let mut index = 0;
+        while cursor < header {
+            let (kind, size) = varint(self.payload, cursor).filter(|&(_, n)| n <= header - cursor).ok_or_else(|| bad("record type"))?;
+            let len =
+                if kind >= 12 { usize::try_from((kind - 12) / 2).map_err(|_| bad("record value size"))? } else { Db::value_len(kind) };
+            if index == column {
+                if kind < 12 || kind % 2 != 0 {
+                    return Ok(None);
+                }
+                let end = offset.checked_add(len).ok_or_else(|| bad("record value"))?;
+                return self.payload.get(offset..end).map(Some).ok_or_else(|| bad("record value"));
+            }
+            offset = offset.checked_add(len).ok_or_else(|| bad("record value"))?;
+            cursor += size;
+            index += 1;
+        }
+        Ok(None)
+    }
+}
+
 /// State of an ordered, early-stopping rowid-table traversal.
 struct TableScan<'a> {
     skip: usize,
@@ -814,7 +862,7 @@ impl Db {
         Ok(Table { columns, rows })
     }
 
-    /// Visit decoded rows in table order, skipping payloads outside the range. Optional
+    /// Visit borrowed rows in table order, skipping payloads outside the range. Optional
     /// rowids restrict the traversal to those lookups (in the supplied order). The callback
     /// receives the ordinal including skipped rows (within the supplied sequence for rowid
     /// lookups), and can stop before reading another record.
@@ -824,7 +872,7 @@ impl Db {
         rowids: Option<&[i64]>,
         skip: usize,
         maximum: Option<usize>,
-        visit: &mut dyn FnMut(usize, Vec<Value>) -> Result<bool>,
+        visit: &mut dyn FnMut(usize, TableRow<'_>) -> Result<bool>,
     ) -> Result<()> {
         let (root, sql) = self.table_root(name)?;
         let columns = columns(&sql);
@@ -832,16 +880,8 @@ impl Db {
         if maximum == Some(0) {
             return Ok(());
         }
-        let mut decode = |ordinal, rowid, payload: &[u8]| {
-            let mut values = self.decode_record(payload)?;
-            values.resize(columns.len().max(values.len()), Value::Null);
-            if let Some(c) = rowid_col
-                && values[c] == Value::Null
-            {
-                values[c] = Value::Int(rowid);
-            }
-            visit(ordinal, values)
-        };
+        let mut decode =
+            |ordinal, rowid, payload: &[u8]| visit(ordinal, TableRow { db: self, payload, rowid, rowid_col, columns: columns.len() });
         if let Some(ids) = rowids {
             let mut ordinal = 0;
             let mut kept = 0;
@@ -1369,16 +1409,17 @@ mod tests {
         };
         let db = Db::new(writer::write_database(&[table], &[], 0, 0).unwrap()).unwrap();
         let all = db.table("records").unwrap();
-        let before_metadata = db.decoded_record_count();
+        let before_schema = db.decoded_record_count();
         db.visit_table_rows("records", None, 0, Some(0), &mut |_, _| panic!("zero limit visited a record")).unwrap();
-        let metadata = db.decoded_record_count() - before_metadata;
+        let schema_decodes = db.decoded_record_count() - before_schema;
+        assert_eq!(schema_decodes, 1, "even a zero limit reads the one-row schema to find the table");
         for (skip, limit) in [(0, Some(0)), (1, Some(2)), (497, Some(5)), (1799, None), (1800, None), (usize::MAX, Some(usize::MAX))] {
             let mut rows = Vec::new();
             let mut ordinals = Vec::new();
             let before = db.decoded_record_count();
             db.visit_table_rows("records", None, skip, limit, &mut |ordinal, row| {
                 ordinals.push(ordinal);
-                rows.push(row);
+                rows.push(row.values()?);
                 Ok(true)
             })
             .unwrap();
@@ -1386,15 +1427,43 @@ mod tests {
             let end = limit.map_or(all.rows.len(), |m| start.saturating_add(m).min(all.rows.len()));
             assert_eq!(rows, all.rows[start..end]);
             assert_eq!(ordinals, (start..end).collect::<Vec<_>>());
-            assert_eq!(db.decoded_record_count() - before - metadata, end - start);
+            assert_eq!(db.decoded_record_count() - before - schema_decodes, end - start);
         }
         let mut rows = Vec::new();
         db.visit_table_rows("records", Some(&[11, 14, 15, 35]), 1, Some(2), &mut |_, row| {
-            rows.push(row);
+            rows.push(row.values()?);
             Ok(true)
         })
         .unwrap();
         assert_eq!(rows, [all.rows[1].clone(), all.rows[8].clone()]);
+    }
+
+    /// Geometry projection does not materialize neighboring text, including UTF-16 databases.
+    #[test]
+    fn borrowed_blob_projection_leaves_other_values_undecoded() {
+        use crate::drivers::vector::sqlite as writer;
+        let payload = writer::record(&[
+            writer::Value::Text("café水".repeat(2000)),
+            writer::Value::Blob(vec![1, 2, 3, 255]),
+            writer::Value::Null,
+            writer::Value::Blob(Vec::new()),
+        ]);
+        for encoding in 1u32..=3 {
+            let mut bytes = database(2);
+            bytes[56..60].copy_from_slice(&encoding.to_be_bytes());
+            let db = Db::new(bytes).unwrap();
+            let row = TableRow { db: &db, payload: &payload, rowid: 1, rowid_col: None, columns: 4 };
+            let blob = row.blob(1).unwrap().unwrap();
+            assert_eq!(blob, &[1, 2, 3, 255]);
+            assert!(blob.as_ptr() >= payload.as_ptr() && blob.as_ptr() < payload.as_ptr_range().end);
+            assert!(row.blob(0).unwrap().is_none());
+            assert!(row.blob(2).unwrap().is_none());
+            assert_eq!(row.blob(3).unwrap(), Some([].as_slice()));
+            assert!(row.blob(4).unwrap().is_none());
+            assert_eq!(db.decoded_record_count(), 0);
+            let truncated = TableRow { payload: &payload[..payload.len() - 2], ..row };
+            assert!(truncated.blob(1).is_err());
+        }
     }
 
     #[test]

@@ -2729,7 +2729,11 @@ R-tree. A malformed record outside a requested Python page is not decoded; a
 selected malformed record remains an error. A real-data test counts row decodes
 at the SQLite traversal boundary rather than inferring them from returned features.
 That external-data test is explicitly ignored unless requested; the synthetic
-SQLite page test asserts decoder-call counts in every ordinary CI run:
+SQLite page test asserts decoder-call counts in every ordinary CI run. The spatial
+page regression also asserts that only returned rows materialize their attributes,
+both without an index and with deliberately loose R-tree boxes that include null
+and nonmatching geometries. Borrowed geometry projection checks blob offsets
+without decoding neighboring fields, including UTF-16 databases:
 
 ```sh
 cargo test -p terrio --lib drivers::sqlite::tests
@@ -2740,10 +2744,13 @@ pytest python/tests/test_pyogrio_feature_range.py
 python scripts/conformance.py ../terrio-data --only gpkg-paging --strict
 ```
 
-The measured 176-feature countries table decodes three rows for a three-feature
+The measured 176-feature countries table decodes three rows for an unfiltered three-feature
 page after skipping 88, versus 176 for a full traversal. Metadata reads are outside
 that feature-row count. Skipping visits leaf headers to count records without
-decoding their payloads or reading their overflow chains. Byte and HTTP inputs
+decoding their payloads or reading their overflow chains. Spatial filters instead
+read candidate geometry blobs and count matching geometries before materializing
+the selected records' attributes. Candidate payloads can still read overflow pages;
+this is not a geometry-only I/O guarantee. Byte and HTTP inputs
 still obtain the SQLite snapshot; paging bounds decoding rather than input transfer.
 
 The native ranged visitor decodes serially; unpaged full reads use the parallel
@@ -2756,8 +2763,8 @@ Each requested one skipped match and three returned features; FIDs agreed exactl
 
 | Bounding-box matches | Before median (ms) | After median (ms) | Before peak RSS (MiB) | After peak RSS (MiB) |
 |---|---:|---:|---:|---:|
-| Early, x=0.5..1000 | 152.68 | 6.01 | 148.47 | 26.05 |
-| Near the end, x=199990.5..200000 | 155.52 | 64.61 | 150.02 | 45.68 |
+| Early, x=0.5..1000 | 94.44 | 4.16 | 149.39 | 25.52 |
+| Near the end, x=199990.5..200000 | 95.53 | 16.26 | 148.38 | 38.43 |
 
 The late filter scans almost the whole layer before finding its result. These
 point-workload measurements show the cost of that path alongside early stopping;

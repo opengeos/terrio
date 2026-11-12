@@ -482,12 +482,18 @@ fn read_layer(db: &Db, c: &Content, options: &crate::VectorOpenOptions) -> Resul
         let limit = if filtered && options.max_features != Some(0) { None } else { options.max_features };
         let mut matching_skip = if filtered { options.skip_features } else { 0 };
         db.visit_table_rows(&c.name, candidates.as_deref(), skip, limit, &mut |ordinal, row| {
-            if let Some(feature) = def.feature(&row, ordinal as i64, bbox) {
+            if let (Some(rect), Some(column)) = (bbox, def.geom_col) {
+                let geometry = row.blob(column)?.and_then(decode_geometry);
+                if !geometry.as_ref().is_some_and(|g| bbox_intersects(g, rect)) {
+                    return Ok(true);
+                }
                 if matching_skip > 0 {
                     matching_skip -= 1;
-                } else {
-                    layer.push(feature);
+                    return Ok(true);
                 }
+            }
+            if let Some(feature) = def.feature(&row.values()?, ordinal as i64, None) {
+                layer.push(feature);
             }
             Ok(options.max_features.is_none_or(|m| layer.len() < m))
         })?;
@@ -783,7 +789,7 @@ mod tests {
 
     /// Without an R-tree, count only matching geometries before skipping features.
     #[test]
-    fn spatial_pages_without_an_index_count_only_matches() {
+    fn spatial_pages_decode_only_selected_attributes_with_or_without_an_index() {
         use super::super::sqlite as writer;
         let table = |name: &str, sql: &str, rows| writer::Table { name: name.into(), sql: sql.into(), rows, autoindexes: vec![] };
         let contents = table(
@@ -816,19 +822,40 @@ mod tests {
             })
             .collect();
         let points = table("points", "CREATE TABLE points(fid INTEGER PRIMARY KEY,geom POINT,name TEXT)", rows);
-        let db = Db::new(writer::write_database(&[contents, geometry, points], &[], 0, 0).unwrap()).unwrap();
-        let options = crate::VectorOpenOptions {
-            skip_features: 2,
-            max_features: Some(3),
-            spatial_filter: Some((3.5, -1., 10.5, 1.)),
-            ..Default::default()
-        };
-        let read = read_db_named(&db, &options, None).unwrap();
-        assert_eq!(
-            read[0].features.iter().map(|f| f.attributes.clone()).collect::<Vec<_>>(),
-            [vec![FieldValue::Text("p7".into())], vec![FieldValue::Text("p9".into())], vec![FieldValue::Text("p10".into())]]
-        );
-        assert_eq!(read[0].features.iter().map(|f| f.fid).collect::<Vec<_>>(), [31, 37, 40]);
+        let mut tables = vec![contents, geometry, points];
+        for indexed in [false, true] {
+            if indexed {
+                // Deliberately loose boxes include null and nonmatching candidate geometries.
+                let entries = (0..16).map(|i| (i * 3 + 10, [-100., 100., -100., 100.])).collect();
+                let (nodes, _, _) = super::super::geopackage::build_rtree(entries);
+                tables.push(table(
+                    "rtree_points_geom_node",
+                    "CREATE TABLE rtree_points_geom_node(nodeno INTEGER PRIMARY KEY,data BLOB)",
+                    nodes,
+                ));
+            }
+            let db = Db::new(writer::write_database(&tables, &[], 0, 0).unwrap()).unwrap();
+            let options = crate::VectorOpenOptions {
+                skip_features: 2,
+                max_features: Some(3),
+                spatial_filter: Some((3.5, -1., 10.5, 1.)),
+                ..Default::default()
+            };
+            let before = db.decoded_record_count();
+            read_db_named(&db, &crate::VectorOpenOptions { max_features: Some(0), ..options.clone() }, None).unwrap();
+            // A nonzero spatial request also probes the R-tree schema before visiting records.
+            let candidates = rtree_candidates(&db, "rtree_points_geom", options.spatial_filter.unwrap()).unwrap();
+            assert_eq!(candidates.is_some(), indexed);
+            let metadata = db.decoded_record_count() - before;
+            let before = db.decoded_record_count();
+            let read = read_db_named(&db, &options, None).unwrap();
+            assert_eq!(db.decoded_record_count() - before - metadata, 3, "skipped spatial matches decoded their attributes");
+            assert_eq!(
+                read[0].features.iter().map(|f| f.attributes.clone()).collect::<Vec<_>>(),
+                [vec![FieldValue::Text("p7".into())], vec![FieldValue::Text("p9".into())], vec![FieldValue::Text("p10".into())]]
+            );
+            assert_eq!(read[0].features.iter().map(|f| f.fid).collect::<Vec<_>>(), [31, 37, 40]);
+        }
     }
 
     /// Decode counts at the native SQLite boundary on an optional real GeoPackage.
