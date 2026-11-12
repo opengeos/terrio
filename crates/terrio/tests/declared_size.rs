@@ -1324,9 +1324,9 @@ fn fallback_pcraster_is_checked_before_whole_file_detection() {
     });
 }
 
-/// Reference: GDAL 3.13.3. Truncating preflight at invalid text must not make a raster readable.
+/// Reference: GDAL 3.13.3. Native validation stays strict; optional GDAL keeps its own syntax rules.
 #[test]
-fn malformed_ascii_headers_and_pixels_still_fail_when_preflight_stops() {
+fn malformed_ascii_preflight_preserves_codec_and_optional_backend_validation() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let esri = "ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n";
@@ -1345,13 +1345,33 @@ fn malformed_ascii_headers_and_pixels_still_fail_when_preflight_stops() {
             std::fs::write(&path, corrupt).unwrap();
             for limit in ["", "1", "32"] {
                 scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", limit)], || {
-                    let (result, largest) = largest_during(|| terrio::open_raster(path.to_str().unwrap()).map(|_| ()));
-                    assert!(result.is_err() && largest < 1 << 20, "{name} header={in_header} limit={limit}: {result:?}, largest={largest}");
-                    if limit != "1" {
-                        assert!(!matches!(result, Err(terrio::Error::ResourceLimit(_))), "{result:?}");
-                    } else if !in_header && name != "grass.txt" {
-                        // The known Esri header is checked before inspecting invalid pixel bytes.
-                        assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))), "{result:?}");
+                    let (result, largest) = largest_during(|| terrio::open_raster(path.to_str().unwrap()));
+                    assert!(largest < 1 << 20, "{name} header={in_header} limit={limit}: largest={largest}");
+                    match result {
+                        Ok(actual) => {
+                            #[cfg(not(feature = "gdal"))]
+                            panic!("native codec accepted {name} header={in_header} limit={limit}: {actual:?}");
+                            #[cfg(feature = "gdal")]
+                            {
+                                // GDAL accepts some invalid pixel tokens as zero. This is the
+                                // existing optional backend's grammar, not a native preflight bypass.
+                                assert_ne!(limit, "1", "GDAL fallback bypassed the declaration budget");
+                                let reference = terrio::gdal_backend::open_raster(path.to_str().unwrap()).unwrap();
+                                assert_eq!(actual.raster.data_type, reference.raster.data_type);
+                                assert_eq!((actual.raster.cols, actual.raster.rows), (reference.raster.cols, reference.raster.rows));
+                                assert_eq!(actual.raster.data.to_f64_vec(), reference.raster.data.to_f64_vec());
+                                assert_eq!(actual.geo_transform(), reference.geo_transform());
+                                assert_eq!(actual.nodata(), reference.nodata());
+                            }
+                        }
+                        Err(error) => {
+                            if limit != "1" {
+                                assert!(!matches!(error, terrio::Error::ResourceLimit(_)), "{error:?}");
+                            } else if !in_header && name != "grass.txt" {
+                                // A known Esri header is checked before inspecting invalid pixels.
+                                assert!(matches!(error, terrio::Error::ResourceLimit(_)), "{error:?}");
+                            }
+                        }
                     }
                 });
             }

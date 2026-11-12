@@ -2842,7 +2842,7 @@ pixels and geotransform. A one-byte limit must refuse it without a file-sized al
 during format detection. The fallback's bounded signature check precedes its whole-file CSF
 detector, including when the name is neither `.asc` nor `.txt`.
 
-Native and fallback Esri/GRASS controls reject malformed UTF-8 headers and pixels with
+Default-feature native and fallback Esri/GRASS controls reject malformed UTF-8 headers and pixels with
 limits unset, below the valid declaration and at its exact maximum sample size. An injected
 header I/O error also remains an error in the unchanged fallback codec; partial preflight
 does not make it a successful raster read. The existing valid-header/invalid-pixel control
@@ -2852,3 +2852,9 @@ The Python GeoPackage raster-limit suite includes a GDAL-authored mixed raster/v
 A complete check counts both before a limit is set. Under a raster refusal, raster-first
 rendering and complete checking fail, while vector opens, loaded-vector rendering and
 layer-selected vector clip templates retain the single polygon and its attribute.
+
+The malformed ASCII preflight regression requires native codec rejection in default
+builds. With the optional GDAL backend, successful fallback reads are compared with
+a direct GDAL read for values, sample type, dimensions, georeferencing and nodata;
+GDAL 3.13.3 can interpret an invalid pixel token as zero. A one-byte declaration
+budget still refuses every such accepted fallback before decoding.

@@ -155,7 +155,9 @@ filename has an unknown suffix, so identification does not first read its whole 
 Malformed ASCII fields can end the declaration scan; the original codec still validates the
 input and reports its error. A complete oversized header can be refused before invalid pixels.
 Invalid UTF-8 during fallback identification can report the preflight I/O diagnostic instead
-of the fallback reader's diagnostic; it does not add support for non-UTF-8 ASCII grids.
+of the fallback reader's diagnostic; it does not add support for non-UTF-8 ASCII grids
+to native readers. The optional GDAL backend retains its own parser rules; resource
+refusals remain terminal.
 
 For a GeoPackage holding both rasters and vector layers, raster-first path rendering and a
 complete dataset check retain a refused raster's resource error. The vector layers remain
