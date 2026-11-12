@@ -207,6 +207,20 @@ test("CityJSON late root type retains vertical XYZ and unknown CRS", () => {
   ds.free();
 });
 
+test("toGeoJSON escapes control characters and keeps feature order across parse chunks", () => {
+  // The text is parsed in chunks of about 8 MB: the long second feature ends one.
+  const props = [{ s: "a\u0001b\u001f\"q\"", n: 1.5 }, { s: "x".repeat(9 << 20), n: 2 }, { s: "last", n: -3 }];
+  const ds = terrio.fromGeoJSON({
+    type: "FeatureCollection",
+    features: props.map((p, i) => ({ type: "Feature", properties: p, geometry: { type: "Polygon", coordinates: [[[i, 0], [i + 1, 0], [i, 1], [i, 0]]] } })),
+  });
+  const fc = ds.toGeoJSON();
+  assert.equal(fc.type, "FeatureCollection");
+  assert.deepEqual(fc.features.map((f) => f.properties), props);
+  assert.deepEqual(fc.features[2].geometry, { type: "Polygon", coordinates: [[[2, 0], [3, 0], [2, 1], [2, 0]]] });
+  ds.free();
+});
+
 test("CityGML 3.0 reads vertical XYZ with object identity and CRS", () => {
   const xml = `<CityModel xmlns="http://www.opengis.net/citygml/3.0" xmlns:g="http://www.opengis.net/gml/3.2" xmlns:b="http://www.opengis.net/citygml/building/3.0">
     <cityObjectMember><b:Building g:id="house"><b:function>office</b:function><b:function>retail</b:function><b:lod2MultiSurface><g:MultiSurface srsName="EPSG:32632" srsDimension="3"><g:surfaceMember><g:Polygon><g:exterior><g:LinearRing><g:posList>10 20 30 10 21 30 10 21 31 10 20 30</g:posList></g:LinearRing></g:exterior></g:Polygon></g:surfaceMember></g:MultiSurface></b:lod2MultiSurface></b:Building></cityObjectMember></CityModel>`;
@@ -2173,6 +2187,39 @@ test("coordinate operation safeguards and warnings", () => {
   assert.throws(() => terrio.transformPoints([110], [35], "EPSG:4610", "EPSG:4326", undefined, { allowBallpark: false }), /ALLOW_BALLPARK/);
   assert.throws(() => terrio.transformPoints([600000], [200000], "EPSG:21781", "EPSG:2056", undefined, { onlyBest: true }), /ONLY_BEST/);
   assert.ok(Array.from(terrio.takeWarnings()).some((w) => w.includes("missing grid")));
+});
+
+test("JPEG 2000 quality and reversible options reach the WASM encoder", { skip: needs("jp2") }, () => {
+  const n = 64 * 64;
+  const values = new Uint8Array(3 * n).map((_, i) => (i * 37 + Math.floor(i / 64)) % 251);
+  const image = terrio.rasterFromArray(values, 64, 64, [0, 1, 0, 64, 0, -1]);
+  const low = image.toBytes("low.jp2", { creationOptions: { QUALITY: "10", REVERSIBLE: "NO" } });
+  const high = image.toBytes("high.jp2", { creationOptions: { quality: "50" } });
+  assert.notDeepEqual(low, high);
+  assert.notDeepEqual([...terrio.open(low, "low.jp2").readBand(1)], [...values.slice(0, n)]);
+  for (const options of [{}, { QUALITY: "100" }, { QUALITY: "10,100", REVERSIBLE: "YES" }]) {
+    const exact = terrio.open(image.toBytes("exact.jp2", { creationOptions: options }), "exact.jp2");
+    for (let b = 1; b <= 3; b++) assert.deepEqual([...exact.readBand(b)], [...values.slice((b - 1) * n, b * n)]);
+  }
+  for (const quality of ["nan", "100.000001", "1e-36"]) {
+    assert.throws(() => image.toBytes("bad.jp2", { creationOptions: { QUALITY: quality } }), /QUALITY/);
+  }
+  const almost = terrio.open(image.toBytes("almost.jp2", { creationOptions: { QUALITY: "99.999999" } }), "almost.jp2");
+  assert.notDeepEqual([...almost.readBand(1)], [...values.slice(0, n)]);
+});
+
+test("WebP shared lossy encoder preserves TIFF alpha at different qualities", () => {
+  const n = 32 * 32;
+  const rgba = new Uint8Array(4 * n).map((_, i) => (i * 31 + Math.floor(i / 32)) % 256);
+  const image = terrio.rasterFromArray(rgba, 32, 32, [0, 1, 0, 32, 0, -1]);
+  const low = image.toBytes("low.tif", { compress: "WEBP", creationOptions: { QUALITY: "10" } });
+  const high = image.toBytes("high.tif", { compress: "WEBP", creationOptions: { QUALITY: "90" } });
+  assert.notDeepEqual(low, high);
+  for (const bytes of [low, high]) {
+    const decoded = terrio.open(bytes, "tile.tif");
+    assert.deepEqual([...decoded.readBand(4)], [...rgba.slice(3 * n)]);
+    assert.notDeepEqual([...decoded.readBand(1)], [...rgba.slice(0, n)]);
+  }
 });
 
 test("GDAL 3.13 terrain and native WebP creation options", () => {
@@ -4523,5 +4570,19 @@ test("coarse geographic warp footprints survive exact and approximate transforms
       projected.free();
     }
     source.free();
+  }
+});
+
+test("default Deflate retains long matches across categorical runs", () => {
+  for (const [columns, rows] of [[64, 64], [37, 53], [37, 512]]) {
+    const values = new Uint8Array(512 * 512).map((_, i) =>
+      (Math.floor((i % 512) / columns) + Math.floor(Math.floor(i / 512) / rows)) % 10);
+    const src = terrio.rasterFromArray(values, 512, 512, [500000, 10, 0, 5800000, 0, -10], "EPSG:32633");
+    const bytes = src.toBytes("classes.tif", { compress: "DEFLATE", tileSize: 512 });
+    assert.ok(bytes.length <= 3000, `${columns}x${rows}: ${bytes.length} bytes`);
+    const back = terrio.open(bytes, "classes.tif");
+    assert.deepEqual(back.readBand(1), src.readBand(1));
+    assert.deepEqual([...back.transform], [...src.transform]);
+    assert.equal(back.crs, src.crs);
   }
 });

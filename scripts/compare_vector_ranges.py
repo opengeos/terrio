@@ -9,6 +9,7 @@ agree; point coordinates allow 1e-9 degrees. All checks remain active under pyth
 
 import argparse
 import json
+import math
 import tempfile
 from pathlib import Path
 
@@ -60,7 +61,10 @@ def compare(path, item):
             if frame.crs.to_epsg() != 4326:
                 raise AssertionError("CRS differs")
             for geometry, (_, x, y) in zip(frame.geometry, expected, strict=True):
-                error = max(abs(geometry.x - x), abs(geometry.y - y))
+                differences = (abs(geometry.x - x), abs(geometry.y - y))
+                if not all(math.isfinite(value) for value in differences):
+                    raise AssertionError("non-finite coordinate difference")
+                error = max(differences)
                 largest = max(largest, error)
                 if error > 1e-9:
                     raise AssertionError(

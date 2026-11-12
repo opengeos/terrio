@@ -6,8 +6,6 @@ import sys
 
 import pytest
 
-pytest.importorskip("geopandas")
-
 import terrio  # noqa: E402
 import terrio.pyogrio as tpg  # noqa: E402
 from terrio import _terrio  # noqa: E402
@@ -85,6 +83,7 @@ def test_stac_dataframe_ranges_match_direct_assets(sources, extension, skip, lim
         skip: Number of live features to skip.
         limit: Maximum live features, or no maximum.
     """
+    pytest.importorskip("geopandas")
     options = {"skip_features": skip, "max_features": limit, "layer": 0}
     direct = tpg.read_dataframe(sources[extension], **options)
     through_item = tpg.read_dataframe(sources[f"stac-{extension}"], **options)

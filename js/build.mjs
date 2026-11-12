@@ -83,9 +83,10 @@ for (const f of (selective ? [] : ["load.js", "load.d.ts"])) copyFileSync(join(c
 
 const path = join(out, "package.json");
 const pkg = JSON.parse(readFileSync(path, "utf8"));
-const module = (dir) => [`${dir}terrio_bg.wasm`, `${dir}terrio_bg.wasm.d.ts`, `${dir}terrio.js`, `${dir}terrio.d.ts`];
+// A module's files, and the JavaScript its glue imports (wasm-bindgen snippets), when it has some.
+const module = (dir) => [`${dir}terrio_bg.wasm`, `${dir}terrio_bg.wasm.d.ts`, `${dir}terrio.js`, `${dir}terrio.d.ts`, ...(existsSync(join(out, dir, "snippets")) ? [`${dir}snippets/`] : [])];
 // The threaded module's worker script is a wasm-bindgen snippet, in `threads/snippets/`.
-const files = [...module(""), ...(existsSync(join(out, "snippets")) ? ["snippets/"] : []), ...(selective ? [] : module("core/")), ...(threads ? ["threads/"] : []), ...(memory64 ? module("memory64/") : []), ...(selective ? [] : ["load.js", "load.d.ts"])];
+const files = [...module(""), ...(selective ? [] : module("core/")), ...(threads ? ["threads/"] : []), ...(memory64 ? module("memory64/") : []), ...(selective ? [] : ["load.js", "load.d.ts"])];
 // Carry project attribution alongside generated glue, declarations and WASM.
 const notices = ["LICENSE", "NOTICE", "LICENSE-THIRD-PARTY.md"];
 for (const name of notices) copyFileSync(join(crate, "..", name), join(out, name));

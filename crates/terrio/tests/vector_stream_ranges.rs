@@ -153,6 +153,32 @@ fn streamed_ranges_match_eager_readers_after_spatial_filtering() {
 }
 
 #[test]
+#[cfg(feature = "flatgeobuf")]
+fn unindexed_flatgeobuf_ranges_keep_the_eager_candidate_order() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("unindexed.fgb");
+    let mut layer = points("points", 0, 5);
+    // A geometry without a bbox makes the writer omit the spatial index.
+    layer.features[1].geometry = None;
+    terrio::write_vector(&[layer], path.to_str().unwrap(), &Default::default()).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    let header = flatgeobuf::size_prefixed_root_as_header(&bytes[8..]).unwrap();
+    assert_eq!(header.index_node_size(), 0);
+    for (skip_features, max_features) in [(0, None), (0, Some(0)), (1, Some(2)), (3, Some(1))] {
+        let options =
+            VectorOpenOptions { spatial_filter: Some((11.5, 45.5, 12.5, 46.5)), skip_features, max_features, ..Default::default() };
+        let eager = terrio::open_vector(path.to_str().unwrap(), &options).unwrap();
+        for batch in [1, 3] {
+            let streamed = terrio::stream::open_layers(path.to_str().unwrap(), &options, batch).unwrap().remove(0).read_all().unwrap();
+            assert_eq!(sequences(&streamed), sequences(&eager.layers[0]));
+            for (streamed, eager) in streamed.features.iter().zip(&eager.layers[0].features) {
+                assert_eq!(streamed.geometry, eager.geometry);
+            }
+        }
+    }
+}
+
+#[test]
 #[cfg(target_os = "linux")]
 fn bounded_csv_ranges_keep_one_file_and_stop_after_its_prefetched_prefix() {
     fn file_position(path: &std::path::Path) -> u64 {
