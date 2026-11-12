@@ -685,7 +685,7 @@ def test_selected_overview_missing_tags_raise_instead_of_using_base(tmp_path, mo
 )
 @pytest.mark.parametrize("bits", [4, None])
 def test_translate_matches_gdal_for_eager_lazy_and_path(tmp_path, gdal, kernel, mode, bits):
-    """GDAL 3.13.3 caps unsigned interpolation, while floating/scaled work keeps overshoot."""
+    """GDAL 3.13.3 caps packed unsigned samples before scaling; float output keeps overshoot."""
     import terrio
 
     source = tmp_path / "packed-interpolation.tif"
@@ -795,7 +795,10 @@ def remove_mask_directories(path, widths):
 
 @pytest.mark.parametrize("missing", [(8,), (16, 8)])
 @pytest.mark.parametrize("base_value", [0, 255])
-def test_cog_copy_preserves_partial_mask_pyramids_as_gdal(tmp_path, gdal, missing, base_value):
+@pytest.mark.parametrize("size", [32, 1024])
+def test_cog_copy_preserves_partial_mask_pyramids_as_gdal(
+    tmp_path, gdal, missing, base_value, size
+):
     """Copy per-level masks, including absent all-valid masks, as GDAL 3.13.3 does."""
     source, target = tmp_path / "partial-mask.tif", tmp_path / "copy.tif"
     previous = gdal.GetConfigOption("GDAL_TIFF_INTERNAL_MASK")
@@ -803,13 +806,13 @@ def test_cog_copy_preserves_partial_mask_pyramids_as_gdal(tmp_path, gdal, missin
     try:
         dataset = gdal.GetDriverByName("GTiff").Create(
             str(source),
-            32,
-            32,
+            size,
+            size,
             1,
             gdal.GDT_UInt16,
             options=["NBITS=9", "ENDIANNESS=LITTLE"],
         )
-        dataset.SetGeoTransform((0, 1, 0, 32, 0, -1))
+        dataset.SetGeoTransform((0, 1, 0, size, 0, -1))
         dataset.GetRasterBand(1).Fill(7)
         dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
         dataset.GetRasterBand(1).GetMaskBand().Fill(base_value)
@@ -818,7 +821,7 @@ def test_cog_copy_preserves_partial_mask_pyramids_as_gdal(tmp_path, gdal, missin
         dataset = None
     finally:
         gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", previous)
-    remove_mask_directories(source, missing)
+    remove_mask_directories(source, tuple(width * size // 32 for width in missing))
     reference_source = gdal.Open(str(source))
     reference = gdal.GetDriverByName("COG").CreateCopy(
         str(tmp_path / "reference.tif"), reference_source
@@ -834,3 +837,34 @@ def test_cog_copy_preserves_partial_mask_pyramids_as_gdal(tmp_path, gdal, missin
         np.testing.assert_array_equal(
             left.GetMaskBand().ReadAsArray(), right.GetMaskBand().ReadAsArray()
         )
+
+
+@pytest.mark.parametrize("driver", ["GTiff", "COG"])
+def test_jp2_copy_inherits_unsigned_precision_as_gdal(tmp_path, gdal, driver):
+    """A lossless 15-bit JPEG2000 source retains NBITS on copy, as GDAL 3.13.3 does."""
+    if gdal.GetDriverByName("JP2OpenJPEG") is None:
+        pytest.skip("GDAL JP2OpenJPEG is unavailable")
+    values = np.arange(1024, dtype="uint16").reshape(32, 32) * 31
+    memory = gdal.GetDriverByName("MEM").Create("", 32, 32, 1, gdal.GDT_UInt16)
+    memory.WriteArray(values)
+    memory.SetGeoTransform((500000, 10, 0, 5800000, 0, -10))
+    memory.SetProjection(rio.CRS.from_epsg(32633).to_wkt())
+    source = tmp_path / "precision.jp2"
+    encoded = gdal.Translate(
+        str(source),
+        memory,
+        format="JP2OpenJPEG",
+        creationOptions=["NBITS=15", "REVERSIBLE=YES", "QUALITY=100"],
+    )
+    encoded.FlushCache()
+    encoded = None
+    reference = gdal.Translate(str(tmp_path / "reference.tif"), str(source), format=driver)
+    target = tmp_path / "copy.tif"
+    copy(source, target, driver=driver)
+    actual = gdal.Open(str(target))
+    for dataset in (actual, reference):
+        band = dataset.GetRasterBand(1)
+        assert band.DataType == gdal.GDT_UInt16
+        assert band.GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "15"
+        assert dataset.GetGeoTransform() == memory.GetGeoTransform()
+        np.testing.assert_array_equal(dataset.ReadAsArray(), values)
