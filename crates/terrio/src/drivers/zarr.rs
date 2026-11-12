@@ -2039,7 +2039,8 @@ fn open_node_with<const ENGINE: bool>(node: &Node, list_subdatasets: bool) -> Re
         }
         None
     };
-    if let Some(gm) = array.attrs["grid_mapping"].as_str().and_then(sibling) {
+    // Without the CRS engine, the grid mapping is read for its geotransform alone.
+    if let Some(gm) = array.attrs["grid_mapping"].as_str().filter(|_| ENGINE || gt.is_none()).and_then(sibling) {
         if ENGINE && crs.is_none() {
             // Its WKT, or its CF parameters (as GDAL reads them).
             let numbers = |k: &str| match &gm.attrs[k] {
@@ -2388,9 +2389,15 @@ impl ZarrArray {
         self.source.levels[0].array.attrs.to_string()
     }
 
-    /// Reads a window of some bands (numbered from 1), band after band.
+    /// Reads a window of some bands (numbered from 1, all for none), band after band. A window
+    /// outside the array, a band it does not have, or an output larger than the process can hold
+    /// is an error, as for [`crate::LazyRaster::read_window`].
     pub fn read(&mut self, window: crate::Window, bands: &[usize]) -> Result<RasterData> {
-        crate::cog::WindowSource::read(&mut self.source, 0, window, bands)
+        let r = &self.header.raster;
+        window.check(r.cols, r.rows)?;
+        let bands = crate::cog::read_bands(bands, r.bands)?;
+        crate::dataset::fallible::check_raster_buffer("a window", window.width, window.height, bands.len(), r.data_type)?;
+        crate::cog::WindowSource::read(&mut self.source, 0, window, &bands)
     }
 }
 

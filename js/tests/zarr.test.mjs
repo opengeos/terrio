@@ -90,10 +90,24 @@ test("terrio-js/zarr opens an array and reads windows of bands", async () => {
     assert.equal(server.stats.requests, before);
     assert.ok(a.stats().requests > 0);
     await assert.rejects(a.read({ window: [0, 0, 8] }), /window/);
+    // Bad reads are errors, not coerced: a band the array lacks (two bands), band 0, a negative or
+    // fractional coordinate, bands that are not an array, a window past the array's edge.
+    await assert.rejects(a.read({ bands: [3] }), /no band 3/);
+    await assert.rejects(a.read({ bands: [0] }), /no band 0/);
+    await assert.rejects(a.read({ window: [-1, 0, 8, 8] }), /non-negative integers/);
+    await assert.rejects(a.read({ window: [0, 0, 8.5, 8] }), /non-negative integers/);
+    await assert.rejects(a.read({ bands: 1 }), /non-negative integers/);
+    await assert.rejects(a.read({ window: [60, 60, 8, 8] }));
   } finally {
     server.close();
     rmSync(dir, { recursive: true });
   }
+});
+
+test("terrio-js/zarr refuses unknown options and options of the wrong type", async () => {
+  await assert.rejects(zarr.openZarr("http://127.0.0.1:9/s.zarr", { arary: "a" }), /unknown option `arary`/);
+  await assert.rejects(zarr.openZarr("http://127.0.0.1:9/s.zarr", { array: 5 }), /`array` must be a string/);
+  await assert.rejects(zarr.openZarr("http://127.0.0.1:9/s.zarr", { cacheSize: -1 }), /`cacheSize` must be/);
 });
 
 test("terrio-js/zarr fails on a store that is not there", async () => {

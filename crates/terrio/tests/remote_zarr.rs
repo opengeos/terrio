@@ -826,4 +826,8 @@ fn zarr_arrays_read_what_lazy_rasters_read() {
     let want = until(&objects, &store, || Ok(lazy.read_window(window, &WindowOptions { bands: vec![2, 1], overview: None })?.raster.data));
     assert_eq!(got.to_f64_vec(), want.to_f64_vec());
     assert_eq!(got.get_f64(0), value(1, 10, 28) as f64);
+    // A band the array lacks, band 0 and a window past its edge are errors, as for LazyRaster.
+    assert!(lean.read(window, &[3]).is_err());
+    assert!(lean.read(window, &[0]).is_err());
+    assert!(lean.read(Window::new(60, 60, 8, 8), &[1]).is_err());
 }
