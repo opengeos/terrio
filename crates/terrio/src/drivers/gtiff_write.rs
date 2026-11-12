@@ -3267,6 +3267,12 @@ mod tests {
             let mut result = crate::LazyRaster::from_tiff_bytes(encode(&dataset.raster, &options).unwrap()).unwrap().unwrap();
             assert_eq!(result.sample_bits(), Some(12));
             assert_eq!(result.read().unwrap().raster.data.to_f64_vec(), vec![2000.0; 4]);
+            for overview in [crate::ops::overview::OverviewSelection::Level(0), crate::ops::overview::OverviewSelection::Auto] {
+                let dataset = reader.read_resampled(&crate::ResampledReadOptions { size: (2, 2), overview, ..Default::default() }).unwrap();
+                let options = crate::RasterWriteOptions::default().inherited_from(&dataset, Some(crate::formats::RasterDriver::GTiff));
+                assert!(options.creation_options.iter().any(|(key, value)| key == "NBITS" && value == "12"));
+                assert_eq!(dataset.raster.data.to_f64_vec(), vec![2000.0; 4]);
+            }
         }
     }
 
