@@ -151,13 +151,11 @@ def test_cli_converts_duplicate_document_names_to_distinct_tables(
         assert restored[name].to_geojson()["features"][0]["geometry"]["coordinates"] == [x, 46]
 
 
-@pytest.mark.parametrize("members,names,coordinates", CASES)
-def test_kmz_preserves_gdal_per_document_xy_and_names(tmp_path, members, names, coordinates):
+@pytest.mark.parametrize("members", [members for members, _, _ in CASES])
+def test_kmz_preserves_gdal_per_document_xy_and_names(tmp_path, members, gdal):
     """GDAL 3.13.3 KML controls; the combined dataset's selection names are Terrio policy."""
-    gdal = pytest.importorskip("osgeo.gdal")
     if gdal.GetDriverByName("KML") is None:
         pytest.skip("GDAL KML driver is unavailable")
-    gdal.UseExceptions()
     expected = []
     for index, text in enumerate(members.values()):
         path = tmp_path / f"document_{index}.kml"

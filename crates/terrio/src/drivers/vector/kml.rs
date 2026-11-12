@@ -303,7 +303,7 @@ fn layers_of(
         .collect()
 }
 
-/// Make names unique across the complete dataset, after KMZ documents are combined.
+/// Make names unique across a dataset: combined KMZ documents or one plain KML document.
 /// ASCII case variants collide as they do for SQLite/GeoPackage table names.
 fn make_layer_names_unique(layers: &mut [Layer]) {
     // Layer names must be unique: a name an earlier layer has takes the first free suffix, ` (2)`,
@@ -1524,5 +1524,7 @@ mod tests {
         let names = |layers: Vec<Layer>| layers.into_iter().map(|l| l.name).collect::<Vec<_>>();
         assert_eq!(names(parse(&doc, "kml").unwrap()), expected);
         assert_eq!(names(parse_kmz(archive(&[("doc.kml", &doc)]), "kmz").unwrap()), expected);
+        let plain = format!("<kml><Document>{}{}</Document></kml>", folder("Roads", ""), folder("roads", ""));
+        assert_eq!(names(parse(&plain, "kml").unwrap()), ["Roads", "roads (2)"]);
     }
 }

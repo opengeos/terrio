@@ -11,3 +11,8 @@ that order. The global suffix rule must run once after assembling documents;
 applying it separately first would incorrectly produce a nested suffix.
 The Python test generates this structure directly, alongside other collision
 and link-order controls. This archived copy exercises the WASM byte reader.
+
+`case_variant_names.kmz` is the ASCII case-variant counterpart. Its expected
+layer names are `Roads (2)`, `Roads`, `roads (3)` and `ROADS (4)`. Their point
+coordinates are `(1, 46)` through `(4, 46)`, respectively, as asserted by the
+Node/WASM byte-reader test.
