@@ -1111,6 +1111,12 @@ type DbfRecord = Option<Vec<FieldValue>>;
 /// Parses a `.dbf` file into field definitions and records.
 fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<DbfRecord>)> {
     let l = dbf_layout(d, cpg)?;
+    let records = read_dbf_records(d, &l, |rec| l.record(rec))?;
+    Ok((l.fields, records))
+}
+
+/// Collect physical slots, invoking the record factory only for live records.
+fn read_dbf_records(d: &[u8], l: &DbfLayout, make_record: impl Fn(&[u8]) -> Vec<FieldValue> + Sync) -> Result<Vec<DbfRecord>> {
     // The header's record count is not trusted: only the records the file holds are read, and
     // their list is allocated fallibly.
     let held = d.len().saturating_sub(l.header_len) / l.record_len.max(1);
@@ -1119,21 +1125,23 @@ fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<DbfRecor
     records
         .try_reserve_exact(count)
         .map_err(|_| Error::ResourceLimit(format!("the .dbf file declares {count} records, more than memory holds")))?;
-    // Every record below `count` is whole in the file; they are decoded in parallel into the
-    // list reserved above.
+    // Keep per-record vectors, decoded strings and dates on the caller's allocator arena.
+    // Returning pool-thread allocations here strands freed storage in those arenas when the
+    // caller drops the dataset and allocates its next working buffers (glibc; see #729).
+    // Every record below `count` is whole in the file.
     let record = |i: usize| {
         let start = l.header_len + i * l.record_len;
-        (d[start] != b'*').then(|| l.record(&d[start..start + l.record_len]))
+        (d[start] != b'*').then(|| make_record(&d[start..start + l.record_len]))
     };
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(target_arch = "wasm32", all(target_os = "linux", target_env = "gnu")))]
+    records.extend((0..count).map(record));
+    #[cfg(not(any(target_arch = "wasm32", all(target_os = "linux", target_env = "gnu"))))]
     crate::par::install(|| {
         use rayon::prelude::*;
         #[allow(clippy::disallowed_methods)] // On terrio's pool, inside `par::install`.
         records.par_extend((0..count).into_par_iter().map(record));
     });
-    #[cfg(target_arch = "wasm32")]
-    records.extend((0..count).map(record));
-    Ok((l.fields, records))
+    Ok(records)
 }
 
 /// Writes a layer as a shapefile. `path` names the `.shp` file; the other files are written next
@@ -1635,6 +1643,42 @@ fn encode_dbf(layer: &Layer) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use wbvector::{Feature, FieldDef};
+
+    /// glibc record storage is built on the calling thread; deleted slots are skipped.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn dbf_record_storage_is_built_on_the_calling_thread() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let mut layer = Layer::new("records");
+        layer.add_field(FieldDef::new("name", FieldType::Text));
+        layer.add_field(FieldDef::new("day", FieldType::Date));
+        for i in 0..128 {
+            layer.push(Feature {
+                fid: i,
+                geometry: None,
+                attributes: vec![FieldValue::Text(format!("record-{i}")), FieldValue::Date("2026-11-12".into())],
+            });
+        }
+        let mut bytes = encode_dbf(&layer).unwrap();
+        let layout = dbf_layout(&bytes, Some("UTF-8")).unwrap();
+        bytes[layout.header_len + 5 * layout.record_len] = b'*';
+        let caller = std::thread::current().id();
+        let worker_allocated = AtomicBool::new(false);
+        let calls = AtomicUsize::new(0);
+        let records = read_dbf_records(&bytes, &layout, |record| {
+            if std::thread::current().id() != caller {
+                worker_allocated.store(true, Ordering::Relaxed);
+            }
+            calls.fetch_add(1, Ordering::Relaxed);
+            layout.record(record)
+        })
+        .unwrap();
+        assert!(!worker_allocated.load(Ordering::Relaxed), "DBF record storage was allocated on a pool thread");
+        assert_eq!(calls.load(Ordering::Relaxed), 127);
+        assert_eq!(records.len(), 128);
+        assert!(records[5].is_none());
+        assert_eq!(records[6].as_ref().unwrap(), &layer.features[6].attributes);
+    }
 
     #[test]
     fn measure_ranges_exclude_missing_samples() {

@@ -3011,3 +3011,55 @@ in the native reader. The declaration regression checks bare `ncols`, `nrows` an
 one-byte bound refuses before allocating a 16 MiB encoded text row. HDF5/netCDF
 component-band counts use checked arithmetic before declaration checks; a shared
 boundary regression refuses complex-count overflow even with limits unset.
+
+## Shapefile host memory reuse
+
+`cargo test -p terrio --lib dbf_record_storage_is_built_on_the_calling_thread`
+checks on glibc Linux that live DBF record vectors and their text/date values are constructed on
+the calling thread, retaining deleted physical slots. The test failed with the
+previous pool decoder. The existing `shapefile-deleted` conformance suite compares
+physical FIDs, attributes/nulls and WKB against GDAL 3.13.3, including streamed reads
+and paging with and without SHX.
+
+On Linux/glibc, profile the read/drop/next-allocation workflow with:
+
+```sh
+cargo build --release -p terrio --example vector_memory_reuse
+RAYON_NUM_THREADS=16 target/release/examples/vector_memory_reuse points.shp
+```
+
+The thread count fixes the old decoder's pool size for a before/after comparison;
+the new glibc DBF path does not use the pool. Other native platforms retain parallel
+DBF decoding, and WebAssembly retains its existing serial path.
+
+The example reads through the library, drops the dataset, then retains 768 written
+256-KiB buffers (192 MiB). It reports elapsed read time and Linux peak RSS before
+and after each step; RSS is null on platforms without `/proc/self/status`.
+Run each measurement in a fresh process. Compare default allocator settings with
+`MALLOC_ARENA_MAX=1` and `MALLOC_MMAP_THRESHOLD_=4194304` as separate controls.
+These variables change the whole host process and are not required by the reader.
+
+The Python reproduction from [#729](https://github.com/opengeos/terrio/issues/729)
+uses `terrio.open_vector`, `del dataset`, then 768 `bytearray(256 * 1024)` allocations.
+A local Linux/glibc measurement used optimized bindings, 16 Rayon threads and three
+fresh processes per case. GDAL 3.13.3 wrote the issue's six-field data shapes:
+200,000 points and 80,000 rectangular polygons, with text, integer and real fields.
+The table shows medians of peak RSS growth above the post-import baseline:
+
+| Data | Decoder | Read peak growth | Peak growth after next 192 MiB | Read time |
+| --- | --- | ---: | ---: | ---: |
+| Points | Previous worker allocation | 180.7 MiB | 268.9 MiB | 62.5 ms |
+| Points | Calling-thread allocation | 188.5 MiB | 215.1 MiB | 154.5 ms |
+| Polygons | Previous worker allocation | 108.7 MiB | 230.2 MiB | 59.5 ms |
+| Polygons | Calling-thread allocation | 118.5 MiB | 215.8 MiB | 94.9 ms |
+
+The new default result approaches the single-arena control (212.8 MiB for points,
+214.3 MiB for polygons). On this host the fixed-mmap control also reduced the old
+decoder's final peak (208.0/208.1 MiB), unlike the original issue's measurement.
+Allocator behavior varies by host and workload. This change improves reuse after
+freeing records. The read's own peak increases by about 8 MiB for points and 10 MiB
+for polygons in these runs, while the later peak drops by about 54 and 14 MiB.
+There is no fixed RSS bound.
+Serial DBF decoding trades parallel parsing throughput for allocation ownership.
+RSS thresholds are deliberately not CI assertions; the calling-thread regression
+and GDAL comparisons provide deterministic checks.
