@@ -92,6 +92,15 @@ def test_decode_check_requires_matching_dtype():
             )
 
 
+def test_one_step_drift_fails_off_macos_arm():
+    """Off macOS arm64 the drift limit is ignored: one-step differences fail."""
+    expected = np.full(4096, 1000, dtype="uint16")
+    actual = expected.copy()
+    actual[:40] += 1
+    with pytest.raises(AssertionError):
+        assert_decodes_as_gdal(actual, expected, macos_drift=0.02, macos_arm=False)
+
+
 def encode(data, **options):
     with MemoryFile() as mem:
         with mem.open(
