@@ -72,3 +72,25 @@ def test_missing_writer_prerequisites_are_skipped(monkeypatch, writer):
     assert "rasterio" in suite.skipped
     assert not suite.cases
     assert not suite.error
+
+
+@pytest.mark.parametrize("available", [False, True])
+def test_jp2_colors_checks_optional_node_exports(monkeypatch, tmp_path, available):
+    import shutil
+
+    if shutil.which("node") is None:
+        pytest.skip("optional Node runtime is absent")
+    monkeypatch.setattr(conformance, "ROOT", tmp_path)
+    package = tmp_path / "js/pkg-node/terrio.js"
+    package.parent.mkdir(parents=True)
+    package.write_text(
+        "module.exports = {open() {}};" if available
+        else 'module.exports = require("./missing_bg.wasm");'
+    )
+    if available:
+        package.with_name("terrio_bg.wasm").write_bytes(b"\0asm\x01\0\0\0")
+    monkeypatch.setattr(
+        conformance, "suite_json_ops", lambda *args, **kwargs: kwargs["extra"]
+    )
+    extra = conformance.suite_jp2_colors(SimpleNamespace())
+    assert extra == (("--node-package", str(package)) if available else ())

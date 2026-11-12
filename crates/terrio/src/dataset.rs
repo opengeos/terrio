@@ -667,6 +667,44 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
     result
 }
 
+/// The `(has_z, has_m)` a header declares for each layer of a dataset, by position; a missing
+/// entry declares nothing.
+pub(crate) type DeclaredDims = Vec<Option<(bool, bool)>>;
+
+/// [`open_vector`], with the Z and M each layer's header declares: `(has_z, has_m)` for the layer
+/// of a FlatGeobuf, read from the header the open parses (a local file, an archive's member, a
+/// remote file's download), so the file is not opened again. Empty for other drivers, and for a
+/// FlatGeobuf whose header terrio's reader did not parse (a `gdal:` path): the dimensions of those
+/// layers are found from their features.
+pub(crate) fn open_vector_declared(path: &str, options: &VectorOpenOptions) -> Result<(VectorDataset, DeclaredDims)> {
+    with_declared_dims(|| open_vector(path, options))
+}
+
+/// Runs `open`, an open of one vector dataset (a path, or bytes in memory), and returns its dataset
+/// with the Z and M its layers' headers declare, as [`open_vector_declared`] does.
+pub(crate) fn with_declared_dims(open: impl FnOnce() -> Result<VectorDataset>) -> Result<(VectorDataset, DeclaredDims)> {
+    #[cfg(feature = "flatgeobuf")]
+    {
+        let (ds, headers) = crate::drivers::vector::flatgeobuf::with_declared_dims(open);
+        let ds = ds?;
+        // An open that parsed a second header would lose the declared pair to the feature scan without
+        // a word: in a debug build, it says so.
+        debug_assert!(
+            ds.driver != VectorDriver::FlatGeobuf || headers.len() <= 1,
+            "a FlatGeobuf open parsed {} headers: its declared Z and M would be dropped",
+            headers.len()
+        );
+        // A FlatGeobuf has one layer, read from the one header parsed.
+        let declared = match headers[..] {
+            [dims] if ds.driver == VectorDriver::FlatGeobuf && ds.layers.len() == 1 => vec![Some(dims)],
+            _ => Vec::new(),
+        };
+        Ok((ds, declared))
+    }
+    #[cfg(not(feature = "flatgeobuf"))]
+    Ok((open()?, Vec::new()))
+}
+
 /// A vector response or feature-service query: opaque remote GeoJSON/GML names, and URLs with
 /// the signs of a service that answers ESRI JSON or its protocol
 /// buffer, or one named by the `ESRIJSON:` or `ESRIPBF:` prefix, which also names a local file. Read
@@ -1535,6 +1573,10 @@ pub struct BandMetadata {
     pub unit: Option<String>,
     /// The color interpretation, as GDAL names it: `Gray`, `Red`, `Alpha`, `Palette`...
     pub color_interp: Option<String>,
+    /// A stored JPEG 2000 colour association (T.800 I.5.3.6), when present. This preserves
+    /// the Y component of grayscale datasets whose bands all report `Gray` in GDAL.
+    /// A caller changing colour roles should leave this unset to choose their association anew.
+    pub color_association: Option<u16>,
     /// Metadata items (GDAL's band metadata, default domain).
     pub items: Vec<(String, String)>,
 }
@@ -1581,6 +1623,12 @@ pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWrit
     let derived = color_options(ds, path, options);
     let options = derived.as_ref().unwrap_or(options);
     let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
+    let mut options = std::borrow::Cow::Borrowed(options);
+    if ds.geotransform_present == Some(false)
+        && matches!(driver, Some(RasterDriver::JP2 | RasterDriver::PNG | RasterDriver::JPEG | RasterDriver::WEBP))
+    {
+        crate::drivers::common::keep_unreferenced(options.to_mut(), path, false);
+    }
     let options = options.inherited_from(ds, driver);
     let pam = needs_nodata_pam(ds) && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
     let tag = if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) { tiff_nodata(ds) } else { ds.nodata() };
@@ -1697,19 +1745,21 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool,
             driver.name()
         )));
     }
-    if options.geo_transform.is_some_and(|gt| !is_north_up(&gt))
+    if (driver != RasterDriver::JP2 && options.geo_transform.is_some_and(|gt| !is_north_up(&gt)))
         || !options.gcps.is_empty()
         || options.mask.is_some()
         || !options.rpc.is_empty()
     {
+        let unsupported =
+            if driver == RasterDriver::JP2 { "GCPs, masks or RPCs" } else { "rotated or south-up geotransforms, GCPs, masks or RPCs" };
         return Err(Error::Unsupported(format!(
-            "the {} writer cannot store rotated or south-up geotransforms, GCPs, masks or RPCs (GeoTIFF can, with a lossless compression)",
+            "the {} writer cannot store {unsupported} (GeoTIFF can, with a lossless compression)",
             driver.name()
         )));
     }
     let north_up;
     let raster = match options.geo_transform {
-        Some(gt) if gt != geo_transform(raster) => {
+        Some(gt) if driver != RasterDriver::JP2 && gt != geo_transform(raster) => {
             north_up = RasterDataset::with_driver(raster.clone(), driver, false).with_geo_transform(gt);
             &north_up
         }
