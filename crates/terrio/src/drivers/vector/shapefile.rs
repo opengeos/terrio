@@ -20,7 +20,7 @@
 //! strings.
 
 use super::profile::LayerProfile;
-use super::stored_crs::quote_text as quote_prj_text;
+use super::stored_crs::quote_text;
 use crate::crs::SpatialRef;
 use crate::ops::simplify::open_ring;
 use crate::{Error, Result};
@@ -41,7 +41,7 @@ pub(crate) fn decode_prj(bytes: Vec<u8>, name: &str) -> Option<String> {
     match String::from_utf8(bytes) {
         Ok(text) => Some(text),
         Err(error) => {
-            let name = quote_prj_text(name);
+            let name = quote_text(name);
             crate::warnings::warn(format!("{name} is not UTF-8 text ({}): the layer is read without a CRS", error.utf8_error()));
             None
         }
@@ -61,7 +61,7 @@ pub(crate) fn read_prj(path: &Path) -> Option<String> {
 
 /// Report a present sidecar whose payload cannot be read, including an archive member.
 pub(crate) fn warn_prj_read_error(name: &str, error: &impl std::fmt::Display) {
-    let name = quote_prj_text(name);
+    let name = quote_text(name);
     crate::warnings::warn(format!("{name} cannot be read ({error}): the layer is read without a CRS"));
 }
 
@@ -342,7 +342,7 @@ pub(crate) fn header_layer(shp: &[u8], name: &str) -> Result<Layer> {
 /// Sets a layer's CRS from a `.prj` file, as GDAL's Shapefile driver does (FindBestMatch()):
 /// the EPSG CRS the `.prj` is identified as, and otherwise its definition.
 ///
-/// A definition is kept as it is when it has the form of one (`is_crs_definition`), whether terrio
+/// A definition is kept as it is when it has the form of one (see `stored_crs::definition`), whether terrio
 /// reads it or not, or when terrio reads it (`SpatialRef::parse_literal`) and it is not WKT: a
 /// PROJ string, PROJJSON. WKT goes by its form alone, since the parser reads its first root and
 /// not what follows. Any other text leaves the layer without a CRS, with a warning that quotes it;
@@ -2021,6 +2021,8 @@ mod tests {
         assert!(!warnings[0].contains(['\x1b', '\u{202e}']));
     }
 
+    /// A `.dbf` of one text field holding `cell`, its header declaring `count` records and the
+    /// language driver id `ldid`.
     fn dbf(cell: &[u8], count: u32, ldid: u8) -> Vec<u8> {
         let width = cell.len() as u8;
         let mut d = vec![3u8, 125, 1, 1];

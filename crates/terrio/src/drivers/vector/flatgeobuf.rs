@@ -111,14 +111,14 @@ pub(crate) fn parse_header(buf: &[u8]) -> Result<(Layer, FgbHeader)> {
     layer.geom_type = from_fgb_type(header.geometry_type());
     if let Some(crs) = header.crs() {
         let org = crs.org().unwrap_or("EPSG");
-        let known_epsg = crs.code() > 0 && org.eq_ignore_ascii_case("EPSG") && wbprojection::to_ogc_wkt(crs.code() as u32).is_ok();
-        if known_epsg {
-            // Match GeoPackage: a recognized authority code takes precedence over its
-            // redundant stored definition, including one that is malformed.
+        let declared_epsg = crs.code() > 0 && org.eq_ignore_ascii_case("EPSG");
+        if declared_epsg {
+            // Keep the declared authority even when this build does not know the code.
+            // Invalid redundant WKT must not remove that fallback.
             layer.set_crs_epsg(Some(crs.code() as u32));
         }
-        let source = format!("FlatGeobuf layer '{}' CRS definition", layer.name);
-        if let Some(wkt) = crs.wkt().and_then(|w| super::stored_crs::definition(w, (!known_epsg).then_some(source.as_str()))) {
+        let source = format!("FlatGeobuf layer '{}'", layer.name);
+        if let Some(wkt) = crs.wkt().and_then(|w| super::stored_crs::definition(w, (!declared_epsg).then_some(source.as_str()))) {
             let s = SpatialRef::from_wkt(wkt);
             layer.set_crs_wkt(Some(wkt.to_string()));
             if layer.crs_epsg().is_none() {
@@ -998,21 +998,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stored_crs_uses_known_authority_without_losing_valid_definition() {
-        for text in ["not a CRS", "PROJCS[\"x\"]"] {
-            let mut builder = FlatBufferBuilder::new();
-            let org = Some(builder.create_string("EPSG"));
-            let wkt = Some(builder.create_string(text));
-            let crs = Some(Crs::create(&mut builder, &CrsArgs { org, code: 4326, wkt, ..Default::default() }));
-            let header = Header::create(&mut builder, &HeaderArgs { crs, index_node_size: 0, ..Default::default() });
-            builder.finish_size_prefixed(header, None);
-            let mut bytes = MAGIC.to_vec();
-            bytes.extend_from_slice(builder.finished_data());
-            crate::warnings::take();
-            let (layer, _) = parse_header(&bytes).unwrap();
-            assert_eq!(layer.crs_epsg(), Some(4326));
-            assert_eq!(layer.crs_wkt(), (text != "not a CRS").then_some(text));
-            assert!(crate::warnings::take().is_empty());
+    fn stored_crs_keeps_declared_authority_and_definition_forms() {
+        for code in [4326, 999999] {
+            for text in [None, Some("not a CRS"), Some("PROJCS[\"x\"]")] {
+                let mut builder = FlatBufferBuilder::new();
+                let org = Some(builder.create_string("EPSG"));
+                let wkt = text.map(|text| builder.create_string(text));
+                let crs = Some(Crs::create(&mut builder, &CrsArgs { org, code, wkt, ..Default::default() }));
+                let header = Header::create(&mut builder, &HeaderArgs { crs, index_node_size: 0, ..Default::default() });
+                builder.finish_size_prefixed(header, None);
+                let mut bytes = MAGIC.to_vec();
+                bytes.extend_from_slice(builder.finished_data());
+                crate::warnings::take();
+                let (layer, _) = parse_header(&bytes).unwrap();
+                assert_eq!(layer.crs_epsg(), Some(code as u32));
+                assert_eq!(layer.crs_wkt(), text.filter(|text| *text != "not a CRS"));
+                assert!(crate::warnings::take().is_empty());
+            }
         }
     }
 

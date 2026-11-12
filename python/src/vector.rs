@@ -25,8 +25,7 @@ impl From<Layer> for PyLayer {
 }
 
 /// Apply the same optional consumer-side parser as pyogrio without changing stored CRS.
-pub(crate) fn dataframe_crs(py: Python<'_>, layer: &Layer) -> PyResult<Option<String>> {
-    let crs = crs_string(&SpatialRef::from_layer(layer));
+pub(crate) fn dataframe_crs(py: Python<'_>, crs: Option<String>) -> PyResult<Option<String>> {
     py.import("terrio._crs")?.call_method1("dataframe_crs", (crs,))?.extract()
 }
 
@@ -310,14 +309,15 @@ impl PyLayer {
     /// Converts the layer to a GeoDataFrame, through WKB geometries. Needs geopandas.
     ///
     /// Returns:
-    ///     geopandas.GeoDataFrame: The features, with the layer's CRS.
+    ///     geopandas.GeoDataFrame: The features, with the layer's CRS when usable.
+    ///         An unparseable definition is omitted with a warning.
     ///
     /// Raises:
     ///     ImportError: If geopandas is not installed.
     fn to_geopandas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let gpd = py.import("geopandas")?;
         let kwargs = PyDict::new(py);
-        kwargs.set_item("crs", dataframe_crs(py, &self.inner)?)?;
+        kwargs.set_item("crs", dataframe_crs(py, crs_string(&SpatialRef::from_layer(&self.inner)))?)?;
         let geometry = gpd.getattr("GeoSeries")?.call_method("from_wkb", (self.to_wkb(py)?,), Some(&kwargs))?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("geometry", geometry)?;

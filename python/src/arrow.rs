@@ -203,7 +203,8 @@ pub(crate) fn write_options(
 
 /// Converts a layer to an `ArrowTable`, validating retained definitions for Python consumers.
 pub(crate) fn layer_to_table(py: Python<'_>, layer: &terrio::Layer, options: &ArrowWriteOptions) -> PyResult<PyArrowTable> {
-    let omit_crs = crate::crs_string(&SpatialRef::from_layer(layer)).is_some() && crate::vector::dataframe_crs(py, layer)?.is_none();
+    let crs = crate::crs_string(&SpatialRef::from_layer(layer));
+    let omit_crs = crs.is_some() && crate::vector::dataframe_crs(py, crs)?.is_none();
     let mut table = py.detach_result(|| terrio::arrow::layer_to_arrow(layer, options)).py()?;
     if omit_crs {
         // Change only schema metadata: retain the buffers and the original layer's definition.
@@ -214,7 +215,7 @@ pub(crate) fn layer_to_table(py: Python<'_>, layer: &terrio::Layer, options: &Ar
             .map(|field| {
                 let mut metadata = field.metadata().clone();
                 if metadata.get("ARROW:extension:name").is_some_and(|name| name.starts_with("geoarrow.")) {
-                    metadata.insert("ARROW:extension:metadata".into(), r#"{"crs":null}"#.into());
+                    metadata.insert("ARROW:extension:metadata".into(), "{}".into());
                 }
                 Arc::new(field.as_ref().clone().with_metadata(metadata))
             })

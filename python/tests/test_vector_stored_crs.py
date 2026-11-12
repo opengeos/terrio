@@ -32,9 +32,18 @@ TEMPORAL = (
 )
 
 
-def stored_crs(tmp_path, driver, text):
+def geopandas_for_surface(surface):
+    gpd = pytest.importorskip("geopandas")
+    if surface in ("arrow", "stream"):
+        pytest.importorskip("pyarrow")
+        if not hasattr(gpd.GeoDataFrame, "from_arrow"):
+            pytest.skip("GeoDataFrame.from_arrow requires GeoPandas 1.0 or later")
+    return gpd
+
+
+def stored_crs(tmp_path, driver, text, container_definition=CUSTOM):
     path = tmp_path / f"points.{driver}"
-    layer = terrio.Layer.from_geojson(POINTS, name="points", crs=CUSTOM)
+    layer = terrio.Layer.from_geojson(POINTS, name="points", crs=container_definition)
     layer.write(str(path))
     if driver == "gpkg":
         with sqlite3.connect(path) as db:
@@ -48,7 +57,7 @@ def stored_crs(tmp_path, driver, text):
             db.execute("UPDATE gpkg_contents SET srs_id=100000")
     elif driver == "fgb":
         raw = bytearray(path.read_bytes())
-        start = raw.index(b'PROJCS["custom"')
+        start = raw.index(b'PROJCS["custom')
         encoded = text.encode()
         assert len(encoded) <= int.from_bytes(raw[start - 4 : start], "little")
         raw[start - 4 : start] = len(encoded).to_bytes(4, "little")
@@ -71,8 +80,7 @@ def test_non_crs_stored_text_is_warned_and_discarded(tmp_path, driver):
 @pytest.mark.parametrize("driver", ["gpkg", "fgb", "shp"])
 @pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream"])
 def test_unparseable_stored_definition_exports_without_crs(tmp_path, driver, surface):
-    gpd = pytest.importorskip("geopandas")
-    pytest.importorskip("pyarrow")
+    gpd = geopandas_for_surface(surface)
     path = stored_crs(tmp_path, driver, 'PROJCS["x"]')
     layer = terrio.open_vector(str(path))[0]
     assert layer.crs == 'PROJCS["x"]'
@@ -91,8 +99,7 @@ def test_unparseable_stored_definition_exports_without_crs(tmp_path, driver, sur
 @pytest.mark.parametrize("definition", [CUSTOM, 'LOCAL_CS["site grid",UNIT["metre",1]]', TEMPORAL])
 @pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream", "pyogrio"])
 def test_valid_custom_stored_definitions_survive_exports(tmp_path, driver, definition, surface):
-    gpd = pytest.importorskip("geopandas")
-    pytest.importorskip("pyarrow")
+    gpd = geopandas_for_surface(surface)
     from pyproj import CRS
 
     import terrio.pyogrio as tpg
@@ -119,3 +126,32 @@ def test_discarded_non_crs_text_is_not_written_into_other_formats(tmp_path, driv
         target = tmp_path / f"copy.{extension}"
         layer.write(str(target))
         assert terrio.open_vector(str(target))[0].crs is None
+
+
+@pytest.mark.parametrize("driver", ["gpkg", "fgb", "shp"])
+@pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream", "pyogrio"])
+def test_custom_dynamic_crs_keeps_frame_reference_epoch(tmp_path, driver, surface):
+    gpd = geopandas_for_surface(surface)
+    from pyproj import CRS
+
+    import terrio.pyogrio as tpg
+
+    dynamic = CRS.from_epsg(9000).to_json_dict()
+    dynamic.pop("id", None)
+    dynamic["name"] = "custom dynamic CRS"
+    dynamic["datum"]["name"] = "custom dynamic datum"
+    reference = CRS.from_json_dict(dynamic)
+    definition = reference.to_wkt()
+    container = CUSTOM.replace('"custom"', '"custom' + "x" * 1000 + '"')
+    path = stored_crs(tmp_path, driver, definition, container)
+    layer = terrio.open_vector(str(path))[0]
+    assert layer.crs == definition
+    if surface == "pyogrio":
+        result = tpg.read_dataframe(path)
+    elif surface == "geopandas":
+        result = layer.to_geopandas()
+    else:
+        result = gpd.GeoDataFrame.from_arrow(layer.to_arrow() if surface == "arrow" else layer)
+    assert result.crs.equals(reference)
+    assert result.crs.to_json_dict()["datum"]["frame_reference_epoch"] == 2010
+    assert list(result["id"]) == [1]

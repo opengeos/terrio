@@ -1,3 +1,6 @@
+// Written to match GDAL v3.13.3 stored Shapefile CRS behavior
+// (ogr/ogrsf_frmts/shape/ogrshapelayer.cpp), without translating its code.
+
 //! Shared validation of stored vector CRS definitions, without requiring parser support.
 
 use crate::crs::SpatialRef;
@@ -7,7 +10,10 @@ use crate::crs::SpatialRef;
 /// A source label enables diagnostics; redundant definitions with a valid authority
 /// fallback may be ignored silently.
 pub(super) fn definition<'a>(text: &'a str, source: Option<&str>) -> Option<&'a str> {
-    let text = text.trim_start_matches('\u{feff}').trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '\0' | '\x1a')).trim_start();
+    let text = text
+        .trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+        .trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '\0' | '\x1a'))
+        .trim_start();
     if text.is_empty() {
         return None;
     }
@@ -247,9 +253,6 @@ mod tests {
         }
     }
 
-    /// A `.dbf` of one text field holding `cell`, its header declaring `count` records and the
-    /// language driver id `ldid`.
-
     #[test]
     fn stored_definition_rejects_prose_but_keeps_unsupported_forms() {
         crate::warnings::take();
@@ -262,6 +265,7 @@ mod tests {
             definition("LOCAL_CS[\"site grid\",UNIT[\"metre\",1]]", Some("test layer")),
             Some("LOCAL_CS[\"site grid\",UNIT[\"metre\",1]]")
         );
+        assert_eq!(definition(" \t\u{feff} PROJCS[\"x\"]\0", Some("test layer")), Some("PROJCS[\"x\"]"));
         assert_eq!(definition(" ", Some("test layer")), None);
         assert!(crate::warnings::take().is_empty());
     }

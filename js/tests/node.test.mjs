@@ -5040,7 +5040,6 @@ test("engineering and long vertical WKT roots keep their CRS identity", () => {
   }
 });
 
-
 test("FlatGeobuf stored CRS validation discards prose and retains definition forms", () => {
   const custom = "PROJCS[\"custom\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"central_meridian\",15.5],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],UNIT[\"metre\",1]]";
   const source = terrio.fromGeoJSON({type:"FeatureCollection", features:[{type:"Feature", properties:{id:1}, geometry:{type:"Point",coordinates:[10,46]}}]}, "points", custom);

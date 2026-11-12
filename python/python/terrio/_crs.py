@@ -26,7 +26,8 @@ def dataframe_crs(crs: str | None) -> str | None:
     """The CRS as pyogrio gives it.
 
     `EPSG:<code>` when GDAL identifies an EPSG code, otherwise GDAL's WKT1 (here PROJ's
-    `WKT1_GDAL` export, which names axes as GDAL does).
+    `WKT1_GDAL` export, which names axes as GDAL does), when it preserves the
+    definition. Dynamic and WKT2-only definitions retain their original representation.
 
     An `EPSG:<code>` that terrio knows is given as it is, without pyproj. A definition pyproj
     cannot parse, an `EPSG:<code>` neither knows included, is `None`, with a warning that quotes
@@ -60,6 +61,10 @@ def dataframe_crs(crs: str | None) -> str | None:
         )
         return None
     if crs.startswith("EPSG:"):
+        return crs
+    datum = parsed.datum
+    if datum is not None and datum.type_name.startswith("Dynamic"):
+        # WKT1 can silently discard a dynamic datum's frame reference epoch.
         return crs
     try:
         return parsed.to_wkt("WKT1_GDAL") or crs

@@ -1182,6 +1182,8 @@ reads it.
   definition-form check as Shapefile: prose and unbalanced WKT are ignored with a
   warning, while balanced definitions unsupported by Terrio remain stored. A
   recognized EPSG authority code takes precedence over the redundant definition.
+  FlatGeobuf also retains declared EPSG codes absent from the local registry,
+  including when its redundant WKT is absent or invalid.
   Python `Layer.to_geopandas()`, `Layer.to_arrow()`, Arrow stream export and
   `terrio.pyogrio` share optional pyproj validation. When a retained definition
   cannot be parsed, these exports warn and omit its CRS, preserving geometries,
