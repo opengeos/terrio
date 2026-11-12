@@ -179,8 +179,14 @@ same, and the grid tests use only the `grids` directory of the test data. Grids 
 change results by centimetres (NAD27 and NAD83) to metres: PROJ's user directory
 (`~/.local/share/proj`, which `projsync` and PROJ's network cache fill), `PROJ_DATA` and
 `PROJ_LIB`. Conda's `proj-data` package puts about 390 grids in the PROJ data directory, and
-GDAL reads them there. `scripts/gen_epsg_points.py` therefore searches a directory with PROJ's
-database (`proj.db`) only, so that its references do not depend on which packages are installed.
+GDAL reads them there. `scripts/gen_epsg_points.py` therefore searches a temporary directory
+holding only PROJ's `proj.db` and `proj.ini`, so that its references do not depend on which
+packages are installed. The Python grid test does the same for GDAL.
+
+Transformations in the real-data Rust test binaries must go through the `data()` helper first,
+which turns grid search and the network off. A test that transforms without calling `data()`
+can see the machine's grids, depending on test order. No current test does this.
+
 If the EPSG tests report a few hundred CRSs off by metres, or the warp or point-cloud tests are
 off by centimetres, check for grids in those directories (`projsync` leaves them in the user
 directory).

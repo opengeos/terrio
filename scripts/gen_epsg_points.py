@@ -33,6 +33,7 @@ Usage: python scripts/gen_epsg_points.py OUT.tsv [--grids DIR] [--points N]
 """
 
 import argparse
+import atexit
 import math
 import multiprocessing
 import os
@@ -65,9 +66,12 @@ osr.UseExceptions()
 # use.
 PROJ_DATA_DIR = pyproj.datadir.get_data_dir().split(os.pathsep)[0]
 PROJ_DB_DIR = tempfile.mkdtemp()
+atexit.register(shutil.rmtree, PROJ_DB_DIR, ignore_errors=True)
 for name in ("proj.db", "proj.ini"):
     if os.path.exists(os.path.join(PROJ_DATA_DIR, name)):
         shutil.copy2(os.path.join(PROJ_DATA_DIR, name), PROJ_DB_DIR)
+if not os.path.exists(os.path.join(PROJ_DB_DIR, "proj.db")):
+    raise SystemExit(f"{PROJ_DATA_DIR} holds no proj.db: the EPSG reference needs PROJ's database")
 GRID_DIR = os.path.abspath(OPTIONS.grids) if OPTIONS.grids else tempfile.mkdtemp()
 # PROJ's user directory (where projsync and the network cache put grids) is searched too.
 os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp()

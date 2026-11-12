@@ -3,7 +3,7 @@
 //! Locates real-world files under `TERRIO_TEST_DATA` (see `scripts/fetch_test_data.sh`).
 
 /// Hides the datum shift grids of the machine from the transformations of real-data tests, as CI
-/// sees them: the expected values were computed by GDAL without grids, and terrio would otherwise
+/// sees them: the expected values were computed by GDAL 3.12.2 without grids, and terrio would otherwise
 /// search PROJ's user directory (`~/.local/share/proj`, where `projsync` writes) and `PROJ_DATA`.
 /// Network access is off as well.
 fn without_grids() {
