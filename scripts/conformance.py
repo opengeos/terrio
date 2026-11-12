@@ -1971,6 +1971,33 @@ def suite_iau(ctx):
     return suite
 
 
+def suite_wkt_keywords(ctx):
+    """Engineering and vertical WKT roots through native bindings and CLI."""
+    suite = Suite("wkt-keywords", "Engineering and vertical WKT keywords", "GDAL 3.13.3",
+                  "Eleven engineering/vertical definitions: exact root authority and CRS kind, "
+                  "CLI WKT retention and unchanged real USGS elevation pixels, nodata and affine. "
+                  "This checks metadata parsing, not engineering-to-Earth transformations.")
+    if missing_modules("terrio", "osgeo", "numpy"):
+        suite.skipped = "needs current Python bindings, GDAL and NumPy"
+        return suite
+    if not (Path(ctx.data) / "usgs_dem.tif").exists():
+        suite.skipped = "usgs_dem.tif is missing (scripts/fetch_test_data.sh)"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_wkt_keywords_with_gdal.py"),
+                          ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        status = IDENTICAL if result["status"] == "identical" else DIFFERS
+        suite.cases.append(Case("WKT keywords", result["name"], status, result["detail"]))
+    if len(results) != 11 or (code and not any(c.status == DIFFERS for c in suite.cases)):
+        suite.error = tail(err or out) or "incomplete WKT keyword comparisons"
+    return suite
+
+
 def suite_crs_list(ctx):
     """The registry CRSs ``terrio list-crs`` lists against GDAL's CRS info list."""
     suite = Suite("crs-list", "Registry CRS listing", "GDAL/PROJ",
@@ -3706,6 +3733,7 @@ SUITES = OrderedDict(
         ("projjson", suite_projjson),
         ("projjson-export", suite_projjson_export),
         ("iau", suite_iau),
+        ("wkt-keywords", suite_wkt_keywords),
         ("crs-list", suite_crs_list),
         ("crs-grids", suite_crs_grids),
     ]

@@ -4813,3 +4813,20 @@ test("JPEG 2000 byte exports preserve rotated and south-up affine grids", { skip
     source.free();
   }
 });
+
+
+test("engineering and long vertical WKT roots keep their CRS identity", () => {
+  // Independent metadata reference: GDAL 3.13.3.
+  const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/wkt_keywords_reference.json", import.meta.url)));
+  for (const c of reference.cases) {
+    const actual = terrio.describeCrs(c.wkt);
+    assert.equal(actual.epsg, c.epsg, c.name);
+    assert.equal(actual.geocentric, false, c.name);
+    assert.equal(actual.wkt, c.wkt, c.name);
+    const values = new Uint8Array([1, 2, 3, 4]);
+    const raster = terrio.rasterFromArray(values, 2, 2, [0, 1, 0, 2, 0, -1], c.wkt);
+    assert.deepEqual(Array.from(raster.readBand(1)), Array.from(values), c.name);
+    assert.equal(terrio.describeCrs(raster.crs).epsg, c.epsg, c.name);
+    raster.free();
+  }
+});

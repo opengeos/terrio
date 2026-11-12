@@ -837,6 +837,21 @@ The options also apply to Python's bundled CLI and MCP. Direct zonal statistics
 are exposed as Python `zonal_stats` and JavaScript `zonalStats`; direct
 point-sampling functions remain unavailable in the language bindings.
 
+## Engineering and vertical WKT keywords
+
+`cargo test -p terrio-crs --test wkt_root_keywords` checks engineering roots,
+case-insensitive keywords, vertical root identifiers and malformed syntax, both
+with and without `wbprojection-fallback`. Python and Node share eleven GDAL
+3.13.3-authored metadata references. Python also covers reader constructors and CLI
+literal/file arguments. Compare independent GDAL identity and real USGS elevation
+pixels with unchanged nodata and affine:
+
+```sh
+python scripts/conformance.py ../data --only wkt-keywords --strict
+```
+
+Engineering-to-Earth transforms are outside this metadata-parsing comparison.
+
 ## Standalone CRS feature coverage
 
 Run the standalone suite separately from the workspace to avoid Cargo feature

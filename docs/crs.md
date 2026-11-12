@@ -22,6 +22,13 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 - the path of a file holding one of these (`SpatialRef::parse_literal` in Rust parses the same
   definitions without reading file paths).
 
+Engineering WKT roots (`LOCAL_CS`, `ENGCRS`, `ENGINEERINGCRS`) retain their local
+coordinate-system definitions without being assigned an unrelated EPSG code. Both
+`VERTCRS` and its long form `VERTICALCRS` read the identifier of the CRS itself;
+identifiers on its datum, coordinate system or unit do not replace it. These forms
+work in Rust, CLI/MCP, Python and JavaScript. Parsing engineering metadata does not
+add transformations between arbitrary local grids and Earth-based CRSs.
+
 Of PROJ's 117 projections, terrio computes 89 as PROJ does (within 1 mm, on a sphere and on WGS 84,
 as PROJ strings with typical parameters and as pyproj's WKT1 and WKT2 of them:
 `crates/terrio-crs/tests/proj_strings.rs`) and refuses the 28 others (`airy`, `bacon`, `goode`,
