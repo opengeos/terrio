@@ -68,6 +68,15 @@ deriving conversions are errors.
 Coordinates are always in GIS order: x (easting, longitude) first, then y (northing, latitude),
 whatever the axis order the authority defines.
 
+Inverse projections refuse non-finite input coordinates before evaluating their formulas.
+In particular, a failed transform's `(inf, inf)` marker cannot become a valid-looking opposite
+pole through a polar stereographic inverse. Finite distant coordinates remain valid where the
+projection permits them. If conversion to metres overflows before normalization by the
+ellipsoid radius, the inverse combines those scale factors to preserve finite normalized
+coordinates and their direction. Unrepresentable normalized coordinates are refused.
+This is stricter than GDAL 3.13.3 for some infinity pairs, such as
+`(0, -inf)` in EPSG:3413, which GDAL accepts as a pole.
+
 ## Standalone Rust crate
 
 Applications that only need coordinate systems can depend on `terrio-crs` rather
@@ -261,7 +270,8 @@ as the ellipsoid plus that shift. A recognized datum name with a custom spheroid
 and no effective registry identity exports the supplied ellipsoid with a warning.
 An ordinary WKT retaining an outer EPSG identity uses the registry definition
 for both transformations and parameter exports, even if its nodes were edited.
-Remove that identity when defining a custom spheroid. Mapping constructors with
+Parameter exports warn when they detect WKT1 projection or datum parameters conflicting with that
+registry definition. Remove that identity when defining a custom CRS. Mapping constructors with
 `init` retain the authority and ignore non-switch parameters for compatibility;
 recognized boolean overrides are still validated and refused as described above.
 

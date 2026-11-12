@@ -420,6 +420,38 @@ def test_declared_projected_authority_exports_its_effective_spheroid():
         np.testing.assert_allclose(coordinates(back, (16, 30)), expected, rtol=0, atol=1e-6)
 
 
+@pytest.mark.parametrize("method", ["to_dict", "to_proj4"])
+def test_authority_export_warns_when_projection_nodes_conflict(method):
+    """Report when an authority identity overrides edited projection parameters.
+
+    Args:
+        method: Public parameter export method.
+    """
+    wkt = CRS.from_epsg(32633).to_wkt().replace('"central_meridian",15', '"central_meridian",9')
+    crs = CRS.from_wkt(wkt)
+    with pytest.warns(UserWarning, match="conflicting WKT parameters") as caught:
+        result = getattr(crs, method)()
+    assert caught[0].filename == __file__
+    if method == "to_dict":
+        assert result["lon_0"] == 15
+    else:
+        assert "+lon_0=15" in result
+
+
+@pytest.mark.parametrize("access", [lambda crs: crs["units"], len, list])
+def test_mapping_datum_warning_points_at_public_caller(access):
+    """Attribute mapping-interface datum warnings to the public caller.
+
+    Args:
+        access: Mapping operation to exercise.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        access(CRS.from_epsg(23031))
+    assert caught
+    assert all(warning.filename == __file__ for warning in caught)
+
+
 def test_registry_parameter_exports_reuse_native_lookup(monkeypatch):
     """Repeated parameter exports reuse their parsed registry definition.
 

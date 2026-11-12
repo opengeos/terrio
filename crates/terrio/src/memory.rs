@@ -4,9 +4,9 @@
 //! A file name goes with the bytes: its extension tells the format, as a path's does, and its stem
 //! names vector layers.
 //!
-//! In native builds, the bytes go through a temporary directory and the file drivers, so every
-//! format reads and writes exactly as from files. WebAssembly builds have no file system and use
-//! in-memory codecs instead, for the formats that have one:
+//! Native reads use a temporary directory and the file drivers. Byte writes use shared codecs
+//! where needed to keep a standalone document or an explicit archive; other native writes use
+//! temporary files. WebAssembly uses in-memory codecs for the formats that have one:
 //!
 //! - reading: GeoTIFF, Esri ASCII grid, JPEG 2000 (JP2 and J2K), GeoPackage (vector layers and rasters), PMTiles and
 //!   MBTiles (raster and vector tiles), MVT tiles, GeoJSON, TopoJSON,
@@ -16,8 +16,8 @@
 //!   layers and rasters), PMTiles and MBTiles, GeoJSON, TopoJSON, FlatGeobuf, CSV, XLSX, GeoParquet, KML, KMZ, GML (without
 //!   its schema), GPX, DWG, DXF and Shapefile ZIP archives (`.shp.zip`).
 //!
-//! Formats made of several files (a shapefile's `.shp`, `.dbf`, `.prj`...) are written as a zip
-//! archive of them.
+//! Shapefile output requires `.shp.zip`; native MapInfo output requires `.mif.zip` or `.tab.zip`.
+//! GML byte output is a standalone document without its schema sidecar on every build.
 //!
 //! With the `gdal` feature, what terrio cannot read is opened by GDAL from memory, through its
 //! `/vsimem/` file system, and extensions terrio has no driver for are written by the GDAL
@@ -44,6 +44,65 @@ pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Dataset> {
     open_bytes_of_kind(bytes, name, None)
 }
 
+/// A vector filename extension suggested by the shared byte identifiers, without opening a
+/// dataset. Unrecognizable content, including unsigned CSV, needs a filename from the caller.
+/// Identification is only a hint: the ordinary reader still validates the data and driver policy.
+/// The pyogrio compatibility caller targets Pyogrio 0.13.0 / GDAL 3.12.2.
+pub fn suggest_vector_extension(bytes: &[u8]) -> Option<&'static str> {
+    let driver = crate::inspection::identify_bytes_unjudged(bytes, "")
+        .and_then(|identified| crate::formats::VectorDriver::from_name(&identified.driver))
+        .or_else(|| {
+            // Anonymous buffers contain the complete document. A bounded header can end
+            // inside features before a root type placed last; inspect that root before
+            // falling back to format-like strings inside properties.
+            let prefix = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+            let first = prefix.iter().copied().take(16 * 1024).find(|byte| !byte.is_ascii_whitespace());
+            if !matches!(first, Some(b'{' | 0x1e)) {
+                return None;
+            }
+            let text = std::str::from_utf8(bytes).ok()?.trim_start_matches('\u{feff}').trim_start();
+            let sequence = text.starts_with('\u{1e}');
+            let json = text.trim_start_matches('\u{1e}').trim_start();
+            if !json.starts_with('{') {
+                return None;
+            }
+            use crate::formats::VectorDriver;
+            match crate::inspection::root_json_type(json)?.as_str() {
+                "Topology" => Some(VectorDriver::TopoJSON),
+                "CityJSON" => Some(VectorDriver::CityJSON),
+                "FeatureCollection" | "Feature" | "Point" | "MultiPoint" | "LineString" | "MultiLineString" | "Polygon"
+                | "MultiPolygon" | "GeometryCollection" => Some(if sequence { VectorDriver::GeoJSONSeq } else { VectorDriver::GeoJSON }),
+                _ => None,
+            }
+        })
+        .or_else(|| crate::formats::identify_bytes("", bytes).by_content.as_deref().and_then(crate::formats::VectorDriver::from_name))
+        .or_else(|| codec::vector_driver(bytes, ""))?;
+    // Anonymous buffers contain the whole object. Require the binary envelope rather than
+    // a prefix that could also be a CSV column name; the reader still validates the payload.
+    match driver {
+        crate::formats::VectorDriver::FlatGeobuf
+            if bytes.len() < 8
+                || !bytes.starts_with(b"fgb")
+                || !matches!(bytes[3], 2 | 3)
+                || bytes.get(4..7) != Some(b"fgb".as_slice()) =>
+        {
+            return None;
+        }
+        crate::formats::VectorDriver::Parquet => {
+            if bytes.len() < 12 || !bytes.starts_with(b"PAR1") || !bytes.ends_with(b"PAR1") {
+                return None;
+            }
+            let metadata_length = u32::from_le_bytes(bytes[bytes.len() - 8..bytes.len() - 4].try_into().ok()?);
+            if usize::try_from(metadata_length).ok()? > bytes.len() - 12 {
+                return None;
+            }
+        }
+        crate::formats::VectorDriver::OSM if crate::drivers::vector::citygml::is_xml_prefix(bytes) => return Some("osm"),
+        _ => {}
+    }
+    driver.info().extensions.first().copied()
+}
+
 /// [`open_bytes`] for a dataset of `kind`: its name and content must pass that kind's allowed
 /// drivers (see [`crate::formats::set_allowed_drivers`]), as a file's must.
 fn open_bytes_of_kind(bytes: Vec<u8>, name: &str, kind: Option<Kind>) -> Result<Dataset> {
@@ -51,6 +110,7 @@ fn open_bytes_of_kind(bytes: Vec<u8>, name: &str, kind: Option<Kind>) -> Result<
     {
         let (_dir, path) = native::spill(&bytes, name)?;
         crate::formats::check_allowed(&path, kind)?;
+        check_vector_archive_filename(&bytes, name)?;
         let result = crate::dataset::open_native(&path);
         // What terrio cannot read, GDAL reads from memory (`/vsimem/`).
         #[cfg(feature = "gdal")]
@@ -147,6 +207,7 @@ pub fn open_vector_bytes(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions
     {
         let (_dir, path) = native::spill(&bytes, name)?;
         crate::formats::check_allowed(&path, Some(Kind::Vector))?;
+        check_vector_archive_filename(&bytes, name)?;
         let result = crate::dataset::open_vector_native(&path, options);
         #[cfg(feature = "gdal")]
         let result = crate::dataset::gdal_fallback(&path, result, |_| crate::gdal_backend::open_vector_bytes(bytes, name, options));
@@ -160,6 +221,16 @@ pub fn open_vector_bytes(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions
         Dataset::Vector(v) => Ok(v),
         Dataset::Raster(_) => Err(Error::Unsupported(format!("'{name}' is a raster, not a vector dataset"))),
     }
+}
+
+/// Refuses a multi-file archive mislabeled as a single vector document.
+fn check_vector_archive_filename(bytes: &[u8], name: &str) -> Result<()> {
+    if codec::is_zip(bytes) && matches!(crate::formats::extension(name).as_deref(), Some("gml" | "mif" | "tab")) {
+        return Err(Error::InvalidArgument(format!(
+            "'{name}' contains a ZIP archive: use a .zip filename to read its dataset and sidecars"
+        )));
+    }
+    Ok(())
 }
 
 /// Writes rasters into one netCDF-4 file in memory, each in its group, as
@@ -214,9 +285,20 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
 /// Shapefile driver). The result is `application/zip` on native and WASM alike.
 /// Bare `.shp` names are refused: use [`crate::write_vector`] for filesystem members.
 /// See [`write_shapefile_zip_bytes`] for supported data and refusals.
+/// GML bytes are one XML document without an XSD sidecar; use a `.gml` filename.
+/// Native MapInfo bytes require `.mif.zip` or `.tab.zip`. A `.zip` name with the MapInfo driver
+/// defaults to MIF members. MapInfo byte writing remains unavailable in WebAssembly.
 pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOptions) -> Result<Vec<u8>> {
+    let archive = name.to_ascii_lowercase().ends_with(".zip");
     let driver = match options.driver.or_else(|| {
-        if name.to_ascii_lowercase().ends_with(".shp.zip") { Some(VectorDriver::Shapefile) } else { VectorDriver::for_extension(name) }
+        if archive {
+            match VectorDriver::for_extension(&name[..name.len() - 4]) {
+                Some(driver @ (VectorDriver::Shapefile | VectorDriver::MapInfo | VectorDriver::GML)) => Some(driver),
+                _ => VectorDriver::for_extension(name),
+            }
+        } else {
+            VectorDriver::for_extension(name)
+        }
     }) {
         Some(d) => d,
         None => {
@@ -229,8 +311,27 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
         }
     };
     crate::dataset::ensure_vector_options_apply(options, Some(driver))?;
+    if driver == VectorDriver::GML {
+        if archive {
+            return Err(Error::InvalidArgument(
+                "GML byte output is one XML document: use a .gml filename; use write_vector for a schema sidecar".into(),
+            ));
+        }
+        crate::formats::check_driver_allowed(driver.name(), name, Kind::Vector)?;
+        return codec::write_vector(layers, driver, options);
+    }
+    #[cfg(target_family = "wasm")]
+    if driver == VectorDriver::MapInfo {
+        return Err(Error::Unsupported("MapInfo byte output is unavailable in WebAssembly".into()));
+    }
+    if driver == VectorDriver::MapInfo && !archive {
+        let extension = if crate::formats::extension(name).as_deref() == Some("tab") { "tab" } else { "mif" };
+        return Err(Error::InvalidArgument(format!(
+            "MapInfo bytes are a ZIP archive: use a .{extension}.zip filename (MIME application/zip)"
+        )));
+    }
     if driver == VectorDriver::Shapefile {
-        if !name.to_ascii_lowercase().ends_with(".zip") {
+        if !archive {
             return Err(Error::InvalidArgument("Shapefile bytes are a ZIP archive: use a .shp.zip filename (MIME application/zip)".into()));
         }
         let [layer] = layers else {
@@ -244,7 +345,14 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
     #[cfg(not(target_family = "wasm"))]
     {
         let dir = native::temp_dir()?;
-        let path = dir.path().join(native::file_name(name, driver.info().extensions.first().copied().unwrap_or("dat")));
+        let member_name = if driver == VectorDriver::MapInfo {
+            let stem = &name[..name.len() - 4];
+            let member = native::file_name(stem, "mif");
+            if matches!(crate::formats::extension(&member).as_deref(), Some("mif" | "tab")) { member } else { format!("{member}.mif") }
+        } else {
+            name.to_string()
+        };
+        let path = dir.path().join(native::file_name(&member_name, driver.info().extensions.first().copied().unwrap_or("dat")));
         let path = path.to_str().ok_or_else(|| Error::InvalidArgument(format!("invalid file name '{name}'")))?;
         crate::write_vector(layers, path, &VectorWriteOptions { driver: Some(driver), ..options.clone() })?;
         native::collect(dir.path(), path)
@@ -287,7 +395,7 @@ mod native {
     }
 
     /// The bytes of what a driver wrote: the file itself, or a zip archive of every file written
-    /// when there are several (a shapefile and its sidecars).
+    /// when there are several (a MapInfo table and its sidecars).
     pub(super) fn collect(dir: &Path, main: &str) -> Result<Vec<u8>> {
         let mut files = Vec::new();
         for entry in std::fs::read_dir(dir)? {
@@ -324,12 +432,12 @@ pub(crate) mod codec {
         matches!(b.get(..4), Some(b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+"))
     }
 
-    fn is_zip(b: &[u8]) -> bool {
+    pub(super) fn is_zip(b: &[u8]) -> bool {
         b.starts_with(b"PK\x03\x04") || b.starts_with(b"PK\x05\x06")
     }
 
     /// The vector driver of a file, by its extension or, without one, its first bytes.
-    fn vector_driver(bytes: &[u8], name: &str) -> Option<VectorDriver> {
+    pub(super) fn vector_driver(bytes: &[u8], name: &str) -> Option<VectorDriver> {
         let json = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes).trim_ascii_start();
         if json.starts_with(b"{")
             && let Ok(text) = std::str::from_utf8(json)
@@ -390,6 +498,7 @@ pub(crate) mod codec {
 
     /// Opens a dataset from bytes with the in-memory codecs.
     pub(crate) fn open(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions) -> Result<Dataset> {
+        check_vector_archive_filename(&bytes, name)?;
         // Formats this build leaves out, by their extension.
         if let Some(feature) = RasterDriver::for_extension(name).and_then(RasterDriver::missing_feature) {
             return Err(Error::disabled(feature));
@@ -665,7 +774,11 @@ pub(crate) mod codec {
             RasterDriver::GPKG => crate::drivers::gpkg::to_bytes(&ds.raster, ds.nodata(), table, options.compression.as_deref()),
             #[cfg(feature = "jp2")]
             RasterDriver::JP2 => {
-                let jp2 = crate::drivers::jp2::to_bytes(&ds.raster, crate::drivers::common::georeferenced(&options.creation_options))?;
+                let jp2 = crate::drivers::jp2::to_bytes(
+                    &ds.raster,
+                    crate::drivers::common::georeferenced(&options.creation_options),
+                    &options.creation_options,
+                )?;
                 // The nodata value goes to a `.aux.xml` sidecar, the two files zipped as the file
                 // drivers' output is.
                 let Some(xml) = crate::drivers::common::pam_xml(None, ds.nodata(), ds.raster.bands) else { return Ok(jp2) };
@@ -730,6 +843,107 @@ mod tests {
     use super::*;
     use wbraster::raster::RasterData;
     use wbraster::{DataType, Raster};
+
+    fn packaging_layer() -> Layer {
+        parse_geojson_layer(
+            br#"{"type":"FeatureCollection","name":"points","features":[{"type":"Feature","properties":{"name":"first","n":1},"geometry":{"type":"Point","coordinates":[10,46]}},{"type":"Feature","properties":{"name":"second","n":2},"geometry":{"type":"Point","coordinates":[11,46]}}]}"#,
+            "points",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn gml_bytes_are_a_document_under_their_filename() {
+        let bytes = write_vector_bytes(&[packaging_layer()], "points.gml", &Default::default()).unwrap();
+        assert!(!bytes.starts_with(b"PK"), "a .gml filename must contain a GML document");
+        let back = open_vector_bytes(bytes.clone(), "points.gml", &Default::default()).unwrap();
+        assert_eq!(back.layers[0].features.len(), 2);
+        let Dataset::Vector(back) = codec::open(bytes, "points.gml", &Default::default()).unwrap() else { panic!() };
+        assert_eq!(back.layers[0].features.len(), 2);
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn mapinfo_bytes_require_explicit_archive_filenames() {
+        for extension in ["mif", "tab"] {
+            let error = write_vector_bytes(&[packaging_layer()], &format!("points.{extension}"), &Default::default()).unwrap_err();
+            assert!(matches!(error, Error::InvalidArgument(_)), "{error}");
+            assert!(error.to_string().contains(&format!(".{extension}.zip")), "{error}");
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn named_mapinfo_archives_round_trip_through_each_reader() {
+        for extension in ["mif", "tab"] {
+            let name = format!("points.{extension}.zip");
+            let bytes = write_vector_bytes(&[packaging_layer()], &name, &Default::default()).unwrap();
+            assert!(bytes.starts_with(b"PK"));
+            let back = open_vector_bytes(bytes.clone(), &name, &Default::default()).unwrap();
+            assert_eq!(back.layers[0].features.len(), 2);
+            let Dataset::Vector(back) = codec::open(bytes, &name, &Default::default()).unwrap() else { panic!() };
+            assert_eq!(back.layers[0].features.len(), 2);
+        }
+    }
+
+    #[test]
+    fn mislabeled_vector_archives_are_refused_instead_of_decoded_as_documents() {
+        use std::io::Write;
+
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file("points.geojson", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(br#"{"type":"FeatureCollection","features":[]}"#).unwrap();
+        let bytes = zip.finish().unwrap().into_inner();
+        for extension in ["gml", "mif", "tab"] {
+            let name = format!("points.{extension}");
+            for error in [
+                open_bytes(bytes.clone(), &name).unwrap_err(),
+                open_vector_bytes(bytes.clone(), &name, &Default::default()).unwrap_err(),
+                codec::open(bytes.clone(), &name, &Default::default()).unwrap_err(),
+            ] {
+                assert!(matches!(error, Error::InvalidArgument(_)), "{error}");
+                assert!(error.to_string().contains("ZIP"), "{error}");
+                assert!(error.to_string().contains(".zip"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn vector_byte_hints_share_signatures_and_xml_probes() {
+        for (bytes, extension) in [
+            (b"SQLite format 3\0".as_slice(), Some("gpkg")),
+            (b"fgb\x03fgb\0".as_slice(), Some("fgb")),
+            (b"fgb\x02fgb\0".as_slice(), Some("fgb")),
+            (b"PAR1\0\0\0\0PAR1".as_slice(), Some("parquet")),
+            (br#"{"type":"FeatureCollection","features":[]}"#.as_slice(), Some("geojson")),
+            (br#"{"type":"FeatureCollection","features":[],"Topology":"survey"}"#.as_slice(), Some("geojson")),
+            (b"<kml/>".as_slice(), Some("kml")),
+            (b"<gpx/>".as_slice(), Some("gpx")),
+            (br#"<osm version="0.6"/>"#.as_slice(), Some("osm")),
+            (br#"<osm version="0.6"><tag k="name" v="gml survey"/></osm>"#.as_slice(), Some("osm")),
+            (b"\0\0\0\x0b\x0a\x09OSMHeader".as_slice(), Some("pbf")),
+            (b"<gml:FeatureCollection/>".as_slice(), Some("gml")),
+            (b"WKT,id\nPOINT (1 2),1\n".as_slice(), None),
+            (b"fgb_id,lat,lon\n1,2,3\n".as_slice(), None),
+            (b"PAR1_id,lat,lon\n1,2,3\n".as_slice(), None),
+            (b"PAR1,id\nx,PAR1".as_slice(), None),
+            (b"fgb,fgb,name\n1,2,3\n".as_slice(), None),
+            (b"PAR1".as_slice(), None),
+            (b"II*\0".as_slice(), None),
+            (b"".as_slice(), None),
+        ] {
+            assert_eq!(suggest_vector_extension(bytes), extension, "{bytes:?}");
+        }
+    }
+
+    #[test]
+    fn late_geojson_root_type_is_not_relabelled_by_property_text() {
+        let bytes = format!(
+            r#"{{"features":[{{"type":"Feature","properties":{{"Topology":"{}"}},"geometry":{{"type":"Point","coordinates":[1,2]}}}}],"type":"FeatureCollection"}}"#,
+            "x".repeat(20_000)
+        );
+        assert_eq!(suggest_vector_extension(bytes.as_bytes()), Some("geojson"));
+    }
 
     #[test]
     fn a_misspelled_layer_name_is_refused_in_memory() {
@@ -819,7 +1033,7 @@ mod tests {
     fn zip_layer_selection_uses_member_names_through_each_reader() {
         let bytes = br#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
         let source = open_vector_bytes(bytes.to_vec(), "source.geojson", &Default::default()).unwrap();
-        for filename in ["member.shp.zip", "member.mif"] {
+        for filename in ["member.shp.zip", "member.mif.zip"] {
             let bytes = write_vector_bytes(&source.layers, filename, &Default::default()).unwrap();
             let member = VectorOpenOptions { layers: vec!["member".into()], ..Default::default() };
             let Dataset::Vector(codec) = codec::open(bytes.clone(), "archive.zip", &member).unwrap() else { panic!() };
@@ -1379,7 +1593,7 @@ mod tests {
             {"type":"Feature","properties":{"id":7,"name":"Zürich"},"geometry":{"type":"Point","coordinates":[8.5,47.4]}},
             {"type":"Feature","properties":{"id":8,"name":"b"},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
         let v = open_vector_bytes(gj.as_bytes().to_vec(), "p.geojson", &Default::default()).unwrap();
-        for name in ["p.shp.zip", "p.mif"] {
+        for name in ["p.shp.zip", "p.mif.zip"] {
             let zip = write_vector_bytes(&v.layers, name, &Default::default()).unwrap();
             // The in-memory codecs (what WebAssembly builds use), and the native path.
             let Dataset::Vector(back) = codec::open(zip.clone(), "p.zip", &Default::default()).unwrap() else { panic!() };

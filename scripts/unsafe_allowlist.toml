@@ -43,9 +43,9 @@ origin = "existing"
 reason = "memmap2 map of a private unlinked temporary file, and MADV_DONTNEED on its clean pages"
 
 [files."crates/terrio/src/gdal_backend.rs"]
-count = 19
+count = 20
 origin = "existing"
-reason = "The optional GDAL backend's 17 baseline FFI blocks; two additions (#485) query a valid borrowed geometry size before budget charging and export into an exactly sized fallible buffer. The safe API exports infallibly allocated WKB."
+reason = "The optional GDAL backend's 17 baseline FFI blocks; two additions (#485) query a valid borrowed geometry size before budget charging and export into an exactly sized fallible buffer. The safe API exports infallibly allocated WKB. One addition (#740) reads DateTimeEx from a live borrowed feature into initialized stack outputs because the safe wrapper loses milliseconds and raw timezone flags."
 
 [files."crates/terrio/src/lib.rs"]
 count = 9
@@ -103,9 +103,9 @@ origin = "existing"
 reason = "The Arrow C stream and C data interfaces: arrays and streams moved out of PyCapsules"
 
 [files."crates/terrio/src/deflate_compress.rs"]
-count = 20
+count = 22
 origin = "added"
-reason = "The libdeflate port's match finder: unaligned 4- and 8-byte loads, match extension and prefetches by raw pointer, as libdeflate does, each bounded by its caller (the greedy, lazy and lazy2 parsers of levels 1 to 9)"
+reason = "The libdeflate port's match finder: unaligned 4- and 8-byte loads, match extension and prefetches by raw pointer, as libdeflate does, each bounded by its caller (the greedy, lazy and lazy2 parsers of levels 1 to 9); and the same load and extension at the position one row back, at most the row length before the current position"
 
 [files."python/src/hugepage_alloc.rs"]
 count = 11

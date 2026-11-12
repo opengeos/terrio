@@ -24,6 +24,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from terrio import _terrio
+from terrio._warnings import warn_user
 from terrio.errors import CRSError as _NativeCRSError
 from terrio.rio.enums import WktVersion
 from terrio.rio.errors import CRSError
@@ -633,6 +634,7 @@ class CRS(Mapping[str, Any]):
 
         Warns:
             UserWarning: A named datum is reduced to its ellipsoid without its operations.
+                An authority identity overrides conflicting WKT parameters.
         """
         return " ".join(
             f"+{key}" if value is True else f"+{key}={value}"
@@ -676,6 +678,7 @@ class CRS(Mapping[str, Any]):
 
         Warns:
             UserWarning: PROJ parameter export omits a named datum's identity and operations.
+                An authority identity overrides conflicting WKT parameters.
 
         Raises:
             CRSError: If PROJJSON is asked for, pyproj is not installed, and terrio cannot write
@@ -757,6 +760,21 @@ class CRS(Mapping[str, Any]):
                         registry_proj4 = _terrio.crs_info(registry["wkt"]).get("proj4")
                     cached = (code, registry_root, registry_proj4)
                 self._registry_root = cached
+            if (
+                root is not None
+                and str(root[0]).upper() in {"GEOGCS", "PROJCS"}
+                and cached[1] is not None
+                and root != cached[1]
+            ):
+                effective = (
+                    _proj_dict(cached[2]) if cached[2] else _wkt_to_proj(cached[1], warn=False)
+                )
+                if _wkt_to_proj(root, warn=False) != effective:
+                    warn_user(
+                        f"PROJ parameter export uses the EPSG:{code} registry definition "
+                        "instead of conflicting WKT parameters; remove the authority identity "
+                        "when defining a custom CRS"
+                    )
             root = cached[1]
             if cached[2]:
                 return _proj_dict(cached[2])
@@ -1072,11 +1090,12 @@ def _datum_spheroid(name: str) -> tuple[float, float]:
     return _DATUM_SPHEROIDS[name]
 
 
-def _wkt_to_proj(root: list[Any]) -> dict[str, Any]:
+def _wkt_to_proj(root: list[Any], *, warn: bool = True) -> dict[str, Any]:
     """PROJ parameters of a parsed WKT1 CRS, for common projections.
 
     Args:
         root: The parsed WKT.
+        warn: Whether to warn when the parameter representation loses datum identity.
 
     Returns:
         dict: The parameters (empty when the projection is not handled).
@@ -1097,7 +1116,7 @@ def _wkt_to_proj(root: list[Any]) -> dict[str, Any]:
                     out[key] = _num(c[2])
         if name == "lambertconformalconic1sp":
             out["lat_1"] = out.get("lat_0", 0)
-        if name == "polarstereographic" and abs(float(out.get("lat_0", 0))) != 90:
+        if name == "polarstereographic" and "lat_0" in out and abs(float(out["lat_0"])) != 90:
             parallel = out.get("lat_0", 0)
             out["lat_ts"] = parallel
             out["lat_0"] = -90 if float(parallel) < 0 else 90
@@ -1142,13 +1161,11 @@ def _wkt_to_proj(root: list[Any]) -> dict[str, Any]:
                     out["b"] = _num(sph[2])
             if shift is not None:
                 out["towgs84"] = ",".join(f"{float(value):.15g}" for value in shift[1:])
-            elif dname not in {"unknown", "unnamed", "undefined"}:
-                warnings.warn(
+            elif warn and dname not in {"unknown", "unnamed", "undefined"}:
+                warn_user(
                     f"PROJ parameters retain the ellipsoid but omit datum '{datum[1]}' "
                     "and its coordinate operations; use to_wkt() or an authority code "
-                    "to preserve datum identity",
-                    UserWarning,
-                    stacklevel=4,
+                    "to preserve datum identity"
                 )
     if kind == "PROJCS":
         unit = _child(root, "UNIT")

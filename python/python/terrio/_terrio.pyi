@@ -189,6 +189,7 @@ __all__ = [
     "check_drivers",
     "canonical_driver_name",
     "identify_drivers",
+    "vector_byte_extension",
     "network_stats",
     "reset_network_stats",
     "clear_http_cache",
@@ -1109,6 +1110,17 @@ def allowed_drivers(
 def check_drivers(path: str, drivers: Sequence[str]) -> None: ...
 def canonical_driver_name(name: str) -> str: ...
 def identify_drivers(path: str) -> tuple[list[str], str | None]: ...
+def vector_byte_extension(data: bytes) -> str | None:
+    """Suggest an extension using shared byte identifiers.
+
+    Args:
+        data: Bytes of a vector dataset.
+
+    Returns:
+        str | None: An extension, or None when a filename is needed.
+    """
+    ...
+
 def network_stats() -> dict[str, Any]: ...
 def reset_network_stats() -> None: ...
 def clear_http_cache() -> None: ...
@@ -1197,6 +1209,7 @@ def warp(
     geoloc: bool = False,
     geolocation: Mapping[str, Any] | None = None,
     kernel_version: str | None = None,
+    grid_invariant: bool | None = None,
     init: Raster | None = None,
     _sum_scale: float = 1.0,
 ) -> Raster: ...
@@ -1771,6 +1784,7 @@ class RegionWarp:
         rpc_options: Mapping[str, str] | None = None,
         kernel_version: str | None = None,
         sum_scale: float = 1.0,
+        grid_invariant: bool | None = None,
     ) -> RegionWarp: ...
     def source_window(self, region: _Window) -> _Window | None: ...
     def warp(

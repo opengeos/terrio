@@ -350,6 +350,26 @@ pub fn read_with<T>(
     Err(crate::Error::InvalidData(format!("the read still needed more bytes after {rounds} fetch rounds")))
 }
 
+/// Grows each range `(offset, length)` of [`SparseFile::missing`] to at least `least` bytes, in
+/// whole `block`s within a file of `len` bytes, merging those that then overlap: a header read in
+/// steps (a TIFF's IFDs, one after another) takes requests that grow with what it read so far,
+/// rather than a request per block or two.
+pub fn grow_ranges(ranges: &[(u64, u64)], least: u64, block: u64, len: u64) -> Vec<(u64, u64)> {
+    let least = least.div_ceil(block.max(1)) * block.max(1);
+    // Ranges starting at or past the end hold nothing to fetch.
+    let mut spans: Vec<(u64, u64)> =
+        ranges.iter().filter(|&&(o, _)| o < len).map(|&(o, n)| (o, o.saturating_add(n.max(least)).min(len))).collect();
+    spans.sort_unstable();
+    let mut out: Vec<(u64, u64)> = Vec::with_capacity(spans.len());
+    for (start, end) in spans {
+        match out.last_mut() {
+            Some((_, last)) if start <= *last => *last = (*last).max(end),
+            _ => out.push((start, end)),
+        }
+    }
+    out.into_iter().map(|(start, end)| (start, end - start)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,6 +437,17 @@ mod tests {
         f.trim(4096);
         assert!(f.lock().blocks.len() <= 4);
     }
+
+    #[test]
+    fn ranges_grow_to_the_least_and_merge() {
+        let k = 1024;
+        // Grown to 4 KiB (from 3.5 KiB in whole blocks), the first two overlap; the file ends at 20 KiB.
+        assert_eq!(grow_ranges(&[(2 * k, k), (0, k), (18 * k, k)], 3 * k + 512, k, 20 * k), [(0, 6 * k), (18 * k, 2 * k)]);
+        // Longer than the least: unchanged.
+        assert_eq!(grow_ranges(&[(0, 8 * k)], 2 * k, k, 20 * k), [(0, 8 * k)]);
+        // Past the end: dropped, not an underflowing length.
+        assert_eq!(grow_ranges(&[(25 * k, k), (20 * k, k)], 2 * k, k, 20 * k), []);
+    }
 }
 
 /// A part of an object of a store: the whole object, `length` bytes from `offset`, or its last `n`
@@ -430,6 +461,10 @@ pub enum ObjectRange {
     /// The last `n` bytes.
     Suffix(u64),
 }
+
+/// The requests the caller of a [`SparseFile`] or [`SparseObjects`] in terrio-js keeps in flight at
+/// once: browsers queue more, and servers may rate-limit them.
+pub const PARALLEL_REQUESTS: usize = 12;
 
 /// A part of an object: its key and range.
 type Part = (String, ObjectRange);
@@ -459,6 +494,8 @@ type Held = (HashMap<Part, Option<Vec<u8>>>, u64);
 pub struct SparseObjects {
     held: Mutex<Held>,
     missing: Mutex<(Vec<Part>, HashSet<Part>)>,
+    /// The requests the caller keeps in flight, when reads should fill them (0: not asked).
+    parallel: std::sync::atomic::AtomicUsize,
 }
 
 impl SparseObjects {
@@ -479,6 +516,20 @@ impl SparseObjects {
             missing.0.push(part);
         }
         Err(io::Error::other(format!("{key} ({range:?}) is not fetched yet")))
+    }
+
+    /// Asks reads to split their parts into at least `n` requests where they can, as the caller
+    /// keeps `n` in flight at once: Zarr reads then split the inner chunks of a shard into that
+    /// many runs, rather than runs of up to 1 MiB. Worth it where requests at once are not queued:
+    /// in Node.js, not in browsers, which keep 6 connections to an HTTP/1.1 server such as S3.
+    /// Not asked (0), the default, parts are as reads choose them.
+    pub fn set_parallel_requests(&self, n: usize) {
+        self.parallel.store(n, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The requests reads should fill ([`SparseObjects::set_parallel_requests`]), when asked.
+    pub fn parallel_requests(&self) -> Option<usize> {
+        Some(self.parallel.load(std::sync::atomic::Ordering::Relaxed)).filter(|&n| n > 0)
     }
 
     /// Whether a read missed parts not fetched since.

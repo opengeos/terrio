@@ -768,8 +768,12 @@ impl Def {
         (pick(self.axis[0]), pick(self.axis[1]))
     }
 
-    /// Geodetic coordinates (radians, east of Greenwich) of a point in this CRS.
+    /// Geodetic coordinates (radians, east of Greenwich) of a point in this CRS; `None` when the
+    /// coordinates are not finite or the projection has no inverse for them.
     pub fn unproject(&self, u: f64, v: f64) -> Option<(f64, f64)> {
+        if !u.is_finite() || !v.is_finite() {
+            return None;
+        }
         let (e, n) = self.unaxis(u, v);
         let (lam, phi) = match &self.proj {
             None => {
@@ -791,8 +795,21 @@ impl Def {
             Some(p) => {
                 // PROJ's `inv_prepare()` multiplies by `ra = 1 / a`.
                 let inverse_a = 1.0 / self.projection_a;
-                let x = (e * self.to_meter - self.x0) * inverse_a;
-                let y = (n * self.to_meter - self.y0) * inverse_a;
+                let normalize = |value: f64, origin: f64| {
+                    let scaled = (value * self.to_meter - origin) * inverse_a;
+                    if scaled.is_finite() {
+                        scaled
+                    } else {
+                        // Preserve the ordinary arithmetic above. Only an overflowing
+                        // intermediate needs the smaller, combined unit/radius factor.
+                        value * (self.to_meter * inverse_a) - origin * inverse_a
+                    }
+                };
+                let x = normalize(e, self.x0);
+                let y = normalize(n, self.y0);
+                if !x.is_finite() || !y.is_finite() {
+                    return None;
+                }
                 let (lam, phi) = p.inv(x, y)?;
                 (lam + self.lam0, phi)
             }
@@ -1069,6 +1086,47 @@ pub(crate) fn wkt_linear_unit(w: &str) -> Option<f64> {
         return u.num(1);
     }
     root.children("AXIS").find_map(|a| a.child("LENGTHUNIT")).and_then(|u| u.num(1))
+}
+
+#[cfg(test)]
+mod inverse_input_tests {
+    use super::*;
+
+    #[test]
+    fn inverse_refuses_nonfinite_coordinates_across_projection_kinds() {
+        for epsg in [4326, 3577, 3857, 3035] {
+            let def = Def::new(&SpatialRef { epsg: Some(epsg), ..Default::default() }).unwrap();
+            for (u, v) in [
+                (f64::INFINITY, f64::INFINITY),
+                (f64::INFINITY, 0.0),
+                (f64::NEG_INFINITY, f64::INFINITY),
+                (0.0, f64::NEG_INFINITY),
+                (f64::NAN, f64::NAN),
+                (0.0, f64::NAN),
+            ] {
+                assert!(def.unproject(u, v).is_none(), "EPSG:{epsg}: ({u}, {v})");
+            }
+        }
+    }
+
+    #[test]
+    fn inverse_preserves_direction_when_finite_unit_conversion_overflows() {
+        let crs = SpatialRef::from_proj4("+proj=stere +lat_0=90 +R=6371000 +units=km").unwrap();
+        let def = Def::new(&crs).unwrap();
+        let (u, v) = (1e306_f64, 2e306_f64);
+        assert!(!(u * 1000.0).is_finite());
+        let (lon, lat) = def.unproject(u, v).unwrap();
+        // Analytic polar stereographic limit, independent of ellipsoid or distance units.
+        assert!((lon - u.atan2(-v)).abs() < 1e-14, "{lon}");
+        assert!((lat + std::f64::consts::FRAC_PI_2).abs() < 1e-14, "{lat}");
+    }
+
+    #[test]
+    fn inverse_refuses_unrepresentable_normalized_coordinates() {
+        let crs = SpatialRef::from_proj4("+proj=stere +lat_0=90 +R=6371000 +to_meter=1e300").unwrap();
+        let def = Def::new(&crs).unwrap();
+        assert!(def.unproject(1e306, 2e306).is_none());
+    }
 }
 
 #[cfg(test)]
