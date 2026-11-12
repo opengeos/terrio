@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from terrio import _terrio
-from terrio.errors import TerrioError
+from terrio.errors import InvalidArgumentError, TerrioError
 from terrio.rio._jpeg_quality import guess_jpeg_quality
 from terrio.rio.enums import ColorInterp
 
@@ -393,28 +393,29 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
                 ifds = [*ifds, *images]
             if index < len(images):
                 image = images[index]
-        if image is not None:
-            # A selected level owns its image layout/colors; georeferencing and dataset
-            # metadata still come from the base image, as GDAL 3.13.3 reports them.
-            image_tags = {
-                BITS,
-                COMPRESSION,
-                PHOTOMETRIC,
-                SAMPLES,
-                ROWS_PER_STRIP,
-                PLANAR,
-                COLOR_MAP,
-                JPEG_TABLES,
-                TILE_WIDTH,
-                TILE_LENGTH,
-                EXTRA_SAMPLES,
-                SAMPLE_FORMAT,
-                INK_SET,
-                LERC_PARAMETERS,
-                317,
-            }
-            t = {key: value for key, value in t.items() if key not in image_tags}
-            t.update({key: value for key, value in image.items() if key in image_tags})
+        if image is None:
+            raise InvalidArgumentError(f"TIFF overview {level} has no matching image directory")
+        # A selected level owns its image layout/colors; georeferencing and dataset
+        # metadata still come from the base image, as GDAL 3.13.3 reports them.
+        image_tags = {
+            BITS,
+            COMPRESSION,
+            PHOTOMETRIC,
+            SAMPLES,
+            ROWS_PER_STRIP,
+            PLANAR,
+            COLOR_MAP,
+            JPEG_TABLES,
+            TILE_WIDTH,
+            TILE_LENGTH,
+            EXTRA_SAMPLES,
+            SAMPLE_FORMAT,
+            INK_SET,
+            LERC_PARAMETERS,
+            317,
+        }
+        t = {key: value for key, value in t.items() if key not in image_tags}
+        t.update({key: value for key, value in image.items() if key in image_tags})
     n = s.count
     if TILE_WIDTH in t and TILE_LENGTH in t:
         s.block_shape = (_first(t[TILE_LENGTH]), _first(t[TILE_WIDTH]))

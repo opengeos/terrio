@@ -2018,8 +2018,8 @@ impl RasterWriteOptions {
                 .map(|band| {
                     ds.metadata_domains
                         .iter()
-                        .find(|(b, domain, _)| *b == Some(band) && domain == "IMAGE_STRUCTURE")
-                        .and_then(|(_, _, items)| items.iter().find(|(key, _)| key == "NBITS").and_then(|(_, value)| value.parse().ok()))
+                        .filter(|(b, domain, _)| *b == Some(band) && domain == "IMAGE_STRUCTURE")
+                        .find_map(|(_, _, items)| items.iter().find(|(key, _)| key == "NBITS").and_then(|(_, value)| value.parse().ok()))
                 })
                 .collect();
             let nodata: Vec<_> = (1..=ds.raster.bands).map(|band| ds.band_nodata(band)).collect();
@@ -2197,6 +2197,21 @@ pub(crate) mod fallible {
 
 #[cfg(test)]
 mod tests {
+    /// GDAL 3.13.3's NBITS item remains visible beside other IMAGE_STRUCTURE items.
+    #[test]
+    fn inherited_width_is_found_after_other_image_structure_domains() {
+        let raster = wbraster::Raster::from_data_native(
+            wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, data_type: wbraster::DataType::U8, ..Default::default() },
+            wbraster::raster::RasterData::U8(vec![7; 4]),
+        )
+        .unwrap();
+        let mut ds = super::RasterDataset::new(raster, false);
+        ds.metadata_domains.push((Some(0), "IMAGE_STRUCTURE".into(), vec![("COMPRESSION".into(), "DEFLATE".into())]));
+        ds.set_sample_bits(4);
+        let options = super::RasterWriteOptions::default().inherited_from(&ds, Some(crate::formats::RasterDriver::GTiff));
+        assert!(options.creation_options.iter().any(|(key, value)| key == "NBITS" && value == "4"));
+    }
+
     #[test]
     fn a_misspelled_layer_name_beside_a_valid_one_is_refused() {
         let options =

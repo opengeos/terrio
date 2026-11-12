@@ -644,3 +644,22 @@ def test_explicit_width_clips_selected_overview_as_ordinary_input(tmp_path, gdal
     np.testing.assert_array_equal(
         result.GetRasterBand(1).GetOverview(0).ReadAsArray(), np.full((2, 2), 7, dtype="uint8")
     )
+
+
+def test_selected_overview_missing_tags_raise_instead_of_using_base(tmp_path, monkeypatch):
+    """A native selected IFD must have matching metadata rather than base image tags."""
+    from terrio.errors import InvalidArgumentError
+    from terrio.rio import _tiff
+
+    source = tmp_path / "missing-tags.tif"
+    write_sample_width_images(
+        source,
+        [
+            (np.zeros((4, 4), dtype="uint8"), 4),
+            (np.full((2, 2), 200, dtype="uint8"), 8),
+        ],
+    )
+    tags = _tiff._terrio.tiff_tags
+    monkeypatch.setattr(_tiff._terrio, "tiff_tags", lambda path: tags(path)[:1])
+    with pytest.raises(InvalidArgumentError, match="no matching image directory"):
+        rio.open(source, overview_level=0)

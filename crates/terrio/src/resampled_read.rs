@@ -419,7 +419,7 @@ impl LazyRaster {
             } else if level.is_some() {
                 dataset.set_sample_bits(0);
             }
-        } else {
+        } else if self.dataset().is_none() {
             // Include the base even without overviews. Every candidate width must be known.
             dataset.set_sample_bits(self.widest_sample_bits().unwrap_or(0));
         }
@@ -1285,6 +1285,19 @@ mod tests {
         ds.set_geo_transform([1000.0, 10.0, 0.0, 2000.0, 0.0, -10.0]);
         ds.gcps = vec![Gcp { pixel: 4.0, line: 6.0, x: 1.0, y: 2.0, ..Default::default() }];
         LazyRaster::from(ds)
+    }
+
+    /// GDAL 3.13.3 preserves in-memory NBITS through an AUTO RasterIO copy.
+    #[test]
+    fn auto_memory_reads_retain_packed_metadata() {
+        let source = raster(RasterData::U8(vec![7; 16]), 4, 4, 1, None);
+        let mut ds = source.dataset().unwrap().clone();
+        ds.set_sample_bits(4);
+        let mut source = LazyRaster::from(ds);
+        let result = source.read_resampled(&ResampledReadOptions { size: (2, 2), ..Default::default() }).unwrap();
+        let options = crate::RasterWriteOptions::default().inherited_from(&result, Some(crate::formats::RasterDriver::GTiff));
+        assert!(options.creation_options.iter().any(|(key, value)| key == "NBITS" && value == "4"));
+        assert_eq!(result.raster.data.to_f64_vec(), vec![7.0; 4]);
     }
 
     /// The levels GDAL 3.13.2 reads from (found by reading rasters whose levels hold markers):
