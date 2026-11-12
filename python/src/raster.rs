@@ -831,15 +831,6 @@ impl PyRaster {
         Ok(self.inner.tiff_overview_ifd(overview))
     }
 
-    /// Internal width for copying a selected level and descendants (GDAL 3.13.3).
-    #[pyo3(signature = (overview=None))]
-    fn _copy_sample_bits(&self, overview: Option<usize>) -> PyResult<Option<u16>> {
-        if let Some(index) = overview {
-            self.inner.overviews().get(index).ok_or_else(|| invalid(format!("no overview {index}")))?;
-        }
-        Ok(self.inner.copy_sample_bits(overview))
-    }
-
     /// Internal shared width policy for copies of a selected level and its descendants.
     #[pyo3(signature = (overview, dtype, inherited))]
     fn _copy_sample_bits_for_output(&self, overview: Option<usize>, dtype: &str, inherited: u16) -> PyResult<Option<u16>> {

@@ -166,6 +166,7 @@ impl RasterDataset {
     }
 
     /// Retain packed unsigned widths in IMAGE_STRUCTURE, as GDAL 3.13.3 reports NBITS.
+    /// Zero clears inherited NBITS when the stored width is unknown.
     pub(crate) fn set_sample_bits(&mut self, bits: u16) {
         // A selected overview or an AUTO read can replace the base image's stored width.
         for (band, domain, items) in &mut self.metadata_domains {
@@ -173,7 +174,7 @@ impl RasterDataset {
                 items.retain(|(key, _)| key != "NBITS");
             }
         }
-        self.metadata_domains.retain(|(_, _, items)| !items.is_empty());
+        self.metadata_domains.retain(|(band, domain, items)| !(band.is_some() && domain == "IMAGE_STRUCTURE" && items.is_empty()));
         if matches!(self.raster.data_type, wbraster::DataType::U8 | wbraster::DataType::U16 | wbraster::DataType::U32)
             && bits > 0
             && usize::from(bits) < self.raster.data_type.size_bytes() * 8
@@ -2307,7 +2308,11 @@ mod tests {
         .unwrap();
         let mut ds = super::RasterDataset::new(raster, false);
         ds.metadata_domains.push((Some(0), "IMAGE_STRUCTURE".into(), vec![("COMPRESSION".into(), "DEFLATE".into())]));
+        ds.metadata_domains.push((None, "EMPTY_DATASET".into(), Vec::new()));
+        ds.metadata_domains.push((Some(0), "EMPTY_BAND".into(), Vec::new()));
         ds.set_sample_bits(4);
+        assert!(ds.metadata_domains.iter().any(|(band, domain, items)| band.is_none() && domain == "EMPTY_DATASET" && items.is_empty()));
+        assert!(ds.metadata_domains.iter().any(|(band, domain, items)| *band == Some(0) && domain == "EMPTY_BAND" && items.is_empty()));
         let options = super::RasterWriteOptions::default().inherited_from(&ds, Some(crate::formats::RasterDriver::GTiff));
         assert!(options.creation_options.iter().any(|(key, value)| key == "NBITS" && value == "4"));
     }
