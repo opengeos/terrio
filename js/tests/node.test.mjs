@@ -1439,6 +1439,47 @@ test("a failed range request cancels the bodies being read", { timeout: 20000 },
   }
 });
 
+test("remote file ranges validate exposed positions and allow hidden headers", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "terrio-range-validation-"));
+  writeGrid(dir, writeFileSync);
+  const server = await serve(dir);
+  try {
+    const url = server.url + "grid.fgb";
+    const shifted = async (url, options) => {
+      const response = await fetch(url, options);
+      if (response.status !== 206) return response;
+      const headers = new Headers(response.headers);
+      headers.set("Content-Range", headers.get("Content-Range").replace(
+        /bytes (\d+)-(\d+)\//,
+        (_, first, last) => `bytes ${BigInt(first) + 1n}-${BigInt(last) + 1n}/`,
+      ));
+      return new Response(response.body, { status: 206, headers });
+    };
+    await assert.rejects(terrio.openUrl(url, { blockSize: 512, fetch: shifted }), /Content-Range/);
+    let corrupt = false;
+    const late = await terrio.openUrl(url, {
+      blockSize: 512, fetch: (url, options) => corrupt ? shifted(url, options) : fetch(url, options),
+    });
+    corrupt = true;
+    await assert.rejects(late.read({ bbox: [-180, 0, 180, 0.5] }), /Content-Range/);
+    const hidden = await terrio.openUrl(url, {
+      blockSize: 512, fetch: async (url, options) => {
+        const response = await fetch(url, options);
+        const headers = new Headers(response.headers);
+        headers.delete("Content-Range");
+        return new Response(response.body, { status: response.status, headers });
+      },
+    });
+    const layer = await hidden.read({ bbox: [-180, 0, 180, 0.5] });
+    assert.equal(layer.toGeoJSON().features.length, 200);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
 test("remote files read with range requests", async () => {
   const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
@@ -1864,6 +1905,13 @@ test("remote Zarr stores are read by window", { skip: needs("zarr"), timeout: 60
       },
     });
     await assert.rejects(misplacedRange.readBand(1, [1, 1, 1, 1]), /Content-Range/);
+    const overflowingRange = await terrio.openUrl(server.url + "s.zarr", {
+      array: "a", fetch: (url, options) => url.includes("/c/")
+        ? Promise.resolve(new Response(new Uint8Array(), {
+          status: 206, headers: { "Content-Range": "bytes 0-18446744073709551615/*" },
+        })) : fetch(url, options),
+    });
+    await assert.rejects(overflowingRange.readBand(1, [1, 1, 1, 1]), /Content-Range/);
     const forbiddenMetadata = (url, options) => url.endsWith("/.zmetadata")
       ? Promise.resolve(new Response("", { status: 403 })) : fetch(url, options);
     await assert.rejects(terrio.openUrl(server.url + "s.zarr", { array: "a", fetch: forbiddenMetadata }), /403/);

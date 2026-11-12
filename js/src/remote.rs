@@ -210,6 +210,13 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
         _ => first.data.len() as u64,
     };
     let file = SparseFile::with_block_size(len, block);
+    if first.status == 206 {
+        let expected = block.min(len);
+        first.validate_content_range(terrio::sparse::ObjectRange::At(0, expected), Some(len))?;
+        if first.data.len() as u64 != expected {
+            return Err(JsError::new("initial range response has an unexpected length"));
+        }
+    }
     file.insert(0, &first.data);
     let path = url.split(['?', '#']).next().unwrap_or(&url);
     let name = path.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("remote").to_string();

@@ -27,22 +27,77 @@ pub const MAX_PARALLEL: usize = terrio::sparse::PARALLEL_REQUESTS;
 
 /// Sends range requests with `fetch`, counting them.
 pub struct Fetcher {
+    /// The file or store URL, including any query parameters.
     pub url: String,
+    /// The caller's fetch implementation, or the runtime's global fetch.
     pub fetch: js_sys::Function,
+    /// Additional HTTP headers supplied by the caller.
     pub headers: JsValue,
+    /// Whether absent metadata probes may treat HTTP 403 as missing.
     pub allow_missing_metadata403: bool,
+    /// Requests completed or rejected with an HTTP response.
     pub requests: Cell<u64>,
+    /// Response-body bytes consumed by this fetcher.
     pub bytes: Cell<u64>,
 }
 
 /// What a range request returned.
 pub struct Fetched {
+    /// The HTTP status code.
     pub status: u16,
     /// The file's length, from `Content-Range`.
     pub total: Option<u64>,
+    /// The exposed Content-Range header, absent when hidden by CORS.
+    pub content_range: Option<String>,
+    /// The response body bytes.
     pub data: Vec<u8>,
 }
 
+impl Fetched {
+    /// Checks an exposed Content-Range against the request, body and optional known file size.
+    /// Missing headers are allowed because browsers can hide them under CORS.
+    pub fn validate_content_range(&self, range: ObjectRange, total: Option<u64>) -> Result<(), JsError> {
+        if self.status == 206
+            && let Some(header) = &self.content_range
+            && !valid_content_range(header, range, self.data.len() as u64, total)
+        {
+            return Err(JsError::new("range response has an unexpected Content-Range"));
+        }
+        Ok(())
+    }
+}
+
+/// Reads the exposed range header without requiring it under CORS.
+fn range_header(response: &JsValue) -> Option<String> {
+    call(&get(response, "headers"), "get", &["content-range".into()]).ok()?.as_string()
+}
+
+/// Whether a range header describes exactly the requested bytes without arithmetic overflow.
+fn valid_content_range(header: &str, range: ObjectRange, body_len: u64, expected_total: Option<u64>) -> bool {
+    let parsed = (|| {
+        let (unit, value) = header.trim().split_once(' ')?;
+        if !unit.eq_ignore_ascii_case("bytes") {
+            return None;
+        }
+        let (interval, total) = value.trim().split_once('/')?;
+        let (first, last) = interval.split_once('-')?;
+        let total = if total == "*" { None } else { Some(total.parse::<u64>().ok()?) };
+        Some((first.parse::<u64>().ok()?, last.parse::<u64>().ok()?, total))
+    })();
+    parsed.is_some_and(|(first, last, total)| {
+        total.is_none_or(|n| last < n && expected_total.is_none_or(|expected| n == expected))
+            && last.checked_sub(first).and_then(|n| n.checked_add(1)) == Some(body_len)
+            && match range {
+                ObjectRange::At(offset, len) => {
+                    first == offset && last.checked_add(1).zip(offset.checked_add(len)).is_some_and(|(end, expected)| end == expected)
+                }
+                ObjectRange::Suffix(len) => body_len <= len && total.is_none_or(|n| first == n.saturating_sub(len) && last == n - 1),
+                ObjectRange::Whole => first == 0 && total.is_none_or(|n| last == n - 1),
+            }
+    })
+}
+
+/// Reads a JavaScript property, returning undefined when property access fails.
 pub fn get(v: &JsValue, key: &str) -> JsValue {
     js_sys::Reflect::get(v, &JsValue::from_str(key)).unwrap_or(JsValue::UNDEFINED)
 }
@@ -134,14 +189,15 @@ impl Fetcher {
         let resp = JsFuture::from(promise).await.map_err(js_error)?;
         let status = get(&resp, "status").as_f64().unwrap_or(0.0) as u16;
         let header = |name: &str| -> Option<String> { call(&get(&resp, "headers"), "get", &[name.into()]).ok()?.as_string() };
-        let total = header("content-range").and_then(|r| r.rsplit('/').next()?.trim().parse().ok());
+        let content_range = header("content-range");
+        let total = content_range.as_deref().and_then(|r| r.rsplit('/').next()?.trim().parse().ok());
         let buf = JsFuture::from(call(&resp, "arrayBuffer", &[])?.dyn_into::<js_sys::Promise>().map_err(|_| JsError::new("no body"))?)
             .await
             .map_err(js_error)?;
         let data = js_sys::Uint8Array::new(&buf).to_vec();
         self.requests.set(self.requests.get() + 1);
         self.bytes.set(self.bytes.get() + data.len() as u64);
-        Ok(Fetched { status, total, data })
+        Ok(Fetched { status, total, content_range, data })
     }
 
     /// The length of the file, from a `HEAD` request's `Content-Length`.
@@ -171,7 +227,11 @@ impl Fetcher {
                 return Ok(());
             }
             let result: Result<(), JsError> = async {
-                let last = offset + len - 1;
+                let last = offset
+                    .checked_add(len)
+                    .filter(|&end| len > 0 && end <= file.len())
+                    .map(|end| end - 1)
+                    .ok_or_else(|| JsError::new("file range exceeds file length"))?;
                 let response = JsFuture::from(self.request(Some((offset, last)), false)?).await.map_err(js_error)?;
                 if whole.get() || failed.get() {
                     cancel_body(&response);
@@ -194,7 +254,11 @@ impl Fetcher {
                     return Ok(());
                 }
                 match status {
-                    206 if data.len() as u64 == len => file.insert(offset, &data),
+                    206 if data.len() as u64 == len => {
+                        let response = Fetched { status, total: None, content_range: range_header(&response), data };
+                        response.validate_content_range(ObjectRange::At(offset, len), Some(file.len()))?;
+                        file.insert(offset, &response.data);
+                    }
                     200 if data.len() as u64 == file.len() => file.insert(0, &data),
                     _ => {
                         return Err(JsError::new(&format!(
@@ -270,35 +334,11 @@ impl Fetcher {
                     // Cancelled by a failure elsewhere: the bytes read are cut short, not held.
                     return Ok(());
                 }
-                let f = Fetched { status, total: None, data };
+                let f = Fetched { status, total: None, content_range: range_header(&response), data };
                 if f.status == 206 && !matches!(*range, ObjectRange::At(_, 0) | ObjectRange::Suffix(0)) {
                     // Browsers may hide Content-Range under CORS. When exposed, check
                     // position as well as length; a same-sized wrong range corrupts pixels.
-                    if let Some(header) =
-                        call(&get(&response, "headers"), "get", &["content-range".into()]).ok().and_then(|v| v.as_string())
-                    {
-                        let parsed = (|| {
-                            let (interval, total) = header.strip_prefix("bytes ")?.split_once('/')?;
-                            let (first, last) = interval.split_once('-')?;
-                            let total = if total == "*" { None } else { Some(total.parse::<u64>().ok()?) };
-                            Some((first.parse::<u64>().ok()?, last.parse::<u64>().ok()?, total))
-                        })();
-                        let valid = parsed.is_some_and(|(first, last, total)| {
-                            first <= last
-                                && total.is_none_or(|total| last < total)
-                                && last - first + 1 == f.data.len() as u64
-                                && match *range {
-                                    ObjectRange::At(o, n) => first == o && last.checked_add(1) == o.checked_add(n),
-                                    ObjectRange::Suffix(n) => {
-                                        total.is_none_or(|total| first == total.saturating_sub(n) && last == total - 1)
-                                    }
-                                    ObjectRange::Whole => first == 0 && total.is_none_or(|total| last == total - 1),
-                                }
-                        });
-                        if !valid {
-                            return Err(JsError::new("object range response has an unexpected Content-Range"));
-                        }
-                    }
+                    f.validate_content_range(*range, None)?;
                     if let ObjectRange::Suffix(n) = *range
                         && f.data.len() as u64 > n
                     {
@@ -447,9 +487,11 @@ impl Fetcher {
 /// kept up to a cache size between reads, and the reads queued, which run one at a time as they
 /// share them.
 pub struct Remote {
+    /// Sparse blocks of a remote file, empty for object stores.
     pub file: SparseFile,
     /// A store's objects (the file is then empty).
     pub objects: Option<Arc<SparseObjects>>,
+    /// Transport configuration and request accounting shared by these reads.
     pub fetcher: Fetcher,
     /// The bytes kept between reads.
     pub cache_size: u64,
@@ -467,6 +509,7 @@ impl Drop for Turn {
 }
 
 impl Remote {
+    /// Creates a queued reader over a file or object store with the given byte-cache budget.
     pub fn new(file: SparseFile, objects: Option<Arc<SparseObjects>>, fetcher: Fetcher, cache_size: u64) -> Self {
         Self { file, objects, fetcher, cache_size, queue: RefCell::new(js_sys::Promise::resolve(&JsValue::UNDEFINED)) }
     }
@@ -513,5 +556,37 @@ impl Remote {
         }
         let name = self.fetcher.url.split(['?', '#']).next().unwrap_or("remote");
         Err(JsError::new(&format!("{name}: the read still needed more bytes after {MAX_ROUNDS} rounds of requests")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Response positions and lengths must match the requested bytes, including suffixes.
+    #[test]
+    fn content_ranges_match_requested_positions() {
+        assert!(valid_content_range("bytes 4-7/8", ObjectRange::At(4, 4), 4, Some(8)));
+        assert!(valid_content_range("Bytes 4-7/8", ObjectRange::At(4, 4), 4, Some(8)));
+        assert!(valid_content_range("bytes 4-7/*", ObjectRange::At(4, 4), 4, Some(8)));
+        assert!(valid_content_range("bytes 4-7/8", ObjectRange::Suffix(4), 4, None));
+        assert!(valid_content_range("bytes 4-7/*", ObjectRange::Suffix(4), 4, None));
+        assert!(valid_content_range("bytes 0-7/8", ObjectRange::Whole, 8, None));
+        assert!(!valid_content_range("bytes 5-8/9", ObjectRange::At(4, 4), 4, None));
+        assert!(!valid_content_range("bytes 0-3/8", ObjectRange::Suffix(4), 4, None));
+        assert!(!valid_content_range("bytes 1-7/8", ObjectRange::Whole, 7, None));
+        assert!(!valid_content_range("bytes 0-3/4", ObjectRange::At(0, 4), 4, Some(8)));
+    }
+
+    /// Malformed intervals cannot wrap their length or masquerade as an empty response.
+    #[test]
+    fn content_ranges_reject_overflow() {
+        let overflow = format!("bytes 0-{}/*", u64::MAX);
+        assert!(!valid_content_range(&overflow, ObjectRange::Whole, 0, None));
+        assert!(!valid_content_range(&overflow, ObjectRange::Suffix(4), 0, None));
+        assert!(!valid_content_range("bytes 7-4/*", ObjectRange::At(7, 2), 2, None));
+        assert!(!valid_content_range("bytes 0-0/0", ObjectRange::Whole, 1, None));
+        let end = format!("bytes {0}-{0}/*", u64::MAX);
+        assert!(!valid_content_range(&end, ObjectRange::At(u64::MAX, 1), 1, None));
     }
 }

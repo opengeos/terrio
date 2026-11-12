@@ -4,6 +4,8 @@ description = "terrio-js/zarr: Zarr arrays read by window over HTTP, the lean We
 publish = false
 version.workspace = true
 edition.workspace = true
+# This unpublished crate's source is MIT; the outer npm package declares the
+# bundle's compound license and ships all dependency notices.
 license = "MIT"
 rust-version.workspace = true
 repository.workspace = true

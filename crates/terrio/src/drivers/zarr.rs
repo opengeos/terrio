@@ -2382,6 +2382,40 @@ impl ZarrArray {
     /// Opens the array `key` (or the single array of a group, with consolidated metadata) of a
     /// store named `name` in messages, its CRS resolved as [`crate::LazyRaster::from_zarr_objects`]
     /// resolves it.
+    ///
+    /// # Examples
+    ///
+    /// Fetch whole objects from an unsharded local store; an HTTP caller can fetch the
+    /// same requested keys through its own transport.
+    ///
+    /// ```no_run
+    /// use std::{path::Path, sync::Arc};
+    /// use terrio::{ZarrArray, Window};
+    /// use terrio::sparse::{ObjectRange, SparseObjects};
+    ///
+    /// let objects = Arc::new(SparseObjects::new());
+    /// let _pixels = loop {
+    ///     let result = (|| {
+    ///         let mut array = ZarrArray::open_objects(objects.clone(), "store.zarr", "a")?;
+    ///         array.read(Window::new(0, 0, 1, 1), &[1])
+    ///     })();
+    ///     if !objects.has_missing() {
+    ///         break result?;
+    ///     }
+    ///     for (key, range) in objects.missing() {
+    ///         if range != ObjectRange::Whole {
+    ///             return Err(std::io::Error::other("example expects an unsharded array").into());
+    ///         }
+    ///         let data = match std::fs::read(Path::new("store.zarr").join(&key)) {
+    ///             Ok(bytes) => Some(bytes),
+    ///             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+    ///             Err(error) => return Err(error.into()),
+    ///         };
+    ///         objects.insert(&key, range, data);
+    ///     }
+    /// };
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
     pub fn open_objects(objects: std::sync::Arc<crate::sparse::SparseObjects>, name: &str, key: &str) -> Result<Self> {
         Self::open::<true>(objects, name, key)
     }
@@ -2391,6 +2425,40 @@ impl ZarrArray {
     /// or made, so builds that call only this leave terrio's CRS engine out. A CF grid mapping is
     /// read only for its `GeoTransform`, when the array has none; GDAL's `pam.aux.xml` sidecar is
     /// not read. [`ZarrArray::attributes`] has the array's own.
+    ///
+    /// # Examples
+    ///
+    /// Fetch whole objects from an unsharded local store; an HTTP caller can fetch the
+    /// same requested keys through its own transport.
+    ///
+    /// ```no_run
+    /// use std::{path::Path, sync::Arc};
+    /// use terrio::{ZarrArray, Window};
+    /// use terrio::sparse::{ObjectRange, SparseObjects};
+    ///
+    /// let objects = Arc::new(SparseObjects::new());
+    /// let _pixels = loop {
+    ///     let result = (|| {
+    ///         let mut array = ZarrArray::open_objects_epsg_only(objects.clone(), "store.zarr", "a")?;
+    ///         array.read(Window::new(0, 0, 1, 1), &[1])
+    ///     })();
+    ///     if !objects.has_missing() {
+    ///         break result?;
+    ///     }
+    ///     for (key, range) in objects.missing() {
+    ///         if range != ObjectRange::Whole {
+    ///             return Err(std::io::Error::other("example expects an unsharded array").into());
+    ///         }
+    ///         let data = match std::fs::read(Path::new("store.zarr").join(&key)) {
+    ///             Ok(bytes) => Some(bytes),
+    ///             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+    ///             Err(error) => return Err(error.into()),
+    ///         };
+    ///         objects.insert(&key, range, data);
+    ///     }
+    /// };
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
     pub fn open_objects_epsg_only(objects: std::sync::Arc<crate::sparse::SparseObjects>, name: &str, key: &str) -> Result<Self> {
         Self::open::<false>(objects, name, key)
     }
@@ -3053,6 +3121,11 @@ mod tests {
             assert_eq!(crs_attribute::<true>(&attributes).and_then(|c| c.epsg), Some(32630));
         }
         assert_eq!(crs_attribute::<false>(&json!({"projjson": {"id": {"authority": "EPSG", "code": 4294967296_u64}}})), None);
+        for code in [json!(4294971622_u64), json!("4294971622")] {
+            let attributes = json!({"proj:projjson": {"id": {"authority": "EPSG", "code": code}}});
+            assert_eq!(proj_crs::<false>(&attributes), None);
+            assert_eq!(proj_crs::<true>(&attributes), None);
+        }
         for engine in [false, true] {
             let attributes = json!({"url": "https://example.com/crs/4326"});
             let crs = if engine { crs_attribute::<true>(&attributes) } else { crs_attribute::<false>(&attributes) };

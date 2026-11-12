@@ -542,7 +542,7 @@ fn projected(p: &Node) -> Option<Value> {
 pub(crate) fn epsg(v: &Value) -> Option<u32> {
     let id = v.get("id").or_else(|| v.get("ids").and_then(|ids| ids.get(0)))?;
     if id["authority"].as_str().is_some_and(|a| a.eq_ignore_ascii_case("EPSG")) {
-        return id["code"].as_u64().map(|c| c as u32).or_else(|| id["code"].as_str()?.parse().ok());
+        return id["code"].as_u64().and_then(|c| u32::try_from(c).ok()).or_else(|| id["code"].as_str()?.parse().ok());
     }
     None
 }
@@ -707,6 +707,17 @@ fn geog_wkt(v: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Numeric and string identifiers retain valid codes and reject overflowing ones.
+    #[test]
+    fn epsg_identifiers_do_not_wrap() {
+        for code in [json!(4326), json!("4326")] {
+            assert_eq!(epsg(&json!({"id": {"authority": "EPSG", "code": code}})), Some(4326));
+        }
+        for code in [json!(4294971622_u64), json!("4294971622")] {
+            assert_eq!(epsg(&json!({"id": {"authority": "EPSG", "code": code}})), None);
+        }
+    }
 
     #[test]
     fn converts_utm() {
