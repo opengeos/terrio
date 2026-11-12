@@ -2245,8 +2245,12 @@ test("ASCII byte opens enforce intrinsic allocation bounds with optional limits 
     { TERRIO_MAX_DECLARED_BYTES: null, TERRIO_MAX_BANDS: "1" }]) {
     terrio.pushConfig(options);
     try {
-      for (const cols of [1000000000, 400000000]) {
-        const bytes = new TextEncoder().encode(`ncols ${cols}\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n0\n`);
+      // wasm64 can address the single-row cases; use an overflowing decoded shape there.
+      const shapes = process.env.TERRIO_MEMORY64 === "1"
+        ? [[3000000000, 3000000000]]
+        : [[1000000000, 1], [400000000, 1], [3000000000, 3000000000]];
+      for (const [cols, rows] of shapes) {
+        const bytes = new TextEncoder().encode(`ncols ${cols}\nnrows ${rows}\nxllcorner 0\nyllcorner 0\ncellsize 1\n0\n`);
         assert.throws(() => terrio.open(bytes, "oversized.asc"), /too large to allocate/);
       }
     } finally { terrio.popConfig(); }
