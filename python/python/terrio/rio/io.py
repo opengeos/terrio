@@ -2413,13 +2413,14 @@ class DatasetWriter(DatasetReader):
             self._complex_int = self._complex_sample == "CInt16"
             self._options = self._creation_options(kwargs)
             shape = (count, height, width)
-            if copy_of is not None and self._streams_on_flush(self._streams(shape, dt)):
+            storage_dtype = self._buffer_dtype
+            if copy_of is not None and self._streams_on_flush(self._streams(shape, storage_dtype)):
                 self._copy_of = copy_of
-                self._data = np.empty((0, 0, 0), dt)
+                self._data = np.empty((0, 0, 0), storage_dtype)
             else:
                 fill = self._nodata if self._nodata is not None else 0
                 with np.errstate(invalid="ignore"):
-                    self._data = self._allocate(shape, dt, fill)
+                    self._data = self._allocate(shape, storage_dtype, fill)
             self._structure = self._new_structure()
             if transform is not None:
                 self._transform = guard_transform(transform)
@@ -2473,8 +2474,12 @@ class DatasetWriter(DatasetReader):
 
     @property
     def _buffer_dtype(self) -> str:
-        """Hold every Int32 component exactly without changing ordinary read defaults."""
-        return "complex128" if getattr(self, "_complex_sample", None) == "CInt32" else self._dtype
+        """Preserve integer components and round once when converting to their output type."""
+        return (
+            "complex128"
+            if getattr(self, "_complex_sample", None) in ("CInt16", "CInt32")
+            else self._dtype
+        )
 
     def _slabs(self) -> Iterator[tuple[int, int]]:
         """Rows of blocks of about 16 MB.

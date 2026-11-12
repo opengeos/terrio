@@ -137,6 +137,40 @@ def test_integer_complex_conversion_matches_gdal(tmp_path, gdal):
     np.testing.assert_array_equal(actual, expected)
 
 
+@pytest.mark.parametrize("driver", ["GTiff", "COG"])
+@pytest.mark.parametrize("limit", ["1", "2000", "100000000"])
+def test_integer_complex_window_rounding_matches_gdal(tmp_path, monkeypatch, gdal, driver, limit):
+    """CInt16 writes round complex128 components once, as GDAL 3.13.3 does."""
+    monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", limit)
+    parts = np.array([2.4999999, -2.4999999, 0.49999999, -0.49999999, 32766.4999, -32767.4999])
+    values = np.tile(parts + 1j * parts[::-1], (37, 1))
+    reference = tmp_path / "rounding-reference.tif"
+    ds = gdal.GetDriverByName("GTiff").Create(str(reference), len(parts), 37, 1, gdal.GDT_CInt16)
+    ds.GetRasterBand(1).WriteArray(values)
+    expected = ds.ReadAsArray(buf_type=gdal.GDT_CFloat64)
+    path = tmp_path / "rounding.tif"
+    with rio.open(
+        path,
+        "w",
+        driver=driver,
+        width=len(parts),
+        height=37,
+        count=1,
+        dtype="complex_int16",
+        tiled=True,
+        blockxsize=16,
+        blockysize=16,
+    ) as dst:
+        assert dst._data.dtype == np.dtype("complex128")
+        assert isinstance(dst._data, np.memmap) == (values.nbytes > int(limit))
+        for start in range(0, 37, 7):
+            rows = min(7, 37 - start)
+            dst.write(values[None, start : start + rows], window=Window(0, start, len(parts), rows))
+    actual, output = read_precise(gdal, path)
+    assert output.GetRasterBand(1).DataType == gdal.GDT_CInt16
+    np.testing.assert_array_equal(actual, expected)
+
+
 def test_real_landsat_complex_integer_copy_is_exact(tmp_path, data_dir, gdal):
     with rio.open(data_dir / "landsat7.tif") as src:
         sample = src.read([1, 2], window=Window(500, 500, 64, 64))

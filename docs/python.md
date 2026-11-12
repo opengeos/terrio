@@ -81,12 +81,12 @@ Integer components are rounded and saturated, as GDAL 3.13.3 converts them.
 preserves every Int32 component; the default complex dtype remains compatible with rasterio.
 Converting CInt32 to `float64` or a 32-bit-or-wider integer output reads the components
 without a float32 intermediate. Unsigned outputs preserve exactly representable positive
-components; their final signed-to-unsigned conversion follows the existing cast policy. A narrower real dtype, such as `float32`, first
-passes through complex64, which can round Int32 components above 2^24. Use
+components; their final signed-to-unsigned conversion follows the existing cast policy.
+A narrower real dtype, such as `float32`, first passes through complex64, which can round Int32 components above 2^24. Use
 `raster.read(out_dtype="complex128").real` to retain exact real components of any type.
-Updates retain the physical complex sample type. A readable CInt32 writer keeps precise
-components in complex128 buffers, including when it is copied; memory and spill-file slab
-accounting includes their 16 bytes per complex sample.
+Updates retain the physical complex sample type. Integer-complex writers keep components in complex128 buffers, so CInt16 output rounds
+once from the input precision and CInt32 output retains every integer component. Memory,
+spill-file selection and slab accounting include their 16 bytes per complex sample.
 Complex `terrio.rio` reads support unresampled windows and nearest-neighbour resampling;
 other interpolation methods compute real and imaginary components separately. Their complex
 results have not been validated against GDAL.

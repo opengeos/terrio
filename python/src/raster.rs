@@ -597,8 +597,10 @@ impl PyRaster {
     ///
     /// Raises:
     ///     InvalidArgumentError: If a band, the window or the overview does not exist.
-    ///     ResourceLimitError: If a GeoTIFF window the process cannot hold is refused before it is
-    ///         allocated.
+    ///     ResourceLimitError: If the native read exceeds its resource policy, or its subsequent
+    ///         NumPy conversion exceeds usable memory. Native window storage is checked by the
+    ///         reader; NumPy working buffers are checked after that read and before conversion.
+    ///         Conversion admission applies to both real and complex rasters.
     #[pyo3(signature = (band=None, window=None, overview=None, *, out_dtype=None))]
     fn read<'py>(
         slf: &Bound<'py, Self>,
@@ -1364,7 +1366,10 @@ impl PyGeoTiffWriter {
     /// writer's dtype, and the mask's `(rows, width)` uint8 rows (0 for invalid) when it has one.
     ///
     /// Args:
-    ///     array: The rows.
+    ///     array: The rows. Real output requires the matching NumPy dtype. Complex output
+    ///         accepts complex64 or complex128 and converts components to the selected storage
+    ///         type; integer components round and saturate as GDAL 3.13.3 does. Use complex128
+    ///         input to avoid narrowing components before integer rounding.
     ///     mask: The mask's rows.
     ///
     /// Raises:

@@ -119,7 +119,10 @@ impl PyCogWriter {
     /// writer's dtype.
     ///
     /// Args:
-    ///     array: The rows.
+    ///     array: The rows. Real output requires the matching NumPy dtype. Complex output
+    ///         accepts complex64 or complex128 and converts components to the selected storage
+    ///         type; integer components round and saturate as GDAL 3.13.3 does. Use complex128
+    ///         input to avoid narrowing components before integer rounding.
     ///
     /// Raises:
     ///     InvalidArgumentError: If the shapes or dtype do not match, or the writer is closed.
