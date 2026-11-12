@@ -3075,6 +3075,7 @@ mod tests {
         let mut header = RasterDataset::new(wbraster::Raster::from_data_native(cfg, RasterData::U16(vec![10; 16])).unwrap(), false);
         header.set_sample_bits(9);
         let mut source = LazyRaster::from_source(header, Box::new(UnknownWidth));
+        assert_eq!(source.widest_sample_bits(), None);
         let base = source.read_window(Window::full(4, 4), &WindowOptions::default()).unwrap();
         let inherited = |ds: &RasterDataset| {
             crate::RasterWriteOptions::default()
