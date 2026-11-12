@@ -1116,7 +1116,7 @@ fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<DbfRecor
 }
 
 /// Collect physical slots, invoking the record factory only for live records.
-fn read_dbf_records(d: &[u8], l: &DbfLayout, make_record: impl Fn(&[u8]) -> Vec<FieldValue>) -> Result<Vec<DbfRecord>> {
+fn read_dbf_records(d: &[u8], l: &DbfLayout, make_record: impl Fn(&[u8]) -> Vec<FieldValue> + Sync) -> Result<Vec<DbfRecord>> {
     // The header's record count is not trusted: only the records the file holds are read, and
     // their list is allocated fallibly.
     let held = d.len().saturating_sub(l.header_len) / l.record_len.max(1);
@@ -1133,7 +1133,14 @@ fn read_dbf_records(d: &[u8], l: &DbfLayout, make_record: impl Fn(&[u8]) -> Vec<
         let start = l.header_len + i * l.record_len;
         (d[start] != b'*').then(|| make_record(&d[start..start + l.record_len]))
     };
+    #[cfg(any(target_arch = "wasm32", all(target_os = "linux", target_env = "gnu")))]
     records.extend((0..count).map(record));
+    #[cfg(not(any(target_arch = "wasm32", all(target_os = "linux", target_env = "gnu"))))]
+    crate::par::install(|| {
+        use rayon::prelude::*;
+        #[allow(clippy::disallowed_methods)] // On terrio's pool, inside `par::install`.
+        records.par_extend((0..count).into_par_iter().map(record));
+    });
     Ok(records)
 }
 
@@ -1634,7 +1641,11 @@ fn encode_dbf(layer: &Layer) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    /// Record storage belongs to the caller that will free it; DBF values follow GDAL 3.13.3.
+    use super::*;
+    use wbvector::{Feature, FieldDef};
+
+    /// glibc record storage is built on the calling thread; deleted slots are skipped.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[test]
     fn dbf_record_storage_is_built_on_the_calling_thread() {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1668,8 +1679,6 @@ mod tests {
         assert!(records[5].is_none());
         assert_eq!(records[6].as_ref().unwrap(), &layer.features[6].attributes);
     }
-    use super::*;
-    use wbvector::{Feature, FieldDef};
 
     #[test]
     fn measure_ranges_exclude_missing_samples() {

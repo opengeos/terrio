@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !(2..=3).contains(&args.len()) {
         return Err("usage: vector_memory_reuse FILE [256-KiB BLOCKS, default 768]".into());
     }
-    let count = args.get(2).map(|v| v.parse()).transpose()?.unwrap_or(768);
+    let count = args.get(2).map(|v| v.parse::<usize>()).transpose()?.unwrap_or(768);
     let base = peak_kib();
     let started = std::time::Instant::now();
     let dataset = terrio::open_vector(&args[1], &Default::default())?;
