@@ -54,6 +54,7 @@ def test_missing_synthetic_case_is_an_incomplete_suite(monkeypatch):
 
 @pytest.mark.parametrize("missing", ["JP2 15-bit AUTO to GTiff", "JP2 15-bit AUTO to COG", "COG overview-only source masks"])
 def test_missing_source_preservation_control_is_incomplete(monkeypatch, missing):
+    """Verify missing source preservation control is incomplete."""
     names = [f"{driver} {bits}-bit" for driver in ("GTiff", "COG") for bits in (1, 4, 7, 12, 24, 31)]
     names.extend(("COG 4-bit CUBIC bright edge", "WorldCover palette", "JP2 15-bit AUTO to GTiff",
                   "JP2 15-bit AUTO to COG", "COG overview-only source masks"))

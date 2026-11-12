@@ -1428,12 +1428,9 @@ overviews have masks. These cases compare the output with the source's validity:
 GDAL 3.13.3's COG copier drops the overview-only masks. Missing physical masks
 remain absent, so implicit nodata and alpha masks retain their flags and values;
 no base-sized all-valid mask is allocated. Regressions cover both nodata and RGBA
-sources. Other cases retain the GDAL-copy comparison. A 1024-square probe, with
-five alternating fresh processes and four Rayon threads, measured median logical
-process-read bytes of 4,039,048 before and 4,186,576 after; read-system-call counts
-were 469 and 489. Those counts include metadata/probe reads and are not per-file
-physical transfers. The first overview's mask changed from incorrectly all-valid
-to the source's all-invalid mask, while the base retained its all-valid implicit
+sources. Other cases retain the GDAL-copy comparison. Run the mask controls with
+`pytest python/tests/test_gtiff_packed_writer.py -k 'partial_and_overview_only_masks or overview_only_masks_keep_implicit_alpha'`.
+They verify each overview's source validity while retaining the base's implicit
 mask and flags.
 
 Selected-overview COG copies are checked with internal and external three-level

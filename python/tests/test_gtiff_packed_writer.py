@@ -30,6 +30,7 @@ from terrio.rio.transform import from_origin
 )
 @pytest.mark.parametrize("driver", ["GTiff", "COG"])
 def test_packed_unsigned_write_retains_samples_and_bit_width(tmp_path, gdal, bits, dtype, driver):
+    """Verify packed unsigned write retains samples and bit width."""
     y, x = np.mgrid[:19, :37]
     values = ((x * 104729 + y * 15485863) % (1 << bits)).astype(dtype)
     path = tmp_path / "packed.tif"
@@ -64,6 +65,7 @@ def test_packed_unsigned_write_retains_samples_and_bit_width(tmp_path, gdal, bit
 
 @pytest.mark.parametrize("driver", ["GTiff", "COG"])
 def test_copy_retains_bilevel_palette(tmp_path, gdal, driver):
+    """Verify copy retains bilevel palette."""
     values = (np.indices((19, 37)).sum(axis=0) % 3 == 0).astype("uint8")
     source = tmp_path / "source.tif"
     ds = gdal.GetDriverByName("GTiff").Create(
@@ -100,6 +102,7 @@ def test_copy_retains_bilevel_palette(tmp_path, gdal, driver):
     ],
 )
 def test_invalid_packed_options_are_refused(tmp_path, bits, dtype, extra):
+    """Verify invalid packed options are refused."""
     with pytest.raises(Exception, match="NBITS|packed"):
         with rio.open(
             tmp_path / "invalid.tif",
@@ -117,6 +120,7 @@ def test_invalid_packed_options_are_refused(tmp_path, bits, dtype, extra):
 
 
 def test_explicit_bit_width_overrides_the_source(tmp_path, gdal):
+    """Verify explicit bit width overrides the source."""
     source = tmp_path / "source.tif"
     ds = gdal.GetDriverByName("GTiff").Create(
         str(source), 9, 1, 1, gdal.GDT_Byte, options=["NBITS=1"]
@@ -167,6 +171,7 @@ def write_sample_width_images(path, images, photometric=1):
 
 @pytest.mark.parametrize("driver", ["GTiff", "COG"])
 def test_internal_overview_copies_use_the_overviews_sample_width(tmp_path, gdal, driver):
+    """Verify internal overview copies use the overviews sample width."""
     base = np.arange(16, dtype="uint16").reshape(4, 4)
     values = np.array([[1000, 2000], [3000, 4000]], dtype="uint16")
     source = tmp_path / "internal.tif"
@@ -185,6 +190,7 @@ def test_internal_overview_copies_use_the_overviews_sample_width(tmp_path, gdal,
 
 
 def test_wider_cog_overview_copy_uses_the_widest_stored_width(tmp_path, gdal):
+    """Verify wider cog overview copy uses the widest stored width."""
     driver = "COG"
     source = tmp_path / "external.tif"
     base = np.arange(16, dtype="uint8").reshape(4, 4)
@@ -207,6 +213,7 @@ def test_wider_cog_overview_copy_uses_the_widest_stored_width(tmp_path, gdal):
 def test_auto_translation_does_not_label_wider_overview_values_as_the_base(
     tmp_path, gdal, overview_kind
 ):
+    """Verify auto translation does not label wider overview values as the base."""
     import terrio
 
     source = tmp_path / "auto.tif"
@@ -232,6 +239,7 @@ def test_auto_translation_does_not_label_wider_overview_values_as_the_base(
 
 @pytest.mark.parametrize("options", [{"compress": "JPEG"}, {"compress": "DEFLATE", "predictor": 2}])
 def test_incompatible_destination_options_do_not_inherit_packed_width(tmp_path, gdal, options):
+    """Verify incompatible destination options do not inherit packed width."""
     source = tmp_path / "narrow.tif"
     values = np.zeros((16, 16), dtype="uint8")
     write_sample_width_images(source, [(values, 4)])
@@ -246,6 +254,7 @@ def test_incompatible_destination_options_do_not_inherit_packed_width(tmp_path, 
 
 @pytest.mark.parametrize("driver", ["GTiff", "COG"])
 def test_unrepresentable_packed_nodata_is_refused_before_it_becomes_valid(tmp_path, driver):
+    """Verify unrepresentable packed nodata is refused before it becomes valid."""
     target = tmp_path / "nodata.tif"
     with pytest.raises(Exception, match="nodata.*NBITS=4"):
         with rio.open(
@@ -276,6 +285,7 @@ def test_unrepresentable_packed_nodata_is_refused_before_it_becomes_valid(tmp_pa
     ],
 )
 def test_copy_normalizes_options_before_inheriting_width(tmp_path, gdal, options, surface):
+    """Verify copy normalizes options before inheriting width."""
     import terrio
 
     source, target = tmp_path / "source.tif", tmp_path / "copy.tif"
@@ -291,6 +301,7 @@ def test_copy_normalizes_options_before_inheriting_width(tmp_path, gdal, options
 
 
 def test_copy_accepts_compression_enum_without_losing_width(tmp_path, gdal):
+    """Verify copy accepts compression enum without losing width."""
     from terrio.rio.enums import Compression
 
     source, target = tmp_path / "source.tif", tmp_path / "copy.tif"
@@ -304,6 +315,7 @@ def test_copy_accepts_compression_enum_without_losing_width(tmp_path, gdal):
 
 @pytest.mark.parametrize("surface", ["rio", "native"])
 def test_implicit_width_does_not_make_stored_nodata_unrepresentable(tmp_path, gdal, surface):
+    """Verify implicit width does not make stored nodata unrepresentable."""
     import terrio
 
     source, target = tmp_path / "source.tif", tmp_path / "copy.tif"
@@ -325,6 +337,7 @@ def test_implicit_width_does_not_make_stored_nodata_unrepresentable(tmp_path, gd
 
 
 def test_sample_width_rejects_an_invalid_overview_index(tmp_path):
+    """Verify sample width rejects an invalid overview index."""
     import terrio
 
     source = tmp_path / "source.tif"
@@ -337,12 +350,14 @@ def test_sample_width_rejects_an_invalid_overview_index(tmp_path):
 
 @pytest.mark.parametrize("external", [False, True])
 def test_selected_overview_uses_its_own_photometric_tags(tmp_path, gdal, monkeypatch, external):
+    """Verify selected overview uses its own photometric tags."""
     from terrio.rio import _tiff
 
     tag_reads = []
     read_tags = _tiff._terrio.tiff_tags
 
     def tracked_tags(path):
+        """Record requested TIFF tag paths before reading their tags."""
         tag_reads.append(path)
         return read_tags(path)
 
@@ -412,6 +427,7 @@ def test_streamed_cog_reports_wider_clipping_but_keeps_bilevel_silent(
 
 
 def test_copy_uses_full_width_for_a_requested_outside_domain_nodata(tmp_path, gdal):
+    """Verify copy uses full width for a requested outside domain nodata."""
     source, target = tmp_path / "source.tif", tmp_path / "copy.tif"
     values = np.arange(16, dtype="uint8").reshape(4, 4)
     write_sample_width_images(source, [(values, 4)])
@@ -464,6 +480,7 @@ def test_cog_copy_of_an_overview_keeps_its_wider_descendant_levels(tmp_path, gda
 
 @pytest.mark.parametrize("surface", ["rio", "native"])
 def test_uncompressed_packed_copy_ignores_an_ineffective_predictor(tmp_path, gdal, surface):
+    """Verify uncompressed packed copy ignores an ineffective predictor."""
     import terrio
 
     source, target = tmp_path / "source.tif", tmp_path / "copy.tif"
@@ -498,6 +515,7 @@ def test_uncompressed_packed_copy_ignores_an_ineffective_predictor(tmp_path, gda
 
 @pytest.mark.parametrize("surface", ["rio", "native"])
 def test_default_cog_compression_does_not_inherit_an_incompatible_width(tmp_path, gdal, surface):
+    """Verify default cog compression does not inherit an incompatible width."""
     import terrio
 
     source, target = tmp_path / "source.tif", tmp_path / "copy.tif"
@@ -515,6 +533,7 @@ def test_default_cog_compression_does_not_inherit_an_incompatible_width(tmp_path
 
 
 def test_cog_copy_of_an_overview_keeps_its_own_and_descendant_masks(tmp_path, gdal):
+    """Verify cog copy of an overview keeps its own and descendant masks."""
     source, target = tmp_path / "masked.tif", tmp_path / "copy.tif"
     values = np.arange(32 * 32, dtype="uint16").reshape(32, 32) % 512
     mask = np.where(np.indices((32, 32)).sum(axis=0) % 3, 255, 0).astype("uint8")
@@ -550,6 +569,7 @@ def test_cog_copy_of_an_overview_keeps_its_own_and_descendant_masks(tmp_path, gd
 
 @pytest.mark.parametrize("failure", [PermissionError, ValueError, NotFoundError])
 def test_selected_overview_tag_errors_are_not_hidden(tmp_path, monkeypatch, failure):
+    """Verify selected overview tag errors are not hidden."""
     from terrio.rio import _tiff
 
     source = tmp_path / "source.tif"
@@ -561,6 +581,7 @@ def test_selected_overview_tag_errors_are_not_hidden(tmp_path, monkeypatch, fail
         read_tags = _tiff._terrio.tiff_tags
 
         def failing_tags(path):
+            """Simulate a selected overview tag read failure."""
             if path.endswith(".ovr"):
                 raise failure("overview tags unavailable")
             return read_tags(path)

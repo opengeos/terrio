@@ -1133,6 +1133,8 @@ impl crate::cog::WindowSource for Jp2Window {
             return None;
         }
         let effective = |i: usize, bits: u32| {
+            // GDAL 3.13.3 promotes 1-bit alpha alongside 8-bit colour to 0/255.
+            // Compare with a non-alpha component, including when alpha is first.
             let colour = if i == 0 && self.header.precisions.len() > 1 { 1 } else { 0 };
             if self.alpha == Some(i) && bits == 1 && self.header.precisions.get(colour) == Some(&8) { 8 } else { bits }
         };

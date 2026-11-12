@@ -24,6 +24,7 @@ from terrio.rio.transform import Affine, from_origin
 
 
 def verify(path, values, bits, transform, crs, nodata=None, palette=None, require_overviews=False):
+    """Compare stored TIFF samples and metadata against GDAL references."""
     ds = gdal.Open(str(path))
     band = ds.GetRasterBand(1)
     if band.GetMetadataItem("NBITS", "IMAGE_STRUCTURE") != str(bits):
@@ -150,6 +151,7 @@ def source_preservation_cases(directory):
 
 
 def main():
+    """Run packed TIFF conformance cases and report comparison results."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data", type=Path)
     parser.add_argument("--terrio", required=True)
@@ -199,7 +201,8 @@ def main():
                 reference.BuildOverviews("CUBIC", [2])
                 references.append(reference.GetRasterBand(1).GetOverview(0).ReadAsArray())
                 reference = None
-            assert references[1].max() > 15, "bright control must produce cubic overshoot"
+            if references[1].max() <= 15:
+                raise RuntimeError("bright control must produce cubic overshoot")
             path = directory / "cubic-bright.tif"
             with warnings.catch_warnings(record=True) as captured:
                 warnings.simplefilter("always")
