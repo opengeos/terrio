@@ -6,6 +6,36 @@ from pathlib import Path
 
 import pytest
 
+
+def _activate_proj_data():
+    """Set PROJ_DATA and GDAL_DATA as conda's activation does, when the environment has them.
+
+    CI runs these tests in an activated environment. Its PROJ data directory holds PROJ's database
+    alone: the environment's own `share/proj` may also hold the datum shift grids of a package such
+    as conda's proj-data, which CI does not have. So PROJ's database and configuration are copied
+    into a temporary directory, and PROJ_DATA names that one.
+    """
+    import atexit
+    import shutil
+    import tempfile
+
+    if "PROJ_DATA" in os.environ:
+        return
+    share = Path(sys.prefix) / "share"
+    if not (share / "proj" / "proj.db").exists():
+        return
+    proj_dir = Path(tempfile.mkdtemp(prefix="terrio-proj-"))
+    atexit.register(shutil.rmtree, proj_dir, ignore_errors=True)
+    for name in ("proj.db", "proj.ini"):
+        if (share / "proj" / name).exists():
+            shutil.copy2(share / "proj" / name, proj_dir)
+    os.environ["PROJ_DATA"] = str(proj_dir)
+    if "GDAL_DATA" not in os.environ and (share / "gdal").is_dir():
+        os.environ["GDAL_DATA"] = str(share / "gdal")
+
+
+_activate_proj_data()
+
 # GDAL's bindings register their drivers before any test starts rasterio's. rasterio's pip wheel
 # bundles a second libgdal: once its environment has started in a process (`rasterio.Env`, or any
 # `rasterio.open`), a later first import of `osgeo.gdal` registers only the GDAL plugins, and
