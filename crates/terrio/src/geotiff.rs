@@ -1461,7 +1461,14 @@ pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek + Send + 'static>(
     // Chunks `..first` were decoded by other threads.
     #[cfg(threads)]
     let first = match reopen {
-        Some(reopen) => decode_in_threads(reopen, pool, ifd, chunks, codec, limit, err, &mut place)?,
+        Some(reopen) => match decode_in_threads(reopen, pool, ifd, chunks, codec, limit, err, &mut place) {
+            // Quiet worker reads can discover bytes beyond the prefetched ranges. Replay
+            // through the primary decoder so its nonquiet source records the missing blocks.
+            // Placement overwrites output samples; resource refusals remain terminal.
+            // Without the decoded cache, each retry repeats already decoded chunks.
+            Err(crate::Error::Io(e)) if e.get_ref().is_some_and(|e| e.is::<crate::sparse::NotFetched>()) => 0,
+            result => result?,
+        },
         None => 0,
     };
     #[cfg(not(threads))]
@@ -1672,6 +1679,10 @@ fn decode_in_threads<D: Read + Seek + Send + 'static>(
                 crate::Error::DecodedLimitExceeded { resource, limit } => crate::Error::DecodedLimitExceeded { resource, limit: *limit },
                 crate::Error::Io(io) if io.kind() == std::io::ErrorKind::OutOfMemory => {
                     crate::Error::Io(std::io::Error::new(io.kind(), io.to_string()))
+                }
+                crate::Error::Io(io) if io.get_ref().is_some_and(|e| e.is::<crate::sparse::NotFetched>()) => {
+                    let missing = io.get_ref().and_then(|e| e.downcast_ref::<crate::sparse::NotFetched>()).unwrap();
+                    crate::Error::Io(std::io::Error::new(io.kind(), crate::sparse::NotFetched { offset: missing.offset }))
                 }
                 e if e.is_resource_refusal() => crate::Error::ResourceLimit(e.to_string()),
                 e => crate::Error::InvalidData(e.to_string()),

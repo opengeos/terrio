@@ -841,8 +841,7 @@ impl LazyRaster {
     }
 
     fn from_sparse_using(file: crate::sparse::SparseFile, limits: impl FnOnce() -> Result<TiffReadLimits>) -> Result<Option<Self>> {
-        let capacity = file.block_size().min(SPARSE_BUFFER_BYTES as u64) as usize;
-        let mut source = Source::Sparse(BufReader::with_capacity(capacity, SparseBlockReader::new(file)));
+        let mut source = Source::sparse(file);
         source.seek(SeekFrom::Start(0))?;
         let mut magic = [0u8; 4];
         source.read_exact(&mut magic)?;
@@ -2223,6 +2222,13 @@ impl Seek for SparseBlockReader {
 }
 
 impl Source {
+    /// A remote file whose bytes the caller fetches, buffered by at most a block
+    /// ([`SPARSE_BUFFER_BYTES`]).
+    fn sparse(file: crate::sparse::SparseFile) -> Self {
+        let capacity = file.block_size().min(SPARSE_BUFFER_BYTES as u64) as usize;
+        Source::Sparse(BufReader::with_capacity(capacity, SparseBlockReader::new(file)))
+    }
+
     /// Whether reading needs [`Source::prefetch`]: a source whose bytes the caller fetches.
     fn prefetches(&self) -> bool {
         match self {
@@ -2376,12 +2382,22 @@ enum Reopened {
     File(crate::geotiff::FileCursor),
     Memory(SharedBytes),
     Zip(crate::vsi::sozip::MemberReopen),
+    /// A remote file whose bytes the caller fetches: the chunks were prefetched before decoding.
+    /// Quiet ([`crate::sparse::SparseFile::quiet`]): a decoder that cannot be opened is done
+    /// without.
+    Sparse(crate::sparse::SparseFile),
 }
 
 fn tiff_err(e: tiff::TiffError) -> Error {
     match e {
         tiff::TiffError::LimitsExceeded => Error::ResourceLimit("TIFF: decoding limits exceeded (see TiffReadLimits)".into()),
-        tiff::TiffError::IoError(e) if e.kind() == std::io::ErrorKind::OutOfMemory || crate::error::is_http_io(&e) => Error::Io(e),
+        tiff::TiffError::IoError(e)
+            if e.kind() == std::io::ErrorKind::OutOfMemory
+                || crate::error::is_http_io(&e)
+                || e.get_ref().is_some_and(|e| e.is::<crate::sparse::NotFetched>()) =>
+        {
+            Error::Io(e)
+        }
         e => Error::InvalidData(format!("TIFF: {e}")),
     }
 }
@@ -2836,7 +2852,11 @@ impl TiffRaster {
             Source::File(f) => Some(Reopened::File(f.get_ref().clone())),
             Source::Memory(m) => Some(Reopened::Memory(m.get_ref().clone())),
             Source::Zip(member) => member.reopen().map(Reopened::Zip),
-            _ => None,
+            // Without recording what they miss: a header the caller's cache dropped would be
+            // fetched again for decoders the read does without.
+            Source::Sparse(s) => Some(Reopened::Sparse(s.get_ref().file.quiet())),
+            #[cfg(remote)]
+            Source::Http(_) => None,
         };
         let reopen = source.map(|source| {
             move || -> Result<Decoder<PatchedReader<Source>>> {
@@ -2854,6 +2874,11 @@ impl TiffRaster {
                         let len = s.seek(SeekFrom::End(0))?;
                         s.seek(SeekFrom::Start(0))?;
                         (s, len)
+                    }
+                    Reopened::Sparse(file) => {
+                        let mut s = Source::sparse(file.clone());
+                        s.seek(SeekFrom::Start(0))?;
+                        (s, file.len())
                     }
                 };
                 Ok(Decoder::new(PatchedReader::new(s, tags)).map_err(tiff_err)?.with_limits(limits.tiff_within(len)))
@@ -3791,6 +3816,63 @@ mod tests {
         let peak = crate::geotiff::PEAK_WORKERS.load(std::sync::atomic::Ordering::Relaxed);
         let limit = crate::geotiff::decode_worker_limit();
         assert!(peak <= limit, "{peak} decode workers at once, over the {limit} allowed");
+    }
+
+    /// A remote file read through a `SparseFile` (terrio-js's `openUrl`) decodes its tiles on the
+    /// workers, as a local file does, and reads the same values. With the TIFF's header dropped
+    /// from the sparse cache after a read, the next read still returns the same values.
+    #[test]
+    fn sparse_window_reads_decode_on_the_workers() {
+        let _serial = crate::block_cache::tests::cache_test_guard(0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiled.tif");
+        write_tiled_tiff(&path, (160, 144, 3), sequence(DataType::U8, 160 * 144 * 3, 5), &[]);
+        let bytes = std::fs::read(&path).unwrap();
+        // Keep header and window data in different blocks so prefetch cannot restore
+        // the header incidentally after trimming.
+        let file = crate::sparse::SparseFile::with_block_size(bytes.len() as u64, 256);
+        let header_fetches = std::cell::Cell::new(0usize);
+        let fetch = |o: u64, n: u64| -> std::io::Result<Vec<u8>> {
+            if o == 0 {
+                header_fetches.set(header_fetches.get() + 1);
+            }
+            Ok(bytes[o as usize..(o + n) as usize].to_vec())
+        };
+        let open = || crate::sparse::read_with(&file, 32, fetch, || Ok(LazyRaster::from_sparse(file.clone())?.unwrap())).unwrap();
+        let w = Window::new(20, 20, 120, 100);
+        let want = read_f64(&mut LazyRaster::open(path.to_str().unwrap()).unwrap(), w, &[1, 2, 3], None);
+        let opts = WindowOptions { bands: vec![1, 2, 3], overview: None };
+        let read = |r: &mut LazyRaster| {
+            crate::sparse::read_with(&file, 32, fetch, || Ok(r.read_window(w, &opts)?.raster.data.to_f64_vec())).unwrap()
+        };
+        let opened = |r: &LazyRaster| match &r.inner {
+            Inner::Tiff(t) => t.workers.opened.load(std::sync::atomic::Ordering::Relaxed),
+            _ => panic!("a GeoTIFF reader"),
+        };
+        // Tests running alongside may hold the process's decode workers: a read then decodes on
+        // its own thread. Fresh readers until one gets workers (20 at most).
+        let mut r = open();
+        assert_eq!(read(&mut r), want);
+        for _ in 0..20 {
+            if crate::par::threads() < 2 || opened(&r) >= 1 {
+                break;
+            }
+            r = open();
+            assert_eq!(read(&mut r), want);
+        }
+        if crate::par::threads() > 1 {
+            assert!(opened(&r) >= 1, "no read opened decoders for its workers over the sparse file");
+        }
+        // Force the next read to reopen workers rather than reuse cached decoders.
+        static SPARES: crate::geotiff::SpareDecoders = crate::geotiff::SpareDecoders::new(0);
+        if let Inner::Tiff(t) = &mut r.inner {
+            t.workers = crate::geotiff::DecoderPool::sharing(&SPARES);
+        }
+        file.trim(0);
+        let before = header_fetches.get();
+        assert!(before > 0, "the opening read must fetch the TIFF header");
+        assert_eq!(read(&mut r), want);
+        assert_eq!(header_fetches.get(), before, "worker reopening must not refetch the trimmed header");
     }
 
     /// `place` matches a pixel-by-pixel copy of each sample of pixel-interleaved chunks, over:
