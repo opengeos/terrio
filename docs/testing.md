@@ -837,6 +837,19 @@ The options also apply to Python's bundled CLI and MCP. Direct zonal statistics
 are exposed as Python `zonal_stats` and JavaScript `zonalStats`; direct
 point-sampling functions remain unavailable in the language bindings.
 
+## Compound authority references
+
+`cargo test -p terrio-crs --lib` (also with `--features wbprojection-fallback`)
+checks compound EPSG URNs, invalid component roles and unrelated text. GML and
+CityGML regressions keep both components and normalize horizontal axis order
+without changing height. Python path/bytes and layer CRS arguments are covered
+in `python/tests/test_compound_crs_urn.py`; Node covers shared parsing and GML XYZ.
+The registered `compound-crs` suite runs
+`scripts/compare_compound_crs_with_gdal.py`: three EPSG horizontal/vertical pairs
+against GDAL 3.13.3 with `GML_REPORT_COMPD_CS=YES`, with exact component IDs,
+2+1 axes and normalized XYZ. CRS
+names and serialized PROJJSON text are deliberately outside that comparison.
+
 ## Standalone CRS feature coverage
 
 Run the standalone suite separately from the workspace to avoid Cargo feature
@@ -2791,18 +2804,21 @@ with roughly 17 KiB of coordinate/validity scratch rather than allocating an ent
 output-width row before memory-limit splitting. The polar regression starts off a
 global batch boundary and spans several batches; RPC batch membership stays global.
 
-## Compound authority references
+## Shapefile projection decoding warnings
 
-`cargo test -p terrio-crs --lib` (also with `--features wbprojection-fallback`)
-checks compound EPSG URNs, invalid component roles and unrelated text. GML and
-CityGML regressions keep both components and normalize horizontal axis order
-without changing height. Python path/bytes and layer CRS arguments are covered
-in `python/tests/test_compound_crs_urn.py`; Node covers shared parsing and GML XYZ.
-The registered `compound-crs` suite runs
-`scripts/compare_compound_crs_with_gdal.py`: three EPSG horizontal/vertical pairs
-against GDAL 3.13.3 with `GML_REPORT_COMPD_CS=YES`, with exact component IDs,
-2+1 axes and normalized XYZ. CRS
-names and serialized PROJJSON text are deliberately outside that comparison.
+`python/tests/test_pyogrio_prj.py` checks invalid Latin-1 and UTF-16 sidecars through
+whole, range, stream, ZIP path and ZIP byte reads. Reads retain their geometries
+and attributes, leave the CRS absent, and issue one warning naming the sidecar
+and the decoding reason. CLI inspection and conversion report the same warning.
+Existing tests keep valid UTF-8 (including a BOM), empty and missing sidecars
+unchanged. A present sidecar that cannot be read is diagnosed separately.
+
+The Node test uses tiny GDAL 3.13.3-authored geometry fixtures under
+`crates/terrio/tests/data/shapefile`, with deliberately non-UTF-8 projection bytes.
+These check native warning policy, not equality to GDAL's metadata encoding policy.
+A projection member with a deliberately wrong CRC checks the WASM memory codec's
+read-error diagnostic; native extraction retains its fatal checksum refusal.
+A separate native memory-codec regression keeps sidecar budget refusals terminal.
 
 ## JPEG 2000 channel roles
 
