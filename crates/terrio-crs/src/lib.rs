@@ -89,6 +89,16 @@ pub(crate) mod wkt1;
 mod wkt1_write;
 mod wkt2;
 
+/// Recognized boolean PROJ parameters with their normalized values, in definition order.
+/// Numeric and other non-boolean parameters are omitted. Invalid quoting and unknown
+/// values on recognized switches are refused, using the same rules as the CRS parser.
+pub fn proj_boolean_parameters(definition: &str) -> Result<Vec<(String, bool)>> {
+    let parameters = params::Params::parse(definition);
+    parameters.validate_quoting()?;
+    parameters.validate_flags()?;
+    Ok(parameters.boolean_parameters())
+}
+
 pub use catalog::{AUTHORITIES, CrsEntry, CrsKind, CrsQuery, EPSG_VERSION, check_authorities, list_crs};
 pub(crate) use def::Def;
 pub use grid::{confine_grid_search_paths, register_grid, reset_grid_cache, set_grid_search_paths, set_network_enabled};
@@ -422,6 +432,7 @@ impl SpatialRef {
     pub fn from_proj4(proj4: &str) -> Result<Self> {
         let p = params::Params::parse(proj4);
         p.validate_quoting()?;
+        p.validate_flags()?;
         if let Some(code) = p.str("init").and_then(|i| i.to_ascii_lowercase().strip_prefix("epsg:").and_then(|c| c.parse().ok())) {
             return Self::from_epsg(code);
         }

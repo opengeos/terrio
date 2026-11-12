@@ -547,6 +547,23 @@ test("CRS benchmark projection regressions", () => {
   }
 });
 
+test("CRS boolean flags preserve UTM and UPS hemispheres", () => {
+  for (const [projection, north, south, lon, lat] of [["utm +zone=33", 32633, 32733, 15, -30], ["ups", 32661, 32761, 0, 85]]) {
+    for (const [flag, enabled] of [["False", false], ["f", false], ["0", false], ["True", true], ["1", true]]) {
+      const definition = `+proj=${projection} +south=${flag} +datum=WGS84 +units=m`;
+      const expected = terrio.transformPoints([lon], [lat], "EPSG:4326", `EPSG:${enabled ? south : north}`);
+      const actual = terrio.transformPoints([lon], [lat], "EPSG:4326", definition);
+      assert.ok(Math.abs(actual[0][0] - expected[0][0]) < 1e-7 && Math.abs(actual[1][0] - expected[1][0]) < 1e-7, definition);
+    }
+  }
+  assert.throws(() => terrio.describeCrs("+proj=utm +zone=33 +south=maybe"), /boolean flag/);
+  for (const flag of ["True", "False"]) {
+    const definition = `+init=epsg:32633 +south=${flag}`;
+    assert.throws(() => terrio.describeCrs(definition), /overrides.*init/);
+    assert.throws(() => terrio.transformPoints([15], [-30], "EPSG:4326", definition), /overrides.*init/);
+  }
+});
+
 test("CRS transforms with heights, epochs and grids", () => {
   // Heights are kept between 2D CRSs.
   const [, , zs] = terrio.transformPoints([0], [0], "EPSG:4326", "EPSG:3857", [100]);

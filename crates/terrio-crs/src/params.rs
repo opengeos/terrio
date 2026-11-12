@@ -5,6 +5,42 @@
 
 //! The `+key=value` parameters of a PROJ string.
 
+/// Boolean switches consumed by the CRS reader; numeric parameters keep presence semantics.
+const FLAGS: &[&str] = &[
+    "south",
+    "no_defs",
+    "wktext",
+    "over",
+    "approx",
+    "geoc",
+    "R_A",
+    "R_C",
+    "R_V",
+    "R_a",
+    "R_g",
+    "R_h",
+    "no_rot",
+    "no_uoff",
+    "no_off",
+    "czech",
+    "guam",
+    "hyperbolic",
+    "exact",
+    "transpose",
+    "no_z_transform",
+    "inv",
+    "omit_fwd",
+    "omit_inv",
+];
+
+fn flag_value(value: Option<&str>) -> Option<bool> {
+    match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        None | Some("true" | "t" | "yes" | "y" | "on" | "1") => Some(true),
+        Some("false" | "f" | "no" | "n" | "off" | "0") => Some(false),
+        _ => None,
+    }
+}
+
 /// The parameters of a PROJ string, in order.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Params {
@@ -38,9 +74,38 @@ impl Params {
         Ok(())
     }
 
-    /// Whether the parameter is present.
+    /// Refuses non-boolean values on recognized switches rather than treating them as enabled.
+    pub fn validate_flags(&self) -> crate::Result<()> {
+        for (key, value) in &self.items {
+            if FLAGS.contains(&key.as_str()) && flag_value(value.as_deref()).is_none() {
+                return Err(crate::Error::Crs(format!("+{key} needs a boolean flag value")));
+            }
+        }
+        if self.str("init").is_some() && self.keys().any(|key| FLAGS.contains(&key) && !matches!(key, "no_defs" | "wktext")) {
+            return Err(crate::Error::Crs(
+                "boolean overrides combined with +init are not supported; use an expanded +proj definition".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Recognized boolean parameters, in definition order, with their normalized values.
+    pub fn boolean_parameters(&self) -> Vec<(String, bool)> {
+        let mut seen = std::collections::HashSet::new();
+        self.items
+            .iter()
+            .filter(|(key, _)| FLAGS.contains(&key.as_str()) && seen.insert(key.as_str()))
+            .filter_map(|(key, value)| flag_value(value.as_deref()).map(|value| (key.clone(), value)))
+            .collect()
+    }
+
+    /// Whether a parameter is present, or a recognized boolean switch is enabled.
+    /// Call `validate_flags` first: invalid switch values otherwise read as disabled.
     pub fn has(&self, key: &str) -> bool {
-        self.items.iter().any(|(k, _)| k == key)
+        self.items
+            .iter()
+            .find(|(k, _)| k == key)
+            .is_some_and(|(_, value)| !FLAGS.contains(&key) || flag_value(value.as_deref()).unwrap_or(false))
     }
 
     /// The parameters' names, in order.
@@ -126,6 +191,24 @@ fn parse_dms(s: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boolean_switches_keep_numeric_parameter_presence() {
+        for value in ["False", "false", "F", "f", "NO", "off", "0"] {
+            let p = Params::parse(&format!("+south={value} +lat_0=0 +zone=0"));
+            p.validate_flags().unwrap();
+            assert!(!p.has("south"));
+            assert!(p.has("lat_0") && p.has("zone"));
+        }
+        for value in ["True", "true", "T", "YES", "on", "1"] {
+            let p = Params::parse(&format!("+south={value}"));
+            p.validate_flags().unwrap();
+            assert!(p.has("south"));
+        }
+        for value in ["", "maybe", "2", "NaN"] {
+            assert!(Params::parse(&format!("+south={value}")).validate_flags().is_err());
+        }
+    }
 
     #[test]
     fn parses_tokens_and_angles() {

@@ -291,6 +291,50 @@ CRS with GDAL 3.13.2's list (PROJ 9.8.1), field by field: all are identical.
 
 ## PROJ string interpretation changes
 
+Recognized boolean switches, including UTM and UPS `south`, accept a bare flag
+or an explicit case-insensitive value: `true`, `t`, `yes`, `y`, `on`, `1` enable
+it; `false`, `f`, `no`, `n`, `off`, `0` disable it. Other values are refused.
+This differs from treating every supplied value as an enabled flag. Python's
+`terrio.rio.CRS.to_proj4()` writes enabled flags as `+flag` and omits disabled
+ones; `to_dict()` keeps boolean types.
+Flags combined with `+init=epsg:N`, except the metadata switches `no_defs` and
+`wktext`, are refused because that path cannot apply overrides to the registry
+definition. Use an expanded `+proj` definition when changing these flags.
+
+PROJ parameter exports preserve projection-specific standard parallels, the
+validated PROJ4 extension of a WKT definition (including Web Mercator), named
+PROJ datums and explicit WKT `TOWGS84` operations. A datum with neither a PROJ
+name nor an explicit shift is exported as an ellipsoid with a warning that
+its identity and coordinate operations are omitted. An ellipsoid is not a
+datum: a round trip can then select a ballpark operation and move points.
+Use `to_wkt()`, PROJJSON or the authority code to preserve such datums and
+their area-dependent or grid-based operation selection. Unsupported projection
+exports remain empty rather than describing another projection.
+An explicit `TOWGS84` operation takes precedence over a named datum and exports
+as the ellipsoid plus that shift. A recognized datum name with a custom spheroid
+and no effective registry identity exports the supplied ellipsoid with a warning.
+An ordinary WKT retaining an outer EPSG identity uses the registry definition
+for both transformations and parameter exports, even if its nodes were edited.
+Parameter exports warn when they detect WKT1 projection or datum parameters conflicting with that
+registry definition. Remove that identity when defining a custom CRS. Mapping constructors with
+`init` retain the authority and ignore non-switch parameters for compatibility;
+recognized boolean overrides are still validated and refused as described above.
+
+Python's existing WKT-to-parameter adapter handles these rasterio-compatible
+dictionary exports. Its canonical datum spheroids come from the shared native
+CRS reader and are cached in Python; projection and datum transformations remain
+in Rust. The adapter preserves WKT standard-parallel conventions when producing
+PROJ's parameter names, including negative southern polar standard parallels.
+
+Transforms retain authority-based operation selection for unbound WKT and dataset
+CRSs. WKT containing an explicit `TOWGS84`, `BOUNDCRS` or bound transformation keeps
+that operation even when it also declares an EPSG code. This follows PROJ's bound
+CRS interpretation and can differ from rasterio's authority normalization of
+GDAL-written WKT1. Tests add synthetic shifts to EPSG:27700 and EPSG:23031,
+serialize the resulting WKT with GDAL and compare it against PROJ within 1 mm.
+These optional reference tests require both GDAL Python bindings and pyproj;
+the real-data CI job installs them, while the ordinary Python job can skip them.
+
 PROJ strings supplied as CRSs follow PROJ's CRS import rules. For polar
 `+proj=stere` with `+lat_0=90` or `-90`, an explicit `+lat_ts` selects the
 hemisphere: negative selects south, and zero or positive selects north. For

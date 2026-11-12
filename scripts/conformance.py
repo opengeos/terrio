@@ -110,6 +110,7 @@ DIFFERS = "differs"
 # A case whose reference values could not be computed (no coordinates to compare), reported apart.
 NOT_COMPARED = "not compared"
 
+# These suites do not need osgeo; some use rasterio's independently bundled GDAL instead.
 GDAL_FREE_SUITES = frozenset(
     (
         "citygml",
@@ -117,6 +118,7 @@ GDAL_FREE_SUITES = frozenset(
         "cityjson",
         "cityjson-write",
         "crs",
+        "crs-parameters",
         "grib",
         "hecras",
         "jp2-writer",
@@ -2267,6 +2269,36 @@ def suite_projjson_export(ctx):
     return suite
 
 
+def suite_crs_parameters(ctx):
+    """Compare exported projection parameters with the active rasterio GDAL oracle.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Forward coordinate comparisons within 1e-5 metres, or a prerequisite skip.
+    """
+    suite = Suite("crs-parameters", "PROJ parameter exports", "GDAL via rasterio",
+                  "Nine WGS 84 projection cases: polar stereographic variants A/B, Mercator "
+                  "variant B, Web Mercator and UTM. Exported PROJ strings read back by Terrio "
+                  "are compared with GDAL's authority-code coordinates within 1e-5 metres.")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    import rasterio
+    suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
+    code, out, err = run([sys.executable, "-m", "pytest", "-q",
+                          str(ROOT / "python/tests/test_crs_proj_parameters.py") + "::test_exported_projections_match_gdal"])
+    if code:
+        suite.cases.append(Case("CRS", "projection export coordinates", DIFFERS, tail(err or out)))
+    elif "skipped" in out:
+        suite.skipped = "GDAL oracle unavailable: " + tail(out)
+    else:
+        suite.cases.append(Case("CRS", "projection export coordinates", TOLERANCE, tail(out)))
+    return suite
+
+
 def suite_geocentric(ctx):
     """XYZ conversions, units, poles, datum shifts and projected composition."""
     suite = Suite("geocentric", "Geocentric XYZ endpoints", "GDAL/PROJ",
@@ -3878,6 +3910,7 @@ SUITES = OrderedDict(
         ("reduced-first-masks", suite_reduced_first_masks),
         ("hecras", suite_hecras),
         ("crs", suite_crs),
+        ("crs-parameters", suite_crs_parameters),
         ("geocentric", suite_geocentric),
         ("perspective", suite_perspective),
         ("omerc-two-point", suite_omerc_two_point),
