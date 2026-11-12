@@ -16,6 +16,19 @@ documented in [the roadmap](https://terrio.dev/roadmap/), [formats](formats.md) 
 The optional GDAL backend provides additional format access; it does not constitute
 native implementation of the proposed operations.
 
+## Deliberate TIFF mask difference
+
+Issue [#748](https://github.com/opengeos/terrio/issues/748) requests that a TIFF image's
+own reduced-resolution flag select its transparency mask, including the first image
+of an external overview file. Terrio honors a first-image/mask pair marked 1/5;
+GDAL 3.13.3 ignores that first mask. This applies to existing GDAL-written external
+pyramids as well as TIFFs opened directly and intentionally changes their masked reads.
+
+The frozen masked-external cubic 26×41 reference pins 488 differing values out of
+3,198 against unmodified GDAL output. Terrio is checked against a second GDAL control
+whose first image/mask flags are normalized to 0/4 without changing stored samples.
+Both references remain checked; this behavior is not described as GDAL pixel parity.
+
 ## Prioritized additions
 
 | Order | Feature | Suggested first deliverable | Relative effort |

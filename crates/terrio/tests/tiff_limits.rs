@@ -217,7 +217,7 @@ fn oversized_tiled_windows_are_rejected_before_fetching_chunks() {
         },
         || raster.read_window(Window::full(raster.width(), raster.height()), &band1()),
     );
-    assert!(matches!(result, Err(terrio::Error::InvalidArgument(ref message)) if message.contains("too large")));
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(ref message)) if message.contains("too large")), "{result:?}");
     assert_eq!(bytes_fetched, 0);
 }
 

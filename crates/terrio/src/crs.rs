@@ -470,6 +470,12 @@ pub fn set_grid_search_paths(paths: Option<Vec<std::path::PathBuf>>) {
     initialize();
     terrio_crs::set_grid_search_paths(paths);
 }
+/// Confine grid names to the effective search directories, preserving host defaults.
+/// See [`terrio_crs::confine_grid_search_paths`].
+pub fn confine_grid_search_paths() {
+    initialize();
+    terrio_crs::confine_grid_search_paths();
+}
 /// Override shared grid network access.
 pub fn set_network_enabled(enabled: Option<bool>) {
     initialize();

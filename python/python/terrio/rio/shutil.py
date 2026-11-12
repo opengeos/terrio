@@ -102,7 +102,7 @@ def copy(
         DriverRegistrationError: If the driver is not one terrio writes.
     """
     from terrio.rio import open as rio_open
-    from terrio.rio.io import DatasetReader, driver_from_extension, get_writer_for_driver
+    from terrio.rio.io import DatasetReader, _canonical_writer_driver, driver_from_extension
 
     dst_path = _fspath(dst)
     if driver is None:
@@ -111,7 +111,7 @@ def copy(
         except ValueError:
             driver = "GTiff"
     try:
-        get_writer_for_driver(driver)
+        driver = _canonical_writer_driver(driver)
     except Exception as err:
         raise DriverRegistrationError(f"Unrecognized driver: {driver}") from err
     if isinstance(src, DatasetReader):
@@ -168,6 +168,7 @@ def _copy_dataset(
         from_source: Whether a file written in rows is written from the source; otherwise the
             copy holds the source's pixels until it is written, whatever its format.
     """
+    from terrio import _terrio
     from terrio.rio import open as rio_open
     from terrio.rio.windows import Window
 
@@ -175,6 +176,10 @@ def _copy_dataset(
     for k in ("blockxsize", "blockysize", "tiled", "compress", "interleave", "photometric"):
         profile.pop(k, None)
     profile["driver"] = driver
+    sample = getattr(src, "_complex_sample", None)
+    if sample in ("CInt16", "CInt32") and not any(k.lower() == "dtype" for k in creation_options):
+        profile["dtype"] = "complex64" if sample == "CInt16" else "complex128"
+        profile["_complex_dtype"] = sample
     profile.update({k.lower(): v for k, v in creation_options.items()})
     if driver.upper() in ("GTIFF", "COG") and src.count > 1 and "interleave" not in profile:
         # GDALDriver::CreateCopy (gcore/gdaldriver.cpp): without INTERLEAVE, and without a
@@ -225,6 +230,16 @@ def _copy_dataset(
         if any(o != 0.0 for o in src.offsets):
             dst.offsets = src.offsets
         dst.colorinterp = src.colorinterp
+        if (
+            _terrio.canonical_driver_name(src.driver) == "JP2"
+            and _terrio.canonical_driver_name(driver) == "JP2"
+        ):
+            # Two Gray roles do not identify which stored component supplies luminance.
+            dst._jp2_associations = (
+                [m.get("color_association") for m in src._raster.band_metadata]
+                if src._raster is not None
+                else list(getattr(src, "_jp2_associations", []))
+            )
         if gcps and not src._georeferenced:
             dst.gcps = (gcps, gcp_crs)
         try:
@@ -235,10 +250,11 @@ def _copy_dataset(
             dst.write_colormap(1, cmap)
         if dst._copy_of is not None:
             return
-        rows = max(1, min(src.height, (64 << 20) // max(1, src.width * src.count * 8)))
+        itemsize = 16 if sample in ("CInt16", "CInt32", "CFloat64") else 8
+        rows = max(1, min(src.height, (64 << 20) // max(1, src.width * src.count * itemsize)))
         for y in range(0, src.height, rows):
             w = Window(0, y, src.width, min(rows, src.height - y))
-            dst.write(src.read(window=w), window=w)
+            dst.write(src._read_for_copy(window=w), window=w)
             if per_dataset_mask:
                 dst.write_mask(src.dataset_mask(window=w), window=w)
 

@@ -34,6 +34,36 @@ fn sidecar(base: &Path, ext: &str) -> Option<PathBuf> {
     [ext.to_string(), ext.to_ascii_uppercase()].into_iter().map(|e| base.with_extension(e)).find(|p| p.exists())
 }
 
+/// Decode a present `.prj` without silently treating unreadable text as a missing CRS.
+/// Invalid UTF-8 remains unsupported; never guess an encoding or alter a CRS name.
+pub(crate) fn decode_prj(bytes: Vec<u8>, name: &str) -> Option<String> {
+    match String::from_utf8(bytes) {
+        Ok(text) => Some(text),
+        Err(error) => {
+            let name = quote_prj_text(name);
+            crate::warnings::warn(format!("{name} is not UTF-8 text ({}): the layer is read without a CRS", error.utf8_error()));
+            None
+        }
+    }
+}
+
+/// Read a sidecar that was found next to a Shapefile. Absence is handled by the caller.
+pub(crate) fn read_prj(path: &Path) -> Option<String> {
+    match std::fs::read(path) {
+        Ok(bytes) => decode_prj(bytes, &path.display().to_string()),
+        Err(error) => {
+            warn_prj_read_error(&path.to_string_lossy(), &error);
+            None
+        }
+    }
+}
+
+/// Report a present sidecar whose payload cannot be read, including an archive member.
+pub(crate) fn warn_prj_read_error(name: &str, error: &impl std::fmt::Display) {
+    let name = quote_prj_text(name);
+    crate::warnings::warn(format!("{name} cannot be read ({error}): the layer is read without a CRS"));
+}
+
 /// How the rings of a polygon record make polygons: the methods of GDAL's
 /// `OGR_ORGANIZE_POLYGONS`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -106,7 +136,7 @@ pub fn read(path: &str, options: &ShapefileOptions) -> Result<Layer> {
     let base = Path::new(path).with_extension("");
     let shp = std::fs::read(path)?;
     let dbf = sidecar(&base, "dbf").map(std::fs::read).transpose()?;
-    let prj = sidecar(&base, "prj").and_then(|p| std::fs::read_to_string(p).ok());
+    let prj = sidecar(&base, "prj").as_deref().and_then(read_prj);
     if prj.is_some() {
         crate::crs::prefetch();
     }
@@ -137,7 +167,7 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
     let mut head = [0u8; 100];
     shp.read_exact(&mut head).map_err(|_| not_a_shapefile())?;
     let mut layer = header_layer(&head, name).map_err(|_| not_a_shapefile())?;
-    let prj = sidecar(&base, "prj").and_then(|p| std::fs::read_to_string(p).ok());
+    let prj = sidecar(&base, "prj").as_deref().and_then(read_prj);
     if prj.is_some() {
         crate::crs::prefetch();
     }
@@ -327,11 +357,10 @@ pub(crate) fn apply_prj(layer: &mut Layer, prj: Option<&str>) {
     // Validate WKT's entire form before identifying its EPSG code: identification reads only
     // the first root, so it must not bypass the check for trailing prose or unbalanced text.
     if !(is_crs_definition(prj) || (crs_wkt_opener(prj).is_none() && SpatialRef::parse_literal(prj).is_ok())) {
-        let quote = |s: &str| s.chars().map(|c| if quoted_as_space(c) { ' ' } else { c }).collect::<String>();
-        let quoted = quote(&prj.chars().take(80).collect::<String>());
+        let quoted = quote_prj_text(&prj.chars().take(80).collect::<String>());
         crate::warnings::warn(format!(
             "{}.prj holds no CRS definition terrio can read ('{quoted}'): the layer is read without a CRS",
-            quote(&layer.name)
+            quote_prj_text(&layer.name)
         ));
         return;
     }
@@ -342,6 +371,11 @@ pub(crate) fn apply_prj(layer: &mut Layer, prj: Option<&str>) {
             layer.set_crs_wkt(Some(prj.to_string()));
         }
     }
+}
+
+/// Quotes diagnostic text using the whitespace/control policy of [`quoted_as_space`].
+fn quote_prj_text(text: &str) -> String {
+    text.chars().map(|c| if quoted_as_space(c) { ' ' } else { c }).collect()
 }
 
 /// Quote whitespace, control codes and Unicode 15.1 General_Category=Cf format controls
@@ -1077,6 +1111,12 @@ type DbfRecord = Option<Vec<FieldValue>>;
 /// Parses a `.dbf` file into field definitions and records.
 fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<DbfRecord>)> {
     let l = dbf_layout(d, cpg)?;
+    let records = read_dbf_records(d, &l, |rec| l.record(rec))?;
+    Ok((l.fields, records))
+}
+
+/// Collect physical slots, invoking the record factory only for live records.
+fn read_dbf_records(d: &[u8], l: &DbfLayout, make_record: impl Fn(&[u8]) -> Vec<FieldValue> + Sync) -> Result<Vec<DbfRecord>> {
     // The header's record count is not trusted: only the records the file holds are read, and
     // their list is allocated fallibly.
     let held = d.len().saturating_sub(l.header_len) / l.record_len.max(1);
@@ -1085,21 +1125,23 @@ fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<DbfRecor
     records
         .try_reserve_exact(count)
         .map_err(|_| Error::ResourceLimit(format!("the .dbf file declares {count} records, more than memory holds")))?;
-    // Every record below `count` is whole in the file; they are decoded in parallel into the
-    // list reserved above.
+    // Keep per-record vectors, decoded strings and dates on the caller's allocator arena.
+    // Returning pool-thread allocations here strands freed storage in those arenas when the
+    // caller drops the dataset and allocates its next working buffers (glibc; see #729).
+    // Every record below `count` is whole in the file.
     let record = |i: usize| {
         let start = l.header_len + i * l.record_len;
-        (d[start] != b'*').then(|| l.record(&d[start..start + l.record_len]))
+        (d[start] != b'*').then(|| make_record(&d[start..start + l.record_len]))
     };
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(target_arch = "wasm32", all(target_os = "linux", target_env = "gnu")))]
+    records.extend((0..count).map(record));
+    #[cfg(not(any(target_arch = "wasm32", all(target_os = "linux", target_env = "gnu"))))]
     crate::par::install(|| {
         use rayon::prelude::*;
         #[allow(clippy::disallowed_methods)] // On terrio's pool, inside `par::install`.
         records.par_extend((0..count).into_par_iter().map(record));
     });
-    #[cfg(target_arch = "wasm32")]
-    records.extend((0..count).map(record));
-    Ok((l.fields, records))
+    Ok(records)
 }
 
 /// Writes a layer as a shapefile. `path` names the `.shp` file; the other files are written next
@@ -1602,6 +1644,42 @@ mod tests {
     use super::*;
     use wbvector::{Feature, FieldDef};
 
+    /// glibc record storage is built on the calling thread; deleted slots are skipped.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn dbf_record_storage_is_built_on_the_calling_thread() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let mut layer = Layer::new("records");
+        layer.add_field(FieldDef::new("name", FieldType::Text));
+        layer.add_field(FieldDef::new("day", FieldType::Date));
+        for i in 0..128 {
+            layer.push(Feature {
+                fid: i,
+                geometry: None,
+                attributes: vec![FieldValue::Text(format!("record-{i}")), FieldValue::Date("2026-11-12".into())],
+            });
+        }
+        let mut bytes = encode_dbf(&layer).unwrap();
+        let layout = dbf_layout(&bytes, Some("UTF-8")).unwrap();
+        bytes[layout.header_len + 5 * layout.record_len] = b'*';
+        let caller = std::thread::current().id();
+        let worker_allocated = AtomicBool::new(false);
+        let calls = AtomicUsize::new(0);
+        let records = read_dbf_records(&bytes, &layout, |record| {
+            if std::thread::current().id() != caller {
+                worker_allocated.store(true, Ordering::Relaxed);
+            }
+            calls.fetch_add(1, Ordering::Relaxed);
+            layout.record(record)
+        })
+        .unwrap();
+        assert!(!worker_allocated.load(Ordering::Relaxed), "DBF record storage was allocated on a pool thread");
+        assert_eq!(calls.load(Ordering::Relaxed), 127);
+        assert_eq!(records.len(), 128);
+        assert!(records[5].is_none());
+        assert_eq!(records[6].as_ref().unwrap(), &layer.features[6].attributes);
+    }
+
     #[test]
     fn measure_ranges_exclude_missing_samples() {
         let coordinates = vec![
@@ -2050,21 +2128,35 @@ mod tests {
         for padding in ["\0", "\x1a", "\0\r\n"] {
             assert_eq!(read_with(&format!("{custom}{padding}")), (None, Some(custom.to_string()), vec![]));
         }
-        // So are those terrio does not read that have the form of a definition: an engineering CRS
-        // in WKT 1 and WKT 2, WKT that is no CRS, another authority's code and an unknown code.
+        // Engineering definitions retain their WKT without inventing an EPSG identity.
         let engineering = r#"ENGCRS["site grid",EDATUM["site"],CS[Cartesian,2],AXIS["(E)",east],AXIS["(N)",north],LENGTHUNIT["metre",1]]"#;
-        for prj in [
-            r#"LOCAL_CS["site grid",UNIT["metre",1]]"#,
-            engineering,
-            r#"ENGCRS["x"]"#,
-            "IGNF:LAMB93",
-            "ignf:LAMB93",
-            "urn:ogc:def:crs:IGNF::LAMB93",
-            "EPSG:999999",
-        ] {
+        for prj in [r#"LOCAL_CS["site grid",UNIT["metre",1]]"#, engineering, r#"ENGCRS["x"]"#] {
+            assert!(SpatialRef::parse_literal(prj).is_ok(), "{prj:?}");
+            assert_eq!(read_with(&format!("{prj}\n")), (None, Some(prj.to_string()), vec![]), "{prj:?}");
+        }
+        // Unsupported authorities and unknown codes retain definition-shaped metadata too.
+        for prj in ["IGNF:LAMB93", "ignf:LAMB93", "urn:ogc:def:crs:IGNF::LAMB93", "EPSG:999999"] {
             assert!(SpatialRef::parse_literal(prj).is_err(), "{prj:?}");
             assert_eq!(read_with(&format!("{prj}\n")), (None, Some(prj.to_string()), vec![]), "{prj:?}");
         }
+    }
+
+    #[test]
+    fn unreadable_prj_sidecars_warn_instead_of_becoming_silent_absences() {
+        let _ = crate::warnings::take();
+        assert!(decode_prj(vec![0xff], "p.prj").is_none());
+        let warning = crate::warnings::take();
+        assert_eq!(warning.len(), 1);
+        assert!(warning[0].contains("p.prj is not UTF-8 text"));
+        assert!(warning[0].contains("invalid utf-8"));
+        assert_eq!(decode_prj("Réseau local".as_bytes().to_vec(), "p.prj").as_deref(), Some("Réseau local"));
+        assert!(crate::warnings::take().is_empty());
+        let directory = tempfile::tempdir().unwrap();
+        assert!(read_prj(directory.path()).is_none());
+        let warning = crate::warnings::take();
+        assert_eq!(warning.len(), 1);
+        assert!(warning[0].contains("cannot be read"));
+        assert!(warning[0].contains(&directory.path().display().to_string()));
     }
 
     #[test]

@@ -364,9 +364,17 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
     };
 
     let complex = o.scale.is_some() || o.exponent.is_some();
-    let n = ow * oh;
+    let n = crate::dataset::fallible::len(&[ow, oh], "a translated raster")?;
     let in_place = pixels.is_some();
-    let mut out = pixels.unwrap_or_else(|| RasterData::new_filled(out_type, n * bands.len(), 0.0));
+    let mut out = match pixels {
+        Some(pixels) => pixels,
+        None => {
+            crate::dataset::fallible::check_raster_buffer("a translated raster", ow, oh, bands.len(), out_type)?;
+            let samples = crate::dataset::fallible::len(&[n, bands.len()], "a translated raster")?;
+            crate::dataset::fallible::raster_data(out_type, samples, 0.0, "a translated raster")?
+        }
+    };
+    let retained = crate::dataset::fallible::len(&[n, bands.len().saturating_sub(1), out_type.size_bytes()], "translated bands")?;
     for (k, &b) in bands.iter().enumerate() {
         if in_place {
             // Converted as the copy below converts them.
@@ -436,14 +444,24 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
         crate::pixel::with_data!(&mut out, v => {
             let band = &mut v[k * n..(k + 1) * n];
             band.iter_mut().for_each(|x| *x = fill as _);
-            read.read(ow, oh, band, |x| convert_value(scaled(x), out_type) as _);
+            read.read_with_retained(ow, oh, band, retained, |x| convert_value(scaled(x), out_type) as _)?;
         });
     }
     let grid = Grid { width: ow, height: oh, geo_transform: gt };
     let srs = o.assign_srs.clone().unwrap_or_else(|| ds.crs());
     let mut res = super::build_raster_data(grid, out, bands.len(), out_nodata.first().copied().flatten(), &srs)?;
+    res.complex = ds.complex
+        && matches!(out_type, DataType::I16 | DataType::I32 | DataType::F32 | DataType::F64)
+        && bands.len().is_multiple_of(2)
+        && bands.as_chunks::<2>().0.iter().all(|p| p[0] % 2 == 1 && p[1] == p[0] + 1);
     res.raster.metadata = ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
-    res.band_metadata = bands.iter().map(|&b| ds.band_metadata.get(b - 1).cloned().unwrap_or_default()).collect();
+    res.band_metadata = if res.complex {
+        bands.as_chunks::<2>().0.iter().map(|p| ds.band_metadata.get((p[0] - 1) / 2).cloned().unwrap_or_default()).collect()
+    } else if ds.complex {
+        bands.iter().map(|&b| ds.band_metadata.get((b - 1) / 2).cloned().unwrap_or_default()).collect()
+    } else {
+        bands.iter().map(|&b| ds.band_metadata.get(b - 1).cloned().unwrap_or_default()).collect()
+    };
     if win != (0., 0., w, h)
         || ow != r.cols
         || oh != r.rows

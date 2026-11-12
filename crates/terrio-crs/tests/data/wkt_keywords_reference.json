@@ -1,0 +1,82 @@
+{
+  "reference": "GDAL 3.13.3",
+  "cases": [
+    {
+      "name": "LOCAL_CS",
+      "wkt": "LOCAL_CS[\"site grid\",LOCAL_DATUM[\"site\",32767],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",
+      "epsg": null,
+      "local": true,
+      "vertical": false
+    },
+    {
+      "name": "ENGCRS",
+      "wkt": "ENGCRS[\"site grid\",EDATUM[\"site\"],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1]],AXIS[\"(N)\",north,ORDER[2]],LENGTHUNIT[\"metre\",1]]",
+      "epsg": null,
+      "local": true,
+      "vertical": false
+    },
+    {
+      "name": "ENGINEERINGCRS",
+      "wkt": "ENGINEERINGCRS[\"site grid\",ENGINEERINGDATUM[\"site\"],CS[Cartesian,2],AXIS[\"(E)\",east,ORDER[1]],AXIS[\"(N)\",north,ORDER[2]],LENGTHUNIT[\"metre\",1]]",
+      "epsg": null,
+      "local": true,
+      "vertical": false
+    },
+    {
+      "name": "VERTCRS-plain",
+      "wkt": "VERTCRS[\"NAVD88 height\",VDATUM[\"North American Vertical Datum 1988\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up],LENGTHUNIT[\"metre\",1]]",
+      "epsg": null,
+      "local": false,
+      "vertical": true
+    },
+    {
+      "name": "VERTICALCRS-plain",
+      "wkt": "VERTICALCRS[\"NAVD88 height\",VDATUM[\"North American Vertical Datum 1988\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up],LENGTHUNIT[\"metre\",1]]",
+      "epsg": null,
+      "local": false,
+      "vertical": true
+    },
+    {
+      "name": "VERTCRS-own-id",
+      "wkt": "VERTCRS[\"NAVD88 height\",VDATUM[\"North American Vertical Datum 1988\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up],LENGTHUNIT[\"metre\",1],ID[\"EPSG\",5703]]",
+      "epsg": 5703,
+      "local": false,
+      "vertical": true
+    },
+    {
+      "name": "VERTICALCRS-own-id",
+      "wkt": "VERTICALCRS[\"NAVD88 height\",VDATUM[\"North American Vertical Datum 1988\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up],LENGTHUNIT[\"metre\",1],ID[\"EPSG\",5703]]",
+      "epsg": 5703,
+      "local": false,
+      "vertical": true
+    },
+    {
+      "name": "VERTCRS-nested-ids",
+      "wkt": "VERTCRS[\"NAVD88 height\",VDATUM[\"North American Vertical Datum 1988\",ID[\"EPSG\",5103]],CS[vertical,1,ID[\"EPSG\",6499]],AXIS[\"gravity-related height (H)\",up],LENGTHUNIT[\"metre\",1,ID[\"EPSG\",9001]],ID[\"EPSG\",5703]]",
+      "epsg": 5703,
+      "local": false,
+      "vertical": true
+    },
+    {
+      "name": "VERTICALCRS-nested-ids",
+      "wkt": "VERTICALCRS[\"NAVD88 height\",VDATUM[\"North American Vertical Datum 1988\",ID[\"EPSG\",5103]],CS[vertical,1,ID[\"EPSG\",6499]],AXIS[\"gravity-related height (H)\",up],LENGTHUNIT[\"metre\",1,ID[\"EPSG\",9001]],ID[\"EPSG\",5703]]",
+      "epsg": 5703,
+      "local": false,
+      "vertical": true
+    },
+    {
+      "name": "VERTCRS-unit-id",
+      "wkt": "VERTCRS[\"NAVD88 height\",VDATUM[\"North American Vertical Datum 1988\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up],LENGTHUNIT[\"metre\",1,ID[\"EPSG\",9001]],ID[\"EPSG\",5703]]",
+      "epsg": 5703,
+      "local": false,
+      "vertical": true
+    },
+    {
+      "name": "VERTICALCRS-unit-id",
+      "wkt": "VERTICALCRS[\"NAVD88 height\",VDATUM[\"North American Vertical Datum 1988\"],CS[vertical,1],AXIS[\"gravity-related height (H)\",up],LENGTHUNIT[\"metre\",1,ID[\"EPSG\",9001]],ID[\"EPSG\",5703]]",
+      "epsg": 5703,
+      "local": false,
+      "vertical": true
+    }
+  ]
+}

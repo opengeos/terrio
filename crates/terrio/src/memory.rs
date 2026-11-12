@@ -120,7 +120,11 @@ fn open_bytes_of_kind(bytes: Vec<u8>, name: &str, kind: Option<Kind>) -> Result<
     #[cfg(target_family = "wasm")]
     {
         crate::formats::check_allowed_bytes(name, &bytes, kind)?;
-        codec::open(bytes, name, &VectorOpenOptions::default())
+        let ds = codec::open(bytes, name, &VectorOpenOptions::default())?;
+        if let Dataset::Raster(raster) = &ds {
+            crate::declared::check_dataset(raster)?;
+        }
+        Ok(ds)
     }
 }
 
@@ -130,7 +134,9 @@ pub fn open_raster_bytes(bytes: Vec<u8>, name: &str) -> Result<RasterDataset> {
     #[cfg(feature = "hecras")]
     if crate::drivers::hdf5::parse_subdataset(name).is_none() && crate::drivers::hecras::driver::is_hecras_bytes(&bytes) {
         crate::formats::check_allowed_bytes(name, &bytes, Some(Kind::Raster))?;
-        return crate::drivers::hdf5::read_bytes(bytes, name, None);
+        let ds = crate::drivers::hdf5::read_bytes(bytes, name, None)?;
+        crate::declared::check_dataset(&ds)?;
+        return Ok(ds);
     }
     match open_bytes_of_kind(bytes, name, Some(Kind::Raster))? {
         Dataset::Raster(r) => Ok(r),
@@ -141,6 +147,13 @@ pub fn open_raster_bytes(bytes: Vec<u8>, name: &str) -> Result<RasterDataset> {
 /// Opens a raster from its bytes for reading by window. GeoTIFFs are decoded one window at a time;
 /// other formats are decoded whole.
 pub fn open_raster_lazy_bytes(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> {
+    let r = open_raster_lazy_bytes_unchecked(bytes, name)?;
+    // What it declares (see `crate::declared`), from its header when it is read by window.
+    crate::declared::check_lazy(&r)?;
+    Ok(r)
+}
+
+fn open_raster_lazy_bytes_unchecked(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> {
     // Tile archives, JPEG 2000, GRIB and TIFF are decoded from memory, without a file to check.
     crate::formats::check_allowed_bytes(name, &bytes, Some(Kind::Raster))?;
     if let Some(kind) = crate::tiles::archive_kind(name) {
@@ -198,7 +211,9 @@ pub fn open_zarr_store(files: Vec<(String, Vec<u8>)>) -> Result<RasterDataset> {
     // Opened as Zarr by its caller: only if the process-wide raster allow-list has Zarr, as a
     // de-registered GDAL driver opens no store.
     crate::formats::check_driver_allowed("Zarr", if root.is_empty() { "the Zarr store" } else { &root }, Kind::Raster)?;
-    codec::open_zarr_store(files, &root)
+    let ds = codec::open_zarr_store(files, &root)?;
+    crate::declared::check_dataset(&ds)?;
+    Ok(ds)
 }
 
 /// Opens a vector dataset from its bytes.
@@ -261,6 +276,16 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
             }
             return Err(Error::InvalidArgument(format!("cannot tell the output format of '{name}': give it explicitly")));
         }
+    };
+    // JP2 byte exports, including WASM, retain the source's absent transform just as
+    // file conversion does. An explicit output transform/GEOREFERENCED still wins.
+    let mut jp2_options;
+    let options = if driver == RasterDriver::JP2 {
+        jp2_options = options.clone();
+        crate::drivers::common::keep_unreferenced(&mut jp2_options, name, ds.geotransform_present.unwrap_or(true));
+        &jp2_options
+    } else {
+        options
     };
     // A Zarr store is a directory: written in memory and zipped, on every platform.
     if driver == RasterDriver::Zarr {
@@ -585,6 +610,7 @@ pub(crate) mod codec {
             return open_zip(&bytes, name, options);
         }
         if RasterDriver::for_extension(name) == Some(RasterDriver::AAIGrid) {
+            crate::drivers::declared_header::check_ascii_bytes(&bytes)?;
             let raster = wbraster::formats::esri_ascii::parse(Cursor::new(&bytes), name)?;
             return Ok(Dataset::Raster(RasterDataset::with_driver(raster, RasterDriver::AAIGrid, true)));
         }
@@ -658,7 +684,12 @@ pub(crate) mod codec {
                         refused.borrow_mut().get_or_insert(e);
                         None
                     }
-                    Err(_) => None,
+                    Err(error) => {
+                        if ext == "prj" {
+                            crate::drivers::vector::shapefile::warn_prj_read_error(member, &error);
+                        }
+                        None
+                    }
                 }
             };
             let layers = crate::drivers::vector::read_parts(&member, &main, driver, &sidecar, options);
@@ -774,10 +805,13 @@ pub(crate) mod codec {
             RasterDriver::GPKG => crate::drivers::gpkg::to_bytes(&ds.raster, ds.nodata(), table, options.compression.as_deref()),
             #[cfg(feature = "jp2")]
             RasterDriver::JP2 => {
+                let inherited = options.inherited_from(ds, Some(driver));
                 let jp2 = crate::drivers::jp2::to_bytes(
                     &ds.raster,
-                    crate::drivers::common::georeferenced(&options.creation_options),
-                    &options.creation_options,
+                    crate::drivers::common::georeferenced(&inherited.creation_options),
+                    inherited.geo_transform,
+                    &inherited.band_metadata,
+                    &inherited.creation_options,
                 )?;
                 // The nodata value goes to a `.aux.xml` sidecar, the two files zipped as the file
                 // drivers' output is.
@@ -840,6 +874,36 @@ pub(crate) mod codec {
 
 #[cfg(test)]
 mod tests {
+    /// Reference: GDAL 3.13.3. The WASM codec and native writer use the requested output grid.
+    #[test]
+    #[cfg(feature = "jp2")]
+    fn jp2_codec_applies_explicit_output_transform() {
+        let raster = crate::Raster::from_data_native(
+            crate::RasterConfig { cols: 32, rows: 24, bands: 1, data_type: crate::DataType::U8, ..Default::default() },
+            crate::raster::RasterData::U8(vec![7; 32 * 24]),
+        )
+        .unwrap();
+        let mut ds = crate::RasterDataset::new(raster, false);
+        ds.geotransform_present = Some(false);
+        let transform = [500000.0, 10.0, 0.0, 4600000.0, 0.0, -10.0];
+        let options = crate::RasterWriteOptions { geo_transform: Some(transform), ..Default::default() };
+        let codec_bytes = super::codec::write_raster(&ds, crate::formats::RasterDriver::JP2, &options, "grid").unwrap();
+        let file_bytes = super::write_raster_bytes(&ds, "grid.jp2", &options).unwrap();
+        for bytes in [codec_bytes, file_bytes] {
+            let output = crate::drivers::jp2::read_bytes(&bytes).unwrap();
+            assert_eq!(output.geotransform_present, Some(true));
+            assert_eq!(output.geo_transform(), transform);
+            assert_eq!(output.raster.data.to_f64_vec(), vec![7.0; 32 * 24]);
+        }
+        for transform in [[500000.0, 10.0, 1.0, 4600000.0, 2.0, -10.0], [500000.0, 10.0, 0.0, 4600000.0, 0.0, 10.0]] {
+            let options = crate::RasterWriteOptions { geo_transform: Some(transform), ..Default::default() };
+            let bytes = super::codec::write_raster(&ds, crate::formats::RasterDriver::JP2, &options, "grid").unwrap();
+            let output = crate::drivers::jp2::read_bytes(&bytes).unwrap();
+            assert_eq!(output.geo_transform(), transform);
+            assert_eq!(output.raster.data.to_f64_vec(), vec![7.0; 32 * 24]);
+        }
+    }
+
     use super::*;
     use wbraster::raster::RasterData;
     use wbraster::{DataType, Raster};
@@ -906,6 +970,35 @@ mod tests {
                 assert!(error.to_string().contains(".zip"), "{error}");
             }
         }
+    }
+
+    #[test]
+    fn unreadable_projection_member_is_diagnosed_by_the_memory_codec() {
+        let bytes = include_bytes!("../tests/data/shapefile/prj_bad_crc.zip");
+        let _ = crate::warnings::take();
+        let result = codec::open(bytes.to_vec(), "points.zip", &Default::default());
+        let warnings = crate::warnings::take();
+        let Dataset::Vector(dataset) = result.unwrap() else { panic!() };
+        assert_eq!(dataset.layers[0].features.len(), 3);
+        assert_eq!(dataset.layers[0].crs_wkt(), None);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("pts.prj cannot be read"));
+        assert!(warnings[0].to_ascii_lowercase().contains("checksum"));
+    }
+
+    #[test]
+    fn projection_member_budget_refusals_are_not_downgraded_to_warnings() {
+        let bytes = include_bytes!("../tests/data/shapefile/prj_bad_crc.zip");
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let main_size = archive.by_name("pts.shp").unwrap().size();
+        let before_projection = main_size + archive.by_name("pts.dbf").unwrap().size();
+        let _ = crate::warnings::take();
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_ZIP_MAX_SIZE".into(), Some(before_projection.to_string()))]));
+        let result = codec::open(bytes.to_vec(), "points.zip", &Default::default());
+        crate::config::pop_scope();
+        let warnings = crate::warnings::take();
+        assert!(result.is_err_and(|error| error.is_resource_refusal()));
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! The COG writer that writes a few rows at a time: `terrio.rio`'s COG writes stream through it.
 
 use crate::Detach;
-use crate::raster::{GcpTuple, from_numpy, parse_band_metadata, parse_gcps, string_pairs, write_options};
+use crate::raster::{GcpTuple, parse_band_metadata, parse_gcps, raster_array_data, string_pairs, write_options};
 use crate::{PyResultExt, invalid};
 use numpy::{PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::prelude::*;
@@ -44,6 +44,7 @@ pub struct PyCogWriter {
     width: usize,
     count: usize,
     data_type: DataType,
+    complex: bool,
 }
 
 #[pymethods]
@@ -77,19 +78,7 @@ impl PyCogWriter {
         if width == 0 || height == 0 || count == 0 {
             return Err(invalid("the raster is empty"));
         }
-        let data_type = match dtype {
-            "uint8" | "bool" => DataType::U8,
-            "int8" => DataType::I8,
-            "uint16" => DataType::U16,
-            "int16" => DataType::I16,
-            "uint32" => DataType::U32,
-            "int32" => DataType::I32,
-            "uint64" => DataType::U64,
-            "int64" => DataType::I64,
-            "float32" => DataType::F32,
-            "float64" => DataType::F64,
-            other => return Err(invalid(format!("unsupported dtype {other}"))),
-        };
+        let (data_type, complex) = crate::raster::storage_type(dtype)?;
         let crs = crs.map(SpatialRef::parse).transpose().py()?.unwrap_or_default();
         let cfg = terrio::RasterConfig {
             cols: 1,
@@ -104,9 +93,10 @@ impl PyCogWriter {
         let mut raster = terrio::Raster::new(cfg);
         raster.cols = width;
         raster.rows = height;
-        raster.bands = count;
+        raster.bands = count * if complex { 2 } else { 1 };
         raster.data = RasterData::new_filled(data_type, 0, 0.0);
         let mut header = RasterDataset::new(raster, nodata.is_some());
+        header.complex = complex;
         header.set_geo_transform(transform);
         let mut o = write_options(Some("COG"), compress, None, bigtiff)?;
         o.creation_options = crate::raster::validated_creation_options(options)?;
@@ -116,7 +106,7 @@ impl PyCogWriter {
         o.rpc = rpc.unwrap_or_default();
         o.overview_resampling = overview_resampling;
         let inner = terrio::GeoTiffWriter::create(path, &header, &o).py()?;
-        Ok(Self { inner: Some(inner), width, count, data_type })
+        Ok(Self { inner: Some(inner), width, count, data_type, complex })
     }
 
     /// The number of rows written so far.
@@ -129,7 +119,10 @@ impl PyCogWriter {
     /// writer's dtype.
     ///
     /// Args:
-    ///     array: The rows.
+    ///     array: The rows. Real output requires the matching NumPy dtype. Complex output
+    ///         accepts complex64 or complex128 and converts components to the selected storage
+    ///         type; integer components round and saturate as GDAL 3.13.3 does. Use complex128
+    ///         input to avoid narrowing components before integer rounding.
     ///
     /// Raises:
     ///     InvalidArgumentError: If the shapes or dtype do not match, or the writer is closed.
@@ -143,8 +136,8 @@ impl PyCogWriter {
         if bands != self.count || cols != self.width {
             return Err(invalid(format!("expected {} bands of {} columns, got {bands} of {cols}", self.count, self.width)));
         }
-        let data = from_numpy(array)?;
-        if data.data_type() != self.data_type {
+        let (data, complex) = raster_array_data(array, self.complex.then_some(self.data_type))?;
+        if complex != self.complex || data.data_type() != self.data_type {
             return Err(invalid("the array's dtype is not the writer's"));
         }
         let w = self.inner.as_mut().ok_or_else(|| invalid("the writer is closed"))?;

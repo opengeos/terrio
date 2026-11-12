@@ -410,6 +410,35 @@ impl ChunkCodec {
         }))
     }
 
+    /// The largest decoded sample buffer needed by a chunk, before decoding it. Keep the
+    /// configured limit's existing semantics (decoded samples, not codec working precision).
+    /// Reference: GDAL 3.13.3; LERC and JPEG XL conversions use Float64 working samples here.
+    pub(crate) fn allocation_bytes<R: Read + Seek>(&self, dec: &mut Decoder<R>, idx: u32) -> TiffResult<usize> {
+        let (dw, dh) = dec.chunk_data_dimensions(idx);
+        let (dw, dh) = (dw as usize, dh as usize);
+        if self.codec == Codec::CratePacked {
+            let bytes = dec.image_chunk_buffer_layout(idx)?.len.max(self.decoded_size(dw, dh)?);
+            return if bytes > self.limit { Err(TiffError::LimitsExceeded) } else { Ok(bytes) };
+        }
+        let (w, h) = if self.tiled { self.chunk } else { (dw, dh) };
+        let decoded = self.decoded_size(w, h)?;
+        if decoded > self.limit {
+            // Preserve the existing Deflate edge-tile fallback: the crate retains only
+            // clipped image data and streams past padding instead of holding the full tile.
+            if self.codec == Codec::Deflate && self.decoded_size(dw, dh)? <= self.limit {
+                let bytes = dec.image_chunk_buffer_layout(idx)?.len;
+                return if bytes > self.limit { Err(TiffError::LimitsExceeded) } else { Ok(bytes) };
+            }
+            return Err(TiffError::LimitsExceeded);
+        }
+        let working = if matches!(self.codec, Codec::Lerc | Codec::Jxl) {
+            fallible::len(&[w, h, self.spp, size_of::<f64>()], "a TIFF chunk")?
+        } else {
+            decoded
+        };
+        Ok(decoded.max(working))
+    }
+
     /// Decodes chunk `idx`, as `Decoder::read_chunk` does: the samples of the chunk's image data,
     /// without padding.
     pub(crate) fn read<R: Read + Seek>(&self, dec: &mut Decoder<R>, idx: u32) -> TiffResult<DecodingResult> {
@@ -988,9 +1017,21 @@ impl ChunkCodec {
         if spp != self.spp || jw < w || jh < h {
             return Err(invalid(format!("JPEG: a {jw} x {jh} image of {spp} components for a {w} x {h} chunk of {} samples", self.spp)));
         }
+        // A JPEG as wide as the chunk (the usual case) is the chunk, past its last row.
+        if jw == w {
+            let mut pixels = pixels;
+            pixels.truncate(h * w * spp);
+            // A JPEG taller than its chunk: the block cache weighs chunks by their capacity.
+            if pixels.capacity() > pixels.len() {
+                pixels.shrink_to_fit();
+            }
+            return Ok(pixels);
+        }
         let mut out = Vec::new();
         fallible::reserve(&mut out, fallible::len(&[h, w, spp], "a TIFF chunk")?, "a TIFF chunk")?;
-        out.extend(pixels.chunks_exact(jw * spp).take(h).flat_map(|row| &row[..w * spp]));
+        for row in pixels.chunks_exact(jw * spp).take(h) {
+            out.extend_from_slice(&row[..w * spp]);
+        }
         Ok(out)
     }
 

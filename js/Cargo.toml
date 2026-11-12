@@ -21,6 +21,8 @@ wbraster.workspace = true
 wbvector.workspace = true
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+# `buffer_unordered`: remote requests in a sliding window (`remote::in_window`).
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 js-sys = "0.3"
 console_error_panic_hook = "0.1"
 # The thread pool of the threaded module (the `threads` feature), whose main thread spins rather
