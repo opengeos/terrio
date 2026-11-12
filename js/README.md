@@ -156,8 +156,9 @@ a.stats();                                        // { requests, bytes }
 
 Its options are those of `openUrl` for Zarr: `array`, `cacheSize`, `fetch`, `headers` and
 `allowMissingMetadata403`. Without the CRS engine, `epsg` is the EPSG code the store names
-(`proj:code`, `proj:epsg`, a PROJJSON identifier, GDAL's `_CRS`); CF grid mappings and GDAL's
-`pam.aux.xml` are not read, and `attributes()` has the rest. It reads the full-resolution array:
+(`proj:code`, `proj:epsg`, a PROJJSON identifier, GDAL's `_CRS`); CF grid-mapping CRS parameters
+and GDAL's `pam.aux.xml` are not read. A grid mapping's `GeoTransform` can still supply the
+geotransform, and `attributes()` has the rest. It reads the full-resolution array:
 multiscale levels are other arrays of the store, opened by their `array` path.
 
 Measured from a local `wasm-release` build (wasm-opt `-Oz`; gzip 9, Brotli 11), not a recorded CI

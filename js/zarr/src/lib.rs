@@ -40,6 +40,9 @@ pub struct ZarrArray {
 /// requests), `allowMissingMetadata403` (anonymous S3 stores that answer 403 for absent keys).
 #[wasm_bindgen(js_name = openZarr)]
 pub async fn open_zarr(url: String, options: JsValue) -> Result<ZarrArray, JsError> {
+    if !options.is_undefined() && !options.is_null() && !options.is_object() {
+        return Err(JsError::new("openZarr: options must be an object"));
+    }
     let (mut fetcher, rest) = Fetcher::from_options(&url, &options)?;
     if rest.is_object() {
         for key in js_sys::Object::keys(&rest.clone().into()).iter().filter_map(|k| k.as_string()) {

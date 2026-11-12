@@ -108,6 +108,9 @@ test("terrio-js/zarr opens an array and reads windows of bands", async () => {
 });
 
 test("terrio-js/zarr refuses unknown options and options of the wrong type", async () => {
+  for (const options of ["x", 5, true]) {
+    await assert.rejects(zarr.openZarr("http://127.0.0.1:9/s.zarr", options), /options must be an object/);
+  }
   await assert.rejects(zarr.openZarr("http://127.0.0.1:9/s.zarr", { arary: "a" }), /unknown option `arary`/);
   await assert.rejects(zarr.openZarr("http://127.0.0.1:9/s.zarr", { array: 5 }), /`array` must be a string/);
   await assert.rejects(zarr.openZarr("http://127.0.0.1:9/s.zarr", { cacheSize: -1 }), /`cacheSize` must be/);
