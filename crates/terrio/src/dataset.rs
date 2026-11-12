@@ -632,6 +632,44 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
     result
 }
 
+/// The `(has_z, has_m)` a header declares for each layer of a dataset, by position; a missing
+/// entry declares nothing.
+pub(crate) type DeclaredDims = Vec<Option<(bool, bool)>>;
+
+/// [`open_vector`], with the Z and M each layer's header declares: `(has_z, has_m)` for the layer
+/// of a FlatGeobuf, read from the header the open parses (a local file, an archive's member, a
+/// remote file's download), so the file is not opened again. Empty for other drivers, and for a
+/// FlatGeobuf whose header terrio's reader did not parse (a `gdal:` path): the dimensions of those
+/// layers are found from their features.
+pub(crate) fn open_vector_declared(path: &str, options: &VectorOpenOptions) -> Result<(VectorDataset, DeclaredDims)> {
+    with_declared_dims(|| open_vector(path, options))
+}
+
+/// Runs `open`, an open of one vector dataset (a path, or bytes in memory), and returns its dataset
+/// with the Z and M its layers' headers declare, as [`open_vector_declared`] does.
+pub(crate) fn with_declared_dims(open: impl FnOnce() -> Result<VectorDataset>) -> Result<(VectorDataset, DeclaredDims)> {
+    #[cfg(feature = "flatgeobuf")]
+    {
+        let (ds, headers) = crate::drivers::vector::flatgeobuf::with_declared_dims(open);
+        let ds = ds?;
+        // An open that parsed a second header would lose the declared pair to the feature scan without
+        // a word: in a debug build, it says so.
+        debug_assert!(
+            ds.driver != VectorDriver::FlatGeobuf || headers.len() <= 1,
+            "a FlatGeobuf open parsed {} headers: its declared Z and M would be dropped",
+            headers.len()
+        );
+        // A FlatGeobuf has one layer, read from the one header parsed.
+        let declared = match headers[..] {
+            [dims] if ds.driver == VectorDriver::FlatGeobuf && ds.layers.len() == 1 => vec![Some(dims)],
+            _ => Vec::new(),
+        };
+        Ok((ds, declared))
+    }
+    #[cfg(not(feature = "flatgeobuf"))]
+    Ok((open()?, Vec::new()))
+}
+
 /// A vector response or feature-service query: opaque remote GeoJSON/GML names, and URLs with
 /// the signs of a service that answers ESRI JSON or its protocol
 /// buffer, or one named by the `ESRIJSON:` or `ESRIPBF:` prefix, which also names a local file. Read

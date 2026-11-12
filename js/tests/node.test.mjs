@@ -1894,6 +1894,17 @@ test("vector dataset commands: concat, partition, setFieldType, makePoint, schem
   a.free(); merged.free();
 });
 
+test("exportSchema reports the Z a FlatGeobuf header declares on an empty layer", () => {
+  // GDAL writes this from an empty GeoJSON with `ogr2ogr -f FlatGeobuf empty_z.fgb empty.geojson -nlt PointZ`:
+  // no features, so only the header declares Z.
+  const emptyZ = new Uint8Array(Buffer.from("ZmdiA2ZnYgEEAgAAIAAAAAAAGgAUAAgAAAAEAAUAAAAAAAAADAAAAAYAEAAaAAAAAQEAABAAAAAIAAAAIAAAAAAAAAAFAAAAZW1wdHkADgAUAAQACAAMAAAAEAAOAAAApAEAAOYQAACQAQAABAAAAIABAABHRU9HQ1JTWyJXR1MgODQiLERBVFVNWyJXb3JsZCBHZW9kZXRpYyBTeXN0ZW0gMTk4NCIsRUxMSVBTT0lEWyJXR1MgODQiLDYzNzgxMzcsMjk4LjI1NzIyMzU2MyxMRU5HVEhVTklUWyJtZXRyZSIsMV1dXSxQUklNRU1bIkdyZWVud2ljaCIsMCxBTkdMRVVOSVRbImRlZ3JlZSIsMC4wMTc0NTMyOTI1MTk5NDMzXV0sQ1NbZWxsaXBzb2lkYWwsMl0sQVhJU1siZ2VvZGV0aWMgbGF0aXR1ZGUgKExhdCkiLG5vcnRoLE9SREVSWzFdLEFOR0xFVU5JVFsiZGVncmVlIiwwLjAxNzQ1MzI5MjUxOTk0MzNdXSxBWElTWyJnZW9kZXRpYyBsb25naXR1ZGUgKExvbikiLGVhc3QsT1JERVJbMl0sQU5HTEVVTklUWyJkZWdyZWUiLDAuMDE3NDUzMjkyNTE5OTQzM11dLElEWyJFUFNHIiw0MzI2XV0AAAAABgAAAFdHUyA4NAAABAAAAEVQU0cAAAAA", "base64"));
+  assert.equal(terrio.exportSchema({ bytes: emptyZ, filename: "empty_z.fgb" }).layers[0].geometryFields[0].type, "PointZ");
+  // Raw bytes are named "data"; the driver is still found from their content.
+  const raw = terrio.exportSchema(emptyZ);
+  assert.equal(raw.layers[0].geometryFields[0].type, "PointZ");
+  assert.equal(raw.layers[0].name, "empty");
+});
+
 test("unscale, nodataToAlpha, reclassify and asFeatures", () => {
   const gt = [100, 10, 0, 50, 0, -10];
   const src = terrio.rasterFromArray(new Uint8Array([1, 2, 255, 40]), 2, 2, gt, "EPSG:32611", 255);
