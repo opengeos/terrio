@@ -484,7 +484,7 @@ def test_registry_parameter_exports_reuse_native_lookup(monkeypatch):
 
 
 def test_unknown_declared_authority_has_safe_parameter_exports():
-    """An unregistered authority does not break parameter or mapping inspection."""
+    """An unregistered authority retains representable WKT parameter exports."""
     wkt = (
         CRS.from_epsg(32633)
         .to_wkt()
@@ -492,9 +492,26 @@ def test_unknown_declared_authority_has_safe_parameter_exports():
     )
     crs = CRS.from_wkt(wkt)
     assert crs.to_epsg() == 999999
-    assert crs.to_dict() == {}
-    assert crs.to_proj4() == ""
-    assert list(crs) == []
+    expected = CRS.from_epsg(32633)
+    assert crs.to_dict() == expected.to_dict()
+    assert crs.to_proj4() == expected.to_proj4()
+    assert list(crs) == list(expected)
+
+
+def test_equality_does_not_warn_about_registry_parameter_conflicts():
+    """Equality suppresses export-policy warnings even with warnings as errors."""
+    canonical = CRS.from_epsg(32633).to_wkt()
+    tagged = CRS.from_wkt(canonical.replace('"central_meridian",15', '"central_meridian",9'))
+    untagged = CRS.from_wkt(
+        canonical.replace(',AUTHORITY["EPSG","32633"]', "")
+        .replace('"central_meridian",15', '"central_meridian",11')
+        .replace("WGS 84 / UTM zone 33N", "custom")
+    )
+    assert tagged.to_epsg() == 32633
+    assert untagged.to_epsg() is None
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        assert tagged != untagged
 
 
 def test_wkt2_mercator_registry_export_retains_spherical_extension():

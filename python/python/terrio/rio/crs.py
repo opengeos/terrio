@@ -744,8 +744,8 @@ class CRS(Mapping[str, Any]):
                 try:
                     registry = _terrio.crs_info(f"EPSG:{code}")
                 except _NativeCRSError:
-                    # WKT can retain an unknown declared code. No registry definition
-                    # then exists to export consistently with that effective identity.
+                    # Without a registry definition, native transforms use the WKT.
+                    # Keep its representable parameters for export too.
                     cached = (code, None, None)
                 else:
                     registry_root = _parse_wkt(registry["wkt"])
@@ -775,7 +775,8 @@ class CRS(Mapping[str, Any]):
                         "instead of conflicting WKT parameters; remove the authority identity "
                         "when defining a custom CRS"
                     )
-            root = cached[1]
+            if cached[1] is not None:
+                root = cached[1]
             if cached[2]:
                 return _proj_dict(cached[2])
         return _wkt_to_proj(root) if root is not None else {}
@@ -838,7 +839,7 @@ class CRS(Mapping[str, Any]):
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore",
-                message="PROJ parameters retain the ellipsoid but omit datum",
+                message="PROJ parameter",
                 category=UserWarning,
             )
             da, db = self.to_dict(), o.to_dict()
