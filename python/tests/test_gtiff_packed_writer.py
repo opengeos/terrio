@@ -799,7 +799,10 @@ def remove_mask_directories(path, widths):
 @pytest.mark.parametrize("missing", [(8,), (16, 8), (32,), (32, 8)])
 @pytest.mark.parametrize("base_value", [0, 255])
 @pytest.mark.parametrize("size", [32, 1024])
-def test_cog_copy_keeps_partial_and_overview_only_masks(tmp_path, gdal, missing, base_value, size):
+@pytest.mark.parametrize("nodata", [None, 0])
+def test_cog_copy_keeps_partial_and_overview_only_masks(
+    tmp_path, gdal, missing, base_value, size, nodata
+):
     """Preserve source masks; GDAL 3.13.3 COG copies discard overview-only masks."""
     source, target = tmp_path / "partial-mask.tif", tmp_path / "copy.tif"
     previous = gdal.GetConfigOption("GDAL_TIFF_INTERNAL_MASK")
@@ -815,6 +818,9 @@ def test_cog_copy_keeps_partial_and_overview_only_masks(tmp_path, gdal, missing,
         )
         dataset.SetGeoTransform((0, 1, 0, size, 0, -1))
         dataset.GetRasterBand(1).Fill(7)
+        if nodata is not None:
+            dataset.GetRasterBand(1).SetNoDataValue(nodata)
+            dataset.GetRasterBand(1).WriteArray(np.zeros((8, 8), dtype="uint16"))
         dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
         dataset.GetRasterBand(1).GetMaskBand().Fill(base_value)
         dataset.BuildOverviews("NEAREST", [2, 4])
@@ -834,8 +840,7 @@ def test_cog_copy_keeps_partial_and_overview_only_masks(tmp_path, gdal, missing,
     expected_dataset = reference_source if 32 in missing else reference
     actual, expected = result.GetRasterBand(1), expected_dataset.GetRasterBand(1)
     if 32 in missing:
-        assert expected.GetMaskFlags() == gdal.GMF_ALL_VALID
-        assert actual.GetMaskFlags() == gdal.GMF_PER_DATASET
+        assert actual.GetMaskFlags() == expected.GetMaskFlags()
     assert actual.GetOverviewCount() == expected.GetOverviewCount() == 2
     for left, right in [(actual, expected)] + [
         (actual.GetOverview(i), expected.GetOverview(i)) for i in range(2)
@@ -844,6 +849,42 @@ def test_cog_copy_keeps_partial_and_overview_only_masks(tmp_path, gdal, missing,
         np.testing.assert_array_equal(
             left.GetMaskBand().ReadAsArray(), right.GetMaskBand().ReadAsArray()
         )
+
+
+def test_cog_overview_only_masks_keep_implicit_alpha(tmp_path, gdal):
+    """Physical overview masks must not replace implicit alpha at other levels."""
+    source, target = tmp_path / "alpha-mask.tif", tmp_path / "copy.tif"
+    previous = gdal.GetConfigOption("GDAL_TIFF_INTERNAL_MASK")
+    gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
+    try:
+        dataset = gdal.GetDriverByName("GTiff").Create(
+            str(source), 32, 32, 4, gdal.GDT_Byte, options=["ENDIANNESS=LITTLE"]
+        )
+        dataset.SetGeoTransform((0, 1, 0, 32, 0, -1))
+        for band in range(1, 5):
+            dataset.GetRasterBand(band).Fill(255 if band == 4 else 7)
+        dataset.GetRasterBand(4).SetColorInterpretation(gdal.GCI_AlphaBand)
+        dataset.GetRasterBand(4).WriteArray(np.zeros((8, 8), dtype="uint8"))
+        dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
+        dataset.GetRasterBand(1).GetMaskBand().Fill(255)
+        dataset.BuildOverviews("NEAREST", [2, 4])
+        dataset.GetRasterBand(1).GetOverview(0).GetMaskBand().Fill(0)
+        dataset = None
+    finally:
+        gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", previous)
+    remove_mask_directories(source, (32, 8))
+    copy(source, target, driver="COG")
+    expected, actual = gdal.Open(str(source)), gdal.Open(str(target))
+    for band in range(1, 5):
+        left, right = actual.GetRasterBand(band), expected.GetRasterBand(band)
+        for a, b in [(left, right)] + [
+            (left.GetOverview(i), right.GetOverview(i)) for i in range(2)
+        ]:
+            assert a.GetMaskFlags() == b.GetMaskFlags()
+            np.testing.assert_array_equal(a.ReadAsArray(), b.ReadAsArray())
+            np.testing.assert_array_equal(
+                a.GetMaskBand().ReadAsArray(), b.GetMaskBand().ReadAsArray()
+            )
 
 
 @pytest.mark.parametrize("size", [32, 256])

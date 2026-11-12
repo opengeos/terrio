@@ -1092,6 +1092,8 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
     // factors asked for.
     let mut levels = vec![Level::from_raster(raster)];
     // The per-dataset mask of each level, as GDAL reads it (0 or 255).
+    // In a copied pyramid an empty entry denotes an absent physical mask, preserving
+    // implicit nodata/alpha validity. Generated pyramids contain only present masks.
     let mut masks: Vec<Vec<u8>> = opts.mask.iter().map(|m| m.iter().map(|v| if *v != 0 { 255 } else { 0 }).collect()).collect();
     // The overviews of the mask as they are computed, before they are written as bits (level `i`
     // at `i - 1`): GDAL keeps them in a temporary Byte file, which the next level is computed
@@ -1184,7 +1186,7 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
         images.push(img);
         // GDAL's internal mask follows each image it masks (`NewSubfileType` 4, and 5 for an
         // overview's).
-        if let Some(m) = masks.get(i) {
+        if let Some(m) = masks.get(i).filter(|m| !m.is_empty()) {
             let main = &images[images.len() - 1];
             let tag = |t: u16| {
                 main.tags.iter().find_map(|(k, v)| match v {
@@ -1221,7 +1223,7 @@ fn cog_method(opts: &TiffOptions) -> Method {
 
 /// The overviews of the GeoTIFF a COG is converted from, copied as they are, as GDAL's COG driver
 /// copies a source's (`OVERVIEWS=AUTO`, `COPY_SRC_OVERVIEWS`), with their masks: the source's
-/// per-level masks, with an absent mask meaning all valid. A mask supplied only to the
+/// per-level physical masks, leaving implicit nodata/alpha masks implicit. A mask supplied only to the
 /// destination is generated from its full-resolution values (GDAL 3.13.3).
 fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels: &mut Vec<Level>, masks: &mut Vec<Vec<u8>>) -> Result<()> {
     let mut src = crate::LazyRaster::open_tiff(path)?.ok_or_else(|| Error::InvalidArgument(format!("{path}: not a GeoTIFF")))?;
@@ -1241,12 +1243,9 @@ fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels
     let has_overview_mask = (first..sizes.len()).any(|i| src.level_has_own_mask(i));
     let preserve_level_masks = has_overview_mask || (has_base_mask && width <= tile && height <= tile);
     if masks.is_empty() && has_overview_mask {
-        // A source can have overview masks without a base mask. Materialize an all-valid
-        // output base so its mask pyramid can retain those independently stored masks.
-        let name = "base mask for copied overviews";
-        crate::dataset::fallible::check_raster_buffer(name, width, height, 1, DataType::U8)?;
-        let count = crate::dataset::fallible::len(&[width, height], name)?;
-        masks.push(crate::dataset::fallible::filled(count, 255u8, name)?);
+        // Keep the level index aligned without introducing a base mask that would
+        // override nodata or alpha validity.
+        masks.push(Vec::new());
     }
     let block = gdal_overview::ovr_block(opts.source_block);
     for (i, (w, h)) in sizes.into_iter().enumerate().skip(first) {
@@ -1267,7 +1266,7 @@ fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels
         }
         if !masks.is_empty() {
             let m = if preserve_level_masks {
-                src.read_level_mask(crate::Window::full(w, h), Some(i))?.unwrap_or_else(|| vec![255; w * h])
+                src.read_level_mask(crate::Window::full(w, h), Some(i))?.unwrap_or_default()
             } else {
                 let mi = if levels.last().is_some_and(|l| l.cols > w) { levels.len() - 1 } else { 0 };
                 gdal_overview::mask_level(cog_method(opts), &masks[mi], (levels[mi].cols, levels[mi].rows), (w, h), block)
@@ -4615,9 +4614,9 @@ mod tests {
             let mut masks = if base_mask { vec![vec![255; 32 * 32]] } else { Vec::new() };
             copy_source_overviews(path.to_str().unwrap(), &raster, &options, &mut levels, &mut masks).unwrap();
             assert_eq!(levels.len(), 3);
-            assert_eq!(masks.iter().map(Vec::len).collect::<Vec<_>>(), vec![32 * 32, 16 * 16, 8 * 8]);
+            assert_eq!(masks.iter().map(Vec::len).collect::<Vec<_>>(), vec![if base_mask { 32 * 32 } else { 0 }, 16 * 16, 0]);
             assert!(masks[1].iter().all(|&value| value == 0));
-            assert!(masks[2].iter().all(|&value| value == 255));
+            assert!(masks[2].is_empty());
         }
     }
 

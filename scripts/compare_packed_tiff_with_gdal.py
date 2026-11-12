@@ -137,12 +137,13 @@ def source_preservation_cases(directory):
         copy(source, target, driver="COG")
         detail = verify(target, original.ReadAsArray(), 9, transform, crs, require_overviews=True)
         output = gdal.Open(str(target))
+        assert output.GetRasterBand(1).GetMaskFlags() == original.GetRasterBand(1).GetMaskFlags()
         assert output.GetRasterBand(1).GetOverviewCount() == original.GetRasterBand(1).GetOverviewCount()
         for i in range(original.GetRasterBand(1).GetOverviewCount()):
             np.testing.assert_array_equal(output.GetRasterBand(1).GetOverview(i).GetMaskBand().ReadAsArray(),
                                           original.GetRasterBand(1).GetOverview(i).GetMaskBand().ReadAsArray())
         rows.append(dict(name=name, status="identical", detail=detail + "; exact SOURCE overview validity; "
-                         "GDAL 3.13.3 COG copying drops these masks, while Terrio adds an all-valid base mask"))
+                         "GDAL 3.13.3 COG copying drops these masks; Terrio retains the absent base mask"))
     except Exception as error:
         rows.append(dict(name=name, status="differs", detail=str(error)))
     return rows

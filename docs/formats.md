@@ -246,10 +246,11 @@ a COG writer can generate its packed overviews while writing the new file. An op
 overview can be copied with its compatible later levels; the source base image is not
 copied again. Native TIFF readers expose compatible decoded sample types only, so a
 Byte/UInt16 mixture is not exposed as one overview pyramid.
-When a copied source has overview masks but no base mask, the output adds an
-all-valid base mask and preserves the source's overview masks. The base therefore
-has a per-dataset mask flag. GDAL 3.13.3's COG copier drops these overview-only
-masks; Terrio preserves their validity rather than following that loss.
+When a copied source has overview masks but no base mask, the output preserves
+those overview masks and leaves the base mask absent. Missing masks at other
+levels also remain absent, retaining implicit nodata or alpha validity.
+GDAL 3.13.3's COG copier drops overview-only masks; Terrio preserves their
+validity rather than following that loss.
 
 Deflate levels 6–9 supplement the bounded hash-chain search with up to four
 run-boundary candidates. This keeps long matches across repeating categorical
