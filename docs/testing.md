@@ -183,6 +183,11 @@ GDAL reads them there. `scripts/gen_epsg_points.py` therefore searches a tempora
 holding only PROJ's `proj.db` and `proj.ini`, so that its references do not depend on which
 packages are installed. The Python grid test does the same for GDAL.
 
+Python's test setup also initializes GDAL and Rasterio with a database-only PROJ directory,
+including when `PROJ_DATA` was already set. It disables reference networking and isolates
+PROJ's user cache before either library is imported. Grid-specific tests explicitly select
+their own grid directories instead.
+
 Transformations in the real-data Rust test binaries must go through the `data()` helper first,
 which turns grid search and the network off. A test that transforms without calling `data()`
 can see the machine's grids, depending on test order. No current test does this.
