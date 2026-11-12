@@ -992,6 +992,10 @@ impl ChunkCodec {
         if jw == w {
             let mut pixels = pixels;
             pixels.truncate(h * w * spp);
+            // A JPEG taller than its chunk: the block cache weighs chunks by their capacity.
+            if pixels.capacity() > pixels.len() {
+                pixels.shrink_to_fit();
+            }
             return Ok(pixels);
         }
         let mut out = Vec::new();

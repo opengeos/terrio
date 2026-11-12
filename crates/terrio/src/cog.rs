@@ -3589,9 +3589,9 @@ mod tests {
         assert!(peak <= limit, "{peak} decode workers at once, over the {limit} allowed");
     }
 
-    /// `place` copies pixel-interleaved chunks as a copy of each sample, pixel by pixel, does:
-    /// samples to any bands, chunks cropped by the window on every side, a chunk not reaching the
-    /// window, and a truncated chunk, whose missing samples leave the output as it was.
+    /// `place` matches a pixel-by-pixel copy of each sample of pixel-interleaved chunks, over:
+    /// samples sent to any bands, chunks cropped by the window on every side, a chunk not reaching
+    /// the window, and a truncated chunk, whose missing samples leave the output as it was.
     #[test]
     fn interleaved_chunks_are_placed_sample_by_sample() {
         fn by_pixel(out: &mut [u16], vals: &[u16], g: &ChunkGeom, w: Window, map: &[(usize, usize)]) {
