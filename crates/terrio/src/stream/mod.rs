@@ -803,7 +803,8 @@ fn open_fgb(path: &str, batch: usize, bbox: Option<(f64, f64, f64, f64)>) -> Res
         return Err(Error::InvalidData("FlatGeobuf: truncated index".into()));
     }
     r.seek_relative(header.index_size as i64)?;
-    // The eager reader applies a bbox only when the file has a spatial index.
+    // Match eager candidate semantics: an unindexed file retains every feature,
+    // even with a bbox. Indexed streams filter while scanning, without using the index.
     let bbox = bbox.filter(|_| header.index_size > 0);
     Ok((layer, Box::new(FgbSource { r, header, fid: 0, batch, batch_bytes: source_bytes(CHUNK_BYTES), bbox })))
 }

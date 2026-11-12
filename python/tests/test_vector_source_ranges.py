@@ -75,7 +75,7 @@ def sources(tmp_path_factory):
 @pytest.mark.parametrize("extension", ["gpkg", "geojson"])
 @pytest.mark.parametrize("skip,limit", [(0, 0), (1, 2), (4, None), (99, 1)])
 def test_stac_dataframe_ranges_match_direct_assets(sources, extension, skip, limit):
-    """STAC references forward the same per-layer range as direct asset paths.
+    """STAC forwards per-layer ranges, including the facade's zero-as-unbounded case.
 
     Args:
         sources: Generated vector fixtures.
@@ -106,8 +106,9 @@ def test_native_tile_ranges_are_bounded(sources, source, skip, limit):
         skip: Number of live features to skip.
         limit: Maximum number of features.
     """
+    full = _terrio.pyogrio_read(sources[source], 0, None, True)
     result = _terrio.pyogrio_read(sources[source], skip, limit, True)
-    assert len(result["fids"]) == (1 if skip == 1 else 0)
+    assert len(result["fids"]) == len(full["fids"][skip : skip + limit])
 
 
 @pytest.mark.parametrize("source", ["mbtiles", "pmtiles", "tile"])

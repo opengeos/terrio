@@ -38,9 +38,12 @@ def compare(path, item):
     name = f"STAC:{item}:data"
     for layer in reference:
         layer_name = layer.GetName()
+        definition = layer.GetLayerDefn()
+        fields = [definition.GetFieldDefn(index).GetName() for index in range(definition.GetFieldCount())]
+        reference_epsg = int(layer.GetSpatialRef().GetAuthorityCode(None))
         full = [
             (
-                feature.GetField("sequence"),
+                tuple(feature.GetField(field) for field in fields),
                 feature.GetGeometryRef().GetX(),
                 feature.GetGeometryRef().GetY(),
             )
@@ -54,11 +57,12 @@ def compare(path, item):
             frame = tpg.read_dataframe(
                 name, layer=layer_name, skip_features=skip, max_features=limit
             )
-            if frame["sequence"].tolist() != [row[0] for row in expected]:
+            actual_values = list(frame[fields].itertuples(index=False, name=None))
+            if actual_values != [row[0] for row in expected]:
                 raise AssertionError(
                     f"feature range differs: {layer_name}, {skip}, {limit}"
                 )
-            if frame.crs.to_epsg() != 4326:
+            if frame.crs.to_epsg() != reference_epsg:
                 raise AssertionError("CRS differs")
             for geometry, (_, x, y) in zip(frame.geometry, expected, strict=True):
                 differences = (abs(geometry.x - x), abs(geometry.y - y))
@@ -96,7 +100,7 @@ def main():
         features.append(
             {
                 "type": "Feature",
-                "properties": {"sequence": index},
+                "properties": {"sequence": index, "label": f"place {index}"},
                 "geometry": json.loads(feature.GetGeometryRef().ExportToJson()),
             }
         )
@@ -131,7 +135,7 @@ def main():
             try:
                 detail, maximum_error = compare(asset, item)
                 status = "identical" if maximum_error == 0.0 else "within tolerance"
-            except Exception as error:
+            except AssertionError as error:
                 status, detail = "differs", str(error)
             results.append({"name": extension, "status": status, "detail": detail})
     print(

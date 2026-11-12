@@ -23,6 +23,16 @@ cursor after bounded and full reads. Schema discovery still scans the file;
 the feature reader stops after its prefetched prefix for a bounded range. A
 portable source counter also checks that a zero limit decodes no feature batches
 and a satisfied limit never requests another batch.
+
+FlatGeobuf streams scan features sequentially even when an index exists; indexed
+bounding-box filtering happens before range counting, but does not use the index
+to avoid those reads. No indexed-read byte reduction is claimed here. Without an
+index, both eager and streamed readers retain all features as spatial candidates,
+so a bounding box does not remove features on that path. Eager codec reads and
+the GDAL fallback materialize a layer before slicing its feature range. A small
+range therefore does not reduce their decoding memory or GDAL vector-budget
+charges. Native Python `terrio.open_vector` keeps its existing whole-dataset API;
+Python callers use the pyogrio facade for range parameters.
 Skipping still decodes and discards the skipped live features, so its work grows
 with the requested offset; this wrapper does not add indexed seeks for pagination.
 
