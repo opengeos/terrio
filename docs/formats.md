@@ -146,6 +146,19 @@ independent of `TERRIO_TIFF_MAX_CHUNK_BYTES`, which bounds each decoded chunk, a
 `TERRIO_WARP_SUM_MAX_BYTES`, which bounds what a `sum` warp holds: a read passes every one that
 applies.
 
+Opt-in fallback recognizes a PCRaster CSF signature from a bounded prefix even when the
+filename has an unknown suffix, so identification does not first read its whole encoded file.
+Malformed ASCII fields can end the declaration scan; the original codec still validates the
+input and reports its error. A complete oversized header can be refused before invalid pixels.
+Invalid UTF-8 during fallback identification can report the preflight I/O diagnostic instead
+of the fallback reader's diagnostic; it does not add support for non-UTF-8 ASCII grids.
+
+For a GeoPackage holding both rasters and vector layers, raster-first path rendering and a
+complete dataset check retain a refused raster's resource error. The vector layers remain
+readable through vector opens and the GeoPackage's generic layer-preferring open. In Python,
+pass an opened vector dataset to `render` to draw it explicitly; vector clip templates selected
+with `like_layer` remain available too.
+
 Native resampled UInt16-alpha mask reads also check their actual source windows before
 reading and converting them to bytes. The working-set estimate includes simultaneously
 retained source/conversion buffers, previously produced Byte output and caller-owned

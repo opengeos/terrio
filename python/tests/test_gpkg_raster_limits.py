@@ -47,6 +47,43 @@ def test_exact_limits_preserve_coverage_values_and_metadata(coverage, gdal):
             assert dataset.nodata == reference.GetRasterBand(1).GetNoDataValue()
 
 
+def test_mixed_geopackage_keeps_explicit_vector_routes_after_raster_refusal(coverage, gdal):
+    """A raster refusal stays terminal for raster-first drawing and complete dataset checks."""
+    from osgeo import ogr, osr
+
+    dataset = gdal.OpenEx(str(coverage), gdal.OF_UPDATE | gdal.OF_VECTOR)
+    crs = osr.SpatialReference()
+    crs.ImportFromEPSG(4326)
+    layer = dataset.CreateLayer("areas", srs=crs, geom_type=ogr.wkbPolygon)
+    layer.CreateField(ogr.FieldDefn("name", ogr.OFTString))
+    feature = ogr.Feature(layer.GetLayerDefn())
+    feature.SetField("name", "kept")
+    feature.SetGeometry(ogr.CreateGeometryFromWkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))"))
+    assert layer.CreateFeature(feature) == 0
+    feature = layer = dataset = None
+
+    summary = terrio.check_dataset(str(coverage))
+    assert summary["raster_samples"] == 512
+    assert summary["layers"] == summary["features"] == 1
+    with rio.Env(TERRIO_MAX_DECLARED_BYTES="1"):
+        for read in (
+            lambda: terrio.open_raster(str(coverage)),
+            lambda: terrio.render(str(coverage)),
+            lambda: terrio.check_dataset(str(coverage)),
+        ):
+            with pytest.raises(terrio.ResourceLimitError, match="TERRIO_MAX_DECLARED_BYTES"):
+                read()
+        for vector in (terrio.open_vector(str(coverage)), terrio.open(str(coverage))):
+            assert isinstance(vector, terrio.VectorDataset)
+            assert vector.layer_names == ["areas"]
+            assert len(vector[0]) == 1
+            assert terrio.render(vector, max_size=32).startswith(b"\x89PNG")
+            clipped = terrio.clip_vector(vector, like=str(coverage), like_layer="areas")
+            assert isinstance(clipped, terrio.Layer)
+            assert len(clipped) == 1
+            assert clipped.to_geojson()["features"][0]["properties"]["name"] == "kept"
+
+
 @pytest.mark.parametrize("tile_format", ["rgb-png", "palette-png", "rgb-tiff"])
 @pytest.mark.parametrize(
     "option,value", [("TERRIO_MAX_BANDS", "1"), ("TERRIO_MAX_DECLARED_BYTES", "4096")]

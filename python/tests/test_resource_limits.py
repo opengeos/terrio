@@ -114,6 +114,30 @@ def test_archive_policy_refusal_is_terminal(tmp_path, monkeypatch):
         terrio.open_vector(f"/vsizip/{path}/a.geojson")
 
 
+def test_pcraster_unknown_suffix_preserves_values_and_declaration_limits(tmp_path):
+    """Bounded CSF recognition keeps unknown-suffix fallback support and its logical limit."""
+    import numpy as np
+
+    import terrio.rio as rio
+
+    values = np.ones((1024, 1024), dtype="uint8")
+    values[0] = np.arange(1024, dtype="uint16") % 100
+    transform = (10, 1 / 1024, 0, 48, 0, -1 / 1024)
+    source = tmp_path / "source.map"
+    terrio.Raster.from_array(values, transform=transform).write(str(source))
+    unknown = tmp_path / "binary.unknown"
+    unknown.write_bytes(source.read_bytes())
+    for limit in ("", str(values.nbytes)):
+        with rio.Env(TERRIO_WBRASTER_FALLBACK="YES", TERRIO_MAX_DECLARED_BYTES=limit):
+            raster = terrio.open_raster(str(unknown), lazy=False)
+            np.testing.assert_array_equal(raster.read(1), values)
+            assert raster.read(1).dtype == values.dtype
+            assert raster.transform == transform
+    with rio.Env(TERRIO_WBRASTER_FALLBACK="YES", TERRIO_MAX_DECLARED_BYTES="1"):
+        with pytest.raises(terrio.ResourceLimitError, match="TERRIO_MAX_DECLARED_BYTES"):
+            terrio.open_raster(str(unknown), lazy=False)
+
+
 @pytest.fixture
 def io_failure_dataset(tmp_path, gdal):
     path = tmp_path / "io-errors.tif"

@@ -1303,6 +1303,86 @@ fn fallback_ascii_detection_keeps_types_and_binary_signatures() {
     });
 }
 
+/// Reference: GDAL 3.13.3. Unknown suffixes must not force a whole CSF read just to identify it.
+#[test]
+fn fallback_pcraster_is_checked_before_whole_file_detection() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let (source, _) = sample(RasterDriver::PCRaster, dir.path()).unwrap();
+    let reference = terrio::open_raster(&source).unwrap();
+    let path = dir.path().join("binary.unknown");
+    std::fs::copy(source, &path).unwrap();
+    scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "1048576")], || {
+        let actual = terrio::open_raster(path.to_str().unwrap()).unwrap();
+        assert_eq!((actual.raster.cols, actual.raster.rows, actual.raster.data_type), (1024, 1024, DataType::U8));
+        assert_eq!(actual.raster.data.to_f64_vec(), reference.raster.data.to_f64_vec());
+        assert_eq!(actual.geo_transform(), reference.geo_transform());
+    });
+    scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "1")], || {
+        let (result, largest) = largest_during(|| terrio::open_raster(path.to_str().unwrap()).map(|_| ()));
+        assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))) && largest < 1 << 20, "{result:?}, largest={largest}");
+    });
+}
+
+/// Reference: GDAL 3.13.3. Truncating preflight at invalid text must not make a raster readable.
+#[test]
+fn malformed_ascii_headers_and_pixels_still_fail_when_preflight_stops() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let esri = "ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n";
+    let grass = "north: 2\nsouth: 0\neast: 2\nwest: 0\nrows: 2\ncols: 2\ntype: double\n";
+    for (name, header) in [("native.asc", esri), ("fallback.txt", esri), ("grass.txt", grass)] {
+        let path = dir.path().join(name);
+        let valid = format!("{header}1 2\n3 4\n");
+        std::fs::write(&path, &valid).unwrap();
+        scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", "32")], || {
+            let ds = terrio::open_raster(path.to_str().unwrap()).unwrap();
+            assert_eq!(ds.raster.data.to_f64_vec(), vec![1., 2., 3., 4.]);
+        });
+        for in_header in [true, false] {
+            let mut corrupt = valid.as_bytes().to_vec();
+            corrupt[if in_header { 3 } else { header.len() }] = 0xff;
+            std::fs::write(&path, corrupt).unwrap();
+            for limit in ["", "1", "32"] {
+                scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", limit)], || {
+                    let (result, largest) = largest_during(|| terrio::open_raster(path.to_str().unwrap()).map(|_| ()));
+                    assert!(result.is_err() && largest < 1 << 20, "{name} header={in_header} limit={limit}: {result:?}, largest={largest}");
+                    if limit != "1" {
+                        assert!(!matches!(result, Err(terrio::Error::ResourceLimit(_))), "{result:?}");
+                    } else if !in_header && name != "grass.txt" {
+                        // The known Esri header is checked before inspecting invalid pixel bytes.
+                        assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))), "{result:?}");
+                    }
+                });
+            }
+        }
+    }
+}
+
+/// Reference: GDAL 3.13.3. Native Esri keeps the first dimension; the pinned fallback keeps the last.
+#[test]
+fn duplicate_ascii_dimensions_follow_each_readers_rule() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    for (first, last) in [(3, 1000), (1000, 3)] {
+        for (name, cols, data_type) in [("native.asc", first, DataType::I32), ("fallback.txt", last, DataType::F64)] {
+            let path = dir.path().join(name);
+            let pixels = (0..cols).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
+            std::fs::write(&path, format!("ncols {first}\nncols {last}\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n{pixels}\n"))
+                .unwrap();
+            let bytes = cols * data_type.size_bytes();
+            scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", &bytes.to_string())], || {
+                let ds = terrio::open_raster(path.to_str().unwrap()).unwrap();
+                assert_eq!((ds.raster.cols, ds.raster.rows, ds.raster.data_type), (cols, 1, data_type));
+                assert_eq!(ds.raster.data.to_f64_vec(), (0..cols).map(|i| i as f64).collect::<Vec<_>>());
+            });
+            scoped(&[("TERRIO_WBRASTER_FALLBACK", "YES"), ("TERRIO_MAX_DECLARED_BYTES", &(bytes - 1).to_string())], || {
+                assert!(matches!(terrio::open_raster(path.to_str().unwrap()), Err(terrio::Error::ResourceLimit(_))));
+            });
+        }
+    }
+}
+
 /// Reference: GDAL 3.13.3. A tiny raster can request an enormous padded encoding tile.
 #[test]
 #[cfg(target_pointer_width = "64")]

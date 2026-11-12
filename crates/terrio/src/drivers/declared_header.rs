@@ -25,8 +25,8 @@ pub(crate) fn check_fallback(path: &Path, driver: RasterDriver) -> Result<()> {
 
 fn check_type(path: &Path, driver: RasterDriver, sample_type: Option<DataType>) -> Result<()> {
     if !matches!(driver, RasterDriver::AAIGrid | RasterDriver::GRASSASCIIGrid)
-        && crate::config::get("TERRIO_MAX_DECLARED_BYTES").is_none()
-        && crate::config::get("TERRIO_MAX_BANDS").is_none()
+        && crate::config::get(crate::declared::MAX_DECLARED_BYTES_OPTION).is_none()
+        && crate::config::get(crate::declared::MAX_BANDS_OPTION).is_none()
     {
         return Ok(());
     }
@@ -59,11 +59,11 @@ fn check_type(path: &Path, driver: RasterDriver, sample_type: Option<DataType>) 
     Ok(())
 }
 
-/// Match the fallback's first 32 raw lines with bounded memory, including unknown fields.
+/// Check the fallback's binary signature before its first 32 raw ASCII lines with bounded memory.
 /// Detection must not reuse the declaration parser's canonicalized numeric/type fields.
 pub(crate) fn detect_ascii(path: &str) -> Result<Option<wbraster::RasterFormat>> {
     let p = Path::new(path);
-    if !p.is_file() || !matches!(crate::formats::extension(path).as_deref(), Some("asc" | "txt")) {
+    if !p.is_file() {
         return Ok(None);
     }
     let mut file = std::fs::File::open(p)?;
@@ -71,6 +71,9 @@ pub(crate) fn detect_ascii(path: &str) -> Result<Option<wbraster::RasterFormat>>
     file.by_ref().take(32).read_to_end(&mut signature)?;
     if signature.starts_with(b"RUU CROSS SYSTEM MAP FORMAT") {
         return Ok(Some(wbraster::RasterFormat::Pcraster));
+    }
+    if !matches!(crate::formats::extension(path).as_deref(), Some("asc" | "txt")) {
+        return Ok(None);
     }
     file.rewind()?;
     detect_ascii_reader(BufReader::new(file)).map(Some)
@@ -253,6 +256,8 @@ impl AsciiNumber {
 
 /// Keep a bounded metadata prefix and stream oversized numeric/type fields. Native Esri,
 /// fallback Esri and GRASS have different header boundaries; preserve each reader's rule.
+/// An unreadable field ends preflight; the unchanged codec still validates the input and
+/// reports its error. Complete dimensions already seen can trigger a declaration refusal.
 fn header_lines(mut reader: impl BufRead, driver: RasterDriver, fallback: bool) -> impl Iterator<Item = String> {
     let mut data = false;
     std::iter::from_fn(move || {
@@ -429,7 +434,7 @@ fn ascii_shape<S: AsRef<str>>(lines: impl Iterator<Item = S>, driver: RasterDriv
                 cols = Some(value.parse().ok()?);
             }
             "ncols" if driver == RasterDriver::AAIGrid => {
-                if driver != RasterDriver::AAIGrid || cols.is_none() {
+                if cols.is_none() {
                     cols = Some(value.parse().ok()?);
                 }
             }
@@ -437,7 +442,7 @@ fn ascii_shape<S: AsRef<str>>(lines: impl Iterator<Item = S>, driver: RasterDriv
                 rows = Some(value.parse().ok()?);
             }
             "nrows" if driver == RasterDriver::AAIGrid => {
-                if driver != RasterDriver::AAIGrid || rows.is_none() {
+                if rows.is_none() {
                     rows = Some(value.parse().ok()?);
                 }
             }
@@ -466,6 +471,33 @@ fn ascii_shape<S: AsRef<str>>(lines: impl Iterator<Item = S>, driver: RasterDriv
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reference: GDAL 3.13.3. Missing preflight dimensions do not turn a failing reader into EOF.
+    #[test]
+    fn incomplete_header_io_error_is_still_rejected_by_the_codec() {
+        #[derive(Clone)]
+        struct Failing(&'static [u8]);
+        impl Read for Failing {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0.is_empty() {
+                    return Err(std::io::Error::other("injected header read failure"));
+                }
+                self.0.read(buf)
+            }
+        }
+        impl BufRead for Failing {
+            fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+                if self.0.is_empty() { Err(std::io::Error::other("injected header read failure")) } else { Ok(self.0) }
+            }
+            fn consume(&mut self, n: usize) {
+                self.0 = &self.0[n..];
+            }
+        }
+        let reader = Failing(b"ncols 2\nnrows ");
+        assert!(fallback_ascii_shape(header_lines(reader.clone(), RasterDriver::AAIGrid, true)).is_none());
+        let error = wbraster::formats::esri_ascii::parse(reader, "incomplete.txt").unwrap_err();
+        assert!(matches!(error, wbraster::RasterError::Io(ref e) if e.kind() == std::io::ErrorKind::Other), "{error:?}");
+    }
 
     /// Reference: GDAL 3.13.3. Invalid pixel encoding cannot bypass a valid ASCII header.
     #[test]

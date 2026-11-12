@@ -2833,3 +2833,22 @@ checks the native Python mask API with GDAL 3.13.3-authored opaque UInt16 alpha 
 The small-window mask matches GDAL before the large read is refused. This targets the
 native path that converts source samples before resizing; the rio alpha fallback has
 its own resampling/conversion path.
+
+## Fallback header refusals
+
+`fallback_pcraster_is_checked_before_whole_file_detection` in the `declared_size` suite
+opens a complete PCRaster file with an unknown suffix at its exact logical limit and checks
+pixels and geotransform. A one-byte limit must refuse it without a file-sized allocation
+during format detection. The fallback's bounded signature check precedes its whole-file CSF
+detector, including when the name is neither `.asc` nor `.txt`.
+
+Native and fallback Esri/GRASS controls reject malformed UTF-8 headers and pixels with
+limits unset, below the valid declaration and at its exact maximum sample size. An injected
+header I/O error also remains an error in the unchanged fallback codec; partial preflight
+does not make it a successful raster read. The existing valid-header/invalid-pixel control
+retains the earlier declaration refusal.
+
+The Python GeoPackage raster-limit suite includes a GDAL-authored mixed raster/vector file.
+A complete check counts both before a limit is set. Under a raster refusal, raster-first
+rendering and complete checking fail, while vector opens, loaded-vector rendering and
+layer-selected vector clip templates retain the single polygon and its attribute.
