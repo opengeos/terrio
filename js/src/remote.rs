@@ -30,7 +30,7 @@ use wasm_bindgen_futures::JsFuture;
 const MAX_ROUNDS: usize = 64;
 
 /// The range requests sent at once: browsers queue more, and servers may rate-limit them.
-const MAX_PARALLEL: usize = 12;
+const MAX_PARALLEL: usize = terrio::sparse::PARALLEL_REQUESTS;
 
 /// Options of [`open_url`].
 #[derive(Deserialize)]
@@ -435,6 +435,16 @@ pub struct RemoteDataset {
     state: Rc<State>,
 }
 
+/// Whether this runs in a server runtime (Node.js, Bun, Deno), whose `fetch` opens as many
+/// connections to a host as requests in flight, rather than in a browser, which keeps 6 to an
+/// HTTP/1.1 server and queues the rest. An Electron renderer has Node's `process` but a browser's
+/// `document` and connections: not a server.
+fn server_runtime() -> bool {
+    let global = js_sys::global();
+    (get(&get(&get(&global, "process"), "versions"), "node").is_string() || !get(&global, "Deno").is_undefined())
+        && get(&global, "document").is_undefined()
+}
+
 /// The format of a file, from its name or first bytes.
 fn detect(name: &str, head: &[u8], forced: Option<&str>) -> Result<&'static str, JsError> {
     if let Some(f) = forced {
@@ -621,6 +631,11 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
 #[cfg(feature = "zarr")]
 async fn open_zarr(url: String, fetcher: Fetcher, o: OpenUrlOptions) -> Result<RemoteDataset, JsError> {
     let objects = std::sync::Arc::new(SparseObjects::new());
+    // Shard reads split into requests that fill those in flight: worth it where they are not
+    // queued (Node.js, Deno, Bun), not in browsers (see `SparseObjects::set_parallel_requests`).
+    if server_runtime() {
+        objects.set_parallel_requests(MAX_PARALLEL);
+    }
     let state = Rc::new(State {
         file: SparseFile::new(0),
         objects: Some(objects.clone()),
@@ -666,14 +681,15 @@ struct ReadArgs {
     layers: Option<Vec<String>>,
 }
 
-/// Keeps the features that intersect a rectangle, as `ogr2ogr -spat` does.
+/// Keeps the features that intersect a rectangle, as `ogr2ogr -spat` does; without one, the
+/// layers as they are. The features are moved, not copied.
 #[cfg_attr(not(any(feature = "tiles", feature = "flatgeobuf", feature = "parquet")), allow(dead_code))]
-fn spatial_filter(layers: &[terrio::Layer], bbox: Option<[f64; 4]>) -> terrio::Result<Vec<terrio::Layer>> {
+fn spatial_filter(layers: Vec<terrio::Layer>, bbox: Option<[f64; 4]>) -> terrio::Result<Vec<terrio::Layer>> {
     match bbox {
-        None => Ok(layers.to_vec()),
+        None => Ok(layers),
         Some([a, b, c, d]) => {
             let o = terrio::ops::vector_filter::VectorTranslateOptions { spatial_filter: Some((a, b, c, d)), ..Default::default() };
-            terrio::ops::vector_filter::translate(layers, &o)
+            terrio::ops::vector_filter::translate_owned(layers, &o)
         }
     }
 }
@@ -952,7 +968,7 @@ impl RemoteDataset {
                             o.layers = a.layers.clone().unwrap_or_default();
                             o.spatial_filter = a.bbox.map(|[a, b, c, d]| (a, b, c, d));
                             match TileArchive::from_sparse(file.clone())?.into_dataset(&name, &o)? {
-                                terrio::Dataset::Vector(v) => Ok(Dataset::from_layers(spatial_filter(&v.layers, a.bbox)?, v.driver)),
+                                terrio::Dataset::Vector(v) => Ok(Dataset::from_layers(spatial_filter(v.layers, a.bbox)?, v.driver)),
                                 terrio::Dataset::Raster(r) => Ok(Dataset::from_raster(r)),
                             }
                         }
@@ -960,14 +976,14 @@ impl RemoteDataset {
                         Some(Reader::FlatGeobuf(_)) => {
                             let bbox = a.bbox.map(|[a, b, c, d]| (a, b, c, d));
                             let (_, layer) = terrio::vector::read_flatgeobuf_sparse(&file, &name, bbox)?;
-                            Ok(Dataset::from_layers(spatial_filter(&[layer], a.bbox)?, VectorDriver::FlatGeobuf))
+                            Ok(Dataset::from_layers(spatial_filter(vec![layer], a.bbox)?, VectorDriver::FlatGeobuf))
                         }
                         #[cfg(feature = "parquet")]
                         Some(Reader::Parquet(_)) => {
                             let bbox = a.bbox.map(|[a, b, c, d]| (a, b, c, d));
                             let layer =
                                 terrio::vector::read_geoparquet_sparse(&file, &name, a.row_groups.as_deref(), bbox, a.columns.as_deref())?;
-                            Ok(Dataset::from_layers(spatial_filter(&[layer], a.bbox)?, VectorDriver::Parquet))
+                            Ok(Dataset::from_layers(spatial_filter(vec![layer], a.bbox)?, VectorDriver::Parquet))
                         }
                         _ => Err(terrio::Error::InvalidArgument("not open".into())),
                     }
