@@ -223,7 +223,7 @@ pub(crate) fn from_numpy(array: &Bound<'_, PyUntypedArray>) -> PyResult<RasterDa
         let a = array.cast::<PyArrayDyn<bool>>()?.readonly();
         return Ok(RasterData::U8(a.as_array().iter().map(|b| *b as u8).collect()));
     }
-    Err(invalid(format!("unsupported array dtype {dtype}: use an integer or float32/float64 array")))
+    Err(invalid(format!("unsupported array dtype {dtype}: use a supported array in native byte order")))
 }
 
 /// The physical component type selected by a complex NumPy/GDAL sample name.
@@ -296,7 +296,7 @@ pub(crate) fn raster_array_data(array: &Bound<'_, PyUntypedArray>, target: Optio
     complex!(numpy::Complex32, F32, f64::from);
     complex!(numpy::Complex64, F64, std::convert::identity::<f64>);
     if target.is_some() {
-        return Err(invalid("a complex sample type requires a complex NumPy array"));
+        return Err(invalid("a complex sample type requires a complex NumPy array in native byte order"));
     }
     Ok((from_numpy(array)?, false))
 }
@@ -648,7 +648,11 @@ impl PyRaster {
             let array =
                 if complex { complex_to_numpy_as(py, r.data, r.rows * r.cols, &shape, double)? } else { to_numpy(py, r.data, &shape)? };
             match &out_dtype {
-                Some(d) => array.call_method1("astype", (d,)),
+                Some(d) => {
+                    let options = PyDict::new(py);
+                    options.set_item("copy", false)?;
+                    array.call_method("astype", (d,), Some(&options))
+                }
                 None => Ok(array),
             }
         })
@@ -916,7 +920,8 @@ impl PyRaster {
     ///     array: A 2-D `(rows, cols)` or 3-D `(bands, rows, cols)` integer, float or complex
     ///         array (booleans are stored as uint8). Complex bands count once.
     ///     complex_dtype: Optional CInt16, CInt32, CFloat32 or CFloat64 output sample type for
-    ///         complex input; integer components are rounded and saturated as GDAL 3.13.3 does.
+    ///         complex input; complex_int16/complex_int32/complex64/complex128 are aliases.
+    ///         Integer components are rounded and saturated as GDAL 3.13.3 does.
     ///     transform: The GDAL-style geotransform `(x_origin, pixel_width, row_rotation,
     ///         y_origin, column_rotation, pixel_height)`: north-up, rotated or south-up.
     ///     crs: The CRS: `"EPSG:4326"`, WKT or a PROJ string. `None` leaves it unknown.

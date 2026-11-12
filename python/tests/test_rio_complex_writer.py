@@ -1,5 +1,7 @@
 """Complex GeoTIFF writes and copies against GDAL 3.13.3, including exact Int32 components."""
 
+import sys
+
 import numpy as np
 import pytest
 
@@ -428,12 +430,15 @@ def test_readable_cint32_writer_boundless_output_preserves_components(
         ("complex64", "CInt32"),
         ("complex128", "CFloat32"),
         ("complex64", "CFloat64"),
+        ("complex_int16", "CFloat32"),
+        ("complex_int16", "CFloat64"),
+        ("complex_int16", "CInt32"),
     ],
 )
 def test_complex_writer_rejects_a_conflicting_physical_sample_selector(tmp_path, dtype, sample):
     """Private copy metadata cannot select storage inconsistent with the writer buffer."""
     path = tmp_path / "conflicting.tif"
-    with pytest.raises(TypeError, match="needs dtype"):
+    with pytest.raises(TypeError, match="needs dtype|complex_int16 is CInt16"):
         rio.open(
             path,
             "w",
@@ -514,3 +519,53 @@ def test_integer_complex_copy_preserves_resource_refusal(tmp_path, monkeypatch, 
             with pytest.raises(ResourceLimitError) as caught:
                 reader._read_for_copy()
             assert caught.value is refusal
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux usable-memory policy")
+def test_precise_complex_copy_checks_wide_output_before_allocation(tmp_path, gdal):
+    """A 72 MiB CInt32 source cannot produce a 144 MiB buffer under a 128 MiB policy."""
+    import os
+    import subprocess
+    import sys
+
+    source = tmp_path / "wide-copy.tif"
+    dataset = gdal.GetDriverByName("GTiff").Create(
+        str(source),
+        1024,
+        9216,
+        1,
+        gdal.GDT_CInt32,
+        options=["TILED=YES", "COMPRESS=DEFLATE"],
+    )
+    dataset.GetRasterBand(1).Fill(16777217, -16777219)
+    dataset.Close()
+    script = """
+import resource
+import sys
+import terrio
+from terrio.rio import open
+from terrio.rio.windows import Window
+_, hard = resource.getrlimit(resource.RLIMIT_RSS)
+resource.setrlimit(resource.RLIMIT_RSS, (min(hard, 128 << 20) if hard >= 0 else 128 << 20, hard))
+with open(sys.argv[1]) as reader:
+    small = reader._read_for_copy(Window(0, 0, 16, 16))
+    assert small.dtype.name == "complex128"
+    assert (small == complex(16777217, -16777219)).all()
+    try:
+        reader._read_for_copy()
+    except terrio.ResourceLimitError:
+        pass
+    else:
+        raise AssertionError("unchecked 144 MiB complex copy output")
+"""
+    environment = dict(os.environ)
+    for option in ("TERRIO_MAX_DECLARED_BYTES", "TERRIO_MAX_BANDS", "TERRIO_TIFF_MAX_CHUNK_BYTES"):
+        environment.pop(option, None)
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(source)],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

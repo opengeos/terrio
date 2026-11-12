@@ -1536,6 +1536,8 @@ class DatasetReader(DatasetBase):
                     int(v) for v in (window.col_off, window.row_off, window.width, window.height)
                 )
             )
+            height, width = (self.height, self.width) if region is None else (region[3], region[2])
+            _check_buffer(self.count, height, width, 16)
             try:
                 return np.asarray(self._raster.read(None, window=region, out_dtype="complex128"))
             except ResourceLimitError:
@@ -2388,6 +2390,8 @@ class DatasetWriter(DatasetReader):
                 raise TypeError("A valid dtype is required.") from None
             if dt not in _SUPPORTED_DTYPES:
                 raise TypeError(f"terrio cannot write {dt} rasters")
+            if dtype == "complex_int16" and complex_sample not in (None, "CInt16"):
+                raise TypeError(f"complex_int16 is CInt16, not {complex_sample}")
             if complex_sample is not None:
                 required_buffer = (
                     "complex128" if complex_sample in ("CInt32", "CFloat64") else "complex64"
