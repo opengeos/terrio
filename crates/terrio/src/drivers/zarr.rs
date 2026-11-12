@@ -2340,7 +2340,17 @@ fn epsg_only(code: u32) -> CrsInfo {
 /// The EPSG code of an authority code such as `EPSG:32631`.
 fn epsg_code(s: &str) -> Option<u32> {
     let (authority, code) = s.rsplit_once(':')?;
-    authority.trim_end_matches(':').rsplit(':').next()?.eq_ignore_ascii_case("EPSG").then(|| code.parse().ok()).flatten()
+    let authority = match authority.rsplit_once(':') {
+        Some((prefix, _version)) => {
+            let (namespace, authority) = prefix.rsplit_once(':')?;
+            if !namespace.eq_ignore_ascii_case("urn:ogc:def:crs") {
+                return None;
+            }
+            authority
+        }
+        None => authority,
+    };
+    authority.eq_ignore_ascii_case("EPSG").then(|| code.parse().ok()).flatten()
 }
 
 /// A Zarr array of a store whose objects the caller fetches ([`crate::sparse::SparseObjects`]),
@@ -3001,6 +3011,8 @@ mod tests {
         assert_eq!(epsg_code("EPSG:32631"), Some(32631));
         assert_eq!(epsg_code("epsg:4326"), Some(4326));
         assert_eq!(epsg_code("urn:ogc:def:crs:EPSG::3857"), Some(3857));
+        assert_eq!(epsg_code("urn:ogc:def:crs:EPSG:6.6:4326"), Some(4326));
+        assert_eq!(epsg_code("urn:ogc:def:crs:OGC:1.3:84"), None);
         assert_eq!(epsg_code("OGC:CRS84"), None);
         assert_eq!(epsg_code("EPSG:x"), None);
         assert_eq!(proj_crs::<false>(&json!({"proj:epsg": 32630})).and_then(|c| c.epsg), Some(32630));

@@ -152,7 +152,7 @@ snapshot:
 
 ## Threads: `terrio-js/load` and `terrio-js/threads`
 
-A third module, `terrio-js/threads`, has every format and a thread pool of Web Workers (or
+A separate module, `terrio-js/threads`, has every format and a thread pool of Web Workers (or
 Node.js worker threads) over shared memory: GeoTIFF tiles and strips, JPEG 2000 tiles and Zarr
 chunks decode in parallel, and GeoTIFF/COG tiles, overviews and Zarr chunks are compressed in
 parallel, as natively. `terrio-js/load` picks it where WebAssembly threads run (Node.js 22 or

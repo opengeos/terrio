@@ -67,6 +67,15 @@ fn settle(value: JsValue) {
     }
 }
 
+/// Cancels active readers without waiting for their cancellation promises.
+fn cancel_all(readers: &RefCell<Vec<JsValue>>) {
+    for reader in readers.borrow_mut().drain(..) {
+        if let Ok(value) = call(&reader, "cancel", &[]) {
+            settle(value);
+        }
+    }
+}
+
 /// Release an unused response without replacing the original request error, and without waiting
 /// for the cancellation ([`settle`]).
 fn cancel_body(response: &JsValue) {
@@ -156,13 +165,7 @@ impl Fetcher {
         let failed = Cell::new(false);
         let readers = RefCell::new(Vec::new());
         let (whole, failed, readers) = (&whole, &failed, &readers);
-        let cancel_readers = || {
-            for reader in readers.borrow_mut().drain(..) {
-                if let Ok(value) = call(&reader, "cancel", &[]) {
-                    settle(value);
-                }
-            }
-        };
+        let cancel_readers = || cancel_all(readers);
         in_window(ranges, |&(offset, len)| async move {
             if whole.get() || failed.get() {
                 return Ok(());
@@ -331,11 +334,7 @@ impl Fetcher {
             }
             .await;
             if result.is_err() && !failed.replace(true) {
-                for reader in readers.borrow_mut().drain(..) {
-                    if let Ok(value) = call(&reader, "cancel", &[]) {
-                        settle(value);
-                    }
-                }
+                cancel_all(readers);
             }
             result
         })
