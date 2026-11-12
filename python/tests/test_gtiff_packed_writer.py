@@ -543,3 +543,25 @@ def test_cog_copy_of_an_overview_keeps_its_own_and_descendant_masks(tmp_path, gd
         np.testing.assert_array_equal(
             left.GetMaskBand().ReadAsArray(), right.GetMaskBand().ReadAsArray()
         )
+
+
+@pytest.mark.parametrize("failure", [PermissionError, ValueError])
+def test_selected_overview_tag_errors_are_not_hidden(tmp_path, monkeypatch, failure):
+    from terrio.rio import _tiff
+
+    source = tmp_path / "source.tif"
+    write_sample_width_images(source, [(np.ones((4, 4), dtype="uint8"), 1)], photometric=0)
+    write_sample_width_images(
+        tmp_path / "source.tif.ovr", [(np.full((2, 2), 200, dtype="uint8"), 8)]
+    )
+    with rio.open(source, overview_level=0) as reader:
+        read_tags = _tiff._terrio.tiff_tags
+
+        def failing_tags(path):
+            if path.endswith(".ovr"):
+                raise failure("overview tags unavailable")
+            return read_tags(path)
+
+        monkeypatch.setattr(_tiff._terrio, "tiff_tags", failing_tags)
+        with pytest.raises(failure, match="overview tags unavailable"):
+            _tiff.tiff_structure(str(source), reader._raster)

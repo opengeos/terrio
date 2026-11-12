@@ -396,7 +396,7 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
         if image is None:
             try:
                 external = _terrio.tiff_tags(path + ".ovr") or []
-            except Exception:
+            except FileNotFoundError:
                 external = []
             image = selected(external)
             ifds = [*ifds, *external]

@@ -412,7 +412,18 @@ impl LazyRaster {
         // The nodata values of the dataset read: a level read alone is one of its own
         // (`gdal_translate -ovr`), whose bands an external overview's tags describe.
         let nodata = self.level_band_nodata(&read.bands, read.fixed.flatten());
-        self.window_dataset(&read.bands, nodata, data, read.buf, geo_transform, gcp, whole)
+        let mut dataset = self.window_dataset(&read.bands, nodata, data, read.buf, geo_transform, gcp, whole)?;
+        if let Some(level) = read.fixed {
+            if let Some(bits) = self.level_sample_bits(level) {
+                dataset.set_sample_bits(bits);
+            } else if level.is_some() {
+                dataset.set_sample_bits(0);
+            }
+        } else if !self.overviews().is_empty() {
+            // AUTO may read different stored levels per band; no single width is guaranteed.
+            dataset.set_sample_bits(0);
+        }
+        Ok(dataset)
     }
 
     /// How the bands of a read are read, as GDAL's `RasterIO` reads them: from which level, and

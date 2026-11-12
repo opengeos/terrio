@@ -1447,6 +1447,9 @@ impl LazyRaster {
         let mut dataset = self.window_dataset(&bands, band_nodata, data, (window.width, window.height), geo_transform, gcp, whole)?;
         if let Some(bits) = self.level_sample_bits(options.overview) {
             dataset.set_sample_bits(bits);
+        } else if options.overview.is_some() {
+            // An unknown overview width cannot safely inherit the base image's NBITS.
+            dataset.set_sample_bits(0);
         }
         Ok(dataset)
     }
@@ -3051,6 +3054,42 @@ mod tests {
         assert_eq!(header.raster.metadata, dataset.raster.metadata);
         assert_eq!(header.raster.cols, 4);
         assert_eq!(lazy.dataset().unwrap().raster.data.len(), 24);
+    }
+
+    /// Unknown overview widths must not inherit a packed base width (GDAL 3.13.3 NBITS).
+    #[test]
+    fn unknown_overview_widths_do_not_clip_copied_samples() {
+        struct UnknownWidth;
+        impl WindowSource for UnknownWidth {
+            fn overviews(&self) -> Vec<(usize, usize)> {
+                vec![(2, 2)]
+            }
+            fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
+                Ok(RasterData::U16(vec![if level == 0 { 10 } else { 2000 }; window.width * window.height * bands.len()]))
+            }
+        }
+        let cfg = wbraster::RasterConfig { cols: 4, rows: 4, bands: 1, data_type: DataType::U16, ..Default::default() };
+        let mut header = RasterDataset::new(wbraster::Raster::from_data_native(cfg, RasterData::U16(vec![10; 16])).unwrap(), false);
+        header.set_sample_bits(9);
+        let mut source = LazyRaster::from_source(header, Box::new(UnknownWidth));
+        let base = source.read_window(Window::full(4, 4), &WindowOptions::default()).unwrap();
+        let inherited = |ds: &RasterDataset| {
+            crate::RasterWriteOptions::default()
+                .inherited_from(ds, Some(crate::formats::RasterDriver::GTiff))
+                .creation_options
+                .iter()
+                .find(|(key, _)| key == "NBITS")
+                .map(|(_, value)| value.parse::<u16>().unwrap())
+        };
+        assert_eq!(inherited(&base), Some(9));
+        let selected = source.read_window(Window::full(2, 2), &WindowOptions { overview: Some(0), ..Default::default() }).unwrap();
+        assert_eq!(inherited(&selected), None);
+        assert_eq!(selected.raster.data.to_f64_vec(), vec![2000.0; 4]);
+        for overview in [crate::ops::overview::OverviewSelection::Level(0), crate::ops::overview::OverviewSelection::Auto] {
+            let read = source.read_resampled(&crate::ResampledReadOptions { size: (2, 2), overview, ..Default::default() }).unwrap();
+            assert_eq!(inherited(&read), None);
+            assert_eq!(read.raster.data.to_f64_vec(), vec![2000.0; 4]);
+        }
     }
 
     #[test]
