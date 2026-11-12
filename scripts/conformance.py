@@ -3002,6 +3002,9 @@ def suite_schema_dimensions(ctx):
             ds.CreateLayer("empty", srs, wkb)
             ds = None  # closing the dataset writes the file
             opened = ogr.Open(path)
+            if opened is None:
+                suite.cases.append(Case("Declared dimensions", f"empty {kind}", DIFFERS, "GDAL could not reopen the file"))
+                continue
             gdal_type = opened.GetLayer(0).GetGeomType()
             opened = None
             gdal_name = names.get(gdal_type, ogr.GeometryTypeToName(gdal_type))
