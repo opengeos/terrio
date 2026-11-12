@@ -4577,6 +4577,7 @@ mod tests {
     /// its body twice, and the 307 that keeps it within its origin is not counted.
     #[test]
     fn a_post_is_counted_with_the_body_it_sends() {
+        let _serial = stats_test_guard();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let host = listener.local_addr().unwrap().to_string();
         let server = std::thread::spawn(move || {
@@ -4945,8 +4946,9 @@ mod tests {
         assert_eq!(counted(), (None, None), "reset per host and per file");
     }
 
-    /// Serializes the tests that check the process-wide statistics against the one that resets them.
-    fn stats_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    /// Serializes the tests that check the process-wide statistics against the one that resets them
+    /// (also those of [`super::store`]).
+    pub(super) fn stats_test_guard() -> std::sync::MutexGuard<'static, ()> {
         static SERIAL: Mutex<()> = Mutex::new(());
         SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
