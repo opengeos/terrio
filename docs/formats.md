@@ -124,7 +124,9 @@ whatever the compression.
 UInt16 and 17–32 bits for UInt32. Rows begin on byte boundaries; bits are stored
 most significant first. GTiff supports strips or tiles and COG is tiled. Both support pixel/band
 interleaving and NONE, LZW, DEFLATE, PACKBITS or ZSTD compression. Packed samples require
-`PREDICTOR=1`; signed, floating-point and complex `NBITS` requests are refused.
+`PREDICTOR=1` when compression uses a predictor; NONE ignores it. GDAL emits an
+ignored-option warning for NONE, while Terrio retains its existing quiet behavior.
+Signed, floating-point and complex `NBITS` requests are refused.
 Values above the stored unsigned maximum are clipped, as in GDAL 3.13.3. Palettes
 have exactly `2**NBITS` entries. Copies retain a compatible source bit width unless
 the caller overrides `NBITS`; a bilevel palette therefore stays a two-entry palette.
@@ -135,7 +137,10 @@ is silent, as in GDAL 3.13.3; wider packed domains report a clipping warning, in
 when a COG is compressed on worker threads.
 This applies to Rust, CLI/MCP, Python and JavaScript writes. Creating or refreshing
 overviews later with the standalone overview tools still refuses packed samples;
-a COG writer can generate its packed overviews while writing the new file.
+a COG writer can generate its packed overviews while writing the new file. An opened
+overview can be copied with its compatible later levels; the source base image is not
+copied again. Native TIFF readers expose compatible decoded sample types only, so a
+Byte/UInt16 mixture is not exposed as one overview pyramid.
 
 Deflate levels 6–9 supplement the bounded hash-chain search with up to four
 run-boundary candidates. This keeps long matches across repeating categorical

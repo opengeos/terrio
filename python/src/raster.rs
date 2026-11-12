@@ -781,6 +781,32 @@ impl PyRaster {
         })
     }
 
+    /// Internal metadata-only TIFF width policy, shared with native copies.
+    #[staticmethod]
+    #[pyo3(signature = (dtype, widths, nodata, compression, predictor, driver))]
+    fn _inherited_sample_bits(
+        dtype: &str,
+        widths: Vec<Option<String>>,
+        nodata: Vec<Option<f64>>,
+        compression: Option<&str>,
+        predictor: &str,
+        driver: &str,
+    ) -> Option<u16> {
+        let data_type = match dtype {
+            "uint8" => DataType::U8,
+            "uint16" => DataType::U16,
+            "uint32" => DataType::U32,
+            _ => return None,
+        };
+        let widths: Vec<_> = widths.into_iter().map(|value| value.and_then(|value| value.parse().ok())).collect();
+        let options = RasterWriteOptions {
+            compression: compression.map(str::to_string),
+            creation_options: vec![("PREDICTOR".into(), predictor.into())],
+            ..Default::default()
+        };
+        options.inherited_sample_bits(RasterDriver::from_name(driver)?, data_type, &widths, &nodata)
+    }
+
     /// Internal stored sample-width metadata, including a selected overview, without pixel I/O.
     ///
     /// Raises:

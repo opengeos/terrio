@@ -380,6 +380,8 @@ pub(crate) struct TiffOptions {
     /// A GeoTIFF whose overviews (and their masks) a COG copies rather than computing its own,
     /// as GDAL's COG driver does with a source that has some (`OVERVIEWS=AUTO`).
     pub source_overviews: Option<String>,
+    /// Source overview opened as the copy's base image; only its later levels are copied.
+    pub source_overview_level: Option<usize>,
     /// The number of a COG's overviews (`OVERVIEW_COUNT`); by default, until one fits in a tile.
     pub overview_count: Option<usize>,
     /// The block size of the raster written, which sets the blocks GDAL computes overviews in.
@@ -508,6 +510,7 @@ impl Default for TiffOptions {
             cog_resampling: None,
             cog_resampling_name: None,
             source_overviews: None,
+            source_overview_level: None,
             overview_count: None,
             source_block: None,
             block: None,
@@ -647,6 +650,9 @@ impl TiffOptions {
                 o.cog_resampling_name = Some(r.to_ascii_uppercase());
             }
             o.source_overviews = co("@COPY_SRC_OVERVIEWS").map(str::to_string);
+            o.source_overview_level = co("@COPY_SRC_OVERVIEW_LEVEL")
+                .map(|value| value.parse().map_err(|_| Error::InvalidArgument(format!("invalid source overview level '{value}'"))))
+                .transpose()?;
             o.mask_without_dataset = co("@MASK_WITHOUT_DATASET").is_some_and(yes);
             if let Some(n) = co("OVERVIEW_COUNT") {
                 let n: i64 = n.trim().parse().map_err(|_| Error::InvalidArgument(format!("invalid OVERVIEW_COUNT '{n}'")))?;
@@ -892,7 +898,7 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
         {
             return Err(Error::Unsupported("packed NBITS samples support NONE, LZW, DEFLATE, PACKBITS or ZSTD compression".into()));
         }
-        if packed && opts.predictor != 1 {
+        if packed && opts.compression.takes_predictor() && opts.predictor != 1 {
             return Err(Error::Unsupported("packed NBITS samples require PREDICTOR=1".into()));
         }
         if packed && opts.nodata.is_some_and(|v| !v.is_finite() || v < 0.0 || v > ((1u64 << bits) - 1) as f64 || v.fract() != 0.0) {
@@ -1212,13 +1218,18 @@ fn cog_method(opts: &TiffOptions) -> Method {
 /// makes them (`bGenerateMskOvr`), cascading from the full-resolution mask.
 fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels: &mut Vec<Level>, masks: &mut Vec<Vec<u8>>) -> Result<()> {
     let mut src = crate::LazyRaster::open_tiff(path)?.ok_or_else(|| Error::InvalidArgument(format!("{path}: not a GeoTIFF")))?;
-    if (src.width(), src.height(), src.band_count(), src.data_type()) != (raster.cols, raster.rows, raster.bands, raster.data_type) {
+    let sizes = src.overviews();
+    let (width, height) = match opts.source_overview_level {
+        Some(i) => sizes.get(i).copied().ok_or_else(|| Error::InvalidArgument(format!("{path}: no source overview {i}")))?,
+        None => (src.width(), src.height()),
+    };
+    if (width, height, src.band_count(), src.data_type()) != (raster.cols, raster.rows, raster.bands, raster.data_type) {
         return Err(Error::InvalidArgument(format!("{path}: not the raster written")));
     }
-    let sizes = src.overviews();
-    let own_masks = (0..sizes.len()).all(|i| src.has_overview_mask(i));
+    let first = opts.source_overview_level.map_or(0, |i| i + 1);
+    let own_masks = (first..sizes.len()).all(|i| src.has_overview_mask(i));
     let block = gdal_overview::ovr_block(opts.source_block);
-    for (i, (w, h)) in sizes.into_iter().enumerate() {
+    for (i, (w, h)) in sizes.into_iter().enumerate().skip(first) {
         let level = src.read_window(crate::Window::full(w, h), &crate::WindowOptions { bands: Vec::new(), overview: Some(i) })?;
         if let Some(bits) = opts.nbits {
             let max = (1u64 << bits) - 1;
@@ -3250,6 +3261,32 @@ mod tests {
             assert_eq!(result.sample_bits(), Some(12));
             assert_eq!(result.read().unwrap().raster.data.to_f64_vec(), vec![2000.0; 4]);
         }
+    }
+
+    /// GDAL 3.13.3 ignores an ineffective predictor for uncompressed packed output.
+    #[test]
+    fn inherited_packed_width_uses_the_effective_predictor() {
+        use crate::RasterWriteOptions;
+        for (compression, predictor, expected) in [("NONE", "2", Some(4)), ("DEFLATE", "2", None), ("LZW", "NO", Some(4))] {
+            let options = RasterWriteOptions {
+                compression: Some(compression.into()),
+                creation_options: vec![("PREDICTOR".into(), predictor.into())],
+                ..Default::default()
+            };
+            assert_eq!(options.inherited_sample_bits(crate::formats::RasterDriver::GTiff, DataType::U8, &[Some(4)], &[None]), expected);
+            assert_eq!(options.inherited_sample_bits(crate::formats::RasterDriver::GTiff, DataType::U8, &[Some(4)], &[Some(255.0)]), None);
+            assert_eq!(
+                options.inherited_sample_bits(crate::formats::RasterDriver::GTiff, DataType::U8, &[Some(4), Some(8)], &[None, None]),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn packed_inheritance_respects_each_drivers_default_compression() {
+        let options = crate::RasterWriteOptions { creation_options: vec![("PREDICTOR".into(), "2".into())], ..Default::default() };
+        assert_eq!(options.inherited_sample_bits(crate::formats::RasterDriver::GTiff, DataType::U8, &[Some(4)], &[None]), Some(4));
+        assert_eq!(options.inherited_sample_bits(crate::formats::RasterDriver::Cog, DataType::U8, &[Some(4)], &[None]), None);
     }
 
     /// GDAL 3.13.3 retains the packed width when copying an unchanged unsigned band.

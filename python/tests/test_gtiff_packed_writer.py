@@ -419,3 +419,127 @@ def test_copy_uses_full_width_for_a_requested_outside_domain_nodata(tmp_path, gd
     np.testing.assert_array_equal(result.ReadAsArray(), values)
     with pytest.raises(Exception, match="nodata.*NBITS=4"):
         copy(source, tmp_path / "explicit.tif", nodata=255, nbits=4)
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_cog_copy_of_an_overview_keeps_its_wider_descendant_levels(tmp_path, gdal, external):
+    """GDAL 3.13.3 overview views expose only their selected pixels and later levels."""
+    source, target = tmp_path / "levels.tif", tmp_path / "copied.tif"
+    base = np.arange(16 * 16, dtype="uint16").reshape(16, 16)
+    selected = np.full((8, 8), 300, dtype="uint16")
+    descendant = np.full((4, 4), 2000, dtype="uint16")
+    if external:
+        write_sample_width_images(source, [(base, 9)])
+        write_sample_width_images(tmp_path / "levels.tif.ovr", [(selected, 9), (descendant, 12)])
+    else:
+        write_sample_width_images(source, [(base, 9), (selected, 9), (descendant, 12)])
+    gt = (500000, 30, 0, 4100000, 0, -30)
+    original = gdal.Open(str(source), gdal.GA_Update)
+    original.SetGeoTransform(gt)
+    original.SetProjection("EPSG:32633")
+    original = None
+    reference = gdal.OpenEx(str(source), open_options=["OVERVIEW_LEVEL=0"])
+    np.testing.assert_array_equal(reference.ReadAsArray(), selected)
+    assert reference.GetRasterBand(1).GetOverviewCount() == 1
+    np.testing.assert_array_equal(
+        reference.GetRasterBand(1).GetOverview(0).ReadAsArray(), descendant
+    )
+    with rio.open(source, overview_level=0) as reader:
+        copy(reader, target, driver="COG")
+    result = gdal.Open(str(target))
+    assert result.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "12"
+    np.testing.assert_array_equal(result.ReadAsArray(), selected)
+    assert result.GetRasterBand(1).GetOverviewCount() == 1
+    np.testing.assert_array_equal(result.GetRasterBand(1).GetOverview(0).ReadAsArray(), descendant)
+    assert (
+        result.GetGeoTransform() == reference.GetGeoTransform() == (500000, 60, 0, 4100000, 0, -60)
+    )
+    assert result.GetSpatialRef().IsSame(reference.GetSpatialRef())
+    assert result.GetRasterBand(1).GetNoDataValue() is None
+    assert np.all(result.GetRasterBand(1).GetMaskBand().ReadAsArray() == 255)
+
+
+@pytest.mark.parametrize("surface", ["rio", "native"])
+def test_uncompressed_packed_copy_ignores_an_ineffective_predictor(tmp_path, gdal, surface):
+    import terrio
+
+    source, target = tmp_path / "source.tif", tmp_path / "copy.tif"
+    values = np.arange(16, dtype="uint8").reshape(4, 4)
+    write_sample_width_images(source, [(values, 4)])
+    if surface == "rio":
+        copy(source, target, compress="NONE", predictor=2)
+    else:
+        terrio.open_raster(str(source)).write(
+            str(target), compress="NONE", options={"PREDICTOR": "2"}
+        )
+    result = gdal.Open(str(target))
+    assert result.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "4"
+    assert result.GetMetadataItem("PREDICTOR", "IMAGE_STRUCTURE") is None
+    np.testing.assert_array_equal(result.ReadAsArray(), values)
+    explicit = tmp_path / "explicit.tif"
+    with rio.open(
+        explicit,
+        "w",
+        driver="GTiff",
+        width=4,
+        height=4,
+        count=1,
+        dtype="uint8",
+        nbits=4,
+        compress="NONE",
+        predictor=2,
+    ) as writer:
+        writer.write(values, 1)
+    np.testing.assert_array_equal(gdal.Open(str(explicit)).ReadAsArray(), values)
+
+
+@pytest.mark.parametrize("surface", ["rio", "native"])
+def test_default_cog_compression_does_not_inherit_an_incompatible_width(tmp_path, gdal, surface):
+    import terrio
+
+    source, target = tmp_path / "source.tif", tmp_path / "copy.tif"
+    values = np.arange(16, dtype="uint8").reshape(4, 4)
+    write_sample_width_images(source, [(values, 4)])
+    if surface == "rio":
+        copy(source, target, driver="COG", predictor=2)
+    else:
+        terrio.open_raster(str(source)).write(str(target), driver="COG", options={"PREDICTOR": "2"})
+    result = gdal.Open(str(target))
+    assert result.GetMetadataItem("COMPRESSION", "IMAGE_STRUCTURE") == "LZW"
+    assert result.GetMetadataItem("PREDICTOR", "IMAGE_STRUCTURE") == "2"
+    assert result.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") is None
+    np.testing.assert_array_equal(result.ReadAsArray(), values)
+
+
+def test_cog_copy_of_an_overview_keeps_its_own_and_descendant_masks(tmp_path, gdal):
+    source, target = tmp_path / "masked.tif", tmp_path / "copy.tif"
+    values = np.arange(32 * 32, dtype="uint16").reshape(32, 32) % 512
+    mask = np.where(np.indices((32, 32)).sum(axis=0) % 3, 255, 0).astype("uint8")
+    previous = gdal.GetConfigOption("GDAL_TIFF_INTERNAL_MASK")
+    gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
+    try:
+        dataset = gdal.GetDriverByName("GTiff").Create(
+            str(source), 32, 32, 1, gdal.GDT_UInt16, options=["NBITS=9"]
+        )
+        dataset.SetGeoTransform((500000, 10, 0, 4100000, 0, -10))
+        dataset.WriteArray(values)
+        dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
+        dataset.GetRasterBand(1).GetMaskBand().WriteArray(mask)
+        dataset.BuildOverviews("NEAREST", [2, 4])
+        dataset = None
+    finally:
+        gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", previous)
+    reference = gdal.OpenEx(str(source), open_options=["OVERVIEW_LEVEL=0"])
+    with rio.open(source, overview_level=0) as reader:
+        copy(reader, target, driver="COG")
+    result = gdal.Open(str(target))
+    expected = reference.GetRasterBand(1)
+    actual = result.GetRasterBand(1)
+    assert (result.RasterXSize, result.RasterYSize, actual.GetOverviewCount()) == (16, 16, 1)
+    assert actual.GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "9"
+    assert result.GetGeoTransform() == reference.GetGeoTransform()
+    for left, right in [(actual, expected), (actual.GetOverview(0), expected.GetOverview(0))]:
+        np.testing.assert_array_equal(left.ReadAsArray(), right.ReadAsArray())
+        np.testing.assert_array_equal(
+            left.GetMaskBand().ReadAsArray(), right.GetMaskBand().ReadAsArray()
+        )

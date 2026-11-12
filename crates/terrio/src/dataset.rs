@@ -1950,6 +1950,50 @@ pub(crate) fn ensure_writable_location(path: &str) -> Result<()> {
 }
 
 impl RasterWriteOptions {
+    /// Selects a compatible inherited unsigned TIFF width (GDAL 3.13.3 NBITS).
+    /// Returns `None` for inconsistent/missing source widths, an explicit NBITS override,
+    /// incompatible output options, or nodata outside the stored domain. With uncompressed
+    /// output the effective predictor is always 1. Only GTiff/COG output inherits widths.
+    pub fn inherited_sample_bits(
+        &self,
+        driver: RasterDriver,
+        data_type: wbraster::DataType,
+        widths: &[Option<u16>],
+        nodata: &[Option<f64>],
+    ) -> Option<u16> {
+        if !matches!(driver, RasterDriver::GTiff | RasterDriver::Cog) {
+            return None;
+        }
+        let first = widths.first().copied().flatten()?;
+        let (minimum, capacity) = match data_type {
+            wbraster::DataType::U8 => (1, 8),
+            wbraster::DataType::U16 => (9, 16),
+            wbraster::DataType::U32 => (17, 32),
+            _ => return None,
+        };
+        let co = |key: &str| self.creation_options.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, value)| value.as_str());
+        let compression = self
+            .compression
+            .as_deref()
+            .or_else(|| co("COMPRESS"))
+            .unwrap_or(if driver == RasterDriver::Cog { "LZW" } else { "NONE" })
+            .to_ascii_uppercase();
+        if co("NBITS").is_some()
+            || first < minimum
+            || first > capacity
+            || widths.iter().any(|&value| value != Some(first))
+            || !matches!(compression.as_str(), "" | "NONE" | "LZW" | "DEFLATE" | "ZIP" | "PACKBITS" | "ZSTD")
+            || nodata
+                .iter()
+                .flatten()
+                .any(|&value| !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > ((1u64 << first) - 1) as f64)
+        {
+            return None;
+        }
+        let predictor = co("PREDICTOR").unwrap_or("1").trim().to_ascii_uppercase();
+        (matches!(compression.as_str(), "" | "NONE") || matches!(predictor.as_str(), "1" | "NO" | "NONE")).then_some(first)
+    }
+
     /// Metadata inheritance shared by whole-image and row-streamed TIFF writers.
     pub(crate) fn inherited_from(&self, ds: &RasterDataset, driver: Option<RasterDriver>) -> Self {
         let co = |key: &str| self.creation_options.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
@@ -1969,39 +2013,18 @@ impl RasterWriteOptions {
             }
         }
         let mut creation_options = self.creation_options.clone();
-        if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog))
-            && co("NBITS").is_none()
-            && co("PREDICTOR").is_none_or(|v| matches!(v.trim().to_ascii_uppercase().as_str(), "1" | "NO" | "NONE"))
-            && matches!(compression.to_ascii_uppercase().as_str(), "" | "NONE" | "LZW" | "DEFLATE" | "ZIP" | "PACKBITS" | "ZSTD")
-            && matches!(ds.raster.data_type, wbraster::DataType::U8 | wbraster::DataType::U16 | wbraster::DataType::U32)
-        {
-            let bits = |band| {
-                ds.metadata_domains
-                    .iter()
-                    .find(|(b, domain, _)| *b == Some(band) && domain == "IMAGE_STRUCTURE")
-                    .and_then(|(_, _, items)| items.iter().find(|(key, _)| key == "NBITS").map(|(_, value)| value.as_str()))
-            };
-            let minimum = match ds.raster.data_type {
-                wbraster::DataType::U16 => 9,
-                wbraster::DataType::U32 => 17,
-                _ => 1,
-            };
-            if let Some(first) = bits(0)
-                && first
-                    .parse::<u16>()
-                    .ok()
-                    .is_some_and(|bits| bits >= minimum && usize::from(bits) <= ds.raster.data_type.size_bytes() * 8)
-                && (1..ds.raster.bands).all(|band| bits(band) == Some(first))
-                && (1..=ds.raster.bands).all(|band| {
-                    ds.band_nodata(band).is_none_or(|value| {
-                        value.is_finite()
-                            && value >= 0.0
-                            && value.fract() == 0.0
-                            && value <= ((1u64 << first.parse::<u16>().unwrap()) - 1) as f64
-                    })
+        if let Some(driver @ (RasterDriver::GTiff | RasterDriver::Cog)) = driver {
+            let widths: Vec<_> = (0..ds.raster.bands)
+                .map(|band| {
+                    ds.metadata_domains
+                        .iter()
+                        .find(|(b, domain, _)| *b == Some(band) && domain == "IMAGE_STRUCTURE")
+                        .and_then(|(_, _, items)| items.iter().find(|(key, _)| key == "NBITS").and_then(|(_, value)| value.parse().ok()))
                 })
-            {
-                creation_options.push(("NBITS".into(), first.into()));
+                .collect();
+            let nodata: Vec<_> = (1..=ds.raster.bands).map(|band| ds.band_nodata(band)).collect();
+            if let Some(bits) = self.inherited_sample_bits(driver, ds.raster.data_type, &widths, &nodata) {
+                creation_options.push(("NBITS".into(), bits.to_string()));
             }
         }
         Self {

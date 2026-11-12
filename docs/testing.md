@@ -2825,3 +2825,12 @@ external tags once when needed (no pixel reads by that metadata helper). Bilevel
 clipping is silent in GDAL 3.13.3, while wider streamed COG clipping warns on the
 calling thread. The packed conformance comparison requires synthetic COG overviews
 and verifies each overview's stored NBITS as well as its independently decoded values.
+
+
+Selected-overview COG copies are checked with internal and external three-level
+UInt16 pyramids storing 9/9/12 bits. GDAL 3.13.3 independently checks the selected
+pixels, the later level, the output width, rescaled affine/CRS and masks. A shared
+Rust width-inheritance policy is exercised through native writes and the Python
+copy adapter, including GTiff/COG default compression and ineffective uncompressed
+predictors. Type promotion across incompatible native overview containers is not
+part of these controls; native TIFF discovery filters those levels.

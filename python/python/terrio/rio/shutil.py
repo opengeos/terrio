@@ -147,6 +147,33 @@ def _unwritten_on_error(dst: Any) -> Iterator[None]:
         raise
 
 
+def _inherited_nbits(src: Any, requested: dict[str, Any], driver: str) -> int | None:
+    """Normalize Python metadata/options before applying the shared Rust TIFF policy."""
+    from terrio import _terrio
+    from terrio.rio.dtypes import _getnpdtype
+
+    if driver.upper() not in ("GTIFF", "COG") or "nbits" in requested:
+        return None
+    compression = requested.get("compress")
+    compression = (
+        None if compression is None else str(getattr(compression, "value", compression)).upper()
+    )
+    predictor = requested.get("predictor")
+    if isinstance(predictor, bool):
+        predictor = "YES" if predictor else "NO"
+    predictor = "1" if predictor is None else str(getattr(predictor, "value", predictor)).upper()
+    widths = [src.tags(band, ns="IMAGE_STRUCTURE").get("NBITS") for band in src.indexes]
+    nodata = [requested["nodata"]] * src.count if "nodata" in requested else list(src.nodatavals)
+    return _terrio.Raster._inherited_sample_bits(
+        _getnpdtype(requested.get("dtype", src.dtypes[0])).name,
+        widths,
+        nodata,
+        compression,
+        predictor,
+        driver,
+    )
+
+
 def _copy_dataset(
     src: Any,
     dst_path: str,
@@ -168,8 +195,6 @@ def _copy_dataset(
         from_source: Whether a file written in rows is written from the source; otherwise the
             copy holds the source's pixels until it is written, whatever its format.
     """
-    import numpy as np
-
     from terrio.rio import open as rio_open
     from terrio.rio.dtypes import _getnpdtype
     from terrio.rio.windows import Window
@@ -179,38 +204,9 @@ def _copy_dataset(
         profile.pop(k, None)
     profile["driver"] = driver
     requested = {k.lower(): v for k, v in creation_options.items()}
-    compression = requested.get("compress") or "NONE"
-    predictor = requested.get("predictor")
-    if isinstance(predictor, bool):
-        predictor = "YES" if predictor else "NO"
-    predictor = "1" if predictor is None else str(getattr(predictor, "value", predictor)).upper()
-    packed_compression = str(getattr(compression, "value", compression)).upper() in (
-        "NONE",
-        "LZW",
-        "DEFLATE",
-        "ZIP",
-        "PACKBITS",
-        "ZSTD",
-    )
-    if (
-        driver.upper() in ("GTIFF", "COG")
-        and packed_compression
-        and predictor in ("1", "NO", "NONE")
-    ):
-        widths = {src.tags(band, ns="IMAGE_STRUCTURE").get("NBITS") for band in src.indexes}
-        output_dtype = _getnpdtype(requested.get("dtype", src.dtypes[0])).name
-        capacity = {"uint8": 8, "uint16": 16, "uint32": 32}.get(output_dtype, 0)
-        minimum = {"uint8": 1, "uint16": 9, "uint32": 17}.get(output_dtype, 1)
-        if len(widths) == 1 and None not in widths:
-            width = next(iter(widths))
-            if width.isascii() and width.isdecimal() and minimum <= int(width) <= capacity:
-                nodata = requested.get("nodata", src.nodata)
-                if nodata is None or (
-                    np.isfinite(nodata)
-                    and 0 <= nodata <= (1 << int(width)) - 1
-                    and float(nodata).is_integer()
-                ):
-                    profile["nbits"] = width
+    bits = _inherited_nbits(src, requested, driver)
+    if bits is not None:
+        profile["nbits"] = bits
     profile.update({k.lower(): v for k, v in creation_options.items()})
     if driver.upper() in ("GTIFF", "COG") and src.count > 1 and "interleave" not in profile:
         # GDALDriver::CreateCopy (gcore/gdaldriver.cpp): without INTERLEAVE, and without a
@@ -236,14 +232,19 @@ def _copy_dataset(
             and src.overviews(1)
         ):
             profile["@copy_src_overviews"] = src.name
+            base = getattr(src._raster, "_base", src._raster)
+            source_level = getattr(src._raster, "_level", None)
+            if source_level is not None:
+                profile["@copy_src_overview_level"] = source_level
             if "nbits" not in requested and "nbits" in profile:
-                base = getattr(src._raster, "_base", src._raster)
+                capacity = _getnpdtype(profile["dtype"]).itemsize * 8
+                first = 0 if source_level is None else source_level + 1
                 width = max(
                     int(profile["nbits"]),
-                    *(base._sample_bits(i) or capacity for i in range(len(src.overviews(1)))),
+                    *(base._sample_bits(i) or capacity for i in range(first, len(base.overviews))),
                 )
                 if width < capacity:
-                    profile["nbits"] = str(width)
+                    profile["nbits"] = width
                 else:
                     profile.pop("nbits")
     gcps, gcp_crs = src.gcps
