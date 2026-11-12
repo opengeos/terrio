@@ -232,6 +232,9 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
         for raw in &raws {
             if let Some(node) = raw.geometry {
                 check_geometry_reference(node, srs_name, srs.as_ref(), swap)?;
+                if dimension == 3 {
+                    validate_geometry_dimensions(node, dimension)?;
+                }
             }
         }
         for (fid, raw) in raws.iter().enumerate() {
@@ -264,6 +267,66 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
         return Err(Error::InvalidData("GML: no features".into()));
     }
     Ok(layers)
+}
+
+fn validate_geometry_dimensions(node: &Element, dimension: usize) -> Result<()> {
+    let dimension = node.attr("srsDimension").and_then(|value| value.parse().ok()).unwrap_or(dimension);
+    match node.name.as_str() {
+        "MultiPoint" | "MultiLineString" | "MultiCurve" | "MultiPolygon" | "MultiSurface" | "CompositeSurface" | "MultiGeometry"
+        | "GeometryCollection" => {
+            for member in &node.children {
+                if member.name.ends_with("Members") {
+                    for child in &member.children {
+                        validate_geometry_dimensions(child, dimension)?;
+                    }
+                } else if member.name.ends_with("Member")
+                    && let Some(child) = member.children.first()
+                {
+                    validate_geometry_dimensions(child, dimension)?;
+                }
+            }
+            Ok(())
+        }
+        "OrientableSurface" => {
+            if let Some(surface) = node.find("Polygon").or_else(|| node.find("Surface")) {
+                validate_geometry_dimensions(surface, dimension)?;
+            }
+            Ok(())
+        }
+        "Polygon" | "Surface" => {
+            let patch = node.find("PolygonPatch").unwrap_or(node);
+            for boundary in patch
+                .children
+                .iter()
+                .filter(|child| matches!(child.name.as_str(), "exterior" | "outerBoundaryIs" | "interior" | "innerBoundaryIs"))
+            {
+                validate_coordinate_dimensions(boundary, dimension)?;
+            }
+            Ok(())
+        }
+        "Point" | "LineString" | "Curve" | "LinearRing" | "CompositeCurve" => validate_coordinate_dimensions(node, dimension),
+        _ => Ok(()),
+    }
+}
+
+fn validate_coordinate_dimensions(node: &Element, dimension: usize) -> Result<()> {
+    let dimension = node.attr("srsDimension").and_then(|value| value.parse().ok()).unwrap_or(dimension);
+    if matches!(node.name.as_str(), "pos" | "posList") {
+        let dimension = dimension.max(2);
+        let mut count = 0usize;
+        for value in node.text.split_ascii_whitespace() {
+            value.parse::<f64>().map_err(|_| Error::InvalidData("GML: invalid coordinate value".into()))?;
+            count += 1;
+        }
+        if !count.is_multiple_of(dimension) {
+            return Err(Error::InvalidData(format!("GML: {count} coordinate values do not form complete {dimension}-dimensional tuples")));
+        }
+    } else if !matches!(node.name.as_str(), "coordinates" | "coord") {
+        for child in &node.children {
+            validate_coordinate_dimensions(child, dimension)?;
+        }
+    }
+    Ok(())
 }
 
 fn check_geometry_reference(node: &Element, reference: Option<&str>, layer_srs: Option<&SpatialRef>, swap: bool) -> Result<()> {
@@ -748,6 +811,21 @@ mod tests {
             );
             let layers = parse(&xml::parse(&text).unwrap(), None).unwrap();
             assert_eq!(layers[0].features[0].geometry, Some(expected));
+        }
+    }
+
+    #[test]
+    fn incomplete_compound_coordinate_tuples_are_refused_instead_of_truncated() {
+        for geometry in [
+            "<Point><pos>52 4</pos></Point>",
+            "<LineString><posList>52 4 53 5</posList></LineString>",
+            "<MultiPoint><pointMember><Point><pos>52 4</pos></Point></pointMember></MultiPoint>",
+        ] {
+            let text = format!(
+                "<FeatureCollection><boundedBy><Envelope srsName=\"EPSG:4269+5713\"/></boundedBy><featureMember><p><geom>{geometry}</geom></p></featureMember></FeatureCollection>"
+            );
+            let error = parse(&xml::parse(&text).unwrap(), None).unwrap_err();
+            assert!(matches!(error, Error::InvalidData(ref message) if message.contains("complete 3-dimensional tuples")), "{error}");
         }
     }
 
