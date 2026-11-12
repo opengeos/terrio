@@ -222,11 +222,12 @@ then scale or convert the result; convolution kernels also respect the stored
 bit width. SUM retains its widened accumulation in both modes. Select the reference
 version with `TERRIO_GDAL_COMPAT=3.12` or `3.13`.
 Generated CUBIC overviews can reach a packed limit even when the base samples fit.
-The four-bit bright-edge conformance control matches an independent GDAL 3.13.3
-pyramid exactly; Terrio reports encode-time clipping where the reference is quiet.
 Values above the stored unsigned maximum are clipped, as in GDAL 3.13.3. Palettes
 have exactly `2**NBITS` entries. Copies retain a compatible source bit width unless
 the caller overrides `NBITS`; a bilevel palette therefore stays a two-entry palette.
+Generic metadata inheritance trusts the source's declared width without scanning
+pixels. Modified samples follow the same clipping policy; explicitly request the
+container width (8, 16 or 32) to preserve values exceeding inherited packed limits.
 This inheritance also covers unsigned widths reported by other supported sources,
 including 15-bit JPEG 2000 windows copied to GeoTIFF or COG.
 Implicit inheritance is omitted when nodata cannot fit the stored domain. A COG copy

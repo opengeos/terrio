@@ -1391,8 +1391,6 @@ Python regressions check bit-width preservation, bilevel palette copies, explici
 width overrides and refusals. Node verifies the stored TIFF tags and values through
 explicit exports and copies that inherit the source width.
 
-## Packed-TIFF copy and overview metadata
-
 Packed-TIFF copy regressions also check predictor aliases, compression enums and
 NumPy dtype objects, nodata outside the stored bit domain, and shared readers with
 wider overviews. Internal/external overview tests retain each image's photometric
@@ -1401,6 +1399,10 @@ external tags once when needed (no pixel reads by that metadata helper). Bilevel
 clipping is silent in GDAL 3.13.3, while wider streamed COG clipping warns on the
 calling thread. The packed conformance comparison requires synthetic COG overviews
 and verifies each overview's stored NBITS as well as its independently decoded values.
+The four-bit bright-edge CUBIC control matches an independent GDAL 3.13.3 pyramid
+exactly; Terrio reports encode-time clipping where the reference is quiet.
+The native metadata regression also requires NBITS to share its band's existing
+IMAGE_STRUCTURE domain with other items, preserving unrelated empty domains.
 
 Selected-overview COG copies are checked with internal and external three-level
 UInt16 pyramids storing 9/9/12 bits. GDAL 3.13.3 independently checks the selected

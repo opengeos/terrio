@@ -179,9 +179,16 @@ impl RasterDataset {
             && bits > 0
             && usize::from(bits) < self.raster.data_type.size_bytes() * 8
         {
-            self.metadata_domains.extend(
-                (0..self.raster.bands).map(|band| (Some(band), "IMAGE_STRUCTURE".into(), vec![("NBITS".into(), bits.to_string())])),
-            );
+            for band in 0..self.raster.bands {
+                let item = ("NBITS".into(), bits.to_string());
+                if let Some((_, _, items)) =
+                    self.metadata_domains.iter_mut().find(|(index, domain, _)| *index == Some(band) && domain == "IMAGE_STRUCTURE")
+                {
+                    items.push(item);
+                } else {
+                    self.metadata_domains.push((Some(band), "IMAGE_STRUCTURE".into(), vec![item]));
+                }
+            }
         }
     }
 
@@ -2049,6 +2056,8 @@ impl RasterWriteOptions {
     /// Returns `None` for inconsistent/missing source widths, an explicit NBITS override,
     /// incompatible output options, or nodata outside the stored domain. With uncompressed
     /// output the effective predictor is always 1. Only GTiff/COG output inherits widths.
+    /// This metadata policy trusts the source width; it does not inspect pixels. Modified
+    /// samples follow the encoder's clipping policy unless the caller overrides NBITS.
     pub fn inherited_sample_bits(
         &self,
         driver: RasterDriver,
@@ -2311,6 +2320,10 @@ mod tests {
         ds.metadata_domains.push((None, "EMPTY_DATASET".into(), Vec::new()));
         ds.metadata_domains.push((Some(0), "EMPTY_BAND".into(), Vec::new()));
         ds.set_sample_bits(4);
+        assert_eq!(ds.metadata_domains.iter().filter(|(band, domain, _)| *band == Some(0) && domain == "IMAGE_STRUCTURE").count(), 1);
+        let items = &ds.metadata_domains.iter().find(|(band, domain, _)| *band == Some(0) && domain == "IMAGE_STRUCTURE").unwrap().2;
+        assert!(items.contains(&("COMPRESSION".into(), "DEFLATE".into())));
+        assert!(items.contains(&("NBITS".into(), "4".into())));
         assert!(ds.metadata_domains.iter().any(|(band, domain, items)| band.is_none() && domain == "EMPTY_DATASET" && items.is_empty()));
         assert!(ds.metadata_domains.iter().any(|(band, domain, items)| *band == Some(0) && domain == "EMPTY_BAND" && items.is_empty()));
         let options = super::RasterWriteOptions::default().inherited_from(&ds, Some(crate::formats::RasterDriver::GTiff));
