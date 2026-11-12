@@ -1096,7 +1096,6 @@ mod tests {
     }
 
     /// A zip archive holding one member `name` with `bytes`, as its file contents.
-    #[cfg(remote)]
     fn zip_bytes(name: &str, bytes: &[u8]) -> Vec<u8> {
         let mut buf = std::io::Cursor::new(Vec::new());
         {
@@ -1125,16 +1124,9 @@ mod tests {
 
     /// A zip archive at a temporary path, holding one member `name` with `bytes`.
     fn zip_with_member(name: &str, bytes: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
-        let mut buf = std::io::Cursor::new(Vec::new());
-        {
-            let mut zip = zip::ZipWriter::new(&mut buf);
-            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
-            std::io::Write::write_all(&mut zip, bytes).unwrap();
-            zip.finish().unwrap();
-        }
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("archive.zip");
-        std::fs::write(&path, buf.into_inner()).unwrap();
+        std::fs::write(&path, zip_bytes(name, bytes)).unwrap();
         (dir, path)
     }
 
