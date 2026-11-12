@@ -1,7 +1,7 @@
 //! The `Raster` class: a raster in memory, or a GeoTIFF read by window.
 
 use crate::Detach;
-use crate::{PyResultExt, crs_string, invalid};
+use crate::{PyResultExt, crs_string, invalid, with_warnings};
 use numpy::{PyArray1, PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
@@ -134,14 +134,13 @@ impl PyRaster {
     /// Writes the raster to `path` with `options`, streaming tile archives by tile row when lazy
     /// and falling back to a whole read when the source inventory is unavailable.
     pub(crate) fn write_with_options(&mut self, py: Python<'_>, path: &str, mut options: RasterWriteOptions) -> PyResult<()> {
-        py.detach_result(|| {
+        with_warnings(py, || {
             self.inner.prepare_output_mask(path, &mut options, Window::full(self.inner.width(), self.inner.height()), None)?;
             if self.inner.can_stream_tile_archive(path, &options) {
                 return self.inner.write(path, &options);
             }
             self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))
         })
-        .py()
     }
 
     fn crs_ref(&self) -> SpatialRef {
@@ -927,6 +926,65 @@ impl PyRaster {
         })
     }
 
+    /// Internal metadata-only TIFF width policy, shared with native copies.
+    #[staticmethod]
+    #[pyo3(signature = (dtype, widths, nodata, compression, predictor, driver))]
+    fn _inherited_sample_bits(
+        dtype: &str,
+        widths: Vec<Option<String>>,
+        nodata: Vec<Option<f64>>,
+        compression: Option<&str>,
+        predictor: &str,
+        driver: &str,
+    ) -> Option<u16> {
+        let data_type = match dtype {
+            "uint8" => DataType::U8,
+            "uint16" => DataType::U16,
+            "uint32" => DataType::U32,
+            _ => return None,
+        };
+        let widths: Vec<_> = widths.into_iter().map(|value| value.and_then(|value| value.parse().ok())).collect();
+        let options = RasterWriteOptions {
+            compression: compression.map(str::to_string),
+            creation_options: vec![("PREDICTOR".into(), predictor.into())],
+            ..Default::default()
+        };
+        options.inherited_sample_bits(RasterDriver::from_name(driver)?, data_type, &widths, &nodata)
+    }
+
+    /// Internal stored sample-width metadata, including a selected overview, without pixel I/O.
+    ///
+    /// Raises:
+    ///     InvalidArgumentError: If the overview index does not exist.
+    #[pyo3(signature = (overview=None))]
+    fn _sample_bits(&self, overview: Option<usize>) -> PyResult<Option<u16>> {
+        if let Some(index) = overview {
+            self.inner.overviews().get(index).ok_or_else(|| invalid(format!("no overview {index}")))?;
+        }
+        Ok(self.inner.level_sample_bits(overview))
+    }
+
+    /// Internal native TIFF IFD identity, without additional file reads (GDAL 3.13.3).
+    fn _tiff_overview_ifd(&self, overview: usize) -> PyResult<Option<(bool, usize)>> {
+        self.inner.overviews().get(overview).ok_or_else(|| invalid(format!("no overview {overview}")))?;
+        Ok(self.inner.tiff_overview_ifd(overview))
+    }
+
+    /// Internal shared width policy for copies of a selected level and its descendants.
+    #[pyo3(signature = (overview, dtype, inherited))]
+    fn _copy_sample_bits_for_output(&self, overview: Option<usize>, dtype: &str, inherited: u16) -> PyResult<Option<u16>> {
+        if let Some(index) = overview {
+            self.inner.overviews().get(index).ok_or_else(|| invalid(format!("no overview {index}")))?;
+        }
+        let data_type = match dtype {
+            "uint8" => DataType::U8,
+            "uint16" => DataType::U16,
+            "uint32" => DataType::U32,
+            _ => return Ok(None),
+        };
+        Ok(self.inner.copy_sample_bits_for_output(overview, data_type, inherited))
+    }
+
     /// Internal overview metadata from the native mask discovery, without reading pixels.
     fn _overview_has_mask(&self, overview: usize) -> PyResult<bool> {
         self.inner.overviews().get(overview).ok_or_else(|| invalid(format!("no overview {overview}")))?;
@@ -1391,7 +1449,7 @@ impl PyGeoTiffWriter {
         }
         let mask: Option<Vec<u8>> = mask.map(|m| m.as_array().iter().copied().collect());
         let w = self.inner.as_mut().ok_or_else(|| invalid("the writer is closed"))?;
-        py.detach_result(|| w.write_rows(&data, rows, mask.as_deref())).py()
+        with_warnings(py, || w.write_rows(&data, rows, mask.as_deref()))
     }
 
     /// Writes the directory and closes the file.
@@ -1400,7 +1458,7 @@ impl PyGeoTiffWriter {
     ///     InvalidArgumentError: If rows are missing.
     fn close(&mut self, py: Python<'_>) -> PyResult<()> {
         match self.inner.take() {
-            Some(w) => py.detach_result(|| w.finish()).py(),
+            Some(w) => with_warnings(py, || w.finish()),
             None => Ok(()),
         }
     }

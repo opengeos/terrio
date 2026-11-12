@@ -1100,6 +1100,31 @@ def suite_vrt(ctx):
     )
 
 
+def suite_packed_tiff(ctx):
+    """Packed raster creation and preservation through copies."""
+    suite = Suite("packed-tiff", "Packed unsigned TIFF output", "GDAL TIFF decoder",
+                  "GTiff/COG writes, Python copies and CLI copies: exact base/overview samples, bit widths, container types, masks, nodata, affine and CRS. An independent GDAL CUBIC bright-edge pyramid checks generated packed overview values. An available WorldCover crop also checks the first 128 palette entries. JP2 AUTO copies retain precision; overview-only masks compare with source validity (GDAL COG copying drops them). Compressed bytes are not compared.")
+    missing = missing_modules("terrio", "numpy", "osgeo")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_packed_tiff_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        rows = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for row in rows:
+        suite.cases.append(Case("packed TIFF", row["name"], {"identical": IDENTICAL, "not compared": NOT_COMPARED}.get(row["status"], DIFFERS), row["detail"]))
+    required = {f"{driver} {bits}-bit" for driver in ("GTiff", "COG") for bits in (1, 4, 7, 12, 24, 31)}
+    required.update(("COG 4-bit CUBIC bright edge", "WorldCover palette", "JP2 15-bit AUTO to GTiff",
+                     "JP2 15-bit AUTO to COG", "COG overview-only source masks"))
+    if not required.issubset(row["name"] for row in rows) or (
+        code and not any(case.status == DIFFERS for case in suite.cases)
+    ):
+        suite.error = tail(err or out) or "incomplete packed TIFF comparisons"
+    return suite
+
 def suite_jp2_colors(ctx):
     """Real Landsat component values, channel roles and masks through each writer."""
     package = ROOT / "js/pkg-node/terrio.js"
@@ -3844,6 +3869,7 @@ SUITES = OrderedDict(
         ("vrt", suite_vrt),
         ("jp2-colors", suite_jp2_colors),
         ("overviews", suite_overviews),
+        ("packed-tiff", suite_packed_tiff),
         ("warp-grid", suite_warp_grid),
         ("sum-overviews", suite_sum_overviews),
         ("translate-overviews", suite_translate_overviews),

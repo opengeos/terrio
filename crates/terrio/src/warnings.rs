@@ -1,8 +1,8 @@
 //! Warnings: problems that do not stop an operation but change its result, such as a CRS that
 //! terrio reads but cannot represent. They are kept for the thread that raised them until taken
 //! with [`take`], so that callers (the command line, the Python bindings) can report them.
-//! Warnings are recorded on the caller's thread, during I/O and processing: those raised on other
-//! threads (a worker of a parallel operation) are kept for those threads and not reported.
+//! Warnings are recorded on the thread that raises them. Workers must explicitly return their
+//! warnings to the caller for reporting, as the streamed TIFF writer does when joined.
 
 use std::cell::RefCell;
 

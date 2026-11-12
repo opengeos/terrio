@@ -259,6 +259,14 @@ pub(crate) trait WindowSource: Send + Sync {
     fn band_data_type(&self, _band: usize) -> Option<DataType> {
         None
     }
+    /// Stored sample width of a selected level (GDAL 3.13.3 NBITS).
+    fn level_sample_bits(&self, _overview: Option<usize>) -> Option<u16> {
+        None
+    }
+    /// Native TIFF overview identity: whether external, and the original IFD index (GDAL 3.13.3).
+    fn tiff_overview_ifd(&self, _overview: usize) -> Option<(bool, usize)> {
+        None
+    }
     /// A second handle to an already shared source.
     fn shared_clone(&self) -> Option<Box<dyn WindowSource>> {
         None
@@ -387,6 +395,12 @@ impl WindowSource for SharedRaster {
     }
     fn band_data_type(&self, band: usize) -> Option<DataType> {
         self.lock().ok().map(|reader| reader.band_data_type(band))
+    }
+    fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
+        self.lock().ok()?.level_sample_bits(overview)
+    }
+    fn tiff_overview_ifd(&self, overview: usize) -> Option<(bool, usize)> {
+        self.lock().ok()?.tiff_overview_ifd(overview)
     }
     fn shared_clone(&self) -> Option<Box<dyn WindowSource>> {
         Some(Box::new(self.clone()))
@@ -1000,21 +1014,61 @@ impl LazyRaster {
     pub fn sample_bits(&self) -> Option<u16> {
         match &self.inner {
             Inner::Tiff(t) => Some(t.bits),
-            Inner::Memory(_) | Inner::Source(..) => None,
+            Inner::Source(_, source) => source.level_sample_bits(None),
+            Inner::Memory(_) => None,
         }
     }
 
     /// The bits of a sample of a level (full resolution, or an overview) as stored: an external
-    /// overview's own (its `.ovr` file is a dataset of its own, with its own `NBITS`), else
-    /// [`LazyRaster::sample_bits`].
-    pub(crate) fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
-        if let Inner::Tiff(t) = &self.inner
-            && overview.and_then(|i| t.levels.get(i + 1)).is_some_and(|l| l.external.is_some())
-            && let Some(ovr) = &t.ovr
-        {
-            return Some(ovr.bits);
+    /// or internal overview's own BitsPerSample, rather than the base image's width.
+    pub fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
+        match &self.inner {
+            Inner::Tiff(t) => t.levels.get(overview.map_or(0, |i| i + 1)).map(|l| l.bits),
+            Inner::Source(_, source) => source.level_sample_bits(overview),
+            _ => self.sample_bits(),
         }
-        self.sample_bits()
+    }
+
+    /// Native TIFF overview identity, including equal-sized levels (GDAL 3.13.3).
+    /// Returns whether its IFD belongs to the external overview file and its original index.
+    pub fn tiff_overview_ifd(&self, overview: usize) -> Option<(bool, usize)> {
+        match &self.inner {
+            Inner::Tiff(t) => t.levels.get(overview.checked_add(1)?).map(|level| (level.external.is_some(), level.ifd)),
+            Inner::Source(_, source) => source.tiff_overview_ifd(overview),
+            Inner::Memory(_) => None,
+        }
+    }
+
+    /// A width preserving a copied level and all its descendants (GDAL 3.13.3).
+    /// An unknown candidate width leaves inheritance disabled.
+    pub fn copy_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
+        let count = self.overviews().len();
+        let first = match overview {
+            Some(index) if index < count => index + 1,
+            Some(_) => return None,
+            None => 0,
+        };
+        std::iter::once(overview)
+            .chain((first..count).map(Some))
+            .try_fold(0u16, |widest, level| self.level_sample_bits(level).map(|bits| widest.max(bits)))
+    }
+
+    /// Selects an inherited copy width for a selected level and its descendants (GDAL 3.13.3).
+    /// Unknown stored widths or widths reaching the output container capacity omit NBITS.
+    pub fn copy_sample_bits_for_output(&self, overview: Option<usize>, data_type: DataType, inherited: u16) -> Option<u16> {
+        let capacity = match data_type {
+            DataType::U8 => 8,
+            DataType::U16 => 16,
+            DataType::U32 => 32,
+            _ => return None,
+        };
+        let width = inherited.max(self.copy_sample_bits(overview).unwrap_or(capacity));
+        (width < capacity).then_some(width)
+    }
+
+    /// A width that can retain samples from every stored level an AUTO read can select.
+    pub(crate) fn widest_sample_bits(&self) -> Option<u16> {
+        self.copy_sample_bits(None)
     }
 
     /// The driver.
@@ -1213,6 +1267,9 @@ impl LazyRaster {
         };
         let mut ds = RasterDataset::with_driver(raster, self.driver(), self.nodata().is_some());
         ds.complex = self.is_complex();
+        if let Some(bits) = self.sample_bits() {
+            ds.set_sample_bits(bits);
+        }
         ds.band_nodata = (1..=self.band_count()).map(|b| self.band_nodata(b)).collect();
         let first_nodata = ds.band_nodata.first().copied().flatten();
         ds.has_nodata = first_nodata.is_some();
@@ -1479,7 +1536,14 @@ impl LazyRaster {
         let (full_cols, full_rows) = (self.width() as f64, self.height() as f64);
         let gcp = |pixel: f64, line: f64| (pixel * lw as f64 / full_cols - x, line * lh as f64 / full_rows - y);
         let whole = options.overview.is_none() && window == Window::full(lw, lh);
-        self.window_dataset(&bands, band_nodata, data, (window.width, window.height), geo_transform, gcp, whole)
+        let mut dataset = self.window_dataset(&bands, band_nodata, data, (window.width, window.height), geo_transform, gcp, whole)?;
+        if let Some(bits) = self.level_sample_bits(options.overview) {
+            dataset.set_sample_bits(bits);
+        } else if options.overview.is_some() {
+            // An unknown overview width cannot safely inherit the base image's NBITS.
+            dataset.set_sample_bits(0);
+        }
+        Ok(dataset)
     }
 
     /// The nodata values of some bands (numbered from 1) at full resolution or of an overview,
@@ -1542,6 +1606,9 @@ impl LazyRaster {
             })
             .collect();
         ds.band_metadata = self.bands_metadata(bands);
+        if ds.raster.data_type == self.data_type() {
+            ds.metadata_domains = crate::dataset::selected_nbits(self.metadata_domains(), bands);
+        }
         ds.band_nodata = band_nodata;
         ds.complex = self.reads_complex(bands);
         if bands == [1] {
@@ -2217,6 +2284,8 @@ fn overview_resampling_metadata<R: Read + Seek>(decoder: &mut Decoder<R>) -> tif
 
 /// One image of a TIFF: the full-resolution image or an overview.
 struct Level {
+    /// BitsPerSample of this image, which can differ from the full-resolution image.
+    bits: u16,
     /// The image's index in the file.
     ifd: usize,
     width: usize,
@@ -2360,6 +2429,7 @@ impl TiffRaster {
         let reduced = dec.find_tag_unsigned::<u32>(Tag::NewSubfileType).ok().flatten().unwrap_or(0) & 1 != 0;
         let (cw, ch) = dec.chunk_dimensions();
         let mut levels = vec![Level {
+            bits,
             ifd: 0,
             reduced,
             width: w as usize,
@@ -2383,7 +2453,13 @@ impl TiffRaster {
                     let (ow, oh) = dec.dimensions().map_err(tiff_err)?;
                     let (cw, ch) = dec.chunk_dimensions();
                     let block = (cw as usize, ch as usize);
+                    let bits = dec
+                        .find_tag_unsigned_vec::<u16>(Tag::BitsPerSample)
+                        .map_err(tiff_err)?
+                        .and_then(|v| v.first().copied())
+                        .unwrap_or(1);
                     levels.push(Level {
+                        bits,
                         ifd,
                         reduced: subfile & 1 != 0,
                         width: ow as usize,
@@ -2456,6 +2532,7 @@ impl TiffRaster {
             // equal-sized and larger images; there is no reduction-factor gate.
             // Read through the `.ovr`'s own levels, which keep their tables.
             self.levels.push(Level {
+                bits: l.bits,
                 ifd: l.ifd,
                 reduced: l.reduced,
                 width: l.width,
@@ -3094,6 +3171,58 @@ mod tests {
         assert_eq!(header.raster.metadata, dataset.raster.metadata);
         assert_eq!(header.raster.cols, 4);
         assert_eq!(lazy.dataset().unwrap().raster.data.len(), 24);
+    }
+
+    /// Unknown overview widths must not inherit a packed base width (GDAL 3.13.3 NBITS).
+    #[test]
+    fn unknown_overview_widths_do_not_clip_copied_samples() {
+        struct UnknownWidth;
+        impl WindowSource for UnknownWidth {
+            fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
+                overview.is_none().then_some(9)
+            }
+            fn overviews(&self) -> Vec<(usize, usize)> {
+                vec![(2, 2)]
+            }
+            fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
+                Ok(RasterData::U16(vec![if level == 0 { 10 } else { 2000 }; window.width * window.height * bands.len()]))
+            }
+        }
+        let cfg = wbraster::RasterConfig { cols: 4, rows: 4, bands: 1, data_type: DataType::U16, ..Default::default() };
+        let mut header = RasterDataset::new(wbraster::Raster::from_data_native(cfg, RasterData::U16(vec![10; 16])).unwrap(), false);
+        header.set_sample_bits(9);
+        let mut source = LazyRaster::from_source(header, Box::new(UnknownWidth));
+        assert_eq!(source.widest_sample_bits(), None);
+        let base = source.read_window(Window::full(4, 4), &WindowOptions::default()).unwrap();
+        let inherited = |ds: &RasterDataset| {
+            crate::RasterWriteOptions::default()
+                .inherited_from(ds, Some(crate::formats::RasterDriver::GTiff))
+                .creation_options
+                .iter()
+                .find(|(key, _)| key == "NBITS")
+                .map(|(_, value)| value.parse::<u16>().unwrap())
+        };
+        assert_eq!(inherited(&base), Some(9));
+        assert_eq!(source.widest_sample_bits(), None);
+        let selected = source.read_window(Window::full(2, 2), &WindowOptions { overview: Some(0), ..Default::default() }).unwrap();
+        assert_eq!(inherited(&selected), None);
+        assert_eq!(selected.raster.data.to_f64_vec(), vec![2000.0; 4]);
+        let translated = crate::ops::translate::translate_lazy(
+            &mut source,
+            &crate::ops::translate::TranslateOptions {
+                out_size: Some((crate::ops::translate::Size::Pixels(2), crate::ops::translate::Size::Pixels(2))),
+                ..Default::default()
+            },
+            crate::ops::overview::OverviewSelection::Auto,
+        )
+        .unwrap();
+        assert_eq!(inherited(&translated), None);
+        assert_eq!(translated.raster.data.to_f64_vec(), vec![2000.0; 4]);
+        for overview in [crate::ops::overview::OverviewSelection::Level(0), crate::ops::overview::OverviewSelection::Auto] {
+            let read = source.read_resampled(&crate::ResampledReadOptions { size: (2, 2), overview, ..Default::default() }).unwrap();
+            assert_eq!(inherited(&read), None);
+            assert_eq!(read.raster.data.to_f64_vec(), vec![2000.0; 4]);
+        }
     }
 
     #[test]

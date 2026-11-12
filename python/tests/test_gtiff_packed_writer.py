@@ -1,0 +1,1016 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
+"""Packed unsigned TIFF writes and copies, compared with GDAL 3.13.3."""
+
+import struct
+
+import numpy as np
+import pytest
+
+import terrio.rio as rio
+from terrio.errors import NotFoundError
+from terrio.rio.errors import RasterioIOError
+from terrio.rio.shutil import copy
+from terrio.rio.transform import from_origin
+
+
+@pytest.mark.parametrize(
+    "bits,dtype",
+    [
+        (1, "uint8"),
+        (2, "uint8"),
+        (4, "uint8"),
+        (7, "uint8"),
+        (9, "uint16"),
+        (12, "uint16"),
+        (15, "uint16"),
+        (17, "uint32"),
+        (24, "uint32"),
+        (31, "uint32"),
+    ],
+)
+@pytest.mark.parametrize("driver", ["GTiff", "COG"])
+def test_packed_unsigned_write_retains_samples_and_bit_width(tmp_path, gdal, bits, dtype, driver):
+    """Verify packed unsigned write retains samples and bit width."""
+    y, x = np.mgrid[:19, :37]
+    values = ((x * 104729 + y * 15485863) % (1 << bits)).astype(dtype)
+    path = tmp_path / "packed.tif"
+    transform = from_origin(500000, 5800000, 10, 10)
+    with rio.open(
+        path,
+        "w",
+        driver=driver,
+        width=37,
+        height=19,
+        count=1,
+        dtype=dtype,
+        nbits=bits,
+        crs="EPSG:32633",
+        transform=transform,
+        compress="DEFLATE",
+        blocksize=16,
+        tiled=True,
+        blockxsize=16,
+        blockysize=16,
+    ) as dst:
+        dst.write(values, 1)
+    ds = gdal.Open(str(path))
+    band = ds.GetRasterBand(1)
+    assert band.GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == str(bits)
+    np.testing.assert_array_equal(band.ReadAsArray(), values)
+    assert ds.GetGeoTransform() == transform.to_gdal()
+    with rio.open(path) as src:
+        np.testing.assert_array_equal(src.read(1), values)
+        assert src.tags(1, ns="IMAGE_STRUCTURE")["NBITS"] == str(bits)
+
+
+@pytest.mark.parametrize("driver", ["GTiff", "COG"])
+def test_copy_retains_bilevel_palette(tmp_path, gdal, driver):
+    """Verify copy retains bilevel palette."""
+    values = (np.indices((19, 37)).sum(axis=0) % 3 == 0).astype("uint8")
+    source = tmp_path / "source.tif"
+    ds = gdal.GetDriverByName("GTiff").Create(
+        str(source), 37, 19, 1, gdal.GDT_Byte, options=["NBITS=1"]
+    )
+    ds.GetRasterBand(1).WriteArray(values)
+    palette = gdal.ColorTable()
+    palette.SetColorEntry(0, (0, 0, 0, 255))
+    palette.SetColorEntry(1, (255, 255, 255, 255))
+    ds.GetRasterBand(1).SetRasterColorTable(palette)
+    ds = None
+    path = tmp_path / "copy.tif"
+    copy(source, path, driver=driver, compress="DEFLATE")
+    ds = gdal.Open(str(path))
+    band = ds.GetRasterBand(1)
+    assert band.GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "1"
+    assert band.GetRasterColorTable().GetCount() == 2
+    np.testing.assert_array_equal(band.ReadAsArray(), values)
+
+
+@pytest.mark.parametrize(
+    "bits,dtype,extra",
+    [
+        (0, "uint8", {}),
+        (8, "uint16", {}),
+        (16, "uint32", {}),
+        (9, "uint8", {}),
+        (17, "uint16", {}),
+        (33, "uint32", {}),
+        ("invalid", "uint8", {}),
+        (4, "int16", {}),
+        (4, "float32", {}),
+        (4, "uint8", {"predictor": 2}),
+    ],
+)
+def test_invalid_packed_options_are_refused(tmp_path, bits, dtype, extra):
+    """Verify invalid packed options are refused."""
+    with pytest.raises(Exception, match="NBITS|packed"):
+        with rio.open(
+            tmp_path / "invalid.tif",
+            "w",
+            driver="GTiff",
+            width=9,
+            height=1,
+            count=1,
+            dtype=dtype,
+            nbits=bits,
+            compress="DEFLATE",
+            **extra,
+        ) as dst:
+            dst.write(np.zeros((1, 9), dtype=dtype), 1)
+
+
+def test_explicit_bit_width_overrides_the_source(tmp_path, gdal):
+    """Verify explicit bit width overrides the source."""
+    source = tmp_path / "source.tif"
+    ds = gdal.GetDriverByName("GTiff").Create(
+        str(source), 9, 1, 1, gdal.GDT_Byte, options=["NBITS=1"]
+    )
+    ds.GetRasterBand(1).WriteArray(np.array([[0, 1, 0, 1, 0, 1, 0, 1, 1]], dtype="uint8"))
+    ds = None
+    path = tmp_path / "wider.tif"
+    copy(source, path, nbits=4)
+    ds = gdal.Open(str(path))
+    assert ds.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "4"
+
+
+def write_sample_width_images(path, images, photometric=1):
+    """Write independent TIFF 6.0 strips with per-image sample widths for GDAL 3.13.3 checks."""
+    out = bytearray(b"II*\0" + struct.pack("<I", 8))
+    for index, (values, bits) in enumerate(images):
+        height, width = values.shape
+        samples = np.asarray(values, dtype="uint32")
+        binary = ((samples[..., None] >> np.arange(bits - 1, -1, -1, dtype="uint32")) & 1).astype(
+            "uint8"
+        )
+        payload = np.packbits(binary.reshape(height, -1), axis=1).tobytes()
+        count = 12
+        offset = len(out) + 2 + count * 12 + 4
+        tags = [
+            (254, 4, int(index > 0)),
+            (256, 4, width),
+            (257, 4, height),
+            (258, 3, bits),
+            (259, 3, 1),
+            (262, 3, photometric),
+            (273, 4, offset),
+            (277, 3, 1),
+            (278, 4, height),
+            (279, 4, len(payload)),
+            (284, 3, 1),
+            (339, 3, 1),
+        ]
+        out.extend(struct.pack("<H", count))
+        for tag, kind, value in tags:
+            out.extend(struct.pack("<HHI", tag, kind, 1))
+            out.extend(struct.pack("<H2x" if kind == 3 else "<I", value))
+        following = offset + len(payload) if index + 1 < len(images) else 0
+        out.extend(struct.pack("<I", following))
+        out.extend(payload)
+    path.write_bytes(out)
+
+
+@pytest.mark.parametrize("driver", ["GTiff", "COG"])
+def test_closed_packed_source_copy_keeps_destination(tmp_path, driver):
+    """Reject a closed packed reader before accessing metadata or changing output."""
+    source, target = tmp_path / "source.tif", tmp_path / "target.tif"
+    write_sample_width_images(
+        source,
+        [(np.ones((4, 4), dtype="uint8"), 4), (np.ones((2, 2), dtype="uint8"), 4)],
+    )
+    reader = rio.open(source)
+    reader.close()
+    target.write_bytes(b"existing output")
+    with pytest.raises(RasterioIOError, match="Dataset is closed"):
+        copy(reader, target, driver=driver)
+    assert target.read_bytes() == b"existing output"
+
+
+@pytest.mark.parametrize("driver", ["GTiff", "COG"])
+def test_internal_overview_copies_use_the_overviews_sample_width(tmp_path, gdal, driver):
+    """Verify internal overview copies use the overviews sample width."""
+    base = np.arange(16, dtype="uint16").reshape(4, 4)
+    values = np.array([[1000, 2000], [3000, 4000]], dtype="uint16")
+    source = tmp_path / "internal.tif"
+    write_sample_width_images(source, [(base, 9), (values, 12)])
+    reference = gdal.Open(str(source))
+    overview = reference.GetRasterBand(1).GetOverview(0)
+    assert overview.GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "12"
+    np.testing.assert_array_equal(overview.ReadAsArray(), values)
+    target = tmp_path / "internal-copy.tif"
+    with rio.open(source, overview_level=0) as reader:
+        assert reader.tags(1, ns="IMAGE_STRUCTURE")["NBITS"] == "12"
+        copy(reader, target, driver=driver)
+    actual = gdal.Open(str(target))
+    assert actual.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "12"
+    np.testing.assert_array_equal(actual.ReadAsArray(), values)
+
+
+def test_wider_cog_overview_copy_uses_the_widest_stored_width(tmp_path, gdal):
+    """Verify wider cog overview copy uses the widest stored width."""
+    driver = "COG"
+    source = tmp_path / "external.tif"
+    base = np.arange(16, dtype="uint8").reshape(4, 4)
+    values = np.full((2, 2), 200, dtype="uint8")
+    write_sample_width_images(source, [(base, 4)])
+    write_sample_width_images(tmp_path / "external.tif.ovr", [(values, 8)])
+    expected = gdal.Open(str(source))
+    np.testing.assert_array_equal(expected.GetRasterBand(1).GetOverview(0).ReadAsArray(), values)
+    target = tmp_path / "external-copy.tif"
+    with pytest.raises(Exception, match="overview.*NBITS=4"):
+        copy(source, target, driver=driver, nbits=4)
+    assert not target.exists()
+    copy(source, target, driver=driver)
+    actual = gdal.Open(str(target))
+    np.testing.assert_array_equal(actual.ReadAsArray(), base)
+    np.testing.assert_array_equal(actual.GetRasterBand(1).GetOverview(0).ReadAsArray(), values)
+
+
+@pytest.mark.parametrize("overview_kind", ["internal", "external"])
+def test_auto_translation_does_not_label_wider_overview_values_as_the_base(
+    tmp_path, gdal, overview_kind
+):
+    """Verify auto translation does not label wider overview values as the base."""
+    import terrio
+
+    source = tmp_path / "auto.tif"
+    if overview_kind == "internal":
+        base = np.arange(16, dtype="uint16").reshape(4, 4)
+        values, base_bits, overview_bits = np.full((2, 2), 2000, dtype="uint16"), 9, 12
+        write_sample_width_images(source, [(base, base_bits), (values, overview_bits)])
+    else:
+        base = np.arange(16, dtype="uint8").reshape(4, 4)
+        values, base_bits, overview_bits = np.full((2, 2), 200, dtype="uint8"), 4, 8
+        write_sample_width_images(source, [(base, base_bits)])
+        write_sample_width_images(tmp_path / "auto.tif.ovr", [(values, overview_bits)])
+    expected = gdal.Open(str(source))
+    np.testing.assert_array_equal(expected.GetRasterBand(1).GetOverview(0).ReadAsArray(), values)
+    target = tmp_path / "auto-copy.tif"
+    terrio.translate(str(source), str(target), outsize=(2, 2), overview="AUTO")
+    actual = gdal.Open(str(target))
+    np.testing.assert_array_equal(actual.ReadAsArray(), values)
+    assert actual.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == (
+        str(overview_bits) if overview_bits != values.dtype.itemsize * 8 else None
+    )
+
+
+@pytest.mark.parametrize("options", [{"compress": "JPEG"}, {"compress": "DEFLATE", "predictor": 2}])
+def test_incompatible_destination_options_do_not_inherit_packed_width(tmp_path, gdal, options):
+    """Verify incompatible destination options do not inherit packed width."""
+    source = tmp_path / "narrow.tif"
+    values = np.zeros((16, 16), dtype="uint8")
+    write_sample_width_images(source, [(values, 4)])
+    target = tmp_path / "compatible.tif"
+    copy(source, target, driver="GTiff", **options)
+    actual = gdal.Open(str(target))
+    assert actual.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") is None
+    np.testing.assert_array_equal(actual.ReadAsArray(), values)
+    with pytest.raises(Exception, match="packed NBITS"):
+        copy(source, tmp_path / "explicit.tif", driver="GTiff", nbits=4, **options)
+
+
+@pytest.mark.parametrize("driver", ["GTiff", "COG"])
+def test_unrepresentable_packed_nodata_is_refused_before_it_becomes_valid(tmp_path, driver):
+    """Verify unrepresentable packed nodata is refused before it becomes valid."""
+    target = tmp_path / "nodata.tif"
+    with pytest.raises(Exception, match="nodata.*NBITS=4"):
+        with rio.open(
+            target,
+            "w",
+            driver=driver,
+            dtype="uint8",
+            width=2,
+            height=1,
+            count=1,
+            nodata=255,
+            nbits=4,
+        ) as writer:
+            writer.write(np.array([[1, 255]], dtype="uint8"), 1)
+    assert not target.exists()
+
+
+@pytest.mark.parametrize(
+    "surface,options",
+    [
+        ("rio", {"predictor": "NO"}),
+        ("rio", {"predictor": "NONE"}),
+        ("rio", {"predictor": None}),
+        ("rio", {"predictor": False}),
+        ("rio", {"dtype": np.uint16}),
+        ("native", {"predictor": "NO"}),
+        ("native", {"predictor": "NONE"}),
+    ],
+)
+def test_copy_normalizes_options_before_inheriting_width(tmp_path, gdal, options, surface):
+    """Verify copy normalizes options before inheriting width."""
+    import terrio
+
+    source, target = tmp_path / "source.tif", tmp_path / "copy.tif"
+    values = np.arange(16, dtype="uint16").reshape(4, 4)
+    write_sample_width_images(source, [(values, 12)])
+    if surface == "rio":
+        copy(source, target, **options)
+    else:
+        terrio.open_raster(str(source)).write(str(target), options=options)
+    result = gdal.Open(str(target))
+    assert result.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "12"
+    np.testing.assert_array_equal(result.ReadAsArray(), values)
+
+
+def test_copy_accepts_compression_enum_without_losing_width(tmp_path, gdal):
+    """Verify copy accepts compression enum without losing width."""
+    from terrio.rio.enums import Compression
+
+    source, target = tmp_path / "source.tif", tmp_path / "copy.tif"
+    values = np.arange(16, dtype="uint8").reshape(4, 4)
+    write_sample_width_images(source, [(values, 4)])
+    copy(source, target, compress=Compression.lzw)
+    result = gdal.Open(str(target))
+    assert result.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "4"
+    np.testing.assert_array_equal(result.ReadAsArray(), values)
+
+
+@pytest.mark.parametrize("surface", ["rio", "native"])
+def test_implicit_width_does_not_make_stored_nodata_unrepresentable(tmp_path, gdal, surface):
+    """Verify implicit width does not make stored nodata unrepresentable."""
+    import terrio
+
+    source, target = tmp_path / "source.tif", tmp_path / "copy.tif"
+    original = gdal.GetDriverByName("GTiff").Create(
+        str(source), 4, 4, 1, gdal.GDT_Byte, options=["NBITS=4"]
+    )
+    values = np.arange(16, dtype="uint8").reshape(4, 4)
+    original.GetRasterBand(1).SetNoDataValue(255)
+    original.WriteArray(values)
+    original = None
+    if surface == "rio":
+        copy(source, target)
+    else:
+        terrio.open_raster(str(source)).write(str(target))
+    result = gdal.Open(str(target))
+    assert result.GetRasterBand(1).GetNoDataValue() == 255
+    assert result.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") is None
+    np.testing.assert_array_equal(result.ReadAsArray(), values)
+
+
+def test_sample_width_rejects_an_invalid_overview_index(tmp_path):
+    """Verify sample width rejects an invalid overview index."""
+    import terrio
+
+    source = tmp_path / "source.tif"
+    write_sample_width_images(source, [(np.zeros((4, 4), dtype="uint8"), 4)])
+    reader = terrio.open_raster(str(source), lazy=True)
+    assert reader._sample_bits() == 4
+    with pytest.raises(terrio.InvalidArgumentError, match="no overview 0"):
+        reader._sample_bits(0)
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_selected_overview_uses_its_own_photometric_tags(tmp_path, gdal, monkeypatch, external):
+    """Verify selected overview uses its own photometric tags."""
+    from terrio.rio import _tiff
+
+    tag_reads = []
+    read_tags = _tiff._terrio.tiff_tags
+
+    def tracked_tags(path):
+        """Record requested TIFF tag paths before reading their tags."""
+        tag_reads.append(path)
+        return read_tags(path)
+
+    monkeypatch.setattr(_tiff._terrio, "tiff_tags", tracked_tags)
+    source, target = tmp_path / "source.tif", tmp_path / "copy.tif"
+    base = np.ones((4, 4), dtype="uint8")
+    overview = np.full((2, 2), 200, dtype="uint8")
+    if external:
+        write_sample_width_images(source, [(base, 1)], photometric=0)
+        write_sample_width_images(tmp_path / "source.tif.ovr", [(overview, 8)])
+    else:
+        write_sample_width_images(source, [(base, 1), (overview, 8)], photometric=0)
+        raw = bytearray(source.read_bytes())
+        # Change only the second image's PhotometricInterpretation to MINISBLACK.
+        first = struct.unpack_from("<I", raw, 4)[0]
+        count = struct.unpack_from("<H", raw, first)[0]
+        second = struct.unpack_from("<I", raw, first + 2 + count * 12)[0]
+        count = struct.unpack_from("<H", raw, second)[0]
+        for i in range(count):
+            offset = second + 2 + i * 12
+            if struct.unpack_from("<H", raw, offset)[0] == 262:
+                struct.pack_into("<H", raw, offset + 8, 1)
+        source.write_bytes(raw)
+    reference = gdal.Open(str(source))
+    np.testing.assert_array_equal(reference.GetRasterBand(1).GetOverview(0).ReadAsArray(), overview)
+    with rio.open(source, overview_level=0) as reader:
+        assert reader.tags(ns="IMAGE_STRUCTURE").get("MINISWHITE") is None
+        with pytest.raises(ValueError):
+            reader.colormap(1)
+        np.testing.assert_array_equal(reader.read(1), overview)
+        assert tag_reads == [str(source)] + ([str(source) + ".ovr"] if external else [])
+        copy(reader, target)
+    result = gdal.Open(str(target))
+    assert result.GetRasterBand(1).GetRasterColorTable() is None
+    np.testing.assert_array_equal(result.ReadAsArray(), overview)
+
+
+@pytest.mark.parametrize("bits", [1, 4])
+@pytest.mark.parametrize("surface", ["streamed-cog", "whole", "streamed-gtiff"])
+def test_streamed_cog_reports_wider_clipping_but_keeps_bilevel_silent(
+    tmp_path, gdal, monkeypatch, bits, surface
+):
+    """GDAL 3.13.3 silently clips bilevel values; wider domains report clipping."""
+    import warnings
+
+    if surface == "streamed-gtiff":
+        monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", "1")
+    path = tmp_path / f"clipped-{bits}.tif"
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        with rio.open(
+            path,
+            "w",
+            driver="COG" if surface == "streamed-cog" else "GTiff",
+            width=32,
+            height=32,
+            count=1,
+            dtype="uint8",
+            nbits=bits,
+            blocksize=32,
+        ) as writer:
+            writer.write(np.full((1, 32, 32), 255, dtype="uint8"))
+    clipping = [str(w.message) for w in recorded if "clipped to fit" in str(w.message)]
+    assert len(clipping) == (1 if bits > 1 else 0)
+    result = gdal.Open(str(path))
+    np.testing.assert_array_equal(result.ReadAsArray(), np.full((32, 32), (1 << bits) - 1))
+
+
+def test_copy_uses_full_width_for_a_requested_outside_domain_nodata(tmp_path, gdal):
+    """Verify copy uses full width for a requested outside domain nodata."""
+    source, target = tmp_path / "source.tif", tmp_path / "copy.tif"
+    values = np.arange(16, dtype="uint8").reshape(4, 4)
+    write_sample_width_images(source, [(values, 4)])
+    copy(source, target, nodata=255)
+    result = gdal.Open(str(target))
+    assert result.GetRasterBand(1).GetNoDataValue() == 255
+    assert result.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") is None
+    np.testing.assert_array_equal(result.ReadAsArray(), values)
+    with pytest.raises(Exception, match="nodata.*NBITS=4"):
+        copy(source, tmp_path / "explicit.tif", nodata=255, nbits=4)
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_cog_copy_of_an_overview_keeps_its_wider_descendant_levels(tmp_path, gdal, external):
+    """GDAL 3.13.3 overview views expose only their selected pixels and later levels."""
+    source, target = tmp_path / "levels.tif", tmp_path / "copied.tif"
+    base = np.arange(16 * 16, dtype="uint16").reshape(16, 16)
+    selected = np.full((8, 8), 300, dtype="uint16")
+    descendant = np.full((4, 4), 2000, dtype="uint16")
+    if external:
+        write_sample_width_images(source, [(base, 9)])
+        write_sample_width_images(tmp_path / "levels.tif.ovr", [(selected, 9), (descendant, 12)])
+    else:
+        write_sample_width_images(source, [(base, 9), (selected, 9), (descendant, 12)])
+    gt = (500000, 30, 0, 4100000, 0, -30)
+    original = gdal.Open(str(source), gdal.GA_Update)
+    original.SetGeoTransform(gt)
+    original.SetProjection("EPSG:32633")
+    original = None
+    reference = gdal.OpenEx(str(source), open_options=["OVERVIEW_LEVEL=0"])
+    np.testing.assert_array_equal(reference.ReadAsArray(), selected)
+    assert reference.GetRasterBand(1).GetOverviewCount() == 1
+    np.testing.assert_array_equal(
+        reference.GetRasterBand(1).GetOverview(0).ReadAsArray(), descendant
+    )
+    with rio.open(source, overview_level=0) as reader:
+        copy(reader, target, driver="COG")
+    result = gdal.Open(str(target))
+    assert result.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "12"
+    np.testing.assert_array_equal(result.ReadAsArray(), selected)
+    assert result.GetRasterBand(1).GetOverviewCount() == 1
+    np.testing.assert_array_equal(result.GetRasterBand(1).GetOverview(0).ReadAsArray(), descendant)
+    assert (
+        result.GetGeoTransform() == reference.GetGeoTransform() == (500000, 60, 0, 4100000, 0, -60)
+    )
+    assert result.GetSpatialRef().IsSame(reference.GetSpatialRef())
+    assert result.GetRasterBand(1).GetNoDataValue() is None
+    assert np.all(result.GetRasterBand(1).GetMaskBand().ReadAsArray() == 255)
+
+
+@pytest.mark.parametrize("surface", ["rio", "native"])
+def test_uncompressed_packed_copy_ignores_an_ineffective_predictor(tmp_path, gdal, surface):
+    """Verify uncompressed packed copy ignores an ineffective predictor."""
+    import terrio
+
+    source, target = tmp_path / "source.tif", tmp_path / "copy.tif"
+    values = np.arange(16, dtype="uint8").reshape(4, 4)
+    write_sample_width_images(source, [(values, 4)])
+    if surface == "rio":
+        copy(source, target, compress="NONE", predictor=2)
+    else:
+        terrio.open_raster(str(source)).write(
+            str(target), compress="NONE", options={"PREDICTOR": "2"}
+        )
+    result = gdal.Open(str(target))
+    assert result.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "4"
+    assert result.GetMetadataItem("PREDICTOR", "IMAGE_STRUCTURE") is None
+    np.testing.assert_array_equal(result.ReadAsArray(), values)
+    explicit = tmp_path / "explicit.tif"
+    with rio.open(
+        explicit,
+        "w",
+        driver="GTiff",
+        width=4,
+        height=4,
+        count=1,
+        dtype="uint8",
+        nbits=4,
+        compress="NONE",
+        predictor=2,
+    ) as writer:
+        writer.write(values, 1)
+    np.testing.assert_array_equal(gdal.Open(str(explicit)).ReadAsArray(), values)
+
+
+@pytest.mark.parametrize("surface", ["rio", "native"])
+def test_default_cog_compression_does_not_inherit_an_incompatible_width(tmp_path, gdal, surface):
+    """Verify default cog compression does not inherit an incompatible width."""
+    import terrio
+
+    source, target = tmp_path / "source.tif", tmp_path / "copy.tif"
+    values = np.arange(16, dtype="uint8").reshape(4, 4)
+    write_sample_width_images(source, [(values, 4)])
+    if surface == "rio":
+        copy(source, target, driver="COG", predictor=2)
+    else:
+        terrio.open_raster(str(source)).write(str(target), driver="COG", options={"PREDICTOR": "2"})
+    result = gdal.Open(str(target))
+    assert result.GetMetadataItem("COMPRESSION", "IMAGE_STRUCTURE") == "LZW"
+    assert result.GetMetadataItem("PREDICTOR", "IMAGE_STRUCTURE") == "2"
+    assert result.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") is None
+    np.testing.assert_array_equal(result.ReadAsArray(), values)
+
+
+def test_cog_copy_of_an_overview_keeps_its_own_and_descendant_masks(tmp_path, gdal):
+    """Verify cog copy of an overview keeps its own and descendant masks."""
+    source, target = tmp_path / "masked.tif", tmp_path / "copy.tif"
+    values = np.arange(32 * 32, dtype="uint16").reshape(32, 32) % 512
+    mask = np.where(np.indices((32, 32)).sum(axis=0) % 3, 255, 0).astype("uint8")
+    previous = gdal.GetConfigOption("GDAL_TIFF_INTERNAL_MASK")
+    gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
+    try:
+        dataset = gdal.GetDriverByName("GTiff").Create(
+            str(source), 32, 32, 1, gdal.GDT_UInt16, options=["NBITS=9"]
+        )
+        dataset.SetGeoTransform((500000, 10, 0, 4100000, 0, -10))
+        dataset.WriteArray(values)
+        dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
+        dataset.GetRasterBand(1).GetMaskBand().WriteArray(mask)
+        dataset.BuildOverviews("NEAREST", [2, 4])
+        dataset = None
+    finally:
+        gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", previous)
+    reference = gdal.OpenEx(str(source), open_options=["OVERVIEW_LEVEL=0"])
+    with rio.open(source, overview_level=0) as reader:
+        copy(reader, target, driver="COG")
+    result = gdal.Open(str(target))
+    expected = reference.GetRasterBand(1)
+    actual = result.GetRasterBand(1)
+    assert (result.RasterXSize, result.RasterYSize, actual.GetOverviewCount()) == (16, 16, 1)
+    assert actual.GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "9"
+    assert result.GetGeoTransform() == reference.GetGeoTransform()
+    for left, right in [(actual, expected), (actual.GetOverview(0), expected.GetOverview(0))]:
+        np.testing.assert_array_equal(left.ReadAsArray(), right.ReadAsArray())
+        np.testing.assert_array_equal(
+            left.GetMaskBand().ReadAsArray(), right.GetMaskBand().ReadAsArray()
+        )
+
+
+@pytest.mark.parametrize("failure", [PermissionError, ValueError, NotFoundError])
+def test_selected_overview_tag_errors_are_not_hidden(tmp_path, monkeypatch, failure):
+    """Verify selected overview tag errors are not hidden."""
+    from terrio.rio import _tiff
+
+    source = tmp_path / "source.tif"
+    write_sample_width_images(source, [(np.ones((4, 4), dtype="uint8"), 1)], photometric=0)
+    write_sample_width_images(
+        tmp_path / "source.tif.ovr", [(np.full((2, 2), 200, dtype="uint8"), 8)]
+    )
+    with rio.open(source, overview_level=0) as reader:
+        read_tags = _tiff._terrio.tiff_tags
+
+        def failing_tags(path):
+            """Simulate a selected overview tag read failure."""
+            if path.endswith(".ovr"):
+                raise failure("overview tags unavailable")
+            return read_tags(path)
+
+        monkeypatch.setattr(_tiff._terrio, "tiff_tags", failing_tags)
+        with pytest.raises(failure, match="overview tags unavailable"):
+            _tiff.tiff_structure(str(source), reader._raster)
+
+
+def test_selected_duplicate_size_overview_uses_its_own_image_tags(tmp_path, gdal):
+    """GDAL 3.13.3 preserves IFD identity when overview dimensions repeat."""
+    source, target = tmp_path / "duplicate.tif", tmp_path / "copy.tif"
+    base = np.zeros((4, 4), dtype="uint8")
+    values = np.full((2, 2), 200, dtype="uint8")
+    write_sample_width_images(source, [(base, 8), (values, 8), (values, 8)])
+    raw = bytearray(source.read_bytes())
+    offset = struct.unpack_from("<I", raw, 4)[0]
+    count = struct.unpack_from("<H", raw, offset)[0]
+    offset = struct.unpack_from("<I", raw, offset + 2 + count * 12)[0]
+    count = struct.unpack_from("<H", raw, offset)[0]
+    for index in range(count):
+        entry = offset + 2 + index * 12
+        if struct.unpack_from("<H", raw, entry)[0] == 262:
+            struct.pack_into("<H", raw, entry + 8, 0)
+    source.write_bytes(raw)
+    with rio.open(source, overview_level=1) as reader:
+        assert reader.tags(ns="IMAGE_STRUCTURE").get("MINISWHITE") is None
+        np.testing.assert_array_equal(reader.read(1), values)
+        copy(reader, target)
+    np.testing.assert_array_equal(gdal.Open(str(target)).ReadAsArray(), values)
+
+
+def test_cog_copy_preserves_external_overviews_own_masks(tmp_path, gdal):
+    """External masks may differ from resampling the preceding mask (GDAL 3.13.3)."""
+    source, target = tmp_path / "external-mask.tif", tmp_path / "copy.tif"
+    values = np.arange(32 * 32, dtype="uint16").reshape(32, 32) % 512
+    write_sample_width_images(source, [(values, 9)])
+    previous = gdal.GetConfigOption("GDAL_TIFF_INTERNAL_MASK")
+    gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
+    try:
+        dataset = gdal.GetDriverByName("GTiff").Create(
+            str(source) + ".ovr", 16, 16, 1, gdal.GDT_UInt16, options=["NBITS=9"]
+        )
+        dataset.WriteArray(values[::2, ::2])
+        dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
+        dataset.GetRasterBand(1).GetMaskBand().Fill(255)
+        dataset.BuildOverviews("NEAREST", [2])
+        dataset.GetRasterBand(1).GetOverview(0).GetMaskBand().Fill(0)
+        dataset = None
+    finally:
+        gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", previous)
+    with rio.open(source, overview_level=0) as reader:
+        np.testing.assert_array_equal(reader.read_masks(1), np.full((16, 16), 255, dtype="uint8"))
+        copy(reader, target, driver="COG")
+    result = gdal.Open(str(target))
+    actual = result.GetRasterBand(1)
+    np.testing.assert_array_equal(
+        actual.GetOverview(0).GetMaskBand().ReadAsArray(), np.zeros((8, 8), dtype="uint8")
+    )
+
+
+def test_explicit_width_clips_selected_overview_as_ordinary_input(tmp_path, gdal):
+    """The selected base follows GDAL 3.13.3's explicit-width clipping policy."""
+    source, target = tmp_path / "selected.tif", tmp_path / "copy.tif"
+    write_sample_width_images(
+        source,
+        [
+            (np.zeros((8, 8), dtype="uint8"), 8),
+            (np.full((4, 4), 200, dtype="uint8"), 8),
+            (np.full((2, 2), 7, dtype="uint8"), 8),
+        ],
+    )
+    reference_source = gdal.OpenEx(str(source), open_options=["OVERVIEW_LEVEL=0"])
+    reference = gdal.GetDriverByName("COG").CreateCopy(
+        str(tmp_path / "reference.tif"), reference_source, options=["NBITS=4"]
+    )
+    with rio.open(source, overview_level=0) as reader, pytest.warns(UserWarning, match="clipped"):
+        copy(reader, target, driver="COG", nbits=4)
+    result = gdal.Open(str(target))
+    np.testing.assert_array_equal(result.ReadAsArray(), reference.ReadAsArray())
+    np.testing.assert_array_equal(result.ReadAsArray(), np.full((4, 4), 15, dtype="uint8"))
+    np.testing.assert_array_equal(
+        result.GetRasterBand(1).GetOverview(0).ReadAsArray(), np.full((2, 2), 7, dtype="uint8")
+    )
+
+
+def test_selected_overview_missing_tags_raise_instead_of_using_base(tmp_path, monkeypatch):
+    """A native selected IFD must have matching metadata rather than base image tags."""
+    from terrio.errors import InvalidArgumentError
+    from terrio.rio import _tiff
+
+    source = tmp_path / "missing-tags.tif"
+    write_sample_width_images(
+        source,
+        [
+            (np.zeros((4, 4), dtype="uint8"), 4),
+            (np.full((2, 2), 200, dtype="uint8"), 8),
+        ],
+    )
+    tags = _tiff._terrio.tiff_tags
+    monkeypatch.setattr(_tiff._terrio, "tiff_tags", lambda path: tags(path)[:1])
+    with pytest.raises(InvalidArgumentError, match="no matching image directory"):
+        rio.open(source, overview_level=0)
+
+
+@pytest.mark.parametrize(
+    "kernel", ["cubic", "cubicspline", "lanczos", "average", "bilinear", "rms", "mode"]
+)
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "default",
+        "uint16",
+        "uint32",
+        "uint64",
+        "int8",
+        "int16",
+        "int32",
+        "int64",
+        "float32",
+        "float64",
+        "scale",
+        "scale-float32",
+    ],
+)
+@pytest.mark.parametrize("bits", [4, None])
+def test_translate_matches_gdal_for_eager_lazy_and_path(tmp_path, gdal, kernel, mode, bits):
+    """GDAL 3.13.3 caps unscaled unsigned samples; scaled and float work keeps overshoot."""
+    import terrio
+
+    source = tmp_path / "packed-interpolation.tif"
+    maximum = 15 if bits == 4 else 255
+    values = np.array([0, 0, 0, maximum, maximum, 0, 0, 0], dtype="uint8")[None, :].repeat(
+        4, axis=0
+    )
+    dataset = gdal.GetDriverByName("GTiff").Create(
+        str(source), 8, 4, 1, gdal.GDT_Byte, options=[f"NBITS={bits}"] if bits else []
+    )
+    dataset.SetGeoTransform((0, 1, 0, 4, 0, -1))
+    dataset.WriteArray(values)
+    dataset = None
+    native_options, reference_options = {}, {}
+    if mode not in ("default", "scale"):
+        dtype = "float32" if mode == "scale-float32" else mode
+        native_options["ot"] = dtype
+        reference_options["outputType"] = {
+            "uint16": gdal.GDT_UInt16,
+            "uint32": gdal.GDT_UInt32,
+            "uint64": gdal.GDT_UInt64,
+            "int8": gdal.GDT_Int8,
+            "int16": gdal.GDT_Int16,
+            "int32": gdal.GDT_Int32,
+            "int64": gdal.GDT_Int64,
+            "float32": gdal.GDT_Float32,
+            "float64": gdal.GDT_Float64,
+        }[dtype]
+    if mode.startswith("scale"):
+        native_options["scale"] = (0, 15, 0, 30)
+        reference_options["scaleParams"] = [[0, 15, 0, 30]]
+    reference = gdal.Translate(
+        "",
+        str(source),
+        format="MEM",
+        width=32,
+        height=4,
+        resampleAlg=kernel,
+        **reference_options,
+    )
+    expected = reference.ReadAsArray()
+    for name, reader in [
+        ("path", str(source)),
+        ("eager", terrio.open_raster(str(source), lazy=False)),
+        ("lazy", terrio.open_raster(str(source), lazy=True)),
+    ]:
+        result = terrio.translate(reader, outsize=(32, 4), resampling=kernel, **native_options)
+        np.testing.assert_array_equal(result.read(1), expected, err_msg=f"{name}: {kernel}/{mode}")
+        if mode == "default":
+            output = tmp_path / f"{name}.tif"
+            result.write(str(output))
+            stored = gdal.Open(str(output))
+            assert stored.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == (
+                str(bits) if bits else None
+            )
+            np.testing.assert_array_equal(stored.ReadAsArray(), expected)
+
+
+@pytest.mark.parametrize("kernel", ["cubic", "cubicspline", "lanczos"])
+def test_memory_packed_resampled_read_retains_the_gdal_domain(tmp_path, gdal, kernel):
+    """Materialized TIFF metadata still determines GDAL 3.13.3's resampling clamp."""
+    import terrio
+
+    source = tmp_path / "memory-interpolation.tif"
+    dataset = gdal.GetDriverByName("GTiff").Create(
+        str(source), 8, 4, 1, gdal.GDT_Byte, options=["NBITS=4"]
+    )
+    dataset.WriteArray(
+        np.array([0, 0, 0, 15, 15, 0, 0, 0], dtype="uint8")[None, :].repeat(4, axis=0)
+    )
+    dataset = None
+    reference = gdal.Open(str(source))
+    algorithm = {
+        "cubic": gdal.GRIORA_Cubic,
+        "cubicspline": gdal.GRIORA_CubicSpline,
+        "lanczos": gdal.GRIORA_Lanczos,
+    }[kernel]
+    expected = reference.ReadAsArray(buf_xsize=32, buf_ysize=4, resample_alg=algorithm)
+    actual = terrio.open_raster(str(source), lazy=False).read_resampled(
+        (32, 4), band=1, resampling=kernel
+    )
+    np.testing.assert_array_equal(actual, expected)
+
+
+def remove_mask_directories(path, widths):
+    """Remove selected internal-mask IFDs without changing the GDAL-authored samples."""
+    raw = bytearray(path.read_bytes())
+    assert raw[:4] == b"II*\0"
+    offset, previous = struct.unpack_from("<I", raw, 4)[0], 4
+    while offset:
+        count = struct.unpack_from("<H", raw, offset)[0]
+        tags = {}
+        for index in range(count):
+            entry = offset + 2 + 12 * index
+            tag, kind, length = struct.unpack_from("<HHI", raw, entry)
+            if length == 1:
+                tags[tag] = struct.unpack_from("<H" if kind == 3 else "<I", raw, entry + 8)[0]
+        next_slot = offset + 2 + 12 * count
+        following = struct.unpack_from("<I", raw, next_slot)[0]
+        if tags.get(254, 0) & 4 and tags.get(256) in widths:
+            struct.pack_into("<I", raw, previous, following)
+        else:
+            previous = next_slot
+        offset = following
+    path.write_bytes(raw)
+
+
+@pytest.mark.parametrize("missing", [(8,), (16, 8), (32,), (32, 8)])
+@pytest.mark.parametrize("base_value", [0, 255])
+@pytest.mark.parametrize("size", [32, 1024])
+@pytest.mark.parametrize("nodata", [None, 0])
+def test_cog_copy_keeps_partial_and_overview_only_masks(
+    tmp_path, gdal, missing, base_value, size, nodata
+):
+    """Preserve source masks; GDAL 3.13.3 COG copies discard overview-only masks."""
+    source, target = tmp_path / "partial-mask.tif", tmp_path / "copy.tif"
+    previous = gdal.GetConfigOption("GDAL_TIFF_INTERNAL_MASK")
+    gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
+    try:
+        dataset = gdal.GetDriverByName("GTiff").Create(
+            str(source),
+            size,
+            size,
+            1,
+            gdal.GDT_UInt16,
+            options=["NBITS=9", "ENDIANNESS=LITTLE"],
+        )
+        dataset.SetGeoTransform((0, 1, 0, size, 0, -1))
+        dataset.GetRasterBand(1).Fill(7)
+        if nodata is not None:
+            dataset.GetRasterBand(1).SetNoDataValue(nodata)
+            dataset.GetRasterBand(1).WriteArray(np.zeros((8, 8), dtype="uint16"))
+        dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
+        dataset.GetRasterBand(1).GetMaskBand().Fill(base_value)
+        dataset.BuildOverviews("NEAREST", [2, 4])
+        dataset.GetRasterBand(1).GetOverview(0).GetMaskBand().Fill(255 - base_value)
+        dataset = None
+    finally:
+        gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", previous)
+    remove_mask_directories(source, tuple(width * size // 32 for width in missing))
+    reference_source = gdal.Open(str(source))
+    reference = gdal.GetDriverByName("COG").CreateCopy(
+        str(tmp_path / "reference.tif"), reference_source
+    )
+    copy(source, target, driver="COG")
+    result = gdal.Open(str(target))
+    # GDAL's COG copy drops overview-only masks. Preserve the source's masks instead
+    # when the base has none; other cases retain the ordinary GDAL-copy comparison.
+    expected_dataset = reference_source if 32 in missing else reference
+    actual, expected = result.GetRasterBand(1), expected_dataset.GetRasterBand(1)
+    if 32 in missing:
+        assert actual.GetMaskFlags() == expected.GetMaskFlags()
+    assert actual.GetOverviewCount() == expected.GetOverviewCount() == 2
+    for left, right in [(actual, expected)] + [
+        (actual.GetOverview(i), expected.GetOverview(i)) for i in range(2)
+    ]:
+        np.testing.assert_array_equal(left.ReadAsArray(), right.ReadAsArray())
+        np.testing.assert_array_equal(
+            left.GetMaskBand().ReadAsArray(), right.GetMaskBand().ReadAsArray()
+        )
+
+
+def test_cog_overview_only_masks_keep_implicit_alpha(tmp_path, gdal):
+    """Physical overview masks must not replace implicit alpha at other levels."""
+    source, target = tmp_path / "alpha-mask.tif", tmp_path / "copy.tif"
+    previous = gdal.GetConfigOption("GDAL_TIFF_INTERNAL_MASK")
+    gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
+    try:
+        dataset = gdal.GetDriverByName("GTiff").Create(
+            str(source), 32, 32, 4, gdal.GDT_Byte, options=["ENDIANNESS=LITTLE"]
+        )
+        dataset.SetGeoTransform((0, 1, 0, 32, 0, -1))
+        for band in range(1, 5):
+            dataset.GetRasterBand(band).Fill(255 if band == 4 else 7)
+        dataset.GetRasterBand(4).SetColorInterpretation(gdal.GCI_AlphaBand)
+        dataset.GetRasterBand(4).WriteArray(np.zeros((8, 8), dtype="uint8"))
+        dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
+        dataset.GetRasterBand(1).GetMaskBand().Fill(255)
+        dataset.BuildOverviews("NEAREST", [2, 4])
+        dataset.GetRasterBand(1).GetOverview(0).GetMaskBand().Fill(0)
+        dataset = None
+    finally:
+        gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", previous)
+    remove_mask_directories(source, (32, 8))
+    copy(source, target, driver="COG")
+    expected, actual = gdal.Open(str(source)), gdal.Open(str(target))
+    for band in range(1, 5):
+        left, right = actual.GetRasterBand(band), expected.GetRasterBand(band)
+        for a, b in [(left, right)] + [
+            (left.GetOverview(i), right.GetOverview(i)) for i in range(2)
+        ]:
+            assert a.GetMaskFlags() == b.GetMaskFlags()
+            np.testing.assert_array_equal(a.ReadAsArray(), b.ReadAsArray())
+            np.testing.assert_array_equal(
+                a.GetMaskBand().ReadAsArray(), b.GetMaskBand().ReadAsArray()
+            )
+
+
+@pytest.mark.parametrize("size", [32, 256])
+@pytest.mark.parametrize("surface", ["copy", "auto", "none"])
+@pytest.mark.parametrize("driver", ["GTiff", "COG"])
+def test_jp2_copy_inherits_unsigned_precision_as_gdal(tmp_path, gdal, driver, surface, size):
+    """A lossless 15-bit JPEG2000 source retains NBITS on copy, as GDAL 3.13.3 does."""
+    if gdal.GetDriverByName("JP2OpenJPEG") is None:
+        pytest.skip("GDAL JP2OpenJPEG is unavailable")
+    values = (
+        ((np.arange(size * size, dtype="uint32") % 1024) * 31).astype("uint16").reshape(size, size)
+    )
+    memory = gdal.GetDriverByName("MEM").Create("", size, size, 1, gdal.GDT_UInt16)
+    memory.WriteArray(values)
+    memory.SetGeoTransform((500000, 10, 0, 5800000, 0, -10))
+    memory.SetProjection(rio.CRS.from_epsg(32633).to_wkt())
+    source = tmp_path / "precision.jp2"
+    encoded = gdal.Translate(
+        str(source),
+        memory,
+        format="JP2OpenJPEG",
+        creationOptions=["NBITS=15", "REVERSIBLE=YES", "QUALITY=100"],
+    )
+    encoded.FlushCache()
+    encoded = None
+    reference = gdal.Translate(
+        str(tmp_path / "reference.tif"),
+        str(source),
+        format=driver,
+        **(
+            {
+                "width": size // 2,
+                "height": size // 2,
+                "overviewLevel": "NONE" if surface == "none" else "AUTO",
+            }
+            if surface != "copy"
+            else {}
+        ),
+    )
+    target = tmp_path / "copy.tif"
+    if surface == "copy":
+        copy(source, target, driver=driver)
+    else:
+        import terrio
+
+        terrio.translate(
+            str(source),
+            str(target),
+            format=driver,
+            outsize=(size // 2, size // 2),
+            overview="NONE" if surface == "none" else "AUTO",
+        )
+    actual = gdal.Open(str(target))
+    for dataset in (actual, reference):
+        band = dataset.GetRasterBand(1)
+        assert band.DataType == gdal.GDT_UInt16
+        assert band.GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "15"
+        assert dataset.GetGeoTransform() == reference.GetGeoTransform()
+        np.testing.assert_array_equal(dataset.ReadAsArray(), reference.ReadAsArray())
+
+
+@pytest.mark.parametrize("bits,dtype,value", [(1, "uint8", 255), (12, "uint16", 65535)])
+@pytest.mark.parametrize("driver", ["GTiff", "COG"])
+def test_translate_output_delivers_clipping_warning_to_caller(
+    tmp_path, gdal, bits, dtype, value, driver
+):
+    """Translation outputs follow GDAL 3.13.3 clipping, with caller-visible warnings."""
+    import warnings
+
+    import terrio
+
+    source, target = tmp_path / "source.tif", tmp_path / "target.tif"
+    values = np.full((32, 32), value, dtype=dtype)
+    with rio.open(
+        source,
+        "w",
+        width=32,
+        height=32,
+        count=1,
+        dtype=dtype,
+        transform=from_origin(0, 32, 1, 1),
+        crs="EPSG:4326",
+    ) as writer:
+        writer.write(values, 1)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        terrio.translate(str(source), str(target), format=driver, options={"NBITS": str(bits)})
+    clipped = [str(w.message) for w in caught if "clipped to fit" in str(w.message)]
+    assert len(clipped) == (1 if bits > 1 else 0)
+    actual = gdal.Open(str(target))
+    np.testing.assert_array_equal(actual.ReadAsArray(), np.full((32, 32), (1 << bits) - 1))

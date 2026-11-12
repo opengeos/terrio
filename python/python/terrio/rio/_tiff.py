@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from terrio import _terrio
-from terrio.errors import TerrioError
+from terrio.errors import InvalidArgumentError, TerrioError
 from terrio.rio._jpeg_quality import guess_jpeg_quality
 from terrio.rio.enums import ColorInterp
 
@@ -34,6 +34,7 @@ PHOTOMETRIC = 262
 SAMPLES = 277
 ROWS_PER_STRIP = 278
 PLANAR = 284
+PREDICTOR = 317
 COLOR_MAP = 320
 JPEG_TABLES = 347
 TILE_WIDTH = 322
@@ -377,7 +378,44 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
     if not ifds:
         return None
     t = ifds[0]
+    # Selected-level masks may live in the external overview file, alongside its images.
+    mask_ifds = ifds
+    native = getattr(raster, "_base", raster)
     s = default_structure(raster)
+    if (level := getattr(raster, "_level", None)) is not None:
+        location = native._tiff_overview_ifd(level)
+        image = None
+        if location is not None:
+            is_external, index = location
+            images = ifds
+            if is_external:
+                images = _terrio.tiff_tags(path + ".ovr") or []
+                mask_ifds = [*ifds, *images]
+            if index < len(images):
+                image = images[index]
+        if image is None:
+            raise InvalidArgumentError(f"TIFF overview {level} has no matching image directory")
+        # A selected level owns its image layout/colors; georeferencing and dataset
+        # metadata still come from the base image, as GDAL 3.13.3 reports them.
+        image_tags = {
+            BITS,
+            COMPRESSION,
+            PHOTOMETRIC,
+            SAMPLES,
+            ROWS_PER_STRIP,
+            PLANAR,
+            COLOR_MAP,
+            JPEG_TABLES,
+            TILE_WIDTH,
+            TILE_LENGTH,
+            EXTRA_SAMPLES,
+            SAMPLE_FORMAT,
+            INK_SET,
+            LERC_PARAMETERS,
+            PREDICTOR,
+        }
+        t = {key: value for key, value in t.items() if key not in image_tags}
+        t.update({key: value for key, value in image.items() if key in image_tags})
     n = s.count
     if TILE_WIDTH in t and TILE_LENGTH in t:
         s.block_shape = (_first(t[TILE_LENGTH]), _first(t[TILE_WIDTH]))
@@ -434,6 +472,7 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
         s.layout_path = path
     # libtiff's default BitsPerSample is 1, as the reader's.
     bits = _first(t.get(BITS), 1)
+    bits = native._sample_bits(getattr(raster, "_level", None)) or bits
     tables = t.get(JPEG_TABLES)
     if code == 7 and isinstance(tables, (bytes, list)):
         # The JPEG quality and tables mode GDAL guesses from the JPEGTables tag.
@@ -578,7 +617,7 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
 
     # A per-dataset mask of the selected image: type 4 at full resolution, type 5 for an overview.
     mask_type = 5 if getattr(raster, "_level", None) is not None else 4
-    for ifd in ifds[1:]:
+    for ifd in mask_ifds[1:]:
         if (_first(ifd.get(NEW_SUBFILE_TYPE)) & 5) == mask_type and _first(
             ifd.get(PHOTOMETRIC)
         ) == 4:

@@ -288,6 +288,8 @@ Command-group progress:
       Default TIFF readers capture a configurable decoded-chunk budget through
       `TERRIO_TIFF_MAX_CHUNK_BYTES` for trusted large stacks (#799), including Python spare
       readers; explicit Rust limits retain precedence.
+      GTiff and COG writers support packed unsigned samples, with compatible copies retaining
+      stored bit widths, including selected overviews (#711, #860).
 - [x] Vector: Shapefile (with `.prj`, `.cpg` and zipped), FlatGeobuf (with its spatial index),
       GeoParquet 1.1 (with bounding-box filtering), CSV with point or WKT columns, XLSX as GDAL's
       driver reads and writes it.

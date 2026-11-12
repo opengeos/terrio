@@ -23,6 +23,7 @@
 use super::Ct as Transformer;
 use super::overview::OverviewSelection;
 use super::vrt::SourceRead;
+use super::warp::KernelVersion;
 use super::{Grid, Resampling, convert_value, type_range};
 use crate::crs::SpatialRef;
 use crate::{Error, LazyRaster, RasterDataset, ResampledReadOptions, Result};
@@ -364,6 +365,11 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
     };
 
     let complex = o.scale.is_some() || o.exponent.is_some();
+    let convolution = matches!(o.resampling, Some(Resampling::Cubic | Resampling::CubicSpline | Resampling::Lanczos));
+    // GDAL 3.12 converts resampled values to the source type before VRT scaling
+    // or output conversion. GDAL 3.13 preserves the floating working values.
+    let modern = KernelVersion::configured() == KernelVersion::Gdal313;
+    let legacy_convolution = convolution && !modern;
     let n = crate::dataset::fallible::len(&[ow, oh], "a translated raster")?;
     let in_place = pixels.is_some();
     let mut out = match pixels {
@@ -398,7 +404,7 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
             src_rect: s,
             dst_rect: d,
             resampling: o.resampling.unwrap_or_default(),
-            working_float: complex,
+            working_float: modern && (complex || out_type != r.data_type),
             invalid_value: if complex { None } else { src_nodata },
             within_rects: false,
         };
@@ -440,11 +446,21 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
                 if float_working { s } else { s as f32 as f64 }
             }
         };
+        // GDAL 3.13.3 resamples SimpleSource unsigned outputs in their packed domain.
+        // ComplexSource scaling and signed/floating outputs keep their working overshoot.
+        // GDAL 3.12.1 instead clamps to source NBITS before scaling or retyping.
+        let maximum = (convolution && (legacy_convolution || !complex)).then(|| ds.band_sample_bits(b - 1)).flatten().and_then(|bits| {
+            crate::drivers::gdal_overview::nbits_max(u32::from(bits), if legacy_convolution { r.data_type } else { out_type })
+        });
+        let packed = |value: f64| match maximum {
+            Some(maximum) if !src_nodata.is_some_and(|nd| value == nd || (value.is_nan() && nd.is_nan())) => value.clamp(0.0, maximum),
+            _ => value,
+        };
         // Written in the output's type, converted as they are stored.
         crate::pixel::with_data!(&mut out, v => {
             let band = &mut v[k * n..(k + 1) * n];
             band.iter_mut().for_each(|x| *x = fill as _);
-            read.read_with_retained(ow, oh, band, retained, |x| convert_value(scaled(x), out_type) as _)?;
+            read.read_with_retained(ow, oh, band, retained, |x| convert_value(scaled(packed(x)), out_type) as _)?;
         });
     }
     let grid = Grid { width: ow, height: oh, geo_transform: gt };
@@ -462,6 +478,30 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
     } else {
         bands.iter().map(|&b| ds.band_metadata.get(b - 1).cloned().unwrap_or_default()).collect()
     };
+    if out_type == r.data_type && o.scale.is_none() && o.exponent.is_none() {
+        res.metadata_domains = crate::dataset::selected_nbits(&ds.metadata_domains, &bands);
+        // Aggregations such as SUM can leave the source's packed domain.
+        // Inherit a width only when every output sample in that band still fits.
+        res.metadata_domains.retain(|(band, _, items)| {
+            let Some(band) = *band else { return false };
+            let Some(maximum) = items
+                .iter()
+                .find(|(key, _)| key == "NBITS")
+                .and_then(|(_, value)| value.parse().ok())
+                .and_then(|bits| crate::drivers::gdal_overview::nbits_max(bits, out_type))
+            else {
+                return false;
+            };
+            let range = band * n..(band + 1) * n;
+            match &res.raster.data {
+                RasterData::U8(values) => values.get(range).is_some_and(|v| v.iter().all(|&v| f64::from(v) <= maximum)),
+                RasterData::U16(values) => values.get(range).is_some_and(|v| v.iter().all(|&v| f64::from(v) <= maximum)),
+                RasterData::U32(values) => values.get(range).is_some_and(|v| v.iter().all(|&v| f64::from(v) <= maximum)),
+                _ => false,
+            }
+        });
+    }
+
     if win != (0., 0., w, h)
         || ow != r.cols
         || oh != r.rows
@@ -622,6 +662,8 @@ struct LazyRead {
     by_strips: bool,
     /// Whether the output copies a window of the source, pixel for pixel.
     copy: bool,
+    /// The selected TIFF image's packed width, retained while values stay in their type.
+    sample_bits: Option<u16>,
     /// The conversion of the values read: type, nodata and georeferencing.
     values: TranslateOptions,
 }
@@ -642,6 +684,9 @@ impl LazyRead {
             ResampledReadOptions { window, size: (ow, h), ..self.read.clone() }
         };
         let mut resized = if self.together { src.read_resampled(&read)? } else { src.read_resampled_by_band(&read)? };
+        if let Some(bits) = self.sample_bits {
+            resized.set_sample_bits(bits);
+        }
         let mut gt = self.gt;
         gt[0] += y as f64 * gt[2];
         gt[3] += y as f64 * gt[5];
@@ -862,7 +907,18 @@ fn plan_lazy(src: &mut LazyRaster, o: &TranslateOptions, overview: OverviewSelec
         assign_ullr: o.assign_ullr,
         ..Default::default()
     };
-    Ok(Planned::Read(LazyRead { read, together, gt: geom.gt, gcps, whole, by_strips, copy, values }))
+    let sample_bits = o
+        .output_type
+        .is_none_or(|t| t == source_type)
+        .then(|| {
+            if !copy && matches!(selection, OverviewSelection::Auto | OverviewSelection::AutoOffset(_)) {
+                src.widest_sample_bits()
+            } else {
+                src.level_sample_bits(level)
+            }
+        })
+        .flatten();
+    Ok(Planned::Read(LazyRead { read, together, gt: geom.gt, gcps, whole, by_strips, copy, sample_bits, values }))
 }
 
 /// A value within 0.001 of a whole number, rounded to it, as `gdal_translate`'s VRT source rounds
@@ -927,6 +983,146 @@ fn fix_windows(s: &mut [f64; 4], d: &mut [f64; 4], w: f64, h: f64) -> bool {
 mod tests {
     use super::*;
     use wbraster::{Raster, RasterConfig};
+
+    /// GDAL 3.12.1 rounds Byte bilinear reads before retyping; nearest UInt32 stays exact.
+    #[test]
+    fn non_convolution_retyping_keeps_source_precision_in_the_legacy_profile() {
+        let config = RasterConfig { cols: 8, rows: 1, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let source = RasterDataset::new(Raster::from_data_native(config, RasterData::U8(vec![0, 0, 0, 15, 15, 0, 0, 0])).unwrap(), false);
+        let options = TranslateOptions {
+            out_size: Some((Size::Pixels(32), Size::Pixels(1))),
+            output_type: Some(DataType::F64),
+            resampling: Some(Resampling::Bilinear),
+            ..Default::default()
+        };
+        let output = crate::config::with_options(&[("TERRIO_GDAL_COMPAT", "3.12")], || translate(&source, &options).unwrap());
+        let row = [
+            0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 2., 6., 9., 13., 15., 15., 15., 15., 13., 9., 6., 2., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0., 0.,
+        ];
+        assert_eq!(output.raster.data.to_f64_vec(), row);
+        let options = TranslateOptions { scale: Some(Scale { src: Some((0.0, 15.0)), dst: Some((0.0, 30.0)) }), ..options };
+        let output = crate::config::with_options(&[("TERRIO_GDAL_COMPAT", "3.12")], || translate(&source, &options).unwrap());
+        assert_eq!(output.raster.data.to_f64_vec(), row.map(|value| value * 2.0));
+
+        let config = RasterConfig { cols: 1, rows: 1, bands: 1, data_type: DataType::U32, ..Default::default() };
+        let source = RasterDataset::new(Raster::from_data_native(config, RasterData::U32(vec![16_777_217])).unwrap(), false);
+        let options = TranslateOptions {
+            out_size: Some((Size::Pixels(2), Size::Pixels(1))),
+            output_type: Some(DataType::F64),
+            resampling: Some(Resampling::Nearest),
+            ..Default::default()
+        };
+        for version in ["3.12", "3.13"] {
+            let output = crate::config::with_options(&[("TERRIO_GDAL_COMPAT", version)], || translate(&source, &options).unwrap());
+            assert_eq!(output.raster.data.to_f64_vec(), [16_777_217.; 2]);
+        }
+    }
+
+    /// GDAL 3.12.1 reference values preserve source-type conversion before scaling/retyping.
+    #[test]
+    fn convolution_retyping_uses_the_configured_source_precision() {
+        let reference: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/data/translate_convolution_source_precision.json")).unwrap();
+        for case in reference["cases"].as_array().unwrap() {
+            let bits = case["bits"].as_u64().unwrap() as u16;
+            let maximum = ((1u16 << bits) - 1) as u8;
+            let config = RasterConfig { cols: 8, rows: 4, bands: 1, data_type: DataType::U8, ..Default::default() };
+            let values = [0, 0, 0, maximum, maximum, 0, 0, 0].repeat(4);
+            let mut source = RasterDataset::new(Raster::from_data_native(config, RasterData::U8(values)).unwrap(), false);
+            source.set_sample_bits(bits);
+            let kernel = match case["kernel"].as_str().unwrap() {
+                "cubic" => Resampling::Cubic,
+                "cubicspline" => Resampling::CubicSpline,
+                "lanczos" => Resampling::Lanczos,
+                _ => unreachable!(),
+            };
+            let row: Vec<f64> = case["row"].as_array().unwrap().iter().map(|value| value.as_f64().unwrap()).collect();
+            for scale in [None, Some(Scale { src: Some((0.0, 15.0)), dst: Some((0.0, 30.0)) })] {
+                let options = TranslateOptions {
+                    out_size: Some((Size::Pixels(32), Size::Pixels(4))),
+                    output_type: Some(DataType::F32),
+                    resampling: Some(kernel),
+                    scale,
+                    ..Default::default()
+                };
+                let legacy = crate::config::with_options(&[("TERRIO_GDAL_COMPAT", "3.12")], || translate(&source, &options).unwrap());
+                let factor = if options.scale.is_some() { 2.0 } else { 1.0 };
+                let expected: Vec<f64> = row.iter().map(|value| value * factor).collect::<Vec<_>>().repeat(4);
+                assert_eq!(legacy.raster.data.to_f64_vec(), expected, "{bits} {kernel:?} scale={factor}");
+                let modern = crate::config::with_options(&[("TERRIO_GDAL_COMPAT", "3.13")], || translate(&source, &options).unwrap());
+                assert!(modern.raster.data.to_f64_vec().iter().any(|value| value.fract() != 0.0), "{bits} {kernel:?} scale={factor}");
+            }
+        }
+    }
+
+    /// GDAL 3.13.3 clamps unscaled unsigned CUBIC reads of a MEM band carrying NBITS.
+    #[test]
+    fn packed_cubic_translation_keeps_the_unsigned_sample_domain() {
+        let config = RasterConfig { cols: 8, rows: 4, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let values = [0, 0, 0, 15, 15, 0, 0, 0].repeat(4);
+        let mut source = RasterDataset::new(Raster::from_data_native(config, RasterData::U8(values)).unwrap(), false);
+        source.metadata_domains = vec![(Some(0), "IMAGE_STRUCTURE".into(), vec![("NBITS".into(), "4".into())])];
+        let copied = translate(&source, &Default::default()).unwrap();
+        assert_eq!(copied.metadata_domains, source.metadata_domains);
+        let options = TranslateOptions {
+            out_size: Some((Size::Pixels(32), Size::Pixels(4))),
+            resampling: Some(Resampling::Cubic),
+            ..Default::default()
+        };
+        let translated = translate(&source, &options).unwrap();
+        assert!(translated.raster.data.to_f64_vec().iter().all(|&value| value <= 15.0));
+        assert_eq!(translated.metadata_domains, source.metadata_domains);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("resampled.tif");
+        crate::write_raster_dataset(&translated, path.to_str().unwrap(), &Default::default()).unwrap();
+        let restored = crate::open_raster(path.to_str().unwrap()).unwrap();
+        assert_eq!(restored.raster.data.to_f64_vec(), translated.raster.data.to_f64_vec());
+        let input = directory.path().join("source.tif");
+        crate::write_raster_dataset(&source, input.to_str().unwrap(), &Default::default()).unwrap();
+        let mut lazy = LazyRaster::open(input.to_str().unwrap()).unwrap();
+        let lazy = translate_lazy(&mut lazy, &options, OverviewSelection::None).unwrap();
+        assert_eq!(lazy.raster.data.to_f64_vec(), translated.raster.data.to_f64_vec());
+        source.has_nodata = true;
+        source.raster.nodata = 255.0;
+        source.raster.data = RasterData::U8(vec![255; 32]);
+        let invalid = translate(&source, &options).unwrap();
+        assert!(invalid.raster.data.to_f64_vec().iter().all(|&value| value == 255.0));
+    }
+
+    /// GDAL 3.13.3 RasterIO clamps packed-source CUBIC values before TIFF encoding.
+    #[test]
+    fn lazy_packed_cubic_reads_keep_the_domain_across_output_strips() {
+        let config = RasterConfig { cols: 8, rows: 4, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let mut values = vec![0u8; 32];
+        values[16..].copy_from_slice(&[0, 0, 0, 15, 15, 0, 0, 0].repeat(2));
+        let source = RasterDataset::new(Raster::from_data_native(config, RasterData::U8(values)).unwrap(), false);
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("packed.tif");
+        let output = directory.path().join("resampled.tif");
+        crate::write_raster_dataset(
+            &source,
+            input.to_str().unwrap(),
+            &crate::RasterWriteOptions { creation_options: vec![("NBITS".into(), "4".into())], ..Default::default() },
+        )
+        .unwrap();
+        let mut reader = LazyRaster::open(input.to_str().unwrap()).unwrap();
+        let options = TranslateOptions {
+            out_size: Some((Size::Pixels(32), Size::Pixels(4))),
+            resampling: Some(Resampling::Cubic),
+            ..Default::default()
+        };
+        let expected = translate_lazy(&mut reader, &options, OverviewSelection::Auto).unwrap();
+        let values = expected.raster.data.to_f64_vec();
+        let eager = translate(&crate::open_raster(input.to_str().unwrap()).unwrap(), &options).unwrap();
+        assert_eq!(eager.raster.data.to_f64_vec(), values);
+        assert!(values.iter().all(|&value| value <= 15.0));
+        assert!(values.contains(&15.0));
+        write_lazy(&mut reader, &options, OverviewSelection::Auto, output.to_str().unwrap(), &Default::default(), Some(1)).unwrap();
+        let mut result = LazyRaster::open(output.to_str().unwrap()).unwrap();
+        assert_eq!(result.sample_bits(), Some(4));
+        assert_eq!(result.read().unwrap().raster.data.to_f64_vec(), values);
+    }
 
     fn ds(cols: usize, rows: usize) -> RasterDataset {
         let cfg = RasterConfig {

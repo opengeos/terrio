@@ -387,6 +387,8 @@ pub(crate) struct TiffOptions {
     /// A GeoTIFF whose overviews (and their masks) a COG copies rather than computing its own,
     /// as GDAL's COG driver does with a source that has some (`OVERVIEWS=AUTO`).
     pub source_overviews: Option<String>,
+    /// Source overview opened as the copy's base image; only its later levels are copied.
+    pub source_overview_level: Option<usize>,
     /// The number of a COG's overviews (`OVERVIEW_COUNT`); by default, until one fits in a tile.
     pub overview_count: Option<usize>,
     /// The block size of the raster written, which sets the blocks GDAL computes overviews in.
@@ -433,6 +435,8 @@ pub(crate) struct TiffOptions {
     /// The raster's bands are pairs of real and imaginary parts (a complex dataset): written as
     /// complex samples (`SampleFormat` 5 or 6, GDAL's `CInt16`... `CFloat64`).
     pub complex: bool,
+    /// Stored unsigned sample width (`NBITS`), rather than the container type width.
+    pub nbits: Option<u16>,
     /// Metadata domains other than the default one (`@METADATA_DOMAINS`), those GDAL writes.
     pub domains: Vec<MetadataDomain>,
     /// Leave out the dataset's and the bands' default-domain items, as GDAL's `CreateCopy` does
@@ -513,6 +517,7 @@ impl Default for TiffOptions {
             cog_resampling: None,
             cog_resampling_name: None,
             source_overviews: None,
+            source_overview_level: None,
             overview_count: None,
             source_block: None,
             block: None,
@@ -533,6 +538,7 @@ impl Default for TiffOptions {
             rpc: Vec::new(),
             codec: CodecParams::default(),
             complex: false,
+            nbits: None,
             domains: Vec::new(),
             drop_default_items: (false, false),
         }
@@ -637,6 +643,9 @@ impl TiffOptions {
             rpc: options.rpc.clone(),
             ..Default::default()
         };
+        if let Some(bits) = size("NBITS")? {
+            o.nbits = Some(u16::try_from(bits).map_err(|_| Error::InvalidArgument(format!("invalid NBITS '{bits}'")))?);
+        }
         if cog {
             if let Some(b) = size("BLOCKSIZE")? {
                 o.tile_size = Some(b);
@@ -648,6 +657,9 @@ impl TiffOptions {
                 o.cog_resampling_name = Some(r.to_ascii_uppercase());
             }
             o.source_overviews = co("@COPY_SRC_OVERVIEWS").map(str::to_string);
+            o.source_overview_level = co("@COPY_SRC_OVERVIEW_LEVEL")
+                .map(|value| value.parse().map_err(|_| Error::InvalidArgument(format!("invalid source overview level '{value}'"))))
+                .transpose()?;
             o.mask_without_dataset = co("@MASK_WITHOUT_DATASET").is_some_and(yes);
             if let Some(n) = co("OVERVIEW_COUNT") {
                 let n: i64 = n.trim().parse().map_err(|_| Error::InvalidArgument(format!("invalid OVERVIEW_COUNT '{n}'")))?;
@@ -812,6 +824,15 @@ pub(crate) struct Image {
     pub(crate) tags: Vec<(u16, Value)>,
     pub(crate) chunks: Vec<Vec<u8>>,
     pub(crate) tiled: bool,
+    clipped_bits: Option<u16>,
+}
+
+impl Image {
+    fn report_clipping(&self) {
+        if let Some(bits) = self.clipped_bits {
+            crate::warnings::warn(format!("One or more pixels clipped to fit {bits} bit domain."));
+        }
+    }
 }
 
 /// Writes a raster as a GeoTIFF or COG.
@@ -858,6 +879,38 @@ struct Plan {
 fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
     if raster.cols == 0 || raster.rows == 0 || raster.bands == 0 {
         return Err(Error::InvalidArgument("cannot write an empty raster".into()));
+    }
+    let native_bits = (raster.data_type.size_bytes() * 8) as u16;
+    let minimum_bits = match raster.data_type {
+        DataType::U16 => 9,
+        DataType::U32 => 17,
+        _ => 1,
+    };
+    let packed = opts.nbits.is_some_and(|bits| bits != native_bits);
+    if let Some(bits) = opts.nbits {
+        if !matches!(raster.data_type, DataType::U8 | DataType::U16 | DataType::U32)
+            || opts.complex
+            || bits < minimum_bits
+            || bits > native_bits
+        {
+            return Err(Error::InvalidArgument(format!(
+                "NBITS={bits} requires unsigned Byte, UInt16 or UInt32 samples and {minimum_bits}..={native_bits} bits"
+            )));
+        }
+        if packed
+            && !matches!(
+                opts.compression,
+                Compression::None | Compression::Lzw | Compression::Deflate | Compression::PackBits | Compression::Zstd
+            )
+        {
+            return Err(Error::Unsupported("packed NBITS samples support NONE, LZW, DEFLATE, PACKBITS or ZSTD compression".into()));
+        }
+        if packed && opts.compression.takes_predictor() && opts.predictor != 1 {
+            return Err(Error::Unsupported("packed NBITS samples require PREDICTOR=1".into()));
+        }
+        if packed && opts.nodata.is_some_and(|v| !v.is_finite() || v < 0.0 || v > ((1u64 << bits) - 1) as f64 || v.fract() != 0.0) {
+            return Err(Error::InvalidArgument(format!("nodata {:?} cannot be represented by NBITS={bits}", opts.nodata.unwrap())));
+        }
     }
     let tile = if opts.cog {
         let t = opts.tile_size.unwrap_or(512);
@@ -939,8 +992,16 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
     // The colour interpretations GDAL reads from the photometric and extra samples written
     // (`GTiffRasterBand`): GDAL_METADATA holds only the bands' others (see [`geo_tags`]).
     let implied: Vec<&str> = (0..samples).map(|i| implied_color_interp(photometric, &extra, base_samples, i)).collect();
-    let layout =
-        Layout { tile, rows_per_strip: opts.rows_per_strip, planar: opts.planar && samples > 1, photometric, extra, predictor, parts };
+    let layout = Layout {
+        tile,
+        rows_per_strip: opts.rows_per_strip,
+        planar: opts.planar && samples > 1,
+        photometric,
+        extra,
+        predictor,
+        parts,
+        nbits: opts.nbits,
+    };
     // GDAL's COG driver records the resampling of the overviews it makes (`@OVERVIEW_RESAMPLING`,
     // an IMAGE_STRUCTURE item): the option as given, else `GetResampling`'s; for overviews it
     // copies, the source's `RESAMPLING` item.
@@ -1009,7 +1070,7 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
         }
         geo.push((50844, Value::Doubles(opts.rpc.clone())));
     }
-    let color_map = (photometric == 3).then(|| color_map_tag(&opts.color_table, raster.data_type));
+    let color_map = (photometric == 3).then(|| color_map_tag(&opts.color_table, opts.nbits.unwrap_or(native_bits)));
     Ok(Plan { tile, layout, geo, color_map })
 }
 
@@ -1031,6 +1092,8 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
     // factors asked for.
     let mut levels = vec![Level::from_raster(raster)];
     // The per-dataset mask of each level, as GDAL reads it (0 or 255).
+    // In a copied pyramid an empty entry denotes an absent physical mask, preserving
+    // implicit nodata/alpha validity. Generated pyramids contain only present masks.
     let mut masks: Vec<Vec<u8>> = opts.mask.iter().map(|m| m.iter().map(|v| if *v != 0 { 255 } else { 0 }).collect()).collect();
     // The overviews of the mask as they are computed, before they are written as bits (level `i`
     // at `i - 1`): GDAL keeps them in a temporary Byte file, which the next level is computed
@@ -1105,6 +1168,7 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
     let mut images = Vec::with_capacity(levels.len());
     for (i, level) in levels.iter().enumerate() {
         let mut img = level.image(raster.data_type, opts.compression, &opts.codec, &layout)?;
+        img.report_clipping();
         if i > 0 {
             img.tags.push((254, Value::Longs(vec![1])));
         }
@@ -1122,7 +1186,7 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
         images.push(img);
         // GDAL's internal mask follows each image it masks (`NewSubfileType` 4, and 5 for an
         // overview's).
-        if let Some(m) = masks.get(i) {
+        if let Some(m) = masks.get(i).filter(|m| !m.is_empty()) {
             let main = &images[images.len() - 1];
             let tag = |t: u16| {
                 main.tags.iter().find_map(|(k, v)| match v {
@@ -1159,21 +1223,51 @@ fn cog_method(opts: &TiffOptions) -> Method {
 
 /// The overviews of the GeoTIFF a COG is converted from, copied as they are, as GDAL's COG driver
 /// copies a source's (`OVERVIEWS=AUTO`, `COPY_SRC_OVERVIEWS`), with their masks: the source's
-/// when its mask has overviews, else made at the overviews' sizes as `GDALCOGCreator::Create`
-/// makes them (`bGenerateMskOvr`), cascading from the full-resolution mask.
+/// per-level physical masks, leaving implicit nodata/alpha masks implicit. A mask supplied only to the
+/// destination is generated from its full-resolution values (GDAL 3.13.3).
 fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels: &mut Vec<Level>, masks: &mut Vec<Vec<u8>>) -> Result<()> {
     let mut src = crate::LazyRaster::open_tiff(path)?.ok_or_else(|| Error::InvalidArgument(format!("{path}: not a GeoTIFF")))?;
-    if (src.width(), src.height(), src.band_count(), src.data_type()) != (raster.cols, raster.rows, raster.bands, raster.data_type) {
+    let sizes = src.overviews();
+    let (width, height) = match opts.source_overview_level {
+        Some(i) => sizes.get(i).copied().ok_or_else(|| Error::InvalidArgument(format!("{path}: no source overview {i}")))?,
+        None => (src.width(), src.height()),
+    };
+    if (width, height, src.band_count(), src.data_type()) != (raster.cols, raster.rows, raster.bands, raster.data_type) {
         return Err(Error::InvalidArgument(format!("{path}: not the raster written")));
     }
-    let sizes = src.overviews();
-    let own_masks = (0..sizes.len()).all(|i| src.level_has_own_mask(i));
+    let first = opts.source_overview_level.map_or(0, |i| i + 1);
+    let has_base_mask = opts.source_overview_level.map_or_else(|| src.has_mask(), |i| src.level_has_own_mask(i));
+    let tile = opts.tile_size.unwrap_or(512) as usize;
+    // GDAL 3.13.3 generates a missing mask pyramid only beyond the output tile.
+    // Smaller sources retain all-valid missing masks even when image overviews exist.
+    let has_overview_mask = (first..sizes.len()).any(|i| src.level_has_own_mask(i));
+    let destination_only_mask = opts.mask.is_some() && !has_base_mask;
+    let preserve_level_masks = !destination_only_mask && (has_overview_mask || (has_base_mask && width <= tile && height <= tile));
+    if masks.is_empty() && has_overview_mask {
+        // Keep the level index aligned without introducing a base mask that would
+        // override nodata or alpha validity.
+        masks.push(Vec::new());
+    }
     let block = gdal_overview::ovr_block(opts.source_block);
-    for (i, (w, h)) in sizes.into_iter().enumerate() {
+    for (i, (w, h)) in sizes.into_iter().enumerate().skip(first) {
         let level = src.read_window(crate::Window::full(w, h), &crate::WindowOptions { bands: Vec::new(), overview: Some(i) })?;
+        if let Some(bits) = opts.nbits {
+            let max = (1u64 << bits) - 1;
+            let fits = match &level.raster.data {
+                RasterData::U8(v) => v.iter().all(|&v| u64::from(v) <= max),
+                RasterData::U16(v) => v.iter().all(|&v| u64::from(v) <= max),
+                RasterData::U32(v) => v.iter().all(|&v| u64::from(v) <= max),
+                _ => true,
+            };
+            if !fits {
+                return Err(Error::InvalidArgument(format!(
+                    "source overview {i} has values that exceed NBITS={bits}; choose a wider output NBITS"
+                )));
+            }
+        }
         if !masks.is_empty() {
-            let m = if own_masks {
-                src.read_mask(crate::Window::full(w, h), Some(i))?.unwrap_or_else(|| vec![255; w * h])
+            let m = if preserve_level_masks {
+                src.read_level_mask(crate::Window::full(w, h), Some(i))?.unwrap_or_default()
             } else {
                 let mi = if levels.last().is_some_and(|l| l.cols > w) { levels.len() - 1 } else { 0 };
                 gdal_overview::mask_level(cog_method(opts), &masks[mi], (levels[mi].cols, levels[mi].rows), (w, h), block)
@@ -1278,12 +1372,12 @@ pub(crate) fn mask_image(mask: &[u8], cols: usize, rows: usize, block: (usize, u
         tags.push((278, Value::Longs(vec![chunk_h as u32])));
     }
     tags.sort_by_key(|(t, _)| *t);
-    Ok(Image { tags, chunks, tiled })
+    Ok(Image { tags, chunks, tiled, clipped_bits: None })
 }
 
 /// The `ColorMap` tag of a color table: every red value, then green, then blue, as 16 bits.
-fn color_map_tag(table: &[[u8; 4]], t: DataType) -> Value {
-    let n = if t == DataType::U16 { 65536 } else { 256 };
+fn color_map_tag(table: &[[u8; 4]], bits: u16) -> Value {
+    let n = 1usize << bits;
     let mut v = vec![0u16; 3 * n];
     for (i, e) in table.iter().take(n).enumerate() {
         for c in 0..3 {
@@ -1308,6 +1402,7 @@ pub(crate) struct Layout {
     pub(crate) predictor: u16,
     /// The bands per TIFF sample: 2 for complex samples (real and imaginary parts), else 1.
     pub(crate) parts: usize,
+    pub(crate) nbits: Option<u16>,
 }
 
 /// One resolution level's pixels, band-major: the raster's own, or an overview's.
@@ -1351,6 +1446,8 @@ impl<'a> Level<'a> {
         };
         let per_plane = across * down;
         let band_len = self.cols * self.rows;
+        let clipped = std::sync::atomic::AtomicBool::new(false);
+        let packed_bits = layout.nbits.filter(|&bits| bits != (size * 8) as u16);
         let chunks = crate::par::map_range_coarse(planes * per_plane, |i| {
             let (plane, j) = (i / per_plane, i % per_plane);
             let (x0, y0) = ((j % across) * chunk_w, (j / across) * chunk_h);
@@ -1363,11 +1460,22 @@ impl<'a> Level<'a> {
             } else {
                 with_data!(self.data.as_ref(), v => chunk_bytes(v, self.cols, self.rows, spp * parts, x0, y0, chunk_w, h))
             };
-            apply_predictor(&mut buf, layout.predictor, chunk_w * chunk_spp, chunk_spp, size);
+            if let Some(bits) = packed_bits {
+                let (packed, did_clip) = pack_unsigned_rows(&buf, chunk_w * chunk_spp, size, bits);
+                buf = packed;
+                // GDAL 3.13.3 silently clamps bilevel samples; wider packed domains warn.
+                if did_clip && bits > 1 {
+                    clipped.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            } else {
+                apply_predictor(&mut buf, layout.predictor, chunk_w * chunk_spp, chunk_spp, size);
+            }
             compression.compress(buf, &ChunkInfo { w: chunk_w, h, spp: chunk_spp, t }, codec)
         });
         let chunks = chunks.into_iter().collect::<Result<Vec<_>>>()?;
+        let clipped_bits = packed_bits.filter(|_| clipped.load(std::sync::atomic::Ordering::Relaxed));
         let (bits, format) = sample_format(t);
+        let bits = layout.nbits.unwrap_or(bits);
         // Complex samples: twice the bits, `SampleFormat` 5 (integers) or 6 (floats).
         let (bits, format) = if parts == 2 { (bits * 2, format + 3) } else { (bits, format) };
         let mut tags = vec![
@@ -1403,7 +1511,7 @@ impl<'a> Level<'a> {
         } else {
             tags.push((278, Value::Longs(vec![chunk_h as u32])));
         }
-        Ok(Image { tags, chunks, tiled })
+        Ok(Image { tags, chunks, tiled, clipped_bits })
     }
 }
 
@@ -1529,6 +1637,40 @@ fn chunk_bytes<T: Pixel>(data: &[T], cols: usize, rows: usize, spp: usize, x0: u
         }
     }
     buf
+}
+
+/// Pack unsigned little-endian samples MSB first, padding each row to a byte boundary.
+/// GDAL 3.13.3 clips values to the stored unsigned domain, rather than masking high bits.
+fn pack_unsigned_rows(input: &[u8], row_samples: usize, size: usize, bits: u16) -> (Vec<u8>, bool) {
+    let bits = usize::from(bits);
+    let maximum = (1u64 << bits) - 1;
+    // Packed rows fit in the existing native row; avoid overflowing a bit-count intermediate.
+    let row_bytes = row_samples / 8 * bits + (row_samples % 8 * bits).div_ceil(8);
+    let mut output = Vec::with_capacity(row_bytes * (input.len() / (row_samples * size)));
+    let mut clipped = false;
+    for row in input.chunks_exact(row_samples * size) {
+        let (mut accumulator, mut pending) = (0u64, 0usize);
+        for sample in row.chunks_exact(size) {
+            let value = match size {
+                1 => u64::from(sample[0]),
+                2 => u64::from(u16::from_le_bytes(sample.try_into().unwrap())),
+                4 => u64::from(u32::from_le_bytes(sample.try_into().unwrap())),
+                _ => unreachable!("packed samples have 1, 2 or 4 byte containers"),
+            };
+            clipped |= value > maximum;
+            accumulator = (accumulator << bits) | value.min(maximum);
+            pending += bits;
+            while pending >= 8 {
+                pending -= 8;
+                output.push((accumulator >> pending) as u8);
+            }
+            accumulator &= (1u64 << pending) - 1;
+        }
+        if pending != 0 {
+            output.push((accumulator << (8 - pending)) as u8);
+        }
+    }
+    (output, clipped)
 }
 
 fn sample_format(t: DataType) -> (u16, u16) {
@@ -2317,6 +2459,7 @@ impl TiffRows {
         // Tiles are padded to full height.
         let layout = Layout { rows_per_strip: Some(self.block_rows as u32), extra: self.layout.extra.clone(), ..self.layout };
         let img = level.image(self.data_type, self.compression, &self.codec, &layout)?;
+        img.report_clipping();
         let block_row = self.rows_done / self.block_rows;
         let per_plane = self.across * self.rows.div_ceil(self.block_rows);
         // The chunks of each plane, block row after block row.
@@ -2860,6 +3003,7 @@ impl CogWriter {
 
     /// Adds compressed rows of tiles of level `i` to its spools.
     fn add(&mut self, i: usize, rows: usize, (img, mask): CogImages) -> Result<()> {
+        img.report_clipping();
         let l = &mut self.levels[i];
         let per_plane = l.cols.div_ceil(self.tile) * rows.div_ceil(self.tile);
         let mut framed = vec![Vec::new(); l.spools.len()];
@@ -3185,6 +3329,195 @@ mod tests {
                 assert_eq!(std::fs::read(&link).unwrap(), expected, "{driver:?}, streamed {streamed}");
             }
         }
+    }
+
+    /// TIFF row padding and MSB order, independently cross-read with GDAL 3.13.3.
+    #[test]
+    fn packed_rows_use_msb_order_and_restart_at_byte_boundaries() {
+        assert_eq!(pack_unsigned_rows(&[0, 1, 1, 0, 1, 0, 0, 1, 1], 9, 1, 1), (vec![0x69, 0x80], false));
+        let input: Vec<u8> = [0xabcu16, 0x123, 0xdef, 0x456, 0x789, 0xabc].into_iter().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(pack_unsigned_rows(&input, 3, 2, 12), (vec![0xab, 0xc1, 0x23, 0xde, 0xf0, 0x45, 0x67, 0x89, 0xab, 0xc0], false));
+        assert_eq!(pack_unsigned_rows(&u32::MAX.to_le_bytes(), 1, 4, 31), (vec![255, 255, 255, 254], true));
+    }
+
+    /// Packed unsigned sample widths round-trip through the independent TIFF decoder.
+    /// GDAL 3.13.3 checks these layouts through the binding conformance comparisons.
+    #[test]
+    fn packed_unsigned_tiffs_roundtrip_tiles_strips_and_band_planes() {
+        for bits in 1u16..=32 {
+            let data_type = if bits <= 8 {
+                DataType::U8
+            } else if bits <= 16 {
+                DataType::U16
+            } else {
+                DataType::U32
+            };
+            let maximum = (1u64 << bits) - 1;
+            let values: Vec<f64> = (0..37 * 19 * 3).map(|i| (i as u64 * 2654435761 % (maximum + 1)) as f64).collect();
+            let cfg = wbraster::RasterConfig { cols: 37, rows: 19, bands: 3, data_type, ..Default::default() };
+            let raster = Raster::from_data_native(cfg, RasterData::from_f64_vec(data_type, values.clone())).unwrap();
+            for tile_size in [None, Some(16)] {
+                for planar in [false, true] {
+                    let options =
+                        TiffOptions { nbits: Some(bits), tile_size, planar, compression: Compression::Deflate, ..Default::default() };
+                    let bytes = encode(&raster, &options).unwrap();
+                    let mut read = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap();
+                    assert_eq!(read.sample_bits(), Some(bits));
+                    assert_eq!(
+                        read.read_window(crate::Window::full(37, 19), &Default::default()).unwrap().raster.data.to_f64_vec(),
+                        values
+                    );
+                }
+            }
+        }
+    }
+
+    /// GDAL 3.13.3's bilevel clipping is silent; other packed domains report on the caller.
+    #[test]
+    fn packed_clipping_warnings_stay_on_the_callers_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        for bits in [1, 4] {
+            let _ = crate::warnings::take();
+            let cfg = wbraster::RasterConfig { cols: 32, rows: 32, bands: 1, data_type: DataType::U8, ..Default::default() };
+            let raster = Raster::from_data_native(cfg, RasterData::U8(vec![255; 32 * 32])).unwrap();
+            let opts = TiffOptions { cog: true, nbits: Some(bits), tile_size: Some(32), ..Default::default() };
+            let target = dir.path().join(format!("clipped-{bits}.tif"));
+            let mut writer = CogWriter::create(target.to_str().unwrap(), &raster, &opts).unwrap();
+            writer.write_rows(raster.data, 32).unwrap();
+            writer.finish().unwrap();
+            let warnings = crate::warnings::take();
+            assert_eq!(warnings.len(), usize::from(bits > 1), "{warnings:?}");
+            let mut result = crate::LazyRaster::open(target.to_str().unwrap()).unwrap();
+            assert!(result.read().unwrap().raster.data.to_f64_vec().iter().all(|&v| v == ((1u32 << bits) - 1) as f64));
+        }
+    }
+
+    /// A shared TIFF handle keeps each stored level's width (GDAL 3.13.3 NBITS).
+    #[test]
+    fn shared_overview_copies_keep_the_selected_sample_width() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("base.tif");
+        let ovr = dir.path().join("base.tif.ovr");
+        for (path, size, bits, value) in [(&source, 4, 9, 10), (&ovr, 2, 12, 2000)] {
+            let cfg = wbraster::RasterConfig { cols: size, rows: size, bands: 1, data_type: DataType::U16, ..Default::default() };
+            let raster = Raster::from_data_native(cfg, RasterData::U16(vec![value; size * size])).unwrap();
+            std::fs::write(path, encode(&raster, &TiffOptions { nbits: Some(bits), ..Default::default() }).unwrap()).unwrap();
+            if path == &source {
+                let mut reader = crate::LazyRaster::open(source.to_str().unwrap()).unwrap();
+                assert!(reader.overviews().is_empty());
+                for overview in [crate::ops::overview::OverviewSelection::Auto, crate::ops::overview::OverviewSelection::AutoOffset(1)] {
+                    let dataset =
+                        reader.read_resampled(&crate::ResampledReadOptions { size: (2, 2), overview, ..Default::default() }).unwrap();
+                    let options = crate::RasterWriteOptions::default().inherited_from(&dataset, Some(crate::formats::RasterDriver::GTiff));
+                    assert!(options.creation_options.iter().any(|(key, value)| key == "NBITS" && value == "9"));
+                }
+            }
+        }
+        let mut original = crate::LazyRaster::open(source.to_str().unwrap()).unwrap();
+        let mut shared = original.shared();
+        for reader in [&mut original, &mut shared] {
+            assert_eq!(reader.sample_bits(), Some(9));
+            assert_eq!(reader.level_sample_bits(Some(0)), Some(12));
+            assert_eq!(reader.widest_sample_bits(), Some(12));
+            let dataset =
+                reader.read_window(crate::Window::full(2, 2), &crate::WindowOptions { overview: Some(0), ..Default::default() }).unwrap();
+            let options = crate::RasterWriteOptions::default().inherited_from(&dataset, Some(crate::formats::RasterDriver::GTiff));
+            let options = TiffOptions::from_write_options(&options, false, None).unwrap().unwrap();
+            let mut result = crate::LazyRaster::from_tiff_bytes(encode(&dataset.raster, &options).unwrap()).unwrap().unwrap();
+            assert_eq!(result.sample_bits(), Some(12));
+            assert_eq!(result.read().unwrap().raster.data.to_f64_vec(), vec![2000.0; 4]);
+            for overview in [crate::ops::overview::OverviewSelection::Level(0), crate::ops::overview::OverviewSelection::Auto] {
+                let dataset = reader.read_resampled(&crate::ResampledReadOptions { size: (2, 2), overview, ..Default::default() }).unwrap();
+                let options = crate::RasterWriteOptions::default().inherited_from(&dataset, Some(crate::formats::RasterDriver::GTiff));
+                assert!(options.creation_options.iter().any(|(key, value)| key == "NBITS" && value == "12"));
+                assert_eq!(dataset.raster.data.to_f64_vec(), vec![2000.0; 4]);
+            }
+        }
+    }
+
+    /// A resampled base image without overviews retains its own width (GDAL 3.13.3 NBITS).
+    #[test]
+    fn resampled_packed_base_without_overviews_keeps_its_width() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("base.tif");
+        let config = wbraster::RasterConfig { cols: 8, rows: 4, bands: 1, data_type: DataType::U16, ..Default::default() };
+        let raster = Raster::from_data_native(config, RasterData::U16(vec![300; 32])).unwrap();
+        std::fs::write(&path, encode(&raster, &TiffOptions { nbits: Some(9), ..Default::default() }).unwrap()).unwrap();
+        let mut native = crate::LazyRaster::open(path.to_str().unwrap()).unwrap();
+        let mut sharable = crate::LazyRaster::open(path.to_str().unwrap()).unwrap();
+        let mut shared = sharable.shared();
+        for reader in [&mut native, &mut shared] {
+            assert!(reader.overviews().is_empty());
+            for overview in [crate::ops::overview::OverviewSelection::Auto, crate::ops::overview::OverviewSelection::Level(0)] {
+                let dataset =
+                    reader.read_resampled(&crate::ResampledReadOptions { size: (16, 8), overview, ..Default::default() }).unwrap();
+                let options = crate::RasterWriteOptions::default().inherited_from(&dataset, Some(crate::formats::RasterDriver::GTiff));
+                let options = TiffOptions::from_write_options(&options, false, None).unwrap().unwrap();
+                let mut result = crate::LazyRaster::from_tiff_bytes(encode(&dataset.raster, &options).unwrap()).unwrap().unwrap();
+                assert_eq!(result.sample_bits(), Some(9));
+                assert_eq!(result.read().unwrap().raster.data.to_f64_vec(), vec![300.0; 128]);
+            }
+        }
+    }
+
+    /// GDAL 3.13.3 ignores an ineffective predictor for uncompressed packed output.
+    #[test]
+    fn inherited_packed_width_uses_the_effective_predictor() {
+        use crate::RasterWriteOptions;
+        for (compression, predictor, expected) in
+            [("NONE", "2", Some(4)), ("PACKBITS", "2", Some(4)), ("DEFLATE", "2", None), ("LZW", "NO", Some(4))]
+        {
+            let options = RasterWriteOptions {
+                compression: Some(compression.into()),
+                creation_options: vec![("PREDICTOR".into(), predictor.into())],
+                ..Default::default()
+            };
+            assert_eq!(options.inherited_sample_bits(crate::formats::RasterDriver::GTiff, DataType::U8, &[Some(4)], &[None]), expected);
+            assert_eq!(options.inherited_sample_bits(crate::formats::RasterDriver::GTiff, DataType::U8, &[Some(4)], &[Some(255.0)]), None);
+            assert_eq!(
+                options.inherited_sample_bits(crate::formats::RasterDriver::GTiff, DataType::U8, &[Some(4), Some(8)], &[None, None]),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn packed_inheritance_respects_each_drivers_default_compression() {
+        let options = crate::RasterWriteOptions { creation_options: vec![("PREDICTOR".into(), "2".into())], ..Default::default() };
+        assert_eq!(options.inherited_sample_bits(crate::formats::RasterDriver::GTiff, DataType::U8, &[Some(4)], &[None]), Some(4));
+        assert_eq!(options.inherited_sample_bits(crate::formats::RasterDriver::Cog, DataType::U8, &[Some(4)], &[None]), None);
+    }
+
+    /// GDAL 3.13.3 retains the packed width when copying an unchanged unsigned band.
+    #[test]
+    fn packed_tiff_translates_keep_the_source_width() {
+        use crate::ops::translate::{TranslateOptions, translate, translate_lazy, translate_path_to_file};
+        let cfg = wbraster::RasterConfig { cols: 37, rows: 19, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let raster = Raster::from_data_native(cfg, RasterData::U8((0..37 * 19).map(|i| (i % 16) as u8).collect())).unwrap();
+        let bytes = encode(&raster, &TiffOptions { nbits: Some(4), ..Default::default() }).unwrap();
+        let mut source = crate::LazyRaster::from_tiff_bytes(bytes.clone()).unwrap().unwrap();
+        let whole = source.read_window(crate::Window::full(37, 19), &Default::default()).unwrap();
+        let translated = translate(&whole, &TranslateOptions::default()).unwrap();
+        let lazy = translate_lazy(&mut source, &TranslateOptions::default(), crate::ops::overview::OverviewSelection::None).unwrap();
+        for result in [whole, translated, lazy] {
+            let options = crate::RasterWriteOptions::default().inherited_from(&result, Some(crate::formats::RasterDriver::GTiff));
+            let options = TiffOptions::from_write_options(&options, false, None).unwrap().unwrap();
+            let read = crate::LazyRaster::from_tiff_bytes(encode(&result.raster, &options).unwrap()).unwrap().unwrap();
+            assert_eq!(read.sample_bits(), Some(4));
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("source.tif");
+        let output = directory.path().join("copy.tif");
+        std::fs::write(&input, bytes).unwrap();
+        translate_path_to_file(
+            input.to_str().unwrap(),
+            &Default::default(),
+            crate::ops::overview::OverviewSelection::Auto,
+            output.to_str().unwrap(),
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(crate::LazyRaster::open(output.to_str().unwrap()).unwrap().sample_bits(), Some(4));
     }
 
     #[test]
@@ -3953,7 +4286,8 @@ mod tests {
             (None, true, 600, &[30, 30, 10, 30, 30, 10][..]),
             (Some((64, 64)), false, 256, &[64; 10][..]),
         ] {
-            let layout = Layout { tile, rows_per_strip: Some(30), planar, photometric: 1, extra: vec![0], predictor: 1, parts: 1 };
+            let layout =
+                Layout { tile, rows_per_strip: Some(30), planar, photometric: 1, extra: vec![0], predictor: 1, parts: 1, nbits: None };
             let image = level.image(DataType::U16, Compression::Deflate, &codec, &layout).unwrap();
             assert_eq!(image.chunks.len(), heights.len(), "{tile:?}, {planar}");
             for (i, (chunk, h)) in image.chunks.iter().zip(heights).enumerate() {
@@ -4233,6 +4567,110 @@ mod tests {
     // An odd-sized source large enough for factors 2, 4 and 8 with 16-pixel COG tiles.
     fn overview_fixture(bands: usize, data_type: DataType, data: RasterData) -> Raster {
         Raster::from_data_native(wbraster::RasterConfig { cols: 65, rows: 35, bands, data_type, ..Default::default() }, data).unwrap()
+    }
+
+    /// GDAL 3.13.3 own-mask association is per level, including an incomplete mask pyramid.
+    #[test]
+    fn copied_overviews_keep_own_masks_beside_unmasked_levels() {
+        for base_mask in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("partial-masks.tif");
+            let raster = Raster::from_data_native(
+                wbraster::RasterConfig { cols: 32, rows: 32, bands: 1, data_type: DataType::U8, ..Default::default() },
+                RasterData::U8(vec![7; 32 * 32]),
+            )
+            .unwrap();
+            let options = TiffOptions::default();
+            let layout = plan(&raster, &options).unwrap().layout;
+            let mut images = Vec::new();
+            for (i, size) in [32, 16, 8].into_iter().enumerate() {
+                let level = Level { cols: size, rows: size, bands: 1, data: std::borrow::Cow::Owned(RasterData::U8(vec![7; size * size])) };
+                let mut image = level.image(DataType::U8, options.compression, &options.codec, &layout).unwrap();
+                if i > 0 {
+                    image.tags.push((254, Value::Longs(vec![1])));
+                    image.tags.sort_by_key(|(tag, _)| *tag);
+                }
+                images.push(image);
+                if i == 1 || (i == 0 && base_mask) {
+                    let mut mask = mask_image(&vec![if i == 0 { 255 } else { 0 }; size * size], size, size, (size, size, false)).unwrap();
+                    if i > 0 {
+                        for (tag, value) in &mut mask.tags {
+                            if *tag == 254 {
+                                *value = Value::Longs(vec![5]);
+                            }
+                        }
+                    }
+                    images.push(mask);
+                }
+            }
+            let mut bytes = Vec::new();
+            assemble(images, false, false, &mut bytes).unwrap();
+            std::fs::write(&path, bytes).unwrap();
+            let source = crate::LazyRaster::open_tiff(path.to_str().unwrap()).unwrap().unwrap();
+            assert_eq!(source.has_mask(), base_mask);
+            assert_eq!(source.overviews(), vec![(16, 16), (8, 8)]);
+            assert!(source.level_has_own_mask(0));
+            assert!(!source.level_has_own_mask(1));
+            let mut levels = vec![Level::from_raster(&raster)];
+            let mut masks = if base_mask { vec![vec![255; 32 * 32]] } else { Vec::new() };
+            copy_source_overviews(path.to_str().unwrap(), &raster, &options, &mut levels, &mut masks).unwrap();
+            assert_eq!(levels.len(), 3);
+            assert_eq!(masks.iter().map(Vec::len).collect::<Vec<_>>(), vec![if base_mask { 32 * 32 } else { 0 }, 16 * 16, 0]);
+            assert!(masks[1].iter().all(|&value| value == 0));
+            assert!(masks[2].is_empty());
+            if !base_mask {
+                // A caller-supplied mask replaces source validity at every level.
+                let supplied = vec![255; 32 * 32];
+                let options = TiffOptions { mask: Some(supplied.clone()), ..options };
+                let mut levels = vec![Level::from_raster(&raster)];
+                let mut masks = vec![supplied];
+                copy_source_overviews(path.to_str().unwrap(), &raster, &options, &mut levels, &mut masks).unwrap();
+                assert_eq!(masks.iter().map(Vec::len).collect::<Vec<_>>(), [32 * 32, 16 * 16, 8 * 8]);
+                assert!(masks.iter().flatten().all(|&value| value == 255));
+            }
+        }
+    }
+
+    /// GDAL 3.13.3 generates missing mask levels when the base exceeds an output tile.
+    #[test]
+    fn copied_overviews_generate_masks_for_sources_larger_than_a_tile() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("generated-masks.tif");
+        let raster = Raster::from_data_native(
+            wbraster::RasterConfig { cols: 64, rows: 64, bands: 1, data_type: DataType::U8, ..Default::default() },
+            RasterData::U8(vec![7; 64 * 64]),
+        )
+        .unwrap();
+        let options = TiffOptions { tile_size: Some(16), ..Default::default() };
+        let layout = plan(&raster, &options).unwrap().layout;
+        let base_mask: Vec<u8> = (0..64 * 64).map(|index| if index % 64 < 32 { 255 } else { 0 }).collect();
+        let mut images = Vec::new();
+        for (index, size) in [64, 32, 16].into_iter().enumerate() {
+            let level = Level { cols: size, rows: size, bands: 1, data: std::borrow::Cow::Owned(RasterData::U8(vec![7; size * size])) };
+            let mut image = level.image(DataType::U8, options.compression, &options.codec, &layout).unwrap();
+            if index > 0 {
+                image.tags.push((254, Value::Longs(vec![1])));
+                image.tags.sort_by_key(|(tag, _)| *tag);
+            }
+            images.push(image);
+            if index == 0 {
+                images.push(mask_image(&base_mask, size, size, (size, size, false)).unwrap());
+            }
+        }
+        let mut bytes = Vec::new();
+        assemble(images, false, false, &mut bytes).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        let mut levels = vec![Level::from_raster(&raster)];
+        let mut masks = vec![base_mask];
+        copy_source_overviews(path.to_str().unwrap(), &raster, &options, &mut levels, &mut masks).unwrap();
+        assert_eq!(masks.len(), 3);
+        for (mask, width) in masks[1..].iter().zip([32, 16]) {
+            assert_eq!(mask.len(), width * width);
+            assert!(
+                mask.chunks_exact(width)
+                    .all(|row| row[..width / 2].iter().all(|&value| value == 255) && row[width / 2..].iter().all(|&value| value == 0))
+            );
+        }
     }
 
     /// Streamed mask values are read as the whole writer reads them: any nonzero value is valid

@@ -1234,7 +1234,7 @@ pub(crate) fn finish_raster(
 ) -> PyResult<PyRaster> {
     if let Some(path) = dst {
         let o = crate::raster::write_options_with_creation(format, compress, tile_size, bigtiff, creation_options)?;
-        py.detach_result(|| terrio::write_raster_dataset(&out, path, &o)).py()?;
+        crate::with_warnings(py, || terrio::write_raster_dataset(&out, path, &o))?;
     }
     Ok(PyRaster::from_dataset(out))
 }

@@ -1474,6 +1474,65 @@ node --test --test-name-pattern='vector geometry' js/tests/node.test.mjs
 python scripts/conformance.py ../terrio-data --only vector-geom
 ```
 
+## Packed unsigned TIFF output
+
+`python scripts/conformance.py ../data --only packed-tiff --strict` checks GTiff
+and COG writes and their Python/CLI copies against GDAL's TIFF decoder. The
+reference is locally validated with GDAL 3.13.3. Twelve synthetic cases cover
+1, 4, 7, 12, 24 and 31 bits, partial bytes, tile edges and generated COG overviews.
+An available `esa_worldcover_colormap.tif` adds a real 7-bit palette COG crop,
+checking exact base samples, masks, nodata, affine, CRS and the first 128 palette
+entries. Native and GDAL readers also compare every stored overview's samples.
+These are exact decoding/metadata checks, not compressed-byte or file-size claims.
+
+Native tests check MSB order, padding at every row boundary, clipping at 31 bits,
+and round trips at all widths 1–32 through stripes/tiles and pixel/band interleaving.
+Python regressions check bit-width preservation, bilevel palette copies, explicit
+width overrides and refusals. Node verifies the stored TIFF tags and values through
+explicit exports and copies that inherit the source width.
+
+Packed-TIFF copy regressions also check predictor aliases, compression enums and
+NumPy dtype objects, nodata outside the stored bit domain, and shared readers with
+wider overviews. Internal/external overview tests retain each image's photometric
+tags and color table; the structure reader requests the base tags once and the
+external tags once when needed (no pixel reads by that metadata helper). Bilevel
+clipping is silent in GDAL 3.13.3, while wider streamed COG clipping warns on the
+calling thread. The packed conformance comparison requires synthetic COG overviews
+and verifies each overview's stored NBITS as well as its independently decoded values.
+GTiff/COG translation-output regressions check that clipping warnings reach Python.
+The native strip-writer test preserves parent diagnostics and relays worker warnings
+on successful finish, failed sends and drop, while incomplete files are removed.
+Selected external-overview tag reads also preserve a missing-file error rather
+than replacing it with a missing-image-directory diagnostic.
+The four-bit bright-edge CUBIC control matches an independent GDAL 3.13.3 pyramid
+exactly; Terrio reports encode-time clipping where the reference is quiet.
+The native metadata regression also requires NBITS to share its band's existing
+IMAGE_STRUCTURE domain with other items, preserving unrelated empty domains.
+JPEG 2000 controls cover 15-bit whole copies and AUTO/explicit-base resampling,
+with and without stored resolution levels. The registered `packed-tiff` suite includes
+two JP2 AUTO controls and the overview-only source-mask case, alongside the earlier
+14 comparisons (17 total). Its mask oracle is source validity, not GDAL's lossy COG
+copy. Twelve additional nearest/cubic/Lanczos
+controls at 128- and 384-square output exactly match GDAL 3.13.3 sample arrays.
+
+Mask-pyramid regressions include sources whose base mask is absent but whose
+overviews have masks. These cases compare the output with the source's validity:
+GDAL 3.13.3's COG copier drops the overview-only masks. Missing physical masks
+remain absent, so implicit nodata and alpha masks retain their flags and values;
+no base-sized all-valid mask is allocated. Regressions cover both nodata and RGBA
+sources. Other cases retain the GDAL-copy comparison. Run the mask controls with
+`pytest python/tests/test_gtiff_packed_writer.py -k 'partial_and_overview_only_masks or overview_only_masks_keep_implicit_alpha'`.
+They verify each overview's source validity while retaining the base's implicit
+mask and flags.
+
+Selected-overview COG copies are checked with internal and external three-level
+UInt16 pyramids storing 9/9/12 bits. GDAL 3.13.3 independently checks the selected
+pixels, the later level, the output width, rescaled affine/CRS and masks. A shared
+Rust width-inheritance policy is exercised through native writes and the Python
+copy adapter, including GTiff/COG default compression and ineffective uncompressed
+predictors. Type promotion across incompatible native overview containers is not
+part of these controls; native TIFF discovery filters those levels.
+
 ## Lazy GeoTIFF metadata and external overviews
 
 The `lazy-geotiff` conformance suite runs the Rust regressions for sample bit

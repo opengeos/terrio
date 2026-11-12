@@ -1,8 +1,7 @@
 //! The COG writer that writes a few rows at a time: `terrio.rio`'s COG writes stream through it.
 
-use crate::Detach;
 use crate::raster::{GcpTuple, parse_band_metadata, parse_gcps, raster_array_data, string_pairs, write_options};
-use crate::{PyResultExt, invalid};
+use crate::{PyResultExt, invalid, with_warnings};
 use numpy::{PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -141,7 +140,7 @@ impl PyCogWriter {
             return Err(invalid("the array's dtype is not the writer's"));
         }
         let w = self.inner.as_mut().ok_or_else(|| invalid("the writer is closed"))?;
-        py.detach_result(|| w.write_rows(&data, rows, None)).py()
+        with_warnings(py, || w.write_rows(&data, rows, None))
     }
 
     /// Computes the last overview rows, lays the file out and closes it.
@@ -150,7 +149,7 @@ impl PyCogWriter {
     ///     InvalidArgumentError: If rows are missing.
     fn close(&mut self, py: Python<'_>) -> PyResult<()> {
         match self.inner.take() {
-            Some(w) => py.detach_result(|| w.finish()).py(),
+            Some(w) => with_warnings(py, || w.finish()),
             None => Ok(()),
         }
     }
