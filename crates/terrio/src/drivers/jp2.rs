@@ -881,11 +881,6 @@ impl Jp2Window {
     }
 }
 
-/// The colour interpretation GDAL gives each band (`JP2OPJLikeRasterBand::GetColorInterpretation`):
-/// the alpha channel of the `cdef` box; gray for one or two bands in the greyscale colour space;
-/// red, green and blue (the `cdef` box's, else the first three) in the sRGB and sYCC spaces
-/// (`colr` box enumerations 16, 18, 20 and 21; 17 is greyscale); undefined otherwise, codestreams
-/// without a JP2 header included.
 /// Stored colour associations, independent of GDAL's normalized interpretation names.
 fn color_associations(b: &[u8], bands: usize) -> Vec<Option<u16>> {
     let mut associations = vec![None; bands];
@@ -905,6 +900,11 @@ fn color_associations(b: &[u8], bands: usize) -> Vec<Option<u16>> {
     associations
 }
 
+/// The colour interpretation GDAL gives each band (`JP2OPJLikeRasterBand::GetColorInterpretation`):
+/// the alpha channel of the `cdef` box; gray for one or two bands in the greyscale colour space;
+/// red, green and blue (the `cdef` box's, else the first three) in the sRGB and sYCC spaces
+/// (`colr` box enumerations 16, 18, 20 and 21; 17 is greyscale); undefined otherwise, codestreams
+/// without a JP2 header included.
 fn color_interpretation(b: &[u8], bands: usize) -> Vec<&'static str> {
     #[derive(PartialEq)]
     enum Space {

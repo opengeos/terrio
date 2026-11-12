@@ -753,6 +753,43 @@ pub(crate) mod codec {
         Ok(Dataset::Vector(VectorDataset::new(layers, driver)))
     }
 
+    /// Reuse the source pixels unless a different north-up grid must be written.
+    #[cfg(feature = "jp2")]
+    fn jp2_raster(ds: &RasterDataset, transform: Option<[f64; 6]>) -> Result<std::borrow::Cow<'_, crate::Raster>> {
+        let Some(gt) = transform else { return Ok(std::borrow::Cow::Borrowed(&ds.raster)) };
+        if !crate::is_north_up(&gt) {
+            return Err(Error::Unsupported("the JP2 writer cannot store rotated or south-up geotransforms".into()));
+        }
+        if gt == crate::geo_transform(&ds.raster) {
+            return Ok(std::borrow::Cow::Borrowed(&ds.raster));
+        }
+        let mut transformed = RasterDataset::with_driver(ds.raster.clone(), RasterDriver::JP2, false);
+        transformed.set_geo_transform(gt);
+        Ok(std::borrow::Cow::Owned(transformed.raster))
+    }
+
+    #[test]
+    #[cfg(feature = "jp2")]
+    fn matching_jp2_output_grids_reuse_the_source_pixels() {
+        let config = crate::RasterConfig { cols: 32, rows: 24, bands: 1, data_type: crate::DataType::U8, ..Default::default() };
+        let raster = crate::Raster::from_data_native(config, crate::raster::RasterData::U8(vec![7; 32 * 24])).unwrap();
+        let mut ds = RasterDataset::new(raster, false);
+        let gt = [500000.0, 10.0, 0.0, 4600000.0, 0.0, -10.0];
+        ds.set_geo_transform(gt);
+        for transform in [None, Some(gt)] {
+            let raster = jp2_raster(&ds, transform).unwrap();
+            assert!(std::ptr::eq(raster.as_ref(), &ds.raster));
+        }
+        ds.affine = Some(gt);
+        let inherited = RasterWriteOptions::default().inherited_from(&ds, Some(RasterDriver::JP2));
+        assert!(std::ptr::eq(jp2_raster(&ds, inherited.geo_transform).unwrap().as_ref(), &ds.raster));
+        let changed = [600000.0, 20.0, 0.0, 4600000.0, 0.0, -20.0];
+        let raster = jp2_raster(&ds, Some(changed)).unwrap();
+        assert!(!std::ptr::eq(raster.as_ref(), &ds.raster));
+        assert_eq!(crate::geo_transform(raster.as_ref()), changed);
+        assert_eq!(crate::geo_transform(&ds.raster), gt);
+    }
+
     /// Writes a raster to bytes with the in-memory codecs.
     /// `table` names the raster in formats that hold several (GeoPackage).
     #[cfg_attr(not(any(feature = "sqlite", feature = "jp2", feature = "zarr", feature = "tiles")), allow(unused_variables))]
@@ -785,20 +822,9 @@ pub(crate) mod codec {
             #[cfg(feature = "jp2")]
             RasterDriver::JP2 => {
                 let inherited = options.inherited_from(ds, Some(driver));
-                let mut transformed;
-                let raster = match inherited.geo_transform {
-                    Some(gt) => {
-                        if !crate::is_north_up(&gt) {
-                            return Err(Error::Unsupported("the JP2 writer cannot store rotated or south-up geotransforms".into()));
-                        }
-                        transformed = RasterDataset::with_driver(ds.raster.clone(), driver, false);
-                        transformed.set_geo_transform(gt);
-                        &transformed.raster
-                    }
-                    None => &ds.raster,
-                };
+                let raster = jp2_raster(ds, inherited.geo_transform)?;
                 let jp2 = crate::drivers::jp2::to_bytes(
-                    raster,
+                    raster.as_ref(),
                     crate::drivers::common::georeferenced(&inherited.creation_options),
                     &inherited.band_metadata,
                     &inherited.creation_options,
