@@ -1006,6 +1006,19 @@ impl LazyRaster {
             .try_fold(0u16, |widest, level| self.level_sample_bits(level).map(|bits| widest.max(bits)))
     }
 
+    /// Selects an inherited copy width for a selected level and its descendants (GDAL 3.13.3).
+    /// Unknown stored widths or widths reaching the output container capacity omit NBITS.
+    pub fn copy_sample_bits_for_output(&self, overview: Option<usize>, data_type: DataType, inherited: u16) -> Option<u16> {
+        let capacity = match data_type {
+            DataType::U8 => 8,
+            DataType::U16 => 16,
+            DataType::U32 => 32,
+            _ => return None,
+        };
+        let width = inherited.max(self.copy_sample_bits(overview).unwrap_or(capacity));
+        (width < capacity).then_some(width)
+    }
+
     /// A width that can retain samples from every stored level an AUTO read can select.
     pub(crate) fn widest_sample_bits(&self) -> Option<u16> {
         self.copy_sample_bits(None)

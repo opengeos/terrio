@@ -838,6 +838,21 @@ impl PyRaster {
         Ok(self.inner.copy_sample_bits(overview))
     }
 
+    /// Internal shared width policy for copies of a selected level and its descendants.
+    #[pyo3(signature = (overview, dtype, inherited))]
+    fn _copy_sample_bits_for_output(&self, overview: Option<usize>, dtype: &str, inherited: u16) -> PyResult<Option<u16>> {
+        if let Some(index) = overview {
+            self.inner.overviews().get(index).ok_or_else(|| invalid(format!("no overview {index}")))?;
+        }
+        let data_type = match dtype {
+            "uint8" => DataType::U8,
+            "uint16" => DataType::U16,
+            "uint32" => DataType::U32,
+            _ => return Ok(None),
+        };
+        Ok(self.inner.copy_sample_bits_for_output(overview, data_type, inherited))
+    }
+
     /// Internal overview metadata from the native mask discovery, without reading pixels.
     fn _overview_has_mask(&self, overview: usize) -> PyResult<bool> {
         self.inner.overviews().get(overview).ok_or_else(|| invalid(format!("no overview {overview}")))?;

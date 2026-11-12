@@ -164,13 +164,11 @@ def _inherited_nbits(src: Any, requested: dict[str, Any], driver: str) -> int | 
     if driver.upper() not in ("GTIFF", "COG") or "nbits" in requested:
         return None
     compression = requested.get("compress")
-    compression = (
-        None if compression is None else str(getattr(compression, "value", compression)).upper()
-    )
+    compression = None if compression is None else str(getattr(compression, "value", compression))
     predictor = requested.get("predictor")
     if isinstance(predictor, bool):
         predictor = "YES" if predictor else "NO"
-    predictor = "1" if predictor is None else str(getattr(predictor, "value", predictor)).upper()
+    predictor = "1" if predictor is None else str(getattr(predictor, "value", predictor))
     widths = [src.tags(band, ns="IMAGE_STRUCTURE").get("NBITS") for band in src.indexes]
     nodata = [requested["nodata"]] * src.count if "nodata" in requested else list(src.nodatavals)
     return _terrio.Raster._inherited_sample_bits(
@@ -247,9 +245,10 @@ def _copy_dataset(
             if source_level is not None:
                 profile["@copy_src_overview_level"] = source_level
             if "nbits" not in requested and "nbits" in profile:
-                capacity = _getnpdtype(profile["dtype"]).itemsize * 8
-                width = max(int(profile["nbits"]), base._copy_sample_bits(source_level) or capacity)
-                if width < capacity:
+                width = base._copy_sample_bits_for_output(
+                    source_level, _getnpdtype(profile["dtype"]).name, int(profile["nbits"])
+                )
+                if width is not None:
                     profile["nbits"] = width
                 else:
                     profile.pop("nbits")
