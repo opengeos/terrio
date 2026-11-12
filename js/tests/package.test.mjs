@@ -56,8 +56,10 @@ test("terrio-js/core is the smaller download", () => {
 const threaded = existsSync(join(dir, "threads", "terrio_bg.wasm"));
 
 test("terrio-js/load starts the threaded module, which matches the single-threaded one", { skip: !threaded && "no threads/ module" }, async () => {
-  const { load, threadsSupported } = await import(pathToFileURL(join(dir, "load.js")).href);
+  const { load, threadsSupported, simdSupported } = await import(pathToFileURL(join(dir, "load.js")).href);
   assert.ok(threadsSupported());
+  // The modules are built with WebAssembly SIMD, which Node.js has.
+  assert.ok(simdSupported());
   const mt = await load({ threads: 4 });
   assert.equal(mt.features().build, "terrio-js/threads");
   assert.equal(mt.features().threads, 4);

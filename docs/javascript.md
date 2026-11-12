@@ -5,7 +5,8 @@ WebAssembly for browsers and Node.js. Datasets are opened from bytes, with a fil
 format, and written back to bytes. Try it without installing anything on the [Playground](playground.md).
 
 The modules use WebAssembly SIMD (all but `terrio-js/memory64`): Chrome and Edge 91, Firefox 89,
-Safari 16.4 and Node.js 16.4 or later run them.
+Safari 16.4 and Node.js 16.4 or later have it. `terrio-js/load` needs Node.js 20.16 or 22.3 and
+later (`process.getBuiltinModule`), and fails with a clear error where SIMD is missing.
 
 ```js
 import init, { open, fromGeoJSON, fromArrowIPC, rasterFromArray, registerGrid, transformPoints, describeCrs, listCrs } from "terrio-js";

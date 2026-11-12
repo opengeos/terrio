@@ -21,6 +21,8 @@ export interface LoadOptions {
 
 /** Whether WebAssembly's 64-bit memories work here (Node.js 24+, Chrome 133+, Firefox 134+). */
 export function memory64Supported(): boolean;
+/** Whether WebAssembly SIMD works here, which every module but memory64 needs. */
+export function simdSupported(): boolean;
 
 /** Whether WebAssembly threads can run here (Node.js, or a cross-origin isolated page). */
 export function threadsSupported(): boolean;

@@ -42,6 +42,17 @@ export function memory64Supported() {
   }
 }
 
+/** Whether WebAssembly SIMD works here, which every module but memory64 needs: a module using it validates. */
+export function simdSupported() {
+  // A function of type [] -> [v128]: i32.const 0, i8x16.splat, i8x16.popcnt.
+  const module = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 5, 1, 0x60, 0, 1, 0x7b, 3, 2, 1, 0, 10, 10, 1, 8, 0, 0x41, 0, 0xfd, 15, 0xfd, 0x62, 0x0b]);
+  try {
+    return WebAssembly.validate(module);
+  } catch {
+    return false;
+  }
+}
+
 /** Whether WebAssembly threads can run here. */
 export function threadsSupported() {
   if (typeof SharedArrayBuffer !== "function" || typeof Atomics !== "object") return false;
@@ -64,6 +75,10 @@ export function threadsSupported() {
 export async function load(options = {}) {
   const { threads = true, core = false, memory64 = false, onFallback } = options;
   if (memory64 && core) throw new TypeError("load: terrio-js/core has no memory64 module (memory64 and core together)");
+  // Without SIMD only the memory64 module could load: say so rather than fail on each module.
+  if (!simdSupported() && !(memory64 && memory64Supported())) {
+    throw new Error("terrio-js needs WebAssembly SIMD (Chrome and Edge 91, Firefox 89, Safari 16.4, Node.js 16.4 or later)");
+  }
   // The memory64 module is single-threaded: `threads` is not used with it.
   if (memory64) {
     if (memory64Supported()) {
