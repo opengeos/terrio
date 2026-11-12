@@ -1035,6 +1035,8 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
             )
         self.structure.colorinterp = [ColorInterp(v) for v in value]
         self._colorinterp_set = True
+        # Explicit roles select fresh channel associations; copy restores stored ones afterward.
+        self._jp2_associations: list[int | None] = []
         self._dirty = True
 
     def colormap(self, bidx: int) -> dict[int, tuple[int, int, int, int]]:
@@ -2219,7 +2221,7 @@ class DatasetWriter(DatasetReader):
 
         Raises:
             TypeError: If the driver, size, count or dtype is missing or invalid.
-            DriverCapabilityError: If the driver name has whitespace around it.
+            DriverCapabilityError: If terrio cannot write the format.
             ValueError: If the nodata value does not fit the data type.
             RasterBlockError: If tile sizes are not multiples of 16.
         """
@@ -2245,10 +2247,7 @@ class DatasetWriter(DatasetReader):
         if mode in ("w", "w+"):
             if not isinstance(driver, str):
                 raise TypeError("A driver name string is required.")
-            if driver != driver.strip():
-                # The name is compared with `GTiff` and `COG` as written, here and when the file
-                # is written, while the core writer would read it without the whitespace.
-                raise DriverCapabilityError(f"Writer does not exist for driver: {driver}")
+            driver = _canonical_writer_driver(driver)
             try:
                 width, height = int(width), int(height)
             except (TypeError, ValueError):
@@ -2269,7 +2268,7 @@ class DatasetWriter(DatasetReader):
                     f"Given nodata value, {nodata}, is beyond the valid range of its data type, "
                     f"{dt}."
                 )
-            self.driver = "GTiff" if driver.upper() == "COG" else driver
+            self.driver = driver
             self._out_driver = driver
             self.width, self.height, self._count, self._dtype = width, height, count, dt
             self._nodata = None if nodata is None else float(nodata)
@@ -2308,7 +2307,7 @@ class DatasetWriter(DatasetReader):
             bool: True for GeoTIFFs larger than the in-memory limit.
         """
         size = int(np.prod(shape)) * np.dtype(dtype).itemsize
-        return self.driver == "GTiff" and size > _in_memory_limit()
+        return self.driver in ("GTiff", "COG") and size > _in_memory_limit()
 
     def _allocate(self, shape: tuple[int, ...], dtype: Any, fill: Any) -> np.ndarray:
         """An array for pixels, in memory or mapped from a temporary file.
@@ -2499,6 +2498,13 @@ class DatasetWriter(DatasetReader):
         except Exception as err:
             raise RasterioIOError(f"Read failed: {err}") from err
         self._out_driver = self.driver
+        # GDAL reports every non-alpha band of a two-band gray JP2 as Gray. Keep its
+        # actual Y association separately so an update does not choose another component.
+        self._jp2_associations = (
+            [m.get("color_association") for m in raster.band_metadata]
+            if _terrio.canonical_driver_name(self.driver) == "JP2"
+            else []
+        )
         s = self.structure
         opts: dict[str, str] = {}
         if s.compression:
@@ -3006,6 +3012,12 @@ class DatasetWriter(DatasetReader):
         compress = opts.pop("COMPRESS", None)
         band_md: list[dict[str, Any]] = []
         defaults = self._new_structure_defaults()
+        # JP2 needs the whole role vector: once any role is written, omitted entries mean
+        # Undefined rather than the band-count default, so every role is sent explicitly.
+        inherited_associations = getattr(self, "_jp2_associations", [])
+        explicit_jp2_roles = (
+            self._colorinterp_set or bool(inherited_associations)
+        ) and _terrio.canonical_driver_name(driver) == "JP2"
         for b in range(self._count):
             md: dict[str, Any] = {}
             if s.descriptions[b]:
@@ -3019,8 +3031,12 @@ class DatasetWriter(DatasetReader):
             if s.band_tags[b]:
                 md["items"] = dict(s.band_tags[b])
             ci = s.colorinterp[b]
-            if ci != defaults[b] and not (ci == ColorInterp.palette and s.colormap):
+            if (ci != defaults[b] or explicit_jp2_roles) and not (
+                ci == ColorInterp.palette and s.colormap
+            ):
                 md["color_interp"] = _tiff.COLOR_INTERP_NAMES.get(ci, "Undefined")
+            if b < len(inherited_associations) and inherited_associations[b] is not None:
+                md["color_association"] = inherited_associations[b]
             band_md.append(md)
         colormap: list[tuple[int, int, int, int]] | None = None
         if s.colormap:
@@ -3423,13 +3439,28 @@ class MemPointerDataset(DatasetWriter):
             DatasetBase.close(self)
 
 
+def _canonical_writer_driver(driver: str) -> str:
+    """Resolve writable raster aliases once, before writer policy branches use the name."""
+    name = _terrio.canonical_driver_name(driver)
+    if name == "COG":
+        return "COG"
+    for info in _terrio.drivers():
+        if (
+            info.get("kind") == "raster"
+            and info.get("write", True)
+            and _terrio.canonical_driver_name(info["name"]) == name
+        ):
+            return str(info["name"])
+    raise DriverCapabilityError(f"Writer does not exist for driver: {driver}")
+
+
 def get_writer_for_driver(driver: str) -> type[DatasetWriter]:
     """The writer class for a driver.
 
     Names are compared as the driver allow-list compares them (`canonical_driver_name`): in any
     case, and with the names of JPEG 2000 drivers, such as the `JP2OpenJPEG` that
-    `driver_from_extension` gives `.jp2` paths, as terrio's `JP2`. A name with whitespace around
-    it is refused, as the writer keeps the name it is given and compares it as written.
+    `driver_from_extension` gives `.jp2` paths, as terrio's `JP2`. Surrounding whitespace
+    and letter case are ignored, as in the driver allow-list.
 
     Args:
         driver: The driver's short name.
@@ -3438,19 +3469,9 @@ def get_writer_for_driver(driver: str) -> type[DatasetWriter]:
         type: The writer class.
 
     Raises:
-        DriverCapabilityError: If terrio cannot write the format, or the name has whitespace
-            around it.
+        DriverCapabilityError: If terrio cannot write the format.
     """
-    name = _terrio.canonical_driver_name(driver)
-    writes = {
-        _terrio.canonical_driver_name(d["name"]): d.get("write", True)
-        for d in _terrio.drivers()
-        if d.get("kind") == "raster"
-    }
-    # `canonical_driver_name` ignores the whitespace around a name, which `DatasetWriter` refuses:
-    # it compares the name with `GTiff` and `COG` as written.
-    if driver != driver.strip() or (name != "COG" and not writes.get(name, False)):
-        raise DriverCapabilityError(f"Writer does not exist for driver: {driver}")
+    _canonical_writer_driver(driver)
     return DatasetWriter
 
 

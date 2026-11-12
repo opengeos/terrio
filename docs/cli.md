@@ -1088,7 +1088,8 @@ exactly, whatever `--et` is. Source windows include these exact corners as well 
 sampled bounds: a 256 × 256
 tile reprojected from UTM to Web Mercator at the source's resolution totals the integral of the
 source over it within a relative error of 10⁻⁹. Transforming every corner and bounding its footprint takes additional work;
-see [validation and measured costs](testing.md#exact-sum-footprints).
+see [validation and measured costs](testing.md#exact-sum-footprints). A footprint across the
+antimeridian adds the source on both sides of it, as the area methods below take it.
 
 With `-r average`, `rms`, `mode`, `min`, `max`, `med`, `q1` or `q3`, each output pixel takes the
 valid source pixels inside its footprint on the source grid: where the footprint runs past the
@@ -1096,11 +1097,23 @@ source's edges, only its part inside the source counts, and `average`, `rms` and
 source pixel by its area inside that part. A footprint counts within the source window that its
 chunk of the output reads, and an output pixel is left empty only when no valid source pixel of
 that window lies inside it or one of the two corners that bound its footprint (top left and bottom
-right) cannot be transformed. A footprint crossing the antimeridian of a regional, unrotated
-affine geographic source also stays empty pending circular footprint handling (#764).
+right) cannot be transformed. On a geographic source with an unrotated grid, warped into another
+CRS, a footprint across the antimeridian takes the source on both sides of it, as one across any
+other meridian does: near both edges of a source of every longitude, and its part on the source's
+side of one that ends at the antimeridian. A footprint counts as across it when its corners lie
+more than half a turn of longitude apart on the source grid and the source position of its centre
+lies outside them. Any other footprint keeps its corners: a coarse pixel's, whose centre lies
+between them, and that of a pixel more than half a turn wide, whose corners lie less than half a
+turn apart, which takes the source between them.
 The window holds the footprints of its chunk unless a strongly curved
 transformation takes one past the points the window is sampled from: such a footprint is shortened,
 and its pixel can then differ with the chunks the warp splits the output grid into.
+With chunk-dependent sampling, the sampled source window can also omit one side of an
+antimeridian-crossing footprint; default stable sampling avoids that window-selection gap.
+For a source wider than one longitude turn, repeated longitudes are read at the single placement
+with the greatest overlap. If no single placement covers the footprint, the part beyond the
+other edge is omitted. Covering that remainder without counting repeated longitudes twice is
+tracked in [#884](https://github.com/opengeos/terrio/issues/884).
 
 ### Warp source overviews
 

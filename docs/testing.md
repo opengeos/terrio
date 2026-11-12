@@ -9,6 +9,21 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## GDAL backend date-times
+
+The optional backend reads date-time fields using `OGR_F_GetFieldAsDateTimeEx`,
+retaining GDAL's millisecond precision and raw timezone flag. UTC is written as
+`Z`, explicit offsets are retained, and unknown/local zones remain unqualified.
+Fractions are canonicalized to three decimal digits when nonzero; this does not
+preserve the source's original text spelling or sub-millisecond precision.
+
+`cargo test -p terrio --features gdal --test gdal_backend date_time_fields` checks
+path and byte reads, fractional seconds, UTC, signed and quarter-hour offsets,
+unzoned values and nulls. The native unit test
+`gdal_backend::tests::datetime_field_keeps_gdal_timezone_flags` independently checks
+GDAL-authored in-memory fields with unknown, local and explicit UTC flags.
+These tests use GDAL itself as the typed-field reference; validation uses GDAL 3.13.3.
+
 ## Python warning attribution
 
 `python/tests/test_native_warning_locations.py` checks warnings recorded in Rust
@@ -18,6 +33,25 @@ once-per-location suppression. The shared warning bridge skips Terrio's Python
 frames using APIs available on Python 3.10 and later, without changing warning filters.
 Attribution stops at the first frame outside the Terrio package, including a
 third-party intermediary when one calls Terrio on the application's behalf.
+
+`python/tests/test_pyogrio_datetime_filters.py` checks pandas 2 and 3 datetime parsing without
+Terrio changing warning filters, including invalid input after mixed offsets and pandas-only
+ISO forms. Standard ISO strings with a uniform offset pass directly to pandas after a distinct
+value syntax scan. Other pandas 2 inputs inspect every distinct value so invalid strings retain
+their original diagnostic; pandas 3 uses its parser directly. Reduced `YYYY`/`YYYY-MM` values
+are parsed in a timezone-free batch, retaining valid results when one value is invalid.
+Python datetime output normalizes timestamp fractions to six digits before stdlib parsing
+and attributes any precision warning to the caller. Other pandas-only ISO forms can still
+require one pandas fallback per distinct value on older Python versions.
+Regressions check bounded pandas calls for repeated and reduced-date inputs, the older stdlib
+precision path, and the uniform-offset shortcut. The additional scan has a CPU cost; it is
+not an end-to-end read benchmark or a timing gate.
+Each live buffer-reference comparison owns its GDAL and Arrow state in a child process. The
+GeoParquet case checks both ordinary buffers and Arrow dataframe reads with registered WKB
+extension types, keeping the reference driver's registrations out of other tests.
+An explicit child assertion is a comparison difference; skipped references stay skipped.
+Other exit codes, signals and the 60-second timeout are fixture setup errors, which the
+conformance reporter records as suite errors instead of data differences.
 
 ## Vector byte packaging
 
@@ -138,6 +172,26 @@ GDAL:
   RGB), WebP, JPEG XL, LERC (with Deflate and Zstandard, lossy and with NaN masks) and LZMA
 
 ## The conformance suite
+
+JPEG 2000 creation options are checked with
+`python scripts/conformance.py DATA --only jp2-writer --strict`, using the real
+`landsat7.tif` fixture, current Python bindings, pytest and rasterio. Path and memory
+writes check default lossless pixels, lossy quality/rate selection, reversible and
+irreversible filters, progressive quality layers, invalid options, georeferencing,
+types and independent GDAL decoding (reference: GDAL 3.13.3). Encoder byte identity
+with GDAL is not claimed. The corresponding JavaScript/WASM regression is in
+`js/tests/node.test.mjs`.
+
+Standalone WebP creation options are checked with
+`python scripts/conformance.py DATA --only webp-writer --strict`, using the
+`landsat7.tif` downloaded by `scripts/fetch_test_data.sh`. Current Python bindings,
+pytest and rasterio are required. Default/explicit lossless samples are exact;
+requested lossy output changes with quality, keeps alpha exactly, and is decoded
+independently with GDAL (validated locally with GDAL 3.13.3). Path and memory
+outputs agree. Lossy byte streams, size and PSNR are not claimed to match libwebp.
+The shared lossy encoder is also checked through WebAssembly GeoTIFF tiles in
+`js/tests/node.test.mjs`. General `toBytes` and `open` do not support WebP in that
+build; `rasterTiles` can emit standalone WebP bytes through its callback.
 
 CityJSON uses its published schemas and specifications as the reference because
 GDAL 3.13.3 has no CityJSON driver. Prepare the real CityJSON 1.1 Den Haag and 2.0
@@ -318,6 +372,7 @@ rule rather than treating the outputs as pixel-identical or excluding edge pixel
 | GRIB | `scripts/compare_grib_with_gdal.py` (`OUT_DIR URL[#REGEX] ...`; registered in conformance as `grib`, on the repository's GRIB fixtures and the test data's GRIB files) | real products by URL (subsets of NOAA's GFS and HRRR by their `.idx` lines, MRMS, files GDAL writes), band by band: band count, size, geotransform, CRS, pixels, nodata, mask, description and `GRIB_*` metadata, from a file and as a URL |
 | Tile archives | `scripts/compare_tiles_with_gdal.py` | MBTiles written by `gdal_translate`/`gdaladdo` and by terrio, pixel for pixel per zoom level; PMTiles pixels; vector tiles read by both tools and written by `ogr2ogr` and terrio: feature counts, areas, lengths per feature key |
 | Point clouds | `scripts/compare_pointclouds.py` | every value vs laspy; headers, COPC queries, `writers.gdal` grids and reprojection vs PDAL |
+| pyogrio signed buffers | `python/tests/test_pyogrio_buffer_sources.py::test_signed_buffers_match_gdal` (`pyogrio-buffers`) | GeoPackage, FlatGeobuf and GeoParquet bytes against the installed Pyogrio/GDAL reference: columns, values, dtypes, point geometries and CRS match. Missing reference drivers are reported as not compared. Warning text is outside this comparison. |
 | Arrow | `scripts/compare_arrow_with_gdal.py` | `Layer.to_arrow()` (WKB and native GeoArrow) vs GDAL's Arrow streams, through pyarrow and GeoPandas; `terrio.from_arrow()` of GDAL's, GeoPandas' and terrio's tables; GDAL's `WriteArrow` of terrio's tables |
 | GeoPackage updates and spatial filters | `scripts/compare_gpkg_with_gdal.py` | `--append`, `--overwrite` and added layers vs `ogr2ogr` (features, extents, counts, sequences, R-trees, `integrity_check`, `validate_gpkg.py`, rasters kept); `--spat` vs `ogr2ogr -spat`; timings on a large file |
 | CAD drawings | `scripts/compare_cad_with_gdal.py` (`cad`) | Independent AutoCAD R2000 DWG files and public GDAL DXF fixtures (binary DXF, OCS, faces, solids, hatches and blocks), real OSM roads through DWG/DXF, and Terrio-authored DXF read by GDAL. Counts, types, layer names and coordinates; linear tolerance 1e-8 (zero-Z promotion to XYZ reported), curve Hausdorff tolerance 0.001 times diagonal and relative length/area tolerance 0.002; Z bounds separately. Independent DWG coordinates were checked with GDAL/libopencad; generated DWG is cross-read through DXF. GDAL uses unmerged blocks and an explicit UTF-8 override for the mislabeled Russian hatch fixture. |
@@ -2760,6 +2815,34 @@ The stored masked-external cubic 26×41 resampled-read case uses the separate
 The control changes only first-image/mask flags from 1/5 to 0/4, so GDAL weights the
 stored mask. Its pixels match Terrio exactly; 488 samples differ from the historical
 raw GDAL reference, which remains unchanged in `expected.json.gz`.
+
+## JPEG 2000 channel roles
+
+`python/tests/test_jp2_color_roles.py` checks UInt8/UInt16 path and MemoryFile writes,
+independent GDAL reads, exact masks and a GDAL-authored BGR/ARGB reader regression.
+It also checks inferred and alias drivers and absence of invented GeoJP2 transforms.
+Encoded CDEF/COD checks cover channel associations and RGB component transforms;
+small RGB subsets remain grayscale and duplicate RGB associations are rejected.
+A GDAL-authored BGRA fixture checks stored 8/8/8/1-bit component precisions, alpha
+promotion and masks. The native test checks full and selected-window component order.
+Two Gray components with luminance in either component retain their CDEF association
+through updates and `rio.shutil.copy` (including the alias driver); an explicit color-role
+assignment still selects new associations. Inherited multispectral roles pin the disabled
+multiple-component transform. Source-affine tests check rotated and south-up grids
+through both file and byte exports. Unreferenced sources remain without a transform;
+CRS-only sources retain their existing unit-pixel grid, as specified in #714.
+
+The `jp2-colors` conformance suite writes real Landsat subsets through Python
+paths/bytes, CLI and Node/WASM when its package is available. GDAL independently
+checks exact values, types, masks, roles and either absence of georeferencing or exact
+rotated/south-up affine grids with EPSG:32633; this does
+not claim compressed-byte identity with GDAL's encoder. Copies of real two-component
+subsets also check stored luminance associations through both path and open-reader
+inputs and the JP2 alias driver. Run with GDAL 3.13.3:
+
+```sh
+python scripts/conformance.py ../terrio-data --only jp2-colors --strict
+```
 
 ## Categorical Deflate output
 
