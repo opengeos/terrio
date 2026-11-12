@@ -1127,6 +1127,18 @@ impl crate::cog::WindowSource for Jp2Window {
     fn geotransform_present(&self) -> Option<bool> {
         Some(self.referenced)
     }
+    /// JPEG 2000 resolutions retain their component precision (GDAL 3.13.3 NBITS).
+    fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
+        if !self.preserve_band_order || overview.is_some_and(|i| i >= self.overviews.len()) {
+            return None;
+        }
+        let effective = |i: usize, bits: u32| {
+            let colour = if i == 0 && self.header.precisions.len() > 1 { 1 } else { 0 };
+            if self.alpha == Some(i) && bits == 1 && self.header.precisions.get(colour) == Some(&8) { 8 } else { bits }
+        };
+        let bits = effective(0, *self.header.precisions.first()?);
+        if self.header.precisions.iter().enumerate().all(|(i, &p)| effective(i, p) == bits) { u16::try_from(bits).ok() } else { None }
+    }
     fn overviews(&self) -> Vec<(usize, usize)> {
         self.overviews.clone()
     }
@@ -1520,8 +1532,20 @@ mod tests {
         let bytes = encode(16, 16, &components, false, &EncodingOptions::from_creation_options(&[]).unwrap()).unwrap();
         std::fs::write(&path, bytes).unwrap();
         let mut source = crate::LazyRaster::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(source.level_sample_bits(None), Some(15));
+        assert_eq!(source.level_sample_bits(Some(0)), None);
         let window = source.read_window(crate::Window { x: 2, y: 3, width: 5, height: 4 }, &Default::default()).unwrap();
         assert_eq!(window.band_sample_bits(0), Some(15));
+        let resized = crate::ops::translate::translate_lazy(
+            &mut source,
+            &crate::ops::translate::TranslateOptions {
+                out_size: Some((crate::ops::translate::Size::Pixels(8), crate::ops::translate::Size::Pixels(8))),
+                ..Default::default()
+            },
+            crate::ops::overview::OverviewSelection::Auto,
+        )
+        .unwrap();
+        assert_eq!(resized.band_sample_bits(0), Some(15));
         let target = directory.path().join("copy.tif");
         crate::write_raster_dataset(&window, target.to_str().unwrap(), &Default::default()).unwrap();
         let mut copied = crate::LazyRaster::open(target.to_str().unwrap()).unwrap();

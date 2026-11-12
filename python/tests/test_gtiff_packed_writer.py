@@ -796,13 +796,11 @@ def remove_mask_directories(path, widths):
     path.write_bytes(raw)
 
 
-@pytest.mark.parametrize("missing", [(8,), (16, 8)])
+@pytest.mark.parametrize("missing", [(8,), (16, 8), (32,), (32, 8)])
 @pytest.mark.parametrize("base_value", [0, 255])
 @pytest.mark.parametrize("size", [32, 1024])
-def test_cog_copy_preserves_partial_mask_pyramids_as_gdal(
-    tmp_path, gdal, missing, base_value, size
-):
-    """Copy per-level masks, including absent all-valid masks, as GDAL 3.13.3 does."""
+def test_cog_copy_keeps_partial_and_overview_only_masks(tmp_path, gdal, missing, base_value, size):
+    """Preserve source masks; GDAL 3.13.3 COG copies discard overview-only masks."""
     source, target = tmp_path / "partial-mask.tif", tmp_path / "copy.tif"
     previous = gdal.GetConfigOption("GDAL_TIFF_INTERNAL_MASK")
     gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
@@ -831,7 +829,13 @@ def test_cog_copy_preserves_partial_mask_pyramids_as_gdal(
     )
     copy(source, target, driver="COG")
     result = gdal.Open(str(target))
-    actual, expected = result.GetRasterBand(1), reference.GetRasterBand(1)
+    # GDAL's COG copy drops overview-only masks. Preserve the source's masks instead
+    # when the base has none; other cases retain the ordinary GDAL-copy comparison.
+    expected_dataset = reference_source if 32 in missing else reference
+    actual, expected = result.GetRasterBand(1), expected_dataset.GetRasterBand(1)
+    if 32 in missing:
+        assert expected.GetMaskFlags() == gdal.GMF_ALL_VALID
+        assert actual.GetMaskFlags() == gdal.GMF_PER_DATASET
     assert actual.GetOverviewCount() == expected.GetOverviewCount() == 2
     for left, right in [(actual, expected)] + [
         (actual.GetOverview(i), expected.GetOverview(i)) for i in range(2)
@@ -842,13 +846,17 @@ def test_cog_copy_preserves_partial_mask_pyramids_as_gdal(
         )
 
 
+@pytest.mark.parametrize("size", [32, 256])
+@pytest.mark.parametrize("surface", ["copy", "auto", "none"])
 @pytest.mark.parametrize("driver", ["GTiff", "COG"])
-def test_jp2_copy_inherits_unsigned_precision_as_gdal(tmp_path, gdal, driver):
+def test_jp2_copy_inherits_unsigned_precision_as_gdal(tmp_path, gdal, driver, surface, size):
     """A lossless 15-bit JPEG2000 source retains NBITS on copy, as GDAL 3.13.3 does."""
     if gdal.GetDriverByName("JP2OpenJPEG") is None:
         pytest.skip("GDAL JP2OpenJPEG is unavailable")
-    values = np.arange(1024, dtype="uint16").reshape(32, 32) * 31
-    memory = gdal.GetDriverByName("MEM").Create("", 32, 32, 1, gdal.GDT_UInt16)
+    values = (
+        ((np.arange(size * size, dtype="uint32") % 1024) * 31).astype("uint16").reshape(size, size)
+    )
+    memory = gdal.GetDriverByName("MEM").Create("", size, size, 1, gdal.GDT_UInt16)
     memory.WriteArray(values)
     memory.SetGeoTransform((500000, 10, 0, 5800000, 0, -10))
     memory.SetProjection(rio.CRS.from_epsg(32633).to_wkt())
@@ -861,16 +869,40 @@ def test_jp2_copy_inherits_unsigned_precision_as_gdal(tmp_path, gdal, driver):
     )
     encoded.FlushCache()
     encoded = None
-    reference = gdal.Translate(str(tmp_path / "reference.tif"), str(source), format=driver)
+    reference = gdal.Translate(
+        str(tmp_path / "reference.tif"),
+        str(source),
+        format=driver,
+        **(
+            {
+                "width": size // 2,
+                "height": size // 2,
+                "overviewLevel": "NONE" if surface == "none" else "AUTO",
+            }
+            if surface != "copy"
+            else {}
+        ),
+    )
     target = tmp_path / "copy.tif"
-    copy(source, target, driver=driver)
+    if surface == "copy":
+        copy(source, target, driver=driver)
+    else:
+        import terrio
+
+        terrio.translate(
+            str(source),
+            str(target),
+            format=driver,
+            outsize=(size // 2, size // 2),
+            overview="NONE" if surface == "none" else "AUTO",
+        )
     actual = gdal.Open(str(target))
     for dataset in (actual, reference):
         band = dataset.GetRasterBand(1)
         assert band.DataType == gdal.GDT_UInt16
         assert band.GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "15"
-        assert dataset.GetGeoTransform() == memory.GetGeoTransform()
-        np.testing.assert_array_equal(dataset.ReadAsArray(), values)
+        assert dataset.GetGeoTransform() == reference.GetGeoTransform()
+        np.testing.assert_array_equal(dataset.ReadAsArray(), reference.ReadAsArray())
 
 
 @pytest.mark.parametrize("bits,dtype,value", [(1, "uint8", 255), (12, "uint16", 65535)])

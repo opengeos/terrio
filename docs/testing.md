@@ -1416,6 +1416,21 @@ The four-bit bright-edge CUBIC control matches an independent GDAL 3.13.3 pyrami
 exactly; Terrio reports encode-time clipping where the reference is quiet.
 The native metadata regression also requires NBITS to share its band's existing
 IMAGE_STRUCTURE domain with other items, preserving unrelated empty domains.
+JPEG 2000 controls cover 15-bit whole copies and AUTO/explicit-base resampling,
+with and without stored resolution levels. Twelve additional nearest/cubic/Lanczos
+controls at 128- and 384-square output exactly match GDAL 3.13.3 sample arrays.
+
+Mask-pyramid regressions include sources whose base mask is absent but whose
+overviews have masks. These cases compare the output with the source's validity:
+GDAL 3.13.3's COG copier drops the overview-only masks. The output's synthetic
+all-valid base mask requires one byte per base pixel while building the pyramid,
+with checked dimensions, memory admission and fallible allocation. Other cases
+retain the GDAL-copy comparison. A 1024-square probe, with five alternating fresh
+processes and four Rayon threads, measured median logical process-read bytes of
+4,039,048 before and 4,186,576 after; read-system-call counts were 469 and 489.
+Those counts include metadata/probe reads and are not per-file physical transfers.
+The first overview's mask changed from incorrectly all-valid to the source's
+all-invalid mask, while the new base mask remained all-valid.
 
 Selected-overview COG copies are checked with internal and external three-level
 UInt16 pyramids storing 9/9/12 bits. GDAL 3.13.3 independently checks the selected
