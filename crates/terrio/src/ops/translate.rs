@@ -366,9 +366,10 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
 
     let complex = o.scale.is_some() || o.exponent.is_some();
     let convolution = matches!(o.resampling, Some(Resampling::Cubic | Resampling::CubicSpline | Resampling::Lanczos));
-    // GDAL 3.12 converts convolution results to the source type before VRT scaling
+    // GDAL 3.12 converts resampled values to the source type before VRT scaling
     // or output conversion. GDAL 3.13 preserves the floating working values.
-    let legacy_convolution = convolution && KernelVersion::configured() == KernelVersion::Gdal312;
+    let modern = KernelVersion::configured() == KernelVersion::Gdal313;
+    let legacy_convolution = convolution && !modern;
     let n = crate::dataset::fallible::len(&[ow, oh], "a translated raster")?;
     let in_place = pixels.is_some();
     let mut out = match pixels {
@@ -403,7 +404,7 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
             src_rect: s,
             dst_rect: d,
             resampling: o.resampling.unwrap_or_default(),
-            working_float: !legacy_convolution && (complex || out_type != r.data_type),
+            working_float: modern && (complex || out_type != r.data_type),
             invalid_value: if complex { None } else { src_nodata },
             within_rects: false,
         };
@@ -972,6 +973,41 @@ fn fix_windows(s: &mut [f64; 4], d: &mut [f64; 4], w: f64, h: f64) -> bool {
 mod tests {
     use super::*;
     use wbraster::{Raster, RasterConfig};
+
+    /// GDAL 3.12.1 rounds Byte bilinear reads before retyping; nearest UInt32 stays exact.
+    #[test]
+    fn non_convolution_retyping_keeps_source_precision_in_the_legacy_profile() {
+        let config = RasterConfig { cols: 8, rows: 1, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let source = RasterDataset::new(Raster::from_data_native(config, RasterData::U8(vec![0, 0, 0, 15, 15, 0, 0, 0])).unwrap(), false);
+        let options = TranslateOptions {
+            out_size: Some((Size::Pixels(32), Size::Pixels(1))),
+            output_type: Some(DataType::F64),
+            resampling: Some(Resampling::Bilinear),
+            ..Default::default()
+        };
+        let output = crate::config::with_options(&[("TERRIO_GDAL_COMPAT", "3.12")], || translate(&source, &options).unwrap());
+        let row = [
+            0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 2., 6., 9., 13., 15., 15., 15., 15., 13., 9., 6., 2., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0., 0.,
+        ];
+        assert_eq!(output.raster.data.to_f64_vec(), row);
+        let options = TranslateOptions { scale: Some(Scale { src: Some((0.0, 15.0)), dst: Some((0.0, 30.0)) }), ..options };
+        let output = crate::config::with_options(&[("TERRIO_GDAL_COMPAT", "3.12")], || translate(&source, &options).unwrap());
+        assert_eq!(output.raster.data.to_f64_vec(), row.map(|value| value * 2.0));
+
+        let config = RasterConfig { cols: 1, rows: 1, bands: 1, data_type: DataType::U32, ..Default::default() };
+        let source = RasterDataset::new(Raster::from_data_native(config, RasterData::U32(vec![16_777_217])).unwrap(), false);
+        let options = TranslateOptions {
+            out_size: Some((Size::Pixels(2), Size::Pixels(1))),
+            output_type: Some(DataType::F64),
+            resampling: Some(Resampling::Nearest),
+            ..Default::default()
+        };
+        for version in ["3.12", "3.13"] {
+            let output = crate::config::with_options(&[("TERRIO_GDAL_COMPAT", version)], || translate(&source, &options).unwrap());
+            assert_eq!(output.raster.data.to_f64_vec(), [16_777_217.; 2]);
+        }
+    }
 
     /// GDAL 3.12.1 reference values preserve source-type conversion before scaling/retyping.
     #[test]

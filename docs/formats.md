@@ -211,8 +211,9 @@ eager and lazy reads. Signed/floating outputs and scaled
 work retain their interpolation range before final conversion, as in GDAL 3.13.3.
 Type-changing translations also retain interpolation precision for unpacked sources
 before the final output conversion in that mode. With the default GDAL 3.12
-compatibility mode, these convolution kernels first round and clamp to the source
-type and stored bit width, then scale or convert the result. Select the reference
+compatibility mode, resampled values first round and clamp to the source type,
+then scale or convert the result; convolution kernels also respect the stored
+bit width. SUM retains its widened accumulation in both modes. Select the reference
 version with `TERRIO_GDAL_COMPAT=3.12` or `3.13`.
 Generated CUBIC overviews can reach a packed limit even when the base samples fit.
 The four-bit bright-edge conformance control matches an independent GDAL 3.13.3
