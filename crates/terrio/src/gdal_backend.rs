@@ -1055,7 +1055,9 @@ fn vector_from(ds: GdalDataset, path: &str, options: &VectorOpenOptions) -> Resu
         if let Some((x0, y0, x1, y1)) = options.spatial_filter {
             layer.set_spatial_filter_rect(x0, y0, x1, y1);
         }
-        layers.push(layer_from(&mut layer, &name, &mut budget)?);
+        let mut output = layer_from(&mut layer, &name, &mut budget)?;
+        options.keep_range(&mut output);
+        layers.push(output);
     }
     // `finish_vector` names unnamed layers after the file: use the path without GDAL's syntax.
     Ok(finish_vector(layers, strip_prefix(path).unwrap_or(path), VectorDriver::Gdal))

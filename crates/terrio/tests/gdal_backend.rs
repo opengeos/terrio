@@ -289,6 +289,40 @@ fn subdatasets_through_gdal() {
     assert_eq!(differing, 0);
 }
 
+/// GDAL 3.13.3 feature ranges follow spatial filtering for paths and in-memory inputs.
+#[test]
+fn vector_ranges_follow_filtered_order() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("ordered.geojson");
+    let features: Vec<_> = (0..5)
+        .map(
+            |i| serde_json::json!({"type": "Feature", "properties": {"sequence": i}, "geometry": {"type": "Point", "coordinates": [i, 0]}}),
+        )
+        .collect();
+    let bytes = serde_json::to_vec(&serde_json::json!({"type": "FeatureCollection", "features": features})).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    let name = path.to_str().unwrap();
+    let base = terrio::VectorOpenOptions { spatial_filter: Some((1.5, -1.0, 4.5, 1.0)), ..Default::default() };
+    let full = terrio::gdal_backend::open_vector(name, &base).unwrap();
+    assert_eq!(full.layers[0].features.len(), 3);
+    for (skip, limit) in [(0, Some(0)), (1, Some(1)), (2, None), (9, Some(2))] {
+        let options = terrio::VectorOpenOptions { skip_features: skip, max_features: limit, ..base.clone() };
+        let start = skip.min(full.layers[0].features.len());
+        let end = limit.map_or(full.layers[0].features.len(), |n| (start + n).min(full.layers[0].features.len()));
+        let expected = &full.layers[0].features[start..end];
+        for result in [
+            terrio::open_vector(&format!("GDAL:{name}"), &options).unwrap(),
+            terrio::gdal_backend::open_vector_bytes(bytes.clone(), "ordered.geojson", &options).unwrap(),
+        ] {
+            assert_eq!(result.layers[0].features.len(), expected.len());
+            for (actual, expected) in result.layers[0].features.iter().zip(expected) {
+                assert_eq!(actual.geometry, expected.geometry);
+                assert_eq!(actual.fid, expected.fid);
+            }
+        }
+    }
+}
+
 /// Vector datasets terrio reads itself, read again through GDAL.
 #[test]
 fn vectors_match_terrio_drivers() {

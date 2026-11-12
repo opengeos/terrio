@@ -762,22 +762,7 @@ fn authority_axis_order(name: &str) -> bool {
 }
 
 fn parse_crs(name: &str) -> Result<SpatialRef> {
-    Ok(if let Some(parts) = name.strip_prefix("urn:ogc:def:crs,") {
-        let codes = parts
-            .split(',')
-            .map(|part| {
-                if !part.starts_with("crs:EPSG:") {
-                    return Err(invalid("unsupported compound CRS authority"));
-                }
-                let code = part.rsplit(':').next().unwrap_or_default();
-                code.parse::<u32>().map_err(invalid)?;
-                Ok(code)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        SpatialRef::parse(&format!("EPSG:{}", codes.join("+")))?
-    } else {
-        SpatialRef::parse(name)?
-    })
+    SpatialRef::parse_literal(name)
 }
 
 impl<'a> Reader<'a> {
@@ -808,7 +793,7 @@ impl<'a> Reader<'a> {
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
             .and_then(|value| axis_count(&value))
             .or_else(|| (crs.has_height() || crs.is_geocentric()).then_some(3));
-        let reference = Reference { dimension, swap: crs.is_geographic() && authority_axis_order(name) };
+        let reference = Reference { dimension, swap: crs.has_north_east_axis_order() && authority_axis_order(name) };
         if self.crs.is_none() {
             crs.apply_to_layer(&mut self.layer);
             self.crs = Some(crs);
@@ -1491,6 +1476,11 @@ mod test_data;
 #[cfg(test)]
 mod tests {
     use super::test_data::{FACE, model};
+
+    #[test]
+    fn native_compound_reference_does_not_drop_unsupported_components() {
+        assert!(super::parse_crs("urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720").is_err());
+    }
 
     #[test]
     fn anonymous_objects_avoid_declared_logical_ids_in_both_document_orders() {

@@ -75,9 +75,9 @@ around them. A new operation should be available from each of them where it appl
 |---|---|
 | Find compile errors quickly, without building | `cargo check -p terrio` |
 | Run the command-line tool | `cargo run -p terrio-cli -- info FILE` |
-| Run one integration test file | `cargo test -p terrio --test stac_geozarr` |
-| Run tests whose names contain a word | `cargo test -p terrio --test stac_geozarr stac_items` |
-| Show what passing tests print | `cargo test -p terrio --test stac_geozarr -- --nocapture` |
+| Run one integration test file | `cargo test -p terrio --test merged stac_geozarr::` |
+| Run tests whose names contain a word | `cargo test -p terrio --test merged stac_geozarr::stac_items` |
+| Show what passing tests print | `cargo test -p terrio --test merged stac_geozarr:: -- --nocapture` |
 | Format the code | `cargo fmt --all` |
 | Lint, treating warnings as errors | `cargo clippy --workspace --all-targets -- -D warnings` |
 | Open the API documentation | `cargo doc -p terrio --no-deps --open` |
@@ -87,6 +87,14 @@ are slow to run: add `--release` when you time something or process a large file
 
 While editing, repeat `cargo check` and the tests closest to your change. Leave the whole workspace
 for the end.
+
+terrio's integration tests (`crates/terrio/tests/*.rs`) are modules of one test binary, `merged`
+(`tests/merged/main.rs`): run one file's tests with `--test merged <file>::`. A file that sets driver
+allow-lists, environment variables, configuration or CRS settings (grid paths, network), reads
+process-wide counters, installs a global allocator, measures the process's memory, runs its own test
+binary again, or is run by name (CI, docs, scripts) is a binary of its own instead (a
+`[[test]]` of `crates/terrio/Cargo.toml`, run with `--test <file>`). Add a new file to one of the
+two; a test checks that each file is built once.
 
 ### Tests on real data
 
@@ -98,7 +106,7 @@ the copies in other formats (see [Testing Against GDAL](testing.md)).
 
 ```sh
 scripts/fetch_test_data.sh ../terrio-data
-TERRIO_TEST_DATA=../terrio-data cargo test -p terrio --test geopackage
+TERRIO_TEST_DATA=../terrio-data cargo test -p terrio --test merged geopackage::
 ```
 
 ### Python bindings

@@ -2,6 +2,39 @@ use super::*;
 use crate::ops::vector_filter::VectorTranslateOptions;
 use wbvector::{Coord, FieldDef, FieldType, FieldValue, Geometry};
 
+#[test]
+fn range_source_stops_decoding_batches_at_its_limit() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountedSource {
+        batches: VecDeque<Vec<Feature>>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl FeatureSource for CountedSource {
+        fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(self.batches.pop_front())
+        }
+    }
+
+    for (skip, limit, expected_calls, expected_rows) in [(0, 0, 0, 0), (1, 2, 3, 2), (3, 1, 4, 1)] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let rows = sample(10).features.into_iter().map(|feature| vec![feature]).collect();
+        let inner = CountedSource { batches: rows, calls: calls.clone() };
+        let mut source = RangedSource { inner: Box::new(inner), skip, remaining: Some(limit) };
+        let mut actual = Vec::new();
+        while let Some(batch) = source.next_batch().unwrap() {
+            actual.extend(batch);
+        }
+        assert_eq!(actual.len(), expected_rows);
+        assert_eq!(calls.load(Ordering::Relaxed), expected_calls);
+        assert!(source.next_batch().unwrap().is_none());
+        assert_eq!(calls.load(Ordering::Relaxed), expected_calls);
+    }
+}
+
 /// A layer with every field type, null values and geometries, empty geometries, Z and
 /// integers beyond 32 bits.
 fn sample(n: usize) -> Layer {

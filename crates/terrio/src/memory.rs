@@ -38,6 +38,9 @@ use wbvector::Layer;
 pub use crate::drivers::vector::geojson::parse as parse_geojson_layer;
 pub use crate::drivers::vector::shapefile::to_zip_bytes as write_shapefile_zip_bytes;
 
+#[cfg(test)]
+mod range_tests;
+
 /// Opens a dataset, raster or vector, from its bytes. `name` is a file name whose extension tells
 /// the format (`dem.tif`, `roads.fgb`, `parcels.zip`).
 pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Dataset> {
@@ -523,6 +526,8 @@ pub(crate) mod codec {
 
     /// Opens a dataset from bytes with the in-memory codecs.
     pub(crate) fn open(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions) -> Result<Dataset> {
+        // Bytes never designate a service, even when their caller-supplied label does.
+        options.oapif.validate_source("in-memory dataset")?;
         check_vector_archive_filename(&bytes, name)?;
         // Formats this build leaves out, by their extension.
         if let Some(feature) = RasterDriver::for_extension(name).and_then(RasterDriver::missing_feature) {
@@ -580,8 +585,7 @@ pub(crate) mod codec {
         #[cfg(feature = "tiles")]
         if (ext == "mvt" || ext == "gz" || ext == "pbf") && crate::tiles::is_mvt(&bytes) {
             let layers = crate::tiles::vector::read_tile_file(&bytes, name, &options.tiles)?;
-            let layers = crate::dataset::select_layers(layers, name, options)?;
-            return Ok(Dataset::Vector(crate::dataset::finish_vector(layers, name, VectorDriver::MVT)));
+            return finish_vector(layers, name, VectorDriver::MVT, options);
         }
         if bytes.starts_with(b"SQLite format 3\0") {
             #[cfg(feature = "sqlite")]
@@ -766,11 +770,12 @@ pub(crate) mod codec {
     /// Keeps the layers the options ask for.
     pub(super) fn finish_vector(layers: Vec<Layer>, name: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Dataset> {
         let names: Vec<String> = layers.iter().map(|l| l.name.clone()).collect();
-        let layers = crate::dataset::select_layers(layers, name, options)?;
-        // A source without layers is refused, as before names were checked one by one.
-        if layers.is_empty() {
+        let mut layers = crate::dataset::select_layers(layers, name, options)?;
+        // Preserve empty MVT datasets; explicit missing selections are checked above.
+        if layers.is_empty() && driver != VectorDriver::MVT {
             return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
         }
+        layers.iter_mut().for_each(|layer| options.keep_range(layer));
         Ok(Dataset::Vector(VectorDataset::new(layers, driver)))
     }
 
@@ -907,6 +912,15 @@ mod tests {
     use super::*;
     use wbraster::raster::RasterData;
     use wbraster::{DataType, Raster};
+
+    #[test]
+    fn empty_mvt_keeps_an_empty_dataset_without_a_layer_selection() {
+        let dataset = codec::finish_vector(Vec::new(), "empty.mvt", VectorDriver::MVT, &Default::default()).unwrap();
+        assert!(matches!(dataset, Dataset::Vector(dataset) if dataset.layers.is_empty()));
+        let options = VectorOpenOptions { layers: vec!["missing".into()], ..Default::default() };
+        let error = codec::finish_vector(Vec::new(), "empty.mvt", VectorDriver::MVT, &options).unwrap_err();
+        assert!(matches!(error, Error::InvalidArgument(message) if message.contains("no layer named missing")));
+    }
 
     fn packaging_layer() -> Layer {
         parse_geojson_layer(
