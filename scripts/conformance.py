@@ -2624,6 +2624,38 @@ def suite_gpkg(ctx):
     return s
 
 
+def suite_vector_ranges(ctx):
+    """Compare STAC vector asset ranges with GDAL on Natural Earth point data.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: GeoJSON and GeoPackage layer, value, CRS and coordinate comparisons.
+    """
+    suite = Suite("vector-ranges", "Vector source ranges", "GDAL/OGR",
+                  "16 Natural Earth points; layer names, order, scalar values and CRS exact; coordinates within 1e-9 degrees.")
+    missing = missing_modules("terrio", "geopandas", "osgeo")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    if not os.path.exists(os.path.join(ctx.data, "ne_places/ne_10m_populated_places_simple.shp")):
+        suite.skipped = "needs the Natural Earth populated places fixture"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_vector_ranges.py"), ctx.data, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        status = {"identical": IDENTICAL, "within tolerance": TOLERANCE}.get(result["status"], DIFFERS)
+        suite.cases.append(Case("STAC ranges", result["name"], status, result["detail"]))
+    if not results or (code and not any(case.status == DIFFERS for case in suite.cases)):
+        suite.error = tail(err or out) or "no vector range comparisons"
+    return suite
+
+
 def suite_streams(ctx):
     """Streamed vector conversions vs whole-layer ones, and a large layer vs ogr2ogr."""
     s = Suite(
@@ -3802,6 +3834,7 @@ SUITES = OrderedDict(
         ("gpkg", suite_gpkg),
         ("gpkg-paging", suite_gpkg_paging),
         ("streams", suite_streams),
+        ("vector-ranges", suite_vector_ranges),
         ("wfs", suite_wfs),
         ("oapif", suite_oapif),
         ("tiles", suite_tiles),

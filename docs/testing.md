@@ -9,6 +9,41 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Vector source ranges
+
+`cargo test -p terrio --test vector_stream_ranges` checks eager/streamed ranges,
+STAC asset forwarding and MVT directories/tiles. The memory range tests exercise
+filesystem-free codecs, including multi-layer and archive readers. Ranges count
+live features after a driver's candidate filtering, once per selected layer.
+Zero retains an empty layer with its schema. Pyogrio's compatibility facade
+retains its separate convention that `max_features=0` means unbounded.
+
+The Linux CSV regression measures the number of live input handles and the file
+cursor after bounded and full reads. Schema discovery still scans the file;
+the feature reader stops after its prefetched prefix for a bounded range. A
+portable source counter also checks that a zero limit decodes no feature batches
+and a satisfied limit never requests another batch.
+
+FlatGeobuf streams scan features sequentially even when an index exists; indexed
+bounding-box filtering happens before range counting, but does not use the index
+to avoid those reads. No indexed-read byte reduction is claimed here. Without an
+index, both eager and streamed readers retain all features as spatial candidates,
+so a bounding box does not remove features on that path. Eager codec reads and
+the GDAL fallback materialize a layer before slicing its feature range. A small
+range therefore does not reduce their decoding memory or GDAL vector-budget
+charges. Native Python `terrio.open_vector` keeps its existing whole-dataset API;
+Python callers use the pyogrio facade for range parameters.
+Skipping still decodes and discards the skipped live features, so its work grows
+with the requested offset; this wrapper does not add indexed seeks for pagination.
+
+`python scripts/conformance.py DATA --only vector-ranges --strict` compares
+GeoJSON and multi-layer GeoPackage STAC assets with GDAL/OGR using 16 real Natural
+Earth populated places. It checks 12 selected-layer/range combinations: order,
+scalar values and EPSG:4326 exactly, and point coordinates within 1e-9 degrees.
+Local validation uses GDAL 3.13.3 and finds zero coordinate difference.
+The public Python tests also exercise archives and CLI layer selection; Node
+checks byte ranges and rejects service options for in-memory files.
+
 ## GDAL backend date-times
 
 The optional backend reads date-time fields using `OGR_F_GetFieldAsDateTimeEx`,

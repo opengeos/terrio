@@ -921,7 +921,7 @@ fn read_feature_service(url: &str, first: &[u8], driver: VectorDriver, options: 
 
 pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
     options.oapif.validate_source(path)?;
-    if let Some(result) = crate::stac::open(path) {
+    if let Some(result) = crate::stac::open_vector(path, options) {
         return match result? {
             Dataset::Vector(v) => Ok(v),
             Dataset::Raster(_) => Err(Error::Unsupported(format!("'{path}' is a raster, not a vector dataset"))),
@@ -1155,7 +1155,11 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     }
     #[cfg(feature = "tiles")]
     if let Some(layers) = crate::tiles::open_mvt_local(path, options) {
-        return layers.map(|l| Dataset::Vector(finish_vector(l, path, VectorDriver::MVT)));
+        return layers.and_then(|layers| {
+            let mut layers = select_layers(layers, path, options)?;
+            layers.iter_mut().for_each(|layer| options.keep_range(layer));
+            Ok(Dataset::Vector(finish_vector(layers, path, VectorDriver::MVT)))
+        });
     }
     if !Path::new(path).exists() {
         return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("'{path}' does not exist"))));

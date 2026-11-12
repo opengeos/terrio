@@ -4666,6 +4666,47 @@ test("single named layer accepts the file stem across readers and operations", (
   ]) assert.throws(call, /no layer named missing \(layers: roads\)/);
 });
 
+test("vector byte ranges apply once and service options are refused", () => {
+  const source = terrio.fromGeoJSON({type: "FeatureCollection", features: Array.from({length: 5}, (_, i) => ({
+    type: "Feature", properties: {sequence: i}, geometry: {type: "Point", coordinates: [10 + i, 46]},
+  }))});
+  const filenames = ["points.geojson", "points.gml", "points.kml", "points.kmz", "points.csv", "points.shp.zip"];
+  for (const [feature, filename] of [["flatgeobuf", "points.fgb"], ["parquet", "points.parquet"], ["sqlite", "points.gpkg"]]) {
+    if (!needs(feature)) filenames.push(filename);
+  }
+  for (const filename of filenames) {
+    const bytes = source.toBytes(filename);
+    const full = terrio.openVector(bytes, filename, {});
+    const expected = full.toGeoJSON().features.map(feature => feature.properties.sequence);
+    full.free();
+    for (const [skipFeatures, maxFeatures] of [[0, 0], [1, 2], [4, undefined], [99, 1]]) {
+      const dataset = terrio.openVector(bytes, filename, {skipFeatures, maxFeatures});
+      assert.deepEqual(dataset.toGeoJSON().features.map(feature => feature.properties.sequence),
+        expected.slice(skipFeatures, maxFeatures === undefined ? undefined : skipFeatures + maxFeatures), filename);
+      dataset.free();
+    }
+    assert.throws(() => terrio.openVector(bytes, filename, {openOptions: {DATETIME: "2024-01-01"}}), /OAPIF/);
+    assert.throws(() => terrio.openVector(bytes, "OAPIF:https://example.invalid/points", {openOptions: {DATETIME: "2024-01-01"}}), /OAPIF/);
+  }
+  source.free();
+});
+
+test("MVT byte ranges preserve each selected layer", () => {
+  // Native Terrio fixture: five points and three points in one gzipped z=0 tile.
+  const bytes = new Uint8Array(Buffer.from(
+    "H4sIAAAAAAAA/5MqqWDiYknLLEsV4hViYmCQYFRi5Xyi+EgMzGUEc3/BuExg7iQlKJcZzF0B47KAufuUHolJcRSnFpam5iWnKjFpMCgxaTAqMWkwKTFpMCsxabBoNChI+VcwcbGWZBSlkmYtdoM1GhQAccdRN8cAAAA=",
+    "base64",
+  ));
+  for (const layer of ["five", "three"]) {
+    for (const [skipFeatures, maxFeatures, expected] of [[1, 1, [1]], [0, 0, []], [99, 1, []]]) {
+      const dataset = terrio.openVector(bytes, "0/0/0.pbf", {layers: [layer], skipFeatures, maxFeatures});
+      assert.deepEqual(dataset.layerNames(), [layer]);
+      assert.deepEqual(dataset.toGeoJSON().features.map(feature => feature.properties.sequence), expected);
+      dataset.free();
+    }
+  }
+});
+
 test("MapInfo MIF archives read in WebAssembly", () => {
   // Native Terrio fixture: points.mif and points.mid, one EPSG:4326 point with label=site.
   const bytes = new Uint8Array(Buffer.from(
