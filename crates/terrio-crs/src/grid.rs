@@ -780,6 +780,18 @@ pub fn set_grid_search_paths(paths: Option<Vec<std::path::PathBuf>>) {
     reset_grid_cache();
 }
 
+/// Make the effective grid search directories explicit, refusing path-named grids.
+/// This snapshots the configured directories, or the host's default directories when none
+/// are configured. Registered grids and the network policy are unchanged. Use this before
+/// creating transformers for untrusted CRS definitions.
+pub fn confine_grid_search_paths() {
+    #[cfg(not(target_family = "wasm"))]
+    let paths = search_dirs();
+    #[cfg(target_family = "wasm")]
+    let paths = Vec::new();
+    set_grid_search_paths(Some(paths));
+}
+
 /// Enables or disables downloading grids from the PROJ CDN, instead of following the
 /// `TERRIO_NETWORK` (or `PROJ_NETWORK`) environment variable; `None` goes back to it. As PROJ's
 /// `proj_context_set_enable_network`.

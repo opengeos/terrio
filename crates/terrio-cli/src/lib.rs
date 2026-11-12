@@ -492,6 +492,11 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         eprintln!("JSON usage is not available for this command");
         return 2;
     }
+    // MCP definitions come from a client: retain the host's grid directories without
+    // permitting a definition to name an arbitrary grid file outside that lookup policy.
+    if std::env::var_os("TERRIO_MCP_TOOL").is_some() {
+        terrio::crs::confine_grid_search_paths();
+    }
     let result = match cli.command {
         Command::Info(a) => cmd::info::run(a),
         Command::RpftocCreate(a) => cmd::rpftoc::run(&a),

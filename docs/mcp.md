@@ -12,6 +12,13 @@ command's `--help`, so the agent sees every option. The server speaks over stand
 output, and runs each call as a separate `terrio` process: its output goes back to the agent, and
 a command that fails says why.
 
+For native datum/geoid grid lookups, tool processes use the host's search directories and
+reject grids named by absolute or dot-relative paths inside CRS definitions. Configure
+trusted directories through `TERRIO_GRID_DIR`, `PROJ_DATA` or `PROJ_LIB` in the server's
+environment, then use the grid's name. See [grid lookup policy](crs.md#datum-shift-grids).
+CRS definition-file arguments accept regular files, including symlinks to them; pipes
+and devices are refused. These rules govern CRS lookups, not other tool input paths.
+
 ## Set it up
 
 Install the `terrio` command (see [Installation](installation.md)), then register it with your
