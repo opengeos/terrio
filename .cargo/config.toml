@@ -7,6 +7,6 @@
 # WebAssembly SIMD (`simd128`, Chrome and Edge 91, Firefox 89, Safari 16.4, Node.js 16.4): zlib-rs
 # decodes with it, and LLVM vectorizes loops with it. A Zarr store of zlib chunks reads 20% faster
 # (warm reads, Node.js); other codecs gain up to 4%. js/build.mjs repeats these flags where its
-# RUSTFLAGS replace them (the threaded and memory64 modules).
+# RUSTFLAGS replace them (the threaded module; the memory64 one is built without SIMD).
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "target-feature=+simd128", "-C", "link-arg=--allow-undefined"]

@@ -174,8 +174,9 @@ function buildMemory64(outDir) {
   }
   const link = ["--allow-undefined", "--max-memory=17179869184"].flatMap((a) => ["-C", `link-arg=${a}`]);
   // zlib-rs's SIMD for wasm64 (core::arch::wasm64) is unstable; ahash seeds with getrandom, whose
-  // wasm64 backend js/src/lib.rs defines.
-  const rustflags = ["-Zcrate-attr=feature(simd_wasm64)", "-C", "target-feature=+simd128", "--cfg", 'getrandom_backend="custom"', ...link];
+  // wasm64 backend js/src/lib.rs defines. Without WebAssembly SIMD (simd128), unlike the other
+  // modules: jxl-modular 0.11 then imports `std::arch::wasm32`, which wasm64 does not have.
+  const rustflags = ["-Zcrate-attr=feature(simd_wasm64)", "--cfg", 'getrandom_backend="custom"', ...link];
   try {
     execFileSync("rustup", ["run", NIGHTLY, "cargo", "build", "-p", "terrio-js", "--target", target, ...profile, "-Z", "build-std=panic_abort,std", ...patches], {
       cwd: crate,

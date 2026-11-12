@@ -13,8 +13,8 @@
 WebAssembly for browsers and Node.js. Datasets are opened from bytes, with a file name telling the
 format, and written back to bytes.
 
-The modules use WebAssembly SIMD: Chrome and Edge 91, Firefox 89, Safari 16.4 and Node.js 16.4 or
-later run them.
+The modules use WebAssembly SIMD (all but `terrio-js/memory64`): Chrome and Edge 91, Firefox 89,
+Safari 16.4 and Node.js 16.4 or later run them.
 
 ```js
 import init, { open, fromGeoJSON, fromArrowIPC, rasterFromArray, registerGrid, transformPoints, describeCrs, listCrs, openPoints, pointsFromArrays } from "terrio-js";
