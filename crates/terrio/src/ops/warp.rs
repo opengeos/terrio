@@ -7402,6 +7402,49 @@ mod tests {
         assert!(sx == 0 && sy == 0 && sw < 40, "columns {sx} to {}, rows from {sy}", sx + sw);
     }
 
+    /// The poles extend the estimated source window only in the chunk-dependent sampling
+    /// (`grid_invariant: false`), and not for a `sum`. In the stable sampling, which bounds each
+    /// pixel's own kernel or footprint and uses the estimate only to size its memory chunks, and
+    /// for a `sum`, which bounds every corner of its footprints in both samplings, the estimate is
+    /// bounded as before. NSIDC's north grid (EPSG:3413, 25 km pixels), with the North Pole on
+    /// the centre of pixel (154, 234), from a longitude and latitude source of 0.01° pixels from
+    /// 90° N to the equator (so that the grid's rows span less than 90% of the source's, which
+    /// the estimate would read whole): the whole grid's estimate starts at the pole's row for
+    /// nearest neighbour in the chunk-dependent sampling; in the stable sampling, at the source
+    /// row the points sampled along the grid's edges reach (56.38° N, row 3362); for a `sum`, in
+    /// both samplings, at the rows of the corners nearest the pole, 0.16° from it, less the
+    /// estimate's margin of two.
+    #[test]
+    fn a_window_estimate_reaches_a_pole_only_for_the_chunk_dependent_samplings_kernels_other_than_sum() {
+        let geographic = SpatialRef::from_epsg(4326).unwrap();
+        let polar = SpatialRef::from_epsg(3413).unwrap();
+        let dst_gt = [-3_862_500.0, 25_000.0, 0.0, 5_862_500.0, 0.0, -25_000.0];
+        let first_row = |resampling: Resampling, grid_invariant: bool| {
+            let rw = RegionWarp::new(
+                (36_000, 9_000),
+                [-180.0, 0.01, 0.0, 90.0, 0.0, -0.01],
+                &geographic,
+                &polar,
+                dst_gt,
+                resampling,
+                0.125,
+                DataType::F32,
+                vec![None],
+                Some(0.0),
+            )
+            .unwrap()
+            .with_grid_invariance(grid_invariant);
+            rw.context().estimate_source_window(0, 0, 304, 448).unwrap().1
+        };
+        let rows = [
+            first_row(Resampling::Nearest, false),
+            first_row(Resampling::Nearest, true),
+            first_row(Resampling::Sum, false),
+            first_row(Resampling::Sum, true),
+        ];
+        assert_eq!(rows, [0, 3362, 14, 14], "nearest neighbour, chunk-dependent and stable; sum, chunk-dependent and stable");
+    }
+
     /// Worlds in projected CRSs warped into NSIDC's north grid, whose interior holds the North
     /// Pole: in Mercator (EPSG:3857, to 85.05° N and S), which takes the pole beyond its edge,
     /// and in Eckert IV (ESRI:54012), which takes it to its first row but cannot transform the
