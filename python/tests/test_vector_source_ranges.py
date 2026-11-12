@@ -108,16 +108,24 @@ def test_native_tile_ranges_are_bounded(sources, source, skip, limit):
     """
     result = _terrio.pyogrio_read(sources[source], skip, limit, True)
     assert len(result["fids"]) == (1 if skip == 1 else 0)
-    if source != "mvt":
-        frame = tpg.read_dataframe(sources[source], skip_features=skip, max_features=limit, layer=0)
-        # The compatibility facade follows pyogrio's zero-as-unbounded convention.
-        # The native API represents an unbounded range with None instead.
-        expected = (
-            len(_terrio.pyogrio_read(sources[source], skip, None, True)["fids"])
-            if limit == 0
-            else len(result["fids"])
-        )
-        assert len(frame) == expected
+
+
+@pytest.mark.parametrize("source", ["mbtiles", "pmtiles", "tile"])
+@pytest.mark.parametrize("skip,limit", [(0, 0), (1, 1), (99, 1)])
+def test_tile_dataframe_ranges_match_native_reads(sources, source, skip, limit):
+    """Check the optional dataframe facade against native tile ranges.
+
+    Args:
+        sources: Generated vector fixtures.
+        source: Archive or single tile key.
+        skip: Number of live features to skip.
+        limit: Facade maximum, where zero means unbounded.
+    """
+    pytest.importorskip("geopandas")
+    frame = tpg.read_dataframe(sources[source], skip_features=skip, max_features=limit, layer=0)
+    # The facade uses zero for unbounded reads; the native API uses None.
+    expected = _terrio.pyogrio_read(sources[source], skip, None if limit == 0 else limit, True)
+    assert len(frame) == len(expected["fids"])
 
 
 def test_stac_cli_layer_selection_matches_the_asset(sources):
