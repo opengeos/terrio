@@ -175,9 +175,7 @@ def _copy_dataset(
     for k in ("blockxsize", "blockysize", "tiled", "compress", "interleave", "photometric"):
         profile.pop(k, None)
     profile["driver"] = driver
-    sample = getattr(src, "_complex_sample", None) or getattr(
-        getattr(src, "_raster", None), "data_type", None
-    )
+    sample = getattr(src, "_complex_sample", None)
     if sample in ("CInt16", "CInt32") and not any(k.lower() == "dtype" for k in creation_options):
         profile["dtype"] = "complex64" if sample == "CInt16" else "complex128"
         profile["_complex_dtype"] = sample

@@ -468,3 +468,28 @@ def test_integer_complex_copy_reports_native_read_errors(tmp_path, monkeypatch, 
                 reader._read_for_copy()
             assert isinstance(caught.value.__cause__, ValueError)
         assert reader._raster is native
+
+
+@pytest.mark.parametrize("dtype", ["uint8", "float64"])
+def test_real_copy_uses_cached_sample_metadata(tmp_path, monkeypatch, gdal, dtype):
+    """Copying does not reborrow the native sample-type getter during another read."""
+    source, target = tmp_path / "real.tif", tmp_path / "copied.tif"
+    values = np.arange(24, dtype=dtype).reshape(1, 4, 6)
+    with rio.open(source, "w", driver="GTiff", width=6, height=4, count=1, dtype=dtype) as dst:
+        dst.write(values)
+    with rio.open(source) as reader:
+        native = reader._raster
+
+        class ReadingRaster:
+            @property
+            def data_type(self):
+                raise AssertionError("native sample type is already borrowed by a read")
+
+            def __getattr__(self, name):
+                return getattr(native, name)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(reader, "_raster", ReadingRaster())
+            copy(reader, target, driver="GTiff")
+    decoded = gdal.Open(str(target))
+    np.testing.assert_array_equal(decoded.ReadAsArray(), values[0])
