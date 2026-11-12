@@ -7254,6 +7254,43 @@ mod tests {
         }
     }
 
+    /// NSIDC's north grid (EPSG:3413, 304 x 448 pixels of 25 km), moved a quarter of a pixel
+    /// east so that no pixel centre lies on the 180° meridian, the source's edge, from the 1°
+    /// source of 90° N to 30° N given in radians and in grads, whose pole lies a quarter of the
+    /// CRS's longitude period from its equator, in its own unit. In both samplings
+    /// (`SAMPLINGS`), each pixel the source covers is written, by nearest neighbour with its
+    /// centre's row or the next.
+    #[test]
+    fn a_polar_grid_from_a_source_in_radians_or_grads_is_written_up_to_the_pole() {
+        let (origin, size) = ((-3_856_250.0, 5_850_000.0), (304, 448));
+        let rows = centre_rows(3413, origin, size, 25_000.0, (90.0, 30.0, 1.0));
+        let degrees = typed_raster(DataType::F32, 360, 60, [-180.0, 1.0, 0.0, 90.0, 0.0, -1.0], 4326, |_, r| (r + 1) as f64);
+        for (unit, radians) in [("radian", 1.0), ("grad", std::f64::consts::PI / 200.0)] {
+            let wkt = format!(
+                r#"GEOGCS["WGS84 {unit}",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["{unit}",{radians}]]"#
+            );
+            let srs = SpatialRef::parse(&wkt).unwrap();
+            let per_degree = 1f64.to_radians() / radians;
+            assert!((srs.longitude_period().unwrap() - 360.0 * per_degree).abs() < 1e-9, "{unit}");
+            let mut source = degrees.clone();
+            source.set_geo_transform([-180.0 * per_degree, per_degree, 0.0, 90.0 * per_degree, 0.0, -per_degree]);
+            source.raster.crs = srs.to_crs_info();
+            for (grid_invariant, sampling) in SAMPLINGS {
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::from_epsg(3413).unwrap()),
+                    dst_transform: Some([origin.0, 25_000.0, 0.0, origin.1, 0.0, -25_000.0]),
+                    size: Some(size),
+                    resampling: Resampling::Nearest,
+                    dst_nodata: Nodata::Values(vec![0.0]),
+                    grid_invariant,
+                    ..Default::default()
+                };
+                let out = warp(&[&source], &o).unwrap().raster.data.to_f64_vec();
+                assert_written_up_to_the_pole(&format!("{sampling}, {unit}"), &rows, &out, true);
+            }
+        }
+    }
+
     /// A region of an NSIDC north grid (EPSG:3413, 25 km pixels) in the chunk-dependent sampling
     /// (`grid_invariant: false`), from a longitude and latitude source of 1° pixels from 90° N (or
     /// from 80° N, short of the pole) to 30° N. Its source window reaches the pole's row (or the
