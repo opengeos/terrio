@@ -2985,8 +2985,9 @@ def suite_schema_dimensions(ctx):
     if not os.path.exists(ctx.terrio):
         suite.skipped = f"needs the terrio command-line tool at {ctx.terrio}"
         return suite
-    from osgeo import ogr, osr
+    from osgeo import gdal, ogr, osr
 
+    suite.reference = f"GDAL {gdal.__version__} (FlatGeobuf driver)"
     # Bindings without ``wkbPointZ`` spell the Z point ``wkbPoint25D``, the same type.
     kinds = {"Point": ogr.wkbPoint, "PointZ": ogr.wkbPoint25D, "PointM": ogr.wkbPointM, "PointZM": ogr.wkbPointZM}
     names = {wkb: name for name, wkb in kinds.items()}
