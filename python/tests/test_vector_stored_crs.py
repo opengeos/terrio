@@ -1,6 +1,7 @@
 """Stored CRS robustness across vector readers and dataframe/Arrow exports (#784)."""
 
 import sqlite3
+import warnings
 
 import pytest
 
@@ -142,6 +143,8 @@ def test_custom_dynamic_crs_keeps_frame_reference_epoch(tmp_path, driver, surfac
     dynamic["datum"]["name"] = "custom dynamic datum"
     reference = CRS.from_json_dict(dynamic)
     definition = reference.to_wkt()
+    # Reserve a large enough FlatBuffer string slot for the longer dynamic WKT;
+    # replacing it must not move later header fields or feature offsets.
     container = CUSTOM.replace('"custom"', '"custom' + "x" * 1000 + '"')
     path = stored_crs(tmp_path, driver, definition, container)
     layer = terrio.open_vector(str(path))[0]
@@ -155,3 +158,40 @@ def test_custom_dynamic_crs_keeps_frame_reference_epoch(tmp_path, driver, surfac
     assert result.crs.equals(reference)
     assert result.crs.to_json_dict()["datum"]["frame_reference_epoch"] == 2010
     assert list(result["id"]) == [1]
+
+
+@pytest.mark.parametrize("definition", [CUSTOM, 'LOCAL_CS["site grid",UNIT["metre",1]]'])
+@pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream", "pyogrio"])
+def test_unknown_authority_uses_usable_stored_wkt_without_warning(tmp_path, definition, surface):
+    gpd = geopandas_for_surface(surface)
+    from pyproj import CRS
+
+    import terrio.pyogrio as tpg
+
+    path = tmp_path / "coded.fgb"
+    terrio.Layer.from_geojson(POINTS, name="points", crs="EPSG:32633").write(str(path))
+    raw = bytearray(path.read_bytes())
+    declared = (32633).to_bytes(4, "little")
+    assert raw.count(declared) == 1
+    code_slot = raw.index(declared)
+    raw[code_slot : code_slot + 4] = (999999).to_bytes(4, "little")
+    wkt_slot = raw.index(b"PROJCS[")
+    encoded = definition.encode()
+    assert len(encoded) < int.from_bytes(raw[wkt_slot - 4 : wkt_slot], "little")
+    raw[wkt_slot - 4 : wkt_slot] = len(encoded).to_bytes(4, "little")
+    raw[wkt_slot : wkt_slot + len(encoded) + 1] = encoded + b"\0"
+    path.write_bytes(raw)
+    layer = terrio.open_vector(str(path))[0]
+    assert layer.crs == "EPSG:999999"
+    assert layer.crs_wkt == definition
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        if surface == "pyogrio":
+            result = tpg.read_dataframe(path)
+        elif surface == "geopandas":
+            result = layer.to_geopandas()
+        else:
+            result = gpd.GeoDataFrame.from_arrow(layer.to_arrow() if surface == "arrow" else layer)
+    assert result.crs.equals(CRS.from_user_input(definition))
+    assert list(result["id"]) == [1]
+    assert layer.crs == "EPSG:999999"

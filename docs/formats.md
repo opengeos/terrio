@@ -1184,6 +1184,9 @@ reads it.
   recognized EPSG authority code takes precedence over the redundant definition.
   FlatGeobuf also retains declared EPSG codes absent from the local registry,
   including when its redundant WKT is absent or invalid.
+  If Python cannot use a declared authority code but can parse the stored WKT,
+  dataframe and Arrow exports use that WKT without a CRS warning; the original
+  layer retains its declared code and definition.
   Python `Layer.to_geopandas()`, `Layer.to_arrow()`, Arrow stream export and
   `terrio.pyogrio` share optional pyproj validation. When a retained definition
   cannot be parsed, these exports warn and omit its CRS, preserving geometries,

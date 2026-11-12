@@ -22,7 +22,9 @@ from terrio import errors as _terrio_errors
 from terrio._warnings import warn_user
 
 
-def dataframe_crs(crs: str | None) -> str | None:
+def dataframe_crs(
+    crs: str | None, normalize: bool = True, fallback: str | None = None
+) -> str | None:
     """The CRS as pyogrio gives it.
 
     `EPSG:<code>` when GDAL identifies an EPSG code, otherwise GDAL's WKT1 (here PROJ's
@@ -32,7 +34,9 @@ def dataframe_crs(crs: str | None) -> str | None:
     An `EPSG:<code>` that terrio knows is given as it is, without pyproj. A definition pyproj
     cannot parse, an `EPSG:<code>` neither knows included, is `None`, with a warning that quotes
     it, since a GeoDataFrame refuses it; without pyproj, or with one that fails to import, the
-    definition is given as it is.
+    definition is given as it is. With ``normalize=False``, only validate it and
+    return its original representation. A stored fallback is tried before warning
+    when the preferred authority code or definition cannot be parsed.
     """
     if crs is None:
         return crs
@@ -49,24 +53,28 @@ def dataframe_crs(crs: str | None) -> str | None:
         from pyproj import CRS
     except Exception:  # noqa: BLE001
         return crs
-    try:
-        parsed = CRS.from_user_input(crs)
-    except Exception:  # noqa: BLE001
-        # Non-printable characters (whitespace other than the space, and control characters such
-        # as ESC) are quoted as spaces, so that the quote is one line and sends a terminal no
-        # escape sequence.
+    candidates = (crs, fallback) if fallback and fallback != crs else (crs,)
+    for candidate in candidates:
+        try:
+            parsed = CRS.from_user_input(candidate)
+        except Exception:  # noqa: BLE001
+            continue
+        crs = candidate
+        break
+    else:
+        # Report one failure only after every available definition was rejected.
         quoted = "".join(c if c.isprintable() else " " for c in crs.strip()[:80])
         warn_user(
             f"the layer's CRS definition cannot be parsed ('{quoted}'): it is read without a CRS",
         )
         return None
-    if crs.startswith("EPSG:"):
-        return crs
-    datum = parsed.datum
-    if datum is not None and datum.type_name.startswith("Dynamic"):
-        # WKT1 can silently discard a dynamic datum's frame reference epoch.
+    if not normalize or crs.startswith("EPSG:"):
         return crs
     try:
+        datum = parsed.datum
+        if datum is not None and datum.type_name.startswith("Dynamic"):
+            # WKT1 can silently discard a dynamic datum's frame reference epoch.
+            return crs
         return parsed.to_wkt("WKT1_GDAL") or crs
     except Exception:  # noqa: BLE001
         # A valid WKT2-only CRS remains usable even if WKT1 cannot express it.

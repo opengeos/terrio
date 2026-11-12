@@ -25,8 +25,8 @@ impl From<Layer> for PyLayer {
 }
 
 /// Apply the same optional consumer-side parser as pyogrio without changing stored CRS.
-pub(crate) fn dataframe_crs(py: Python<'_>, crs: Option<String>) -> PyResult<Option<String>> {
-    py.import("terrio._crs")?.call_method1("dataframe_crs", (crs,))?.extract()
+pub(crate) fn dataframe_crs(py: Python<'_>, crs: Option<&str>, fallback: Option<&str>, normalize: bool) -> PyResult<Option<String>> {
+    py.import("terrio._crs")?.call_method1("dataframe_crs", (crs, normalize, fallback))?.extract()
 }
 
 impl PyLayer {
@@ -317,7 +317,8 @@ impl PyLayer {
     fn to_geopandas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let gpd = py.import("geopandas")?;
         let kwargs = PyDict::new(py);
-        kwargs.set_item("crs", dataframe_crs(py, crs_string(&SpatialRef::from_layer(&self.inner)))?)?;
+        let crs = crs_string(&SpatialRef::from_layer(&self.inner));
+        kwargs.set_item("crs", dataframe_crs(py, crs.as_deref(), self.inner.crs_wkt(), true)?)?;
         let geometry = gpd.getattr("GeoSeries")?.call_method("from_wkb", (self.to_wkb(py)?,), Some(&kwargs))?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("geometry", geometry)?;

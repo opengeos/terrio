@@ -1,5 +1,7 @@
-// Written to match GDAL v3.13.3 stored Shapefile CRS behavior
+// Extracted from Terrio's Shapefile CRS handling, written to follow GDAL v3.13.3
 // (ogr/ogrsf_frmts/shape/ogrshapelayer.cpp), without translating its code.
+// GeoPackage and FlatGeobuf reuse this validation policy; it is not a claim of
+// matching those GDAL drivers' handling of malformed CRS definitions.
 
 //! Shared validation of stored vector CRS definitions, without requiring parser support.
 

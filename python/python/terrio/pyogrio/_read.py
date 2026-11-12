@@ -543,7 +543,7 @@ def read_source(
         geometry[:] = wkb
     fids = np.array(raw["fids"], dtype=np.int64) if return_fids else None
     meta = {
-        "crs": _crs(raw["crs"]),
+        "crs": _crs(raw["crs"], fallback=raw.get("crs_wkt")),
         "encoding": "UTF-8",
         "fields": np.array([f[0] for f in fields], dtype=object),
         "dtypes": np.array([f[3] for f in fields], dtype=object),
