@@ -114,6 +114,10 @@ a few rows and thousands of bands, whose 512-row tiles hold every band, is
 held whole. These checks refuse what cannot fit: a buffer about the size of the usable memory
 passes them and can still exhaust it, with what the process holds besides.
 
+`terrio.rio` preserves `ResourceLimitError` when constructing or closing whole and
+streaming writers, after cleaning temporary outputs. Other allocation failures
+retain their `RasterioIOError` wrapping.
+
 For files you do not trust, two options bound what a raster may declare, whatever its driver:
 
 | Option | Refuses a raster that declares more than |

@@ -199,6 +199,56 @@ def test_rio_distinguishes_policy_refusals_from_other_memory_errors(
         assert caught.value.__cause__ is injected
 
 
+@pytest.mark.parametrize("surface", ["construct", "whole", "streaming"])
+@pytest.mark.parametrize(
+    "error_type", [MemoryError, terrio.ResourceLimitError], ids=["allocation", "policy"]
+)
+def test_rio_writer_preserves_policy_errors_and_cleans_temporary_files(
+    tmp_path, monkeypatch, surface, error_type
+):
+    """Both writer paths preserve policy refusals without leaving temporary outputs."""
+    import numpy as np
+
+    import terrio.rio as rio
+    from terrio.rio import io
+    from terrio.rio.errors import RasterioIOError
+
+    path = tmp_path / "output.tif"
+    injected = error_type("injected writer refusal")
+
+    def fail(*args, **kwargs):
+        if surface != "construct":
+            target = args[1]
+            with open(target, "wb") as stream:
+                stream.write(b"incomplete")
+        raise injected
+
+    if surface == "construct":
+        monkeypatch.setattr(io._terrio.Raster, "from_array", fail)
+    elif surface == "whole":
+        monkeypatch.setattr(io._terrio.Raster, "write", fail)
+    else:
+        monkeypatch.setattr(io.DatasetWriter, "_write_streaming", fail)
+
+    expected = error_type if error_type is terrio.ResourceLimitError else RasterioIOError
+    with pytest.raises(expected) as caught:
+        with rio.open(
+            path, "w", driver="GTiff", width=2, height=2, count=1, dtype="uint8"
+        ) as dataset:
+            dataset.write(np.ones((1, 2, 2), dtype="uint8"))
+            # Use the transactional update target for whole writes as well as streamed ones.
+            # The injection exercises cleanup after the output has actually been created.
+            dataset.mode = "r+"
+            if surface == "streaming":
+                monkeypatch.setattr(dataset, "_streams_on_flush", lambda: True)
+    if error_type is terrio.ResourceLimitError:
+        assert caught.value is injected
+    else:
+        assert caught.value.__cause__ is injected
+    assert dataset.closed
+    assert list(tmp_path.iterdir()) == []
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="uses the Linux usable-memory policy")
 def test_vrt_working_memory_refusal_reaches_python(tmp_path):
     """A small Byte window fits while full-size Float64 VRT work does not."""

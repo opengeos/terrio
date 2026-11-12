@@ -2975,7 +2975,8 @@ class DatasetWriter(DatasetReader):
         """Writes the dataset to its file.
 
         Raises:
-            RasterioIOError: If the file cannot be written.
+            ResourceLimitError: If a resource policy refuses the write.
+            RasterioIOError: If the file cannot otherwise be written.
         """
         s = self.structure
         t = self._transform
@@ -3015,6 +3016,8 @@ class DatasetWriter(DatasetReader):
                 raster = _terrio.Raster.from_array(
                     np.asarray(self._data), gt, crs or None, self._nodata, tags
                 )
+            except ResourceLimitError:
+                raise
             except Exception as err:
                 raise RasterioIOError(f"Write failed: {err}") from err
         driver = self._out_driver
@@ -3090,6 +3093,8 @@ class DatasetWriter(DatasetReader):
                 for leftover in (tmp, msk_tmp):
                     if leftover and os.path.exists(leftover):
                         os.remove(leftover)
+                if isinstance(err, ResourceLimitError):
+                    raise
                 raise RasterioIOError(f"Write failed: {err}") from err
             self._dirty = False
             return
@@ -3111,6 +3116,8 @@ class DatasetWriter(DatasetReader):
             for leftover in (tmp, msk_tmp):
                 if leftover and os.path.exists(leftover):
                     os.remove(leftover)
+            if isinstance(err, ResourceLimitError):
+                raise
             raise RasterioIOError(f"Write failed: {err}") from err
         self._dirty = False
 
