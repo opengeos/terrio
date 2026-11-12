@@ -63,8 +63,10 @@ Suites:
     crs               every EPSG CRS's transformations vs GDAL's (tests/epsg_accuracy.rs)
     crs-grids         the same with datum shift grids, then grids, geoid models and coordinate
                       epochs (tests/epsg_accuracy_grids.rs, compare_crs_grids_with_gdal.py)
+    compound-crs      compound EPSG URNs and GML XYZ against GDAL/OGR
     crs-list          ``terrio list-crs`` vs GDAL's GetCRSInfoListFromDatabase, field by field, for
                       the EPSG, ESRI and IAU_2015 CRSs (compare_crs_list_with_gdal.py)
+    transform-bounds  polar and regional bounding boxes vs GDAL via rasterio
 
 Usage:
     python scripts/conformance.py ../terrio-data [--output docs/conformance.md] [--json FILE]
@@ -109,6 +111,7 @@ DIFFERS = "differs"
 # A case whose reference values could not be computed (no coordinates to compare), reported apart.
 NOT_COMPARED = "not compared"
 
+# These suites do not need osgeo; some use rasterio's independently bundled GDAL instead.
 GDAL_FREE_SUITES = frozenset(
     (
         "citygml",
@@ -116,6 +119,7 @@ GDAL_FREE_SUITES = frozenset(
         "cityjson",
         "cityjson-write",
         "crs",
+        "crs-parameters",
         "grib",
         "hecras",
         "jp2-writer",
@@ -1097,6 +1101,31 @@ def suite_vrt(ctx):
     )
 
 
+def suite_packed_tiff(ctx):
+    """Packed raster creation and preservation through copies."""
+    suite = Suite("packed-tiff", "Packed unsigned TIFF output", "GDAL TIFF decoder",
+                  "GTiff/COG writes, Python copies and CLI copies: exact base/overview samples, bit widths, container types, masks, nodata, affine and CRS. An independent GDAL CUBIC bright-edge pyramid checks generated packed overview values. An available WorldCover crop also checks the first 128 palette entries. JP2 AUTO copies retain precision; overview-only masks compare with source validity (GDAL COG copying drops them). Compressed bytes are not compared.")
+    missing = missing_modules("terrio", "numpy", "osgeo")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_packed_tiff_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        rows = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for row in rows:
+        suite.cases.append(Case("packed TIFF", row["name"], {"identical": IDENTICAL, "not compared": NOT_COMPARED}.get(row["status"], DIFFERS), row["detail"]))
+    required = {f"{driver} {bits}-bit" for driver in ("GTiff", "COG") for bits in (1, 4, 7, 12, 24, 31)}
+    required.update(("COG 4-bit CUBIC bright edge", "WorldCover palette", "JP2 15-bit AUTO to GTiff",
+                     "JP2 15-bit AUTO to COG", "COG overview-only source masks"))
+    if not required.issubset(row["name"] for row in rows) or (
+        code and not any(case.status == DIFFERS for case in suite.cases)
+    ):
+        suite.error = tail(err or out) or "incomplete packed TIFF comparisons"
+    return suite
+
 def suite_jp2_colors(ctx):
     """Real Landsat component values, channel roles and masks through each writer."""
     package = ROOT / "js/pkg-node/terrio.js"
@@ -1971,6 +2000,39 @@ def suite_iau(ctx):
     return suite
 
 
+def suite_compound_crs(ctx):
+    """Compare compound EPSG URN components and GML coordinates with GDAL.
+
+    Args:
+        ctx: Conformance run context.
+
+    Returns:
+        Suite: Component and coordinate comparison results.
+    """
+    suite = Suite("compound-crs", "Compound CRS references", "GDAL/OGR",
+                  "Three projected/geographic plus vertical EPSG pairs: component authorities/codes, "
+                  "2+1 axes and GML normalized XYZ match exactly through Python path/bytes and CLI CRS export. "
+                  "GDAL uses GML_REPORT_COMPD_CS=YES to retain both GML components. "
+                  "Names and serialized PROJJSON text are not compared.")
+    if missing_modules("terrio", "osgeo"):
+        suite.skipped = "needs terrio and GDAL Python bindings"
+        return suite
+    from osgeo import gdal
+
+    suite.reference = f"GDAL {gdal.__version__}/OGR"
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_compound_crs_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("Compound CRS", result["name"], result["status"], result["detail"]))
+    if code or len(results) != 6:
+        suite.error = tail(err or out) or "expected six component/coordinate comparisons"
+    return suite
+
+
 def suite_wkt_keywords(ctx):
     """Engineering and vertical WKT roots through native bindings and CLI."""
     suite = Suite("wkt-keywords", "Engineering and vertical WKT keywords", "GDAL 3.13.3",
@@ -2230,6 +2292,63 @@ def suite_projjson_export(ctx):
         suite.cases.append(Case(case["group"], case["name"], case["status"], case["detail"]))
     if code and not any(c.status == DIFFERS for c in suite.cases):
         suite.error = tail(err or out)
+    return suite
+
+
+def suite_transform_bounds(ctx):
+    """Compare polar and regional transformed bounds with live GDAL.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Bounds comparisons within 1e-8 target units, or a prerequisite skip.
+    """
+    suite = Suite("transform-bounds", "Transformed bounds", "GDAL via rasterio",
+                  "Four polar stereographic CRSs and the northern/southern NSIDC 25 km grid "
+                  "extents, EPSG:4326 and OGC:CRS84 targets, and four regional controls. "
+                  "48 comparisons at 2, 21 and 40 interior edge points: pole and full longitude "
+                  "limits exact, remaining bounds within 1e-8 target units. "
+                  "Wrapped antimeridian bounds are outside this suite's scope.")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    import rasterio
+    suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_transform_bounds_poles.py", selection="match_gdal", expected_count=48)
+    suite.cases.append(Case("Bounds", "polar and regional bounds", TOLERANCE if complete else DIFFERS, detail))
+    return suite
+
+
+def suite_crs_parameters(ctx):
+    """Compare exported projection parameters with the active rasterio GDAL oracle.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Forward coordinate comparisons within 1e-5 metres, or a prerequisite skip.
+    """
+    suite = Suite("crs-parameters", "PROJ parameter exports", "GDAL via rasterio",
+                  "Nine WGS 84 projection cases: polar stereographic variants A/B, Mercator "
+                  "variant B, Web Mercator and UTM. Exported PROJ strings read back by Terrio "
+                  "are compared with GDAL's authority-code coordinates within 1e-5 metres.")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    import rasterio
+    suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
+    code, out, err = run([sys.executable, "-m", "pytest", "-q",
+                          str(ROOT / "python/tests/test_crs_proj_parameters.py") + "::test_exported_projections_match_gdal"])
+    if code:
+        suite.cases.append(Case("CRS", "projection export coordinates", DIFFERS, tail(err or out)))
+    elif "skipped" in out:
+        suite.skipped = "GDAL oracle unavailable: " + tail(out)
+    else:
+        suite.cases.append(Case("CRS", "projection export coordinates", TOLERANCE, tail(out)))
     return suite
 
 
@@ -2568,6 +2687,33 @@ def suite_arrow(ctx):
     return s
 
 
+def suite_gpkg_paging(ctx):
+    """Real GeoPackage feature pages through Python paths/bytes and the CLI."""
+    suite = Suite("gpkg-paging", "GeoPackage feature pages", "GDAL vector reader",
+                  "Exact FIDs/order, attributes, geometry WKB, fields and CRS for full, head, middle, tail, empty and spatially filtered pages. CLI limits check values/geometries/CRS, not output-writer FID policy.")
+    missing = missing_modules("terrio", "pandas", "geopandas", "osgeo")
+    if missing:
+        suite.error = "missing modules: " + ", ".join(missing)
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_gpkg_paging_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        rows = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    names = {f"{source} {label}" for source in ("path", "bytes") for label in ("full", "head", "middle", "tail", "empty", "bbox")} | {"CLI limit"}
+    if not isinstance(rows, list) or len(rows) != len(names) or {r.get("name") for r in rows} != names:
+        suite.error = "incomplete GeoPackage paging comparisons"
+        return suite
+    for row in rows:
+        status = {"identical": IDENTICAL, "not compared": NOT_COMPARED}.get(row.get("status"), DIFFERS)
+        suite.cases.append(Case("GeoPackage page", row["name"], status, row.get("detail", "missing comparison detail")))
+    if code:
+        errors = [f"{row['name']}: {row.get('detail', '')}" for row in rows if row.get("status") == "error"]
+        suite.error = tail(err) or "; ".join(errors) or "GeoPackage paging comparisons failed"
+    return suite
+
+
 def suite_gpkg(ctx):
     """GeoPackage updates (append, overwrite, added layers) and R-tree spatial filters vs ogr2ogr."""
     s = Suite(
@@ -2595,6 +2741,38 @@ def suite_gpkg(ctx):
     if not s.cases:
         s.error = tail(err or out)
     return s
+
+
+def suite_vector_ranges(ctx):
+    """Compare STAC vector asset ranges with GDAL on Natural Earth point data.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: GeoJSON and GeoPackage layer, value, CRS and coordinate comparisons.
+    """
+    suite = Suite("vector-ranges", "Vector source ranges", "GDAL/OGR",
+                  "16 Natural Earth points; layer names, order, scalar values and CRS exact; coordinates within 1e-9 degrees.")
+    missing = missing_modules("terrio", "geopandas", "osgeo")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    if not os.path.exists(os.path.join(ctx.data, "ne_places/ne_10m_populated_places_simple.shp")):
+        suite.skipped = "needs the Natural Earth populated places fixture"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_vector_ranges.py"), ctx.data, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        status = {"identical": IDENTICAL, "within tolerance": TOLERANCE}.get(result["status"], DIFFERS)
+        suite.cases.append(Case("STAC ranges", result["name"], status, result["detail"]))
+    if not results or (code and not any(case.status == DIFFERS for case in suite.cases)):
+        suite.error = tail(err or out) or "no vector range comparisons"
+    return suite
 
 
 def suite_streams(ctx):
@@ -3599,15 +3777,52 @@ def suite_oapif(ctx):
     return suite
 
 
-def _pytest_module_conformance(ctx, filename):
-    """Require the complete, unfiltered test module and its successful JUnit report."""
+def suite_complex_writes(ctx):
+    suite = Suite("complex-writes", "Complex GeoTIFF writes", "GDAL",
+                  "Exact sample types, values, nodata, masks, CRS and transforms for complex "
+                  "whole/streamed writes and copies; CInt32 values above 2^24, integer saturation "
+                  "and a real Landsat-derived complex grid are included. Compressed byte identity "
+                  "with GDAL is not asserted.")
+    missing = missing_modules("pytest", "osgeo", "numpy", "terrio")
+    if missing:
+        suite.skipped = "needs the Python modules " + ", ".join(missing)
+        return suite
+    code, version, err = run([sys.executable, "-c", "from osgeo import gdal, gdal_array; print(gdal.VersionInfo('RELEASE_NAME'))"])
+    if code:
+        suite.skipped = "needs GDAL's NumPy bindings (osgeo.gdal_array): " + tail(err)
+        return suite
+    if not (Path(ctx.data) / "landsat7.tif").is_file():
+        suite.skipped = "needs landsat7.tif to run the complete complex-write comparison module"
+        return suite
+    suite.reference = "GDAL " + version.strip()
+    passed, detail = _pytest_module_conformance(ctx, "test_rio_complex_writer.py")
+    suite.cases.append(Case("Complex GDAL decoding", "write and copy assertions including Landsat",
+                            IDENTICAL if passed else DIFFERS, detail))
+    return suite
+
+
+def _pytest_module_conformance(ctx, filename, *, selection=None, expected_count=None):
+    """Require every intended comparison and its successful JUnit report.
+
+    Args:
+        ctx: Conformance context with a data directory.
+        filename: Test module under python/tests.
+        selection: Optional explicit pytest keyword expression.
+        expected_count: Required number of comparisons, when known.
+
+    Returns:
+        tuple: Whether all comparisons passed, and a report detail string.
+    """
     command = [sys.executable, "-m", "pytest", "-o", "addopts=", "-q",
                str(ROOT / "python/tests" / filename)]
+    if selection is not None:
+        command += ["-k", selection]
     env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "PYTEST_ADDOPTS": ""}
     code, collected, err = run(command + ["--collect-only"], env)
     expected = sum("::" in line and Path(line.split("::", 1)[0]).name == filename
                    for line in collected.splitlines())
-    if code or not expected or "deselected" in collected:
+    if (code or not expected or (selection is None and "deselected" in collected)
+            or (expected_count is not None and expected != expected_count)):
         return False, "Could not collect the complete test module. " + tail(err or collected)
     with tempfile.TemporaryDirectory(prefix="terrio-pytest-conformance-") as directory:
         report = Path(directory) / "results.xml"
@@ -3621,7 +3836,7 @@ def _pytest_module_conformance(ctx, filename):
         except (OSError, ET.ParseError) as error:
             complete = False
             detail = f"Pytest report unavailable: {error}. "
-    return code == 0 and complete and "deselected" not in out, detail + tail(err or out)
+    return code == 0 and complete and (selection is not None or "deselected" not in out), detail + tail(err or out)
 
 
 def suite_jp2_writer(ctx):
@@ -3681,6 +3896,7 @@ SUITES = OrderedDict(
         ("shapefile-rings", suite_shapefile_rings),
         ("shapefile-deleted", suite_shapefile_deleted),
         ("raster-roundtrip", suite_raster_roundtrip),
+        ("complex-writes", suite_complex_writes),
         ("jp2-writer", suite_jp2_writer),
         ("webp-writer", suite_webp_writer),
         ("deflate", suite_deflate),
@@ -3694,6 +3910,7 @@ SUITES = OrderedDict(
         ("vrt", suite_vrt),
         ("jp2-colors", suite_jp2_colors),
         ("overviews", suite_overviews),
+        ("packed-tiff", suite_packed_tiff),
         ("warp-grid", suite_warp_grid),
         ("sum-overviews", suite_sum_overviews),
         ("translate-overviews", suite_translate_overviews),
@@ -3748,7 +3965,9 @@ SUITES = OrderedDict(
         ("analysis-output", suite_analysis_output),
         ("arrow", suite_arrow),
         ("gpkg", suite_gpkg),
+        ("gpkg-paging", suite_gpkg_paging),
         ("streams", suite_streams),
+        ("vector-ranges", suite_vector_ranges),
         ("wfs", suite_wfs),
         ("oapif", suite_oapif),
         ("tiles", suite_tiles),
@@ -3758,6 +3977,8 @@ SUITES = OrderedDict(
         ("reduced-first-masks", suite_reduced_first_masks),
         ("hecras", suite_hecras),
         ("crs", suite_crs),
+        ("crs-parameters", suite_crs_parameters),
+        ("transform-bounds", suite_transform_bounds),
         ("geocentric", suite_geocentric),
         ("perspective", suite_perspective),
         ("omerc-two-point", suite_omerc_two_point),
@@ -3769,6 +3990,7 @@ SUITES = OrderedDict(
         ("projjson", suite_projjson),
         ("projjson-export", suite_projjson_export),
         ("iau", suite_iau),
+        ("compound-crs", suite_compound_crs),
         ("wkt-keywords", suite_wkt_keywords),
         ("crs-list", suite_crs_list),
         ("crs-grids", suite_crs_grids),

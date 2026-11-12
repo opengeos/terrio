@@ -89,9 +89,19 @@ pub(crate) mod wkt1;
 mod wkt1_write;
 mod wkt2;
 
+/// Recognized boolean PROJ parameters with their normalized values, in definition order.
+/// Numeric and other non-boolean parameters are omitted. Invalid quoting and unknown
+/// values on recognized switches are refused, using the same rules as the CRS parser.
+pub fn proj_boolean_parameters(definition: &str) -> Result<Vec<(String, bool)>> {
+    let parameters = params::Params::parse(definition);
+    parameters.validate_quoting()?;
+    parameters.validate_flags()?;
+    Ok(parameters.boolean_parameters())
+}
+
 pub use catalog::{AUTHORITIES, CrsEntry, CrsKind, CrsQuery, EPSG_VERSION, check_authorities, list_crs};
 pub(crate) use def::Def;
-pub use grid::{register_grid, reset_grid_cache, set_grid_search_paths, set_network_enabled};
+pub use grid::{confine_grid_search_paths, register_grid, reset_grid_cache, set_grid_search_paths, set_network_enabled};
 #[doc(hidden)]
 pub use wkt1_write::{Described, describe, epsg_ellipsoid, from_proj_on};
 
@@ -171,9 +181,59 @@ fn epsg_reference(s: &str) -> Option<u32> {
     let code = canonical_epsg_reference(s);
     #[cfg(feature = "wbprojection-fallback")]
     {
-        // Keep legacy free-form references, but normalize canonical versioned
+        // Keep legacy reference suffixes, but normalize canonical versioned
         // references first: the fallback can mistake their version for the code.
-        code.or_else(|| wbp::epsg_from_srs_reference(s))
+        code.or_else(|| {
+            let upper = s.trim().to_ascii_uppercase();
+            // Keep legacy suffixes after a recognized reference, without letting
+            // arbitrary text, compound references or unrecognized WKT leak a code.
+            if upper.contains(',') || (upper.contains('+') && !upper.starts_with('+')) {
+                return None;
+            }
+            let leading_code = |text: &str| {
+                let end = text.bytes().take_while(u8::is_ascii_digit).count();
+                text[..end].parse::<u32>().ok()
+            };
+            let mut reference = upper.strip_prefix('+').filter(|n| n.bytes().all(|b| b.is_ascii_digit())).and_then(leading_code);
+            reference = reference.or_else(|| {
+                upper.strip_prefix("EPSG:").and_then(|rest| {
+                    let code = rest.trim_start_matches(':');
+                    let end = code.bytes().take_while(u8::is_ascii_digit).count();
+                    (!code[end..].starts_with(['.', ':'])).then(|| leading_code(code)).flatten()
+                })
+            });
+            reference = reference.or_else(|| {
+                upper.strip_prefix("URN:OGC:DEF:CRS:EPSG:").and_then(|rest| {
+                    let (version, code) = rest.split_once(':')?;
+                    version.is_empty().then(|| leading_code(code)).flatten()
+                })
+            });
+            for prefix in [
+                "HTTP://WWW.OPENGIS.NET/DEF/CRS/EPSG/",
+                "HTTPS://WWW.OPENGIS.NET/DEF/CRS/EPSG/",
+                "HTTP://OPENGIS.NET/DEF/CRS/EPSG/",
+                "HTTPS://OPENGIS.NET/DEF/CRS/EPSG/",
+            ] {
+                reference = reference.or_else(|| {
+                    upper.strip_prefix(prefix).and_then(|rest| {
+                        let (version, code) = rest.split_once('/')?;
+                        (version.is_empty() || version == "0").then(|| leading_code(code)).flatten()
+                    })
+                });
+            }
+            for prefix in [
+                "HTTP://WWW.OPENGIS.NET/GML/SRS/EPSG.XML#",
+                "HTTPS://WWW.OPENGIS.NET/GML/SRS/EPSG.XML#",
+                "HTTP://OPENGIS.NET/GML/SRS/EPSG.XML#",
+                "HTTPS://OPENGIS.NET/GML/SRS/EPSG.XML#",
+            ] {
+                reference = reference.or_else(|| upper.strip_prefix(prefix).and_then(leading_code));
+            }
+            // The legacy parser can mistake a short code before '/' for a version.
+            // Keep its compatibility forms only when it returns the prefix's own code.
+            let reference = reference?;
+            wbp::epsg_from_srs_reference(s).filter(|code| *code == reference)
+        })
     }
     #[cfg(not(feature = "wbprojection-fallback"))]
     code
@@ -191,6 +251,9 @@ fn canonical_epsg_reference(s: &str) -> Option<u32> {
     let upper = s.to_ascii_uppercase();
     if let Some(code) = upper.strip_prefix("EPSG:") {
         return digits(code.strip_prefix(':').unwrap_or(code));
+    }
+    if let Some(code) = upper.strip_prefix("URN:X-OGC:DEF:CRS:EPSG:") {
+        return digits(code);
     }
     if let Some(rest) = upper.strip_prefix("URN:OGC:DEF:CRS:EPSG:") {
         let (_, code) = rest.split_once(':')?;
@@ -353,10 +416,23 @@ impl SpatialRef {
         Ok(Self { wkt: Some(wkt), ..Default::default() })
     }
 
+    /// Validate string-reference component roles without changing metadata composition callers.
+    fn compound_reference(horizontal: u32, vertical: u32) -> Result<Self> {
+        let h = Self::from_epsg(horizontal)?;
+        if epsg::vertical(horizontal).is_some()
+            || epsg::compound(horizontal).is_some()
+            || Def::new(&h).is_ok_and(|d| d.is_geocentric() || d.has_height())
+        {
+            return Err(Error::Crs(format!("EPSG:{horizontal} is not a two-dimensional horizontal CRS")));
+        }
+        Self::compound(horizontal, vertical)
+    }
+
     /// A CRS from a PROJ string such as `+proj=utm +zone=33 +datum=WGS84`.
     pub fn from_proj4(proj4: &str) -> Result<Self> {
         let p = params::Params::parse(proj4);
         p.validate_quoting()?;
+        p.validate_flags()?;
         if let Some(code) = p.str("init").and_then(|i| i.to_ascii_lowercase().strip_prefix("epsg:").and_then(|c| c.parse().ok())) {
             return Self::from_epsg(code);
         }
@@ -391,7 +467,9 @@ impl SpatialRef {
 
     /// Parses a user-supplied CRS: `EPSG:4326`, `4326`, `urn:ogc:def:crs:EPSG::4326`, an OGC URL,
     /// `OGC:CRS84`, `WGS84`, `ESRI:54009` (or `urn:ogc:def:crs:ESRI::54009`), a WKT definition,
-    /// a PROJ/PROJJSON string, or the path of a file holding one of these (such as a shapefile's `.prj`).
+    /// a PROJ/PROJJSON string, or the path of a regular file holding one of these (such as a
+    /// shapefile's `.prj`). Special files, including pipes and devices, are refused without
+    /// reading them. Use [`Self::parse_literal`] for text read by the caller.
     pub fn parse(s: &str) -> Result<Self> {
         Self::parse_definition(s, true)
     }
@@ -424,12 +502,34 @@ impl SpatialRef {
         if let Some(code) = iau::reference(s) {
             return Self::from_iau(code?);
         }
+        // OGC 07-092r3 7.5.2: two CRS components, not a single authority reference.
+        // GDAL 3.13.3 retains the horizontal and vertical parts of this form.
+        if let Some(parts) = upper.strip_prefix("URN:OGC:DEF:CRS,") {
+            let mut parts = parts.split(',');
+            let (Some(horizontal), Some(vertical), None) = (parts.next(), parts.next(), parts.next()) else {
+                return Err(Error::Crs("a compound CRS URN requires two CRS components".into()));
+            };
+            let code = |part: &str| -> Result<u32> {
+                let Some(rest) = part.trim().strip_prefix("CRS:EPSG:") else {
+                    return Err(Error::Crs(format!("unsupported compound CRS component '{part}'")));
+                };
+                let Some((_, code)) = rest.split_once(':') else {
+                    return Err(Error::Crs(format!("invalid compound CRS component '{part}'")));
+                };
+                if code.is_empty() || !code.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(Error::Crs(format!("invalid compound CRS component '{part}'")));
+                }
+                code.parse().map_err(|_| Error::Crs(format!("invalid compound CRS code '{code}'")))
+            };
+            return Self::compound_reference(code(horizontal)?, code(vertical)?);
+        }
         // `EPSG:4326+5773`: a horizontal and a vertical CRS.
         if let Some(rest) = upper.strip_prefix("EPSG:")
             && let Some((h, v)) = rest.split_once('+')
+            && h.trim().bytes().chain(v.trim().bytes()).all(|byte| byte.is_ascii_digit())
             && let (Ok(h), Ok(v)) = (h.trim().parse::<u32>(), v.trim().parse::<u32>())
         {
-            return Self::compound(h, v);
+            return Self::compound_reference(h, v);
         }
         if looks_like_wkt(s) {
             // As GDAL's `importFromWkt`: WKT its reader refuses (unbalanced, nested deeper than
@@ -451,7 +551,7 @@ impl SpatialRef {
         // its text is a definition, never the path of another file (one naming itself recursed
         // until the stack overflowed).
         #[cfg(not(target_family = "wasm"))]
-        if files && let Ok(f) = std::fs::File::open(s) {
+        if files && let Some(f) = open_definition_file(s) {
             use std::io::Read;
             const MAX: u64 = 99_999;
             let mut bytes = Vec::new();
@@ -1059,6 +1159,21 @@ fn esri_reference(upper: &str) -> Option<u32> {
     code.trim().parse().ok()
 }
 
+/// Open only regular definition files, checking the descriptor too in case the path changed.
+#[cfg(not(target_family = "wasm"))]
+fn open_definition_file(path: &str) -> Option<std::fs::File> {
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    // A path swapped for a FIFO must not wait for a writer before its type can be checked.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+    let file = options.open(path).ok()?;
+    file.metadata().ok()?.is_file().then_some(file)
+}
+
 fn looks_like_wkt(s: &str) -> bool {
     let head: String = s.chars().take_while(|c| *c != '[' && *c != '(').collect::<String>().trim().to_ascii_uppercase();
     matches!(
@@ -1163,6 +1278,7 @@ pub struct Transformer {
     identity: bool,
     route: route::Route,
     best_route: std::sync::OnceLock<route::Route>,
+    bounds_reverse_route: std::sync::OnceLock<route::Route>,
     policy: TransformOptions,
     missing_grid_checked: std::sync::OnceLock<()>,
     /// The geoid models with grids of the source and target vertical CRSs, found on first use.
@@ -1507,6 +1623,7 @@ impl Transformer {
             web_mercator_to_wgs84,
             wgs84_to_web_mercator,
             best_route: std::sync::OnceLock::new(),
+            bounds_reverse_route: std::sync::OnceLock::new(),
             policy: opts.clone(),
             missing_grid_checked: std::sync::OnceLock::new(),
             src_geoid_grids: std::sync::OnceLock::new(),
@@ -1928,11 +2045,24 @@ impl Transformer {
 
     /// Transforms a bounding box `(min_x, min_y, max_x, max_y)`, densifying its edges so that
     /// curved edges in the target CRS are covered. Points that fail to transform are skipped.
+    /// Uses 21 interior points per edge, as GDAL 3.12.1 does by default.
     pub fn transform_bounds(&self, b: (f64, f64, f64, f64)) -> Result<(f64, f64, f64, f64)> {
-        const STEPS: usize = 20;
+        self.transform_bounds_densified(b, 21)
+    }
+
+    /// Transforms bounds with `densify` interior points per edge. Projected boxes containing
+    /// a pole include that pole and the full longitude range in a geographic target CRS.
+    /// Geographic antimeridian crossings retain scalar longitude minima and maxima; wrapped
+    /// bounds with `min_x > max_x` are not produced.
+    /// Counts above 65,536 interior points per edge are refused to bound computation time.
+    pub fn transform_bounds_densified(&self, b: (f64, f64, f64, f64), densify: usize) -> Result<(f64, f64, f64, f64)> {
+        let steps = densify.checked_add(1).ok_or_else(|| Error::Crs("densify count is too large".into()))?;
+        if densify > 65_536 {
+            return Err(Error::Crs("densify count must not exceed 65536 interior points per edge".into()));
+        }
         let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-        for i in 0..=STEPS {
-            let t = i as f64 / STEPS as f64;
+        for i in 0..=steps {
+            let t = i as f64 / steps as f64;
             let x = b.0 + (b.2 - b.0) * t;
             let y = b.1 + (b.3 - b.1) * t;
             for (px, py) in [(x, b.1), (x, b.3), (b.0, y), (b.2, y)] {
@@ -1950,13 +2080,133 @@ impl Transformer {
         if !x0.is_finite() {
             return Err(Error::Crs("no point of the bounds could be transformed".into()));
         }
+        if self.src.is_projected() && self.dst.is_geographic() {
+            // Synthetic probes must not record diagnostics or change operation reporting for
+            // actual edge coordinates. In particular, UTM's projected pole is usually outside
+            // the box and outside the datum operation's area of use.
+            route::recording(|| {
+                let reverse = self.bounds_reverse_route.get_or_init(|| route::Route::new(&self.dst, &self.src));
+                for lat in [std::f64::consts::FRAC_PI_2, -std::f64::consts::FRAC_PI_2] {
+                    let probe = || -> Option<()> {
+                        let (px, py) = self.dst.project(0.0, lat)?;
+                        let p = datum::Point { lon: 0.0, lat, h: 0.0, t: self.time };
+                        let mut q = reverse.apply(&self.dst, px, py, p, false)?;
+                        if let Some(steps) = &self.motion {
+                            q = datum::run(steps, q, true, true)?;
+                        }
+                        let (sx, sy) = self.src.project(q.lon, q.lat)?;
+                        if !(b.0 < sx && sx < b.2 && b.1 < sy && sy < b.3) {
+                            return None;
+                        }
+                        let (lon, phi) = self.src.unproject(sx, sy)?;
+                        let mut p = datum::Point { lon, lat: phi, h: 0.0, t: self.time };
+                        if let Some(steps) = &self.motion {
+                            p = datum::run(steps, p, false, true)?;
+                        }
+                        let q = self.bounds_probe_forward(sx, sy, p)?;
+                        if !q.lat.is_finite() || (q.lat - lat).abs() > 1e-10 {
+                            return None;
+                        }
+                        Some(())
+                    };
+                    if probe().is_some() {
+                        for (x, y) in self.dst.pole_bounds(lat) {
+                            x0 = x0.min(x);
+                            y0 = y0.min(y);
+                            x1 = x1.max(x);
+                            y1 = y1.max(y);
+                        }
+                    }
+                }
+            });
+        }
         Ok((x0, y0, x1, y1))
+    }
+
+    /// Apply the forward policy to a synthetic bounds probe without recording diagnostics.
+    fn bounds_probe_forward(&self, x: f64, y: f64, p: datum::Point) -> Option<datum::Point> {
+        if self.policy.only_best && !self.route.same_datum() {
+            let route = self.best_route();
+            let (selected, _) = route.selected(&self.src, x, y, p);
+            if selected.is_some_and(|op| !op.available())
+                || (self.policy.allow_ballpark == Some(false) && selected.is_none_or(|op| op.ballpark))
+            {
+                return None;
+            }
+            route.apply_selected(&self.src, x, y, p, false, selected)
+        } else {
+            let refused_ballpark = std::cell::Cell::new(false);
+            let q = self.route.apply_reporting(&self.src, x, y, p, false, &|op, _| {
+                if self.policy.allow_ballpark == Some(false) && op.is_none_or(|op| op.ballpark) {
+                    refused_ballpark.set(true);
+                }
+            })?;
+            (!refused_ballpark.get()).then_some(q)
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Polar bounds from GDAL 3.12.1 include an interior pole and every longitude.
+    #[test]
+    fn transform_bounds_contains_interior_poles() {
+        for (code, pole) in [(3413, 90.0), (3995, 90.0), (3031, -90.0), (3976, -90.0)] {
+            let t = Transformer::new(&SpatialRef::from_epsg(code).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+            let b = t.transform_bounds((-1e6, -1e6, 1e6, 1e6)).unwrap();
+            assert_eq!((b.0, b.2), (-180.0, 180.0), "EPSG:{code}: {b:?}");
+            assert_eq!(if pole > 0.0 { b.3 } else { b.1 }, pole, "EPSG:{code}: {b:?}");
+        }
+    }
+
+    #[test]
+    fn transform_bounds_probes_do_not_record_diagnostics() {
+        let t = Transformer::new(&SpatialRef::from_epsg(25830).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+        let b = t.transform_bounds((500_000.0, 4_000_000.0, 600_000.0, 4_100_000.0)).unwrap();
+        assert!(b.0 > -4.0 && b.2 < -1.0 && b.1 > 35.0 && b.3 < 38.0, "{b:?}");
+        assert_eq!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed), 0);
+        // Real out-of-area coordinates must still record a warning.
+        t.transform(500_000.0, -4_000_000.0).unwrap();
+        assert_ne!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed) & 4, 0);
+    }
+
+    #[test]
+    fn transform_bounds_probe_refuses_an_unavailable_best_operation() {
+        let source = SpatialRef::parse("+proj=stere +lat_0=90 +datum=NAD27").unwrap();
+        let target = SpatialRef::from_epsg(4326).unwrap();
+        let mut t = Transformer::with_options(&source, &target, &TransformOptions { only_best: true, ..Default::default() }).unwrap();
+        // A world-covering required grid whose file cannot exist, independent of installed
+        // PROJ data. The ordinary NAD27 route remains available as a fallback.
+        let directory = tempfile::tempdir().unwrap();
+        let grid = directory.path().join("missing.gsb");
+        let ideal = Def::from_proj(&format!("+proj=stere +lat_0=90 +ellps=clrk66 +nadgrids={}", grid.display())).unwrap();
+        assert!(t.best_route.set(route::Route::all(&ideal, &t.dst)).is_ok());
+        let p = datum::Point { lon: 0.0, lat: std::f64::consts::FRAC_PI_2, h: 0.0, t: None };
+        assert!(t.bounds_probe_forward(0.0, 0.0, p).is_none());
+        assert_eq!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed), 0);
+        t.policy.only_best = false;
+        assert!(t.bounds_probe_forward(0.0, 0.0, p).is_some());
+        t.policy.only_best = true;
+        assert!(matches!(t.transform(0.0, 0.0), Err(Error::MissingGrid(_))));
+        assert_ne!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed) & 2, 0);
+    }
+
+    #[test]
+    fn transform_bounds_uses_requested_densification() {
+        let t = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::from_epsg(5070).unwrap()).unwrap();
+        let b = (-100.0, 30.0, -90.0, 40.0);
+        let corners = t.transform_bounds_densified(b, 0).unwrap();
+        let dense = t.transform_bounds_densified(b, 21).unwrap();
+        assert!(dense.1 < corners.1, "{dense:?} {corners:?}");
+        assert_eq!(dense, t.transform_bounds(b).unwrap());
+        assert!(t.transform_bounds_densified(b, usize::MAX).is_err());
+        assert!(t.transform_bounds_densified(b, 65_537).is_err());
+        let identity = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+        assert_eq!(identity.transform_bounds_densified(b, 65_536).unwrap(), b);
+        assert!(t.transform_bounds((f64::NAN, f64::NAN, f64::NAN, f64::NAN)).is_err());
+    }
 
     /// GDAL 3.12.1 axis predicates: projected, geographic, 3D and non-NE controls.
     #[test]
@@ -2162,6 +2412,66 @@ mod tests {
         let nad83 = r#"GEOGCS["unknown",DATUM["NAD83",SPHEROID["GRS 1980",6378137,298.257222101]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
         assert_eq!(identify_epsg(nad83), Some(4269));
         assert!(epsg::datums_named("Unknown based on Bessel 1841 ellipsoid").is_empty());
+    }
+
+    /// Compound OGC references retain horizontal and vertical components, as GDAL 3.13.3.
+    #[test]
+    fn compound_urns_preserve_both_components() {
+        for (text, horizontal, vertical) in [
+            ("urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::5720", 2154, 5720),
+            ("URN:OGC:DEF:CRS,CRS:epsg:9.9:4269,CRS:epsg::5713", 4269, 5713),
+            ("urn:ogc:def:crs,crs:EPSG::4326,crs:EPSG::5773", 4326, 5773),
+        ] {
+            let expected = SpatialRef::compound(horizontal, vertical).unwrap();
+            for actual in [SpatialRef::parse(text), SpatialRef::parse_literal(text)] {
+                let actual = actual.unwrap();
+                assert_eq!(actual.epsg, None, "{text}");
+                assert_eq!(actual.to_wkt(), expected.to_wkt(), "{text}");
+                let json: serde_json::Value = serde_json::from_str(&actual.to_projjson().unwrap()).unwrap();
+                assert_eq!(json["type"], "CompoundCRS");
+            }
+        }
+    }
+
+    #[test]
+    fn unrelated_text_and_unsupported_compound_references_are_refused() {
+        for text in [
+            "not EPSG:4326",
+            "description EPSG:4326 suffix",
+            "PREFIX[ID[\"EPSG\",4326]]",
+            "EPSG:2154+garbage",
+            "EPSG:2154+5720junk",
+            "EPSG:4326.0:3857",
+            "EPSG:1/3857",
+            "urn:ogc:def:crs:EPSG:4326",
+            "urn:ogc:def:crs:EPSG::1/3857",
+            "https://www.opengis.net/def/crs/EPSG//1/3857",
+            "urn:ogc:def:crs:EPSG:4326:3857junk",
+            "https://www.opengis.net/def/crs/EPSG/4326/3857junk",
+            "urn:ogc:def:crs:EPSG::2154,crs:EPSG::5720",
+            "urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720",
+            "urn:ogc:def:crs,crs:EPSG::2154",
+            "urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::5720,crs:EPSG::5713",
+            "urn:ogc:def:crs,cs:EPSG::2154,crs:EPSG::5720",
+            "urn:ogc:def:crs,crs:EPSG::99999999,crs:EPSG::5720",
+            "urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::99999999",
+            "urn:ogc:def:crs,crs:EPSG::2154junk,crs:EPSG::5720",
+        ] {
+            assert!(SpatialRef::parse_literal(text).is_err(), "{text}");
+        }
+    }
+
+    /// Reference syntax: GDAL 3.13.3. Terrio string references require 2D horizontal roles.
+    #[test]
+    fn compound_components_must_have_horizontal_and_vertical_roles() {
+        for (horizontal, vertical) in [(5720, 5713), (4978, 5720), (4979, 5720), (7405, 5720), (2154, 4326)] {
+            for text in [format!("EPSG:{horizontal}+{vertical}"), format!("urn:ogc:def:crs,crs:EPSG::{horizontal},crs:EPSG::{vertical}")] {
+                assert!(SpatialRef::parse_literal(&text).is_err(), "{text}");
+            }
+        }
+        for text in ["EPSG:+2154+5720", "EPSG:2154++5720"] {
+            assert!(SpatialRef::parse_literal(text).is_err(), "{text}");
+        }
     }
 
     /// Canonical references stay identical across feature configurations; legacy

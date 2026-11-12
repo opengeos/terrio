@@ -62,6 +62,7 @@ __all__ = [
     "pansharpen",
     "polygonize",
     "transform_points",
+    "transform_bounds",
     "set_grid_search_paths",
     "set_network_enabled",
     "list_crs",
@@ -126,6 +127,7 @@ __all__ = [
     "tiff_infers_cog_layout",
     "gdal_compat",
     "crs_info",
+    "proj_boolean_parameters",
     "crs_to_projjson",
     "suggested_grid",
     "warped_vrt_type",
@@ -350,6 +352,8 @@ class Raster:
         band: int | Sequence[int] | None = None,
         window: _Window | None = None,
         overview: int | None = None,
+        *,
+        out_dtype: DTypeLike | None = None,
     ) -> NDArray[Any]: ...
     def read_sampled(
         self,
@@ -358,6 +362,20 @@ class Raster:
         rows: Sequence[int],
         overview: int | None = None,
     ) -> NDArray[Any] | None: ...
+    @staticmethod
+    def _inherited_sample_bits(
+        dtype: str,
+        widths: list[str | None],
+        nodata: list[float | None],
+        compression: str | None,
+        predictor: str,
+        driver: str,
+    ) -> int | None: ...
+    def _sample_bits(self, overview: int | None = None) -> int | None: ...
+    def _copy_sample_bits_for_output(
+        self, overview: int | None, dtype: str, inherited: int
+    ) -> int | None: ...
+    def _tiff_overview_ifd(self, overview: int) -> tuple[bool, int] | None: ...
     def _overview_has_mask(self, overview: int) -> bool: ...
     def _overview_nodata(self, overview: int) -> list[float | None]: ...
     def _read_level_mask(
@@ -397,6 +415,8 @@ class Raster:
         crs: str | None = None,
         nodata: float | None = None,
         metadata: Mapping[str, Any] | Sequence[tuple[Any, Any]] | None = None,
+        *,
+        complex_dtype: str | None = None,
     ) -> Raster: ...
     def write(
         self,
@@ -1061,6 +1081,12 @@ def polygonize(
     append: bool = False,
     overwrite: bool = False,
 ) -> Layer: ...
+def transform_bounds(
+    src_crs: str,
+    dst_crs: str,
+    bounds: tuple[float, float, float, float],
+    densify_pts: int = 21,
+) -> tuple[float, float, float, float]: ...
 @overload
 def transform_points(
     xs: Any,
@@ -1721,6 +1747,17 @@ def resampled_read(
     dataset: bool = False,
 ) -> Any: ...
 def crs_info(crs: str) -> dict[str, Any]: ...
+def proj_boolean_parameters(definition: str) -> list[tuple[str, bool]]:
+    """Normalize recognized flags with the shared CRS parser.
+
+    Args:
+        definition: A PROJ parameter string.
+
+    Returns:
+        list: Parameter names and boolean values, in definition order.
+    """
+    ...
+
 def crs_to_projjson(crs: str) -> str: ...
 def crs_projjson(crs: str, database: bool) -> str: ...
 def gcp_transform(

@@ -118,9 +118,41 @@ is passed only to the functions of its own module.
 Both modules are built for size: whole-program LTO, the codecs optimized for speed and the rest
 for size, and wasm-opt -Oz. The full module's sizes are in the table above.
 
+## Zarr alone: `terrio-js/zarr`
+
+`terrio-js/zarr` is a third module, of its own API, that reads Zarr arrays over HTTP and nothing
+else: terrio's Zarr driver (v2 and v3, sharded or not, every codec terrio reads), the requests of
+`openUrl` (12 in flight, chunks kept between reads), and no CRS engine. It suits pages that only
+show Zarr data, such as embeddings or satellite image cubes.
+
+```js
+import init, { openZarr } from "terrio-js/zarr";
+
+await init();
+const a = await openZarr("https://example.com/cube.zarr", { array: "b04" });
+a.width, a.height, a.count, a.dtype, a.nodata, a.transform, a.epsg;
+a.attributes();                                   // the array's attributes
+const [red, nir] = await a.read({ window: [0, 0, 512, 512], bands: [3, 4] }); // typed arrays
+a.stats();                                        // { requests, bytes }
+```
+
+Its options are those of `openUrl` for Zarr: `array`, `cacheSize`, `fetch`, `headers` and
+`allowMissingMetadata403`. Without the CRS engine, `epsg` is the EPSG code the store names
+(`proj:code`, `proj:epsg`, a PROJJSON identifier, GDAL's `_CRS`); CF grid-mapping CRS parameters
+and GDAL's `pam.aux.xml` are not read. A grid mapping's `GeoTransform` can still supply the
+geotransform, and `attributes()` has the rest. It reads the full-resolution array:
+multiscale levels are other arrays of the store, opened by their `array` path.
+
+Measured from a local `wasm-release` build (wasm-opt `-Oz`; gzip 9, Brotli 11), not a recorded CI
+snapshot:
+
+| Module | `.wasm` | gzip | Brotli |
+|---|---|---|---|
+| `terrio-js/zarr` | 0.53 MB | 0.23 MB | 0.19 MB |
+
 ## Threads: `terrio-js/load` and `terrio-js/threads`
 
-A third module, `terrio-js/threads`, has every format and a thread pool of Web Workers (or
+A separate module, `terrio-js/threads`, has every format and a thread pool of Web Workers (or
 Node.js worker threads) over shared memory: GeoTIFF tiles and strips, JPEG 2000 tiles and Zarr
 chunks decode in parallel, and GeoTIFF/COG tiles, overviews and Zarr chunks are compressed in
 parallel, as natively. `terrio-js/load` picks it where WebAssembly threads run (Node.js 22 or
@@ -446,6 +478,15 @@ For ZIP archives, selection uses the main dataset member's filename (for example
 
 HEC-RAS, WFS and OAPIF retain their driver-specific selection rules and error
 messages. HEC-RAS requires stored layer names; it does not accept filename aliases.
+
+`openVector` also accepts `skipFeatures` and `maxFeatures`, applying the range
+once to each selected layer. `maxFeatures: 0` retains its schema with no features.
+The eager byte reader decodes the source before slicing; these options bound the
+returned features, not its peak decoding memory. In Python, ranges are available
+through the pyogrio facade; native `terrio.open_vector` retains its existing
+whole-dataset interface without range parameters.
+In-memory files refuse OAPIF service open options, including when their filename
+label starts with `OAPIF:`. Use `openOapif` for a service.
 
 `openVector(bytes, filename, {layers})` and operations receiving `{bytes, filename}`
 can use the filename alias. Bare `Uint8Array` inputs use the implicit filename

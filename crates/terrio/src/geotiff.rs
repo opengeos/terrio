@@ -1461,7 +1461,14 @@ pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek + Send + 'static>(
     // Chunks `..first` were decoded by other threads.
     #[cfg(threads)]
     let first = match reopen {
-        Some(reopen) => decode_in_threads(reopen, pool, ifd, chunks, codec, limit, err, &mut place)?,
+        Some(reopen) => match decode_in_threads(reopen, pool, ifd, chunks, codec, limit, err, &mut place) {
+            // Quiet worker reads can discover bytes beyond the prefetched ranges. Replay
+            // through the primary decoder so its nonquiet source records the missing blocks.
+            // Placement overwrites output samples; resource refusals remain terminal.
+            // Without the decoded cache, each retry repeats already decoded chunks.
+            Err(crate::Error::Io(e)) if e.get_ref().is_some_and(|e| e.is::<crate::sparse::NotFetched>()) => 0,
+            result => result?,
+        },
         None => 0,
     };
     #[cfg(not(threads))]
@@ -1673,6 +1680,10 @@ fn decode_in_threads<D: Read + Seek + Send + 'static>(
                 crate::Error::Io(io) if io.kind() == std::io::ErrorKind::OutOfMemory => {
                     crate::Error::Io(std::io::Error::new(io.kind(), io.to_string()))
                 }
+                crate::Error::Io(io) if io.get_ref().is_some_and(|e| e.is::<crate::sparse::NotFetched>()) => {
+                    let missing = io.get_ref().and_then(|e| e.downcast_ref::<crate::sparse::NotFetched>()).unwrap();
+                    crate::Error::Io(std::io::Error::new(io.kind(), crate::sparse::NotFetched { offset: missing.offset }))
+                }
                 e if e.is_resource_refusal() => crate::Error::ResourceLimit(e.to_string()),
                 e => crate::Error::InvalidData(e.to_string()),
             })?;
@@ -1711,6 +1722,8 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     let mut dec = file_decoder(file, &tags, limits, path)?;
     let (w, h) = dec.dimensions().map_err(tiff_err)?;
     check_open(&mut dec, tiff_err)?;
+    let stored_bits =
+        dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).map_err(tiff_err)?.and_then(|bits| bits.first().copied()).unwrap_or(1);
     let (w, h) = (w as usize, h as usize);
     let samples = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).map_err(tiff_err)?.unwrap_or(1).max(1) as usize;
     let planar = dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).map_err(tiff_err)? == Some(2);
@@ -1826,6 +1839,7 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     let has_nodata = tags.nodata.is_some();
     let mut ds = crate::RasterDataset::with_driver(raster, crate::formats::RasterDriver::GTiff, has_nodata);
     ds.complex = complex;
+    ds.set_sample_bits(stored_bits);
     ds.band_metadata = tags.band_properties.clone();
     ds.color_table = tags.color_table.clone();
     ds.gcps = tags.gcps.clone();

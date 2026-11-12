@@ -391,6 +391,11 @@ impl TransformOptions {
 pub use terrio_crs::CoordinateOperation;
 pub use terrio_crs::{AUTHORITIES, CrsEntry, CrsKind, CrsQuery, EPSG_VERSION, check_authorities};
 
+/// Recognized boolean PROJ parameters, normalized by the shared CRS parser.
+pub fn proj_boolean_parameters(definition: &str) -> Result<Vec<(String, bool)>> {
+    terrio_crs::proj_boolean_parameters(definition).map_err(Into::into)
+}
+
 /// The CRSs of the registries terrio carries (EPSG [`EPSG_VERSION`], ESRI and IAU_2015) that a
 /// query selects, for searchable CRS pickers, as GDAL's `OSRGetCRSInfoListFromDatabase` describes
 /// them: name, kind, deprecation, area of use, projection method and celestial body. Needs no
@@ -448,6 +453,10 @@ impl Transformer {
     pub fn transform_bounds(&self, bounds: (f64, f64, f64, f64)) -> Result<(f64, f64, f64, f64)> {
         self.0.transform_bounds(bounds).map_err(Into::into)
     }
+    /// Transform bounds with `densify` interior points per edge, including interior poles.
+    pub fn transform_bounds_densified(&self, bounds: (f64, f64, f64, f64), densify: usize) -> Result<(f64, f64, f64, f64)> {
+        self.0.transform_bounds_densified(bounds, densify).map_err(Into::into)
+    }
     /// Emit new diagnostics on this thread through Terrio's warning sink.
     pub fn flush_warnings(&self) {
         self.0.flush_warnings();
@@ -469,6 +478,12 @@ pub fn register_grid(name: &str, bytes: Vec<u8>) {
 pub fn set_grid_search_paths(paths: Option<Vec<std::path::PathBuf>>) {
     initialize();
     terrio_crs::set_grid_search_paths(paths);
+}
+/// Confine grid names to the effective search directories, preserving host defaults.
+/// See [`terrio_crs::confine_grid_search_paths`].
+pub fn confine_grid_search_paths() {
+    initialize();
+    terrio_crs::confine_grid_search_paths();
 }
 /// Override shared grid network access.
 pub fn set_network_enabled(enabled: Option<bool>) {

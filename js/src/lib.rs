@@ -92,12 +92,8 @@ const FEATURES: &[(&str, bool)] = &[
     ("zarr", cfg!(feature = "zarr")),
 ];
 
-/// A JavaScript exception as an error.
-pub(crate) fn js_error(e: JsValue) -> JsError {
-    use wasm_bindgen::JsCast;
-    let msg = e.dyn_ref::<js_sys::Error>().map(|e| String::from(e.message())).or_else(|| e.as_string()).unwrap_or_else(|| format!("{e:?}"));
-    JsError::new(&msg)
-}
+/// Converts a JavaScript exception into a `JsError` with its message.
+pub(crate) use terrio_js_fetch::js_error;
 
 /// Converts a terrio error into a JavaScript `Error`. Formats this build leaves out say which
 /// module has them.
@@ -514,6 +510,10 @@ pub fn open(bytes: Vec<u8>, filename: &str) -> Result<Dataset, JsError> {
 struct VectorOpenOptions {
     /// Only these layers, by name.
     layers: Option<Vec<String>>,
+    /// Live features skipped from each selected layer.
+    skip_features: usize,
+    /// Maximum live features retained from each selected layer, including zero.
+    max_features: Option<usize>,
     /// Driver open options by their GDAL names (`{ CELL_SUMMARIES: "Maximum Water Surface",
     /// TIME_STEP: "12" }`), as `terrio convert --oo` takes them.
     open_options: Option<std::collections::BTreeMap<String, serde_json::Value>>,
@@ -521,7 +521,8 @@ struct VectorOpenOptions {
 
 /// Opens a vector dataset from its bytes, with driver open options. `filename` names the file
 /// (its extension tells the format when the content does not); `options` takes `layers` (names)
-/// and `openOptions`, the driver's open options by their GDAL names: the CSV and XLSX options, the
+/// `skipFeatures` and `maxFeatures` (a range per selected layer), and `openOptions`,
+/// the driver's open options by their GDAL names: the CSV and XLSX options, the
 /// tile archive options and those of the HECRAS driver for HEC-RAS geometry and plan HDF files
 /// (`CELL_SUMMARIES`, `TIME_STEP`, ...). A list option takes a comma-separated string or an
 /// array of names.
@@ -532,7 +533,12 @@ struct VectorOpenOptions {
 #[wasm_bindgen(js_name = openVector)]
 pub fn open_vector(bytes: Vec<u8>, filename: &str, options: JsValue) -> Result<Dataset, JsError> {
     let o: VectorOpenOptions = parse_options(&options)?;
-    let mut open = terrio::VectorOpenOptions { layers: o.layers.unwrap_or_default(), ..Default::default() };
+    let mut open = terrio::VectorOpenOptions {
+        layers: o.layers.unwrap_or_default(),
+        skip_features: o.skip_features,
+        max_features: o.max_features,
+        ..Default::default()
+    };
     for (key, value) in o.open_options.unwrap_or_default() {
         // A list option may be given as an array of names, joined as its comma-separated form.
         let value = match &value {

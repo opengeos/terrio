@@ -2,6 +2,8 @@
 name = "terrio"
 description = "Pure-Rust geospatial raster, vector and point cloud data I/O: read, write, convert and reproject GIS formats without C dependencies"
 readme = "../../README.md"
+# Integration tests: tests/merged/main.rs, and the [[test]] targets at the end.
+autotests = false
 documentation = "https://docs.rs/terrio"
 keywords = ["gis", "geospatial", "raster", "vector", "point-cloud"]
 categories = ["science::geo", "parser-implementations", "encoding"]
@@ -199,3 +201,207 @@ memmap2.workspace = true
 [[example]]
 name = "xlsx_workbook"
 required-features = ["xlsx"]
+
+# Integration tests. Most are modules of one binary (tests/merged/main.rs). A file that sets driver
+# allow-lists, environment variables, configuration or CRS settings, reads process-wide counters,
+# installs a global allocator, measures the process's memory, runs its own test binary again, or is
+# run by name (CI, docs, scripts) is a binary of its own.
+[[test]]
+name = "merged"
+path = "tests/merged/main.rs"
+
+[[test]]
+name = "allowed_drivers_option"
+path = "tests/allowed_drivers_option.rs"
+
+[[test]]
+name = "allow_list"
+path = "tests/allow_list.rs"
+
+[[test]]
+name = "cdn_default_off"
+path = "tests/cdn_default_off.rs"
+
+[[test]]
+name = "cdn_missing_grid"
+path = "tests/cdn_missing_grid.rs"
+
+[[test]]
+name = "content_allow_list"
+path = "tests/content_allow_list.rs"
+
+[[test]]
+name = "crs_grids_remote"
+path = "tests/crs_grids_remote.rs"
+
+[[test]]
+name = "crs_point_motion"
+path = "tests/crs_point_motion.rs"
+
+[[test]]
+name = "crs_policy"
+path = "tests/crs_policy.rs"
+
+[[test]]
+name = "crs_vertical"
+path = "tests/crs_vertical.rs"
+
+[[test]]
+name = "declared_size"
+path = "tests/declared_size.rs"
+
+[[test]]
+name = "entry_allow_list"
+path = "tests/entry_allow_list.rs"
+
+[[test]]
+name = "ept_append_allow_list"
+path = "tests/ept_append_allow_list.rs"
+
+[[test]]
+name = "esri"
+path = "tests/esri.rs"
+
+[[test]]
+name = "esrijson_allow_list"
+path = "tests/esrijson_allow_list.rs"
+
+[[test]]
+name = "esrijson_allow_list_only"
+path = "tests/esrijson_allow_list_only.rs"
+
+[[test]]
+name = "esripbf"
+path = "tests/esripbf.rs"
+
+[[test]]
+name = "esripbf_allow_list"
+path = "tests/esripbf_allow_list.rs"
+
+[[test]]
+name = "esripbf_allow_list_json"
+path = "tests/esripbf_allow_list_json.rs"
+
+[[test]]
+name = "esripbf_allow_list_only"
+path = "tests/esripbf_allow_list_only.rs"
+
+[[test]]
+name = "external_overviews"
+path = "tests/external_overviews.rs"
+
+[[test]]
+name = "file_list"
+path = "tests/file_list.rs"
+
+[[test]]
+name = "float_reads"
+path = "tests/float_reads.rs"
+
+[[test]]
+name = "gdal_backend"
+path = "tests/gdal_backend.rs"
+
+[[test]]
+name = "geostationary"
+path = "tests/geostationary.rs"
+
+[[test]]
+name = "geotiff_band_metadata"
+path = "tests/geotiff_band_metadata.rs"
+
+[[test]]
+name = "geotiff_nodata"
+path = "tests/geotiff_nodata.rs"
+
+[[test]]
+name = "hecras_corpus"
+path = "tests/hecras_corpus.rs"
+
+[[test]]
+name = "hgt_allow_list"
+path = "tests/hgt_allow_list.rs"
+
+[[test]]
+name = "lazy_reads"
+path = "tests/lazy_reads.rs"
+
+[[test]]
+name = "lazy_rpc"
+path = "tests/lazy_rpc.rs"
+
+[[test]]
+name = "lazy_sample_bits"
+path = "tests/lazy_sample_bits.rs"
+
+[[test]]
+name = "local_vector_by_content"
+path = "tests/local_vector_by_content.rs"
+
+[[test]]
+name = "ndarray"
+path = "tests/ndarray.rs"
+
+[[test]]
+name = "pmtiles_limits"
+path = "tests/pmtiles_limits.rs"
+
+[[test]]
+name = "point_cloud_allow_list"
+path = "tests/point_cloud_allow_list.rs"
+
+[[test]]
+name = "pointcloud_heights"
+path = "tests/pointcloud_heights.rs"
+
+[[test]]
+name = "query_allow_list"
+path = "tests/query_allow_list.rs"
+
+[[test]]
+name = "remote_vector_response"
+path = "tests/remote_vector_response.rs"
+
+[[test]]
+name = "remote_zarr"
+path = "tests/remote_zarr.rs"
+
+[[test]]
+name = "shapefile_archive"
+path = "tests/shapefile_archive.rs"
+
+[[test]]
+name = "stacta_allow_list"
+path = "tests/stacta_allow_list.rs"
+
+[[test]]
+name = "stacta_local_refusals"
+path = "tests/stacta_local_refusals.rs"
+
+[[test]]
+name = "stacta_missing"
+path = "tests/stacta_missing.rs"
+
+[[test]]
+name = "tiff_chunk_tables"
+path = "tests/tiff_chunk_tables.rs"
+
+[[test]]
+name = "tiles"
+path = "tests/tiles.rs"
+
+[[test]]
+name = "vector_stream_ranges"
+path = "tests/vector_stream_ranges.rs"
+
+[[test]]
+name = "wfs_service"
+path = "tests/wfs_service.rs"
+
+[[test]]
+name = "zarr_input_limits"
+path = "tests/zarr_input_limits.rs"
+
+[[test]]
+name = "zonal_scoped_options"
+path = "tests/zonal_scoped_options.rs"

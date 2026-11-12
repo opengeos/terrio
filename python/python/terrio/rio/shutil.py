@@ -147,6 +147,40 @@ def _unwritten_on_error(dst: Any) -> Iterator[None]:
         raise
 
 
+def _inherited_nbits(src: Any, requested: dict[str, Any], driver: str) -> int | None:
+    """Normalize metadata and options for the shared Rust TIFF policy.
+
+    Args:
+        src: Source raster reader.
+        requested: Explicit output creation options.
+        driver: Output raster driver name.
+
+    Returns:
+        Inherited packed width, or None when inheritance is incompatible.
+    """
+    from terrio import _terrio
+    from terrio.rio.dtypes import _getnpdtype
+
+    if driver.upper() not in ("GTIFF", "COG") or "nbits" in requested:
+        return None
+    compression = requested.get("compress")
+    compression = None if compression is None else str(getattr(compression, "value", compression))
+    predictor = requested.get("predictor")
+    if isinstance(predictor, bool):
+        predictor = "YES" if predictor else "NO"
+    predictor = "1" if predictor is None else str(getattr(predictor, "value", predictor))
+    widths = [src.tags(band, ns="IMAGE_STRUCTURE").get("NBITS") for band in src.indexes]
+    nodata = [requested["nodata"]] * src.count if "nodata" in requested else list(src.nodatavals)
+    return _terrio.Raster._inherited_sample_bits(
+        _getnpdtype(requested.get("dtype", src.dtypes[0])).name,
+        widths,
+        nodata,
+        compression,
+        predictor,
+        driver,
+    )
+
+
 def _copy_dataset(
     src: Any,
     dst_path: str,
@@ -170,12 +204,22 @@ def _copy_dataset(
     """
     from terrio import _terrio
     from terrio.rio import open as rio_open
+    from terrio.rio.dtypes import _getnpdtype
     from terrio.rio.windows import Window
 
+    src._check_open()
     profile = dict(src.profile)
     for k in ("blockxsize", "blockysize", "tiled", "compress", "interleave", "photometric"):
         profile.pop(k, None)
     profile["driver"] = driver
+    requested = {k.lower(): v for k, v in creation_options.items()}
+    bits = _inherited_nbits(src, requested, driver)
+    if bits is not None:
+        profile["nbits"] = bits
+    sample = getattr(src, "_complex_sample", None)
+    if sample in ("CInt16", "CInt32") and not any(k.lower() == "dtype" for k in creation_options):
+        profile["dtype"] = "complex64" if sample == "CInt16" else "complex128"
+        profile["_complex_dtype"] = sample
     profile.update({k.lower(): v for k, v in creation_options.items()})
     if driver.upper() in ("GTIFF", "COG") and src.count > 1 and "interleave" not in profile:
         # GDALDriver::CreateCopy (gcore/gdaldriver.cpp): without INTERLEAVE, and without a
@@ -201,6 +245,18 @@ def _copy_dataset(
             and src.overviews(1)
         ):
             profile["@copy_src_overviews"] = src.name
+            base = getattr(src._raster, "_base", src._raster)
+            source_level = getattr(src._raster, "_level", None)
+            if source_level is not None:
+                profile["@copy_src_overview_level"] = source_level
+            if "nbits" not in requested and "nbits" in profile:
+                width = base._copy_sample_bits_for_output(
+                    source_level, _getnpdtype(profile["dtype"]).name, int(profile["nbits"])
+                )
+                if width is not None:
+                    profile["nbits"] = width
+                else:
+                    profile.pop("nbits")
     gcps, gcp_crs = src.gcps
     per_dataset_mask = all(
         "per_dataset" in [f.name for f in flags] for flags in src.mask_flag_enums
@@ -246,10 +302,11 @@ def _copy_dataset(
             dst.write_colormap(1, cmap)
         if dst._copy_of is not None:
             return
-        rows = max(1, min(src.height, (64 << 20) // max(1, src.width * src.count * 8)))
+        itemsize = 16 if sample in ("CInt16", "CInt32", "CFloat64") else 8
+        rows = max(1, min(src.height, (64 << 20) // max(1, src.width * src.count * itemsize)))
         for y in range(0, src.height, rows):
             w = Window(0, y, src.width, min(rows, src.height - y))
-            dst.write(src.read(window=w), window=w)
+            dst.write(src._read_for_copy(window=w), window=w)
             if per_dataset_mask:
                 dst.write_mask(src.dataset_mask(window=w), window=w)
 

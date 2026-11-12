@@ -74,6 +74,8 @@ pub struct SparseFile {
     shared: Arc<Mutex<Shared>>,
     len: u64,
     pos: u64,
+    /// Whether reads of blocks not held fail without recording them (see [`SparseFile::quiet`]).
+    quiet: bool,
 }
 
 impl std::fmt::Debug for SparseFile {
@@ -111,7 +113,15 @@ impl SparseFile {
             bytes: 0,
             inserts: 0,
         };
-        Self { shared: Arc::new(Mutex::new(shared)), len, pos: 0 }
+        Self { shared: Arc::new(Mutex::new(shared)), len, pos: 0, quiet: false }
+    }
+
+    /// A clone whose reads of blocks not held fail without recording them as missing, so that
+    /// the caller does not fetch them: for reads that can do without those bytes, such as the
+    /// extra decoders of a GeoTIFF read, which are skipped when they cannot reopen the file.
+    /// Missing chunk bytes can be retried through the primary nonquiet decoder.
+    pub fn quiet(&self) -> Self {
+        Self { quiet: true, ..self.clone() }
     }
 
     /// The file's length in bytes.
@@ -256,8 +266,10 @@ impl SparseFile {
             return Ok((at - pos) as usize);
         }
         // Nothing held at `pos`: record every block of the read, not only the first.
-        let missing: Vec<u64> = (pos / bs..=(end - 1) / bs).filter(|b| !s.blocks.contains_key(b)).collect();
-        s.missing.extend(missing);
+        if !self.quiet {
+            let missing: Vec<u64> = (pos / bs..=(end - 1) / bs).filter(|b| !s.blocks.contains_key(b)).collect();
+            s.missing.extend(missing);
+        }
         Err(io::Error::other(NotFetched { offset: pos }))
     }
 

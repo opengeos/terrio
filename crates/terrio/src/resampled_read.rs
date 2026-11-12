@@ -473,7 +473,18 @@ impl LazyRaster {
         // The nodata values of the dataset read: a level read alone is one of its own
         // (`gdal_translate -ovr`), whose bands an external overview's tags describe.
         let nodata = self.level_band_nodata(&read.bands, read.fixed.flatten());
-        self.window_dataset(&read.bands, nodata, data, read.buf, geo_transform, gcp, whole)
+        let mut dataset = self.window_dataset(&read.bands, nodata, data, read.buf, geo_transform, gcp, whole)?;
+        if let Some(level) = read.fixed {
+            if let Some(bits) = self.level_sample_bits(level) {
+                dataset.set_sample_bits(bits);
+            } else if level.is_some() {
+                dataset.set_sample_bits(0);
+            }
+        } else if self.dataset().is_none() {
+            // Include the base even without overviews. Every candidate width must be known.
+            dataset.set_sample_bits(self.widest_sample_bits().unwrap_or(0));
+        }
+        Ok(dataset)
     }
 
     /// How the bands of a read are read, as GDAL's `RasterIO` reads them: from which level, and
@@ -695,13 +706,23 @@ impl LazyRaster {
                         "average and RMS reads of a paletted band are not supported (GDAL averages its colors): use nearest or mode".into(),
                     ));
                 }
-                let resampled = self.resampled_read(read, request, dataset);
+                let mut resampled = self.resampled_read(read, request, dataset);
+                let maxima: Option<Vec<Option<f64>>> = self.dataset().map(|ds| {
+                    bands
+                        .iter()
+                        .map(|&band| ds.band_sample_bits(band - 1).and_then(|bits| nbits_max(u32::from(bits), ds.raster.data_type)))
+                        .collect()
+                });
+                if dataset && let Some(maxima) = &maxima {
+                    // GDAL 3.13.3's shared dataset kernel uses the final selected band's NBITS.
+                    resampled.max = maxima.last().copied().flatten();
+                }
                 let nodata = self.level_band_nodata(&bands, request.level);
                 let kinds: Vec<MaskKind> =
                     kinds[part.bands.clone()].iter().zip(&bands).map(|(&k, &b)| self.kind_at(k, b, request.level)).collect();
                 let kinds = &kinds;
                 let sample_bytes = self.band_data_type(bands[0]).size_bytes();
-                resample(&resampled, &nodata, sample_bytes, &mut |w| {
+                resample(&resampled, &nodata, maxima.as_deref(), sample_bytes, &mut |w| {
                     let data = self.read_window(w, &options)?.raster.data;
                     let masks = self.weights(w, request.level, &bands, kinds, &nodata, &data)?;
                     Ok((data, masks))
@@ -856,7 +877,7 @@ impl LazyRaster {
             self.prefetch_mask_band_window(Window::new(x, y, w, h), request.level)?;
             let max = self.mask_band_bits().and_then(|bits| nbits_max(u32::from(bits), DataType::U8));
             let resampled = resampled_read(read, request, false, block.0, max);
-            resample(&resampled, &[None], 1, &mut |w| Ok((RasterData::U8(self.read_mask_band(w, request.level)?), vec![None])))?
+            resample(&resampled, &[None], None, 1, &mut |w| Ok((RasterData::U8(self.read_mask_band(w, request.level)?), vec![None])))?
         };
         match data {
             RasterData::U8(v) => Ok(v),
@@ -902,7 +923,7 @@ impl LazyRaster {
             self.prefetch_window(Window::new(x, y, w, h), &options)?;
             let block_width = self.level_block_size(None).map_or(full.size.0, |b| b.0);
             let resampled = resampled_read(read, full, false, block_width, None);
-            resample(&resampled, &[None], 1, &mut |w| Ok((rescaled(self, w)?, vec![None])))?
+            resample(&resampled, &[None], None, 1, &mut |w| Ok((rescaled(self, w)?, vec![None])))?
         };
         Ok(alpha_mask(&data))
     }
@@ -1215,10 +1236,11 @@ type Weighted = (RasterData, Vec<Option<Vec<u8>>>);
 
 /// Resamples with `resampled`, reading the source through `read` a strip of rows of blocks at a
 /// time: `(bands, rows, cols)`. Bands read band by band take their own nodata value from
-/// `nodata`.
+/// `nodata`; materialized sources also supply each band's declared sample maximum.
 fn resample(
     resampled: &ResampledRead,
     nodata: &[Option<f64>],
+    maxima: Option<&[Option<f64>]>,
     sample_bytes: usize,
     read: &mut dyn FnMut(Window) -> Result<Weighted>,
 ) -> Result<RasterData> {
@@ -1249,7 +1271,13 @@ fn resample(
         } else {
             let n = w * (end - y);
             let parts: Vec<RasterData> = (0..bands)
-                .map(|b| resampled.read_rows(&band_of(&src, b, n), region, 1, &masks[b..b + 1], nodata[b], rows.clone()))
+                .map(|b| {
+                    let mut request = resampled.clone();
+                    if let Some(maxima) = maxima {
+                        request.max = maxima[b];
+                    }
+                    request.read_rows(&band_of(&src, b, n), region, 1, &masks[b..b + 1], nodata[b], rows.clone())
+                })
                 .collect();
             concat(parts)
         };
@@ -1422,6 +1450,51 @@ mod tests {
         ds.set_geo_transform([1000.0, 10.0, 0.0, 2000.0, 0.0, -10.0]);
         ds.gcps = vec![Gcp { pixel: 4.0, line: 6.0, x: 1.0, y: 2.0, ..Default::default() }];
         LazyRaster::from(ds)
+    }
+
+    /// GDAL 3.13.3 preserves in-memory NBITS through an AUTO RasterIO copy.
+    #[test]
+    fn auto_memory_reads_retain_packed_metadata() {
+        let source = raster(RasterData::U8(vec![7; 16]), 4, 4, 1, None);
+        let mut ds = source.dataset().unwrap().clone();
+        ds.set_sample_bits(4);
+        let mut source = LazyRaster::from(ds);
+        let result = source.read_resampled(&ResampledReadOptions { size: (2, 2), ..Default::default() }).unwrap();
+        let options = crate::RasterWriteOptions::default().inherited_from(&result, Some(crate::formats::RasterDriver::GTiff));
+        assert!(options.creation_options.iter().any(|(key, value)| key == "NBITS" && value == "4"));
+        assert_eq!(result.raster.data.to_f64_vec(), vec![7.0; 4]);
+    }
+
+    /// GDAL 3.13.3 uses the final selected band's NBITS for a shared dataset kernel.
+    #[test]
+    fn memory_resampling_uses_selected_band_sample_domains() {
+        let mut values = [0, 0, 0, 15, 15, 0, 0, 0].repeat(4);
+        values.extend([0, 0, 0, 127, 127, 0, 0, 0].repeat(4));
+        let source = raster(RasterData::U8(values), 8, 4, 2, None);
+        let mut ds = source.dataset().unwrap().clone();
+        ds.metadata_domains = vec![
+            (Some(0), "IMAGE_STRUCTURE".into(), vec![("NBITS".into(), "4".into())]),
+            (Some(1), "IMAGE_STRUCTURE".into(), vec![("NBITS".into(), "7".into())]),
+        ];
+        let mut source = LazyRaster::from(ds);
+        for (bands, together, expected) in [
+            (vec![1], true, vec![15.]),
+            (vec![2], true, vec![127.]),
+            (vec![1, 2], true, vec![17., 127.]),
+            (vec![2, 1], true, vec![15., 15.]),
+            (vec![2, 1], false, vec![127., 15.]),
+        ] {
+            let options = ResampledReadOptions { bands, size: (32, 4), resampling: Resampling::Cubic, ..Default::default() };
+            let result = if together { source.read_resampled(&options) } else { source.read_resampled_by_band(&options) }.unwrap();
+            let maxima: Vec<_> = result
+                .raster
+                .data
+                .to_f64_vec()
+                .chunks(128)
+                .map(|values| values.iter().copied().fold(f64::NEG_INFINITY, f64::max))
+                .collect();
+            assert_eq!(maxima, expected);
+        }
     }
 
     /// The levels GDAL 3.13.2 reads from (found by reading rasters whose levels hold markers):

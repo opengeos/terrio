@@ -344,6 +344,8 @@ pub use drivers::vector::kml::KmzOptions;
 pub use drivers::vector::shapefile::{OrganizePolygons, ShapefileOptions};
 pub use drivers::vector::wfs::WfsOpenOptions;
 pub use drivers::vector::xlsx_options::{XlsxColumnWidth, XlsxFieldTypes, XlsxHeaders, XlsxOptions};
+#[cfg(feature = "zarr")]
+pub use drivers::zarr::ZarrArray;
 pub use error::{Error, Result};
 pub use float_read::FloatReadOptions;
 /// The `ndarray` crate, of the version terrio's array views of raster pixels use.
@@ -359,7 +361,7 @@ pub use ndarray_ext::{ArrayError, BandLayout, FloatElement, RasterArrayExt, Rast
 /// The raster type: pixels, georeferencing and CRS, in memory.
 pub use wbraster::{DataType, Raster, RasterConfig};
 // Building a `Raster` from its pixels without a nodata fill.
-pub use pixel::raster_from_data;
+pub use pixel::{complex_components_from_iter, raster_from_data};
 /// The vector types: layers of features with geometries and attributes.
 pub use wbvector::{Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
 

@@ -222,7 +222,7 @@ def test_a_definition_pyproj_cannot_parse_gives_no_crs_and_a_warning(tmp_path, p
     # the form of a definition (`ENGCRS["x"]`, a code no authority defines), and a GeoPackage's
     # definition (None here).
     if prj is None:
-        definition = "not a coordinate reference system"
+        definition = 'PROJCS["x"]'
         path = _geopackage(tmp_path, definition)
     else:
         definition = prj
@@ -245,7 +245,7 @@ def test_a_definition_pyproj_cannot_parse_gives_no_crs_and_a_warning(tmp_path, p
 def test_read_dataframe_reads_a_layer_whose_crs_pyproj_cannot_parse(tmp_path, prj):
     pytest.importorskip("geopandas")
     # A code no authority defines, in a `.prj`, and a GeoPackage's definition (None here).
-    definition = prj or "not a coordinate reference system"
+    definition = prj or 'PROJCS["x"]'
     path = _geopackage(tmp_path, definition) if prj is None else _shapefile(tmp_path, prj)
     df, messages = _warned(lambda: tpg.read_dataframe(path))
     assert (df.crs, df["id"].tolist()) == (None, [0, 1, 2])
@@ -255,10 +255,10 @@ def test_read_dataframe_reads_a_layer_whose_crs_pyproj_cannot_parse(tmp_path, pr
 
 
 def test_without_pyproj_the_definition_is_given_as_it_is(tmp_path, monkeypatch):
-    path = _geopackage(tmp_path, "not a coordinate reference system")
+    path = _geopackage(tmp_path, 'PROJCS["x"]')
     monkeypatch.setitem(sys.modules, "pyproj", None)
     info, messages = _warned(lambda: tpg.read_info(path))
-    assert (info["crs"], messages) == ("not a coordinate reference system", [])
+    assert (info["crs"], messages) == ('PROJCS["x"]', [])
 
 
 def test_a_pyproj_that_fails_to_import_counts_as_no_pyproj(tmp_path, monkeypatch):
@@ -268,10 +268,10 @@ def test_a_pyproj_that_fails_to_import_counts_as_no_pyproj(tmp_path, monkeypatch
 
     broken = types.ModuleType("pyproj")
     vars(broken)["__getattr__"] = fail
-    path = _geopackage(tmp_path, "not a coordinate reference system")
+    path = _geopackage(tmp_path, 'PROJCS["x"]')
     monkeypatch.setitem(sys.modules, "pyproj", broken)
     info, messages = _warned(lambda: tpg.read_info(path))
-    assert (info["crs"], messages) == ("not a coordinate reference system", [])
+    assert (info["crs"], messages) == ('PROJCS["x"]', [])
 
 
 def test_a_warning_quotes_control_characters_as_spaces(tmp_path):
@@ -286,11 +286,10 @@ def test_a_warning_quotes_control_characters_as_spaces(tmp_path):
     assert (done.returncode, done.stderr) == (0, f"terrio: warning: {warning}\n")
     # In a definition pyproj cannot parse.
     pytest.importorskip("pyproj")
-    path = _geopackage(tmp_path, CONTROL)
-    warning = (
-        f"the layer's CRS definition cannot be parsed ('{CONTROL_QUOTED}'): "
-        "it is read without a CRS"
-    )
+    definition = f'PROJCS["{CONTROL}"]'
+    path = _geopackage(tmp_path, definition)
+    quoted = f'PROJCS["{CONTROL_QUOTED}"]'
+    warning = f"the layer's CRS definition cannot be parsed ('{quoted}'): it is read without a CRS"
     info, messages = _warned(lambda: tpg.read_info(path))
     assert (info["crs"], messages) == (None, [warning])
 

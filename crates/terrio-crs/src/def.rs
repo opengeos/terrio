@@ -312,6 +312,7 @@ impl Def {
     pub fn from_proj(s: &str) -> Result<Self> {
         let p = Params::parse(s);
         p.validate_quoting()?;
+        p.validate_flags()?;
         if let Some(init) = p.str("init") {
             let code = init.to_ascii_lowercase().strip_prefix("epsg:").and_then(|c| c.parse().ok());
             if let Some(code) = code {
@@ -681,10 +682,22 @@ impl Def {
         self.is_geographic().then_some(360.0 / self.to_deg.abs()).filter(|v| v.is_finite() && *v > 0.0)
     }
 
+    /// Endpoints of the full longitude range at a pole, in this CRS's units and axis order.
+    pub fn pole_bounds(&self, latitude: f64) -> [(f64, f64); 2] {
+        let half = 180.0 / self.to_deg;
+        let y = latitude.to_degrees() / self.to_deg;
+        [self.axis(-half, y), self.axis(half, y)]
+    }
+
     /// Whether this is a geographic CRS. A rotated-pole grid is not: its coordinates are in
     /// degrees, but are not longitudes and latitudes.
     pub fn is_geographic(&self) -> bool {
         self.proj.is_none() && self.rot.is_none() && !self.geocentric
+    }
+
+    /// Whether this definition has a map projection.
+    pub fn is_projected(&self) -> bool {
+        self.proj.is_some()
     }
 
     pub fn is_geocentric(&self) -> bool {

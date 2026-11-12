@@ -204,6 +204,54 @@ with the `libzstd` feature: without it, as in the default build and in WebAssemb
 chunks are compressed at the one level their encoder has. A level out of range is refused,
 whatever the compression.
 
+`NBITS` writes unsigned samples packed into 1–8 bits for Byte, 9–16 bits for
+UInt16 and 17–32 bits for UInt32. Rows begin on byte boundaries; bits are stored
+most significant first. GTiff supports strips or tiles and COG is tiled. Both support pixel/band
+interleaving and NONE, LZW, DEFLATE, PACKBITS or ZSTD compression. Packed samples require
+`PREDICTOR=1` when compression uses a predictor; NONE ignores it. GDAL emits an
+ignored-option warning for NONE, while Terrio retains its existing quiet behavior.
+Signed, floating-point and complex `NBITS` requests are refused.
+With GDAL 3.13 compatibility selected, unscaled CUBIC/cubic-spline/Lanczos translation
+to Byte/UInt16/UInt32 output respects the source packed domain, consistently for
+eager and lazy reads. Signed/floating outputs and scaled
+work retain their interpolation range before final conversion, as in GDAL 3.13.3.
+Type-changing translations also retain interpolation precision for unpacked sources
+before the final output conversion in that mode. With the default GDAL 3.12
+compatibility mode, resampled values first round and clamp to the source type,
+then scale or convert the result; convolution kernels also respect the stored
+bit width. SUM retains its widened accumulation in both modes. Select the reference
+version with `TERRIO_GDAL_COMPAT=3.12` or `3.13`.
+Generated CUBIC overviews can reach a packed limit even when the base samples fit.
+Values above the stored unsigned maximum are clipped, as in GDAL 3.13.3. Palettes
+have exactly `2**NBITS` entries. Copies retain a compatible source bit width unless
+the caller overrides `NBITS`; a bilevel palette therefore stays a two-entry palette.
+Generic metadata inheritance trusts the source's declared width without scanning
+pixels. Modified samples follow the same clipping policy; explicitly request the
+container width (8, 16 or 32) to preserve values exceeding inherited packed limits.
+This inheritance also covers unsigned widths reported by other supported sources,
+including 15-bit JPEG 2000 windows copied to GeoTIFF or COG.
+JPEG 2000 AUTO-resampled reads retain a uniform stored component precision across
+resolution levels; mixed component precisions and palette-expanded pixels remain
+conservative when no single stored width describes them.
+Implicit inheritance is omitted when nodata cannot fit the stored domain. A COG copy
+carrying wider source overviews uses their widest stored width by default; an explicit
+narrower width is refused when copied descendant overview values would be clipped.
+The selected level becomes ordinary output input and follows the same explicit-width
+clipping policy as the full-resolution image. Bilevel clipping
+is silent, as in GDAL 3.13.3; wider packed domains report a clipping warning, including
+when a COG is compressed on worker threads.
+This applies to Rust, CLI/MCP, Python and JavaScript writes. Creating or refreshing
+overviews later with the standalone overview tools still refuses packed samples;
+a COG writer can generate its packed overviews while writing the new file. An opened
+overview can be copied with its compatible later levels; the source base image is not
+copied again. Native TIFF readers expose compatible decoded sample types only, so a
+Byte/UInt16 mixture is not exposed as one overview pyramid.
+When a copied source has overview masks but no base mask, the output preserves
+those overview masks and leaves the base mask absent. Missing masks at other
+levels also remain absent, retaining implicit nodata or alpha validity.
+GDAL 3.13.3's COG copier drops overview-only masks; Terrio preserves their
+validity rather than following that loss.
+
 Deflate levels 6–9 supplement the bounded hash-chain search with up to four
 run-boundary candidates. This keeps long matches across repeating categorical
 rows instead of encoding each short uniform run separately. It can change the
@@ -1092,7 +1140,10 @@ reads it.
 - **GeoPackage** layers are read with spatial filters through their R-tree index (`terrio convert
   --spat`, `VectorOpenOptions::spatial_filter`, Python's `open_vector(bbox=...)`): the
   candidates the index finds are read by feature id, then tested against the rectangle, giving the
-  features `ogr2ogr -spat` gives. Existing files are updated as `ogr2ogr` updates them:
+  features `ogr2ogr -spat` gives. Native feature pages skip unselected SQLite payloads
+  and stop at their limit; spatial filters count matching features before applying
+  the range. Paths and byte inputs retain the same layer metadata and feature order.
+  Byte inputs still hold the complete SQLite snapshot. Existing files are updated as `ogr2ogr` updates them:
   `--append` adds features to a layer (fields matched by name, new feature ids continuing the
   layer's sequence, its R-tree, `gpkg_contents` extent and `gpkg_ogr_contents` count updated),
   `--overwrite` replaces a layer, and layers are added to files holding other layers or rasters.
@@ -1139,6 +1190,13 @@ reads it.
 - **MapInfo TAB** native tables (`.tab` with its `.dat`, `.map` and `.id`) are read with every
   object type and field type, in their charset, and seamless tables; they are written with their
   spatial index, which GDAL uses for spatial filters. Views and DBF-backed tables are not read.
+- **Shapefile memory reuse**: on glibc Linux, whole-file DBF reads build record vectors, text and date values
+  on the calling thread. On glibc this lets that thread reuse freed record storage after
+  dropping the dataset, instead of leaving it in worker-thread malloc arenas. DBF decoding
+  runs serially there, so text-heavy reads can take longer. Other native platforms retain
+  parallel DBF decoding; WebAssembly retains its existing serial path. Terrio does not change the library
+  host's allocator settings. See [memory validation](testing.md#shapefile-host-memory-reuse)
+  for measurements and a profiling example.
 - **Shapefile polygons** are made from their rings as GDAL's shapefile driver makes them. By
   default (`ONLY_CCW`), clockwise rings are exteriors and each counter-clockwise ring is a hole of
   the smallest exterior around it. The `ORGANIZE_POLYGONS` open option (`--oo`,
@@ -1171,6 +1229,23 @@ reads it.
   Trailing NUL or DOS EOF padding is ignored. Reference syntax does not prove that a
   code exists: a well-formed unknown code from a known authority is retained here; Python's
   pyogrio interface warns and returns no CRS if pyproj cannot parse that reference.
+- **Stored vector CRS definitions** in GeoPackage and FlatGeobuf follow the same
+  definition-form check as Shapefile: prose and unbalanced WKT are ignored with a
+  warning, while balanced definitions unsupported by Terrio remain stored. Redundant
+  malformed definitions are ignored silently when FlatGeobuf declares an EPSG code. A
+  recognized EPSG authority code takes precedence over the redundant definition.
+  FlatGeobuf also retains declared EPSG codes absent from the local registry,
+  including when its redundant WKT is absent or invalid.
+  If Python cannot use a declared authority code but can parse the stored WKT,
+  dataframe and Arrow exports use that WKT without a CRS warning; the original
+  layer retains its declared code and definition.
+  Python `Layer.to_geopandas()`, `Layer.to_arrow()`, Arrow stream export and
+  `terrio.pyogrio` share optional pyproj validation. When a retained definition
+  cannot be parsed, these exports warn and omit its CRS, preserving geometries,
+  attributes and the original layer's definition. Valid custom and engineering
+  CRSs remain usable. Without a working pyproj installation, retained definitions
+  are passed through; the native Rust/JavaScript Arrow metadata remains portable
+  and retains definitions that Terrio cannot parse.
 - **OSM XML** (`.osm`) gives the same five layers as PBF, with tags in the file's order.
 - **KML layer names** use the same ASCII case-insensitive collision rule as KMZ.
   Within one document, `Roads` followed by `roads` becomes `Roads` and `roads (2)`,

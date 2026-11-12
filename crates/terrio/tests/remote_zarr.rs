@@ -769,3 +769,65 @@ fn multidimensional_sparse_strides_fetch_only_selected_chunks() {
     assert_eq!(requests, 2);
     assert_eq!(bytes, 4);
 }
+
+/// A Zarr array read with `ZarrArray` (terrio-js/zarr) reads what `LazyRaster` reads; opened
+/// without the CRS engine, its CRS is the EPSG code the store names, without WKT.
+#[test]
+fn zarr_arrays_read_what_lazy_rasters_read() {
+    use terrio::sparse::{ObjectRange, SparseObjects};
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("s.zarr");
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::write(store.join("zarr.json"), r#"{"zarr_format": 3, "node_type": "group", "attributes": {}}"#).unwrap();
+    let meta = serde_json::json!({
+        "zarr_format": 3, "node_type": "array", "shape": [2, 64, 64], "data_type": "uint16",
+        "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [1, 32, 32]}},
+        "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
+        "fill_value": 0, "dimension_names": ["band", "y", "x"],
+        "attributes": {"spatial:transform": [10.0, 0.0, 500000.0, 0.0, -10.0, 4600000.0], "proj:code": "EPSG:32630"},
+        "codecs": [{"name": "bytes", "configuration": {"endian": "little"}}]
+    });
+    std::fs::create_dir_all(store.join("a")).unwrap();
+    std::fs::write(store.join("a/zarr.json"), serde_json::to_vec(&meta).unwrap()).unwrap();
+    let value = |b: usize, r: usize, c: usize| (b * 10000 + r * 100 + c) as u16;
+    for (b, cy, cx) in (0..2).flat_map(|b| (0..2).flat_map(move |cy| (0..2).map(move |cx| (b, cy, cx)))) {
+        let chunk: Vec<u8> =
+            (cy * 32..cy * 32 + 32).flat_map(|r| (cx * 32..cx * 32 + 32).flat_map(move |c| value(b, r, c).to_le_bytes())).collect();
+        std::fs::create_dir_all(store.join(format!("a/c/{b}/{cy}"))).unwrap();
+        std::fs::write(store.join(format!("a/c/{b}/{cy}/{cx}")), chunk).unwrap();
+    }
+    /// Runs `f` until it misses no object, fetching them from `store` in between.
+    fn until<T>(objects: &SparseObjects, store: &std::path::Path, mut f: impl FnMut() -> terrio::Result<T>) -> T {
+        for _ in 0..32 {
+            match f() {
+                Ok(v) if !objects.has_missing() => return v,
+                _ => {}
+            }
+            for (key, range) in objects.missing() {
+                assert_eq!(range, ObjectRange::Whole);
+                objects.insert(&key, range, std::fs::read(store.join(&key)).ok());
+            }
+        }
+        panic!("fetch loop did not converge");
+    }
+    let objects = std::sync::Arc::new(SparseObjects::new());
+    let mut lean = until(&objects, &store, || terrio::ZarrArray::open_objects_epsg_only(objects.clone(), "s.zarr", "a"));
+    let crs = &lean.header().raster.crs;
+    assert_eq!((crs.epsg, crs.wkt.as_deref()), (Some(32630), None));
+    assert_eq!((lean.header().raster.cols, lean.header().raster.rows, lean.header().raster.bands), (64, 64, 2));
+    assert!(lean.attributes().contains("\"proj:code\":\"EPSG:32630\""));
+    let full = until(&objects, &store, || terrio::ZarrArray::open_objects(objects.clone(), "s.zarr", "a"));
+    assert_eq!(full.header().raster.crs.epsg, Some(32630));
+    assert!(full.header().raster.crs.wkt.is_some());
+    let mut lazy = until(&objects, &store, || terrio::LazyRaster::from_zarr_objects(objects.clone(), "s.zarr", "a"));
+    assert_eq!(lean.header().geo_transform(), lazy.geo_transform());
+    let window = Window::new(28, 10, 8, 30);
+    let got = until(&objects, &store, || lean.read(window, &[2, 1]));
+    let want = until(&objects, &store, || Ok(lazy.read_window(window, &WindowOptions { bands: vec![2, 1], overview: None })?.raster.data));
+    assert_eq!(got.to_f64_vec(), want.to_f64_vec());
+    assert_eq!(got.get_f64(0), value(1, 10, 28) as f64);
+    // A band the array lacks, band 0 and a window past its edge are errors, as for LazyRaster.
+    assert!(lean.read(window, &[3]).is_err());
+    assert!(lean.read(window, &[0]).is_err());
+    assert!(lean.read(Window::new(60, 60, 8, 8), &[1]).is_err());
+}

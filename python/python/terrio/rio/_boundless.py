@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from functools import partial
 from typing import Any
 
 import numpy as np
@@ -431,6 +432,7 @@ class _VRT:
         fw: tuple[float, float, float, float],
         buf: tuple[int, int],
         resampling: int,
+        dtype: Any,
     ) -> np.ndarray:
         """A source band (or its mask, `band` None) read as GDAL's `RasterIO` reads it.
 
@@ -440,12 +442,13 @@ class _VRT:
             fw: The floating-point window.
             buf: The buffer `(height, width)`.
             resampling: The resampling method.
+            dtype: The VRT working type, preserving wide complex components when requested.
 
         Returns:
             numpy.ndarray: `(height, width)`.
         """
         ds = self.ds
-        key = (band is None, iw, fw, buf, resampling)
+        key = (band is None, iw, fw, buf, resampling, np.dtype(dtype).str)
         hit = self.cache.get(key)
         if hit is not None:
             return hit[0] if band is None else hit[self.bands.index(band)]
@@ -475,9 +478,11 @@ class _VRT:
             return got[0]
         bands = self.bands if band in self.bands else [band]
         nodata = ds.nodatavals[band - 1]
+        wide = np.dtype(dtype).name == "complex128" and ds._exact_complex_read()
+        read_level = partial(ds._read_level, out_dtype="complex128") if wide else ds._read_level
         got = np.asarray(
             raster_io(
-                ds._read_level,
+                read_level,
                 bands,
                 (ds.width, ds.height),
                 ds._overview_sizes,
@@ -558,10 +563,10 @@ class _VRT:
             vals = np.full((oh, ow), 255.0)
             valid = np.ones((oh, ow), bool)
             if self.src_nodata is not None:
-                raw = self._source_read(band, nq, fq, (oh, ow), src_rs)
+                raw = self._source_read(band, nq, fq, (oh, ow), src_rs, dtype)
                 valid = ~is_nodata(raw, self.src_nodata)
         else:
-            raw = self._source_read(band, nq, fq, (oh, ow), src_rs)
+            raw = self._source_read(band, nq, fq, (oh, ow), src_rs, dtype)
             vals = raw
             valid = np.ones(raw.shape, bool)
             if band is not None and self.src_nodata is not None:
@@ -834,6 +839,8 @@ def boundless_read(
     fill_value: Any,
     ndv: Any,
     masked: bool,
+    *,
+    out_dtype: Any = None,
 ) -> tuple[np.ndarray, Any]:
     """A boundless read as rasterio's `read(boundless=True)` makes it.
 
@@ -846,9 +853,11 @@ def boundless_read(
         fill_value: The read's fill value.
         ndv: The last read band's (clamped) nodata value.
         masked: Whether the mask is wanted.
+        out_dtype: A wider complex working type when requested.
 
     Returns:
-        tuple: The pixels `(bands, h, w)` in the dataset's data type, and the mask (True where
+        tuple: The pixels `(bands, h, w)` in the requested working type (the dataset's type
+            by default), and the mask (True where
         invalid) or None.
     """
     from terrio.rio.io import _check_buffer
@@ -860,7 +869,7 @@ def boundless_read(
     nodataval = fill_value if fill_value is not None else ndv
     vrt = _vrt(ds, win, nodataval, False, idx)
     vrt.resampling = int(resampling)
-    dtype = np.dtype(ds._dtype)
+    dtype = np.dtype(out_dtype if out_dtype is not None else ds._dtype)
     # rasterio reads Window(0, 0, w, h) of the VRT with nearest neighbour.
     fw = (0.0, 0.0, float(win.width), float(win.height))
     iw = (0, 0, int(max(1, win.width)), int(max(1, win.height)))

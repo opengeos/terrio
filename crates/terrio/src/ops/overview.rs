@@ -602,6 +602,7 @@ fn layout_like(
         extra: dir.get(338).map(|e| e.uints().into_iter().map(|v| v as u16).collect()).unwrap_or_default(),
         predictor,
         parts: 1,
+        nbits: None,
     };
     let codec = CodecParams { jpeg_ycbcr: photometric == 6, ..Default::default() };
     Ok((layout, compression, codec))

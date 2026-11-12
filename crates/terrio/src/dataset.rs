@@ -71,6 +71,22 @@ pub struct RasterDataset {
 /// domain and its items (see [`RasterDataset::metadata_domains`]).
 pub type MetadataDomain = (Option<usize>, String, Vec<(String, String)>);
 
+/// Select and renumber per-band packing metadata without retaining unrelated source domains.
+pub(crate) fn selected_nbits(domains: &[MetadataDomain], bands: &[usize]) -> Vec<MetadataDomain> {
+    bands
+        .iter()
+        .enumerate()
+        .flat_map(|(output, &input)| {
+            domains.iter().filter(move |(band, domain, _)| *band == Some(input - 1) && domain == "IMAGE_STRUCTURE").filter_map(
+                move |(_, domain, items)| {
+                    let items: Vec<_> = items.iter().filter(|(key, _)| key == "NBITS").cloned().collect();
+                    (!items.is_empty()).then(|| (Some(output), domain.clone(), items))
+                },
+            )
+        })
+        .collect()
+}
+
 /// Where the longitude and latitude of each pixel of a raster are, as GDAL describes geolocation
 /// arrays (its `GEOLOCATION` metadata domain, RFC 4): two rasters (`x_dataset`, `y_dataset`),
 /// sampled every `pixel_step` columns from `pixel_offset` and every `line_step` rows from
@@ -141,6 +157,41 @@ impl Geolocation {
 }
 
 impl RasterDataset {
+    /// A band's declared stored width, from IMAGE_STRUCTURE (band from zero; GDAL 3.13.3).
+    pub(crate) fn band_sample_bits(&self, band: usize) -> Option<u16> {
+        self.metadata_domains
+            .iter()
+            .filter(|(index, domain, _)| *index == Some(band) && domain == "IMAGE_STRUCTURE")
+            .find_map(|(_, _, items)| items.iter().find(|(key, _)| key == "NBITS").and_then(|(_, value)| value.parse().ok()))
+    }
+
+    /// Retain packed unsigned widths in IMAGE_STRUCTURE, as GDAL 3.13.3 reports NBITS.
+    /// Zero clears inherited NBITS when the stored width is unknown.
+    pub(crate) fn set_sample_bits(&mut self, bits: u16) {
+        // A selected overview or an AUTO read can replace the base image's stored width.
+        for (band, domain, items) in &mut self.metadata_domains {
+            if band.is_some() && domain == "IMAGE_STRUCTURE" {
+                items.retain(|(key, _)| key != "NBITS");
+            }
+        }
+        self.metadata_domains.retain(|(band, domain, items)| !(band.is_some() && domain == "IMAGE_STRUCTURE" && items.is_empty()));
+        if matches!(self.raster.data_type, wbraster::DataType::U8 | wbraster::DataType::U16 | wbraster::DataType::U32)
+            && bits > 0
+            && usize::from(bits) < self.raster.data_type.size_bytes() * 8
+        {
+            for band in 0..self.raster.bands {
+                let item = ("NBITS".into(), bits.to_string());
+                if let Some((_, _, items)) =
+                    self.metadata_domains.iter_mut().find(|(index, domain, _)| *index == Some(band) && domain == "IMAGE_STRUCTURE")
+                {
+                    items.push(item);
+                } else {
+                    self.metadata_domains.push((Some(band), "IMAGE_STRUCTURE".into(), vec![item]));
+                }
+            }
+        }
+    }
+
     /// Wraps a raster created in memory.
     pub fn new(raster: Raster, has_nodata: bool) -> Self {
         Self::with_driver(raster, RasterDriver::GTiff, has_nodata)
@@ -324,7 +375,8 @@ pub struct VectorOpenOptions {
     /// rows this matches pyogrio's `skip_features` and GDAL's `SetNextByIndex`; their Shapefile
     /// fast-seek paths can count physical slots when records are deleted instead.
     /// The Shapefile driver reads deletion flags without skipped geometry/attributes;
-    /// the other local drivers read every feature and keep the range.
+    /// GeoPackage walks only the requested records (after spatial matching, when filtered).
+    /// Other local drivers read every feature and keep the range.
     pub skip_features: usize,
     /// At most this many live features per layer after the skipped ones; `None` reads to the end.
     /// Unlike pyogrio, `Some(0)` returns no features rather than treating zero as unlimited.
@@ -920,7 +972,7 @@ fn read_feature_service(url: &str, first: &[u8], driver: VectorDriver, options: 
 
 pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
     options.oapif.validate_source(path)?;
-    if let Some(result) = crate::stac::open(path) {
+    if let Some(result) = crate::stac::open_vector(path, options) {
         return match result? {
             Dataset::Vector(v) => Ok(v),
             Dataset::Raster(_) => Err(Error::Unsupported(format!("'{path}' is a raster, not a vector dataset"))),
@@ -1154,7 +1206,11 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     }
     #[cfg(feature = "tiles")]
     if let Some(layers) = crate::tiles::open_mvt_local(path, options) {
-        return layers.map(|l| Dataset::Vector(finish_vector(l, path, VectorDriver::MVT)));
+        return layers.and_then(|layers| {
+            let mut layers = select_layers(layers, path, options)?;
+            layers.iter_mut().for_each(|layer| options.keep_range(layer));
+            Ok(Dataset::Vector(finish_vector(layers, path, VectorDriver::MVT)))
+        });
     }
     if !Path::new(path).exists() {
         return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("'{path}' does not exist"))));
@@ -1400,8 +1456,7 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
     driver.ensure_built()?;
     #[cfg(feature = "sqlite")]
     if driver == VectorDriver::GPKG {
-        let mut layers = crate::drivers::vector::gpkg_read::read(path, &options.layers, options.spatial_filter)?;
-        layers.iter_mut().for_each(|l| options.keep_range(l));
+        let layers = crate::drivers::vector::gpkg_read::read(path, options)?;
         return Ok(finish_vector(layers, path, driver));
     }
     if matches!(driver, VectorDriver::KML | VectorDriver::KMZ) {
@@ -2001,6 +2056,52 @@ pub(crate) fn ensure_writable_location(path: &str) -> Result<()> {
 }
 
 impl RasterWriteOptions {
+    /// Selects a compatible inherited unsigned TIFF width (GDAL 3.13.3 NBITS).
+    /// Returns `None` for inconsistent/missing source widths, an explicit NBITS override,
+    /// incompatible output options, or nodata outside the stored domain. With uncompressed
+    /// output the effective predictor is always 1. Only GTiff/COG output inherits widths.
+    /// This metadata policy trusts the source width; it does not inspect pixels. Modified
+    /// samples follow the encoder's clipping policy unless the caller overrides NBITS.
+    pub fn inherited_sample_bits(
+        &self,
+        driver: RasterDriver,
+        data_type: wbraster::DataType,
+        widths: &[Option<u16>],
+        nodata: &[Option<f64>],
+    ) -> Option<u16> {
+        if !matches!(driver, RasterDriver::GTiff | RasterDriver::Cog) {
+            return None;
+        }
+        let first = widths.first().copied().flatten()?;
+        let (minimum, capacity) = match data_type {
+            wbraster::DataType::U8 => (1, 8),
+            wbraster::DataType::U16 => (9, 16),
+            wbraster::DataType::U32 => (17, 32),
+            _ => return None,
+        };
+        let co = |key: &str| self.creation_options.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, value)| value.as_str());
+        let compression = self
+            .compression
+            .as_deref()
+            .or_else(|| co("COMPRESS"))
+            .unwrap_or(if driver == RasterDriver::Cog { "LZW" } else { "NONE" })
+            .to_ascii_uppercase();
+        if co("NBITS").is_some()
+            || first < minimum
+            || first > capacity
+            || widths.iter().any(|&value| value != Some(first))
+            || !matches!(compression.as_str(), "" | "NONE" | "LZW" | "DEFLATE" | "ZIP" | "PACKBITS" | "ZSTD")
+            || nodata
+                .iter()
+                .flatten()
+                .any(|&value| !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > ((1u64 << first) - 1) as f64)
+        {
+            return None;
+        }
+        let predictor = co("PREDICTOR").unwrap_or("1").trim().to_ascii_uppercase();
+        (matches!(compression.as_str(), "" | "NONE" | "PACKBITS") || matches!(predictor.as_str(), "1" | "NO" | "NONE")).then_some(first)
+    }
+
     /// Metadata inheritance shared by whole-image and row-streamed TIFF writers.
     pub(crate) fn inherited_from(&self, ds: &RasterDataset, driver: Option<RasterDriver>) -> Self {
         let co = |key: &str| self.creation_options.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
@@ -2019,11 +2120,20 @@ impl RasterWriteOptions {
                 }
             }
         }
+        let mut creation_options = self.creation_options.clone();
+        if let Some(driver @ (RasterDriver::GTiff | RasterDriver::Cog)) = driver {
+            let widths: Vec<_> = (0..ds.raster.bands).map(|band| ds.band_sample_bits(band)).collect();
+            let nodata: Vec<_> = (1..=ds.raster.bands).map(|band| ds.band_nodata(band)).collect();
+            if let Some(bits) = self.inherited_sample_bits(driver, ds.raster.data_type, &widths, &nodata) {
+                creation_options.push(("NBITS".into(), bits.to_string()));
+            }
+        }
         Self {
             geo_transform: self.geo_transform.or(ds.affine),
             gcps: self.inherited_gcps(ds, driver),
             color_table,
             band_metadata,
+            creation_options,
             ..self.clone()
         }
     }
@@ -2201,6 +2311,29 @@ pub(crate) mod fallible {
 
 #[cfg(test)]
 mod tests {
+    /// GDAL 3.13.3's NBITS item remains visible beside other IMAGE_STRUCTURE items.
+    #[test]
+    fn inherited_width_is_found_after_other_image_structure_domains() {
+        let raster = wbraster::Raster::from_data_native(
+            wbraster::RasterConfig { cols: 2, rows: 2, bands: 1, data_type: wbraster::DataType::U8, ..Default::default() },
+            wbraster::raster::RasterData::U8(vec![7; 4]),
+        )
+        .unwrap();
+        let mut ds = super::RasterDataset::new(raster, false);
+        ds.metadata_domains.push((Some(0), "IMAGE_STRUCTURE".into(), vec![("COMPRESSION".into(), "DEFLATE".into())]));
+        ds.metadata_domains.push((None, "EMPTY_DATASET".into(), Vec::new()));
+        ds.metadata_domains.push((Some(0), "EMPTY_BAND".into(), Vec::new()));
+        ds.set_sample_bits(4);
+        assert_eq!(ds.metadata_domains.iter().filter(|(band, domain, _)| *band == Some(0) && domain == "IMAGE_STRUCTURE").count(), 1);
+        let items = &ds.metadata_domains.iter().find(|(band, domain, _)| *band == Some(0) && domain == "IMAGE_STRUCTURE").unwrap().2;
+        assert!(items.contains(&("COMPRESSION".into(), "DEFLATE".into())));
+        assert!(items.contains(&("NBITS".into(), "4".into())));
+        assert!(ds.metadata_domains.iter().any(|(band, domain, items)| band.is_none() && domain == "EMPTY_DATASET" && items.is_empty()));
+        assert!(ds.metadata_domains.iter().any(|(band, domain, items)| *band == Some(0) && domain == "EMPTY_BAND" && items.is_empty()));
+        let options = super::RasterWriteOptions::default().inherited_from(&ds, Some(crate::formats::RasterDriver::GTiff));
+        assert!(options.creation_options.iter().any(|(key, value)| key == "NBITS" && value == "4"));
+    }
+
     #[test]
     fn a_misspelled_layer_name_beside_a_valid_one_is_refused() {
         let options =

@@ -288,6 +288,8 @@ Command-group progress:
       Default TIFF readers capture a configurable decoded-chunk budget through
       `TERRIO_TIFF_MAX_CHUNK_BYTES` for trusted large stacks (#799), including Python spare
       readers; explicit Rust limits retain precedence.
+      GTiff and COG writers support packed unsigned samples, with compatible copies retaining
+      stored bit widths, including selected overviews (#711, #860).
 - [x] Vector: Shapefile (with `.prj`, `.cpg` and zipped), FlatGeobuf (with its spatial index),
       GeoParquet 1.1 (with bounding-box filtering), CSV with point or WKT columns, XLSX as GDAL's
       driver reads and writes it.
@@ -616,6 +618,8 @@ WebAssembly (the `terrio-js` npm package):
       it needs those formats; formats left out say which module has them. Both are built with
       whole-program LTO, the codecs optimized for speed and the rest for size, and wasm-opt -Oz:
       both decode GeoTIFFs and write COGs as fast in Node.js, and the full module decodes JPEG 2000.
+      The separate `terrio-js/zarr` module reads Zarr arrays over HTTP by window and band,
+      retaining declared EPSG codes without including the CRS engine (#900).
 - [x] Datasets larger than 4 GB, with the 64-bit memory proposal (memory64) where runtimes support
       it. Done: a memory64 module, `terrio-js/memory64` (every format, up to 16 GB), which
       `load({ memory64: true })` picks where the runtime has 64-bit memories (Node.js 24+, Chrome

@@ -345,7 +345,7 @@ lists ISC for the engine.
 ## Testing
 
 ```sh
-cargo test -p terrio --test hecras_driver --test hecras_results --test hecras_synthetic
+cargo test -p terrio --test merged -- hecras_driver:: hecras_results:: hecras_synthetic::
 python scripts/compare_hecras_with_h5py.py <corpus>/fixtures   # the 7.0.1 comparison with h5py
 ```
 

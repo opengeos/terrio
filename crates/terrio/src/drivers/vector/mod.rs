@@ -47,6 +47,7 @@ pub(crate) mod projjson;
 pub mod shapefile;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+mod stored_crs;
 pub mod tab;
 pub mod topojson;
 pub mod wfs;

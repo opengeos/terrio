@@ -95,11 +95,29 @@ pub(crate) struct StripWriter {
 enum Inner {
     /// Strips compressed and written on another thread, while the next are computed.
     #[cfg(not(target_family = "wasm"))]
-    Thread { tx: std::sync::mpsc::SyncSender<(RasterData, usize, Option<Vec<u8>>)>, handle: Option<std::thread::JoinHandle<Result<()>>> },
+    Thread { tx: std::sync::mpsc::SyncSender<(RasterData, usize, Option<Vec<u8>>)>, handle: Option<std::thread::JoinHandle<ThreadOutput>> },
     #[cfg(target_family = "wasm")]
     Tiff(Tiff),
     /// The output gathered whole, written at the end.
     Whole { ds: Box<RasterDataset>, options: Box<RasterWriteOptions>, done: usize },
+}
+
+#[cfg(not(target_family = "wasm"))]
+struct ThreadOutput {
+    result: Result<()>,
+    warnings: Vec<String>,
+}
+
+/// Join before reporting worker diagnostics, including failed or abandoned writes.
+#[cfg(not(target_family = "wasm"))]
+fn join_writer(handle: Option<std::thread::JoinHandle<ThreadOutput>>) -> Result<()> {
+    let Some(Ok(output)) = handle.map(|h| h.join()) else {
+        return Err(Error::InvalidData("the GeoTIFF writer stopped".into()));
+    };
+    for warning in output.warnings {
+        crate::warnings::warn(warning);
+    }
+    output.result
 }
 
 impl StripWriter {
@@ -130,10 +148,13 @@ impl StripWriter {
                     let mut w = tiff;
                     let (tx, rx) = std::sync::mpsc::sync_channel::<(RasterData, usize, Option<Vec<u8>>)>(1);
                     let handle = std::thread::spawn(move || {
-                        for (data, n, mask) in rx {
-                            w.write_rows(data, n, mask)?;
-                        }
-                        w.finish()
+                        let result = (|| {
+                            for (data, n, mask) in rx {
+                                w.write_rows(data, n, mask)?;
+                            }
+                            w.finish()
+                        })();
+                        ThreadOutput { result, warnings: crate::warnings::take() }
                     });
                     Inner::Thread { tx, handle: Some(handle) }
                 }
@@ -174,10 +195,7 @@ impl StripWriter {
                     return Ok(());
                 }
                 // The writer stopped on an error.
-                match handle.take().map(|h| h.join()) {
-                    Some(Ok(Err(e))) => Err(e),
-                    _ => Err(Error::InvalidData("the GeoTIFF writer stopped".into())),
-                }
+                join_writer(handle.take()).and_then(|()| Err(Error::InvalidData("the GeoTIFF writer stopped".into())))
             }
             #[cfg(target_family = "wasm")]
             Inner::Tiff(w) => w.write_rows(data, rows, mask),
@@ -215,10 +233,7 @@ impl StripWriter {
             #[cfg(not(target_family = "wasm"))]
             Inner::Thread { tx, handle } => {
                 drop(tx);
-                match handle.map(|h| h.join()) {
-                    Some(Ok(result)) => result,
-                    _ => Err(Error::InvalidData("the GeoTIFF writer stopped".into())),
-                }
+                join_writer(handle)
             }
             #[cfg(target_family = "wasm")]
             Inner::Tiff(w) => w.finish(),
@@ -252,9 +267,7 @@ impl Drop for StripWriter {
             #[cfg(not(target_family = "wasm"))]
             Inner::Thread { tx, handle } => {
                 drop(tx);
-                if let Some(h) = handle {
-                    let _ = h.join();
-                }
+                let _ = join_writer(handle);
             }
             #[cfg(target_family = "wasm")]
             Inner::Tiff(w) => drop(w),
@@ -544,6 +557,50 @@ mod tests {
     fn header(data_type: DataType) -> RasterDataset {
         let grid = Grid { width: 4, height: 6, geo_transform: [0.0, 1.0, 0.0, 6.0, 0.0, -1.0] };
         raster_header(grid, data_type, 1, None, &SpatialRef::parse("EPSG:4326").unwrap()).unwrap()
+    }
+
+    /// GDAL 3.13.3 clips wider packed values; Terrio delivers its warning to the caller.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn strip_writer_delivers_worker_warnings_on_finish_error_and_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        for mode in ["finish", "error", "drop"] {
+            let _ = crate::warnings::take();
+            crate::warnings::warn("parent warning".into());
+            let path = dir.path().join(format!("{mode}.tif"));
+            let options = RasterWriteOptions {
+                creation_options: vec![("NBITS".into(), "4".into()), ("BLOCKYSIZE".into(), "1".into())],
+                ..Default::default()
+            };
+            let mut writer = StripWriter::create(&header(DataType::U8), path.to_str().unwrap(), &options).unwrap();
+            writer.write(RasterData::U8(vec![255; 12]), 3).unwrap();
+            match mode {
+                "finish" => {
+                    writer.write(RasterData::U8(vec![255; 12]), 3).unwrap();
+                    writer.finish().unwrap();
+                    assert!(path.exists());
+                }
+                "error" => {
+                    // The worker refuses seven rows for a six-row output, after the first
+                    // clipping warning. Wait for that actual error before the next send.
+                    writer.write(RasterData::U8(vec![255; 16]), 4).unwrap();
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    let Some(Inner::Thread { handle: Some(handle), .. }) = &writer.inner else { panic!("expected a worker") };
+                    while !handle.is_finished() {
+                        assert!(std::time::Instant::now() < deadline, "writer did not stop on invalid rows");
+                        std::thread::yield_now();
+                    }
+                    assert!(writer.write(RasterData::U8(vec![255; 4]), 1).is_err());
+                    drop(writer);
+                    assert!(!path.exists());
+                }
+                _ => {
+                    drop(writer);
+                    assert!(!path.exists());
+                }
+            }
+            assert_eq!(crate::warnings::take(), ["parent warning", "One or more pixels clipped to fit 4 bit domain."], "{mode}");
+        }
     }
 
     /// Streamed writes retain source colors and honor explicit TIFF color overrides.

@@ -150,6 +150,33 @@ fn clear_chunk(bytes: &mut [u8], t: &Tables, i: usize) {
 /// data and metadata.
 const BLOCK: usize = 16;
 
+/// Uncompressed chunks may read beyond undersized declared counts, as GDAL 3.13.3 allows.
+/// Missing sparse blocks must remain retryable even when worker decoding discovers them.
+#[test]
+fn sparse_uncompressed_reads_retry_undersized_chunk_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("undersized.tif");
+    let ds = raster(256, 128, 1);
+    let mut opts = options("NONE", &[]);
+    opts.tile_size = Some(128);
+    terrio::write_raster_dataset(&ds, path.to_str().unwrap(), &opts).unwrap();
+    let mut bytes = std::fs::read(path).unwrap();
+    let table = chunk_tables(&bytes).remove(0);
+    let (at, size) = table.counts_at;
+    for i in 0..table.counts.len() {
+        bytes[at + i * size..at + (i + 1) * size].fill(0);
+        bytes[at + i * size] = 1;
+    }
+    let file = SparseFile::with_block_size(bytes.len() as u64, 4096);
+    let fetch = |offset: u64, length: u64| -> std::io::Result<Vec<u8>> { Ok(bytes[offset as usize..(offset + length) as usize].to_vec()) };
+    let mut reader = terrio::sparse::read_with(&file, 32, fetch, || Ok(LazyRaster::from_sparse(file.clone())?.unwrap())).unwrap();
+    let actual = terrio::sparse::read_with(&file, 32, fetch, || {
+        Ok(reader.read_window(Window::full(256, 128), &WindowOptions::default())?.raster.data.to_f64_vec())
+    })
+    .unwrap();
+    assert_eq!(actual, ds.raster.data.to_f64_vec());
+}
+
 /// A sparse file holding every block of `bytes`, those holding chunk data (of every image, masks
 /// included) inserted last; and the number of these.
 fn sparse_file(bytes: &[u8]) -> (SparseFile, usize) {
