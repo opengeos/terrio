@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
 """Packed unsigned GTiff/COG writes and copies, independently decoded by GDAL 3.13.3.
 
 Synthetic rows exercise byte padding and tile edges; an available WorldCover

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
 """Packed unsigned TIFF writes and copies, compared with GDAL 3.13.3."""
 
 import struct

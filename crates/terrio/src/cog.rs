@@ -979,9 +979,9 @@ impl LazyRaster {
     pub(crate) fn widest_sample_bits(&self) -> Option<u16> {
         match &self.inner {
             Inner::Tiff(t) => t.levels.iter().map(|level| level.bits).max(),
-            Inner::Source(..) => {
-                std::iter::once(None).chain((0..self.overviews().len()).map(Some)).filter_map(|level| self.level_sample_bits(level)).max()
-            }
+            Inner::Source(..) => std::iter::once(None)
+                .chain((0..self.overviews().len()).map(Some))
+                .try_fold(0u16, |widest, level| self.level_sample_bits(level).map(|bits| widest.max(bits))),
             _ => self.sample_bits(),
         }
     }
@@ -3072,6 +3072,7 @@ mod tests {
         let mut header = RasterDataset::new(wbraster::Raster::from_data_native(cfg, RasterData::U16(vec![10; 16])).unwrap(), false);
         header.set_sample_bits(9);
         let mut source = LazyRaster::from_source(header, Box::new(UnknownWidth));
+        assert_eq!(source.widest_sample_bits(), None);
         let base = source.read_window(Window::full(4, 4), &WindowOptions::default()).unwrap();
         let inherited = |ds: &RasterDataset| {
             crate::RasterWriteOptions::default()

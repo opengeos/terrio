@@ -3253,6 +3253,16 @@ mod tests {
             let cfg = wbraster::RasterConfig { cols: size, rows: size, bands: 1, data_type: DataType::U16, ..Default::default() };
             let raster = Raster::from_data_native(cfg, RasterData::U16(vec![value; size * size])).unwrap();
             std::fs::write(path, encode(&raster, &TiffOptions { nbits: Some(bits), ..Default::default() }).unwrap()).unwrap();
+            if path == &source {
+                let mut reader = crate::LazyRaster::open(source.to_str().unwrap()).unwrap();
+                assert!(reader.overviews().is_empty());
+                for overview in [crate::ops::overview::OverviewSelection::Auto, crate::ops::overview::OverviewSelection::AutoOffset(1)] {
+                    let dataset =
+                        reader.read_resampled(&crate::ResampledReadOptions { size: (2, 2), overview, ..Default::default() }).unwrap();
+                    let options = crate::RasterWriteOptions::default().inherited_from(&dataset, Some(crate::formats::RasterDriver::GTiff));
+                    assert!(options.creation_options.iter().any(|(key, value)| key == "NBITS" && value == "9"));
+                }
+            }
         }
         let mut original = crate::LazyRaster::open(source.to_str().unwrap()).unwrap();
         let mut shared = original.shared();

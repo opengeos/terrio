@@ -1110,7 +1110,7 @@ def suite_packed_tiff(ctx):
         return suite
     for row in rows:
         suite.cases.append(Case("packed TIFF", row["name"], {"identical": IDENTICAL, "not compared": NOT_COMPARED}.get(row["status"], DIFFERS), row["detail"]))
-    if len(rows) < 12 or code and not any(case.status == DIFFERS for case in suite.cases):
+    if len(rows) < 12 or (code and not any(case.status == DIFFERS for case in suite.cases)):
         suite.error = tail(err or out) or "incomplete packed TIFF comparisons"
     return suite
 
