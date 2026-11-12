@@ -1166,6 +1166,9 @@ reads it.
   code exists: a well-formed unknown code from a known authority is retained here; Python's
   pyogrio interface warns and returns no CRS if pyproj cannot parse that reference.
 - **OSM XML** (`.osm`) gives the same five layers as PBF, with tags in the file's order.
+- **KML layer names** use the same ASCII case-insensitive collision rule as KMZ.
+  Within one document, `Roads` followed by `roads` becomes `Roads` and `roads (2)`,
+  preserving feature order and the original spelling before the suffix.
 - **KMZ archives** are written as GDAL writes them, a `doc.kml` linking to one document per
   layer under `layers/`. Files given as KMZ resources (Rust `KmzOptions::resources`, CLI
   `--kmz-resource`, Python `kmz_resources`, JavaScript `kmzResources`), such as the icon images
@@ -1180,8 +1183,12 @@ reads it.
   archive limits of `/vsizip/` (`TERRIO_ZIP_MAX_ENTRIES`, `TERRIO_ZIP_MAX_RATIO`,
   `TERRIO_ZIP_MAX_SIZE`), and 512 MiB of decompressed text for the main document and the layer
   documents it links to together. Repeated links to a document read it once and emit its layers once.
-  Existing document and folder names are preserved; the first link supplies the default name
-  for an unnamed root, or the member stem when that link is unnamed. Set `TERRIO_KMZ_MAX_SIZE`
+  The first link supplies the default name for an unnamed root, or the member stem
+  when that link is unnamed. Existing document and folder names are used; collisions,
+  including ASCII case variants, receive the first free ` (2)`, ` (3)` suffix across
+  the complete dataset, in main-document order followed by linked documents in link
+  order. This makes every layer selectable by name and avoids duplicate table names
+  when converting to GeoPackage. Set `TERRIO_KMZ_MAX_SIZE`
   to a byte count to change that budget;
   reading a KML document takes at least twice its size in memory, so in WebAssembly, whose
   memory is at most 4 GiB, a lower budget leaves room for the parsed layers. An archive past

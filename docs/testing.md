@@ -53,6 +53,16 @@ An explicit child assertion is a comparison difference; skipped references stay 
 Other exit codes, signals and the 60-second timeout are fixture setup errors, which the
 conformance reporter records as suite errors instead of data differences.
 
+## KMZ dataset-wide layer names
+
+`python/tests/test_kmz_layer_names.py` checks whole-dataset naming across main
+folders, main placemarks and linked documents, including ASCII case collisions, existing numbered names
+and link order different from ZIP entry order. Every layer remains selectable by
+name and converts to a distinct GeoPackage table through Python and CLI. The
+shared reader's Rust tests retain the single-document suffix rules. Node checks
+the same cross-document suffix collision through a frozen KMZ fixture. Layer
+names follow Terrio's deterministic policy; this is not GDAL name equivalence.
+
 ## Vector byte packaging
 
 `python/tests/test_vector_byte_packaging.py` reads default vector byte outputs

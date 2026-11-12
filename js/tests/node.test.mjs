@@ -442,6 +442,24 @@ test("finite polar kilometre inputs preserve direction through normalization", (
   assert.ok(Math.abs(ys[0] + 90) < 1e-12);
 });
 
+test("KMZ selection names are unique across all linked documents", () => {
+  for (const [fixture, names] of [
+    ["cross_document_names.kmz", ["roads (2)", "roads", "roads (3)", "roads (4)"]],
+    ["case_variant_names.kmz", ["Roads (2)", "Roads", "roads (3)", "ROADS (4)"]],
+  ]) {
+    const bytes = readFileSync(new URL(`../../crates/terrio/tests/data/kmz/${fixture}`, import.meta.url));
+    const ds = terrio.open(bytes, "source.kmz");
+    try {
+      assert.deepEqual(ds.layerNames(), names);
+      names.forEach((name, i) => {
+        const feature = ds.toGeoJSON(name).features[0];
+        assert.deepEqual(feature.geometry.coordinates, [i+1,46]);
+        assert.equal(feature.properties.Name, `point ${i+1}`);
+      });
+    } finally { ds.free(); }
+  }
+});
+
 test("ZIP archives with duplicate member names are refused", () => {
   const bytes = readFileSync(new URL("../../crates/terrio/tests/data/zip/duplicate_members.zip", import.meta.url));
   assert.throws(() => terrio.open(bytes, "vector.zip"), /several entries with the same name/);

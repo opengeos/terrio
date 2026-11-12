@@ -229,6 +229,7 @@ fn kmz_styled<R: std::io::Read + std::io::Seek>(reader: R, default_name: &str) -
     for (member, document, name) in &documents {
         layers.extend(layers_of(document, member, &index, name, true, &mut table, &mut known));
     }
+    make_layer_names_unique(&mut layers);
     Ok((layers, table))
 }
 
@@ -254,7 +255,8 @@ pub fn parse_styled(text: &str, default_name: &str) -> Result<Styled> {
     let root = xml::parse(text)?;
     let mut table = Vec::new();
     let mut known = HashMap::new();
-    let layers = layers_of(&root, "", &kml_style::MemberIndex::new(), default_name, false, &mut table, &mut known);
+    let mut layers = layers_of(&root, "", &kml_style::MemberIndex::new(), default_name, false, &mut table, &mut known);
+    make_layer_names_unique(&mut layers);
     Ok((layers, table))
 }
 
@@ -291,33 +293,38 @@ fn layers_of(
     }
     let mut styles = kml_style::Styles::new(root, member, members);
     styles.add_to(table, known);
-    let mut layers: Vec<Layer> = containers
+    containers
         .into_iter()
         .map(|(name, features, container)| {
             let mut l = layer(&name, &features, &schemas, &styles);
             l.extent = container_bounds(container);
             l
         })
-        .collect();
+        .collect()
+}
+
+/// Make names unique across a dataset: combined KMZ documents or one plain KML document.
+/// ASCII case variants collide as they do for SQLite/GeoPackage table names.
+fn make_layer_names_unique(layers: &mut [Layer]) {
     // Layer names must be unique: a name an earlier layer has takes the first free suffix, ` (2)`,
     // ` (3)`, and so on. Names are only ever added, so the suffixes a name found taken stay taken,
     // and its next search resumes after the last suffix it took.
     let mut taken = std::collections::HashSet::with_capacity(layers.len());
     let mut next: HashMap<String, usize> = HashMap::new();
-    for layer in &mut layers {
-        if taken.insert(layer.name.clone()) {
+    for layer in layers {
+        let key = layer.name.to_ascii_lowercase();
+        if taken.insert(key.clone()) {
             continue;
         }
-        let n = next.entry(layer.name.clone()).or_insert(2);
+        let n = next.entry(key).or_insert(2);
         layer.name = loop {
             let name = format!("{} ({n})", layer.name);
             *n += 1;
-            if taken.insert(name.clone()) {
+            if taken.insert(name.to_ascii_lowercase()) {
                 break name;
             }
         };
     }
-    layers
 }
 
 fn collect_schemas<'a>(e: &'a Element, out: &mut Vec<&'a Element>) {
@@ -1449,6 +1456,26 @@ mod tests {
         }
     }
 
+    /// Dataset-wide selection names use the existing suffix policy (GDAL 3.13.3 comparison scope:
+    /// geometry/attributes only; these deterministic names are Terrio's reader policy).
+    #[test]
+    fn kmz_layer_names_are_unique_across_documents() {
+        let point = |x| format!("<Placemark><name>point {x}</name><Point><coordinates>{x},46</coordinates></Point></Placemark>");
+        let folder = |name: &str, x| format!("<Folder><name>{name}</name>{}</Folder>", point(x));
+        let link = |href| format!("<NetworkLink><name>roads</name><Link><href>{href}</href></Link></NetworkLink>");
+        let linked = format!("<kml><Document>{}{}</Document></kml>", point(3), folder("roads", 4));
+        let main = format!("<kml><Document>{}{}{}</Document></kml>", folder("roads (2)", 1), folder("roads", 2), link("layers/a.kml"));
+        let layers = parse_kmz(archive(&[("doc.kml", &main), ("layers/a.kml", &linked)]), "archive").unwrap();
+        assert_eq!(layers.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["roads (2)", "roads", "roads (3)", "roads (4)"]);
+        for (layer, x) in layers.iter().zip(1..=4) {
+            assert_eq!(layer.features[0].geometry, Some(Geometry::point(x as f64, 46.0)));
+        }
+        let main = format!("<kml><Document>{}{}</Document></kml>", link("layers/a.kml"), link("layers/b.kml"));
+        let simple = format!("<kml><Document>{}</Document></kml>", point(5));
+        let layers = parse_kmz(archive(&[("doc.kml", &main), ("layers/a.kml", &simple), ("layers/b.kml", &simple)]), "archive").unwrap();
+        assert_eq!(layers.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["roads", "roads (2)"]);
+    }
+
     /// A document's layer names are made unique in document order, in a KML file and a KMZ
     /// archive alike. A name an earlier layer has takes the first free suffix, ` (2)`, ` (3)`, and
     /// so on, and a container without a name is named after its element. A suffix a name given
@@ -1497,5 +1524,7 @@ mod tests {
         let names = |layers: Vec<Layer>| layers.into_iter().map(|l| l.name).collect::<Vec<_>>();
         assert_eq!(names(parse(&doc, "kml").unwrap()), expected);
         assert_eq!(names(parse_kmz(archive(&[("doc.kml", &doc)]), "kmz").unwrap()), expected);
+        let plain = format!("<kml><Document>{}{}</Document></kml>", folder("Roads", ""), folder("roads", ""));
+        assert_eq!(names(parse(&plain, "kml").unwrap()), ["Roads", "roads (2)"]);
     }
 }
