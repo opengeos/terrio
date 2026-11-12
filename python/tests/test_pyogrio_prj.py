@@ -319,6 +319,13 @@ def test_pyproj_checks_only_an_epsg_code_terrio_does_not_know(
 @pytest.mark.parametrize("encoding", ["latin-1", "utf-16"])
 @pytest.mark.parametrize("reader", ["path", "range", "info", "stream", "zip-path", "zip-bytes"])
 def test_undecodable_prj_warns_with_filename_and_reason(tmp_path, encoding, reader):
+    """Check that undecodable sidecars produce one useful warning.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+        encoding: Unsupported sidecar encoding to exercise.
+        reader: Public read route to exercise.
+    """
     path = _shapefile(tmp_path, ESRI_WGS84)
     text = CUSTOM_TM.replace("custom", "Réseau local") if encoding == "latin-1" else ESRI_WGS84
     (tmp_path / "pts.prj").write_bytes(text.encode(encoding))
@@ -351,6 +358,11 @@ def test_undecodable_prj_warns_with_filename_and_reason(tmp_path, encoding, read
 
 
 def test_unreadable_present_prj_warns_instead_of_looking_missing(tmp_path):
+    """Distinguish an unreadable sidecar from an absent one.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+    """
     path = _shapefile(tmp_path, ESRI_WGS84)
     sidecar = tmp_path / "pts.prj"
     sidecar.unlink()
@@ -365,6 +377,12 @@ def test_unreadable_present_prj_warns_instead_of_looking_missing(tmp_path):
 
 @pytest.mark.parametrize("encoding", ["latin-1", "utf-16"])
 def test_cli_warns_for_undecodable_prj_and_omits_it_from_conversion(tmp_path, encoding):
+    """Check CLI diagnostics and conversion without a readable CRS.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+        encoding: Unsupported sidecar encoding to exercise.
+    """
     path = _shapefile(tmp_path, ESRI_WGS84)
     text = CUSTOM_TM.replace("custom", "Réseau local") if encoding == "latin-1" else ESRI_WGS84
     (tmp_path / "pts.prj").write_bytes(text.encode(encoding))
@@ -392,6 +410,11 @@ def test_cli_warns_for_undecodable_prj_and_omits_it_from_conversion(tmp_path, en
 
 
 def test_stream_projection_warning_uses_caller_and_error_filter(tmp_path):
+    """Check warning attribution and error filters when opening a stream.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+    """
     path = _shapefile(tmp_path, ESRI_WGS84)
     (tmp_path / "pts.prj").write_bytes(b"\xff\xfe")
     with pytest.warns(UserWarning, match="not UTF-8 text") as caught:
@@ -409,6 +432,12 @@ def _corrupt_prj_crc(data):
 
     These fixtures have no prepended data; ZipFile.start_dir and header_offset
     therefore index the original bytes directly. This is not a general ZIP editor.
+
+    Args:
+        data: Encoded fixture archive containing pts.prj.
+
+    Returns:
+        Archive bytes with an intentionally incorrect projection checksum.
     """
     raw = bytearray(data)
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
@@ -428,6 +457,12 @@ def _corrupt_prj_crc(data):
 
 @pytest.mark.parametrize("memory", [False, True])
 def test_native_archive_checksum_errors_remain_fatal(tmp_path, memory):
+    """Check that native extraction refuses corrupt projection members.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+        memory: Whether to open the archive through the byte API.
+    """
     _shapefile(tmp_path, ESRI_WGS84)
     data = io.BytesIO()
     with zipfile.ZipFile(data, "w", compression=zipfile.ZIP_DEFLATED) as archive:
