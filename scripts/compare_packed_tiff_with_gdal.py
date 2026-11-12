@@ -70,23 +70,24 @@ def main():
             y, x = np.mgrid[:97, :131]
             values = ((x * 104729 + y * 15485863) % (1 << bits)).astype(dtype)
             transform, crs = from_origin(500000, 5800000, 10, 10), "EPSG:32633"
+            nodata = 0 if bits == 4 else None
             for driver in ["GTiff", "COG"]:
                 name = f"{driver} {bits}-bit"
                 try:
                     path = directory / f"{driver}-{bits}.tif"
                     with rio.open(path, "w", driver=driver, width=131, height=97, count=1, dtype=dtype,
-                                  crs=crs, transform=transform, compress="DEFLATE", nbits=bits,
+                                  crs=crs, transform=transform, nodata=nodata, compress="DEFLATE", nbits=bits,
                                   tiled=True, blockxsize=32, blockysize=32, blocksize=32) as dst:
                         dst.write(values, 1)
-                    detail = verify(path, values, bits, transform, crs, require_overviews=driver == "COG")
+                    detail = verify(path, values, bits, transform, crs, nodata, require_overviews=driver == "COG")
                     copied = directory / f"copy-{driver}-{bits}.tif"
                     copy(path, copied, driver=driver, compress="LZW")
-                    verify(copied, values, bits, transform, crs)
+                    verify(copied, values, bits, transform, crs, nodata)
                     cli = directory / f"cli-{driver}-{bits}.tif"
                     result = subprocess.run([args.terrio, "translate", str(path), str(cli), "-f", driver, "--compress", "DEFLATE"], capture_output=True, text=True)
                     if result.returncode:
                         raise RuntimeError(f"terrio translate failed: {result.stderr.strip()}")
-                    verify(cli, values, bits, transform, crs)
+                    verify(cli, values, bits, transform, crs, nodata)
                     rows.append(dict(name=name, status="identical", detail=detail + "; Python and CLI copies retain the bit width"))
                 except Exception as error:
                     rows.append(dict(name=name, status="differs", detail=str(error)))

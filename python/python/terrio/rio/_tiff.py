@@ -378,28 +378,21 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
         return None
     t = ifds[0]
     s = default_structure(raster)
-    if getattr(raster, "_level", None) is not None:
-
-        def selected(images):
-            return next(
-                (
-                    image
-                    for image in images
-                    if not (_first(image.get(NEW_SUBFILE_TYPE)) & 4)
-                    and _first(image.get(WIDTH)) == s.width
-                    and _first(image.get(HEIGHT)) == s.height
-                ),
-                None,
-            )
-
-        image = selected(ifds[1:])
-        if image is None:
-            try:
-                external = _terrio.tiff_tags(path + ".ovr") or []
-            except FileNotFoundError:
-                external = []
-            image = selected(external)
-            ifds = [*ifds, *external]
+    if (level := getattr(raster, "_level", None)) is not None:
+        native = getattr(raster, "_base", raster)
+        location = native._tiff_overview_ifd(level)
+        image = None
+        if location is not None:
+            is_external, index = location
+            images = ifds
+            if is_external:
+                try:
+                    images = _terrio.tiff_tags(path + ".ovr") or []
+                except FileNotFoundError:
+                    images = []
+                ifds = [*ifds, *images]
+            if index < len(images):
+                image = images[index]
         if image is not None:
             # A selected level owns its image layout/colors; georeferencing and dataset
             # metadata still come from the base image, as GDAL 3.13.3 reports them.

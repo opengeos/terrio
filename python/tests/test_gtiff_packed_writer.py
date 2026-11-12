@@ -567,3 +567,80 @@ def test_selected_overview_tag_errors_are_not_hidden(tmp_path, monkeypatch, fail
         monkeypatch.setattr(_tiff._terrio, "tiff_tags", failing_tags)
         with pytest.raises(failure, match="overview tags unavailable"):
             _tiff.tiff_structure(str(source), reader._raster)
+
+
+def test_selected_duplicate_size_overview_uses_its_own_image_tags(tmp_path, gdal):
+    """GDAL 3.13.3 preserves IFD identity when overview dimensions repeat."""
+    source, target = tmp_path / "duplicate.tif", tmp_path / "copy.tif"
+    base = np.zeros((4, 4), dtype="uint8")
+    values = np.full((2, 2), 200, dtype="uint8")
+    write_sample_width_images(source, [(base, 8), (values, 8), (values, 8)])
+    raw = bytearray(source.read_bytes())
+    offset = struct.unpack_from("<I", raw, 4)[0]
+    count = struct.unpack_from("<H", raw, offset)[0]
+    offset = struct.unpack_from("<I", raw, offset + 2 + count * 12)[0]
+    count = struct.unpack_from("<H", raw, offset)[0]
+    for index in range(count):
+        entry = offset + 2 + index * 12
+        if struct.unpack_from("<H", raw, entry)[0] == 262:
+            struct.pack_into("<H", raw, entry + 8, 0)
+    source.write_bytes(raw)
+    with rio.open(source, overview_level=1) as reader:
+        assert reader.tags(ns="IMAGE_STRUCTURE").get("MINISWHITE") is None
+        np.testing.assert_array_equal(reader.read(1), values)
+        copy(reader, target)
+    np.testing.assert_array_equal(gdal.Open(str(target)).ReadAsArray(), values)
+
+
+def test_cog_copy_preserves_external_overviews_own_masks(tmp_path, gdal):
+    """External masks may differ from resampling the preceding mask (GDAL 3.13.3)."""
+    source, target = tmp_path / "external-mask.tif", tmp_path / "copy.tif"
+    values = np.arange(32 * 32, dtype="uint16").reshape(32, 32) % 512
+    write_sample_width_images(source, [(values, 9)])
+    previous = gdal.GetConfigOption("GDAL_TIFF_INTERNAL_MASK")
+    gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
+    try:
+        dataset = gdal.GetDriverByName("GTiff").Create(
+            str(source) + ".ovr", 16, 16, 1, gdal.GDT_UInt16, options=["NBITS=9"]
+        )
+        dataset.WriteArray(values[::2, ::2])
+        dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
+        dataset.GetRasterBand(1).GetMaskBand().Fill(255)
+        dataset.BuildOverviews("NEAREST", [2])
+        dataset.GetRasterBand(1).GetOverview(0).GetMaskBand().Fill(0)
+        dataset = None
+    finally:
+        gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", previous)
+    with rio.open(source, overview_level=0) as reader:
+        np.testing.assert_array_equal(reader.read_masks(1), np.full((16, 16), 255, dtype="uint8"))
+        copy(reader, target, driver="COG")
+    result = gdal.Open(str(target))
+    actual = result.GetRasterBand(1)
+    np.testing.assert_array_equal(
+        actual.GetOverview(0).GetMaskBand().ReadAsArray(), np.zeros((8, 8), dtype="uint8")
+    )
+
+
+def test_explicit_width_clips_selected_overview_as_ordinary_input(tmp_path, gdal):
+    """The selected base follows GDAL 3.13.3's explicit-width clipping policy."""
+    source, target = tmp_path / "selected.tif", tmp_path / "copy.tif"
+    write_sample_width_images(
+        source,
+        [
+            (np.zeros((8, 8), dtype="uint8"), 8),
+            (np.full((4, 4), 200, dtype="uint8"), 8),
+            (np.full((2, 2), 7, dtype="uint8"), 8),
+        ],
+    )
+    reference_source = gdal.OpenEx(str(source), open_options=["OVERVIEW_LEVEL=0"])
+    reference = gdal.GetDriverByName("COG").CreateCopy(
+        str(tmp_path / "reference.tif"), reference_source, options=["NBITS=4"]
+    )
+    with rio.open(source, overview_level=0) as reader, pytest.warns(UserWarning, match="clipped"):
+        copy(reader, target, driver="COG", nbits=4)
+    result = gdal.Open(str(target))
+    np.testing.assert_array_equal(result.ReadAsArray(), reference.ReadAsArray())
+    np.testing.assert_array_equal(result.ReadAsArray(), np.full((4, 4), 15, dtype="uint8"))
+    np.testing.assert_array_equal(
+        result.GetRasterBand(1).GetOverview(0).ReadAsArray(), np.full((2, 2), 7, dtype="uint8")
+    )

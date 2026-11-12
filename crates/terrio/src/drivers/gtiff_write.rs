@@ -1234,7 +1234,7 @@ fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels
         return Err(Error::InvalidArgument(format!("{path}: not the raster written")));
     }
     let first = opts.source_overview_level.map_or(0, |i| i + 1);
-    let own_masks = (first..sizes.len()).all(|i| src.has_overview_mask(i));
+    let own_masks = (first..sizes.len()).all(|i| src.level_has_own_mask(i));
     let block = gdal_overview::ovr_block(opts.source_block);
     for (i, (w, h)) in sizes.into_iter().enumerate().skip(first) {
         let level = src.read_window(crate::Window::full(w, h), &crate::WindowOptions { bands: Vec::new(), overview: Some(i) })?;

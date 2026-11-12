@@ -261,6 +261,10 @@ pub(crate) trait WindowSource: Send + Sync {
     fn level_sample_bits(&self, _overview: Option<usize>) -> Option<u16> {
         None
     }
+    /// Native TIFF overview identity: whether external, and the original IFD index (GDAL 3.13.3).
+    fn tiff_overview_ifd(&self, _overview: usize) -> Option<(bool, usize)> {
+        None
+    }
     /// A second handle to an already shared source.
     fn shared_clone(&self) -> Option<Box<dyn WindowSource>> {
         None
@@ -392,6 +396,9 @@ impl WindowSource for SharedRaster {
     }
     fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
         self.lock().ok()?.level_sample_bits(overview)
+    }
+    fn tiff_overview_ifd(&self, overview: usize) -> Option<(bool, usize)> {
+        self.lock().ok()?.tiff_overview_ifd(overview)
     }
     fn shared_clone(&self) -> Option<Box<dyn WindowSource>> {
         Some(Box::new(self.clone()))
@@ -975,15 +982,33 @@ impl LazyRaster {
         }
     }
 
+    /// Native TIFF overview identity, including equal-sized levels (GDAL 3.13.3).
+    /// Returns whether its IFD belongs to the external overview file and its original index.
+    pub fn tiff_overview_ifd(&self, overview: usize) -> Option<(bool, usize)> {
+        match &self.inner {
+            Inner::Tiff(t) => t.levels.get(overview.checked_add(1)?).map(|level| (level.external.is_some(), level.ifd)),
+            Inner::Source(_, source) => source.tiff_overview_ifd(overview),
+            Inner::Memory(_) => None,
+        }
+    }
+
+    /// A width preserving a copied level and all its descendants (GDAL 3.13.3).
+    /// An unknown candidate width leaves inheritance disabled.
+    pub fn copy_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
+        let count = self.overviews().len();
+        let first = match overview {
+            Some(index) if index < count => index + 1,
+            Some(_) => return None,
+            None => 0,
+        };
+        std::iter::once(overview)
+            .chain((first..count).map(Some))
+            .try_fold(0u16, |widest, level| self.level_sample_bits(level).map(|bits| widest.max(bits)))
+    }
+
     /// A width that can retain samples from every stored level an AUTO read can select.
     pub(crate) fn widest_sample_bits(&self) -> Option<u16> {
-        match &self.inner {
-            Inner::Tiff(t) => t.levels.iter().map(|level| level.bits).max(),
-            Inner::Source(..) => std::iter::once(None)
-                .chain((0..self.overviews().len()).map(Some))
-                .try_fold(0u16, |widest, level| self.level_sample_bits(level).map(|bits| widest.max(bits))),
-            _ => self.sample_bits(),
-        }
+        self.copy_sample_bits(None)
     }
 
     /// The driver.

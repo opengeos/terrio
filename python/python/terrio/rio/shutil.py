@@ -247,11 +247,7 @@ def _copy_dataset(
                 profile["@copy_src_overview_level"] = source_level
             if "nbits" not in requested and "nbits" in profile:
                 capacity = _getnpdtype(profile["dtype"]).itemsize * 8
-                first = 0 if source_level is None else source_level + 1
-                width = max(
-                    int(profile["nbits"]),
-                    *(base._sample_bits(i) or capacity for i in range(first, len(base.overviews))),
-                )
+                width = max(int(profile["nbits"]), base._copy_sample_bits(source_level) or capacity)
                 if width < capacity:
                     profile["nbits"] = width
                 else:

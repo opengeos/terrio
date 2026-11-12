@@ -819,6 +819,21 @@ impl PyRaster {
         Ok(self.inner.level_sample_bits(overview))
     }
 
+    /// Internal native TIFF IFD identity, without additional file reads (GDAL 3.13.3).
+    fn _tiff_overview_ifd(&self, overview: usize) -> PyResult<Option<(bool, usize)>> {
+        self.inner.overviews().get(overview).ok_or_else(|| invalid(format!("no overview {overview}")))?;
+        Ok(self.inner.tiff_overview_ifd(overview))
+    }
+
+    /// Internal width for copying a selected level and descendants (GDAL 3.13.3).
+    #[pyo3(signature = (overview=None))]
+    fn _copy_sample_bits(&self, overview: Option<usize>) -> PyResult<Option<u16>> {
+        if let Some(index) = overview {
+            self.inner.overviews().get(index).ok_or_else(|| invalid(format!("no overview {index}")))?;
+        }
+        Ok(self.inner.copy_sample_bits(overview))
+    }
+
     /// Internal overview metadata from the native mask discovery, without reading pixels.
     fn _overview_has_mask(&self, overview: usize) -> PyResult<bool> {
         self.inner.overviews().get(overview).ok_or_else(|| invalid(format!("no overview {overview}")))?;
