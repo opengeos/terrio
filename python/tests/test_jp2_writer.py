@@ -169,8 +169,8 @@ def test_real_landsat_quality_controls_size(data_dir):
     with rasterio.open(data_dir / "landsat7.tif") as src:
         data = src.read([1, 2, 3], window=rasterio.windows.Window(500, 500, 128, 128))
     low, high, exact = (encode(data, quality=q) for q in (10, 50, 100))
-    # The quality 10 and 50 payloads are 9/7 decodes too. They matched GDAL exactly on macOS
-    # arm64, so they stay exact rather than take a limit that was never measured.
+    # The quality 10 and 50 payloads are 9/7 decodes too. Only the Linux real-data job sets
+    # TERRIO_TEST_DATA, so this test skips on macOS and its macOS arm64 result is unmeasured.
     assert len(low) < len(high) < len(exact)
     for payload in (low, high, exact):
         with GdalMemoryFile(payload) as mem, mem.open() as oracle:
