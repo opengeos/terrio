@@ -63,6 +63,7 @@ Suites:
     crs               every EPSG CRS's transformations vs GDAL's (tests/epsg_accuracy.rs)
     crs-grids         the same with datum shift grids, then grids, geoid models and coordinate
                       epochs (tests/epsg_accuracy_grids.rs, compare_crs_grids_with_gdal.py)
+    compound-crs      compound EPSG URNs and GML XYZ against GDAL/OGR
     crs-list          ``terrio list-crs`` vs GDAL's GetCRSInfoListFromDatabase, field by field, for
                       the EPSG, ESRI and IAU_2015 CRSs (compare_crs_list_with_gdal.py)
 
@@ -1971,6 +1972,39 @@ def suite_iau(ctx):
     return suite
 
 
+def suite_compound_crs(ctx):
+    """Compare compound EPSG URN components and GML coordinates with GDAL.
+
+    Args:
+        ctx: Conformance run context.
+
+    Returns:
+        Suite: Component and coordinate comparison results.
+    """
+    suite = Suite("compound-crs", "Compound CRS references", "GDAL/OGR",
+                  "Three projected/geographic plus vertical EPSG pairs: component authorities/codes, "
+                  "2+1 axes and GML normalized XYZ match exactly through Python path/bytes and CLI CRS export. "
+                  "GDAL uses GML_REPORT_COMPD_CS=YES to retain both GML components. "
+                  "Names and serialized PROJJSON text are not compared.")
+    if missing_modules("terrio", "osgeo"):
+        suite.skipped = "needs terrio and GDAL Python bindings"
+        return suite
+    from osgeo import gdal
+
+    suite.reference = f"GDAL {gdal.__version__}/OGR"
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_compound_crs_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("Compound CRS", result["name"], result["status"], result["detail"]))
+    if code or len(results) != 6:
+        suite.error = tail(err or out) or "expected six component/coordinate comparisons"
+    return suite
+
+
 def suite_wkt_keywords(ctx):
     """Engineering and vertical WKT roots through native bindings and CLI."""
     suite = Suite("wkt-keywords", "Engineering and vertical WKT keywords", "GDAL 3.13.3",
@@ -3855,6 +3889,7 @@ SUITES = OrderedDict(
         ("projjson", suite_projjson),
         ("projjson-export", suite_projjson_export),
         ("iau", suite_iau),
+        ("compound-crs", suite_compound_crs),
         ("wkt-keywords", suite_wkt_keywords),
         ("crs-list", suite_crs_list),
         ("crs-grids", suite_crs_grids),
