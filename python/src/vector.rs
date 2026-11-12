@@ -24,6 +24,12 @@ impl From<Layer> for PyLayer {
     }
 }
 
+/// Apply the same optional consumer-side parser as pyogrio without changing stored CRS.
+pub(crate) fn dataframe_crs(py: Python<'_>, layer: &Layer) -> PyResult<Option<String>> {
+    let crs = crs_string(&SpatialRef::from_layer(layer));
+    py.import("terrio._crs")?.call_method1("dataframe_crs", (crs,))?.extract()
+}
+
 impl PyLayer {
     /// The layer with each `@id` style reference replaced by its definition: borrowed when the
     /// dataset it came from has no style table.
@@ -311,7 +317,7 @@ impl PyLayer {
     fn to_geopandas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let gpd = py.import("geopandas")?;
         let kwargs = PyDict::new(py);
-        kwargs.set_item("crs", self.crs_wkt().map(|w| SpatialRef::from_layer(&self.inner).authority_code().unwrap_or(w)))?;
+        kwargs.set_item("crs", dataframe_crs(py, &self.inner)?)?;
         let geometry = gpd.getattr("GeoSeries")?.call_method("from_wkb", (self.to_wkb(py)?,), Some(&kwargs))?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("geometry", geometry)?;

@@ -1178,6 +1178,17 @@ reads it.
   Trailing NUL or DOS EOF padding is ignored. Reference syntax does not prove that a
   code exists: a well-formed unknown code from a known authority is retained here; Python's
   pyogrio interface warns and returns no CRS if pyproj cannot parse that reference.
+- **Stored vector CRS definitions** in GeoPackage and FlatGeobuf follow the same
+  definition-form check as Shapefile: prose and unbalanced WKT are ignored with a
+  warning, while balanced definitions unsupported by Terrio remain stored. A
+  recognized EPSG authority code takes precedence over the redundant definition.
+  Python `Layer.to_geopandas()`, `Layer.to_arrow()`, Arrow stream export and
+  `terrio.pyogrio` share optional pyproj validation. When a retained definition
+  cannot be parsed, these exports warn and omit its CRS, preserving geometries,
+  attributes and the original layer's definition. Valid custom and engineering
+  CRSs remain usable. Without a working pyproj installation, retained definitions
+  are passed through; the native Rust/JavaScript Arrow metadata remains portable
+  and retains definitions that Terrio cannot parse.
 - **OSM XML** (`.osm`) gives the same five layers as PBF, with tags in the file's order.
 - **KML layer names** use the same ASCII case-insensitive collision rule as KMZ.
   Within one document, `Roads` followed by `roads` becomes `Roads` and `roads (2)`,

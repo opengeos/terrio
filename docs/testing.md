@@ -226,6 +226,24 @@ transform `(0.25, 0.5, 100)` to `(0.25, 0.5, 122.5)` with the tiny GTX fixture,
 exactly matching the direct CLI. The confinement policy deliberately differs from
 PROJ's default path lookup; it does not change interpolation or coordinate math.
 
+### Stored vector CRS definitions
+
+`python/tests/test_vector_stored_crs.py` checks actual GeoPackage SRS rows,
+FlatGeobuf WKT headers and Shapefile projection sidecars. Prose warns and gives
+no layer CRS; balanced but unparseable WKT remains on the layer while GeoPandas,
+Arrow-table and Arrow-stream exports warn and omit the unusable CRS. Valid custom
+Transverse Mercator, engineering and WKT2-only temporal definitions retain equivalent CRS and values
+across those exports and pyogrio. Rewriting a layer whose prose definition was
+ignored does not carry that text into another format. The original regression
+failed on 11 of its 12 cases before the correction (the Shapefile control passed).
+The JavaScript regression checks the native FlatGeobuf byte-read path, including
+retained incomplete and engineering definitions without a Python parser.
+Local GDAL 3.13.3 checks match geometry and attributes for six malformed-definition
+fixtures. GDAL's CRS lookup/export can itself fail on incomplete Shapefile WKT or
+an invalid FlatGeobuf CRS object; Terrio deliberately keeps dataframe export usable
+with a warning and no consumer CRS. The registered Arrow suite also matches all
+12 available comparisons on `countries.gpkg`, including CRS and native encodings.
+
 ## The conformance suite
 
 Complex TIFF writes are checked with

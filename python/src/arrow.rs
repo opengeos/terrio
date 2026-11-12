@@ -201,15 +201,39 @@ pub(crate) fn write_options(
     })
 }
 
-/// Converts a layer to an `ArrowTable`.
+/// Converts a layer to an `ArrowTable`, validating retained definitions for Python consumers.
 pub(crate) fn layer_to_table(py: Python<'_>, layer: &terrio::Layer, options: &ArrowWriteOptions) -> PyResult<PyArrowTable> {
-    Ok(PyArrowTable { table: py.detach_result(|| terrio::arrow::layer_to_arrow(layer, options)).py()? })
+    let omit_crs = crate::crs_string(&SpatialRef::from_layer(layer)).is_some() && crate::vector::dataframe_crs(py, layer)?.is_none();
+    let mut table = py.detach_result(|| terrio::arrow::layer_to_arrow(layer, options)).py()?;
+    if omit_crs {
+        // Change only schema metadata: retain the buffers and the original layer's definition.
+        let fields: Vec<_> = table
+            .schema
+            .fields()
+            .iter()
+            .map(|field| {
+                let mut metadata = field.metadata().clone();
+                if metadata.get("ARROW:extension:name").is_some_and(|name| name.starts_with("geoarrow.")) {
+                    metadata.insert("ARROW:extension:metadata".into(), r#"{"crs":null}"#.into());
+                }
+                Arc::new(field.as_ref().clone().with_metadata(metadata))
+            })
+            .collect();
+        let schema = Arc::new(Schema::new_with_metadata(fields, table.schema.metadata().clone()));
+        table.batches = table
+            .batches
+            .iter()
+            .map(|batch| RecordBatch::try_new(schema.clone(), batch.columns().to_vec()).map_err(arrow_err))
+            .collect::<PyResult<_>>()?;
+        table.schema = schema;
+    }
+    Ok(PyArrowTable { table })
 }
 
 /// Exports a layer as an Arrow C stream, with WKB geometries.
 pub(crate) fn layer_stream<'py>(py: Python<'py>, layer: &terrio::Layer) -> PyResult<Bound<'py, PyCapsule>> {
-    let table = py.detach_result(|| terrio::arrow::layer_to_arrow(layer, &ArrowWriteOptions::default())).py()?;
-    stream_capsule(py, &table)
+    let table = layer_to_table(py, layer, &ArrowWriteOptions::default())?;
+    stream_capsule(py, &table.table)
 }
 
 /// Creates a layer from Arrow data.
