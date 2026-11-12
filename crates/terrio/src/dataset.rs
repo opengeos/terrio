@@ -1971,7 +1971,7 @@ impl RasterWriteOptions {
         let mut creation_options = self.creation_options.clone();
         if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog))
             && co("NBITS").is_none()
-            && co("PREDICTOR").is_none_or(|v| v.trim() == "1")
+            && co("PREDICTOR").is_none_or(|v| matches!(v.trim().to_ascii_uppercase().as_str(), "1" | "NO" | "NONE"))
             && matches!(compression.to_ascii_uppercase().as_str(), "" | "NONE" | "LZW" | "DEFLATE" | "ZIP" | "PACKBITS" | "ZSTD")
             && matches!(ds.raster.data_type, wbraster::DataType::U8 | wbraster::DataType::U16 | wbraster::DataType::U32)
         {
@@ -1992,6 +1992,14 @@ impl RasterWriteOptions {
                     .ok()
                     .is_some_and(|bits| bits >= minimum && usize::from(bits) <= ds.raster.data_type.size_bytes() * 8)
                 && (1..ds.raster.bands).all(|band| bits(band) == Some(first))
+                && (1..=ds.raster.bands).all(|band| {
+                    ds.band_nodata(band).is_none_or(|value| {
+                        value.is_finite()
+                            && value >= 0.0
+                            && value.fract() == 0.0
+                            && value <= ((1u64 << first.parse::<u16>().unwrap()) - 1) as f64
+                    })
+                })
             {
                 creation_options.push(("NBITS".into(), first.into()));
             }

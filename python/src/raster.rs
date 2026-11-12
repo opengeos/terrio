@@ -1,7 +1,7 @@
 //! The `Raster` class: a raster in memory, or a GeoTIFF read by window.
 
 use crate::Detach;
-use crate::{PyResultExt, crs_string, invalid};
+use crate::{PyResultExt, crs_string, invalid, with_warnings};
 use numpy::{PyArray1, PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
@@ -134,14 +134,13 @@ impl PyRaster {
     /// Writes the raster to `path` with `options`, streaming tile archives by tile row when lazy
     /// and falling back to a whole read when the source inventory is unavailable.
     pub(crate) fn write_with_options(&mut self, py: Python<'_>, path: &str, mut options: RasterWriteOptions) -> PyResult<()> {
-        py.detach_result(|| {
+        with_warnings(py, || {
             self.inner.prepare_output_mask(path, &mut options, Window::full(self.inner.width(), self.inner.height()), None)?;
             if self.inner.can_stream_tile_archive(path, &options) {
                 return self.inner.write(path, &options);
             }
             self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))
         })
-        .py()
     }
 
     fn crs_ref(&self) -> SpatialRef {
@@ -783,9 +782,15 @@ impl PyRaster {
     }
 
     /// Internal stored sample-width metadata, including a selected overview, without pixel I/O.
+    ///
+    /// Raises:
+    ///     InvalidArgumentError: If the overview index does not exist.
     #[pyo3(signature = (overview=None))]
-    fn _sample_bits(&self, overview: Option<usize>) -> Option<u16> {
-        self.inner.level_sample_bits(overview)
+    fn _sample_bits(&self, overview: Option<usize>) -> PyResult<Option<u16>> {
+        if let Some(index) = overview {
+            self.inner.overviews().get(index).ok_or_else(|| invalid(format!("no overview {index}")))?;
+        }
+        Ok(self.inner.level_sample_bits(overview))
     }
 
     /// Internal overview metadata from the native mask discovery, without reading pixels.
@@ -1252,7 +1257,7 @@ impl PyGeoTiffWriter {
         }
         let mask: Option<Vec<u8>> = mask.map(|m| m.as_array().iter().copied().collect());
         let w = self.inner.as_mut().ok_or_else(|| invalid("the writer is closed"))?;
-        py.detach_result(|| w.write_rows(&data, rows, mask.as_deref())).py()
+        with_warnings(py, || w.write_rows(&data, rows, mask.as_deref()))
     }
 
     /// Writes the directory and closes the file.
@@ -1261,7 +1266,7 @@ impl PyGeoTiffWriter {
     ///     InvalidArgumentError: If rows are missing.
     fn close(&mut self, py: Python<'_>) -> PyResult<()> {
         match self.inner.take() {
-            Some(w) => py.detach_result(|| w.finish()).py(),
+            Some(w) => with_warnings(py, || w.finish()),
             None => Ok(()),
         }
     }

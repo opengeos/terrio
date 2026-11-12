@@ -378,6 +378,50 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
         return None
     t = ifds[0]
     s = default_structure(raster)
+    if getattr(raster, "_level", None) is not None:
+
+        def selected(images):
+            return next(
+                (
+                    image
+                    for image in images
+                    if not (_first(image.get(NEW_SUBFILE_TYPE)) & 4)
+                    and _first(image.get(WIDTH)) == s.width
+                    and _first(image.get(HEIGHT)) == s.height
+                ),
+                None,
+            )
+
+        image = selected(ifds[1:])
+        if image is None:
+            try:
+                external = _terrio.tiff_tags(path + ".ovr") or []
+            except Exception:
+                external = []
+            image = selected(external)
+            ifds = [*ifds, *external]
+        if image is not None:
+            # A selected level owns its image layout/colors; georeferencing and dataset
+            # metadata still come from the base image, as GDAL 3.13.3 reports them.
+            image_tags = {
+                BITS,
+                COMPRESSION,
+                PHOTOMETRIC,
+                SAMPLES,
+                ROWS_PER_STRIP,
+                PLANAR,
+                COLOR_MAP,
+                JPEG_TABLES,
+                TILE_WIDTH,
+                TILE_LENGTH,
+                EXTRA_SAMPLES,
+                SAMPLE_FORMAT,
+                INK_SET,
+                LERC_PARAMETERS,
+                317,
+            }
+            t = {key: value for key, value in t.items() if key not in image_tags}
+            t.update({key: value for key, value in image.items() if key in image_tags})
     n = s.count
     if TILE_WIDTH in t and TILE_LENGTH in t:
         s.block_shape = (_first(t[TILE_LENGTH]), _first(t[TILE_WIDTH]))

@@ -811,6 +811,15 @@ pub(crate) struct Image {
     pub(crate) tags: Vec<(u16, Value)>,
     pub(crate) chunks: Vec<Vec<u8>>,
     pub(crate) tiled: bool,
+    clipped_bits: Option<u16>,
+}
+
+impl Image {
+    fn report_clipping(&self) {
+        if let Some(bits) = self.clipped_bits {
+            crate::warnings::warn(format!("One or more pixels clipped to fit {bits} bit domain."));
+        }
+    }
 }
 
 /// Writes a raster as a GeoTIFF or COG.
@@ -1144,6 +1153,7 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
     let mut images = Vec::with_capacity(levels.len());
     for (i, level) in levels.iter().enumerate() {
         let mut img = level.image(raster.data_type, opts.compression, &opts.codec, &layout)?;
+        img.report_clipping();
         if i > 0 {
             img.tags.push((254, Value::Longs(vec![1])));
         }
@@ -1331,7 +1341,7 @@ pub(crate) fn mask_image(mask: &[u8], cols: usize, rows: usize, block: (usize, u
         tags.push((278, Value::Longs(vec![chunk_h as u32])));
     }
     tags.sort_by_key(|(t, _)| *t);
-    Ok(Image { tags, chunks, tiled })
+    Ok(Image { tags, chunks, tiled, clipped_bits: None })
 }
 
 /// The `ColorMap` tag of a color table: every red value, then green, then blue, as 16 bits.
@@ -1422,6 +1432,7 @@ impl<'a> Level<'a> {
             if let Some(bits) = packed_bits {
                 let (packed, did_clip) = pack_unsigned_rows(&buf, chunk_w * chunk_spp, size, bits);
                 buf = packed;
+                // GDAL 3.13.3 silently clamps bilevel samples; wider packed domains warn.
                 if did_clip && bits > 1 {
                     clipped.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
@@ -1431,9 +1442,7 @@ impl<'a> Level<'a> {
             compression.compress(buf, &ChunkInfo { w: chunk_w, h, spp: chunk_spp, t }, codec)
         });
         let chunks = chunks.into_iter().collect::<Result<Vec<_>>>()?;
-        if clipped.load(std::sync::atomic::Ordering::Relaxed) {
-            crate::warnings::warn(format!("One or more pixels clipped to fit {} bit domain.", packed_bits.unwrap()));
-        }
+        let clipped_bits = packed_bits.filter(|_| clipped.load(std::sync::atomic::Ordering::Relaxed));
         let (bits, format) = sample_format(t);
         let bits = layout.nbits.unwrap_or(bits);
         // Complex samples: twice the bits, `SampleFormat` 5 (integers) or 6 (floats).
@@ -1471,7 +1480,7 @@ impl<'a> Level<'a> {
         } else {
             tags.push((278, Value::Longs(vec![chunk_h as u32])));
         }
-        Ok(Image { tags, chunks, tiled })
+        Ok(Image { tags, chunks, tiled, clipped_bits })
     }
 }
 
@@ -2307,6 +2316,7 @@ impl TiffRows {
         // Tiles are padded to full height.
         let layout = Layout { rows_per_strip: Some(self.block_rows as u32), extra: self.layout.extra.clone(), ..self.layout };
         let img = level.image(self.data_type, self.compression, &self.codec, &layout)?;
+        img.report_clipping();
         let block_row = self.rows_done / self.block_rows;
         let per_plane = self.across * self.rows.div_ceil(self.block_rows);
         // The chunks of each plane, block row after block row.
@@ -2826,6 +2836,7 @@ impl CogWriter {
 
     /// Adds compressed rows of tiles of level `i` to its spools.
     fn add(&mut self, i: usize, rows: usize, (img, mask): CogImages) -> Result<()> {
+        img.report_clipping();
         let l = &mut self.levels[i];
         let per_plane = l.cols.div_ceil(self.tile) * rows.div_ceil(self.tile);
         let mut framed = vec![Vec::new(); l.spools.len()];
@@ -3191,6 +3202,53 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// GDAL 3.13.3's bilevel clipping is silent; other packed domains report on the caller.
+    #[test]
+    fn packed_clipping_warnings_stay_on_the_callers_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        for bits in [1, 4] {
+            let _ = crate::warnings::take();
+            let cfg = wbraster::RasterConfig { cols: 32, rows: 32, bands: 1, data_type: DataType::U8, ..Default::default() };
+            let raster = Raster::from_data_native(cfg, RasterData::U8(vec![255; 32 * 32])).unwrap();
+            let opts = TiffOptions { cog: true, nbits: Some(bits), tile_size: Some(32), ..Default::default() };
+            let target = dir.path().join(format!("clipped-{bits}.tif"));
+            let mut writer = CogWriter::create(target.to_str().unwrap(), &raster, &opts).unwrap();
+            writer.write_rows(raster.data, 32).unwrap();
+            writer.finish().unwrap();
+            let warnings = crate::warnings::take();
+            assert_eq!(warnings.len(), usize::from(bits > 1), "{warnings:?}");
+            let mut result = crate::LazyRaster::open(target.to_str().unwrap()).unwrap();
+            assert!(result.read().unwrap().raster.data.to_f64_vec().iter().all(|&v| v == ((1u32 << bits) - 1) as f64));
+        }
+    }
+
+    /// A shared TIFF handle keeps each stored level's width (GDAL 3.13.3 NBITS).
+    #[test]
+    fn shared_overview_copies_keep_the_selected_sample_width() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("base.tif");
+        let ovr = dir.path().join("base.tif.ovr");
+        for (path, size, bits, value) in [(&source, 4, 9, 10), (&ovr, 2, 12, 2000)] {
+            let cfg = wbraster::RasterConfig { cols: size, rows: size, bands: 1, data_type: DataType::U16, ..Default::default() };
+            let raster = Raster::from_data_native(cfg, RasterData::U16(vec![value; size * size])).unwrap();
+            std::fs::write(path, encode(&raster, &TiffOptions { nbits: Some(bits), ..Default::default() }).unwrap()).unwrap();
+        }
+        let mut original = crate::LazyRaster::open(source.to_str().unwrap()).unwrap();
+        let mut shared = original.shared();
+        for reader in [&mut original, &mut shared] {
+            assert_eq!(reader.sample_bits(), Some(9));
+            assert_eq!(reader.level_sample_bits(Some(0)), Some(12));
+            assert_eq!(reader.widest_sample_bits(), Some(12));
+            let dataset =
+                reader.read_window(crate::Window::full(2, 2), &crate::WindowOptions { overview: Some(0), ..Default::default() }).unwrap();
+            let options = crate::RasterWriteOptions::default().inherited_from(&dataset, Some(crate::formats::RasterDriver::GTiff));
+            let options = TiffOptions::from_write_options(&options, false, None).unwrap().unwrap();
+            let mut result = crate::LazyRaster::from_tiff_bytes(encode(&dataset.raster, &options).unwrap()).unwrap().unwrap();
+            assert_eq!(result.sample_bits(), Some(12));
+            assert_eq!(result.read().unwrap().raster.data.to_f64_vec(), vec![2000.0; 4]);
         }
     }
 

@@ -128,6 +128,11 @@ interleaving and NONE, LZW, DEFLATE, PACKBITS or ZSTD compression. Packed sample
 Values above the stored unsigned maximum are clipped, as in GDAL 3.13.3. Palettes
 have exactly `2**NBITS` entries. Copies retain a compatible source bit width unless
 the caller overrides `NBITS`; a bilevel palette therefore stays a two-entry palette.
+Implicit inheritance is omitted when nodata cannot fit the stored domain. A COG copy
+carrying wider source overviews uses their widest stored width by default; an explicit
+narrower width is refused when overview values would be clipped. Bilevel clipping
+is silent, as in GDAL 3.13.3; wider packed domains report a clipping warning, including
+when a COG is compressed on worker threads.
 This applies to Rust, CLI/MCP, Python and JavaScript writes. Creating or refreshing
 overviews later with the standalone overview tools still refuses packed samples;
 a COG writer can generate its packed overviews while writing the new file.

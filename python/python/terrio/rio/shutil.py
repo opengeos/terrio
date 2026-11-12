@@ -168,7 +168,10 @@ def _copy_dataset(
         from_source: Whether a file written in rows is written from the source; otherwise the
             copy holds the source's pixels until it is written, whatever its format.
     """
+    import numpy as np
+
     from terrio.rio import open as rio_open
+    from terrio.rio.dtypes import _getnpdtype
     from terrio.rio.windows import Window
 
     profile = dict(src.profile)
@@ -176,7 +179,12 @@ def _copy_dataset(
         profile.pop(k, None)
     profile["driver"] = driver
     requested = {k.lower(): v for k, v in creation_options.items()}
-    packed_compression = str(requested.get("compress", "NONE")).upper() in (
+    compression = requested.get("compress") or "NONE"
+    predictor = requested.get("predictor")
+    if isinstance(predictor, bool):
+        predictor = "YES" if predictor else "NO"
+    predictor = "1" if predictor is None else str(getattr(predictor, "value", predictor)).upper()
+    packed_compression = str(getattr(compression, "value", compression)).upper() in (
         "NONE",
         "LZW",
         "DEFLATE",
@@ -187,19 +195,22 @@ def _copy_dataset(
     if (
         driver.upper() in ("GTIFF", "COG")
         and packed_compression
-        and str(requested.get("predictor", "1")) == "1"
+        and predictor in ("1", "NO", "NONE")
     ):
         widths = {src.tags(band, ns="IMAGE_STRUCTURE").get("NBITS") for band in src.indexes}
-        output_dtype = next(
-            (str(v) for k, v in creation_options.items() if k.lower() == "dtype"),
-            src.dtypes[0],
-        )
+        output_dtype = _getnpdtype(requested.get("dtype", src.dtypes[0])).name
         capacity = {"uint8": 8, "uint16": 16, "uint32": 32}.get(output_dtype, 0)
         minimum = {"uint8": 1, "uint16": 9, "uint32": 17}.get(output_dtype, 1)
         if len(widths) == 1 and None not in widths:
             width = next(iter(widths))
             if width.isascii() and width.isdecimal() and minimum <= int(width) <= capacity:
-                profile["nbits"] = width
+                nodata = requested.get("nodata", src.nodata)
+                if nodata is None or (
+                    np.isfinite(nodata)
+                    and 0 <= nodata <= (1 << int(width)) - 1
+                    and float(nodata).is_integer()
+                ):
+                    profile["nbits"] = width
     profile.update({k.lower(): v for k, v in creation_options.items()})
     if driver.upper() in ("GTIFF", "COG") and src.count > 1 and "interleave" not in profile:
         # GDALDriver::CreateCopy (gcore/gdaldriver.cpp): without INTERLEAVE, and without a
@@ -225,6 +236,16 @@ def _copy_dataset(
             and src.overviews(1)
         ):
             profile["@copy_src_overviews"] = src.name
+            if "nbits" not in requested and "nbits" in profile:
+                base = getattr(src._raster, "_base", src._raster)
+                width = max(
+                    int(profile["nbits"]),
+                    *(base._sample_bits(i) or capacity for i in range(len(src.overviews(1)))),
+                )
+                if width < capacity:
+                    profile["nbits"] = str(width)
+                else:
+                    profile.pop("nbits")
     gcps, gcp_crs = src.gcps
     per_dataset_mask = all(
         "per_dataset" in [f.name for f in flags] for flags in src.mask_flag_enums

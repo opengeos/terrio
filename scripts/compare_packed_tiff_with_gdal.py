@@ -18,7 +18,7 @@ from terrio.rio.shutil import copy
 from terrio.rio.transform import Affine, from_origin
 
 
-def verify(path, values, bits, transform, crs, nodata=None, palette=None):
+def verify(path, values, bits, transform, crs, nodata=None, palette=None, require_overviews=False):
     ds = gdal.Open(str(path))
     band = ds.GetRasterBand(1)
     if band.GetMetadataItem("NBITS", "IMAGE_STRUCTURE") != str(bits):
@@ -43,7 +43,11 @@ def verify(path, values, bits, transform, crs, nodata=None, palette=None):
     with rio.open(path) as native:
         np.testing.assert_array_equal(native.read(1), values)
         np.testing.assert_array_equal(native.read_masks(1), expected_mask)
+    if require_overviews and band.GetOverviewCount() == 0:
+        raise ValueError("COG has no overviews")
     for i in range(band.GetOverviewCount()):
+        if band.GetOverview(i).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") != str(bits):
+            raise ValueError(f"overview {i}: stored width is not {bits}")
         with rio.open(path, overview_level=i) as native:
             np.testing.assert_array_equal(native.read(1), band.GetOverview(i).ReadAsArray())
     return f"NBITS={bits}; exact samples, masks, container type, nodata, affine and CRS; {band.GetOverviewCount()} packed overviews decoded by both readers"
@@ -71,12 +75,14 @@ def main():
                                   crs=crs, transform=transform, compress="DEFLATE", nbits=bits,
                                   tiled=True, blockxsize=32, blockysize=32, blocksize=32) as dst:
                         dst.write(values, 1)
-                    detail = verify(path, values, bits, transform, crs)
+                    detail = verify(path, values, bits, transform, crs, require_overviews=driver == "COG")
                     copied = directory / f"copy-{driver}-{bits}.tif"
                     copy(path, copied, driver=driver, compress="LZW")
                     verify(copied, values, bits, transform, crs)
                     cli = directory / f"cli-{driver}-{bits}.tif"
-                    subprocess.run([args.terrio, "translate", str(path), str(cli), "-f", driver, "--compress", "DEFLATE"], check=True, capture_output=True)
+                    result = subprocess.run([args.terrio, "translate", str(path), str(cli), "-f", driver, "--compress", "DEFLATE"], capture_output=True, text=True)
+                    if result.returncode:
+                        raise RuntimeError(f"terrio translate failed: {result.stderr.strip()}")
                     verify(cli, values, bits, transform, crs)
                     rows.append(dict(name=name, status="identical", detail=detail + "; Python and CLI copies retain the bit width"))
                 except Exception as error:

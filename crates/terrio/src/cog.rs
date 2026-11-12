@@ -257,6 +257,10 @@ pub(crate) trait WindowSource: Send + Sync {
     fn band_data_type(&self, _band: usize) -> Option<DataType> {
         None
     }
+    /// Stored sample width of a selected level (GDAL 3.13.3 NBITS).
+    fn level_sample_bits(&self, _overview: Option<usize>) -> Option<u16> {
+        None
+    }
     /// A second handle to an already shared source.
     fn shared_clone(&self) -> Option<Box<dyn WindowSource>> {
         None
@@ -385,6 +389,9 @@ impl WindowSource for SharedRaster {
     }
     fn band_data_type(&self, band: usize) -> Option<DataType> {
         self.lock().ok().map(|reader| reader.band_data_type(band))
+    }
+    fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
+        self.lock().ok()?.level_sample_bits(overview)
     }
     fn shared_clone(&self) -> Option<Box<dyn WindowSource>> {
         Some(Box::new(self.clone()))
@@ -953,7 +960,8 @@ impl LazyRaster {
     pub fn sample_bits(&self) -> Option<u16> {
         match &self.inner {
             Inner::Tiff(t) => Some(t.bits),
-            Inner::Memory(_) | Inner::Source(..) => None,
+            Inner::Source(_, source) => source.level_sample_bits(None),
+            Inner::Memory(_) => None,
         }
     }
 
@@ -962,6 +970,7 @@ impl LazyRaster {
     pub fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
         match &self.inner {
             Inner::Tiff(t) => t.levels.get(overview.map_or(0, |i| i + 1)).map(|l| l.bits),
+            Inner::Source(_, source) => source.level_sample_bits(overview),
             _ => self.sample_bits(),
         }
     }
@@ -970,6 +979,9 @@ impl LazyRaster {
     pub(crate) fn widest_sample_bits(&self) -> Option<u16> {
         match &self.inner {
             Inner::Tiff(t) => t.levels.iter().map(|level| level.bits).max(),
+            Inner::Source(..) => {
+                std::iter::once(None).chain((0..self.overviews().len()).map(Some)).filter_map(|level| self.level_sample_bits(level)).max()
+            }
             _ => self.sample_bits(),
         }
     }
