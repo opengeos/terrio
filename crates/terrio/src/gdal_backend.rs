@@ -1139,10 +1139,14 @@ fn layer_from(layer: &mut gdal::vector::Layer, name: &str, budget: &mut VectorBu
         let mut attributes = Vec::new();
         attributes.try_reserve_exact(kinds.len()).map_err(|_| Error::ResourceLimit("GDAL: cannot allocate feature attributes".into()))?;
         for (k, kind) in kinds.iter().enumerate() {
-            let value = match feature.field(k) {
-                Ok(Some(v)) => value_from(v),
-                Ok(None) if *kind == OGRFieldType::OFTBinary => binary_field(&feature, k),
-                _ => FieldValue::Null,
+            let value = if *kind == OGRFieldType::OFTDateTime {
+                datetime_field(&feature, k)
+            } else {
+                match feature.field(k) {
+                    Ok(Some(v)) => value_from(v),
+                    Ok(None) if *kind == OGRFieldType::OFTBinary => binary_field(&feature, k),
+                    _ => FieldValue::Null,
+                }
             };
             let bytes = match &value {
                 FieldValue::Text(s) | FieldValue::Date(s) | FieldValue::DateTime(s) => s.len(),
@@ -1249,19 +1253,55 @@ fn value_from(v: GdalValue) -> FieldValue {
         GdalValue::RealValue(x) => FieldValue::Float(x),
         GdalValue::StringValue(s) => FieldValue::Text(s),
         GdalValue::DateValue(d) => FieldValue::Date(d.to_string()),
-        GdalValue::DateTimeValue(t) => {
-            // GDAL reports times without a time zone as UTC: keep them without one.
-            if t.offset().local_minus_utc() == 0 {
-                FieldValue::DateTime(t.naive_local().format("%Y-%m-%dT%H:%M:%S%.f").to_string())
-            } else {
-                FieldValue::DateTime(t.to_rfc3339())
-            }
-        }
+        // layer_from intercepts every OFTDateTime before this converted-value match:
+        // only the original feature retains the timezone flag datetime_field needs.
+        GdalValue::DateTimeValue(t) => FieldValue::DateTime(t.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)),
         GdalValue::IntegerListValue(v) => json(v.into_iter().map(Into::into).collect()),
         GdalValue::Integer64ListValue(v) => json(v.into_iter().map(Into::into).collect()),
         GdalValue::RealListValue(v) => json(v.into_iter().map(Into::into).collect()),
         GdalValue::StringListValue(v) => json(v.into_iter().map(Into::into).collect()),
     }
+}
+
+/// Retain milliseconds and the raw timezone flag using GDAL's DateTimeEx API.
+/// Reference validation: GDAL 3.13.3; this API also exists in earlier GDAL releases.
+/// The gdal crate's DateTime conversion truncates seconds and conflates unknown zones with UTC.
+fn datetime_field(feature: &gdal::vector::Feature, field: usize) -> FieldValue {
+    let Ok(index) = i32::try_from(field) else { return FieldValue::Null };
+    let (mut year, mut month, mut day, mut hour, mut minute, mut zone) = (0, 0, 0, 0, 0, 0);
+    let mut second = 0.0;
+    // SAFETY: feature owns the live handle, index comes from its field definition,
+    // and all output pointers refer to initialized values for the duration of the call.
+    let success = unsafe {
+        let handle = feature.c_feature();
+        if gdal_sys::OGR_F_IsFieldSetAndNotNull(handle, index) == 0 {
+            return FieldValue::Null;
+        }
+        gdal_sys::OGR_F_GetFieldAsDateTimeEx(handle, index, &mut year, &mut month, &mut day, &mut hour, &mut minute, &mut second, &mut zone)
+    };
+    if success == 0 || !(0.0..61.0).contains(&second) {
+        return FieldValue::Null;
+    }
+    let Some(date) = chrono::NaiveDate::from_ymd_opt(year, month as u32, day as u32) else { return FieldValue::Null };
+    let Some(time) = date.and_hms_opt(hour as u32, minute as u32, 0) else { return FieldValue::Null };
+    // GDAL exposes float seconds with millisecond accuracy. Round away float noise;
+    // adding to the minute also handles a fractional value rounding into the next minute.
+    let milliseconds = (f64::from(second) * 1000.0).round() as i64;
+    let Some(time) = time.checked_add_signed(chrono::TimeDelta::milliseconds(milliseconds)) else { return FieldValue::Null };
+    let pattern = if milliseconds % 1000 == 0 { "%Y-%m-%dT%H:%M:%S" } else { "%Y-%m-%dT%H:%M:%S%.3f" };
+    let mut text = time.format(pattern).to_string();
+    match zone {
+        0 | 1 => (), // unknown or local time: neither asserts UTC
+        100 => text.push('Z'),
+        _ => {
+            let minutes = (zone - 100) * 15;
+            if chrono::FixedOffset::east_opt(minutes * 60).is_none() {
+                return FieldValue::Null;
+            }
+            text.push_str(&format!("{}{:02}:{:02}", if minutes < 0 { '-' } else { '+' }, minutes.abs() / 60, minutes.abs() % 60));
+        }
+    }
+    FieldValue::DateTime(text)
 }
 
 fn binary_field(feature: &gdal::vector::Feature, field: usize) -> FieldValue {
@@ -1405,6 +1445,24 @@ mod crs_tests {
 
 #[cfg(test)]
 mod tests {
+    /// GDAL 3.13.3 keeps local/unknown flags distinct from explicit UTC in memory.
+    #[test]
+    fn datetime_field_keeps_gdal_timezone_flags() {
+        use gdal::vector::{LayerAccess, LayerOptions, OGRFieldType};
+        let mut dataset = gdal::DriverManager::get_driver_by_name("Memory").unwrap().create_vector_only("").unwrap();
+        let layer = dataset.create_layer(LayerOptions::default()).unwrap();
+        layer.create_defn_fields(&[("time", OGRFieldType::OFTDateTime)]).unwrap();
+        let mut feature = gdal::vector::Feature::new(layer.defn()).unwrap();
+        assert_eq!(super::datetime_field(&feature, 0), crate::FieldValue::Null);
+        for (zone, suffix) in [(0, ""), (1, ""), (100, "Z"), (114, "+03:30"), (86, "-03:30")] {
+            // SAFETY: feature is live and owns a DateTime field at index zero.
+            unsafe { gdal_sys::OGR_F_SetFieldDateTimeEx(feature.c_feature(), 0, 2024, 3, 15, 10, 30, 5.25, zone) };
+            assert_eq!(super::datetime_field(&feature, 0), crate::FieldValue::DateTime(format!("2024-03-15T10:30:05.250{suffix}")));
+        }
+        feature.set_field_null(0).unwrap();
+        assert_eq!(super::datetime_field(&feature, 0), crate::FieldValue::Null);
+    }
+
     #[test]
     fn memory_file_cleanup_removes_only_the_calls_directory() {
         // Keep another directory alive so a failed or empty root listing cannot pass vacuously.

@@ -9,6 +9,21 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## GDAL backend date-times
+
+The optional backend reads date-time fields using `OGR_F_GetFieldAsDateTimeEx`,
+retaining GDAL's millisecond precision and raw timezone flag. UTC is written as
+`Z`, explicit offsets are retained, and unknown/local zones remain unqualified.
+Fractions are canonicalized to three decimal digits when nonzero; this does not
+preserve the source's original text spelling or sub-millisecond precision.
+
+`cargo test -p terrio --features gdal --test gdal_backend date_time_fields` checks
+path and byte reads, fractional seconds, UTC, signed and quarter-hour offsets,
+unzoned values and nulls. The native unit test
+`gdal_backend::tests::datetime_field_keeps_gdal_timezone_flags` independently checks
+GDAL-authored in-memory fields with unknown, local and explicit UTC flags.
+These tests use GDAL itself as the typed-field reference; validation uses GDAL 3.13.3.
+
 ## Python warning attribution
 
 `python/tests/test_native_warning_locations.py` checks warnings recorded in Rust
