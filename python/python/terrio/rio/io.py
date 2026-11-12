@@ -2514,8 +2514,10 @@ class DatasetWriter(DatasetReader):
             else:
                 self._data = np.asarray(raster.read())
         except ResourceLimitError:
+            self._release_spill()
             raise
         except Exception as err:
+            self._release_spill()
             raise RasterioIOError(f"Read failed: {err}") from err
         self._out_driver = self.driver
         s = self.structure

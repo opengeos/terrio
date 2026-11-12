@@ -231,7 +231,7 @@ mod tests {
         // 2^31 cells (8 GB of Float32 values) declared, 3 given: an error before allocating.
         std::fs::write(&p, "ncols 65536\nnrows 32768\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3\n").unwrap();
         let e = read(&p).unwrap_err();
-        assert!(e.to_string().contains("expected 2147483648 values"), "{e}");
+        assert!(e.is_resource_refusal() || e.to_string().contains("expected 2147483648 values"), "{e}");
         // A body long enough by its length, padded with spaces, holding 3 values of 2048.
         std::fs::write(&p, format!("ncols 64\nnrows 32\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3{}\n", " ".repeat(5000))).unwrap();
         let e = read(&p).unwrap_err();

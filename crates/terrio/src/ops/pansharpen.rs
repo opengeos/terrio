@@ -402,7 +402,7 @@ fn process_aligned(
     let grid = plan.pan.grid;
     let n = grid.width.checked_mul(grid.height).ok_or_else(|| bad("pansharpen buffer size overflow"))?;
     let max = if matches!(work, DataType::U8 | DataType::U16) { o.bit_depth.map(|b| ((1u64 << b) - 1) as f64) } else { None };
-    let mut values = Vec::new();
+    let mut values: Vec<Vec<f64>> = Vec::new();
     for (index, ds) in bands.into_iter().enumerate() {
         let geometry = &reads[index];
         let input = BandView::of(&ds.raster, 0);
@@ -449,13 +449,21 @@ fn process_aligned(
                 }
             }
             Resampling::Average => {
+                let retained = values
+                    .iter()
+                    .fold(out.capacity().checked_mul(std::mem::size_of::<f64>()), |total, band| {
+                        total.and_then(|total| {
+                            band.capacity().checked_mul(std::mem::size_of::<f64>()).and_then(|bytes| total.checked_add(bytes))
+                        })
+                    })
+                    .ok_or_else(|| Error::ResourceLimit("pansharpen retained bands exceed the address space".into()))?;
                 let averaged = super::vrt::gdal_average_with_origin(
                     &read,
                     (x.max(0.0) as usize, y.max(0.0) as usize),
                     (rect[0], rect[1], rect[2], rect[3]),
                     (grid.width, grid.height),
                     Some(geometry.origin),
-                    std::mem::size_of_val(out.as_slice()),
+                    retained,
                 )?;
                 for (target, value) in out.iter_mut().zip(averaged) {
                     *target = convert_value(convert_value(value.unwrap_or(source_nodata.unwrap_or(0.0)), ds.raster.data_type), work);

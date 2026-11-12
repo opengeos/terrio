@@ -1676,9 +1676,7 @@ fn decode_in_threads<D: Read + Seek + Send + 'static>(
                 e if e.is_resource_refusal() => crate::Error::ResourceLimit(e.to_string()),
                 e => crate::Error::InvalidData(e.to_string()),
             })?;
-            let c = read_chunk(d, codec, idx, limit).map_err(err)?;
-            let (w, h) = d.chunk_data_dimensions(idx);
-            Ok((idx, c, (w as usize, h as usize)))
+            decode_chunk(d, codec, idx, limit, err)
         });
         for c in decoded {
             place(c?)?;

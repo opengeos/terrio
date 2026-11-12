@@ -1137,6 +1137,19 @@ fn opening_a_vrt_description_checks_its_declaration() {
     assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))));
 }
 
+#[test]
+fn eager_translation_refuses_an_unrepresentable_output_before_allocation() {
+    let _serial = serial();
+    let mut source = header(1, 1, 1);
+    source.raster.data = RasterData::U8(vec![1]);
+    let options = terrio::ops::translate::TranslateOptions {
+        out_size: Some((terrio::ops::translate::Size::Pixels(usize::MAX), terrio::ops::translate::Size::Pixels(2))),
+        ..Default::default()
+    };
+    let result = terrio::ops::translate::translate(&source, &options);
+    assert!(result.is_err_and(|error| error.is_resource_refusal()));
+}
+
 /// The GeoTIFF and COG writers that operations stream their output to (`terrio translate` and
 /// `convert`, `GeoTiffWriter`) keep a row of their blocks of every band until it is complete, held
 /// twice while a strip is appended: a writer whose rows cannot fit in the usable memory is refused
