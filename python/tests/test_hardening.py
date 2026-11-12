@@ -96,14 +96,19 @@ def read_limited(action, path, env=None, headroom=HEADROOM):
 
 # A size refused before its allocation, or by it: the TIFF decoding limit (TiffReadLimits), a window
 # too large for the allocator, or a fallible allocation.
-REFUSALS = ("exceeds decoded-byte limit", "too large to allocate", "cannot allocate")
+REFUSALS = (
+    "exceeds decoded-byte limit",
+    "too large to allocate",
+    "cannot allocate",
+    " bytes, more than ",
+)
 
 
 def assert_raises_allocation_error(p):
     assert p.returncode == 0, f"the reader died (exit code {p.returncode}): {p.stderr[-600:]}"
-    assert p.stdout.startswith("RAISED ResourceLimitError:") or (
-        p.stdout.startswith("RAISED") and any(r in p.stdout for r in REFUSALS)
-    ), p.stdout + p.stderr[-600:]
+    assert p.stdout.startswith("RAISED") and any(r in p.stdout for r in REFUSALS), (
+        p.stdout + p.stderr[-600:]
+    )
 
 
 def tiled_tiff(width, height, tile, tiles=1, tile_bytes=None):
