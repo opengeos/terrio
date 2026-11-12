@@ -207,6 +207,7 @@ def _copy_dataset(
     from terrio.rio.dtypes import _getnpdtype
     from terrio.rio.windows import Window
 
+    src._check_open()
     profile = dict(src.profile)
     for k in ("blockxsize", "blockysize", "tiled", "compress", "interleave", "photometric"):
         profile.pop(k, None)

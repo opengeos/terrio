@@ -9,6 +9,7 @@ import pytest
 
 import terrio.rio as rio
 from terrio.errors import NotFoundError
+from terrio.rio.errors import RasterioIOError
 from terrio.rio.shutil import copy
 from terrio.rio.transform import from_origin
 
@@ -167,6 +168,22 @@ def write_sample_width_images(path, images, photometric=1):
         out.extend(struct.pack("<I", following))
         out.extend(payload)
     path.write_bytes(out)
+
+
+@pytest.mark.parametrize("driver", ["GTiff", "COG"])
+def test_closed_packed_source_copy_keeps_destination(tmp_path, driver):
+    """Reject a closed packed reader before accessing metadata or changing output."""
+    source, target = tmp_path / "source.tif", tmp_path / "target.tif"
+    write_sample_width_images(
+        source,
+        [(np.ones((4, 4), dtype="uint8"), 4), (np.ones((2, 2), dtype="uint8"), 4)],
+    )
+    reader = rio.open(source)
+    reader.close()
+    target.write_bytes(b"existing output")
+    with pytest.raises(RasterioIOError, match="Dataset is closed"):
+        copy(reader, target, driver=driver)
+    assert target.read_bytes() == b"existing output"
 
 
 @pytest.mark.parametrize("driver", ["GTiff", "COG"])
