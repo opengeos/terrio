@@ -1109,6 +1109,20 @@ mod tests {
 
     #[cfg(remote)]
     #[test]
+    fn disallowed_wfs_service_url_is_refused_before_any_request() {
+        // A `.fgb` URL naming a WFS service is that service's to read, as `open_vector` judges it: with
+        // the WFS driver not allowed, it is refused before any request.
+        let (base, requests) = crate::http::test_server(empty_dimension_fixture(true, false));
+        let url = format!("{base}/x.fgb?service=WFS");
+        let (opened, exported) = crate::config::with_options(&[("TERRIO_ALLOWED_DRIVERS", "FlatGeobuf")], || {
+            (crate::open_vector(&url, &Default::default()).map(|_| ()), crate::ops::vector_schema::export_schema_path(&url, &[]))
+        });
+        assert_eq!(exported.unwrap_err().to_string(), opened.unwrap_err().to_string());
+        assert!(requests.lock().unwrap().is_empty(), "the WFS service was requested");
+    }
+
+    #[cfg(remote)]
+    #[test]
     fn remote_flatgeobuf_reports_declared_z_without_features() {
         // The file is downloaded once; its header declares Z, and no feature can show it.
         let bytes = empty_dimension_fixture(true, false);
