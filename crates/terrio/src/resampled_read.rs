@@ -249,7 +249,13 @@ impl LazyRaster {
             });
         }
         let n = read.buf.0 * read.buf.1;
-        self.resampled_masks(&read, &kinds, |k| nodata[k].as_ref().map(|d| (d, 0)), n)
+        let retained = nodata
+            .iter()
+            .flatten()
+            .map(raster_capacity_bytes)
+            .try_fold(0usize, usize::checked_add)
+            .ok_or_else(|| fallible::out_of_memory(None, "resampled nodata pixels"))?;
+        self.resampled_masks(&read, &kinds, |k| nodata[k].as_ref().map(|d| (d, 0)), n, retained)
     }
 
     /// Reads [`LazyRaster::read_resampled`] and [`LazyRaster::read_resampled_masks`] at once:
@@ -266,7 +272,7 @@ impl LazyRaster {
         let data = self.resample_bands(&read, &kinds)?;
         let n = read.buf.0 * read.buf.1;
         // GDAL reads bands with a nodata mask band by band, as the read did.
-        let masks = self.resampled_masks(&read, &kinds, |k| Some((&data, k)), n)?;
+        let masks = self.resampled_masks(&read, &kinds, |k| Some((&data, k)), n, raster_capacity_bytes(&data))?;
         Ok((self.resampled_dataset(&read, data)?, masks))
     }
 
@@ -763,6 +769,7 @@ impl LazyRaster {
         kinds: &[MaskKind],
         nodata: impl Fn(usize) -> Option<(&'d RasterData, usize)>,
         n: usize,
+        retained: usize,
     ) -> Result<Vec<u8>> {
         let mut out = Vec::with_capacity(kinds.len() * n);
         let mut dataset: Option<Vec<u8>> = None;
@@ -784,7 +791,11 @@ impl LazyRaster {
                 }
                 MaskKind::Alpha(a) => {
                     if alpha.is_none() {
-                        alpha = Some(self.resampled_alpha(read, a)?);
+                        let retained = retained
+                            .checked_add(out.capacity())
+                            .and_then(|n| n.checked_add(dataset.as_ref().map_or(0, Vec::capacity)))
+                            .ok_or_else(|| fallible::out_of_memory(None, "retained resampled mask buffers"))?;
+                        alpha = Some(self.resampled_alpha(read, a, retained)?);
                     }
                     out.extend_from_slice(alpha.as_deref().unwrap_or_default());
                 }
@@ -850,7 +861,7 @@ impl LazyRaster {
     /// The alpha band `alpha` read as the mask band GDAL makes of it: a Byte band read as the
     /// other bands are, band by band, all valid; a UInt16 one rescaled to 0–255 as
     /// `GDALRescaledAlphaBand` does, which has no overviews: from full resolution.
-    fn resampled_alpha(&mut self, read: &Read, alpha: usize) -> Result<Vec<u8>> {
+    fn resampled_alpha(&mut self, read: &Read, alpha: usize, retained: usize) -> Result<Vec<u8>> {
         let single = Read { bands: vec![alpha], ..read.clone() };
         if self.band_data_type(alpha) == DataType::U8 {
             let kinds = self.mask_kinds(&single.bands);
@@ -862,25 +873,54 @@ impl LazyRaster {
         let full = read.full;
         let options = WindowOptions { bands: vec![alpha], overview: None };
         let (x, y, w, h) = full.window;
-        let rescaled = |data: RasterData| RasterData::U8(alpha_mask(&data));
+        let mut output_live = false;
+        let mut rescaled = |source: &mut Self, window: Window| -> Result<RasterData> {
+            check_alpha_window(window, read.buf, output_live, read.resampling != Resampling::Nearest, retained)?;
+            let data = source.read_window(window, &options)?.raster.data;
+            let data = RasterData::U8(alpha_mask(&data));
+            output_live = true;
+            Ok(data)
+        };
         let data = if full.is_copy(read.buf) {
             self.prefetch_window(Window::new(x, y, w, h), &options)?;
-            rescaled(self.read_window(Window::new(x, y, w, h), &options)?.raster.data)
+            rescaled(self, Window::new(x, y, w, h))?
         } else if read.resampling == Resampling::Nearest {
             let (cols, rows) = nearest_pixels(full.fwindow, read.buf, full.size);
             let block = self.level_block_size(None).unwrap_or((full.size.0, SAMPLE_ROWS));
             if let Some(windows) = nearest_prefetch_windows(&cols, &rows, block) {
                 self.prefetch_windows(&windows, &options)?;
             }
-            sample_by_blocks(&cols, &rows, block, &mut |w| Ok(rescaled(self.read_window(w, &options)?.raster.data)))?
+            sample_by_blocks(&cols, &rows, block, &mut |w| rescaled(self, w))?
         } else {
             self.prefetch_window(Window::new(x, y, w, h), &options)?;
             let block_width = self.level_block_size(None).map_or(full.size.0, |b| b.0);
             let resampled = resampled_read(read, full, false, block_width, None);
-            resample(&resampled, &[None], 1, &mut |w| Ok((rescaled(self.read_window(w, &options)?.raster.data), vec![None])))?
+            resample(&resampled, &[None], 1, &mut |w| Ok((rescaled(self, w)?, vec![None])))?
         };
         Ok(alpha_mask(&data))
     }
+}
+
+/// Known UInt16 alpha conversion phases, using the source window (reference: GDAL 3.13.3).
+/// Source samples coexist with their Byte conversion; subsequent windows also retain the
+/// resampled Byte output. Once UInt16 samples are dropped, copying/kernel output and the
+/// final Byte mask copy have their own peaks. Caller-owned pixels/masks stay live throughout.
+fn check_alpha_window(window: Window, output: (usize, usize), output_live: bool, kernel: bool, retained: usize) -> Result<()> {
+    let source = window.width.checked_mul(window.height).filter(|&n| n <= isize::MAX as usize / 2);
+    let output = output.0.checked_mul(output.1).filter(|&n| n <= isize::MAX as usize);
+    let bytes = source.zip(output).and_then(|(source, output)| {
+        let conversion = source.checked_mul(3)?.checked_add(if output_live { output } else { 0 })?;
+        let scatter = source.checked_add(output.checked_mul(if kernel { 2 } else { 1 })?)?;
+        conversion.max(scatter).max(output.checked_mul(2)?).checked_add(retained)
+    });
+    fallible::check_usable(bytes, || "an alpha mask source/conversion working set is too large to allocate".into())
+        .map(|_| ())
+        .map_err(Error::ResourceLimit)
+}
+
+fn raster_capacity_bytes(data: &RasterData) -> usize {
+    let capacity = crate::pixel::with_data!(data, values => values.capacity());
+    capacity * data.data_type().size_bytes()
 }
 
 /// The geometry of `RasterIOResampled` for a request of a band of blocks `block_width` pixels

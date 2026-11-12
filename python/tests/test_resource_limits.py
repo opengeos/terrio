@@ -211,3 +211,61 @@ else:
         timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.fixture(scope="module")
+def large_uint16_alpha(tmp_path_factory, gdal):
+    """GDAL writes separate 32 MiB alpha/data strips, each individually within the policy."""
+    path = tmp_path_factory.mktemp("alpha-memory") / "alpha.tif"
+    dataset = gdal.GetDriverByName("GTiff").Create(
+        str(path),
+        4096,
+        4096,
+        2,
+        gdal.GDT_UInt16,
+        options=["COMPRESS=DEFLATE", "INTERLEAVE=BAND", "BLOCKYSIZE=4096"],
+    )
+    dataset.SetGeoTransform([0, 1, 0, 4096, 0, -1])
+    dataset.GetRasterBand(2).SetColorInterpretation(gdal.GCI_AlphaBand)
+    dataset.GetRasterBand(1).Fill(17)
+    dataset.GetRasterBand(2).Fill(65535)
+    dataset = None
+    reference = gdal.Open(str(path))
+    assert reference.GetRasterBand(2).GetBlockSize() == [4096, 4096]
+    assert reference.GetRasterBand(1).GetMaskFlags() & gdal.GMF_ALPHA
+    assert reference.GetRasterBand(1).GetMaskBand().ReadAsArray(0, 0, 16, 16).min() == 255
+    return path
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="uses the Linux usable-memory policy")
+@pytest.mark.parametrize("method", ["nearest", "bilinear", "average"])
+def test_resized_alpha_source_memory_refusal(large_uint16_alpha, method):
+    """A small mask output cannot conceal the source window's UInt16/Byte conversion peak."""
+    script = """
+import resource
+import sys
+import terrio
+_, hard = resource.getrlimit(resource.RLIMIT_RSS)
+resource.setrlimit(resource.RLIMIT_RSS, (min(hard, 32 << 20) if hard >= 0 else 32 << 20, hard))
+path, method = sys.argv[1:]
+dataset = terrio.open_raster(path, lazy=True)
+small = dataset.read_resampled_masks((8, 8), band=1, window=(0, 0, 16, 16), resampling=method)
+assert small.shape == (8, 8) and (small == 255).all()
+try:
+    dataset.read_resampled_masks((512, 512), band=1, resampling=method)
+except terrio.ResourceLimitError as error:
+    assert "alpha mask source/conversion working set" in str(error), str(error)
+else:
+    raise AssertionError("unchecked UInt16 alpha conversion")
+"""
+    environment = dict(os.environ)
+    for option in ("TERRIO_MAX_DECLARED_BYTES", "TERRIO_MAX_BANDS", "TERRIO_TIFF_MAX_CHUNK_BYTES"):
+        environment.pop(option, None)
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(large_uint16_alpha), method],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

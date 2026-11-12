@@ -2817,3 +2817,19 @@ pixels, types, masks and nodata; the native API also checks its geotransform and
 The Node suite checks Byte, UInt16, Int16 and Float32 GeoPackage byte round trips
 at their exact limits and refuses one byte less. The registered raster round-trip
 comparison can be focused with `python scripts/raster_roundtrip.py GPKG -v`.
+
+## Resized UInt16-alpha allocation checks
+
+`cargo test -p terrio --test declared_size resized_alpha_checks_the_source_and_conversion_together`
+uses separate TIFF planes whose individual decoded strips fit a Linux child process's
+32 MiB usable-memory policy. A 512-square mask must refuse its nearly 4096-square
+UInt16 source and simultaneous Byte conversion before allocating the large source window.
+Nearest, bilinear and average controls retain small-window values and Byte-alpha reads.
+A two-window control allows the first conversion, then refuses the second peak while
+the previously produced Byte output remains live.
+
+`python -m pytest python/tests/test_resource_limits.py -k resized_alpha_source_memory`
+checks the native Python mask API with GDAL 3.13.3-authored opaque UInt16 alpha strips.
+The small-window mask matches GDAL before the large read is refused. This targets the
+native path that converts source samples before resizing; the rio alpha fallback has
+its own resampling/conversion path.

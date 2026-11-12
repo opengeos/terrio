@@ -1627,3 +1627,74 @@ fn vrt_and_source_resampling_check_their_working_arrays() {
     let source_refused = matches!(result, Err(terrio::Error::ResourceLimit(_))) && largest < 16 << 20;
     assert!(vrt_refused && source_refused, "VRT {vrt_result}; source {result:?}, largest={largest}");
 }
+
+/// Reference: GDAL 3.13.3. UInt16 alpha is converted to bytes before resizing the source window.
+#[test]
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+fn resized_alpha_checks_the_source_and_conversion_together() {
+    const CHILD: &str = "TERRIO_TEST_ALPHA_WORKING_MEMORY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "resized_alpha_checks_the_source_and_conversion_together"])
+            .env(CHILD, "1")
+            .env_remove("TERRIO_MAX_DECLARED_BYTES")
+            .env_remove("TERRIO_MAX_BANDS")
+            .output()
+            .unwrap();
+        assert!(child.status.success(), "{}\n{}", String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
+        return;
+    }
+    let _serial = serial();
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: valid pointers; only this child's usable-memory policy is constrained.
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_RSS, &mut limit), 0);
+        limit.rlim_cur = limit.rlim_max.min(32 << 20);
+        assert_eq!(libc::setrlimit(libc::RLIMIT_RSS, &limit), 0);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let alpha_tiff = |bits, block| {
+        let mut bytes = declaring_tiff(4096, 4096, 2, bits, 1, block);
+        let ifd = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let count = u16::from_le_bytes(bytes[ifd..ifd + 2].try_into().unwrap()) as usize;
+        let extra = (0..count).map(|i| ifd + 2 + 12 * i).find(|&i| u16::from_le_bytes(bytes[i..i + 2].try_into().unwrap()) == 338).unwrap();
+        bytes[extra + 8..extra + 10].copy_from_slice(&2u16.to_le_bytes());
+        bytes
+    };
+    for bits in [8, 16] {
+        // Separate planes keep each decoded strip within the policy. It is the subsequent
+        // UInt16-to-Byte conversion, not a single decoder buffer, that crosses the limit.
+        let path = dir.path().join(format!("alpha-{bits}.tif"));
+        std::fs::write(&path, alpha_tiff(bits, None)).unwrap();
+        for resampling in [terrio::ops::Resampling::Nearest, terrio::ops::Resampling::Bilinear, terrio::ops::Resampling::Average] {
+            let mut source = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap();
+            let small = terrio::ResampledReadOptions {
+                bands: vec![1],
+                window: Some((0., 0., 16., 16.)),
+                size: (8, 8),
+                resampling,
+                ..Default::default()
+            };
+            assert_eq!(source.read_resampled_masks(&small).unwrap(), vec![0; 64]);
+            let large = terrio::ResampledReadOptions { window: None, size: (512, 512), ..small };
+            let (result, largest) = largest_during(|| source.read_resampled_masks(&large));
+            if bits == 8 {
+                assert_eq!(result.unwrap(), vec![0; 512 * 512]);
+            } else {
+                let result = result.map(|_| ());
+                assert!(
+                    matches!(result, Err(terrio::Error::ResourceLimit(_))) && largest < 1 << 20,
+                    "{resampling:?}: {result:?}, largest={largest}"
+                );
+            }
+        }
+    }
+    // With two source windows, the first conversion fits; the second also retains
+    // the Byte output allocated while scattering the first. Refuse that later peak.
+    let path = dir.path().join("alpha-two-windows.tif");
+    std::fs::write(&path, alpha_tiff(16, Some((4096, 2048)))).unwrap();
+    let mut source = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap();
+    let options = terrio::ResampledReadOptions { bands: vec![1], size: (4096, 2048), ..Default::default() };
+    let (result, largest) = largest_during(|| source.read_resampled_masks(&options).map(|_| ()));
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))) && largest >= 16 << 20, "{result:?}, largest={largest}");
+}

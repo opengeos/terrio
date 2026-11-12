@@ -146,6 +146,13 @@ independent of `TERRIO_TIFF_MAX_CHUNK_BYTES`, which bounds each decoded chunk, a
 `TERRIO_WARP_SUM_MAX_BYTES`, which bounds what a `sum` warp holds: a read passes every one that
 applies.
 
+Native resampled UInt16-alpha mask reads also check their actual source windows before
+reading and converting them to bytes. The working-set estimate includes simultaneously
+retained source/conversion buffers, previously produced Byte output and caller-owned
+pixel/mask buffers. Small mask outputs can therefore be refused when their source-window
+conversion cannot fit, while small source windows and Byte-alpha reads keep their existing
+paths. This remains an estimate of known buffers rather than a total-process memory cap.
+
 GeoTIFF compression: none, LZW, Deflate (including the legacy code), PackBits, JPEG, WebP,
 Zstandard, LZMA, LERC (alone, with Deflate or with Zstandard, lossless or not, with NaN masks) and
 JPEG XL, with horizontal and floating-point predictors, tiled or striped, chunky or planar. JPEG
