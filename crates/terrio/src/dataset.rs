@@ -1551,7 +1551,9 @@ pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWrit
     let options = derived.as_ref().unwrap_or(options);
     let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
     let mut options = std::borrow::Cow::Borrowed(options);
-    if ds.geotransform_present == Some(false) {
+    if ds.geotransform_present == Some(false)
+        && matches!(driver, Some(RasterDriver::JP2 | RasterDriver::PNG | RasterDriver::JPEG | RasterDriver::WEBP))
+    {
         crate::drivers::common::keep_unreferenced(options.to_mut(), path, false);
     }
     let options = options.inherited_from(ds, driver);

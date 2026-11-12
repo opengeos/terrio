@@ -439,3 +439,20 @@ def test_native_image_copies_preserve_absent_georeferencing(tmp_path, gdal, exte
     assert reference.GetGeoTransform(can_return_null=True) is None
     assert reference.GetSpatialRef() is None
     assert not target.with_suffix(".wld").exists()
+
+
+@pytest.mark.parametrize("driver", ["GTiff", "COG"])
+def test_crs_only_tiff_native_copies_keep_existing_unit_grid(tmp_path, gdal, driver):
+    source = tmp_path / "crs-only.tif"
+    reference = gdal.GetDriverByName("GTiff").Create(str(source), 32, 24, 1, gdal.GDT_Byte)
+    reference.SetProjection("EPSG:32633")
+    reference.GetRasterBand(1).Fill(7)
+    reference = None
+    raster = terrio.open_raster(str(source), lazy=True)
+    assert not raster.has_transform
+    target = tmp_path / "copy.tif"
+    raster.write(str(target), driver=driver)
+    reference = gdal.Open(str(target))
+    assert reference.GetGeoTransform(can_return_null=True) == (0.0, 1.0, 0.0, 24.0, 0.0, -1.0)
+    assert reference.GetSpatialRef().GetAuthorityCode(None) == "32633"
+    np.testing.assert_array_equal(reference.ReadAsArray(), 7)
