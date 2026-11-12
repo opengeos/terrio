@@ -398,3 +398,26 @@ fn convert_writes_jp2_under_each_jpeg_2000_driver_name() {
         assert_eq!(values, &(0..12).collect::<Vec<u8>>(), "{name}");
     }
 }
+
+/// Streamed TIFF outputs clip as GDAL 3.13.3 does, with diagnostics on stderr.
+#[test]
+fn translate_reports_wider_packed_clipping_but_keeps_bilevel_silent() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    for (bits, data_type, value) in [(1, terrio::DataType::U8, 255.), (12, terrio::DataType::U16, 65535.)] {
+        let cfg = terrio::RasterConfig { cols: 4, rows: 6, data_type, ..Default::default() };
+        let ds = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, vec![value; 24]).unwrap(), false);
+        terrio::write_raster_dataset(&ds, d.join("source.tif").to_str().unwrap(), &Default::default()).unwrap();
+        for driver in ["GTiff", "COG"] {
+            let output = format!("{driver}-{bits}.tif");
+            let nbits = format!("NBITS={bits}");
+            let result = run(&["translate", "source.tif", &output, "-f", driver, "--co", &nbits], d);
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            assert!(result.status.success(), "{stderr}");
+            assert_eq!(stderr.matches("clipped to fit").count(), usize::from(bits > 1), "{stderr}");
+            let back = terrio::open_raster(d.join(&output).to_str().unwrap()).unwrap();
+            let maximum = ((1u32 << bits) - 1) as f64;
+            assert!(back.raster.data.to_f64_vec().iter().all(|&v| v == maximum));
+        }
+    }
+}

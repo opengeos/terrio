@@ -1399,6 +1399,11 @@ external tags once when needed (no pixel reads by that metadata helper). Bilevel
 clipping is silent in GDAL 3.13.3, while wider streamed COG clipping warns on the
 calling thread. The packed conformance comparison requires synthetic COG overviews
 and verifies each overview's stored NBITS as well as its independently decoded values.
+GTiff/COG translation-output regressions check that clipping warnings reach Python.
+The native strip-writer test preserves parent diagnostics and relays worker warnings
+on successful finish, failed sends and drop, while incomplete files are removed.
+Selected external-overview tag reads also preserve a missing-file error rather
+than replacing it with a missing-image-directory diagnostic.
 The four-bit bright-edge CUBIC control matches an independent GDAL 3.13.3 pyramid
 exactly; Terrio reports encode-time clipping where the reference is quiet.
 The native metadata regression also requires NBITS to share its band's existing

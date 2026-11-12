@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 import terrio.rio as rio
+from terrio.errors import NotFoundError
 from terrio.rio.shutil import copy
 from terrio.rio.transform import from_origin
 
@@ -547,7 +548,7 @@ def test_cog_copy_of_an_overview_keeps_its_own_and_descendant_masks(tmp_path, gd
         )
 
 
-@pytest.mark.parametrize("failure", [PermissionError, ValueError])
+@pytest.mark.parametrize("failure", [PermissionError, ValueError, NotFoundError])
 def test_selected_overview_tag_errors_are_not_hidden(tmp_path, monkeypatch, failure):
     from terrio.rio import _tiff
 
@@ -870,3 +871,35 @@ def test_jp2_copy_inherits_unsigned_precision_as_gdal(tmp_path, gdal, driver):
         assert band.GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "15"
         assert dataset.GetGeoTransform() == memory.GetGeoTransform()
         np.testing.assert_array_equal(dataset.ReadAsArray(), values)
+
+
+@pytest.mark.parametrize("bits,dtype,value", [(1, "uint8", 255), (12, "uint16", 65535)])
+@pytest.mark.parametrize("driver", ["GTiff", "COG"])
+def test_translate_output_delivers_clipping_warning_to_caller(
+    tmp_path, gdal, bits, dtype, value, driver
+):
+    """Translation outputs follow GDAL 3.13.3 clipping, with caller-visible warnings."""
+    import warnings
+
+    import terrio
+
+    source, target = tmp_path / "source.tif", tmp_path / "target.tif"
+    values = np.full((32, 32), value, dtype=dtype)
+    with rio.open(
+        source,
+        "w",
+        width=32,
+        height=32,
+        count=1,
+        dtype=dtype,
+        transform=from_origin(0, 32, 1, 1),
+        crs="EPSG:4326",
+    ) as writer:
+        writer.write(values, 1)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        terrio.translate(str(source), str(target), format=driver, options={"NBITS": str(bits)})
+    clipped = [str(w.message) for w in caught if "clipped to fit" in str(w.message)]
+    assert len(clipped) == (1 if bits > 1 else 0)
+    actual = gdal.Open(str(target))
+    np.testing.assert_array_equal(actual.ReadAsArray(), np.full((32, 32), (1 << bits) - 1))

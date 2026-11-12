@@ -389,10 +389,7 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
             is_external, index = location
             images = ifds
             if is_external:
-                try:
-                    images = _terrio.tiff_tags(path + ".ovr") or []
-                except FileNotFoundError:
-                    images = []
+                images = _terrio.tiff_tags(path + ".ovr") or []
                 mask_ifds = [*ifds, *images]
             if index < len(images):
                 image = images[index]
