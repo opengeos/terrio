@@ -793,7 +793,7 @@ impl<'a> Reader<'a> {
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
             .and_then(|value| axis_count(&value))
             .or_else(|| (crs.has_height() || crs.is_geocentric()).then_some(3));
-        let reference = Reference { dimension, swap: crs.is_geographic() && authority_axis_order(name) };
+        let reference = Reference { dimension, swap: crs.has_north_east_axis_order() && authority_axis_order(name) };
         if self.crs.is_none() {
             crs.apply_to_layer(&mut self.layer);
             self.crs = Some(crs);

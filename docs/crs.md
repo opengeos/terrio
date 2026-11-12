@@ -7,16 +7,23 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 - EPSG codes: `EPSG:32613`, `32613`, `urn:ogc:def:crs:EPSG::32613`,
   `http://www.opengis.net/def/crs/EPSG/0/32613`, including geographic 3D CRSs (`EPSG:4979`) and
   compound CRSs (`EPSG:5498`);
-- Horizontal plus vertical EPSG pairs: `EPSG:2154+5720` and
+- Horizontal plus vertical EPSG pairs: `EPSG:4326+5773` (WGS 84 with EGM96 heights), `EPSG:2154+5720` and
   `urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::5720`. Both components are retained,
   including in GML and CityGML metadata. Compound URNs require exactly two
   components: a two-dimensional horizontal CRS followed by a vertical CRS.
   Unsupported authorities, missing components and invalid component roles are errors.
+  This also rejects previously accepted strings with a 3D horizontal component such as
+  `EPSG:4979+5720`; string references require two horizontal axes before adding a height.
+  An unversioned URN component needs the empty version separator (`crs:EPSG::2154`);
+  the formerly accepted CityGML form `crs:EPSG:2154` is refused.
   The native GML reader rejects a document declaring an unsupported compound CRS; it does
   not open with only one component or with silently discarded CRS metadata. The optional
   GDAL fallback can read additional authorities and follows GDAL's driver settings.
   WFS service metadata retains its existing permissive handling of unrecognized CRSs;
   the strict unsupported-compound refusal here applies to native GML/CityGML reads.
+  GML layers refuse differing resolved geometry CRSs, including vertical-component
+  differences, instead of assigning the first geometry's metadata to every feature.
+  GML and WFS `srsName` values are parsed as literal metadata and never as local CRS files.
   Terrio retains the compound metadata in GML; GDAL requires
   [`GML_REPORT_COMPD_CS=YES`](https://github.com/OSGeo/gdal/blob/v3.13.3/ogr/ogrsf_frmts/gml/ogrgmldatasource.cpp#L1601)
   to report both GML components;

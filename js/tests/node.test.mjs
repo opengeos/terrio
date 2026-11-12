@@ -464,10 +464,10 @@ test("compound CRS URNs preserve both components and GML XYZ", () => {
   }
   for (const name of ["not EPSG:4326", "urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720", "EPSG:4979+5720",
     "EPSG:4326.0:3857", "urn:ogc:def:crs:EPSG:4326:3857junk", "https://www.opengis.net/def/crs/EPSG/4326/3857junk"]) {
-    assert.throws(() => terrio.describeCrs(name));
+    assert.throws(() => terrio.describeCrs(name), /coordinate reference system:/);
   }
   const bad = `<FeatureCollection><featureMember><p><geom><Point srsName="urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720"><pos>1 2</pos></Point></geom></p></featureMember></FeatureCollection>`;
-  assert.throws(() => terrio.open(new TextEncoder().encode(bad), "point.gml"));
+  assert.throws(() => terrio.open(new TextEncoder().encode(bad), "point.gml"), /coordinate reference system:/);
 });
 
 test("CRS transforms", () => {

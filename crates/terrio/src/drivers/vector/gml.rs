@@ -212,7 +212,14 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
         let srs = match srs_name {
             // A partially recognized compound reference would attach the wrong CRS to
             // three-dimensional coordinates. Refuse the entire declaration instead.
-            Some(name) if name.trim().to_ascii_uppercase().starts_with("URN:OGC:DEF:CRS,") => Some(parse_srs_name(name)?),
+            Some(name)
+                if {
+                    let upper = name.trim().to_ascii_uppercase();
+                    upper.starts_with("URN:OGC:DEF:CRS,") || (upper.starts_with("EPSG:") && upper.contains('+'))
+                } =>
+            {
+                Some(parse_srs_name(name)?)
+            }
             _ => srs_name.and_then(|srs| parse_srs_name(srs).ok()),
         };
         let swap = srs_name.is_some_and(authority_axis_order) && srs.as_ref().is_some_and(SpatialRef::has_north_east_axis_order);
@@ -223,7 +230,7 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
         // including nested geometry members, before applying its shared XY normalization.
         for raw in &raws {
             if let Some(node) = raw.geometry {
-                check_geometry_axis_order(node, srs_name, swap)?;
+                check_geometry_reference(node, srs_name, srs.as_ref(), swap)?;
             }
         }
         for (fid, raw) in raws.iter().enumerate() {
@@ -258,17 +265,20 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
     Ok(layers)
 }
 
-fn check_geometry_axis_order(node: &Element, reference: Option<&str>, swap: bool) -> Result<()> {
+fn check_geometry_reference(node: &Element, reference: Option<&str>, layer_srs: Option<&SpatialRef>, swap: bool) -> Result<()> {
     if let Some(name) = node.attr("srsName")
         && Some(name) != reference
     {
         let srs = parse_srs_name(name).map_err(|_| Error::Unsupported("GML: a differing geometry CRS cannot be resolved".into()))?;
+        if layer_srs.is_none_or(|layer| !layer.same_as(&srs)) {
+            return Err(Error::Unsupported("GML: mixed coordinate reference systems within a layer".into()));
+        }
         if (authority_axis_order(name) && srs.has_north_east_axis_order()) != swap {
             return Err(Error::Unsupported("GML: mixed coordinate axis conventions within a layer".into()));
         }
     }
     for child in &node.children {
-        check_geometry_axis_order(child, reference, swap)?;
+        check_geometry_reference(child, reference, layer_srs, swap)?;
     }
     Ok(())
 }
@@ -717,18 +727,62 @@ mod tests {
         }
     }
 
+    /// GDAL 3.13.3 compound syntax identifies both components; Terrio stores one CRS per layer.
+    #[test]
+    fn compound_geometry_references_must_agree_with_the_layer() {
+        let first = "urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::5720";
+        for second in ["EPSG:2154+5720", "urn:ogc:def:crs,crs:EPSG:6.6:2154,crs:EPSG::5720"] {
+            let text = format!(
+                "<FeatureCollection><featureMember><point><geom><Point srsName=\"{first}\" srsDimension=\"3\"><pos>1 2 35</pos></Point></geom></point></featureMember><featureMember><point><geom><Point srsName=\"{second}\" srsDimension=\"3\"><pos>3 4 36</pos></Point></geom></point></featureMember></FeatureCollection>"
+            );
+            let layers = parse(&xml::parse(&text).unwrap(), None).unwrap();
+            assert_eq!(layers[0].features.len(), 2);
+            assert_eq!(layers[0].crs_wkt(), SpatialRef::compound(2154, 5720).unwrap().to_wkt().as_deref());
+            assert_eq!(layers[0].features[1].geometry, Some(Geometry::Point(Coord { x: 3., y: 4., z: Some(36.), m: None })));
+        }
+        let second = "urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::5773";
+        for geometry in [
+            format!(
+                "<Point srsName=\"{first}\"><pos>1 2 35</pos></Point></geom></point></featureMember><featureMember><point><geom><Point srsName=\"{second}\"><pos>3 4 36</pos></Point>"
+            ),
+            format!(
+                "<MultiPoint srsName=\"{first}\"><pointMember><Point srsName=\"{second}\" srsDimension=\"3\"><pos>3 4 36</pos></Point></pointMember></MultiPoint>"
+            ),
+        ] {
+            let text =
+                format!("<FeatureCollection><featureMember><point><geom>{geometry}</geom></point></featureMember></FeatureCollection>");
+            let error = parse(&xml::parse(&text).unwrap(), None).unwrap_err();
+            assert!(matches!(error, Error::Unsupported(ref message) if message.contains("mixed coordinate reference systems")), "{error}");
+        }
+    }
+
     #[test]
     fn unsupported_compound_urns_are_errors_instead_of_partial_metadata() {
         for name in [
             "urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720",
             "urn:ogc:def:crs,crs:EPSG::2154,crs:EPSG::999999999",
             "urn:ogc:def:crs,crs:EPSG::2154",
+            "EPSG:4979+5720",
+            "EPSG:5720+5713",
+            "EPSG:+2154+5720",
         ] {
             let text = format!(
                 "<FeatureCollection><featureMember><point><geom><Point srsName=\"{name}\"><pos>1 2</pos></Point></geom></point></featureMember></FeatureCollection>"
             );
             assert!(parse(&xml::parse(&text).unwrap(), None).is_err(), "{name}");
         }
+    }
+
+    /// Metadata references use literal CRS syntax, including GDAL 3.13.3 WKT definitions.
+    #[test]
+    #[cfg(fs)]
+    fn geometry_metadata_does_not_follow_local_crs_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("definition.wkt");
+        std::fs::write(&path, SpatialRef::from_epsg(2154).unwrap().to_wkt().unwrap()).unwrap();
+        let name = path.to_str().unwrap();
+        assert!(SpatialRef::parse(name).is_ok(), "the control is a readable CRS definition");
+        assert!(parse_srs_name(name).is_err(), "geometry metadata must remain literal");
     }
 
     /// GDAL 3.12.1 exposes EPSG:6708 GML coordinates in traditional easting, northing order.

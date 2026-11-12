@@ -499,6 +499,7 @@ impl SpatialRef {
         // `EPSG:4326+5773`: a horizontal and a vertical CRS.
         if let Some(rest) = upper.strip_prefix("EPSG:")
             && let Some((h, v)) = rest.split_once('+')
+            && h.trim().bytes().chain(v.trim().bytes()).all(|byte| byte.is_ascii_digit())
             && let (Ok(h), Ok(v)) = (h.trim().parse::<u32>(), v.trim().parse::<u32>())
         {
             return Self::compound_reference(h, v);
@@ -2275,13 +2276,16 @@ mod tests {
         }
     }
 
-    /// GDAL 3.13.3 permits a 2D horizontal CRS plus a vertical CRS, not duplicate height axes.
+    /// Reference syntax: GDAL 3.13.3. Terrio string references require 2D horizontal roles.
     #[test]
     fn compound_components_must_have_horizontal_and_vertical_roles() {
         for (horizontal, vertical) in [(5720, 5713), (4978, 5720), (4979, 5720), (7405, 5720), (2154, 4326)] {
             for text in [format!("EPSG:{horizontal}+{vertical}"), format!("urn:ogc:def:crs,crs:EPSG::{horizontal},crs:EPSG::{vertical}")] {
                 assert!(SpatialRef::parse_literal(&text).is_err(), "{text}");
             }
+        }
+        for text in ["EPSG:+2154+5720", "EPSG:2154++5720"] {
+            assert!(SpatialRef::parse_literal(text).is_err(), "{text}");
         }
     }
 

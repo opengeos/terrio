@@ -106,6 +106,7 @@ def compare(executable):
             layer = source.GetLayer(0)
             # Keep the owning feature alive while reading its borrowed geometry.
             feature = layer.GetNextFeature()
+            require(feature is not None, f"{name}: GDAL returned an empty GML layer")
             expected_coordinates = list(feature.GetGeometryRef().GetPoint())
             expected_crs = components(
                 json.loads(layer.GetSpatialRef().ExportToPROJJSON())
