@@ -2163,6 +2163,14 @@ def suite_lazy_geotiff(ctx):
 
 
 def suite_reduced_first_masks(ctx):
+    """Compare reduced-first masks with GDAL's normalized control.
+
+    Args:
+        ctx: Conformance run context.
+
+    Returns:
+        Suite: Mask and external overview refresh comparisons.
+    """
     suite = Suite("reduced-first-masks", "Reduced first-image TIFF masks", "GDAL normalized 0/4 control",
                   "Landsat-derived images and masks match an equivalent ordinary-first-image "
                   "GDAL control before and after bounded external refresh. GDAL 3.13.3 also "
@@ -2182,7 +2190,7 @@ def suite_reduced_first_masks(ctx):
     suite.reference = "GDAL " + version.strip() + " (normalized 0/4 control)"
     code, out, err = run([sys.executable, "-m", "pytest", "-q",
                          str(ROOT / "python/tests/test_reduced_first_mask.py")],
-                        {"TERRIO_TEST_DATA": str(ctx.data)})
+                        {"TERRIO_TEST_DATA": str(Path(ctx.data).resolve())})
     suite.cases.append(Case("TIFF mask control", "Landsat normalized 0/4 control and external refresh",
                             IDENTICAL if code == 0 and "skipped" not in out else DIFFERS,
                             tail(err or out)))
