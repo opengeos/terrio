@@ -462,7 +462,10 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
         return Ok(Info::Vector(vector_info(&result?)));
     }
     if let Some(r) = crate::drivers::open_lazy(path) {
-        return Ok(Info::Raster(Box::new(lazy_raster_info_at(&mut r?, options, Some(path))?)));
+        let mut r = r?;
+        // Refused as an open refuses it, before statistics decode it (see `crate::declared`).
+        crate::declared::check_lazy(&r)?;
+        return Ok(Info::Raster(Box::new(lazy_raster_info_at(&mut r, options, Some(path))?)));
     }
     #[cfg(feature = "pointcloud")]
     if crate::pointcloud::is_point_cloud_path(path) {
@@ -482,6 +485,7 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
             return Ok(info(&crate::tiles::archive_dataset(archive, &loc.file_name(), &Default::default())?, options));
         }
         let mut r = LazyRaster::from_tiles(crate::tiles::raster::TileRaster::new(archive, None)?);
+        crate::declared::check_lazy(&r)?;
         return Ok(Info::Raster(Box::new(lazy_raster_info(&mut r, options)?)));
     }
     if !matches!(loc, crate::vfs::Location::Zip { .. })

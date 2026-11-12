@@ -2084,18 +2084,14 @@ mod tests {
         for padding in ["\0", "\x1a", "\0\r\n"] {
             assert_eq!(read_with(&format!("{custom}{padding}")), (None, Some(custom.to_string()), vec![]));
         }
-        // So are those terrio does not read that have the form of a definition: an engineering CRS
-        // in WKT 1 and WKT 2, WKT that is no CRS, another authority's code and an unknown code.
+        // Engineering definitions retain their WKT without inventing an EPSG identity.
         let engineering = r#"ENGCRS["site grid",EDATUM["site"],CS[Cartesian,2],AXIS["(E)",east],AXIS["(N)",north],LENGTHUNIT["metre",1]]"#;
-        for prj in [
-            r#"LOCAL_CS["site grid",UNIT["metre",1]]"#,
-            engineering,
-            r#"ENGCRS["x"]"#,
-            "IGNF:LAMB93",
-            "ignf:LAMB93",
-            "urn:ogc:def:crs:IGNF::LAMB93",
-            "EPSG:999999",
-        ] {
+        for prj in [r#"LOCAL_CS["site grid",UNIT["metre",1]]"#, engineering, r#"ENGCRS["x"]"#] {
+            assert!(SpatialRef::parse_literal(prj).is_ok(), "{prj:?}");
+            assert_eq!(read_with(&format!("{prj}\n")), (None, Some(prj.to_string()), vec![]), "{prj:?}");
+        }
+        // Unsupported authorities and unknown codes retain definition-shaped metadata too.
+        for prj in ["IGNF:LAMB93", "ignf:LAMB93", "urn:ogc:def:crs:IGNF::LAMB93", "EPSG:999999"] {
             assert!(SpatialRef::parse_literal(prj).is_err(), "{prj:?}");
             assert_eq!(read_with(&format!("{prj}\n")), (None, Some(prj.to_string()), vec![]), "{prj:?}");
         }

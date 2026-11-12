@@ -597,17 +597,29 @@ fn declaring(dir: &Path, name: &str, shape: &[u64], chunks: &[u64]) -> String {
 fn window_errors(path: &str, width: usize, height: usize) -> [String; 2] {
     let mut r = terrio::open_raster_lazy(path).unwrap();
     let lazy = r.read_window(Window::new(0, 0, width, height), &WindowOptions { bands: vec![1], overview: None });
-    [lazy.map(|ds| ds.raster.cols), terrio::open_raster(path).map(|ds| ds.raster.cols)].map(|r| r.unwrap_err().to_string())
+    [lazy.map(|ds| ds.raster.cols), terrio::open_raster(path).map(|ds| ds.raster.cols)].map(|r| {
+        let error = r.unwrap_err();
+        if terrio::usable_memory().is_some() {
+            assert!(matches!(error, terrio::Error::ResourceLimit(_)), "{error:?}");
+        }
+        error.to_string()
+    })
 }
 
 /// The error of a window of `size` pixels taking `bytes`: refused against the usable memory where
 /// it is known, else by the allocation that fails.
 #[cfg(not(feature = "gdal"))]
-fn window_refusal(size: &str, bytes: u64) -> String {
+fn window_refusal(size: &str, bytes: u64) -> [String; 2] {
     if terrio::usable_memory().is_some() {
-        format!("Zarr: a window of {size} pixels in 1 band(s) is too large: {bytes} bytes")
+        // Lazy source-backed windows are checked by the shared preflight before the codec.
+        let window = size.replace('x', " x ");
+        [
+            format!("a window of {window} pixels in 1 band(s) of 2-byte samples is too large to allocate: {bytes} bytes"),
+            format!("Zarr: a window of {size} pixels in 1 band(s) is too large: {bytes} bytes"),
+        ]
     } else {
-        format!("cannot allocate {bytes} bytes for a Zarr region")
+        let message = format!("cannot allocate {bytes} bytes for a Zarr region");
+        [message.clone(), message]
     }
 }
 
@@ -621,7 +633,7 @@ fn a_window_of_a_huge_declared_shape_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let path = declaring(dir.path(), "wide", &[64, 1 << 52], &[32, 32]);
     let expected = window_refusal("4503599627370496x64", 1 << 59);
-    for e in window_errors(&path, 1 << 52, 64) {
+    for (e, expected) in window_errors(&path, 1 << 52, 64).into_iter().zip(expected) {
         assert!(e.contains(&expected), "{e}");
     }
 }
@@ -634,7 +646,7 @@ fn a_window_past_what_a_buffer_holds_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let path = declaring(dir.path(), "wider", &[64, 1 << 56], &[32, 32]);
     let expected = window_refusal("72057594037927936x64", 1 << 63);
-    for e in window_errors(&path, 1 << 56, 64) {
+    for (e, expected) in window_errors(&path, 1 << 56, 64).into_iter().zip(expected) {
         assert!(e.contains(&expected), "{e}");
     }
 }

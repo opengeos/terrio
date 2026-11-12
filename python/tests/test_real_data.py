@@ -6,6 +6,8 @@ and compare with GDAL when `osgeo.gdal` is installed. Tests reading public cloud
 """
 
 import os
+import shutil
+import tempfile
 
 import numpy as np
 import pytest
@@ -243,9 +245,15 @@ def test_grid_transformations_match_osr(data_dir, gdal):
     proj_db = next((p for p in paths if os.path.exists(os.path.join(p, "proj.db"))), None)
     if proj_db is None:
         pytest.skip("PROJ's database is not found")
-    # GDAL uses the same grids as terrio, and only them (conda turns PROJ's network access on).
+    # GDAL uses the same grids as terrio, and only them: its PROJ directory holds PROJ's database
+    # and configuration alone, as the EPSG reference does, because a data directory may also hold
+    # grids (conda's proj-data). Conda also turns PROJ's network access on.
     network = osr.GetPROJEnableNetwork()
-    osr.SetPROJSearchPaths([str(grids), proj_db])
+    proj_only = tempfile.TemporaryDirectory()
+    for name in ("proj.db", "proj.ini"):
+        if os.path.exists(os.path.join(proj_db, name)):
+            shutil.copy2(os.path.join(proj_db, name), proj_only.name)
+    osr.SetPROJSearchPaths([str(grids), proj_only.name])
     osr.SetPROJEnableNetwork(False)
     terrio.set_grid_search_paths([grids])
     terrio.set_network_enabled(False)
@@ -282,6 +290,7 @@ def test_grid_transformations_match_osr(data_dir, gdal):
         osr.SetPROJEnableNetwork(network)
         terrio.set_grid_search_paths(None)
         terrio.set_network_enabled(None)
+        proj_only.cleanup()
 
 
 def test_transform_points_match_osr(gdal):

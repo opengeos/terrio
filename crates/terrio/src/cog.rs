@@ -130,7 +130,8 @@ pub struct WindowOptions {
 /// [`LazyRaster::open_tiff_with_limits`],
 /// [`LazyRaster::from_tiff_bytes_with_limits`], [`LazyRaster::from_sparse_with_limits`] and
 /// [`crate::open_raster_with_tiff_limits`] for eager reads. The
-/// window a read returns is not bounded by it: check the window's size before reading it.
+/// window a read returns is not bounded by it: a window the process cannot hold is refused before
+/// it is allocated (see [`crate::usable_memory`]); check the window's size before reading it.
 ///
 /// Nor do the limits bound the chunk tables a reader keeps: after a level's first window read,
 /// its chunk offsets and byte counts (about 16 bytes per chunk) are kept for the reader's
@@ -181,7 +182,8 @@ impl TiffReadLimits {
         }
     }
 
-    /// No limit: a malformed header can make a read attempt an allocation of any size.
+    /// No configured chunk/tag limit. Decoded chunk buffers must still fit the process's
+    /// usable memory, independently of this limit.
     pub fn unlimited() -> Self {
         Self { chunk_bytes: usize::MAX }
     }
@@ -458,6 +460,17 @@ pub fn open_raster_lazy(path: &str) -> Result<LazyRaster> {
     LazyRaster::open(path)
 }
 
+/// A raster a public constructor opened (callers may hand them untrusted files), unless it
+/// declares more than `TERRIO_MAX_DECLARED_BYTES` or `TERRIO_MAX_BANDS` allow (see
+/// [`crate::declared`]).
+fn declared_allowed(opened: Result<Option<LazyRaster>>) -> Result<Option<LazyRaster>> {
+    let opened = opened?;
+    if let Some(r) = &opened {
+        crate::declared::check_lazy(r)?;
+    }
+    Ok(opened)
+}
+
 impl LazyRaster {
     pub(crate) fn enter_asset_read(&self) -> Result<Option<crate::stac::AssetReadScope>> {
         self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()
@@ -558,13 +571,20 @@ impl LazyRaster {
     /// GeoTIFFs are read in place: only their headers are read now. So are raw-layout rasters (SRTM
     /// tiles, EHdr, ENVI, SAGA, ERS, Idrisi and Surfer 6 grids), JPEG 2000, GRIB and Zarr; other
     /// formats are read whole.
+    ///
+    /// A raster that declares more than the options `TERRIO_MAX_DECLARED_BYTES` (width x height x
+    /// bands x bytes per sample) or `TERRIO_MAX_BANDS` allow, when they are set, is refused with
+    /// [`Error::ResourceLimit`] naming the option: from its headers, before any pixel is read,
+    /// where its reader reads headers first.
     pub fn open(path: &str) -> Result<Self> {
         let policy = crate::stac::AssetReadPolicy::nested(path)?;
         let _scope = policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
         crate::formats::check_allowed(path, Some(crate::formats::Kind::Raster))?;
         // A missing file, or a directory, is named in the error.
         let mut r = Self::open_without_sidecars(path).map_err(|e| e.naming_local_file(path))?;
-        r.find_sidecar_mask(path);
+        // What it declares, from its header (a format read whole was checked when it was read).
+        crate::declared::check_lazy(&r)?;
+        r.find_sidecar_mask(path)?;
         if r.asset_policy.is_none() {
             r.asset_policy = policy;
         }
@@ -574,16 +594,16 @@ impl LazyRaster {
     /// Attaches the `.msk` sidecar of a local file (`dem.tif.msk`, as GDAL writes it when
     /// `GDAL_TIFF_INTERNAL_MASK=NO` or for formats without internal masks) when the raster has
     /// no internal mask and the sidecar is a per-dataset mask of its size.
-    fn find_sidecar_mask(&mut self, path: &str) {
+    fn find_sidecar_mask(&mut self, path: &str) -> Result<()> {
         // Not under `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, where GDAL sees an empty directory
         // and reads no `.msk` (GDAL 3.12.1: the mask is then all valid), nor when the allow-list
         // refuses the sidecar, which GDAL cannot read with its GTiff driver de-registered.
         if self.has_mask() || !Location::parse(path).is_local() || crate::config::sidecars_disabled() {
-            return;
+            return Ok(());
         }
         let msk = format!("{path}.msk");
         if !std::path::Path::new(&msk).is_file() || crate::formats::check_allowed(&msk, Some(crate::formats::Kind::Raster)).is_err() {
-            return;
+            return Ok(());
         }
         // Per-dataset (INTERNAL_MASK_FLAGS_1=2, GMF_PER_DATASET): one mask for every band.
         let per_dataset = crate::geotiff::read_geo_tags(std::path::Path::new(&msk)).is_none_or(|t| {
@@ -596,24 +616,27 @@ impl LazyRaster {
             Inner::Tiff(t) => t.limits,
             _ => TiffReadLimits::default(),
         };
-        if let Ok(Some(m)) = Self::open_tiff_with_limits(&msk, limits)
-            && per_dataset
-            && (m.width(), m.height()) == (self.width(), self.height())
-        {
-            self.sidecar_mask = Some(Box::new(m));
+        match Self::open_tiff_with_limits(&msk, limits) {
+            Ok(Some(m)) if per_dataset && (m.width(), m.height()) == (self.width(), self.height()) => {
+                self.sidecar_mask = Some(Box::new(m));
+            }
+            Err(error) if error.is_resource_refusal() => return Err(error),
+            _ => (),
         }
+        Ok(())
     }
 
     /// Attaches the `.ovr` beside a local GeoTIFF that has no overviews of its own, even under
     /// `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, which keeps an ordinary open from reading it:
     /// for an external refresh over an extent, which keeps that `.ovr`'s pixels outside it
     /// (`ops::overview`).
-    pub(crate) fn attach_managed_ovr(&mut self, path: &str) {
+    pub(crate) fn attach_managed_ovr(&mut self, path: &str) -> Result<()> {
         if let (Inner::Tiff(t), Location::Local(p)) = (&mut self.inner, Location::parse(path)) {
             let mut ovr = p.into_os_string();
             ovr.push(".ovr");
-            t.attach_ovr(std::path::Path::new(&ovr));
+            t.attach_ovr(std::path::Path::new(&ovr))?;
         }
+        Ok(())
     }
 
     fn open_without_sidecars(path: &str) -> Result<Self> {
@@ -633,7 +656,8 @@ impl LazyRaster {
         if let Some(t) = crate::tiles::raster::open_lazy(path)? {
             return Ok(Self::from_tiles(t));
         }
-        match Self::open_tiff(path)? {
+        // `LazyRaster::open` checks what it declares before looking for a sidecar mask.
+        match Self::open_tiff_unchecked(path)? {
             Some(r) => Ok(r),
             // A local VRT whatever its name, as GDAL's VRT driver identifies it by its content,
             // read as a `.vrt` is. An allow-list without VRT has refused it.
@@ -651,14 +675,22 @@ impl LazyRaster {
     }
 
     /// Opens a GeoTIFF in place, reading only its headers. Returns `None` when the file is not a
-    /// TIFF (having read only its first bytes).
+    /// TIFF (having read only its first bytes). Refused when it declares more than
+    /// `TERRIO_MAX_DECLARED_BYTES` or `TERRIO_MAX_BANDS` allow, as [`LazyRaster::open`] refuses it.
     pub fn open_tiff(path: &str) -> Result<Option<Self>> {
-        Self::open_tiff_using(path, TiffReadLimits::from_config)
+        declared_allowed(Self::open_tiff_unchecked(path))
     }
 
     /// [`LazyRaster::open_tiff`] with other decoding limits than the defaults.
     pub fn open_tiff_with_limits(path: &str, limits: TiffReadLimits) -> Result<Option<Self>> {
-        Self::open_tiff_using(path, || Ok(limits))
+        declared_allowed(Self::open_tiff_using(path, || Ok(limits)))
+    }
+
+    /// [`LazyRaster::open_tiff`] whatever the GeoTIFF declares: for [`LazyRaster::open`], which
+    /// checks it before looking for a sidecar mask, and for terrio's own files, the copy of a GeoTIFF
+    /// an update wrote, read back to refresh its overviews (`ops::update`).
+    pub(crate) fn open_tiff_unchecked(path: &str) -> Result<Option<Self>> {
+        Self::open_tiff_using(path, TiffReadLimits::from_config)
     }
 
     fn open_tiff_using(path: &str, limits: impl FnOnce() -> Result<TiffReadLimits>) -> Result<Option<Self>> {
@@ -718,25 +750,33 @@ impl LazyRaster {
         {
             let mut ovr = p.as_os_str().to_owned();
             ovr.push(".ovr");
-            t.attach_ovr(std::path::Path::new(&ovr));
+            t.attach_ovr(std::path::Path::new(&ovr))?;
         }
         Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() }))
     }
 
     /// Opens a GeoTIFF held in memory, reading only its headers now. Returns `None` when the bytes
-    /// are not a TIFF.
+    /// are not a TIFF. Refused when it declares more than `TERRIO_MAX_DECLARED_BYTES` or
+    /// `TERRIO_MAX_BANDS` allow, as [`LazyRaster::open`] refuses it.
     pub fn from_tiff_bytes(bytes: Vec<u8>) -> Result<Option<Self>> {
         Self::from_tiff_shared_bytes(std::sync::Arc::new(bytes))
     }
 
     /// [`LazyRaster::from_tiff_bytes`] with other decoding limits than the defaults.
     pub fn from_tiff_bytes_with_limits(bytes: Vec<u8>, limits: TiffReadLimits) -> Result<Option<Self>> {
-        Self::from_tiff_shared_bytes_with_limits(std::sync::Arc::new(bytes), limits)
+        declared_allowed(Self::from_tiff_shared_bytes_with_limits(std::sync::Arc::new(bytes), limits))
     }
 
-    /// Opens GeoTIFF bytes shared by immutable readers without copying the file buffer.
+    /// Opens GeoTIFF bytes shared by immutable readers without copying the file buffer, refused as
+    /// [`LazyRaster::from_tiff_bytes`] is.
     pub fn from_tiff_shared_bytes(bytes: std::sync::Arc<Vec<u8>>) -> Result<Option<Self>> {
-        Self::from_tiff_shared_bytes_using(bytes, TiffReadLimits::from_config)
+        declared_allowed(Self::from_tiff_shared_bytes_using(bytes, TiffReadLimits::from_config))
+    }
+
+    /// [`LazyRaster::from_tiff_bytes`] whatever the GeoTIFF declares, for terrio's own bytes: the
+    /// GeoTIFF an update of bytes wrote, read back to refresh its overviews (`ops::update`).
+    pub(crate) fn from_tiff_bytes_unchecked(bytes: Vec<u8>) -> Result<Option<Self>> {
+        Self::from_tiff_shared_bytes_using(std::sync::Arc::new(bytes), TiffReadLimits::from_config)
     }
 
     fn from_tiff_shared_bytes_with_limits(bytes: std::sync::Arc<Vec<u8>>, limits: TiffReadLimits) -> Result<Option<Self>> {
@@ -761,25 +801,29 @@ impl LazyRaster {
 
     /// Opens a remote GeoTIFF whose bytes the caller fetches (see [`crate::sparse`]), reading
     /// only its headers. Reads fail until the bytes they need are fetched, and are then run
-    /// again. Returns `None` when the file is not a TIFF.
+    /// again. Returns `None` when the file is not a TIFF. Refused when it declares more than
+    /// `TERRIO_MAX_DECLARED_BYTES` or `TERRIO_MAX_BANDS` allow, as [`LazyRaster::open`] refuses it.
     pub fn from_sparse(file: crate::sparse::SparseFile) -> Result<Option<Self>> {
-        Self::from_sparse_using(file, TiffReadLimits::from_config)
+        declared_allowed(Self::from_sparse_using(file, TiffReadLimits::from_config))
     }
 
     /// Opens the array at `key` (`""` for the store's root: a group's single array) of a Zarr
     /// store whose objects the caller fetches (see [`crate::sparse::SparseObjects`]), named
     /// `name` in messages, read by window as a remote store is. A group requires consolidated
     /// metadata to discover its arrays; otherwise pass the array's key explicitly. Opening and
-    /// reads fail until the objects they need are fetched, and are then run again.
+    /// reads fail until the objects they need are fetched, and are then run again. Refused when
+    /// the array declares more than `TERRIO_MAX_DECLARED_BYTES` or `TERRIO_MAX_BANDS` allow.
     #[cfg(feature = "zarr")]
     pub fn from_zarr_objects(objects: std::sync::Arc<crate::sparse::SparseObjects>, name: &str, key: &str) -> Result<Self> {
         crate::formats::check_driver_allowed("Zarr", "a Zarr store", crate::formats::Kind::Raster)?;
-        crate::drivers::zarr::open_objects(objects, name, key)
+        let r = crate::drivers::zarr::open_objects(objects, name, key)?;
+        crate::declared::check_lazy(&r)?;
+        Ok(r)
     }
 
     /// [`LazyRaster::from_sparse`] with other decoding limits than the defaults.
     pub fn from_sparse_with_limits(file: crate::sparse::SparseFile, limits: TiffReadLimits) -> Result<Option<Self>> {
-        Self::from_sparse_using(file, || Ok(limits))
+        declared_allowed(Self::from_sparse_using(file, || Ok(limits)))
     }
 
     fn from_sparse_using(file: crate::sparse::SparseFile, limits: impl FnOnce() -> Result<TiffReadLimits>) -> Result<Option<Self>> {
@@ -801,11 +845,14 @@ impl LazyRaster {
     }
 
     /// Opens an archive of image tiles (PMTiles or MBTiles) for reading by window, zoom levels
-    /// as overviews.
+    /// as overviews. Refused when its full resolution declares more than
+    /// `TERRIO_MAX_DECLARED_BYTES` or `TERRIO_MAX_BANDS` allow.
     #[cfg(feature = "tiles")]
     #[cfg_attr(docsrs, doc(cfg(feature = "tiles")))]
     pub fn from_tile_archive(archive: crate::tiles::TileArchive) -> Result<Self> {
-        Ok(Self::from_tiles(crate::tiles::raster::TileRaster::new(archive, None)?))
+        let r = Self::from_tiles(crate::tiles::raster::TileRaster::new(archive, None)?);
+        crate::declared::check_lazy(&r)?;
+        Ok(r)
     }
 
     /// The raster in memory, when it is not read on demand.
@@ -1180,7 +1227,9 @@ impl LazyRaster {
         ds
     }
 
-    /// Reads the whole full-resolution image.
+    /// Reads the whole full-resolution image. An image that the process cannot hold (more than
+    /// [`crate::usable_memory`]) is refused with [`Error::ResourceLimit`] before it is allocated,
+    /// as any of its windows is.
     pub fn read(&mut self) -> Result<RasterDataset> {
         let window = Window::full(self.width(), self.height());
         let mut ds = self.read_window(window, &WindowOptions::default())?;
@@ -1395,12 +1444,17 @@ impl LazyRaster {
     /// returned window dimensions). Planes follow the requested band order. This also applies
     /// to internal and external overviews; no pixel reordering is needed before a warp.
     /// The result does not retain the dataset mask. Read it separately with [`Self::read_mask`]
-    /// using the same window and overview selection when needed.
+    /// using the same window and overview selection when needed. A window the process
+    /// cannot hold (more than [`crate::usable_memory`]) is refused with [`Error::ResourceLimit`]
+    /// before it is allocated.
     pub fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {
         let _scope = self.asset_policy.as_ref().map(crate::stac::AssetReadPolicy::enter).transpose()?;
         let (lw, lh) = self.level_size(options.overview)?;
         window.check(lw, lh)?;
         let bands = read_bands(&options.bands, self.band_count())?;
+        // Repeated bands can make even a small in-memory raster's output exceed usable memory.
+        // Check the returned buffer before dispatching to any reader or allocating band metadata.
+        crate::dataset::fallible::check_raster_buffer("a window", window.width, window.height, bands.len(), self.data_type())?;
         let band_nodata = self.level_band_nodata(&bands, options.overview);
         let gt = self.level_geo_transform(options.overview)?;
         let data = match &mut self.inner {
@@ -2363,17 +2417,21 @@ impl TiffRaster {
 
     /// Takes the images of a GDAL `.ovr` file as overviews, as GDAL does when the TIFF has none
     /// of its own, when they have the TIFF's bands and type.
-    fn attach_ovr(&mut self, path: &std::path::Path) {
+    fn attach_ovr(&mut self, path: &std::path::Path) -> Result<()> {
         if self.levels.len() > 1 || !path.is_file() {
-            return;
+            return Ok(());
         }
-        let Ok(file) = std::fs::File::open(path) else { return };
-        let Ok(mut ovr) = TiffRaster::new(Source::File(BufReader::new(crate::geotiff::FileCursor::new(file))), None, self.limits) else {
-            return;
+        let Ok(file) = std::fs::File::open(path) else { return Ok(()) };
+        let mut ovr = match TiffRaster::new(Source::File(BufReader::new(crate::geotiff::FileCursor::new(file))), None, self.limits) {
+            Ok(ovr) => ovr,
+            Err(error) if error.is_resource_refusal() => return Err(error),
+            Err(_) => return Ok(()),
         };
         if ovr.bands != self.bands || ovr.data_type != self.data_type || ovr.complex != self.complex {
-            return;
+            return Ok(());
         }
+        let first = &ovr.levels[0];
+        crate::declared::check(first.width, first.height, ovr.bands, ovr.data_type, ovr.complex)?;
         ovr.file = Some(path.to_path_buf());
         for (i, l) in ovr.levels.iter().enumerate() {
             // GDAL accepts all matching-band/type images, including irregular,
@@ -2397,7 +2455,7 @@ impl TiffRaster {
         ovr.files.push(path.to_string_lossy().into_owned());
         let mut view =
             LazyRaster { inner: Inner::Tiff(Box::new(ovr)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() };
-        view.find_sidecar_mask(&path.to_string_lossy());
+        view.find_sidecar_mask(&path.to_string_lossy())?;
         let files = view.file_list().unwrap_or_else(|_| vec![path.to_string_lossy().into_owned()]);
         // Listed after the TIFF, as GDAL lists it.
         let at = self.files.len().min(1);
@@ -2405,6 +2463,7 @@ impl TiffRaster {
         self.ovr_mask = view.sidecar_mask;
         let Inner::Tiff(ovr) = view.inner else { unreachable!() };
         self.ovr = Some(ovr);
+        Ok(())
     }
 
     fn tags_at_level(&self, level: usize) -> &GeoTags {
@@ -2556,7 +2615,9 @@ impl TiffRaster {
 
     /// Reads a window of some samples (numbered from 1) of a level, band-major, as stored.
     fn read_samples(&mut self, level: usize, w: Window, bands: &[usize]) -> Result<RasterData> {
-        // A window too large for any allocation is refused before its chunks are listed or fetched.
+        // A window too large for any allocation is refused before its chunks are listed or fetched,
+        // and so is one the process cannot hold: allocated beyond the usable memory, it would kill
+        // the process as its pages are written.
         let len = bands
             .len()
             .checked_mul(w.width)
@@ -2565,6 +2626,7 @@ impl TiffRaster {
             .ok_or_else(|| {
                 Error::InvalidArgument(format!("a window of {}x{} pixels in {} band(s) is too large", w.width, w.height, bands.len()))
             })?;
+        crate::dataset::fallible::check_raster_buffer("a window", w.width, w.height, bands.len(), self.data_type)?;
         let tiff_err = self.limits.error();
         let ifd = self.levels[level].ifd;
         let dec = &mut self.decoder;
