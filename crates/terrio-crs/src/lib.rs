@@ -180,24 +180,35 @@ fn epsg_reference(s: &str) -> Option<u32> {
             if upper.contains(',') || (upper.contains('+') && !upper.starts_with('+')) {
                 return None;
             }
-            let starts_with_code = |text: &str| text.as_bytes().first().is_some_and(u8::is_ascii_digit);
-            let mut reference = upper.strip_prefix('+').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-            reference |= upper.strip_prefix("EPSG:").is_some_and(|rest| {
-                let code = rest.trim_start_matches(':');
-                let end = code.bytes().take_while(u8::is_ascii_digit).count();
-                end > 0 && !code[end..].starts_with(['.', ':'])
+            let leading_code = |text: &str| {
+                let end = text.bytes().take_while(u8::is_ascii_digit).count();
+                text[..end].parse::<u32>().ok()
+            };
+            let mut reference = upper.strip_prefix('+').filter(|n| n.bytes().all(|b| b.is_ascii_digit())).and_then(leading_code);
+            reference = reference.or_else(|| {
+                upper.strip_prefix("EPSG:").and_then(|rest| {
+                    let code = rest.trim_start_matches(':');
+                    let end = code.bytes().take_while(u8::is_ascii_digit).count();
+                    (!code[end..].starts_with(['.', ':'])).then(|| leading_code(code)).flatten()
+                })
             });
-            reference |= upper
-                .strip_prefix("URN:OGC:DEF:CRS:EPSG:")
-                .is_some_and(|rest| rest.split_once(':').is_some_and(|(version, code)| version.is_empty() && starts_with_code(code)));
+            reference = reference.or_else(|| {
+                upper.strip_prefix("URN:OGC:DEF:CRS:EPSG:").and_then(|rest| {
+                    let (version, code) = rest.split_once(':')?;
+                    version.is_empty().then(|| leading_code(code)).flatten()
+                })
+            });
             for prefix in [
                 "HTTP://WWW.OPENGIS.NET/DEF/CRS/EPSG/",
                 "HTTPS://WWW.OPENGIS.NET/DEF/CRS/EPSG/",
                 "HTTP://OPENGIS.NET/DEF/CRS/EPSG/",
                 "HTTPS://OPENGIS.NET/DEF/CRS/EPSG/",
             ] {
-                reference |= upper.strip_prefix(prefix).is_some_and(|rest| {
-                    rest.split_once('/').is_some_and(|(version, code)| (version.is_empty() || version == "0") && starts_with_code(code))
+                reference = reference.or_else(|| {
+                    upper.strip_prefix(prefix).and_then(|rest| {
+                        let (version, code) = rest.split_once('/')?;
+                        (version.is_empty() || version == "0").then(|| leading_code(code)).flatten()
+                    })
                 });
             }
             for prefix in [
@@ -206,9 +217,12 @@ fn epsg_reference(s: &str) -> Option<u32> {
                 "HTTP://OPENGIS.NET/GML/SRS/EPSG.XML#",
                 "HTTPS://OPENGIS.NET/GML/SRS/EPSG.XML#",
             ] {
-                reference |= upper.strip_prefix(prefix).is_some_and(starts_with_code);
+                reference = reference.or_else(|| upper.strip_prefix(prefix).and_then(leading_code));
             }
-            reference.then(|| wbp::epsg_from_srs_reference(s)).flatten()
+            // The legacy parser can mistake a short code before '/' for a version.
+            // Keep its compatibility forms only when it returns the prefix's own code.
+            let reference = reference?;
+            wbp::epsg_from_srs_reference(s).filter(|code| *code == reference)
         })
     }
     #[cfg(not(feature = "wbprojection-fallback"))]
@@ -2265,6 +2279,9 @@ mod tests {
             "EPSG:2154+garbage",
             "EPSG:2154+5720junk",
             "EPSG:4326.0:3857",
+            "EPSG:1/3857",
+            "urn:ogc:def:crs:EPSG::1/3857",
+            "https://www.opengis.net/def/crs/EPSG//1/3857",
             "urn:ogc:def:crs:EPSG:4326:3857junk",
             "https://www.opengis.net/def/crs/EPSG/4326/3857junk",
             "urn:ogc:def:crs:EPSG::2154,crs:EPSG::5720",

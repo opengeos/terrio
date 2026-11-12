@@ -270,7 +270,9 @@ fn check_geometry_reference(node: &Element, reference: Option<&str>, layer_srs: 
         && Some(name) != reference
     {
         let srs = parse_srs_name(name).map_err(|_| Error::Unsupported("GML: a differing geometry CRS cannot be resolved".into()))?;
-        if layer_srs.is_none_or(|layer| !layer.same_as(&srs)) {
+        let layer_srs =
+            layer_srs.ok_or_else(|| Error::Unsupported("GML: layer CRS is unresolved; cannot validate a differing geometry CRS".into()))?;
+        if !layer_srs.same_as(&srs) {
             return Err(Error::Unsupported("GML: mixed coordinate reference systems within a layer".into()));
         }
         if (authority_axis_order(name) && srs.has_north_east_axis_order()) != swap {
@@ -869,6 +871,13 @@ mod tests {
             let restored = &parse(&xml::parse(&text).unwrap(), None).unwrap()[0];
             assert_eq!(restored.features[0].geometry, layer.features[0].geometry);
         }
+    }
+
+    #[test]
+    fn unresolved_layer_crs_refuses_differing_geometry_references_explicitly() {
+        let text = r#"<FeatureCollection><featureMember><p><geom><Point srsName="EPSG:999999"><pos>1 2</pos></Point></geom></p></featureMember><featureMember><p><geom><Point srsName="EPSG:4326"><pos>3 4</pos></Point></geom></p></featureMember></FeatureCollection>"#;
+        let error = parse(&xml::parse(text).unwrap(), None).unwrap_err();
+        assert!(matches!(error, Error::Unsupported(ref message) if message.contains("layer CRS is unresolved")), "{error}");
     }
 
     #[test]

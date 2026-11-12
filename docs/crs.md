@@ -185,7 +185,8 @@ The [standalone benchmark validation](crs-benchmark-validation.md) records the
 direct native/fallback results against both pinned upstream suites.
 
 Canonical EPSG references use one parser in both standalone configurations.
-The legacy `urn:x-ogc:def:crs:EPSG:4326` form remains supported without a version;
+The legacy unversioned `urn:x-ogc:def:crs:EPSG:4326` form is now accepted by both
+the native parser and the fallback;
 versioned X-OGC forms remain unsupported. Use the modern versioned OGC URN below.
 Versioned URNs/URLs resolve the code separately from the authority version
 (`urn:ogc:def:crs:EPSG:6.6:4326` resolves EPSG:4326). The fallback retains its
