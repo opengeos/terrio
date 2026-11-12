@@ -1181,7 +1181,7 @@ mod tests {
     /// a 503 counts its body twice, and the same-origin redirect after it is not counted.
     #[test]
     fn a_write_is_counted_with_the_body_it_sends() {
-        let _serial = crate::http::tests::stats_test_guard();
+        let _serial = crate::http::stats_test_guard();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let host = listener.local_addr().unwrap().to_string();
         let remote = Remote::Url(format!("http://{host}/stats/upload.bin?sig=secret"));
