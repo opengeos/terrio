@@ -60,15 +60,7 @@ def _boxes(raw):
         offset += length
 
 
-@pytest.mark.parametrize("roles", ROLES, ids=lambda r: "-".join(r))
-@pytest.mark.parametrize("dtype", ["uint8", "uint16"])
-@pytest.mark.parametrize("memory", [False, True], ids=["path", "memory"])
-def test_explicit_jp2_roles_preserve_values_and_unreferenced_storage(
-    tmp_path, roles, dtype, memory
-):
-    values, path, raw = _write(tmp_path, roles, dtype, memory)
-    for kind, payload in _boxes(raw):
-        assert not (kind == b"uuid" and payload.startswith(GEOJP2_UUID))
+def _mct(raw):
     codestream = next(payload for kind, payload in _boxes(raw) if kind == b"jp2c")
     assert codestream[:2] == b"\xff\x4f"  # SOC
     cod = 2
@@ -78,7 +70,19 @@ def test_explicit_jp2_roles_preserve_values_and_unreferenced_storage(
         assert length >= 2 and cod + length + 2 <= len(codestream)
         cod += length + 2
     assert struct.unpack_from(">H", codestream, cod + 2)[0] >= 7
-    assert codestream[cod + 8] == int(roles[:3] == ("Red", "Green", "Blue"))
+    return codestream[cod + 8]
+
+
+@pytest.mark.parametrize("roles", ROLES, ids=lambda r: "-".join(r))
+@pytest.mark.parametrize("dtype", ["uint8", "uint16"])
+@pytest.mark.parametrize("memory", [False, True], ids=["path", "memory"])
+def test_explicit_jp2_roles_preserve_values_and_unreferenced_storage(
+    tmp_path, roles, dtype, memory
+):
+    values, path, raw = _write(tmp_path, roles, dtype, memory)
+    for kind, payload in _boxes(raw):
+        assert not (kind == b"uuid" and payload.startswith(GEOJP2_UUID))
+    assert _mct(raw) == int(roles[:3] == ("Red", "Green", "Blue"))
     header = next(payload for kind, payload in _boxes(raw) if kind == b"jp2h")
     definitions = next(payload for kind, payload in _boxes(header) if kind == b"cdef")
     if not any(role in roles for role in ("Red", "Green", "Blue")):
@@ -266,6 +270,7 @@ def test_inherited_geotiff_roles_are_not_replaced_with_rgb(tmp_path, gdal, memor
         path.write_bytes(raster.to_bytes("inherited.jp2"))
     else:
         raster.write(str(path))
+    assert _mct(path.read_bytes()) == 0
     with rio.open(path) as result:
         assert result.colorinterp == (ColorInterp.undefined,) * 3
         np.testing.assert_array_equal(result.read(), values)
@@ -358,3 +363,79 @@ def test_gray_update_preserves_original_y_association(tmp_path, gdal, y_band, su
         np.testing.assert_array_equal(result.read(), values)
     reference = gdal.Open(str(path))
     np.testing.assert_array_equal(reference.ReadAsArray(), expected)
+
+
+@pytest.mark.parametrize("memory", [False, True])
+@pytest.mark.parametrize(
+    "transform",
+    [
+        (500000.0, 10.0, 0.0, 4600000.0, 0.0, 10.0),
+        (500000.0, 10.0, 2.0, 4600000.0, 1.0, -10.0),
+    ],
+)
+def test_jp2_exports_preserve_full_source_affine(tmp_path, gdal, memory, transform):
+    values = _source(("Gray",), "uint8")[0]
+    source = tmp_path / "affine.tif"
+    reference = gdal.GetDriverByName("GTiff").Create(str(source), 64, 48, 1, gdal.GDT_Byte)
+    reference.SetGeoTransform(transform)
+    reference.SetProjection("EPSG:32633")
+    reference.WriteArray(values)
+    reference = None
+    raster = terrio.open_raster(str(source), lazy=True)
+    target = tmp_path / "affine.jp2"
+    if memory:
+        target.write_bytes(raster.to_bytes(target.name))
+    else:
+        raster.write(str(target))
+    reference = gdal.Open(str(target))
+    assert reference.GetGeoTransform() == transform
+    assert reference.GetSpatialRef().GetAuthorityCode(None) == "32633"
+    np.testing.assert_array_equal(reference.ReadAsArray(), values)
+    np.testing.assert_array_equal(reference.GetRasterBand(1).GetMaskBand().ReadAsArray(), 255)
+    actual = terrio.open_raster(str(target), lazy=True)
+    assert tuple(actual.transform) == transform
+    np.testing.assert_array_equal(actual.read(), values[None])
+
+
+@pytest.mark.parametrize("memory", [False, True])
+@pytest.mark.parametrize("has_crs", [False, True])
+def test_jp2_source_georeferencing_policy(tmp_path, gdal, memory, has_crs):
+    source = tmp_path / "crs-only.tif"
+    reference = gdal.GetDriverByName("GTiff").Create(str(source), 32, 24, 1, gdal.GDT_Byte)
+    if has_crs:
+        reference.SetProjection("EPSG:32633")
+    reference.GetRasterBand(1).Fill(7)
+    reference = None
+    raster = terrio.open_raster(str(source), lazy=True)
+    assert not raster.has_transform
+    target = tmp_path / "crs-only.jp2"
+    if memory:
+        target.write_bytes(raster.to_bytes(target.name))
+    else:
+        raster.write(str(target))
+    reference = gdal.Open(str(target))
+    if has_crs:
+        # Issue #714 explicitly retains the existing CRS-only unit-pixel grid.
+        assert reference.GetGeoTransform() == (0.0, 1.0, 0.0, 24.0, 0.0, -1.0)
+        assert reference.GetSpatialRef().GetAuthorityCode(None) == "32633"
+    else:
+        assert reference.GetGeoTransform(can_return_null=True) is None
+        assert reference.GetSpatialRef() is None
+    np.testing.assert_array_equal(reference.ReadAsArray(), 7)
+
+
+@pytest.mark.parametrize("extension", ["png", "jpg", "webp"])
+def test_native_image_copies_preserve_absent_georeferencing(tmp_path, gdal, extension):
+    source = tmp_path / "plain.tif"
+    reference = gdal.GetDriverByName("GTiff").Create(str(source), 32, 24, 3, gdal.GDT_Byte)
+    for band in range(1, 4):
+        reference.GetRasterBand(band).Fill(7)
+    reference = None
+    raster = terrio.open_raster(str(source), lazy=True)
+    assert not raster.has_transform
+    target = tmp_path / f"plain.{extension}"
+    raster.write(str(target))
+    reference = gdal.Open(str(target))
+    assert reference.GetGeoTransform(can_return_null=True) is None
+    assert reference.GetSpatialRef() is None
+    assert not target.with_suffix(".wld").exists()

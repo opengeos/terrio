@@ -1383,18 +1383,21 @@ pub(crate) fn write(
     nodata: Option<f64>,
     path: &Path,
     georeferenced: bool,
+    geo_transform: Option<[f64; 6]>,
     band_metadata: &[crate::BandMetadata],
     creation_options: &[(String, String)],
 ) -> Result<()> {
-    common::write_replacing(path, to_bytes(r, georeferenced, band_metadata, creation_options)?)?;
+    common::write_replacing(path, to_bytes(r, georeferenced, geo_transform, band_metadata, creation_options)?)?;
     common::write_pam_with(path, None, nodata, r.bands)
 }
 
 /// Encodes a raster as a JP2 file with a GeoJP2 box, unless it has neither a
 /// geotransform (`georeferenced` false, `GEOREFERENCED=NO`) nor a CRS.
+/// Full affine transforms use the embedded TIFF matrix (reference: GDAL 3.13.3).
 pub(crate) fn to_bytes(
     r: &Raster,
     georeferenced: bool,
+    geo_transform: Option<[f64; 6]>,
     band_metadata: &[crate::BandMetadata],
     creation_options: &[(String, String)],
 ) -> Result<Vec<u8>> {
@@ -1475,7 +1478,7 @@ pub(crate) fn to_bytes(
             ..Default::default()
         };
         let tiny = Raster::from_data_native(tiny_cfg, RasterData::U8(vec![0]))?;
-        let tiff = super::gtiff_write::encode(&tiny, &Default::default())?;
+        let tiff = super::gtiff_write::encode(&tiny, &super::gtiff_write::TiffOptions { geo_transform, ..Default::default() })?;
         let mut uuid = GEOJP2_UUID.to_vec();
         uuid.extend(tiff);
         put(b"uuid", &uuid);
@@ -1506,18 +1509,18 @@ mod tests {
         let raster =
             common::make_raster(64, 64, 3, RasterData::U8(values.clone()), common::NO_GEOTRANSFORM, Default::default(), None).unwrap();
         let options = |q: &str| vec![("quality".to_string(), q.to_string())];
-        let default = to_bytes(&raster, false, &[], &[]).unwrap();
-        assert_eq!(default, to_bytes(&raster, false, &[], &options("100")).unwrap());
+        let default = to_bytes(&raster, false, None, &[], &[]).unwrap();
+        assert_eq!(default, to_bytes(&raster, false, None, &[], &options("100")).unwrap());
         assert_eq!(read_bytes(&default).unwrap().raster.data.to_f64_vec(), values.iter().map(|v| *v as f64).collect::<Vec<_>>());
-        let low = to_bytes(&raster, false, &[], &options("10")).unwrap();
-        let high = to_bytes(&raster, false, &[], &options("50")).unwrap();
+        let low = to_bytes(&raster, false, None, &[], &options("10")).unwrap();
+        let high = to_bytes(&raster, false, None, &[], &options("50")).unwrap();
         assert_ne!(low, high);
         assert_ne!(read_bytes(&low).unwrap().raster.data.to_f64_vec(), raster.data.to_f64_vec());
         assert!(low.windows(b"LOSSY settings used".len()).any(|s| s == b"LOSSY settings used"));
-        let progressive = to_bytes(&raster, false, &[], &options("10,100")).unwrap();
+        let progressive = to_bytes(&raster, false, None, &[], &options("10,100")).unwrap();
         assert_eq!(read_bytes(&progressive).unwrap().raster.data.to_f64_vec(), raster.data.to_f64_vec());
         for quality in ["", "0", "-1", "101", "nan", "inf", "1e-40", "1e-36", "25,10", "25,25"] {
-            assert!(to_bytes(&raster, false, &[], &options(quality)).unwrap_err().to_string().contains("QUALITY"));
+            assert!(to_bytes(&raster, false, None, &[], &options(quality)).unwrap_err().to_string().contains("QUALITY"));
         }
     }
 
@@ -1560,7 +1563,7 @@ mod tests {
         .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("t.jp2");
-        write(&r, Some(-1500.0), &p, true, &[], &[]).unwrap();
+        write(&r, Some(-1500.0), &p, true, None, &[], &[]).unwrap();
         let ds = read(&p).unwrap();
         assert_eq!(ds.raster.data_i16().unwrap(), &data[..]);
         assert_eq!(ds.crs().epsg, Some(32611));
@@ -1582,7 +1585,7 @@ mod tests {
             let gt = [500000.0, 10.0, 0.0, 4100000.0, 0.0, -10.0];
             let r = common::make_raster(w, h, bands, data, gt, CrsInfo::from_epsg(32611), None).unwrap();
             let src = path(&format!("{name}.jp2"));
-            write(&r, Some(0.0), Path::new(&src), true, &[], &[]).unwrap();
+            write(&r, Some(0.0), Path::new(&src), true, None, &[], &[]).unwrap();
             let Dataset::Raster(whole) = crate::open(&src).unwrap() else { panic!("not a raster") };
             for driver in [D::Cog, D::GTiff] {
                 let options = RasterWriteOptions { driver: Some(driver), compression: Some("DEFLATE".into()), ..Default::default() };

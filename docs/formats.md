@@ -159,8 +159,10 @@ the same way (JPEG XL files themselves are not a format terrio reads).
 Supplied JPEG 2000 colour roles, including roles inherited from source files, are stored in channel-definition boxes. Three- and
 four-band data marked undefined read back as Undefined while the file declares grayscale; RGB associations and
 alpha can appear in any component order. The multiple-component transform is enabled
-only for RGB in the first three components. Non-RGB files declare grayscale with one
-Y channel (the first gray channel, else the first non-alpha component), as the format requires.
+only for RGB in the first three components. Inherited multispectral Undefined roles therefore
+disable that transform as well as declaring grayscale; encoded sizes can change. Non-RGB files declare grayscale with one
+Y channel (a non-alpha channel with stored association 1, else the first gray channel,
+else the first non-alpha component), as the format requires.
 All-alpha inputs are rejected because they have no colour channel. Multiple alpha roles and signed
 alpha samples are rejected; JPEG 2000 opacity requires an unsigned component. Updates and copies
 retain the stored Y association even when both bands report Gray. Multiple gray roles
@@ -177,13 +179,15 @@ as GDAL 3.13.3 does, instead of permuting BGR or ARGB samples into RGB order. Pa
 decoding keeps its existing expansion. As with GDAL, grayscale images of one or two
 components report gray for non-alpha channels; non-RGB images with more components
 report undefined. JPEG 2000 byte exports in Python and WebAssembly also preserve
-an absent source transform. Byte exports refuse rotated and south-up transforms, whether
-explicitly supplied or inherited from a source; file exports retain the existing bounding-grid
-behaviour. Nodata and georeferencing follow the existing box/sidecar policy.
+absence of georeferencing when neither a transform nor a CRS is supplied. CRS-only inputs
+retain their existing unit-pixel grid. Both file and byte exports preserve full affine transforms, including rotated and south-up grids,
+in the embedded GeoTIFF. Nodata and georeferencing follow the existing box/sidecar policy.
 
 `JP2OpenJPEG` (the driver `terrio.rio` names for `.jp2` paths), `JPEG2000`, `JP2KAK`, `JP2ECW` and
 `JP2MrSID` name the JP2 driver too, in any case: to write (`-f`, `driver=`), to read with a driver
-named, and in the allowed drivers. A file written with any of them reads back as `JP2`.
+named, and in the allowed drivers. A file written with any of them reads back as `JP2`. A CMAP box without a preceding PCLR
+palette remains unsupported by the Rust OpenJPEG header parser; GDAL 3.13.3 accepts
+the tested direct-mapping case. This existing limit is independent of CDEF band-order handling.
 
 GRIB files (editions 1 and 2) are read as GDAL's GRIB driver reads them, also when found by
 their content rather than their extension: each field of each GRIB2 message, and each GRIB1

@@ -1550,6 +1550,10 @@ pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWrit
     let derived = color_options(ds, path, options);
     let options = derived.as_ref().unwrap_or(options);
     let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
+    let mut options = std::borrow::Cow::Borrowed(options);
+    if ds.geotransform_present == Some(false) {
+        crate::drivers::common::keep_unreferenced(options.to_mut(), path, false);
+    }
     let options = options.inherited_from(ds, driver);
     let pam = needs_nodata_pam(ds) && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
     let tag = if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) { tiff_nodata(ds) } else { ds.nodata() };
@@ -1666,19 +1670,21 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool,
             driver.name()
         )));
     }
-    if options.geo_transform.is_some_and(|gt| !is_north_up(&gt))
+    if (driver != RasterDriver::JP2 && options.geo_transform.is_some_and(|gt| !is_north_up(&gt)))
         || !options.gcps.is_empty()
         || options.mask.is_some()
         || !options.rpc.is_empty()
     {
+        let unsupported =
+            if driver == RasterDriver::JP2 { "GCPs, masks or RPCs" } else { "rotated or south-up geotransforms, GCPs, masks or RPCs" };
         return Err(Error::Unsupported(format!(
-            "the {} writer cannot store rotated or south-up geotransforms, GCPs, masks or RPCs (GeoTIFF can, with a lossless compression)",
+            "the {} writer cannot store {unsupported} (GeoTIFF can, with a lossless compression)",
             driver.name()
         )));
     }
     let north_up;
     let raster = match options.geo_transform {
-        Some(gt) if gt != geo_transform(raster) => {
+        Some(gt) if driver != RasterDriver::JP2 && gt != geo_transform(raster) => {
             north_up = RasterDataset::with_driver(raster.clone(), driver, false).with_geo_transform(gt);
             &north_up
         }

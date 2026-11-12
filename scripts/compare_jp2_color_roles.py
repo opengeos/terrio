@@ -17,10 +17,11 @@ import terrio
 import terrio.rio as rio
 from terrio.rio.enums import ColorInterp
 from terrio.rio.shutil import copy
+from terrio.rio.transform import Affine
 
 
-def compare(path, values, roles):
-    """GDAL and Native reads must retain the declared components, masks and absence of a grid."""
+def compare(path, values, roles, transform=None):
+    """GDAL and Native reads retain components, masks and the declared affine or its absence."""
     reference = gdal.Open(str(path))
     reference_roles = [gdal.GetColorInterpretationName(reference.GetRasterBand(i+1).GetColorInterpretation()) for i in range(len(roles))]
     actual = reference.ReadAsArray()
@@ -39,11 +40,16 @@ def compare(path, values, roles):
     exact = 1.0 - differing / differences.size
     # The shared raster-conformance schema uses matching fractions, not flags.
     # Integer samples require zero tolerance, so within_tol and exact coincide.
+    native_raster = terrio.open_raster(str(path), lazy=True)
+    if transform is None:
+        same_georeferencing = reference.GetGeoTransform(can_return_null=True) is None and not native_raster.has_transform
+    else:
+        same_georeferencing = (reference.GetGeoTransform() == transform and tuple(native_raster.transform) == transform
+                              and reference.GetSpatialRef().GetAuthorityCode(None) == "32633" and native_raster.crs == "EPSG:32633")
     result = dict(same_size=same_size,
                   same_type=actual.dtype == values.dtype and native_types == (str(values.dtype),) * len(roles),
                   same_metadata=reference_roles == list(roles) and native_roles == [role.lower() for role in roles],
-                  same_georeferencing=reference.GetGeoTransform(can_return_null=True) is None and
-                      not terrio.open_raster(str(path), lazy=True).has_transform,
+                  same_georeferencing=same_georeferencing,
                   valid_mismatch=int(np.count_nonzero(native_masks != masks)), differing=differing,
                   max_diff=float(np.abs(differences).max(initial=0)), within_tol=exact, exact=exact)
     reference = None
@@ -74,12 +80,18 @@ def main():
         ("RGBA", ("Red", "Green", "Blue", "Alpha"), np.concatenate([pixels, alpha[None]])),
         ("ARGB", ("Alpha", "Red", "Green", "Blue"), np.concatenate([alpha[None], pixels])),
     ]
+    cases.extend((name, ("Red", "Green", "Blue"), pixels) for name in ("rotated", "south-up"))
+    transforms = {"rotated": (500000.0, 10.0, 2.0, 4600000.0, 1.0, -10.0),
+                  "south-up": (500000.0, 10.0, 0.0, 4600000.0, 0.0, 10.0)}
     records = []
     with tempfile.TemporaryDirectory(prefix="terrio-jp2-colors-") as directory:
         root = Path(directory)
         for name, roles, values in cases:
             input_path = root / f"{name}.tif"
             profile = dict(width=width, height=height, count=len(roles), dtype=str(values.dtype))
+            transform = transforms.get(name)
+            if transform is not None:
+                profile.update(transform=Affine.from_gdal(*transform), crs="EPSG:32633")
             colors = [ColorInterp[role.lower()] for role in roles]
             with rio.open(input_path, "w", driver="GTiff", **profile) as dst:
                 dst.colorinterp = colors
@@ -107,7 +119,7 @@ source.free();
 """
                         subprocess.run(["node", "-e", program, str(args.node_package.resolve()), str(input_path), str(output)],
                                        check=True, capture_output=True, text=True)
-                    record.update(compare(output, values, roles))
+                    record.update(compare(output, values, roles, transform))
                 except Exception as error:
                     record["error"] = f"{type(error).__name__}: {error}"
                 records.append(record)

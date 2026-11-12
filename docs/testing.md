@@ -2802,11 +2802,15 @@ A GDAL-authored BGRA fixture checks stored 8/8/8/1-bit component precisions, alp
 promotion and masks. The native test checks full and selected-window component order.
 Two Gray components with luminance in either component retain their CDEF association
 through updates and `rio.shutil.copy` (including the alias driver); an explicit color-role
-assignment still selects new associations.
+assignment still selects new associations. Inherited multispectral roles pin the disabled
+multiple-component transform. Source-affine tests check rotated and south-up grids
+through both file and byte exports. Unreferenced sources remain without a transform;
+CRS-only sources retain their existing unit-pixel grid, as specified in #714.
 
 The `jp2-colors` conformance suite writes real Landsat subsets through Python
 paths/bytes, CLI and Node/WASM when its package is available. GDAL independently
-checks exact values, types, masks, roles and absence of georeferencing; this does
+checks exact values, types, masks, roles and either absence of georeferencing or exact
+rotated/south-up affine grids with EPSG:32633; this does
 not claim compressed-byte identity with GDAL's encoder. Copies of real two-component
 subsets also check stored luminance associations through both path and open-reader
 inputs and the JP2 alias driver. Run with GDAL 3.13.3:

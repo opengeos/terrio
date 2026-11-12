@@ -4640,3 +4640,45 @@ test("JP2 byte copies preserve either grayscale Y component", { skip: needs("jp2
     source.free();
   }
 });
+
+
+test("JPEG 2000 byte exports preserve rotated and south-up affine grids", { skip: needs("jp2") }, () => {
+  // Reference: GDAL 3.13.3 accepts the full affine transform in a GeoJP2 TIFF matrix.
+  const values = Uint16Array.from({ length: 64 * 48 }, (_, i) => i % 3011);
+  for (const transform of [[500000, 10, 2, 4600000, 1, -10], [500000, 10, 0, 4600000, 0, 10]]) {
+    const seed = terrio.rasterFromArray(values, 64, 48, [500000, 10, 0, 4600000, 0, -10], "EPSG:32633");
+    const tiff = seed.toBytes("source.tif");
+    seed.free();
+    // Repoint the TIFF to an appended IFD with a ModelTransformation matrix. Existing
+    // pixel and CRS offsets remain valid; this supplies an affine source through open().
+    const original = new DataView(tiff.buffer, tiff.byteOffset, tiff.byteLength);
+    assert.equal(original.getUint32(0, true), 0x002A4949);
+    const ifd = original.getUint32(4, true), count = original.getUint16(ifd, true);
+    const entries = [];
+    for (let i = 0; i < count; i++) {
+      const offset = ifd + 2 + 12 * i, tag = original.getUint16(offset, true);
+      if (![33550, 33922, 34264].includes(tag)) entries.push(tiff.slice(offset, offset + 12));
+    }
+    const nextIfd = Math.ceil(tiff.length / 8) * 8;
+    const matrixOffset = Math.ceil((nextIfd + 2 + 12 * (entries.length + 1) + 4) / 8) * 8;
+    const encoded = new Uint8Array(matrixOffset + 128);
+    encoded.set(tiff);
+    const view = new DataView(encoded.buffer), entry = new Uint8Array(12), tag = new DataView(entry.buffer);
+    tag.setUint16(0, 34264, true); tag.setUint16(2, 12, true);
+    tag.setUint32(4, 16, true); tag.setUint32(8, matrixOffset, true);
+    entries.push(entry);
+    entries.sort((a, b) => new DataView(a.buffer).getUint16(0, true) - new DataView(b.buffer).getUint16(0, true));
+    view.setUint32(4, nextIfd, true); view.setUint16(nextIfd, entries.length, true);
+    entries.forEach((entry, i) => encoded.set(entry, nextIfd + 2 + 12 * i));
+    [transform[1], transform[2], 0, transform[0], transform[4], transform[5], 0, transform[3],
+      0, 0, 0, 0, 0, 0, 0, 1].forEach((value, i) => view.setFloat64(matrixOffset + 8 * i, value, true));
+    const source = terrio.open(encoded, "affine.tif");
+    assert.deepEqual([...source.transform], transform);
+    const output = terrio.open(source.toBytes("affine.jp2"), "affine.jp2");
+    assert.deepEqual([...output.transform], transform);
+    assert.equal(output.crs, "EPSG:32633");
+    assert.deepEqual([...output.readBand(1)], [...values]);
+    output.free();
+    source.free();
+  }
+});
