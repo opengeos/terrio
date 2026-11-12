@@ -1108,6 +1108,12 @@ turn apart, which takes the source between them.
 The window holds the footprints of its chunk unless a strongly curved
 transformation takes one past the points the window is sampled from: such a footprint is shortened,
 and its pixel can then differ with the chunks the warp splits the output grid into.
+With chunk-dependent sampling, the sampled source window can also omit one side of an
+antimeridian-crossing footprint; default stable sampling avoids that window-selection gap.
+For a source wider than one longitude turn, repeated longitudes are read at the single placement
+with the greatest overlap. If no single placement covers the footprint, the part beyond the
+other edge is omitted. Covering that remainder without counting repeated longitudes twice is
+tracked in [#884](https://github.com/opengeos/terrio/issues/884).
 
 ### Warp source overviews
 
