@@ -1770,6 +1770,17 @@ fn vrt_and_source_resampling_check_their_working_arrays() {
     let (result, largest) = largest_during(|| terrio::ops::translate::translate(&data, &options).map(|_| ()));
     let source_refused = matches!(result, Err(terrio::Error::ResourceLimit(_))) && largest < 16 << 20;
     assert!(vrt_refused && source_refused, "VRT {vrt_result}; source {result:?}, largest={largest}");
+
+    // A small destination still needs every area contributor's value/weight pair.
+    let mut area = header(4096, 4096, 1);
+    area.raster.data = RasterData::U8(vec![7; 4096 * 4096]);
+    for method in [terrio::ops::Resampling::Mode, terrio::ops::Resampling::Min] {
+        let options =
+            TranslateOptions { out_size: Some((Size::Pixels(1), Size::Pixels(1))), resampling: Some(method), ..Default::default() };
+        let (result, largest) = largest_during(|| terrio::ops::translate::translate(&area, &options).map(|_| ()));
+        assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))), "{method:?}: {result:?}");
+        assert!(largest < 1 << 20, "{method:?}: {largest} bytes requested before area scratch refusal");
+    }
 }
 
 /// Reference: GDAL 3.13.3. UInt16 alpha is converted to bytes before resizing the source window.
@@ -1865,4 +1876,79 @@ fn bare_ascii_header_keys_keep_the_preflight_before_encoded_text_reads() {
             assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))) && largest < 1 << 20, "{key}: {result:?}, largest={largest}");
         });
     }
+}
+
+/// Reference: GDAL 3.13.3 streaming TIFF writes; large calls keep only block-row work buffers.
+#[test]
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+fn large_row_calls_keep_encoded_work_bounded() {
+    const CHILD: &str = "TERRIO_TEST_TIFF_ROW_BATCH_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "large_row_calls_keep_encoded_work_bounded"])
+            .env(CHILD, "1")
+            .env("RAYON_NUM_THREADS", "1")
+            .env_remove("TERRIO_MAX_DECLARED_BYTES")
+            .env_remove("TERRIO_MAX_BANDS")
+            .output()
+            .unwrap();
+        assert!(child.status.success(), "{}\n{}", String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
+        return;
+    }
+    let _serial = serial();
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: valid pointers, changing the policy only in this child process.
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_RSS, &mut limit), 0);
+        limit.rlim_cur = limit.rlim_max.min(128 << 20);
+        assert_eq!(libc::setrlimit(libc::RLIMIT_RSS, &limit), 0);
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rows.tif");
+    let (columns, rows) = (4096, 18432);
+    let raster = header(columns, rows, 1);
+    let data = RasterData::U8(vec![7; columns * rows]);
+    let options = RasterWriteOptions {
+        driver: Some(RasterDriver::GTiff),
+        compression: Some("NONE".into()),
+        tile_size: Some(256),
+        ..Default::default()
+    };
+    let mut writer = terrio::GeoTiffWriter::create(path.to_str().unwrap(), &raster, &options).unwrap();
+    writer.write_rows(&data, rows, None).unwrap();
+    writer.finish().unwrap();
+    // Linux reports the process's peak resident set in KiB, including the caller's 72 MiB slab.
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+    // SAFETY: getrusage initializes this valid output pointer on success.
+    let usage = unsafe {
+        assert_eq!(libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()), 0);
+        usage.assume_init()
+    };
+    assert!(usage.ru_maxrss < 128 * 1024, "{} KiB peak resident memory", usage.ru_maxrss);
+    let bytes = std::fs::metadata(&path).unwrap().len();
+    assert!((72 << 20..73 << 20).contains(&bytes), "{bytes} output bytes");
+
+    let mut cog = terrio::GeoTiffWriter::create(
+        directory.path().join("rows-cog.tif").to_str().unwrap(),
+        &raster,
+        &RasterWriteOptions { driver: Some(RasterDriver::Cog), tile_size: Some(256), ..Default::default() },
+    )
+    .unwrap();
+    assert!(matches!(cog.write_rows(&data, rows, None), Err(terrio::Error::ResourceLimit(_))));
+    drop(cog);
+    drop(data);
+    let mut reader = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap();
+    for y in (0..rows).step_by(256) {
+        let part = reader.read_window(terrio::Window::new(0, y, columns, 256), &Default::default()).unwrap();
+        assert!(matches!(part.raster.data, RasterData::U8(ref values) if values.iter().all(|&value| value == 7)));
+    }
+    let huge = header(1, u32::MAX as usize, 1);
+    let path = directory.path().join("large-index.tif");
+    let result = terrio::GeoTiffWriter::create(
+        path.to_str().unwrap(),
+        &huge,
+        &RasterWriteOptions { driver: Some(RasterDriver::GTiff), tile_size: Some(16), ..Default::default() },
+    );
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))));
+    assert!(!path.exists());
 }

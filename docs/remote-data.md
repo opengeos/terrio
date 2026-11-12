@@ -425,6 +425,18 @@ Each is a positive integer, set in the environment or for one thread (Python's `
 [Rasters](formats.md#rasters) for the opens that apply them and the readers that refuse a raster
 only once read.
 
+CLI commands use these process-environment settings rather than per-command flags,
+so one policy applies to every raster-opening operation. For example:
+
+```sh
+TERRIO_MAX_DECLARED_BYTES=1073741824 TERRIO_MAX_BANDS=64 terrio info dem.tif
+```
+
+For MCP, put the same variables in the server process's environment (the `env` entry
+in the client's server configuration), or export them before starting the server.
+They apply to every tool call handled by that server; individual tool arguments do
+not expose separate limit settings.
+
 ## Managing files
 
 `terrio vsi` lists, copies, synchronizes, moves and deletes files on these locations and in

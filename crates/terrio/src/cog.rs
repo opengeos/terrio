@@ -1227,7 +1227,7 @@ impl LazyRaster {
         ds
     }
 
-    /// Reads the whole full-resolution image. A GeoTIFF that the process cannot hold (more than
+    /// Reads the whole full-resolution image. An image that the process cannot hold (more than
     /// [`crate::usable_memory`]) is refused with [`Error::ResourceLimit`] before it is allocated,
     /// as any of its windows is.
     pub fn read(&mut self) -> Result<RasterDataset> {
@@ -1444,7 +1444,7 @@ impl LazyRaster {
     /// returned window dimensions). Planes follow the requested band order. This also applies
     /// to internal and external overviews; no pixel reordering is needed before a warp.
     /// The result does not retain the dataset mask. Read it separately with [`Self::read_mask`]
-    /// using the same window and overview selection when needed. A GeoTIFF window the process
+    /// using the same window and overview selection when needed. A window the process
     /// cannot hold (more than [`crate::usable_memory`]) is refused with [`Error::ResourceLimit`]
     /// before it is allocated.
     pub fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {

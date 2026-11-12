@@ -101,9 +101,9 @@ REFUSALS = ("exceeds decoded-byte limit", "too large to allocate", "cannot alloc
 
 def assert_raises_allocation_error(p):
     assert p.returncode == 0, f"the reader died (exit code {p.returncode}): {p.stderr[-600:]}"
-    assert p.stdout.startswith("RAISED") and any(r in p.stdout for r in REFUSALS), (
-        p.stdout + p.stderr[-600:]
-    )
+    assert p.stdout.startswith("RAISED ResourceLimitError:") or (
+        p.stdout.startswith("RAISED") and any(r in p.stdout for r in REFUSALS)
+    ), p.stdout + p.stderr[-600:]
 
 
 def tiled_tiff(width, height, tile, tiles=1, tile_bytes=None):

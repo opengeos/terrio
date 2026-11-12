@@ -1305,6 +1305,41 @@ pub(crate) fn gdal_average_with_origin(
     Ok(res)
 }
 
+/// Peak area-method scratch, including concurrent rows and vector growth.
+/// Reference: GDAL 3.13.3 area kernels; storage follows this implementation's value/weight pairs.
+fn area_scratch_bytes(s: &SourceRead, ratio: (f64, f64), out: (usize, usize)) -> Option<usize> {
+    if !s.resampling.is_area_based() || out.0 == 0 || out.1 == 0 {
+        return Some(0);
+    }
+    let columns = (ratio.0.ceil() as usize).saturating_add(1).min(s.width);
+    let rows = (ratio.1.ceil() as usize).saturating_add(1).min(s.height);
+    let samples = columns.checked_mul(rows)?;
+    if samples == 0 {
+        return Some(0);
+    }
+    let capacity = samples.max(4).checked_next_power_of_two()?;
+    let values = capacity.checked_mul(std::mem::size_of::<(f64, f64)>())?;
+    // A growing vector can retain its old half-capacity while requesting the new buffer.
+    let growing_values = values.checked_add(values / 2)?;
+    let extra = match s.resampling {
+        Resampling::Mode => {
+            let distinct = match s.values {
+                super::BandView::U8(_) | super::BandView::I8(_) => samples.min(256),
+                super::BandView::U16(_) | super::BandView::I16(_) => samples.min(65536),
+                _ => samples,
+            };
+            let counts = distinct.max(4).checked_next_power_of_two()?.checked_mul(std::mem::size_of::<(f64, f32)>())?;
+            counts.checked_add(counts / 2)?
+        }
+        // Stable sorting may allocate auxiliary storage for the contributing pairs.
+        Resampling::Med | Resampling::Q1 | Resampling::Q3 => samples.checked_mul(std::mem::size_of::<(f64, f64)>())?,
+        _ => 0,
+    };
+    let per_row = growing_values.max(values.checked_add(extra)?);
+    let workers = if out.1 == 1 { 1 } else { out.1.min(crate::par::threads()) };
+    per_row.checked_mul(workers).filter(|&bytes| bytes <= isize::MAX as usize)
+}
+
 /// Resamples a floating-point source window to `out` pixels as GDAL's overview code does
 /// (`GDALRasterIOResampled()`): separable convolution kernels stretched when downsampling,
 /// coverage-weighted averages, or the most frequent value. A `sum` adds each valid source pixel
@@ -1314,7 +1349,10 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
     let (ow, oh) = out;
     let (rx, ry) = (fw / ow as f64, fh / oh as f64);
     let is_valid = |i: usize| s.valid.is_none_or(|m| m[i]);
-    let mut res = resampling_values(s, ow, oh, retained)?;
+    let scratch = area_scratch_bytes(s, (rx, ry), out)
+        .and_then(|scratch| retained.checked_add(scratch))
+        .ok_or_else(|| Error::ResourceLimit("area resampling scratch is too large to allocate".into()))?;
+    let mut res = resampling_values(s, ow, oh, scratch)?;
     if ow == 0 {
         return Ok(res);
     }

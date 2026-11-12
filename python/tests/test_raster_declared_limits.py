@@ -107,3 +107,19 @@ def test_exact_declaration_limits_allow_the_original_samples(declared_raster, su
     assert values.shape == (3, 16, 32)
     for band in range(3):
         np.testing.assert_array_equal(values[band], (band + 1) * 17)
+
+
+def test_public_boundless_read_checks_coordinate_buffers_before_arange(tmp_path, monkeypatch):
+    from terrio.rio.windows import Window
+
+    path = tmp_path / "single.tif"
+    terrio.Raster.from_array(np.ones((1, 1), dtype="uint8"), (0, 1, 0, 1, 0, -1)).write(str(path))
+    with terrio.rio.open(path) as source:
+        monkeypatch.setattr(terrio._terrio, "usable_memory", lambda: 128 << 20)
+
+        def unexpected_coordinates(*args, **kwargs):
+            raise AssertionError("coordinate allocation ran before admission")
+
+        monkeypatch.setattr(np, "arange", unexpected_coordinates)
+        with pytest.raises(terrio.ResourceLimitError):
+            source.read(1, window=Window(0, 0, 1, 1), boundless=True, out_shape=(1, 30_000_000))

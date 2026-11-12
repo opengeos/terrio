@@ -1924,8 +1924,8 @@ struct TiffRows {
     /// written to it.
     failed: bool,
     tags: Vec<(u16, Value)>,
-    /// The internal mask's compressed chunks, written after the image data.
-    mask: Option<Vec<Vec<u8>>>,
+    /// Offsets and lengths of mask chunks streamed alongside the image's block rows.
+    mask: Option<(Vec<u64>, Vec<u64>)>,
 }
 
 impl std::fmt::Debug for GeoTiffWriter {
@@ -1981,11 +1981,21 @@ impl GeoTiffWriter {
     pub fn write_rows(&mut self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
         match &mut self.inner {
             RowWriter::Tiff(t) => t.write_rows(data, rows, mask),
-            RowWriter::Cog(c) => c.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).write_rows_masked(
-                data.clone(),
-                rows,
-                mask.map(<[u8]>::to_vec),
-            ),
+            RowWriter::Cog(c) => {
+                // The borrowed input remains live while the COG writer takes its owned copy.
+                let bytes = data
+                    .len()
+                    .checked_mul(data.data_type().size_bytes())
+                    .and_then(|n| n.checked_add(mask.map_or(0, <[u8]>::len)))
+                    .and_then(|n| n.checked_mul(2));
+                crate::dataset::fallible::check_usable(bytes, || "a COG input slab and its copy are too large to allocate".into())
+                    .map_err(Error::ResourceLimit)?;
+                c.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).write_rows_masked(
+                    data.clone(),
+                    rows,
+                    mask.map(<[u8]>::to_vec),
+                )
+            }
         }
     }
 
@@ -2071,12 +2081,28 @@ impl TiffRows {
         }
         let mut layout = plan.layout;
         layout.rows_per_strip = Some(block_rows as u32);
-        let raw = (cols * rows * bands * size) as u64;
-        let big = opts.bigtiff || raw + raw / 4 > (u32::MAX as u64) - (1 << 24);
+        let raw = cols
+            .checked_mul(rows)
+            .and_then(|n| n.checked_mul(bands))
+            .and_then(|n| n.checked_mul(size))
+            .ok_or_else(|| Error::ResourceLimit("a GeoTIFF output is too large to address".into()))? as u64;
+        let big = opts.bigtiff || raw.checked_add(raw / 4).is_none_or(|n| n > (u32::MAX as u64) - (1 << 24));
         let mut tags = plan.geo;
         if let Some(cm) = plan.color_map {
             tags.push((320, cm));
         }
+        let n = planes
+            .checked_mul(across)
+            .and_then(|n| n.checked_mul(down))
+            .ok_or_else(|| Error::ResourceLimit("a GeoTIFF chunk index is too large to allocate".into()))?;
+        let mask_chunks = if with_mask { across.checked_mul(down) } else { Some(0) };
+        // Index arrays and serialized directories can coexist when finish writes the IFDs.
+        let index_bytes = mask_chunks
+            .and_then(|m| n.checked_add(m))
+            .and_then(|n| n.checked_mul(2 * std::mem::size_of::<u64>() * 4))
+            .and_then(|n| n.checked_add(1 << 20));
+        crate::dataset::fallible::check_usable(index_bytes, || "a GeoTIFF chunk index and directory are too large to allocate".into())
+            .map_err(Error::ResourceLimit)?;
         let mut file = std::io::BufWriter::with_capacity(1 << 20, create_replacing(path)?);
         let head: Vec<u8> = if big {
             [b"II".as_slice(), &43u16.to_le_bytes(), &8u16.to_le_bytes(), &0u16.to_le_bytes(), &0u64.to_le_bytes()].concat()
@@ -2084,7 +2110,6 @@ impl TiffRows {
             [b"II".as_slice(), &42u16.to_le_bytes(), &0u32.to_le_bytes()].concat()
         };
         file.write_all(&head)?;
-        let n = planes * across * down;
         Ok(Self {
             file,
             pos: head.len() as u64,
@@ -2099,15 +2124,15 @@ impl TiffRows {
             block_rows,
             chunk_w,
             across,
-            offsets: vec![0; n],
-            counts: vec![0; n],
+            offsets: crate::dataset::fallible::filled(n, 0u64, "GeoTIFF chunk offsets")?,
+            counts: crate::dataset::fallible::filled(n, 0u64, "GeoTIFF chunk sizes")?,
             pending: RasterData::new_filled(r.data_type, 0, 0.0),
             pending_mask: Vec::new(),
             pending_rows: 0,
             rows_done: 0,
             failed: false,
             tags,
-            mask: with_mask.then(Vec::new),
+            mask: with_mask.then(|| (Vec::new(), Vec::new())),
         })
     }
 
@@ -2153,6 +2178,65 @@ impl TiffRows {
             }
             (Some(_), m) => m,
         };
+        self.check_row_working_set(data, rows, mask)?;
+        let mut y = 0;
+        while y < rows {
+            let count = (self.block_rows - self.pending_rows).min(rows - y);
+            let part = if y == 0 && count == rows {
+                std::borrow::Cow::Borrowed(data)
+            } else {
+                std::borrow::Cow::Owned(slice_rows(data, rows, y..y + count, self.cols, self.bands))
+            };
+            self.append_block_rows(&part, count, mask.map(|m| &m[y * self.cols..(y + count) * self.cols]))?;
+            y += count;
+        }
+        Ok(())
+    }
+
+    /// Admit the retained input, one block row's scratch and the index arrays (GDAL 3.13.3).
+    fn check_row_working_set(&self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
+        let size = self.data_type.size_bytes();
+        let pixels = self.cols.checked_mul(self.block_rows.min(self.rows));
+        let row = pixels.and_then(|n| n.checked_mul(self.bands)).and_then(|n| n.checked_mul(size));
+        let padded = self.chunk_w.checked_mul(self.across).and_then(|n| n.checked_mul(self.block_rows));
+        let image = padded.and_then(|n| n.checked_mul(self.bands)).and_then(|n| n.checked_mul(size));
+        let image_indices =
+            self.offsets.capacity().checked_add(self.counts.capacity()).and_then(|n| n.checked_mul(std::mem::size_of::<u64>()));
+        let mask_work = if let Some((offsets, counts)) = &self.mask {
+            let new_chunks =
+                rows.checked_add(self.pending_rows).map(|n| n.div_ceil(self.block_rows)).and_then(|n| n.checked_mul(self.across));
+            let indices = offsets
+                .capacity()
+                .checked_add(counts.capacity())
+                .and_then(|n| n.checked_mul(3))
+                .and_then(|n| new_chunks.and_then(|m| m.checked_mul(2)).and_then(|m| n.checked_add(m)))
+                .and_then(|n| n.checked_mul(std::mem::size_of::<u64>()));
+            padded
+                .and_then(|n| n.checked_mul(3))
+                .and_then(|n| n.checked_add(self.pending_mask.capacity()))
+                .and_then(|n| n.checked_add(mask.map_or(0, <[u8]>::len)))
+                .and_then(|n| indices.and_then(|m| n.checked_add(m)))
+        } else {
+            Some(0)
+        };
+        let bytes = [
+            data.len().checked_mul(size),
+            self.pending.len().checked_mul(size),
+            row.and_then(|n| n.checked_mul(2)),
+            image.and_then(|n| n.checked_mul(2)),
+            image_indices,
+            mask_work,
+            Some(1 << 20),
+        ]
+        .into_iter()
+        .try_fold(0usize, |total, bytes| total.checked_add(bytes?));
+        crate::dataset::fallible::check_usable(bytes, || "a GeoTIFF input slab and block-row working set are too large to allocate".into())
+            .map(|_| ())
+            .map_err(Error::ResourceLimit)
+    }
+
+    /// Appends at most the remainder of one block row, retaining band-major order.
+    fn append_block_rows(&mut self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
         // Pending rows are kept band after band, in the raster's type; these rows follow them, or
         // are read where they are when none is pending.
         let old = self.pending_rows;
@@ -2227,10 +2311,19 @@ impl TiffRows {
         if self.tags.iter().all(|(t, _)| *t != 256) {
             self.tags.extend(img.tags);
         }
-        if let Some(chunks) = &mut self.mask {
+        if self.mask.is_some() {
             let m = &self.pending_mask[..h * cols];
             let mi = mask_image(m, cols, h, (self.chunk_w, self.block_rows, self.layout.tile.is_some()))?;
-            chunks.extend(mi.chunks);
+            for chunk in mi.chunks {
+                let offset = self.pos;
+                self.file.write_all(&chunk)?;
+                self.pos += chunk.len() as u64;
+                self.check_size()?;
+                if let Some((offsets, counts)) = &mut self.mask {
+                    offsets.push(offset);
+                    counts.push(chunk.len() as u64);
+                }
+            }
         }
         self.rows_done += h;
         Ok(())
@@ -2267,21 +2360,12 @@ impl TiffRows {
             }
         }
         let (off_tag, cnt_tag) = if tiled { (324, 325) } else { (273, 279) };
-        tags.push((off_tag, Value::Offsets(self.offsets.clone())));
-        tags.push((cnt_tag, Value::Offsets(self.counts.clone())));
+        tags.push((off_tag, Value::Offsets(std::mem::take(&mut self.offsets))));
+        tags.push((cnt_tag, Value::Offsets(std::mem::take(&mut self.counts))));
         tags.sort_by_key(|(t, _)| *t);
-        // The mask's data, then its directory.
+        // Mask chunks were streamed with the image; only their directory remains.
         let mut mask_ifd: Option<Vec<(u16, Value)>> = None;
-        if let Some(chunks) = self.mask.take() {
-            let mut offsets = Vec::with_capacity(chunks.len());
-            let mut counts = Vec::with_capacity(chunks.len());
-            for c in &chunks {
-                offsets.push(self.pos);
-                counts.push(c.len() as u64);
-                self.file.write_all(c)?;
-                self.pos += c.len() as u64;
-                self.check_size()?;
-            }
+        if let Some((offsets, counts)) = self.mask.take() {
             let full = mask_image(&[], self.cols, 0, (self.chunk_w, self.block_rows, tiled))?;
             let mut mt: Vec<(u16, Value)> = full.tags.into_iter().filter(|(t, _)| *t != 257 && *t != 278).collect();
             mt.push((257, Value::Longs(vec![self.rows as u32])));
@@ -3176,8 +3260,8 @@ mod tests {
         }
     }
 
-    /// A GeoTIFF row write that fails keeps every row given so far pending, and the writer then
-    /// refuses more rows and to finish, whose file would miss the block row.
+    /// A failed GeoTIFF row write retains only the failed block row and refuses further rows
+    /// and finish; the unconsumed tail of a large caller slab is never copied.
     #[test]
     fn failed_row_writes_stop_the_writer() {
         let raster = overview_fixture(1, DataType::U8, RasterData::U8((0..65 * 35).map(|i| (i % 251) as u8).collect()));
@@ -3191,18 +3275,18 @@ mod tests {
         // Past what a classic TIFF addresses: the block row is refused once written.
         let pos = std::mem::replace(&mut w.pos, u64::from(u32::MAX));
         assert!(w.write_rows(&slice_rows(&raster.data, 35, 10..20, 65, 1), 10, None).is_err());
-        assert_eq!((w.rows_written(), w.pending_rows, w.pending.len()), (20, 20, 65 * 20));
+        assert_eq!((w.rows_written(), w.pending_rows, w.pending.len()), (16, 16, 65 * 16));
         // Within the limit again, the writer still refuses: the file may hold part of the row.
         w.pos = pos;
         assert!(w.write_rows(&slice_rows(&raster.data, 35, 20..35, 65, 1), 15, None).is_err());
-        assert_eq!(w.rows_written(), 20);
+        assert_eq!(w.rows_written(), 16);
         drop(w);
-        // A last block row that fails: its rows are all given, yet the file would miss them.
+        // A later block row fails before consuming the last three rows of the caller slab.
         let mut w = TiffRows::create(path.to_str().unwrap(), &header, &options).unwrap();
         w.write_rows(&slice_rows(&raster.data, 35, 0..16, 65, 1), 16, None).unwrap();
         w.pos = u64::from(u32::MAX);
         assert!(w.write_rows(&slice_rows(&raster.data, 35, 16..35, 65, 1), 19, None).is_err());
-        assert_eq!(w.rows_written(), 35);
+        assert_eq!(w.rows_written(), 32);
         assert!(w.finish().is_err());
     }
 

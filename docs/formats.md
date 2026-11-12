@@ -125,6 +125,10 @@ For files you do not trust, two options bound what a raster may declare, whateve
 | `TERRIO_MAX_DECLARED_BYTES` | this many bytes of pixels: width x height x bands x bytes per sample, in the type terrio reads the samples as (8 for GRIB's Float64 bands) |
 | `TERRIO_MAX_BANDS` | this many bands (a complex band counts once) |
 
+The CLI and MCP take these limits from the process environment; MCP operators set
+them on the server process, so the same admission policy covers every tool call.
+See [remote-data limits](remote-data.md) for a CLI example and MCP configuration.
+
 Both are unset by default. Each is a positive integer, set in the environment or in an `Env`
 scope (or JavaScript's `pushConfig`/`popConfig`), whose value applies on its thread instead of
 the environment's; any other value is an
