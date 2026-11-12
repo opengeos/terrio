@@ -1652,7 +1652,8 @@ impl LazyRaster {
     }
 
     /// Whether overview `overview` (from 0) has a mask image of its own (GDAL's internal mask
-    /// of an overview), rather than none.
+    /// of an overview), rather than none. External `.ovr` levels are excluded; use
+    /// [`Self::level_has_own_mask`] to include their own masks.
     pub fn has_overview_mask(&self, overview: usize) -> bool {
         let Inner::Tiff(t) = &self.inner else { return false };
         let Some(l) = t.levels.get(overview + 1) else { return false };

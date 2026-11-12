@@ -98,6 +98,12 @@ also bounds LERC Deflate/Zstandard inflation and the decoded size declared by
 embedded LERC and JPEG headers, before mask or pixel decoding. It is not a cap
 on total process memory or the codec's working buffers.
 
+TIFF masks follow the image's own `NewSubfileType` reduced-resolution flag, including a
+reduced first image with a reduced mask (flag 5) or a unique legacy mask (flag 4).
+GDAL 3.13.3 ignores a first-image flag-5 mask; Terrio deliberately honors it, so masked
+reads can differ from GDAL and Rasterio for these files. An unreduced image does not
+inherit a reduced mask merely because their dimensions match.
+
 GeoTIFF compression: none, LZW, Deflate (including the legacy code), PackBits, JPEG, WebP,
 Zstandard, LZMA, LERC (alone, with Deflate or with Zstandard, lossless or not, with NaN masks) and
 JPEG XL, with horizontal and floating-point predictors, tiled or striped, chunky or planar. JPEG

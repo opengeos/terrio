@@ -1353,6 +1353,33 @@ cargo test -p terrio --test external_overviews --test geotiff_nodata
 python scripts/conformance.py ../terrio-data --only lazy-geotiff --strict
 ```
 
+### Reduced first-image masks
+
+The `reduced-first-masks` conformance suite checks `NewSubfileType` mask association
+for ordinary and reduced-resolution first TIFF images. Using a Landsat-derived
+external overview pyramid, it compares pixels and masks before and after an
+extent-limited external overview refresh with an equivalent ordinary-first-image
+GDAL control. The refresh check changes base pixels inside the masked region and
+verifies the reduced overview's updated values and mask. This checks decoding after
+Terrio's refresh, not equivalence to GDAL's refresh algorithm. Internal reduced-first
+TIFF overview creation and refresh remain outside this change: the existing writer
+planner requires a full-resolution image. A reduced first image with a legacy mask
+marked 4 is also covered.
+A unique size-matching legacy mask remains usable for a reduced first image.
+An unreduced first image still ignores a reduced mask and uses nodata/alpha validity.
+GDAL 3.13.3 itself ignores first-image masks marked 5; Terrio deliberately
+uses the image's own reduced-resolution flag rather than its position in the file,
+following [TIFF 6.0 NewSubfileType](https://www.itu.int/itudoc/itu-t/com16/tiff-fx/docs/tiff6.pdf). Local validation uses
+GDAL 3.13.3. The `lazy-geotiff` suite also checks own-mask detection and full-image
+mask fallback when the smaller image has no mask.
+
+The stored masked-external cubic 26×41 resampled-read case uses the separate
+`expected_mask_control.json.gz` reference. Regenerate it with
+`python scripts/make_resampled_reads_fixtures.py --mask-control` and GDAL 3.13.3.
+The control changes only first-image/mask flags from 1/5 to 0/4, so GDAL weights the
+stored mask. Its pixels match Terrio exactly; 488 samples differ from the historical
+raw GDAL reference, which remains unchanged in `expected.json.gz`.
+
 `LazyRaster::rpc`, `file_list` and `sample_bits` are Rust APIs. Python and
 JavaScript exposure of these additional lazy-reader facts remains follow-up
 work; the existing bindings retain their behavior.
@@ -2791,30 +2818,6 @@ with roughly 17 KiB of coordinate/validity scratch rather than allocating an ent
 output-width row before memory-limit splitting. The polar regression starts off a
 global batch boundary and spans several batches; RPC batch membership stays global.
 
-The `reduced-first-masks` conformance suite checks `NewSubfileType` mask association
-for ordinary and reduced-resolution first TIFF images. Using a Landsat-derived
-external overview pyramid, it compares pixels and masks before and after an
-extent-limited external overview refresh with an equivalent ordinary-first-image
-GDAL control. The refresh check changes base pixels inside the masked region and
-verifies the reduced overview's updated values and mask. This checks decoding after
-Terrio's refresh, not equivalence to GDAL's refresh algorithm. Internal reduced-first
-TIFF overview creation and refresh remain outside this change: the existing writer
-planner requires a full-resolution image. A reduced first image with a legacy mask
-marked 4 is also covered.
-A unique size-matching legacy mask remains usable for a reduced first image.
-An unreduced first image still ignores a reduced mask and uses nodata/alpha validity.
-GDAL 3.13.3 itself ignores first-image masks marked 5; Terrio deliberately
-uses the image's own reduced-resolution flag rather than its position in the file,
-following [TIFF 6.0 NewSubfileType](https://www.itu.int/itudoc/itu-t/com16/tiff-fx/docs/tiff6.pdf). Local validation uses
-GDAL 3.13.3. The `lazy-geotiff` suite also checks own-mask detection and full-image
-mask fallback when the smaller image has no mask.
-
-The stored masked-external cubic 26×41 resampled-read case uses the separate
-`expected_mask_control.json.gz` reference. Regenerate it with
-`python scripts/make_resampled_reads_fixtures.py --mask-control` and GDAL 3.13.3.
-The control changes only first-image/mask flags from 1/5 to 0/4, so GDAL weights the
-stored mask. Its pixels match Terrio exactly; 488 samples differ from the historical
-raw GDAL reference, which remains unchanged in `expected.json.gz`.
 
 ## JPEG 2000 channel roles
 

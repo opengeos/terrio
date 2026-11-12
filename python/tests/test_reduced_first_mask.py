@@ -11,6 +11,15 @@ from terrio.rio.transform import from_origin
 
 
 def mark_image(path, index, subfile):
+    """Rewrite an IFD in a little-endian classic TIFF fixture.
+
+    Mirrors the assumptions of ``mark_image`` in ``tests/external_overviews.rs``.
+
+    Args:
+        path: TIFF fixture path.
+        index: Zero-based IFD index.
+        subfile: Replacement NewSubfileType value.
+    """
     data = bytearray(path.read_bytes())
     assert data[:4] == b"II*\0"
     pointer = 4

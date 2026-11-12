@@ -2275,12 +2275,10 @@ def suite_reduced_first_masks(ctx):
         suite.error = tail(err)
         return suite
     suite.reference = "GDAL " + version.strip() + " (normalized 0/4 control)"
-    code, out, err = run([sys.executable, "-m", "pytest", "-q",
-                         str(ROOT / "python/tests/test_reduced_first_mask.py")],
-                        {"TERRIO_TEST_DATA": str(Path(ctx.data).resolve())})
+    complete, detail = _pytest_module_conformance(ctx, "test_reduced_first_mask.py")
     suite.cases.append(Case("TIFF mask control", "Landsat normalized 0/4 control and external refresh",
-                            IDENTICAL if code == 0 and "skipped" not in out else DIFFERS,
-                            tail(err or out)))
+                            IDENTICAL if complete else DIFFERS,
+                            "Exact agreement with the normalized 0/4 GDAL control, not raw flag-5 parity. " + detail))
     return suite
 
 

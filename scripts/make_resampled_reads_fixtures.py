@@ -441,7 +441,10 @@ def write_mask_control(gdal: Any) -> None:
             directories.append(tags)
             offset = struct.unpack_from("<I", data, offset + 2 + count * 12)[0]
         def value(tags, tag):
-            return struct.unpack_from("<I", data, tags[tag] + 8)[0]
+            """Read an inline SHORT or LONG from the little-endian classic TIFF."""
+            entry = tags[tag]
+            fmt = "<H" if struct.unpack_from("<H", data, entry + 2)[0] == 3 else "<I"
+            return struct.unpack_from(fmt, data, entry + 8)[0]
         image, mask = directories[0], directories[2]
         assert (value(image, 254), value(mask, 254), value(mask, 262)) == (1, 5, 4)
         assert [value(image, tag) for tag in (256, 257)] == [value(mask, tag) for tag in (256, 257)]
