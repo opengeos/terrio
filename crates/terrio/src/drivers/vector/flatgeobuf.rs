@@ -1339,6 +1339,20 @@ mod tests {
         assert!(declared.is_empty());
     }
 
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "a FlatGeobuf open parsed 2 headers")]
+    fn a_second_header_parse_in_one_open_is_reported_in_debug_builds() {
+        // The declared pair is kept only when the open parsed one header; a second parse would drop it
+        // to the feature scan, so a debug build reports it rather than falling back without a word.
+        let bytes = empty_dimension_fixture(true, false);
+        let _ = crate::dataset::with_declared_dims(|| {
+            let (layer, _) = parse_header(&bytes)?;
+            parse_header(&bytes)?;
+            Ok(crate::VectorDataset::new(vec![layer], crate::formats::VectorDriver::FlatGeobuf))
+        });
+    }
+
     #[test]
     fn declared_dimensions_show_for_gdal_magic_bytes() {
         // GDAL writes the magic's version byte as 1 (terrio's MAGIC has 0): the bytes route reads its header too.

@@ -652,6 +652,13 @@ pub(crate) fn with_declared_dims(open: impl FnOnce() -> Result<VectorDataset>) -
     {
         let (ds, headers) = crate::drivers::vector::flatgeobuf::with_declared_dims(open);
         let ds = ds?;
+        // An open that parsed a second header would lose the declared pair to the feature scan without
+        // a word: in a debug build, it says so.
+        debug_assert!(
+            ds.driver != VectorDriver::FlatGeobuf || headers.len() <= 1,
+            "a FlatGeobuf open parsed {} headers: its declared Z and M would be dropped",
+            headers.len()
+        );
         // A FlatGeobuf has one layer, read from the one header parsed.
         let declared = match headers[..] {
             [dims] if ds.driver == VectorDriver::FlatGeobuf && ds.layers.len() == 1 => vec![Some(dims)],
