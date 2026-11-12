@@ -423,6 +423,12 @@ pub(crate) fn threads() -> usize {
     }
 }
 
+/// Whether the calling thread is a thread of the pool. Parallel work started there waits for its
+/// tasks by running other tasks of the pool, which may take a lock the caller holds.
+pub(crate) fn on_pool_thread() -> bool {
+    rayon::current_thread_index().is_some()
+}
+
 /// Runs `f` on terrio's thread pool natively, and returns its result; in WebAssembly, on the
 /// calling thread. For rayon code that the other functions cannot express, and for calls into a
 /// dependency that parallelizes with rayon by itself: their parallel work then runs on this pool,
