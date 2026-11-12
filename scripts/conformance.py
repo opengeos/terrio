@@ -2535,6 +2535,32 @@ def suite_arrow(ctx):
     return s
 
 
+def suite_gpkg_paging(ctx):
+    """Real GeoPackage feature pages through Python paths/bytes and the CLI."""
+    suite = Suite("gpkg-paging", "GeoPackage feature pages", "GDAL vector reader",
+                  "Exact FIDs/order, attributes, geometry WKB, fields and CRS for full, head, middle, tail, empty and spatially filtered pages. CLI limits check values/geometries/CRS, not output-writer FID policy.")
+    missing = missing_modules("terrio", "pandas", "geopandas", "osgeo")
+    if missing:
+        suite.error = "missing modules: " + ", ".join(missing)
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_gpkg_paging_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        rows = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    names = {f"{source} {label}" for source in ("path", "bytes") for label in ("full", "head", "middle", "tail", "empty", "bbox")} | {"CLI limit"}
+    if not isinstance(rows, list) or len(rows) != len(names) or {r.get("name") for r in rows} != names:
+        suite.error = "incomplete GeoPackage paging comparisons"
+        return suite
+    for row in rows:
+        status = {"identical": IDENTICAL, "not compared": NOT_COMPARED}.get(row.get("status"), DIFFERS)
+        suite.cases.append(Case("GeoPackage page", row["name"], status, row.get("detail", "missing comparison detail")))
+    if code:
+        suite.error = tail(err) or "GeoPackage paging comparisons failed"
+    return suite
+
+
 def suite_gpkg(ctx):
     """GeoPackage updates (append, overwrite, added layers) and R-tree spatial filters vs ogr2ogr."""
     s = Suite(
@@ -3715,6 +3741,7 @@ SUITES = OrderedDict(
         ("analysis-output", suite_analysis_output),
         ("arrow", suite_arrow),
         ("gpkg", suite_gpkg),
+        ("gpkg-paging", suite_gpkg_paging),
         ("streams", suite_streams),
         ("wfs", suite_wfs),
         ("oapif", suite_oapif),

@@ -324,7 +324,8 @@ pub struct VectorOpenOptions {
     /// rows this matches pyogrio's `skip_features` and GDAL's `SetNextByIndex`; their Shapefile
     /// fast-seek paths can count physical slots when records are deleted instead.
     /// The Shapefile driver reads deletion flags without skipped geometry/attributes;
-    /// the other local drivers read every feature and keep the range.
+    /// GeoPackage walks only the requested records (after spatial matching, when filtered).
+    /// Other local drivers read every feature and keep the range.
     pub skip_features: usize,
     /// At most this many live features per layer after the skipped ones; `None` reads to the end.
     /// Unlike pyogrio, `Some(0)` returns no features rather than treating zero as unlimited.
@@ -1400,8 +1401,7 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
     driver.ensure_built()?;
     #[cfg(feature = "sqlite")]
     if driver == VectorDriver::GPKG {
-        let mut layers = crate::drivers::vector::gpkg_read::read(path, &options.layers, options.spatial_filter)?;
-        layers.iter_mut().for_each(|l| options.keep_range(l));
+        let layers = crate::drivers::vector::gpkg_read::read(path, options)?;
         return Ok(finish_vector(layers, path, driver));
     }
     if matches!(driver, VectorDriver::KML | VectorDriver::KMZ) {

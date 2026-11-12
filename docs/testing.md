@@ -2715,6 +2715,35 @@ The GDAL/OGR Python bindings (`osgeo`) are required; Terrio Python bindings and
 downloaded data are not. The positional data-directory argument is required by the
 conformance runner, but this suite generates its fixtures in a temporary directory.
 
+### GeoPackage feature pages
+
+The `gpkg-paging` conformance suite compares the real `countries.gpkg` with GDAL
+through Python path/byte inputs and a CLI conversion limit. FIDs and order,
+attributes, geometry WKB, fields and CRS are exact for full, head, middle, tail,
+empty and spatially filtered pages. CLI output-writer FID policy is outside this
+comparison. Local validation uses GDAL 3.13.3.
+
+Native tests cover layer selection, original row ordinals, primary keys with gaps,
+UTF-16 text, overflow records, zero limits, and spatial matching with/without an
+R-tree. A malformed record outside a requested Python page is not decoded; a
+selected malformed record remains an error. A real-data test counts row decodes
+at the SQLite traversal boundary rather than inferring them from returned features:
+
+```sh
+cargo test -p terrio --lib drivers::sqlite::tests
+cargo test -p terrio --lib drivers::vector::gpkg_read::tests
+TERRIO_GPKG_PAGING_DATA=../terrio-data/countries.gpkg \
+  cargo test -p terrio --lib real_feature_pages_decode_only_requested_rows -- --nocapture
+pytest python/tests/test_pyogrio_feature_range.py
+python scripts/conformance.py ../terrio-data --only gpkg-paging --strict
+```
+
+The measured 176-feature countries table decodes three rows for a three-feature
+page after skipping 88, versus 176 for a full traversal. Metadata reads are outside
+that feature-row count. Skipping visits leaf headers to count records without
+decoding their payloads or reading their overflow chains. Byte and HTTP inputs
+still obtain the SQLite snapshot; paging bounds decoding rather than input transfer.
+
 ### GeoPackage text encodings
 
 `cargo test -p terrio --test sqlite_encodings` reads the small SQLite-generated

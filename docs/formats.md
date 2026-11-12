@@ -1086,7 +1086,10 @@ reads it.
 - **GeoPackage** layers are read with spatial filters through their R-tree index (`terrio convert
   --spat`, `VectorOpenOptions::spatial_filter`, Python's `open_vector(bbox=...)`): the
   candidates the index finds are read by feature id, then tested against the rectangle, giving the
-  features `ogr2ogr -spat` gives. Existing files are updated as `ogr2ogr` updates them:
+  features `ogr2ogr -spat` gives. Native feature pages skip unselected SQLite payloads
+  and stop at their limit; spatial filters count matching features before applying
+  the range. Paths and byte inputs retain the same layer metadata and feature order.
+  Byte inputs still hold the complete SQLite snapshot. Existing files are updated as `ogr2ogr` updates them:
   `--append` adds features to a layer (fields matched by name, new feature ids continuing the
   layer's sequence, its R-tree, `gpkg_contents` extent and `gpkg_ogr_contents` count updated),
   `--overwrite` replaces a layer, and layers are added to files holding other layers or rasters.
