@@ -11,11 +11,13 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import struct
 import tempfile
 import warnings
 
 import numpy as np
 from osgeo import gdal, osr
+import terrio
 import terrio.rio as rio
 from terrio.rio.shutil import copy
 from terrio.rio.transform import Affine, from_origin
@@ -56,6 +58,94 @@ def verify(path, values, bits, transform, crs, nodata=None, palette=None, requir
         with rio.open(path, overview_level=i) as native:
             np.testing.assert_array_equal(native.read(1), band.GetOverview(i).ReadAsArray())
     return f"NBITS={bits}; exact samples, masks, container type, nodata, affine and CRS; {band.GetOverviewCount()} packed overviews decoded by both readers"
+
+
+
+def source_preservation_cases(directory):
+    """Precision and source validity controls, including GDAL's overview-only-mask loss."""
+    rows = []
+    for driver in ("GTiff", "COG"):
+        name = f"JP2 15-bit AUTO to {driver}"
+        if gdal.GetDriverByName("JP2OpenJPEG") is None:
+            rows.append(dict(name=name, status="not compared", detail="GDAL JP2OpenJPEG is unavailable"))
+            continue
+        try:
+            values = (np.arange(256 * 256, dtype="uint32").reshape(256, 256) % 32768).astype("uint16")
+            transform, crs = from_origin(500000, 5800000, 10, 10), "EPSG:32633"
+            memory = gdal.GetDriverByName("MEM").Create("", 256, 256, 1, gdal.GDT_UInt16)
+            memory.WriteArray(values)
+            memory.SetGeoTransform(transform.to_gdal())
+            srs = osr.SpatialReference()
+            srs.SetFromUserInput(crs)
+            memory.SetProjection(srs.ExportToWkt())
+            source = directory / f"precision-{driver}.jp2"
+            encoded = gdal.Translate(str(source), memory, format="JP2OpenJPEG",
+                                     creationOptions=["NBITS=15", "REVERSIBLE=YES", "QUALITY=100"])
+            encoded.FlushCache()
+            encoded = None
+            reference = gdal.Translate("", str(source), format="MEM", width=128, height=128)
+            target = directory / f"precision-{driver}.tif"
+            terrio.translate(str(source), str(target), format=driver, outsize=(128, 128))
+            detail = verify(target, reference.ReadAsArray(), 15, Affine.from_gdal(*reference.GetGeoTransform()), crs)
+            rows.append(dict(name=name, status="identical", detail=detail + "; independent GDAL AUTO-resampled JP2 values"))
+        except Exception as error:
+            rows.append(dict(name=name, status="differs", detail=str(error)))
+    name = "COG overview-only source masks"
+    try:
+        source = directory / "overview-only.tif"
+        transform, crs = from_origin(500000, 5800000, 10, 10), "EPSG:32633"
+        previous = gdal.GetConfigOption("GDAL_TIFF_INTERNAL_MASK")
+        gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
+        try:
+            ds = gdal.GetDriverByName("GTiff").Create(str(source), 64, 64, 1, gdal.GDT_UInt16,
+                                                     options=["NBITS=9", "ENDIANNESS=LITTLE"])
+            ds.SetGeoTransform(transform.to_gdal())
+            srs = osr.SpatialReference()
+            srs.SetFromUserInput(crs)
+            ds.SetProjection(srs.ExportToWkt())
+            ds.GetRasterBand(1).Fill(7)
+            ds.CreateMaskBand(gdal.GMF_PER_DATASET)
+            ds.GetRasterBand(1).GetMaskBand().Fill(255)
+            ds.BuildOverviews("NEAREST", [2, 4])
+            ds.GetRasterBand(1).GetOverview(0).GetMaskBand().Fill(0)
+            ds = None
+        finally:
+            gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", previous)
+        # Unlink only the base mask IFD from GDAL's classic little-endian TIFF.
+        raw = bytearray(source.read_bytes())
+        assert raw[:4] == b"II*\0"
+        offset, previous_slot = struct.unpack_from("<I", raw, 4)[0], 4
+        while offset:
+            count = struct.unpack_from("<H", raw, offset)[0]
+            tags = {}
+            for index in range(count):
+                entry = offset + 2 + 12 * index
+                tag, kind, length = struct.unpack_from("<HHI", raw, entry)
+                if length == 1:
+                    tags[tag] = struct.unpack_from("<H" if kind == 3 else "<I", raw, entry + 8)[0]
+            next_slot = offset + 2 + 12 * count
+            following = struct.unpack_from("<I", raw, next_slot)[0]
+            if tags.get(254, 0) & 4 and tags.get(256) == 64:
+                struct.pack_into("<I", raw, previous_slot, following)
+            else:
+                previous_slot = next_slot
+            offset = following
+        source.write_bytes(raw)
+        original = gdal.Open(str(source))
+        assert original.GetRasterBand(1).GetMaskFlags() == gdal.GMF_ALL_VALID
+        target = directory / "overview-only-copy.tif"
+        copy(source, target, driver="COG")
+        detail = verify(target, original.ReadAsArray(), 9, transform, crs, require_overviews=True)
+        output = gdal.Open(str(target))
+        assert output.GetRasterBand(1).GetOverviewCount() == original.GetRasterBand(1).GetOverviewCount()
+        for i in range(original.GetRasterBand(1).GetOverviewCount()):
+            np.testing.assert_array_equal(output.GetRasterBand(1).GetOverview(i).GetMaskBand().ReadAsArray(),
+                                          original.GetRasterBand(1).GetOverview(i).GetMaskBand().ReadAsArray())
+        rows.append(dict(name=name, status="identical", detail=detail + "; exact SOURCE overview validity; "
+                         "GDAL 3.13.3 COG copying drops these masks, while Terrio adds an all-valid base mask"))
+    except Exception as error:
+        rows.append(dict(name=name, status="differs", detail=str(error)))
+    return rows
 
 
 def main():
@@ -126,6 +216,7 @@ def main():
                              + "warnings=" + repr(messages)))
         except Exception as error:
             rows.append(dict(name="COG 4-bit CUBIC bright edge", status="differs", detail=str(error)))
+        rows.extend(source_preservation_cases(directory))
         source = args.data / "esa_worldcover_colormap.tif"
         if source.exists():
             try:

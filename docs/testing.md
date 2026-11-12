@@ -1417,7 +1417,10 @@ exactly; Terrio reports encode-time clipping where the reference is quiet.
 The native metadata regression also requires NBITS to share its band's existing
 IMAGE_STRUCTURE domain with other items, preserving unrelated empty domains.
 JPEG 2000 controls cover 15-bit whole copies and AUTO/explicit-base resampling,
-with and without stored resolution levels. Twelve additional nearest/cubic/Lanczos
+with and without stored resolution levels. The registered `packed-tiff` suite includes
+two JP2 AUTO controls and the overview-only source-mask case, alongside the earlier
+14 comparisons (17 total). Its mask oracle is source validity, not GDAL's lossy COG
+copy. Twelve additional nearest/cubic/Lanczos
 controls at 128- and 384-square output exactly match GDAL 3.13.3 sample arrays.
 
 Mask-pyramid regressions include sources whose base mask is absent but whose
