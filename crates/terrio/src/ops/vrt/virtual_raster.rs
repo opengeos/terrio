@@ -1240,7 +1240,7 @@ fn retained_buffers(values: &Vec<f64>, out: &Vec<f64>, inputs: &[Vec<f64>]) -> R
     std::iter::once(values.capacity())
         .chain(std::iter::once(out.capacity()))
         .chain(inputs.iter().map(Vec::capacity))
-        .try_fold(0usize, |sum, n| n.checked_mul(8).and_then(|n| sum.checked_add(n)))
+        .try_fold(0usize, |sum, n| n.checked_mul(std::mem::size_of::<f64>()).and_then(|n| sum.checked_add(n)))
         .ok_or_else(working_overflow)
 }
 
@@ -1265,10 +1265,12 @@ impl Reader {
         let data_type = super::common_type(bands.iter().map(|&b| description.layout.bands[b - 1].data_type));
         // The accumulated Float64 capacity coexists with a band's Float64 working array.
         // At the end it coexists with the converted output, except when Float64 is moved.
-        let floats = len.checked_mul(8).filter(|&n| n <= isize::MAX as usize);
+        let floats = len.checked_mul(std::mem::size_of::<f64>()).filter(|&n| n <= isize::MAX as usize);
         let conversion = if data_type == DataType::F64 { Some(0) } else { len.checked_mul(data_type.size_bytes()) };
-        let peak =
-            floats.zip(n.checked_mul(8)).zip(conversion).and_then(|((floats, band), conversion)| floats.checked_add(band.max(conversion)));
+        let peak = floats
+            .zip(n.checked_mul(std::mem::size_of::<f64>()))
+            .zip(conversion)
+            .and_then(|((floats, band), conversion)| floats.checked_add(band.max(conversion)));
         check_working_set(peak)?;
         let mut values = Vec::new();
         fallible::reserve(&mut values, len, "a VRT window")?;
@@ -1297,7 +1299,7 @@ impl Reader {
                             .capacity()
                             .checked_mul(std::mem::size_of::<Option<f64>>())
                             .and_then(|b| b.checked_add(retained))
-                            .and_then(|b| n.checked_mul(8).and_then(|n| b.checked_add(n))),
+                            .and_then(|b| n.checked_mul(std::mem::size_of::<f64>()).and_then(|n| b.checked_add(n))),
                     )?;
                     let mut converted = Vec::new();
                     fallible::reserve(&mut converted, n, "a VRT derived input")?;
@@ -1314,7 +1316,7 @@ impl Reader {
             }
             if element.attr("subClass") == Some("VRTDerivedRasterBand") {
                 let retained = retained_buffers(&values, &out, &inputs)?;
-                check_working_set(n.checked_mul(8).and_then(|b| b.checked_add(retained)))?;
+                check_working_set(n.checked_mul(std::mem::size_of::<f64>()).and_then(|b| b.checked_add(retained)))?;
                 out = derived(element, &inputs, out.len())?;
             }
             values.extend(out.into_iter().map(|v| crate::ops::convert_value(v, layout.data_type)));
