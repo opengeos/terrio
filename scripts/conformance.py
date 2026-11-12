@@ -2278,6 +2278,39 @@ def suite_lazy_geotiff(ctx):
     return suite
 
 
+def suite_reduced_first_masks(ctx):
+    """Compare reduced-first masks with GDAL's normalized control.
+
+    Args:
+        ctx: Conformance run context.
+
+    Returns:
+        Suite: Mask and external overview refresh comparisons.
+    """
+    suite = Suite("reduced-first-masks", "Reduced first-image TIFF masks", "GDAL normalized 0/4 control",
+                  "Landsat-derived images and masks match an equivalent ordinary-first-image "
+                  "GDAL control before and after bounded external refresh. GDAL 3.13.3 also "
+                  "ignores first-image masks marked 5; Terrio intentionally follows the image flag.")
+    missing = missing_modules("pytest", "osgeo", "numpy", "terrio")
+    if missing:
+        suite.skipped = "needs the Python modules " + ", ".join(missing)
+        return suite
+    if not (Path(ctx.data) / "landsat7.tif").is_file():
+        suite.skipped = "needs landsat7.tif"
+        return suite
+    code, version, err = run([sys.executable, "-c",
+                             "from osgeo import gdal; print(gdal.VersionInfo('RELEASE_NAME'))"])
+    if code:
+        suite.error = tail(err)
+        return suite
+    suite.reference = "GDAL " + version.strip() + " (normalized 0/4 control)"
+    complete, detail = _pytest_module_conformance(ctx, "test_reduced_first_mask.py")
+    suite.cases.append(Case("TIFF mask control", "Landsat normalized 0/4 control and external refresh",
+                            IDENTICAL if complete else DIFFERS,
+                            "Exact agreement with the normalized 0/4 GDAL control, not raw flag-5 parity. " + detail))
+    return suite
+
+
 def suite_crs(ctx):
     """Every EPSG CRS's transformations against GDAL's (crates/terrio-crs/tests/epsg_accuracy.rs)."""
     s = Suite(
@@ -3722,6 +3755,7 @@ SUITES = OrderedDict(
         ("grib", suite_grib),
         ("pointclouds", suite_pointclouds),
         ("lazy-geotiff", suite_lazy_geotiff),
+        ("reduced-first-masks", suite_reduced_first_masks),
         ("hecras", suite_hecras),
         ("crs", suite_crs),
         ("geocentric", suite_geocentric),
