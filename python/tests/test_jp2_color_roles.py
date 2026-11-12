@@ -291,7 +291,16 @@ def test_signed_alpha_roles_are_rejected(tmp_path, dtype):
 
 
 @pytest.mark.parametrize(
-    "surface", ["update", "path", "memory", "rio-copy", "rio-copy-alias", "update-roles"]
+    "surface",
+    [
+        "update",
+        "path",
+        "memory",
+        "rio-copy",
+        "rio-copy-alias",
+        "rio-copy-update-roles",
+        "update-roles",
+    ],
 )
 @pytest.mark.parametrize("y_band", [0, 1])
 def test_gray_update_preserves_original_y_association(tmp_path, gdal, y_band, surface):
@@ -324,7 +333,12 @@ def test_gray_update_preserves_original_y_association(tmp_path, gdal, y_band, su
 
         source = path
         path = tmp_path / "copied.jp2"
-        copy(source, path, driver="JP2OpenJPEG" if surface.endswith("alias") else "JP2")
+        if surface == "rio-copy-update-roles":
+            with rio.open(source, "r+") as src:
+                src.colorinterp = (ColorInterp.gray, ColorInterp.gray)
+                copy(src, path, driver="JP2")
+        else:
+            copy(source, path, driver="JP2OpenJPEG" if surface.endswith("alias") else "JP2")
     else:
         raster = terrio.open_raster(str(path), lazy=True)
         assert raster.band_metadata[y_band]["color_association"] == 1
@@ -335,7 +349,7 @@ def test_gray_update_preserves_original_y_association(tmp_path, gdal, y_band, su
             path.write_bytes(raster.to_bytes(path.name))
     header = next(payload for kind, payload in _boxes(path.read_bytes()) if kind == b"jp2h")
     definitions = next(payload for kind, payload in _boxes(header) if kind == b"cdef")
-    expected_y = 0 if surface == "update-roles" else y_band
+    expected_y = 0 if surface in ("update-roles", "rio-copy-update-roles") else y_band
     assert [struct.unpack_from(">HHH", definitions, 2 + 6 * band) for band in range(2)] == [
         (band, 0, 1) if band == expected_y else (band, 65535, 65535) for band in range(2)
     ]

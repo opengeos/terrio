@@ -1036,7 +1036,7 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
         self.structure.colorinterp = [ColorInterp(v) for v in value]
         self._colorinterp_set = True
         # Explicit roles select fresh channel associations; copy restores stored ones afterward.
-        self._jp2_associations = []
+        self._jp2_associations: list[int | None] = []
         self._dirty = True
 
     def colormap(self, bidx: int) -> dict[int, tuple[int, int, int, int]]:
