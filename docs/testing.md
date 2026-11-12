@@ -9,6 +9,41 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## Vector source ranges
+
+`cargo test -p terrio --test vector_stream_ranges` checks eager/streamed ranges,
+STAC asset forwarding and MVT directories/tiles. The memory range tests exercise
+filesystem-free codecs, including multi-layer and archive readers. Ranges count
+live features after a driver's candidate filtering, once per selected layer.
+Zero retains an empty layer with its schema. Pyogrio's compatibility facade
+retains its separate convention that `max_features=0` means unbounded.
+
+The Linux CSV regression measures the number of live input handles and the file
+cursor after bounded and full reads. Schema discovery still scans the file;
+the feature reader stops after its prefetched prefix for a bounded range. A
+portable source counter also checks that a zero limit decodes no feature batches
+and a satisfied limit never requests another batch.
+
+FlatGeobuf streams scan features sequentially even when an index exists; indexed
+bounding-box filtering happens before range counting, but does not use the index
+to avoid those reads. No indexed-read byte reduction is claimed here. Without an
+index, both eager and streamed readers retain all features as spatial candidates,
+so a bounding box does not remove features on that path. Eager codec reads and
+the GDAL fallback materialize a layer before slicing its feature range. A small
+range therefore does not reduce their decoding memory or GDAL vector-budget
+charges. Native Python `terrio.open_vector` keeps its existing whole-dataset API;
+Python callers use the pyogrio facade for range parameters.
+Skipping still decodes and discards the skipped live features, so its work grows
+with the requested offset; this wrapper does not add indexed seeks for pagination.
+
+`python scripts/conformance.py DATA --only vector-ranges --strict` compares
+GeoJSON and multi-layer GeoPackage STAC assets with GDAL/OGR using 16 real Natural
+Earth populated places. It checks 12 selected-layer/range combinations: order,
+scalar values and EPSG:4326 exactly, and point coordinates within 1e-9 degrees.
+Local validation uses GDAL 3.13.3 and finds zero coordinate difference.
+The public Python tests also exercise archives and CLI layer selection; Node
+checks byte ranges and rejects service options for in-memory files.
+
 ## GDAL backend date-times
 
 The optional backend reads date-time fields using `OGR_F_GetFieldAsDateTimeEx`,
@@ -443,6 +478,7 @@ rule rather than treating the outputs as pixel-identical or excluding edge pixel
 | Streamed vector conversions | `scripts/compare_streams_with_gdal.py` | conversions read and written as streams vs the same conversions of whole layers (identical files) and read back by GDAL; with `--features N`, a synthetic layer converted by terrio and `ogr2ogr`, with time and peak memory |
 | rasterio API | `scripts/compare_rio_with_rasterio.py` | `terrio.rio` vs rasterio: metadata, reads, masks, writes read back by rasterio, features, warping, merging, masking, warped VRTs, rasterio's documentation examples, and `terrio-rio` against rasterio's `rio` command line (see [Coming from rasterio](rasterio.md)) |
 | Coordinate transformations | `crates/terrio-crs/tests/epsg_accuracy.rs` | a point per EPSG CRS, forward, inverse and between CRSs, vs GDAL |
+| PROJ parameter exports | `python/tests/test_crs_proj_parameters.py` (`crs-parameters`) | Nine WGS 84 projected CRS cases read from exported PROJ strings versus the active rasterio GDAL oracle, forward coordinates within 1e-5 metres. Other regressions cover dictionary/WKT round trips, named datums and explicit shifts, warnings for unrepresentable datums, and boolean flags through Rust, CLI, Python and WebAssembly. |
 | Chains through intermediate datums | `crates/terrio-crs/tests/crs_chains.rs`, `scripts/compare_chains_with_proj.py` | every pair of EPSG geographic 2D CRSs on two datums no transformation links directly whose areas overlap, and a projected CRS of each datum, without and with grids, vs GDAL |
 | Datum shift grids, geoid models, epochs | `crates/terrio-crs/tests/epsg_accuracy_grids.rs`, `crates/terrio-crs/tests/crs_grids.rs`, `scripts/compare_crs_grids_with_gdal.py` | the same EPSG points with the grids of `scripts/proj_grids.txt`; random points through every grid (forward and inverse), legacy NTv2 and GTX files, NADCON5 and geocentric grids, compound CRSs and coordinate epochs, vs GDAL with the same grids |
 
@@ -901,6 +937,19 @@ numeric attributes, not coordinates or format-specific trailing-zero display.
 The options also apply to Python's bundled CLI and MCP. Direct zonal statistics
 are exposed as Python `zonal_stats` and JavaScript `zonalStats`; direct
 point-sampling functions remain unavailable in the language bindings.
+
+## Compound authority references
+
+`cargo test -p terrio-crs --lib` (also with `--features wbprojection-fallback`)
+checks compound EPSG URNs, invalid component roles and unrelated text. GML and
+CityGML regressions keep both components and normalize horizontal axis order
+without changing height. Python path/bytes and layer CRS arguments are covered
+in `python/tests/test_compound_crs_urn.py`; Node covers shared parsing and GML XYZ.
+The registered `compound-crs` suite runs
+`scripts/compare_compound_crs_with_gdal.py`: three EPSG horizontal/vertical pairs
+against GDAL 3.13.3 with `GML_REPORT_COMPD_CS=YES`, with exact component IDs,
+2+1 axes and normalized XYZ. CRS
+names and serialized PROJJSON text are deliberately outside that comparison.
 
 ## Engineering and vertical WKT keywords
 
@@ -2771,6 +2820,68 @@ python scripts/conformance.py ../terrio-data --only shapefile-deleted --strict
 The GDAL/OGR Python bindings (`osgeo`) are required; Terrio Python bindings and
 downloaded data are not. The positional data-directory argument is required by the
 conformance runner, but this suite generates its fixtures in a temporary directory.
+
+### GeoPackage feature pages
+
+The `gpkg-paging` conformance suite compares the real `countries.gpkg` with GDAL
+through Python path/byte inputs and a CLI conversion limit. FIDs and order,
+attributes, geometry WKB, fields and CRS are exact for full, head, middle, tail,
+empty and spatially filtered pages. CLI output-writer FID policy is outside this
+comparison. Local validation uses GDAL 3.13.3.
+
+Native tests cover layer selection, original row ordinals, primary keys with gaps,
+UTF-16 text, overflow records, zero limits, and spatial matching with/without an
+R-tree. A malformed record outside a requested Python page is not decoded; a
+selected malformed record remains an error. A real-data test counts row decodes
+at the SQLite traversal boundary rather than inferring them from returned features.
+That external-data test is explicitly ignored unless requested; the synthetic
+SQLite page test asserts decoder-call counts in every ordinary CI run. The spatial
+page regression also asserts that only returned rows materialize their attributes,
+both without an index and with deliberately loose R-tree boxes that include null
+and nonmatching geometries. Borrowed geometry projection checks blob offsets
+without decoding neighboring fields, including UTF-16 databases:
+
+```sh
+cargo test -p terrio --lib drivers::sqlite::tests
+cargo test -p terrio --lib drivers::vector::gpkg_read::tests
+TERRIO_GPKG_PAGING_DATA=../terrio-data/countries.gpkg \
+  cargo test -p terrio --lib real_feature_pages_decode_only_requested_rows -- --ignored --nocapture
+pytest python/tests/test_pyogrio_feature_range.py
+python scripts/conformance.py ../terrio-data --only gpkg-paging --strict
+```
+
+The measured 176-feature countries table decodes three rows for an unfiltered three-feature
+page after skipping 88, versus 176 for a full traversal. Metadata reads are outside
+that feature-row count. Skipping visits leaf headers to count records without
+decoding their payloads or reading their overflow chains. Spatial filters instead
+read candidate geometry blobs and count matching geometries before materializing
+the selected records' attributes. Candidate payloads can still read overflow pages;
+this is not a geometry-only I/O guarantee. Byte and HTTP inputs
+still obtain the SQLite snapshot; paging bounds decoding rather than input transfer.
+
+The native ranged visitor decodes serially; unpaged full reads use the parallel
+decoder. To measure the index-free trade-off, `vector_read_profile` was built
+against both base commit `649d64cd` and the paging implementation. A GDAL 3.13.3
+fixture contained 200,000 EPSG:3857 points at `(i, 0)`, with name/category text and
+a floating value, and `SPATIAL_INDEX=NO`. Five alternating fresh-process runs
+followed one warm-up per binary, with `RAYON_NUM_THREADS=4` and warm file caches.
+Each requested one skipped match and three returned features; FIDs agreed exactly.
+
+| Bounding-box matches | Before median (ms) | After median (ms) | Before peak RSS (MiB) | After peak RSS (MiB) |
+|---|---:|---:|---:|---:|
+| Early, x=0.5..1000 | 94.44 | 4.16 | 149.39 | 25.52 |
+| Near the end, x=199990.5..200000 | 95.53 | 16.26 | 148.38 | 38.43 |
+
+The late filter scans almost the whole layer before finding its result. These
+point-workload measurements show the cost of that path alongside early stopping;
+they are not throughput guarantees for other geometry or attribute workloads.
+The example reports elapsed milliseconds, returned FIDs and Linux peak RSS:
+
+```sh
+cargo build --release -p terrio --example vector_read_profile
+RAYON_NUM_THREADS=4 target/release/examples/vector_read_profile FILE.gpkg 1 3 0.5 -1 1000 1
+RAYON_NUM_THREADS=4 target/release/examples/vector_read_profile FILE.gpkg 1 3 199990.5 -1 200000 1
+```
 
 ### GeoPackage text encodings
 

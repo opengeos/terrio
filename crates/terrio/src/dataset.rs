@@ -324,7 +324,8 @@ pub struct VectorOpenOptions {
     /// rows this matches pyogrio's `skip_features` and GDAL's `SetNextByIndex`; their Shapefile
     /// fast-seek paths can count physical slots when records are deleted instead.
     /// The Shapefile driver reads deletion flags without skipped geometry/attributes;
-    /// the other local drivers read every feature and keep the range.
+    /// GeoPackage walks only the requested records (after spatial matching, when filtered).
+    /// Other local drivers read every feature and keep the range.
     pub skip_features: usize,
     /// At most this many live features per layer after the skipped ones; `None` reads to the end.
     /// Unlike pyogrio, `Some(0)` returns no features rather than treating zero as unlimited.
@@ -920,7 +921,7 @@ fn read_feature_service(url: &str, first: &[u8], driver: VectorDriver, options: 
 
 pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
     options.oapif.validate_source(path)?;
-    if let Some(result) = crate::stac::open(path) {
+    if let Some(result) = crate::stac::open_vector(path, options) {
         return match result? {
             Dataset::Vector(v) => Ok(v),
             Dataset::Raster(_) => Err(Error::Unsupported(format!("'{path}' is a raster, not a vector dataset"))),
@@ -1154,7 +1155,11 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     }
     #[cfg(feature = "tiles")]
     if let Some(layers) = crate::tiles::open_mvt_local(path, options) {
-        return layers.map(|l| Dataset::Vector(finish_vector(l, path, VectorDriver::MVT)));
+        return layers.and_then(|layers| {
+            let mut layers = select_layers(layers, path, options)?;
+            layers.iter_mut().for_each(|layer| options.keep_range(layer));
+            Ok(Dataset::Vector(finish_vector(layers, path, VectorDriver::MVT)))
+        });
     }
     if !Path::new(path).exists() {
         return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("'{path}' does not exist"))));
@@ -1400,8 +1405,7 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
     driver.ensure_built()?;
     #[cfg(feature = "sqlite")]
     if driver == VectorDriver::GPKG {
-        let mut layers = crate::drivers::vector::gpkg_read::read(path, &options.layers, options.spatial_filter)?;
-        layers.iter_mut().for_each(|l| options.keep_range(l));
+        let layers = crate::drivers::vector::gpkg_read::read(path, options)?;
         return Ok(finish_vector(layers, path, driver));
     }
     if matches!(driver, VectorDriver::KML | VectorDriver::KMZ) {

@@ -144,6 +144,8 @@ mod user_crs;
 mod vector_ops;
 #[path = "../vector_sql.rs"]
 mod vector_sql;
+#[path = "../vector_stream_ranges.rs"]
+mod vector_stream_ranges;
 #[path = "../white_is_zero.rs"]
 mod white_is_zero;
 #[path = "../wkt2.rs"]

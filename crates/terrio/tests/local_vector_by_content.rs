@@ -85,7 +85,7 @@ fn a_json_document_that_is_not_geojson_is_still_not_recognized() {
 fn refused_documents(dir: &std::path::Path) -> [(String, &'static str); 2] {
     [
         ("lines", FEATURES_PER_LINE, "GeoJSON: trailing characters at line 2 column 1"),
-        ("mixed", MIXED_CRS_GML, "GML: mixed coordinate axis conventions within a layer"),
+        ("mixed", MIXED_CRS_GML, "GML: mixed coordinate reference systems within a layer"),
     ]
     .map(|(name, body, refusal)| {
         let path = dir.join(name);

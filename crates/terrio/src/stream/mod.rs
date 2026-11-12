@@ -94,6 +94,42 @@ trait FeatureSource: Send {
     }
 }
 
+/// A range over live features emitted by a source, after its candidate filtering.
+struct RangedSource {
+    inner: Box<dyn FeatureSource>,
+    skip: usize,
+    remaining: Option<usize>,
+}
+
+impl FeatureSource for RangedSource {
+    fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
+        if self.remaining == Some(0) {
+            return Ok(None);
+        }
+        loop {
+            let Some(mut features) = self.inner.next_batch()? else { return Ok(None) };
+            let skipped = self.skip.min(features.len());
+            features.drain(..skipped);
+            self.skip -= skipped;
+            if let Some(remaining) = &mut self.remaining {
+                features.truncate(*remaining);
+                *remaining -= features.len();
+            }
+            if !features.is_empty() {
+                return Ok(Some(features));
+            }
+        }
+    }
+
+    fn set_batch_bytes(&mut self, bytes: usize) {
+        self.inner.set_batch_bytes(bytes);
+    }
+
+    fn select_columns(&mut self, keep: &[usize]) -> Result<bool> {
+        self.inner.select_columns(keep)
+    }
+}
+
 /// The features of a reader with some of their fields (see [`FeatureReader::select_fields`]).
 struct SelectedFields {
     inner: FeatureReader,
@@ -168,6 +204,14 @@ pub struct FeatureReader {
 impl FeatureReader {
     fn new(layer: Layer, source: Box<dyn FeatureSource>) -> Self {
         Self { layer: schema_of(&layer), source, buffer: VecDeque::new(), buffered: 0, done: false, chunk_bytes: CHUNK_BYTES }
+    }
+
+    /// Limits raw streamed sources once; whole-read fallbacks already kept their range.
+    fn with_range(mut self, options: &VectorOpenOptions) -> Self {
+        if options.has_range() {
+            self.source = Box::new(RangedSource { inner: self.source, skip: options.skip_features, remaining: options.max_features });
+        }
+        self
     }
 
     /// Reads chunks of about `bytes` at most rather than [`CHUNK_BYTES`].
@@ -330,7 +374,7 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
     {
         let layer = crate::dataset::fix_layer(s.layer.clone(), path, VectorDriver::Parquet);
         crate::dataset::layer_selection(&options.layers, &[layer.name.as_str()], Some(path), false)?;
-        return Ok(vec![FeatureReader::new(layer, Box::new(ParquetSource(s)))]);
+        return Ok(vec![FeatureReader::new(layer, Box::new(ParquetSource(s))).with_range(options)]);
     }
     let Some(driver) = driver.filter(|d| local && can_read_stream(*d)) else {
         let ds = crate::open_vector(path, options)?;
@@ -360,7 +404,7 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
         }
         VectorDriver::Shapefile => open_shapefile(path, options)?,
         #[cfg(feature = "flatgeobuf")]
-        VectorDriver::FlatGeobuf => open_fgb(path, batch)?,
+        VectorDriver::FlatGeobuf => open_fgb(path, batch, options.spatial_filter)?,
         #[cfg(feature = "parquet")]
         VectorDriver::Parquet => {
             let s = geoparquet::ParquetStream::open(|| geoparquet::open_file(path), stem, None, options.spatial_filter, batch, None, None)?;
@@ -370,7 +414,7 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
     };
     let layer = crate::dataset::fix_layer(layer, path, driver);
     crate::dataset::layer_selection(&options.layers, &[layer.name.as_str()], Some(path), false)?;
-    Ok(vec![FeatureReader::new(layer, source)])
+    Ok(vec![FeatureReader::new(layer, source).with_range(options)])
 }
 
 // GeoJSON
@@ -687,6 +731,7 @@ struct FgbSource {
     fid: u64,
     batch: usize,
     batch_bytes: usize,
+    bbox: Option<(f64, f64, f64, f64)>,
 }
 
 #[cfg(feature = "flatgeobuf")]
@@ -724,12 +769,22 @@ impl FeatureSource for FgbSource {
         let features: Result<Vec<Feature>> =
             crate::par::map_range(raw.len(), |i| fgb::decode_feature(&raw[i], h, first + i as u64)).into_iter().collect();
         self.fid += raw.len() as u64;
-        features.map(Some)
+        let mut features = features?;
+        if let Some((min_x, min_y, max_x, max_y)) = self.bbox {
+            features.retain(|feature| {
+                feature
+                    .geometry
+                    .as_ref()
+                    .and_then(|geometry| geometry.bbox())
+                    .is_some_and(|bounds| bounds.max_x >= min_x && bounds.min_x <= max_x && bounds.max_y >= min_y && bounds.min_y <= max_y)
+            });
+        }
+        Ok(Some(features))
     }
 }
 
 #[cfg(feature = "flatgeobuf")]
-fn open_fgb(path: &str, batch: usize) -> Result<(Layer, Box<dyn FeatureSource>)> {
+fn open_fgb(path: &str, batch: usize, bbox: Option<(f64, f64, f64, f64)>) -> Result<(Layer, Box<dyn FeatureSource>)> {
     let mut r = BufReader::with_capacity(1 << 20, File::open(path)?);
     let mut start = [0u8; 12];
     let n = read_full(&mut r, &mut start)?;
@@ -748,7 +803,10 @@ fn open_fgb(path: &str, batch: usize) -> Result<(Layer, Box<dyn FeatureSource>)>
         return Err(Error::InvalidData("FlatGeobuf: truncated index".into()));
     }
     r.seek_relative(header.index_size as i64)?;
-    Ok((layer, Box::new(FgbSource { r, header, fid: 0, batch, batch_bytes: source_bytes(CHUNK_BYTES) })))
+    // Match eager candidate semantics: an unindexed file retains every feature,
+    // even with a bbox. Indexed streams filter while scanning, without using the index.
+    let bbox = bbox.filter(|_| header.index_size > 0);
+    Ok((layer, Box::new(FgbSource { r, header, fid: 0, batch, batch_bytes: source_bytes(CHUNK_BYTES), bbox })))
 }
 
 // GeoParquet
@@ -864,7 +922,7 @@ fn open_gpkg(path: &str, options: &VectorOpenOptions, batch: usize) -> Result<Ve
         };
         let layer = crate::dataset::fix_layer(def.layer.clone(), path, VectorDriver::GPKG);
         let source = GpkgSource { db, def, columns, rowid_col, rows, bbox, n: 0, batch, batch_bytes: source_bytes(CHUNK_BYTES) };
-        out.push(FeatureReader::new(layer, Box::new(source)));
+        out.push(FeatureReader::new(layer, Box::new(source)).with_range(options));
     }
     Ok(out)
 }
