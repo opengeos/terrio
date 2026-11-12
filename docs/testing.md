@@ -866,7 +866,8 @@ allowance does not apply to exact benchmark or conformance comparisons.
 ### Footprint attributes and singleparts (#275)
 
 ```sh
-cargo test -p terrio -p terrio-cli --test processing
+cargo test -p terrio --test merged processing::
+cargo test -p terrio-cli --test processing
 python scripts/conformance.py ../terrio-data --only footprint --strict
 ```
 
@@ -884,7 +885,8 @@ source-path attribute automatically; callers provide it explicitly when needed.
 ### Zonal and point-sampling output controls (#280)
 
 ```sh
-cargo test -p terrio -p terrio-cli --test processing --test raster_analysis
+cargo test -p terrio --test merged -- processing:: raster_analysis::
+cargo test -p terrio-cli --test processing --test raster_analysis
 python scripts/conformance.py ../terrio-data --only analysis-output --strict
 ```
 
@@ -952,7 +954,8 @@ ellipsoids; an explicit GDAL no-op checks Cartesian vector preservation.
 
 ```sh
 cargo test -p terrio-crs --test geocentric
-cargo test -p terrio --test geocentric -p terrio-cli --test mcp
+cargo test -p terrio --test merged geocentric::
+cargo test -p terrio-cli --test mcp
 python scripts/conformance.py ../terrio-data --only geocentric --strict
 python -m pytest python/tests/test_geocentric.py
 node --test --test-name-pattern='geocentric XYZ' js/tests/node.test.mjs
@@ -1271,7 +1274,7 @@ conformance suite check that terrio refuses them, and Python and Node/WASM leave
 
 ```sh
 cargo test -p terrio-crs --test ob_tran
-cargo test -p terrio --test rotated_pole
+cargo test -p terrio --test merged rotated_pole::
 cargo test -p terrio-cli --test mcp oblique_mollweide
 python -m pytest python/tests/test_ob_tran.py
 node --test --test-name-pattern='general oblique' js/tests/node.test.mjs
@@ -1539,7 +1542,7 @@ its GDAL had no netCDF driver for the other 3.
 
 ```sh
 cargo test -p terrio --lib resampled_read
-cargo test -p terrio --test resampled_reads
+cargo test -p terrio --test merged resampled_reads::
 cargo test -p terrio-cli --test translate_overviews
 python scripts/make_resampled_reads_fixtures.py                  # GDAL's Python bindings
 python scripts/make_resampled_reads_fixtures.py --check-rasterio # rasterio
@@ -2202,7 +2205,7 @@ limit, while wildcard-only patterns use the direct matching path.
 ## JTS provenance replacement regressions
 
 `docs/jts-provenance.md` maps the geometry replacements to pinned JTS 1.20.0
-sources. `cargo test -p terrio --test jts_behavior` replays the captured GEOS
+sources. `cargo test -p terrio --test merged jts_behavior::` replays the captured GEOS
 simplification, convex/concave hull and STR ordering observations without native
 reference libraries. `cargo test -p terrio --lib tiles::validity` checks recorded
 integer-grid validity decisions. The existing `vector-geom` conformance suite
@@ -2744,7 +2747,7 @@ operations, including file bytes passed directly to JavaScript operations:
 
 ```sh
 cargo test -p terrio --lib layer_selection
-cargo test -p terrio --test layer_selection
+cargo test -p terrio --test merged layer_selection::
 cargo test -p terrio --lib zip_layer_selection
 cargo test -p terrio --lib named_layer
 cargo test -p terrio --features gdal --test gdal_backend
@@ -2771,7 +2774,7 @@ conformance runner, but this suite generates its fixtures in a temporary directo
 
 ### GeoPackage text encodings
 
-`cargo test -p terrio --test sqlite_encodings` reads the small SQLite-generated
+`cargo test -p terrio --test merged sqlite_encodings::` reads the small SQLite-generated
 snapshots in `crates/terrio/tests/data/sqlite_encodings`; it needs no Python
 executable. The directory contains the generator and SHA-256 manifest for
 regeneration. Tests cover non-ASCII schema names, UTF-8/UTF-16LE/UTF-16BE,
