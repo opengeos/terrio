@@ -321,6 +321,11 @@ jobs:
         run: |
           wasm-pack build js --release --target nodejs --out-dir pkg-node/core --out-name terrio --no-pack -- --no-default-features --features core
           TERRIO_JS_PKG=../pkg-node/core/terrio.js node --test js/tests/node.test.mjs
+      # The Zarr-only module, `terrio-js/zarr` (its own crate, js/zarr).
+      - name: Build and test terrio-js/zarr (Node.js)
+        run: |
+          wasm-pack build js/zarr --release --target nodejs --out-dir ../pkg-node/zarr --out-name terrio --no-pack
+          node --test js/tests/zarr.test.mjs
 
   # The cargo features (see crates/terrio/Cargo.toml): each builds on its own, and so does the
   # core without them, natively and for WebAssembly.

@@ -2203,7 +2203,8 @@ fn band_dim_metadata(array: &Array, bds: &[usize], coord: impl Fn(usize) -> Opti
 /// dimension names.
 fn axes(a: &Array, attrs: &[&Value]) -> (usize, usize) {
     let nd = a.shape.len();
-    let geo = geozarr::<true>(attrs, |_, _| None);
+    // Its dimensions alone: without the CRS engine, which builds without it leave out.
+    let geo = geozarr::<false>(attrs, |_, _| None);
     let by_name = |n: &str| a.dims.iter().position(|d| d == n);
     if let Some(d) = geo.dims.as_ref().and_then(|(y, x)| Some((by_name(x)?, by_name(y)?))) {
         return d;
