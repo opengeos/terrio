@@ -6,6 +6,9 @@ QUALITY is a percentage of uncompressed size, not a PSNR target. Rate targets ar
 approximate, including container overhead. Encoder byte identity with GDAL is not claimed.
 """
 
+import platform
+import sys
+
 import numpy as np
 import pytest
 
@@ -18,6 +21,20 @@ from terrio.rio.errors import RasterioIOError  # noqa: E402
 from terrio.rio.io import MemoryFile  # noqa: E402
 
 TRANSFORM = from_origin(500000, 4600000, 10, 10)
+
+# The irreversible 9/7 inverse is floating point. On macOS arm64 the C OpenJPEG in rasterio's wheel
+# (clang fuses multiply-adds) rounds a few samples one level away from the pure-Rust decoder, which
+# does not fuse. Integer 5/3 decodes stay exact everywhere.
+FUSED_FLOAT_ORACLE = sys.platform == "darwin" and platform.machine() == "arm64"
+
+
+def assert_decodes_as_gdal(actual, expected, irreversible):
+    if irreversible and FUSED_FLOAT_ORACLE:
+        difference = np.abs(actual.astype("int64") - expected.astype("int64"))
+        assert difference.max() <= 1
+        assert np.count_nonzero(difference) <= 0.02 * difference.size
+    else:
+        np.testing.assert_array_equal(actual, expected)
 
 
 def encode(data, **options):
@@ -72,7 +89,8 @@ def test_jp2_path_and_memory_options(tmp_path, options, lossless):
     assert path.read_bytes() == payload
     with GdalMemoryFile(payload) as mem, mem.open() as oracle, rio.open(path) as actual:
         expected = oracle.read()
-        np.testing.assert_array_equal(actual.read(), expected)
+        irreversible = str(options.get("REVERSIBLE", options.get("reversible", ""))).upper() == "NO"
+        assert_decodes_as_gdal(actual.read(), expected, irreversible)
         assert actual.transform == oracle.transform == TRANSFORM
         assert actual.crs.to_epsg() == oracle.crs.to_epsg() == 32631
         assert actual.dtypes == oracle.dtypes == ("uint8",) * 3
@@ -117,4 +135,4 @@ def test_lossy_integer_samples_decode_as_gdal(dtype):
         assert oracle.dtypes == (dtype,)
     with MemoryFile(payload, ext=".jp2") as mem, mem.open() as actual:
         assert actual.dtypes == (dtype,)
-        np.testing.assert_array_equal(actual.read(), expected)
+        assert_decodes_as_gdal(actual.read(), expected, irreversible=True)
