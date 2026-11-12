@@ -249,6 +249,14 @@ pub fn fetch_stats_by_file() -> Vec<(String, FetchStats)> {
     stats(&FILE_STATS).iter().map(|(k, v)| (k.clone(), *v)).collect()
 }
 
+/// Serializes the tests that check the process-wide statistics ([`fetch_stats`] and those by host
+/// and by file) against the one that resets them, in this module and in [`store`].
+#[cfg(test)]
+pub(crate) fn stats_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: Mutex<()> = Mutex::new(());
+    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Resets the counters of [`fetch_stats`], [`fetch_stats_by_host`] and [`fetch_stats_by_file`]
 /// (as GDAL's `VSINetworkStatsReset`).
 pub fn reset_fetch_stats() {
@@ -4577,6 +4585,7 @@ mod tests {
     /// its body twice, and the 307 that keeps it within its origin is not counted.
     #[test]
     fn a_post_is_counted_with_the_body_it_sends() {
+        let _serial = stats_test_guard();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let host = listener.local_addr().unwrap().to_string();
         let server = std::thread::spawn(move || {
@@ -4943,12 +4952,6 @@ mod tests {
         assert_eq!(counted(), (Some((1, 7)), Some((1, 7))), "counted per host and per file");
         reset_fetch_stats();
         assert_eq!(counted(), (None, None), "reset per host and per file");
-    }
-
-    /// Serializes the tests that check the process-wide statistics against the one that resets them.
-    fn stats_test_guard() -> std::sync::MutexGuard<'static, ()> {
-        static SERIAL: Mutex<()> = Mutex::new(());
-        SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// The bytes the recorded requests asked for (each `Range` header's length).

@@ -493,3 +493,24 @@ def test_real_copy_uses_cached_sample_metadata(tmp_path, monkeypatch, gdal, dtyp
             copy(reader, target, driver="GTiff")
     decoded = gdal.Open(str(target))
     np.testing.assert_array_equal(decoded.ReadAsArray(), values[0])
+
+
+def test_integer_complex_copy_preserves_resource_refusal(tmp_path, monkeypatch, gdal):
+    """The precise-copy path preserves resource admission errors (GDAL 3.13.3 fixture)."""
+    from terrio.errors import ResourceLimitError
+
+    source = tmp_path / "source.tif"
+    ds = gdal.GetDriverByName("GTiff").Create(str(source), 2, 2, 1, gdal.GDT_CInt32)
+    ds.Close()
+    refusal = ResourceLimitError("injected admission refusal")
+    with rio.open(source) as reader:
+
+        class RefusedRead:
+            def read(self, *args, **kwargs):
+                raise refusal
+
+        with monkeypatch.context() as patch:
+            patch.setattr(reader, "_raster", RefusedRead())
+            with pytest.raises(ResourceLimitError) as caught:
+                reader._read_for_copy()
+            assert caught.value is refusal

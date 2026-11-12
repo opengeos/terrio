@@ -1333,6 +1333,13 @@ pub(crate) fn check_allowed(path: &str, kind: Option<Kind>) -> crate::Result<()>
             // Before `identify`, which requests the start of a query's answer.
             #[cfg(remote)]
             check_query_readable(path, kind, &list)?;
+            // A name that points only to drivers the list leaves out is refused whatever the content
+            // shows: before `identify` reads it (an archive's member, remote by range requests).
+            if let Named::Name(_, by_name) = named_drivers(path.trim())
+                && !by_name.is_empty()
+            {
+                check_identified(path, &Identified { by_name, by_content: None }, &list)?;
+            }
             check_identified(path, &identify(path), &list)
         }
         None => Ok(()),
@@ -1512,6 +1519,25 @@ mod allow_list_tests {
         assert!(err.contains("holds VRT data"), "{err}");
         assert!(check_drivers(&format!("{archive}!x.tif"), &allowed).is_err());
         assert!(check_drivers(&format!("/vsizip/{archive}/y.tif"), &allowed).is_ok(), "a GeoTIFF member is allowed");
+    }
+
+    /// A remote archive's member whose name points only to drivers the list leaves out is refused by
+    /// that name before any request, as a remote file is: its content could not make it allowed.
+    #[cfg(remote)]
+    #[test]
+    fn a_disallowed_remote_zip_member_is_refused_by_its_name_before_any_request() {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(&mut buf);
+        zip.start_file("x.fgb", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, b"fgb\x03fgb\0").unwrap();
+        zip.finish().unwrap();
+        let (base, requests) = crate::http::test_server(buf.into_inner());
+        let url = format!("{base}/a.zip!x.fgb");
+        let err = crate::config::with_options(&[("TERRIO_ALLOWED_DRIVERS", "GTiff")], || {
+            crate::open_vector(&url, &Default::default()).map(|_| ()).unwrap_err().to_string()
+        });
+        assert!(err.contains("the FLATGEOBUF driver is not allowed"), "{err}");
+        assert!(requests.lock().unwrap().is_empty(), "the refused archive was requested");
     }
 
     #[test]

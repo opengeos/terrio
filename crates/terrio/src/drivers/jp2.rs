@@ -254,6 +254,7 @@ mod codec {
         r: &mut dyn ReadSeek,
         len: u64,
         j2k: bool,
+        preserve_band_order: bool,
         f: impl FnOnce(*mut opj_codec_t, *mut opj_stream_t, *mut opj_image_t) -> Result<T>,
     ) -> Result<T> {
         r.seek(std::io::SeekFrom::Start(0))?;
@@ -272,6 +273,11 @@ mod codec {
             opj_stream_set_user_data(stream, &mut source as *mut Source as *mut c_void, None);
             let codec = opj_create_decompress(format);
             let mut params = opj_dparameters_t::default();
+            if preserve_band_order {
+                // GDAL 3.13.3 reads component samples without applying channel-definition
+                // permutations. Metadata describes the stored band order separately.
+                params.flags |= OPJ_DPARAMETERS_IGNORE_PCLR_CMAP_CDEF_FLAG;
+            }
             let mut image: *mut opj_image_t = std::ptr::null_mut();
             let ok = !codec.is_null() && opj_setup_decoder(codec, &mut params) != 0 && opj_read_header(stream, codec, &mut image) != 0;
             let result = if ok && !image.is_null() {
@@ -294,10 +300,10 @@ mod codec {
     }
 
     /// Reads the main header of a JP2 file or a J2K codestream (`j2k`).
-    pub(super) fn read_header(r: &mut dyn ReadSeek, len: u64, j2k: bool) -> Result<Header> {
+    pub(super) fn read_header(r: &mut dyn ReadSeek, len: u64, j2k: bool, preserve_band_order: bool) -> Result<Header> {
         // SAFETY: the pointers are those `with_codec` passes, valid during the call.
         unsafe {
-            with_codec(r, len, j2k, |codec, _, image| {
+            with_codec(r, len, j2k, preserve_band_order, |codec, _, image| {
                 let img = &*image;
                 let comps = std::slice::from_raw_parts(img.comps, img.numcomps as usize);
                 if comps.is_empty() {
@@ -338,10 +344,11 @@ mod codec {
         area: Option<[u32; 4]>,
         reduce: u32,
         alpha: Option<usize>,
+        preserve_band_order: bool,
     ) -> Result<(usize, usize, RasterData)> {
         // SAFETY: the pointers are those `with_codec` passes, valid during the call.
         unsafe {
-            with_codec(r, len, j2k, |codec, stream, image| {
+            with_codec(r, len, j2k, preserve_band_order, |codec, stream, image| {
                 if reduce > 0 && opj_set_decoded_resolution_factor(codec, reduce) == 0 {
                     return Err(Error::InvalidData(format!("cannot decode JPEG 2000 resolution level {reduce}")));
                 }
@@ -404,7 +411,7 @@ mod codec {
     }
 
     /// Encodes components as a J2K codestream with explicit wavelet and quality layers.
-    pub(super) fn encode(w: usize, h: usize, comps: &[Component], options: &super::EncodingOptions) -> Result<Vec<u8>> {
+    pub(super) fn encode(w: usize, h: usize, comps: &[Component], rgb: bool, options: &super::EncodingOptions) -> Result<Vec<u8>> {
         let mut parms: Vec<openjp2::opj_image_comptparm> = comps
             .iter()
             .map(|c| openjp2::opj_image_comptparm {
@@ -460,7 +467,7 @@ mod codec {
                 levels -= 1;
             }
             params.numresolution = levels;
-            params.tcp_mct = (comps.len() >= 3 && comps[..3].iter().all(|c| c.precision == comps[0].precision)) as core::ffi::c_char;
+            params.tcp_mct = (rgb && comps.len() >= 3 && comps[..3].iter().all(|c| c.precision == comps[0].precision)) as core::ffi::c_char;
             if w > 1024 || h > 1024 {
                 params.tile_size_on = 1;
                 params.cp_tdx = 1024;
@@ -791,6 +798,7 @@ struct Jp2Window {
     j2k: bool,
     header: codec::Header,
     alpha: Option<usize>,
+    preserve_band_order: bool,
     overviews: Vec<(usize, usize)>,
     block: (usize, usize),
 }
@@ -809,20 +817,37 @@ impl Jp2Window {
         let boxes_bytes = if j2k { Vec::new() } else { header_boxes(stream.as_mut())? };
         let (gt, crs) = georeferencing(&boxes_bytes);
         let alpha = alpha_channel(&boxes_bytes);
-        let header = codec::read_header(stream.as_mut(), len, j2k)?;
+        let palette =
+            boxes(&boxes_bytes).into_iter().find(|(t, _)| t == b"jp2h").is_some_and(|(_, p)| boxes(p).iter().any(|(t, _)| t == b"pclr"));
+        let header = codec::read_header(stream.as_mut(), len, j2k, !palette)?;
         if header.subsampled {
             return Err(Error::Unsupported("JPEG 2000 components with different sizes are not supported".into()));
         }
         let [x0, y0, x1, y1] = header.area;
         let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
-        let palette =
-            boxes(&boxes_bytes).into_iter().find(|(t, _)| t == b"jp2h").is_some_and(|(_, p)| boxes(p).iter().any(|(t, _)| t == b"pclr"));
+        // A palette expands its stored index component to the columns described by PCLR.
+        // Refuse its output declaration before the one-pixel probe can allocate tile metadata.
+        let palette_shape = boxes(&boxes_bytes).into_iter().find(|(t, _)| t == b"jp2h").and_then(|(_, p)| {
+            let children = boxes(p);
+            let (_, pclr) = children.iter().find(|(t, _)| *t == *b"pclr")?;
+            let channels = usize::from(*pclr.get(2)?);
+            let columns = pclr.get(3..3 + channels)?;
+            let (_, cmap) = children.iter().find(|(t, _)| *t == *b"cmap")?;
+            if channels == 0 || cmap.len() != channels * 4 {
+                return None;
+            }
+            let precisions: Vec<u32> = columns.iter().map(|v| u32::from(v & 0x7f) + 1).collect();
+            Some((channels, codec::data_type(&precisions, columns[0] & 0x80 != 0, alpha)))
+        });
+        let (declared_bands, declared_type) =
+            palette_shape.unwrap_or_else(|| (header.precisions.len(), codec::data_type(&header.precisions, header.signed, alpha)));
+        crate::declared::check(w, h, declared_bands, declared_type, false)?;
         let mut header = header;
         let (bands, data_type) = if palette {
             // OpenJPEG applies the palette when decoding: the bands and type are those of a
             // decoded pixel.
             let mut s = source.open()?;
-            let (_, _, px) = codec::decode_area(s.as_mut(), len, j2k, Some([x0, y0, x0 + 1, y0 + 1]), 0, alpha)?;
+            let (_, _, px) = codec::decode_area(s.as_mut(), len, j2k, Some([x0, y0, x0 + 1, y0 + 1]), 0, alpha, false)?;
             let n = px.len().max(1);
             header.precisions = vec![header.precisions[0]; n];
             (n, px.data_type())
@@ -852,19 +877,44 @@ impl Jp2Window {
         let reversibility = reversibility(source.open()?.as_mut(), len, j2k).unwrap_or(None);
         ds.metadata_domains = image_structure(&header.precisions, alpha, reversibility);
         if !palette {
+            let associations = color_associations(&boxes_bytes, bands);
             ds.band_metadata = color_interpretation(&boxes_bytes, bands)
                 .into_iter()
-                .map(|c| crate::BandMetadata { color_interp: Some(c.to_string()), ..Default::default() })
+                .zip(associations)
+                .map(|(c, association)| crate::BandMetadata {
+                    color_interp: Some(c.to_string()),
+                    color_association: association,
+                    ..Default::default()
+                })
                 .collect();
         }
-        Ok((Self { referenced: gt.is_some(), source, len, j2k, header, alpha, overviews, block }, ds))
+        Ok((Self { referenced: gt.is_some(), source, len, j2k, header, alpha, preserve_band_order: !palette, overviews, block }, ds))
     }
 
     /// Decodes an area of the reference grid at a resolution level, on a stream of its own.
     fn decode(&self, area: [u32; 4], reduce: u32) -> Result<(usize, usize, RasterData)> {
         let mut stream = self.source.open()?;
-        codec::decode_area(stream.as_mut(), self.len, self.j2k, Some(area), reduce, self.alpha)
+        codec::decode_area(stream.as_mut(), self.len, self.j2k, Some(area), reduce, self.alpha, self.preserve_band_order)
     }
+}
+
+/// Stored colour associations, independent of GDAL's normalized interpretation names.
+fn color_associations(b: &[u8], bands: usize) -> Vec<Option<u16>> {
+    let mut associations = vec![None; bands];
+    let header = boxes(b).into_iter().find(|(t, _)| t == b"jp2h").map(|(_, p)| boxes(p)).unwrap_or_default();
+    if let Some((_, c)) = header.iter().find(|(t, _)| t == b"cdef") {
+        for e in c.get(2..).unwrap_or_default().as_chunks::<6>().0 {
+            let band = u16::from_be_bytes([e[0], e[1]]) as usize;
+            if let Some(association) = associations.get_mut(band) {
+                // Only colour channels can select the Y component; opacity may also be
+                // associated with a particular colour, but must not replace it.
+                if u16::from_be_bytes([e[2], e[3]]) == 0 {
+                    *association = Some(u16::from_be_bytes([e[4], e[5]]));
+                }
+            }
+        }
+    }
+    associations
 }
 
 /// The colour interpretation GDAL gives each band (`JP2OPJLikeRasterBand::GetColorInterpretation`):
@@ -1283,22 +1333,93 @@ pub(crate) fn read_bytes(bytes: &[u8]) -> Result<RasterDataset> {
 fn read_source(source: StreamSource) -> Result<RasterDataset> {
     use crate::cog::WindowSource;
     let (mut reader, mut ds) = Jp2Window::open(source)?;
+    // What the headers declare, before any tile is decoded (see `crate::declared`).
+    crate::declared::check_dataset(&ds)?;
     let (w, h, bands) = (ds.raster.cols, ds.raster.rows, ds.raster.bands);
     let all: Vec<usize> = (1..=bands).collect();
     ds.raster.data = reader.read(0, crate::Window::full(w, h), &all)?;
     Ok(ds)
 }
 
+/// Describe the stored components explicitly when the caller supplies colour roles.
+/// Reference: GDAL 3.13.3 JP2OpenJPEG uses sRGB for colour channels and grayscale
+/// otherwise. CDEF associations identify RGB channels, whole-image opacity or an
+/// unspecified channel (65535), without rearranging the encoded component planes.
+fn channel_definitions(bands: usize, metadata: &[crate::BandMetadata]) -> Result<(u32, Option<Vec<u8>>, bool)> {
+    let default_space = if bands == 3 || bands == 4 { 16 } else { 17 };
+    if metadata.iter().all(|band| band.color_interp.is_none()) {
+        return Ok((default_space, None, default_space == 16));
+    }
+    // Once roles are supplied, missing entries are unspecified; do not invent RGB
+    // channels around an explicit Undefined or Gray component.
+    let roles: Vec<&str> = (0..bands)
+        .map(|band| {
+            metadata.get(band).and_then(|m| m.color_interp.as_deref()).map(crate::geotiff::color_interpretation).unwrap_or("Undefined")
+        })
+        .collect();
+    let space = if bands >= 3 && roles.iter().any(|r| matches!(*r, "Red" | "Green" | "Blue")) { 16u32 } else { 17 };
+    if space == 16 && !["Red", "Green", "Blue"].iter().all(|role| roles.iter().filter(|r| *r == role).count() == 1) {
+        return Err(Error::Unsupported("JPEG 2000 RGB output requires red, green and blue channel roles exactly once".into()));
+    }
+    // ITU-T T.800 I.5.3.6 requires every colour of the declared space to have
+    // a channel. Non-RGB output uses one Y channel, even for undefined data.
+    let gray = metadata
+        .iter()
+        .take(bands)
+        .enumerate()
+        .find_map(|(i, m)| (m.color_association == Some(1) && roles[i] != "Alpha").then_some(i))
+        .or_else(|| roles.iter().position(|role| *role == "Gray"))
+        .or_else(|| roles.iter().position(|role| *role != "Alpha"));
+    if space == 17 && gray.is_none() {
+        return Err(Error::Unsupported("JPEG 2000 grayscale output requires a non-alpha channel".into()));
+    }
+    if roles.iter().filter(|role| **role == "Alpha").count() > 1 {
+        return Err(Error::Unsupported("JPEG 2000 output allows at most one alpha channel role".into()));
+    }
+    let rgb = roles.starts_with(&["Red", "Green", "Blue"]);
+    let mut definitions = Vec::with_capacity(2 + bands * 6);
+    definitions.extend((bands as u16).to_be_bytes());
+    for (band, role) in roles.iter().enumerate() {
+        let (kind, association): (u16, u16) = match *role {
+            "Red" if space == 16 => (0, 1),
+            "Green" if space == 16 => (0, 2),
+            "Blue" if space == 16 => (0, 3),
+            _ if space == 17 && Some(band) == gray => (0, 1),
+            "Alpha" => (1, 0),
+            _ => (u16::MAX, u16::MAX),
+        };
+        definitions.extend((band as u16).to_be_bytes());
+        definitions.extend(kind.to_be_bytes());
+        definitions.extend(association.to_be_bytes());
+    }
+    Ok((space, Some(definitions), rgb))
+}
+
 /// Writes a JP2 with a GeoJP2 box (see [`to_bytes`]); nodata goes to a `.aux.xml`
 /// sidecar.
-pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, georeferenced: bool, options: &[(String, String)]) -> Result<()> {
-    common::write_replacing(path, to_bytes(r, georeferenced, options)?)?;
+pub(crate) fn write(
+    r: &Raster,
+    nodata: Option<f64>,
+    path: &Path,
+    georeferenced: bool,
+    geo_transform: Option<[f64; 6]>,
+    band_metadata: &[crate::BandMetadata],
+    creation_options: &[(String, String)],
+) -> Result<()> {
+    common::write_replacing(path, to_bytes(r, georeferenced, geo_transform, band_metadata, creation_options)?)?;
     common::write_pam_with(path, None, nodata, r.bands)
 }
 
 /// Encodes a raster as a JP2 file with a GeoJP2 box, unless it has neither a
 /// geotransform (`georeferenced` false, `GEOREFERENCED=NO`) nor a CRS.
-pub(crate) fn to_bytes(r: &Raster, georeferenced: bool, creation_options: &[(String, String)]) -> Result<Vec<u8>> {
+/// Full affine transforms use the embedded TIFF matrix (reference: GDAL 3.13.3).
+pub(crate) fn to_bytes(
+    r: &Raster,
+    georeferenced: bool,
+    geo_transform: Option<[f64; 6]>,
+    band_metadata: &[crate::BandMetadata],
+    creation_options: &[(String, String)],
+) -> Result<Vec<u8>> {
     let options = EncodingOptions::from_creation_options(creation_options)?;
     let (precision, signed) = match r.data_type {
         DataType::U8 => (8, false),
@@ -1312,6 +1433,13 @@ pub(crate) fn to_bytes(r: &Raster, georeferenced: bool, creation_options: &[(Str
             )));
         }
     };
+    let (enumcs, definitions, rgb) = channel_definitions(r.bands, band_metadata)?;
+    // T.800 I.5.3.6: all opacity channels must be mapped from unsigned components.
+    if signed
+        && band_metadata.iter().any(|m| m.color_interp.as_deref().is_some_and(|role| crate::geotiff::color_interpretation(role) == "Alpha"))
+    {
+        return Err(Error::Unsupported("JPEG 2000 alpha channels require unsigned samples".into()));
+    }
     let n = r.cols * r.rows;
     let band = |b: usize| -> Vec<i32> {
         let range = b * n..(b + 1) * n;
@@ -1324,7 +1452,7 @@ pub(crate) fn to_bytes(r: &Raster, georeferenced: bool, creation_options: &[(Str
         }
     };
     let comps: Vec<Component> = (0..r.bands).map(|b| Component { precision, signed, data: band(b) }).collect();
-    let codestream = encode(r.cols, r.rows, &comps, &options)?;
+    let codestream = encode(r.cols, r.rows, &comps, rgb, &options)?;
 
     let mut out = Vec::new();
     let mut put = |typ: &[u8; 4], payload: &[u8]| {
@@ -1339,7 +1467,6 @@ pub(crate) fn to_bytes(r: &Raster, georeferenced: bool, creation_options: &[(Str
     ihdr.extend((r.cols as u32).to_be_bytes());
     ihdr.extend((r.bands as u16).to_be_bytes());
     ihdr.extend([(precision - 1) as u8 | if signed { 0x80 } else { 0 }, 7, 0, 0]);
-    let enumcs: u32 = if r.bands == 3 || r.bands == 4 { 16 } else { 17 };
     let mut colr = vec![1u8, 0, 0];
     colr.extend(enumcs.to_be_bytes());
     let mut jp2h = Vec::new();
@@ -1349,6 +1476,11 @@ pub(crate) fn to_bytes(r: &Raster, georeferenced: bool, creation_options: &[(Str
     jp2h.extend(((colr.len() + 8) as u32).to_be_bytes());
     jp2h.extend(b"colr");
     jp2h.extend(&colr);
+    if let Some(definitions) = definitions {
+        jp2h.extend(((definitions.len() + 8) as u32).to_be_bytes());
+        jp2h.extend(b"cdef");
+        jp2h.extend(definitions);
+    }
     put(b"jp2h", &jp2h);
     // GeoJP2: a 1x1 GeoTIFF carrying the georeferencing of the full image.
     if common::writes_georeferencing(r, georeferenced) {
@@ -1365,7 +1497,7 @@ pub(crate) fn to_bytes(r: &Raster, georeferenced: bool, creation_options: &[(Str
             ..Default::default()
         };
         let tiny = Raster::from_data_native(tiny_cfg, RasterData::U8(vec![0]))?;
-        let tiff = super::gtiff_write::encode(&tiny, &Default::default())?;
+        let tiff = super::gtiff_write::encode(&tiny, &super::gtiff_write::TiffOptions { geo_transform, ..Default::default() })?;
         let mut uuid = GEOJP2_UUID.to_vec();
         uuid.extend(tiff);
         put(b"uuid", &uuid);
@@ -1377,6 +1509,37 @@ pub(crate) fn to_bytes(r: &Raster, georeferenced: bool, creation_options: &[(Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reference: GDAL 3.13.3. Palette output limits precede any pixel decoding probe.
+    #[test]
+    fn palette_declarations_are_checked_before_the_pixel_probe() {
+        let raster = common::make_raster(4, 4, 1, RasterData::U8(vec![0; 16]), common::NO_GEOTRANSFORM, Default::default(), None).unwrap();
+        let original = to_bytes(&raster, false, None, &[], &[]).unwrap();
+        let mut bytes = Vec::new();
+        let put = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+            out.extend(((data.len() + 8) as u32).to_be_bytes());
+            out.extend(kind);
+            out.extend(data);
+        };
+        for (kind, payload) in boxes(&original) {
+            let mut payload = payload.to_vec();
+            if kind == *b"jp2h" {
+                // Two palette entries, three unsigned 8-bit output channels.
+                put(&mut payload, b"pclr", &[0, 2, 3, 7, 7, 7, 0, 0, 0, 255, 255, 255]);
+                put(&mut payload, b"cmap", &[0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 2]);
+            } else if kind == *b"jp2c" {
+                let sod = payload.windows(2).position(|w| w == [0xff, 0x93]).unwrap();
+                payload[sod + 1] = 0x94; // Bad tile payload, while the main header stays readable.
+            }
+            put(&mut bytes, &kind, &payload);
+        }
+        let result = open_lazy_bytes(bytes.clone());
+        assert!(matches!(result, Err(Error::InvalidData(_))), "{result:?}");
+        crate::config::with_options(&[("TERRIO_MAX_DECLARED_BYTES", "47")], || {
+            let result = open_lazy_bytes(bytes.clone());
+            assert!(matches!(result, Err(Error::ResourceLimit(ref e)) if e.contains("48 bytes")), "{result:?}");
+        });
+    }
 
     #[test]
     fn quality_boundaries_are_checked_before_codec_rounding() {
@@ -1396,18 +1559,18 @@ mod tests {
         let raster =
             common::make_raster(64, 64, 3, RasterData::U8(values.clone()), common::NO_GEOTRANSFORM, Default::default(), None).unwrap();
         let options = |q: &str| vec![("quality".to_string(), q.to_string())];
-        let default = to_bytes(&raster, false, &[]).unwrap();
-        assert_eq!(default, to_bytes(&raster, false, &options("100")).unwrap());
+        let default = to_bytes(&raster, false, None, &[], &[]).unwrap();
+        assert_eq!(default, to_bytes(&raster, false, None, &[], &options("100")).unwrap());
         assert_eq!(read_bytes(&default).unwrap().raster.data.to_f64_vec(), values.iter().map(|v| *v as f64).collect::<Vec<_>>());
-        let low = to_bytes(&raster, false, &options("10")).unwrap();
-        let high = to_bytes(&raster, false, &options("50")).unwrap();
+        let low = to_bytes(&raster, false, None, &[], &options("10")).unwrap();
+        let high = to_bytes(&raster, false, None, &[], &options("50")).unwrap();
         assert_ne!(low, high);
         assert_ne!(read_bytes(&low).unwrap().raster.data.to_f64_vec(), raster.data.to_f64_vec());
         assert!(low.windows(b"LOSSY settings used".len()).any(|s| s == b"LOSSY settings used"));
-        let progressive = to_bytes(&raster, false, &options("10,100")).unwrap();
+        let progressive = to_bytes(&raster, false, None, &[], &options("10,100")).unwrap();
         assert_eq!(read_bytes(&progressive).unwrap().raster.data.to_f64_vec(), raster.data.to_f64_vec());
         for quality in ["", "0", "-1", "101", "nan", "inf", "1e-40", "1e-36", "25,10", "25,25"] {
-            assert!(to_bytes(&raster, false, &options(quality)).unwrap_err().to_string().contains("QUALITY"));
+            assert!(to_bytes(&raster, false, None, &[], &options(quality)).unwrap_err().to_string().contains("QUALITY"));
         }
     }
 
@@ -1420,6 +1583,7 @@ mod tests {
             4,
             4,
             &[codec::Component { precision: 8, signed: false, data: vec![7; 16] }],
+            false,
             &EncodingOptions::from_creation_options(&[]).unwrap(),
         )
         .unwrap();
@@ -1449,7 +1613,7 @@ mod tests {
         .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("t.jp2");
-        write(&r, Some(-1500.0), &p, true, &[]).unwrap();
+        write(&r, Some(-1500.0), &p, true, None, &[], &[]).unwrap();
         let ds = read(&p).unwrap();
         assert_eq!(ds.raster.data_i16().unwrap(), &data[..]);
         assert_eq!(ds.crs().epsg, Some(32611));
@@ -1471,7 +1635,7 @@ mod tests {
             let gt = [500000.0, 10.0, 0.0, 4100000.0, 0.0, -10.0];
             let r = common::make_raster(w, h, bands, data, gt, CrsInfo::from_epsg(32611), None).unwrap();
             let src = path(&format!("{name}.jp2"));
-            write(&r, Some(0.0), Path::new(&src), true, &[]).unwrap();
+            write(&r, Some(0.0), Path::new(&src), true, None, &[], &[]).unwrap();
             let Dataset::Raster(whole) = crate::open(&src).unwrap() else { panic!("not a raster") };
             for driver in [D::Cog, D::GTiff] {
                 let options = RasterWriteOptions { driver: Some(driver), compression: Some("DEFLATE".into()), ..Default::default() };
@@ -1499,5 +1663,68 @@ mod tests {
         let (gt, crs) = gml_georeferencing(xml);
         assert_eq!(gt.unwrap(), [300000.0, 10.0, 0.0, 5000040.0, 0.0, -10.0]);
         assert_eq!(crs.unwrap().epsg, Some(32633));
+    }
+
+    #[test]
+    fn partial_channel_metadata_does_not_invent_rgb_roles() {
+        let metadata = [crate::BandMetadata { color_interp: Some("Undefined".into()), ..Default::default() }];
+        let (space, definitions, mct) = channel_definitions(3, &metadata).unwrap();
+        assert_eq!(space, 17);
+        assert!(!mct);
+        let definitions = definitions.unwrap();
+        assert_eq!(&definitions[2..8], &[0, 0, 0, 0, 0, 1]);
+        assert_eq!(&definitions[8..14], &[0, 1, 255, 255, 255, 255]);
+        assert_eq!(&definitions[14..20], &[0, 2, 255, 255, 255, 255]);
+        let no_roles = vec![crate::BandMetadata::default(); 3];
+        assert_eq!(channel_definitions(3, &no_roles).unwrap(), (16, None, true));
+        let red = [crate::BandMetadata { color_interp: Some("Red".into()), ..Default::default() }];
+        assert!(channel_definitions(3, &red).is_err());
+    }
+
+    #[test]
+    fn explicit_channel_roles_keep_stored_components_in_order() {
+        // Reference: GDAL 3.13.3 JP2OpenJPEG. Distinct planes expose CDEF permutations.
+        for roles in [
+            vec!["Undefined"; 3],
+            vec!["Undefined"; 4],
+            vec!["Red", "Green", "Blue"],
+            vec!["Blue", "Green", "Red"],
+            vec!["Red", "Green", "Blue", "Alpha"],
+            vec!["Alpha", "Red", "Green", "Blue"],
+            vec!["Gray", "Alpha"],
+        ] {
+            let (width, height) = (64, 48);
+            let values: Vec<u8> =
+                (0..roles.len()).flat_map(|band| (0..width * height).map(move |i| (11 + band * 31 + i % 7) as u8)).collect();
+            let config =
+                wbraster::RasterConfig { cols: width, rows: height, bands: roles.len(), data_type: DataType::U8, ..Default::default() };
+            let raster = Raster::from_data_native(config, RasterData::U8(values.clone())).unwrap();
+            let mut dataset = RasterDataset::new(raster, false);
+            dataset.band_metadata =
+                roles.iter().map(|name| crate::BandMetadata { color_interp: Some((*name).into()), ..Default::default() }).collect();
+            let options = crate::RasterWriteOptions {
+                driver: Some(RasterDriver::JP2),
+                creation_options: vec![("GEOREFERENCED".into(), "NO".into())],
+                ..Default::default()
+            };
+            let bytes = crate::memory::write_raster_bytes(&dataset, "roles.jp2", &options).unwrap();
+            let decoded = read_bytes(&bytes).unwrap();
+            assert_eq!(decoded.raster.data.to_f64_vec(), values.iter().map(|&v| v as f64).collect::<Vec<_>>(), "{roles:?}");
+            let actual: Vec<&str> = decoded.band_metadata.iter().map(|band| band.color_interp.as_deref().unwrap()).collect();
+            assert_eq!(actual, roles);
+            assert_eq!(decoded.geotransform_present, Some(false));
+            let mut lazy = open_lazy_bytes(bytes).unwrap();
+            let selected = vec![roles.len(), 1];
+            let window = crate::Window::new(7, 9, 11, 13);
+            let got = lazy.read_window(window, &crate::WindowOptions { bands: selected.clone(), ..Default::default() }).unwrap();
+            let expected: Vec<f64> = selected
+                .iter()
+                .flat_map(|&band| {
+                    let values = &values;
+                    (9..22).flat_map(move |row| (7..18).map(move |col| values[(band - 1) * width * height + row * width + col] as f64))
+                })
+                .collect();
+            assert_eq!(got.raster.data.to_f64_vec(), expected, "window {roles:?}");
+        }
     }
 }

@@ -34,6 +34,36 @@ fn sidecar(base: &Path, ext: &str) -> Option<PathBuf> {
     [ext.to_string(), ext.to_ascii_uppercase()].into_iter().map(|e| base.with_extension(e)).find(|p| p.exists())
 }
 
+/// Decode a present `.prj` without silently treating unreadable text as a missing CRS.
+/// Invalid UTF-8 remains unsupported; never guess an encoding or alter a CRS name.
+pub(crate) fn decode_prj(bytes: Vec<u8>, name: &str) -> Option<String> {
+    match String::from_utf8(bytes) {
+        Ok(text) => Some(text),
+        Err(error) => {
+            let name = quote_prj_text(name);
+            crate::warnings::warn(format!("{name} is not UTF-8 text ({}): the layer is read without a CRS", error.utf8_error()));
+            None
+        }
+    }
+}
+
+/// Read a sidecar that was found next to a Shapefile. Absence is handled by the caller.
+pub(crate) fn read_prj(path: &Path) -> Option<String> {
+    match std::fs::read(path) {
+        Ok(bytes) => decode_prj(bytes, &path.display().to_string()),
+        Err(error) => {
+            warn_prj_read_error(&path.to_string_lossy(), &error);
+            None
+        }
+    }
+}
+
+/// Report a present sidecar whose payload cannot be read, including an archive member.
+pub(crate) fn warn_prj_read_error(name: &str, error: &impl std::fmt::Display) {
+    let name = quote_prj_text(name);
+    crate::warnings::warn(format!("{name} cannot be read ({error}): the layer is read without a CRS"));
+}
+
 /// How the rings of a polygon record make polygons: the methods of GDAL's
 /// `OGR_ORGANIZE_POLYGONS`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -106,7 +136,7 @@ pub fn read(path: &str, options: &ShapefileOptions) -> Result<Layer> {
     let base = Path::new(path).with_extension("");
     let shp = std::fs::read(path)?;
     let dbf = sidecar(&base, "dbf").map(std::fs::read).transpose()?;
-    let prj = sidecar(&base, "prj").and_then(|p| std::fs::read_to_string(p).ok());
+    let prj = sidecar(&base, "prj").as_deref().and_then(read_prj);
     if prj.is_some() {
         crate::crs::prefetch();
     }
@@ -137,7 +167,7 @@ pub fn read_range(path: &str, skip: usize, max: Option<usize>, options: &Shapefi
     let mut head = [0u8; 100];
     shp.read_exact(&mut head).map_err(|_| not_a_shapefile())?;
     let mut layer = header_layer(&head, name).map_err(|_| not_a_shapefile())?;
-    let prj = sidecar(&base, "prj").and_then(|p| std::fs::read_to_string(p).ok());
+    let prj = sidecar(&base, "prj").as_deref().and_then(read_prj);
     if prj.is_some() {
         crate::crs::prefetch();
     }
@@ -327,11 +357,10 @@ pub(crate) fn apply_prj(layer: &mut Layer, prj: Option<&str>) {
     // Validate WKT's entire form before identifying its EPSG code: identification reads only
     // the first root, so it must not bypass the check for trailing prose or unbalanced text.
     if !(is_crs_definition(prj) || (crs_wkt_opener(prj).is_none() && SpatialRef::parse_literal(prj).is_ok())) {
-        let quote = |s: &str| s.chars().map(|c| if quoted_as_space(c) { ' ' } else { c }).collect::<String>();
-        let quoted = quote(&prj.chars().take(80).collect::<String>());
+        let quoted = quote_prj_text(&prj.chars().take(80).collect::<String>());
         crate::warnings::warn(format!(
             "{}.prj holds no CRS definition terrio can read ('{quoted}'): the layer is read without a CRS",
-            quote(&layer.name)
+            quote_prj_text(&layer.name)
         ));
         return;
     }
@@ -342,6 +371,11 @@ pub(crate) fn apply_prj(layer: &mut Layer, prj: Option<&str>) {
             layer.set_crs_wkt(Some(prj.to_string()));
         }
     }
+}
+
+/// Quotes diagnostic text using the whitespace/control policy of [`quoted_as_space`].
+fn quote_prj_text(text: &str) -> String {
+    text.chars().map(|c| if quoted_as_space(c) { ' ' } else { c }).collect()
 }
 
 /// Quote whitespace, control codes and Unicode 15.1 General_Category=Cf format controls
@@ -2065,6 +2099,24 @@ mod tests {
             assert!(SpatialRef::parse_literal(prj).is_err(), "{prj:?}");
             assert_eq!(read_with(&format!("{prj}\n")), (None, Some(prj.to_string()), vec![]), "{prj:?}");
         }
+    }
+
+    #[test]
+    fn unreadable_prj_sidecars_warn_instead_of_becoming_silent_absences() {
+        let _ = crate::warnings::take();
+        assert!(decode_prj(vec![0xff], "p.prj").is_none());
+        let warning = crate::warnings::take();
+        assert_eq!(warning.len(), 1);
+        assert!(warning[0].contains("p.prj is not UTF-8 text"));
+        assert!(warning[0].contains("invalid utf-8"));
+        assert_eq!(decode_prj("Réseau local".as_bytes().to_vec(), "p.prj").as_deref(), Some("Réseau local"));
+        assert!(crate::warnings::take().is_empty());
+        let directory = tempfile::tempdir().unwrap();
+        assert!(read_prj(directory.path()).is_none());
+        let warning = crate::warnings::take();
+        assert_eq!(warning.len(), 1);
+        assert!(warning[0].contains("cannot be read"));
+        assert!(warning[0].contains(&directory.path().display().to_string()));
     }
 
     #[test]

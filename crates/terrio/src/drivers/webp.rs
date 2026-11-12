@@ -206,6 +206,8 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     let (w, h) = decoder.dimensions();
     let (cols, rows) = (w as usize, h as usize);
     let bands = if decoder.has_alpha() { 4 } else { 3 };
+    // What the header declares, before the image is decoded (see `crate::declared`).
+    crate::declared::check(cols, rows, bands, wbraster::DataType::U8, false)?;
     let lossy = decoder.is_lossy();
     // The sizes come from the header: allocated fallibly.
     let size = decoder.output_buffer_size().ok_or_else(|| webp_err(path, "image too large"))?;

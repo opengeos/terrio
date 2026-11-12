@@ -15,7 +15,7 @@ use std::rc::Rc;
 use terrio::formats::VectorDriver;
 #[cfg(feature = "pointcloud")]
 use terrio::pointcloud::PointCloudReader;
-use terrio::sparse::{ObjectRange, SparseFile, SparseObjects};
+use terrio::sparse::{self, ObjectRange, SparseFile, SparseObjects};
 #[cfg(feature = "tiles")]
 use terrio::tiles::TileArchive;
 #[cfg(feature = "flatgeobuf")]
@@ -26,11 +26,14 @@ use terrio::{LazyRaster, Window, WindowOptions};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
+/// The most a request made while a file opens grows to (`sparse::grow_ranges`).
+const OPEN_GROWTH_MAX: u64 = 4 << 20;
+
 /// The most rounds of fetches a read may take.
 const MAX_ROUNDS: usize = 64;
 
 /// The range requests sent at once: browsers queue more, and servers may rate-limit them.
-const MAX_PARALLEL: usize = 12;
+const MAX_PARALLEL: usize = terrio::sparse::PARALLEL_REQUESTS;
 
 /// Options of [`open_url`].
 #[derive(Deserialize)]
@@ -409,7 +412,13 @@ impl State {
         let _turn = self.turn().await;
         for _ in 0..MAX_ROUNDS {
             let result = read(&mut self.reader.borrow_mut());
-            let missing = self.file.missing();
+            let mut missing = self.file.missing();
+            let block = self.file.block_size();
+            // Opening (no reader yet): requests grow with the header read so far, so that a large
+            // header (a COG's IFDs and tile tables) takes a few requests rather than one per block.
+            if self.reader.borrow().is_none() {
+                missing = sparse::grow_ranges(&missing, self.file.fetched().0.min(OPEN_GROWTH_MAX), block, self.file.len());
+            }
             let parts = self.objects.as_ref().map(|o| o.missing()).unwrap_or_default();
             if missing.is_empty() && parts.is_empty() {
                 self.file.trim(self.cache_size);
@@ -433,6 +442,16 @@ impl State {
 #[wasm_bindgen]
 pub struct RemoteDataset {
     state: Rc<State>,
+}
+
+/// Whether this runs in a server runtime (Node.js, Bun, Deno), whose `fetch` opens as many
+/// connections to a host as requests in flight, rather than in a browser, which keeps 6 to an
+/// HTTP/1.1 server and queues the rest. An Electron renderer has Node's `process` but a browser's
+/// `document` and connections: not a server.
+fn server_runtime() -> bool {
+    let global = js_sys::global();
+    (get(&get(&get(&global, "process"), "versions"), "node").is_string() || !get(&global, "Deno").is_undefined())
+        && get(&global, "document").is_undefined()
 }
 
 /// The format of a file, from its name or first bytes.
@@ -621,6 +640,11 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
 #[cfg(feature = "zarr")]
 async fn open_zarr(url: String, fetcher: Fetcher, o: OpenUrlOptions) -> Result<RemoteDataset, JsError> {
     let objects = std::sync::Arc::new(SparseObjects::new());
+    // Shard reads split into requests that fill those in flight: worth it where they are not
+    // queued (Node.js, Deno, Bun), not in browsers (see `SparseObjects::set_parallel_requests`).
+    if server_runtime() {
+        objects.set_parallel_requests(MAX_PARALLEL);
+    }
     let state = Rc::new(State {
         file: SparseFile::new(0),
         objects: Some(objects.clone()),
@@ -666,14 +690,15 @@ struct ReadArgs {
     layers: Option<Vec<String>>,
 }
 
-/// Keeps the features that intersect a rectangle, as `ogr2ogr -spat` does.
+/// Keeps the features that intersect a rectangle, as `ogr2ogr -spat` does; without one, the
+/// layers as they are. The features are moved, not copied.
 #[cfg_attr(not(any(feature = "tiles", feature = "flatgeobuf", feature = "parquet")), allow(dead_code))]
-fn spatial_filter(layers: &[terrio::Layer], bbox: Option<[f64; 4]>) -> terrio::Result<Vec<terrio::Layer>> {
+fn spatial_filter(layers: Vec<terrio::Layer>, bbox: Option<[f64; 4]>) -> terrio::Result<Vec<terrio::Layer>> {
     match bbox {
-        None => Ok(layers.to_vec()),
+        None => Ok(layers),
         Some([a, b, c, d]) => {
             let o = terrio::ops::vector_filter::VectorTranslateOptions { spatial_filter: Some((a, b, c, d)), ..Default::default() };
-            terrio::ops::vector_filter::translate(layers, &o)
+            terrio::ops::vector_filter::translate_owned(layers, &o)
         }
     }
 }
@@ -952,7 +977,7 @@ impl RemoteDataset {
                             o.layers = a.layers.clone().unwrap_or_default();
                             o.spatial_filter = a.bbox.map(|[a, b, c, d]| (a, b, c, d));
                             match TileArchive::from_sparse(file.clone())?.into_dataset(&name, &o)? {
-                                terrio::Dataset::Vector(v) => Ok(Dataset::from_layers(spatial_filter(&v.layers, a.bbox)?, v.driver)),
+                                terrio::Dataset::Vector(v) => Ok(Dataset::from_layers(spatial_filter(v.layers, a.bbox)?, v.driver)),
                                 terrio::Dataset::Raster(r) => Ok(Dataset::from_raster(r)),
                             }
                         }
@@ -960,14 +985,14 @@ impl RemoteDataset {
                         Some(Reader::FlatGeobuf(_)) => {
                             let bbox = a.bbox.map(|[a, b, c, d]| (a, b, c, d));
                             let (_, layer) = terrio::vector::read_flatgeobuf_sparse(&file, &name, bbox)?;
-                            Ok(Dataset::from_layers(spatial_filter(&[layer], a.bbox)?, VectorDriver::FlatGeobuf))
+                            Ok(Dataset::from_layers(spatial_filter(vec![layer], a.bbox)?, VectorDriver::FlatGeobuf))
                         }
                         #[cfg(feature = "parquet")]
                         Some(Reader::Parquet(_)) => {
                             let bbox = a.bbox.map(|[a, b, c, d]| (a, b, c, d));
                             let layer =
                                 terrio::vector::read_geoparquet_sparse(&file, &name, a.row_groups.as_deref(), bbox, a.columns.as_deref())?;
-                            Ok(Dataset::from_layers(spatial_filter(&[layer], a.bbox)?, VectorDriver::Parquet))
+                            Ok(Dataset::from_layers(spatial_filter(vec![layer], a.bbox)?, VectorDriver::Parquet))
                         }
                         _ => Err(terrio::Error::InvalidArgument("not open".into())),
                     }
