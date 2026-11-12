@@ -833,8 +833,9 @@ mod tests {
 
     /// Decode counts at the native SQLite boundary on an optional real GeoPackage.
     #[test]
+    #[ignore = "requires TERRIO_GPKG_PAGING_DATA pointing to a real GeoPackage"]
     fn real_feature_pages_decode_only_requested_rows() {
-        let Ok(path) = std::env::var("TERRIO_GPKG_PAGING_DATA") else { return };
+        let path = std::env::var("TERRIO_GPKG_PAGING_DATA").expect("set TERRIO_GPKG_PAGING_DATA to a real GeoPackage");
         let db = crate::drivers::sqlite_edit::open_consistent(std::path::Path::new(&path)).unwrap();
         let name = contents(&db).unwrap().0.remove(0).name;
         let base = crate::VectorOpenOptions { layers: vec![name.clone()], ..Default::default() };

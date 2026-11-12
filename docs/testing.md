@@ -2727,13 +2727,15 @@ Native tests cover layer selection, original row ordinals, primary keys with gap
 UTF-16 text, overflow records, zero limits, and spatial matching with/without an
 R-tree. A malformed record outside a requested Python page is not decoded; a
 selected malformed record remains an error. A real-data test counts row decodes
-at the SQLite traversal boundary rather than inferring them from returned features:
+at the SQLite traversal boundary rather than inferring them from returned features.
+That external-data test is explicitly ignored unless requested; the synthetic
+SQLite page test asserts decoder-call counts in every ordinary CI run:
 
 ```sh
 cargo test -p terrio --lib drivers::sqlite::tests
 cargo test -p terrio --lib drivers::vector::gpkg_read::tests
 TERRIO_GPKG_PAGING_DATA=../terrio-data/countries.gpkg \
-  cargo test -p terrio --lib real_feature_pages_decode_only_requested_rows -- --nocapture
+  cargo test -p terrio --lib real_feature_pages_decode_only_requested_rows -- --ignored --nocapture
 pytest python/tests/test_pyogrio_feature_range.py
 python scripts/conformance.py ../terrio-data --only gpkg-paging --strict
 ```
@@ -2743,6 +2745,30 @@ page after skipping 88, versus 176 for a full traversal. Metadata reads are outs
 that feature-row count. Skipping visits leaf headers to count records without
 decoding their payloads or reading their overflow chains. Byte and HTTP inputs
 still obtain the SQLite snapshot; paging bounds decoding rather than input transfer.
+
+The native ranged visitor decodes serially; unpaged full reads use the parallel
+decoder. To measure the index-free trade-off, `vector_read_profile` was built
+against both base commit `649d64cd` and the paging implementation. A GDAL 3.13.3
+fixture contained 200,000 EPSG:3857 points at `(i, 0)`, with name/category text and
+a floating value, and `SPATIAL_INDEX=NO`. Five alternating fresh-process runs
+followed one warm-up per binary, with `RAYON_NUM_THREADS=4` and warm file caches.
+Each requested one skipped match and three returned features; FIDs agreed exactly.
+
+| Bounding-box matches | Before median (ms) | After median (ms) | Before peak RSS (MiB) | After peak RSS (MiB) |
+|---|---:|---:|---:|---:|
+| Early, x=0.5..1000 | 152.68 | 6.01 | 148.47 | 26.05 |
+| Near the end, x=199990.5..200000 | 155.52 | 64.61 | 150.02 | 45.68 |
+
+The late filter scans almost the whole layer before finding its result. These
+point-workload measurements show the cost of that path alongside early stopping;
+they are not throughput guarantees for other geometry or attribute workloads.
+The example reports elapsed milliseconds, returned FIDs and Linux peak RSS:
+
+```sh
+cargo build --release -p terrio --example vector_read_profile
+RAYON_NUM_THREADS=4 target/release/examples/vector_read_profile FILE.gpkg 1 3 0.5 -1 1000 1
+RAYON_NUM_THREADS=4 target/release/examples/vector_read_profile FILE.gpkg 1 3 199990.5 -1 200000 1
+```
 
 ### GeoPackage text encodings
 

@@ -2557,7 +2557,8 @@ def suite_gpkg_paging(ctx):
         status = {"identical": IDENTICAL, "not compared": NOT_COMPARED}.get(row.get("status"), DIFFERS)
         suite.cases.append(Case("GeoPackage page", row["name"], status, row.get("detail", "missing comparison detail")))
     if code:
-        suite.error = tail(err) or "GeoPackage paging comparisons failed"
+        errors = [f"{row['name']}: {row.get('detail', '')}" for row in rows if row.get("status") == "error"]
+        suite.error = tail(err) or "; ".join(errors) or "GeoPackage paging comparisons failed"
     return suite
 
 

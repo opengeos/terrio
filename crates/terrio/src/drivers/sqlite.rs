@@ -1369,9 +1369,13 @@ mod tests {
         };
         let db = Db::new(writer::write_database(&[table], &[], 0, 0).unwrap()).unwrap();
         let all = db.table("records").unwrap();
+        let before_metadata = db.decoded_record_count();
+        db.visit_table_rows("records", None, 0, Some(0), &mut |_, _| panic!("zero limit visited a record")).unwrap();
+        let metadata = db.decoded_record_count() - before_metadata;
         for (skip, limit) in [(0, Some(0)), (1, Some(2)), (497, Some(5)), (1799, None), (1800, None), (usize::MAX, Some(usize::MAX))] {
             let mut rows = Vec::new();
             let mut ordinals = Vec::new();
+            let before = db.decoded_record_count();
             db.visit_table_rows("records", None, skip, limit, &mut |ordinal, row| {
                 ordinals.push(ordinal);
                 rows.push(row);
@@ -1382,6 +1386,7 @@ mod tests {
             let end = limit.map_or(all.rows.len(), |m| start.saturating_add(m).min(all.rows.len()));
             assert_eq!(rows, all.rows[start..end]);
             assert_eq!(ordinals, (start..end).collect::<Vec<_>>());
+            assert_eq!(db.decoded_record_count() - before - metadata, end - start);
         }
         let mut rows = Vec::new();
         db.visit_table_rows("records", Some(&[11, 14, 15, 35]), 1, Some(2), &mut |_, row| {

@@ -98,6 +98,8 @@ def main():
                     results.append(dict(name=name, status="identical", detail="Exact FIDs/order, attributes, geometry WKB, fields and CRS against GDAL"))
                 except AssertionError as error:
                     results.append(dict(name=name, status="differs", detail=str(error)))
+                except Exception as error:
+                    results.append(dict(name=name, status="error", detail=f"{type(error).__name__}: {error}"))
         try:
             expected = reference_rows(layer, 0, 3, None)
             with tempfile.TemporaryDirectory(prefix="terrio-gpkg-page-") as directory:
@@ -111,8 +113,10 @@ def main():
             results.append(dict(name="CLI limit", status="identical", detail="Exact first-three attributes, WKB and CRS; output-writer FID policy is not compared"))
         except AssertionError as error:
             results.append(dict(name="CLI limit", status="differs", detail=str(error)))
+        except Exception as error:
+            results.append(dict(name="CLI limit", status="error", detail=f"{type(error).__name__}: {error}"))
     print(json.dumps(results, indent=2) if args.json else "\n".join(f"{r['name']}: {r['status']}: {r['detail']}" for r in results))
-    return int(any(row["status"] == "differs" for row in results))
+    return int(any(row["status"] in {"differs", "error"} for row in results))
 
 
 if __name__ == "__main__":
