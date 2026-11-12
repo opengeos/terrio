@@ -22,6 +22,7 @@ REFERENCE = json.loads(
 @pytest.mark.parametrize("case", REFERENCE, ids=lambda case: case["name"])
 @pytest.mark.parametrize("entry", ["from_wkt", "from_user_input", "from_string"])
 def test_wkt_root_preserves_crs_identity(case, entry, gdal):
+    """Preserve CRS kind and root authority through each constructor."""
     osr = pytest.importorskip("osgeo.osr")
     actual = getattr(CRS, entry)(case["wkt"])
     assert actual.to_epsg() == case["epsg"]
@@ -35,6 +36,7 @@ def test_wkt_root_preserves_crs_identity(case, entry, gdal):
 
 @pytest.mark.parametrize("case", REFERENCE, ids=lambda case: case["name"])
 def test_wkt_keywords_work_for_raster_and_layer_construction(case, gdal):
+    """Retain CRS identity and values when constructing rasters and layers."""
     osr = pytest.importorskip("osgeo.osr")
     reference = osr.SpatialReference()
     reference.ImportFromWkt(case["wkt"])
@@ -63,6 +65,7 @@ def test_wkt_keywords_work_for_raster_and_layer_construction(case, gdal):
 
 @pytest.mark.parametrize("case", REFERENCE, ids=lambda case: case["name"])
 def test_cli_reads_wkt_keyword_from_literal_and_file(case, tmp_path):
+    """Accept supported WKT roots from literal and file CLI inputs."""
     path = tmp_path / "definition.wkt"
     path.write_text(case["wkt"])
     for source in [case["wkt"], str(path)]:
