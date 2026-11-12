@@ -102,7 +102,7 @@ def copy(
         DriverRegistrationError: If the driver is not one terrio writes.
     """
     from terrio.rio import open as rio_open
-    from terrio.rio.io import DatasetReader, driver_from_extension, get_writer_for_driver
+    from terrio.rio.io import DatasetReader, _canonical_writer_driver, driver_from_extension
 
     dst_path = _fspath(dst)
     if driver is None:
@@ -111,7 +111,7 @@ def copy(
         except ValueError:
             driver = "GTiff"
     try:
-        get_writer_for_driver(driver)
+        driver = _canonical_writer_driver(driver)
     except Exception as err:
         raise DriverRegistrationError(f"Unrecognized driver: {driver}") from err
     if isinstance(src, DatasetReader):
