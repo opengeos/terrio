@@ -93,16 +93,96 @@ parallel, besides the window it returns. In
 Rust, use `TiffReadLimits` with `LazyRaster::open_tiff_with_limits`
 (or its bytes/sparse counterparts), or `terrio::open_raster_with_tiff_limits` for an
 eager read. The override applies to parallel decoders too. It limits decoded chunks;
-callers still choose the size of the returned raster/window allocation. The limit
+callers still choose the size of the returned raster/window allocation, which the
+check below refuses when the process cannot hold it. The limit
 also bounds LERC Deflate/Zstandard inflation and the decoded size declared by
 embedded LERC and JPEG headers, before mask or pixel decoding. It is not a cap
 on total process memory or the codec's working buffers.
 
+<<<<<<< HEAD
 TIFF masks follow the image's own `NewSubfileType` reduced-resolution flag, including a
 reduced first image with a reduced mask (flag 5) or a unique legacy mask (flag 4).
 GDAL 3.13.3 ignores a first-image flag-5 mask; Terrio deliberately honors it, so masked
 reads can differ from GDAL and Rasterio for these files. An unreduced image does not
 inherit a reduced mask merely because their dimensions match.
+=======
+A GeoTIFF read whole (`terrio::open_raster`, a lazy raster's `read`) or by window is refused
+with a resource error (Python's `ResourceLimitError`) before its buffer is allocated when the
+buffer is more than the memory the process can use (`terrio::usable_memory`: the physical memory,
+or less under the memory limit of the process's cgroup or its address-space or resident-set
+limit); the message gives both sizes. This usable-memory estimate currently reads Linux
+`/proc` files. On macOS, Windows and other systems without those files, there is no
+physical-memory refusal; allocation arithmetic, address-space checks and explicitly
+configured limits still apply. A window that fits is read. The GeoTIFF and COG writers that
+`translate`, `convert` and other operations stream their output to keep a row of their blocks of
+every band until the row is complete, and hold it twice while a strip is appended to it: a raster
+whose row cannot fit is refused when the writer is created, before its rows are gathered. A COG of
+a few rows and thousands of bands, whose 512-row tiles hold every band, is
+held whole. These checks refuse what cannot fit: a buffer about the size of the usable memory
+passes them and can still exhaust it, with what the process holds besides.
+
+`terrio.rio` preserves `ResourceLimitError` when constructing or closing whole and
+streaming writers, after cleaning temporary outputs. Other allocation failures
+retain their `RasterioIOError` wrapping.
+
+For files you do not trust, two options bound what a raster may declare, whatever its driver:
+
+| Option | Refuses a raster that declares more than |
+|---|---|
+| `TERRIO_MAX_DECLARED_BYTES` | this many bytes of pixels: width x height x bands x bytes per sample, in the type terrio reads the samples as (8 for GRIB's Float64 bands) |
+| `TERRIO_MAX_BANDS` | this many bands (a complex band counts once) |
+
+The CLI and MCP take these limits from the process environment; MCP operators set
+them on the server process, so the same admission policy covers every tool call.
+See [remote-data limits](remote-data.md) for a CLI example and MCP configuration.
+
+Both are unset by default. Each is a positive integer, set in the environment or in an `Env`
+scope (or JavaScript's `pushConfig`/`popConfig`), whose value applies on its thread instead of
+the environment's; any other value is an
+invalid argument naming the option. A raster they refuse is a resource error naming the option,
+raised when it is opened: by `open`, `open_raster`, `open_raster_lazy` and `LazyRaster::open`, the
+format constructors (`LazyRaster::open_tiff`, `from_tiff_bytes`, `from_tiff_shared_bytes`,
+`from_sparse`, `from_zarr_objects`, `from_tile_archive`, with or without explicit limits), a tile
+archive's own opens (`tiles::open_dataset`, `TileArchive::into_dataset`), the opens of bytes in
+`terrio::memory`, the VRT opens (pansharpened VRTs included, and `VrtDataset::materialize` before
+it reads any source), the catalog opens and the GDAL backend.
+The sources a VRT or a catalog opens are rasters opened too: each is checked when it is opened, a
+VRT's when a read first needs it. Readers that read a header first refuse a raster before decoding
+any of its pixels; the Imagine reader reads its whole file, without decoding it, before its header.
+Esri ASCII and GRASS ASCII grids, PCRaster, DTED and Esri binary grids preflight their headers
+before allocating or parsing pixels. ASCII allocation bounds also apply when both
+options are unset. The fallback Esri reader uses Float64 samples; the GRASS reader
+uses a Float64 working buffer even when its output type is narrower. ASCII header
+scans retain bounded prefixes and stream longer fields; they may read arbitrarily
+long padding or unknown header lines to preserve the decoder's grammar. XYZ grids infer their size and sample type from coordinate
+records and check before allocating the dense grid. Operations
+that open a raster refuse it the same way, `info` included. These bounds and the checks above are
+independent of `TERRIO_TIFF_MAX_CHUNK_BYTES`, which bounds each decoded chunk, and of
+`TERRIO_WARP_SUM_MAX_BYTES`, which bounds what a `sum` warp holds: a read passes every one that
+applies.
+
+Opt-in fallback recognizes a PCRaster CSF signature from a bounded prefix even when the
+filename has an unknown suffix, so identification does not first read its whole encoded file.
+Malformed ASCII fields can end the declaration scan; the original codec still validates the
+input and reports its error. A complete oversized header can be refused before invalid pixels.
+Invalid UTF-8 during fallback identification can report the preflight I/O diagnostic instead
+of the fallback reader's diagnostic; it does not add support for non-UTF-8 ASCII grids
+to native readers. The optional GDAL backend retains its own parser rules; resource
+refusals remain terminal.
+
+For a GeoPackage holding both rasters and vector layers, raster-first path rendering and a
+complete dataset check retain a refused raster's resource error. The vector layers remain
+readable through vector opens and the GeoPackage's generic layer-preferring open. In Python,
+pass an opened vector dataset to `render` to draw it explicitly; vector clip templates selected
+with `like_layer` remain available too.
+
+Native resampled UInt16-alpha mask reads also check their actual source windows before
+reading and converting them to bytes. The working-set estimate includes simultaneously
+retained source/conversion buffers, previously produced Byte output and caller-owned
+pixel/mask buffers. Small mask outputs can therefore be refused when their source-window
+conversion cannot fit, while small source windows and Byte-alpha reads keep their existing
+paths. This remains an estimate of known buffers rather than a total-process memory cap.
+>>>>>>> origin/main
 
 GeoTIFF compression: none, LZW, Deflate (including the legacy code), PackBits, JPEG, WebP,
 Zstandard, LZMA, LERC (alone, with Deflate or with Zstandard, lossless or not, with NaN masks) and
@@ -368,6 +448,13 @@ JPEG with `--compress JPEG`; one-band Int16, UInt16 and Float32 rasters as gridd
 (16-bit PNG or float TIFF tiles), with every zoom level of the pyramid. A GeoPackage holding
 vector layers and rasters opens as its layers, and `terrio info` lists its rasters as
 subdatasets, opened as `GPKG:file.gpkg:table`. Written layers get an R-tree spatial index.
+
+GeoPackage raster declaration limits count the logical raster rather than padded tile storage.
+A gridded coverage obtains its returned band count from its first tile's header, before decoding
+pixels; indexed PNG tiles count their expanded RGBA channels. Allocation checks include the
+Float64 grid, returned decoded tile and conversion buffers, band remapping and final typed output,
+including an empty tile table. The SQLite input and encoded tiles remain in memory; these checks
+are not a total-process memory cap or a bound on every codec-private temporary.
 
 Zarr stores are read and written as GDAL writes them (`_CRS` and X/Y coordinate arrays) and as
 xarray writes them (a CF `grid_mapping` variable with `crs_wkt` and `GeoTransform`). GeoZarr's
@@ -1075,10 +1162,14 @@ reads it.
   it names is not read) leaves the layer without a CRS, with a warning that quotes it. An empty
   `.prj` leaves it without one silently, as a missing `.prj` does, and a leading byte-order mark is
   skipped. A present `.prj` that cannot be read or is not UTF-8 warns with its sidecar path
-  (or member name for archive reads) and the reason, and leaves the layer without a CRS. Encodings are not guessed; this
-  applies to path, range, stream and archive byte reads. A memory-codec archive
-  member that fails its read is diagnosed too. Native archive integrity errors
-  can refuse the whole read; resource-budget refusals remain fatal on both paths.
+  and the reason, and leaves the layer without a CRS. Native ZIP-path reads report the
+  extracted temporary sidecar path; memory-codec reads report the archive member name.
+  Projection encodings are not guessed; this applies to path, range, stream and archive
+  byte reads. A memory-codec projection member that fails its read is diagnosed too.
+  This diagnostic policy covers `.prj`; `.cpg` decoding is unchanged. On memory-codec
+  reads, unreadable optional `.dbf` and `.cpg` members retain their existing missing-member
+  behavior. Native archive integrity errors can refuse the whole read; resource-budget
+  refusals remain fatal on both paths.
   Trailing NUL or DOS EOF padding is ignored. Reference syntax does not prove that a
   code exists: a well-formed unknown code from a known authority is retained here; Python's
   pyogrio interface warns and returns no CRS if pyproj cannot parse that reference.

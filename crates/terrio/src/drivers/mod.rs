@@ -10,6 +10,7 @@ pub(crate) mod aaigrid;
 #[cfg(any(feature = "netcdf-hdf5", feature = "zarr"))]
 mod cf;
 pub(crate) mod common;
+pub(crate) mod declared_header;
 mod ehdr;
 mod envi;
 mod ers;

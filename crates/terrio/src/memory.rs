@@ -120,7 +120,11 @@ fn open_bytes_of_kind(bytes: Vec<u8>, name: &str, kind: Option<Kind>) -> Result<
     #[cfg(target_family = "wasm")]
     {
         crate::formats::check_allowed_bytes(name, &bytes, kind)?;
-        codec::open(bytes, name, &VectorOpenOptions::default())
+        let ds = codec::open(bytes, name, &VectorOpenOptions::default())?;
+        if let Dataset::Raster(raster) = &ds {
+            crate::declared::check_dataset(raster)?;
+        }
+        Ok(ds)
     }
 }
 
@@ -130,7 +134,9 @@ pub fn open_raster_bytes(bytes: Vec<u8>, name: &str) -> Result<RasterDataset> {
     #[cfg(feature = "hecras")]
     if crate::drivers::hdf5::parse_subdataset(name).is_none() && crate::drivers::hecras::driver::is_hecras_bytes(&bytes) {
         crate::formats::check_allowed_bytes(name, &bytes, Some(Kind::Raster))?;
-        return crate::drivers::hdf5::read_bytes(bytes, name, None);
+        let ds = crate::drivers::hdf5::read_bytes(bytes, name, None)?;
+        crate::declared::check_dataset(&ds)?;
+        return Ok(ds);
     }
     match open_bytes_of_kind(bytes, name, Some(Kind::Raster))? {
         Dataset::Raster(r) => Ok(r),
@@ -141,6 +147,13 @@ pub fn open_raster_bytes(bytes: Vec<u8>, name: &str) -> Result<RasterDataset> {
 /// Opens a raster from its bytes for reading by window. GeoTIFFs are decoded one window at a time;
 /// other formats are decoded whole.
 pub fn open_raster_lazy_bytes(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> {
+    let r = open_raster_lazy_bytes_unchecked(bytes, name)?;
+    // What it declares (see `crate::declared`), from its header when it is read by window.
+    crate::declared::check_lazy(&r)?;
+    Ok(r)
+}
+
+fn open_raster_lazy_bytes_unchecked(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> {
     // Tile archives, JPEG 2000, GRIB and TIFF are decoded from memory, without a file to check.
     crate::formats::check_allowed_bytes(name, &bytes, Some(Kind::Raster))?;
     if let Some(kind) = crate::tiles::archive_kind(name) {
@@ -198,7 +211,9 @@ pub fn open_zarr_store(files: Vec<(String, Vec<u8>)>) -> Result<RasterDataset> {
     // Opened as Zarr by its caller: only if the process-wide raster allow-list has Zarr, as a
     // de-registered GDAL driver opens no store.
     crate::formats::check_driver_allowed("Zarr", if root.is_empty() { "the Zarr store" } else { &root }, Kind::Raster)?;
-    codec::open_zarr_store(files, &root)
+    let ds = codec::open_zarr_store(files, &root)?;
+    crate::declared::check_dataset(&ds)?;
+    Ok(ds)
 }
 
 /// Opens a vector dataset from its bytes.
@@ -595,6 +610,7 @@ pub(crate) mod codec {
             return open_zip(&bytes, name, options);
         }
         if RasterDriver::for_extension(name) == Some(RasterDriver::AAIGrid) {
+            crate::drivers::declared_header::check_ascii_bytes(&bytes)?;
             let raster = wbraster::formats::esri_ascii::parse(Cursor::new(&bytes), name)?;
             return Ok(Dataset::Raster(RasterDataset::with_driver(raster, RasterDriver::AAIGrid, true)));
         }

@@ -825,6 +825,23 @@ impl Jp2Window {
         }
         let [x0, y0, x1, y1] = header.area;
         let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
+        // A palette expands its stored index component to the columns described by PCLR.
+        // Refuse its output declaration before the one-pixel probe can allocate tile metadata.
+        let palette_shape = boxes(&boxes_bytes).into_iter().find(|(t, _)| t == b"jp2h").and_then(|(_, p)| {
+            let children = boxes(p);
+            let (_, pclr) = children.iter().find(|(t, _)| *t == *b"pclr")?;
+            let channels = usize::from(*pclr.get(2)?);
+            let columns = pclr.get(3..3 + channels)?;
+            let (_, cmap) = children.iter().find(|(t, _)| *t == *b"cmap")?;
+            if channels == 0 || cmap.len() != channels * 4 {
+                return None;
+            }
+            let precisions: Vec<u32> = columns.iter().map(|v| u32::from(v & 0x7f) + 1).collect();
+            Some((channels, codec::data_type(&precisions, columns[0] & 0x80 != 0, alpha)))
+        });
+        let (declared_bands, declared_type) =
+            palette_shape.unwrap_or_else(|| (header.precisions.len(), codec::data_type(&header.precisions, header.signed, alpha)));
+        crate::declared::check(w, h, declared_bands, declared_type, false)?;
         let mut header = header;
         let (bands, data_type) = if palette {
             // OpenJPEG applies the palette when decoding: the bands and type are those of a
@@ -1316,6 +1333,8 @@ pub(crate) fn read_bytes(bytes: &[u8]) -> Result<RasterDataset> {
 fn read_source(source: StreamSource) -> Result<RasterDataset> {
     use crate::cog::WindowSource;
     let (mut reader, mut ds) = Jp2Window::open(source)?;
+    // What the headers declare, before any tile is decoded (see `crate::declared`).
+    crate::declared::check_dataset(&ds)?;
     let (w, h, bands) = (ds.raster.cols, ds.raster.rows, ds.raster.bands);
     let all: Vec<usize> = (1..=bands).collect();
     ds.raster.data = reader.read(0, crate::Window::full(w, h), &all)?;
@@ -1490,6 +1509,37 @@ pub(crate) fn to_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reference: GDAL 3.13.3. Palette output limits precede any pixel decoding probe.
+    #[test]
+    fn palette_declarations_are_checked_before_the_pixel_probe() {
+        let raster = common::make_raster(4, 4, 1, RasterData::U8(vec![0; 16]), common::NO_GEOTRANSFORM, Default::default(), None).unwrap();
+        let original = to_bytes(&raster, false, None, &[], &[]).unwrap();
+        let mut bytes = Vec::new();
+        let put = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+            out.extend(((data.len() + 8) as u32).to_be_bytes());
+            out.extend(kind);
+            out.extend(data);
+        };
+        for (kind, payload) in boxes(&original) {
+            let mut payload = payload.to_vec();
+            if kind == *b"jp2h" {
+                // Two palette entries, three unsigned 8-bit output channels.
+                put(&mut payload, b"pclr", &[0, 2, 3, 7, 7, 7, 0, 0, 0, 255, 255, 255]);
+                put(&mut payload, b"cmap", &[0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 2]);
+            } else if kind == *b"jp2c" {
+                let sod = payload.windows(2).position(|w| w == [0xff, 0x93]).unwrap();
+                payload[sod + 1] = 0x94; // Bad tile payload, while the main header stays readable.
+            }
+            put(&mut bytes, &kind, &payload);
+        }
+        let result = open_lazy_bytes(bytes.clone());
+        assert!(matches!(result, Err(Error::InvalidData(_))), "{result:?}");
+        crate::config::with_options(&[("TERRIO_MAX_DECLARED_BYTES", "47")], || {
+            let result = open_lazy_bytes(bytes.clone());
+            assert!(matches!(result, Err(Error::ResourceLimit(ref e)) if e.contains("48 bytes")), "{result:?}");
+        });
+    }
 
     #[test]
     fn quality_boundaries_are_checked_before_codec_rounding() {

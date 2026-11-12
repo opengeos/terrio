@@ -726,3 +726,25 @@ fails the read. Supply a retrying `fetch` when a service is unreliable. See the
 Signed numeric source IDs, or string IDs that conflict with a source `id`
 property, are preserved in `_oapif_id` text (with an extra leading underscore
 if that field already exists); generated unsigned FIDs then follow row order.
+
+## Raster declaration budgets
+
+Use configuration scopes to refuse inputs that declare more work than a service accepts.
+The limits apply to byte opens, lazy constructors and source datasets opened while the scope is
+active, including WASM's in-memory codecs. With no scope, both limits are unset.
+
+```js
+terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: "268435456", TERRIO_MAX_BANDS: "64" });
+try {
+  const dataset = terrio.open(bytes, "upload.tif");
+  const band = dataset.readBand(1);
+} finally {
+  terrio.popConfig();
+}
+```
+
+Values are positive integer strings; `null` unsets an option within a scope. Scopes nest and
+`popConfig()` restores the preceding values. A scope belongs to the module's calling thread
+and is shared by calls on that thread; avoid overlapping scopes across asynchronous tasks.
+The byte limit counts width × height × bands × sample bytes, with both components of complex
+samples included; the band limit counts a complex band once. A refusal names the limit.

@@ -1593,7 +1593,19 @@ impl WindowSource for Mosaic {
         let (dw, dh) = (w.width, w.height);
         let gt = self.geo_transform;
         let (rx, ry) = (gt[1], -gt[5]);
-        let mut out: Vec<Vec<f64>> = vec![vec![self.nodata.unwrap_or(0.0); dw * dh]; bands.len()];
+        let what = "a STAC mosaic window";
+        let pixels = crate::dataset::fallible::len(&[dw, dh], what)?;
+        let samples = crate::dataset::fallible::len(&[pixels, bands.len()], what)?;
+        let output_bytes = crate::dataset::fallible::len(&[samples, std::mem::size_of::<f64>()], what)?;
+        let conversion_bytes = if self.data_type == DataType::F64 { Some(0) } else { samples.checked_mul(self.data_type.size_bytes()) };
+        crate::dataset::fallible::check_usable(conversion_bytes.and_then(|bytes| bytes.checked_add(output_bytes)), || {
+            format!("{what} conversion buffers are too large to allocate")
+        })
+        .map_err(Error::ResourceLimit)?;
+        let mut out = crate::dataset::fallible::filled(samples, self.nodata.unwrap_or(0.0), what)?;
+        if pixels == 0 || bands.is_empty() {
+            return Ok(RasterData::from_f64_vec(self.data_type, out));
+        }
         for (item, raster) in &mut self.items {
             let [xmin, ymin, xmax, ymax] = item.bounds;
             let (dxo, dxs) = ((xmin - gt[0]) / rx, (xmax - xmin) / rx);
@@ -1620,6 +1632,13 @@ impl WindowSource for Mosaic {
             if sx1 > r.width() || sy1 > r.height() {
                 return Err(bad(format!("{} is {}x{}, smaller than its STAC metadata says", item.href, r.width(), r.height())));
             }
+            let source_bytes = [sw, sh, bands.len(), r.data_type().size_bytes()].iter().try_fold(1usize, |n, &size| n.checked_mul(size));
+            let validity_bytes = if self.nodata.is_some() { sw.checked_mul(sh) } else { Some(0) };
+            let peak = source_bytes
+                .and_then(|bytes| bytes.checked_add(output_bytes))
+                .and_then(|bytes| validity_bytes.and_then(|mask| bytes.checked_add(mask)));
+            crate::dataset::fallible::check_usable(peak, || format!("{what} source buffers are too large to allocate"))
+                .map_err(Error::ResourceLimit)?;
             let (window, options) = (Window::new(sx0, sy0, sw, sh), WindowOptions { bands: bands.to_vec(), overview: None });
             let sub = match r.read_window(window, &options) {
                 // A signed URL whose token expired since the file was opened: open it again,
@@ -1630,8 +1649,13 @@ impl WindowSource for Mosaic {
                 }
                 result => result?,
             };
-            for (bi, buf) in out.iter_mut().enumerate() {
+            let source_bytes = crate::dataset::fallible::len(&[sub.raster.data.len(), sub.raster.data_type.size_bytes()], what)?;
+            for (bi, buf) in out.chunks_mut(pixels).enumerate() {
                 let values = crate::ops::BandView::of(&sub.raster, bi);
+                let retained = output_bytes
+                    .checked_sub(std::mem::size_of_val(buf))
+                    .and_then(|bytes| bytes.checked_add(source_bytes.saturating_sub(values.byte_len())))
+                    .ok_or_else(|| Error::ResourceLimit(format!("{what} retained buffers exceed the address space")))?;
                 let valid: Option<Vec<bool>> = self.nodata.map(|nd| values.valid(nd));
                 let req = SourceRead {
                     values,
@@ -1646,10 +1670,10 @@ impl WindowSource for Mosaic {
                     invalid_value: None,
                     within_rects: false,
                 };
-                req.read(dw, dh, buf, |v| v);
+                req.read_with_retained(dw, dh, buf, retained, |v| v)?;
             }
         }
-        Ok(RasterData::from_f64_vec(self.data_type, out.concat()))
+        Ok(RasterData::from_f64_vec(self.data_type, out))
     }
 }
 
@@ -1862,15 +1886,17 @@ pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
 }
 
 fn open_document(path: &str, as_raster: bool) -> Option<Result<Dataset>> {
+    // Rasters read by window, read whole once what they declare is allowed.
+    let whole = crate::dataset::read_lazy_whole;
     if let Some(r) = crate::stacta::open_named_or_local(path) {
-        return Some(r.and_then(|mut r| r.read()).map(Dataset::Raster));
+        return Some(r.and_then(whole).map(Dataset::Raster));
     }
     match parse_name(path) {
         Some(Name::Asset { item, asset }) => {
             return Some(asset_target(&item, &asset).and_then(|(href, item)| with_asset_read(&item, &href, || crate::open(&href))));
         }
         Some(Name::Mosaic { .. }) => {
-            return Some(open_lazy(path)?.and_then(|mut r| r.read()).map(Dataset::Raster));
+            return Some(open_lazy(path)?.and_then(whole).map(Dataset::Raster));
         }
         None => {}
     }
@@ -1883,7 +1909,7 @@ fn open_document(path: &str, as_raster: bool) -> Option<Result<Dataset>> {
             keep_remote_refusal(path, footprint_dataset(doc, &location, DEFAULT_MAX_ITEMS).map(|(v, _)| Dataset::Vector(v)))
         }
         Ok(Probe::Stacta(item)) => {
-            keep_remote_refusal(path, crate::stacta::open_first(*item, None, None).and_then(|mut r| r.read()).map(Dataset::Raster))
+            keep_remote_refusal(path, crate::stacta::open_first(*item, None, None).and_then(whole).map(Dataset::Raster))
         }
         Ok(Probe::Other(ds)) => Ok(*ds),
         Err(e) => Err(e),
@@ -2007,9 +2033,13 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
             })();
             return Some(match several {
                 Ok(Some(i)) => Ok(i),
-                Ok(None) => {
-                    open_lazy(path)?.and_then(|mut r| crate::info::lazy_raster_info(&mut r, options)).map(|r| Info::Raster(Box::new(r)))
-                }
+                Ok(None) => open_lazy(path)?
+                    .and_then(|mut r| {
+                        // Refused as an open refuses it (see `crate::declared`).
+                        crate::declared::check_lazy(&r)?;
+                        crate::info::lazy_raster_info(&mut r, options)
+                    })
+                    .map(|r| Info::Raster(Box::new(r))),
                 Err(e) => Err(e),
             });
         }
@@ -2088,6 +2118,14 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn mosaic_windows_refuse_unrepresentable_working_buffers() {
+        let mut mosaic =
+            Mosaic { items: Vec::new(), geo_transform: [0.0, 1.0, 0.0, 0.0, 0.0, -1.0], data_type: DataType::U8, nodata: None };
+        let result = mosaic.read(0, Window::new(0, 0, usize::MAX, 2), &[1]);
+        assert!(result.is_err_and(|error| error.is_resource_refusal()));
+    }
 
     /// Cached native clients retain credentials; changing current configuration cannot revoke
     /// the consent check on their future windows (reference GDAL 3.13.3 credential lifetime).

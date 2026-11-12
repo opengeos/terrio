@@ -15,6 +15,7 @@ use super::common::xml_escape;
 use super::sqlite::{Db, Table, Value};
 use super::vector::gpkg_read::Tables;
 use super::{common, nodata};
+use crate::dataset::fallible;
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
 use std::path::Path;
@@ -36,53 +37,118 @@ fn i(t: &Table, row: &[Value], col: &str) -> Option<i64> {
 /// A decoded tile: `(width, height, bands, samples)`, pixel-interleaved, as f64.
 type Tile = (usize, usize, usize, Vec<f64>);
 
+/// Header-derived storage and the buffers used to decode/convert a tile (GDAL 3.13.3 reference).
+struct TileLayout {
+    width: usize,
+    height: usize,
+    bands: usize,
+    values: Option<usize>,
+    peak: Option<usize>,
+}
+
+impl TileLayout {
+    fn new(width: usize, height: usize, bands: usize, raw: Option<usize>, extra: Option<usize>) -> Self {
+        let values = buffer_bytes(&[width, height, bands], 8);
+        let peak = values.zip(raw).zip(extra).and_then(|((values, raw), extra)| values.checked_add(raw)?.checked_add(extra));
+        Self { width, height, bands, values, peak }
+    }
+}
+
+fn buffer_bytes(dimensions: &[usize], sample_bytes: usize) -> Option<usize> {
+    dimensions.iter().try_fold(sample_bytes, |n, &d| n.checked_mul(d)).filter(|&n| n <= isize::MAX as usize)
+}
+
+fn check_working_set(bytes: Option<usize>) -> Result<()> {
+    fallible::check_usable(bytes, || "a GeoPackage raster working set is too large to allocate".into())
+        .map(|_| ())
+        .map_err(Error::ResourceLimit)
+}
+
+fn tile_values(len: usize, values: impl IntoIterator<Item = f64>) -> Result<Vec<f64>> {
+    let mut out = Vec::new();
+    fallible::reserve(&mut out, len, "GeoPackage tile samples")?;
+    out.extend(values);
+    Ok(out)
+}
+
 /// Decodes a PNG, JPEG or TIFF tile.
-fn decode_tile(b: &[u8]) -> Result<Tile> {
+fn decode_tile(b: &[u8], mut check: impl FnMut(TileLayout) -> Result<()>) -> Result<Tile> {
     let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("GeoPackage tile: {e}"));
     if b.starts_with(b"\x89PNG") {
         let mut reader = png::Decoder::new(std::io::Cursor::new(b)).read_info().map_err(|e| err(&e))?;
-        let mut buf = vec![0u8; reader.output_buffer_size().ok_or_else(|| err(&"too large"))?];
+        let header = reader.info();
+        let (w, h) = (header.width as usize, header.height as usize);
+        let indexed = header.color_type == png::ColorType::Indexed;
+        let bands = if indexed { 4 } else { header.color_type.samples() };
+        let indices = if indexed { buffer_bytes(&[w, h], 8) } else { Some(0) };
+        check(TileLayout::new(w, h, bands, reader.output_buffer_size(), indices))?;
+        let mut buf = fallible::filled(reader.output_buffer_size().ok_or_else(|| err(&"too large"))?, 0u8, "a GeoPackage PNG tile")?;
         let info = reader.next_frame(&mut buf).map_err(|e| err(&e))?;
         let bands = info.color_type.samples();
         let (w, h) = (info.width as usize, info.height as usize);
         let values: Vec<f64> = match info.bit_depth {
-            png::BitDepth::Sixteen => buf[..w * h * bands * 2].chunks(2).map(|c| u16::from_be_bytes([c[0], c[1]]) as f64).collect(),
-            png::BitDepth::Eight => buf[..w * h * bands].iter().map(|v| *v as f64).collect(),
+            png::BitDepth::Sixteen => {
+                tile_values(w * h * bands, buf[..w * h * bands * 2].chunks(2).map(|c| u16::from_be_bytes([c[0], c[1]]) as f64))?
+            }
+            png::BitDepth::Eight => tile_values(w * h * bands, buf[..w * h * bands].iter().map(|v| *v as f64))?,
             d => return Err(err(&format!("{d:?} PNG tiles are not supported"))),
         };
         // Palette tiles are expanded to RGB(A).
         if info.color_type == png::ColorType::Indexed {
-            let palette = reader.info().palette.as_deref().unwrap_or_default().to_vec();
-            let trns = reader.info().trns.as_deref().unwrap_or_default().to_vec();
-            let rgba = values
-                .iter()
-                .flat_map(|&ix| {
+            let palette = reader.info().palette.as_deref().unwrap_or_default();
+            let trns = reader.info().trns.as_deref().unwrap_or_default();
+            let rgba = tile_values(
+                w * h * 4,
+                values.iter().flat_map(|&ix| {
                     let k = ix as usize;
                     let c = |j: usize| *palette.get(3 * k + j).unwrap_or(&0) as f64;
                     [c(0), c(1), c(2), *trns.get(k).unwrap_or(&255) as f64]
-                })
-                .collect();
+                }),
+            )?;
             return Ok((w, h, 4, rgba));
         }
         return Ok((w, h, bands, values));
     }
     if b.starts_with(&[0xff, 0xd8]) {
+        let mut header = jpeg_decoder::Decoder::new(std::io::Cursor::new(b));
+        let shape = match header.read_info().ok().and_then(|_| header.info()) {
+            Some(info) => (info.width as usize, info.height as usize, info.pixel_format.pixel_bytes()),
+            // The native decoder also supports raw two-component baseline frames.
+            None => crate::jpeg::frame_dimensions(b).map_err(|e| err(&e))?,
+        };
+        let (w, h, bands) = shape;
+        check(TileLayout::new(w, h, bands, buffer_bytes(&[w, h, bands], 1), Some(0)))?;
         let img = crate::jpeg::decode_file(b)
             .map_err(|e| if crate::jpeg::is_resource_refusal(&e) { Error::ResourceLimit(e.to_string()) } else { err(&e) })?;
-        return Ok((img.width, img.height, img.components, img.data.into_iter().map(f64::from).collect()));
+        return Ok((img.width, img.height, img.components, tile_values(img.data.len(), img.data.into_iter().map(f64::from))?));
     }
     if b.starts_with(b"II*\0") || b.starts_with(b"MM\0*") {
-        use tiff::decoder::{Decoder, DecodingResult};
+        use tiff::decoder::{Decoder, DecodingResult, DecodingSampleType};
         let mut d = Decoder::new(std::io::Cursor::new(b)).map_err(|e| err(&e))?;
         let (w, h) = d.dimensions().map_err(|e| err(&e))?;
+        let layout = d.image_buffer_layout().map_err(|e| err(&e))?;
+        let bytes = match layout.sample_type {
+            Some(DecodingSampleType::U8) => 1,
+            Some(DecodingSampleType::U16 | DecodingSampleType::I16) => 2,
+            Some(DecodingSampleType::U32 | DecodingSampleType::I32 | DecodingSampleType::F32) => 4,
+            Some(DecodingSampleType::F64) => 8,
+            _ => return Err(err(&"unsupported TIFF tile type")),
+        };
+        // read_image and image_buffer_layout both read only the first plane of planar TIFFs.
+        // Preserve that decoder's existing sample count rather than inventing extra bands.
+        let pixels = fallible::len(&[w as usize, h as usize], "a GeoPackage TIFF tile")?;
+        let bands = layout.len.div_ceil(bytes) / pixels.max(1);
+        // Float64 decoding already owns the output vector; other sample types need a conversion buffer.
+        let raw = if matches!(layout.sample_type, Some(DecodingSampleType::F64)) { 0 } else { layout.len };
+        check(TileLayout::new(w as usize, h as usize, bands, Some(raw), Some(0)))?;
         let values: Vec<f64> = match d.read_image().map_err(|e| err(&e))? {
-            DecodingResult::F32(v) => v.into_iter().map(f64::from).collect(),
+            DecodingResult::F32(v) => tile_values(v.len(), v.into_iter().map(f64::from))?,
             DecodingResult::F64(v) => v,
-            DecodingResult::U8(v) => v.into_iter().map(f64::from).collect(),
-            DecodingResult::U16(v) => v.into_iter().map(f64::from).collect(),
-            DecodingResult::I16(v) => v.into_iter().map(f64::from).collect(),
-            DecodingResult::I32(v) => v.into_iter().map(f64::from).collect(),
-            DecodingResult::U32(v) => v.into_iter().map(f64::from).collect(),
+            DecodingResult::U8(v) => tile_values(v.len(), v.into_iter().map(f64::from))?,
+            DecodingResult::U16(v) => tile_values(v.len(), v.into_iter().map(f64::from))?,
+            DecodingResult::I16(v) => tile_values(v.len(), v.into_iter().map(f64::from))?,
+            DecodingResult::I32(v) => tile_values(v.len(), v.into_iter().map(f64::from))?,
+            DecodingResult::U32(v) => tile_values(v.len(), v.into_iter().map(f64::from))?,
             _ => return Err(err(&"unsupported TIFF tile type")),
         };
         let bands = values.len() / (w as usize * h as usize).max(1);
@@ -94,11 +160,12 @@ fn decode_tile(b: &[u8]) -> Result<Tile> {
 /// Maps a tile's samples (gray, gray and alpha, RGB or RGBA) to `n` bands, as GDAL does: gray
 /// and RGB values for the first bands, alpha (opaque when the tile has none) for the last of 2
 /// or 4.
-fn select_bands(bands: usize, values: Vec<f64>, n: usize) -> Vec<f64> {
+fn select_bands(bands: usize, values: Vec<f64>, n: usize) -> Result<Vec<f64>> {
     if bands == n {
-        return values;
+        return Ok(values);
     }
-    let mut out = Vec::with_capacity(values.len() / bands.max(1) * n);
+    let mut out = Vec::new();
+    fallible::reserve(&mut out, fallible::len(&[values.len() / bands.max(1), n], "GeoPackage tile bands")?, "GeoPackage tile bands")?;
     for px in values.chunks(bands.max(1)) {
         let rgba = match px.len() {
             1 => [px[0], px[0], px[0], 255.0],
@@ -113,7 +180,7 @@ fn select_bands(bands: usize, values: Vec<f64>, n: usize) -> Vec<f64> {
             _ => out.extend(rgba),
         }
     }
-    out
+    Ok(out)
 }
 
 /// Reads the first raster table of a GeoPackage.
@@ -271,6 +338,10 @@ pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<Raste
         coverage.2 = Some(-32768.0);
     }
     let null_raw = if gridded && coverage.3 == DataType::I16 { Some(65535.0) } else { coverage.2 };
+    let data_type = if gridded { coverage.3 } else { DataType::U8 };
+    // What the tile matrix declares, before any tile is decoded (see `crate::declared`); a
+    // coverage's bands come from its tiles, one by default.
+    crate::declared::check(cols, rows, band_count.unwrap_or(1), data_type, false)?;
 
     let tiles = db.table(&name)?;
     let mut grid: Option<(usize, Vec<f64>)> = None;
@@ -283,9 +354,31 @@ pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<Raste
         else {
             continue;
         };
-        let (w, h, bands, values) = decode_tile(blob)?;
+        let (w, h, bands, values) = decode_tile(blob, |tile| {
+            let bands = band_count.unwrap_or(tile.bands);
+            if grid.is_none() && band_count.is_none() {
+                // Coverage bands come from the first tile's header, before pixels are decoded.
+                crate::declared::check(cols, rows, bands, data_type, false)?;
+            }
+            let grid_bands = grid.as_ref().map_or(bands, |(n, _)| *n);
+            let grid_bytes = buffer_bytes(&[cols, rows, grid_bands], 8);
+            let retained = grid.as_ref().map_or(Some(0), |(_, v)| buffer_bytes(&[v.capacity()], 8));
+            let remap = band_count.is_some_and(|n| n != tile.bands);
+            let mapped = if remap { buffer_bytes(&[tile.width, tile.height, bands], 8) } else { Some(0) };
+            let kept = if remap { mapped } else { tile.values };
+            let output = if data_type == DataType::F64 { Some(0) } else { buffer_bytes(&[cols, rows, grid_bands], data_type.size_bytes()) };
+            // The first tile is decoded before the grid exists. Subsequent tiles retain the grid;
+            // remapping retains old/new samples, and final conversion retains the Float64 grid.
+            let phases = [
+                tile.peak.zip(retained).and_then(|(a, b)| a.checked_add(b)),
+                tile.values.zip(mapped).zip(retained).and_then(|((a, b), c)| a.checked_add(b)?.checked_add(c)),
+                grid_bytes.zip(kept).and_then(|(a, b)| a.checked_add(b)),
+                grid_bytes.zip(output).and_then(|(a, b)| a.checked_add(b)),
+            ];
+            check_working_set(phases.into_iter().try_fold(0usize, |peak, bytes| Some(peak.max(bytes?))))
+        })?;
         let (bands, values) = match band_count {
-            Some(n) => (n, select_bands(bands, values, n)),
+            Some(n) => (n, select_bands(bands, values, n)?),
             None => (bands, values),
         };
         let (mut tscale, mut toffset) = (1.0, 0.0);
@@ -297,7 +390,11 @@ pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<Raste
             toffset = f(ta, row, "offset").unwrap_or(0.0);
         }
         let fill = if gridded { coverage.2.unwrap_or(0.0) } else { tile_nodata.unwrap_or(0.0) };
-        let (nb, out) = grid.get_or_insert_with(|| (bands, vec![fill; cols * rows * bands]));
+        if grid.is_none() {
+            let len = fallible::len(&[cols, rows, bands], "a GeoPackage raster grid")?;
+            grid = Some((bands, fallible::filled(len, fill, "a GeoPackage raster grid")?));
+        }
+        let (nb, out) = grid.as_mut().unwrap();
         let nb = *nb;
         for y in 0..h.min(th) {
             let gy = tr * th as i64 + y as i64 - yoff;
@@ -319,9 +416,26 @@ pub(crate) fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<Raste
             }
         }
     }
-    let (bands, values) = grid.unwrap_or((1, vec![0.0; cols * rows]));
-    let data_type = if gridded { coverage.3 } else { DataType::U8 };
-    let data = RasterData::from_f64_vec(data_type, values);
+    let (bands, values) = match grid {
+        Some(grid) => grid,
+        None => {
+            let working = buffer_bytes(&[cols, rows], 8);
+            let output = if data_type == DataType::F64 { Some(0) } else { buffer_bytes(&[cols, rows], data_type.size_bytes()) };
+            check_working_set(working.zip(output).and_then(|(a, b)| a.checked_add(b)))?;
+            (1, fallible::filled(fallible::len(&[cols, rows], "an empty GeoPackage raster")?, 0., "an empty GeoPackage raster")?)
+        }
+    };
+    let data = if data_type == DataType::F64 {
+        RasterData::F64(values)
+    } else {
+        let mut data = fallible::raster_data(data_type, values.len(), 0., "a GeoPackage raster output")?;
+        crate::pixel::with_data!(&mut data, out => {
+            for (dst, &value) in out.iter_mut().zip(&values) {
+                *dst = value as _;
+            }
+        });
+        data
+    };
     let crs = srs_id.map(|id| crs_for_srs(db, id)).transpose()?.flatten().unwrap_or_default();
     let gt = [minx, rx, 0.0, maxy, 0.0, -ry];
     let nodata = if gridded { coverage.2 } else { tile_nodata };
@@ -654,6 +768,190 @@ pub(crate) fn add_raster(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reference: GDAL 3.13.3. Declared limits describe the returned bands, not unused tile channels.
+    #[test]
+    fn coverage_band_count_is_fixed_by_the_first_tile() {
+        for first in [vec![7.], vec![7., 8., 9.]] {
+            let bands = first.len();
+            let mut tiles = Vec::new();
+            for (col, values) in [first, if bands == 1 { vec![11., 12., 13.] } else { vec![11.] }].into_iter().enumerate() {
+                let raster =
+                    common::make_raster(1, 1, values.len(), RasterData::F32(values), common::NO_GEOTRANSFORM, Default::default(), None)
+                        .unwrap();
+                tiles.push((0, col as i64, 0, super::super::gtiff_write::encode(&raster, &Default::default()).unwrap()));
+            }
+            let mut builder = super::super::vector::geopackage::Builder::new();
+            let extent = [0., 0., 2., 1.];
+            let ids = builder.add_tiles("grid", "2d-gridded-coverage", 0, extent, extent, &[(0, 2, 1, 1, 1, 1., 1.)], tiles).unwrap();
+            builder.add_coverage("grid", ("float", 1., 0., None), ids.into_iter().map(|id| (id, 1., 0., [None; 4])).collect());
+            let db = Db::new(builder.finish().unwrap()).unwrap();
+            let count = bands.to_string();
+            let bytes = (2 * bands * 4).to_string();
+            crate::config::with_options(&[("TERRIO_MAX_BANDS", &count), ("TERRIO_MAX_DECLARED_BYTES", &bytes)], || {
+                let ds = read_db(&db, Some("grid"), Path::new("coverage.gpkg")).unwrap();
+                assert_eq!(ds.raster.bands, bands);
+                assert_eq!(ds.raster.data.to_f64_vec(), if bands == 1 { vec![7., 11.] } else { vec![7., 11., 8., 0., 9., 0.] });
+            });
+        }
+    }
+
+    /// Reference: GDAL 3.13.3. The Float64 grid and final typed array coexist on coverage reads.
+    #[test]
+    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    fn coverage_working_grid_is_checked_even_without_tiles() {
+        const CHILD: &str = "TERRIO_TEST_GPKG_WORKING_MEMORY_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "drivers::gpkg::tests::coverage_working_grid_is_checked_even_without_tiles"])
+                .env(CHILD, "1")
+                .env_remove("TERRIO_MAX_DECLARED_BYTES")
+                .env_remove("TERRIO_MAX_BANDS")
+                .output()
+                .unwrap();
+            assert!(child.status.success(), "{}\n{}", String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
+            return;
+        }
+        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        // SAFETY: valid pointers; only this isolated child's usable-memory policy is constrained.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_RSS, &mut limit), 0);
+            limit.rlim_cur = limit.rlim_max.min(128 << 20);
+            assert_eq!(libc::setrlimit(libc::RLIMIT_RSS, &limit), 0);
+        }
+        let raster = common::make_raster(1, 1, 1, RasterData::F32(vec![7.]), common::NO_GEOTRANSFORM, Default::default(), None).unwrap();
+        let tile = super::super::gtiff_write::encode(&raster, &Default::default()).unwrap();
+        for with_tile in [true, false] {
+            for size in [1536, 5000] {
+                let mut builder = super::super::vector::geopackage::Builder::new();
+                let extent = [0., 0., size as f64, size as f64];
+                let tiles = if with_tile { vec![(0, 0, 0, tile.clone())] } else { Vec::new() };
+                let ids =
+                    builder.add_tiles("grid", "2d-gridded-coverage", 0, extent, extent, &[(0, size, size, 1, 1, 1., 1.)], tiles).unwrap();
+                builder.add_coverage("grid", ("float", 1., 0., None), ids.into_iter().map(|id| (id, 1., 0., [None; 4])).collect());
+                let db = Db::new(builder.finish().unwrap()).unwrap();
+                let result = read_db(&db, Some("grid"), Path::new("coverage.gpkg"));
+                if size == 1536 {
+                    let ds = result.unwrap();
+                    let RasterData::F32(values) = ds.raster.data else { panic!("expected Float32 coverage") };
+                    assert_eq!(values.len(), (size as usize).pow(2));
+                    assert_eq!(values[0], if with_tile { 7. } else { 0. });
+                    assert!(values[1..].iter().all(|&v| v == 0.));
+                } else {
+                    let result = result.map(|_| ());
+                    assert!(matches!(result, Err(Error::ResourceLimit(_))), "with_tile={with_tile}: {result:?}");
+                }
+            }
+        }
+        // A tiny destination can still need a large decoded tile. Its Float32 buffer
+        // alone fits this policy, but its simultaneous Float64 conversion does not.
+        let tags = [
+            (256u16, 4u16, 5000u32),
+            (257, 4, 5000),
+            (258, 3, 32),
+            (259, 3, 1),
+            (262, 3, 1),
+            (273, 4, 8 + 2 + 10 * 12 + 4),
+            (277, 3, 1),
+            (278, 4, 5000),
+            (279, 4, 100_000_000),
+            (339, 3, 3),
+        ];
+        let mut tile = b"II*\0\x08\0\0\0".to_vec();
+        tile.extend_from_slice(&(tags.len() as u16).to_le_bytes());
+        for (tag, kind, value) in tags {
+            tile.extend_from_slice(&tag.to_le_bytes());
+            tile.extend_from_slice(&kind.to_le_bytes());
+            tile.extend_from_slice(&1u32.to_le_bytes());
+            tile.extend_from_slice(&value.to_le_bytes());
+        }
+        tile.extend_from_slice(&[0; 8]);
+        assert!(tiff::decoder::Decoder::new(std::io::Cursor::new(&tile)).is_ok());
+        let mut builder = super::super::vector::geopackage::Builder::new();
+        let extent = [0., 0., 1., 1.];
+        let ids =
+            builder.add_tiles("grid", "2d-gridded-coverage", 0, extent, extent, &[(0, 1, 1, 1, 1, 1., 1.)], vec![(0, 0, 0, tile)]).unwrap();
+        builder.add_coverage("grid", ("float", 1., 0., None), vec![(ids[0], 1., 0., [None; 4])]);
+        let db = Db::new(builder.finish().unwrap()).unwrap();
+        let result = read_db(&db, Some("grid"), Path::new("coverage.gpkg")).map(|_| ());
+        assert!(matches!(result, Err(Error::ResourceLimit(_))), "{result:?}");
+    }
+
+    /// Reference: GDAL 3.13.3. A valid tile header supplies bands before corrupt pixels are decoded.
+    #[test]
+    fn coverage_band_limits_precede_corrupt_tile_pixels() {
+        let raster =
+            common::make_raster(1, 1, 3, RasterData::F32(vec![1., 2., 3.]), common::NO_GEOTRANSFORM, Default::default(), None).unwrap();
+        let mut tiff = super::super::gtiff_write::encode(&raster, &Default::default()).unwrap();
+        assert_eq!(&tiff[..4], b"II*\0");
+        let ifd = u32::from_le_bytes(tiff[4..8].try_into().unwrap()) as usize;
+        let count = u16::from_le_bytes(tiff[ifd..ifd + 2].try_into().unwrap()) as usize;
+        let entry = (0..count)
+            .map(|i| ifd + 2 + i * 12)
+            .find(|&i| matches!(u16::from_le_bytes(tiff[i..i + 2].try_into().unwrap()), 273 | 324))
+            .unwrap();
+        assert_eq!(u32::from_le_bytes(tiff[entry + 4..entry + 8].try_into().unwrap()), 1);
+        let past_end = (tiff.len() as u32 + 1024).to_le_bytes();
+        tiff[entry + 8..entry + 12].copy_from_slice(&past_end);
+        assert!(tiff::decoder::Decoder::new(std::io::Cursor::new(&tiff)).is_ok());
+
+        let rgb = encode_png(1, 1, 3, false, &[1, 2, 3]).unwrap();
+        let mut palette = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut palette, 1, 1);
+            encoder.set_color(png::ColorType::Indexed);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_palette(vec![1, 2, 3]);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[0]).unwrap();
+            writer.finish().unwrap();
+        }
+        let corrupt_png = |mut bytes: Vec<u8>| {
+            let idat = bytes.windows(4).position(|b| b == b"IDAT").unwrap();
+            bytes[idat + 4] ^= 0xff;
+            assert!(png::Decoder::new(std::io::Cursor::new(&bytes)).read_info().is_ok());
+            bytes
+        };
+        for tile in [tiff, corrupt_png(rgb), corrupt_png(palette)] {
+            let mut builder = super::super::vector::geopackage::Builder::new();
+            let extent = [0., 0., 1024., 1024.];
+            let ids = builder
+                .add_tiles("grid", "2d-gridded-coverage", 0, extent, extent, &[(0, 1024, 1024, 1, 1, 1., 1.)], vec![(0, 0, 0, tile)])
+                .unwrap();
+            builder.add_coverage("grid", ("float", 1., 0., None), vec![(ids[0], 1., 0., [None; 4])]);
+            let db = Db::new(builder.finish().unwrap()).unwrap();
+            crate::config::with_options(&[("TERRIO_MAX_BANDS", ""), ("TERRIO_MAX_DECLARED_BYTES", "")], || {
+                assert!(matches!(read_db(&db, Some("grid"), Path::new("coverage.gpkg")), Err(Error::InvalidData(_))));
+                for (key, value) in [("TERRIO_MAX_BANDS", "1"), ("TERRIO_MAX_DECLARED_BYTES", "8388608")] {
+                    crate::config::with_options(&[(key, value)], || {
+                        let result = read_db(&db, Some("grid"), Path::new("coverage.gpkg")).map(|_| ());
+                        assert!(matches!(&result, Err(Error::ResourceLimit(message)) if message.contains(key)), "{result:?}");
+                    });
+                }
+            });
+        }
+    }
+
+    /// Reference: GDAL 3.13.3. A coverage tile supplies the real count before the grid is allocated.
+    #[test]
+    fn coverage_limits_count_multiband_tiles_before_allocating_the_grid() {
+        let raster =
+            common::make_raster(1, 1, 3, RasterData::F32(vec![1., 2., 3.]), common::NO_GEOTRANSFORM, Default::default(), None).unwrap();
+        let tile = super::super::gtiff_write::encode(&raster, &Default::default()).unwrap();
+        let mut builder = super::super::vector::geopackage::Builder::new();
+        let extent = [0., 0., 1024., 1024.];
+        let ids = builder
+            .add_tiles("grid", "2d-gridded-coverage", 0, extent, extent, &[(0, 1024, 1024, 1, 1, 1., 1.)], vec![(0, 0, 0, tile)])
+            .unwrap();
+        builder.add_coverage("grid", ("float", 1., 0., None), vec![(ids[0], 1., 0., [None; 4])]);
+        let db = Db::new(builder.finish().unwrap()).unwrap();
+        for (key, value) in [("TERRIO_MAX_BANDS", "1"), ("TERRIO_MAX_DECLARED_BYTES", "8388608")] {
+            crate::config::with_options(&[(key, value)], || {
+                let result = read_db(&db, Some("grid"), Path::new("coverage.gpkg"));
+                assert!(matches!(result, Err(Error::ResourceLimit(_))), "{result:?}");
+            });
+        }
+    }
 
     #[test]
     fn optional_raster_metadata_distinguishes_absence_from_corrupt_records() {

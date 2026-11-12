@@ -58,7 +58,9 @@ pub fn update_raster(src: &mut LazyRaster, dst: &str, options: &UpdateOptions) -
         drop(target);
         if let Some((_, extent)) = window.filter(|_| !o.no_update_overviews && !external) {
             f.flush()?;
-            let mut updated = LazyRaster::open_tiff(&tmp.to_string_lossy())?.ok_or_else(|| Error::InvalidData("not a TIFF".into()))?;
+            // The copy just written, of the destination opened above: read whatever it declares.
+            let mut updated =
+                LazyRaster::open_tiff_unchecked(&tmp.to_string_lossy())?.ok_or_else(|| Error::InvalidData("not a TIFF".into()))?;
             if !updated.overviews().is_empty() {
                 super::overview::refresh(f, &mut updated, &refresh_options(&o, extent, false))?;
             }
@@ -90,7 +92,8 @@ pub fn update_raster_bytes_owned(src: &mut LazyRaster, dst: Vec<u8>, options: &U
     let mut bytes = out.into_inner();
     drop(target);
     if let Some((_, extent)) = window.filter(|_| !options.no_update_overviews) {
-        let mut updated = LazyRaster::from_tiff_bytes(bytes.clone())?.ok_or_else(|| Error::InvalidData("not a TIFF".into()))?;
+        // The GeoTIFF just written, from the destination opened above: read whatever it declares.
+        let mut updated = LazyRaster::from_tiff_bytes_unchecked(bytes.clone())?.ok_or_else(|| Error::InvalidData("not a TIFF".into()))?;
         if !updated.overviews().is_empty() {
             let r = refresh_options(options, extent, false);
             let mut cursor = std::io::Cursor::new(bytes);

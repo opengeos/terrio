@@ -279,6 +279,8 @@ pub(crate) fn info_item(item: Item, asset: Option<&str>, tms: Option<&str>, opti
             Err(_) => return Ok(Info::Raster(Box::new(container_info(subs)))),
         },
     };
+    // Refused as an open refuses it, before statistics decode it (see `crate::declared`).
+    crate::declared::check_lazy(&r)?;
     Ok(Info::Raster(Box::new(crate::info::lazy_raster_info(&mut r, options)?)))
 }
 
