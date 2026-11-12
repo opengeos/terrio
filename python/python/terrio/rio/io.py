@@ -1939,7 +1939,8 @@ class DatasetReader(DatasetBase):
             buf = (int(out_shape[-2]), int(out_shape[-1]))
         else:
             buf = win_shape
-        precise = dtype.name == "complex128" and self._exact_complex_read()
+        # Outputs that hold every Int32 component (complex128, float64, int32...) read them exactly.
+        precise = np.can_cast(np.int32, dtype, "safe") and self._exact_complex_read()
         read_options = {"out_dtype": "complex128"} if precise else {}
         nodatavals = [self.nodatavals[b - 1] for b in idx]
         fill = None if not nodatavals else nodatavals[-1]
@@ -2341,6 +2342,8 @@ class DatasetWriter(DatasetReader):
                 raise TypeError("Integer band count is required.") from None
             if _is_complex_int(dtype) and dtype != "complex_int16":
                 raise TypeError("unsupported complex integer dtype")
+            if complex_sample not in (None, "CInt16", "CInt32", "CFloat32", "CFloat64"):
+                raise TypeError(f"unsupported complex sample type: {complex_sample}")
             try:
                 assert dtype is not None
                 dt = _getnpdtype(dtype).name

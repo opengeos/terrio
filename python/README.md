@@ -103,12 +103,12 @@ accepts its supported array dtype names and refuses `dtype="complex_int32"`;
 selector. Default complex reads retain their existing dtype; request
 `read(out_dtype="complex128")` for exact Int32 components. An explicit real
 `out_dtype`, such as `float32`, follows NumPy casting: it keeps the real component
-and emits `ComplexWarning`. CInt32 components pass through complex64 first, so values
-above 2^24 may round even with `out_dtype="float64"`; use
+and emits `ComplexWarning`. Real outputs that hold every Int32 component, such as
+`float64` or `int32`, read them exactly; narrower ones, such as `float32`, pass through
+complex64 first, so values above 2^24 may round. Use
 `read(out_dtype="complex128").real` for exact real components. Select a complex dtype
 to preserve both components. Complex `terrio.rio` reads support unresampled windows and
 nearest-neighbour resampling; non-nearest complex interpolation remains unsupported.
-
 
 ## Vector data
 

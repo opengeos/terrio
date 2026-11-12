@@ -259,6 +259,23 @@ def test_read_only_cint32_wide_output_keeps_integer_components(tmp_path, gdal, m
     np.testing.assert_array_equal(actual, expected)
 
 
+@pytest.mark.parametrize("dtype", ["float64", "int32"])
+def test_read_only_cint32_real_output_keeps_integer_components(tmp_path, gdal, dtype):
+    """Real outputs holding every Int32 component read the real parts exactly, as GDAL does."""
+    values = (np.arange(2 * 19 * 37).reshape(2, 19, 37).astype("float64") + 2**24 + 1) * (1 - 1j)
+    values[0, 0, 0] = (2**31 - 1) - (2**31) * 1j
+    path = tmp_path / "read-only-real.tif"
+    ds = gdal.GetDriverByName("GTiff").Create(str(path), 37, 19, 2, gdal.GDT_CInt32)
+    ds.SetGeoTransform(GT)
+    for band in range(2):
+        ds.GetRasterBand(band + 1).WriteArray(values[band])
+    ds = None
+    with rio.open(path) as source:
+        actual = source.read(out_dtype=dtype)
+    assert actual.dtype == np.dtype(dtype)
+    np.testing.assert_array_equal(actual, values.real.astype(dtype))
+
+
 @pytest.mark.parametrize("byteorder", ["<", ">"])
 @pytest.mark.parametrize("complex_input", [False, True])
 def test_numpy_dtype_casts_keep_requested_byte_order(byteorder, complex_input):

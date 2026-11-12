@@ -87,28 +87,6 @@ macro_rules! with_data {
 }
 pub(crate) use with_data;
 
-/// Converts samples using GDAL 3.13.3's rounded, saturated integer conversion.
-/// Complex components are Int16, Int32, Float32 or Float64; unchanged types reuse their buffer.
-///
-/// # Errors
-/// When either type cannot represent a complex sample component.
-pub fn convert_complex_components(
-    data: wbraster::raster::RasterData,
-    target: wbraster::DataType,
-) -> crate::Result<wbraster::raster::RasterData> {
-    use wbraster::DataType;
-    use wbraster::raster::RasterData;
-    if !matches!(data.data_type(), DataType::I16 | DataType::I32 | DataType::F32 | DataType::F64)
-        || !matches!(target, DataType::I16 | DataType::I32 | DataType::F32 | DataType::F64)
-    {
-        return Err(crate::Error::InvalidArgument("complex components must be Int16, Int32, Float32 or Float64".into()));
-    }
-    if data.data_type() == target {
-        return Ok(data);
-    }
-    with_data!(&data, values => complex_components_from_iter(values.iter().map(|v| v.to_f64()), target))
-}
-
 /// Collect real/imaginary component planes directly in their storage type, without a temporary
 /// floating-point buffer. Integer conversion is rounded and saturated as in GDAL 3.13.3.
 ///

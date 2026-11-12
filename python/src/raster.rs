@@ -274,11 +274,11 @@ pub(crate) fn raster_array_data(array: &Bound<'_, PyUntypedArray>, target: Optio
                 let readonly = contiguous.cast::<PyArrayDyn<$c>>()?.readonly();
                 let values = readonly.as_slice().map_err(|e| invalid(e.to_string()))?;
                 if let Some(target) = target {
-                    let components = (0..values.len() * 2).map(|i| {
-                        let band = i / (2 * plane);
-                        let value = values[band * plane + i % plane];
-                        $to_f64(if (i / plane) % 2 == 0 { value.re } else { value.im })
-                    });
+                    // Band-major, each band's real plane then its imaginary plane. An empty array
+                    // has no bands, so the chunk size only has to be nonzero.
+                    let components = values
+                        .chunks_exact(plane.max(1))
+                        .flat_map(|band| band.iter().map(|v| $to_f64(v.re)).chain(band.iter().map(|v| $to_f64(v.im))));
                     return Ok((terrio::complex_components_from_iter(components, target).py()?, true));
                 }
                 let mut parts = Vec::with_capacity(values.len() * 2);
