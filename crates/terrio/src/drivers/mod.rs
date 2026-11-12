@@ -10,6 +10,7 @@ pub(crate) mod aaigrid;
 #[cfg(any(feature = "netcdf-hdf5", feature = "zarr"))]
 mod cf;
 pub(crate) mod common;
+pub(crate) mod declared_header;
 mod ehdr;
 mod envi;
 mod ers;
@@ -392,7 +393,9 @@ pub(crate) fn write(
         #[cfg(feature = "grib")]
         RasterDriver::GRIB => grib::write::write(r, nodata, p, options),
         #[cfg(feature = "jp2")]
-        RasterDriver::JP2 => jp2::write(r, nodata, p, georeferenced, &options.creation_options),
+        RasterDriver::JP2 => {
+            jp2::write(r, nodata, p, georeferenced, options.geo_transform, &options.band_metadata, &options.creation_options)
+        }
         #[cfg(feature = "zarr")]
         RasterDriver::Zarr => zarr::write_with(r, nodata, p, compression, &options.creation_options, &options.band_metadata),
         #[cfg(feature = "netcdf-hdf5")]

@@ -427,9 +427,19 @@ pub fn open(path: &str) -> Result<Dataset> {
     result
 }
 
+/// [`open`] with terrio's own drivers: a raster it opens declaring more than the options allow
+/// (see [`crate::declared`]) is refused, after it is read when its reader reads it whole at once.
 pub(crate) fn open_native(path: &str) -> Result<Dataset> {
+    let ds = open_native_unchecked(path)?;
+    if let Dataset::Raster(r) = &ds {
+        crate::declared::check_dataset(r)?;
+    }
+    Ok(ds)
+}
+
+fn open_native_unchecked(path: &str) -> Result<Dataset> {
     if let Some(result) = crate::catalog::open_lazy(path) {
-        return result?.read().map(Dataset::Raster);
+        return read_lazy_whole(result?).map(Dataset::Raster);
     }
     if let Some(result) = crate::stac::open(path) {
         return result;
@@ -451,6 +461,12 @@ pub(crate) fn open_native(path: &str) -> Result<Dataset> {
 }
 
 /// Opens a raster dataset, reading it into memory.
+///
+/// A GeoTIFF the process cannot hold (more than [`crate::usable_memory`]) is refused with
+/// [`Error::ResourceLimit`] before its buffer is allocated. A raster that declares more than the
+/// options `TERRIO_MAX_DECLARED_BYTES` (width x height x bands x bytes per sample) or
+/// `TERRIO_MAX_BANDS` allow, when they are set, is refused with [`Error::ResourceLimit`] naming
+/// the option, from its headers where its reader reads them first, else once it is read.
 ///
 /// With the `gdal` feature, paths starting with `GDAL:` are opened by GDAL, and so are those
 /// terrio's own drivers cannot open.
@@ -489,8 +505,21 @@ pub fn open_raster_with_tiff_limits(path: &str, limits: crate::TiffReadLimits) -
 }
 
 fn open_raster_native(path: &str) -> Result<RasterDataset> {
+    let ds = read_raster_native(path)?;
+    crate::declared::check_dataset(&ds)?;
+    Ok(ds)
+}
+
+/// A raster opened to be read by window (an indexed raster catalog, a STAC mosaic or tiled item),
+/// read whole once what it declares is allowed (see [`crate::declared`]).
+pub(crate) fn read_lazy_whole(mut r: crate::LazyRaster) -> Result<RasterDataset> {
+    crate::declared::check_lazy(&r)?;
+    r.read()
+}
+
+fn read_raster_native(path: &str) -> Result<RasterDataset> {
     if let Some(result) = crate::catalog::open_lazy(path) {
-        return result?.read();
+        return read_lazy_whole(result?);
     }
     if let Some(result) = crate::stac::open_raster(path) {
         return match result? {
@@ -630,6 +659,44 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
     #[cfg(feature = "gdal")]
     let result = gdal_fallback(path, result, |p| crate::gdal_backend::open_vector(p, options));
     result
+}
+
+/// The `(has_z, has_m)` a header declares for each layer of a dataset, by position; a missing
+/// entry declares nothing.
+pub(crate) type DeclaredDims = Vec<Option<(bool, bool)>>;
+
+/// [`open_vector`], with the Z and M each layer's header declares: `(has_z, has_m)` for the layer
+/// of a FlatGeobuf, read from the header the open parses (a local file, an archive's member, a
+/// remote file's download), so the file is not opened again. Empty for other drivers, and for a
+/// FlatGeobuf whose header terrio's reader did not parse (a `gdal:` path): the dimensions of those
+/// layers are found from their features.
+pub(crate) fn open_vector_declared(path: &str, options: &VectorOpenOptions) -> Result<(VectorDataset, DeclaredDims)> {
+    with_declared_dims(|| open_vector(path, options))
+}
+
+/// Runs `open`, an open of one vector dataset (a path, or bytes in memory), and returns its dataset
+/// with the Z and M its layers' headers declare, as [`open_vector_declared`] does.
+pub(crate) fn with_declared_dims(open: impl FnOnce() -> Result<VectorDataset>) -> Result<(VectorDataset, DeclaredDims)> {
+    #[cfg(feature = "flatgeobuf")]
+    {
+        let (ds, headers) = crate::drivers::vector::flatgeobuf::with_declared_dims(open);
+        let ds = ds?;
+        // An open that parsed a second header would lose the declared pair to the feature scan without
+        // a word: in a debug build, it says so.
+        debug_assert!(
+            ds.driver != VectorDriver::FlatGeobuf || headers.len() <= 1,
+            "a FlatGeobuf open parsed {} headers: its declared Z and M would be dropped",
+            headers.len()
+        );
+        // A FlatGeobuf has one layer, read from the one header parsed.
+        let declared = match headers[..] {
+            [dims] if ds.driver == VectorDriver::FlatGeobuf && ds.layers.len() == 1 => vec![Some(dims)],
+            _ => Vec::new(),
+        };
+        Ok((ds, declared))
+    }
+    #[cfg(not(feature = "flatgeobuf"))]
+    Ok((open()?, Vec::new()))
 }
 
 /// A vector response or feature-service query: opaque remote GeoJSON/GML names, and URLs with
@@ -1272,13 +1339,20 @@ fn read_raster_local(path: &str) -> Result<RasterDataset> {
     let (raster, driver) = match RasterDriver::for_extension(path) {
         // No `wbraster` format: GRIB in a build with `gdal` and without `grib`, read by the GDAL backend.
         Some(driver) => match driver.to_wb() {
-            Some(format) => (Raster::read_with_format(path, format)?, driver),
+            Some(format) => {
+                crate::drivers::declared_header::check_fallback(Path::new(path), driver)?;
+                (Raster::read_with_format(path, format)?, driver)
+            }
             None => return Err(Error::Unsupported(format!("'{path}': no {} reader in this build", driver.name()))),
         },
         None if wbraster_fallback_allowed() => {
-            let fmt = wbraster::RasterFormat::detect(path)?;
+            let fmt = match crate::drivers::declared_header::detect_ascii(path)? {
+                Some(format) => format,
+                None => wbraster::RasterFormat::detect(path)?,
+            };
             // Found by its content or the files beside it: read only if its driver is allowed.
             crate::drivers::check_recognised(RasterDriver::from_wb(fmt), path)?;
+            crate::drivers::declared_header::check_fallback(Path::new(path), RasterDriver::from_wb(fmt))?;
             (fmt.read(path)?, RasterDriver::from_wb(fmt))
         }
         None => {
@@ -1500,6 +1574,10 @@ pub struct BandMetadata {
     pub unit: Option<String>,
     /// The color interpretation, as GDAL names it: `Gray`, `Red`, `Alpha`, `Palette`...
     pub color_interp: Option<String>,
+    /// A stored JPEG 2000 colour association (T.800 I.5.3.6), when present. This preserves
+    /// the Y component of grayscale datasets whose bands all report `Gray` in GDAL.
+    /// A caller changing colour roles should leave this unset to choose their association anew.
+    pub color_association: Option<u16>,
     /// Metadata items (GDAL's band metadata, default domain).
     pub items: Vec<(String, String)>,
 }
@@ -1546,6 +1624,12 @@ pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWrit
     let derived = color_options(ds, path, options);
     let options = derived.as_ref().unwrap_or(options);
     let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
+    let mut options = std::borrow::Cow::Borrowed(options);
+    if ds.geotransform_present == Some(false)
+        && matches!(driver, Some(RasterDriver::JP2 | RasterDriver::PNG | RasterDriver::JPEG | RasterDriver::WEBP))
+    {
+        crate::drivers::common::keep_unreferenced(options.to_mut(), path, false);
+    }
     let options = options.inherited_from(ds, driver);
     let pam = needs_nodata_pam(ds) && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
     let tag = if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) { tiff_nodata(ds) } else { ds.nodata() };
@@ -1662,19 +1746,21 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool,
             driver.name()
         )));
     }
-    if options.geo_transform.is_some_and(|gt| !is_north_up(&gt))
+    if (driver != RasterDriver::JP2 && options.geo_transform.is_some_and(|gt| !is_north_up(&gt)))
         || !options.gcps.is_empty()
         || options.mask.is_some()
         || !options.rpc.is_empty()
     {
+        let unsupported =
+            if driver == RasterDriver::JP2 { "GCPs, masks or RPCs" } else { "rotated or south-up geotransforms, GCPs, masks or RPCs" };
         return Err(Error::Unsupported(format!(
-            "the {} writer cannot store rotated or south-up geotransforms, GCPs, masks or RPCs (GeoTIFF can, with a lossless compression)",
+            "the {} writer cannot store {unsupported} (GeoTIFF can, with a lossless compression)",
             driver.name()
         )));
     }
     let north_up;
     let raster = match options.geo_transform {
-        Some(gt) if gt != geo_transform(raster) => {
+        Some(gt) if driver != RasterDriver::JP2 && gt != geo_transform(raster) => {
             north_up = RasterDataset::with_driver(raster.clone(), driver, false).with_geo_transform(gt);
             &north_up
         }
@@ -2081,6 +2167,19 @@ pub(crate) mod fallible {
             }
             _ => Ok(b),
         }
+    }
+
+    /// [`check_usable`] for a raster buffer of `width` x `height` pixels in `bands` bands of
+    /// `data_type` samples, `what` (the raster read whole, a window), refused as an
+    /// [`crate::Error::ResourceLimit`].
+    pub(crate) fn check_raster_buffer(what: &str, width: usize, height: usize, bands: usize, data_type: DataType) -> crate::Result<()> {
+        let size = data_type.size_bytes();
+        let bytes = [width, height, bands, size].iter().try_fold(1usize, |n, &d| n.checked_mul(d));
+        check_usable(bytes, || {
+            format!("{what} of {width} x {height} pixels in {bands} band(s) of {size}-byte samples is too large to allocate")
+        })
+        .map(|_| ())
+        .map_err(crate::Error::ResourceLimit)
     }
 
     /// [`RasterData::new_filled`], fallibly.

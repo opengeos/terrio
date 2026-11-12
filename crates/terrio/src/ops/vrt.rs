@@ -30,7 +30,7 @@ mod virtual_raster;
 pub(crate) use virtual_raster::{SourceInventoryScope, resolve_reference, source_input_paths, subdataset_parts};
 pub use virtual_raster::{VirtualRaster, open_virtual_raster};
 
-use super::{Grid, Resampling, convert_value, data_type_name, parse_data_type};
+use super::{Grid, Resampling, common_type, convert_value, data_type_name, parse_data_type};
 use crate::crs::SpatialRef;
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
@@ -65,47 +65,6 @@ pub struct VrtDataset {
     pub srs: Option<SpatialRef>,
     /// The bands.
     pub bands: Vec<VrtBand>,
-}
-
-/// GDALDataTypeUnion-style common buffer type for bands with different native types.
-/// Float64 is required when Float32 cannot cover an integer type's precision/range.
-fn common_type(types: impl IntoIterator<Item = DataType>) -> DataType {
-    fn union(a: DataType, b: DataType) -> DataType {
-        use DataType::*;
-        if a == b {
-            return a;
-        }
-        if a == F64 || b == F64 {
-            return F64;
-        }
-        if a == F32 || b == F32 {
-            let integer = if a == F32 { b } else { a };
-            return if integer.size_bytes() > 2 { F64 } else { F32 };
-        }
-        fn range(t: DataType) -> (i128, i128) {
-            match t {
-                U8 => (0, u8::MAX as i128),
-                I8 => (i8::MIN as i128, i8::MAX as i128),
-                U16 => (0, u16::MAX as i128),
-                I16 => (i16::MIN as i128, i16::MAX as i128),
-                U32 => (0, u32::MAX as i128),
-                I32 => (i32::MIN as i128, i32::MAX as i128),
-                U64 => (0, u64::MAX as i128),
-                I64 => (i64::MIN as i128, i64::MAX as i128),
-                F32 | F64 => unreachable!("integer types only"),
-            }
-        }
-        let (amin, amax) = range(a);
-        let (bmin, bmax) = range(b);
-        [U8, I8, U16, I16, U32, I32, U64, I64]
-            .into_iter()
-            .find(|&t| {
-                let (min, max) = range(t);
-                min <= amin.min(bmin) && max >= amax.max(bmax)
-            })
-            .unwrap_or(F64)
-    }
-    types.into_iter().reduce(union).unwrap_or(DataType::U8)
 }
 
 /// A band of a virtual raster.
@@ -155,7 +114,15 @@ impl VrtDataset {
     #[cfg(not(target_family = "wasm"))]
     pub fn open(path: &str) -> Result<Self> {
         crate::formats::check_driver_allowed("VRT", path, crate::formats::Kind::Raster)?;
-        Self::from_xml(&std::fs::read_to_string(path)?)
+        let dataset = Self::from_xml(&std::fs::read_to_string(path)?)?;
+        crate::declared::check(
+            dataset.width,
+            dataset.height,
+            dataset.bands.len(),
+            common_type(dataset.bands.iter().map(|b| b.data_type)),
+            false,
+        )?;
+        Ok(dataset)
     }
 
     /// Parses a VRT description. Under a process-wide raster allow-list, only with the VRT driver
@@ -343,14 +310,22 @@ impl VrtDataset {
     }
 
     /// Reads the pixels of the virtual raster. `base` is the directory relative source paths are
-    /// relative to.
+    /// relative to. Refused, before any source is read, when the VRT declares more than
+    /// `TERRIO_MAX_DECLARED_BYTES` or `TERRIO_MAX_BANDS` allow.
     pub fn materialize(&self, base: &Path) -> Result<RasterDataset> {
-        let mut cache: HashMap<PathBuf, RasterDataset> = HashMap::new();
-        let n = self.width * self.height;
         let data_type = common_type(self.bands.iter().map(|b| b.data_type));
+        // What the VRT declares, before its output is allocated (see `crate::declared`).
+        crate::declared::check(self.width, self.height, self.bands.len(), data_type, false)?;
+        crate::dataset::fallible::check_raster_buffer("a VRT", self.width, self.height, self.bands.len(), data_type)?;
+        let mut cache: HashMap<PathBuf, RasterDataset> = HashMap::new();
+        let n = crate::dataset::fallible::len(&[self.width, self.height], "a VRT output")?;
+        let samples = crate::dataset::fallible::len(&[n, self.bands.len()], "a VRT output")?;
+        let output_bytes = crate::dataset::fallible::len(&[samples, data_type.size_bytes()], "a VRT output")?;
+        let output_band_bytes = crate::dataset::fallible::len(&[n, data_type.size_bytes()], "a VRT band")?;
+        let mut cached_bytes = 0usize;
         let nodata = self.bands[0].nodata;
         // The output in its type, values converted as they are stored.
-        let mut out = RasterData::new_filled(data_type, n * self.bands.len(), 0.0);
+        let mut out = crate::dataset::fallible::raster_data(data_type, samples, 0.0, "a VRT output")?;
         let mut srs = self.srs.clone();
         for (bi, band) in self.bands.iter().enumerate() {
             crate::pixel::with_data!(&mut out, v => {
@@ -365,6 +340,13 @@ impl VrtDataset {
                 };
                 if !cache.contains_key(&path) {
                     let ds = crate::open_raster(&path.to_string_lossy())?;
+                    cached_bytes = ds
+                        .raster
+                        .data
+                        .len()
+                        .checked_mul(ds.raster.data_type.size_bytes())
+                        .and_then(|bytes| cached_bytes.checked_add(bytes))
+                        .ok_or_else(|| Error::ResourceLimit("VRT cached source buffers exceed the address space".into()))?;
                     cache.insert(path.clone(), ds);
                 }
                 let ds = &cache[&path];
@@ -378,6 +360,16 @@ impl VrtDataset {
                 }
                 let values = super::BandView::of(r, src.band - 1);
                 let skip = if src.complex { src.nodata } else { None };
+                let valid_bytes = if skip.is_some() { r.cols.checked_mul(r.rows) } else { Some(0) };
+                let peak = output_bytes.checked_add(cached_bytes).and_then(|bytes| valid_bytes.and_then(|mask| bytes.checked_add(mask)));
+                crate::dataset::fallible::check_usable(peak, || {
+                    "VRT output, cached sources and validity buffers are too large to allocate".into()
+                })
+                .map_err(Error::ResourceLimit)?;
+                let retained = output_bytes
+                    .checked_sub(output_band_bytes)
+                    .and_then(|bytes| cached_bytes.checked_sub(values.byte_len()).and_then(|cached| bytes.checked_add(cached)))
+                    .ok_or_else(|| Error::ResourceLimit("VRT retained buffers exceed the address space".into()))?;
                 let valid: Option<Vec<bool>> = skip.map(|nd| values.valid(nd));
                 let src_rect = if src.src_rect[0].is_nan() { [0.0, 0.0, r.cols as f64, r.rows as f64] } else { src.src_rect };
                 let req = SourceRead {
@@ -421,7 +413,7 @@ impl VrtDataset {
                     }
                 };
                 crate::pixel::with_data!(&mut out, v => {
-                    req.read(self.width, self.height, &mut v[bi * n..(bi + 1) * n], |x| convert_value(value(x), band.data_type) as _);
+                    req.read_with_retained(self.width, self.height, &mut v[bi * n..(bi + 1) * n], retained, |x| convert_value(value(x), band.data_type) as _)?;
                 });
             }
         }
@@ -562,13 +554,26 @@ pub(crate) struct SourceRead<'a> {
 impl SourceRead<'_> {
     /// Reads into a destination `out` of `dw × dh` pixels, setting each valid destination pixel
     /// the source covers to `f(value)`. Rows are read in parallel.
-    pub fn read<T: Send>(&self, dw: usize, dh: usize, out: &mut [T], f: impl Fn(f64) -> T + Sync + Send) {
-        let Some(w) = self.window(dw as f64, dh as f64, dw, dh) else { return };
+    pub fn read<T: Send>(&self, dw: usize, dh: usize, out: &mut [T], f: impl Fn(f64) -> T + Sync + Send) -> Result<()> {
+        self.read_with_retained(dw, dh, out, 0, f)
+    }
+
+    /// Also account for buffers retained by a caller while this source is resampled.
+    pub fn read_with_retained<T: Send>(
+        &self,
+        dw: usize,
+        dh: usize,
+        out: &mut [T],
+        retained: usize,
+        f: impl Fn(f64) -> T + Sync + Send,
+    ) -> Result<()> {
+        let Some(w) = self.window(dw as f64, dh as f64, dw, dh) else { return Ok(()) };
         let (ow, oh) = (w.out_size.0, w.out_size.1);
         if ow == 0 || oh == 0 {
-            return;
+            return Ok(());
         }
         let is_valid = |i: usize| self.valid.is_none_or(|m| m[i]);
+        let output_bytes = std::mem::size_of_val(out);
         // The destination rows the source covers.
         let start = (w.out_off.1 * dw).min(out.len());
         let end = ((w.out_off.1 + oh) * dw).min(out.len());
@@ -587,13 +592,13 @@ impl SourceRead<'_> {
                     }
                 }
             });
-            return;
+            return Ok(());
         }
         // The destination pixels written, relative to the window, and the source pixels read.
         let [c0, r0, c1, r1] = self.written(&w);
         let [sx0, sy0, sx1, sy1] = self.cover();
         if sx1 <= sx0 || sy1 <= sy0 {
-            return;
+            return Ok(());
         }
         let (fx, fy, fw, fh) = (w.dreq_off.0, w.dreq_off.1, w.dreq_size.0, w.dreq_size.1);
         if self.resampling == Resampling::Nearest {
@@ -618,13 +623,16 @@ impl SourceRead<'_> {
                     }
                 }
             });
-            return;
+            return Ok(());
         }
+        let retained = retained
+            .checked_add(output_bytes)
+            .ok_or_else(|| Error::ResourceLimit("a resampling working set is too large to allocate".into()))?;
         let res = if self.resampling == Resampling::Average {
-            gdal_average(self, w.req_off, (fx, fy, fw, fh), (ow, oh))
+            gdal_average(self, w.req_off, (fx, fy, fw, fh), (ow, oh), retained)
         } else {
-            resample_window(self, (fx, fy, fw, fh), (ow, oh))
-        };
+            resample_window(self, (fx, fy, fw, fh), (ow, oh), retained)
+        }?;
         // A `sum` adds shares of source pixels, which neither the source type's precision nor its
         // range holds: it is passed on as it is, for `f` to store in the output's type.
         let keep = self.working_float || self.resampling == Resampling::Sum;
@@ -643,6 +651,7 @@ impl SourceRead<'_> {
                 }
             }
         });
+        Ok(())
     }
 
     /// How a read of the whole destination of `dw × dh` pixels copies source pixels, when it
@@ -1020,13 +1029,37 @@ fn gdal_chunks(
     chunks
 }
 
+/// Reserve optional Float64 source-resampling samples (reference: GDAL 3.13.3).
+/// They coexist with the destination and borrowed source/mask buffers.
+fn resampling_values(s: &SourceRead, width: usize, height: usize, retained: usize) -> Result<Vec<Option<f64>>> {
+    let what = "a source resampling working set";
+    let n = crate::dataset::fallible::len(&[width, height], what)?;
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let bytes = n
+        .checked_mul(std::mem::size_of::<Option<f64>>())
+        .filter(|&n| n <= isize::MAX as usize)
+        .and_then(|n| n.checked_add(retained))
+        .and_then(|n| n.checked_add(s.values.byte_len()))
+        .and_then(|n| n.checked_add(s.valid.map_or(0, |v| v.len())));
+    crate::dataset::fallible::check_usable(bytes, || format!("{what} is too large to allocate")).map_err(Error::ResourceLimit)?;
+    Ok(crate::dataset::fallible::filled(n, None, what)?)
+}
+
 /// Averages a source window into `out` pixels with the arithmetic of GDAL's overview code
 /// (`GDALResampleChunk_AverageOrRMS_T()`, through `GDALRasterBand::RasterIOResampled()`): per
 /// chunk, a weighted sum scaled by the pixel count where the chunk has no nodata pixel (and, at a
 /// factor of two, GDAL's sum of quarters in the work type), a sum over the valid pixels otherwise,
 /// in the work type of the source's data type; `None` where no pixel is valid.
-pub(crate) fn gdal_average(s: &SourceRead, req_off: (usize, usize), win: (f64, f64, f64, f64), out: (usize, usize)) -> Vec<Option<f64>> {
-    gdal_average_with_origin(s, req_off, win, out, None)
+pub(crate) fn gdal_average(
+    s: &SourceRead,
+    req_off: (usize, usize),
+    win: (f64, f64, f64, f64),
+    out: (usize, usize),
+    retained: usize,
+) -> Result<Vec<Option<f64>>> {
+    gdal_average_with_origin(s, req_off, win, out, None, retained)
 }
 
 /// Average with an explicit RasterIO reference frame, preserving virtual-output offsets.
@@ -1036,12 +1069,13 @@ pub(crate) fn gdal_average_with_origin(
     win: (f64, f64, f64, f64),
     out: (usize, usize),
     origin: Option<[f64; 8]>,
-) -> Vec<Option<f64>> {
+    retained: usize,
+) -> Result<Vec<Option<f64>>> {
     let (fx, fy, fw, fh) = win;
     let (ow, oh) = out;
-    let mut res = vec![None; ow * oh];
+    let mut res = resampling_values(s, ow, oh, retained)?;
     if ow == 0 || oh == 0 {
-        return res;
+        return Ok(res);
     }
     let ratio = (fw / ow as f64, fh / oh as f64);
     // Offsets are relative to the request's integer origin, as in GDAL.
@@ -1289,21 +1323,72 @@ pub(crate) fn gdal_average_with_origin(
             }
         }
     }
-    res
+    Ok(res)
+}
+
+/// Peak area/convolution scratch, including concurrent rows and vector growth.
+/// Reference: GDAL 3.13.3 area kernels; storage follows this implementation's value/weight pairs.
+fn resampling_scratch_bytes(s: &SourceRead, ratio: (f64, f64), out: (usize, usize)) -> Option<usize> {
+    if out.0 == 0 || out.1 == 0 {
+        return Some(0);
+    }
+    if !s.resampling.is_area_based() {
+        let radius = s.resampling.radius().max(1) as f64;
+        let taps = |ratio: f64, limit: usize| ((2.0 * radius * ratio.max(1.0)).ceil() as usize).saturating_add(2).min(limit);
+        let columns = taps(ratio.0, s.width);
+        let rows = taps(ratio.1, s.height);
+        // Horizontal taps are kept for every output column; each concurrent row holds
+        // vertical weights and a row of Option<f64> intermediate values.
+        let horizontal =
+            columns.checked_mul(std::mem::size_of::<f64>())?.checked_add(std::mem::size_of::<(usize, Vec<f64>)>())?.checked_mul(out.0)?;
+        let per_row = rows.checked_mul(std::mem::size_of::<f64>() + std::mem::size_of::<Option<f64>>())?;
+        let workers = out.1.min(crate::par::threads());
+        return per_row.checked_mul(workers)?.checked_add(horizontal).filter(|&n| n <= isize::MAX as usize);
+    }
+    let columns = (ratio.0.ceil() as usize).saturating_add(1).min(s.width);
+    let rows = (ratio.1.ceil() as usize).saturating_add(1).min(s.height);
+    let samples = columns.checked_mul(rows)?;
+    if samples == 0 {
+        return Some(0);
+    }
+    let capacity = samples.max(4).checked_next_power_of_two()?;
+    let values = capacity.checked_mul(std::mem::size_of::<(f64, f64)>())?;
+    // A growing vector can retain its old half-capacity while requesting the new buffer.
+    let growing_values = values.checked_add(values / 2)?;
+    let extra = match s.resampling {
+        Resampling::Mode => {
+            let distinct = match s.values {
+                super::BandView::U8(_) | super::BandView::I8(_) => samples.min(256),
+                super::BandView::U16(_) | super::BandView::I16(_) => samples.min(65536),
+                _ => samples,
+            };
+            let counts = distinct.max(4).checked_next_power_of_two()?.checked_mul(std::mem::size_of::<(f64, f32)>())?;
+            counts.checked_add(counts / 2)?
+        }
+        // Stable sorting may allocate auxiliary storage for the contributing pairs.
+        Resampling::Med | Resampling::Q1 | Resampling::Q3 => samples.checked_mul(std::mem::size_of::<(f64, f64)>())?,
+        _ => 0,
+    };
+    let per_row = growing_values.max(values.checked_add(extra)?);
+    let workers = if out.1 == 1 { 1 } else { out.1.min(crate::par::threads()) };
+    per_row.checked_mul(workers).filter(|&bytes| bytes <= isize::MAX as usize)
 }
 
 /// Resamples a floating-point source window to `out` pixels as GDAL's overview code does
 /// (`GDALRasterIOResampled()`): separable convolution kernels stretched when downsampling,
 /// coverage-weighted averages, or the most frequent value. A `sum` adds each valid source pixel
 /// times the share of its area inside the destination pixel.
-fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize)) -> Vec<Option<f64>> {
+fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize), retained: usize) -> Result<Vec<Option<f64>>> {
     let (fx, fy, fw, fh) = win;
     let (ow, oh) = out;
     let (rx, ry) = (fw / ow as f64, fh / oh as f64);
     let is_valid = |i: usize| s.valid.is_none_or(|m| m[i]);
-    let mut res = vec![None; ow * oh];
+    let scratch = resampling_scratch_bytes(s, (rx, ry), out)
+        .and_then(|scratch| retained.checked_add(scratch))
+        .ok_or_else(|| Error::ResourceLimit("resampling scratch is too large to allocate".into()))?;
+    let mut res = resampling_values(s, ow, oh, scratch)?;
     if ow == 0 {
-        return res;
+        return Ok(res);
     }
     match s.resampling {
         Resampling::Average
@@ -1438,7 +1523,7 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
             });
         }
     }
-    res
+    Ok(res)
 }
 
 // ─── A small XML reader ─────────────────────────────────────────────────────────────────────────
@@ -1684,14 +1769,14 @@ mod tests {
             within_rects: true,
         };
         let mut out = vec![-1.0; 48];
-        r.read(8, 6, &mut out, |v| v);
+        r.read(8, 6, &mut out, |v| v).unwrap();
         assert_eq!(out[8 + 2], 0.0);
         assert_eq!(out[4 * 8 + 5], 15.0);
         assert_eq!(out[0], -1.0);
         // Downsampling by 2 with average.
         let r = SourceRead { dst_rect: [0.0, 0.0, 2.0, 2.0], resampling: Resampling::Average, ..r };
         let mut out = vec![-1.0; 4];
-        r.read(2, 2, &mut out, |v| v);
+        r.read(2, 2, &mut out, |v| v).unwrap();
         assert_eq!(out, vec![2.5, 4.5, 10.5, 12.5]);
     }
 
@@ -1720,7 +1805,7 @@ mod tests {
                 within_rects: true,
             };
             let mut out = vec![f64::NAN; 1600];
-            r.read(40, 40, &mut out, |v| v);
+            r.read(40, 40, &mut out, |v| v).unwrap();
             out
         };
         // The 16 pixels whose bilinear kernel reaches the nodata pixel, rows 13 to 16 and
@@ -1765,7 +1850,7 @@ mod tests {
             within_rects: true,
         };
         let mut out = vec![-1.0; 16];
-        r.read(4, 4, &mut out, |v| v);
+        r.read(4, 4, &mut out, |v| v).unwrap();
         let quarters: Vec<f64> =
             [1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 3.0, 3.0, 4.0, 4.0].iter().map(|v| v / 4.0).collect();
         assert_eq!(out, quarters);
@@ -1779,7 +1864,7 @@ mod tests {
             ..r
         };
         let mut out = vec![-1.0; 4];
-        r.read(2, 2, &mut out, |v| v);
+        r.read(2, 2, &mut out, |v| v).unwrap();
         assert_eq!(out, vec![5.25, 8.25, 14.25, 17.25]);
     }
 
@@ -1814,7 +1899,7 @@ mod tests {
         for src_rect in [[0.25, 0.0, 2.0, 2.0], [0.0, 0.25, 2.0, 2.0], [0.0, 0.0, 2.25, 2.0], [0.0, 0.0, 2.0, 2.25]] {
             let r = SourceRead { src_rect, ..base };
             let mut out = vec![-1.0; 4];
-            r.read(2, 2, &mut out, |v| v);
+            r.read(2, 2, &mut out, |v| v).unwrap();
             let [x, y, w, h] = src_rect;
             let (sx, sy) = (w / 2.0, h / 2.0);
             let expected: Vec<f64> = (0..4)
@@ -1829,7 +1914,7 @@ mod tests {
         // `[10, 20, 30]` read from x = 0.25.
         let r = SourceRead { src_rect: [0.25, 0.0, 2.0, 2.0], ..base };
         let mut out = vec![-1.0; 4];
-        r.read(2, 2, &mut out, |v| v);
+        r.read(2, 2, &mut out, |v| v).unwrap();
         assert_eq!(out[..2], [12.5, 22.5]);
         let r = SourceRead { src_rect: [1.0, 1.0, 2.0, 2.0], ..base };
         assert_eq!(r.plain_copy(2, 2), Ok(Some(PlainCopy { src: (1, 1), dst_x: 0, cols: 2, dst_rows: 0..2 })));
@@ -1856,7 +1941,7 @@ mod tests {
             within_rects: true,
         };
         let mut quarters = vec![-1.0; 4];
-        r.read(2, 2, &mut quarters, |v| v);
+        r.read(2, 2, &mut quarters, |v| v).unwrap();
         let two_hundreds = [200.0; 4];
         let r = SourceRead {
             values: crate::ops::BandView::F64(&two_hundreds),
@@ -1867,7 +1952,7 @@ mod tests {
             ..r
         };
         let mut total = vec![-1.0; 1];
-        r.read(1, 1, &mut total, |v| convert_value(v, DataType::U16));
+        r.read(1, 1, &mut total, |v| convert_value(v, DataType::U16)).unwrap();
         assert_eq!((quarters, total), (vec![0.25; 4], vec![800.0]));
     }
 
@@ -1913,7 +1998,7 @@ mod tests {
                     within_rects: true,
                 };
                 let mut out = vec![-1.0; 3];
-                r.read(dw, dh, &mut out, |v| v);
+                r.read(dw, dh, &mut out, |v| v).unwrap();
                 let case = format!("{resampling:?} {src_rect:?} at {dst_rect:?}");
                 assert_eq!(out, expected, "{case}");
                 assert_eq!(r.plain_copy(dw, dh), copied.map(|n| Some(copy(n))).ok_or(()), "{case}");
@@ -1942,7 +2027,7 @@ mod tests {
             within_rects: true,
         };
         let mut out = vec![-1.0; 3];
-        r.read(3, 1, &mut out, |v| v);
+        r.read(3, 1, &mut out, |v| v).unwrap();
         assert_eq!(out, [10.0; 3]);
     }
 

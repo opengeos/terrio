@@ -851,6 +851,12 @@ def boundless_read(
         tuple: The pixels `(bands, h, w)` in the dataset's data type, and the mask (True where
         invalid) or None.
     """
+    from terrio.rio.io import _check_buffer
+
+    # Nearest-neighbour reads construct 64-bit coordinate axes before sampling.
+    bh, bw = buf
+    _check_buffer(1, 1, bw, 8)
+    _check_buffer(1, 1, bh, 8)
     nodataval = fill_value if fill_value is not None else ndv
     vrt = _vrt(ds, win, nodataval, False, idx)
     vrt.resampling = int(resampling)

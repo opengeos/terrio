@@ -210,6 +210,8 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     let d = first.data as usize;
     let (cols, rows) = (f.u32(d)? as usize, f.u32(d + 4)? as usize);
     let (data_type, _) = pixel_type(f.u16(d + 10)?)?;
+    // What the header declares, before any block is read (see `crate::declared`).
+    crate::declared::check(cols, rows, layers.len(), data_type, false)?;
     // Sizes come from the header: a raster no allocator can hold is refused before anything is
     // allocated (the bands' Float64 values, then their converted copy).
     let n = fallible::len(&[cols, rows], "the Imagine raster")?;

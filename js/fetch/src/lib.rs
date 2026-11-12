@@ -6,7 +6,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
-use terrio::sparse::{ObjectRange, SparseFile, SparseObjects};
+use terrio::sparse::{self, ObjectRange, SparseFile, SparseObjects};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
@@ -16,11 +16,14 @@ pub fn js_error(e: JsValue) -> JsError {
     JsError::new(&msg)
 }
 
+/// The most a request made while a file opens grows to (`sparse::grow_ranges`).
+pub const OPEN_GROWTH_MAX: u64 = 4 << 20;
+
 /// The most rounds of fetches a read may take.
 pub const MAX_ROUNDS: usize = 64;
 
 /// The range requests sent at once: browsers queue more, and servers may rate-limit them.
-pub const MAX_PARALLEL: usize = 12;
+pub const MAX_PARALLEL: usize = terrio::sparse::PARALLEL_REQUESTS;
 
 /// Sends range requests with `fetch`, counting them.
 pub struct Fetcher {
@@ -144,33 +147,68 @@ impl Fetcher {
     }
 
     /// Fetches byte ranges `(offset, length)` into the file, [`MAX_PARALLEL`] requests at a time
-    /// ([`in_window`]).
+    /// ([`in_window`]). Once a server that ignores `Range` answers with the whole file, or a
+    /// request fails, the other bodies are cancelled, not read: those being read (their readers
+    /// held here), and those whose responses come after; a body cut short is not kept.
     pub async fn fetch_into(&self, file: &SparseFile, ranges: &[(u64, u64)]) -> Result<(), JsError> {
-        // Set when a server that ignores `Range` sent the whole file: the other ranges are held.
+        // Set when a server that ignores `Range` sends the whole file: the other ranges are in it.
         let whole = Cell::new(false);
-        let whole = &whole;
+        let failed = Cell::new(false);
+        let readers = RefCell::new(Vec::new());
+        let (whole, failed, readers) = (&whole, &failed, &readers);
+        let cancel_readers = || {
+            for reader in readers.borrow_mut().drain(..) {
+                if let Ok(value) = call(&reader, "cancel", &[]) {
+                    settle(value);
+                }
+            }
+        };
         in_window(ranges, |&(offset, len)| async move {
-            if whole.get() {
+            if whole.get() || failed.get() {
                 return Ok(());
             }
-            let f = self.response(self.request(Some((offset, offset + len - 1)), false)?).await?;
-            match f.status {
-                206 if f.data.len() as u64 == len => file.insert(offset, &f.data),
-                200 if f.data.len() as u64 == file.len() => {
-                    file.insert(0, &f.data);
+            let result: Result<(), JsError> = async {
+                let last = offset + len - 1;
+                let response = JsFuture::from(self.request(Some((offset, last)), false)?).await.map_err(js_error)?;
+                if whole.get() || failed.get() {
+                    cancel_body(&response);
+                    return Ok(());
+                }
+                let status = get(&response, "status").as_f64().unwrap_or(0.0) as u16;
+                if !(200..300).contains(&status) {
+                    cancel_body(&response);
+                    self.requests.set(self.requests.get() + 1);
+                    return Err(JsError::new(&format!("{}: HTTP status {status}", self.url)));
+                }
+                if status == 200 {
+                    // The whole file: the bodies of the other ranges are not needed.
                     whole.set(true);
+                    cancel_readers();
                 }
-                status => {
-                    return Err(JsError::new(&format!(
-                        "{}: bytes {offset}-{}: unexpected response (status {status}, {} bytes): the server must \
-                         answer Range requests, without a Content-Encoding",
-                        self.url,
-                        offset + len - 1,
-                        f.data.len()
-                    )));
+                let data = self.read_body(&response, readers).await?;
+                if failed.get() || (status == 206 && whole.get()) {
+                    // Cut short by a failure, or by the whole file elsewhere: not kept.
+                    return Ok(());
                 }
+                match status {
+                    206 if data.len() as u64 == len => file.insert(offset, &data),
+                    200 if data.len() as u64 == file.len() => file.insert(0, &data),
+                    _ => {
+                        return Err(JsError::new(&format!(
+                            "{}: bytes {offset}-{last}: unexpected response (status {status}, {} bytes): the server must \
+                             answer Range requests, without a Content-Encoding",
+                            self.url,
+                            data.len()
+                        )));
+                    }
+                }
+                Ok(())
             }
-            Ok(())
+            .await;
+            if result.is_err() && !failed.replace(true) {
+                cancel_readers();
+            }
+            result
         })
         .await
     }
@@ -371,6 +409,16 @@ where
     results.into_iter().collect()
 }
 
+/// Whether this runs in a server runtime (Node.js, Bun, Deno), whose `fetch` opens as many
+/// connections to a host as requests in flight, rather than in a browser, which keeps 6 to an
+/// HTTP/1.1 server and queues the rest. An Electron renderer has Node's `process` but a browser's
+/// `document` and connections: not a server.
+pub fn server_runtime() -> bool {
+    let global = js_sys::global();
+    (get(&get(&get(&global, "process"), "versions"), "node").is_string() || !get(&global, "Deno").is_undefined())
+        && get(&global, "document").is_undefined()
+}
+
 impl Fetcher {
     /// A fetcher of `url` with the `fetch` and `headers` of `options` (the global `fetch` without
     /// one), and the rest of the options, without those two.
@@ -434,13 +482,23 @@ impl Remote {
     }
 
     /// Runs a read until it no longer misses blocks or objects, fetching them in between, and
-    /// returns its result; an error when a request fails, or after [`MAX_ROUNDS`] rounds. Reads
+    /// returns its result; an error when a request fails, or after [`MAX_ROUNDS`] rounds. While
+    /// `opening()` (no reader yet), requests grow with the header read so far, so that a large
+    /// header (a COG's IFDs and tile tables) takes a few requests rather than one per block. Reads
     /// of one remote run one after another, even when their promises are awaited together.
-    pub async fn run<T>(&self, mut read: impl FnMut() -> terrio::Result<T>) -> Result<terrio::Result<T>, JsError> {
+    pub async fn run<T>(
+        &self,
+        opening: impl Fn() -> bool,
+        mut read: impl FnMut() -> terrio::Result<T>,
+    ) -> Result<terrio::Result<T>, JsError> {
         let _turn = self.turn().await;
         for _ in 0..MAX_ROUNDS {
             let result = read();
-            let missing = self.file.missing();
+            let mut missing = self.file.missing();
+            if opening() {
+                let block = self.file.block_size();
+                missing = sparse::grow_ranges(&missing, self.file.fetched().0.min(OPEN_GROWTH_MAX), block, self.file.len());
+            }
             let parts = self.objects.as_ref().map(|o| o.missing()).unwrap_or_default();
             if missing.is_empty() && parts.is_empty() {
                 self.file.trim(self.cache_size);

@@ -250,6 +250,7 @@ pub mod config;
 pub mod crs;
 mod dataset;
 pub mod dataset_files;
+mod declared;
 mod deflate_compress;
 mod drivers;
 #[cfg(test)]

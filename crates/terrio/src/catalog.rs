@@ -129,7 +129,7 @@ enum Input {
     Path(String),
     Raster(LazyRaster),
     Bytes(Vec<u8>, String),
-    Failed(String),
+    Failed { message: String, resource_refusal: bool },
 }
 impl CatalogInput {
     /// Defers opening a native path until spatial selection.
@@ -152,7 +152,7 @@ impl CatalogInput {
             });
             self.0 = match opened {
                 Ok(reader) => Input::Raster(reader),
-                Err(error) => Input::Failed(error.to_string()),
+                Err(error) => Input::Failed { resource_refusal: error.is_resource_refusal(), message: error.to_string() },
             };
         }
         match &mut self.0 {
@@ -163,7 +163,9 @@ impl CatalogInput {
                 LazyRaster::open(path)
             }
             Input::Raster(reader) => Ok(reader.shared()),
-            Input::Failed(message) => Err(bad(message)),
+            Input::Failed { message, resource_refusal } => {
+                Err(if *resource_refusal { Error::ResourceLimit(message.clone()) } else { bad(message) })
+            }
             Input::Bytes(..) => unreachable!(),
         }
     }
@@ -172,7 +174,9 @@ impl CatalogInput {
             Input::Path(path) => crate::ops::vrt::source_input_paths(path),
             Input::Raster(reader) => reader.input_paths(),
             Input::Bytes(bytes, name) => virtual_bytes(bytes, name)?.map_or_else(|| Ok(Vec::new()), |reader| reader.input_paths()),
-            Input::Failed(message) => Err(bad(message)),
+            Input::Failed { message, resource_refusal } => {
+                Err(if *resource_refusal { Error::ResourceLimit(message.clone()) } else { bad(message) })
+            }
         }
     }
 }
@@ -417,6 +421,8 @@ impl RasterCatalog {
         };
         let mut header = RasterDataset::with_driver(raster, crate::formats::RasterDriver::GTI, nodata.is_some());
         header.set_geo_transform([bounds.0, resolution.0, 0.0, bounds.3, 0.0, -resolution.1]);
+        // What the catalog declares, before any of its sources is read for pixels.
+        crate::declared::check_dataset(&header)?;
         catalog.header = header;
         Ok(catalog)
     }
@@ -1120,6 +1126,16 @@ mod lazy_source_tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn deferred_byte_refusals_keep_the_resource_error_on_repeated_access() {
+        let xml = br#"<VRTDataset rasterXSize="2" rasterYSize="2"><VRTRasterBand dataType="Byte" band="1"/></VRTDataset>"#;
+        let mut input = CatalogInput::bytes(xml.to_vec(), "bounded.vrt");
+        let first = crate::config::with_options(&[("TERRIO_MAX_DECLARED_BYTES", "1")], || input.open());
+        assert!(matches!(first, Err(Error::ResourceLimit(_))));
+        assert!(matches!(input.open(), Err(Error::ResourceLimit(_))));
+        assert!(matches!(input.inputs(), Err(Error::ResourceLimit(_))));
+    }
 
     struct Count(Arc<AtomicUsize>);
     impl WindowSource for Count {

@@ -19,6 +19,11 @@
 //! parameters of libdeflate's `libdeflate_alloc_compressor_ex()` (see [`Level`]). Levels 6–9 also
 //! probe a few periodic-run boundaries for maximal matches; structured rasters can therefore
 //! compress more densely than libdeflate's ordinary hash-chain search.
+//!
+//! [`zlib_compress_rows`] compresses the rows of an image, such as a GeoTIFF chunk: after the hash
+//! chains (and, at levels 6 to 9, the periodic-run probe), each search also examines the position
+//! one row back, which libdeflate's matchfinder does not, so its output differs from
+//! [`zlib_compress`]'s where that position gives a longer match.
 
 use std::cell::Cell;
 use std::hint::select_unpredictable;
@@ -59,7 +64,8 @@ enum Parser {
 /// parsers and parameters of libdeflate's `libdeflate_alloc_compressor_ex()`. Its level 1 is
 /// another compressor (a hash table of two entries per bucket, blocks of fixed length); here
 /// level 1 is the greedy parser over the hash chains, examining two candidates, with that
-/// level's nice match length (32).
+/// level's nice match length (32). With an image's rows ([`zlib_compress_rows`]), every level
+/// also examines the position one row back.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Level {
     level: u32,
@@ -818,17 +824,26 @@ fn repeated_run_candidate(s: &[u8], at: usize, max_len: usize, base: usize, tab:
 }
 
 /// Position-relative matchfinder state: `base` is the input index that the
-/// i16 positions are relative to, `next_hashes` the hashes for the next byte.
+/// i16 positions are relative to, `next_hashes` the hashes for the next byte, `row` the length of
+/// the input's rows when it holds an image (at most 32,767 bytes), 0 otherwise.
 struct Mf<'t> {
     tab: &'t mut Matchfinder,
     base: usize,
     next_hashes: [usize; 2],
     probe_repeats: bool,
+    row: usize,
 }
 
 impl Mf<'_> {
     /// hc_matchfinder_longest_match(): returns (length, offset); length is
     /// `best_len` and offset 0 if nothing longer than `best_len` was found.
+    ///
+    /// Then, unlike libdeflate, when the input has rows, the position one row back (`row`, at most
+    /// 32,767 bytes back, within the window): its match is taken only when it is longer than the
+    /// best of the hash chains and, at levels 6 to 9, of the periodic-run probe; one only as long is
+    /// not taken, so the nearer match stays. The chains can miss it: their search ends after
+    /// `max_search_depth` positions, before the start of a long run above, or once a match reaches
+    /// `nice_len`.
     ///
     /// # Safety
     /// `in_next + max_len <= s.len()` and `nice_len <= max_len`: the input
@@ -980,6 +995,19 @@ impl Mf<'_> {
             best_len = max_len;
             best_match = s.as_ptr().wrapping_add(start);
         }
+        if self.row != 0 && max_len >= 5 && best_len < max_len && in_next >= self.row {
+            let p = ip.wrapping_sub(self.row);
+            // SAFETY: in_next >= row, so p is s[in_next - row], before ip; in_next + 5 <= s.len()
+            // (max_len >= 5), so both 4-byte loads are in bounds.
+            if unsafe { load_u32_at(p) == load_u32_at(ip) } {
+                // SAFETY: p < ip, and in_next + max_len <= s.len().
+                let len = unsafe { lz_extend(ip, p, 4, max_len) };
+                if len > best_len {
+                    best_len = len;
+                    best_match = p;
+                }
+            }
+        }
         (best_len, (ip as usize - best_match as usize) as u32)
     }
 
@@ -1103,14 +1131,14 @@ fn begin_block(c: &mut Compressor, seqs: &mut Vec<Sequence>) {
 }
 
 /// deflate_compress_greedy(): the longest match at each position, with a length-3 match only
-/// within 4096 bytes.
-fn compress_greedy<'a>(c: &mut Compressor, s: &[u8], mut w: BitWriter<'a>, level: Level) -> BitWriter<'a> {
+/// within 4096 bytes. `row`: as [`Mf`]'s.
+fn compress_greedy<'a>(c: &mut Compressor, s: &[u8], mut w: BitWriter<'a>, level: Level, row: usize) -> BitWriter<'a> {
     let in_end = s.len();
     let mut in_next = 0;
     let mut max_len = MAX_MATCH_LEN;
     let mut nice_len = level.nice_match_length.min(max_len);
     let (mut tab, mut seqs) = scratch();
-    let mut mf = Mf { tab: &mut tab, base: 0, next_hashes: [0, 0], probe_repeats: level.level >= 6 };
+    let mut mf = Mf { tab: &mut tab, base: 0, next_hashes: [0, 0], probe_repeats: level.level >= 6, row };
 
     loop {
         let in_block_begin = in_next;
@@ -1148,15 +1176,15 @@ fn compress_greedy<'a>(c: &mut Compressor, s: &[u8], mut w: BitWriter<'a>, level
 }
 
 /// deflate_compress_lazy_generic(): deflate_compress_lazy(), or with `Parser::Lazy2`
-/// deflate_compress_lazy2(), which looks a second position ahead.
-fn compress_lazy<'a>(c: &mut Compressor, s: &[u8], mut w: BitWriter<'a>, level: Level) -> BitWriter<'a> {
+/// deflate_compress_lazy2(), which looks a second position ahead. `row`: as [`Mf`]'s.
+fn compress_lazy<'a>(c: &mut Compressor, s: &[u8], mut w: BitWriter<'a>, level: Level, row: usize) -> BitWriter<'a> {
     let in_end = s.len();
     let mut in_next = 0;
     let mut max_len = MAX_MATCH_LEN;
     let mut nice_len = level.nice_match_length.min(max_len);
     let depth = level.max_search_depth;
     let (mut tab, mut seqs) = scratch();
-    let mut mf = Mf { tab: &mut tab, base: 0, next_hashes: [0, 0], probe_repeats: level.level >= 6 };
+    let mut mf = Mf { tab: &mut tab, base: 0, next_hashes: [0, 0], probe_repeats: level.level >= 6, row };
 
     loop {
         let in_block_begin = in_next;
@@ -1245,6 +1273,17 @@ fn compress_lazy<'a>(c: &mut Compressor, s: &[u8], mut w: BitWriter<'a>, level: 
 /// Reference interoperability validation: GDAL 3.13.3.
 /// The default is [`Level::DEFAULT`]; another `level` searches as [`Level`] says.
 pub(crate) fn zlib_compress(input: &[u8], level: Level) -> Vec<u8> {
+    zlib_compress_rows(input, 0, level)
+}
+
+/// zlib-wrapped DEFLATE of `input`, the rows of an image, each `row_len` bytes long (a GeoTIFF
+/// chunk's): [`zlib_compress`], where each search also examines the position one row back and
+/// takes its match when it is longer than the best of the hash chains (and, at levels 6 to 9, of
+/// the periodic-run probe; see [`Mf::longest_match`]). So a tile whose rows repeat the row above,
+/// as uniform blocks of a class do, is coded as copies of those rows. With `row_len` 0, or over
+/// 32,767 bytes (farther back than the matchfinder reaches), the output is [`zlib_compress`]'s.
+pub(crate) fn zlib_compress_rows(input: &[u8], row_len: usize, level: Level) -> Vec<u8> {
+    let row = if row_len < WINDOW_SIZE as usize { row_len } else { 0 };
     let n = input.len();
     let passthrough = level.max_passthrough_size();
     // Room for the header, a stored input of up to `passthrough` bytes and the trailer;
@@ -1286,8 +1325,8 @@ pub(crate) fn zlib_compress(input: &[u8], level: Level) -> Vec<u8> {
         };
         let w = BitWriter { out: &mut out, pos, bitbuf: 0, bitcount: 0 };
         let mut w = match level.parser {
-            Parser::Greedy => compress_greedy(&mut c, input, w, level),
-            Parser::Lazy | Parser::Lazy2 => compress_lazy(&mut c, input, w, level),
+            Parser::Greedy => compress_greedy(&mut c, input, w, level, row),
+            Parser::Lazy | Parser::Lazy2 => compress_lazy(&mut c, input, w, level, row),
         };
         if w.bitcount != 0 {
             w.out[w.pos] = w.bitbuf as u8;
@@ -1304,7 +1343,7 @@ pub(crate) fn zlib_compress(input: &[u8], level: Level) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Level, zlib_compress};
+    use super::{Level, zlib_compress, zlib_compress_rows};
 
     /// The output equals libdeflate's at level 6 (`libdeflate_zlib_compress`), given by its length
     /// and CRC-32: text, incompressible bytes (stored blocks), a smooth Int16 tile of 512 KiB (several
@@ -1433,6 +1472,152 @@ mod tests {
         roundtrip(&runs);
     }
 
+    /// A 512 x 512 tile, row by row, of the pixels `f(x, y)`, each of `bpp` bytes.
+    fn tile(bpp: usize, f: impl Fn(usize, usize) -> Vec<u8>) -> Vec<u8> {
+        let mut t = Vec::with_capacity(512 * 512 * bpp);
+        for y in 0..512 {
+            for x in 0..512 {
+                t.extend(f(x, y));
+            }
+        }
+        t
+    }
+
+    /// The class of a pixel of a categorical raster: 10 classes in blocks of 37 x 53 pixels.
+    fn class(x: usize, y: usize) -> u8 {
+        ((x / 37 + y / 53) % 10) as u8
+    }
+
+    /// A palette-like tile of 16 classes: each pixel the class of the nearest of 32 sites, blobs
+    /// with irregular edges.
+    fn palette() -> Vec<u8> {
+        let sites: Vec<(i64, i64)> = lcg(64, 5, 256).chunks(2).map(|p| (i64::from(p[0]) * 2, i64::from(p[1]) * 2)).collect();
+        tile(1, |x, y| {
+            let d = |&(px, py): &(i64, i64)| (x as i64 - px).pow(2) + (y as i64 - py).pow(2);
+            vec![(sites.iter().enumerate().min_by_key(|(_, s)| d(s)).unwrap().0 % 16) as u8]
+        })
+    }
+
+    /// Two equal rows of `row_len` bytes, made of runs of 64 bytes of random values.
+    fn two_rows_of_runs(row_len: usize) -> Vec<u8> {
+        let values = lcg(row_len / 64 + 1, 9, 256);
+        let row: Vec<u8> = (0..row_len).map(|i| values[i / 64]).collect();
+        [row.clone(), row].concat()
+    }
+
+    /// `z` decompresses to `data`.
+    fn decompresses_to(z: &[u8], data: &[u8]) -> bool {
+        let mut out = vec![0u8; data.len() + 1];
+        let (dec, rc) = zlib_rs::decompress_slice(&mut out, z, zlib_rs::InflateConfig::default());
+        rc == zlib_rs::ReturnCode::Ok && dec == data
+    }
+
+    /// Tiles of uniform blocks, whose rows repeat the row above, are coded as copies of whole rows
+    /// when their rows are given, at every level, with pixels of 1 to 4 bytes (3, RGB, interleaved):
+    /// each compresses to at most its bound. At level 5 the hash chains alone give at least twice as
+    /// much (3.3 to 6.4 times). At level 6, whose periodic-run probe also finds copies of runs of 1-,
+    /// 2- and 4-byte pixels, the rows never give more, and still at most a third of the RGB tile's
+    /// bytes without rows and two thirds of the Float32 tile's. The palette-like tile, of blobs with
+    /// irregular edges, has a bound too, and at level 6 compresses to 4,671 bytes with its rows, 5,124
+    /// without.
+    #[test]
+    fn rows_that_repeat_the_row_above_are_copied_from_it() {
+        let squares = |x: usize, y: usize| ((x / 64 + y / 64) % 10) as u8;
+        let rgb = |c: u8| vec![c * 20, c * 7 + 3, 255 - c * 11];
+        let cases: [(&str, Vec<u8>, usize, usize); 6] = [
+            ("64 x 64 squares", tile(1, |x, y| vec![squares(x, y)]), 512, 1400),
+            ("37 x 53 blocks", tile(1, |x, y| vec![class(x, y)]), 512, 1600),
+            ("37 x 53 blocks, UInt16", tile(2, |x, y| (u16::from(class(x, y)) * 1000 + 17).to_le_bytes().to_vec()), 1024, 3100),
+            ("37 x 53 blocks, RGB", tile(3, |x, y| rgb(class(x, y))), 1536, 4800),
+            ("37 x 53 blocks, Float32", tile(4, |x, y| (f32::from(class(x, y)) * 2.5 + 0.1).to_le_bytes().to_vec()), 2048, 6200),
+            ("palette-like", palette(), 512, 5800),
+        ];
+        for (name, input, row_len, bound) in cases {
+            for l in 1..=9 {
+                let level = Level::new(l).unwrap();
+                let (rows, chains) = (zlib_compress_rows(&input, row_len, level), zlib_compress(&input, level));
+                assert!(decompresses_to(&rows, &input), "{name}, level {l}");
+                assert!(rows.len() <= bound, "{name}, level {l}: {} bytes", rows.len());
+                if name == "palette-like" {
+                    if l == 6 {
+                        assert_eq!((rows.len(), chains.len()), (4671, 5124), "{name}");
+                    }
+                } else if l == 5 {
+                    assert!(chains.len() >= 2 * rows.len(), "{name}: {} < 2 x {}", chains.len(), rows.len());
+                } else if l == 6 {
+                    let at_least = match name {
+                        "37 x 53 blocks, RGB" => 3.0,
+                        "37 x 53 blocks, Float32" => 1.5,
+                        _ => 1.0,
+                    };
+                    assert!(chains.len() as f64 >= at_least * rows.len() as f64, "{name}: {} < {at_least} x {}", chains.len(), rows.len());
+                }
+            }
+        }
+    }
+
+    /// Where no match one row back is longer than the hash chains' best, the rows change nothing,
+    /// at any level: on high-entropy bytes, and on rows each of one value, whose match one byte back
+    /// reaches the longest length, 258 bytes.
+    #[test]
+    fn rows_change_nothing_where_the_chains_find_as_long_a_match() {
+        let noise = lcg(512 * 512, 1, 256);
+        let stripes = tile(1, |_, y| vec![((y / 37) % 10) as u8]);
+        for (name, input) in [("noise", noise), ("rows of one value", stripes), ("zeros", vec![0u8; 512 * 512])] {
+            for l in 1..=9 {
+                let level = Level::new(l).unwrap();
+                assert!(zlib_compress_rows(&input, 512, level) == zlib_compress(&input, level), "{name}, level {l}");
+            }
+        }
+    }
+
+    /// The row back is at most 32,767 bytes back, as far as the matchfinder reaches: two equal rows
+    /// of 32,767 bytes compress otherwise with their rows given at levels 1 to 5 (smaller at level
+    /// 5), and the same at levels 6 to 9, whose periodic-run probe finds copies as long; rows of
+    /// 32,768 bytes, as without rows, at every level.
+    #[test]
+    fn the_row_back_is_at_most_32767_bytes_back() {
+        let (near, far) = (two_rows_of_runs(32767), two_rows_of_runs(32768));
+        for l in 1..=9 {
+            let level = Level::new(l).unwrap();
+            let (rows, chains) = (zlib_compress_rows(&near, 32767, level), zlib_compress(&near, level));
+            assert!(decompresses_to(&rows, &near), "32,767, level {l}");
+            assert_eq!(rows != chains, l <= 5, "32,767, level {l}");
+            if l == 5 {
+                assert!(rows.len() < chains.len(), "{} >= {}", rows.len(), chains.len());
+            }
+            assert!(zlib_compress_rows(&far, 32768, level) == zlib_compress(&far, level), "32,768, level {l}");
+        }
+    }
+
+    /// Two rows of 4,096 bytes of 64 letters, ending alike in their last 5 bytes, `[200, 201, 202,
+    /// 203, 204]`, or in their last 4, each after a byte found nowhere else; the second row holds 680
+    /// copies of `[200, 201, 202, 203]`, each followed by letters. The hash chains, searched newest
+    /// first, run out of depth on those copies before they reach the first row's end, at every
+    /// level (level 9 examines 600 positions). The position one row back is examined while at
+    /// least 5 bytes remain: the last 5 bytes are coded as a copy of the first row's, at every level,
+    /// and the last 4 as literals, as without rows.
+    #[test]
+    fn the_row_back_is_examined_while_5_bytes_remain() {
+        let key = [200u8, 201, 202, 203, 204];
+        for tail in [5, 4] {
+            let mut rows = lcg(2 * 4096, 31, 64);
+            for i in 0..680 {
+                rows[4096 + 6 * i..4096 + 6 * i + 4].copy_from_slice(&key[..4]);
+            }
+            for (end, before) in [(4096, 250), (8192, 251)] {
+                rows[end - tail..end].copy_from_slice(&key[5 - tail..]);
+                rows[end - tail - 1] = before;
+            }
+            for l in 1..=9 {
+                let level = Level::new(l).unwrap();
+                let (with_rows, without) = (zlib_compress_rows(&rows, 4096, level), zlib_compress(&rows, level));
+                assert!(decompresses_to(&with_rows, &rows), "{tail} bytes, level {l}");
+                assert_eq!(with_rows != without, tail == 5, "{tail} bytes, level {l}");
+            }
+        }
+    }
+
     /// A smooth Int16 tile of 512 KiB, as in `output_matches_libdeflate`.
     fn walk() -> Vec<u8> {
         let mut v = 0i64;
@@ -1478,7 +1663,12 @@ mod tests {
     /// level's nice match length decides; and on noise with 3-byte strings repeated 6,000 bytes
     /// later, where the greedy parser's 4,096-byte limit for length-3 matches decides (levels 1 to
     /// 4 store it; the lazy parser's limit is 8,192). Level 6 gives the values of
-    /// `output_matches_libdeflate`.
+    /// `output_matches_libdeflate`. With rows (`zlib_compress_rows`), each output decompresses to
+    /// its input: on the Int16 tile, in rows of 1,024 bytes, where a match one row back is longer
+    /// than the hash chains' best now and then; on 64 x 64 squares of 10 values and on the
+    /// palette-like tile, where it often is; and on rows of a run of one value then bytes of their
+    /// own, where a match one row back is longer at the start of a run and, further in, only as
+    /// long as the run's own match, which stays.
     #[test]
     fn each_level_gives_these_outputs() {
         // The length and CRC-32 of the output of levels 1 to 9.
@@ -1502,10 +1692,15 @@ mod tests {
             let three = [far[i], far[i + 1], far[i + 2]];
             far[i + 6000..i + 6003].copy_from_slice(&three);
         }
-        let cases: [(&str, Vec<u8>, Outputs); 6] = [
+        // Rows of 512 bytes: 480 bytes of one value, the same for 16 rows, then 32 bytes of their own.
+        let own = lcg(512 * 32, 13, 256);
+        let run_then_own = tile(1, |x, y| vec![if x < 480 { (y / 16 % 4) as u8 } else { own[y * 32 + x - 480] }]);
+        let squares = tile(1, |x, y| vec![((x / 64 + y / 64) % 10) as u8]);
+        let cases: [(&str, Vec<u8>, usize, Outputs); 10] = [
             (
                 "Int16 tile",
                 walk(),
+                0,
                 [
                     (68469, 0x5e59f553),
                     (65923, 0x0bcfb63e),
@@ -1521,6 +1716,7 @@ mod tests {
             (
                 "40 bytes",
                 b"abcdefghij".repeat(4),
+                0,
                 [
                     (51, 0xed79f363),
                     (51, 0xab3c1311),
@@ -1536,6 +1732,7 @@ mod tests {
             (
                 "12 letters",
                 lcg(300_000, 7, 12),
+                0,
                 [
                     (149967, 0x6749d11b),
                     (141927, 0x9d5633f7),
@@ -1551,6 +1748,7 @@ mod tests {
             (
                 "5 letters",
                 lcg(100_000, 5, 5),
+                0,
                 [
                     (35163, 0x8fbb55a7),
                     (34203, 0xc14c4b79),
@@ -1566,6 +1764,7 @@ mod tests {
             (
                 "nice lengths",
                 nice,
+                0,
                 [
                     (10915, 0xd81e36e8),
                     (10937, 0xc3c75cdc),
@@ -1581,6 +1780,7 @@ mod tests {
             (
                 "3-byte strings 6,000 bytes back",
                 far,
+                0,
                 [
                     (40011, 0xa32dd0db),
                     (40011, 0x8df33568),
@@ -1593,11 +1793,76 @@ mod tests {
                     (39929, 0x5d682a6c),
                 ],
             ),
+            (
+                "Int16 tile, rows of 1,024 bytes",
+                walk(),
+                1024,
+                [
+                    (68811, 0x9bc15761),
+                    (66095, 0x17b7e150),
+                    (63932, 0xa5e43197),
+                    (62156, 0xfdabf70f),
+                    (62205, 0x352df772),
+                    (60795, 0x668f994d),
+                    (59358, 0x7aecd9ae),
+                    (58844, 0x488bb6f4),
+                    (58484, 0xb22b2b14),
+                ],
+            ),
+            (
+                "64 x 64 squares, rows of 512 bytes",
+                squares,
+                512,
+                [
+                    (1287, 0x6478b7c6),
+                    (1295, 0xb3ab3d95),
+                    (1330, 0x7451e108),
+                    (1336, 0xd2d79c22),
+                    (1257, 0x262f9659),
+                    (1220, 0x5c812e4e),
+                    (1211, 0x731e1a2f),
+                    (1211, 0x92fc235b),
+                    (1211, 0x92fc235b),
+                ],
+            ),
+            (
+                "palette-like, rows of 512 bytes",
+                palette(),
+                512,
+                [
+                    (5402, 0x3ce5a723),
+                    (5421, 0x1f9eed6f),
+                    (5589, 0x72c7a17b),
+                    (5719, 0xabaff489),
+                    (4907, 0x59766daa),
+                    (4671, 0xe7c60c56),
+                    (4487, 0x7065f2fa),
+                    (4398, 0x37baff9a),
+                    (4449, 0x074d465a),
+                ],
+            ),
+            (
+                "a run, then bytes of their own, rows of 512 bytes",
+                run_then_own,
+                512,
+                [
+                    (18310, 0xb61af2c2),
+                    (18310, 0x95bf145e),
+                    (18312, 0x014c13db),
+                    (18317, 0xf0ec6ead),
+                    (18249, 0x6045d5e9),
+                    (18274, 0xad50cdc3),
+                    (18274, 0xad50cdc3),
+                    (18274, 0x812271a5),
+                    (18274, 0x812271a5),
+                ],
+            ),
         ];
-        for (name, input, want) in cases {
+        for (name, input, row_len, want) in cases {
             let got: Vec<(usize, u32)> = (1..=9)
                 .map(|l| {
-                    let z = zlib_compress(&input, Level::new(l).unwrap());
+                    let z = zlib_compress_rows(&input, row_len, Level::new(l).unwrap());
+                    assert!(decompresses_to(&z, &input), "{name}, level {l}");
                     (z.len(), zlib_rs::crc32::crc32(0, &z))
                 })
                 .collect();

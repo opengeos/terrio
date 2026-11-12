@@ -16,7 +16,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use terrio::raster::RasterData;
 use terrio::sparse::{SparseFile, SparseObjects};
-use terrio_js_fetch::{Fetcher, Remote, get};
+use terrio_js_fetch::{Fetcher, MAX_PARALLEL, Remote, get, server_runtime};
 use wasm_bindgen::prelude::*;
 
 fn err(e: terrio::Error) -> JsError {
@@ -46,13 +46,21 @@ pub async fn open_zarr(url: String, options: JsValue) -> Result<ZarrArray, JsErr
     let cache_size = get(&rest, "cacheSize").as_f64().map_or(256 << 20, |v| v as u64);
     let path = url.split(['?', '#']).next().unwrap_or(&url).to_string();
     let objects = Arc::new(SparseObjects::new());
+    // Shard reads split into requests that fill those in flight where they are not queued
+    // (Node.js, Deno, Bun), as terrio-js does.
+    if server_runtime() {
+        objects.set_parallel_requests(MAX_PARALLEL);
+    }
     let remote = Remote::new(SparseFile::new(0), Some(objects.clone()), fetcher, cache_size);
     let mut opened = None;
     remote
-        .run(|| {
-            opened = Some(terrio::ZarrArray::open_objects_epsg_only(objects.clone(), &path, &key)?);
-            Ok(())
-        })
+        .run(
+            || false,
+            || {
+                opened = Some(terrio::ZarrArray::open_objects_epsg_only(objects.clone(), &path, &key)?);
+                Ok(())
+            },
+        )
         .await?
         .map_err(err)?;
     let array = opened.ok_or_else(|| JsError::new("Zarr: not opened"))?;
@@ -163,7 +171,7 @@ impl ZarrArray {
                 None => terrio::Window::new(0, 0, cols, rows),
             };
             let wanted = numbers("bands").unwrap_or_else(|| (1..=count).collect());
-            let data = inner.remote.run(|| inner.array.borrow_mut().read(window, &wanted)).await?.map_err(err)?;
+            let data = inner.remote.run(|| false, || inner.array.borrow_mut().read(window, &wanted)).await?.map_err(err)?;
             Ok(bands(data, wanted.len()).into())
         })
     }
