@@ -2007,6 +2007,9 @@ fn open_node(node: &Node, list_subdatasets: bool) -> Result<(RasterDataset, Zarr
         return Err(bad(format!("{}: an empty dimension", array.node.display())));
     }
 
+    // Check the raster before coordinate or band arrays can allocate their metadata buffers.
+    crate::declared::check(cols, rows, bands, array.data_type, false)?;
+
     // Georeferencing: a grid mapping variable (xarray), or X/Y coordinate arrays (GDAL).
     let mut gt = geo.gt;
     let mut crs = geo.crs;
@@ -2202,6 +2205,8 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
 
 fn read_node(node: &Node) -> Result<RasterDataset> {
     let (mut header, mut source) = open_node(node, false)?;
+    // What the array declares, before any chunk is read (see `crate::declared`).
+    crate::declared::check_dataset(&header)?;
     let r = &header.raster;
     let bands: Vec<usize> = (1..=r.bands).collect();
     header.raster.data = crate::cog::WindowSource::read(&mut source, 0, crate::Window::full(r.cols, r.rows), &bands)?;

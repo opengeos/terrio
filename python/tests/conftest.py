@@ -63,6 +63,8 @@ NEEDS_LINUX_MEMORY_LIMITS = {
     "test_hardening.py::test_a_zip_member_declaring_more_than_memory_is_streamed",
     "test_hardening.py::test_vsi_read_of_a_file_larger_than_memory_raises",
     "test_hardening.py::test_vsi_read_refuses_a_zip_member_declaring_more_than_memory",
+    "test_hardening.py::test_whole_reads_the_process_cannot_hold_raise_before_allocating",
+    "test_hardening.py::test_translate_refuses_what_it_would_hold_but_cannot",
     "test_vsi.py::test_a_remote_file_larger_than_the_memory_is_refused_after_its_first_response",
 }
 # Comparisons to the bit with GDAL, which hold where GDAL and terrio share a libm and contraction:

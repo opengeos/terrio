@@ -509,7 +509,7 @@ fn vrt_from_memory(vrt: &VrtDataset, sources: &[MosaicSource]) -> Result<RasterD
                 within_rects: true,
             };
             crate::pixel::with_data!(&mut out, v => {
-                read.read(vrt.width, vrt.height, &mut v[b * n..(b + 1) * n], |x| super::convert_value(x, data_type) as _);
+                read.read(vrt.width, vrt.height, &mut v[b * n..(b + 1) * n], |x| super::convert_value(x, data_type) as _)?;
             });
         }
     }

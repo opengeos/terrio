@@ -1404,6 +1404,22 @@ test("translate AUTO-0 keeps the whole-read byte fallback", () => {
   assert.throws(() => terrio.translate(invalid, { overview: "AUTO-0" }), { message: autoError });
 });
 
+test("fixed empty resampled windows keep typed nodata and masks", () => {
+  for (const Type of [Uint8Array, Uint16Array, Float32Array, Float64Array]) {
+    const nodata = Type === Float32Array || Type === Float64Array ? 7.25 : 7;
+    const source = terrio.rasterFromArray(new Type(20000).fill(1), 100, 100,
+      [0, 1, 0, 100, 0, -1], "EPSG:4326", nodata);
+    const options = { bands: [2, 1, 2], size: [512, 512], window: [99.9999, 0, 0.0001, 100], overview: "NONE" };
+    const pixels = source.readResampled(options);
+    const masks = source.readResampledMasks(options);
+    assert.ok(pixels instanceof Type);
+    assert.equal(pixels.length, 3 * 512 * 512);
+    assert.ok(pixels.every((value) => value === nodata));
+    assert.equal(masks.length, pixels.length);
+    assert.ok(masks.every((value) => value === 0));
+  }
+});
+
 test("resampled reads from overviews, local and remote", async () => {
   const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
@@ -2187,6 +2203,92 @@ test("HEC-RAS plans from memory as vector layers, with open options", { skip: ne
   // A value the file does not store is an error, never an empty layer.
   assert.throws(() => terrio.openVector(plan, "x.hdf", { layers: ["mesh_cells"], openOptions: { CELL_SERIES: "Depth", TIME_STEP: 0 } }));
   assert.throws(() => terrio.openVector(plan, "x.hdf", { openOptions: { NO_SUCH_OPTION: "1" } }));
+});
+
+test("GeoPackage declaration limits count logical pixels rather than padded tile storage", () => {
+  const transform = [0, 1, 0, 16, 0, -1];
+  for (const Type of [Uint8Array, Uint16Array, Int16Array, Float32Array]) {
+    const values = Type.from({ length: 512 }, (_, i) => (i % 100) + 0.25);
+    const source = terrio.rasterFromArray(values, 32, 16, transform, "EPSG:4326");
+    const bytes = source.toBytes("coverage.gpkg");
+    terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: String(values.byteLength), TERRIO_MAX_BANDS: "1" });
+    try {
+      const back = terrio.open(bytes, "coverage.gpkg");
+      assert.equal(back.dtype, source.dtype);
+      assert.deepEqual([...back.readBand(1)], [...values]);
+      assert.deepEqual([...back.transform], transform);
+      back.free();
+      terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: String(values.byteLength - 1) });
+      try { assert.throws(() => terrio.open(bytes, "coverage.gpkg"), /TERRIO_MAX_DECLARED_BYTES/); }
+      finally { terrio.popConfig(); }
+    } finally { terrio.popConfig(); source.free(); }
+  }
+});
+
+test("declared raster budgets apply to WASM byte opens and restore with their scope", () => {
+  const grid = new TextEncoder().encode("ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n3 4\n");
+  const source = terrio.rasterFromArray(new Uint8Array(12).fill(7), 2, 2, [0, 1, 0, 2, 0, -1]);
+  const tiff = source.toBytes("rgb.tif");
+  const cases = [[grid, "grid.asc", 32, 1], [tiff, "rgb.tif", 12, 3]];
+  for (const [bytes, name, declared, bands] of cases) {
+    terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: String(declared), TERRIO_MAX_BANDS: String(bands) });
+    try {
+      assert.ok(terrio.open(bytes, name));
+      terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: String(declared - 1) });
+      try { assert.throws(() => terrio.open(bytes, name), /TERRIO_MAX_DECLARED_BYTES/); }
+      finally { assert.equal(terrio.popConfig(), true); }
+      assert.ok(terrio.open(bytes, name));
+    } finally { assert.equal(terrio.popConfig(), true); }
+  }
+  terrio.pushConfig({ TERRIO_MAX_BANDS: "2" });
+  try { assert.throws(() => terrio.open(tiff, "rgb.tif"), /TERRIO_MAX_BANDS/); }
+  finally { terrio.popConfig(); }
+  // The grid is refused from its declaration, before its deliberately invalid cells are parsed.
+  const corrupt = new TextEncoder().encode("ncols=200\n# header comment\nunknown ignored\nnrows=200\ncellsize 1\ninvalid pixels\n");
+  terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: "16" });
+  try { assert.throws(() => terrio.open(corrupt, "bad.asc"), /TERRIO_MAX_DECLARED_BYTES/); }
+  finally { terrio.popConfig(); }
+  assert.deepEqual([...terrio.open(grid, "grid.asc").readBand(1)], [1, 2, 3, 4]);
+});
+
+test("ASCII byte opens enforce intrinsic allocation bounds with optional limits unset", () => {
+  for (const options of [{ TERRIO_MAX_DECLARED_BYTES: null, TERRIO_MAX_BANDS: null },
+    { TERRIO_MAX_DECLARED_BYTES: null, TERRIO_MAX_BANDS: "1" }]) {
+    terrio.pushConfig(options);
+    try {
+      // wasm64 can address the single-row cases; use an overflowing decoded shape there.
+      const shapes = process.env.TERRIO_MEMORY64 === "1"
+        ? [[3000000000, 3000000000]]
+        : [[1000000000, 1], [400000000, 1], [3000000000, 3000000000]];
+      for (const [cols, rows] of shapes) {
+        const bytes = new TextEncoder().encode(`ncols ${cols}\nnrows ${rows}\nxllcorner 0\nyllcorner 0\ncellsize 1\n0\n`);
+        assert.throws(() => terrio.open(bytes, "oversized.asc"), /too large to allocate/);
+      }
+    } finally { terrio.popConfig(); }
+  }
+});
+
+test("ASCII byte preflight preserves unknown null lines and later dimensions", () => {
+  for (const token of ["nan", "inf", "*"]) {
+    const header = `ncols 2\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n${token} ${"ignored".repeat(12000)}\nncols 3\n`;
+    terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: "23" });
+    try { assert.throws(() => terrio.open(new TextEncoder().encode(`${header}invalid pixels\n`), "grid.asc"), /TERRIO_MAX_DECLARED_BYTES/); }
+    finally { terrio.popConfig(); }
+    terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: "24" });
+    try { assert.deepEqual([...terrio.open(new TextEncoder().encode(`${header}1 2 3\n`), "grid.asc").readBand(1)], [1, 2, 3]); }
+    finally { terrio.popConfig(); }
+  }
+});
+
+test("ASCII byte limits precede invalid UTF-8 pixels", () => {
+  const header = new TextEncoder().encode("ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n3 ");
+  const bytes = new Uint8Array([...header, 0xff]);
+  terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: "31" });
+  try { assert.throws(() => terrio.open(bytes, "pixels.asc"), /TERRIO_MAX_DECLARED_BYTES/); }
+  finally { terrio.popConfig(); }
+  terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: "32" });
+  try { assert.throws(() => terrio.open(bytes, "pixels.asc"), /UTF-8/); }
+  finally { terrio.popConfig(); }
 });
 
 test("coordinate operation safeguards and warnings", () => {

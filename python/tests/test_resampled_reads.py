@@ -305,3 +305,29 @@ def test_raster_read_resampled_arguments(sources):
         r.read_resampled((0, 70))
     with pytest.raises(terrio.UnsupportedError):
         r.read_resampled((90, 70), resampling="max")
+
+
+@pytest.mark.parametrize("kind", ["Byte", "UInt16", "Float32", "Float64"])
+def test_fixed_empty_window_preserves_typed_nodata(tmp_path, gdal, kind):
+    """Keep Terrio's nodata fill policy for windows rounded past the fixed level's edge."""
+    import terrio
+
+    nodata = 7.25 if kind.startswith("Float") else 7
+    path = tmp_path / "empty-window.tif"
+    ds = gdal.GetDriverByName("GTiff").Create(str(path), 100, 100, 1, gdal.GetDataTypeByName(kind))
+    ds.GetRasterBand(1).Fill(1)
+    ds.GetRasterBand(1).SetNoDataValue(nodata)
+    ds = None
+    raster = terrio.open_raster(str(path), lazy=True)
+    options = dict(window=(99.9999, 0, 0.0001, 100), overview="NONE", band=[1, 1])
+    pixels = raster.read_resampled((512, 512), **options)
+    masks = raster.read_resampled_masks((512, 512), **options)
+    assert pixels.shape == masks.shape == (2, 512, 512)
+    assert (
+        pixels.dtype
+        == {"Byte": np.uint8, "UInt16": np.uint16, "Float32": np.float32, "Float64": np.float64}[
+            kind
+        ]
+    )
+    assert np.all(pixels == nodata)
+    assert masks.dtype == np.uint8 and np.all(masks == 0)
