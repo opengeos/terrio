@@ -30,7 +30,7 @@ use wasm_bindgen_futures::JsFuture;
 const MAX_ROUNDS: usize = 64;
 
 /// The range requests sent at once: browsers queue more, and servers may rate-limit them.
-const MAX_PARALLEL: usize = 12;
+const MAX_PARALLEL: usize = terrio::sparse::PARALLEL_REQUESTS;
 
 /// Options of [`open_url`].
 #[derive(Deserialize)]
@@ -435,6 +435,16 @@ pub struct RemoteDataset {
     state: Rc<State>,
 }
 
+/// Whether this runs in a server runtime (Node.js, Bun, Deno), whose `fetch` opens as many
+/// connections to a host as requests in flight, rather than in a browser, which keeps 6 to an
+/// HTTP/1.1 server and queues the rest. An Electron renderer has Node's `process` but a browser's
+/// `document` and connections: not a server.
+fn server_runtime() -> bool {
+    let global = js_sys::global();
+    (get(&get(&get(&global, "process"), "versions"), "node").is_string() || !get(&global, "Deno").is_undefined())
+        && get(&global, "document").is_undefined()
+}
+
 /// The format of a file, from its name or first bytes.
 fn detect(name: &str, head: &[u8], forced: Option<&str>) -> Result<&'static str, JsError> {
     if let Some(f) = forced {
@@ -621,6 +631,11 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
 #[cfg(feature = "zarr")]
 async fn open_zarr(url: String, fetcher: Fetcher, o: OpenUrlOptions) -> Result<RemoteDataset, JsError> {
     let objects = std::sync::Arc::new(SparseObjects::new());
+    // Shard reads split into requests that fill those in flight: worth it where they are not
+    // queued (Node.js, Deno, Bun), not in browsers (see `SparseObjects::set_parallel_requests`).
+    if server_runtime() {
+        objects.set_parallel_requests(MAX_PARALLEL);
+    }
     let state = Rc::new(State {
         file: SparseFile::new(0),
         objects: Some(objects.clone()),

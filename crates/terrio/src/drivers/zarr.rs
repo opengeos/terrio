@@ -1104,6 +1104,18 @@ const MAX_RUN: usize = 1 << 20;
 /// [`MAX_RUN`] for a local store, read without round trips.
 const MAX_LOCAL_RUN: usize = 16 << 20;
 
+/// The least number of requests the runs of one shard are split into, in a read of `total`
+/// chunks, when the store's caller fetches the objects and asks reads to fill the requests it
+/// keeps in flight ([`crate::sparse::SparseObjects::set_parallel_requests`]): its parallel
+/// requests shared among the chunks. Runs of up to [`MAX_RUN`] alone would leave some of those
+/// requests idle, and over a long round trip a few long runs arrive slowly while their
+/// connections' windows grow. Browsers, which queue requests on a few connections, don't ask for
+/// it. `None` for other stores: a native read keeps its own requests in flight ([`read_plan`]),
+/// and a local one has no round trips.
+fn run_slots(a: &Array, total: usize) -> Option<usize> {
+    a.node.parallel_requests().map(|n| (n / total.max(1)).max(1))
+}
+
 /// The bytes one chunk decoding holds: a chunk's decoded bytes, or, for a shard read by parts, an
 /// inner chunk's. `usize::MAX` when they overflow (such chunks are refused before decoding).
 fn decoded_bytes(a: &Array) -> usize {
@@ -1265,12 +1277,13 @@ type Put<'a> = dyn Fn(&Decoded, &[usize], &[usize]) + Sync + 'a;
 /// Decodes the chunk at grid position `idx` of an array and hands it to `put`; for a shard read by
 /// parts, its index, then the inner chunks `wanted` keeps (given an inner chunk's origin and
 /// shape), nearby ones fetched in one request, decoded `inner_at_once` at a time (on threads
-/// waiting on the server when `waiting`, see [`read_plan`]). Missing chunks are not handed.
+/// waiting on the server when `waiting`, see [`read_plan`]), in at least as many requests as
+/// `slots` when given and the inner chunks allow ([`run_slots`]). Missing chunks are not handed.
 fn decode_chunk(
     a: &Array,
     idx: &[usize],
     allow_big: bool,
-    (inner_at_once, waiting): (usize, bool),
+    (inner_at_once, waiting, slots): (usize, bool, Option<usize>),
     wanted: &(dyn Fn(&[usize], &[usize]) -> bool + Sync),
     put: &Put,
 ) -> Result<()> {
@@ -1302,7 +1315,11 @@ fn decode_chunk(
     chosen.sort_by_key(|w| w.0);
     // Runs of nearby inner chunks, each fetched in one request.
     let mut runs: Vec<(usize, usize)> = Vec::new();
-    let max_run = if a.node.is_remote() { MAX_RUN } else { MAX_LOCAL_RUN };
+    let mut max_run = if a.node.is_remote() { MAX_RUN } else { MAX_LOCAL_RUN };
+    if let Some(slots) = slots {
+        let bytes: u64 = chosen.iter().map(|w| w.1 - w.0).sum();
+        max_run = max_run.min(usize::try_from(bytes.div_ceil(slots.max(1) as u64)).unwrap_or(usize::MAX));
+    }
     for (k, w) in chosen.iter().enumerate() {
         match runs.last_mut() {
             Some((s, e)) if w.0 <= chosen[*e - 1].1.saturating_add(MERGE_GAP as u64) && w.1 - chosen[*s].0 <= max_run as u64 => *e = k + 1,
@@ -1377,7 +1394,7 @@ fn read_region_with(a: &Array, start: &[usize], shape: &[usize], requests: usize
     let (at_once, inner_at_once, waiting) = read_plan(a, total, requests);
     each(waiting, total, at_once, |i| {
         let idx: Vec<usize> = unravel(i, &counts).iter().zip(&first).map(|(k, f)| k + f).collect();
-        decode_chunk(a, &idx, allow_big, (inner_at_once, waiting), &wanted, &put)
+        decode_chunk(a, &idx, allow_big, (inner_at_once, waiting, run_slots(a, total)), &wanted, &put)
     })?;
     out.into_inner().map_err(|_| bad("a chunk decoder panicked"))
 }
@@ -1467,7 +1484,7 @@ fn read_points(a: &Array, sel: &[Vec<usize>]) -> Result<Vec<u8>> {
                 }
             }
         };
-        decode_chunk(a, &idx, allow_big, (inner_at_once, waiting), &wanted, &put)
+        decode_chunk(a, &idx, allow_big, (inner_at_once, waiting, run_slots(a, total)), &wanted, &put)
     })?;
     out.into_inner().map_err(|_| bad("a chunk decoder panicked"))
 }
