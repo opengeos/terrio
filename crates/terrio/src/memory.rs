@@ -668,7 +668,12 @@ pub(crate) mod codec {
                         refused.borrow_mut().get_or_insert(e);
                         None
                     }
-                    Err(_) => None,
+                    Err(error) => {
+                        if ext == "prj" {
+                            crate::drivers::vector::shapefile::warn_prj_read_error(member, &error);
+                        }
+                        None
+                    }
                 }
             };
             let layers = crate::drivers::vector::read_parts(&member, &main, driver, &sidecar, options);
@@ -949,6 +954,35 @@ mod tests {
                 assert!(error.to_string().contains(".zip"), "{error}");
             }
         }
+    }
+
+    #[test]
+    fn unreadable_projection_member_is_diagnosed_by_the_memory_codec() {
+        let bytes = include_bytes!("../tests/data/shapefile/prj_bad_crc.zip");
+        let _ = crate::warnings::take();
+        let result = codec::open(bytes.to_vec(), "points.zip", &Default::default());
+        let warnings = crate::warnings::take();
+        let Dataset::Vector(dataset) = result.unwrap() else { panic!() };
+        assert_eq!(dataset.layers[0].features.len(), 3);
+        assert_eq!(dataset.layers[0].crs_wkt(), None);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("pts.prj cannot be read"));
+        assert!(warnings[0].to_ascii_lowercase().contains("checksum"));
+    }
+
+    #[test]
+    fn projection_member_budget_refusals_are_not_downgraded_to_warnings() {
+        let bytes = include_bytes!("../tests/data/shapefile/prj_bad_crc.zip");
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let main_size = archive.by_name("pts.shp").unwrap().size();
+        let before_projection = main_size + archive.by_name("pts.dbf").unwrap().size();
+        let _ = crate::warnings::take();
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_ZIP_MAX_SIZE".into(), Some(before_projection.to_string()))]));
+        let result = codec::open(bytes.to_vec(), "points.zip", &Default::default());
+        crate::config::pop_scope();
+        let warnings = crate::warnings::take();
+        assert!(result.is_err_and(|error| error.is_resource_refusal()));
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]

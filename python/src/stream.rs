@@ -92,15 +92,13 @@ fn open_stream(
         return Err(invalid("batch_size must be positive"));
     }
     let options = VectorOpenOptions { spatial_filter: bbox, ..Default::default() };
-    let reader = py
-        .detach_result(|| {
-            let reader = pick(terrio::stream::open_layers(path, &options, batch_size)?, layer)?;
-            match &columns {
-                Some(columns) => reader.select_fields(columns, batch_size),
-                None => Ok(reader),
-            }
-        })
-        .py()?;
+    let reader = crate::with_warnings(py, || {
+        let reader = pick(terrio::stream::open_layers(path, &options, batch_size)?, layer)?;
+        match &columns {
+            Some(columns) => reader.select_fields(columns, batch_size),
+            None => Ok(reader),
+        }
+    })?;
     let layer = reader.layer().clone();
     Ok(PyFeatureStream { reader: Mutex::new(Some(reader)), layer, path: path.to_string(), options, columns, batch_size, started: false })
 }
