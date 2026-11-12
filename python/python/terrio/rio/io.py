@@ -1939,8 +1939,12 @@ class DatasetReader(DatasetBase):
             buf = (int(out_shape[-2]), int(out_shape[-1]))
         else:
             buf = win_shape
-        # Outputs that hold every Int32 component (complex128, float64, int32...) read them exactly.
-        precise = np.can_cast(np.int32, dtype, "safe") and self._exact_complex_read()
+        # Preserve components for wide real/complex outputs before their final conversion.
+        precise = self._exact_complex_read() and (
+            (dtype.kind in "iu" and dtype.itemsize >= 4)
+            or (dtype.kind == "f" and dtype.itemsize >= 8)
+            or (dtype.kind == "c" and dtype.itemsize >= 16)
+        )
         read_options = {"out_dtype": "complex128"} if precise else {}
         nodatavals = [self.nodatavals[b - 1] for b in idx]
         fill = None if not nodatavals else nodatavals[-1]
@@ -2066,7 +2070,7 @@ class DatasetReader(DatasetBase):
         out = np.full(
             (len(idx), bh, bw),
             background if background is not None else 0,
-            out_dtype or self._dtype,
+            out_dtype if out_dtype is not None else self._dtype,
         )
         inside = np.zeros((len(idx), bh, bw), bool)
         if inx.any() and iny.any():
@@ -2075,7 +2079,7 @@ class DatasetReader(DatasetBase):
             sub = Window(
                 win.col_off + c0 * sx, win.row_off + r0 * sy, (c1 - c0) * sx, (r1 - r0) * sy
             ).crop(self.height, self.width)
-            part = self._io(idx, sub, (r1 - r0, c1 - c0), resampling)
+            part = self._io(idx, sub, (r1 - r0, c1 - c0), resampling, out_dtype=out_dtype)
             out[:, r0:r1, c0:c1] = part
             inside[:, r0:r1, c0:c1] = True
         return out, inside

@@ -79,8 +79,9 @@ For explicit integer-complex output, use `dtype="complex_int16"` in `terrio.rio`
 Integer components are rounded and saturated, as GDAL 3.13.3 converts them.
 `raster.read(out_dtype="complex128")` (and `np.asarray(raster, dtype="complex128")`)
 preserves every Int32 component; the default complex dtype remains compatible with rasterio.
-Converting CInt32 to a real output dtype that holds every Int32 component, such as `float64`
-or `int32`, reads the components exactly. A narrower real dtype, such as `float32`, first
+Converting CInt32 to `float64` or a 32-bit-or-wider integer output reads the components
+without a float32 intermediate. Unsigned outputs preserve exactly representable positive
+components; their final signed-to-unsigned conversion follows the existing cast policy. A narrower real dtype, such as `float32`, first
 passes through complex64, which can round Int32 components above 2^24. Use
 `raster.read(out_dtype="complex128").real` to retain exact real components of any type.
 Updates retain the physical complex sample type. A readable CInt32 writer keeps precise

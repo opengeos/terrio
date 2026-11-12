@@ -354,3 +354,28 @@ def test_integer_complex_array_layouts_match_gdal(tmp_path, gdal, layout, dtype,
     expected = reference.ReadAsArray(buf_type=gdal.GDT_CFloat64)
     actual = terrio.Raster.from_array(values, GT, complex_dtype=kind).read(out_dtype="complex128")
     np.testing.assert_array_equal(actual, expected)
+
+
+def test_boundless_fallback_preserves_requested_numpy_complex_dtype(tmp_path, gdal):
+    """The fallback forwards explicit dtype objects before losing Int32 precision."""
+    from terrio.rio.enums import Resampling
+    from terrio.rio.windows import Window
+
+    values = np.full((2, 3), (2**24 + 1) * (1 - 1j), dtype="complex128")
+    path = tmp_path / "fallback-complex.tif"
+    dataset = gdal.GetDriverByName("GTiff").Create(str(path), 3, 2, 1, gdal.GDT_CInt32)
+    dataset.SetGeoTransform(GT)
+    dataset.GetRasterBand(1).WriteArray(values)
+    dataset = None
+    with rio.open(path) as reader:
+        actual, inside = reader._boundless(
+            [1],
+            Window(-1, -1, 5, 4),
+            (4, 5),
+            Resampling.nearest,
+            0,
+            out_dtype=np.dtype("complex128"),
+        )
+    assert actual.dtype == np.dtype("complex128")
+    np.testing.assert_array_equal(actual[0], np.pad(values, ((1, 1), (1, 1))))
+    np.testing.assert_array_equal(inside[0], np.pad(np.ones((2, 3), dtype=bool), ((1, 1), (1, 1))))
