@@ -11,7 +11,7 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 ## Overview
 
 - Apache License 2.0 (263)
-- MIT License (68)
+- MIT License (70)
 - ISC License (20)
 - BSD 3-Clause "New" or "Revised" License (15)
 - BSD 2-Clause "Simplified" License (8)
@@ -9367,6 +9367,8 @@ licenses of the Rust crates terrio is built with.
 Used by:
 
 - terrio-js (terrio's own crate)
+- terrio-js-fetch (terrio's own crate)
+- terrio-js-zarr (terrio's own crate)
 - [gdal-sys 0.12.0](https://github.com/georust/gdal)
 - [gdal 0.19.0](https://github.com/georust/gdal)
 - [i_key_sort 0.10.3](https://github.com/iShape-Rust/iKeySort)
