@@ -207,6 +207,20 @@ test("CityJSON late root type retains vertical XYZ and unknown CRS", () => {
   ds.free();
 });
 
+test("toGeoJSON escapes control characters and keeps feature order across parse chunks", () => {
+  // The text is parsed in chunks of about 8 MB: the long second feature ends one.
+  const props = [{ s: "a\u0001b\u001f\"q\"", n: 1.5 }, { s: "x".repeat(9 << 20), n: 2 }, { s: "last", n: -3 }];
+  const ds = terrio.fromGeoJSON({
+    type: "FeatureCollection",
+    features: props.map((p, i) => ({ type: "Feature", properties: p, geometry: { type: "Polygon", coordinates: [[[i, 0], [i + 1, 0], [i, 1], [i, 0]]] } })),
+  });
+  const fc = ds.toGeoJSON();
+  assert.equal(fc.type, "FeatureCollection");
+  assert.deepEqual(fc.features.map((f) => f.properties), props);
+  assert.deepEqual(fc.features[2].geometry, { type: "Polygon", coordinates: [[[2, 0], [3, 0], [2, 1], [2, 0]]] });
+  ds.free();
+});
+
 test("CityGML 3.0 reads vertical XYZ with object identity and CRS", () => {
   const xml = `<CityModel xmlns="http://www.opengis.net/citygml/3.0" xmlns:g="http://www.opengis.net/gml/3.2" xmlns:b="http://www.opengis.net/citygml/building/3.0">
     <cityObjectMember><b:Building g:id="house"><b:function>office</b:function><b:function>retail</b:function><b:lod2MultiSurface><g:MultiSurface srsName="EPSG:32632" srsDimension="3"><g:surfaceMember><g:Polygon><g:exterior><g:LinearRing><g:posList>10 20 30 10 21 30 10 21 31 10 20 30</g:posList></g:LinearRing></g:exterior></g:Polygon></g:surfaceMember></g:MultiSurface></b:lod2MultiSurface></b:Building></cityObjectMember></CityModel>`;
@@ -1898,6 +1912,17 @@ test("vector dataset commands: concat, partition, setFieldType, makePoint, schem
   a.free(); merged.free();
 });
 
+test("exportSchema reports the Z a FlatGeobuf header declares on an empty layer", () => {
+  // GDAL writes this from an empty GeoJSON with `ogr2ogr -f FlatGeobuf empty_z.fgb empty.geojson -nlt PointZ`:
+  // no features, so only the header declares Z.
+  const emptyZ = new Uint8Array(Buffer.from("ZmdiA2ZnYgEEAgAAIAAAAAAAGgAUAAgAAAAEAAUAAAAAAAAADAAAAAYAEAAaAAAAAQEAABAAAAAIAAAAIAAAAAAAAAAFAAAAZW1wdHkADgAUAAQACAAMAAAAEAAOAAAApAEAAOYQAACQAQAABAAAAIABAABHRU9HQ1JTWyJXR1MgODQiLERBVFVNWyJXb3JsZCBHZW9kZXRpYyBTeXN0ZW0gMTk4NCIsRUxMSVBTT0lEWyJXR1MgODQiLDYzNzgxMzcsMjk4LjI1NzIyMzU2MyxMRU5HVEhVTklUWyJtZXRyZSIsMV1dXSxQUklNRU1bIkdyZWVud2ljaCIsMCxBTkdMRVVOSVRbImRlZ3JlZSIsMC4wMTc0NTMyOTI1MTk5NDMzXV0sQ1NbZWxsaXBzb2lkYWwsMl0sQVhJU1siZ2VvZGV0aWMgbGF0aXR1ZGUgKExhdCkiLG5vcnRoLE9SREVSWzFdLEFOR0xFVU5JVFsiZGVncmVlIiwwLjAxNzQ1MzI5MjUxOTk0MzNdXSxBWElTWyJnZW9kZXRpYyBsb25naXR1ZGUgKExvbikiLGVhc3QsT1JERVJbMl0sQU5HTEVVTklUWyJkZWdyZWUiLDAuMDE3NDUzMjkyNTE5OTQzM11dLElEWyJFUFNHIiw0MzI2XV0AAAAABgAAAFdHUyA4NAAABAAAAEVQU0cAAAAA", "base64"));
+  assert.equal(terrio.exportSchema({ bytes: emptyZ, filename: "empty_z.fgb" }).layers[0].geometryFields[0].type, "PointZ");
+  // Raw bytes are named "data"; the driver is still found from their content.
+  const raw = terrio.exportSchema(emptyZ);
+  assert.equal(raw.layers[0].geometryFields[0].type, "PointZ");
+  assert.equal(raw.layers[0].name, "empty");
+});
+
 test("unscale, nodataToAlpha, reclassify and asFeatures", () => {
   const gt = [100, 10, 0, 50, 0, -10];
   const src = terrio.rasterFromArray(new Uint8Array([1, 2, 255, 40]), 2, 2, gt, "EPSG:32611", 255);
@@ -2191,6 +2216,39 @@ test("coordinate operation safeguards and warnings", () => {
   assert.throws(() => terrio.transformPoints([110], [35], "EPSG:4610", "EPSG:4326", undefined, { allowBallpark: false }), /ALLOW_BALLPARK/);
   assert.throws(() => terrio.transformPoints([600000], [200000], "EPSG:21781", "EPSG:2056", undefined, { onlyBest: true }), /ONLY_BEST/);
   assert.ok(Array.from(terrio.takeWarnings()).some((w) => w.includes("missing grid")));
+});
+
+test("JPEG 2000 quality and reversible options reach the WASM encoder", { skip: needs("jp2") }, () => {
+  const n = 64 * 64;
+  const values = new Uint8Array(3 * n).map((_, i) => (i * 37 + Math.floor(i / 64)) % 251);
+  const image = terrio.rasterFromArray(values, 64, 64, [0, 1, 0, 64, 0, -1]);
+  const low = image.toBytes("low.jp2", { creationOptions: { QUALITY: "10", REVERSIBLE: "NO" } });
+  const high = image.toBytes("high.jp2", { creationOptions: { quality: "50" } });
+  assert.notDeepEqual(low, high);
+  assert.notDeepEqual([...terrio.open(low, "low.jp2").readBand(1)], [...values.slice(0, n)]);
+  for (const options of [{}, { QUALITY: "100" }, { QUALITY: "10,100", REVERSIBLE: "YES" }]) {
+    const exact = terrio.open(image.toBytes("exact.jp2", { creationOptions: options }), "exact.jp2");
+    for (let b = 1; b <= 3; b++) assert.deepEqual([...exact.readBand(b)], [...values.slice((b - 1) * n, b * n)]);
+  }
+  for (const quality of ["nan", "100.000001", "1e-36"]) {
+    assert.throws(() => image.toBytes("bad.jp2", { creationOptions: { QUALITY: quality } }), /QUALITY/);
+  }
+  const almost = terrio.open(image.toBytes("almost.jp2", { creationOptions: { QUALITY: "99.999999" } }), "almost.jp2");
+  assert.notDeepEqual([...almost.readBand(1)], [...values.slice(0, n)]);
+});
+
+test("WebP shared lossy encoder preserves TIFF alpha at different qualities", () => {
+  const n = 32 * 32;
+  const rgba = new Uint8Array(4 * n).map((_, i) => (i * 31 + Math.floor(i / 32)) % 256);
+  const image = terrio.rasterFromArray(rgba, 32, 32, [0, 1, 0, 32, 0, -1]);
+  const low = image.toBytes("low.tif", { compress: "WEBP", creationOptions: { QUALITY: "10" } });
+  const high = image.toBytes("high.tif", { compress: "WEBP", creationOptions: { QUALITY: "90" } });
+  assert.notDeepEqual(low, high);
+  for (const bytes of [low, high]) {
+    const decoded = terrio.open(bytes, "tile.tif");
+    assert.deepEqual([...decoded.readBand(4)], [...rgba.slice(3 * n)]);
+    assert.notDeepEqual([...decoded.readBand(1)], [...rgba.slice(0, n)]);
+  }
 });
 
 test("GDAL 3.13 terrain and native WebP creation options", () => {
@@ -4434,6 +4492,54 @@ test("vsi: listUrl refuses invalid depth before fetching", async () => {
   }
 });
 
+test("JP2 bytes retain BGR definitions and stored component order", { skip: needs("jp2") }, () => {
+  const width = 64, height = 48, count = width * height;
+  const values = Uint8Array.from({ length: count * 3 }, (_, i) => 11 + 31 * Math.floor(i / count) + i % 7);
+  const seed = terrio.rasterFromArray(values, width, height, [0, 1, 0, height, 0, -1]);
+  const bytes = Buffer.from(seed.toBytes("seed.jp2"));
+  seed.free();
+  const boxes = (buffer) => {
+    const result = [];
+    for (let pos = 0; pos < buffer.length;) {
+      const size = buffer.readUInt32BE(pos);
+      assert.ok(size >= 8 && pos + size <= buffer.length);
+      result.push([buffer.toString("ascii", pos + 4, pos + 8), buffer.subarray(pos + 8, pos + size)]);
+      pos += size;
+    }
+    return result;
+  };
+  const box = (type, payload) => {
+    const header = Buffer.alloc(8);
+    header.writeUInt32BE(payload.length + 8);
+    header.write(type, 4);
+    return Buffer.concat([header, payload]);
+  };
+  const definitions = Buffer.alloc(20);
+  definitions.writeUInt16BE(3);
+  for (let i = 0; i < 3; i++) {
+    definitions.writeUInt16BE(i, 2 + i * 6);
+    definitions.writeUInt16BE(0, 4 + i * 6);
+    definitions.writeUInt16BE(3 - i, 6 + i * 6);
+  }
+  const encoded = Buffer.concat(boxes(bytes).map(([type, payload]) => box(type,
+    type === "jp2h"
+      ? Buffer.concat([...boxes(payload).filter(([t]) => t !== "cdef").map(([t, p]) => box(t, p)), box("cdef", definitions)])
+      : payload)));
+  const source = terrio.open(encoded, "BGR.jp2");
+  for (let band = 1; band <= 3; band++) {
+    assert.deepEqual([...source.readBand(band)], [...values.subarray((band - 1) * count, band * count)]);
+  }
+  const output = Buffer.from(source.toBytes("BGR.jp2"));
+  const header = boxes(output).find(([type]) => type === "jp2h")[1];
+  assert.deepEqual(boxes(header).find(([type]) => type === "cdef")[1], definitions);
+  const again = terrio.open(output, "BGR.jp2");
+  for (let band = 1; band <= 3; band++) {
+    assert.deepEqual([...again.readBand(band)], [...values.subarray((band - 1) * count, band * count)]);
+  }
+  again.free();
+  source.free();
+});
+
 test("warp aligned tiles retain whole-grid values with either kernel version", () => {
   const values = Float64Array.from({ length: 256 * 256 }, (_, i) => {
     const x = i % 256, y = Math.floor(i / 256);
@@ -4514,5 +4620,94 @@ test("default Deflate retains long matches across categorical runs", () => {
     assert.deepEqual(back.readBand(1), src.readBand(1));
     assert.deepEqual([...back.transform], [...src.transform]);
     assert.equal(back.crs, src.crs);
+  }
+});
+
+
+test("JP2 byte copies preserve either grayscale Y component", { skip: needs("jp2") }, () => {
+  const boxes = (raw) => {
+    const found = [];
+    for (let p = 0; p < raw.length;) {
+      const n = raw.readUInt32BE(p);
+      assert.ok(n >= 8 && p + n <= raw.length);
+      found.push([raw.toString("ascii", p + 4, p + 8), raw.subarray(p + 8, p + n)]);
+      p += n;
+    }
+    return found;
+  };
+  const box = (kind, payload) => {
+    const header = Buffer.alloc(8);
+    header.writeUInt32BE(8 + payload.length);
+    header.write(kind, 4);
+    return Buffer.concat([header, payload]);
+  };
+  const values = Uint8Array.from({ length: 32 * 24 * 2 }, (_, i) => 11 + 31 * Math.floor(i / (32 * 24)) + i % 7);
+  const seed = terrio.rasterFromArray(values, 32, 24, [0, 1, 0, 24, 0, -1]);
+  const original = Buffer.from(seed.toBytes("seed.jp2"));
+  seed.free();
+  for (const yBand of [0, 1]) {
+    const definitions = Buffer.alloc(14);
+    definitions.writeUInt16BE(2);
+    for (let band = 0; band < 2; band++) {
+      definitions.writeUInt16BE(band, 2 + 6 * band);
+      definitions.writeUInt16BE(band === yBand ? 0 : 65535, 4 + 6 * band);
+      definitions.writeUInt16BE(band === yBand ? 1 : 65535, 6 + 6 * band);
+    }
+    const raw = Buffer.concat(boxes(original).map(([kind, data]) => box(kind,
+      kind === "jp2h"
+        ? Buffer.concat([...boxes(data).filter(([k]) => k !== "cdef").map(([k, p]) => box(k, p)), box("cdef", definitions)])
+        : data)));
+    const source = terrio.open(raw, "gray.jp2");
+    const bytes = Buffer.from(source.toBytes("copy.jp2"));
+    const header = boxes(bytes).find(([k]) => k === "jp2h")[1];
+    assert.deepEqual(boxes(header).find(([k]) => k === "cdef")[1], definitions);
+    const copy = terrio.open(bytes, "copy.jp2");
+    for (let band = 1; band <= 2; band++) {
+      assert.deepEqual([...copy.readBand(band)], [...values.subarray((band - 1) * 32 * 24, band * 32 * 24)]);
+    }
+    copy.free();
+    source.free();
+  }
+});
+
+
+test("JPEG 2000 byte exports preserve rotated and south-up affine grids", { skip: needs("jp2") }, () => {
+  // Reference: GDAL 3.13.3 accepts the full affine transform in a GeoJP2 TIFF matrix.
+  const values = Uint16Array.from({ length: 64 * 48 }, (_, i) => i % 3011);
+  for (const transform of [[500000, 10, 2, 4600000, 1, -10], [500000, 10, 0, 4600000, 0, 10]]) {
+    const seed = terrio.rasterFromArray(values, 64, 48, [500000, 10, 0, 4600000, 0, -10], "EPSG:32633");
+    const tiff = seed.toBytes("source.tif");
+    seed.free();
+    // Repoint the TIFF to an appended IFD with a ModelTransformation matrix. Existing
+    // pixel and CRS offsets remain valid; this supplies an affine source through open().
+    const original = new DataView(tiff.buffer, tiff.byteOffset, tiff.byteLength);
+    assert.equal(original.getUint32(0, true), 0x002A4949);
+    const ifd = original.getUint32(4, true), count = original.getUint16(ifd, true);
+    const entries = [];
+    for (let i = 0; i < count; i++) {
+      const offset = ifd + 2 + 12 * i, tag = original.getUint16(offset, true);
+      if (![33550, 33922, 34264].includes(tag)) entries.push(tiff.slice(offset, offset + 12));
+    }
+    const nextIfd = Math.ceil(tiff.length / 8) * 8;
+    const matrixOffset = Math.ceil((nextIfd + 2 + 12 * (entries.length + 1) + 4) / 8) * 8;
+    const encoded = new Uint8Array(matrixOffset + 128);
+    encoded.set(tiff);
+    const view = new DataView(encoded.buffer), entry = new Uint8Array(12), tag = new DataView(entry.buffer);
+    tag.setUint16(0, 34264, true); tag.setUint16(2, 12, true);
+    tag.setUint32(4, 16, true); tag.setUint32(8, matrixOffset, true);
+    entries.push(entry);
+    entries.sort((a, b) => new DataView(a.buffer).getUint16(0, true) - new DataView(b.buffer).getUint16(0, true));
+    view.setUint32(4, nextIfd, true); view.setUint16(nextIfd, entries.length, true);
+    entries.forEach((entry, i) => encoded.set(entry, nextIfd + 2 + 12 * i));
+    [transform[1], transform[2], 0, transform[0], transform[4], transform[5], 0, transform[3],
+      0, 0, 0, 0, 0, 0, 0, 1].forEach((value, i) => view.setFloat64(matrixOffset + 8 * i, value, true));
+    const source = terrio.open(encoded, "affine.tif");
+    assert.deepEqual([...source.transform], transform);
+    const output = terrio.open(source.toBytes("affine.jp2"), "affine.jp2");
+    assert.deepEqual([...output.transform], transform);
+    assert.equal(output.crs, "EPSG:32633");
+    assert.deepEqual([...output.readBand(1)], [...values]);
+    output.free();
+    source.free();
   }
 });

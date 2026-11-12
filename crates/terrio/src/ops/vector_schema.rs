@@ -894,10 +894,22 @@ fn driver_columns(driver: Option<crate::formats::VectorDriver>) -> (&'static str
 /// GDAL reports): GDAL's field types (see [`ogr_type`]), widths, precisions and nullability, the
 /// geometry type and CRS (`authid` when the CRS has an authority code, otherwise its WKT).
 pub fn export_schema(layers: &[Layer], driver: Option<crate::formats::VectorDriver>) -> OgrSchema {
+    export_schema_with_dims(layers, driver, &[])
+}
+
+/// [`export_schema`] with the Z and M a layer's header declares: `declared_dims[i]` is the
+/// `(has_z, has_m)` of `layers[i]`, when known. A declared pair replaces the feature scan for that
+/// layer, so a file declared Z with no features still reports `PointZ`. A missing entry keeps the scan.
+pub fn export_schema_with_dims(
+    layers: &[Layer],
+    driver: Option<crate::formats::VectorDriver>,
+    declared_dims: &[Option<(bool, bool)>],
+) -> OgrSchema {
     let (geom_name, fid) = driver_columns(driver);
     let layers = layers
         .iter()
-        .map(|l| {
+        .enumerate()
+        .map(|(layer_index, l)| {
             let fields = (0..l.schema.len())
                 .map(|i| {
                     let f = &l.schema.fields()[i];
@@ -916,17 +928,25 @@ pub fn export_schema(layers: &[Layer], driver: Option<crate::formats::VectorDriv
                     }
                 })
                 .collect();
-            let has_geometry =
-                l.geom_type.is_some() || l.features.iter().any(|f| f.geometry.is_some()) || !SpatialRef::from_layer(l).is_unknown();
+            let declared = declared_dims.get(layer_index).copied().flatten();
+            // A declared Z or M is evidence of a geometry field, even with no features, no type and no CRS.
+            let declares_geometry = matches!(declared, Some((z, m)) if z || m);
+            let has_geometry = l.geom_type.is_some()
+                || declares_geometry
+                || l.features.iter().any(|f| f.geometry.is_some())
+                || !SpatialRef::from_layer(l).is_unknown();
             let geometry_fields = if has_geometry {
-                let declared = l.geom_type.or_else(|| crate::drivers::vector::uniform_type(l));
-                let (z, m) = l.features.iter().filter_map(|f| f.geometry.as_ref()).take(1000).fold((false, false), |(z, m), g| {
-                    let (gz, gm) = crate::vector::geometry_dims(g);
-                    (z || gz, m || gm)
-                });
+                let geom_type = l.geom_type.or_else(|| crate::drivers::vector::uniform_type(l));
+                let (z, m) = match declared {
+                    Some(dims) => dims,
+                    None => l.features.iter().filter_map(|f| f.geometry.as_ref()).take(1000).fold((false, false), |(z, m), g| {
+                        let (gz, gm) = crate::vector::geometry_dims(g);
+                        (z || gz, m || gm)
+                    }),
+                };
                 vec![SchemaGeometryField {
                     name: geom_name.into(),
-                    geometry_type: geometry_type_name(declared, z, m),
+                    geometry_type: geometry_type_name(geom_type, z, m),
                     nullable: Some(true),
                     coordinate_system: Some(crs_json(&SpatialRef::from_layer(l))),
                     extra: Default::default(),
@@ -950,7 +970,10 @@ pub fn export_schema(layers: &[Layer], driver: Option<crate::formats::VectorDriv
 /// `gdal vector export-schema` exports it. Local GeoPackages are described from their tables'
 /// declarations (exact column types, `NOT NULL` and `UNIQUE` constraints and defaults, the
 /// geometry column and its Z/M flags); other datasets are read and described by
-/// [`export_schema`].
+/// [`export_schema`] from what [`crate::open_vector`] reads of them. A FlatGeobuf that terrio's
+/// reader opens (a local or remote file, or a member of a local or remote zip) reports the Z and M
+/// its header declares, even with no features, taken from the header that open parses. Other
+/// datasets, and a FlatGeobuf that GDAL reads (a `gdal:` path), report the Z and M of their features.
 pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
     #[cfg(feature = "sqlite")]
     if crate::formats::VectorDriver::for_extension(path) == Some(crate::formats::VectorDriver::GPKG)
@@ -964,8 +987,20 @@ pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
         return Ok(OgrSchema { layers: declared.iter().map(declared_schema).collect() });
     }
     let options = crate::VectorOpenOptions { layers: layers.to_vec(), ..Default::default() };
-    let ds = crate::open_vector(path, &options)?;
-    Ok(export_schema(&ds.layers, Some(ds.driver)))
+    let (ds, declared) = crate::dataset::open_vector_declared(path, &options)?;
+    Ok(export_schema_with_dims(&ds.layers, Some(ds.driver), &declared))
+}
+
+/// [`export_schema_path`] for a dataset held in memory, named `name` (its file name, which the
+/// driver is judged by). `layers` keeps the named layers, as the bindings do; `None` keeps all.
+pub fn export_schema_bytes(bytes: Vec<u8>, name: &str, layers: Option<&[String]>) -> Result<OgrSchema> {
+    let (mut ds, mut declared) = crate::dataset::with_declared_dims(|| crate::memory::open_vector_bytes(bytes, name, &Default::default()))?;
+    if let Some(names) = layers {
+        ds.layers.retain(|l| names.contains(&l.name));
+        // A pair is declared only for a FlatGeobuf's one layer: it goes when that layer does.
+        declared.truncate(ds.layers.len());
+    }
+    Ok(export_schema_with_dims(&ds.layers, Some(ds.driver), &declared))
 }
 
 /// The OGR type GDAL's GeoPackage driver gives a declared column type.
@@ -1271,6 +1306,19 @@ mod tests {
 
     fn text(v: &[&str]) -> Vec<Vec<FieldValue>> {
         v.iter().map(|s| vec![FieldValue::Text((*s).into())]).collect()
+    }
+
+    #[test]
+    fn declared_dimensions_win_over_a_z_bearing_layer() {
+        // The layer carries Z on its feature, so only the declared pair can give `Point`.
+        let mut l = Layer::new("t");
+        l.push(Feature { fid: 1, geometry: Some(Geometry::point_z(1.0, 2.0, 3.0)), attributes: vec![] });
+        let driver = Some(crate::formats::VectorDriver::FlatGeobuf);
+        let type_of = |declared: &[Option<(bool, bool)>]| {
+            export_schema_with_dims(std::slice::from_ref(&l), driver, declared).layers[0].geometry_fields[0].geometry_type.clone()
+        };
+        assert_eq!(type_of(&[Some((false, false))]), "Point");
+        assert_eq!(type_of(&[]), "PointZ");
     }
 
     #[test]
