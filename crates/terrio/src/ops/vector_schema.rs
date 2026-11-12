@@ -1393,6 +1393,19 @@ mod tests {
     }
 
     #[test]
+    fn declared_dimensions_win_over_a_z_bearing_layer() {
+        // The layer carries Z on its feature, so only the declared pair can give `Point`.
+        let mut l = Layer::new("t");
+        l.push(Feature { fid: 1, geometry: Some(Geometry::point_z(1.0, 2.0, 3.0)), attributes: vec![] });
+        let driver = Some(crate::formats::VectorDriver::FlatGeobuf);
+        let type_of = |declared: &[Option<(bool, bool)>]| {
+            export_schema_with_dims(std::slice::from_ref(&l), driver, declared).layers[0].geometry_fields[0].geometry_type.clone()
+        };
+        assert_eq!(type_of(&[Some((false, false))]), "Point");
+        assert_eq!(type_of(&[]), "PointZ");
+    }
+
+    #[test]
     fn parses_types_and_subtypes() {
         assert_eq!(OgrType::parse("integer64").unwrap(), OgrType::new(OgrFieldType::Integer64));
         let b = OgrType::parse("Boolean").unwrap();
