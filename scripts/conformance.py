@@ -66,6 +66,7 @@ Suites:
     compound-crs      compound EPSG URNs and GML XYZ against GDAL/OGR
     crs-list          ``terrio list-crs`` vs GDAL's GetCRSInfoListFromDatabase, field by field, for
                       the EPSG, ESRI and IAU_2015 CRSs (compare_crs_list_with_gdal.py)
+    transform-bounds  polar and regional bounding boxes vs GDAL via rasterio
 
 Usage:
     python scripts/conformance.py ../terrio-data [--output docs/conformance.md] [--json FILE]
@@ -2294,6 +2295,33 @@ def suite_projjson_export(ctx):
     return suite
 
 
+def suite_transform_bounds(ctx):
+    """Compare polar and regional transformed bounds with live GDAL.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Bounds comparisons within 1e-8 target units, or a prerequisite skip.
+    """
+    suite = Suite("transform-bounds", "Transformed bounds", "GDAL via rasterio",
+                  "Four polar stereographic CRSs and the northern/southern NSIDC 25 km grid "
+                  "extents, EPSG:4326 and OGC:CRS84 targets, and four regional controls. "
+                  "48 comparisons at 2, 21 and 40 interior edge points: pole and full longitude "
+                  "limits exact, remaining bounds within 1e-8 target units. "
+                  "Wrapped antimeridian bounds are outside this suite's scope.")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    import rasterio
+    suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_transform_bounds_poles.py", selection="match_gdal", expected_count=48)
+    suite.cases.append(Case("Bounds", "polar and regional bounds", TOLERANCE if complete else DIFFERS, detail))
+    return suite
+
+
 def suite_crs_parameters(ctx):
     """Compare exported projection parameters with the active rasterio GDAL oracle.
 
@@ -3773,15 +3801,28 @@ def suite_complex_writes(ctx):
     return suite
 
 
-def _pytest_module_conformance(ctx, filename):
-    """Require the complete, unfiltered test module and its successful JUnit report."""
+def _pytest_module_conformance(ctx, filename, *, selection=None, expected_count=None):
+    """Require every intended comparison and its successful JUnit report.
+
+    Args:
+        ctx: Conformance context with a data directory.
+        filename: Test module under python/tests.
+        selection: Optional explicit pytest keyword expression.
+        expected_count: Required number of comparisons, when known.
+
+    Returns:
+        tuple: Whether all comparisons passed, and a report detail string.
+    """
     command = [sys.executable, "-m", "pytest", "-o", "addopts=", "-q",
                str(ROOT / "python/tests" / filename)]
+    if selection is not None:
+        command += ["-k", selection]
     env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "PYTEST_ADDOPTS": ""}
     code, collected, err = run(command + ["--collect-only"], env)
     expected = sum("::" in line and Path(line.split("::", 1)[0]).name == filename
                    for line in collected.splitlines())
-    if code or not expected or "deselected" in collected:
+    if (code or not expected or (selection is None and "deselected" in collected)
+            or (expected_count is not None and expected != expected_count)):
         return False, "Could not collect the complete test module. " + tail(err or collected)
     with tempfile.TemporaryDirectory(prefix="terrio-pytest-conformance-") as directory:
         report = Path(directory) / "results.xml"
@@ -3795,7 +3836,7 @@ def _pytest_module_conformance(ctx, filename):
         except (OSError, ET.ParseError) as error:
             complete = False
             detail = f"Pytest report unavailable: {error}. "
-    return code == 0 and complete and "deselected" not in out, detail + tail(err or out)
+    return code == 0 and complete and (selection is not None or "deselected" not in out), detail + tail(err or out)
 
 
 def suite_jp2_writer(ctx):
@@ -3937,6 +3978,7 @@ SUITES = OrderedDict(
         ("hecras", suite_hecras),
         ("crs", suite_crs),
         ("crs-parameters", suite_crs_parameters),
+        ("transform-bounds", suite_transform_bounds),
         ("geocentric", suite_geocentric),
         ("perspective", suite_perspective),
         ("omerc-two-point", suite_omerc_two_point),
