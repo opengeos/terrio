@@ -24,6 +24,10 @@ bounds allow absolute error of 1e-8 target units. Regional UTM checks also
 require no warnings from synthetic pole probes. The reference for development
 is GDAL 3.12.1 via rasterio 1.5.0. Antimeridian crossings without an interior pole retain scalar
 longitude minima/maxima; wrapped bounds are outside this comparison's scope.
+Poles on an edge retain GDAL's edge-sampling behavior; only an interior pole
+forces the full longitude range. Sampling counts above 65,536 per edge are
+refused. The conformance runner clears inherited pytest options and requires
+all 48 comparison results in its JUnit report before declaring agreement.
 
 ## Vector source ranges
 

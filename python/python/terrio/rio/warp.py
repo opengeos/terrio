@@ -25,6 +25,7 @@ import numpy as np
 from affine import Affine
 
 from terrio import _terrio
+from terrio.errors import CRSError as TerrioCRSError
 from terrio.rio.crs import CRS
 from terrio.rio.dtypes import _gdal_typename
 from terrio.rio.enums import Resampling
@@ -357,7 +358,7 @@ def transform_bounds(
         bottom: The bottom bound.
         right: The right bound.
         top: The top bound.
-        densify_pts: Points added along each edge.
+        densify_pts: Points added along each edge, at most 65,536.
 
     Returns:
         tuple: `(left, bottom, right, top)` in the target CRS.
@@ -366,7 +367,10 @@ def transform_bounds(
         CRSError: If no point can be transformed.
     """
     src, dst = _crs_text(src_crs), _crs_text(dst_crs)
-    return _terrio.transform_bounds(src, dst, (left, bottom, right, top), max(densify_pts, 0))
+    try:
+        return _terrio.transform_bounds(src, dst, (left, bottom, right, top), max(densify_pts, 0))
+    except TerrioCRSError as exc:
+        raise CRSError(str(exc)) from exc
 
 
 def _gcp_args(gcps: Any, kwargs: dict[str, Any]) -> dict[str, Any]:

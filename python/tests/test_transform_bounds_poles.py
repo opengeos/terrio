@@ -113,3 +113,26 @@ def test_raster_info_extent_includes_pole(tmp_path):
     terrio.write_raster(raster, str(path))
     bounds = terrio.info(str(path))["wgs84_extent"]
     assert (bounds[0], bounds[2], bounds[3]) == (-180.0, 180.0, 90.0)
+
+
+def test_bounds_failures_raise_rio_crs_error():
+    """Preserve the rio exception contract for invalid bounds and excessive sampling."""
+    from terrio.errors import CRSError as NativeCRSError
+    from terrio.rio.errors import CRSError
+
+    for bounds, count in [((0, 100, 10, 110), 21), ((0, 0, 10, 10), 65_537)]:
+        with pytest.raises(CRSError) as caught:
+            transform_bounds("EPSG:4326", "EPSG:3857", *bounds, densify_pts=count)
+        assert isinstance(caught.value.__cause__, NativeCRSError)
+    with pytest.raises(TypeError):
+        transform_bounds("EPSG:4326", "EPSG:3857", 0, 0, 10, 10, densify_pts="invalid")
+
+
+def test_boundary_pole_retains_gdal_edge_sampling():
+    """Match GDAL 3.12.1 for a pole on the edge, rather than claiming full longitude."""
+    rw = pytest.importorskip("rasterio.warp")
+    bounds = (-1e6, 0, 2e6, 1e6)
+    expected = rw.transform_bounds("EPSG:3413", "EPSG:4326", *bounds)
+    actual = transform_bounds("EPSG:3413", "EPSG:4326", *bounds)
+    assert actual[2] < 180 and actual[3] < 90
+    np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-8)

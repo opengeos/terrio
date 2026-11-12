@@ -2316,14 +2316,9 @@ def suite_transform_bounds(ctx):
         return suite
     import rasterio
     suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
-    code, out, err = run([sys.executable, "-m", "pytest", "-q",
-                          str(ROOT / "python/tests/test_transform_bounds_poles.py"), "-k", "match_gdal"])
-    if code:
-        suite.cases.append(Case("Bounds", "polar and regional bounds", DIFFERS, tail(err or out)))
-    elif "skipped" in out:
-        suite.skipped = "GDAL oracle unavailable: " + tail(out)
-    else:
-        suite.cases.append(Case("Bounds", "polar and regional bounds", TOLERANCE, tail(out)))
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_transform_bounds_poles.py", selection="match_gdal", expected_count=48)
+    suite.cases.append(Case("Bounds", "polar and regional bounds", TOLERANCE if complete else DIFFERS, detail))
     return suite
 
 
@@ -3806,15 +3801,28 @@ def suite_complex_writes(ctx):
     return suite
 
 
-def _pytest_module_conformance(ctx, filename):
-    """Require the complete, unfiltered test module and its successful JUnit report."""
+def _pytest_module_conformance(ctx, filename, *, selection=None, expected_count=None):
+    """Require every intended comparison and its successful JUnit report.
+
+    Args:
+        ctx: Conformance context with a data directory.
+        filename: Test module under python/tests.
+        selection: Optional explicit pytest keyword expression.
+        expected_count: Required number of comparisons, when known.
+
+    Returns:
+        tuple: Whether all comparisons passed, and a report detail string.
+    """
     command = [sys.executable, "-m", "pytest", "-o", "addopts=", "-q",
                str(ROOT / "python/tests" / filename)]
+    if selection is not None:
+        command += ["-k", selection]
     env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "PYTEST_ADDOPTS": ""}
     code, collected, err = run(command + ["--collect-only"], env)
     expected = sum("::" in line and Path(line.split("::", 1)[0]).name == filename
                    for line in collected.splitlines())
-    if code or not expected or "deselected" in collected:
+    if (code or not expected or (selection is None and "deselected" in collected)
+            or (expected_count is not None and expected != expected_count)):
         return False, "Could not collect the complete test module. " + tail(err or collected)
     with tempfile.TemporaryDirectory(prefix="terrio-pytest-conformance-") as directory:
         report = Path(directory) / "results.xml"
@@ -3828,7 +3836,7 @@ def _pytest_module_conformance(ctx, filename):
         except (OSError, ET.ParseError) as error:
             complete = False
             detail = f"Pytest report unavailable: {error}. "
-    return code == 0 and complete and "deselected" not in out, detail + tail(err or out)
+    return code == 0 and complete and (selection is not None or "deselected" not in out), detail + tail(err or out)
 
 
 def suite_jp2_writer(ctx):

@@ -1278,6 +1278,7 @@ pub struct Transformer {
     identity: bool,
     route: route::Route,
     best_route: std::sync::OnceLock<route::Route>,
+    bounds_reverse_route: std::sync::OnceLock<route::Route>,
     policy: TransformOptions,
     missing_grid_checked: std::sync::OnceLock<()>,
     /// The geoid models with grids of the source and target vertical CRSs, found on first use.
@@ -1622,6 +1623,7 @@ impl Transformer {
             web_mercator_to_wgs84,
             wgs84_to_web_mercator,
             best_route: std::sync::OnceLock::new(),
+            bounds_reverse_route: std::sync::OnceLock::new(),
             policy: opts.clone(),
             missing_grid_checked: std::sync::OnceLock::new(),
             src_geoid_grids: std::sync::OnceLock::new(),
@@ -2052,8 +2054,12 @@ impl Transformer {
     /// a pole include that pole and the full longitude range in a geographic target CRS.
     /// Geographic antimeridian crossings retain scalar longitude minima and maxima; wrapped
     /// bounds with `min_x > max_x` are not produced.
+    /// Counts above 65,536 interior points per edge are refused to bound computation time.
     pub fn transform_bounds_densified(&self, b: (f64, f64, f64, f64), densify: usize) -> Result<(f64, f64, f64, f64)> {
         let steps = densify.checked_add(1).ok_or_else(|| Error::Crs("densify count is too large".into()))?;
+        if densify > 65_536 {
+            return Err(Error::Crs("densify count must not exceed 65536 interior points per edge".into()));
+        }
         let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
         for i in 0..=steps {
             let t = i as f64 / steps as f64;
@@ -2079,7 +2085,7 @@ impl Transformer {
             // actual edge coordinates. In particular, UTM's projected pole is usually outside
             // the box and outside the datum operation's area of use.
             route::recording(|| {
-                let reverse = route::Route::new(&self.dst, &self.src);
+                let reverse = self.bounds_reverse_route.get_or_init(|| route::Route::new(&self.dst, &self.src));
                 for lat in [std::f64::consts::FRAC_PI_2, -std::f64::consts::FRAC_PI_2] {
                     let probe = || -> Option<()> {
                         let (px, py) = self.dst.project(0.0, lat)?;
@@ -2097,7 +2103,7 @@ impl Transformer {
                         if let Some(steps) = &self.motion {
                             p = datum::run(steps, p, false, true)?;
                         }
-                        let q = self.route.apply(&self.src, sx, sy, p, false)?;
+                        let q = self.bounds_probe_forward(sx, sy, p)?;
                         if !q.lat.is_finite() || (q.lat - lat).abs() > 1e-10 {
                             return None;
                         }
@@ -2115,6 +2121,28 @@ impl Transformer {
             });
         }
         Ok((x0, y0, x1, y1))
+    }
+
+    /// Apply the forward policy to a synthetic bounds probe without recording diagnostics.
+    fn bounds_probe_forward(&self, x: f64, y: f64, p: datum::Point) -> Option<datum::Point> {
+        if self.policy.only_best && !self.route.same_datum() {
+            let route = self.best_route();
+            let (selected, _) = route.selected(&self.src, x, y, p);
+            if selected.is_some_and(|op| !op.available())
+                || (self.policy.allow_ballpark == Some(false) && selected.is_none_or(|op| op.ballpark))
+            {
+                return None;
+            }
+            route.apply_selected(&self.src, x, y, p, false, selected)
+        } else {
+            let refused_ballpark = std::cell::Cell::new(false);
+            let q = self.route.apply_reporting(&self.src, x, y, p, false, &|op, _| {
+                if self.policy.allow_ballpark == Some(false) && op.is_none_or(|op| op.ballpark) {
+                    refused_ballpark.set(true);
+                }
+            })?;
+            (!refused_ballpark.get()).then_some(q)
+        }
     }
 }
 
@@ -2145,6 +2173,27 @@ mod tests {
     }
 
     #[test]
+    fn transform_bounds_probe_refuses_an_unavailable_best_operation() {
+        let source = SpatialRef::parse("+proj=stere +lat_0=90 +datum=NAD27").unwrap();
+        let target = SpatialRef::from_epsg(4326).unwrap();
+        let mut t = Transformer::with_options(&source, &target, &TransformOptions { only_best: true, ..Default::default() }).unwrap();
+        // A world-covering required grid whose file cannot exist, independent of installed
+        // PROJ data. The ordinary NAD27 route remains available as a fallback.
+        let directory = tempfile::tempdir().unwrap();
+        let grid = directory.path().join("missing.gsb");
+        let ideal = Def::from_proj(&format!("+proj=stere +lat_0=90 +ellps=clrk66 +nadgrids={}", grid.display())).unwrap();
+        assert!(t.best_route.set(route::Route::all(&ideal, &t.dst)).is_ok());
+        let p = datum::Point { lon: 0.0, lat: std::f64::consts::FRAC_PI_2, h: 0.0, t: None };
+        assert!(t.bounds_probe_forward(0.0, 0.0, p).is_none());
+        assert_eq!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed), 0);
+        t.policy.only_best = false;
+        assert!(t.bounds_probe_forward(0.0, 0.0, p).is_some());
+        t.policy.only_best = true;
+        assert!(matches!(t.transform(0.0, 0.0), Err(Error::MissingGrid(_))));
+        assert_ne!(t.diagnostics.load(std::sync::atomic::Ordering::Relaxed) & 2, 0);
+    }
+
+    #[test]
     fn transform_bounds_uses_requested_densification() {
         let t = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::from_epsg(5070).unwrap()).unwrap();
         let b = (-100.0, 30.0, -90.0, 40.0);
@@ -2153,6 +2202,9 @@ mod tests {
         assert!(dense.1 < corners.1, "{dense:?} {corners:?}");
         assert_eq!(dense, t.transform_bounds(b).unwrap());
         assert!(t.transform_bounds_densified(b, usize::MAX).is_err());
+        assert!(t.transform_bounds_densified(b, 65_537).is_err());
+        let identity = Transformer::new(&SpatialRef::from_epsg(4326).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+        assert_eq!(identity.transform_bounds_densified(b, 65_536).unwrap(), b);
         assert!(t.transform_bounds((f64::NAN, f64::NAN, f64::NAN, f64::NAN)).is_err());
     }
 
