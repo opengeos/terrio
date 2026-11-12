@@ -350,6 +350,8 @@ class Raster:
         band: int | Sequence[int] | None = None,
         window: _Window | None = None,
         overview: int | None = None,
+        *,
+        out_dtype: DTypeLike | None = None,
     ) -> NDArray[Any]: ...
     def read_sampled(
         self,
@@ -411,6 +413,8 @@ class Raster:
         crs: str | None = None,
         nodata: float | None = None,
         metadata: Mapping[str, Any] | Sequence[tuple[Any, Any]] | None = None,
+        *,
+        complex_dtype: str | None = None,
     ) -> Raster: ...
     def write(
         self,

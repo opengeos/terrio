@@ -1084,7 +1084,12 @@ class WarpedVRT(DatasetReader):
         return out
 
     def _read_level(
-        self, bands: Any, window: tuple[int, int, int, int], level: int | None
+        self,
+        bands: Any,
+        window: tuple[int, int, int, int],
+        level: int | None,
+        *,
+        out_dtype: Any = None,
     ) -> np.ndarray:
         """Reads an integer window of the VRT or of one of its implicit overviews.
 
@@ -1092,6 +1097,7 @@ class WarpedVRT(DatasetReader):
             bands: The bands, from 1.
             window: `(x, y, w, h)`.
             level: None for the VRT, else an overview index.
+            out_dtype: Unused: VRT pixels use their own working type before conversion.
 
         Returns:
             numpy.ndarray: `(bands, h, w)`.
@@ -1107,6 +1113,8 @@ class WarpedVRT(DatasetReader):
         window: Any,
         buf: tuple[int, int],
         resampling: Resampling,
+        *,
+        out_dtype: Any = None,
     ) -> np.ndarray:
         """Reads bands of a window into a buffer, as rasterio's read through GDAL's `RasterIO`.
 
@@ -1115,6 +1123,7 @@ class WarpedVRT(DatasetReader):
             window: The window, or None for the whole raster.
             buf: The output `(height, width)`.
             resampling: The resampling method.
+            out_dtype: Unused: VRT pixels use their own working type before conversion.
 
         Returns:
             numpy.ndarray: `(bands, height, width)` in the VRT's data type.
