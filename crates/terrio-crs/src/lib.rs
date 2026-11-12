@@ -1076,7 +1076,11 @@ fn looks_like_wkt(s: &str) -> bool {
             | "BOUNDCRS"
             | "COMPOUNDCRS"
             | "VERTCRS"
+            | "VERTICALCRS"
             | "VERT_CS"
+            | "LOCAL_CS"
+            | "ENGCRS"
+            | "ENGINEERINGCRS"
     )
 }
 
