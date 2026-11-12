@@ -683,14 +683,18 @@ def test_selected_overview_missing_tags_raise_instead_of_using_base(tmp_path, mo
         "scale-float32",
     ],
 )
-def test_packed_translate_matches_gdal_for_eager_lazy_and_path(tmp_path, gdal, kernel, mode):
+@pytest.mark.parametrize("bits", [4, None])
+def test_translate_matches_gdal_for_eager_lazy_and_path(tmp_path, gdal, kernel, mode, bits):
     """GDAL 3.13.3 caps unsigned interpolation, while floating/scaled work keeps overshoot."""
     import terrio
 
     source = tmp_path / "packed-interpolation.tif"
-    values = np.array([0, 0, 0, 15, 15, 0, 0, 0], dtype="uint8")[None, :].repeat(4, axis=0)
+    maximum = 15 if bits == 4 else 255
+    values = np.array([0, 0, 0, maximum, maximum, 0, 0, 0], dtype="uint8")[None, :].repeat(
+        4, axis=0
+    )
     dataset = gdal.GetDriverByName("GTiff").Create(
-        str(source), 8, 4, 1, gdal.GDT_Byte, options=["NBITS=4"]
+        str(source), 8, 4, 1, gdal.GDT_Byte, options=[f"NBITS={bits}"] if bits else []
     )
     dataset.SetGeoTransform((0, 1, 0, 4, 0, -1))
     dataset.WriteArray(values)
@@ -734,7 +738,9 @@ def test_packed_translate_matches_gdal_for_eager_lazy_and_path(tmp_path, gdal, k
             output = tmp_path / f"{name}.tif"
             result.write(str(output))
             stored = gdal.Open(str(output))
-            assert stored.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "4"
+            assert stored.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == (
+                str(bits) if bits else None
+            )
             np.testing.assert_array_equal(stored.ReadAsArray(), expected)
 
 

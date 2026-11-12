@@ -130,6 +130,8 @@ Signed, floating-point and complex `NBITS` requests are refused.
 Unscaled CUBIC/cubic-spline/Lanczos translation to Byte/UInt16/UInt32 output respects the source
 packed domain, consistently for eager and lazy reads. Signed/floating outputs and scaled
 work retain their interpolation range before final conversion, as in GDAL 3.13.3.
+Type-changing translations also retain interpolation precision for unpacked sources
+before the final output conversion.
 Generated CUBIC overviews can reach a packed limit even when the base samples fit.
 The four-bit bright-edge conformance control matches an independent GDAL 3.13.3
 pyramid exactly; Terrio reports encode-time clipping where the reference is quiet.
