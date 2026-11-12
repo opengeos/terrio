@@ -645,6 +645,47 @@ impl PyRaster {
             let r = ds.raster;
             let count = if complex { r.bands / 2 } else { r.bands };
             let shape = if single { vec![r.rows, r.cols] } else { vec![count, r.rows, r.cols] };
+            // Admit NumPy's result and known conversion buffers, which can be wider
+            // than the component pixels returned by Rust's window reader.
+            let wide_complex = complex && (double || r.data_type == DataType::F64);
+            let working_size = if complex { if wide_complex { 16 } else { 8 } } else { r.data_type.size_bytes() };
+            let working_name = if complex { if wide_complex { "complex128" } else { "complex64" } } else { r.data_type.as_str() };
+            let itemsize = out_dtype.as_ref().map(|d| d.getattr("itemsize")?.extract::<usize>()).transpose()?.unwrap_or(working_size);
+            let casts = match &out_dtype {
+                Some(d) => dtype_name.as_deref() != Some(working_name) || !d.getattr("isnative")?.extract::<bool>()?,
+                None => false,
+            };
+            let samples = count.checked_mul(r.rows).and_then(|n| n.checked_mul(r.cols));
+            let native_bytes = samples.and_then(|n| n.checked_mul(working_size));
+            let conversion_peak = if complex {
+                r.data
+                    .len()
+                    .checked_mul(r.data_type.size_bytes())
+                    .and_then(|raw| r.data.len().checked_mul(std::mem::size_of::<f64>()).and_then(|float| raw.checked_add(float)))
+                    .and_then(|held| native_bytes.and_then(|output| held.checked_add(output)))
+            } else {
+                native_bytes
+            };
+            let cast_peak = if casts {
+                native_bytes.and_then(|held| samples.and_then(|n| n.checked_mul(itemsize)).and_then(|output| held.checked_add(output)))
+            } else {
+                native_bytes
+            };
+            let bytes = conversion_peak
+                .zip(cast_peak)
+                .map(|(a, b)| a.max(b))
+                .filter(|&n| n <= isize::MAX as usize)
+                .ok_or_else(|| terrio::Error::ResourceLimit("a NumPy raster window exceeds the address space".into()))
+                .py()?;
+            if bytes > 1 << 24
+                && let Some(most) = terrio::usable_memory()
+                && bytes as u64 > most
+            {
+                return Err(terrio::Error::ResourceLimit(format!(
+                    "a NumPy raster window working set requires {bytes} bytes, more than the {most} bytes of memory the process can use"
+                )))
+                .py();
+            }
             let array =
                 if complex { complex_to_numpy_as(py, r.data, r.rows * r.cols, &shape, double)? } else { to_numpy(py, r.data, &shape)? };
             match &out_dtype {

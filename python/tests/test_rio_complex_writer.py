@@ -522,7 +522,10 @@ def test_integer_complex_copy_preserves_resource_refusal(tmp_path, monkeypatch, 
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux usable-memory policy")
-def test_precise_complex_copy_checks_wide_output_before_allocation(tmp_path, gdal):
+@pytest.mark.parametrize(
+    "surface", ["rio-copy", "native-read", "native-array", "rio-working-set", "native-working-set"]
+)
+def test_precise_complex_copy_checks_wide_output_before_allocation(tmp_path, gdal, surface):
     """A 72 MiB CInt32 source cannot produce a 144 MiB buffer under a 128 MiB policy."""
     import os
     import subprocess
@@ -543,26 +546,43 @@ def test_precise_complex_copy_checks_wide_output_before_allocation(tmp_path, gda
 import resource
 import sys
 import terrio
+import numpy as np
 from terrio.rio import open
 from terrio.rio.windows import Window
 _, hard = resource.getrlimit(resource.RLIMIT_RSS)
 resource.setrlimit(resource.RLIMIT_RSS, (min(hard, 128 << 20) if hard >= 0 else 128 << 20, hard))
-with open(sys.argv[1]) as reader:
+surface = sys.argv[2]
+if surface.startswith("rio"):
+
+    reader = open(sys.argv[1])
     small = reader._read_for_copy(Window(0, 0, 16, 16))
-    assert small.dtype.name == "complex128"
-    assert (small == complex(16777217, -16777219)).all()
-    try:
-        reader._read_for_copy()
-    except terrio.ResourceLimitError:
-        pass
+    if surface == "rio-copy":
+        large = reader._read_for_copy
     else:
-        raise AssertionError("unchecked 144 MiB complex copy output")
+        large = lambda: reader._read_for_copy(Window(0, 0, 1024, 4096))
+else:
+    reader = terrio.open_raster(sys.argv[1], lazy=True)
+    small = reader.read(window=(0, 0, 16, 16), out_dtype="complex128")
+    if surface == "native-working-set":
+        large = lambda: reader.read(window=(0, 0, 1024, 4096), out_dtype="complex128")
+    elif surface == "native-read":
+        large = lambda: reader.read(out_dtype="complex128")
+    else:
+        large = lambda: np.asarray(reader, dtype="complex128")
+assert small.dtype.name == "complex128"
+assert (small == complex(16777217, -16777219)).all()
+try:
+    large()
+except terrio.ResourceLimitError:
+    pass
+else:
+    raise AssertionError("unchecked promoted complex output or conversion working set")
 """
     environment = dict(os.environ)
     for option in ("TERRIO_MAX_DECLARED_BYTES", "TERRIO_MAX_BANDS", "TERRIO_TIFF_MAX_CHUNK_BYTES"):
         environment.pop(option, None)
     result = subprocess.run(
-        [sys.executable, "-c", script, str(source)],
+        [sys.executable, "-c", script, str(source), surface],
         env=environment,
         capture_output=True,
         text=True,
