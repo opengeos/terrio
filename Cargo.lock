@@ -2592,17 +2592,39 @@ name = "terrio-js"
 version = "0.8.0"
 dependencies = [
  "console_error_panic_hook",
- "futures-util",
  "getrandom 0.4.3",
  "js-sys",
  "rayon",
  "serde",
  "serde_json",
  "terrio",
+ "terrio-js-fetch",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wbraster",
  "wbvector",
+]
+
+[[package]]
+name = "terrio-js-fetch"
+version = "0.8.0"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "terrio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "terrio-js-zarr"
+version = "0.8.0"
+dependencies = [
+ "js-sys",
+ "terrio",
+ "terrio-js-fetch",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
