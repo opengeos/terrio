@@ -665,7 +665,9 @@ def test_selected_overview_missing_tags_raise_instead_of_using_base(tmp_path, mo
         rio.open(source, overview_level=0)
 
 
-@pytest.mark.parametrize("kernel", ["cubic", "cubicspline", "lanczos"])
+@pytest.mark.parametrize(
+    "kernel", ["cubic", "cubicspline", "lanczos", "average", "bilinear", "rms", "mode"]
+)
 @pytest.mark.parametrize(
     "mode",
     [

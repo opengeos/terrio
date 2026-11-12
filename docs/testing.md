@@ -2932,6 +2932,7 @@ reduced squares from 4,870 to 1,220 compressed bytes and about 0.93 to 0.45 ms C
 a WorldCover tile stayed at 27,597 bytes and took about 2.62 versus 3.47 ms.
 A half-zero/half-noise UInt16 control grew 72 bytes out of about 265 KiB. These
 measurements describe the size/CPU tradeoff and are not universal speed claims.
+
 ## GeoPackage raster allocation checks
 
 Run `cargo test -p terrio --lib drivers::gpkg::tests` and
