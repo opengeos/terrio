@@ -126,7 +126,7 @@ def _write_metadata(
     if offsets is not None:
         raster_handle.offsets = [float(o) for o in offsets]
     lossy = any(float(v) != 1.0 for v in scales or ()) or any(float(v) for v in offsets or ())
-    if lossy and str(raster_handle.driver).upper() != "GTIFF":
+    if lossy and str(raster_handle.driver).upper() not in ("GTIFF", "COG"):
         warnings.warn(
             f"terrio's {raster_handle.driver} writer does not store band scales and offsets: "
             "the file holds the encoded values without them. Write a GeoTIFF "
