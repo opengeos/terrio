@@ -2322,7 +2322,13 @@ enum Reopened {
 fn tiff_err(e: tiff::TiffError) -> Error {
     match e {
         tiff::TiffError::LimitsExceeded => Error::ResourceLimit("TIFF: decoding limits exceeded (see TiffReadLimits)".into()),
-        tiff::TiffError::IoError(e) if e.kind() == std::io::ErrorKind::OutOfMemory || crate::error::is_http_io(&e) => Error::Io(e),
+        tiff::TiffError::IoError(e)
+            if e.kind() == std::io::ErrorKind::OutOfMemory
+                || crate::error::is_http_io(&e)
+                || e.get_ref().is_some_and(|e| e.is::<crate::sparse::NotFetched>()) =>
+        {
+            Error::Io(e)
+        }
         e => Error::InvalidData(format!("TIFF: {e}")),
     }
 }

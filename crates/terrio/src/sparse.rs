@@ -119,7 +119,7 @@ impl SparseFile {
     /// A clone whose reads of blocks not held fail without recording them as missing, so that
     /// the caller does not fetch them: for reads that can do without those bytes, such as the
     /// extra decoders of a GeoTIFF read, which are skipped when they cannot reopen the file.
-    /// A worker chunk decode error still fails the read.
+    /// Missing chunk bytes can be retried through the primary nonquiet decoder.
     pub fn quiet(&self) -> Self {
         Self { quiet: true, ..self.clone() }
     }
