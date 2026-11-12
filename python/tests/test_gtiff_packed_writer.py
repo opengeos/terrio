@@ -663,3 +663,168 @@ def test_selected_overview_missing_tags_raise_instead_of_using_base(tmp_path, mo
     monkeypatch.setattr(_tiff._terrio, "tiff_tags", lambda path: tags(path)[:1])
     with pytest.raises(InvalidArgumentError, match="no matching image directory"):
         rio.open(source, overview_level=0)
+
+
+@pytest.mark.parametrize("kernel", ["cubic", "cubicspline", "lanczos"])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "default",
+        "uint16",
+        "uint32",
+        "uint64",
+        "int8",
+        "int16",
+        "int32",
+        "int64",
+        "float32",
+        "float64",
+        "scale",
+        "scale-float32",
+    ],
+)
+def test_packed_translate_matches_gdal_for_eager_lazy_and_path(tmp_path, gdal, kernel, mode):
+    """GDAL 3.13.3 caps unsigned interpolation, while floating/scaled work keeps overshoot."""
+    import terrio
+
+    source = tmp_path / "packed-interpolation.tif"
+    values = np.array([0, 0, 0, 15, 15, 0, 0, 0], dtype="uint8")[None, :].repeat(4, axis=0)
+    dataset = gdal.GetDriverByName("GTiff").Create(
+        str(source), 8, 4, 1, gdal.GDT_Byte, options=["NBITS=4"]
+    )
+    dataset.SetGeoTransform((0, 1, 0, 4, 0, -1))
+    dataset.WriteArray(values)
+    dataset = None
+    native_options, reference_options = {}, {}
+    if mode not in ("default", "scale"):
+        dtype = "float32" if mode == "scale-float32" else mode
+        native_options["ot"] = dtype
+        reference_options["outputType"] = {
+            "uint16": gdal.GDT_UInt16,
+            "uint32": gdal.GDT_UInt32,
+            "uint64": gdal.GDT_UInt64,
+            "int8": gdal.GDT_Int8,
+            "int16": gdal.GDT_Int16,
+            "int32": gdal.GDT_Int32,
+            "int64": gdal.GDT_Int64,
+            "float32": gdal.GDT_Float32,
+            "float64": gdal.GDT_Float64,
+        }[dtype]
+    if mode.startswith("scale"):
+        native_options["scale"] = (0, 15, 0, 30)
+        reference_options["scaleParams"] = [[0, 15, 0, 30]]
+    reference = gdal.Translate(
+        "",
+        str(source),
+        format="MEM",
+        width=32,
+        height=4,
+        resampleAlg=kernel,
+        **reference_options,
+    )
+    expected = reference.ReadAsArray()
+    for name, reader in [
+        ("path", str(source)),
+        ("eager", terrio.open_raster(str(source), lazy=False)),
+        ("lazy", terrio.open_raster(str(source), lazy=True)),
+    ]:
+        result = terrio.translate(reader, outsize=(32, 4), resampling=kernel, **native_options)
+        np.testing.assert_array_equal(result.read(1), expected, err_msg=f"{name}: {kernel}/{mode}")
+        if mode == "default":
+            output = tmp_path / f"{name}.tif"
+            result.write(str(output))
+            stored = gdal.Open(str(output))
+            assert stored.GetRasterBand(1).GetMetadataItem("NBITS", "IMAGE_STRUCTURE") == "4"
+            np.testing.assert_array_equal(stored.ReadAsArray(), expected)
+
+
+@pytest.mark.parametrize("kernel", ["cubic", "cubicspline", "lanczos"])
+def test_memory_packed_resampled_read_retains_the_gdal_domain(tmp_path, gdal, kernel):
+    """Materialized TIFF metadata still determines GDAL 3.13.3's resampling clamp."""
+    import terrio
+
+    source = tmp_path / "memory-interpolation.tif"
+    dataset = gdal.GetDriverByName("GTiff").Create(
+        str(source), 8, 4, 1, gdal.GDT_Byte, options=["NBITS=4"]
+    )
+    dataset.WriteArray(
+        np.array([0, 0, 0, 15, 15, 0, 0, 0], dtype="uint8")[None, :].repeat(4, axis=0)
+    )
+    dataset = None
+    reference = gdal.Open(str(source))
+    algorithm = {
+        "cubic": gdal.GRIORA_Cubic,
+        "cubicspline": gdal.GRIORA_CubicSpline,
+        "lanczos": gdal.GRIORA_Lanczos,
+    }[kernel]
+    expected = reference.ReadAsArray(buf_xsize=32, buf_ysize=4, resample_alg=algorithm)
+    actual = terrio.open_raster(str(source), lazy=False).read_resampled(
+        (32, 4), band=1, resampling=kernel
+    )
+    np.testing.assert_array_equal(actual, expected)
+
+
+def remove_mask_directories(path, widths):
+    """Remove selected internal-mask IFDs without changing the GDAL-authored samples."""
+    raw = bytearray(path.read_bytes())
+    assert raw[:4] == b"II*\0"
+    offset, previous = struct.unpack_from("<I", raw, 4)[0], 4
+    while offset:
+        count = struct.unpack_from("<H", raw, offset)[0]
+        tags = {}
+        for index in range(count):
+            entry = offset + 2 + 12 * index
+            tag, kind, length = struct.unpack_from("<HHI", raw, entry)
+            if length == 1:
+                tags[tag] = struct.unpack_from("<H" if kind == 3 else "<I", raw, entry + 8)[0]
+        next_slot = offset + 2 + 12 * count
+        following = struct.unpack_from("<I", raw, next_slot)[0]
+        if tags.get(254, 0) & 4 and tags.get(256) in widths:
+            struct.pack_into("<I", raw, previous, following)
+        else:
+            previous = next_slot
+        offset = following
+    path.write_bytes(raw)
+
+
+@pytest.mark.parametrize("missing", [(8,), (16, 8)])
+@pytest.mark.parametrize("base_value", [0, 255])
+def test_cog_copy_preserves_partial_mask_pyramids_as_gdal(tmp_path, gdal, missing, base_value):
+    """Copy per-level masks, including absent all-valid masks, as GDAL 3.13.3 does."""
+    source, target = tmp_path / "partial-mask.tif", tmp_path / "copy.tif"
+    previous = gdal.GetConfigOption("GDAL_TIFF_INTERNAL_MASK")
+    gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
+    try:
+        dataset = gdal.GetDriverByName("GTiff").Create(
+            str(source),
+            32,
+            32,
+            1,
+            gdal.GDT_UInt16,
+            options=["NBITS=9", "ENDIANNESS=LITTLE"],
+        )
+        dataset.SetGeoTransform((0, 1, 0, 32, 0, -1))
+        dataset.GetRasterBand(1).Fill(7)
+        dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
+        dataset.GetRasterBand(1).GetMaskBand().Fill(base_value)
+        dataset.BuildOverviews("NEAREST", [2, 4])
+        dataset.GetRasterBand(1).GetOverview(0).GetMaskBand().Fill(255 - base_value)
+        dataset = None
+    finally:
+        gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", previous)
+    remove_mask_directories(source, missing)
+    reference_source = gdal.Open(str(source))
+    reference = gdal.GetDriverByName("COG").CreateCopy(
+        str(tmp_path / "reference.tif"), reference_source
+    )
+    copy(source, target, driver="COG")
+    result = gdal.Open(str(target))
+    actual, expected = result.GetRasterBand(1), reference.GetRasterBand(1)
+    assert actual.GetOverviewCount() == expected.GetOverviewCount() == 2
+    for left, right in [(actual, expected)] + [
+        (actual.GetOverview(i), expected.GetOverview(i)) for i in range(2)
+    ]:
+        np.testing.assert_array_equal(left.ReadAsArray(), right.ReadAsArray())
+        np.testing.assert_array_equal(
+            left.GetMaskBand().ReadAsArray(), right.GetMaskBand().ReadAsArray()
+        )

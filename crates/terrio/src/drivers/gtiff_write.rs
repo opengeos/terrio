@@ -1221,8 +1221,8 @@ fn cog_method(opts: &TiffOptions) -> Method {
 
 /// The overviews of the GeoTIFF a COG is converted from, copied as they are, as GDAL's COG driver
 /// copies a source's (`OVERVIEWS=AUTO`, `COPY_SRC_OVERVIEWS`), with their masks: the source's
-/// when its mask has overviews, else made at the overviews' sizes as `GDALCOGCreator::Create`
-/// makes them (`bGenerateMskOvr`), cascading from the full-resolution mask.
+/// per-level masks, with an absent mask meaning all valid. A mask supplied only to the
+/// destination is generated from its full-resolution values (GDAL 3.13.3).
 fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels: &mut Vec<Level>, masks: &mut Vec<Vec<u8>>) -> Result<()> {
     let mut src = crate::LazyRaster::open_tiff(path)?.ok_or_else(|| Error::InvalidArgument(format!("{path}: not a GeoTIFF")))?;
     let sizes = src.overviews();
@@ -1234,6 +1234,11 @@ fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels
         return Err(Error::InvalidArgument(format!("{path}: not the raster written")));
     }
     let first = opts.source_overview_level.map_or(0, |i| i + 1);
+    let has_base_mask = opts.source_overview_level.map_or_else(|| src.has_mask(), |i| src.level_has_own_mask(i));
+    let tile = opts.tile_size.unwrap_or(512) as usize;
+    // GDAL 3.13.3 generates a missing mask pyramid only beyond the output tile.
+    // Smaller sources retain all-valid missing masks even when image overviews exist.
+    let own_masks = (first..sizes.len()).any(|i| src.level_has_own_mask(i)) || (has_base_mask && width <= tile && height <= tile);
     let block = gdal_overview::ovr_block(opts.source_block);
     for (i, (w, h)) in sizes.into_iter().enumerate().skip(first) {
         let level = src.read_window(crate::Window::full(w, h), &crate::WindowOptions { bands: Vec::new(), overview: Some(i) })?;
@@ -1252,8 +1257,8 @@ fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels
             }
         }
         if !masks.is_empty() {
-            let m = if src.level_has_own_mask(i) {
-                src.read_mask(crate::Window::full(w, h), Some(i))?.unwrap_or_else(|| vec![255; w * h])
+            let m = if own_masks {
+                src.read_level_mask(crate::Window::full(w, h), Some(i))?.unwrap_or_else(|| vec![255; w * h])
             } else {
                 let mi = if levels.last().is_some_and(|l| l.cols > w) { levels.len() - 1 } else { 0 };
                 gdal_overview::mask_level(cog_method(opts), &masks[mi], (levels[mi].cols, levels[mi].rows), (w, h), block)
@@ -4464,7 +4469,8 @@ mod tests {
         copy_source_overviews(path.to_str().unwrap(), &raster, &options, &mut levels, &mut masks).unwrap();
         assert_eq!(levels.len(), 3);
         assert_eq!(masks.iter().map(Vec::len).collect::<Vec<_>>(), vec![32 * 32, 16 * 16, 8 * 8]);
-        assert!(masks[1].iter().chain(&masks[2]).all(|&value| value == 0));
+        assert!(masks[1].iter().all(|&value| value == 0));
+        assert!(masks[2].iter().all(|&value| value == 255));
     }
 
     /// Streamed mask values are read as the whole writer reads them: any nonzero value is valid

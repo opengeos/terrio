@@ -4726,3 +4726,22 @@ test("JPEG 2000 byte exports preserve rotated and south-up affine grids", { skip
     source.free();
   }
 });
+
+test("packed cubic translations and memory reads retain the GDAL sample domain", () => {
+  // GDAL 3.13.3: a four-bit 8x4 bright stripe, read as 32x4 with CUBIC.
+  const row = [0, 0, 0, 15, 15, 0, 0, 0];
+  const expectedRow = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 5, 10, 14, 15, 15,
+    15, 15, 14, 10, 5, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  const source = terrio.rasterFromArray(Uint8Array.from(Array(4).fill(row).flat()), 8, 4, [0, 1, 0, 4, 0, -1]);
+  const bytes = source.toBytes("packed.tif", { creationOptions: { NBITS: "4" } });
+  const opened = terrio.open(bytes, "packed.tif");
+  const expected = Array(4).fill(expectedRow).flat();
+  assert.deepEqual([...opened.readResampled({ size: [32, 4], resampling: "cubic" })], expected);
+  for (const input of [opened, { bytes, filename: "packed.tif" }]) {
+    const translated = terrio.translate(input, { outsize: [32, 4], resampling: "cubic" });
+    assert.deepEqual([...translated.readBand(1)], expected);
+    translated.free();
+  }
+  opened.free();
+  source.free();
+});

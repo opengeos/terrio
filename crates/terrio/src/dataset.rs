@@ -157,6 +157,14 @@ impl Geolocation {
 }
 
 impl RasterDataset {
+    /// A band's declared stored width, from IMAGE_STRUCTURE (band from zero; GDAL 3.13.3).
+    pub(crate) fn band_sample_bits(&self, band: usize) -> Option<u16> {
+        self.metadata_domains
+            .iter()
+            .filter(|(index, domain, _)| *index == Some(band) && domain == "IMAGE_STRUCTURE")
+            .find_map(|(_, _, items)| items.iter().find(|(key, _)| key == "NBITS").and_then(|(_, value)| value.parse().ok()))
+    }
+
     /// Retain packed unsigned widths in IMAGE_STRUCTURE, as GDAL 3.13.3 reports NBITS.
     pub(crate) fn set_sample_bits(&mut self, bits: u16) {
         // A selected overview or an AUTO read can replace the base image's stored width.
@@ -2064,14 +2072,7 @@ impl RasterWriteOptions {
         }
         let mut creation_options = self.creation_options.clone();
         if let Some(driver @ (RasterDriver::GTiff | RasterDriver::Cog)) = driver {
-            let widths: Vec<_> = (0..ds.raster.bands)
-                .map(|band| {
-                    ds.metadata_domains
-                        .iter()
-                        .filter(|(b, domain, _)| *b == Some(band) && domain == "IMAGE_STRUCTURE")
-                        .find_map(|(_, _, items)| items.iter().find(|(key, _)| key == "NBITS").and_then(|(_, value)| value.parse().ok()))
-                })
-                .collect();
+            let widths: Vec<_> = (0..ds.raster.bands).map(|band| ds.band_sample_bits(band)).collect();
             let nodata: Vec<_> = (1..=ds.raster.bands).map(|band| ds.band_nodata(band)).collect();
             if let Some(bits) = self.inherited_sample_bits(driver, ds.raster.data_type, &widths, &nodata) {
                 creation_options.push(("NBITS".into(), bits.to_string()));

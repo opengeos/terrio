@@ -390,7 +390,7 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
             src_rect: s,
             dst_rect: d,
             resampling: o.resampling.unwrap_or_default(),
-            working_float: complex,
+            working_float: complex || out_type != r.data_type,
             invalid_value: if complex { None } else { src_nodata },
             within_rects: false,
         };
@@ -432,17 +432,13 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
                 if float_working { s } else { s as f32 as f64 }
             }
         };
-        // GDAL's convolution reads clamp packed source samples before scaling or retyping.
-        let sample_max = matches!(o.resampling, Some(Resampling::Cubic | Resampling::CubicSpline | Resampling::Lanczos))
-            .then(|| {
-                ds.metadata_domains
-                    .iter()
-                    .filter(|(band, domain, _)| *band == Some(b - 1) && domain == "IMAGE_STRUCTURE")
-                    .find_map(|(_, _, items)| items.iter().find(|(key, _)| key == "NBITS").and_then(|(_, value)| value.parse().ok()))
-                    .and_then(|bits| crate::drivers::gdal_overview::nbits_max(bits, r.data_type))
-            })
-            .flatten();
-        let packed = |value: f64| match sample_max {
+        // GDAL 3.13.3 resamples SimpleSource unsigned outputs in their packed domain.
+        // ComplexSource scaling and signed/floating outputs keep their working overshoot.
+        let maximum = (!complex && matches!(o.resampling, Some(Resampling::Cubic | Resampling::CubicSpline | Resampling::Lanczos)))
+            .then(|| ds.band_sample_bits(b - 1))
+            .flatten()
+            .and_then(|bits| crate::drivers::gdal_overview::nbits_max(u32::from(bits), out_type));
+        let packed = |value: f64| match maximum {
             Some(maximum) if !src_nodata.is_some_and(|nd| value == nd || (value.is_nan() && nd.is_nan())) => value.clamp(0.0, maximum),
             _ => value,
         };
@@ -460,7 +456,8 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
     res.band_metadata = bands.iter().map(|&b| ds.band_metadata.get(b - 1).cloned().unwrap_or_default()).collect();
     if out_type == r.data_type && o.scale.is_none() && o.exponent.is_none() {
         res.metadata_domains = crate::dataset::selected_nbits(&ds.metadata_domains, &bands);
-        // Inherit a width only when every output sample, including nodata, still fits.
+        // Aggregations such as SUM can leave the source's packed domain.
+        // Inherit a width only when every output sample in that band still fits.
         res.metadata_domains.retain(|(band, _, items)| {
             let Some(band) = *band else { return false };
             let Some(maximum) = items
@@ -963,9 +960,9 @@ mod tests {
     use super::*;
     use wbraster::{Raster, RasterConfig};
 
-    /// GDAL 3.12.1 clamps CUBIC reads of a MEM band carrying NBITS before conversion.
+    /// GDAL 3.13.3 clamps unscaled unsigned CUBIC reads of a MEM band carrying NBITS.
     #[test]
-    fn eager_packed_cubic_reads_keep_the_sample_domain() {
+    fn packed_cubic_translation_keeps_the_unsigned_sample_domain() {
         let config = RasterConfig { cols: 8, rows: 4, bands: 1, data_type: DataType::U8, ..Default::default() };
         let values = [0, 0, 0, 15, 15, 0, 0, 0].repeat(4);
         let mut source = RasterDataset::new(Raster::from_data_native(config, RasterData::U8(values)).unwrap(), false);
@@ -1021,6 +1018,8 @@ mod tests {
         };
         let expected = translate_lazy(&mut reader, &options, OverviewSelection::Auto).unwrap();
         let values = expected.raster.data.to_f64_vec();
+        let eager = translate(&crate::open_raster(input.to_str().unwrap()).unwrap(), &options).unwrap();
+        assert_eq!(eager.raster.data.to_f64_vec(), values);
         assert!(values.iter().all(|&value| value <= 15.0));
         assert!(values.contains(&15.0));
         write_lazy(&mut reader, &options, OverviewSelection::Auto, output.to_str().unwrap(), &Default::default(), Some(1)).unwrap();
