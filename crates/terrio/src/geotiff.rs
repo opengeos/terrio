@@ -1672,8 +1672,6 @@ fn decode_in_threads<D: Read + Seek + Send + 'static>(
         }
         Ok(d)
     };
-    // Preserve initialization errors: decode_chunks replays only sparse cache misses.
-    let _ = open()?;
     // A batch at a time: decoding never runs far ahead of placing.
     for batch in chunks.chunks(workers * 4) {
         let decoded = crate::par::map_init(batch, open, |d, &idx| -> crate::Result<DecodedChunk> {
