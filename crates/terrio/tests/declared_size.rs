@@ -1953,6 +1953,17 @@ fn large_row_calls_keep_encoded_work_bounded() {
     let path = directory.path().join("rows.tif");
     let (columns, rows) = (4096, 18432);
     let raster = header(columns, rows, 1);
+    let peak_kib = || {
+        std::fs::read_to_string("/proc/self/status")
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("VmHWM:")?.split_whitespace().next()?.parse::<u64>().ok())
+            .unwrap()
+    };
+    // Linux getrusage may retain the parent's pre-exec high-water mark. Reset this
+    // process's mm high-water mark instead, then measure the caller slab and writer.
+    std::fs::write("/proc/self/clear_refs", b"5").unwrap();
+    let baseline = peak_kib();
     let data = RasterData::U8(vec![7; columns * rows]);
     let options = RasterWriteOptions {
         driver: Some(RasterDriver::GTiff),
@@ -1963,14 +1974,9 @@ fn large_row_calls_keep_encoded_work_bounded() {
     let mut writer = terrio::GeoTiffWriter::create(path.to_str().unwrap(), &raster, &options).unwrap();
     writer.write_rows(&data, rows, None).unwrap();
     writer.finish().unwrap();
-    // Linux reports the process's peak resident set in KiB, including the caller's 72 MiB slab.
-    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
-    // SAFETY: getrusage initializes this valid output pointer on success.
-    let usage = unsafe {
-        assert_eq!(libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()), 0);
-        usage.assume_init()
-    };
-    assert!(usage.ru_maxrss < 128 * 1024, "{} KiB peak resident memory", usage.ru_maxrss);
+    let peak = peak_kib();
+    let growth = peak.saturating_sub(baseline);
+    assert!(growth < 128 * 1024, "{baseline} KiB baseline, {peak} KiB peak, {growth} KiB growth including the caller's 72 MiB slab");
     let bytes = std::fs::metadata(&path).unwrap().len();
     assert!((72 << 20..73 << 20).contains(&bytes), "{bytes} output bytes");
 
@@ -2046,4 +2052,16 @@ fn failed_tiff_index_reservation_preserves_existing_destination() {
     );
     assert_eq!(largest, 8 << 20, "the injected reservation must be attempted");
     assert_eq!(std::fs::read(path).unwrap(), b"existing contents");
+}
+
+/// The child writer's memory accounting excludes pages inherited before exec (GDAL 3.13.3 reference).
+#[test]
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+fn row_writes_ignore_parent_resident_history() {
+    let _serial = serial();
+    // Keep these pages resident while the existing row test spawns its isolated child.
+    // getrusage's inherited peak exceeds the child's 128 MiB policy before it starts.
+    let held = vec![1u8; 200 << 20];
+    large_row_calls_keep_encoded_work_bounded();
+    std::hint::black_box(&held);
 }
