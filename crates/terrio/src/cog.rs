@@ -1714,7 +1714,7 @@ impl LazyRaster {
         self.sidecar_mask.is_some()
             || match &self.inner {
                 Inner::Source(_, source) => source.has_mask(),
-                Inner::Tiff(t) => t.masks.iter().any(|m| !m.overview && (m.width, m.height) == (t.levels[0].width, t.levels[0].height)),
+                Inner::Tiff(t) => mask_for_image(&t.masks, &t.levels[0]).is_some(),
                 _ => false,
             }
     }
@@ -1773,11 +1773,12 @@ impl LazyRaster {
     }
 
     /// Whether overview `overview` (from 0) has a mask image of its own (GDAL's internal mask
-    /// of an overview), rather than none.
+    /// of an overview), rather than none. External `.ovr` levels are excluded; use
+    /// [`Self::level_has_own_mask`] to include their own masks.
     pub fn has_overview_mask(&self, overview: usize) -> bool {
         let Inner::Tiff(t) = &self.inner else { return false };
         let Some(l) = t.levels.get(overview + 1) else { return false };
-        t.masks.iter().any(|m| m.overview && (m.width, m.height) == (l.width, l.height))
+        l.external.is_none() && mask_for_image(&t.masks, l).is_some()
     }
 
     /// Reads a window of the per-dataset mask of the full-resolution image or of an overview as
@@ -1816,7 +1817,7 @@ impl LazyRaster {
         {
             return match (&t.ovr_mask, &t.ovr) {
                 (Some(m), _) => (m.width(), m.height()) == size || m.overviews().contains(&size),
-                (None, Some(ovr)) => ovr.masks.iter().any(|m| m.overview == (i > 0) && (m.width, m.height) == size),
+                (None, Some(ovr)) => mask_for_image(&ovr.masks, &ovr.levels[i]).is_some(),
                 (None, None) => false,
             };
         }
@@ -1965,6 +1966,19 @@ impl From<RasterDataset> for LazyRaster {
     }
 }
 
+/// Prefer matching flags; retain a unique size-matching legacy first-image mask when flags disagree.
+fn mask_for_image<'a>(masks: &'a [crate::tiff_mask::MaskImage], image: &Level) -> Option<&'a crate::tiff_mask::MaskImage> {
+    let same_size = |m: &&crate::tiff_mask::MaskImage| (m.width, m.height) == (image.width, image.height);
+    masks.iter().filter(same_size).find(|m| m.overview == image.reduced).or_else(|| {
+        if image.ifd != 0 || !image.reduced {
+            return None;
+        }
+        let mut matches = masks.iter().filter(same_size);
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
+    })
+}
+
 /// A TIFF level's own mask, then its full-resolution mask as a nearest fallback.
 fn read_tiff_mask(t: &mut TiffRaster, window: Window, level: usize) -> Result<Option<Vec<u8>>> {
     if let Some(i) = t.levels[level].external
@@ -1980,12 +1994,12 @@ fn read_tiff_mask(t: &mut TiffRaster, window: Window, level: usize) -> Result<Op
     let w = (window.x, window.y, window.width, window.height);
     let limit = t.limits.chunk_bytes;
     // The masks are borrowed, not copied with their chunk tables.
-    let own = t.masks.iter().find(|m| m.overview == (level > 0) && (m.width, m.height) == (lw, lh));
+    let own = mask_for_image(&t.masks, &t.levels[level]);
     let reader = t.decoder.inner();
     if let Some(m) = own {
         return crate::tiff_mask::read_mask(reader, m, w, limit).map(Some);
     }
-    let Some(full) = t.masks.iter().find(|m| !m.overview && (m.width, m.height) == (fw, fh)) else { return Ok(None) };
+    let Some(full) = mask_for_image(&t.masks, &t.levels[0]) else { return Ok(None) };
     // Nearest neighbour from the full-resolution mask.
     let (sx, sy) = (fw as f64 / lw as f64, fh as f64 / lh as f64);
     let col = |c: usize| (((c as f64 + 0.5) * sx) as usize).min(fw - 1);
@@ -2015,10 +2029,9 @@ fn read_tiff_own_mask(t: &mut TiffRaster, window: Window, level: usize) -> Resul
         }
         return read_tiff_own_mask(ovr, window, i);
     }
-    let (lw, lh) = (t.levels[level].width, t.levels[level].height);
     let w = (window.x, window.y, window.width, window.height);
     let limit = t.limits.chunk_bytes;
-    let own = t.masks.iter().find(|m| m.overview == (level > 0) && (m.width, m.height) == (lw, lh));
+    let own = mask_for_image(&t.masks, &t.levels[level]);
     let reader = t.decoder.inner();
     own.map(|m| crate::tiff_mask::read_mask(reader, m, w, limit)).transpose()
 }
@@ -2277,6 +2290,8 @@ struct Level {
     ifd: usize,
     width: usize,
     height: usize,
+    /// The image's own reduced-resolution bit, independent of its position in the file.
+    reduced: bool,
     /// The tile or strip size.
     block: (usize, usize),
     /// The level of the `.ovr` file (see [`TiffRaster::ovr`]) this one is, rather than an image
@@ -2411,10 +2426,12 @@ impl TiffRaster {
             .is_some_and(|sample| matches!(sample, 1 | 2))
             .then_some(bands);
         let bits = dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample).map_err(tiff_err)?.and_then(|v| v.first().copied()).unwrap_or(1);
+        let reduced = dec.find_tag_unsigned::<u32>(Tag::NewSubfileType).ok().flatten().unwrap_or(0) & 1 != 0;
         let (cw, ch) = dec.chunk_dimensions();
         let mut levels = vec![Level {
             bits,
             ifd: 0,
+            reduced,
             width: w as usize,
             height: h as usize,
             block: (cw as usize, ch as usize),
@@ -2444,6 +2461,7 @@ impl TiffRaster {
                     levels.push(Level {
                         bits,
                         ifd,
+                        reduced: subfile & 1 != 0,
                         width: ow as usize,
                         height: oh as usize,
                         block,
@@ -2516,6 +2534,7 @@ impl TiffRaster {
             self.levels.push(Level {
                 bits: l.bits,
                 ifd: l.ifd,
+                reduced: l.reduced,
                 width: l.width,
                 height: l.height,
                 block: l.block,
@@ -2658,9 +2677,9 @@ impl TiffRaster {
         }
         let (lw, lh) = (self.levels[level].width, self.levels[level].height);
         let (fw, fh) = (self.levels[0].width, self.levels[0].height);
-        let ranges = if let Some(mask) = self.masks.iter().find(|m| m.overview == (level > 0) && (m.width, m.height) == (lw, lh)) {
+        let ranges = if let Some(mask) = mask_for_image(&self.masks, &self.levels[level]) {
             mask_prefetch_ranges(mask, windows)
-        } else if let Some(mask) = self.masks.iter().find(|m| !m.overview && (m.width, m.height) == (fw, fh)) {
+        } else if let Some(mask) = mask_for_image(&self.masks, &self.levels[0]) {
             mask_prefetch_ranges(mask, &full_mask_windows(windows, (lw, lh), (fw, fh)))
         } else {
             Vec::new()
@@ -2680,13 +2699,7 @@ impl TiffRaster {
         if !self.decoder.inner().get_ref().prefetches() {
             return Ok(());
         }
-        let size = (self.levels[level].width, self.levels[level].height);
-        let ranges = self
-            .masks
-            .iter()
-            .find(|m| m.overview == (level > 0) && (m.width, m.height) == size)
-            .map(|mask| mask_prefetch_ranges(mask, windows))
-            .unwrap_or_default();
+        let ranges = mask_for_image(&self.masks, &self.levels[level]).map(|mask| mask_prefetch_ranges(mask, windows)).unwrap_or_default();
         self.decoder.inner().get_ref().prefetch(&ranges)
     }
 
@@ -3908,6 +3921,38 @@ mod tests {
         assert_eq!(crate::block_cache::tests::take_lookups().0, 0);
         let expected = sequence(DataType::U8, 80 * 64, 4).to_f64_vec();
         assert_eq!(full[0], expected[2 * 80 + 3]);
+    }
+
+    /// GDAL 3.13.3 treats an external overview as its own TIFF, even at the base size.
+    #[test]
+    fn equal_sized_external_overview_does_not_claim_the_base_internal_mask() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("image.tif");
+        let cfg = wbraster::RasterConfig { cols: 16, rows: 16, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let dataset = RasterDataset::with_driver(
+            wbraster::Raster::from_data_native(cfg, RasterData::U8(vec![7; 256])).unwrap(),
+            RasterDriver::GTiff,
+            false,
+        );
+        crate::write_raster_dataset(
+            &dataset,
+            path.to_str().unwrap(),
+            &crate::RasterWriteOptions { mask: Some(vec![0; 256]), ..Default::default() },
+        )
+        .unwrap();
+        {
+            let mut output = std::fs::File::create(dir.path().join("image.tif.ovr")).unwrap();
+            let mut encoder = tiff::encoder::TiffEncoder::new(&mut output).unwrap();
+            let mut image = encoder.new_image::<tiff::encoder::colortype::Gray8>(16, 16).unwrap();
+            image.encoder().write_tag(Tag::NewSubfileType, 1u32).unwrap();
+            image.write_data(&[9u8; 256]).unwrap();
+        }
+        let mut source = LazyRaster::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(source.overviews(), [(16, 16)]);
+        assert_eq!(source.read_mask(Window::full(16, 16), None).unwrap(), Some(vec![0; 256]));
+        assert!(!source.has_overview_mask(0));
+        assert!(!source.level_has_own_mask(0));
+        assert_eq!(source.read_mask(Window::full(16, 16), Some(0)).unwrap(), None);
     }
 
     /// Readers of different files never share chunks, though their chunks have the same indexes.

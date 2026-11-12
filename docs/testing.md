@@ -53,6 +53,16 @@ An explicit child assertion is a comparison difference; skipped references stay 
 Other exit codes, signals and the 60-second timeout are fixture setup errors, which the
 conformance reporter records as suite errors instead of data differences.
 
+## KMZ dataset-wide layer names
+
+`python/tests/test_kmz_layer_names.py` checks whole-dataset naming across main
+folders, main placemarks and linked documents, including ASCII case collisions, existing numbered names
+and link order different from ZIP entry order. Every layer remains selectable by
+name and converts to a distinct GeoPackage table through Python and CLI. The
+shared reader's Rust tests retain the single-document suffix rules. Node checks
+the same cross-document suffix collision through a frozen KMZ fixture. Layer
+names follow Terrio's deterministic policy; this is not GDAL name equivalence.
+
 ## Vector byte packaging
 
 `python/tests/test_vector_byte_packaging.py` reads default vector byte outputs
@@ -1429,6 +1439,33 @@ reads the `.ovr` it refreshes, and no other sidecar (in `raster_manage`:
 cargo test -p terrio --test external_overviews --test geotiff_nodata
 python scripts/conformance.py ../terrio-data --only lazy-geotiff --strict
 ```
+
+### Reduced first-image masks
+
+The `reduced-first-masks` conformance suite checks `NewSubfileType` mask association
+for ordinary and reduced-resolution first TIFF images. Using a Landsat-derived
+external overview pyramid, it compares pixels and masks before and after an
+extent-limited external overview refresh with an equivalent ordinary-first-image
+GDAL control. The refresh check changes base pixels inside the masked region and
+verifies the reduced overview's updated values and mask. This checks decoding after
+Terrio's refresh, not equivalence to GDAL's refresh algorithm. Internal reduced-first
+TIFF overview creation and refresh remain outside this change: the existing writer
+planner requires a full-resolution image. A reduced first image with a legacy mask
+marked 4 is also covered.
+A unique size-matching legacy mask remains usable for a reduced first image.
+An unreduced first image still ignores a reduced mask and uses nodata/alpha validity.
+GDAL 3.13.3 itself ignores first-image masks marked 5; Terrio deliberately
+uses the image's own reduced-resolution flag rather than its position in the file,
+following [TIFF 6.0 NewSubfileType](https://www.itu.int/itudoc/itu-t/com16/tiff-fx/docs/tiff6.pdf). Local validation uses
+GDAL 3.13.3. The `lazy-geotiff` suite also checks own-mask detection and full-image
+mask fallback when the smaller image has no mask.
+
+The stored masked-external cubic 26×41 resampled-read case uses the separate
+`expected_mask_control.json.gz` reference. Regenerate it with
+`python scripts/make_resampled_reads_fixtures.py --mask-control` and GDAL 3.13.3.
+The control changes only first-image/mask flags from 1/5 to 0/4, so GDAL weights the
+stored mask. Its pixels match Terrio exactly; 488 samples differ from the historical
+raw GDAL reference, which remains unchanged in `expected.json.gz`.
 
 `LazyRaster::rpc`, `file_list` and `sample_bits` are Rust APIs. Python and
 JavaScript exposure of these additional lazy-reader facts remains follow-up
