@@ -1510,10 +1510,12 @@ class DatasetReader(DatasetBase):
         Inherited native readers qualify. VRTs compute pixels in their own working type,
         so overriding `_read_level` must not be bypassed to read the underlying raster.
         Writers use `_buffer_dtype` instead: their pixels already live in a typed buffer.
+        Use the type cached at open so this check never borrows a native handle during
+        another thread's read.
         """
         return (
             type(self)._read_level is DatasetReader._read_level
-            and getattr(self._raster, "data_type", None) == "CInt32"
+            and getattr(self, "_complex_sample", None) == "CInt32"
         )
 
     def _read_for_copy(self, window: Any = None) -> np.ndarray:
