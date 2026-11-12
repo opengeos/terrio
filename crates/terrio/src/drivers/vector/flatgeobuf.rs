@@ -27,6 +27,42 @@ pub fn read(path: &str) -> Result<Layer> {
     parse(&std::fs::read(path)?)
 }
 
+thread_local! {
+    /// The `(has_z, has_m)` of the headers parsed on this thread inside [`with_declared_dims`];
+    /// `None` outside it.
+    static DECLARED: std::cell::RefCell<Option<Vec<(bool, bool)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f`, an open of vector datasets, and returns with its result the Z and M flags of each
+/// FlatGeobuf header that `f` parsed on this thread, in reading order. A layer read from a
+/// FlatGeobuf has no declared Z or M of its own, so they are returned beside it, as
+/// [`super::geojson::with_declared_geometry_types`] returns GeoJSON layer types: from the read
+/// that opens the file, without opening it again.
+pub(crate) fn with_declared_dims<T>(f: impl FnOnce() -> T) -> (T, Vec<(bool, bool)>) {
+    /// Restores the enclosing call's record, also when `f` panics.
+    struct Scope(Option<Vec<(bool, bool)>>);
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            let outer = self.0.take();
+            DECLARED.with(|d| *d.borrow_mut() = outer);
+        }
+    }
+    let scope = Scope(DECLARED.with(|d| d.replace(Some(Vec::new()))));
+    let out = f();
+    let declared = DECLARED.with(|d| d.borrow_mut().take()).unwrap_or_default();
+    drop(scope);
+    (out, declared)
+}
+
+/// Records a parsed header's Z and M flags (see [`with_declared_dims`]).
+fn declare(has_z: bool, has_m: bool) {
+    DECLARED.with(|d| {
+        if let Some(dims) = d.borrow_mut().as_mut() {
+            dims.push((has_z, has_m));
+        }
+    });
+}
+
 fn bad(what: &str) -> Error {
     Error::InvalidData(format!("FlatGeobuf: {what}"))
 }
@@ -115,6 +151,7 @@ pub(crate) fn parse_header(buf: &[u8]) -> Result<(Layer, FgbHeader)> {
         extent: header.envelope().filter(|e| e.len() >= 4).map(|e| [e.get(0), e.get(1), e.get(2), e.get(3)]),
         index_size: index_size(count, header.index_node_size()),
     };
+    declare(meta.has_z, meta.has_m);
     Ok((layer, meta))
 }
 
@@ -263,6 +300,10 @@ pub struct FlatGeobufInfo {
     pub header_size: u64,
     /// The size of the spatial index.
     pub index_size: u64,
+    /// Whether the header declares Z coordinates for every geometry.
+    pub has_z: bool,
+    /// Whether the header declares M coordinates for every geometry.
+    pub has_m: bool,
 }
 
 /// Reads a FlatGeobuf file's header, and the features whose bounding box intersects `bbox`
@@ -324,6 +365,8 @@ impl PreparedIndex {
             index_node_size: header.index_node_size,
             header_size: size as u64,
             index_size: data_start - size as u64,
+            has_z: header.has_z,
+            has_m: header.has_m,
         };
         Ok(Self { info, layer, metadata, header, file_len })
     }
@@ -995,6 +1038,336 @@ mod tests {
         assert!(!accepts(&dimension_fixture(false, true, None, Some(&[]))));
         let extra = parse(&dimension_fixture(true, false, Some(&[5.0, 6.0]), None)).unwrap();
         assert_eq!(extra.features[0].geometry.as_ref().unwrap().all_coords()[0].z, Some(5.0));
+    }
+
+    /// A point file with the declared dimensions and no features, so no geometry shows them.
+    fn empty_dimension_fixture(has_z: bool, has_m: bool) -> Vec<u8> {
+        empty_typed_dimension_fixture(FgbType::Point, has_z, has_m)
+    }
+
+    /// An empty layer of `geometry_type` with no CRS, declaring Z and M as given.
+    fn empty_typed_dimension_fixture(geometry_type: FgbType, has_z: bool, has_m: bool) -> Vec<u8> {
+        let mut b = FlatBufferBuilder::new();
+        let h = Header::create(
+            &mut b,
+            &HeaderArgs { features_count: 0, index_node_size: 0, has_z, has_m, geometry_type, ..Default::default() },
+        );
+        b.finish_size_prefixed(h, None);
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(b.finished_data());
+        bytes
+    }
+
+    /// The geometry type `export_schema_bytes` reports for the one geometry field of a file.
+    fn exported_geometry_type(bytes: &[u8]) -> String {
+        let schema = crate::ops::vector_schema::export_schema_bytes(bytes.to_vec(), "fixture.fgb", None).unwrap();
+        schema.layers[0].geometry_fields[0].geometry_type.clone()
+    }
+
+    #[test]
+    fn declared_dimensions_show_without_features() {
+        assert_eq!(exported_geometry_type(&empty_dimension_fixture(true, false)), "PointZ");
+        assert_eq!(exported_geometry_type(&empty_dimension_fixture(false, false)), "Point");
+    }
+
+    #[test]
+    fn declared_z_gives_a_geometry_field_for_an_unknown_type_without_crs() {
+        // No geometry type, no features and no CRS: only the declared Z says there is a geometry.
+        let bytes = empty_typed_dimension_fixture(FgbType::Unknown, true, false);
+        assert_eq!(exported_geometry_type(&bytes), "GeometryZ");
+        let undeclared = empty_typed_dimension_fixture(FgbType::Unknown, false, false);
+        let schema = crate::ops::vector_schema::export_schema_bytes(undeclared, "fixture.fgb", None).unwrap();
+        assert!(schema.layers[0].geometry_fields.is_empty());
+    }
+
+    #[test]
+    fn declared_dimensions_show_without_features_from_a_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.fgb");
+        std::fs::write(&path, empty_dimension_fixture(true, true)).unwrap();
+        let schema = crate::ops::vector_schema::export_schema_path(path.to_str().unwrap(), &[]).unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "PointZM");
+    }
+
+    #[test]
+    fn declared_header_replaces_the_feature_scan_for_non_empty_layers() {
+        // A header that declares no Z wins over Z on a feature, as GDAL reads the header flag.
+        let bytes = dimension_fixture(false, false, Some(&[3.0]), None);
+        assert_eq!(exported_geometry_type(&bytes), "Point");
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_zip_named_flatgeobuf_member_reports_declared_z_without_features() {
+        // A remote zip's named member takes the remote FlatGeobuf route: its declared Z shows with no features.
+        let archive = zip_bytes("empty.fgb", &empty_dimension_fixture(true, false));
+        let (base, requests) = crate::http::test_server(archive);
+        let schema = crate::ops::vector_schema::export_schema_path(&format!("{base}/a.zip!empty.fgb"), &[]).unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "PointZ");
+        assert!(!requests.lock().unwrap().is_empty());
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn disallowed_remote_zip_named_flatgeobuf_member_is_refused_before_download() {
+        let archive = zip_bytes("empty.fgb", &empty_dimension_fixture(true, false));
+        let (base, requests) = crate::http::test_server(archive);
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_ALLOWED_DRIVERS".to_string(), Some("GTiff".to_string()))]));
+        let result = crate::ops::vector_schema::export_schema_path(&format!("{base}/a.zip!empty.fgb"), &[]);
+        crate::config::pop_scope();
+        let err = result.unwrap_err().to_string();
+        assert!(err.to_lowercase().contains("flatgeobuf driver is not allowed"), "{err}");
+        assert!(requests.lock().unwrap().is_empty(), "the disallowed archive was requested");
+    }
+
+    /// A zip archive holding one member `name` with `bytes`, as its file contents.
+    fn zip_bytes(name: &str, bytes: &[u8]) -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut zip, bytes).unwrap();
+            zip.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn disallowed_wfs_service_url_is_refused_before_any_request() {
+        // A `.fgb` URL naming a WFS service is that service's to read, as `open_vector` judges it: with
+        // the WFS driver not allowed, it is refused before any request.
+        let (base, requests) = crate::http::test_server(empty_dimension_fixture(true, false));
+        let url = format!("{base}/x.fgb?service=WFS");
+        let (opened, exported) = crate::config::with_options(&[("TERRIO_ALLOWED_DRIVERS", "FlatGeobuf")], || {
+            (crate::open_vector(&url, &Default::default()).map(|_| ()), crate::ops::vector_schema::export_schema_path(&url, &[]))
+        });
+        assert_eq!(exported.unwrap_err().to_string(), opened.unwrap_err().to_string());
+        assert!(requests.lock().unwrap().is_empty(), "the WFS service was requested");
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn feature_service_query_url_reads_as_open_vector_reads_it() {
+        // A `.fgb` URL with a feature-service query sign is read for the answer it gets, as `open_vector`
+        // reads it, not downloaded as FlatGeobuf.
+        let page = br#"{"geometryType":"esriGeometryPoint","fields":[],"features":[{"attributes":{},"geometry":{"x":1,"y":2}}]}"#;
+        for query in ["?f=json", "?resultRecordCount=5"] {
+            let (base, _) = crate::http::test_server(page.to_vec());
+            let url = format!("{base}/x.fgb{query}");
+            let opened = crate::open_vector(&url, &Default::default()).unwrap();
+            let schema = crate::ops::vector_schema::export_schema_path(&url, &[]).unwrap();
+            let names: Vec<_> = schema.layers.iter().map(|l| l.name.clone()).collect();
+            assert_eq!(names, opened.layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>(), "{query}");
+        }
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_flatgeobuf_reports_declared_z_without_features() {
+        // The file is downloaded once; its header declares Z, and no feature can show it.
+        let bytes = empty_dimension_fixture(true, false);
+        let (base, opened) = crate::http::test_server(bytes.clone());
+        crate::open_vector(&format!("{base}/empty.fgb"), &Default::default()).unwrap();
+        let (base, exported) = crate::http::test_server(bytes);
+        let schema = crate::ops::vector_schema::export_schema_path(&format!("{base}/empty.fgb"), &[]).unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "PointZ");
+        // Requests as opening the file makes them: the schema route does not download it again.
+        assert!(!opened.lock().unwrap().is_empty());
+        assert_eq!(exported.lock().unwrap().len(), opened.lock().unwrap().len());
+    }
+
+    /// A zip archive at a temporary path, holding one member `name` with `bytes`.
+    fn zip_with_member(name: &str, bytes: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("archive.zip");
+        std::fs::write(&path, zip_bytes(name, bytes)).unwrap();
+        (dir, path)
+    }
+
+    #[cfg(feature = "gdal")]
+    #[test]
+    fn gdal_prefixed_zip_member_keeps_the_general_route() {
+        // A `gdal:` path is GDAL's to read, as `open_vector` reads it, not extracted under its prefix.
+        let (_dir, path) = zip_with_member("empty.fgb", &empty_dimension_fixture(true, false));
+        let member = format!("gdal:{}!empty.fgb", path.to_str().unwrap());
+        let opened = crate::open_vector(&member, &Default::default()).unwrap();
+        let schema = crate::ops::vector_schema::export_schema_path(&member, &[]).unwrap();
+        let names: Vec<_> = schema.layers.iter().map(|l| l.name.clone()).collect();
+        assert_eq!(names, opened.layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn declared_z_survives_a_zip_archive() {
+        // The archive's member is read, not the archive: its declared Z shows with no features.
+        let member = empty_typed_dimension_fixture(FgbType::Unknown, true, false);
+        let (_dir, path) = zip_with_member("empty.fgb", &member);
+        let schema = crate::ops::vector_schema::export_schema_path(path.to_str().unwrap(), &[]).unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "GeometryZ");
+        // The layer is named as opening the archive names it.
+        let opened = crate::open_vector(path.to_str().unwrap(), &Default::default()).unwrap();
+        let names: Vec<_> = schema.layers.iter().map(|l| l.name.clone()).collect();
+        assert_eq!(names, opened.layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn local_zip_member_is_refused_by_its_data_and_reads_as_geometry_z() {
+        // Guard for the local archive route: a disallowed member is refused by the data it holds, and an
+        // allowed one reads with its declared Z. The route change itself has no observable difference here.
+        let member = empty_typed_dimension_fixture(FgbType::Unknown, true, false);
+        let (_dir, path) = zip_with_member("empty.fgb", &member);
+        let path = path.to_str().unwrap();
+        let refused = crate::config::with_options(&[("TERRIO_ALLOWED_DRIVERS", "GTiff")], || {
+            crate::ops::vector_schema::export_schema_path(path, &[])
+        });
+        let err = refused.unwrap_err().to_string();
+        assert!(err.contains("holds FLATGEOBUF data"), "{err}");
+        let schema = crate::ops::vector_schema::export_schema_path(path, &[]).unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "GeometryZ");
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_flatgeobuf_under_a_remote_policy_reports_declared_z() {
+        // A permitted remote FlatGeobuf reads under a remote document's policy on both routes: the
+        // downloaded copy is not an asset of that document, so the schema route must not judge it as one.
+        let (base, _) = crate::http::test_server(empty_typed_dimension_fixture(FgbType::Unknown, true, false));
+        let url = format!("{base}/empty.fgb");
+        let _scope = crate::stac::AssetReadPolicy::for_tests("https://example.invalid/item.json", false).enter().unwrap();
+        crate::open_vector(&url, &Default::default()).unwrap();
+        let schema = crate::ops::vector_schema::export_schema_path(&url, &[]).unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "GeometryZ");
+    }
+
+    #[cfg(all(remote, not(feature = "gdal")))]
+    #[test]
+    fn remote_flatgeobuf_without_extension_keeps_the_general_route() {
+        // Known limit: a remote FlatGeobuf is recognised by its URL's file name extension. Without
+        // one, the download is named without an extension and no driver recognises it, for schema
+        // export as for open_vector.
+        let (base, _) = crate::http::test_server(empty_dimension_fixture(true, false));
+        let url = format!("{base}/layer?format=fgb");
+        let opened = crate::open_vector(&url, &Default::default()).unwrap_err().to_string();
+        let exported = crate::ops::vector_schema::export_schema_path(&url, &[]).unwrap_err().to_string();
+        assert!(exported.contains("format not recognized"), "{exported}");
+        assert!(opened.contains("format not recognized"), "{opened}");
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn export_schema_path_honours_the_asset_read_policy() {
+        // Under a remote STAC document, a cross-origin FlatGeobuf read with ambient credentials is
+        // refused by open_vector; the schema route must refuse it the same way, before any download.
+        let (base, requests) = crate::http::test_server(empty_typed_dimension_fixture(FgbType::Unknown, true, false));
+        let url = format!("{base}/empty.fgb");
+        crate::config::with_options(
+            &[("GDAL_HTTP_HEADERS", "Authorization: Bearer test-token"), ("TERRIO_STAC_ALLOW_CREDENTIALED_ASSETS", "NO")],
+            || {
+                let _scope = crate::stac::AssetReadPolicy::for_tests("https://example.invalid/item.json", false).enter().unwrap();
+                let opened = crate::open_vector(&url, &Default::default()).unwrap_err().to_string();
+                let exported = crate::ops::vector_schema::export_schema_path(&url, &[]).unwrap_err().to_string();
+                assert_eq!(exported, opened);
+            },
+        );
+        assert!(requests.lock().unwrap().is_empty(), "the refused file was requested");
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn disallowed_remote_flatgeobuf_is_refused_before_download() {
+        // Refused by the allow-list before any request: the file is not downloaded.
+        let (base, requests) = crate::http::test_server(empty_dimension_fixture(true, false));
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_ALLOWED_DRIVERS".to_string(), Some("GTiff".to_string()))]));
+        let result = crate::ops::vector_schema::export_schema_path(&format!("{base}/empty.fgb"), &[]);
+        crate::config::pop_scope();
+        let err = result.unwrap_err().to_string();
+        assert!(err.to_lowercase().contains("flatgeobuf driver is not allowed"), "{err}");
+        assert!(requests.lock().unwrap().is_empty(), "the disallowed file was requested");
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn allowed_remote_flatgeobuf_keeps_declared_z() {
+        // Guard: with FlatGeobuf allowed, the remote declared Z still shows with no features.
+        let (base, requests) = crate::http::test_server(empty_dimension_fixture(true, false));
+        crate::config::push_scope(std::collections::HashMap::from([(
+            "TERRIO_ALLOWED_DRIVERS".to_string(),
+            Some("FlatGeobuf".to_string()),
+        )]));
+        let result = crate::ops::vector_schema::export_schema_path(&format!("{base}/empty.fgb"), &[]);
+        crate::config::pop_scope();
+        let schema = result.unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "PointZ");
+        assert!(!requests.lock().unwrap().is_empty());
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_flatgeobuf_with_query_reports_declared_z() {
+        // A signed URL keeps its extension before the query: the file is still read as FlatGeobuf.
+        let bytes = empty_dimension_fixture(true, false);
+        let (base, opened) = crate::http::test_server(bytes.clone());
+        crate::open_vector(&format!("{base}/empty.fgb?sig=abc"), &Default::default()).unwrap();
+        let (base, exported) = crate::http::test_server(bytes);
+        let schema = crate::ops::vector_schema::export_schema_path(&format!("{base}/empty.fgb?sig=abc"), &[]).unwrap();
+        assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "PointZ");
+        assert!(!opened.lock().unwrap().is_empty());
+        assert_eq!(exported.lock().unwrap().len(), opened.lock().unwrap().len());
+    }
+
+    #[test]
+    fn declared_dims_come_from_the_read_that_opens_the_dataset() {
+        // The header the open parses gives the declared pair: a local file, an archive's member and
+        // bytes in memory, each read once.
+        let bytes = empty_dimension_fixture(true, true);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("empty.fgb");
+        std::fs::write(&file, &bytes).unwrap();
+        let (_zip_dir, archive) = zip_with_member("empty.fgb", &bytes);
+        for path in [file.to_str().unwrap().to_string(), format!("{}!empty.fgb", archive.to_str().unwrap())] {
+            let (ds, declared) = crate::dataset::open_vector_declared(&path, &Default::default()).unwrap();
+            assert_eq!(ds.layers.len(), 1, "{path}");
+            assert_eq!(declared, [Some((true, true))], "{path}");
+        }
+        let (ds, declared) = with_declared_dims(|| crate::memory::open_vector_bytes(bytes, "empty.fgb", &Default::default()));
+        assert_eq!(ds.unwrap().layers.len(), 1);
+        assert_eq!(declared, [(true, true)]);
+        // Another driver declares nothing: its layers keep the feature scan.
+        let geojson = dir.path().join("p.geojson");
+        std::fs::write(&geojson, br#"{"type":"FeatureCollection","features":[]}"#).unwrap();
+        let (_, declared) = crate::dataset::open_vector_declared(geojson.to_str().unwrap(), &Default::default()).unwrap();
+        assert!(declared.is_empty());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "a FlatGeobuf open parsed 2 headers")]
+    fn a_second_header_parse_in_one_open_is_reported_in_debug_builds() {
+        // The declared pair is kept only when the open parsed one header; a second parse would drop it
+        // to the feature scan, so a debug build reports it rather than falling back without a word.
+        let bytes = empty_dimension_fixture(true, false);
+        let _ = crate::dataset::with_declared_dims(|| {
+            let (layer, _) = parse_header(&bytes)?;
+            parse_header(&bytes)?;
+            Ok(crate::VectorDataset::new(vec![layer], crate::formats::VectorDriver::FlatGeobuf))
+        });
+    }
+
+    #[test]
+    fn declared_dimensions_show_for_gdal_magic_bytes() {
+        // GDAL writes the magic's version byte as 1 (terrio's MAGIC has 0): the bytes route reads its header too.
+        let mut bytes = empty_dimension_fixture(true, false);
+        bytes[7] = 1;
+        assert_eq!(exported_geometry_type(&bytes), "PointZ");
+    }
+
+    #[test]
+    fn header_reports_declared_dimensions() {
+        for (has_z, has_m) in [(false, false), (true, false), (false, true), (true, true)] {
+            let bytes = empty_dimension_fixture(has_z, has_m);
+            let (info, _) = read_header(&mut std::io::Cursor::new(&bytes), bytes.len() as u64).unwrap();
+            assert_eq!((info.has_z, info.has_m), (has_z, has_m));
+        }
     }
 
     #[test]

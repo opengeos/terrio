@@ -148,7 +148,8 @@ terrio's GeoTIFF and COG writers compress Deflate chunks with a Rust port of
 parsers, block splitting and coding follow that implementation. Levels 6–9 also probe a bounded
 number of periodic-run boundaries to improve repeating categorical rasters. Compressed bytes can
 therefore differ from libdeflate's; decoded raster values and metadata are checked independently
-with GDAL 3.13.3.
+with GDAL 3.13.3. At every level, the searches over a GeoTIFF or COG chunk's rows also examine the
+position one row back.
 
 ## fdlibm
 

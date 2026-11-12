@@ -63,6 +63,9 @@ test("standard full/core exports and loader remain available", () => {
   assert.ok(pkg.exports["./core"]);
   assert.ok(pkg.exports["./load"]);
   assert.ok(files.includes("load.d.ts"));
+  // Each module's glue imports its own snippets.
+  assert.ok(pkg.files.includes("snippets/"));
+  assert.ok(pkg.files.includes("core/snippets/"));
 });
 test("selective output refuses stale assets", () => {
   assert.throws(() => build(["--no-default-features"], (crate) => fs.mkdirSync(join(crate, "pkg"))), /must not exist/);

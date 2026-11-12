@@ -38,7 +38,7 @@ GDAL's drivers (the formats marked * are written that way): see
 | ERS | ER Mapper | ✓ | ✓ | ers |
 | PNG | PNG with world file | ✓ | ✓ | png |
 | JPEG | JPEG with world file | ✓ | ✓ | jpg, jpeg |
-| WEBP | WebP with world file (written lossless) | ✓ | ✓ | webp |
+| WEBP | WebP with world file | ✓ | ✓ | webp |
 | XYZ | XYZ ASCII grid | ✓ | ✓ | xyz |
 | DTED | DTED elevation | ✓ | ✓ | dt0, dt1, dt2 |
 | SRTMHGT | SRTM HGT tiles (`N37W120.hgt`, zipped or not; NASADEM `.hgts`, `.err`, `.img`, `.num` and water body `.raw`, `.swb` read) | ✓ | ✓ | hgt |
@@ -49,12 +49,20 @@ YCbCr with 4:2:0 chroma subsampling (each 2 x 2 block's chroma averaged, as libj
 quantized at the `QUALITY` creation option (1 to 100, default 75) as libjpeg scales its tables,
 with optimized Huffman tables. Other data types are rounded and saturated to Byte; GDAL's 4-band
 (CMYK) and 12-bit JPEGs are not written. WebP files hold 3 (RGB) or 4 (RGBA) Byte bands of at most
-16383 x 16383 pixels, as GDAL's WEBP driver requires, and are always lossless (encoded in Rust,
-without libwebp), every sample kept: `LOSSLESS=NO`, GDAL's default, still gives a lossless file,
-not the size of GDAL's lossy one, and `QUALITY` (checked to be 0 to 100) and `EXACT` (0 or 1) have
-no effect. The RGB values under fully transparent pixels are kept, as GDAL keeps them with `EXACT=1`;
-with GDAL's default, `EXACT=0`, libwebp writes values of its own choosing there. An alpha band
-that is opaque everywhere is left out, so the file reads back as 3 bands, in GDAL as in terrio.
+16383 x 16383 pixels, as GDAL's WEBP driver requires. With no lossy options, files are
+lossless, every sample kept, including RGB under fully transparent pixels. `LOSSLESS=NO`
+or `QUALITY` without `LOSSLESS=YES` selects lossy VP8 encoding; `QUALITY` ranges from 0 to
+100 (default 75). Explicit `LOSSLESS=YES` overrides quality. Alpha is kept exactly, including
+in lossy output. `LOSSLESS` accepts YES/NO, TRUE/FALSE, ON/OFF and 1/0, in any case;
+unrecognized values are refused, like GeoTIFF's `WEBP_LOSSLESS` (stricter than GDAL's parser).
+The standalone default is lossless; GeoTIFF WebP tiles instead default to lossy. Whitespace
+around `LOSSLESS` is ignored. Alpha in lossy files is compressed losslessly when that is
+smaller, with raw storage as a fallback (one byte per pixel, plus ALPH headers and padding).
+An alpha band that is opaque everywhere is left out, so the file reads back
+as 3 bands. Both encoders are pure Rust; the lossy encoder is shared with GeoTIFF WebP tiles.
+Its size and PSNR at a given quality differ from GDAL's libwebp. `EXACT` (0 or 1) is validated
+but does not change encoding: lossless output always keeps transparent RGB, and lossy RGB
+is approximate even under transparent pixels. Other libwebp tuning options remain ignored.
 WebP files are read lossless or lossy, as 3 bands, or 4 with an alpha channel.
 
 PNG image data is compressed at the `ZLEVEL` creation option, the Deflate level, from 1 (the
@@ -116,13 +124,30 @@ Deflate levels 6–9 supplement the bounded hash-chain search with up to four
 run-boundary candidates. This keeps long matches across repeating categorical
 rows instead of encoding each short uniform run separately. It can change the
 compressed bytes and CPU cost; the decoded pixels are unchanged. Levels 1–5
-retain their existing search. Compressed bytes need not match libdeflate or GDAL.
+add no run-boundary candidates. Compressed bytes need not match libdeflate or GDAL.
+
+Within a `DEFLATE` chunk, at every level, the encoder also looks for a match one row back and takes
+it where it is longer than the matches its hash chains (and, at levels 6–9, its run-boundary
+candidates) find, so rows that repeat the row above, as in rasters of uniform blocks such as land
+cover maps, classifications and masks, are coded as copies of whole rows.
 
 JPEG 2000 is decoded and encoded with the Rust port of OpenJPEG, the codec of GDAL's JP2OpenJPEG
 driver, so pixels are GDAL's (Sentinel-2 L1C and L2A bands included). Georeferencing comes from
 the GeoJP2 box or the GMLJP2 box (Sentinel-2's), a 1-bit alpha channel is promoted to 0 and 255 as
-GDAL does, and files are written losslessly with a GeoJP2 box, the nodata value in a `.aux.xml`
-sidecar. Files are read in place by window and resolution level, as GDAL reads them: the resolution
+GDAL does. Files default to lossless output with a GeoJP2 box, and nodata in a `.aux.xml`
+sidecar. `QUALITY` is a percentage of uncompressed size, as in
+[GDAL's JP2OpenJPEG driver](https://gdal.org/en/stable/drivers/raster/jp2openjpeg.html#creation-options),
+not a PSNR target: 25 requests roughly one quarter of the uncompressed size. Supply one
+percentage or up to 100 strictly increasing comma-separated percentages for progressive
+quality layers, each greater than 0 and at most 100. Targets are approximate and exclude
+container overhead. Distinct percentages very close together may round to the same codec rate;
+the ordering rule applies to the requested percentages. Rates that overflow the codec's
+intermediate arithmetic are refused. The final quality defaults to 100; `REVERSIBLE=NO` alone instead uses
+25. A final quality below 100 defaults to irreversible 9/7, while a final quality of 100
+defaults to reversible 5/3. `REVERSIBLE=YES` explicitly selects 5/3 but is still lossy when
+rate-limited below 100. Only reversible output ending at quality 100 is lossless.
+Path and memory writes expose the same options, including JavaScript/WASM. Files are read in
+place by window and resolution level, as GDAL reads them: the resolution
 levels are the overviews (each halving the size, down to about 128 pixels, with GDAL's block
 sizes), and a window decodes only the tiles, precincts and code blocks it covers, its tiles in
 parallel, from local files, bytes or HTTP range requests. On a 10980 x 10980 Sentinel-2 band, a
@@ -131,9 +156,38 @@ thread) and 1.7 GB, and the smallest overview 0.05 s (GDAL: 0.09 s, 1.1 s and 0.
 window and overview is identical to GDAL's. GeoTIFFs compressed with JPEG XL are read tile by tile
 the same way (JPEG XL files themselves are not a format terrio reads).
 
+Supplied JPEG 2000 colour roles, including roles inherited from source files, are stored in channel-definition boxes. Three- and
+four-band data marked undefined read back as Undefined while the file declares grayscale; RGB associations and
+alpha can appear in any component order. The multiple-component transform is enabled
+only for RGB in the first three components. Inherited multispectral Undefined roles therefore
+disable that transform as well as declaring grayscale; encoded sizes can change. Non-RGB files declare grayscale with one
+Y channel (a non-alpha channel with stored association 1, else the first gray channel,
+else the first non-alpha component), as the format requires.
+All-alpha inputs are rejected because they have no colour channel. Multiple alpha roles and signed
+alpha samples are rejected; JPEG 2000 opacity requires an unsigned component. Updates and copies
+retain the stored Y association even when both bands report Gray. Multiple gray roles
+are normalized to that one Y association; for three or more components, both Terrio
+and GDAL report these non-alpha components as undefined on readback. Undefined
+three- and four-band inputs, including inherited roles, therefore declare grayscale rather than the
+previous inferred sRGB, which changes their display in colour-aware readers.
+One- and two-band RGB subsets write as grayscale. Larger RGB colour sets require
+exactly one red, green and blue channel; incomplete or duplicate sets are rejected.
+When any roles are supplied, omitted entries are unspecified. When none are supplied,
+the existing band-count defaults apply (RGB for three or four components).
+Decoding preserves stored component order,
+as GDAL 3.13.3 does, instead of permuting BGR or ARGB samples into RGB order. Palette
+decoding keeps its existing expansion. As with GDAL, grayscale images of one or two
+components report gray for non-alpha channels; non-RGB images with more components
+report undefined. JPEG 2000 byte exports in Python and WebAssembly also preserve
+absence of georeferencing when neither a transform nor a CRS is supplied. CRS-only inputs
+retain their existing unit-pixel grid. Both file and byte exports preserve full affine transforms, including rotated and south-up grids,
+in the embedded GeoTIFF. Nodata and georeferencing follow the existing box/sidecar policy.
+
 `JP2OpenJPEG` (the driver `terrio.rio` names for `.jp2` paths), `JPEG2000`, `JP2KAK`, `JP2ECW` and
 `JP2MrSID` name the JP2 driver too, in any case: to write (`-f`, `driver=`), to read with a driver
-named, and in the allowed drivers. A file written with any of them reads back as `JP2`.
+named, and in the allowed drivers. A file written with any of them reads back as `JP2`. A CMAP box without a preceding PCLR
+palette remains unsupported by the Rust OpenJPEG header parser; GDAL 3.13.3 accepts
+the tested direct-mapping case. This existing limit is independent of CDEF band-order handling.
 
 GRIB files (editions 1 and 2) are read as GDAL's GRIB driver reads them, also when found by
 their content rather than their extension: each field of each GRIB2 message, and each GRIB1

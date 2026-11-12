@@ -719,19 +719,23 @@ pub(crate) fn nested(batch: &RecordBatch, path: &[usize]) -> ArrayRef {
     a
 }
 
+/// The bytes of a binary column's value, not copied.
+fn blob(a: &dyn Array, row: usize) -> Option<&[u8]> {
+    Some(match a.data_type() {
+        DataType::Binary => a.as_binary::<i32>().value(row),
+        DataType::LargeBinary => a.as_binary::<i64>().value(row),
+        DataType::BinaryView => a.as_binary_view().value(row),
+        DataType::FixedSizeBinary(_) => a.as_fixed_size_binary().value(row),
+        _ => return None,
+    })
+}
+
 pub(crate) fn value(a: &dyn Array, row: usize, t: FieldType) -> FieldValue {
     if a.is_null(row) {
         return FieldValue::Null;
     }
     if t == FieldType::Blob {
-        let bytes = match a.data_type() {
-            DataType::Binary => a.as_binary::<i32>().value(row).to_vec(),
-            DataType::LargeBinary => a.as_binary::<i64>().value(row).to_vec(),
-            DataType::BinaryView => a.as_binary_view().value(row).to_vec(),
-            DataType::FixedSizeBinary(_) => a.as_fixed_size_binary().value(row).to_vec(),
-            _ => return FieldValue::Null,
-        };
-        return FieldValue::Blob(bytes);
+        return blob(a, row).map_or(FieldValue::Null, |b| FieldValue::Blob(b.to_vec()));
     }
     let v = json_value(a, row);
     match (t, v) {
@@ -831,10 +835,7 @@ pub(super) fn geometry(a: &dyn Array, row: usize, encoding: &str) -> Option<Geom
         return None;
     }
     match encoding {
-        "wkb" => {
-            let FieldValue::Blob(b) = value(a, row, FieldType::Blob) else { return None };
-            Geometry::from_wkb(&b).ok()
-        }
+        "wkb" => super::wkb::from_wkb(blob(a, row)?),
         "point" => coords(a).into_iter().nth(row).map(Geometry::Point),
         "linestring" => Some(Geometry::LineString(coords(list_item(a, row)?.as_ref()))),
         "multipoint" => Some(Geometry::MultiPoint(coords(list_item(a, row)?.as_ref()))),

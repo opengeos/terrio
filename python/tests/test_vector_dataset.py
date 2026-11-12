@@ -1,6 +1,7 @@
 """Dataset-level vector operations: concat, partition, set_field_type, make_point,
 export_schema and create_vector."""
 
+import base64
 import json
 import os
 import warnings
@@ -101,6 +102,38 @@ def test_make_point_from_fields():
     assert coords == [[-105.5, 40.25], [-104.0, 39.0]]
     with pytest.raises(terrio.InvalidArgumentError):
         terrio.make_point(layer, "nope", "lat")
+
+
+# Empty FlatGeobuf layers written by GDAL 3.11.4 (`CreateLayer("empty", None, type)`, no CRS), which
+# reads them back as 3D Point, Measured Point and 3D Measured Point.
+EMPTY_FLATGEOBUF = {
+    "PointZ": (
+        "ZmdiA2ZnYgE8AAAAHAAAABgAEAAIAAAABAAFAAAAAAAAAAwA"
+        "AAAGABgAAAABAQAADAAAAAQAAAAAAAAABQAAAGVtcHR5AAAA"
+    ),
+    "PointM": (
+        "ZmdiA2ZnYgE8AAAAHAAAABgAEAAIAAAABAAAAAUAAAAAAAwA"
+        "AAAGABgAAAABAQAADAAAAAQAAAAAAAAABQAAAGVtcHR5AAAA"
+    ),
+    "PointZM": (
+        "ZmdiA2ZnYgFEAAAAIAAAAAAAAAAYABQADAAAAAcACAAJAAAAAAAQAA"
+        "AACgAYAAAAAAAAAQEBAAAMAAAABAAAAAAAAAAFAAAAZW1wdHkAAAA="
+    ),
+}
+
+
+def test_export_schema_reports_the_z_and_m_a_flatgeobuf_header_declares(tmp_path):
+    """An empty FlatGeobuf layer has no features to show its Z and M: the header's declaration gives
+    them, from a file, a zip archive and the archive's named member."""
+    for kind, encoded in EMPTY_FLATGEOBUF.items():
+        path = tmp_path / f"empty_{kind}.fgb"
+        path.write_bytes(base64.b64decode(encoded))
+        archive = str(tmp_path / f"empty_{kind}.zip")
+        with zipfile.ZipFile(archive, "w") as z:
+            z.write(path, "empty.fgb")
+        for source in (str(path), archive, f"{archive}!empty.fgb"):
+            schema = terrio.export_schema(source)
+            assert schema["layers"][0]["geometryFields"][0]["type"] == kind, source
 
 
 def test_export_schema_and_create(tmp_path):

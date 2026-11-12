@@ -44,6 +44,65 @@ pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Dataset> {
     open_bytes_of_kind(bytes, name, None)
 }
 
+/// A vector filename extension suggested by the shared byte identifiers, without opening a
+/// dataset. Unrecognizable content, including unsigned CSV, needs a filename from the caller.
+/// Identification is only a hint: the ordinary reader still validates the data and driver policy.
+/// The pyogrio compatibility caller targets Pyogrio 0.13.0 / GDAL 3.12.2.
+pub fn suggest_vector_extension(bytes: &[u8]) -> Option<&'static str> {
+    let driver = crate::inspection::identify_bytes_unjudged(bytes, "")
+        .and_then(|identified| crate::formats::VectorDriver::from_name(&identified.driver))
+        .or_else(|| {
+            // Anonymous buffers contain the complete document. A bounded header can end
+            // inside features before a root type placed last; inspect that root before
+            // falling back to format-like strings inside properties.
+            let prefix = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+            let first = prefix.iter().copied().take(16 * 1024).find(|byte| !byte.is_ascii_whitespace());
+            if !matches!(first, Some(b'{' | 0x1e)) {
+                return None;
+            }
+            let text = std::str::from_utf8(bytes).ok()?.trim_start_matches('\u{feff}').trim_start();
+            let sequence = text.starts_with('\u{1e}');
+            let json = text.trim_start_matches('\u{1e}').trim_start();
+            if !json.starts_with('{') {
+                return None;
+            }
+            use crate::formats::VectorDriver;
+            match crate::inspection::root_json_type(json)?.as_str() {
+                "Topology" => Some(VectorDriver::TopoJSON),
+                "CityJSON" => Some(VectorDriver::CityJSON),
+                "FeatureCollection" | "Feature" | "Point" | "MultiPoint" | "LineString" | "MultiLineString" | "Polygon"
+                | "MultiPolygon" | "GeometryCollection" => Some(if sequence { VectorDriver::GeoJSONSeq } else { VectorDriver::GeoJSON }),
+                _ => None,
+            }
+        })
+        .or_else(|| crate::formats::identify_bytes("", bytes).by_content.as_deref().and_then(crate::formats::VectorDriver::from_name))
+        .or_else(|| codec::vector_driver(bytes, ""))?;
+    // Anonymous buffers contain the whole object. Require the binary envelope rather than
+    // a prefix that could also be a CSV column name; the reader still validates the payload.
+    match driver {
+        crate::formats::VectorDriver::FlatGeobuf
+            if bytes.len() < 8
+                || !bytes.starts_with(b"fgb")
+                || !matches!(bytes[3], 2 | 3)
+                || bytes.get(4..7) != Some(b"fgb".as_slice()) =>
+        {
+            return None;
+        }
+        crate::formats::VectorDriver::Parquet => {
+            if bytes.len() < 12 || !bytes.starts_with(b"PAR1") || !bytes.ends_with(b"PAR1") {
+                return None;
+            }
+            let metadata_length = u32::from_le_bytes(bytes[bytes.len() - 8..bytes.len() - 4].try_into().ok()?);
+            if usize::try_from(metadata_length).ok()? > bytes.len() - 12 {
+                return None;
+            }
+        }
+        crate::formats::VectorDriver::OSM if crate::drivers::vector::citygml::is_xml_prefix(bytes) => return Some("osm"),
+        _ => {}
+    }
+    driver.info().extensions.first().copied()
+}
+
 /// [`open_bytes`] for a dataset of `kind`: its name and content must pass that kind's allowed
 /// drivers (see [`crate::formats::set_allowed_drivers`]), as a file's must.
 fn open_bytes_of_kind(bytes: Vec<u8>, name: &str, kind: Option<Kind>) -> Result<Dataset> {
@@ -202,6 +261,16 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
             }
             return Err(Error::InvalidArgument(format!("cannot tell the output format of '{name}': give it explicitly")));
         }
+    };
+    // JP2 byte exports, including WASM, retain the source's absent transform just as
+    // file conversion does. An explicit output transform/GEOREFERENCED still wins.
+    let mut jp2_options;
+    let options = if driver == RasterDriver::JP2 {
+        jp2_options = options.clone();
+        crate::drivers::common::keep_unreferenced(&mut jp2_options, name, ds.geotransform_present.unwrap_or(true));
+        &jp2_options
+    } else {
+        options
     };
     // A Zarr store is a directory: written in memory and zipped, on every platform.
     if driver == RasterDriver::Zarr {
@@ -378,7 +447,7 @@ pub(crate) mod codec {
     }
 
     /// The vector driver of a file, by its extension or, without one, its first bytes.
-    fn vector_driver(bytes: &[u8], name: &str) -> Option<VectorDriver> {
+    pub(super) fn vector_driver(bytes: &[u8], name: &str) -> Option<VectorDriver> {
         let json = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes).trim_ascii_start();
         if json.starts_with(b"{")
             && let Ok(text) = std::str::from_utf8(json)
@@ -715,7 +784,14 @@ pub(crate) mod codec {
             RasterDriver::GPKG => crate::drivers::gpkg::to_bytes(&ds.raster, ds.nodata(), table, options.compression.as_deref()),
             #[cfg(feature = "jp2")]
             RasterDriver::JP2 => {
-                let jp2 = crate::drivers::jp2::to_bytes(&ds.raster, crate::drivers::common::georeferenced(&options.creation_options))?;
+                let inherited = options.inherited_from(ds, Some(driver));
+                let jp2 = crate::drivers::jp2::to_bytes(
+                    &ds.raster,
+                    crate::drivers::common::georeferenced(&inherited.creation_options),
+                    inherited.geo_transform,
+                    &inherited.band_metadata,
+                    &inherited.creation_options,
+                )?;
                 // The nodata value goes to a `.aux.xml` sidecar, the two files zipped as the file
                 // drivers' output is.
                 let Some(xml) = crate::drivers::common::pam_xml(None, ds.nodata(), ds.raster.bands) else { return Ok(jp2) };
@@ -777,6 +853,36 @@ pub(crate) mod codec {
 
 #[cfg(test)]
 mod tests {
+    /// Reference: GDAL 3.13.3. The WASM codec and native writer use the requested output grid.
+    #[test]
+    #[cfg(feature = "jp2")]
+    fn jp2_codec_applies_explicit_output_transform() {
+        let raster = crate::Raster::from_data_native(
+            crate::RasterConfig { cols: 32, rows: 24, bands: 1, data_type: crate::DataType::U8, ..Default::default() },
+            crate::raster::RasterData::U8(vec![7; 32 * 24]),
+        )
+        .unwrap();
+        let mut ds = crate::RasterDataset::new(raster, false);
+        ds.geotransform_present = Some(false);
+        let transform = [500000.0, 10.0, 0.0, 4600000.0, 0.0, -10.0];
+        let options = crate::RasterWriteOptions { geo_transform: Some(transform), ..Default::default() };
+        let codec_bytes = super::codec::write_raster(&ds, crate::formats::RasterDriver::JP2, &options, "grid").unwrap();
+        let file_bytes = super::write_raster_bytes(&ds, "grid.jp2", &options).unwrap();
+        for bytes in [codec_bytes, file_bytes] {
+            let output = crate::drivers::jp2::read_bytes(&bytes).unwrap();
+            assert_eq!(output.geotransform_present, Some(true));
+            assert_eq!(output.geo_transform(), transform);
+            assert_eq!(output.raster.data.to_f64_vec(), vec![7.0; 32 * 24]);
+        }
+        for transform in [[500000.0, 10.0, 1.0, 4600000.0, 2.0, -10.0], [500000.0, 10.0, 0.0, 4600000.0, 0.0, 10.0]] {
+            let options = crate::RasterWriteOptions { geo_transform: Some(transform), ..Default::default() };
+            let bytes = super::codec::write_raster(&ds, crate::formats::RasterDriver::JP2, &options, "grid").unwrap();
+            let output = crate::drivers::jp2::read_bytes(&bytes).unwrap();
+            assert_eq!(output.geo_transform(), transform);
+            assert_eq!(output.raster.data.to_f64_vec(), vec![7.0; 32 * 24]);
+        }
+    }
+
     use super::*;
     use wbraster::raster::RasterData;
     use wbraster::{DataType, Raster};
@@ -843,6 +949,43 @@ mod tests {
                 assert!(error.to_string().contains(".zip"), "{error}");
             }
         }
+    }
+
+    #[test]
+    fn vector_byte_hints_share_signatures_and_xml_probes() {
+        for (bytes, extension) in [
+            (b"SQLite format 3\0".as_slice(), Some("gpkg")),
+            (b"fgb\x03fgb\0".as_slice(), Some("fgb")),
+            (b"fgb\x02fgb\0".as_slice(), Some("fgb")),
+            (b"PAR1\0\0\0\0PAR1".as_slice(), Some("parquet")),
+            (br#"{"type":"FeatureCollection","features":[]}"#.as_slice(), Some("geojson")),
+            (br#"{"type":"FeatureCollection","features":[],"Topology":"survey"}"#.as_slice(), Some("geojson")),
+            (b"<kml/>".as_slice(), Some("kml")),
+            (b"<gpx/>".as_slice(), Some("gpx")),
+            (br#"<osm version="0.6"/>"#.as_slice(), Some("osm")),
+            (br#"<osm version="0.6"><tag k="name" v="gml survey"/></osm>"#.as_slice(), Some("osm")),
+            (b"\0\0\0\x0b\x0a\x09OSMHeader".as_slice(), Some("pbf")),
+            (b"<gml:FeatureCollection/>".as_slice(), Some("gml")),
+            (b"WKT,id\nPOINT (1 2),1\n".as_slice(), None),
+            (b"fgb_id,lat,lon\n1,2,3\n".as_slice(), None),
+            (b"PAR1_id,lat,lon\n1,2,3\n".as_slice(), None),
+            (b"PAR1,id\nx,PAR1".as_slice(), None),
+            (b"fgb,fgb,name\n1,2,3\n".as_slice(), None),
+            (b"PAR1".as_slice(), None),
+            (b"II*\0".as_slice(), None),
+            (b"".as_slice(), None),
+        ] {
+            assert_eq!(suggest_vector_extension(bytes), extension, "{bytes:?}");
+        }
+    }
+
+    #[test]
+    fn late_geojson_root_type_is_not_relabelled_by_property_text() {
+        let bytes = format!(
+            r#"{{"features":[{{"type":"Feature","properties":{{"Topology":"{}"}},"geometry":{{"type":"Point","coordinates":[1,2]}}}}],"type":"FeatureCollection"}}"#,
+            "x".repeat(20_000)
+        );
+        assert_eq!(suggest_vector_extension(bytes.as_bytes()), Some("geojson"));
     }
 
     #[test]

@@ -363,7 +363,8 @@ impl PyRaster {
 
     /// The description and metadata of each band, for formats that report them per band (GRIB):
     /// one dictionary per band with its `description`, `color_interp` (GDAL's name, or `None`) and
-    /// metadata `items` (GDAL's default domain), or an empty list.
+    /// metadata `items` (GDAL's default domain), or an empty list. JPEG 2000 colour channels
+    /// also retain their `color_association` from the stored CDEF box.
     #[getter]
     fn band_metadata<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
         self.inner
@@ -373,6 +374,9 @@ impl PyRaster {
                 let d = PyDict::new(py);
                 d.set_item("description", &m.description)?;
                 d.set_item("color_interp", &m.color_interp)?;
+                if let Some(association) = m.color_association {
+                    d.set_item("color_association", association)?;
+                }
                 let items = PyDict::new(py);
                 for (k, v) in &m.items {
                     items.set_item(k, v)?;
@@ -884,9 +888,11 @@ impl PyRaster {
     ///         `{"TILED": "YES", "BLOCKXSIZE": "256", "INTERLEAVE": "BAND"}` for GeoTIFF,
     ///         `{"FORMAT": "ZARR_V3", "GEOREFERENCING_CONVENTION": "SPATIAL_PROJ"}` for Zarr, or
     ///         `{"FORMAT": "NC4", "COMPRESS": "DEFLATE", "ZLEVEL": "6"}` for netCDF-4.
-    ///     band_metadata: GeoTIFF band metadata, one dictionary per band with any of the keys
+    ///     band_metadata: Band metadata, one dictionary per band with any of the keys
     ///         `description`, `scale`, `offset`, `unit`, `color_interp` (a GDAL name such as
-    ///         `"Red"`) and `items` (a mapping of metadata items).
+    ///         `"Red"`) and `items` (a mapping of metadata items). JPEG 2000 also accepts
+    ///         `color_association` to retain a stored CDEF colour association when copying;
+    ///         leave it unset when assigning new colour roles.
     ///     colormap: The color table of a single-band Byte or UInt16 GeoTIFF: `(r, g, b, a)`
     ///         entries from index 0.
     ///     overviews: GeoTIFF overviews to build, as decimation factors such as `[2, 4]`.
@@ -1082,12 +1088,12 @@ pub(crate) fn string_pairs(obj: &Bound<'_, PyAny>) -> PyResult<Vec<(String, Stri
 }
 
 /// A band's metadata from a dictionary with the keys `description`, `scale`, `offset`, `unit`,
-/// `color_interp` and `items`.
+/// `color_interp`, `color_association` and `items`.
 pub(crate) fn parse_band_metadata(d: &Bound<'_, PyDict>) -> PyResult<terrio::BandMetadata> {
     let get = |key: &str| -> PyResult<Option<Bound<'_, PyAny>>> { Ok(d.get_item(key)?.filter(|v| !v.is_none())) };
     for key in d.keys() {
         let key: String = key.extract()?;
-        if !matches!(key.as_str(), "description" | "scale" | "offset" | "unit" | "color_interp" | "items") {
+        if !matches!(key.as_str(), "description" | "scale" | "offset" | "unit" | "color_interp" | "color_association" | "items") {
             return Err(invalid(format!("unknown band metadata key '{key}'")));
         }
     }
@@ -1097,6 +1103,7 @@ pub(crate) fn parse_band_metadata(d: &Bound<'_, PyDict>) -> PyResult<terrio::Ban
         offset: get("offset")?.map(|v| v.extract()).transpose()?,
         unit: get("unit")?.map(|v| v.extract()).transpose()?,
         color_interp: get("color_interp")?.map(|v| v.extract()).transpose()?,
+        color_association: get("color_association")?.map(|v| v.extract()).transpose()?,
         items: get("items")?.map(|v| string_pairs(&v)).transpose()?.unwrap_or_default(),
     })
 }
