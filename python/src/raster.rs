@@ -510,6 +510,8 @@ impl PyRaster {
     ///
     /// Raises:
     ///     InvalidArgumentError: If a band, the window or the overview does not exist.
+    ///     ResourceLimitError: If a GeoTIFF window the process cannot hold is refused before it is
+    ///         allocated.
     #[pyo3(signature = (band=None, window=None, overview=None))]
     fn read<'py>(
         slf: &Bound<'py, Self>,

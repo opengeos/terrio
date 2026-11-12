@@ -159,6 +159,9 @@ fn open_vrt(py: Python<'_>, xml: &str, sources: &Bound<'_, PyDict>) -> PyResult<
 ///
 /// Raises:
 ///     UnsupportedError: If the dataset is not a raster.
+///     ResourceLimitError: If the raster declares more than `TERRIO_MAX_DECLARED_BYTES` (width x
+///         height x bands x bytes per sample) or `TERRIO_MAX_BANDS` allow, when they are set; or,
+///         read whole, a GeoTIFF the process cannot hold, refused before it is allocated.
 ///
 /// Warns:
 ///     UserWarning: If the raster declares a CRS terrio cannot represent (it then has none).

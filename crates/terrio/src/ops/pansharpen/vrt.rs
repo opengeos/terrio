@@ -315,9 +315,12 @@ impl PansharpenVrt {
         }
         std::fs::write(path, self.to_xml()).map_err(Into::into)
     }
-    /// Open with optional supplied sources. Keys match SourceFilename exactly.
+    /// Open with optional supplied sources. Keys match SourceFilename exactly. Refused when the
+    /// VRT declares more than `TERRIO_MAX_DECLARED_BYTES` or `TERRIO_MAX_BANDS` allow.
     pub fn into_lazy(self, base: &Path, sources: HashMap<String, LazyRaster>) -> Result<LazyRaster> {
-        self.into_lazy_reference(&base.join("__vrt__.vrt").to_string_lossy(), sources)
+        let r = self.into_lazy_reference(&base.join("__vrt__.vrt").to_string_lossy(), sources)?;
+        crate::declared::check_lazy(&r)?;
+        Ok(r)
     }
     pub(crate) fn into_lazy_reference(self, base: &str, sources: HashMap<String, LazyRaster>) -> Result<LazyRaster> {
         let _depth = OpenDepth::enter()?;

@@ -408,7 +408,7 @@ pub fn refresh_overviews(path: &str, options: &RefreshOptions) -> Result<Vec<(us
     // Otherwise they are the `.ovr`'s, attached under `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`
     // too as the file refreshed (other operations compute every level from the image alone).
     if options.external && !options.bbox.is_empty() {
-        src.attach_managed_ovr(path);
+        src.attach_managed_ovr(path)?;
     }
     gtiff_update::update_file(&target, move |f| {
         let out = refresh(f, &mut src, options);

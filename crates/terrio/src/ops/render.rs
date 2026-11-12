@@ -765,11 +765,15 @@ pub enum Source {
 ///
 /// # Errors
 ///
-/// When the path is neither, naming both errors, or a raster is given vector-only options.
+/// When the path is neither, naming both errors, or a raster is given vector-only options; a
+/// raster refused for what it declares (`TERRIO_MAX_DECLARED_BYTES`, `TERRIO_MAX_BANDS`) or for
+/// what the process cannot hold ([`crate::usable_memory`]) with that refusal.
 pub fn open_source(path: &str, layers: &[String], vector_options: bool) -> Result<Source> {
     match crate::open_raster_lazy(path) {
         Ok(_) if vector_options => Err(Error::InvalidArgument("attribute and layers are for vector datasets".into())),
         Ok(raster) => Ok(Source::Raster(raster)),
+        // A raster refused for what it declares or what it would hold is not a vector dataset.
+        Err(refusal) if refusal.is_resource_refusal() => Err(refusal),
         Err(raster_error) => {
             let open = crate::VectorOpenOptions { layers: layers.to_vec(), ..Default::default() };
             match crate::open_vector(path, &open) {

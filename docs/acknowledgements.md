@@ -26,6 +26,8 @@ terrio began on the pure-Rust format libraries of
 [`wbraster`](https://crates.io/crates/wbraster), [`wbvector`](https://crates.io/crates/wbvector) and
 [`wbprojection`](https://crates.io/crates/wbprojection). They still read and write many of the
 formats terrio supports, and they made a C-free geospatial library in Rust a realistic goal.
+The declaration preflight reader adapts their DTED, PCRaster, Esri binary grid and GRASS ASCII
+header layouts, under the MIT license; see `NOTICE`.
 
 ## GDAL
 

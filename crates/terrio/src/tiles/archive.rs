@@ -345,6 +345,8 @@ pub(crate) fn archive_dataset(mut archive: TileArchive, name: &str, options: &cr
         return Ok(crate::Dataset::Vector(ds));
     }
     let mut r = raster::TileRaster::new(archive, options.tiles.zoom_level)?;
+    // What the zoom level declares, before its tiles are decoded.
+    crate::declared::check_dataset(&r.header())?;
     Ok(crate::Dataset::Raster(r.read_all()?))
 }
 

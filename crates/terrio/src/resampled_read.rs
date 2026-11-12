@@ -212,7 +212,7 @@ impl LazyRaster {
     /// ```
     pub fn read_resampled(&mut self, options: &ResampledReadOptions) -> Result<RasterDataset> {
         let _scope = self.enter_asset_read()?;
-        let read = self.check_resampled(options)?;
+        let read = self.check_resampled(options, true)?;
         let kinds = self.mask_kinds(&read.bands);
         let data = self.resample_bands(&read, &kinds)?;
         self.resampled_dataset(&read, data)
@@ -237,8 +237,9 @@ impl LazyRaster {
     /// As [`LazyRaster::read_resampled`].
     pub fn read_resampled_masks(&mut self, options: &ResampledReadOptions) -> Result<Vec<u8>> {
         let _scope = self.enter_asset_read()?;
-        let read = self.check_resampled(options)?;
+        let read = self.check_resampled(options, false)?;
         let kinds = self.read_mask_kinds(&read);
+        self.check_resampled_mask_buffers(&read, &kinds, false)?;
         // A nodata mask band reads its band band by band, as a read of that band alone does.
         let mut nodata = Vec::with_capacity(read.bands.len());
         for (k, &b) in read.bands.iter().enumerate() {
@@ -248,7 +249,13 @@ impl LazyRaster {
             });
         }
         let n = read.buf.0 * read.buf.1;
-        self.resampled_masks(&read, &kinds, |k| nodata[k].as_ref().map(|d| (d, 0)), n)
+        let retained = nodata
+            .iter()
+            .flatten()
+            .map(raster_capacity_bytes)
+            .try_fold(0usize, usize::checked_add)
+            .ok_or_else(|| fallible::out_of_memory(None, "resampled nodata pixels"))?;
+        self.resampled_masks(&read, &kinds, |k| nodata[k].as_ref().map(|d| (d, 0)), n, retained)
     }
 
     /// Reads [`LazyRaster::read_resampled`] and [`LazyRaster::read_resampled_masks`] at once:
@@ -259,12 +266,13 @@ impl LazyRaster {
     /// As [`LazyRaster::read_resampled`].
     pub fn read_resampled_with_masks(&mut self, options: &ResampledReadOptions) -> Result<(RasterDataset, Vec<u8>)> {
         let _scope = self.enter_asset_read()?;
-        let read = self.check_resampled(options)?;
+        let read = self.check_resampled(options, false)?;
         let kinds = self.read_mask_kinds(&read);
+        self.check_resampled_mask_buffers(&read, &kinds, true)?;
         let data = self.resample_bands(&read, &kinds)?;
         let n = read.buf.0 * read.buf.1;
         // GDAL reads bands with a nodata mask band by band, as the read did.
-        let masks = self.resampled_masks(&read, &kinds, |k| Some((&data, k)), n)?;
+        let masks = self.resampled_masks(&read, &kinds, |k| Some((&data, k)), n, raster_capacity_bytes(&data))?;
         Ok((self.resampled_dataset(&read, data)?, masks))
     }
 
@@ -273,7 +281,7 @@ impl LazyRaster {
     /// resampled together.
     pub(crate) fn read_resampled_by_band(&mut self, options: &ResampledReadOptions) -> Result<RasterDataset> {
         let _scope = self.enter_asset_read()?;
-        let read = self.check_resampled(options)?;
+        let read = self.check_resampled(options, true)?;
         let kinds = self.mask_kinds(&read.bands);
         let n = read.buf.0 * read.buf.1;
         let mut data: Option<RasterData> = None;
@@ -292,17 +300,22 @@ impl LazyRaster {
     }
 
     /// Checks a read and resolves its bands and windows.
-    fn check_resampled(&self, o: &ResampledReadOptions) -> Result<Read> {
+    fn check_resampled(&self, o: &ResampledReadOptions, pixels: bool) -> Result<Read> {
         let bands = read_bands(&o.bands, self.band_count())?;
         let (bw, bh) = o.size;
         if bw == 0 || bh == 0 {
             return Err(Error::InvalidArgument(format!("the output size {bw}x{bh} is empty")));
         }
-        // An output no allocator can hold is refused before any buffer is sized from it.
-        let what = "a resampled read";
-        let sample_bytes = bands.iter().map(|&b| self.band_data_type(b).size_bytes()).sum::<usize>();
-        let bytes = fallible::len(&[sample_bytes.max(1), bw, bh], what)?;
-        fallible::reserve(&mut Vec::<u8>::new(), bytes, what)?;
+        // An output no allocator can hold is refused before any buffer is sized from it, and so is
+        // one the process cannot hold: allocated beyond the usable memory, it would kill the
+        // process as its pages are written (a translation that does not stream reads its whole
+        // output so).
+        if pixels {
+            let what = "a resampled read";
+            let output_type = crate::ops::common_type(bands.iter().map(|&b| self.band_data_type(b)));
+            let sample_bytes = fallible::len(&[output_type.size_bytes(), bands.len()], what)?;
+            Self::check_resampled_buffer(o.size, bands.len(), sample_bytes, what)?;
+        }
         match o.resampling {
             Resampling::Nearest
             | Resampling::Bilinear
@@ -340,6 +353,54 @@ impl LazyRaster {
         let full = Request { level: None, size: (w, h), window, fwindow };
         let fixed = fixed_level(o.overview, &self.overviews(), bw);
         Ok(Read { bands, full, buf: o.size, resampling: o.resampling, fixed })
+    }
+
+    /// The output masks and the buffers retained while producing them. All-valid masks
+    /// need no pixels. Nodata-only reads keep each requested nodata band's pixel buffer;
+    /// combined reads reuse their pixel output. Dataset and alpha masks are cached once.
+    fn check_resampled_mask_buffers(&self, read: &Read, kinds: &[MaskKind], pixels: bool) -> Result<()> {
+        let what = "a resampled mask read";
+        let mut sample_bytes = read.bands.len();
+        if pixels {
+            let dtype = crate::ops::common_type(read.bands.iter().map(|&b| self.band_data_type(b)));
+            sample_bytes = sample_bytes
+                .checked_add(fallible::len(&[dtype.size_bytes(), read.bands.len()], what)?)
+                .ok_or_else(|| fallible::out_of_memory(None, what))?;
+        }
+        let (mut nodata, mut dataset, mut alpha, mut alpha_working) = (false, 0usize, 0usize, 0usize);
+        for (&kind, &band) in kinds.iter().zip(&read.bands) {
+            match kind {
+                MaskKind::AllValid => {}
+                MaskKind::Nodata => {
+                    nodata = true;
+                    if !pixels {
+                        sample_bytes = sample_bytes
+                            .checked_add(self.band_data_type(band).size_bytes())
+                            .ok_or_else(|| fallible::out_of_memory(None, what))?;
+                    }
+                }
+                MaskKind::PerDataset => dataset = 1,
+                MaskKind::Alpha(band) => {
+                    alpha = 1;
+                    // Byte alpha returns its resampled buffer directly. A copied UInt16
+                    // alpha holds the source and its byte conversion together; a resized
+                    // UInt16 alpha is rescaled to bytes before resampling, then copied.
+                    alpha_working = if self.band_data_type(band) == DataType::U8 {
+                        1
+                    } else if read.full.is_copy(read.buf) {
+                        3
+                    } else {
+                        2
+                    };
+                }
+            }
+        }
+        // The per-band nodata mask is temporary; previously produced alpha/dataset masks
+        // stay cached while it is appended. Alpha conversion and nodata conversion do not
+        // run simultaneously, so use their peak rather than summing those temporaries.
+        let working = dataset + alpha_working.max(alpha + usize::from(nodata));
+        sample_bytes = sample_bytes.checked_add(working).ok_or_else(|| fallible::out_of_memory(None, what))?;
+        Self::check_resampled_buffer(read.buf, read.bands.len(), sample_bytes, what)
     }
 
     /// GDAL's mask band of each band (see [`MaskKind`]).
@@ -615,15 +676,20 @@ impl LazyRaster {
             How::Fill => {
                 let n = read.buf.0 * read.buf.1;
                 let nodata = self.level_band_nodata(&bands, request.level);
-                let values = nodata.iter().flat_map(|nd| std::iter::repeat_n(nd.unwrap_or(0.0), n)).collect();
-                Ok(RasterData::from_f64_vec(self.band_data_type(bands[0]), values))
+                filled_bands(self.band_data_type(bands[0]), n, &nodata)
             }
             How::Copy => {
                 let (x, y, w, h) = request.window;
                 Ok(self.read_window(Window::new(x, y, w, h), &options)?.raster.data)
             }
             How::Nearest => {
-                let (cols, rows) = nearest_pixels(request.fwindow, read.buf, request.size);
+                let output_bytes = read
+                    .buf
+                    .0
+                    .checked_mul(read.buf.1)
+                    .and_then(|n| n.checked_mul(bands.len()))
+                    .and_then(|n| n.checked_mul(self.data_type().size_bytes()));
+                let (cols, rows) = nearest_pixels(request.fwindow, read.buf, request.size, output_bytes)?;
                 if let Some(data) = self.read_sampled(&cols, &rows, &options)? {
                     return Ok(data);
                 }
@@ -663,6 +729,15 @@ impl LazyRaster {
                 })
             }
         }
+    }
+
+    /// Refuses an output/working set before its first buffer is allocated.
+    fn check_resampled_buffer((width, height): (usize, usize), bands: usize, sample_bytes: usize, what: &str) -> Result<()> {
+        let bytes = fallible::len(&[sample_bytes.max(1), width, height], what)?;
+        fallible::check_usable(Some(bytes), || format!("{what} of {width} x {height} pixels in {bands} band(s) is too large to allocate"))
+            .map_err(Error::ResourceLimit)?;
+        fallible::reserve(&mut Vec::<u8>::new(), bytes, what)?;
+        Ok(())
     }
 
     /// The geometry of `RasterIOResampled` for a request of pixels.
@@ -721,6 +796,7 @@ impl LazyRaster {
         kinds: &[MaskKind],
         nodata: impl Fn(usize) -> Option<(&'d RasterData, usize)>,
         n: usize,
+        retained: usize,
     ) -> Result<Vec<u8>> {
         let mut out = Vec::with_capacity(kinds.len() * n);
         let mut dataset: Option<Vec<u8>> = None;
@@ -742,7 +818,11 @@ impl LazyRaster {
                 }
                 MaskKind::Alpha(a) => {
                     if alpha.is_none() {
-                        alpha = Some(self.resampled_alpha(read, a)?);
+                        let retained = retained
+                            .checked_add(out.capacity())
+                            .and_then(|n| n.checked_add(dataset.as_ref().map_or(0, Vec::capacity)))
+                            .ok_or_else(|| fallible::out_of_memory(None, "retained resampled mask buffers"))?;
+                        alpha = Some(self.resampled_alpha(read, a, retained)?);
                     }
                     out.extend_from_slice(alpha.as_deref().unwrap_or_default());
                 }
@@ -788,7 +868,7 @@ impl LazyRaster {
         let level = request.level.and_then(|j| self.overviews().iter().position(|s| *s == mask_overviews[j]));
         let block = self.level_block_size(level).unwrap_or((request.size.0, SAMPLE_ROWS));
         let data = if read.resampling == Resampling::Nearest {
-            let (cols, rows) = nearest_pixels(request.fwindow, read.buf, request.size);
+            let (cols, rows) = nearest_pixels(request.fwindow, read.buf, request.size, read.buf.0.checked_mul(read.buf.1))?;
             if let Some(windows) = nearest_prefetch_windows(&cols, &rows, block) {
                 self.prefetch_mask_band_windows(&windows, request.level)?;
             }
@@ -808,7 +888,7 @@ impl LazyRaster {
     /// The alpha band `alpha` read as the mask band GDAL makes of it: a Byte band read as the
     /// other bands are, band by band, all valid; a UInt16 one rescaled to 0–255 as
     /// `GDALRescaledAlphaBand` does, which has no overviews: from full resolution.
-    fn resampled_alpha(&mut self, read: &Read, alpha: usize) -> Result<Vec<u8>> {
+    fn resampled_alpha(&mut self, read: &Read, alpha: usize, retained: usize) -> Result<Vec<u8>> {
         let single = Read { bands: vec![alpha], ..read.clone() };
         if self.band_data_type(alpha) == DataType::U8 {
             let kinds = self.mask_kinds(&single.bands);
@@ -820,25 +900,55 @@ impl LazyRaster {
         let full = read.full;
         let options = WindowOptions { bands: vec![alpha], overview: None };
         let (x, y, w, h) = full.window;
-        let rescaled = |data: RasterData| RasterData::U8(alpha_mask(&data));
+        let mut output_live = false;
+        let mut rescaled = |source: &mut Self, window: Window| -> Result<RasterData> {
+            check_alpha_window(window, read.buf, output_live, read.resampling != Resampling::Nearest, retained)?;
+            let data = source.read_window(window, &options)?.raster.data;
+            let data = RasterData::U8(alpha_mask(&data));
+            output_live = true;
+            Ok(data)
+        };
         let data = if full.is_copy(read.buf) {
             self.prefetch_window(Window::new(x, y, w, h), &options)?;
-            rescaled(self.read_window(Window::new(x, y, w, h), &options)?.raster.data)
+            rescaled(self, Window::new(x, y, w, h))?
         } else if read.resampling == Resampling::Nearest {
-            let (cols, rows) = nearest_pixels(full.fwindow, read.buf, full.size);
+            let output_bytes = read.buf.0.checked_mul(read.buf.1).and_then(|bytes| bytes.checked_add(retained));
+            let (cols, rows) = nearest_pixels(full.fwindow, read.buf, full.size, output_bytes)?;
             let block = self.level_block_size(None).unwrap_or((full.size.0, SAMPLE_ROWS));
             if let Some(windows) = nearest_prefetch_windows(&cols, &rows, block) {
                 self.prefetch_windows(&windows, &options)?;
             }
-            sample_by_blocks(&cols, &rows, block, &mut |w| Ok(rescaled(self.read_window(w, &options)?.raster.data)))?
+            sample_by_blocks(&cols, &rows, block, &mut |w| rescaled(self, w))?
         } else {
             self.prefetch_window(Window::new(x, y, w, h), &options)?;
             let block_width = self.level_block_size(None).map_or(full.size.0, |b| b.0);
             let resampled = resampled_read(read, full, false, block_width, None);
-            resample(&resampled, &[None], None, 1, &mut |w| Ok((rescaled(self.read_window(w, &options)?.raster.data), vec![None])))?
+            resample(&resampled, &[None], None, 1, &mut |w| Ok((rescaled(self, w)?, vec![None])))?
         };
         Ok(alpha_mask(&data))
     }
+}
+
+/// Known UInt16 alpha conversion phases, using the source window (reference: GDAL 3.13.3).
+/// Source samples coexist with their Byte conversion; subsequent windows also retain the
+/// resampled Byte output. Once UInt16 samples are dropped, copying/kernel output and the
+/// final Byte mask copy have their own peaks. Caller-owned pixels/masks stay live throughout.
+fn check_alpha_window(window: Window, output: (usize, usize), output_live: bool, kernel: bool, retained: usize) -> Result<()> {
+    let source = window.width.checked_mul(window.height).filter(|&n| n <= isize::MAX as usize / 2);
+    let output = output.0.checked_mul(output.1).filter(|&n| n <= isize::MAX as usize);
+    let bytes = source.zip(output).and_then(|(source, output)| {
+        let conversion = source.checked_mul(3)?.checked_add(if output_live { output } else { 0 })?;
+        let scatter = source.checked_add(output.checked_mul(if kernel { 2 } else { 1 })?)?;
+        conversion.max(scatter).max(output.checked_mul(2)?).checked_add(retained)
+    });
+    fallible::check_usable(bytes, || "an alpha mask source/conversion working set is too large to allocate".into())
+        .map(|_| ())
+        .map_err(Error::ResourceLimit)
+}
+
+fn raster_capacity_bytes(data: &RasterData) -> usize {
+    let capacity = crate::pixel::with_data!(data, values => values.capacity());
+    capacity * data.data_type().size_bytes()
 }
 
 /// The geometry of `RasterIOResampled` for a request of a band of blocks `block_width` pixels
@@ -1037,18 +1147,26 @@ fn nearest_pixels(
     (fx, fy, fxs, fys): (f64, f64, f64, f64),
     (bw, bh): (usize, usize),
     (lw, lh): (usize, usize),
-) -> (Vec<usize>, Vec<usize>) {
+    output_bytes: Option<usize>,
+) -> Result<(Vec<usize>, Vec<usize>)> {
+    let coordinates = bw.checked_add(bh).and_then(|n| n.checked_mul(std::mem::size_of::<usize>()));
+    let peak = coordinates.and_then(|coordinates| output_bytes.and_then(|output| coordinates.checked_add(output)));
+    fallible::check_usable(peak, || "nearest-neighbour coordinates and output are too large to allocate".into())
+        .map_err(Error::ResourceLimit)?;
     const EPS: f64 = 1e-10;
     let clamp = |v: f64, n: usize| v.max(0.0).min((n - 1) as f64) as usize;
     let (x_inc, y_inc) = (fxs / bw as f64, fys / bh as f64);
-    let mut cols = Vec::with_capacity(bw);
+    let mut cols = Vec::new();
+    fallible::reserve(&mut cols, bw, "nearest-neighbour columns")?;
     let mut x = 0.5 * x_inc + fx + EPS;
     for _ in 0..bw {
         cols.push(clamp(x, lw));
         x += x_inc;
     }
-    let rows = (0..bh).map(|r| clamp((r as f64 + 0.5) * y_inc + fy + EPS, lh)).collect();
-    (cols, rows)
+    let mut rows = Vec::new();
+    fallible::reserve(&mut rows, bh, "nearest-neighbour rows")?;
+    rows.extend((0..bh).map(|r| clamp((r as f64 + 0.5) * y_inc + fy + EPS, lh)));
+    Ok((cols, rows))
 }
 
 /// Actual decoder windows and their output row/column spans, shared by prefetch and sampling.
@@ -1172,6 +1290,36 @@ fn resample(
         i = j;
     }
     out.ok_or_else(|| Error::InvalidArgument("nothing to resample".into()))
+}
+
+/// Fill selected bands directly in the output type, preserving the empty-window nodata
+/// policy without a full Float64 temporary. Casts match RasterData::from_f64_vec.
+/// Reference: GDAL 3.13.3 RasterIO empty-window nodata fills.
+fn filled_bands(data_type: DataType, n: usize, nodata: &[Option<f64>]) -> Result<RasterData> {
+    let what = "an empty resampled window";
+    let len = fallible::len(&[n, nodata.len()], what)?;
+    macro_rules! fill {
+        ($variant:ident, $sample:ty) => {{
+            let mut values = Vec::new();
+            fallible::reserve(&mut values, len, what)?;
+            for nd in nodata {
+                values.extend(std::iter::repeat_n(nd.unwrap_or(0.0) as $sample, n));
+            }
+            Ok(RasterData::$variant(values))
+        }};
+    }
+    match data_type {
+        DataType::U8 => fill!(U8, u8),
+        DataType::I8 => fill!(I8, i8),
+        DataType::U16 => fill!(U16, u16),
+        DataType::I16 => fill!(I16, i16),
+        DataType::U32 => fill!(U32, u32),
+        DataType::I32 => fill!(I32, i32),
+        DataType::U64 => fill!(U64, u64),
+        DataType::I64 => fill!(I64, i64),
+        DataType::F32 => fill!(F32, f32),
+        DataType::F64 => fill!(F64, f64),
+    }
 }
 
 /// Runs `$body` with `$a` and `$b` the values of two buffers of one type.
@@ -1432,11 +1580,12 @@ mod tests {
     /// GDAL samples columns by repeated addition, rows by multiplication.
     #[test]
     fn nearest_pixels_are_gdals() {
-        let (cols, rows) = nearest_pixels((0.75, 1.25, 13.5, 9.5), (13, 9), (16, 12));
+        let (cols, rows) = nearest_pixels((0.75, 1.25, 13.5, 9.5), (13, 9), (16, 12), Some(13 * 9)).unwrap();
         assert_eq!(cols, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
         assert_eq!(rows, [1, 2, 3, 4, 6, 7, 8, 9, 10]);
         // Clamped to the level.
-        assert_eq!(nearest_pixels((0.0, 0.0, 4.0, 4.0), (8, 8), (4, 4)).0, [0, 0, 1, 1, 2, 2, 3, 3]);
+        assert_eq!(nearest_pixels((0.0, 0.0, 4.0, 4.0), (8, 8), (4, 4), Some(64)).unwrap().0, [0, 0, 1, 1, 2, 2, 3, 3]);
+        assert!(matches!(nearest_pixels((0.0, 0.0, 1.0, 1.0), (usize::MAX, 1), (1, 1), Some(1)), Err(Error::ResourceLimit(_))));
     }
 
     /// The output covers the window at its size, its GCPs scaled with it; bands and the nodata
