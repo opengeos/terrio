@@ -584,7 +584,7 @@ impl LazyRaster {
         let mut r = Self::open_without_sidecars(path).map_err(|e| e.naming_local_file(path))?;
         // What it declares, from its header (a format read whole was checked when it was read).
         crate::declared::check_lazy(&r)?;
-        r.find_sidecar_mask(path);
+        r.find_sidecar_mask(path)?;
         if r.asset_policy.is_none() {
             r.asset_policy = policy;
         }
@@ -594,16 +594,16 @@ impl LazyRaster {
     /// Attaches the `.msk` sidecar of a local file (`dem.tif.msk`, as GDAL writes it when
     /// `GDAL_TIFF_INTERNAL_MASK=NO` or for formats without internal masks) when the raster has
     /// no internal mask and the sidecar is a per-dataset mask of its size.
-    fn find_sidecar_mask(&mut self, path: &str) {
+    fn find_sidecar_mask(&mut self, path: &str) -> Result<()> {
         // Not under `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, where GDAL sees an empty directory
         // and reads no `.msk` (GDAL 3.12.1: the mask is then all valid), nor when the allow-list
         // refuses the sidecar, which GDAL cannot read with its GTiff driver de-registered.
         if self.has_mask() || !Location::parse(path).is_local() || crate::config::sidecars_disabled() {
-            return;
+            return Ok(());
         }
         let msk = format!("{path}.msk");
         if !std::path::Path::new(&msk).is_file() || crate::formats::check_allowed(&msk, Some(crate::formats::Kind::Raster)).is_err() {
-            return;
+            return Ok(());
         }
         // Per-dataset (INTERNAL_MASK_FLAGS_1=2, GMF_PER_DATASET): one mask for every band.
         let per_dataset = crate::geotiff::read_geo_tags(std::path::Path::new(&msk)).is_none_or(|t| {
@@ -616,24 +616,27 @@ impl LazyRaster {
             Inner::Tiff(t) => t.limits,
             _ => TiffReadLimits::default(),
         };
-        if let Ok(Some(m)) = Self::open_tiff_with_limits(&msk, limits)
-            && per_dataset
-            && (m.width(), m.height()) == (self.width(), self.height())
-        {
-            self.sidecar_mask = Some(Box::new(m));
+        match Self::open_tiff_with_limits(&msk, limits) {
+            Ok(Some(m)) if per_dataset && (m.width(), m.height()) == (self.width(), self.height()) => {
+                self.sidecar_mask = Some(Box::new(m));
+            }
+            Err(error) if error.is_resource_refusal() => return Err(error),
+            _ => (),
         }
+        Ok(())
     }
 
     /// Attaches the `.ovr` beside a local GeoTIFF that has no overviews of its own, even under
     /// `TERRIO_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, which keeps an ordinary open from reading it:
     /// for an external refresh over an extent, which keeps that `.ovr`'s pixels outside it
     /// (`ops::overview`).
-    pub(crate) fn attach_managed_ovr(&mut self, path: &str) {
+    pub(crate) fn attach_managed_ovr(&mut self, path: &str) -> Result<()> {
         if let (Inner::Tiff(t), Location::Local(p)) = (&mut self.inner, Location::parse(path)) {
             let mut ovr = p.into_os_string();
             ovr.push(".ovr");
-            t.attach_ovr(std::path::Path::new(&ovr));
+            t.attach_ovr(std::path::Path::new(&ovr))?;
         }
+        Ok(())
     }
 
     fn open_without_sidecars(path: &str) -> Result<Self> {
@@ -747,7 +750,7 @@ impl LazyRaster {
         {
             let mut ovr = p.as_os_str().to_owned();
             ovr.push(".ovr");
-            t.attach_ovr(std::path::Path::new(&ovr));
+            t.attach_ovr(std::path::Path::new(&ovr))?;
         }
         Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() }))
     }
@@ -2414,17 +2417,21 @@ impl TiffRaster {
 
     /// Takes the images of a GDAL `.ovr` file as overviews, as GDAL does when the TIFF has none
     /// of its own, when they have the TIFF's bands and type.
-    fn attach_ovr(&mut self, path: &std::path::Path) {
+    fn attach_ovr(&mut self, path: &std::path::Path) -> Result<()> {
         if self.levels.len() > 1 || !path.is_file() {
-            return;
+            return Ok(());
         }
-        let Ok(file) = std::fs::File::open(path) else { return };
-        let Ok(mut ovr) = TiffRaster::new(Source::File(BufReader::new(crate::geotiff::FileCursor::new(file))), None, self.limits) else {
-            return;
+        let Ok(file) = std::fs::File::open(path) else { return Ok(()) };
+        let mut ovr = match TiffRaster::new(Source::File(BufReader::new(crate::geotiff::FileCursor::new(file))), None, self.limits) {
+            Ok(ovr) => ovr,
+            Err(error) if error.is_resource_refusal() => return Err(error),
+            Err(_) => return Ok(()),
         };
         if ovr.bands != self.bands || ovr.data_type != self.data_type || ovr.complex != self.complex {
-            return;
+            return Ok(());
         }
+        let first = &ovr.levels[0];
+        crate::declared::check(first.width, first.height, ovr.bands, ovr.data_type, ovr.complex)?;
         ovr.file = Some(path.to_path_buf());
         for (i, l) in ovr.levels.iter().enumerate() {
             // GDAL accepts all matching-band/type images, including irregular,
@@ -2448,7 +2455,7 @@ impl TiffRaster {
         ovr.files.push(path.to_string_lossy().into_owned());
         let mut view =
             LazyRaster { inner: Inner::Tiff(Box::new(ovr)), sidecar_mask: None, asset_policy: crate::stac::AssetReadPolicy::current() };
-        view.find_sidecar_mask(&path.to_string_lossy());
+        view.find_sidecar_mask(&path.to_string_lossy())?;
         let files = view.file_list().unwrap_or_else(|_| vec![path.to_string_lossy().into_owned()]);
         // Listed after the TIFF, as GDAL lists it.
         let at = self.files.len().min(1);
@@ -2456,6 +2463,7 @@ impl TiffRaster {
         self.ovr_mask = view.sidecar_mask;
         let Inner::Tiff(ovr) = view.inner else { unreachable!() };
         self.ovr = Some(ovr);
+        Ok(())
     }
 
     fn tags_at_level(&self, level: usize) -> &GeoTags {

@@ -114,7 +114,15 @@ impl VrtDataset {
     #[cfg(not(target_family = "wasm"))]
     pub fn open(path: &str) -> Result<Self> {
         crate::formats::check_driver_allowed("VRT", path, crate::formats::Kind::Raster)?;
-        Self::from_xml(&std::fs::read_to_string(path)?)
+        let dataset = Self::from_xml(&std::fs::read_to_string(path)?)?;
+        crate::declared::check(
+            dataset.width,
+            dataset.height,
+            dataset.bands.len(),
+            common_type(dataset.bands.iter().map(|b| b.data_type)),
+            false,
+        )?;
+        Ok(dataset)
     }
 
     /// Parses a VRT description. Under a process-wide raster allow-list, only with the VRT driver

@@ -1567,6 +1567,7 @@ class DatasetReader(DatasetBase):
             fw = (window.col_off, window.row_off, window.width, window.height)
         if buf[0] <= 0 or buf[1] <= 0:
             return np.zeros((len(indexes), max(buf[0], 0), max(buf[1], 0)), self._dtype)
+        _check_buffer(len(indexes), buf[0], buf[1], np.dtype(self._dtype).itemsize)
         if fw[2] <= 0 or fw[3] <= 0:
             return np.zeros((len(indexes), buf[0], buf[1]), self._dtype)
         core = self._core_resampled(fw, buf, resampling)
@@ -1896,6 +1897,7 @@ class DatasetReader(DatasetBase):
             buf = (int(out_shape[-2]), int(out_shape[-1]))
         else:
             buf = win_shape
+        _check_buffer(len(idx), max(buf[0], 0), max(buf[1], 0), np.dtype(dtype).itemsize)
         nodatavals = [self.nodatavals[b - 1] for b in idx]
         fill = None if not nodatavals else nodatavals[-1]
         if fill is not None and not np.isnan(fill):
@@ -1993,6 +1995,10 @@ class DatasetReader(DatasetBase):
             tuple: The pixels `(bands, h, w)` and where they are inside the raster.
         """
         bh, bw = buf
+        _check_buffer(len(idx), bh, bw, np.dtype(self._dtype).itemsize)
+        _check_buffer(len(idx), bh, bw, 1)
+        _check_buffer(1, 1, bw, 8)
+        _check_buffer(1, 1, bh, 8)
         sx, sy = win.width / bw if bw else 1.0, win.height / bh if bh else 1.0
         # Output pixels whose centres fall inside the raster.
         cx = win.col_off + (np.arange(bw) + 0.5) * sx

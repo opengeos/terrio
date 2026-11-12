@@ -1106,6 +1106,37 @@ fn header(cols: usize, rows: usize, bands: usize) -> RasterDataset {
     RasterDataset::new(raster, false)
 }
 
+/// GDAL 3.13.3 exposes a sidecar mask as part of the raster, not as all-valid fallback.
+#[test]
+fn sidecar_mask_declaration_refusals_are_not_discarded() {
+    let _serial = serial();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("masked.tif");
+    let mut image = header(16, 16, 1);
+    image.raster.data = RasterData::U8(vec![1; 256]);
+    let options = RasterWriteOptions { driver: Some(RasterDriver::GTiff), ..Default::default() };
+    terrio::write_raster_dataset(&image, path.to_str().unwrap(), &options).unwrap();
+    let mut mask = image.clone();
+    mask.raster.data_type = DataType::U16;
+    mask.raster.data = RasterData::U16(vec![1; 256]);
+    let sidecar = directory.path().join("masked.tif.msk");
+    terrio::write_raster_dataset(&mask, sidecar.to_str().unwrap(), &options).unwrap();
+    let result = scoped(&[("TERRIO_MAX_DECLARED_BYTES", "256")], || terrio::open_raster_lazy(path.to_str().unwrap()));
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))));
+}
+
+/// GDAL 3.13.3's VRT header declares its promoted band type without reading sources.
+#[test]
+fn opening_a_vrt_description_checks_its_declaration() {
+    let _serial = serial();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("header.vrt");
+    std::fs::write(&path, "<VRTDataset rasterXSize=\"32\" rasterYSize=\"16\"><VRTRasterBand dataType=\"UInt16\" band=\"1\"/></VRTDataset>")
+        .unwrap();
+    let result = scoped(&[("TERRIO_MAX_DECLARED_BYTES", "512")], || terrio::ops::vrt::VrtDataset::open(path.to_str().unwrap()));
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))));
+}
+
 /// The GeoTIFF and COG writers that operations stream their output to (`terrio translate` and
 /// `convert`, `GeoTiffWriter`) keep a row of their blocks of every band until it is complete, held
 /// twice while a strip is appended: a writer whose rows cannot fit in the usable memory is refused

@@ -7,6 +7,33 @@ import terrio
 import terrio.rio
 
 
+@pytest.mark.parametrize("route", ["converted-output", "fallback", "boundless"])
+def test_read_buffers_are_refused_before_allocation(tmp_path, monkeypatch, route):
+    """Check memory admission before Python read-buffer allocation.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+        monkeypatch: Scoped monkeypatch fixture.
+        route: Output allocation path to exercise.
+    """
+    from terrio.rio.enums import Resampling
+    from terrio.rio.windows import Window
+
+    path = tmp_path / "small.tif"
+    terrio.Raster.from_array(np.ones((1, 1), dtype="uint8"), (0, 1, 0, 1, 0, -1)).write(str(path))
+    with terrio.rio.open(path) as source:
+        monkeypatch.setattr(terrio._terrio, "usable_memory", lambda: 1 << 20)
+        with pytest.raises(terrio.ResourceLimitError):
+            if route == "converted-output":
+                source.read(out_shape=(2048, 2048), out_dtype="float64")
+            elif route == "fallback":
+                source._io([1], None, (4097, 4096), Resampling.nearest)
+            else:
+                source._boundless(
+                    [1], Window(-1, -1, 4096, 4097), (4097, 4096), Resampling.nearest, None
+                )
+
+
 @pytest.fixture(params=[("GTiff", "tif"), ("PNG", "png"), ("ENVI", "dat"), ("EHdr", "bil")])
 def declared_raster(request, tmp_path, gdal):
     """Create independent UInt16 RGB controls with 3,072 declared sample bytes."""
