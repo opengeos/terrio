@@ -205,17 +205,23 @@ interleaving and NONE, LZW, DEFLATE, PACKBITS or ZSTD compression. Packed sample
 `PREDICTOR=1` when compression uses a predictor; NONE ignores it. GDAL emits an
 ignored-option warning for NONE, while Terrio retains its existing quiet behavior.
 Signed, floating-point and complex `NBITS` requests are refused.
-Unscaled CUBIC/cubic-spline/Lanczos translation to Byte/UInt16/UInt32 output respects the source
-packed domain, consistently for eager and lazy reads. Signed/floating outputs and scaled
+With GDAL 3.13 compatibility selected, unscaled CUBIC/cubic-spline/Lanczos translation
+to Byte/UInt16/UInt32 output respects the source packed domain, consistently for
+eager and lazy reads. Signed/floating outputs and scaled
 work retain their interpolation range before final conversion, as in GDAL 3.13.3.
 Type-changing translations also retain interpolation precision for unpacked sources
-before the final output conversion.
+before the final output conversion in that mode. With the default GDAL 3.12
+compatibility mode, these convolution kernels first round and clamp to the source
+type and stored bit width, then scale or convert the result. Select the reference
+version with `TERRIO_GDAL_COMPAT=3.12` or `3.13`.
 Generated CUBIC overviews can reach a packed limit even when the base samples fit.
 The four-bit bright-edge conformance control matches an independent GDAL 3.13.3
 pyramid exactly; Terrio reports encode-time clipping where the reference is quiet.
 Values above the stored unsigned maximum are clipped, as in GDAL 3.13.3. Palettes
 have exactly `2**NBITS` entries. Copies retain a compatible source bit width unless
 the caller overrides `NBITS`; a bilevel palette therefore stays a two-entry palette.
+This inheritance also covers unsigned widths reported by other supported sources,
+including 15-bit JPEG 2000 windows copied to GeoTIFF or COG.
 Implicit inheritance is omitted when nodata cannot fit the stored domain. A COG copy
 carrying wider source overviews uses their widest stored width by default; an explicit
 narrower width is refused when copied descendant overview values would be clipped.

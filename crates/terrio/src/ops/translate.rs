@@ -23,6 +23,7 @@
 use super::Ct as Transformer;
 use super::overview::OverviewSelection;
 use super::vrt::SourceRead;
+use super::warp::KernelVersion;
 use super::{Grid, Resampling, convert_value, type_range};
 use crate::crs::SpatialRef;
 use crate::{Error, LazyRaster, RasterDataset, ResampledReadOptions, Result};
@@ -364,6 +365,10 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
     };
 
     let complex = o.scale.is_some() || o.exponent.is_some();
+    let convolution = matches!(o.resampling, Some(Resampling::Cubic | Resampling::CubicSpline | Resampling::Lanczos));
+    // GDAL 3.12 converts convolution results to the source type before VRT scaling
+    // or output conversion. GDAL 3.13 preserves the floating working values.
+    let legacy_convolution = convolution && KernelVersion::configured() == KernelVersion::Gdal312;
     let n = crate::dataset::fallible::len(&[ow, oh], "a translated raster")?;
     let in_place = pixels.is_some();
     let mut out = match pixels {
@@ -398,7 +403,7 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
             src_rect: s,
             dst_rect: d,
             resampling: o.resampling.unwrap_or_default(),
-            working_float: complex || out_type != r.data_type,
+            working_float: !legacy_convolution && (complex || out_type != r.data_type),
             invalid_value: if complex { None } else { src_nodata },
             within_rects: false,
         };
@@ -442,10 +447,10 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
         };
         // GDAL 3.13.3 resamples SimpleSource unsigned outputs in their packed domain.
         // ComplexSource scaling and signed/floating outputs keep their working overshoot.
-        let maximum = (!complex && matches!(o.resampling, Some(Resampling::Cubic | Resampling::CubicSpline | Resampling::Lanczos)))
-            .then(|| ds.band_sample_bits(b - 1))
-            .flatten()
-            .and_then(|bits| crate::drivers::gdal_overview::nbits_max(u32::from(bits), out_type));
+        // GDAL 3.12.1 instead clamps to source NBITS before scaling or retyping.
+        let maximum = (convolution && (legacy_convolution || !complex)).then(|| ds.band_sample_bits(b - 1)).flatten().and_then(|bits| {
+            crate::drivers::gdal_overview::nbits_max(u32::from(bits), if legacy_convolution { r.data_type } else { out_type })
+        });
         let packed = |value: f64| match maximum {
             Some(maximum) if !src_nodata.is_some_and(|nd| value == nd || (value.is_nan() && nd.is_nan())) => value.clamp(0.0, maximum),
             _ => value,
@@ -967,6 +972,43 @@ fn fix_windows(s: &mut [f64; 4], d: &mut [f64; 4], w: f64, h: f64) -> bool {
 mod tests {
     use super::*;
     use wbraster::{Raster, RasterConfig};
+
+    /// GDAL 3.12.1 reference values preserve source-type conversion before scaling/retyping.
+    #[test]
+    fn convolution_retyping_uses_the_configured_source_precision() {
+        let reference: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/data/translate_convolution_source_precision.json")).unwrap();
+        for case in reference["cases"].as_array().unwrap() {
+            let bits = case["bits"].as_u64().unwrap() as u16;
+            let maximum = ((1u16 << bits) - 1) as u8;
+            let config = RasterConfig { cols: 8, rows: 4, bands: 1, data_type: DataType::U8, ..Default::default() };
+            let values = [0, 0, 0, maximum, maximum, 0, 0, 0].repeat(4);
+            let mut source = RasterDataset::new(Raster::from_data_native(config, RasterData::U8(values)).unwrap(), false);
+            source.set_sample_bits(bits);
+            let kernel = match case["kernel"].as_str().unwrap() {
+                "cubic" => Resampling::Cubic,
+                "cubicspline" => Resampling::CubicSpline,
+                "lanczos" => Resampling::Lanczos,
+                _ => unreachable!(),
+            };
+            let row: Vec<f64> = case["row"].as_array().unwrap().iter().map(|value| value.as_f64().unwrap()).collect();
+            for scale in [None, Some(Scale { src: Some((0.0, 15.0)), dst: Some((0.0, 30.0)) })] {
+                let options = TranslateOptions {
+                    out_size: Some((Size::Pixels(32), Size::Pixels(4))),
+                    output_type: Some(DataType::F32),
+                    resampling: Some(kernel),
+                    scale,
+                    ..Default::default()
+                };
+                let legacy = crate::config::with_options(&[("TERRIO_GDAL_COMPAT", "3.12")], || translate(&source, &options).unwrap());
+                let factor = if options.scale.is_some() { 2.0 } else { 1.0 };
+                let expected: Vec<f64> = row.iter().map(|value| value * factor).collect::<Vec<_>>().repeat(4);
+                assert_eq!(legacy.raster.data.to_f64_vec(), expected, "{bits} {kernel:?} scale={factor}");
+                let modern = crate::config::with_options(&[("TERRIO_GDAL_COMPAT", "3.13")], || translate(&source, &options).unwrap());
+                assert!(modern.raster.data.to_f64_vec().iter().any(|value| value.fract() != 0.0), "{bits} {kernel:?} scale={factor}");
+            }
+        }
+    }
 
     /// GDAL 3.13.3 clamps unscaled unsigned CUBIC reads of a MEM band carrying NBITS.
     #[test]

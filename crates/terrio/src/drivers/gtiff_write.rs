@@ -1238,7 +1238,8 @@ fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels
     let tile = opts.tile_size.unwrap_or(512) as usize;
     // GDAL 3.13.3 generates a missing mask pyramid only beyond the output tile.
     // Smaller sources retain all-valid missing masks even when image overviews exist.
-    let own_masks = (first..sizes.len()).any(|i| src.level_has_own_mask(i)) || (has_base_mask && width <= tile && height <= tile);
+    let preserve_level_masks =
+        (first..sizes.len()).any(|i| src.level_has_own_mask(i)) || (has_base_mask && width <= tile && height <= tile);
     let block = gdal_overview::ovr_block(opts.source_block);
     for (i, (w, h)) in sizes.into_iter().enumerate().skip(first) {
         let level = src.read_window(crate::Window::full(w, h), &crate::WindowOptions { bands: Vec::new(), overview: Some(i) })?;
@@ -1257,7 +1258,7 @@ fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels
             }
         }
         if !masks.is_empty() {
-            let m = if own_masks {
+            let m = if preserve_level_masks {
                 src.read_level_mask(crate::Window::full(w, h), Some(i))?.unwrap_or_else(|| vec![255; w * h])
             } else {
                 let mi = if levels.last().is_some_and(|l| l.cols > w) { levels.len() - 1 } else { 0 };
@@ -4606,6 +4607,48 @@ mod tests {
         assert_eq!(masks.iter().map(Vec::len).collect::<Vec<_>>(), vec![32 * 32, 16 * 16, 8 * 8]);
         assert!(masks[1].iter().all(|&value| value == 0));
         assert!(masks[2].iter().all(|&value| value == 255));
+    }
+
+    /// GDAL 3.13.3 generates missing mask levels when the base exceeds an output tile.
+    #[test]
+    fn copied_overviews_generate_masks_for_sources_larger_than_a_tile() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("generated-masks.tif");
+        let raster = Raster::from_data_native(
+            wbraster::RasterConfig { cols: 64, rows: 64, bands: 1, data_type: DataType::U8, ..Default::default() },
+            RasterData::U8(vec![7; 64 * 64]),
+        )
+        .unwrap();
+        let options = TiffOptions { tile_size: Some(16), ..Default::default() };
+        let layout = plan(&raster, &options).unwrap().layout;
+        let base_mask: Vec<u8> = (0..64 * 64).map(|index| if index % 64 < 32 { 255 } else { 0 }).collect();
+        let mut images = Vec::new();
+        for (index, size) in [64, 32, 16].into_iter().enumerate() {
+            let level = Level { cols: size, rows: size, bands: 1, data: std::borrow::Cow::Owned(RasterData::U8(vec![7; size * size])) };
+            let mut image = level.image(DataType::U8, options.compression, &options.codec, &layout).unwrap();
+            if index > 0 {
+                image.tags.push((254, Value::Longs(vec![1])));
+                image.tags.sort_by_key(|(tag, _)| *tag);
+            }
+            images.push(image);
+            if index == 0 {
+                images.push(mask_image(&base_mask, size, size, (size, size, false)).unwrap());
+            }
+        }
+        let mut bytes = Vec::new();
+        assemble(images, false, false, &mut bytes).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        let mut levels = vec![Level::from_raster(&raster)];
+        let mut masks = vec![base_mask];
+        copy_source_overviews(path.to_str().unwrap(), &raster, &options, &mut levels, &mut masks).unwrap();
+        assert_eq!(masks.len(), 3);
+        for (mask, width) in masks[1..].iter().zip([32, 16]) {
+            assert_eq!(mask.len(), width * width);
+            assert!(
+                mask.chunks_exact(width)
+                    .all(|row| row[..width / 2].iter().all(|&value| value == 255) && row[width / 2..].iter().all(|&value| value == 0))
+            );
+        }
     }
 
     /// Streamed mask values are read as the whole writer reads them: any nonzero value is valid
