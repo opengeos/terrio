@@ -259,9 +259,15 @@ def test_read_only_cint32_wide_output_keeps_integer_components(tmp_path, gdal, m
     np.testing.assert_array_equal(actual, expected)
 
 
-@pytest.mark.parametrize("dtype", ["float64", "int32"])
+@pytest.mark.parametrize("dtype", ["float64", "int32", "uint32", "int64", "uint64"])
 def test_read_only_cint32_real_output_keeps_integer_components(tmp_path, gdal, dtype):
-    """Real outputs holding every Int32 component read the real parts exactly, as GDAL does."""
+    """Read Int32 real parts without a float32 intermediate, as GDAL does.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+        gdal: GDAL reference module.
+        dtype: Real NumPy output type that can hold the positive test values.
+    """
     values = (np.arange(2 * 19 * 37).reshape(2, 19, 37).astype("float64") + 2**24 + 1) * (1 - 1j)
     values[0, 0, 0] = (2**31 - 1) - (2**31) * 1j
     path = tmp_path / "read-only-real.tif"
@@ -274,6 +280,13 @@ def test_read_only_cint32_real_output_keeps_integer_components(tmp_path, gdal, d
         actual = source.read(out_dtype=dtype)
     assert actual.dtype == np.dtype(dtype)
     np.testing.assert_array_equal(actual, values.real.astype(dtype))
+    for source in (
+        terrio.open_raster(str(path)),
+        terrio.Raster.from_array(values, GT, complex_dtype="CInt32"),
+    ):
+        actual = source.read(out_dtype=dtype)
+        assert actual.dtype == np.dtype(dtype)
+        np.testing.assert_array_equal(actual, values.real.astype(dtype))
 
 
 @pytest.mark.parametrize("byteorder", ["<", ">"])

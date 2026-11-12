@@ -604,7 +604,7 @@ impl PyRaster {
         let py = slf.py();
         let out_dtype = out_dtype.map(|d| py.import("numpy")?.call_method1("dtype", (d,))).transpose()?;
         let dtype_name = out_dtype.as_ref().map(|d| d.getattr("name")?.extract::<String>()).transpose()?;
-        let double = dtype_name.as_deref() == Some("complex128");
+        let double = matches!(dtype_name.as_deref(), Some("complex128" | "float64" | "int32" | "uint32" | "int64" | "uint64"));
         let (mut bands, single) = parse_bands(band)?;
         Self::with_reader(slf, |inner| {
             let complex = inner.is_complex();
