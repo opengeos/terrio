@@ -50,6 +50,7 @@ pub mod sqlite;
 pub mod tab;
 pub mod topojson;
 pub mod wfs;
+pub(crate) mod wkb;
 pub mod wkt;
 #[cfg(feature = "xlsx")]
 pub mod xlsx;

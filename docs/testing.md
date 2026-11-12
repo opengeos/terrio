@@ -9,6 +9,21 @@ terrio reproduces the GDAL they compare with (see [warp](cli.md#warp)). Pull req
 compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
 Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
+## GDAL backend date-times
+
+The optional backend reads date-time fields using `OGR_F_GetFieldAsDateTimeEx`,
+retaining GDAL's millisecond precision and raw timezone flag. UTC is written as
+`Z`, explicit offsets are retained, and unknown/local zones remain unqualified.
+Fractions are canonicalized to three decimal digits when nonzero; this does not
+preserve the source's original text spelling or sub-millisecond precision.
+
+`cargo test -p terrio --features gdal --test gdal_backend date_time_fields` checks
+path and byte reads, fractional seconds, UTC, signed and quarter-hour offsets,
+unzoned values and nulls. The native unit test
+`gdal_backend::tests::datetime_field_keeps_gdal_timezone_flags` independently checks
+GDAL-authored in-memory fields with unknown, local and explicit UTC flags.
+These tests use GDAL itself as the typed-field reference; validation uses GDAL 3.13.3.
+
 ## Python warning attribution
 
 `python/tests/test_native_warning_locations.py` checks warnings recorded in Rust
@@ -157,6 +172,26 @@ GDAL:
   RGB), WebP, JPEG XL, LERC (with Deflate and Zstandard, lossy and with NaN masks) and LZMA
 
 ## The conformance suite
+
+JPEG 2000 creation options are checked with
+`python scripts/conformance.py DATA --only jp2-writer --strict`, using the real
+`landsat7.tif` fixture, current Python bindings, pytest and rasterio. Path and memory
+writes check default lossless pixels, lossy quality/rate selection, reversible and
+irreversible filters, progressive quality layers, invalid options, georeferencing,
+types and independent GDAL decoding (reference: GDAL 3.13.3). Encoder byte identity
+with GDAL is not claimed. The corresponding JavaScript/WASM regression is in
+`js/tests/node.test.mjs`.
+
+Standalone WebP creation options are checked with
+`python scripts/conformance.py DATA --only webp-writer --strict`, using the
+`landsat7.tif` downloaded by `scripts/fetch_test_data.sh`. Current Python bindings,
+pytest and rasterio are required. Default/explicit lossless samples are exact;
+requested lossy output changes with quality, keeps alpha exactly, and is decoded
+independently with GDAL (validated locally with GDAL 3.13.3). Path and memory
+outputs agree. Lossy byte streams, size and PSNR are not claimed to match libwebp.
+The shared lossy encoder is also checked through WebAssembly GeoTIFF tiles in
+`js/tests/node.test.mjs`. General `toBytes` and `open` do not support WebP in that
+build; `rasterTiles` can emit standalone WebP bytes through its callback.
 
 CityJSON uses its published schemas and specifications as the reference because
 GDAL 3.13.3 has no CityJSON driver. Prepare the real CityJSON 1.1 Den Haag and 2.0
@@ -2771,6 +2806,34 @@ These check native warning policy, not equality to GDAL's metadata encoding poli
 A projection member with a deliberately wrong CRC checks the WASM memory codec's
 read-error diagnostic; native extraction retains its fatal checksum refusal.
 A separate native memory-codec regression keeps sidecar budget refusals terminal.
+
+## JPEG 2000 channel roles
+
+`python/tests/test_jp2_color_roles.py` checks UInt8/UInt16 path and MemoryFile writes,
+independent GDAL reads, exact masks and a GDAL-authored BGR/ARGB reader regression.
+It also checks inferred and alias drivers and absence of invented GeoJP2 transforms.
+Encoded CDEF/COD checks cover channel associations and RGB component transforms;
+small RGB subsets remain grayscale and duplicate RGB associations are rejected.
+A GDAL-authored BGRA fixture checks stored 8/8/8/1-bit component precisions, alpha
+promotion and masks. The native test checks full and selected-window component order.
+Two Gray components with luminance in either component retain their CDEF association
+through updates and `rio.shutil.copy` (including the alias driver); an explicit color-role
+assignment still selects new associations. Inherited multispectral roles pin the disabled
+multiple-component transform. Source-affine tests check rotated and south-up grids
+through both file and byte exports. Unreferenced sources remain without a transform;
+CRS-only sources retain their existing unit-pixel grid, as specified in #714.
+
+The `jp2-colors` conformance suite writes real Landsat subsets through Python
+paths/bytes, CLI and Node/WASM when its package is available. GDAL independently
+checks exact values, types, masks, roles and either absence of georeferencing or exact
+rotated/south-up affine grids with EPSG:32633; this does
+not claim compressed-byte identity with GDAL's encoder. Copies of real two-component
+subsets also check stored luminance associations through both path and open-reader
+inputs and the JP2 alias driver. Run with GDAL 3.13.3:
+
+```sh
+python scripts/conformance.py ../terrio-data --only jp2-colors --strict
+```
 
 ## Categorical Deflate output
 

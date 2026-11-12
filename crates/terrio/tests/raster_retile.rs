@@ -168,6 +168,7 @@ fn retile_keeps_color_roles_but_drops_source_statistics_and_packing_metadata() {
         description: Some("measurement".into()),
         color_interp: Some("Gray".into()),
         items: vec![("SOURCE".into(), "sensor".into()), ("STATISTICS_MINIMUM".into(), "7".into())],
+        ..Default::default()
     }];
     let mut input = LazyRaster::from(dataset);
     let mut sources = [RetileSource { name: "source.tif".into(), source: &mut input }];
