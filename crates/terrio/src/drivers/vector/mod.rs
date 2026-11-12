@@ -240,7 +240,9 @@ pub(crate) fn read_parts(
     match driver {
         VectorDriver::Shapefile => {
             let dbf = sidecar("dbf");
-            Ok(vec![shapefile::parse(main, dbf.as_deref(), text("prj").as_deref(), text("cpg").as_deref(), stem, &options.shapefile)?])
+            let prj_name = std::path::Path::new(name).with_extension("prj");
+            let prj = sidecar("prj").and_then(|bytes| shapefile::decode_prj(bytes, &prj_name.display().to_string()));
+            Ok(vec![shapefile::parse(main, dbf.as_deref(), prj.as_deref(), text("cpg").as_deref(), stem, &options.shapefile)?])
         }
         VectorDriver::MapInfo if crate::formats::extension(name).as_deref() == Some("tab") => {
             let dat = sidecar("dat").ok_or_else(|| crate::Error::InvalidData(format!("'{name}': no .dat file")))?;

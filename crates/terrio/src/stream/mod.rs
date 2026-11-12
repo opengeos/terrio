@@ -658,7 +658,7 @@ fn open_shapefile(path: &str, options: &crate::VectorOpenOptions) -> Result<(Lay
         }
         None => None,
     };
-    let prj = sidecar("prj").and_then(|p| std::fs::read_to_string(p).ok());
+    let prj = sidecar("prj").as_deref().and_then(shapefile::read_prj);
     if prj.is_some() {
         crate::crs::prefetch();
     }
