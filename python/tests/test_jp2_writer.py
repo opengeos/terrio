@@ -33,8 +33,9 @@ MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
 #   int16 QUALITY=25 9/7:    3 of 4096 samples  (0.07%)  -> limit 0.5% (20 samples, 7x)
 #   uint16 QUALITY=25 9/7:  41 of 4096 samples  (1.0%)   -> limit 2%   (81 samples, 2x)
 # The uint8 limits are 49 samples rather than a few, so a new runner image does not flake on a
-# handful of boundary samples. The limits are looser than that file's 1e-4 because 9/7 output
-# at these qualities sits on rounding boundaries far more often than smooth resampling does.
+# handful of boundary samples. The limits are looser than that file's 1e-4, presumably because
+# 9/7 output at these qualities sits on rounding boundaries more often; that is not measured.
+# The seeds are fixed, so re-measure these counts when the rasterio wheel is upgraded.
 # The trade-off: on macOS arm64 alone, a decoder change moving at most these many samples by
 # one step in these four cases would pass. Linux and Windows compare every case exactly, so it
 # would fail there. Every other case, and the reversible 5/3 path, stays exact everywhere.
@@ -42,7 +43,7 @@ DRIFT_UINT8 = 0.001
 
 
 def assert_decodes_as_gdal(actual, expected, *, macos_drift=0.0, macos_arm=MACOS_ARM):
-    """Assert terrio's decode equals GDAL's.
+    """Assert terrio's decode equals GDAL's, exactly or within the macOS arm64 drift limit.
 
     Args:
         actual: Samples decoded by terrio.
