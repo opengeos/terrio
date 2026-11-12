@@ -1180,7 +1180,8 @@ reads it.
   pyogrio interface warns and returns no CRS if pyproj cannot parse that reference.
 - **Stored vector CRS definitions** in GeoPackage and FlatGeobuf follow the same
   definition-form check as Shapefile: prose and unbalanced WKT are ignored with a
-  warning, while balanced definitions unsupported by Terrio remain stored. A
+  warning, while balanced definitions unsupported by Terrio remain stored. Redundant
+  malformed definitions are ignored silently when FlatGeobuf declares an EPSG code. A
   recognized EPSG authority code takes precedence over the redundant definition.
   FlatGeobuf also retains declared EPSG codes absent from the local registry,
   including when its redundant WKT is absent or invalid.
