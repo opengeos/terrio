@@ -1,0 +1,19 @@
+[package]
+name = "terrio-js-fetch"
+description = "Remote reads through fetch for terrio's WebAssembly modules (no exports of its own)"
+publish = false
+version.workspace = true
+edition.workspace = true
+# This unpublished crate's source is MIT; the outer npm package declares the
+# bundle's compound license and ships all dependency notices.
+license = "MIT"
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+terrio = { path = "../../crates/terrio", default-features = false }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+# `buffer_unordered`: requests in a sliding window (`in_window`).
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }

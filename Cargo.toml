@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "python", "js"]
+members = ["crates/*", "python", "js", "js/fetch", "js/zarr"]
 
 [workspace.package]
 version = "0.8.0"

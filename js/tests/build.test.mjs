@@ -57,10 +57,14 @@ for (const target of ["web", "nodejs", "bundler"]) {
     assert.ok(!files.includes("core"));
   });
 }
-test("standard full/core exports and loader remain available", () => {
+test("standard full/core/zarr exports and loader remain available", () => {
   const { pkg, calls, files } = build(["--no-threads", "--no-memory64"]);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.ok(pkg.exports["./core"]);
+  // terrio-js/zarr: its own crate (js/zarr), built into `zarr/`.
+  assert.deepEqual(pkg.exports["./zarr"], { types: "./zarr/terrio.d.ts", default: "./zarr/terrio.js" });
+  assert.match(calls[2][1], /[\\/]js[\\/]zarr$/);
+  for (const file of ["zarr/terrio.js", "zarr/terrio_bg.wasm", "zarr/terrio.d.ts"]) assert.ok(pkg.files.includes(file), file);
   assert.ok(pkg.exports["./load"]);
   assert.ok(files.includes("load.d.ts"));
   // Each module's glue imports its own snippets.

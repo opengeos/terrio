@@ -1652,7 +1652,7 @@ struct GeoZarr {
     crs: Option<CrsInfo>,
 }
 
-fn geozarr(attrs: &[&Value], shape: impl Fn(&str, &str) -> Option<(usize, usize)>) -> GeoZarr {
+fn geozarr<const ENGINE: bool>(attrs: &[&Value], shape: impl Fn(&str, &str) -> Option<(usize, usize)>) -> GeoZarr {
     let mut g = GeoZarr::default();
     let first = |key: &str| attrs.iter().map(|a| &a[key]).find(|v| !v.is_null());
     if let Some(d) = first("spatial:dimensions").and_then(Value::as_array).filter(|d| d.len() >= 2) {
@@ -1682,18 +1682,26 @@ fn geozarr(attrs: &[&Value], shape: impl Fn(&str, &str) -> Option<(usize, usize)
         let (x0, y0) = if node { (b[0] - rx / 2.0, b[3] + ry / 2.0) } else { (b[0], b[3]) };
         g.gt = Some([x0, rx, 0.0, y0, 0.0, -ry]);
     }
-    g.crs = attrs.iter().find_map(|a| proj_crs(a));
+    g.crs = attrs.iter().find_map(|a| proj_crs::<ENGINE>(a));
     g
 }
 
 /// The CRS of `proj:` attributes (`proj:code`, `proj:wkt2`, `proj:projjson`, or the EOPF
-/// samples' `proj:epsg`).
-fn proj_crs(a: &Value) -> Option<CrsInfo> {
+/// samples' `proj:epsg`). Without the CRS engine (`ENGINE` false), only the EPSG code they name.
+fn proj_crs<const ENGINE: bool>(a: &Value) -> Option<CrsInfo> {
     use crate::crs::SpatialRef;
+    if !ENGINE {
+        let code = a["proj:code"]
+            .as_str()
+            .and_then(epsg_code)
+            .or_else(|| a["proj:epsg"].as_u64().and_then(|c| u32::try_from(c).ok()))
+            .or_else(|| crate::drivers::vector::projjson::epsg(&a["proj:projjson"]))?;
+        return Some(epsg_only(code));
+    }
     let s = if let Some(code) = a["proj:code"].as_str() {
         SpatialRef::parse(code).ok()?
     } else if let Some(code) = a["proj:epsg"].as_u64() {
-        SpatialRef::from_epsg(code as u32).ok()?
+        SpatialRef::from_epsg(u32::try_from(code).ok()?).ok()?
     } else if let Some(w) = a["proj:wkt2"].as_str() {
         SpatialRef::from_wkt(w)
     } else if a["proj:projjson"].is_object() {
@@ -1975,6 +1983,12 @@ impl crate::cog::WindowSource for ZarrSource {
 
 /// Opens the raster of a store, group or array node: its header (without pixels) and reader.
 fn open_node(node: &Node, list_subdatasets: bool) -> Result<(RasterDataset, ZarrSource)> {
+    open_node_with::<true>(node, list_subdatasets)
+}
+
+/// [`open_node`], the CRS resolved by terrio's CRS engine or (`ENGINE` false) reduced to the EPSG
+/// code the store names: neither CF grid mapping parameters nor a GDAL sidecar are then read.
+fn open_node_with<const ENGINE: bool>(node: &Node, list_subdatasets: bool) -> Result<(RasterDataset, ZarrSource)> {
     let (array, group, ms) = locate(node)?;
     let nd = array.shape.len();
     if nd < 2 {
@@ -1989,7 +2003,7 @@ fn open_node(node: &Node, list_subdatasets: bool) -> Result<(RasterDataset, Zarr
     let null = Value::Null;
     let attr_sets: Vec<&Value> = vec![&array.attrs, &group_attrs_v, level_item.unwrap_or(&null), &ms_attrs];
     let dim_size = |name: &str| array.dims.iter().position(|d| d == name).map(|i| array.shape[i]);
-    let geo = geozarr(&attr_sets, |y, x| Some((dim_size(y)?, dim_size(x)?)));
+    let geo = geozarr::<ENGINE>(&attr_sets, |y, x| Some((dim_size(y)?, dim_size(x)?)));
     let (xd, yd) = axes(&array, &attr_sets);
     let bds: Vec<usize> = (0..nd).filter(|d| *d != xd && *d != yd).collect();
     let (cols, rows) = (array.shape[xd], array.shape[yd]);
@@ -2025,8 +2039,9 @@ fn open_node(node: &Node, list_subdatasets: bool) -> Result<(RasterDataset, Zarr
         }
         None
     };
-    if let Some(gm) = array.attrs["grid_mapping"].as_str().and_then(sibling) {
-        if crs.is_none() {
+    // Without the CRS engine, the grid mapping is read for its geotransform alone.
+    if let Some(gm) = array.attrs["grid_mapping"].as_str().filter(|_| ENGINE || gt.is_none()).and_then(sibling) {
+        if ENGINE && crs.is_none() {
             // Its WKT, or its CF parameters (as GDAL reads them).
             let numbers = |k: &str| match &gm.attrs[k] {
                 Value::Number(n) => n.as_f64().map(|v| vec![v]),
@@ -2061,9 +2076,10 @@ fn open_node(node: &Node, list_subdatasets: bool) -> Result<(RasterDataset, Zarr
         }
     }
     if crs.is_none() {
-        crs = crs_attribute(&array.attrs["_CRS"]);
+        crs = crs_attribute::<ENGINE>(&array.attrs["_CRS"]);
     }
-    if crs.is_none()
+    if ENGINE
+        && crs.is_none()
         && array.key_prefix.starts_with('c')
         && let Some(g) = &group
     {
@@ -2188,7 +2204,8 @@ fn band_dim_metadata(array: &Array, bds: &[usize], coord: impl Fn(usize) -> Opti
 /// dimension names.
 fn axes(a: &Array, attrs: &[&Value]) -> (usize, usize) {
     let nd = a.shape.len();
-    let geo = geozarr(attrs, |_, _| None);
+    // Its dimensions alone: without the CRS engine, which builds without it leave out.
+    let geo = geozarr::<false>(attrs, |_, _| None);
     let by_name = |n: &str| a.dims.iter().position(|d| d == n);
     if let Some(d) = geo.dims.as_ref().and_then(|(y, x)| Some((by_name(x)?, by_name(y)?))) {
         return d;
@@ -2297,17 +2314,186 @@ pub(crate) fn open_named(name: &str) -> Option<Result<RasterDataset>> {
     )
 }
 
-/// The CRS of a GDAL `_CRS` attribute: its URL, PROJJSON identifier or WKT.
-fn crs_attribute(v: &Value) -> Option<CrsInfo> {
-    if let Some(code) = v["url"].as_str().and_then(|u| u.rsplit('/').next()).and_then(|c| c.parse::<u32>().ok()) {
-        return Some(crate::crs::epsg_crs_info(code));
+/// The CRS of a GDAL `_CRS` attribute: its URL, PROJJSON identifier or WKT. Without the CRS
+/// engine (`ENGINE` false), only the EPSG code of its URL or identifier.
+fn crs_attribute<const ENGINE: bool>(v: &Value) -> Option<CrsInfo> {
+    let info = |code: u32| if ENGINE { crate::crs::epsg_crs_info(code) } else { epsg_only(code) };
+    if let Some(code) = v["url"].as_str().and_then(epsg_code) {
+        return Some(info(code));
     }
     if v["projjson"]["id"]["authority"].as_str() == Some("EPSG")
         && let Some(code) = v["projjson"]["id"]["code"].as_u64()
     {
-        return Some(crate::crs::epsg_crs_info(code as u32));
+        return Some(info(u32::try_from(code).ok()?));
+    }
+    if !ENGINE {
+        return None;
     }
     v["wkt"].as_str().and_then(common::crs_from_text)
+}
+
+/// A CRS known by its EPSG code alone, without its WKT.
+fn epsg_only(code: u32) -> CrsInfo {
+    CrsInfo { epsg: Some(code), wkt: None, proj4: None }
+}
+
+/// The EPSG code of an authority code such as `EPSG:32631`.
+fn epsg_code(s: &str) -> Option<u32> {
+    if let Some((scheme, path)) = s.split_once("://") {
+        if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+            return None;
+        }
+        let mut parts = path.split('/');
+        if !parts.next()?.eq_ignore_ascii_case("www.opengis.net")
+            || parts.next()? != "def"
+            || parts.next()? != "crs"
+            || !parts.next()?.eq_ignore_ascii_case("EPSG")
+        {
+            return None;
+        }
+        let _version = parts.next()?;
+        let code = parts.next()?.parse().ok()?;
+        return parts.next().is_none().then_some(code);
+    }
+    let (authority, code) = s.rsplit_once(':')?;
+    let authority = match authority.rsplit_once(':') {
+        Some((prefix, _version)) => {
+            let (namespace, authority) = prefix.rsplit_once(':')?;
+            if !namespace.eq_ignore_ascii_case("urn:ogc:def:crs") {
+                return None;
+            }
+            authority
+        }
+        None => authority,
+    };
+    authority.eq_ignore_ascii_case("EPSG").then(|| code.parse().ok()).flatten()
+}
+
+/// A Zarr array of a store whose objects the caller fetches ([`crate::sparse::SparseObjects`]),
+/// read by window straight from its chunks: [`crate::LazyRaster::from_zarr_objects`] without the
+/// `LazyRaster` around it, for builds that keep nothing but Zarr reading (terrio-js/zarr). Opening
+/// and reads fail until the objects they need are fetched, and are then run again.
+pub struct ZarrArray {
+    header: RasterDataset,
+    source: ZarrSource,
+}
+
+impl ZarrArray {
+    /// Opens the array `key` (or the single array of a group, with consolidated metadata) of a
+    /// store named `name` in messages, its CRS resolved as [`crate::LazyRaster::from_zarr_objects`]
+    /// resolves it.
+    ///
+    /// # Examples
+    ///
+    /// Fetch whole objects from an unsharded local store; an HTTP caller can fetch the
+    /// same requested keys through its own transport.
+    ///
+    /// ```no_run
+    /// use std::{path::Path, sync::Arc};
+    /// use terrio::{ZarrArray, Window};
+    /// use terrio::sparse::{ObjectRange, SparseObjects};
+    ///
+    /// let objects = Arc::new(SparseObjects::new());
+    /// let _pixels = loop {
+    ///     let result = (|| {
+    ///         let mut array = ZarrArray::open_objects(objects.clone(), "store.zarr", "a")?;
+    ///         array.read(Window::new(0, 0, 1, 1), &[1])
+    ///     })();
+    ///     if !objects.has_missing() {
+    ///         break result?;
+    ///     }
+    ///     for (key, range) in objects.missing() {
+    ///         if range != ObjectRange::Whole {
+    ///             return Err(std::io::Error::other("example expects an unsharded array").into());
+    ///         }
+    ///         let data = match std::fs::read(Path::new("store.zarr").join(&key)) {
+    ///             Ok(bytes) => Some(bytes),
+    ///             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+    ///             Err(error) => return Err(error.into()),
+    ///         };
+    ///         objects.insert(&key, range, data);
+    ///     }
+    /// };
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
+    pub fn open_objects(objects: std::sync::Arc<crate::sparse::SparseObjects>, name: &str, key: &str) -> Result<Self> {
+        Self::open::<true>(objects, name, key)
+    }
+
+    /// [`ZarrArray::open_objects`], the CRS reduced to the EPSG code the store names (`proj:code`,
+    /// `proj:epsg`, a PROJJSON identifier, the URL or identifier of GDAL's `_CRS`): no WKT is read
+    /// or made, so builds that call only this leave terrio's CRS engine out. A CF grid mapping is
+    /// read only for its `GeoTransform`, when the array has none; GDAL's `pam.aux.xml` sidecar is
+    /// not read. [`ZarrArray::attributes`] has the array's own.
+    ///
+    /// # Examples
+    ///
+    /// Fetch whole objects from an unsharded local store; an HTTP caller can fetch the
+    /// same requested keys through its own transport.
+    ///
+    /// ```no_run
+    /// use std::{path::Path, sync::Arc};
+    /// use terrio::{ZarrArray, Window};
+    /// use terrio::sparse::{ObjectRange, SparseObjects};
+    ///
+    /// let objects = Arc::new(SparseObjects::new());
+    /// let _pixels = loop {
+    ///     let result = (|| {
+    ///         let mut array = ZarrArray::open_objects_epsg_only(objects.clone(), "store.zarr", "a")?;
+    ///         array.read(Window::new(0, 0, 1, 1), &[1])
+    ///     })();
+    ///     if !objects.has_missing() {
+    ///         break result?;
+    ///     }
+    ///     for (key, range) in objects.missing() {
+    ///         if range != ObjectRange::Whole {
+    ///             return Err(std::io::Error::other("example expects an unsharded array").into());
+    ///         }
+    ///         let data = match std::fs::read(Path::new("store.zarr").join(&key)) {
+    ///             Ok(bytes) => Some(bytes),
+    ///             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+    ///             Err(error) => return Err(error.into()),
+    ///         };
+    ///         objects.insert(&key, range, data);
+    ///     }
+    /// };
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
+    pub fn open_objects_epsg_only(objects: std::sync::Arc<crate::sparse::SparseObjects>, name: &str, key: &str) -> Result<Self> {
+        Self::open::<false>(objects, name, key)
+    }
+
+    fn open<const ENGINE: bool>(objects: std::sync::Arc<crate::sparse::SparseObjects>, name: &str, key: &str) -> Result<Self> {
+        crate::formats::check_driver_allowed("Zarr", "a Zarr store", crate::formats::Kind::Raster)?;
+        let node = Node::sparse(objects.clone(), name, key)?;
+        let (header, source) = open_node_with::<ENGINE>(&node, false)?;
+        if objects.has_missing() {
+            return Err(bad("Zarr opening requires objects not fetched yet"));
+        }
+        Ok(Self { header, source })
+    }
+
+    /// The array as a raster, without pixels: its size, bands, type, nodata, georeferencing, CRS
+    /// and metadata.
+    pub fn header(&self) -> &RasterDataset {
+        &self.header
+    }
+
+    /// The array's attributes, as JSON.
+    pub fn attributes(&self) -> String {
+        self.source.levels[0].array.attrs.to_string()
+    }
+
+    /// Reads a window of some bands (numbered from 1, all for none), band after band. A window
+    /// outside the array, a band it does not have, or an output larger than the process can hold
+    /// is an error, as for [`crate::LazyRaster::read_window`].
+    pub fn read(&mut self, window: crate::Window, bands: &[usize]) -> Result<RasterData> {
+        let r = &self.header.raster;
+        window.check(r.cols, r.rows)?;
+        let bands = crate::cog::read_bands(bands, r.bands)?;
+        crate::dataset::fallible::check_raster_buffer("a window", window.width, window.height, bands.len(), r.data_type)?;
+        crate::cog::WindowSource::read(&mut self.source, 0, window, &bands)
+    }
 }
 
 /// The Zarr versions terrio writes.
@@ -2902,6 +3088,50 @@ pub(crate) fn write_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Authority codes name their EPSG code in either form; other authorities name none.
+    #[test]
+    fn epsg_codes_of_authority_codes() {
+        assert_eq!(epsg_code("EPSG:32631"), Some(32631));
+        assert_eq!(epsg_code("epsg:4326"), Some(4326));
+        assert_eq!(epsg_code("urn:ogc:def:crs:EPSG::3857"), Some(3857));
+        assert_eq!(epsg_code("urn:ogc:def:crs:EPSG:6.6:4326"), Some(4326));
+        assert_eq!(epsg_code("https://www.opengis.net/def/crs/EPSG/0/32630"), Some(32630));
+        assert_eq!(epsg_code("http://www.opengis.net/def/crs/EPSG/0/4326"), Some(4326));
+        assert_eq!(epsg_code("https://example.org/def/crs/EPSG/0/4326"), None);
+        assert_eq!(epsg_code("https://www.opengis.net/def/crs/OGC/0/4326"), None);
+        assert_eq!(epsg_code("urn:ogc:def:crs:OGC:1.3:84"), None);
+        assert_eq!(epsg_code("OGC:CRS84"), None);
+        assert_eq!(epsg_code("EPSG:x"), None);
+        assert_eq!(proj_crs::<false>(&json!({"proj:epsg": 32630})).and_then(|c| c.epsg), Some(32630));
+        assert_eq!(proj_crs::<false>(&json!({"proj:wkt2": "PROJCRS[...]"})), None);
+        for attributes in [
+            json!({"proj:code": "https://www.opengis.net/def/crs/EPSG/0/32630"}),
+            json!({"proj:epsg": 32630}),
+            json!({"proj:projjson": {"id": {"authority": "EPSG", "code": 32630}}}),
+        ] {
+            assert_eq!(proj_crs::<false>(&attributes).and_then(|c| c.epsg), Some(32630));
+            assert_eq!(proj_crs::<true>(&attributes).and_then(|c| c.epsg), Some(32630));
+        }
+        for attributes in [
+            json!({"url": "https://www.opengis.net/def/crs/EPSG/0/32630"}),
+            json!({"projjson": {"id": {"authority": "EPSG", "code": 32630}}}),
+        ] {
+            assert_eq!(crs_attribute::<false>(&attributes).and_then(|c| c.epsg), Some(32630));
+            assert_eq!(crs_attribute::<true>(&attributes).and_then(|c| c.epsg), Some(32630));
+        }
+        assert_eq!(crs_attribute::<false>(&json!({"projjson": {"id": {"authority": "EPSG", "code": 4294967296_u64}}})), None);
+        for code in [json!(4294971622_u64), json!("4294971622")] {
+            let attributes = json!({"proj:projjson": {"id": {"authority": "EPSG", "code": code}}});
+            assert_eq!(proj_crs::<false>(&attributes), None);
+            assert_eq!(proj_crs::<true>(&attributes), None);
+        }
+        for engine in [false, true] {
+            let attributes = json!({"url": "https://example.com/crs/4326"});
+            let crs = if engine { crs_attribute::<true>(&attributes) } else { crs_attribute::<false>(&attributes) };
+            assert_eq!(crs, None);
+        }
+    }
 
     #[test]
     fn repeated_fill_is_n_copies_of_the_element() {
