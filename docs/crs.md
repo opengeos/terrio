@@ -25,9 +25,14 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 Engineering WKT roots (`LOCAL_CS`, `ENGCRS`, `ENGINEERINGCRS`) retain their local
 coordinate-system definitions without being assigned an unrelated EPSG code. Both
 `VERTCRS` and its long form `VERTICALCRS` read the identifier of the CRS itself;
-identifiers on its datum, coordinate system or unit do not replace it. These forms
+identifiers on its datum, coordinate system or unit do not replace it. The current
+identifier reader recognizes a root identifier only as the final child; a trailing
+`REMARK` retains the WKT but can leave the EPSG identity unset. These forms
 work in Rust, CLI/MCP, Python and JavaScript. Parsing engineering metadata does not
 add transformations between arbitrary local grids and Earth-based CRSs.
+This change adds these four root spellings. Other definition-shaped metadata,
+including `FITTED_CS`, `DERIVEDPROJCRS`, `PARAMETRICCRS`, `TIMECRS` and `IMAGECRS`,
+can be preserved by format adapters without being supported by the shared parser.
 
 Of PROJ's 117 projections, terrio computes 89 as PROJ does (within 1 mm, on a sphere and on WGS 84,
 as PROJ strings with typical parameters and as pyproj's WKT1 and WKT2 of them:

@@ -49,3 +49,14 @@ fn recognized_wkt_keywords_do_not_bypass_syntax_validation() {
         assert!(SpatialRef::parse_literal(text).is_err(), "{text}");
     }
 }
+
+/// Long vertical components retain the same identity as GDAL 3.13.3's short spelling.
+#[test]
+fn compound_long_vertical_component_retains_identity_and_wkt() {
+    let horizontal = SpatialRef::from_epsg(4326).unwrap().to_wkt().unwrap();
+    let vertical = "VERTICALCRS[\"NAVD88 height\",VDATUM[\"North American Vertical Datum 1988\"],CS[vertical,1],AXIS[\"height\",up],LENGTHUNIT[\"metre\",1],ID[\"EPSG\",5703]]";
+    let text = format!("COMPOUNDCRS[\"WGS 84 and NAVD88\",{horizontal},{vertical}]");
+    let parsed = SpatialRef::parse_literal(&text).unwrap();
+    assert_eq!(parsed.compound_parts(), Some((4326, 5703)));
+    assert_eq!(parsed.to_wkt().as_deref(), Some(text.as_str()));
+}

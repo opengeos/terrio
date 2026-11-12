@@ -73,7 +73,7 @@ def main():
             raster_srs.ImportFromWkt(actual_crs.to_wkt())
             require(raster_srs.IsSame(reference), "raster CRS identity differs")
             results.append(dict(name=case["name"], status="identical", detail="Exact CRS kind/root authority, CLI WKT, USGS pixels, nodata and affine"))
-        except Exception as error:
+        except AssertionError as error:
             results.append(dict(name=case["name"], status="differs", detail=str(error)))
     print(json.dumps(results, indent=2) if args.json else "\n".join(f"{r['name']}: {r['status']}: {r['detail']}" for r in results))
     return int(any(r["status"] != "identical" for r in results))

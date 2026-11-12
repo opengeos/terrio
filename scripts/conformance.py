@@ -1974,7 +1974,7 @@ def suite_iau(ctx):
 def suite_wkt_keywords(ctx):
     """Engineering and vertical WKT roots through native bindings and CLI."""
     suite = Suite("wkt-keywords", "Engineering and vertical WKT keywords", "GDAL 3.13.3",
-                  "Eleven engineering/vertical definitions: exact root authority and CRS kind, "
+                  "Engineering/vertical definitions: exact root authority and CRS kind, "
                   "CLI WKT retention and unchanged real USGS elevation pixels, nodata and affine. "
                   "This checks metadata parsing, not engineering-to-Earth transformations.")
     if missing_modules("terrio", "osgeo", "numpy"):
@@ -1993,7 +1993,9 @@ def suite_wkt_keywords(ctx):
     for result in results:
         status = IDENTICAL if result["status"] == "identical" else DIFFERS
         suite.cases.append(Case("WKT keywords", result["name"], status, result["detail"]))
-    if len(results) != 11 or (code and not any(c.status == DIFFERS for c in suite.cases)):
+    fixture = SCRIPTS.parent / "crates/terrio-crs/tests/data/wkt_keywords_reference.json"
+    expected_names = [case["name"] for case in json.loads(fixture.read_text())["cases"]]
+    if sorted(result["name"] for result in results) != sorted(expected_names) or (code and not any(c.status == DIFFERS for c in suite.cases)):
         suite.error = tail(err or out) or "incomplete WKT keyword comparisons"
     return suite
 

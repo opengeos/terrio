@@ -4814,7 +4814,6 @@ test("JPEG 2000 byte exports preserve rotated and south-up affine grids", { skip
   }
 });
 
-
 test("engineering and long vertical WKT roots keep their CRS identity", () => {
   // Independent metadata reference: GDAL 3.13.3.
   const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/wkt_keywords_reference.json", import.meta.url)));
