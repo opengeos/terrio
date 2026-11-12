@@ -5120,3 +5120,35 @@ test("engineering and long vertical WKT roots keep their CRS identity", () => {
     raster.free();
   }
 });
+
+test("FlatGeobuf stored CRS validation discards prose and retains definition forms", () => {
+  const custom = "PROJCS[\"custom\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"central_meridian\",15.5],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],UNIT[\"metre\",1]]";
+  const source = terrio.fromGeoJSON({type:"FeatureCollection", features:[{type:"Feature", properties:{id:1}, geometry:{type:"Point",coordinates:[10,46]}}]}, "points", custom);
+  try {
+    const template = Buffer.from(source.toBytes("points.fgb"));
+    const start = template.indexOf(Buffer.from('PROJCS["custom"'));
+    assert.ok(start > 4);
+    for (const text of ["not a coordinate reference system", 'PROJCS["x"]', 'LOCAL_CS["site grid",UNIT["metre",1]]']) {
+      const bytes = Buffer.from(template);
+      const replacement = Buffer.from(text);
+      assert.ok(replacement.length < bytes.readUInt32LE(start - 4));
+      bytes.writeUInt32LE(replacement.length, start - 4);
+      replacement.copy(bytes, start);
+      bytes[start + replacement.length] = 0;
+      terrio.takeWarnings();
+      const result = terrio.open(bytes, "points.fgb");
+      try {
+        const warnings = Array.from(terrio.takeWarnings());
+        if (text.startsWith("not ")) {
+          assert.ok(result.crs == null);
+          assert.equal(warnings.length, 1);
+          assert.match(warnings[0], /no CRS definition.*not a coordinate/);
+        } else {
+          assert.equal(result.crs, text);
+          assert.equal(warnings.length, 0);
+        }
+        assert.deepEqual(result.toGeoJSON().features[0].geometry.coordinates, [10,46]);
+      } finally { result.free(); }
+    }
+  } finally { source.free(); }
+});

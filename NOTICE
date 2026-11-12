@@ -92,6 +92,7 @@ Terrio files derived from GDAL source files (each file's header names them):
   crates/terrio/src/tiles/pyramid.rs
   crates/terrio/src/tiles/raster.rs
   crates/terrio/src/tiles/vector.rs
+  python/python/terrio/_crs.py
   python/python/terrio/pyogrio/_read.py
   python/python/terrio/pyogrio/_write.py
   python/python/terrio/rio/_boundless.py
@@ -763,6 +764,7 @@ pyogrio (https://github.com/geopandas/pyogrio)
 -------------------------------------------------------------------------------
 
 Terrio files derived from pyogrio source files (each file's header names them):
+  python/python/terrio/_crs.py
   python/python/terrio/pyogrio/__init__.py
   python/python/terrio/pyogrio/_read.py
   python/python/terrio/pyogrio/errors.py

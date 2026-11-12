@@ -271,6 +271,8 @@ fn set_crs(db: &impl Tables, layer: &mut Layer, srs_id: i64) -> Result<()> {
     if def.is_empty() || def.eq_ignore_ascii_case("undefined") {
         return Ok(());
     }
+    let source = format!("GeoPackage layer '{}'", layer.name);
+    let Some(def) = super::stored_crs::definition(def, Some(&source)) else { return Ok(()) };
     let s = crate::crs::SpatialRef::from_wkt(def);
     layer.set_crs_wkt(Some(def.to_string()));
     layer.set_crs_epsg(s.epsg);
