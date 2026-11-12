@@ -1138,6 +1138,18 @@ mod tests {
         (dir, path)
     }
 
+    #[cfg(feature = "gdal")]
+    #[test]
+    fn gdal_prefixed_zip_member_keeps_the_general_route() {
+        // A `gdal:` path is GDAL's to read, as `open_vector` reads it, not extracted under its prefix.
+        let (_dir, path) = zip_with_member("empty.fgb", &empty_dimension_fixture(true, false));
+        let member = format!("gdal:{}!empty.fgb", path.to_str().unwrap());
+        let opened = crate::open_vector(&member, &Default::default()).unwrap();
+        let schema = crate::ops::vector_schema::export_schema_path(&member, &[]).unwrap();
+        let names: Vec<_> = schema.layers.iter().map(|l| l.name.clone()).collect();
+        assert_eq!(names, opened.layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>());
+    }
+
     #[test]
     fn declared_z_survives_a_zip_archive() {
         // The archive's member is read, not the archive: its declared Z shows with no features.

@@ -970,10 +970,11 @@ pub fn export_schema_with_dims(
 /// `gdal vector export-schema` exports it. Local GeoPackages are described from their tables'
 /// declarations (exact column types, `NOT NULL` and `UNIQUE` constraints and defaults, the
 /// geometry column and its Z/M flags); other datasets are read and described by
-/// [`export_schema`]. A local or remote FlatGeobuf, or a local zip whose member is one, reports the Z and
-/// M its header declares, even with no features. A remote zip's named FlatGeobuf member (`a.zip!x.fgb`)
-/// takes the same route as a remote FlatGeobuf and reports its declared Z and M. A remote zip with no
-/// member named is read by the general route, which does not read its declared Z or M. A remote FlatGeobuf is recognised by its URL's file name
+/// [`export_schema`]. A local or remote FlatGeobuf, or a local zip whose member is one, reports the
+/// Z and M its header declares, even with no features. A remote zip's named FlatGeobuf member
+/// (`a.zip!x.fgb`) takes the same route as a remote FlatGeobuf and reports its declared Z and M.
+/// A remote zip with no member named, and a `gdal:` path, are read by the general route, which does
+/// not read the declared Z or M. A remote FlatGeobuf is recognised by its URL's file name
 /// extension: a URL without one (`layer?format=fgb`) is refused as an unrecognised format, as
 /// `open_vector` refuses it when GDAL is not built in; a build with GDAL reads it through GDAL.
 pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
@@ -1004,7 +1005,12 @@ pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
     let remote =
         !location.is_local() && member.is_none() && crate::formats::VectorDriver::for_extension(&location.file_name()) == Some(flatgeobuf);
     let archived = member.is_some_and(|m| crate::formats::VectorDriver::for_extension(&m) == Some(flatgeobuf));
-    if remote || archived {
+    // A `gdal:` path is read by GDAL, as `open_vector` reads it, so it keeps the general route.
+    #[cfg(feature = "gdal")]
+    let gdal_prefixed = crate::gdal_backend::strip_prefix(path).is_some();
+    #[cfg(not(feature = "gdal"))]
+    let gdal_prefixed = false;
+    if !gdal_prefixed && (remote || archived) {
         // The policy judges the path before any download or extraction. The copy is not an asset of that
         // policy, so the scope ends before the copy is opened, as on the general route.
         let local = {
