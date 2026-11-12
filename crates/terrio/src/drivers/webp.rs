@@ -4,22 +4,21 @@
 // No code is translated from these sources.
 
 //! WebP rasters, read and written as GDAL's WEBP driver reads and writes them (`WEBPDataset` in
-//! `frmts/webp/webpdataset.cpp`, GDAL 3.12.1), except that terrio's writer is lossless only.
+//! `frmts/webp/webpdataset.cpp`, GDAL 3.13.3), with lossless output by default.
 //!
 //! Writing takes 3 (RGB) or 4 (RGBA, the fourth band as alpha) Byte bands of at most 16383 x 16383
-//! pixels, and refuses anything else with GDAL's errors. Every file is lossless (a `VP8L`
-//! bitstream, encoded by `image-webp` without native code): its pixels are the raster's, the RGB
-//! values under fully transparent pixels included.
+//! pixels. Without lossy options, `image-webp` writes exact samples including transparent RGB.
+//! `LOSSLESS=NO`, or `QUALITY` without `LOSSLESS=YES`, selects the workspace's pure Rust VP8
+//! encoder. QUALITY ranges from 0 to 100 (default 75); alpha is stored exactly in an ALPH chunk.
+//! Its rate/distortion tradeoff differs from GDAL's libwebp: equal quality settings do not
+//! imply equal bytes, size or PSNR.
+//! `LOSSLESS` accepts YES/NO, TRUE/FALSE, ON/OFF and 1/0 (case-insensitive); other values
+//! are argument errors, like GeoTIFF's WEBP_LOSSLESS. This is stricter than GDAL's boolean parser.
+//! Only validation is shared with GeoTIFF: standalone WebP defaults to lossless, while
+//! GeoTIFF WebP tiles default to lossy. Whitespace around LOSSLESS is ignored.
 //!
-//! - `LOSSLESS` is accepted with any value. GDAL's default, `LOSSLESS=NO`, writes a lossy (`VP8`)
-//!   file; terrio writes a lossless one for it too, whose size is not that of GDAL's file. The
-//!   pure-Rust lossy encoder of the workspace (`webp-rust` 0.2.1) was measured for that default and
-//!   not adopted: at the same `QUALITY` its files fall more than 1 dB below the PSNR of GDAL's on
-//!   some tiles, and a higher `QUALITY` can give it a larger file of lower PSNR.
-//! - `QUALITY` is checked as GDAL checks it (0 to 100) and has no effect: it sets the lossy
-//!   encoder's quality, and the lossless encoder has no quality.
 //! - `EXACT` is checked as GDAL checks it (0 or 1) and has no effect: terrio always keeps the RGB
-//!   values under fully transparent pixels, as GDAL does with `EXACT=1`. With GDAL's default,
+//!   values under fully transparent pixels in lossless output, as GDAL does with `EXACT=1`. With GDAL's default,
 //!   `EXACT=0`, libwebp replaces them with values of its own choosing (0 in some files, the
 //!   neighbours' prediction in others), so only the visible pixels and the alpha band are GDAL's
 //!   `LOSSLESS=YES` pixels there.
@@ -53,7 +52,7 @@ fn option<'a>(options: &'a [(String, String)], key: &str) -> Option<&'a str> {
     options.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str())
 }
 
-/// Encodes a raster as a lossless WebP file, as GDAL's `WEBPDataset::CreateCopy` checks and
+/// Encodes a raster as a lossless or lossy WebP file, as GDAL's `WEBPDataset::CreateCopy` checks and
 /// imports it (see the module documentation for the options).
 pub(crate) fn encode(r: &Raster, options: &[(String, String)]) -> Result<Vec<u8>> {
     if !matches!(r.bands, 3 | 4) {
@@ -73,9 +72,10 @@ pub(crate) fn encode(r: &Raster, options: &[(String, String)]) -> Result<Vec<u8>
     if r.cols > MAX_SIZE || r.rows > MAX_SIZE {
         return Err(Error::Unsupported("WEBP maximum image dimensions are 16383 x 16383.".into()));
     }
+    let mut quality = 75.0;
     if let Some(q) = option(options, "QUALITY") {
         // `CPLAtof`; NaN passes GDAL's check too.
-        let quality = crate::ops::dem::atof(q);
+        quality = crate::ops::dem::atof(q);
         #[allow(clippy::manual_range_contains, reason = "`!(0.0..=100.0).contains` would refuse a NaN QUALITY, which GDAL accepts")]
         if quality < 0.0 || quality > 100.0 {
             return Err(Error::InvalidArgument(format!("QUALITY={q} is not a legal value.")));
@@ -86,17 +86,27 @@ pub(crate) fn encode(r: &Raster, options: &[(String, String)]) -> Result<Vec<u8>
     {
         return Err(Error::InvalidArgument(format!("EXACT={e} is not a legal value.")));
     }
+    let lossless = match option(options, "LOSSLESS").map(str::trim) {
+        Some(value) if ["YES", "TRUE", "ON", "1"].iter().any(|v| value.eq_ignore_ascii_case(v)) => true,
+        Some(value) if ["NO", "FALSE", "OFF", "0"].iter().any(|v| value.eq_ignore_ascii_case(v)) => false,
+        Some(value) => return Err(Error::InvalidArgument(format!("LOSSLESS={value} is not a legal value."))),
+        None => option(options, "QUALITY").is_none(),
+    };
     let n = r.cols * r.rows;
     let alpha = (r.bands == 4).then(|| &v[3 * n..4 * n]);
     // libwebp writes an alpha channel only when a pixel is not opaque (`WebPPictureHasTransparency`).
     let alpha = alpha.filter(|a| a.iter().any(|&x| x != 255));
-    let channels = if alpha.is_some() { 4 } else { 3 };
+    let channels = if alpha.is_some() || !lossless { 4 } else { 3 };
     let mut pixels = fallible::filled(fallible::len(&[n, channels], "the WEBP image")?, 0u8, "the WEBP image")?;
     for (i, px) in pixels.chunks_exact_mut(channels).enumerate() {
         px[..3].copy_from_slice(&[v[i], v[n + i], v[2 * n + i]]);
-        if let Some(a) = alpha {
-            px[3] = a[i];
+        if channels == 4 {
+            px[3] = alpha.map_or(255, |a| a[i]);
         }
+    }
+    if !lossless {
+        // Preserve the historical acceptance of NaN QUALITY with the default quality.
+        return encode_lossy(pixels, r.cols, r.rows, if quality.is_nan() { 75.0 } else { quality as f32 });
     }
     let color = if channels == 4 { image_webp::ColorType::Rgba8 } else { image_webp::ColorType::Rgb8 };
     let mut out = Vec::new();
@@ -106,7 +116,7 @@ pub(crate) fn encode(r: &Raster, options: &[(String, String)]) -> Result<Vec<u8>
     Ok(out)
 }
 
-/// Writes a lossless WebP file, its world file and its CRS sidecar (with the nodata value, which
+/// Writes a WebP file, its world file and its CRS sidecar (with the nodata value, which
 /// GDAL keeps in its `.aux.xml` too).
 pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, options: &[(String, String)]) -> Result<()> {
     let bytes = encode(r, options)?;
@@ -117,6 +127,78 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, options: &[(St
     common::write_pam_with(path, Some(&r.crs), nodata, r.bands)
 }
 
+/// Encodes opaque RGB with VP8 and keeps any transparency in a separate ALPH chunk.
+/// Shared by standalone WebP files and GeoTIFF WebP tiles; GDAL 3.13.3 can read both.
+pub(crate) fn encode_lossy(mut rgba: Vec<u8>, width: usize, height: usize, quality: f32) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 || width > MAX_SIZE || height > MAX_SIZE {
+        return Err(Error::InvalidArgument("WebP dimensions must be between 1 and 16383".into()));
+    }
+    if rgba.len() != width * height * 4 {
+        return Err(Error::InvalidData("WebP RGBA buffer length differs from image dimensions".into()));
+    }
+    let alpha = rgba.as_chunks::<4>().0.iter().any(|p| p[3] != 255).then(|| {
+        rgba.as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .map(|p| {
+                let a = p[3];
+                p[3] = 255;
+                a
+            })
+            .collect::<Vec<_>>()
+    });
+    let image = webp_rust::ImageBuffer { width, height, rgba };
+    let encoded =
+        webp_rust::encode_lossy_with_config(&image, &webp_rust::LossyEncodingConfig { quality, method: 0, ..Default::default() }, None)
+            .map_err(|error| Error::InvalidData(format!("WebP: {error}")))?;
+    drop(image);
+
+    let Some(alpha) = alpha else { return Ok(encoded) };
+    if encoded.get(..4) != Some(b"RIFF") || encoded.get(8..16) != Some(b"WEBPVP8 ") {
+        return Err(Error::InvalidData("WebP encoder did not return a simple VP8 container".into()));
+    }
+    let mut body = b"WEBP".to_vec();
+    let mut append = |tag: &[u8; 4], payload: &[u8]| {
+        body.extend_from_slice(tag);
+        body.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        body.extend_from_slice(payload);
+        if !payload.len().is_multiple_of(2) {
+            body.push(0);
+        }
+    };
+    let mut extended = vec![0x10, 0, 0, 0];
+    extended.extend_from_slice(&((width - 1) as u32).to_le_bytes()[..3]);
+    extended.extend_from_slice(&((height - 1) as u32).to_le_bytes()[..3]);
+    append(b"VP8X", &extended);
+    let alpha_chunk = encode_alpha(&alpha, width, height)?;
+    append(b"ALPH", &alpha_chunk);
+    body.extend_from_slice(&encoded[12..]);
+    let mut output = b"RIFF".to_vec();
+    output.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    output.extend_from_slice(&body);
+    Ok(output)
+}
+
+/// WebP's ALPH method 1 stores the lossless green plane without the five-byte VP8L header.
+/// A grayscale VP8L has that same green plane. Keep raw alpha when it is smaller.
+/// See https://developers.google.com/speed/webp/docs/riff_container#alpha; GDAL 3.13.3 decodes both.
+fn encode_alpha(alpha: &[u8], width: usize, height: usize) -> Result<Vec<u8>> {
+    let mut encoded = Vec::new();
+    image_webp::WebPEncoder::new(&mut encoded)
+        .encode(alpha, width as u32, height as u32, image_webp::ColorType::L8)
+        .map_err(|e| Error::InvalidData(format!("WebP alpha: {e}")))?;
+    if encoded.get(8..16) != Some(b"WEBPVP8L") || encoded.get(20) != Some(&0x2f) {
+        return Err(Error::InvalidData("WebP alpha encoder did not return a simple VP8L container".into()));
+    }
+    let length = u32::from_le_bytes(encoded[16..20].try_into().unwrap()) as usize;
+    let compressed = encoded.get(25..20 + length).ok_or_else(|| Error::InvalidData("truncated WebP alpha payload".into()))?;
+    let (method, data) = if compressed.len() < alpha.len() { (1, compressed) } else { (0, alpha) };
+    let mut chunk = Vec::with_capacity(1 + data.len());
+    chunk.push(method);
+    chunk.extend_from_slice(data);
+    Ok(chunk)
+}
+
 /// Reads a WebP file, lossless or lossy, as GDAL's WEBP driver reads it.
 pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     let bytes = std::fs::read(path)?;
@@ -124,6 +206,8 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     let (w, h) = decoder.dimensions();
     let (cols, rows) = (w as usize, h as usize);
     let bands = if decoder.has_alpha() { 4 } else { 3 };
+    // What the header declares, before the image is decoded (see `crate::declared`).
+    crate::declared::check(cols, rows, bands, wbraster::DataType::U8, false)?;
     let lossy = decoder.is_lossy();
     // The sizes come from the header: allocated fallibly.
     let size = decoder.output_buffer_size().ok_or_else(|| webp_err(path, "image too large"))?;
@@ -172,14 +256,60 @@ mod tests {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
-    /// A WebP file, not another format's bytes, holding the raster's exact RGB samples: the
-    /// lossless guarantee, whatever `LOSSLESS` and `QUALITY` say.
     #[test]
-    fn rgb_is_written_losslessly_whatever_the_quality() {
+    fn lossy_quality_changes_pixels_but_keeps_alpha() {
+        let n = 32 * 32;
+        let values: Vec<u8> = (0..4 * n).map(|i| ((i * 31 + i / 32) % 256) as u8).collect();
+        let r = raster(32, 32, 4, values.clone());
+        let low = encode(&r, &co(&[("quality", "10")])).unwrap();
+        let high = encode(&r, &co(&[("QUALITY", "90"), ("LOSSLESS", "NO")])).unwrap();
+        assert_ne!(low, high);
+        for bytes in [low, high] {
+            assert!(bytes.windows(4).any(|w| w == b"VP8 "));
+            let (pixels, alpha) = decode(&bytes);
+            assert!(alpha);
+            assert_eq!(pixels.as_chunks::<4>().0.iter().map(|p| p[3]).collect::<Vec<_>>(), values[3 * n..]);
+            assert!(pixels.as_chunks::<4>().0.iter().enumerate().any(|(i, p)| p[..3] != [values[i], values[n + i], values[2 * n + i]]));
+        }
+        assert!(encode(&r, &co(&[("LOSSLESS", "maybe")])).unwrap_err().to_string().contains("LOSSLESS"));
+        assert_eq!(encode(&r, &co(&[("QUALITY", "nan")])).unwrap(), encode(&r, &co(&[("QUALITY", "75")])).unwrap());
+        assert!(encode_lossy(Vec::new(), 0, 1, 75.0).is_err());
+        assert!(encode_lossy(Vec::new(), 1, 0, 75.0).is_err());
+        assert!(encode_lossy(Vec::new(), 1, 1, 75.0).is_err());
+    }
+
+    #[test]
+    fn alpha_compression_uses_lossless_or_raw_without_expanding_the_plane() {
+        let smooth = vec![128; 1024];
+        let mut state = 7u32;
+        let noise: Vec<u8> = (0..1024)
+            .map(|_| {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                (state >> 24) as u8
+            })
+            .collect();
+        for (alpha, method) in [(smooth, 1), (noise, 0)] {
+            let payload = encode_alpha(&alpha, 32, 32).unwrap();
+            assert_eq!(payload[0], method);
+            assert!(payload.len() <= alpha.len() + 1);
+            let rgba: Vec<u8> = alpha.iter().flat_map(|a| [30, 60, 90, *a]).collect();
+            let bytes = encode_lossy(rgba, 32, 32, 75.0).unwrap();
+            let (decoded, has_alpha) = decode(&bytes);
+            assert!(has_alpha);
+            assert_eq!(decoded.as_chunks::<4>().0.iter().map(|p| p[3]).collect::<Vec<_>>(), alpha);
+        }
+        let r = raster(8, 8, 3, vec![10; 3 * 64]);
+        assert_eq!(encode(&r, &co(&[("LOSSLESS", " YES ")])).unwrap(), encode(&r, &[]).unwrap());
+    }
+
+    /// A WebP file, not another format's bytes, holding the raster's exact RGB samples: the
+    /// default lossless guarantee and the explicit override of QUALITY by LOSSLESS=YES.
+    #[test]
+    fn rgb_is_written_losslessly_by_default_or_when_requested() {
         let (cols, rows) = (37, 23);
         let v: Vec<u8> = (0..3 * cols * rows).map(|i| ((i * 7919) % 251) as u8).collect();
         let r = raster(cols, rows, 3, v.clone());
-        for options in [vec![], co(&[("QUALITY", "75"), ("LOSSLESS", "NO")]), co(&[("QUALITY", "5"), ("LOSSLESS", "YES")])] {
+        for options in [vec![], co(&[("QUALITY", "5"), ("LOSSLESS", "YES")])] {
             let bytes = encode(&r, &options).unwrap();
             assert_eq!(&bytes[..4], b"RIFF", "{options:?}");
             assert_eq!(&bytes[8..16], b"WEBPVP8L", "{options:?}: a lossless bitstream");
@@ -288,7 +418,7 @@ mod tests {
         let ds = RasterDataset::with_driver(raster(cols, rows, 3, v.clone()), RasterDriver::GTiff, false);
         let options = crate::RasterWriteOptions {
             driver: Some(RasterDriver::WEBP),
-            creation_options: co(&[("QUALITY", "75"), ("LOSSLESS", "NO")]),
+            creation_options: co(&[("QUALITY", "75"), ("LOSSLESS", "YES")]),
             ..Default::default()
         };
         let p = dir.path().join("tile.tif");

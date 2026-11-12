@@ -39,6 +39,7 @@ import numpy as np
 from affine import Affine
 
 from terrio import _terrio
+from terrio.errors import ResourceLimitError
 from terrio.rio import _tiff
 from terrio.rio._resample import gdal_cast, is_nodata, raster_io
 from terrio.rio.coords import BoundingBox
@@ -175,14 +176,14 @@ def _check_buffer(count: int, height: int, width: int, itemsize: int) -> None:
         itemsize: The bytes of a pixel.
 
     Raises:
-        RasterioIOError: If the buffer takes more bytes than the process can use.
+        ResourceLimitError: If the buffer takes more bytes than the process can use.
     """
     nbytes = count * height * width * itemsize
     if nbytes <= 1 << 24:
         return
     most = _terrio.usable_memory()
     if most is not None and nbytes > most:
-        raise RasterioIOError(
+        raise ResourceLimitError(
             f"Read failed: a window of {width}x{height} pixels in {count} band(s) is too large: "
             f"{nbytes} bytes, more than the {most} bytes of memory the process can use"
         )
@@ -1035,6 +1036,8 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
             )
         self.structure.colorinterp = [ColorInterp(v) for v in value]
         self._colorinterp_set = True
+        # Explicit roles select fresh channel associations; copy restores stored ones afterward.
+        self._jp2_associations: list[int | None] = []
         self._dirty = True
 
     def colormap(self, bidx: int) -> dict[int, tuple[int, int, int, int]]:
@@ -1318,6 +1321,8 @@ class DatasetReader(DatasetBase):
         raster: _terrio.Raster | _OverviewRaster
         try:
             raster = _terrio.open_raster(self._path, lazy=True)
+        except ResourceLimitError:
+            raise
         except Exception as err:
             raise _to_error(err, self.name) from err
         level = kwargs.get("overview_level")
@@ -1478,6 +1483,8 @@ class DatasetReader(DatasetBase):
         self._check_open()
         try:
             return np.asarray(self._raster.read(list(bands), window=window, overview=level))
+        except ResourceLimitError:
+            raise
         except Exception as err:
             raise RasterioIOError(f"Read failed: {err}") from err
 
@@ -1506,6 +1513,8 @@ class DatasetReader(DatasetBase):
             got = self._raster.read_sampled(
                 list(bands), cols.tolist(), rows.tolist(), overview=level
             )
+        except ResourceLimitError:
+            raise
         except Exception as err:
             raise RasterioIOError(f"Read failed: {err}") from err
         return None if got is None else np.asarray(got)
@@ -1560,12 +1569,15 @@ class DatasetReader(DatasetBase):
             fw = (window.col_off, window.row_off, window.width, window.height)
         if buf[0] <= 0 or buf[1] <= 0:
             return np.zeros((len(indexes), max(buf[0], 0), max(buf[1], 0)), self._dtype)
+        _check_buffer(len(indexes), buf[0], buf[1], np.dtype(self._dtype).itemsize)
         if fw[2] <= 0 or fw[3] <= 0:
             return np.zeros((len(indexes), buf[0], buf[1]), self._dtype)
         core = self._core_resampled(fw, buf, resampling)
         if core is not None:
             try:
                 return np.asarray(self._raster.read_resampled(band=list(indexes), **core))
+            except ResourceLimitError:
+                raise
             except Exception as err:
                 raise RasterioIOError(f"Read failed: {err}") from err
         nodata = self.nodatavals[0] if self._count else None
@@ -1767,6 +1779,8 @@ class DatasetReader(DatasetBase):
             # The per-dataset mask is every band's mask band: band 1's, from its own overviews.
             try:
                 return np.asarray(raster.read_resampled_masks(band=1, **core))
+            except ResourceLimitError:
+                raise
             except Exception as err:
                 raise RasterioIOError(f"Read failed: {err}") from err
         out: np.ndarray = np.asarray(
@@ -1863,6 +1877,9 @@ class DatasetReader(DatasetBase):
 
         Raises:
             ValueError: If `out` and `out_shape` are both given, or `out` has the wrong shape.
+            ResourceLimitError: If the requested read exceeds a resource limit or the memory
+                the process can use, before its output buffer is allocated.
+            RasterioIOError: If the read otherwise fails.
         """
         self._readable()
         idx, return2d, win, win_shape = self._prepare(indexes, window, boundless)
@@ -1882,6 +1899,7 @@ class DatasetReader(DatasetBase):
             buf = (int(out_shape[-2]), int(out_shape[-1]))
         else:
             buf = win_shape
+        _check_buffer(len(idx), max(buf[0], 0), max(buf[1], 0), np.dtype(dtype).itemsize)
         nodatavals = [self.nodatavals[b - 1] for b in idx]
         fill = None if not nodatavals else nodatavals[-1]
         if fill is not None and not np.isnan(fill):
@@ -1979,6 +1997,9 @@ class DatasetReader(DatasetBase):
             tuple: The pixels `(bands, h, w)` and where they are inside the raster.
         """
         bh, bw = buf
+        _check_buffer(len(idx), bh, bw, np.dtype(self._dtype).itemsize)
+        _check_buffer(1, 1, bw, 8)
+        _check_buffer(1, 1, bh, 8)
         sx, sy = win.width / bw if bw else 1.0, win.height / bh if bh else 1.0
         # Output pixels whose centres fall inside the raster.
         cx = win.col_off + (np.arange(bw) + 0.5) * sx
@@ -2219,7 +2240,7 @@ class DatasetWriter(DatasetReader):
 
         Raises:
             TypeError: If the driver, size, count or dtype is missing or invalid.
-            DriverCapabilityError: If the driver name has whitespace around it.
+            DriverCapabilityError: If terrio cannot write the format.
             ValueError: If the nodata value does not fit the data type.
             RasterBlockError: If tile sizes are not multiples of 16.
         """
@@ -2245,10 +2266,7 @@ class DatasetWriter(DatasetReader):
         if mode in ("w", "w+"):
             if not isinstance(driver, str):
                 raise TypeError("A driver name string is required.")
-            if driver != driver.strip():
-                # The name is compared with `GTiff` and `COG` as written, here and when the file
-                # is written, while the core writer would read it without the whitespace.
-                raise DriverCapabilityError(f"Writer does not exist for driver: {driver}")
+            driver = _canonical_writer_driver(driver)
             try:
                 width, height = int(width), int(height)
             except (TypeError, ValueError):
@@ -2269,7 +2287,7 @@ class DatasetWriter(DatasetReader):
                     f"Given nodata value, {nodata}, is beyond the valid range of its data type, "
                     f"{dt}."
                 )
-            self.driver = "GTiff" if driver.upper() == "COG" else driver
+            self.driver = driver
             self._out_driver = driver
             self.width, self.height, self._count, self._dtype = width, height, count, dt
             self._nodata = None if nodata is None else float(nodata)
@@ -2308,7 +2326,7 @@ class DatasetWriter(DatasetReader):
             bool: True for GeoTIFFs larger than the in-memory limit.
         """
         size = int(np.prod(shape)) * np.dtype(dtype).itemsize
-        return self.driver == "GTiff" and size > _in_memory_limit()
+        return self.driver in ("GTiff", "COG") and size > _in_memory_limit()
 
     def _allocate(self, shape: tuple[int, ...], dtype: Any, fill: Any) -> np.ndarray:
         """An array for pixels, in memory or mapped from a temporary file.
@@ -2496,9 +2514,20 @@ class DatasetWriter(DatasetReader):
                     )
             else:
                 self._data = np.asarray(raster.read())
+        except ResourceLimitError:
+            self._release_spill()
+            raise
         except Exception as err:
+            self._release_spill()
             raise RasterioIOError(f"Read failed: {err}") from err
         self._out_driver = self.driver
+        # GDAL reports every non-alpha band of a two-band gray JP2 as Gray. Keep its
+        # actual Y association separately so an update does not choose another component.
+        self._jp2_associations = (
+            [m.get("color_association") for m in raster.band_metadata]
+            if _terrio.canonical_driver_name(self.driver) == "JP2"
+            else []
+        )
         s = self.structure
         opts: dict[str, str] = {}
         if s.compression:
@@ -2959,7 +2988,8 @@ class DatasetWriter(DatasetReader):
         """Writes the dataset to its file.
 
         Raises:
-            RasterioIOError: If the file cannot be written.
+            ResourceLimitError: If a resource policy refuses the write.
+            RasterioIOError: If the file cannot otherwise be written.
         """
         s = self.structure
         t = self._transform
@@ -2999,6 +3029,8 @@ class DatasetWriter(DatasetReader):
                 raster = _terrio.Raster.from_array(
                     np.asarray(self._data), gt, crs or None, self._nodata, tags
                 )
+            except ResourceLimitError:
+                raise
             except Exception as err:
                 raise RasterioIOError(f"Write failed: {err}") from err
         driver = self._out_driver
@@ -3006,6 +3038,12 @@ class DatasetWriter(DatasetReader):
         compress = opts.pop("COMPRESS", None)
         band_md: list[dict[str, Any]] = []
         defaults = self._new_structure_defaults()
+        # JP2 needs the whole role vector: once any role is written, omitted entries mean
+        # Undefined rather than the band-count default, so every role is sent explicitly.
+        inherited_associations = getattr(self, "_jp2_associations", [])
+        explicit_jp2_roles = (
+            self._colorinterp_set or bool(inherited_associations)
+        ) and _terrio.canonical_driver_name(driver) == "JP2"
         for b in range(self._count):
             md: dict[str, Any] = {}
             if s.descriptions[b]:
@@ -3019,8 +3057,12 @@ class DatasetWriter(DatasetReader):
             if s.band_tags[b]:
                 md["items"] = dict(s.band_tags[b])
             ci = s.colorinterp[b]
-            if ci != defaults[b] and not (ci == ColorInterp.palette and s.colormap):
+            if (ci != defaults[b] or explicit_jp2_roles) and not (
+                ci == ColorInterp.palette and s.colormap
+            ):
                 md["color_interp"] = _tiff.COLOR_INTERP_NAMES.get(ci, "Undefined")
+            if b < len(inherited_associations) and inherited_associations[b] is not None:
+                md["color_association"] = inherited_associations[b]
             band_md.append(md)
         colormap: list[tuple[int, int, int, int]] | None = None
         if s.colormap:
@@ -3074,6 +3116,8 @@ class DatasetWriter(DatasetReader):
                 for leftover in (tmp, msk_tmp):
                     if leftover and os.path.exists(leftover):
                         os.remove(leftover)
+                if isinstance(err, ResourceLimitError):
+                    raise
                 raise RasterioIOError(f"Write failed: {err}") from err
             self._dirty = False
             return
@@ -3095,6 +3139,8 @@ class DatasetWriter(DatasetReader):
             for leftover in (tmp, msk_tmp):
                 if leftover and os.path.exists(leftover):
                     os.remove(leftover)
+            if isinstance(err, ResourceLimitError):
+                raise
             raise RasterioIOError(f"Write failed: {err}") from err
         self._dirty = False
 
@@ -3423,13 +3469,28 @@ class MemPointerDataset(DatasetWriter):
             DatasetBase.close(self)
 
 
+def _canonical_writer_driver(driver: str) -> str:
+    """Resolve writable raster aliases once, before writer policy branches use the name."""
+    name = _terrio.canonical_driver_name(driver)
+    if name == "COG":
+        return "COG"
+    for info in _terrio.drivers():
+        if (
+            info.get("kind") == "raster"
+            and info.get("write", True)
+            and _terrio.canonical_driver_name(info["name"]) == name
+        ):
+            return str(info["name"])
+    raise DriverCapabilityError(f"Writer does not exist for driver: {driver}")
+
+
 def get_writer_for_driver(driver: str) -> type[DatasetWriter]:
     """The writer class for a driver.
 
     Names are compared as the driver allow-list compares them (`canonical_driver_name`): in any
     case, and with the names of JPEG 2000 drivers, such as the `JP2OpenJPEG` that
-    `driver_from_extension` gives `.jp2` paths, as terrio's `JP2`. A name with whitespace around
-    it is refused, as the writer keeps the name it is given and compares it as written.
+    `driver_from_extension` gives `.jp2` paths, as terrio's `JP2`. Surrounding whitespace
+    and letter case are ignored, as in the driver allow-list.
 
     Args:
         driver: The driver's short name.
@@ -3438,19 +3499,9 @@ def get_writer_for_driver(driver: str) -> type[DatasetWriter]:
         type: The writer class.
 
     Raises:
-        DriverCapabilityError: If terrio cannot write the format, or the name has whitespace
-            around it.
+        DriverCapabilityError: If terrio cannot write the format.
     """
-    name = _terrio.canonical_driver_name(driver)
-    writes = {
-        _terrio.canonical_driver_name(d["name"]): d.get("write", True)
-        for d in _terrio.drivers()
-        if d.get("kind") == "raster"
-    }
-    # `canonical_driver_name` ignores the whitespace around a name, which `DatasetWriter` refuses:
-    # it compares the name with `GTiff` and `COG` as written.
-    if driver != driver.strip() or (name != "COG" and not writes.get(name, False)):
-        raise DriverCapabilityError(f"Writer does not exist for driver: {driver}")
+    _canonical_writer_driver(driver)
     return DatasetWriter
 
 

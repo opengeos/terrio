@@ -28,6 +28,19 @@ import terrio.rio as trio  # noqa: E402
 
 pytestmark = pytest.mark.usefixtures("gdal_warp_grid")
 
+
+@pytest.fixture(scope="module", autouse=True)
+def without_datum_grids():
+    """Terrio applies the grids of the machine (PROJ's user directory, `~/.local/share/proj`) where
+    rasterio's PROJ does not, so the checks run without them, as CI sees them, and the network off.
+    """
+    terrio.set_grid_search_paths([])
+    terrio.set_network_enabled(False)
+    yield
+    terrio.set_grid_search_paths(None)
+    terrio.set_network_enabled(None)
+
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "compare_rio_with_rasterio.py"
 if not SCRIPT.exists():
     pytest.skip("the comparison script is not available", allow_module_level=True)

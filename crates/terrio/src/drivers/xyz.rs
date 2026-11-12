@@ -89,6 +89,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
             pts.len()
         ))
     })?;
+    crate::declared::check(cols, rows, 1, data_type, false)?;
     let n = cols * rows;
     fallible::check_usable(n.checked_mul(size_of::<f64>()), || format!("XYZ: a grid of {cols} x {rows} cells"))
         .map_err(|e| Error::ResourceLimit(format!("{}: {e}", path.display())))?;

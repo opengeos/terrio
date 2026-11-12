@@ -153,7 +153,12 @@ impl Compression {
             Self::Lzw => weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)
                 .encode(&data)
                 .map_err(|e| Error::InvalidData(format!("LZW: {e}")))?,
-            Self::Deflate => deflate(&data, p.deflate_level)?,
+            // The chunk's `h` rows, each of the same length: each search also examines the position
+            // one row back.
+            Self::Deflate => {
+                debug_assert_eq!(data.len() % c.h.max(1), 0, "a Deflate chunk of {} bytes is not {} whole rows", data.len(), c.h);
+                crate::deflate_compress::zlib_compress_rows(&data, data.len() / c.h.max(1), p.deflate_level)
+            }
             Self::PackBits => packbits(&data),
             Self::Zstd => zstd_compress(&data, p.zstd_level)?,
             Self::Lerc => lerc_encode(&data, c, p.max_z_error)?,
@@ -171,8 +176,10 @@ fn lerc_encode(_data: &[u8], _c: &ChunkInfo, _max_z_error: f64) -> Result<Vec<u8
     Err(Error::disabled("lerc"))
 }
 
-/// A Deflate chunk as GDAL 3.12 built with libdeflate writes it: libdeflate's level 6, the same bytes.
-/// At another `level` (`ZLEVEL`), the chunk that level's search gives.
+/// The Deflate stage of a `LERC_DEFLATE` chunk: the LERC blob, zlib-wrapped at `level` (`ZLEVEL`,
+/// 6 by default) by `zlib_compress`, whose compressor is derived from libdeflate's and also probes
+/// periodic-run boundaries at levels 6 to 9. A blob has no rows, so no search looks one row back:
+/// `DEFLATE` chunks are compressed in their rows by `zlib_compress_rows` instead.
 fn deflate(data: &[u8], level: crate::deflate_compress::Level) -> Result<Vec<u8>> {
     Ok(crate::deflate_compress::zlib_compress(data, level))
 }
@@ -248,56 +255,13 @@ fn webp_encode(data: Vec<u8>, chunk: &ChunkInfo, options: &CodecParams) -> Resul
     if data.len() != chunk.w * chunk.h * chunk.spp {
         return Err(Error::InvalidData("WebP sample buffer length differs from chunk dimensions".into()));
     }
-    let mut rgba = if chunk.spp == 4 { data } else { data.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect() };
-    // The pure Rust VP8 encoder accepts opaque RGB. Preserve alpha in the WebP
-    // container's independent, uncompressed ALPH chunk instead of ignoring quality.
-    let alpha = (!options.webp_lossless && chunk.spp == 4 && rgba.as_chunks::<4>().0.iter().any(|p| p[3] != 255)).then(|| {
-        rgba.as_chunks_mut::<4>()
-            .0
-            .iter_mut()
-            .map(|p| {
-                let a = p[3];
-                p[3] = 255;
-                a
-            })
-            .collect::<Vec<_>>()
-    });
+    let rgba = if chunk.spp == 4 { data } else { data.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect() };
+    if !options.webp_lossless {
+        return super::webp::encode_lossy(rgba, chunk.w, chunk.h, options.webp_quality as f32);
+    }
     let image = webp_rust::ImageBuffer { width: chunk.w, height: chunk.h, rgba };
-    let encoded = if options.webp_lossless {
-        webp_rust::encode_lossless_with_config(&image, &webp_rust::LosslessEncodingConfig { z_level: 2 }, None)
-    } else {
-        webp_rust::encode_lossy_with_config(
-            &image,
-            &webp_rust::LossyEncodingConfig { quality: options.webp_quality as f32, method: 0, ..Default::default() },
-            None,
-        )
-    }
-    .map_err(|error| Error::InvalidData(format!("WebP: {error}")))?;
-    let Some(alpha) = alpha else { return Ok(encoded) };
-    if encoded.get(..4) != Some(b"RIFF") || encoded.get(8..16) != Some(b"WEBPVP8 ") {
-        return Err(Error::InvalidData("WebP encoder did not return a simple VP8 container".into()));
-    }
-    let mut body = b"WEBP".to_vec();
-    let mut append = |tag: &[u8; 4], payload: &[u8]| {
-        body.extend_from_slice(tag);
-        body.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        body.extend_from_slice(payload);
-        if !payload.len().is_multiple_of(2) {
-            body.push(0);
-        }
-    };
-    let mut extended = vec![0x10, 0, 0, 0];
-    extended.extend_from_slice(&((chunk.w - 1) as u32).to_le_bytes()[..3]);
-    extended.extend_from_slice(&((chunk.h - 1) as u32).to_le_bytes()[..3]);
-    append(b"VP8X", &extended);
-    let mut alpha_chunk = vec![0]; // uncompressed, unfiltered alpha
-    alpha_chunk.extend_from_slice(&alpha);
-    append(b"ALPH", &alpha_chunk);
-    body.extend_from_slice(&encoded[12..]);
-    let mut output = b"RIFF".to_vec();
-    output.extend_from_slice(&(body.len() as u32).to_le_bytes());
-    output.extend_from_slice(&body);
-    Ok(output)
+    webp_rust::encode_lossless_with_config(&image, &webp_rust::LosslessEncodingConfig { z_level: 2 }, None)
+        .map_err(|error| Error::InvalidData(format!("WebP: {error}")))
 }
 
 /// Encodes a chunk as a lossless JPEG XL codestream: 1 to 4 channels (gray, gray and alpha, RGB,
@@ -1960,8 +1924,8 @@ struct TiffRows {
     /// written to it.
     failed: bool,
     tags: Vec<(u16, Value)>,
-    /// The internal mask's compressed chunks, written after the image data.
-    mask: Option<Vec<Vec<u8>>>,
+    /// Offsets and lengths of mask chunks streamed alongside the image's block rows.
+    mask: Option<(Vec<u64>, Vec<u64>)>,
 }
 
 impl std::fmt::Debug for GeoTiffWriter {
@@ -1984,8 +1948,10 @@ impl GeoTiffWriter {
     ///
     /// # Errors
     /// For explicit overview factors, a source's overviews to copy, and compressions
-    /// terrio's own writer does not encode (WEBP...), which need the whole raster; and when the
-    /// file cannot be created.
+    /// terrio's own writer does not encode (WEBP...), which need the whole raster; when the
+    /// file cannot be created; and, before it is created, [`Error::ResourceLimit`] when the rows
+    /// the writer holds, a row of its blocks of every band (twice while rows are appended to
+    /// it), cannot fit in the memory the process can use ([`crate::usable_memory`]).
     pub fn create(path: &str, header: &crate::RasterDataset, options: &crate::RasterWriteOptions) -> Result<Self> {
         let inner = if options.driver == Some(crate::formats::RasterDriver::Cog) {
             RowWriter::Cog(Box::new(std::sync::Mutex::new(cog_rows(path, header, options)?)))
@@ -2015,11 +1981,40 @@ impl GeoTiffWriter {
     pub fn write_rows(&mut self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
         match &mut self.inner {
             RowWriter::Tiff(t) => t.write_rows(data, rows, mask),
-            RowWriter::Cog(c) => c.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).write_rows_masked(
-                data.clone(),
-                rows,
-                mask.map(<[u8]>::to_vec),
-            ),
+            RowWriter::Cog(c) => {
+                let writer = c.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+                // The caller, owned slab and (when built) overview source buffer coexist.
+                let copies = if writer.builds.iter().any(|build| build.src == 0) { 3 } else { 2 };
+                let bytes = data
+                    .len()
+                    .checked_mul(data.data_type().size_bytes())
+                    .and_then(|n| n.checked_add(mask.map_or(0, <[u8]>::len)))
+                    .and_then(|n| n.checked_mul(copies));
+                let retained = writer.builds.iter().try_fold(0usize, |total, build| {
+                    build
+                        .buf
+                        .len()
+                        .checked_mul(writer.data_type.size_bytes())
+                        .and_then(|n| n.checked_add(build.mask.capacity()))
+                        .and_then(|n| n.checked_add(total))
+                });
+                let retained = retained.and_then(|retained| {
+                    writer.levels.iter().try_fold(retained, |total, level| {
+                        level
+                            .pending
+                            .len()
+                            .checked_mul(writer.data_type.size_bytes())
+                            .and_then(|n| n.checked_add(level.mask.as_ref().map_or(0, |mask| mask.pending.capacity())))
+                            .and_then(|n| n.checked_add(total))
+                    })
+                });
+                let bytes = bytes.and_then(|n| retained.and_then(|held| held.checked_mul(2)).and_then(|held| n.checked_add(held)));
+                crate::dataset::fallible::check_usable(bytes, || {
+                    "a COG input slab and overview working copies are too large to allocate".into()
+                })
+                .map_err(Error::ResourceLimit)?;
+                writer.write_rows_masked(data.clone(), rows, mask.map(<[u8]>::to_vec))
+            }
         }
     }
 
@@ -2099,14 +2094,36 @@ impl TiffRows {
             }
         };
         let planes = if planar { bands } else { 1 };
+        check_rows_held(r, block_rows)?;
+        if plan.tile.is_some() {
+            crate::dataset::fallible::check_raster_buffer("a GeoTIFF tile", chunk_w, block_rows, chunk_spp, r.data_type)?;
+        }
         let mut layout = plan.layout;
         layout.rows_per_strip = Some(block_rows as u32);
-        let raw = (cols * rows * bands * size) as u64;
-        let big = opts.bigtiff || raw + raw / 4 > (u32::MAX as u64) - (1 << 24);
+        let raw = cols
+            .checked_mul(rows)
+            .and_then(|n| n.checked_mul(bands))
+            .and_then(|n| n.checked_mul(size))
+            .ok_or_else(|| Error::ResourceLimit("a GeoTIFF output is too large to address".into()))? as u64;
+        let big = opts.bigtiff || raw.checked_add(raw / 4).is_none_or(|n| n > (u32::MAX as u64) - (1 << 24));
         let mut tags = plan.geo;
         if let Some(cm) = plan.color_map {
             tags.push((320, cm));
         }
+        let n = planes
+            .checked_mul(across)
+            .and_then(|n| n.checked_mul(down))
+            .ok_or_else(|| Error::ResourceLimit("a GeoTIFF chunk index is too large to allocate".into()))?;
+        let mask_chunks = if with_mask { across.checked_mul(down) } else { Some(0) };
+        // Index arrays and serialized directories can coexist when finish writes the IFDs.
+        let index_bytes = mask_chunks
+            .and_then(|m| n.checked_add(m))
+            .and_then(|n| n.checked_mul(2 * std::mem::size_of::<u64>() * 4))
+            .and_then(|n| n.checked_add(1 << 20));
+        crate::dataset::fallible::check_usable(index_bytes, || "a GeoTIFF chunk index and directory are too large to allocate".into())
+            .map_err(Error::ResourceLimit)?;
+        let offsets = crate::dataset::fallible::filled(n, 0u64, "GeoTIFF chunk offsets")?;
+        let counts = crate::dataset::fallible::filled(n, 0u64, "GeoTIFF chunk sizes")?;
         let mut file = std::io::BufWriter::with_capacity(1 << 20, create_replacing(path)?);
         let head: Vec<u8> = if big {
             [b"II".as_slice(), &43u16.to_le_bytes(), &8u16.to_le_bytes(), &0u16.to_le_bytes(), &0u64.to_le_bytes()].concat()
@@ -2114,7 +2131,6 @@ impl TiffRows {
             [b"II".as_slice(), &42u16.to_le_bytes(), &0u32.to_le_bytes()].concat()
         };
         file.write_all(&head)?;
-        let n = planes * across * down;
         Ok(Self {
             file,
             pos: head.len() as u64,
@@ -2129,15 +2145,15 @@ impl TiffRows {
             block_rows,
             chunk_w,
             across,
-            offsets: vec![0; n],
-            counts: vec![0; n],
+            offsets,
+            counts,
             pending: RasterData::new_filled(r.data_type, 0, 0.0),
             pending_mask: Vec::new(),
             pending_rows: 0,
             rows_done: 0,
             failed: false,
             tags,
-            mask: with_mask.then(Vec::new),
+            mask: with_mask.then(|| (Vec::new(), Vec::new())),
         })
     }
 
@@ -2183,6 +2199,65 @@ impl TiffRows {
             }
             (Some(_), m) => m,
         };
+        self.check_row_working_set(data, rows, mask)?;
+        let mut y = 0;
+        while y < rows {
+            let count = (self.block_rows - self.pending_rows).min(rows - y);
+            let part = if y == 0 && count == rows {
+                std::borrow::Cow::Borrowed(data)
+            } else {
+                std::borrow::Cow::Owned(slice_rows(data, rows, y..y + count, self.cols, self.bands))
+            };
+            self.append_block_rows(&part, count, mask.map(|m| &m[y * self.cols..(y + count) * self.cols]))?;
+            y += count;
+        }
+        Ok(())
+    }
+
+    /// Admit the retained input, one block row's scratch and the index arrays (GDAL 3.13.3).
+    fn check_row_working_set(&self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
+        let size = self.data_type.size_bytes();
+        let pixels = self.cols.checked_mul(self.block_rows.min(self.rows));
+        let row = pixels.and_then(|n| n.checked_mul(self.bands)).and_then(|n| n.checked_mul(size));
+        let padded = self.chunk_w.checked_mul(self.across).and_then(|n| n.checked_mul(self.block_rows));
+        let image = padded.and_then(|n| n.checked_mul(self.bands)).and_then(|n| n.checked_mul(size));
+        let image_indices =
+            self.offsets.capacity().checked_add(self.counts.capacity()).and_then(|n| n.checked_mul(std::mem::size_of::<u64>()));
+        let mask_work = if let Some((offsets, counts)) = &self.mask {
+            let new_chunks =
+                rows.checked_add(self.pending_rows).map(|n| n.div_ceil(self.block_rows)).and_then(|n| n.checked_mul(self.across));
+            let indices = offsets
+                .capacity()
+                .checked_add(counts.capacity())
+                .and_then(|n| n.checked_mul(3))
+                .and_then(|n| new_chunks.and_then(|m| m.checked_mul(2)).and_then(|m| n.checked_add(m)))
+                .and_then(|n| n.checked_mul(std::mem::size_of::<u64>()));
+            padded
+                .and_then(|n| n.checked_mul(3))
+                .and_then(|n| n.checked_add(self.pending_mask.capacity()))
+                .and_then(|n| n.checked_add(mask.map_or(0, <[u8]>::len)))
+                .and_then(|n| indices.and_then(|m| n.checked_add(m)))
+        } else {
+            Some(0)
+        };
+        let bytes = [
+            data.len().checked_mul(size),
+            self.pending.len().checked_mul(size),
+            row.and_then(|n| n.checked_mul(2)),
+            image.and_then(|n| n.checked_mul(2)),
+            image_indices,
+            mask_work,
+            Some(1 << 20),
+        ]
+        .into_iter()
+        .try_fold(0usize, |total, bytes| total.checked_add(bytes?));
+        crate::dataset::fallible::check_usable(bytes, || "a GeoTIFF input slab and block-row working set are too large to allocate".into())
+            .map(|_| ())
+            .map_err(Error::ResourceLimit)
+    }
+
+    /// Appends at most the remainder of one block row, retaining band-major order.
+    fn append_block_rows(&mut self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
         // Pending rows are kept band after band, in the raster's type; these rows follow them, or
         // are read where they are when none is pending.
         let old = self.pending_rows;
@@ -2257,10 +2332,19 @@ impl TiffRows {
         if self.tags.iter().all(|(t, _)| *t != 256) {
             self.tags.extend(img.tags);
         }
-        if let Some(chunks) = &mut self.mask {
+        if self.mask.is_some() {
             let m = &self.pending_mask[..h * cols];
             let mi = mask_image(m, cols, h, (self.chunk_w, self.block_rows, self.layout.tile.is_some()))?;
-            chunks.extend(mi.chunks);
+            for chunk in mi.chunks {
+                let offset = self.pos;
+                self.file.write_all(&chunk)?;
+                self.pos += chunk.len() as u64;
+                self.check_size()?;
+                if let Some((offsets, counts)) = &mut self.mask {
+                    offsets.push(offset);
+                    counts.push(chunk.len() as u64);
+                }
+            }
         }
         self.rows_done += h;
         Ok(())
@@ -2297,21 +2381,12 @@ impl TiffRows {
             }
         }
         let (off_tag, cnt_tag) = if tiled { (324, 325) } else { (273, 279) };
-        tags.push((off_tag, Value::Offsets(self.offsets.clone())));
-        tags.push((cnt_tag, Value::Offsets(self.counts.clone())));
+        tags.push((off_tag, Value::Offsets(std::mem::take(&mut self.offsets))));
+        tags.push((cnt_tag, Value::Offsets(std::mem::take(&mut self.counts))));
         tags.sort_by_key(|(t, _)| *t);
-        // The mask's data, then its directory.
+        // Mask chunks were streamed with the image; only their directory remains.
         let mut mask_ifd: Option<Vec<(u16, Value)>> = None;
-        if let Some(chunks) = self.mask.take() {
-            let mut offsets = Vec::with_capacity(chunks.len());
-            let mut counts = Vec::with_capacity(chunks.len());
-            for c in &chunks {
-                offsets.push(self.pos);
-                counts.push(c.len() as u64);
-                self.file.write_all(c)?;
-                self.pos += c.len() as u64;
-                self.check_size()?;
-            }
+        if let Some((offsets, counts)) = self.mask.take() {
             let full = mask_image(&[], self.cols, 0, (self.chunk_w, self.block_rows, tiled))?;
             let mut mt: Vec<(u16, Value)> = full.tags.into_iter().filter(|(t, _)| *t != 257 && *t != 278).collect();
             mt.push((257, Value::Longs(vec![self.rows as u32])));
@@ -2369,6 +2444,27 @@ fn slice_rows(data: &RasterData, total: usize, range: std::ops::Range<usize>, co
         }
         out
     })
+}
+
+/// Refuses, before its file is created, a row writer ([`TiffRows`], [`CogWriter`]) of a raster
+/// whose rows it would hold cannot fit in the memory the process can use
+/// ([`crate::dataset::fallible::check_usable`]): it keeps the rows of a row of its blocks
+/// (`block_rows` rows, or the raster's rows when it has fewer) of every band until the row is
+/// complete, and holds them twice while a strip is appended to them ([`append_rows`] copies them
+/// with the strip into a new buffer). A raster of a few rows and thousands of bands written as a
+/// COG, whose 512-row tiles hold every band, is held whole.
+fn check_rows_held(r: &Raster, block_rows: usize) -> Result<()> {
+    let (rows, size) = (block_rows.min(r.rows), r.data_type.size_bytes());
+    let bytes = [r.cols, rows, r.bands, size, 2].iter().try_fold(1usize, |n, &d| n.checked_mul(d));
+    crate::dataset::fallible::check_usable(bytes, || {
+        format!(
+            "the rows a GeoTIFF writer holds ({rows} rows of {} pixels in {} band(s) of {size}-byte samples, a row of its blocks, \
+             twice while a strip is appended) are too large to allocate",
+            r.cols, r.bands
+        )
+    })
+    .map(|_| ())
+    .map_err(Error::ResourceLimit)
 }
 
 /// The `a_rows` rows of `a` followed by the `b_rows` rows of `b`, band after band.
@@ -2525,6 +2621,9 @@ impl CogWriter {
         }
         let Plan { tile, layout, geo, color_map } = plan(raster, opts)?;
         let tile = tile.map_or(512, |(t, _)| t as usize);
+        check_rows_held(raster, tile)?;
+        let chunk_spp = if layout.planar { layout.parts } else { raster.bands };
+        crate::dataset::fallible::check_raster_buffer("a GeoTIFF tile", tile, tile, chunk_spp, raster.data_type)?;
         let planes = if layout.planar { raster.bands / layout.parts } else { 1 };
         let mut sizes = vec![(raster.cols, raster.rows)];
         sizes.extend(gdal_overview::cog_sizes(raster.cols, raster.rows, tile, opts.overview_count));
@@ -3182,8 +3281,8 @@ mod tests {
         }
     }
 
-    /// A GeoTIFF row write that fails keeps every row given so far pending, and the writer then
-    /// refuses more rows and to finish, whose file would miss the block row.
+    /// A failed GeoTIFF row write retains only the failed block row and refuses further rows
+    /// and finish; the unconsumed tail of a large caller slab is never copied.
     #[test]
     fn failed_row_writes_stop_the_writer() {
         let raster = overview_fixture(1, DataType::U8, RasterData::U8((0..65 * 35).map(|i| (i % 251) as u8).collect()));
@@ -3197,18 +3296,18 @@ mod tests {
         // Past what a classic TIFF addresses: the block row is refused once written.
         let pos = std::mem::replace(&mut w.pos, u64::from(u32::MAX));
         assert!(w.write_rows(&slice_rows(&raster.data, 35, 10..20, 65, 1), 10, None).is_err());
-        assert_eq!((w.rows_written(), w.pending_rows, w.pending.len()), (20, 20, 65 * 20));
+        assert_eq!((w.rows_written(), w.pending_rows, w.pending.len()), (16, 16, 65 * 16));
         // Within the limit again, the writer still refuses: the file may hold part of the row.
         w.pos = pos;
         assert!(w.write_rows(&slice_rows(&raster.data, 35, 20..35, 65, 1), 15, None).is_err());
-        assert_eq!(w.rows_written(), 20);
+        assert_eq!(w.rows_written(), 16);
         drop(w);
-        // A last block row that fails: its rows are all given, yet the file would miss them.
+        // A later block row fails before consuming the last three rows of the caller slab.
         let mut w = TiffRows::create(path.to_str().unwrap(), &header, &options).unwrap();
         w.write_rows(&slice_rows(&raster.data, 35, 0..16, 65, 1), 16, None).unwrap();
         w.pos = u64::from(u32::MAX);
         assert!(w.write_rows(&slice_rows(&raster.data, 35, 16..35, 65, 1), 19, None).is_err());
-        assert_eq!(w.rows_written(), 35);
+        assert_eq!(w.rows_written(), 32);
         assert!(w.finish().is_err());
     }
 
@@ -3763,6 +3862,107 @@ mod tests {
             };
             for (name, write) in &writes {
                 assert_ne!(write(&options("1")), write(&options("9")), "{name}, {driver:?}");
+            }
+        }
+    }
+
+    /// A Deflate chunk is compressed in its rows, as long as its width's samples of its data type:
+    /// each search examines the position that many bytes back, in a tile or a strip (whatever its
+    /// height), of one sample or of interleaved ones, and in a 1-bit mask's rows of packed bits.
+    /// Rows that repeat the one above, each a long run of three values in turn (a period that the
+    /// periodic-run probe does not take) and then bytes of its own, change the chunk.
+    #[test]
+    fn a_deflate_chunk_is_compressed_in_its_rows() {
+        let codec = CodecParams::default();
+        // (width, height, samples per pixel, data type, bytes per row)
+        for (w, h, spp, t, row) in [
+            (512, 512, 1, DataType::U8, 512),
+            (256, 64, 3, DataType::U8, 768),
+            (128, 40, 1, DataType::U16, 256),
+            (100, 7, 2, DataType::F32, 800),
+            // An internal mask's chunk, as `mask_image` passes it: 512 one-bit pixels a row, packed
+            // in 64 bytes.
+            (512, 16, 1, DataType::U8, 64),
+        ] {
+            // Groups of 4 equal rows: three quarters of a row of three values in turn, then bytes of
+            // its own.
+            let data: Vec<u8> = (0..h * row)
+                .map(|i| {
+                    let (group, x) = (i / row / 4, i % row);
+                    let own = ((group * row + x) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56;
+                    if x < row * 3 / 4 { (group % 7) as u8 + 1 + (x % 3) as u8 * 10 } else { own as u8 }
+                })
+                .collect();
+            let chunk = Compression::Deflate.compress(data.clone(), &ChunkInfo { w, h, spp, t }, &codec).unwrap();
+            assert_eq!(chunk, crate::deflate_compress::zlib_compress_rows(&data, row, codec.deflate_level), "{w} x {h} x {spp} {t:?}");
+            assert_ne!(chunk, crate::deflate_compress::zlib_compress(&data, codec.deflate_level), "{w} x {h} x {spp} {t:?}");
+        }
+    }
+
+    /// The Deflate chunks of an internal mask are compressed in their rows of bits, `ceil(width / 8)`
+    /// bytes each, in tiles and in strips (the last one shorter): each chunk of a disc-shaped mask is
+    /// the one its rows give, and some differ from the ones without rows.
+    #[test]
+    fn a_mask_is_compressed_in_its_rows_of_bits() {
+        let (cols, rows) = (1000, 550);
+        let mask: Vec<u8> = (0..cols * rows)
+            .map(|i| {
+                let (x, y) = ((i % cols) as i64, (i / cols) as i64);
+                u8::from((x - 500).pow(2) + (y - 275).pow(2) < 260 * 260)
+            })
+            .collect();
+        let level = crate::deflate_compress::Level::DEFAULT;
+        for (block, row) in [((512, 512, true), 64), ((1000, 200, false), 125)] {
+            let image = mask_image(&mask, cols, rows, block).unwrap();
+            let mut differ = 0;
+            for chunk in &image.chunks {
+                let mut out = vec![0u8; 512 * 64 + 1];
+                let (bits, rc) = zlib_rs::decompress_slice(&mut out, chunk, zlib_rs::InflateConfig::default());
+                assert_eq!(rc, zlib_rs::ReturnCode::Ok, "{block:?}");
+                assert_eq!(bits.len() % row, 0, "{block:?}");
+                assert_eq!(*chunk, crate::deflate_compress::zlib_compress_rows(bits, row, level), "{block:?}");
+                differ += usize::from(*chunk != crate::deflate_compress::zlib_compress(bits, level));
+            }
+            assert!(differ > 0, "{block:?}");
+        }
+    }
+
+    /// An image's Deflate chunks are compressed in their rows through `Level::image`, which the
+    /// writers of TIFF chunks call: in tiles, and in strips whose last one is shorter, of pixel- or
+    /// band-interleaved bands. Each chunk is the one its rows give, and in each short last strip it
+    /// differs from the one without rows: its rows repeat the row above, each three quarters of a
+    /// run of three values in turn, a period that the periodic-run probe does not take.
+    #[test]
+    fn an_image_is_compressed_in_its_rows_in_tiles_and_strips() {
+        let (cols, rows, bands) = (300, 70, 2);
+        // Groups of 4 equal rows: three quarters of a row of three values in turn, then values of
+        // its own.
+        let data: Vec<u16> = (0..cols * rows * bands)
+            .map(|i| {
+                let (band, group, x) = (i / (cols * rows), i / cols % rows / 4, i % cols);
+                let own = (((band * rows + group) * cols + x) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 48;
+                if x < cols * 3 / 4 { (group % 7 + 1) as u16 * 257 + (x % 3) as u16 } else { own as u16 }
+            })
+            .collect();
+        let level = Level { cols, rows, bands, data: std::borrow::Cow::Owned(RasterData::U16(data)) };
+        let codec = CodecParams::default();
+        // (tile, one plane per band, bytes per row, rows of each chunk)
+        for (tile, planar, row, heights) in [
+            (None, false, 1200, &[30, 30, 10][..]),
+            (None, true, 600, &[30, 30, 10, 30, 30, 10][..]),
+            (Some((64, 64)), false, 256, &[64; 10][..]),
+        ] {
+            let layout = Layout { tile, rows_per_strip: Some(30), planar, photometric: 1, extra: vec![0], predictor: 1, parts: 1 };
+            let image = level.image(DataType::U16, Compression::Deflate, &codec, &layout).unwrap();
+            assert_eq!(image.chunks.len(), heights.len(), "{tile:?}, {planar}");
+            for (i, (chunk, h)) in image.chunks.iter().zip(heights).enumerate() {
+                let mut out = vec![0u8; 30 * 1200 + 1];
+                let (bytes, rc) = zlib_rs::decompress_slice(&mut out, chunk, zlib_rs::InflateConfig::default());
+                assert_eq!((rc, bytes.len()), (zlib_rs::ReturnCode::Ok, h * row), "{tile:?}, {planar}, {i}");
+                assert_eq!(*chunk, crate::deflate_compress::zlib_compress_rows(bytes, row, codec.deflate_level), "{tile:?}, {planar}, {i}");
+                if *h == 10 {
+                    assert_ne!(*chunk, crate::deflate_compress::zlib_compress(bytes, codec.deflate_level), "{tile:?}, {planar}, {i}");
+                }
             }
         }
     }

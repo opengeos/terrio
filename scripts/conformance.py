@@ -22,6 +22,7 @@ Suites:
     catalogs          indexed real DEM mosaics and HTTP window I/O vs GDAL GTI
                       (compare_catalogs_with_gdal.py)
     vrt               serialized warped/derived/kernel VRTs, masks and lazy windows
+    jp2-colors        JPEG 2000 component roles and masks on real Landsat data
     overviews         source overview selection and HTTP COG bytes vs gdalwarp -ovr
     warp-grid         aligned warp tiles and windows on real terrain
     sum-overviews     extensive sum estimates and exact NONE controls vs GDAL
@@ -47,6 +48,7 @@ Suites:
     coverage          polygon coverage validity: shared nodes, overlaps and narrow gaps
     coverage-simplify shared-edge topology-preserving coverage simplification
     vector-dataset    concat, partition, set-field-type, make-point, create, export-schema, rename-layer, edit, update
+    schema-dimensions declared Z and M of generated empty FlatGeobuf layers, export-schema vs GDAL (osgeo)
     vector-geom       simplify, segmentize, hulls, swap-xy, set-geom-type, combine and sort vs
                       gdal vector and GEOS (compare_vector_geom_with_gdal.py)
     arrow             Arrow and GeoArrow export and import (compare_arrow_with_gdal.py)
@@ -89,9 +91,11 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from pathlib import Path
 
@@ -105,7 +109,23 @@ DIFFERS = "differs"
 # A case whose reference values could not be computed (no coordinates to compare), reported apart.
 NOT_COMPARED = "not compared"
 
-GDAL_FREE_SUITES = frozenset(("pointclouds", "crs", "grib", "vsi", "hecras", "citygml", "cityjson", "cityjson-write", "citygml-write", "xlsx-workbook"))
+GDAL_FREE_SUITES = frozenset(
+    (
+        "citygml",
+        "citygml-write",
+        "cityjson",
+        "cityjson-write",
+        "crs",
+        "grib",
+        "hecras",
+        "jp2-writer",
+        "pointclouds",
+        "pyogrio-buffers",
+        "vsi",
+        "webp-writer",
+        "xlsx-workbook",
+    )
+)
 
 
 @dataclasses.dataclass
@@ -318,6 +338,57 @@ VECTOR_ROUNDTRIPS = [
 ]
 
 
+def suite_pyogrio_buffers(ctx):
+    """Compare signed vector buffers with the installed Pyogrio/GDAL reference.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Exact dataframe comparisons, with unavailable reference drivers reported apart.
+    """
+    suite = Suite("pyogrio-buffers", "pyogrio signed buffers", "Pyogrio/GDAL",
+                  "GeoPackage, FlatGeobuf and GeoParquet uploads: columns, values, dtypes, "
+                  "point geometries and CRS match Pyogrio/GDAL. Warning text is not compared.")
+    missing = missing_modules("terrio", "pytest", "geopandas", "pyogrio")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    import pyogrio
+    if hasattr(pyogrio, "__terrio_version__"):
+        suite.skipped = "needs the independent Pyogrio/GDAL reference, not Terrio's compatibility adapter"
+        return suite
+    suite.reference = f"GDAL {'.'.join(map(str, pyogrio.__gdal_version__))} via pyogrio {pyogrio.__version__}"
+    with tempfile.TemporaryDirectory(prefix="terrio-buffer-conformance-") as directory:
+        report = Path(directory) / "results.xml"
+        code, out, err = run([sys.executable, "-m", "pytest", "-q",
+                              str(ROOT / "python/tests/test_pyogrio_buffer_sources.py") + "::test_signed_buffers_match_gdal",
+                              f"--junitxml={report}"])
+        try:
+            cases = list(ET.parse(report).getroot().iter("testcase"))
+        except (OSError, ET.ParseError):
+            suite.error = tail(err or out)
+            return suite
+    for case in cases:
+        name = case.get("name", "buffer comparison")
+        failure = case.find("failure")
+        error = case.find("error")
+        if error is not None:
+            suite.error = tail(error.text or error.get("message", "pytest error"))
+            return suite
+        skipped = case.find("skipped")
+        if failure is not None:
+            status, detail = DIFFERS, tail(failure.text or failure.get("message", "comparison failed"))
+        elif skipped is not None:
+            status, detail = NOT_COMPARED, skipped.get("message", "reference unavailable")
+        else:
+            status, detail = IDENTICAL, "dataframe values, dtypes, point geometries and CRS match"
+        suite.cases.append(Case("vector buffers", name, status, detail))
+    if not cases or (code and not any(case.status == DIFFERS for case in suite.cases)):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_vector_roundtrip(ctx):
     """Vector files converted by terrio into each format, read back by GDAL."""
     s = Suite(
@@ -507,6 +578,27 @@ def suite_json_ops(ctx, key, script, title, reference, criteria, group_words, ex
         words = r["name"].split()
         s.cases.append(Case(" ".join(words[:group_words]), r["name"], status, detail))
     return s
+
+
+def suite_deflate(ctx):
+    """Categorical compression bounds and exact independent TIFF decoding."""
+    suite = Suite("deflate", "Categorical Deflate TIFFs", "GDAL TIFF decoder",
+                  "Exact samples, masks, Byte type, nodata, affine and CRS. The three repeating-class fixtures must each fit in 8500 bytes; no compressed-byte equality is claimed. Includes a WorldCover crop when available.")
+    missing = missing_modules("terrio", "numpy", "osgeo")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_deflate_with_gdal.py"), ctx.data, "--json"])
+    try:
+        rows = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for row in rows:
+        suite.cases.append(Case("Deflate", row["name"], IDENTICAL if row["status"] == "identical" else DIFFERS, row["detail"]))
+    if len(rows) < 5 or code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out) or "incomplete Deflate comparisons"
+    return suite
 
 
 def suite_shapefile_archives(ctx):
@@ -1002,6 +1094,22 @@ def suite_vrt(ctx):
         "must preserve types, nodata, georeferencing and values; Terrio-authored warped "
         "descriptions are also read by GDAL. Datum grid availability is matched.",
         2,
+    )
+
+
+def suite_jp2_colors(ctx):
+    """Real Landsat component values, channel roles and masks through each writer."""
+    package = ROOT / "js/pkg-node/terrio.js"
+    extra = ("--node-package", str(package)) if node_exports_available(package, ["open"]) else ()
+    return suite_json_ops(
+        ctx, "jp2-colors", "compare_jp2_color_roles.py", "JPEG 2000 channel roles",
+        "GDAL JP2OpenJPEG reader",
+        "Real Landsat components written with undefined, BGR, RGBA and ARGB roles. "
+        "Python paths/bytes, CLI and optional Node/WASM must retain exact pixel values, "
+        "types, masks and channel roles, preserving rotated/south-up affine grids and "
+        "absence of georeferencing. Two Gray "
+        "components also retain their stored Y association through rio copies. These are "
+        "reader comparisons, not compressed-byte identity with GDAL's encoder.", 2, extra=extra,
     )
 
 
@@ -1860,6 +1968,35 @@ def suite_iau(ctx):
         suite.cases.append(Case("IAU_2015", case["name"], case["status"], case["detail"]))
     if code and not any(c.status == DIFFERS for c in suite.cases):
         suite.error = tail(err or out)
+    return suite
+
+
+def suite_wkt_keywords(ctx):
+    """Engineering and vertical WKT roots through native bindings and CLI."""
+    suite = Suite("wkt-keywords", "Engineering and vertical WKT keywords", "GDAL 3.13.3",
+                  "Engineering/vertical definitions: exact root authority and CRS kind, "
+                  "CLI WKT retention and unchanged real USGS elevation pixels, nodata and affine. "
+                  "This checks metadata parsing, not engineering-to-Earth transformations.")
+    if missing_modules("terrio", "osgeo", "numpy"):
+        suite.skipped = "needs current Python bindings, GDAL and NumPy"
+        return suite
+    if not (Path(ctx.data) / "usgs_dem.tif").exists():
+        suite.skipped = "usgs_dem.tif is missing (scripts/fetch_test_data.sh)"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_wkt_keywords_with_gdal.py"),
+                          ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        status = IDENTICAL if result["status"] == "identical" else DIFFERS
+        suite.cases.append(Case("WKT keywords", result["name"], status, result["detail"]))
+    fixture = SCRIPTS.parent / "crates/terrio-crs/tests/data/wkt_keywords_reference.json"
+    expected_names = [case["name"] for case in json.loads(fixture.read_text())["cases"]]
+    if sorted(result["name"] for result in results) != sorted(expected_names) or (code and not any(c.status == DIFFERS for c in suite.cases)):
+        suite.error = tail(err or out) or "incomplete WKT keyword comparisons"
     return suite
 
 
@@ -2873,6 +3010,105 @@ def suite_topology(ctx):
     return s
 
 
+def _clear_flatgeobuf_has_z(path):
+    """Clears the ``has_z`` flag of a FlatGeobuf file's header in place, keeping its features' Z values.
+
+    The header is a size-prefixed flatbuffer after the 8 magic bytes; ``has_z`` is field 3 of its
+    ``Header`` table, a one-byte bool that GDAL stores whenever it is true.
+
+    Args:
+        path: The FlatGeobuf file to patch.
+
+    Raises:
+        ValueError: The header stores no ``has_z`` field.
+    """
+    with open(path, "r+b") as f:
+        data = bytearray(f.read())
+        table = 12 + struct.unpack_from("<I", data, 12)[0]
+        vtable = table - struct.unpack_from("<i", data, table)[0]
+        slot = vtable + 4 + 2 * 3
+        offset = struct.unpack_from("<H", data, slot)[0] if slot + 2 <= vtable + struct.unpack_from("<H", data, vtable)[0] else 0
+        if offset == 0:
+            raise ValueError(f"{path}: the header stores no has_z field")
+        data[table + offset] = 0
+        f.seek(0)
+        f.write(data)
+
+
+def suite_schema_dimensions(ctx):
+    """Declared Z and M of FlatGeobuf layers: terrio's export-schema vs GDAL's layer type.
+
+    The empty layers are generated by GDAL's FlatGeobuf driver with no features, so only the header's
+    declaration can give their dimensions. Two layers have features with Z: one as GDAL writes it,
+    and one whose header is patched to declare no Z, which both read as 2D. No downloaded data is needed.
+
+    Args:
+        ctx: Conformance run context.
+
+    Returns:
+        Suite: One case per declared dimension combination, and the two layers with features.
+    """
+    suite = Suite("schema-dimensions", "Declared geometry dimensions", "GDAL/OGR (FlatGeobuf driver)",
+                  "FlatGeobuf layers that GDAL generates: empty with each Z and M declaration, and with Z-bearing "
+                  "features under a header that declares Z or (patched) does not. The geometry type from terrio's "
+                  "export-schema must equal the layer's geometry type in GDAL, exactly.")
+    missing = missing_modules("osgeo")
+    if missing:
+        suite.skipped = "needs the Python module " + ", ".join(missing)
+        return suite
+    if not os.path.exists(ctx.terrio):
+        suite.skipped = f"needs the terrio command-line tool at {ctx.terrio}"
+        return suite
+    from osgeo import gdal, ogr, osr
+
+    suite.reference = f"GDAL {gdal.__version__} (FlatGeobuf driver)"
+    # Bindings without ``wkbPointZ`` spell the Z point ``wkbPoint25D``, the same type.
+    kinds = {"Point": ogr.wkbPoint, "PointZ": ogr.wkbPoint25D, "PointM": ogr.wkbPointM, "PointZM": ogr.wkbPointZM}
+    names = {wkb: name for name, wkb in kinds.items()}
+    # GDAL may report the ISO code for the Z point (1001) rather than the 2.5D code.
+    names[getattr(ogr, "wkbPointZ", ogr.wkbPoint25D)] = "PointZ"
+    # (case name, layer type, features with Z, clear the header's has_z, expected type)
+    layers = [(f"empty {kind}", wkb, 0, False, kind) for kind, wkb in kinds.items()]
+    layers += [("PointZ features", ogr.wkbPoint25D, 3, False, "PointZ"),
+               ("PointZ features, header without Z", ogr.wkbPoint25D, 3, True, "Point")]
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(4326)
+    driver = ogr.GetDriverByName("FlatGeobuf")
+    with tempfile.TemporaryDirectory(prefix="terrio-schema-dimensions-") as tmp:
+        for index, (case, wkb, count, clear_z, expected) in enumerate(layers):
+            path = os.path.join(tmp, f"layer_{index}.fgb")
+            ds = driver.CreateDataSource(path)
+            layer = ds.CreateLayer("empty" if count == 0 else "features", srs, wkb)
+            for i in range(count):
+                feature = ogr.Feature(layer.GetLayerDefn())
+                feature.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT Z ({i} {i} {i + 10})"))
+                layer.CreateFeature(feature)
+            layer = ds = None  # closing the dataset writes the file
+            if clear_z:
+                try:
+                    _clear_flatgeobuf_has_z(path)
+                except ValueError as e:
+                    suite.cases.append(Case("Declared dimensions", case, DIFFERS, str(e)))
+                    continue
+            opened = ogr.Open(path)
+            if opened is None:
+                suite.cases.append(Case("Declared dimensions", case, DIFFERS, "GDAL could not reopen the file"))
+                continue
+            gdal_type = opened.GetLayer(0).GetGeomType()
+            opened = None
+            gdal_name = names.get(gdal_type, ogr.GeometryTypeToName(gdal_type))
+            code, out, err = run([ctx.terrio, "export-schema", path])
+            try:
+                terrio_name = json.loads(out)["layers"][0]["geometryFields"][0]["type"]
+            except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                suite.cases.append(Case("Declared dimensions", case, DIFFERS, tail(err or out) or f"exit {code}"))
+                continue
+            status = IDENTICAL if terrio_name == gdal_name == expected else DIFFERS
+            detail = "" if status == IDENTICAL else f"GDAL {gdal_name}, terrio {terrio_name}, expected {expected}"
+            suite.cases.append(Case("Declared dimensions", case, status, detail))
+    return suite
+
+
 def suite_vector_dataset(ctx):
     """Dataset-level vector commands against GDAL's gdal vector commands."""
     s = Suite(
@@ -3330,12 +3566,77 @@ def suite_oapif(ctx):
     return suite
 
 
+def _pytest_module_conformance(ctx, filename):
+    """Require the complete, unfiltered test module and its successful JUnit report."""
+    command = [sys.executable, "-m", "pytest", "-o", "addopts=", "-q",
+               str(ROOT / "python/tests" / filename)]
+    env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "PYTEST_ADDOPTS": ""}
+    code, collected, err = run(command + ["--collect-only"], env)
+    expected = sum("::" in line and Path(line.split("::", 1)[0]).name == filename
+                   for line in collected.splitlines())
+    if code or not expected or "deselected" in collected:
+        return False, "Could not collect the complete test module. " + tail(err or collected)
+    with tempfile.TemporaryDirectory(prefix="terrio-pytest-conformance-") as directory:
+        report = Path(directory) / "results.xml"
+        code, out, err = run(command + [f"--junitxml={report}"], env)
+        try:
+            cases = ET.parse(report).getroot().findall(".//testcase")
+            complete = len(cases) == expected and all(
+                case.find("failure") is None and case.find("error") is None and case.find("skipped") is None
+                for case in cases)
+            detail = f"{len(cases)} of {expected} collected tests reported. "
+        except (OSError, ET.ParseError) as error:
+            complete = False
+            detail = f"Pytest report unavailable: {error}. "
+    return code == 0 and complete and "deselected" not in out, detail + tail(err or out)
+
+
+def suite_jp2_writer(ctx):
+    code, version, _ = run([sys.executable, "-c", "import rasterio; print(rasterio.__gdal_version__)"])
+    reference = f"GDAL {version.strip()} (rasterio)" if code == 0 else "GDAL (rasterio unavailable)"
+    suite = Suite("jp2-writer", "JPEG 2000 creation options", reference,
+                  "Lossless defaults and progressive final layers preserve exact pixels. "
+                  "Lossy quality changes sizes and pixels; independent GDAL decoding, types, "
+                  "georeferencing and reversibility match, including real Landsat RGB. "
+                  "Rate targets are approximate; encoder byte identity is not claimed.")
+    missing = missing_modules("rasterio", "pytest", "terrio", "numpy")
+    if missing:
+        suite.skipped = "needs the Python modules " + ", ".join(missing)
+        return suite
+    complete, detail = _pytest_module_conformance(ctx, "test_jp2_writer.py")
+    suite.cases.append(Case("JP2 GDAL decoding", "path/memory options and Landsat decoding",
+                            IDENTICAL if complete else DIFFERS,
+                            "Exact decoding/metadata comparisons and creation-option assertions; "
+                            "GDAL encoder parity is not asserted. " + detail))
+    return suite
+
+
+def suite_webp_writer(ctx):
+    code, version, _ = run([sys.executable, "-c", "import rasterio; print(rasterio.__gdal_version__)"])
+    reference = f"GDAL {version.strip()} (rasterio)" if code == 0 else "GDAL (rasterio unavailable)"
+    s = Suite("webp-writer", "WebP creation options", reference,
+              "Default/explicit lossless pixels are exact; lossy quality changes bytes and pixels, "
+              "with exact alpha and independent GDAL decoding, including real Landsat RGB. "
+              "Lossy encoder bytes, size and PSNR are not compared with libwebp.")
+    missing = missing_modules("rasterio", "pytest", "terrio", "numpy")
+    if missing:
+        s.skipped = "needs the Python modules " + ", ".join(missing)
+        return s
+    complete, detail = _pytest_module_conformance(ctx, "test_webp_writer.py")
+    s.cases.append(Case("WEBP GDAL decoding", "path/memory options and Landsat decoding",
+                        IDENTICAL if complete else DIFFERS,
+                        "Exact decoding/alpha comparisons and creation-option assertions; "
+                        "GDAL encoder parity is not asserted. " + detail))
+    return s
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
         ("subdatasets", suite_subdatasets),
         ("histograms", suite_histograms),
         ("vector-roundtrip", suite_vector_roundtrip),
+        ("pyogrio-buffers", suite_pyogrio_buffers),
         ("cad", suite_cad),
         ("cityjson", suite_cityjson),
         ("cityjson-write", suite_cityjson_write),
@@ -3347,6 +3648,9 @@ SUITES = OrderedDict(
         ("shapefile-rings", suite_shapefile_rings),
         ("shapefile-deleted", suite_shapefile_deleted),
         ("raster-roundtrip", suite_raster_roundtrip),
+        ("jp2-writer", suite_jp2_writer),
+        ("webp-writer", suite_webp_writer),
+        ("deflate", suite_deflate),
         ("windows", suite_windows),
         ("ops", suite_ops),
         ("raster-masks", suite_raster_masks),
@@ -3355,6 +3659,7 @@ SUITES = OrderedDict(
         ("benchmark-compat", suite_benchmark_compat),
         ("catalogs", suite_catalogs),
         ("vrt", suite_vrt),
+        ("jp2-colors", suite_jp2_colors),
         ("overviews", suite_overviews),
         ("warp-grid", suite_warp_grid),
         ("sum-overviews", suite_sum_overviews),
@@ -3399,6 +3704,7 @@ SUITES = OrderedDict(
         ("vector-geom", suite_vector_geom),
         ("vector-clip", suite_vector_clip),
         ("vector-dataset", suite_vector_dataset),
+        ("schema-dimensions", suite_schema_dimensions),
         ("xlsx", suite_xlsx),
         ("xlsx-layout", suite_xlsx_layout),
         ("xlsx-workbook", suite_xlsx_workbook),
@@ -3429,6 +3735,7 @@ SUITES = OrderedDict(
         ("projjson", suite_projjson),
         ("projjson-export", suite_projjson_export),
         ("iau", suite_iau),
+        ("wkt-keywords", suite_wkt_keywords),
         ("crs-list", suite_crs_list),
         ("crs-grids", suite_crs_grids),
     ]

@@ -141,6 +141,35 @@ terrio.render(ds, layers=["roads"])                   # actual name on a dataset
 # terrio.render(ds, layers=["map"]) raises: no layer named map (layers: roads)
 ```
 
+### pyogrio inputs
+
+`terrio.pyogrio` accepts bytes, byte arrays, memory views and readable file objects for recognized
+vector formats, including GeoPackage, FlatGeobuf, GeoParquet, GeoJSON and recognized XML formats
+such as KML, GML, GPX and OSM. The core's byte identifiers choose the temporary filename; the
+ordinary reader validates the dataset and applies the same driver restrictions as a named file.
+Content without a recognizable signature, such as CSV, still needs a named file. For formats
+whose layer name comes from the filename, such as GeoParquet, anonymous buffers use `data`.
+
+```python
+import io
+from pathlib import Path
+from terrio import pyogrio
+
+data = Path("roads.gpkg").read_bytes()
+frame = pyogrio.read_dataframe(io.BytesIO(data))
+layers = pyogrio.list_layers("published.zip")  # dataset beside a README or license
+```
+
+Archives without a member use the core's main-dataset selection, so ancillary files do not hide
+the dataset. Collections of root-level shapefiles still expose one layer per shapefile.
+Datetime parsing preserves uniform UTC offsets, converts mixed offsets to UTC by default, and
+preserves individual offsets with `mixed_offsets_as_utc=False`. Terrio does not change warning
+filters during parsing on pandas 2 or 3; pandas can still manage its own warning filters.
+Preserving individual offsets also accepts the ISO UTC suffix `Z` on Python 3.10.
+When naive and timezone-aware strings appear together, the default treats naive
+values as UTC before conversion. With `mixed_offsets_as_utc=False`, naive values
+remain naive and aware values retain their offsets in the object column.
+
 ### Streams
 
 Layers larger than memory are read a chunk of features at a time with `terrio.open_stream`
@@ -419,7 +448,24 @@ full resolution exactly. The estimate's accuracy is described under
 [Warp source overviews](cli.md#warp-source-overviews): exact up to rounding for an `average`
 overview of floating-point data without nodata when the footprint covers complete overview
 cells. Cropping through those cells makes even the total approximate; rounded integer means,
-partly nodata blocks and other overview resamplings also introduce approximation. Give a coarse `sum` a floating-point `ot`: a
+partly nodata blocks and other overview resamplings also introduce approximation.
+In a partly valid average-overview block, the valid-pixel mean is also applied to
+invalid pixels; small nodata holes can disappear into it. The measured 1.4% to 2.6%
+excess in the CLI guide is not a bound: the separate raster in
+[#707](https://github.com/opengeos/terrio/issues/707) has 7.9% nodata and overcounts by
+7.1% at ×64, versus 0.03% at ×8. An internal mask has the same limitation when its
+overview stores only binary validity, without the fraction of valid source pixels. For
+complete cells holding exact averages of constant positive valid values, an invalid
+fraction `p` wholly in partly valid cells gives relative excess `p / (1 - p)` over the
+valid total, rather than `p`; with variable values the nodata fraction alone does not
+bound the relative error. Output pixels can also become valid where a full-resolution
+sum has no valid source contribution. Select a finer `overview=n` (zero is the first
+and finest overview) or `"AUTO-n"`, which can reduce the effect, or `overview="NONE"` for valid
+totals and full-resolution nodata coverage. Finer independently built overviews need not
+improve the error monotonically when values vary. The mean-based formulas do not apply
+to nearest overviews, which may select nodata from a partly valid block.
+
+Give a coarse `sum` a floating-point `ot`: a
 `"UInt16"` output stores 65535 for any larger sum. For paths and lazy inputs, a `sum` of one source without a cutline
 reads the window of an output too coarse to be split into chunks a strip of rows at a time, as
 `terrio warp` does (see [Warp source overviews](cli.md#warp-source-overviews)). The working-memory estimate applies per strip, with at least one row; two strips overlap during reading and computation, in addition to output and decoder buffers. An unmasked, already loaded `Raster` reuses its resident pixels and does not use strip reads or this source-read budget. For paths and lazy inputs, a `sum` whose
@@ -939,6 +985,22 @@ option:
 ```python
 with Env(TERRIO_TIFF_MAX_CHUNK_BYTES=str(1 << 30)):
     da = terrio.xarray.open_rasterio("pixel_interleaved_1488_bands.tif")
+```
+
+A GeoTIFF read whole or by window (`terrio.open_raster`, `Raster.read`, `terrio.rio`'s `read`)
+raises `ResourceLimitError` before its buffer is allocated when the process cannot hold it (more
+than the physical memory, or than the limit of its cgroup or its address space), and so does
+`terrio.translate` or `convert` to a GeoTIFF or COG whose writer would hold a row of blocks of
+every band that cannot fit. `terrio.rio` preserves `ResourceLimitError` (a `MemoryError`)
+through open, read, resampled read and mask reads, so callers can distinguish a resource refusal
+from an ordinary `RasterioIOError`. For files you do not trust, `TERRIO_MAX_DECLARED_BYTES` (width x height x bands x bytes
+per sample) and `TERRIO_MAX_BANDS`, positive integers in the environment or an `Env`, refuse a
+raster that declares more when it is opened, whatever its format, with `ResourceLimitError`
+naming the option. See [Rasters](formats.md#rasters) for declaration checks and reader details:
+
+```python
+with Env(TERRIO_MAX_DECLARED_BYTES=str(1 << 30), TERRIO_MAX_BANDS="64"):
+    src = rio.open("upload.tif")  # ResourceLimitError when it declares more
 ```
 
 ## Typing

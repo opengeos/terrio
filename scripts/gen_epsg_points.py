@@ -33,10 +33,12 @@ Usage: python scripts/gen_epsg_points.py OUT.tsv [--grids DIR] [--points N]
 """
 
 import argparse
+import atexit
 import math
 import multiprocessing
 import os
 import random
+import shutil
 import tempfile
 import warnings
 
@@ -50,7 +52,7 @@ if OPTIONS.points < 1:
 
 # conda's PROJ activation turns PROJ's network access on, which downloads grids (NAD27 and others)
 # and makes the transformations depend on the environment: the network stays off, and PROJ
-# searches an empty directory (or the grid directory) and its database's directory only.
+# searches an empty directory (or the grid directory) and a directory holding its database only.
 os.environ["PROJ_NETWORK"] = "OFF"
 
 import numpy as np  # noqa: E402
@@ -59,7 +61,17 @@ from osgeo import gdal, osr  # noqa: E402
 from pyproj.enums import PJType  # noqa: E402
 
 osr.UseExceptions()
-PROJ_DB_DIR = pyproj.datadir.get_data_dir().split(os.pathsep)[0]
+# Only PROJ's database (and its configuration) is searched: the data directory may also hold the
+# datum shift grids of a package such as conda's proj-data, which the "no grid" reference must not
+# use.
+PROJ_DATA_DIR = pyproj.datadir.get_data_dir().split(os.pathsep)[0]
+PROJ_DB_DIR = tempfile.mkdtemp()
+atexit.register(shutil.rmtree, PROJ_DB_DIR, ignore_errors=True)
+for name in ("proj.db", "proj.ini"):
+    if os.path.exists(os.path.join(PROJ_DATA_DIR, name)):
+        shutil.copy2(os.path.join(PROJ_DATA_DIR, name), PROJ_DB_DIR)
+if not os.path.exists(os.path.join(PROJ_DB_DIR, "proj.db")):
+    raise SystemExit(f"{PROJ_DATA_DIR} holds no proj.db: the EPSG reference needs PROJ's database")
 GRID_DIR = os.path.abspath(OPTIONS.grids) if OPTIONS.grids else tempfile.mkdtemp()
 # PROJ's user directory (where projsync and the network cache put grids) is searched too.
 os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp()

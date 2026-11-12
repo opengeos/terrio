@@ -398,12 +398,26 @@ fn process_aligned(
     let plan = plan(pan, spectral, o)?;
     let pan = adjust(pan, o.pan_band, &plan.pan)?;
     let bands = spectral.iter().zip(&plan.spectral).map(|(b, layout)| adjust(b.dataset, b.band, layout)).collect::<Result<Vec<_>>>()?;
+    let buffer_bytes = |ds: &RasterDataset| ds.raster.data.len().checked_mul(ds.raster.data_type.size_bytes());
+    let mut remaining = bands
+        .iter()
+        .try_fold(0usize, |total, ds| buffer_bytes(ds).and_then(|bytes| total.checked_add(bytes)))
+        .ok_or_else(|| Error::ResourceLimit("pansharpen source buffers exceed the address space".into()))?;
+    let retained_sources = reads
+        .iter()
+        .fold(buffer_bytes(&pan), |total, read| total.and_then(|total| total.checked_add(read.mask.as_ref().map_or(0, Vec::capacity))))
+        .ok_or_else(|| Error::ResourceLimit("pansharpen source masks exceed the address space".into()))?;
     let (weights, output, work, nodata) = (plan.weights, plan.output, plan.work, plan.nodata);
     let grid = plan.pan.grid;
     let n = grid.width.checked_mul(grid.height).ok_or_else(|| bad("pansharpen buffer size overflow"))?;
     let max = if matches!(work, DataType::U8 | DataType::U16) { o.bit_depth.map(|b| ((1u64 << b) - 1) as f64) } else { None };
-    let mut values = Vec::new();
+    let mut values: Vec<Vec<f64>> = Vec::new();
     for (index, ds) in bands.into_iter().enumerate() {
+        // The current source is included by resampling_values; the other adjusted
+        // sources remain in the consuming iterator until their own turn.
+        remaining = buffer_bytes(&ds)
+            .and_then(|bytes| remaining.checked_sub(bytes))
+            .ok_or_else(|| Error::ResourceLimit("pansharpen source buffers exceed the address space".into()))?;
         let geometry = &reads[index];
         let input = BandView::of(&ds.raster, 0);
         let source_nodata = nodata.or(ds.nodata());
@@ -449,13 +463,24 @@ fn process_aligned(
                 }
             }
             Resampling::Average => {
+                let retained = values
+                    .iter()
+                    .fold(out.capacity().checked_mul(std::mem::size_of::<f64>()), |total, band| {
+                        total.and_then(|total| {
+                            band.capacity().checked_mul(std::mem::size_of::<f64>()).and_then(|bytes| total.checked_add(bytes))
+                        })
+                    })
+                    .and_then(|bytes| bytes.checked_add(retained_sources))
+                    .and_then(|bytes| bytes.checked_add(remaining))
+                    .ok_or_else(|| Error::ResourceLimit("pansharpen retained bands exceed the address space".into()))?;
                 let averaged = super::vrt::gdal_average_with_origin(
                     &read,
                     (x.max(0.0) as usize, y.max(0.0) as usize),
                     (rect[0], rect[1], rect[2], rect[3]),
                     (grid.width, grid.height),
                     Some(geometry.origin),
-                );
+                    retained,
+                )?;
                 for (target, value) in out.iter_mut().zip(averaged) {
                     *target = convert_value(convert_value(value.unwrap_or(source_nodata.unwrap_or(0.0)), ds.raster.data_type), work);
                 }

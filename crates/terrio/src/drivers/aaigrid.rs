@@ -21,6 +21,7 @@ pub(crate) const HEADER_KEYS: &[&str] =
     &["ncols", "nrows", "xllcorner", "yllcorner", "xllcenter", "yllcenter", "cellsize", "dx", "dy", "nodata_value"];
 
 pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
+    super::declared_header::check(path, RasterDriver::AAIGrid)?;
     let text = std::fs::read_to_string(path)?;
     let bad = |what: &str| Error::InvalidData(format!("{}: {what}", path.display()));
     // The header is the lines that start with a known keyword; the values follow.
@@ -60,17 +61,14 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     let mut nodata = None;
     if let Some(nd) = get("nodata_value") {
         let v = if nd == "null" { -(f32::MAX as f64) } else { common::parse_f64(nd).ok_or_else(|| bad("invalid NODATA_value"))? };
-        if nd == "null" || nd.contains(['.', ',']) || v.is_nan() || v < i32::MIN as f64 || v > i32::MAX as f64 {
-            data_type = DataType::F32;
-            if v.is_finite() && (v.abs() < f32::MIN_POSITIVE as f64 || v.abs() > f32::MAX as f64) && v != 0.0 {
-                data_type = DataType::F64;
-            }
-        }
+        data_type = nodata_type(nd, v);
         nodata = Some(if data_type == DataType::F32 { map_to_f32(v) } else { v });
     }
     if data_type == DataType::I32 && body.bytes().any(|b| matches!(b, b'.' | b',' | b'e' | b'E')) {
         data_type = DataType::F32;
     }
+
+    crate::declared::check(cols, rows, 1, data_type, false)?;
 
     // A resource refusal, which the GDAL fallback does not retry.
     let n = cols
@@ -82,6 +80,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     if n > body.len() / 2 + 1 || body.split_ascii_whitespace().take(n).count() < n {
         return Err(short());
     }
+    super::declared_header::check_ascii_allocation(cols, rows, data_type)?;
     let mut tokens = body.split_ascii_whitespace();
     let data = match data_type {
         DataType::I32 => {
@@ -121,6 +120,19 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     let crs = common::read_prj(path).unwrap_or_default();
     let raster = common::make_raster(cols, rows, 1, data, gt, crs, nodata)?;
     Ok(RasterDataset::with_driver(raster, RasterDriver::AAIGrid, nodata.is_some()))
+}
+
+/// Header sample precision, shared by the decoder and declaration preflight (GDAL 3.13.3).
+pub(crate) fn nodata_type(text: &str, value: f64) -> DataType {
+    if text == "null" || text.contains(['.', ',']) || value.is_nan() || value < i32::MIN as f64 || value > i32::MAX as f64 {
+        if value.is_finite() && value != 0.0 && (value.abs() < f32::MIN_POSITIVE as f64 || value.abs() > f32::MAX as f64) {
+            DataType::F64
+        } else {
+            DataType::F32
+        }
+    } else {
+        DataType::I32
+    }
 }
 
 /// A nodata value as GDAL stores it for a Float32 grid.
@@ -219,7 +231,7 @@ mod tests {
         // 2^31 cells (8 GB of Float32 values) declared, 3 given: an error before allocating.
         std::fs::write(&p, "ncols 65536\nnrows 32768\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3\n").unwrap();
         let e = read(&p).unwrap_err();
-        assert!(e.to_string().contains("expected 2147483648 values"), "{e}");
+        assert!(e.is_resource_refusal() || e.to_string().contains("expected 2147483648 values"), "{e}");
         // A body long enough by its length, padded with spaces, holding 3 values of 2048.
         std::fs::write(&p, format!("ncols 64\nnrows 32\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3{}\n", " ".repeat(5000))).unwrap();
         let e = read(&p).unwrap_err();

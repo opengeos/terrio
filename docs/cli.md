@@ -1088,7 +1088,8 @@ exactly, whatever `--et` is. Source windows include these exact corners as well 
 sampled bounds: a 256 × 256
 tile reprojected from UTM to Web Mercator at the source's resolution totals the integral of the
 source over it within a relative error of 10⁻⁹. Transforming every corner and bounding its footprint takes additional work;
-see [validation and measured costs](testing.md#exact-sum-footprints).
+see [validation and measured costs](testing.md#exact-sum-footprints). A footprint across the
+antimeridian adds the source on both sides of it, as the area methods below take it.
 
 With `-r average`, `rms`, `mode`, `min`, `max`, `med`, `q1` or `q3`, each output pixel takes the
 valid source pixels inside its footprint on the source grid: where the footprint runs past the
@@ -1096,11 +1097,23 @@ source's edges, only its part inside the source counts, and `average`, `rms` and
 source pixel by its area inside that part. A footprint counts within the source window that its
 chunk of the output reads, and an output pixel is left empty only when no valid source pixel of
 that window lies inside it or one of the two corners that bound its footprint (top left and bottom
-right) cannot be transformed. A footprint crossing the antimeridian of a regional, unrotated
-affine geographic source also stays empty pending circular footprint handling (#764).
+right) cannot be transformed. On a geographic source with an unrotated grid, warped into another
+CRS, a footprint across the antimeridian takes the source on both sides of it, as one across any
+other meridian does: near both edges of a source of every longitude, and its part on the source's
+side of one that ends at the antimeridian. A footprint counts as across it when its corners lie
+more than half a turn of longitude apart on the source grid and the source position of its centre
+lies outside them. Any other footprint keeps its corners: a coarse pixel's, whose centre lies
+between them, and that of a pixel more than half a turn wide, whose corners lie less than half a
+turn apart, which takes the source between them.
 The window holds the footprints of its chunk unless a strongly curved
 transformation takes one past the points the window is sampled from: such a footprint is shortened,
 and its pixel can then differ with the chunks the warp splits the output grid into.
+With chunk-dependent sampling, the sampled source window can also omit one side of an
+antimeridian-crossing footprint; default stable sampling avoids that window-selection gap.
+For a source wider than one longitude turn, repeated longitudes are read at the single placement
+with the greatest overlap. If no single placement covers the footprint, the part beyond the
+other edge is omitted. Covering that remainder without counting repeated longitudes twice is
+tracked in [#884](https://github.com/opengeos/terrio/issues/884).
 
 ### Warp source overviews
 
@@ -1134,7 +1147,29 @@ whose values it shares by area. Over 256 × 256 outputs of a 16384 × 16384 rast
 overviews, at 16, 32 and 64 times its pixel size, the totals were within 2 × 10⁻⁷ of the source's
 for Float32 and Float64 data, 0.4% to 0.6% above them for UInt16 data, whose averages are
 rounded at each level, and 1.4% to 2.6% above them for Float32 data 7% nodata, in two corners
-and in holes 40 pixels wide. A sum outgrows small integer types: a `UInt16` output stores 65535
+and in holes 40 pixels wide. These measurements are not an error bound: nodata holes smaller
+than an overview cell can disappear into its valid-pixel mean. For example, a block with one
+valid value 100 and three nodata pixels has mean 100; counting it over the whole block
+estimates 400 instead of the valid total 100. An internal mask has the same limitation when
+its overview records only valid/invalid, without the fraction of valid source pixels.
+
+For nonnegative data and complete overview cells holding exact area-weighted valid-pixel
+means (without integer rounding), the excess is each partly valid cell's mean times the
+area of its invalid portions in source-pixel units, summed over those cells. With a constant positive valid value
+and invalid fraction `p` entirely in partly valid cells, the estimate is `1 / (1 - p)`
+times the valid total: 7.9% nodata can give about 8.6% excess relative to that total.
+Variable values, integer rounding and cropped cells prevent treating the nodata fraction
+alone as a general bound. A separate 4096 × 4096 Float32 example in
+[#707](https://github.com/opengeos/terrio/issues/707), with 7.9% nodata in corners and
+40-pixel holes, overcounts by 7.1% at ×64, but only 0.03% at ×8, where the holes align
+with complete overview cells. Overview sums can also mark output pixels valid where
+full-resolution sums have no valid source contribution. Choose a finer stored level with
+`--overview n` (zero is the first and finest overview), or `AUTO-n`, which can reduce this effect.
+The improvement is not monotonic for variable values and independently built overviews.
+Use `--overview NONE` when valid totals and full-resolution nodata coverage are
+required.
+
+A sum outgrows small integer types: a `UInt16` output stores 65535
 for any larger sum, so give a coarse `sum` `--ot Float32` or `--ot Float64`.
 
 A `sum` of one source without a cutline holds the source window of an output chunk, which the

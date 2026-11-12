@@ -34,6 +34,9 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
         png::ColorType::Rgba => 4,
     };
     let bits = info.bit_depth as usize;
+    // What the header declares, before any row is decoded (see `crate::declared`).
+    let data_type = if bits == 16 { DataType::U16 } else { DataType::U8 };
+    crate::declared::check(cols, rows, bands, data_type, false)?;
     // The sizes come from the header: allocated fallibly.
     let size = reader.output_buffer_size().ok_or_else(|| png_err(path, "image too large"))?;
     let mut buf = fallible::filled(size, 0u8, "the PNG image")?;
@@ -111,7 +114,13 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
 /// Reads a JPEG file with its world file, decoded as GDAL's JPEG driver decodes it (libjpeg's
 /// output, see [`crate::jpeg`]).
 pub(crate) fn read_jpeg(path: &Path) -> Result<RasterDataset> {
-    let img = crate::jpeg::decode_file(&std::fs::read(path)?).map_err(|e| {
+    let bytes = std::fs::read(path)?;
+    // What a baseline frame header declares, before the scans are decoded (see `crate::declared`);
+    // other frames are checked once decoded.
+    if let Ok((cols, rows, bands)) = crate::jpeg::frame_dimensions(&bytes) {
+        crate::declared::check(cols, rows, bands, DataType::U8, false)?;
+    }
+    let img = crate::jpeg::decode_file(&bytes).map_err(|e| {
         let message = format!("{}: {e}", path.display());
         if crate::jpeg::is_resource_refusal(&e) { Error::ResourceLimit(message) } else { Error::InvalidData(message) }
     })?;

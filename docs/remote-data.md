@@ -341,6 +341,22 @@ an object store's listing (remote Zarr groups) at 64 MiB, a STAC signing token r
 
 ## Decoded block cache
 
+Native parallel TIFF reads also retain spare decoders so that later windows avoid rereading
+their chunk tables. This is separate from the decoded block cache. All readers share a
+256 MiB spare-decoder budget by default. Set `TERRIO_TIFF_SPARE_CACHEMAX` before the first
+window read to change it (bytes, optional `K`, `M`, or `G` suffixes); `0` disables spare
+retention. Invalid values use the default. This process-wide setting ignores thread-local
+`terrio.rio.Env` options. A larger budget can avoid repeatedly reopening decoders when several
+large rasters are read in turn, at the cost of retaining more memory.
+
+Positive budgets retain one reader's own spares even when they alone exceed the budget,
+up to one per worker thread. Idle decoders of other readers are evicted least recently used
+first. Each spare is charged for its chunk tables, retained JPEG coding tables and a fixed
+16 KiB overhead. Accounting uses loaded directory metadata without copying or rereading
+the JPEG table payload. Active decoders, the reader's primary decoder, archive buffers and other allocations
+are outside this budget; it does not cap total process memory. An uncountable decoder is
+dropped rather than retained without its chunk tables being charged.
+
 The decoded tiles and strips of lazy GeoTIFF and COG reads, remote or local, are kept in memory
 process-wide, as GDAL's block cache keeps the blocks it decodes. A window read again decodes only
 the chunks no longer in the cache: the least recently used are dropped first when the cache is
@@ -392,6 +408,34 @@ URL: `terrio::http::clear_cache` (Python: `terrio.clear_http_cache()`) drops the
 
 `terrio::formats::allowed_drivers` (Python: `terrio.allowed_drivers()`) gives the drivers allowed on
 the calling thread.
+
+## Declared sizes
+
+A file of a few hundred kilobytes can declare gigabytes of pixels. For files you do not trust,
+these options bound what a raster may declare; a raster that declares more is refused when it is
+opened, with a resource error (Python's `ResourceLimitError`) naming the option:
+
+| Variable | Refuses a raster declaring more than | Default |
+|---|---|---|
+| `TERRIO_MAX_DECLARED_BYTES` | this many bytes of pixels (width x height x bands x bytes per sample) | unset |
+| `TERRIO_MAX_BANDS` | this many bands | unset |
+
+Each is a positive integer, set in the environment or for one thread (Python's `terrio.rio.Env`,
+`terrio::config::push_scope`), where it applies instead of the environment's value. See
+[Rasters](formats.md#rasters) for the opens that apply them and the readers that refuse a raster
+only once read.
+
+CLI commands use these process-environment settings rather than per-command flags,
+so one policy applies to every raster-opening operation. For example:
+
+```sh
+TERRIO_MAX_DECLARED_BYTES=1073741824 TERRIO_MAX_BANDS=64 terrio info dem.tif
+```
+
+For MCP, put the same variables in the server process's environment (the `env` entry
+in the client's server configuration), or export them before starting the server.
+They apply to every tool call handled by that server; individual tool arguments do
+not expose separate limit settings.
 
 ## Managing files
 

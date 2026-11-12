@@ -38,7 +38,7 @@ GDAL's drivers (the formats marked * are written that way): see
 | ERS | ER Mapper | ✓ | ✓ | ers |
 | PNG | PNG with world file | ✓ | ✓ | png |
 | JPEG | JPEG with world file | ✓ | ✓ | jpg, jpeg |
-| WEBP | WebP with world file (written lossless) | ✓ | ✓ | webp |
+| WEBP | WebP with world file | ✓ | ✓ | webp |
 | XYZ | XYZ ASCII grid | ✓ | ✓ | xyz |
 | DTED | DTED elevation | ✓ | ✓ | dt0, dt1, dt2 |
 | SRTMHGT | SRTM HGT tiles (`N37W120.hgt`, zipped or not; NASADEM `.hgts`, `.err`, `.img`, `.num` and water body `.raw`, `.swb` read) | ✓ | ✓ | hgt |
@@ -49,12 +49,20 @@ YCbCr with 4:2:0 chroma subsampling (each 2 x 2 block's chroma averaged, as libj
 quantized at the `QUALITY` creation option (1 to 100, default 75) as libjpeg scales its tables,
 with optimized Huffman tables. Other data types are rounded and saturated to Byte; GDAL's 4-band
 (CMYK) and 12-bit JPEGs are not written. WebP files hold 3 (RGB) or 4 (RGBA) Byte bands of at most
-16383 x 16383 pixels, as GDAL's WEBP driver requires, and are always lossless (encoded in Rust,
-without libwebp), every sample kept: `LOSSLESS=NO`, GDAL's default, still gives a lossless file,
-not the size of GDAL's lossy one, and `QUALITY` (checked to be 0 to 100) and `EXACT` (0 or 1) have
-no effect. The RGB values under fully transparent pixels are kept, as GDAL keeps them with `EXACT=1`;
-with GDAL's default, `EXACT=0`, libwebp writes values of its own choosing there. An alpha band
-that is opaque everywhere is left out, so the file reads back as 3 bands, in GDAL as in terrio.
+16383 x 16383 pixels, as GDAL's WEBP driver requires. With no lossy options, files are
+lossless, every sample kept, including RGB under fully transparent pixels. `LOSSLESS=NO`
+or `QUALITY` without `LOSSLESS=YES` selects lossy VP8 encoding; `QUALITY` ranges from 0 to
+100 (default 75). Explicit `LOSSLESS=YES` overrides quality. Alpha is kept exactly, including
+in lossy output. `LOSSLESS` accepts YES/NO, TRUE/FALSE, ON/OFF and 1/0, in any case;
+unrecognized values are refused, like GeoTIFF's `WEBP_LOSSLESS` (stricter than GDAL's parser).
+The standalone default is lossless; GeoTIFF WebP tiles instead default to lossy. Whitespace
+around `LOSSLESS` is ignored. Alpha in lossy files is compressed losslessly when that is
+smaller, with raw storage as a fallback (one byte per pixel, plus ALPH headers and padding).
+An alpha band that is opaque everywhere is left out, so the file reads back
+as 3 bands. Both encoders are pure Rust; the lossy encoder is shared with GeoTIFF WebP tiles.
+Its size and PSNR at a given quality differ from GDAL's libwebp. `EXACT` (0 or 1) is validated
+but does not change encoding: lossless output always keeps transparent RGB, and lossy RGB
+is approximate even under transparent pixels. Other libwebp tuning options remain ignored.
 WebP files are read lossless or lossy, as 3 bands, or 4 with an alpha channel.
 
 PNG image data is compressed at the `ZLEVEL` creation option, the Deflate level, from 1 (the
@@ -85,10 +93,88 @@ parallel, besides the window it returns. In
 Rust, use `TiffReadLimits` with `LazyRaster::open_tiff_with_limits`
 (or its bytes/sparse counterparts), or `terrio::open_raster_with_tiff_limits` for an
 eager read. The override applies to parallel decoders too. It limits decoded chunks;
-callers still choose the size of the returned raster/window allocation. The limit
+callers still choose the size of the returned raster/window allocation, which the
+check below refuses when the process cannot hold it. The limit
 also bounds LERC Deflate/Zstandard inflation and the decoded size declared by
 embedded LERC and JPEG headers, before mask or pixel decoding. It is not a cap
 on total process memory or the codec's working buffers.
+
+A GeoTIFF read whole (`terrio::open_raster`, a lazy raster's `read`) or by window is refused
+with a resource error (Python's `ResourceLimitError`) before its buffer is allocated when the
+buffer is more than the memory the process can use (`terrio::usable_memory`: the physical memory,
+or less under the memory limit of the process's cgroup or its address-space or resident-set
+limit); the message gives both sizes. This usable-memory estimate currently reads Linux
+`/proc` files. On macOS, Windows and other systems without those files, there is no
+physical-memory refusal; allocation arithmetic, address-space checks and explicitly
+configured limits still apply. A window that fits is read. The GeoTIFF and COG writers that
+`translate`, `convert` and other operations stream their output to keep a row of their blocks of
+every band until the row is complete, and hold it twice while a strip is appended to it: a raster
+whose row cannot fit is refused when the writer is created, before its rows are gathered. A COG of
+a few rows and thousands of bands, whose 512-row tiles hold every band, is
+held whole. These checks refuse what cannot fit: a buffer about the size of the usable memory
+passes them and can still exhaust it, with what the process holds besides.
+
+`terrio.rio` preserves `ResourceLimitError` when constructing or closing whole and
+streaming writers, after cleaning temporary outputs. Other allocation failures
+retain their `RasterioIOError` wrapping.
+
+For files you do not trust, two options bound what a raster may declare, whatever its driver:
+
+| Option | Refuses a raster that declares more than |
+|---|---|
+| `TERRIO_MAX_DECLARED_BYTES` | this many bytes of pixels: width x height x bands x bytes per sample, in the type terrio reads the samples as (8 for GRIB's Float64 bands) |
+| `TERRIO_MAX_BANDS` | this many bands (a complex band counts once) |
+
+The CLI and MCP take these limits from the process environment; MCP operators set
+them on the server process, so the same admission policy covers every tool call.
+See [remote-data limits](remote-data.md) for a CLI example and MCP configuration.
+
+Both are unset by default. Each is a positive integer, set in the environment or in an `Env`
+scope (or JavaScript's `pushConfig`/`popConfig`), whose value applies on its thread instead of
+the environment's; any other value is an
+invalid argument naming the option. A raster they refuse is a resource error naming the option,
+raised when it is opened: by `open`, `open_raster`, `open_raster_lazy` and `LazyRaster::open`, the
+format constructors (`LazyRaster::open_tiff`, `from_tiff_bytes`, `from_tiff_shared_bytes`,
+`from_sparse`, `from_zarr_objects`, `from_tile_archive`, with or without explicit limits), a tile
+archive's own opens (`tiles::open_dataset`, `TileArchive::into_dataset`), the opens of bytes in
+`terrio::memory`, the VRT opens (pansharpened VRTs included, and `VrtDataset::materialize` before
+it reads any source), the catalog opens and the GDAL backend.
+The sources a VRT or a catalog opens are rasters opened too: each is checked when it is opened, a
+VRT's when a read first needs it. Readers that read a header first refuse a raster before decoding
+any of its pixels; the Imagine reader reads its whole file, without decoding it, before its header.
+Esri ASCII and GRASS ASCII grids, PCRaster, DTED and Esri binary grids preflight their headers
+before allocating or parsing pixels. ASCII allocation bounds also apply when both
+options are unset. The fallback Esri reader uses Float64 samples; the GRASS reader
+uses a Float64 working buffer even when its output type is narrower. ASCII header
+scans retain bounded prefixes and stream longer fields; they may read arbitrarily
+long padding or unknown header lines to preserve the decoder's grammar. XYZ grids infer their size and sample type from coordinate
+records and check before allocating the dense grid. Operations
+that open a raster refuse it the same way, `info` included. These bounds and the checks above are
+independent of `TERRIO_TIFF_MAX_CHUNK_BYTES`, which bounds each decoded chunk, and of
+`TERRIO_WARP_SUM_MAX_BYTES`, which bounds what a `sum` warp holds: a read passes every one that
+applies.
+
+Opt-in fallback recognizes a PCRaster CSF signature from a bounded prefix even when the
+filename has an unknown suffix, so identification does not first read its whole encoded file.
+Malformed ASCII fields can end the declaration scan; the original codec still validates the
+input and reports its error. A complete oversized header can be refused before invalid pixels.
+Invalid UTF-8 during fallback identification can report the preflight I/O diagnostic instead
+of the fallback reader's diagnostic; it does not add support for non-UTF-8 ASCII grids
+to native readers. The optional GDAL backend retains its own parser rules; resource
+refusals remain terminal.
+
+For a GeoPackage holding both rasters and vector layers, raster-first path rendering and a
+complete dataset check retain a refused raster's resource error. The vector layers remain
+readable through vector opens and the GeoPackage's generic layer-preferring open. In Python,
+pass an opened vector dataset to `render` to draw it explicitly; vector clip templates selected
+with `like_layer` remain available too.
+
+Native resampled UInt16-alpha mask reads also check their actual source windows before
+reading and converting them to bytes. The working-set estimate includes simultaneously
+retained source/conversion buffers, previously produced Byte output and caller-owned
+pixel/mask buffers. Small mask outputs can therefore be refused when their source-window
+conversion cannot fit, while small source windows and Byte-alpha reads keep their existing
+paths. This remains an estimate of known buffers rather than a total-process memory cap.
 
 GeoTIFF compression: none, LZW, Deflate (including the legacy code), PackBits, JPEG, WebP,
 Zstandard, LZMA, LERC (alone, with Deflate or with Zstandard, lossless or not, with NaN masks) and
@@ -112,11 +198,34 @@ with the `libzstd` feature: without it, as in the default build and in WebAssemb
 chunks are compressed at the one level their encoder has. A level out of range is refused,
 whatever the compression.
 
+Deflate levels 6–9 supplement the bounded hash-chain search with up to four
+run-boundary candidates. This keeps long matches across repeating categorical
+rows instead of encoding each short uniform run separately. It can change the
+compressed bytes and CPU cost; the decoded pixels are unchanged. Levels 1–5
+add no run-boundary candidates. Compressed bytes need not match libdeflate or GDAL.
+
+Within a `DEFLATE` chunk, at every level, the encoder also looks for a match one row back and takes
+it where it is longer than the matches its hash chains (and, at levels 6–9, its run-boundary
+candidates) find, so rows that repeat the row above, as in rasters of uniform blocks such as land
+cover maps, classifications and masks, are coded as copies of whole rows.
+
 JPEG 2000 is decoded and encoded with the Rust port of OpenJPEG, the codec of GDAL's JP2OpenJPEG
 driver, so pixels are GDAL's (Sentinel-2 L1C and L2A bands included). Georeferencing comes from
 the GeoJP2 box or the GMLJP2 box (Sentinel-2's), a 1-bit alpha channel is promoted to 0 and 255 as
-GDAL does, and files are written losslessly with a GeoJP2 box, the nodata value in a `.aux.xml`
-sidecar. Files are read in place by window and resolution level, as GDAL reads them: the resolution
+GDAL does. Files default to lossless output with a GeoJP2 box, and nodata in a `.aux.xml`
+sidecar. `QUALITY` is a percentage of uncompressed size, as in
+[GDAL's JP2OpenJPEG driver](https://gdal.org/en/stable/drivers/raster/jp2openjpeg.html#creation-options),
+not a PSNR target: 25 requests roughly one quarter of the uncompressed size. Supply one
+percentage or up to 100 strictly increasing comma-separated percentages for progressive
+quality layers, each greater than 0 and at most 100. Targets are approximate and exclude
+container overhead. Distinct percentages very close together may round to the same codec rate;
+the ordering rule applies to the requested percentages. Rates that overflow the codec's
+intermediate arithmetic are refused. The final quality defaults to 100; `REVERSIBLE=NO` alone instead uses
+25. A final quality below 100 defaults to irreversible 9/7, while a final quality of 100
+defaults to reversible 5/3. `REVERSIBLE=YES` explicitly selects 5/3 but is still lossy when
+rate-limited below 100. Only reversible output ending at quality 100 is lossless.
+Path and memory writes expose the same options, including JavaScript/WASM. Files are read in
+place by window and resolution level, as GDAL reads them: the resolution
 levels are the overviews (each halving the size, down to about 128 pixels, with GDAL's block
 sizes), and a window decodes only the tiles, precincts and code blocks it covers, its tiles in
 parallel, from local files, bytes or HTTP range requests. On a 10980 x 10980 Sentinel-2 band, a
@@ -125,9 +234,38 @@ thread) and 1.7 GB, and the smallest overview 0.05 s (GDAL: 0.09 s, 1.1 s and 0.
 window and overview is identical to GDAL's. GeoTIFFs compressed with JPEG XL are read tile by tile
 the same way (JPEG XL files themselves are not a format terrio reads).
 
+Supplied JPEG 2000 colour roles, including roles inherited from source files, are stored in channel-definition boxes. Three- and
+four-band data marked undefined read back as Undefined while the file declares grayscale; RGB associations and
+alpha can appear in any component order. The multiple-component transform is enabled
+only for RGB in the first three components. Inherited multispectral Undefined roles therefore
+disable that transform as well as declaring grayscale; encoded sizes can change. Non-RGB files declare grayscale with one
+Y channel (a non-alpha channel with stored association 1, else the first gray channel,
+else the first non-alpha component), as the format requires.
+All-alpha inputs are rejected because they have no colour channel. Multiple alpha roles and signed
+alpha samples are rejected; JPEG 2000 opacity requires an unsigned component. Updates and copies
+retain the stored Y association even when both bands report Gray. Multiple gray roles
+are normalized to that one Y association; for three or more components, both Terrio
+and GDAL report these non-alpha components as undefined on readback. Undefined
+three- and four-band inputs, including inherited roles, therefore declare grayscale rather than the
+previous inferred sRGB, which changes their display in colour-aware readers.
+One- and two-band RGB subsets write as grayscale. Larger RGB colour sets require
+exactly one red, green and blue channel; incomplete or duplicate sets are rejected.
+When any roles are supplied, omitted entries are unspecified. When none are supplied,
+the existing band-count defaults apply (RGB for three or four components).
+Decoding preserves stored component order,
+as GDAL 3.13.3 does, instead of permuting BGR or ARGB samples into RGB order. Palette
+decoding keeps its existing expansion. As with GDAL, grayscale images of one or two
+components report gray for non-alpha channels; non-RGB images with more components
+report undefined. JPEG 2000 byte exports in Python and WebAssembly also preserve
+absence of georeferencing when neither a transform nor a CRS is supplied. CRS-only inputs
+retain their existing unit-pixel grid. Both file and byte exports preserve full affine transforms, including rotated and south-up grids,
+in the embedded GeoTIFF. Nodata and georeferencing follow the existing box/sidecar policy.
+
 `JP2OpenJPEG` (the driver `terrio.rio` names for `.jp2` paths), `JPEG2000`, `JP2KAK`, `JP2ECW` and
 `JP2MrSID` name the JP2 driver too, in any case: to write (`-f`, `driver=`), to read with a driver
-named, and in the allowed drivers. A file written with any of them reads back as `JP2`.
+named, and in the allowed drivers. A file written with any of them reads back as `JP2`. A CMAP box without a preceding PCLR
+palette remains unsupported by the Rust OpenJPEG header parser; GDAL 3.13.3 accepts
+the tested direct-mapping case. This existing limit is independent of CDEF band-order handling.
 
 GRIB files (editions 1 and 2) are read as GDAL's GRIB driver reads them, also when found by
 their content rather than their extension: each field of each GRIB2 message, and each GRIB1
@@ -302,6 +440,13 @@ JPEG with `--compress JPEG`; one-band Int16, UInt16 and Float32 rasters as gridd
 (16-bit PNG or float TIFF tiles), with every zoom level of the pyramid. A GeoPackage holding
 vector layers and rasters opens as its layers, and `terrio info` lists its rasters as
 subdatasets, opened as `GPKG:file.gpkg:table`. Written layers get an R-tree spatial index.
+
+GeoPackage raster declaration limits count the logical raster rather than padded tile storage.
+A gridded coverage obtains its returned band count from its first tile's header, before decoding
+pixels; indexed PNG tiles count their expanded RGBA channels. Allocation checks include the
+Float64 grid, returned decoded tile and conversion buffers, band remapping and final typed output,
+including an empty tile table. The SQLite input and encoded tiles remain in memory; these checks
+are not a total-process memory cap or a bound on every codec-private temporary.
 
 Zarr stores are read and written as GDAL writes them (`_CRS` and X/Y coordinate arrays) and as
 xarray writes them (a CF `grid_mapping` variable with `crs_wkt` and `GeoTransform`). GeoZarr's
@@ -1008,7 +1153,16 @@ reads it.
   such as a PROJ string. Any other text (prose, a URL, unbalanced WKT, WKT followed by prose; a file
   it names is not read) leaves the layer without a CRS, with a warning that quotes it. An empty
   `.prj` leaves it without one silently, as a missing `.prj` does, and a leading byte-order mark is
-  skipped. Trailing NUL or DOS EOF padding is ignored. Reference syntax does not prove that a
+  skipped. A present `.prj` that cannot be read or is not UTF-8 warns with its sidecar path
+  and the reason, and leaves the layer without a CRS. Native ZIP-path reads report the
+  extracted temporary sidecar path; memory-codec reads report the archive member name.
+  Projection encodings are not guessed; this applies to path, range, stream and archive
+  byte reads. A memory-codec projection member that fails its read is diagnosed too.
+  This diagnostic policy covers `.prj`; `.cpg` decoding is unchanged. On memory-codec
+  reads, unreadable optional `.dbf` and `.cpg` members retain their existing missing-member
+  behavior. Native archive integrity errors can refuse the whole read; resource-budget
+  refusals remain fatal on both paths.
+  Trailing NUL or DOS EOF padding is ignored. Reference syntax does not prove that a
   code exists: a well-formed unknown code from a known authority is retained here; Python's
   pyogrio interface warns and returns no CRS if pyproj cannot parse that reference.
 - **OSM XML** (`.osm`) gives the same five layers as PBF, with tags in the file's order.
