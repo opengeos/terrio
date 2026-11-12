@@ -441,8 +441,8 @@ measurement; this specification does not invent a performance result.
 
 The integration custodian must exercise these existing tests after replacement:
 
-- `cargo test -p terrio --test tiles invalid_polygons_are_made_valid_as_gdal_does`
-- `cargo test -p terrio --test tiles sudan_as_gdal_writes_it`
+- `cargo test -p terrio --test merged tiles::invalid_polygons_are_made_valid_as_gdal_does`
+- `cargo test -p terrio --test merged tiles::sudan_as_gdal_writes_it`
 - `cargo test -p terrio --lib tiles::validity`
 - Tile-writing checks in Python and JavaScript, plus a shared-core WASM build.
 
