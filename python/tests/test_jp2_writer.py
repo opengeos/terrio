@@ -24,54 +24,67 @@ TRANSFORM = from_origin(500000, 4600000, 10, 10)
 
 MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
 # The irreversible 9/7 wavelet is computed in float32. Both decoders read the same payload, yet
-# on macOS arm64 a few samples decode one step apart from GDAL's. That the OpenJPEG build in
-# rasterio's wheel fuses multiply-adds is inferred, not measured. Linux, Windows and the
-# reversible 5/3 path stay exact everywhere, and terrio's decoder gives the same output on every
-# platform, so a decoder regression still fails there. The bound only absorbs GDAL's side: the
-# worst case seen was 41 of 4096 samples (1.0%) for a uint16 band, and 2% leaves 2x headroom.
-IRREVERSIBLE_ONE_STEP_MAX_FRACTION = 0.02
+# on macOS arm64 a few samples of some cases decode one step apart from GDAL's. That the OpenJPEG
+# build in rasterio's wheel fuses multiply-adds is inferred, not measured. Like
+# `FMA_ROUNDING_CASES` in `test_resampled_reads.py`, only the cases that differed get a limit,
+# each a few times the fraction measured on the macos-latest runner:
+#   uint8 QUALITY=10:        1 of 49152 samples  -> limit 0.1%
+#   uint8 REVERSIBLE=NO:     2 of 49152 samples  -> limit 0.1%
+#   int16 QUALITY=25 9/7:    3 of 4096 samples   -> limit 0.5%
+#   uint16 QUALITY=25 9/7:  41 of 4096 samples   -> limit 2%
+# Every other case, every case on Linux and Windows, and the reversible 5/3 path stay exact.
+DRIFT_UINT8 = 0.001
 
 
-def assert_decodes_as_gdal(actual, expected, *, irreversible):
-    """Exact equality, except for one-step float rounding on macOS arm64's irreversible path."""
-    assert actual.dtype == expected.dtype and actual.shape == expected.shape
-    if not (MACOS_ARM and irreversible):
+def assert_decodes_as_gdal(actual, expected, *, macos_drift=0.0, macos_arm=MACOS_ARM):
+    """Assert terrio's decode equals GDAL's.
+
+    Args:
+        actual: Samples decoded by terrio.
+        expected: Samples decoded by GDAL from the same payload.
+        macos_drift: Largest fraction of samples that may differ by one step on macOS arm64.
+        macos_arm: Whether the macOS arm64 limit applies; defaults to the running platform.
+    """
+    assert actual.dtype == expected.dtype, (actual.dtype, expected.dtype)
+    assert actual.shape == expected.shape, (actual.shape, expected.shape)
+    if not (macos_arm and macos_drift):
         np.testing.assert_array_equal(actual, expected)
         return
     difference = np.abs(actual.astype("int64") - expected.astype("int64"))
     assert difference.max(initial=0) <= 1, f"max difference {difference.max()}"
     fraction = np.mean(difference != 0)
-    assert fraction <= IRREVERSIBLE_ONE_STEP_MAX_FRACTION, f"{fraction:.4%} of samples differ"
+    assert fraction <= macos_drift, f"{fraction:.4%} of samples differ, limit {macos_drift:.2%}"
 
 
 @pytest.mark.parametrize(
-    "changed,step,irreversible,passes",
+    "changed,step,drift,passes",
     [
-        (40, 1, True, True),
-        (120, 1, True, False),
-        (1, 2, True, False),
-        (1, 1, False, False),
+        (40, 1, 0.02, True),
+        (120, 1, 0.02, False),
+        (1, 2, 0.02, False),
+        (1, 1, 0.0, False),
     ],
 )
-def test_one_step_tolerance_on_macos_arm(monkeypatch, changed, step, irreversible, passes):
-    """The macOS arm64 tolerance admits sparse one-step 9/7 drift and nothing else."""
-    monkeypatch.setitem(globals(), "MACOS_ARM", True)
+def test_one_step_tolerance_on_macos_arm(changed, step, drift, passes):
+    """The macOS arm64 limit admits sparse one-step drift and nothing else."""
     expected = np.full(4096, 1000, dtype="uint16")
     actual = expected.copy()
     actual[:changed] += step
     if passes:
-        assert_decodes_as_gdal(actual, expected, irreversible=irreversible)
+        assert_decodes_as_gdal(actual, expected, macos_drift=drift, macos_arm=True)
     else:
         with pytest.raises(AssertionError):
-            assert_decodes_as_gdal(actual, expected, irreversible=irreversible)
+            assert_decodes_as_gdal(actual, expected, macos_drift=drift, macos_arm=True)
 
 
-def test_one_step_tolerance_requires_matching_dtype(monkeypatch):
-    """A decode of the wrong type fails even inside the tolerance."""
-    monkeypatch.setitem(globals(), "MACOS_ARM", True)
+def test_decode_check_requires_matching_dtype():
+    """A decode of the wrong type fails on every platform, even inside the limit."""
     expected = np.zeros(16, dtype="uint16")
-    with pytest.raises(AssertionError):
-        assert_decodes_as_gdal(expected.astype("int16"), expected, irreversible=True)
+    for macos_arm in (False, True):
+        with pytest.raises(AssertionError):
+            assert_decodes_as_gdal(
+                expected.astype("int16"), expected, macos_drift=0.02, macos_arm=macos_arm
+            )
 
 
 def encode(data, **options):
@@ -91,22 +104,22 @@ def encode(data, **options):
 
 
 @pytest.mark.parametrize(
-    "options,lossless",
+    "options,lossless,macos_drift",
     [
-        ({}, True),
-        ({"quality": 100}, True),
-        ({"quality": "99.999999"}, False),
-        ({"quality": "99.999999,99.9999995"}, False),
-        ({"QUALITY": "1e-30"}, False),
-        ({"QUALITY": 10}, False),
-        ({"QUALITY": 50, "REVERSIBLE": "NO"}, False),
-        ({"REVERSIBLE": "NO"}, False),
-        ({"REVERSIBLE": "NO", "QUALITY": 100}, False),
-        ({"REVERSIBLE": "YES", "QUALITY": 10}, False),
-        ({"quality": "10,100", "reversible": "yes"}, True),
+        ({}, True, 0.0),
+        ({"quality": 100}, True, 0.0),
+        ({"quality": "99.999999"}, False, 0.0),
+        ({"quality": "99.999999,99.9999995"}, False, 0.0),
+        ({"QUALITY": "1e-30"}, False, 0.0),
+        ({"QUALITY": 10}, False, DRIFT_UINT8),
+        ({"QUALITY": 50, "REVERSIBLE": "NO"}, False, 0.0),
+        ({"REVERSIBLE": "NO"}, False, DRIFT_UINT8),
+        ({"REVERSIBLE": "NO", "QUALITY": 100}, False, 0.0),
+        ({"REVERSIBLE": "YES", "QUALITY": 10}, False, 0.0),
+        ({"quality": "10,100", "reversible": "yes"}, True, 0.0),
     ],
 )
-def test_jp2_path_and_memory_options(tmp_path, options, lossless):
+def test_jp2_path_and_memory_options(tmp_path, options, lossless, macos_drift):
     data = np.random.default_rng(7).integers(0, 256, (3, 128, 128), dtype="uint8")
     payload = encode(data, **options)
     path = tmp_path / "written.jp2"
@@ -126,10 +139,7 @@ def test_jp2_path_and_memory_options(tmp_path, options, lossless):
     assert path.read_bytes() == payload
     with GdalMemoryFile(payload) as mem, mem.open() as oracle, rio.open(path) as actual:
         expected = oracle.read()
-        # Lossy output is the float 9/7 transform unless REVERSIBLE=YES keeps the integer 5/3.
-        upper = {key.upper(): str(value).upper() for key, value in options.items()}
-        irreversible = not lossless and upper.get("REVERSIBLE") != "YES"
-        assert_decodes_as_gdal(actual.read(), expected, irreversible=irreversible)
+        assert_decodes_as_gdal(actual.read(), expected, macos_drift=macos_drift)
         assert actual.transform == oracle.transform == TRANSFORM
         assert actual.crs.to_epsg() == oracle.crs.to_epsg() == 32631
         assert actual.dtypes == oracle.dtypes == ("uint8",) * 3
@@ -162,8 +172,8 @@ def test_real_landsat_quality_controls_size(data_dir):
             np.testing.assert_array_equal(actual.read(), expected)
 
 
-@pytest.mark.parametrize("dtype", ["int16", "uint16"])
-def test_lossy_integer_samples_decode_as_gdal(dtype):
+@pytest.mark.parametrize("dtype,macos_drift", [("int16", 0.005), ("uint16", 0.02)])
+def test_lossy_integer_samples_decode_as_gdal(dtype, macos_drift):
     values = np.random.default_rng(11).integers(0, 20000, (1, 64, 64))
     if dtype == "int16":
         values -= 10000
@@ -174,4 +184,4 @@ def test_lossy_integer_samples_decode_as_gdal(dtype):
         assert oracle.dtypes == (dtype,)
     with MemoryFile(payload, ext=".jp2") as mem, mem.open() as actual:
         assert actual.dtypes == (dtype,)
-        assert_decodes_as_gdal(actual.read(), expected, irreversible=True)
+        assert_decodes_as_gdal(actual.read(), expected, macos_drift=macos_drift)
