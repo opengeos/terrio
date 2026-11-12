@@ -277,6 +277,16 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
             return Err(Error::InvalidArgument(format!("cannot tell the output format of '{name}': give it explicitly")));
         }
     };
+    // JP2 byte exports, including WASM, retain the source's absent transform just as
+    // file conversion does. An explicit output transform/GEOREFERENCED still wins.
+    let mut jp2_options;
+    let options = if driver == RasterDriver::JP2 {
+        jp2_options = options.clone();
+        crate::drivers::common::keep_unreferenced(&mut jp2_options, name, ds.geotransform_present.unwrap_or(true));
+        &jp2_options
+    } else {
+        options
+    };
     // A Zarr store is a directory: written in memory and zipped, on every platform.
     if driver == RasterDriver::Zarr {
         let stem = std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("raster");
@@ -790,10 +800,13 @@ pub(crate) mod codec {
             RasterDriver::GPKG => crate::drivers::gpkg::to_bytes(&ds.raster, ds.nodata(), table, options.compression.as_deref()),
             #[cfg(feature = "jp2")]
             RasterDriver::JP2 => {
+                let inherited = options.inherited_from(ds, Some(driver));
                 let jp2 = crate::drivers::jp2::to_bytes(
                     &ds.raster,
-                    crate::drivers::common::georeferenced(&options.creation_options),
-                    &options.creation_options,
+                    crate::drivers::common::georeferenced(&inherited.creation_options),
+                    inherited.geo_transform,
+                    &inherited.band_metadata,
+                    &inherited.creation_options,
                 )?;
                 // The nodata value goes to a `.aux.xml` sidecar, the two files zipped as the file
                 // drivers' output is.
@@ -856,6 +869,36 @@ pub(crate) mod codec {
 
 #[cfg(test)]
 mod tests {
+    /// Reference: GDAL 3.13.3. The WASM codec and native writer use the requested output grid.
+    #[test]
+    #[cfg(feature = "jp2")]
+    fn jp2_codec_applies_explicit_output_transform() {
+        let raster = crate::Raster::from_data_native(
+            crate::RasterConfig { cols: 32, rows: 24, bands: 1, data_type: crate::DataType::U8, ..Default::default() },
+            crate::raster::RasterData::U8(vec![7; 32 * 24]),
+        )
+        .unwrap();
+        let mut ds = crate::RasterDataset::new(raster, false);
+        ds.geotransform_present = Some(false);
+        let transform = [500000.0, 10.0, 0.0, 4600000.0, 0.0, -10.0];
+        let options = crate::RasterWriteOptions { geo_transform: Some(transform), ..Default::default() };
+        let codec_bytes = super::codec::write_raster(&ds, crate::formats::RasterDriver::JP2, &options, "grid").unwrap();
+        let file_bytes = super::write_raster_bytes(&ds, "grid.jp2", &options).unwrap();
+        for bytes in [codec_bytes, file_bytes] {
+            let output = crate::drivers::jp2::read_bytes(&bytes).unwrap();
+            assert_eq!(output.geotransform_present, Some(true));
+            assert_eq!(output.geo_transform(), transform);
+            assert_eq!(output.raster.data.to_f64_vec(), vec![7.0; 32 * 24]);
+        }
+        for transform in [[500000.0, 10.0, 1.0, 4600000.0, 2.0, -10.0], [500000.0, 10.0, 0.0, 4600000.0, 0.0, 10.0]] {
+            let options = crate::RasterWriteOptions { geo_transform: Some(transform), ..Default::default() };
+            let bytes = super::codec::write_raster(&ds, crate::formats::RasterDriver::JP2, &options, "grid").unwrap();
+            let output = crate::drivers::jp2::read_bytes(&bytes).unwrap();
+            assert_eq!(output.geo_transform(), transform);
+            assert_eq!(output.raster.data.to_f64_vec(), vec![7.0; 32 * 24]);
+        }
+    }
+
     use super::*;
     use wbraster::raster::RasterData;
     use wbraster::{DataType, Raster};
