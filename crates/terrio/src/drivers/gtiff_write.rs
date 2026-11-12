@@ -1234,7 +1234,6 @@ fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels
         return Err(Error::InvalidArgument(format!("{path}: not the raster written")));
     }
     let first = opts.source_overview_level.map_or(0, |i| i + 1);
-    let own_masks = (first..sizes.len()).all(|i| src.level_has_own_mask(i));
     let block = gdal_overview::ovr_block(opts.source_block);
     for (i, (w, h)) in sizes.into_iter().enumerate().skip(first) {
         let level = src.read_window(crate::Window::full(w, h), &crate::WindowOptions { bands: Vec::new(), overview: Some(i) })?;
@@ -1253,7 +1252,7 @@ fn copy_source_overviews(path: &str, raster: &Raster, opts: &TiffOptions, levels
             }
         }
         if !masks.is_empty() {
-            let m = if own_masks {
+            let m = if src.level_has_own_mask(i) {
                 src.read_mask(crate::Window::full(w, h), Some(i))?.unwrap_or_else(|| vec![255; w * h])
             } else {
                 let mi = if levels.last().is_some_and(|l| l.cols > w) { levels.len() - 1 } else { 0 };
@@ -4418,6 +4417,54 @@ mod tests {
     // An odd-sized source large enough for factors 2, 4 and 8 with 16-pixel COG tiles.
     fn overview_fixture(bands: usize, data_type: DataType, data: RasterData) -> Raster {
         Raster::from_data_native(wbraster::RasterConfig { cols: 65, rows: 35, bands, data_type, ..Default::default() }, data).unwrap()
+    }
+
+    /// GDAL 3.13.3 own-mask association is per level, including an incomplete mask pyramid.
+    #[test]
+    fn copied_overviews_keep_own_masks_beside_unmasked_levels() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("partial-masks.tif");
+        let raster = Raster::from_data_native(
+            wbraster::RasterConfig { cols: 32, rows: 32, bands: 1, data_type: DataType::U8, ..Default::default() },
+            RasterData::U8(vec![7; 32 * 32]),
+        )
+        .unwrap();
+        let options = TiffOptions::default();
+        let layout = plan(&raster, &options).unwrap().layout;
+        let mut images = Vec::new();
+        for (i, size) in [32, 16, 8].into_iter().enumerate() {
+            let level = Level { cols: size, rows: size, bands: 1, data: std::borrow::Cow::Owned(RasterData::U8(vec![7; size * size])) };
+            let mut image = level.image(DataType::U8, options.compression, &options.codec, &layout).unwrap();
+            if i > 0 {
+                image.tags.push((254, Value::Longs(vec![1])));
+                image.tags.sort_by_key(|(tag, _)| *tag);
+            }
+            images.push(image);
+            if i < 2 {
+                let mut mask = mask_image(&vec![if i == 0 { 255 } else { 0 }; size * size], size, size, (size, size, false)).unwrap();
+                if i > 0 {
+                    for (tag, value) in &mut mask.tags {
+                        if *tag == 254 {
+                            *value = Value::Longs(vec![5]);
+                        }
+                    }
+                }
+                images.push(mask);
+            }
+        }
+        let mut bytes = Vec::new();
+        assemble(images, false, false, &mut bytes).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        let source = crate::LazyRaster::open_tiff(path.to_str().unwrap()).unwrap().unwrap();
+        assert_eq!(source.overviews(), vec![(16, 16), (8, 8)]);
+        assert!(source.level_has_own_mask(0));
+        assert!(!source.level_has_own_mask(1));
+        let mut levels = vec![Level::from_raster(&raster)];
+        let mut masks = vec![vec![255; 32 * 32]];
+        copy_source_overviews(path.to_str().unwrap(), &raster, &options, &mut levels, &mut masks).unwrap();
+        assert_eq!(levels.len(), 3);
+        assert_eq!(masks.iter().map(Vec::len).collect::<Vec<_>>(), vec![32 * 32, 16 * 16, 8 * 8]);
+        assert!(masks[1].iter().chain(&masks[2]).all(|&value| value == 0));
     }
 
     /// Streamed mask values are read as the whole writer reads them: any nonzero value is valid
