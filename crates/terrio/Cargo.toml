@@ -391,6 +391,10 @@ name = "tiles"
 path = "tests/tiles.rs"
 
 [[test]]
+name = "vector_stream_ranges"
+path = "tests/vector_stream_ranges.rs"
+
+[[test]]
 name = "wfs_service"
 path = "tests/wfs_service.rs"
 
