@@ -783,8 +783,7 @@ impl LazyRaster {
     }
 
     fn from_sparse_using(file: crate::sparse::SparseFile, limits: impl FnOnce() -> Result<TiffReadLimits>) -> Result<Option<Self>> {
-        let capacity = file.block_size().min(SPARSE_BUFFER_BYTES as u64) as usize;
-        let mut source = Source::Sparse(BufReader::with_capacity(capacity, SparseBlockReader::new(file)));
+        let mut source = Source::sparse(file);
         source.seek(SeekFrom::Start(0))?;
         let mut magic = [0u8; 4];
         source.read_exact(&mut magic)?;
@@ -2089,6 +2088,13 @@ impl Seek for SparseBlockReader {
 }
 
 impl Source {
+    /// A remote file whose bytes the caller fetches, buffered by at most a block
+    /// ([`SPARSE_BUFFER_BYTES`]).
+    fn sparse(file: crate::sparse::SparseFile) -> Self {
+        let capacity = file.block_size().min(SPARSE_BUFFER_BYTES as u64) as usize;
+        Source::Sparse(BufReader::with_capacity(capacity, SparseBlockReader::new(file)))
+    }
+
     /// Whether reading needs [`Source::prefetch`]: a source whose bytes the caller fetches.
     fn prefetches(&self) -> bool {
         match self {
@@ -2712,8 +2718,7 @@ impl TiffRaster {
                         (s, len)
                     }
                     Reopened::Sparse(file) => {
-                        let capacity = file.block_size().min(SPARSE_BUFFER_BYTES as u64) as usize;
-                        let mut s = Source::Sparse(BufReader::with_capacity(capacity, SparseBlockReader::new(file.clone())));
+                        let mut s = Source::sparse(file.clone());
                         s.seek(SeekFrom::Start(0))?;
                         (s, file.len())
                     }
@@ -3611,20 +3616,30 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         let file = crate::sparse::SparseFile::new(bytes.len() as u64);
         let fetch = |o: u64, n: u64| -> std::io::Result<Vec<u8>> { Ok(bytes[o as usize..(o + n) as usize].to_vec()) };
-        let mut r = crate::sparse::read_with(&file, 32, fetch, || Ok(LazyRaster::from_sparse(file.clone())?.unwrap())).unwrap();
+        let open = || crate::sparse::read_with(&file, 32, fetch, || Ok(LazyRaster::from_sparse(file.clone())?.unwrap())).unwrap();
         let w = Window::new(3, 5, 120, 100);
         let want = read_f64(&mut LazyRaster::open(path.to_str().unwrap()).unwrap(), w, &[1, 2, 3], None);
         let opts = WindowOptions { bands: vec![1, 2, 3], overview: None };
         let read = |r: &mut LazyRaster| {
             crate::sparse::read_with(&file, 32, fetch, || Ok(r.read_window(w, &opts)?.raster.data.to_f64_vec())).unwrap()
         };
-        assert_eq!(read(&mut r), want);
-        let opened = match &r.inner {
+        let opened = |r: &LazyRaster| match &r.inner {
             Inner::Tiff(t) => t.workers.opened.load(std::sync::atomic::Ordering::Relaxed),
             _ => panic!("a GeoTIFF reader"),
         };
+        // Tests running alongside may hold the process's decode workers: a read then decodes on
+        // its own thread. Fresh readers until one gets workers (20 at most).
+        let mut r = open();
+        assert_eq!(read(&mut r), want);
+        for _ in 0..20 {
+            if crate::par::threads() < 2 || opened(&r) >= 1 {
+                break;
+            }
+            r = open();
+            assert_eq!(read(&mut r), want);
+        }
         if crate::par::threads() > 1 {
-            assert!(opened >= 1, "the read opens decoders for its workers over the sparse file");
+            assert!(opened(&r) >= 1, "no read opened decoders for its workers over the sparse file");
         }
         file.trim(0);
         assert_eq!(read(&mut r), want);
