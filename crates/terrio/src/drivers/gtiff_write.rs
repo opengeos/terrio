@@ -153,7 +153,12 @@ impl Compression {
             Self::Lzw => weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)
                 .encode(&data)
                 .map_err(|e| Error::InvalidData(format!("LZW: {e}")))?,
-            Self::Deflate => deflate(&data, p.deflate_level)?,
+            // The chunk's `h` rows, each of the same length: each search also examines the position
+            // one row back.
+            Self::Deflate => {
+                debug_assert_eq!(data.len() % c.h.max(1), 0, "a Deflate chunk of {} bytes is not {} whole rows", data.len(), c.h);
+                crate::deflate_compress::zlib_compress_rows(&data, data.len() / c.h.max(1), p.deflate_level)
+            }
             Self::PackBits => packbits(&data),
             Self::Zstd => zstd_compress(&data, p.zstd_level)?,
             Self::Lerc => lerc_encode(&data, c, p.max_z_error)?,
@@ -171,8 +176,10 @@ fn lerc_encode(_data: &[u8], _c: &ChunkInfo, _max_z_error: f64) -> Result<Vec<u8
     Err(Error::disabled("lerc"))
 }
 
-/// A Deflate chunk as GDAL 3.12 built with libdeflate writes it: libdeflate's level 6, the same bytes.
-/// At another `level` (`ZLEVEL`), the chunk that level's search gives.
+/// The Deflate stage of a `LERC_DEFLATE` chunk: the LERC blob, zlib-wrapped at `level` (`ZLEVEL`,
+/// 6 by default) by `zlib_compress`, whose compressor is derived from libdeflate's and also probes
+/// periodic-run boundaries at levels 6 to 9. A blob has no rows, so no search looks one row back:
+/// `DEFLATE` chunks are compressed in their rows by `zlib_compress_rows` instead.
 fn deflate(data: &[u8], level: crate::deflate_compress::Level) -> Result<Vec<u8>> {
     Ok(crate::deflate_compress::zlib_compress(data, level))
 }
@@ -3720,6 +3727,107 @@ mod tests {
             };
             for (name, write) in &writes {
                 assert_ne!(write(&options("1")), write(&options("9")), "{name}, {driver:?}");
+            }
+        }
+    }
+
+    /// A Deflate chunk is compressed in its rows, as long as its width's samples of its data type:
+    /// each search examines the position that many bytes back, in a tile or a strip (whatever its
+    /// height), of one sample or of interleaved ones, and in a 1-bit mask's rows of packed bits.
+    /// Rows that repeat the one above, each a long run of three values in turn (a period that the
+    /// periodic-run probe does not take) and then bytes of its own, change the chunk.
+    #[test]
+    fn a_deflate_chunk_is_compressed_in_its_rows() {
+        let codec = CodecParams::default();
+        // (width, height, samples per pixel, data type, bytes per row)
+        for (w, h, spp, t, row) in [
+            (512, 512, 1, DataType::U8, 512),
+            (256, 64, 3, DataType::U8, 768),
+            (128, 40, 1, DataType::U16, 256),
+            (100, 7, 2, DataType::F32, 800),
+            // An internal mask's chunk, as `mask_image` passes it: 512 one-bit pixels a row, packed
+            // in 64 bytes.
+            (512, 16, 1, DataType::U8, 64),
+        ] {
+            // Groups of 4 equal rows: three quarters of a row of three values in turn, then bytes of
+            // its own.
+            let data: Vec<u8> = (0..h * row)
+                .map(|i| {
+                    let (group, x) = (i / row / 4, i % row);
+                    let own = ((group * row + x) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56;
+                    if x < row * 3 / 4 { (group % 7) as u8 + 1 + (x % 3) as u8 * 10 } else { own as u8 }
+                })
+                .collect();
+            let chunk = Compression::Deflate.compress(data.clone(), &ChunkInfo { w, h, spp, t }, &codec).unwrap();
+            assert_eq!(chunk, crate::deflate_compress::zlib_compress_rows(&data, row, codec.deflate_level), "{w} x {h} x {spp} {t:?}");
+            assert_ne!(chunk, crate::deflate_compress::zlib_compress(&data, codec.deflate_level), "{w} x {h} x {spp} {t:?}");
+        }
+    }
+
+    /// The Deflate chunks of an internal mask are compressed in their rows of bits, `ceil(width / 8)`
+    /// bytes each, in tiles and in strips (the last one shorter): each chunk of a disc-shaped mask is
+    /// the one its rows give, and some differ from the ones without rows.
+    #[test]
+    fn a_mask_is_compressed_in_its_rows_of_bits() {
+        let (cols, rows) = (1000, 550);
+        let mask: Vec<u8> = (0..cols * rows)
+            .map(|i| {
+                let (x, y) = ((i % cols) as i64, (i / cols) as i64);
+                u8::from((x - 500).pow(2) + (y - 275).pow(2) < 260 * 260)
+            })
+            .collect();
+        let level = crate::deflate_compress::Level::DEFAULT;
+        for (block, row) in [((512, 512, true), 64), ((1000, 200, false), 125)] {
+            let image = mask_image(&mask, cols, rows, block).unwrap();
+            let mut differ = 0;
+            for chunk in &image.chunks {
+                let mut out = vec![0u8; 512 * 64 + 1];
+                let (bits, rc) = zlib_rs::decompress_slice(&mut out, chunk, zlib_rs::InflateConfig::default());
+                assert_eq!(rc, zlib_rs::ReturnCode::Ok, "{block:?}");
+                assert_eq!(bits.len() % row, 0, "{block:?}");
+                assert_eq!(*chunk, crate::deflate_compress::zlib_compress_rows(bits, row, level), "{block:?}");
+                differ += usize::from(*chunk != crate::deflate_compress::zlib_compress(bits, level));
+            }
+            assert!(differ > 0, "{block:?}");
+        }
+    }
+
+    /// An image's Deflate chunks are compressed in their rows through `Level::image`, which the
+    /// writers of TIFF chunks call: in tiles, and in strips whose last one is shorter, of pixel- or
+    /// band-interleaved bands. Each chunk is the one its rows give, and in each short last strip it
+    /// differs from the one without rows: its rows repeat the row above, each three quarters of a
+    /// run of three values in turn, a period that the periodic-run probe does not take.
+    #[test]
+    fn an_image_is_compressed_in_its_rows_in_tiles_and_strips() {
+        let (cols, rows, bands) = (300, 70, 2);
+        // Groups of 4 equal rows: three quarters of a row of three values in turn, then values of
+        // its own.
+        let data: Vec<u16> = (0..cols * rows * bands)
+            .map(|i| {
+                let (band, group, x) = (i / (cols * rows), i / cols % rows / 4, i % cols);
+                let own = (((band * rows + group) * cols + x) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 48;
+                if x < cols * 3 / 4 { (group % 7 + 1) as u16 * 257 + (x % 3) as u16 } else { own as u16 }
+            })
+            .collect();
+        let level = Level { cols, rows, bands, data: std::borrow::Cow::Owned(RasterData::U16(data)) };
+        let codec = CodecParams::default();
+        // (tile, one plane per band, bytes per row, rows of each chunk)
+        for (tile, planar, row, heights) in [
+            (None, false, 1200, &[30, 30, 10][..]),
+            (None, true, 600, &[30, 30, 10, 30, 30, 10][..]),
+            (Some((64, 64)), false, 256, &[64; 10][..]),
+        ] {
+            let layout = Layout { tile, rows_per_strip: Some(30), planar, photometric: 1, extra: vec![0], predictor: 1, parts: 1 };
+            let image = level.image(DataType::U16, Compression::Deflate, &codec, &layout).unwrap();
+            assert_eq!(image.chunks.len(), heights.len(), "{tile:?}, {planar}");
+            for (i, (chunk, h)) in image.chunks.iter().zip(heights).enumerate() {
+                let mut out = vec![0u8; 30 * 1200 + 1];
+                let (bytes, rc) = zlib_rs::decompress_slice(&mut out, chunk, zlib_rs::InflateConfig::default());
+                assert_eq!((rc, bytes.len()), (zlib_rs::ReturnCode::Ok, h * row), "{tile:?}, {planar}, {i}");
+                assert_eq!(*chunk, crate::deflate_compress::zlib_compress_rows(bytes, row, codec.deflate_level), "{tile:?}, {planar}, {i}");
+                if *h == 10 {
+                    assert_ne!(*chunk, crate::deflate_compress::zlib_compress(bytes, codec.deflate_level), "{tile:?}, {planar}, {i}");
+                }
             }
         }
     }

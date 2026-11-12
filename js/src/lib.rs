@@ -14,6 +14,7 @@
 
 mod analysis;
 mod dataset_files;
+mod geojson;
 mod gpkg_maintenance;
 mod grid;
 mod inspection;
@@ -832,7 +833,7 @@ impl Dataset {
     #[wasm_bindgen(js_name = toGeoJSON)]
     pub fn to_geojson(&self, layer: JsValue) -> Result<JsValue, JsError> {
         let l = self.resolved_layer(&layer)?;
-        js_sys::JSON::parse(&wbvector::geojson::to_string(&l)).map_err(|_| JsError::new("invalid GeoJSON"))
+        geojson::feature_collection(&l)
     }
 
     /// A vector layer (by name or position, the first by default) as an Arrow IPC stream, with

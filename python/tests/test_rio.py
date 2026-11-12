@@ -298,33 +298,26 @@ def test_a_name_no_raster_driver_writes_is_refused_before_writing(tmp_path, driv
     assert sorted(p.name for p in tmp_path.iterdir()) == ["src.tif"]
 
 
-@pytest.mark.parametrize("driver", [" GTiff ", "GTiff ", " JP2OpenJPEG ", "\tCOG"])
-def test_a_driver_name_with_whitespace_around_it_is_refused_before_writing(tmp_path, driver):
-    """A writer keeps the driver name it is given and compares it with `GTiff` and `COG` as
-    written, so a name with whitespace around it, which the driver allow-list reads without it,
-    is refused before anything is written: by `get_writer_for_driver`, `open(..., "w")`,
-    `MemoryFile.open`, `DatasetWriter` and `shutil.copy`."""
-    src = str(tmp_path / "src.tif")
-    with rio.open(src, "w", driver="GTiff", **JP2_PROFILE) as dst:
-        dst.write(JP2_PIXELS)
-    out = str(tmp_path / "out.tif")
-    message = f"Writer does not exist for driver: {driver}"
-    with pytest.raises(DriverCapabilityError) as refused:
-        get_writer_for_driver(driver)
-    assert str(refused.value) == message
-    with pytest.raises(DriverCapabilityError) as refused:
-        rio.open(out, "w", driver=driver, **JP2_PROFILE)
-    assert str(refused.value) == message
-    with rio.MemoryFile(ext=".tif") as memfile, pytest.raises(DriverCapabilityError) as refused:
-        memfile.open(driver=driver, **JP2_PROFILE)
-    assert str(refused.value) == message
-    with pytest.raises(DriverCapabilityError) as refused:
-        DatasetWriter(out, "w", driver=driver, **JP2_PROFILE)
-    assert str(refused.value) == message
-    with pytest.raises(DriverRegistrationError) as unrecognized:
-        rio_shutil.copy(src, out, driver=driver)
-    assert str(unrecognized.value) == f"Unrecognized driver: {driver}"
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["src.tif"]
+@pytest.mark.parametrize(
+    "driver,canonical",
+    [(" GTiff ", "GTiff"), ("GTiff ", "GTiff"), (" JP2OpenJPEG ", "JP2"), ("\tCOG", "COG")],
+)
+def test_padded_driver_names_are_resolved_before_writing(tmp_path, driver, canonical):
+    """All writer entry points apply the same native driver-name normalization."""
+    assert get_writer_for_driver(driver) is DatasetWriter
+    source = str(tmp_path / "src.tif")
+    for writer in (rio.open, DatasetWriter):
+        with writer(source, "w", driver=driver, **JP2_PROFILE) as dst:
+            assert dst.driver == canonical
+            dst.write(JP2_PIXELS)
+    with rio.MemoryFile(ext=".tif") as memfile:
+        with memfile.open(driver=driver, **JP2_PROFILE) as dst:
+            assert dst.driver == canonical
+            dst.write(JP2_PIXELS)
+    target = str(tmp_path / "out.tif")
+    rio_shutil.copy(source, target, driver=driver)
+    with rio.open(target) as src:
+        np.testing.assert_array_equal(src.read(), JP2_PIXELS)
 
 
 def test_update_and_colormap(dem, tmp_path):

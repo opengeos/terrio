@@ -366,11 +366,13 @@ def test_south_up_reproject_keeps_the_source_s_pixel_edges():
     assert int(np.isnan(m).sum()) == 54 * 33 and (m[54:] == 1.0).all()
 
 
+@pytest.mark.filterwarnings("error:terrio's COG writer does not store band scales")
 def test_to_raster_round_trips(files, tmp_path):
     da = txr.open_rasterio(files["dem"], mask_and_scale=True, chunks={"x": 100, "y": 100})
     for name, kw in [
         ("plain.tif", {}),
         ("cog.tif", {"driver": "COG", "compress": "DEFLATE"}),
+        ("cog-lower.tif", {"driver": "cog", "compress": "DEFLATE"}),
         ("windowed.tif", {"windowed": True}),
     ]:
         p = str(tmp_path / name)
