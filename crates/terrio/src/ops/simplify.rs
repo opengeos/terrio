@@ -218,8 +218,8 @@ impl TaggedSimplifier {
             }
             let (p, q) = (self.points[owner][a], self.points[owner][b]);
             let (mut farthest, mut distance) = (a + 1, -1.0);
-            for k in a + 1..b {
-                let d = distance_to_segment(self.points[owner][k], p, q);
+            for (k, &point) in self.points[owner].iter().enumerate().take(b).skip(a + 1) {
+                let d = distance_to_segment(point, p, q);
                 if d > distance {
                     (farthest, distance) = (k, d);
                 }
