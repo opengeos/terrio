@@ -1139,6 +1139,12 @@ reads it.
 - **MapInfo TAB** native tables (`.tab` with its `.dat`, `.map` and `.id`) are read with every
   object type and field type, in their charset, and seamless tables; they are written with their
   spatial index, which GDAL uses for spatial filters. Views and DBF-backed tables are not read.
+- **Shapefile memory reuse**: whole-file DBF reads build record vectors, text and date values
+  on the calling thread. On glibc this lets that thread reuse freed record storage after
+  dropping the dataset, instead of leaving it in worker-thread malloc arenas. DBF decoding
+  runs serially, so text-heavy reads can take longer. Terrio does not change the library
+  host's allocator settings. See [memory validation](testing.md#shapefile-host-memory-reuse)
+  for measurements and a profiling example.
 - **Shapefile polygons** are made from their rings as GDAL's shapefile driver makes them. By
   default (`ONLY_CCW`), clockwise rings are exteriors and each counter-clockwise ring is a hole of
   the smallest exterior around it. The `ORGANIZE_POLYGONS` open option (`--oo`,
