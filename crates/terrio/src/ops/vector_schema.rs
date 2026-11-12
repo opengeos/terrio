@@ -973,8 +973,9 @@ pub fn export_schema_with_dims(
 /// [`export_schema`]. A local or remote FlatGeobuf, or a local zip whose member is one, reports the
 /// Z and M its header declares, even with no features. A remote zip's named FlatGeobuf member
 /// (`a.zip!x.fgb`) takes the same route as a remote FlatGeobuf and reports its declared Z and M.
-/// A remote zip with no member named, a `gdal:` path and a WFS service URL (`x.fgb?service=WFS`) are
-/// read by the general route, which does not read the declared Z or M. A remote FlatGeobuf is recognised by its URL's file name
+/// A remote zip with no member named, a `gdal:` path, a WFS service or GetFeature URL
+/// (`x.fgb?service=WFS`) and a feature-service query URL (`x.fgb?f=json`) are read by the general
+/// route, which does not read the declared Z or M. A remote FlatGeobuf is recognised by its URL's file name
 /// extension: a URL without one (`layer?format=fgb`) is refused as an unrecognised format, as
 /// `open_vector` refuses it when GDAL is not built in; a build with GDAL reads it through GDAL.
 pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
@@ -1005,13 +1006,18 @@ pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
     let remote =
         !location.is_local() && member.is_none() && crate::formats::VectorDriver::for_extension(&location.file_name()) == Some(flatgeobuf);
     let archived = member.is_some_and(|m| crate::formats::VectorDriver::for_extension(&m) == Some(flatgeobuf));
-    // A `gdal:` path is read by GDAL, and a WFS service URL by the WFS driver, as `open_vector` reads
-    // them, so they keep the general route and its judgement.
+    // A `gdal:` path is read by GDAL, a WFS service URL by the WFS driver, and a feature-service query
+    // or WFS GetFeature URL for the answer it gets, as `open_vector` reads them, so they keep the general
+    // route and its judgement.
     #[cfg(feature = "gdal")]
     let gdal_prefixed = crate::gdal_backend::strip_prefix(path).is_some();
     #[cfg(not(feature = "gdal"))]
     let gdal_prefixed = false;
-    let own_route = gdal_prefixed || crate::drivers::vector::wfs::service_target(path).is_some();
+    #[cfg(remote)]
+    let query = crate::drivers::vector::featureservice::is_query_url(path) || crate::drivers::vector::wfs::is_feature_request(path);
+    #[cfg(not(remote))]
+    let query = false;
+    let own_route = gdal_prefixed || query || crate::drivers::vector::wfs::service_target(path).is_some();
     if !own_route && (remote || archived) {
         // The policy judges the path before any download or extraction. The copy is not an asset of that
         // policy, so the scope ends before the copy is opened, as on the general route.

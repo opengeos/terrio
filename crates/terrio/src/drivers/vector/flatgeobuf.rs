@@ -1123,6 +1123,22 @@ mod tests {
 
     #[cfg(remote)]
     #[test]
+    fn feature_service_query_url_reads_as_open_vector_reads_it() {
+        // A `.fgb` URL with a feature-service query sign is read for the answer it gets, as `open_vector`
+        // reads it, not downloaded as FlatGeobuf.
+        let page = br#"{"geometryType":"esriGeometryPoint","fields":[],"features":[{"attributes":{},"geometry":{"x":1,"y":2}}]}"#;
+        for query in ["?f=json", "?resultRecordCount=5"] {
+            let (base, _) = crate::http::test_server(page.to_vec());
+            let url = format!("{base}/x.fgb{query}");
+            let opened = crate::open_vector(&url, &Default::default()).unwrap();
+            let schema = crate::ops::vector_schema::export_schema_path(&url, &[]).unwrap();
+            let names: Vec<_> = schema.layers.iter().map(|l| l.name.clone()).collect();
+            assert_eq!(names, opened.layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>(), "{query}");
+        }
+    }
+
+    #[cfg(remote)]
+    #[test]
     fn remote_flatgeobuf_reports_declared_z_without_features() {
         // The file is downloaded once; its header declares Z, and no feature can show it.
         let bytes = empty_dimension_fixture(true, false);
