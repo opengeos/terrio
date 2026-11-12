@@ -465,6 +465,29 @@ test("ZIP archives with duplicate member names are refused", () => {
   assert.throws(() => terrio.open(bytes, "vector.zip"), /several entries with the same name/);
 });
 
+test("compound CRS URNs preserve both components and GML XYZ", () => {
+  // GDAL 3.13.3: two horizontal axes followed by the vertical axis.
+  for (const [h, v, position, xy] of [[2154,5720,[652000,6862000],[652000,6862000]], [4269,5713,[52,4],[4,52]]]) {
+    const name = `urn:ogc:def:crs,crs:EPSG::${h},crs:EPSG::${v}`;
+    const crs = JSON.parse(terrio.crsToProjjson(name));
+    assert.equal(crs.type, "CompoundCRS");
+    assert.deepEqual(crs.components.map(c => c.id.code), [h,v]);
+    assert.deepEqual(crs.components.map(c => c.coordinate_system.axis.length), [2,1]);
+    const xml = `<FeatureCollection><featureMember><p><geom><Point srsName="${name}" srsDimension="3"><pos>${position.join(" ")} 35</pos></Point></geom></p></featureMember></FeatureCollection>`;
+    const ds = terrio.open(new TextEncoder().encode(xml), "point.gml");
+    try {
+      assert.equal(JSON.parse(terrio.crsToProjjson(ds.crs)).type, "CompoundCRS");
+      assert.deepEqual(ds.toGeoJSON().features[0].geometry.coordinates, [...xy,35]);
+    } finally { ds.free(); }
+  }
+  for (const name of ["not EPSG:4326", "urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720", "EPSG:4979+5720",
+    "EPSG:4326.0:3857", "urn:ogc:def:crs:EPSG:4326:3857junk", "https://www.opengis.net/def/crs/EPSG/4326/3857junk"]) {
+    assert.throws(() => terrio.describeCrs(name), /coordinate reference system:/);
+  }
+  const bad = `<FeatureCollection><featureMember><p><geom><Point srsName="urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720"><pos>1 2</pos></Point></geom></p></featureMember></FeatureCollection>`;
+  assert.throws(() => terrio.open(new TextEncoder().encode(bad), "point.gml"), /coordinate reference system:/);
+});
+
 test("CRS transforms", () => {
   const [xs, ys] = terrio.transformPoints([0, 180], [0, 0], "EPSG:4326", "EPSG:3857");
   assert.ok(xs instanceof Float64Array);
@@ -521,6 +544,23 @@ test("CRS benchmark projection regressions", () => {
       const tolerance = Math.abs(q.ll[1]) === 90 ? 1e-6 : 1e-7;
       assert.ok(Math.hypot(dlon, lats[i] - q.inv[1]) < tolerance, `${p.id} inverse ${q.ll}`);
     });
+  }
+});
+
+test("CRS boolean flags preserve UTM and UPS hemispheres", () => {
+  for (const [projection, north, south, lon, lat] of [["utm +zone=33", 32633, 32733, 15, -30], ["ups", 32661, 32761, 0, 85]]) {
+    for (const [flag, enabled] of [["False", false], ["f", false], ["0", false], ["True", true], ["1", true]]) {
+      const definition = `+proj=${projection} +south=${flag} +datum=WGS84 +units=m`;
+      const expected = terrio.transformPoints([lon], [lat], "EPSG:4326", `EPSG:${enabled ? south : north}`);
+      const actual = terrio.transformPoints([lon], [lat], "EPSG:4326", definition);
+      assert.ok(Math.abs(actual[0][0] - expected[0][0]) < 1e-7 && Math.abs(actual[1][0] - expected[1][0]) < 1e-7, definition);
+    }
+  }
+  assert.throws(() => terrio.describeCrs("+proj=utm +zone=33 +south=maybe"), /boolean flag/);
+  for (const flag of ["True", "False"]) {
+    const definition = `+init=epsg:32633 +south=${flag}`;
+    assert.throws(() => terrio.describeCrs(definition), /overrides.*init/);
+    assert.throws(() => terrio.transformPoints([15], [-30], "EPSG:4326", definition), /overrides.*init/);
   }
 });
 
@@ -4697,6 +4737,47 @@ test("single named layer accepts the file stem across readers and operations", (
     () => terrio.render(file, {layers: ["roads", "missing"]}),
     () => terrio.vectorGrid(file, {layers: ["roads", "missing"]}),
   ]) assert.throws(call, /no layer named missing \(layers: roads\)/);
+});
+
+test("vector byte ranges apply once and service options are refused", () => {
+  const source = terrio.fromGeoJSON({type: "FeatureCollection", features: Array.from({length: 5}, (_, i) => ({
+    type: "Feature", properties: {sequence: i}, geometry: {type: "Point", coordinates: [10 + i, 46]},
+  }))});
+  const filenames = ["points.geojson", "points.gml", "points.kml", "points.kmz", "points.csv", "points.shp.zip"];
+  for (const [feature, filename] of [["flatgeobuf", "points.fgb"], ["parquet", "points.parquet"], ["sqlite", "points.gpkg"]]) {
+    if (!needs(feature)) filenames.push(filename);
+  }
+  for (const filename of filenames) {
+    const bytes = source.toBytes(filename);
+    const full = terrio.openVector(bytes, filename, {});
+    const expected = full.toGeoJSON().features.map(feature => feature.properties.sequence);
+    full.free();
+    for (const [skipFeatures, maxFeatures] of [[0, 0], [1, 2], [4, undefined], [99, 1]]) {
+      const dataset = terrio.openVector(bytes, filename, {skipFeatures, maxFeatures});
+      assert.deepEqual(dataset.toGeoJSON().features.map(feature => feature.properties.sequence),
+        expected.slice(skipFeatures, maxFeatures === undefined ? undefined : skipFeatures + maxFeatures), filename);
+      dataset.free();
+    }
+    assert.throws(() => terrio.openVector(bytes, filename, {openOptions: {DATETIME: "2024-01-01"}}), /OAPIF/);
+    assert.throws(() => terrio.openVector(bytes, "OAPIF:https://example.invalid/points", {openOptions: {DATETIME: "2024-01-01"}}), /OAPIF/);
+  }
+  source.free();
+});
+
+test("MVT byte ranges preserve each selected layer", () => {
+  // Native Terrio fixture: five points and three points in one gzipped z=0 tile.
+  const bytes = new Uint8Array(Buffer.from(
+    "H4sIAAAAAAAA/5MqqWDiYknLLEsV4hViYmCQYFRi5Xyi+EgMzGUEc3/BuExg7iQlKJcZzF0B47KAufuUHolJcRSnFpam5iWnKjFpMCgxaTAqMWkwKTFpMCsxabBoNChI+VcwcbGWZBSlkmYtdoM1GhQAccdRN8cAAAA=",
+    "base64",
+  ));
+  for (const layer of ["five", "three"]) {
+    for (const [skipFeatures, maxFeatures, expected] of [[1, 1, [1]], [0, 0, []], [99, 1, []]]) {
+      const dataset = terrio.openVector(bytes, "0/0/0.pbf", {layers: [layer], skipFeatures, maxFeatures});
+      assert.deepEqual(dataset.layerNames(), [layer]);
+      assert.deepEqual(dataset.toGeoJSON().features.map(feature => feature.properties.sequence), expected);
+      dataset.free();
+    }
+  }
 });
 
 test("MapInfo MIF archives read in WebAssembly", () => {

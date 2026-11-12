@@ -126,6 +126,7 @@ __all__ = [
     "tiff_infers_cog_layout",
     "gdal_compat",
     "crs_info",
+    "proj_boolean_parameters",
     "crs_to_projjson",
     "suggested_grid",
     "warped_vrt_type",
@@ -1739,6 +1740,17 @@ def resampled_read(
     dataset: bool = False,
 ) -> Any: ...
 def crs_info(crs: str) -> dict[str, Any]: ...
+def proj_boolean_parameters(definition: str) -> list[tuple[str, bool]]:
+    """Normalize recognized flags with the shared CRS parser.
+
+    Args:
+        definition: A PROJ parameter string.
+
+    Returns:
+        list: Parameter names and boolean values, in definition order.
+    """
+    ...
+
 def crs_to_projjson(crs: str) -> str: ...
 def crs_projjson(crs: str, database: bool) -> str: ...
 def gcp_transform(

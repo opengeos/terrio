@@ -1885,6 +1885,26 @@ pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
     open_document(path, false)
 }
 
+/// Opens a vector asset with the caller's options inside the existing asset-read policy.
+pub(crate) fn open_vector(path: &str, options: &crate::VectorOpenOptions) -> Option<Result<Dataset>> {
+    if let Some(Name::Asset { item, asset }) = parse_name(path) {
+        return Some(
+            asset_target(&item, &asset)
+                .and_then(|(href, item)| with_asset_read(&item, &href, || crate::open_vector(&href, options).map(Dataset::Vector))),
+        );
+    }
+    open(path).map(|result| {
+        result.and_then(|dataset| match dataset {
+            Dataset::Vector(mut vector) => {
+                vector.layers = crate::dataset::select_layers(vector.layers, path, options)?;
+                vector.layers.iter_mut().for_each(|layer| options.keep_range(layer));
+                Ok(Dataset::Vector(vector))
+            }
+            raster => Ok(raster),
+        })
+    })
+}
+
 fn open_document(path: &str, as_raster: bool) -> Option<Result<Dataset>> {
     // Rasters read by window, read whole once what they declare is allowed.
     let whole = crate::dataset::read_lazy_whole;

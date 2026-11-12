@@ -8,7 +8,17 @@ use std::process::{Command, Stdio};
 /// Sends `messages` to `terrio mcp`, one per line, and returns its replies by id, waiting for one
 /// per request before closing its standard input (which stops the commands still running).
 fn session(messages: &[Value]) -> HashMap<u64, Value> {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_terrio")).arg("mcp").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    session_with_env(messages, &[])
+}
+
+fn session_with_env(messages: &[Value], env: &[(&str, &str)]) -> HashMap<u64, Value> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_terrio"))
+        .arg("mcp")
+        .envs(env.iter().copied())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
     let mut stdin = child.stdin.take().unwrap();
     for m in messages {
         writeln!(stdin, "{m}").unwrap();
@@ -894,4 +904,56 @@ fn crs_listing_propagates_output_errors() {
         assert!(!output.status.success(), "json={json}");
         assert!(String::from_utf8_lossy(&output.stderr).contains("space"), "{output:?}");
     }
+}
+
+#[test]
+fn crs_tools_confine_grids_to_host_search_directories() {
+    let dir = tempfile::tempdir().unwrap();
+    let search = dir.path().join("search");
+    std::fs::create_dir(&search).unwrap();
+    // A 2x2 GTX: the geoid height at (0.25, 0.5) is exactly 22.5 m.
+    let mut bytes = Vec::new();
+    for value in [0.0f64, 0., 1., 1.] {
+        bytes.extend(value.to_be_bytes());
+    }
+    for value in [2i32, 2] {
+        bytes.extend(value.to_be_bytes());
+    }
+    for value in [10.0f32, 20., 30., 40.] {
+        bytes.extend(value.to_be_bytes());
+    }
+    let outside = dir.path().join("outside.gtx");
+    std::fs::write(&outside, &bytes).unwrap();
+    std::fs::write(search.join("inside.gtx"), &bytes).unwrap();
+    let definition = |grid: &str| format!("+proj=longlat +datum=WGS84 +geoidgrids={grid} +vunits=m");
+    let absolute = definition(outside.to_str().unwrap());
+    let named = definition("inside.gtx");
+    let coordinates = ["--to", "EPSG:4979", "--dim", "3", "0.25", "0.5", "100"];
+    let args = |crs: &str| {
+        let mut args = vec![crs.to_string()];
+        args.extend(coordinates.iter().map(|s| s.to_string()));
+        args
+    };
+    let direct = Command::new(env!("CARGO_BIN_EXE_terrio"))
+        .arg("crs")
+        .args(args(&absolute))
+        .env_remove("TERRIO_MCP_TOOL")
+        .env("TERRIO_NETWORK", "OFF")
+        .output()
+        .unwrap();
+    assert!(direct.status.success(), "{}", String::from_utf8_lossy(&direct.stderr));
+    assert!(String::from_utf8_lossy(&direct.stdout).contains("122.5"));
+    let absolute_args = args(&absolute);
+    let named_args = args(&named);
+    let replies = session_with_env(
+        &[
+            call(1, "crs", &absolute_args.iter().map(String::as_str).collect::<Vec<_>>()),
+            call(2, "crs", &named_args.iter().map(String::as_str).collect::<Vec<_>>()),
+        ],
+        &[("TERRIO_GRID_DIR", search.to_str().unwrap()), ("TERRIO_NETWORK", "OFF")],
+    );
+    assert_eq!(replies[&1]["result"]["isError"], true, "MCP read an arbitrary path-named grid");
+    assert!(replies[&1]["result"]["content"][0]["text"].as_str().unwrap().contains("cannot transform"));
+    assert_eq!(replies[&2]["result"]["isError"], false);
+    assert!(replies[&2]["result"]["content"][0]["text"].as_str().unwrap().contains("122.5"));
 }
