@@ -432,10 +432,7 @@ def test_authority_export_warns_when_projection_nodes_conflict(method):
     with pytest.warns(UserWarning, match="conflicting WKT parameters") as caught:
         result = getattr(crs, method)()
     assert caught[0].filename == __file__
-    if method == "to_dict":
-        assert result["lon_0"] == 15
-    else:
-        assert "+lon_0=15" in result
+    assert result == getattr(CRS.from_epsg(32633), method)()
 
 
 @pytest.mark.parametrize("access", [lambda crs: crs["units"], len, list])
