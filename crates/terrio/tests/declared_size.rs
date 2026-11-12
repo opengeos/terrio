@@ -1806,6 +1806,33 @@ fn vrt_and_source_resampling_check_their_working_arrays() {
     assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))), "narrow convolution: {result:?}");
     assert!(largest < 1 << 20, "{largest} bytes requested before convolution scratch refusal");
     drop(narrow);
+    // A one-row output can fit while its usize sampling coordinates cannot.
+    let nearest_path = dir.path().join("nearest.tif");
+    terrio::write_raster_dataset(&data, nearest_path.to_str().unwrap(), &RasterWriteOptions::default()).unwrap();
+    let mut nearest = terrio::open_raster_lazy(nearest_path.to_str().unwrap()).unwrap();
+    let options = terrio::ResampledReadOptions { size: (16, 1), ..Default::default() };
+    assert_eq!(nearest.read_resampled(&options).unwrap().raster.data.to_f64_vec(), vec![11.; 16]);
+    let options = terrio::ResampledReadOptions { size: (32 << 20, 1), ..options };
+    let (result, largest) = largest_during(|| nearest.read_resampled(&options).map(|_| ()));
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))), "nearest coordinates: {result:?}");
+    assert!(largest <= 32 << 20, "{largest} bytes requested before coordinate refusal");
+
+    // Full materialization retains both output bands while one source is resampled.
+    let mut cached = header(1024, 1024, 1);
+    cached.raster.data_type = DataType::F64;
+    cached.raster.data = RasterData::F64(vec![7.; 1024 * 1024]);
+    let source_path = dir.path().join("cached.tif");
+    terrio::write_raster_dataset(&cached, source_path.to_str().unwrap(), &RasterWriteOptions::default()).unwrap();
+    drop(cached);
+    let bands = (1..=2).map(|band| format!(
+        "<VRTRasterBand dataType=\"Float64\" band=\"{band}\"><ComplexSource resampling=\"average\"><SourceFilename relativeToVRT=\"1\">cached.tif</SourceFilename><SourceBand>1</SourceBand><SrcRect xOff=\"0\" yOff=\"0\" xSize=\"1024\" ySize=\"1024\"/><DstRect xOff=\"0\" yOff=\"0\" xSize=\"2000\" ySize=\"2000\"/></ComplexSource></VRTRasterBand>"
+    )).collect::<String>();
+    let materialized_path = dir.path().join("materialized.vrt");
+    std::fs::write(&materialized_path, format!("<VRTDataset rasterXSize=\"2000\" rasterYSize=\"2000\">{bands}</VRTDataset>")).unwrap();
+    let materialized = terrio::ops::vrt::VrtDataset::open(materialized_path.to_str().unwrap()).unwrap();
+    let (result, largest) = largest_during(|| materialized.materialize(dir.path()).map(|_| ()));
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))), "materialized VRT: {result:?}");
+    assert!(largest <= 64_000_000, "{largest} bytes requested before retained-buffer refusal");
     // A late Average band retains the pan and not-yet-processed adjusted sources.
     use terrio::ops::pansharpen::{PansharpenOptions, SpectralBand};
     let mut pan = header(512, 512, 1);
@@ -1960,18 +1987,24 @@ fn large_row_calls_keep_encoded_work_bounded() {
         tile_size: Some(256),
         ..Default::default()
     };
+    // VmHWM excludes the parent's pre-exec peak. Capture the child's startup/library
+    // footprint with its caller slab already resident, then charge the writer's growth.
+    let resident_peak = || {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("VmHWM:").and_then(|value| value.split_whitespace().next()))
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("Linux reports VmHWM in KiB")
+    };
+    let initial_peak = resident_peak();
     let mut writer = terrio::GeoTiffWriter::create(path.to_str().unwrap(), &raster, &options).unwrap();
     writer.write_rows(&data, rows, None).unwrap();
     writer.finish().unwrap();
-    // VmHWM measures this child's post-exec address space, including its 72 MiB input slab.
-    // getrusage can instead retain the parent's pre-exec peak when the test harness spawns us.
-    let status = std::fs::read_to_string("/proc/self/status").unwrap();
-    let peak_kib = status
-        .lines()
-        .find_map(|line| line.strip_prefix("VmHWM:").and_then(|value| value.split_whitespace().next()))
-        .and_then(|value| value.parse::<u64>().ok())
-        .expect("Linux reports VmHWM in KiB");
-    assert!(peak_kib < 128 * 1024, "{peak_kib} KiB peak resident memory");
+    // The usable-memory policy bounds these buffers, not unrelated GDAL libraries.
+    let growth_kib = resident_peak().saturating_sub(initial_peak);
+    let buffered_kib = growth_kib + data.len().div_ceil(1024) as u64;
+    assert!(buffered_kib < 128 * 1024, "{buffered_kib} KiB caller slab plus write growth ({growth_kib} KiB added)");
     let bytes = std::fs::metadata(&path).unwrap().len();
     assert!((72 << 20..73 << 20).contains(&bytes), "{bytes} output bytes");
 

@@ -318,10 +318,14 @@ impl VrtDataset {
         crate::declared::check(self.width, self.height, self.bands.len(), data_type, false)?;
         crate::dataset::fallible::check_raster_buffer("a VRT", self.width, self.height, self.bands.len(), data_type)?;
         let mut cache: HashMap<PathBuf, RasterDataset> = HashMap::new();
-        let n = self.width * self.height;
+        let n = crate::dataset::fallible::len(&[self.width, self.height], "a VRT output")?;
+        let samples = crate::dataset::fallible::len(&[n, self.bands.len()], "a VRT output")?;
+        let output_bytes = crate::dataset::fallible::len(&[samples, data_type.size_bytes()], "a VRT output")?;
+        let output_band_bytes = crate::dataset::fallible::len(&[n, data_type.size_bytes()], "a VRT band")?;
+        let mut cached_bytes = 0usize;
         let nodata = self.bands[0].nodata;
         // The output in its type, values converted as they are stored.
-        let mut out = RasterData::new_filled(data_type, n * self.bands.len(), 0.0);
+        let mut out = crate::dataset::fallible::raster_data(data_type, samples, 0.0, "a VRT output")?;
         let mut srs = self.srs.clone();
         for (bi, band) in self.bands.iter().enumerate() {
             crate::pixel::with_data!(&mut out, v => {
@@ -336,6 +340,13 @@ impl VrtDataset {
                 };
                 if !cache.contains_key(&path) {
                     let ds = crate::open_raster(&path.to_string_lossy())?;
+                    cached_bytes = ds
+                        .raster
+                        .data
+                        .len()
+                        .checked_mul(ds.raster.data_type.size_bytes())
+                        .and_then(|bytes| cached_bytes.checked_add(bytes))
+                        .ok_or_else(|| Error::ResourceLimit("VRT cached source buffers exceed the address space".into()))?;
                     cache.insert(path.clone(), ds);
                 }
                 let ds = &cache[&path];
@@ -349,6 +360,16 @@ impl VrtDataset {
                 }
                 let values = super::BandView::of(r, src.band - 1);
                 let skip = if src.complex { src.nodata } else { None };
+                let valid_bytes = if skip.is_some() { r.cols.checked_mul(r.rows) } else { Some(0) };
+                let peak = output_bytes.checked_add(cached_bytes).and_then(|bytes| valid_bytes.and_then(|mask| bytes.checked_add(mask)));
+                crate::dataset::fallible::check_usable(peak, || {
+                    "VRT output, cached sources and validity buffers are too large to allocate".into()
+                })
+                .map_err(Error::ResourceLimit)?;
+                let retained = output_bytes
+                    .checked_sub(output_band_bytes)
+                    .and_then(|bytes| cached_bytes.checked_sub(values.byte_len()).and_then(|cached| bytes.checked_add(cached)))
+                    .ok_or_else(|| Error::ResourceLimit("VRT retained buffers exceed the address space".into()))?;
                 let valid: Option<Vec<bool>> = skip.map(|nd| values.valid(nd));
                 let src_rect = if src.src_rect[0].is_nan() { [0.0, 0.0, r.cols as f64, r.rows as f64] } else { src.src_rect };
                 let req = SourceRead {
@@ -392,7 +413,7 @@ impl VrtDataset {
                     }
                 };
                 crate::pixel::with_data!(&mut out, v => {
-                    req.read(self.width, self.height, &mut v[bi * n..(bi + 1) * n], |x| convert_value(value(x), band.data_type) as _)?;
+                    req.read_with_retained(self.width, self.height, &mut v[bi * n..(bi + 1) * n], retained, |x| convert_value(value(x), band.data_type) as _)?;
                 });
             }
         }

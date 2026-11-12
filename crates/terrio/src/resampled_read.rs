@@ -672,7 +672,13 @@ impl LazyRaster {
                 Ok(self.read_window(Window::new(x, y, w, h), &options)?.raster.data)
             }
             How::Nearest => {
-                let (cols, rows) = nearest_pixels(request.fwindow, read.buf, request.size);
+                let output_bytes = read
+                    .buf
+                    .0
+                    .checked_mul(read.buf.1)
+                    .and_then(|n| n.checked_mul(bands.len()))
+                    .and_then(|n| n.checked_mul(self.data_type().size_bytes()));
+                let (cols, rows) = nearest_pixels(request.fwindow, read.buf, request.size, output_bytes)?;
                 if let Some(data) = self.read_sampled(&cols, &rows, &options)? {
                     return Ok(data);
                 }
@@ -841,7 +847,7 @@ impl LazyRaster {
         let level = request.level.and_then(|j| self.overviews().iter().position(|s| *s == mask_overviews[j]));
         let block = self.level_block_size(level).unwrap_or((request.size.0, SAMPLE_ROWS));
         let data = if read.resampling == Resampling::Nearest {
-            let (cols, rows) = nearest_pixels(request.fwindow, read.buf, request.size);
+            let (cols, rows) = nearest_pixels(request.fwindow, read.buf, request.size, read.buf.0.checked_mul(read.buf.1))?;
             if let Some(windows) = nearest_prefetch_windows(&cols, &rows, block) {
                 self.prefetch_mask_band_windows(&windows, request.level)?;
             }
@@ -885,7 +891,8 @@ impl LazyRaster {
             self.prefetch_window(Window::new(x, y, w, h), &options)?;
             rescaled(self, Window::new(x, y, w, h))?
         } else if read.resampling == Resampling::Nearest {
-            let (cols, rows) = nearest_pixels(full.fwindow, read.buf, full.size);
+            let output_bytes = read.buf.0.checked_mul(read.buf.1).and_then(|bytes| bytes.checked_add(retained));
+            let (cols, rows) = nearest_pixels(full.fwindow, read.buf, full.size, output_bytes)?;
             let block = self.level_block_size(None).unwrap_or((full.size.0, SAMPLE_ROWS));
             if let Some(windows) = nearest_prefetch_windows(&cols, &rows, block) {
                 self.prefetch_windows(&windows, &options)?;
@@ -1119,18 +1126,26 @@ fn nearest_pixels(
     (fx, fy, fxs, fys): (f64, f64, f64, f64),
     (bw, bh): (usize, usize),
     (lw, lh): (usize, usize),
-) -> (Vec<usize>, Vec<usize>) {
+    output_bytes: Option<usize>,
+) -> Result<(Vec<usize>, Vec<usize>)> {
+    let coordinates = bw.checked_add(bh).and_then(|n| n.checked_mul(std::mem::size_of::<usize>()));
+    let peak = coordinates.and_then(|coordinates| output_bytes.and_then(|output| coordinates.checked_add(output)));
+    fallible::check_usable(peak, || "nearest-neighbour coordinates and output are too large to allocate".into())
+        .map_err(Error::ResourceLimit)?;
     const EPS: f64 = 1e-10;
     let clamp = |v: f64, n: usize| v.max(0.0).min((n - 1) as f64) as usize;
     let (x_inc, y_inc) = (fxs / bw as f64, fys / bh as f64);
-    let mut cols = Vec::with_capacity(bw);
+    let mut cols = Vec::new();
+    fallible::reserve(&mut cols, bw, "nearest-neighbour columns")?;
     let mut x = 0.5 * x_inc + fx + EPS;
     for _ in 0..bw {
         cols.push(clamp(x, lw));
         x += x_inc;
     }
-    let rows = (0..bh).map(|r| clamp((r as f64 + 0.5) * y_inc + fy + EPS, lh)).collect();
-    (cols, rows)
+    let mut rows = Vec::new();
+    fallible::reserve(&mut rows, bh, "nearest-neighbour rows")?;
+    rows.extend((0..bh).map(|r| clamp((r as f64 + 0.5) * y_inc + fy + EPS, lh)));
+    Ok((cols, rows))
 }
 
 /// Actual decoder windows and their output row/column spans, shared by prefetch and sampling.
@@ -1492,11 +1507,12 @@ mod tests {
     /// GDAL samples columns by repeated addition, rows by multiplication.
     #[test]
     fn nearest_pixels_are_gdals() {
-        let (cols, rows) = nearest_pixels((0.75, 1.25, 13.5, 9.5), (13, 9), (16, 12));
+        let (cols, rows) = nearest_pixels((0.75, 1.25, 13.5, 9.5), (13, 9), (16, 12), Some(13 * 9)).unwrap();
         assert_eq!(cols, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
         assert_eq!(rows, [1, 2, 3, 4, 6, 7, 8, 9, 10]);
         // Clamped to the level.
-        assert_eq!(nearest_pixels((0.0, 0.0, 4.0, 4.0), (8, 8), (4, 4)).0, [0, 0, 1, 1, 2, 2, 3, 3]);
+        assert_eq!(nearest_pixels((0.0, 0.0, 4.0, 4.0), (8, 8), (4, 4), Some(64)).unwrap().0, [0, 0, 1, 1, 2, 2, 3, 3]);
+        assert!(matches!(nearest_pixels((0.0, 0.0, 1.0, 1.0), (usize::MAX, 1), (1, 1), Some(1)), Err(Error::ResourceLimit(_))));
     }
 
     /// The output covers the window at its size, its GCPs scaled with it; bands and the nodata
