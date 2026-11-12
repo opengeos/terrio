@@ -7235,6 +7235,25 @@ mod tests {
         }
     }
 
+    /// A grid of 400 x 200 pixels of 25 km below the North Pole (EPSG:3413), its top edge ten
+    /// pixels from the pole, which lies midway between two of the points sampled along that edge
+    /// (twenty pixels apart), warped whole from a longitude and latitude source of 1° pixels from
+    /// 90° N to 90° S. The pixel centres nearest the pole lie closer to it than those points, in a
+    /// source row above theirs. In both samplings (`SAMPLINGS`), each pixel is written, by nearest
+    /// neighbour with its centre's row or the next, and by `average`.
+    #[test]
+    fn a_warp_window_whose_edge_passes_near_the_pole_writes_up_to_it() {
+        let (world, origin, size) = ((90.0, -90.0, 1.0), (-4_750_000.0, -250_000.0), (400, 200));
+        let rows = centre_rows(3413, origin, size, 25_000.0, world);
+        let unlimited = WarpOptions::default().memory_limit;
+        for (grid_invariant, sampling) in SAMPLINGS {
+            for m in [Resampling::Nearest, Resampling::Average] {
+                let out = warp_rows_into(3413, origin, size, 25_000.0, world, m, unlimited, grid_invariant);
+                assert_written_up_to_the_pole(&format!("{sampling}, {m:?}"), &rows, &out, m == Resampling::Nearest);
+            }
+        }
+    }
+
     /// A region of an NSIDC north grid (EPSG:3413, 25 km pixels) in the chunk-dependent sampling
     /// (`grid_invariant: false`), from a longitude and latitude source of 1° pixels from 90° N (or
     /// from 80° N, short of the pole) to 30° N. Its source window reaches the pole's row (or the
