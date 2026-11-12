@@ -3,18 +3,19 @@ use crate::{Error, Result};
 
 #[cfg(feature = "sqlite")]
 fn same_image_metadata(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
-    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if (before.dev(), before.ino(), before.ctime(), before.ctime_nsec())
-            != (after.dev(), after.ino(), after.ctime(), after.ctime_nsec())
-        {
-            return false;
-        }
-    }
+    before.len() == after.len() && before.modified().ok() == after.modified().ok() && same_inode(before, after)
+}
+
+/// Whether two metadata snapshots name the same inode with an unchanged status-change time.
+#[cfg(all(feature = "sqlite", unix))]
+fn same_inode(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    (before.dev(), before.ino(), before.ctime(), before.ctime_nsec()) == (after.dev(), after.ino(), after.ctime(), after.ctime_nsec())
+}
+
+/// Platforms without inode metadata compare the length and modification time only.
+#[cfg(all(feature = "sqlite", not(unix)))]
+fn same_inode(_before: &std::fs::Metadata, _after: &std::fs::Metadata) -> bool {
     true
 }
 
