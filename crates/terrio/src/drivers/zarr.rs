@@ -925,8 +925,13 @@ fn repeated(fill: &[u8], n: usize, what: &str) -> Result<Vec<u8>> {
     }
     let mut out = Vec::new();
     crate::dataset::fallible::reserve(&mut out, len, what)?;
-    for _ in 0..n {
-        out.extend_from_slice(fill);
+    if n == 0 {
+        return Ok(out);
+    }
+    // Doubling: a few large copies rather than one per element.
+    out.extend_from_slice(fill);
+    while out.len() < len {
+        out.extend_from_within(..out.len().min(len - out.len()));
     }
     Ok(out)
 }
@@ -2868,6 +2873,15 @@ pub(crate) fn write_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_fill_is_n_copies_of_the_element() {
+        for n in [0, 1, 2, 3, 7, 1000] {
+            let fill = [1u8, 2, 3];
+            assert_eq!(repeated(&fill, n, "test").unwrap(), fill.repeat(n), "n = {n}");
+        }
+        assert_eq!(repeated(&[0, 0], 5, "test").unwrap(), vec![0; 10]);
+    }
 
     #[test]
     fn parallel_coordinates_keep_the_callers_chunk_policy_for_absent_chunks() {
