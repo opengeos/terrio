@@ -2318,7 +2318,7 @@ pub(crate) fn open_named(name: &str) -> Option<Result<RasterDataset>> {
 /// engine (`ENGINE` false), only the EPSG code of its URL or identifier.
 fn crs_attribute<const ENGINE: bool>(v: &Value) -> Option<CrsInfo> {
     let info = |code: u32| if ENGINE { crate::crs::epsg_crs_info(code) } else { epsg_only(code) };
-    if let Some(code) = v["url"].as_str().and_then(|u| u.rsplit('/').next()).and_then(|c| c.parse::<u32>().ok()) {
+    if let Some(code) = v["url"].as_str().and_then(epsg_code) {
         return Some(info(code));
     }
     if v["projjson"]["id"]["authority"].as_str() == Some("EPSG")
@@ -3053,6 +3053,11 @@ mod tests {
             assert_eq!(crs_attribute::<true>(&attributes).and_then(|c| c.epsg), Some(32630));
         }
         assert_eq!(crs_attribute::<false>(&json!({"projjson": {"id": {"authority": "EPSG", "code": 4294967296_u64}}})), None);
+        for engine in [false, true] {
+            let attributes = json!({"url": "https://example.com/crs/4326"});
+            let crs = if engine { crs_attribute::<true>(&attributes) } else { crs_attribute::<false>(&attributes) };
+            assert_eq!(crs, None);
+        }
     }
 
     #[test]
