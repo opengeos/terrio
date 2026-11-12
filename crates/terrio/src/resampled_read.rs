@@ -419,14 +419,9 @@ impl LazyRaster {
             } else if level.is_some() {
                 dataset.set_sample_bits(0);
             }
-        } else if !self.overviews().is_empty() {
-            // AUTO may read different levels per band. Retain a safe width only when every
-            // candidate's stored width is known; otherwise use the full decoded container.
-            let bits = std::iter::once(None)
-                .chain((0..self.overviews().len()).map(Some))
-                .try_fold(0u16, |widest, level| self.level_sample_bits(level).map(|bits| widest.max(bits)))
-                .unwrap_or(0);
-            dataset.set_sample_bits(bits);
+        } else {
+            // Include the base even without overviews. Every candidate width must be known.
+            dataset.set_sample_bits(self.widest_sample_bits().unwrap_or(0));
         }
         Ok(dataset)
     }

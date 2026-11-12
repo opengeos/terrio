@@ -3276,6 +3276,31 @@ mod tests {
         }
     }
 
+    /// A resampled base image without overviews retains its own width (GDAL 3.13.3 NBITS).
+    #[test]
+    fn resampled_packed_base_without_overviews_keeps_its_width() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("base.tif");
+        let config = wbraster::RasterConfig { cols: 8, rows: 4, bands: 1, data_type: DataType::U16, ..Default::default() };
+        let raster = Raster::from_data_native(config, RasterData::U16(vec![300; 32])).unwrap();
+        std::fs::write(&path, encode(&raster, &TiffOptions { nbits: Some(9), ..Default::default() }).unwrap()).unwrap();
+        let mut native = crate::LazyRaster::open(path.to_str().unwrap()).unwrap();
+        let mut sharable = crate::LazyRaster::open(path.to_str().unwrap()).unwrap();
+        let mut shared = sharable.shared();
+        for reader in [&mut native, &mut shared] {
+            assert!(reader.overviews().is_empty());
+            for overview in [crate::ops::overview::OverviewSelection::Auto, crate::ops::overview::OverviewSelection::Level(0)] {
+                let dataset =
+                    reader.read_resampled(&crate::ResampledReadOptions { size: (16, 8), overview, ..Default::default() }).unwrap();
+                let options = crate::RasterWriteOptions::default().inherited_from(&dataset, Some(crate::formats::RasterDriver::GTiff));
+                let options = TiffOptions::from_write_options(&options, false, None).unwrap().unwrap();
+                let mut result = crate::LazyRaster::from_tiff_bytes(encode(&dataset.raster, &options).unwrap()).unwrap().unwrap();
+                assert_eq!(result.sample_bits(), Some(9));
+                assert_eq!(result.read().unwrap().raster.data.to_f64_vec(), vec![300.0; 128]);
+            }
+        }
+    }
+
     /// GDAL 3.13.3 ignores an ineffective predictor for uncompressed packed output.
     #[test]
     fn inherited_packed_width_uses_the_effective_predictor() {

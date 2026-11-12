@@ -973,6 +973,38 @@ mod tests {
         assert_eq!(restored.raster.data.to_f64_vec(), translated.raster.data.to_f64_vec());
     }
 
+    /// GDAL 3.13.3 RasterIO clamps packed-source CUBIC values before TIFF encoding.
+    #[test]
+    fn lazy_packed_cubic_reads_keep_the_domain_across_output_strips() {
+        let config = RasterConfig { cols: 8, rows: 4, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let mut values = vec![0u8; 32];
+        values[16..].copy_from_slice(&[0, 0, 0, 15, 15, 0, 0, 0].repeat(2));
+        let source = RasterDataset::new(Raster::from_data_native(config, RasterData::U8(values)).unwrap(), false);
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("packed.tif");
+        let output = directory.path().join("resampled.tif");
+        crate::write_raster_dataset(
+            &source,
+            input.to_str().unwrap(),
+            &crate::RasterWriteOptions { creation_options: vec![("NBITS".into(), "4".into())], ..Default::default() },
+        )
+        .unwrap();
+        let mut reader = LazyRaster::open(input.to_str().unwrap()).unwrap();
+        let options = TranslateOptions {
+            out_size: Some((Size::Pixels(32), Size::Pixels(4))),
+            resampling: Some(Resampling::Cubic),
+            ..Default::default()
+        };
+        let expected = translate_lazy(&mut reader, &options, OverviewSelection::Auto).unwrap();
+        let values = expected.raster.data.to_f64_vec();
+        assert!(values.iter().all(|&value| value <= 15.0));
+        assert!(values.contains(&15.0));
+        write_lazy(&mut reader, &options, OverviewSelection::Auto, output.to_str().unwrap(), &Default::default(), Some(1)).unwrap();
+        let mut result = LazyRaster::open(output.to_str().unwrap()).unwrap();
+        assert_eq!(result.sample_bits(), Some(4));
+        assert_eq!(result.read().unwrap().raster.data.to_f64_vec(), values);
+    }
+
     fn ds(cols: usize, rows: usize) -> RasterDataset {
         let cfg = RasterConfig {
             cols,

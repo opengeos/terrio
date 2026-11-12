@@ -979,9 +979,9 @@ impl LazyRaster {
     pub(crate) fn widest_sample_bits(&self) -> Option<u16> {
         match &self.inner {
             Inner::Tiff(t) => t.levels.iter().map(|level| level.bits).max(),
-            Inner::Source(..) => {
-                std::iter::once(None).chain((0..self.overviews().len()).map(Some)).filter_map(|level| self.level_sample_bits(level)).max()
-            }
+            Inner::Source(..) => std::iter::once(None)
+                .chain((0..self.overviews().len()).map(Some))
+                .try_fold(0u16, |widest, level| self.level_sample_bits(level).map(|bits| widest.max(bits))),
             _ => self.sample_bits(),
         }
     }
@@ -3061,6 +3061,9 @@ mod tests {
     fn unknown_overview_widths_do_not_clip_copied_samples() {
         struct UnknownWidth;
         impl WindowSource for UnknownWidth {
+            fn level_sample_bits(&self, overview: Option<usize>) -> Option<u16> {
+                overview.is_none().then_some(9)
+            }
             fn overviews(&self) -> Vec<(usize, usize)> {
                 vec![(2, 2)]
             }
@@ -3082,9 +3085,21 @@ mod tests {
                 .map(|(_, value)| value.parse::<u16>().unwrap())
         };
         assert_eq!(inherited(&base), Some(9));
+        assert_eq!(source.widest_sample_bits(), None);
         let selected = source.read_window(Window::full(2, 2), &WindowOptions { overview: Some(0), ..Default::default() }).unwrap();
         assert_eq!(inherited(&selected), None);
         assert_eq!(selected.raster.data.to_f64_vec(), vec![2000.0; 4]);
+        let translated = crate::ops::translate::translate_lazy(
+            &mut source,
+            &crate::ops::translate::TranslateOptions {
+                out_size: Some((crate::ops::translate::Size::Pixels(2), crate::ops::translate::Size::Pixels(2))),
+                ..Default::default()
+            },
+            crate::ops::overview::OverviewSelection::Auto,
+        )
+        .unwrap();
+        assert_eq!(inherited(&translated), None);
+        assert_eq!(translated.raster.data.to_f64_vec(), vec![2000.0; 4]);
         for overview in [crate::ops::overview::OverviewSelection::Level(0), crate::ops::overview::OverviewSelection::Auto] {
             let read = source.read_resampled(&crate::ResampledReadOptions { size: (2, 2), overview, ..Default::default() }).unwrap();
             assert_eq!(inherited(&read), None);

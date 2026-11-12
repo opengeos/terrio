@@ -14,9 +14,20 @@ import conformance  # noqa: E402
 def test_missing_worldcover_is_not_reported_as_a_difference(monkeypatch):
     """Keep every synthetic result and the unavailable optional palette comparison."""
     rows = [dict(name=str(i), status="identical", detail="exact") for i in range(12)]
+    rows.append(dict(name="COG 4-bit CUBIC bright edge", status="identical", detail="independent GDAL pyramid"))
     rows.append(dict(name="WorldCover palette", status="not compared", detail="fixture unavailable"))
     monkeypatch.setattr(conformance, "missing_modules", lambda *args: [])
     monkeypatch.setattr(conformance, "run", lambda *args: (0, json.dumps(rows), ""))
     suite = conformance.suite_packed_tiff(SimpleNamespace(data="missing", terrio="terrio"))
     assert not suite.error
-    assert [case.status for case in suite.cases] == [conformance.IDENTICAL] * 12 + [conformance.NOT_COMPARED]
+    assert [case.status for case in suite.cases] == [conformance.IDENTICAL] * 13 + [conformance.NOT_COMPARED]
+
+
+def test_missing_cubic_reference_is_an_incomplete_suite(monkeypatch):
+    """Do not report success when the independent generated-overview control is absent."""
+    rows = [dict(name=str(i), status="identical", detail="exact") for i in range(12)]
+    rows.append(dict(name="WorldCover palette", status="not compared", detail="fixture unavailable"))
+    monkeypatch.setattr(conformance, "missing_modules", lambda *args: [])
+    monkeypatch.setattr(conformance, "run", lambda *args: (0, json.dumps(rows), ""))
+    suite = conformance.suite_packed_tiff(SimpleNamespace(data="missing", terrio="terrio"))
+    assert suite.error

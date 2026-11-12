@@ -127,6 +127,9 @@ interleaving and NONE, LZW, DEFLATE, PACKBITS or ZSTD compression. Packed sample
 `PREDICTOR=1` when compression uses a predictor; NONE ignores it. GDAL emits an
 ignored-option warning for NONE, while Terrio retains its existing quiet behavior.
 Signed, floating-point and complex `NBITS` requests are refused.
+Generated CUBIC overviews can reach a packed limit even when the base samples fit.
+The four-bit bright-edge conformance control matches an independent GDAL 3.13.3
+pyramid exactly; Terrio reports encode-time clipping where the reference is quiet.
 Values above the stored unsigned maximum are clipped, as in GDAL 3.13.3. Palettes
 have exactly `2**NBITS` entries. Copies retain a compatible source bit width unless
 the caller overrides `NBITS`; a bilevel palette therefore stays a two-entry palette.

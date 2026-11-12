@@ -1097,7 +1097,7 @@ def suite_vrt(ctx):
 def suite_packed_tiff(ctx):
     """Packed raster creation and preservation through copies."""
     suite = Suite("packed-tiff", "Packed unsigned TIFF output", "GDAL TIFF decoder",
-                  "GTiff/COG writes, Python copies and CLI copies: exact base/overview samples, bit widths, container types, masks, nodata, affine and CRS. An available WorldCover crop also checks the first 128 palette entries. Compressed bytes are not compared.")
+                  "GTiff/COG writes, Python copies and CLI copies: exact base/overview samples, bit widths, container types, masks, nodata, affine and CRS. An independent GDAL CUBIC bright-edge pyramid checks generated packed overview values. An available WorldCover crop also checks the first 128 palette entries. Compressed bytes are not compared.")
     missing = missing_modules("terrio", "numpy", "osgeo")
     if missing:
         suite.skipped = "needs " + ", ".join(missing)
@@ -1110,7 +1110,7 @@ def suite_packed_tiff(ctx):
         return suite
     for row in rows:
         suite.cases.append(Case("packed TIFF", row["name"], {"identical": IDENTICAL, "not compared": NOT_COMPARED}.get(row["status"], DIFFERS), row["detail"]))
-    if len(rows) < 12 or code and not any(case.status == DIFFERS for case in suite.cases):
+    if len(rows) < 14 or not any(row["name"] == "COG 4-bit CUBIC bright edge" for row in rows) or (code and not any(case.status == DIFFERS for case in suite.cases)):
         suite.error = tail(err or out) or "incomplete packed TIFF comparisons"
     return suite
 

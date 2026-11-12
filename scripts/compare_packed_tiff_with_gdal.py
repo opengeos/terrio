@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Qiusheng Wu and Terrio contributors
+# SPDX-License-Identifier: MIT
 """Packed unsigned GTiff/COG writes and copies, independently decoded by GDAL 3.13.3.
 
 Synthetic rows exercise byte padding and tile edges; an available WorldCover
@@ -10,6 +12,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import warnings
 
 import numpy as np
 from osgeo import gdal, osr
@@ -87,6 +90,39 @@ def main():
                     rows.append(dict(name=name, status="identical", detail=detail + "; Python and CLI copies retain the bit width"))
                 except Exception as error:
                     rows.append(dict(name=name, status="differs", detail=str(error)))
+        # An even grid gives the same COG and GTiff overview geometry. The odd-position
+        # bright edge makes independent unpacked GDAL CUBIC exceed the four-bit maximum.
+        try:
+            values = np.tile(np.where(np.arange(256) >= 127, 15, 0).astype("uint8"), (128, 1))
+            transform, crs = from_origin(500000, 5800000, 10, 10), "EPSG:32633"
+            references = []
+            for bits in (4, 8):
+                reference = gdal.GetDriverByName("GTiff").Create(
+                    str(directory / f"cubic-reference-{bits}.tif"), 256, 128, 1,
+                    gdal.GDT_Byte, options=[f"NBITS={bits}"],
+                )
+                reference.WriteArray(values)
+                reference.BuildOverviews("CUBIC", [2])
+                references.append(reference.GetRasterBand(1).GetOverview(0).ReadAsArray())
+                reference = None
+            assert references[1].max() > 15, "bright control must produce cubic overshoot"
+            path = directory / "cubic-bright.tif"
+            with warnings.catch_warnings(record=True) as captured:
+                warnings.simplefilter("always")
+                with rio.open(path, "w", driver="COG", width=256, height=128,
+                              count=1, dtype="uint8", crs=crs, transform=transform,
+                              compress="DEFLATE", nbits=4, blocksize=128) as dst:
+                    dst.write(values, 1)
+            detail = verify(path, values, 4, transform, crs, require_overviews=True)
+            actual = gdal.Open(str(path))
+            np.testing.assert_array_equal(actual.GetRasterBand(1).GetOverview(0).ReadAsArray(), references[0])
+            actual = None
+            messages = [str(item.message) for item in captured]
+            rows.append(dict(name="COG 4-bit CUBIC bright edge", status="identical",
+                             detail=detail + "; generated overview equals independent GDAL CUBIC; "
+                             + "warnings=" + repr(messages)))
+        except Exception as error:
+            rows.append(dict(name="COG 4-bit CUBIC bright edge", status="differs", detail=str(error)))
         source = args.data / "esa_worldcover_colormap.tif"
         if source.exists():
             try:
