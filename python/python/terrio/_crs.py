@@ -15,6 +15,10 @@
 
 """CRS validation shared by Python dataframe and Arrow exports."""
 
+# The attribution above follows the normalization helper moved from _read.py.
+# Malformed-definition fallback and dynamic datum retention are Terrio policy,
+# validated with GDAL 3.13.3 and pyproj, rather than translations of GDAL code.
+
 import re
 
 from terrio import _terrio

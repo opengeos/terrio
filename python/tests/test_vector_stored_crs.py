@@ -34,6 +34,7 @@ TEMPORAL = (
 
 
 def geopandas_for_surface(surface):
+    """Load GeoPandas or skip when the requested export surface is unavailable."""
     gpd = pytest.importorskip("geopandas")
     if surface in ("arrow", "stream"):
         pytest.importorskip("pyarrow")
@@ -43,6 +44,7 @@ def geopandas_for_surface(surface):
 
 
 def stored_crs(tmp_path, driver, text, container_definition=CUSTOM):
+    """Write a point fixture and replace its stored CRS with the supplied text."""
     path = tmp_path / f"points.{driver}"
     layer = terrio.Layer.from_geojson(POINTS, name="points", crs=container_definition)
     layer.write(str(path))
@@ -71,6 +73,7 @@ def stored_crs(tmp_path, driver, text, container_definition=CUSTOM):
 
 @pytest.mark.parametrize("driver", ["gpkg", "fgb", "shp"])
 def test_non_crs_stored_text_is_warned_and_discarded(tmp_path, driver):
+    """Warn and omit prose stored in a vector format's CRS field."""
     path = stored_crs(tmp_path, driver, "not a coordinate reference system")
     with pytest.warns(UserWarning, match="no CRS definition.*not a coordinate"):
         layer = terrio.open_vector(str(path))[0]
@@ -81,6 +84,7 @@ def test_non_crs_stored_text_is_warned_and_discarded(tmp_path, driver):
 @pytest.mark.parametrize("driver", ["gpkg", "fgb", "shp"])
 @pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream"])
 def test_unparseable_stored_definition_exports_without_crs(tmp_path, driver, surface):
+    """Export feature values without a CRS when its retained definition is invalid."""
     gpd = geopandas_for_surface(surface)
     path = stored_crs(tmp_path, driver, 'PROJCS["x"]')
     layer = terrio.open_vector(str(path))[0]
@@ -100,6 +104,7 @@ def test_unparseable_stored_definition_exports_without_crs(tmp_path, driver, sur
 @pytest.mark.parametrize("definition", [CUSTOM, 'LOCAL_CS["site grid",UNIT["metre",1]]', TEMPORAL])
 @pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream", "pyogrio"])
 def test_valid_custom_stored_definitions_survive_exports(tmp_path, driver, definition, surface):
+    """Preserve valid custom and WKT2-only definitions through each export surface."""
     gpd = geopandas_for_surface(surface)
     from pyproj import CRS
 
@@ -120,6 +125,7 @@ def test_valid_custom_stored_definitions_survive_exports(tmp_path, driver, defin
 
 @pytest.mark.parametrize("driver", ["gpkg", "fgb", "shp"])
 def test_discarded_non_crs_text_is_not_written_into_other_formats(tmp_path, driver):
+    """Keep rejected prose out of subsequent vector format conversions."""
     path = stored_crs(tmp_path, driver, "not a coordinate reference system")
     with pytest.warns(UserWarning):
         layer = terrio.open_vector(str(path))[0]
@@ -132,6 +138,7 @@ def test_discarded_non_crs_text_is_not_written_into_other_formats(tmp_path, driv
 @pytest.mark.parametrize("driver", ["gpkg", "fgb", "shp"])
 @pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream", "pyogrio"])
 def test_custom_dynamic_crs_keeps_frame_reference_epoch(tmp_path, driver, surface):
+    """Retain the dynamic datum and its frame reference epoch during export."""
     gpd = geopandas_for_surface(surface)
     from pyproj import CRS
 
@@ -163,6 +170,7 @@ def test_custom_dynamic_crs_keeps_frame_reference_epoch(tmp_path, driver, surfac
 @pytest.mark.parametrize("definition", [CUSTOM, 'LOCAL_CS["site grid",UNIT["metre",1]]'])
 @pytest.mark.parametrize("surface", ["geopandas", "arrow", "stream", "pyogrio"])
 def test_unknown_authority_uses_usable_stored_wkt_without_warning(tmp_path, definition, surface):
+    """Use valid stored WKT when a declared authority code cannot be resolved."""
     gpd = geopandas_for_surface(surface)
     from pyproj import CRS
 
