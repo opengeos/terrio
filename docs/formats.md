@@ -377,6 +377,13 @@ JPEG with `--compress JPEG`; one-band Int16, UInt16 and Float32 rasters as gridd
 vector layers and rasters opens as its layers, and `terrio info` lists its rasters as
 subdatasets, opened as `GPKG:file.gpkg:table`. Written layers get an R-tree spatial index.
 
+GeoPackage raster declaration limits count the logical raster rather than padded tile storage.
+A gridded coverage obtains its returned band count from its first tile's header, before decoding
+pixels; indexed PNG tiles count their expanded RGBA channels. Allocation checks include the
+Float64 grid, returned decoded tile and conversion buffers, band remapping and final typed output,
+including an empty tile table. The SQLite input and encoded tiles remain in memory; these checks
+are not a total-process memory cap or a bound on every codec-private temporary.
+
 Zarr stores are read and written as GDAL writes them (`_CRS` and X/Y coordinate arrays) and as
 xarray writes them (a CF `grid_mapping` variable with `crs_wkt` and `GeoTransform`). GeoZarr's
 conventions are read too: [`spatial:`](https://github.com/zarr-conventions/spatial)

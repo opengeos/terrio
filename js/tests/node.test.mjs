@@ -2180,6 +2180,26 @@ test("HEC-RAS plans from memory as vector layers, with open options", { skip: ne
   assert.throws(() => terrio.openVector(plan, "x.hdf", { openOptions: { NO_SUCH_OPTION: "1" } }));
 });
 
+test("GeoPackage declaration limits count logical pixels rather than padded tile storage", () => {
+  const transform = [0, 1, 0, 16, 0, -1];
+  for (const Type of [Uint8Array, Uint16Array, Int16Array, Float32Array]) {
+    const values = Type.from({ length: 512 }, (_, i) => (i % 100) + 0.25);
+    const source = terrio.rasterFromArray(values, 32, 16, transform, "EPSG:4326");
+    const bytes = source.toBytes("coverage.gpkg");
+    terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: String(values.byteLength), TERRIO_MAX_BANDS: "1" });
+    try {
+      const back = terrio.open(bytes, "coverage.gpkg");
+      assert.equal(back.dtype, source.dtype);
+      assert.deepEqual([...back.readBand(1)], [...values]);
+      assert.deepEqual([...back.transform], transform);
+      back.free();
+      terrio.pushConfig({ TERRIO_MAX_DECLARED_BYTES: String(values.byteLength - 1) });
+      try { assert.throws(() => terrio.open(bytes, "coverage.gpkg"), /TERRIO_MAX_DECLARED_BYTES/); }
+      finally { terrio.popConfig(); }
+    } finally { terrio.popConfig(); source.free(); }
+  }
+});
+
 test("declared raster budgets apply to WASM byte opens and restore with their scope", () => {
   const grid = new TextEncoder().encode("ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n3 4\n");
   const source = terrio.rasterFromArray(new Uint8Array(12).fill(7), 2, 2, [0, 1, 0, 2, 0, -1]);

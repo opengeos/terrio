@@ -2796,3 +2796,24 @@ reduced squares from 4,870 to 1,220 compressed bytes and about 0.93 to 0.45 ms C
 a WorldCover tile stayed at 27,597 bytes and took about 2.62 versus 3.47 ms.
 A half-zero/half-noise UInt16 control grew 72 bytes out of about 265 KiB. These
 measurements describe the size/CPU tradeoff and are not universal speed claims.
+
+## GeoPackage raster allocation checks
+
+Run `cargo test -p terrio --lib drivers::gpkg::tests` and
+`python -m pytest python/tests/test_gpkg_raster_limits.py`. Header-valid RGB TIFF,
+RGB PNG and indexed PNG tiles with corrupt pixels must be refused by configured
+band/byte limits before pixel decoding. The controls retain the decoder error
+without those limits. Heterogeneous coverage tiles retain the first tile's returned
+band count, while allocation checks account for the channels actually decoded.
+
+Linux child processes constrain the usable-memory policy to 128 MiB: a 5000-square
+Float32 result fits that policy, but its Float64 working grid does not. Tile and empty
+table cases must return a resource error, while 1536-square controls preserve values.
+A tiny destination also refuses a large TIFF tile's simultaneous Float32/Float64
+buffers before decoding. These are allocation-policy checks, not process-memory caps.
+
+GDAL 3.13.3 writes the Python coverage fixture. Its exact logical limits preserve
+pixels, types, masks and nodata; the native API also checks its geotransform and CRS.
+The Node suite checks Byte, UInt16, Int16 and Float32 GeoPackage byte round trips
+at their exact limits and refuses one byte less. The registered raster round-trip
+comparison can be focused with `python scripts/raster_roundtrip.py GPKG -v`.
