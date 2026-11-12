@@ -740,8 +740,8 @@ pub(crate) mod codec {
     pub(super) fn finish_vector(layers: Vec<Layer>, name: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Dataset> {
         let names: Vec<String> = layers.iter().map(|l| l.name.clone()).collect();
         let mut layers = crate::dataset::select_layers(layers, name, options)?;
-        // A source without layers is refused, as before names were checked one by one.
-        if layers.is_empty() {
+        // Preserve empty MVT datasets; explicit missing selections are checked above.
+        if layers.is_empty() && driver != VectorDriver::MVT {
             return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
         }
         layers.iter_mut().for_each(|layer| options.keep_range(layer));
@@ -848,6 +848,15 @@ mod tests {
     use super::*;
     use wbraster::raster::RasterData;
     use wbraster::{DataType, Raster};
+
+    #[test]
+    fn empty_mvt_keeps_an_empty_dataset_without_a_layer_selection() {
+        let dataset = codec::finish_vector(Vec::new(), "empty.mvt", VectorDriver::MVT, &Default::default()).unwrap();
+        assert!(matches!(dataset, Dataset::Vector(dataset) if dataset.layers.is_empty()));
+        let options = VectorOpenOptions { layers: vec!["missing".into()], ..Default::default() };
+        let error = codec::finish_vector(Vec::new(), "empty.mvt", VectorDriver::MVT, &options).unwrap_err();
+        assert!(matches!(error, Error::InvalidArgument(message) if message.contains("no layer named missing")));
+    }
 
     fn packaging_layer() -> Layer {
         parse_geojson_layer(
