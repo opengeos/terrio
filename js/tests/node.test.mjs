@@ -101,6 +101,17 @@ test("the block cache's size is set, read back and cleared", () => {
   }
 });
 
+test("raster info includes the interior pole in geographic bounds", () => {
+  for (const [crs, pole] of [["EPSG:3413", 90], ["EPSG:3995", 90], ["EPSG:3031", -90], ["EPSG:3976", -90]]) {
+    const ds = terrio.rasterFromArray(new Uint8Array(4), 2, 2, [-1e6, 1e6, 0, 1e6, 0, -1e6], crs, 255);
+    const bounds = ds.info().wgs84_extent;
+    assert.equal(bounds[0], -180);
+    assert.equal(bounds[2], 180);
+    assert.equal(bounds[pole > 0 ? 3 : 1], pole);
+    ds.free();
+  }
+});
+
 test("raster from array, to GeoTIFF bytes and back", () => {
   const data = new Int16Array(2 * 3 * 4).map((_, i) => i - 5);
   const ds = terrio.rasterFromArray(data, 4, 3, [500000, 30, 0, 4100000, 0, -30], "EPSG:32610", -9999);

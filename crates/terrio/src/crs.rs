@@ -453,6 +453,10 @@ impl Transformer {
     pub fn transform_bounds(&self, bounds: (f64, f64, f64, f64)) -> Result<(f64, f64, f64, f64)> {
         self.0.transform_bounds(bounds).map_err(Into::into)
     }
+    /// Transform bounds with `densify` interior points per edge, including interior poles.
+    pub fn transform_bounds_densified(&self, bounds: (f64, f64, f64, f64), densify: usize) -> Result<(f64, f64, f64, f64)> {
+        self.0.transform_bounds_densified(bounds, densify).map_err(Into::into)
+    }
     /// Emit new diagnostics on this thread through Terrio's warning sink.
     pub fn flush_warnings(&self) {
         self.0.flush_warnings();

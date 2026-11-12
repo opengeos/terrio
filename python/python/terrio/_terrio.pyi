@@ -62,6 +62,7 @@ __all__ = [
     "pansharpen",
     "polygonize",
     "transform_points",
+    "transform_bounds",
     "set_grid_search_paths",
     "set_network_enabled",
     "list_crs",
@@ -1080,6 +1081,12 @@ def polygonize(
     append: bool = False,
     overwrite: bool = False,
 ) -> Layer: ...
+def transform_bounds(
+    src_crs: str,
+    dst_crs: str,
+    bounds: tuple[float, float, float, float],
+    densify_pts: int = 21,
+) -> tuple[float, float, float, float]: ...
 @overload
 def transform_points(
     xs: Any,

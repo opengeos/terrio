@@ -43,6 +43,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(polygonize, m)?)?;
     m.add_function(wrap_pyfunction!(transform_points, m)?)?;
+    m.add_function(wrap_pyfunction!(transform_bounds, m)?)?;
     m.add_function(wrap_pyfunction!(set_grid_search_paths, m)?)?;
     m.add_function(wrap_pyfunction!(set_network_enabled, m)?)?;
     m.add_function(wrap_pyfunction!(list_crs, m)?)?;
@@ -975,6 +976,33 @@ fn polygonize(
         })
         .py()?;
     Ok(PyLayer::from(layer))
+}
+
+/// Transform bounds through the shared CRS implementation, including interior poles.
+///
+/// Args:
+///     src_crs: Source CRS definition.
+///     dst_crs: Target CRS definition.
+///     bounds: Source (left, bottom, right, top).
+///     densify_pts: Interior points per edge.
+///
+/// Returns:
+///     tuple: Target (left, bottom, right, top).
+///
+/// Raises:
+///     CRSError: If the CRSs or bounds cannot be transformed.
+#[pyfunction]
+#[pyo3(signature = (src_crs, dst_crs, bounds, densify_pts=21))]
+fn transform_bounds(
+    py: Python<'_>,
+    src_crs: &str,
+    dst_crs: &str,
+    bounds: (f64, f64, f64, f64),
+    densify_pts: usize,
+) -> PyResult<(f64, f64, f64, f64)> {
+    let src = SpatialRef::parse(src_crs).py()?;
+    let dst = SpatialRef::parse(dst_crs).py()?;
+    crate::with_warnings(py, || Transformer::new(&src, &dst)?.transform_bounds_densified(bounds, densify_pts))
 }
 
 /// Transforms coordinates from one CRS to another.
