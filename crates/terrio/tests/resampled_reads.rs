@@ -64,8 +64,16 @@ fn cases() -> Vec<Case> {
             .unwrap()
             .iter()
             .filter(|raw| ["file", "bands", "window", "size", "resampling", "overview"].iter().all(|&key| control[key] == raw[key]))
-            .count();
-        assert_eq!(matches, 1, "mask control must match exactly one historical case: {control}");
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1, "mask control must match exactly one historical case: {control}");
+        let raw = matches[0];
+        assert_eq!(raw["dtype"], control["dtype"]);
+        let raw_values = values(&hex(raw["data"].as_str().unwrap()), raw["dtype"].as_str().unwrap());
+        let control_values = values(&hex(control["data"].as_str().unwrap()), control["dtype"].as_str().unwrap());
+        // Pin the GDAL 3.13.3 known difference as well as matching the normalized control.
+        assert_eq!(raw_values.len(), 3198);
+        assert_eq!(raw_values.len(), control_values.len());
+        assert_eq!(raw_values.iter().zip(&control_values).filter(|(a, b)| a != b).count(), 488);
     }
     let numbers = |v: &serde_json::Value| -> Vec<usize> { v.as_array().unwrap().iter().map(|n| n.as_u64().unwrap() as usize).collect() };
     expected

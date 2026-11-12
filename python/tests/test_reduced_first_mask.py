@@ -29,6 +29,9 @@ def mark_image(path, index, subfile):
     offset = struct.unpack_from("<I", data, pointer)[0]
     count = struct.unpack_from("<H", data, offset)[0]
     entries = [data[offset + 2 + 12 * i : offset + 14 + 12 * i] for i in range(count)]
+    if subfile & 4:
+        current = next((e for e in entries if struct.unpack_from("<H", e)[0] == 254), None)
+        assert current is not None and struct.unpack_from("<I", current, 8)[0] & 4
     entries = [e for e in entries if struct.unpack_from("<H", e)[0] != 254]
     entries.append(struct.pack("<HHII", 254, 4, 1, subfile))
     entries.sort(key=lambda e: struct.unpack_from("<H", e)[0])
@@ -118,4 +121,6 @@ def test_reduced_first_masks_match_gdal_control_before_and_after_external_refres
                     # Legacy ordinary masks (4) retain their stored validity.
                     assert np.all(expected[55:85, 65:120] == (255 if mask_reduced else 0))
             if not refresh and overview != 1:
-                assert np.count_nonzero(expected == 0) == 2600
+                assert np.count_nonzero(expected == 0) == np.count_nonzero(mask == 0)
+            band = None
+            expected_ds = None

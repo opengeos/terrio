@@ -423,15 +423,18 @@ def check_rasterio(expected: list[dict[str, Any]]) -> int:
 def write_mask_control(gdal: Any) -> None:
     """Pin the one resampled case whose first-image mask GDAL otherwise ignores."""
     cases = json.loads(gzip.decompress((OUT / "expected.json.gz").read_bytes()))
-    case = next(c for c in cases if c["file"] == "masked_external_overviews.tif"
-                and c["size"] == [26, 41] and c["resampling"] == "cubic"
-                and c["overview"] == "AUTO" and not c["bands"] and c["window"] is None)
+    case = next((c for c in cases if c["file"] == "masked_external_overviews.tif"
+                 and c["size"] == [26, 41] and c["resampling"] == "cubic"
+                 and c["overview"] == "AUTO" and not c["bands"] and c["window"] is None), None)
+    if case is None:
+        raise RuntimeError("masked external cubic 26x41 reference is missing")
     with tempfile.TemporaryDirectory(prefix="terrio-mask-control-") as temporary:
         path = Path(temporary) / case["file"]
         shutil.copyfile(OUT / case["file"], path)
         overview = Path(str(path) + ".ovr")
         data = bytearray((OUT / (case["file"] + ".ovr")).read_bytes())
-        assert data[:4] == b"II*\0"
+        if data[:4] != b"II*\0":
+            raise RuntimeError("mask control requires a little-endian classic TIFF")
         offset = struct.unpack_from("<I", data, 4)[0]
         directories = []
         while offset:
@@ -446,8 +449,10 @@ def write_mask_control(gdal: Any) -> None:
             fmt = "<H" if struct.unpack_from("<H", data, entry + 2)[0] == 3 else "<I"
             return struct.unpack_from(fmt, data, entry + 8)[0]
         image, mask = directories[0], directories[2]
-        assert (value(image, 254), value(mask, 254), value(mask, 262)) == (1, 5, 4)
-        assert [value(image, tag) for tag in (256, 257)] == [value(mask, tag) for tag in (256, 257)]
+        if (value(image, 254), value(mask, 254), value(mask, 262)) != (1, 5, 4):
+            raise RuntimeError("mask control requires first-image/mask flags 1/5 and mask photometric 4")
+        if [value(image, tag) for tag in (256, 257)] != [value(mask, tag) for tag in (256, 257)]:
+            raise RuntimeError("mask control requires matching first-image and mask dimensions")
         struct.pack_into("<I", data, image[254] + 8, 0)
         struct.pack_into("<I", data, mask[254] + 8, 4)
         overview.write_bytes(data)
