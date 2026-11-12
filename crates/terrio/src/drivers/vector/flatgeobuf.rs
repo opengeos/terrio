@@ -33,6 +33,42 @@ pub(crate) fn declared_dims_bytes(buf: &[u8]) -> Result<(bool, bool)> {
     Ok((header.has_z, header.has_m))
 }
 
+thread_local! {
+    /// The `(has_z, has_m)` of the headers parsed on this thread inside [`with_declared_dims`];
+    /// `None` outside it.
+    static DECLARED: std::cell::RefCell<Option<Vec<(bool, bool)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f`, an open of vector datasets, and returns with its result the Z and M flags of each
+/// FlatGeobuf header that `f` parsed on this thread, in reading order. A layer read from a
+/// FlatGeobuf has no declared Z or M of its own, so they are returned beside it, as
+/// [`super::geojson::with_declared_geometry_types`] returns GeoJSON layer types: from the read
+/// that opens the file, without opening it again.
+pub(crate) fn with_declared_dims<T>(f: impl FnOnce() -> T) -> (T, Vec<(bool, bool)>) {
+    /// Restores the enclosing call's record, also when `f` panics.
+    struct Scope(Option<Vec<(bool, bool)>>);
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            let outer = self.0.take();
+            DECLARED.with(|d| *d.borrow_mut() = outer);
+        }
+    }
+    let scope = Scope(DECLARED.with(|d| d.replace(Some(Vec::new()))));
+    let out = f();
+    let declared = DECLARED.with(|d| d.borrow_mut().take()).unwrap_or_default();
+    drop(scope);
+    (out, declared)
+}
+
+/// Records a parsed header's Z and M flags (see [`with_declared_dims`]).
+fn declare(has_z: bool, has_m: bool) {
+    DECLARED.with(|d| {
+        if let Some(dims) = d.borrow_mut().as_mut() {
+            dims.push((has_z, has_m));
+        }
+    });
+}
+
 /// Whether `buf` starts with the FlatGeobuf magic bytes. The version byte is not compared: GDAL
 /// writes 1 where [`MAGIC`] has 0, and [`header_len`] reads such files too.
 pub(crate) fn has_magic(buf: &[u8]) -> bool {
@@ -127,6 +163,7 @@ pub(crate) fn parse_header(buf: &[u8]) -> Result<(Layer, FgbHeader)> {
         extent: header.envelope().filter(|e| e.len() >= 4).map(|e| [e.get(0), e.get(1), e.get(2), e.get(3)]),
         index_size: index_size(count, header.index_node_size()),
     };
+    declare(meta.has_z, meta.has_m);
     Ok((layer, meta))
 }
 
@@ -1288,6 +1325,30 @@ mod tests {
         assert_eq!(schema.layers[0].geometry_fields[0].geometry_type, "PointZ");
         assert!(!opened.lock().unwrap().is_empty());
         assert_eq!(exported.lock().unwrap().len(), opened.lock().unwrap().len());
+    }
+
+    #[test]
+    fn declared_dims_come_from_the_read_that_opens_the_dataset() {
+        // The header the open parses gives the declared pair: a local file, an archive's member and
+        // bytes in memory, each read once.
+        let bytes = empty_dimension_fixture(true, true);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("empty.fgb");
+        std::fs::write(&file, &bytes).unwrap();
+        let (_zip_dir, archive) = zip_with_member("empty.fgb", &bytes);
+        for path in [file.to_str().unwrap().to_string(), format!("{}!empty.fgb", archive.to_str().unwrap())] {
+            let (ds, declared) = crate::dataset::open_vector_declared(&path, &Default::default()).unwrap();
+            assert_eq!(ds.layers.len(), 1, "{path}");
+            assert_eq!(declared, [Some((true, true))], "{path}");
+        }
+        let (ds, declared) = with_declared_dims(|| crate::memory::open_vector_bytes(bytes, "empty.fgb", &Default::default()));
+        assert_eq!(ds.unwrap().layers.len(), 1);
+        assert_eq!(declared, [(true, true)]);
+        // Another driver declares nothing: its layers keep the feature scan.
+        let geojson = dir.path().join("p.geojson");
+        std::fs::write(&geojson, br#"{"type":"FeatureCollection","features":[]}"#).unwrap();
+        let (_, declared) = crate::dataset::open_vector_declared(geojson.to_str().unwrap(), &Default::default()).unwrap();
+        assert!(declared.is_empty());
     }
 
     #[test]

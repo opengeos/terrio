@@ -323,25 +323,6 @@ fn archive_main_member(path: &Path) -> Option<String> {
     main_member(&entry_names(&zip))
 }
 
-/// The member a zip location reads: its `inner` path, or the archive's main dataset (read from the
-/// local archive's listing). `None` for other locations, and for a remote archive, which keeps its
-/// own route.
-#[cfg(not(target_family = "wasm"))]
-pub(crate) fn zip_member(loc: &Location) -> Option<String> {
-    let Location::Zip { archive, inner } = loc else { return None };
-    let Location::Local(path) = archive.as_ref() else { return None };
-    match inner {
-        Some(name) => Some(name.clone()),
-        None => archive_main_member(path),
-    }
-}
-
-/// [`zip_member`] on WebAssembly, where archives are not read.
-#[cfg(target_family = "wasm")]
-pub(crate) fn zip_member(_loc: &Location) -> Option<String> {
-    None
-}
-
 /// The main dataset among an archive's entry names: the first (by name) with the
 /// highest-priority extension. A Zarr store is its directory, whose files are not candidates.
 #[cfg(not(target_arch = "wasm32"))]

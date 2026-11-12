@@ -584,7 +584,7 @@ fn judged_by_content(name: &str, generic: bool) -> bool {
 /// is replaced with the dataset's name (without its query, which may hold a signature); a message
 /// that names neither starts with it. The variant is kept, but for the format libraries' errors,
 /// which become [`Error::InvalidData`] (the Python class they already map to).
-pub(crate) fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
+fn naming_dataset(e: Error, path: &str, local: &str) -> Error {
     if vfs::Location::parse(path).is_local() {
         return e;
     }
@@ -630,6 +630,31 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
     #[cfg(feature = "gdal")]
     let result = gdal_fallback(path, result, |p| crate::gdal_backend::open_vector(p, options));
     result
+}
+
+/// The `(has_z, has_m)` a header declares for each layer of a dataset, by position; a missing
+/// entry declares nothing.
+pub(crate) type DeclaredDims = Vec<Option<(bool, bool)>>;
+
+/// [`open_vector`], with the Z and M each layer's header declares: `(has_z, has_m)` for the layer
+/// of a FlatGeobuf, read from the header the open parses (a local file, an archive's member, a
+/// remote file's download), so the file is not opened again. Empty for other drivers, and for a
+/// FlatGeobuf whose header terrio's reader did not parse (a `gdal:` path): the dimensions of those
+/// layers are found from their features.
+pub(crate) fn open_vector_declared(path: &str, options: &VectorOpenOptions) -> Result<(VectorDataset, DeclaredDims)> {
+    #[cfg(feature = "flatgeobuf")]
+    {
+        let (ds, headers) = crate::drivers::vector::flatgeobuf::with_declared_dims(|| open_vector(path, options));
+        let ds = ds?;
+        // A FlatGeobuf has one layer, read from the one header parsed.
+        let declared = match headers[..] {
+            [dims] if ds.driver == VectorDriver::FlatGeobuf && ds.layers.len() == 1 => vec![Some(dims)],
+            _ => Vec::new(),
+        };
+        Ok((ds, declared))
+    }
+    #[cfg(not(feature = "flatgeobuf"))]
+    Ok((open_vector(path, options)?, Vec::new()))
 }
 
 /// A vector response or feature-service query: opaque remote GeoJSON/GML names, and URLs with
