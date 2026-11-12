@@ -176,6 +176,10 @@ def _copy_dataset(
     for k in ("blockxsize", "blockysize", "tiled", "compress", "interleave", "photometric"):
         profile.pop(k, None)
     profile["driver"] = driver
+    sample = getattr(src, "_complex_sample", None)
+    if sample in ("CInt16", "CInt32") and not any(k.lower() == "dtype" for k in creation_options):
+        profile["dtype"] = "complex64" if sample == "CInt16" else "complex128"
+        profile["_complex_dtype"] = sample
     profile.update({k.lower(): v for k, v in creation_options.items()})
     if driver.upper() in ("GTIFF", "COG") and src.count > 1 and "interleave" not in profile:
         # GDALDriver::CreateCopy (gcore/gdaldriver.cpp): without INTERLEAVE, and without a
@@ -246,10 +250,11 @@ def _copy_dataset(
             dst.write_colormap(1, cmap)
         if dst._copy_of is not None:
             return
-        rows = max(1, min(src.height, (64 << 20) // max(1, src.width * src.count * 8)))
+        itemsize = 16 if sample in ("CInt16", "CInt32", "CFloat64") else 8
+        rows = max(1, min(src.height, (64 << 20) // max(1, src.width * src.count * itemsize)))
         for y in range(0, src.height, rows):
             w = Window(0, y, src.width, min(rows, src.height - y))
-            dst.write(src.read(window=w), window=w)
+            dst.write(src._read_for_copy(window=w), window=w)
             if per_dataset_mask:
                 dst.write_mask(src.dataset_mask(window=w), window=w)
 

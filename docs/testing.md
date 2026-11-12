@@ -209,6 +209,14 @@ directory).
 
 ## The conformance suite
 
+Complex TIFF writes are checked with
+`python scripts/conformance.py DATA --only complex-writes --strict`, using current
+bindings and `landsat7.tif`. The suite checks whole/streamed GTiff/COG paths, complex
+integer copies without Float32 precision loss, component rounding/saturation, masks,
+types and georeferencing against GDAL (locally validated with 3.13.3). Its real-data
+case derives complex integer components from Landsat pixels and keeps the crop's CRS
+and transform. It checks samples and metadata, without claiming compressed byte identity.
+
 JPEG 2000 creation options are checked with
 `python scripts/conformance.py DATA --only jp2-writer --strict`, using the real
 `landsat7.tif` fixture, current Python bindings, pytest and rasterio. Path and memory

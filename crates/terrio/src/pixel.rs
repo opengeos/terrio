@@ -87,6 +87,30 @@ macro_rules! with_data {
 }
 pub(crate) use with_data;
 
+/// Collect real/imaginary component planes directly in their storage type, without a temporary
+/// floating-point buffer. Integer conversion is rounded and saturated as in GDAL 3.13.3.
+///
+/// # Errors
+/// When the target is not a supported complex component type.
+pub fn complex_components_from_iter(
+    components: impl Iterator<Item = f64>,
+    target: wbraster::DataType,
+) -> crate::Result<wbraster::raster::RasterData> {
+    use wbraster::{DataType, raster::RasterData};
+    macro_rules! cast {
+        ($t:ty, $v:ident) => {
+            RasterData::$v(components.map(<$t as Pixel>::from_f64).collect())
+        };
+    }
+    Ok(match target {
+        DataType::I16 => cast!(i16, I16),
+        DataType::I32 => cast!(i32, I32),
+        DataType::F32 => cast!(f32, F32),
+        DataType::F64 => cast!(f64, F64),
+        _ => return Err(crate::Error::InvalidArgument("complex components must be Int16, Int32, Float32 or Float64".into())),
+    })
+}
+
 /// Builds a `RasterData` of the variant of `like` from a function generic over the sample type.
 macro_rules! map_data {
     ($data:expr, $v:ident => $body:expr) => {

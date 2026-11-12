@@ -3599,6 +3599,30 @@ def suite_oapif(ctx):
     return suite
 
 
+def suite_complex_writes(ctx):
+    suite = Suite("complex-writes", "Complex GeoTIFF writes", "GDAL",
+                  "Exact sample types, values, nodata, masks, CRS and transforms for complex "
+                  "whole/streamed writes and copies; CInt32 values above 2^24, integer saturation "
+                  "and a real Landsat-derived complex grid are included. Compressed byte identity "
+                  "with GDAL is not asserted.")
+    missing = missing_modules("pytest", "osgeo", "numpy", "terrio")
+    if missing:
+        suite.skipped = "needs the Python modules " + ", ".join(missing)
+        return suite
+    code, version, err = run([sys.executable, "-c", "from osgeo import gdal, gdal_array; print(gdal.VersionInfo('RELEASE_NAME'))"])
+    if code:
+        suite.skipped = "needs GDAL's NumPy bindings (osgeo.gdal_array): " + tail(err)
+        return suite
+    if not (Path(ctx.data) / "landsat7.tif").is_file():
+        suite.skipped = "needs landsat7.tif to run the complete complex-write comparison module"
+        return suite
+    suite.reference = "GDAL " + version.strip()
+    passed, detail = _pytest_module_conformance(ctx, "test_rio_complex_writer.py")
+    suite.cases.append(Case("Complex GDAL decoding", "write and copy assertions including Landsat",
+                            IDENTICAL if passed else DIFFERS, detail))
+    return suite
+
+
 def _pytest_module_conformance(ctx, filename):
     """Require the complete, unfiltered test module and its successful JUnit report."""
     command = [sys.executable, "-m", "pytest", "-o", "addopts=", "-q",
@@ -3681,6 +3705,7 @@ SUITES = OrderedDict(
         ("shapefile-rings", suite_shapefile_rings),
         ("shapefile-deleted", suite_shapefile_deleted),
         ("raster-roundtrip", suite_raster_roundtrip),
+        ("complex-writes", suite_complex_writes),
         ("jp2-writer", suite_jp2_writer),
         ("webp-writer", suite_webp_writer),
         ("deflate", suite_deflate),

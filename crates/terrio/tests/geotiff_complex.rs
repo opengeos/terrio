@@ -215,6 +215,63 @@ fn complex_geotiffs_are_copied_as_complex() {
     }
 }
 
+/// GDAL 3.13.3 preserves complex sample types in streamed path conversions.
+#[test]
+fn complex_path_copies_keep_pairs_across_block_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    for (format, bits, parts, name) in TYPES {
+        let source = dir.path().join(format!("source-{name}.tif"));
+        std::fs::write(&source, complex_tiff(false, (23, 37, 2, false), (format, bits, parts), false, None)).unwrap();
+        let mut expected = LazyRaster::open(source.to_str().unwrap()).unwrap().read().unwrap();
+        expected.band_metadata = ["first", "second"]
+            .iter()
+            .map(|name| terrio::BandMetadata { description: Some((*name).into()), ..Default::default() })
+            .collect();
+        let translated = terrio::ops::translate::translate(&expected, &Default::default()).unwrap();
+        assert!(translated.complex, "in-memory translation {name}");
+        assert_eq!(translated.band_metadata, expected.band_metadata);
+        assert_eq!(translated.raster.data.to_f64_vec(), expected.raster.data.to_f64_vec());
+        for component in [2, 3] {
+            let options = terrio::ops::translate::TranslateOptions { bands: vec![component], ..Default::default() };
+            let partial = terrio::ops::translate::translate(&expected, &options).unwrap();
+            assert!(!partial.complex);
+            assert_eq!(partial.band_metadata, [expected.band_metadata[(component - 1) / 2].clone()]);
+            let plane = expected.raster.cols * expected.raster.rows;
+            assert_eq!(partial.raster.data.to_f64_vec(), expected.raster.data.to_f64_vec()[(component - 1) * plane..component * plane]);
+        }
+
+        for interleave in ["PIXEL", "BAND"] {
+            let target = dir.path().join(format!("copy-{name}-{interleave}.tif"));
+            let options = RasterWriteOptions {
+                driver: Some(terrio::formats::RasterDriver::GTiff),
+                tile_size: Some(16),
+                compression: Some("DEFLATE".into()),
+                creation_options: vec![("INTERLEAVE".into(), interleave.into())],
+                ..Default::default()
+            };
+            LazyRaster::open(source.to_str().unwrap()).unwrap().write(target.to_str().unwrap(), &options).unwrap();
+            let actual = LazyRaster::open(target.to_str().unwrap()).unwrap().read().unwrap();
+            assert!(actual.complex, "{name} {interleave}");
+            assert_eq!(actual.raster.data_type, parts);
+            assert_eq!(actual.band_count(), 2);
+            assert_eq!(actual.raster.data.to_f64_vec(), expected.raster.data.to_f64_vec());
+            let translated = dir.path().join(format!("translated-{name}-{interleave}.tif"));
+            terrio::ops::translate::translate_path_to_file(
+                source.to_str().unwrap(),
+                &Default::default(),
+                terrio::ops::overview::OverviewSelection::None,
+                translated.to_str().unwrap(),
+                &options,
+            )
+            .unwrap();
+            let actual = LazyRaster::open(translated.to_str().unwrap()).unwrap().read().unwrap();
+            assert!(actual.complex, "path translation {name} {interleave}");
+            assert_eq!(actual.band_count(), 2);
+            assert_eq!(actual.raster.data.to_f64_vec(), expected.raster.data.to_f64_vec());
+        }
+    }
+}
+
 #[test]
 fn complex_samples_with_a_predictor_are_refused() {
     for (format, bits, parts, name) in TYPES {
