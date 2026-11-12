@@ -140,7 +140,7 @@ def test_integer_complex_conversion_matches_gdal(tmp_path, gdal):
 @pytest.mark.parametrize("driver", ["GTiff", "COG"])
 @pytest.mark.parametrize("limit", ["1", "2000", "100000000"])
 def test_integer_complex_window_rounding_matches_gdal(tmp_path, monkeypatch, gdal, driver, limit):
-    """CInt16 writes round complex128 components once, as GDAL 3.13.3 does."""
+    """CInt16 writes and readable-writer copies round once, as GDAL 3.13.3 does."""
     monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", limit)
     parts = np.array([2.4999999, -2.4999999, 0.49999999, -0.49999999, 32766.4999, -32767.4999])
     values = np.tile(parts + 1j * parts[::-1], (37, 1))
@@ -151,7 +151,7 @@ def test_integer_complex_window_rounding_matches_gdal(tmp_path, monkeypatch, gda
     path = tmp_path / "rounding.tif"
     with rio.open(
         path,
-        "w",
+        "w+",
         driver=driver,
         width=len(parts),
         height=37,
@@ -166,6 +166,11 @@ def test_integer_complex_window_rounding_matches_gdal(tmp_path, monkeypatch, gda
         for start in range(0, 37, 7):
             rows = min(7, 37 - start)
             dst.write(values[None, start : start + rows], window=Window(0, start, len(parts), rows))
+        copied = tmp_path / "rounding-copy.tif"
+        copy(dst, copied, driver=driver)
+        copied_values, copied_output = read_precise(gdal, copied)
+        assert copied_output.GetRasterBand(1).DataType == gdal.GDT_CInt16
+        np.testing.assert_array_equal(copied_values, expected)
     actual, output = read_precise(gdal, path)
     assert output.GetRasterBand(1).DataType == gdal.GDT_CInt16
     np.testing.assert_array_equal(actual, expected)
@@ -499,6 +504,7 @@ def test_integer_complex_copy_reports_native_read_errors(tmp_path, monkeypatch, 
 
         class FailedRead:
             def read(self, *args, **kwargs):
+                """Report the injected native read failure."""
                 raise ValueError("injected read failure")
 
         with monkeypatch.context() as patch:
@@ -522,9 +528,11 @@ def test_real_copy_uses_cached_sample_metadata(tmp_path, monkeypatch, gdal, dtyp
         class ReadingRaster:
             @property
             def data_type(self):
+                """Refuse a repeated native sample-type borrow."""
                 raise AssertionError("native sample type is already borrowed by a read")
 
             def __getattr__(self, name):
+                """Forward other operations to the actual native raster."""
                 return getattr(native, name)
 
         with monkeypatch.context() as patch:
@@ -546,6 +554,7 @@ def test_integer_complex_copy_preserves_resource_refusal(tmp_path, monkeypatch, 
 
         class RefusedRead:
             def read(self, *args, **kwargs):
+                """Preserve the injected resource refusal unchanged."""
                 raise refusal
 
         with monkeypatch.context() as patch:

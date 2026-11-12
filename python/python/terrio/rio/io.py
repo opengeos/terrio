@@ -2694,7 +2694,7 @@ class DatasetWriter(DatasetReader):
 
     def _read_for_copy(self, window: Any = None) -> np.ndarray:
         """Copy a readable writer using its component-preserving buffer type."""
-        if getattr(self, "_complex_sample", None) == "CInt32":
+        if getattr(self, "_complex_sample", None) in ("CInt16", "CInt32"):
             return self.read(window=window, out_dtype="complex128")
         return self.read(window=window)
 
