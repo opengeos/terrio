@@ -4094,7 +4094,8 @@ mod tests {
             (None, true, 600, &[30, 30, 10, 30, 30, 10][..]),
             (Some((64, 64)), false, 256, &[64; 10][..]),
         ] {
-            let layout = Layout { tile, rows_per_strip: Some(30), planar, photometric: 1, extra: vec![0], predictor: 1, parts: 1 };
+            let layout =
+                Layout { tile, rows_per_strip: Some(30), planar, photometric: 1, extra: vec![0], predictor: 1, parts: 1, nbits: None };
             let image = level.image(DataType::U16, Compression::Deflate, &codec, &layout).unwrap();
             assert_eq!(image.chunks.len(), heights.len(), "{tile:?}, {planar}");
             for (i, (chunk, h)) in image.chunks.iter().zip(heights).enumerate() {
