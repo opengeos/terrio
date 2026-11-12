@@ -1991,7 +1991,7 @@ impl RasterWriteOptions {
             return None;
         }
         let predictor = co("PREDICTOR").unwrap_or("1").trim().to_ascii_uppercase();
-        (matches!(compression.as_str(), "" | "NONE") || matches!(predictor.as_str(), "1" | "NO" | "NONE")).then_some(first)
+        (matches!(compression.as_str(), "" | "NONE" | "PACKBITS") || matches!(predictor.as_str(), "1" | "NO" | "NONE")).then_some(first)
     }
 
     /// Metadata inheritance shared by whole-image and row-streamed TIFF writers.

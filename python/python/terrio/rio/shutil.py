@@ -148,7 +148,16 @@ def _unwritten_on_error(dst: Any) -> Iterator[None]:
 
 
 def _inherited_nbits(src: Any, requested: dict[str, Any], driver: str) -> int | None:
-    """Normalize Python metadata/options before applying the shared Rust TIFF policy."""
+    """Normalize metadata and options for the shared Rust TIFF policy.
+
+    Args:
+        src: Source raster reader.
+        requested: Explicit output creation options.
+        driver: Output raster driver name.
+
+    Returns:
+        Inherited packed width, or None when inheritance is incompatible.
+    """
     from terrio import _terrio
     from terrio.rio.dtypes import _getnpdtype
 

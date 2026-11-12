@@ -446,6 +446,26 @@ fn translate_pixels(ds: &RasterDataset, o: &TranslateOptions, pixels: Option<Ras
     res.band_metadata = bands.iter().map(|&b| ds.band_metadata.get(b - 1).cloned().unwrap_or_default()).collect();
     if out_type == r.data_type && o.scale.is_none() && o.exponent.is_none() {
         res.metadata_domains = crate::dataset::selected_nbits(&ds.metadata_domains, &bands);
+        // Cubic and Lanczos interpolation can leave the source's packed domain.
+        // Inherit a width only when every output sample in that band still fits.
+        res.metadata_domains.retain(|(band, _, items)| {
+            let Some(band) = *band else { return false };
+            let Some(maximum) = items
+                .iter()
+                .find(|(key, _)| key == "NBITS")
+                .and_then(|(_, value)| value.parse().ok())
+                .and_then(|bits| crate::drivers::gdal_overview::nbits_max(bits, out_type))
+            else {
+                return false;
+            };
+            let range = band * n..(band + 1) * n;
+            match &res.raster.data {
+                RasterData::U8(values) => values.get(range).is_some_and(|v| v.iter().all(|&v| f64::from(v) <= maximum)),
+                RasterData::U16(values) => values.get(range).is_some_and(|v| v.iter().all(|&v| f64::from(v) <= maximum)),
+                RasterData::U32(values) => values.get(range).is_some_and(|v| v.iter().all(|&v| f64::from(v) <= maximum)),
+                _ => false,
+            }
+        });
     }
 
     if win != (0., 0., w, h)
@@ -929,6 +949,29 @@ fn fix_windows(s: &mut [f64; 4], d: &mut [f64; 4], w: f64, h: f64) -> bool {
 mod tests {
     use super::*;
     use wbraster::{Raster, RasterConfig};
+
+    #[test]
+    fn cubic_overshoot_does_not_inherit_a_width_that_would_clip_output() {
+        let config = RasterConfig { cols: 8, rows: 4, bands: 1, data_type: DataType::U8, ..Default::default() };
+        let values = [0, 0, 0, 15, 15, 0, 0, 0].repeat(4);
+        let mut source = RasterDataset::new(Raster::from_data_native(config, RasterData::U8(values)).unwrap(), false);
+        source.metadata_domains = vec![(Some(0), "IMAGE_STRUCTURE".into(), vec![("NBITS".into(), "4".into())])];
+        let copied = translate(&source, &Default::default()).unwrap();
+        assert_eq!(copied.metadata_domains, source.metadata_domains);
+        let options = TranslateOptions {
+            out_size: Some((Size::Pixels(32), Size::Pixels(4))),
+            resampling: Some(Resampling::Cubic),
+            ..Default::default()
+        };
+        let translated = translate(&source, &options).unwrap();
+        assert!(translated.raster.data.to_f64_vec().iter().any(|&value| value > 15.0));
+        assert!(translated.metadata_domains.is_empty());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("resampled.tif");
+        crate::write_raster_dataset(&translated, path.to_str().unwrap(), &Default::default()).unwrap();
+        let restored = crate::open_raster(path.to_str().unwrap()).unwrap();
+        assert_eq!(restored.raster.data.to_f64_vec(), translated.raster.data.to_f64_vec());
+    }
 
     fn ds(cols: usize, rows: usize) -> RasterDataset {
         let cfg = RasterConfig {

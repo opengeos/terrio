@@ -3280,7 +3280,9 @@ mod tests {
     #[test]
     fn inherited_packed_width_uses_the_effective_predictor() {
         use crate::RasterWriteOptions;
-        for (compression, predictor, expected) in [("NONE", "2", Some(4)), ("DEFLATE", "2", None), ("LZW", "NO", Some(4))] {
+        for (compression, predictor, expected) in
+            [("NONE", "2", Some(4)), ("PACKBITS", "2", Some(4)), ("DEFLATE", "2", None), ("LZW", "NO", Some(4))]
+        {
             let options = RasterWriteOptions {
                 compression: Some(compression.into()),
                 creation_options: vec![("PREDICTOR".into(), predictor.into())],
