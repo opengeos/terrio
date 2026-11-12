@@ -379,3 +379,70 @@ def test_boundless_fallback_preserves_requested_numpy_complex_dtype(tmp_path, gd
     assert actual.dtype == np.dtype("complex128")
     np.testing.assert_array_equal(actual[0], np.pad(values, ((1, 1), (1, 1))))
     np.testing.assert_array_equal(inside[0], np.pad(np.ones((2, 3), dtype=bool), ((1, 1), (1, 1))))
+
+
+@pytest.mark.parametrize("limit", ["1", "100000000"])
+@pytest.mark.parametrize("mode", ["r+", "w+"])
+@pytest.mark.parametrize(
+    "dtype", ["int32", "uint32", "int64", "uint64", "float64", "complex128", "complex64"]
+)
+def test_readable_cint32_writer_boundless_output_preserves_components(
+    tmp_path, monkeypatch, gdal, limit, mode, dtype
+):
+    """Readable memory/spill writers preserve wide requested components outside their grid."""
+    monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", limit)
+    values = np.full((1, 2, 3), (2**24 + 1) * (1 - 1j), dtype="complex128")
+    values[0, 0, 0] = (2**31 - 1) - (2**31) * 1j
+    path = tmp_path / "boundless-update.tif"
+    if mode == "r+":
+        dataset = gdal.GetDriverByName("GTiff").Create(str(path), 3, 2, 1, gdal.GDT_CInt32)
+        dataset.SetGeoTransform(GT)
+        dataset.GetRasterBand(1).WriteArray(values[0])
+        dataset = None
+        options = {}
+    else:
+        options = dict(
+            driver="GTiff",
+            dtype="complex128",
+            _complex_dtype="CInt32",
+            width=3,
+            height=2,
+            count=1,
+            transform=rio.Affine.from_gdal(*GT),
+        )
+    with rio.open(path, mode, **options) as reader:
+        if mode == "w+":
+            reader.write(values)
+        actual = reader.read(window=Window(-1, -1, 5, 4), boundless=True, out_dtype=dtype)
+    expected = np.pad(values, ((0, 0), (1, 1), (1, 1)))
+    if np.dtype(dtype).kind != "c":
+        expected = expected.real
+    assert actual.dtype == np.dtype(dtype)
+    np.testing.assert_array_equal(actual, expected.astype(dtype))
+
+
+@pytest.mark.parametrize(
+    "dtype,sample",
+    [
+        ("complex128", "CInt16"),
+        ("complex64", "CInt32"),
+        ("complex128", "CFloat32"),
+        ("complex64", "CFloat64"),
+    ],
+)
+def test_complex_writer_rejects_a_conflicting_physical_sample_selector(tmp_path, dtype, sample):
+    """Private copy metadata cannot select storage inconsistent with the writer buffer."""
+    path = tmp_path / "conflicting.tif"
+    with pytest.raises(TypeError, match="needs dtype"):
+        rio.open(
+            path,
+            "w",
+            driver="GTiff",
+            dtype=dtype,
+            _complex_dtype=sample,
+            width=3,
+            height=2,
+            count=1,
+            transform=rio.Affine.from_gdal(*GT),
+        )
+    assert not path.exists()

@@ -2011,7 +2011,10 @@ class DatasetReader(DatasetBase):
                 buf,
                 resampling,
                 background,
-                out_dtype=dtype if dtype.name == "complex128" else None,
+                out_dtype="complex128"
+                if dtype.name == "complex128"
+                or getattr(self, "_buffer_dtype", None) == "complex128"
+                else None,
             )
             arr = gdal_cast(data, dtype)
             result = arr
@@ -2357,6 +2360,12 @@ class DatasetWriter(DatasetReader):
                 raise TypeError("A valid dtype is required.") from None
             if dt not in _SUPPORTED_DTYPES:
                 raise TypeError(f"terrio cannot write {dt} rasters")
+            if complex_sample is not None:
+                required_buffer = (
+                    "complex128" if complex_sample in ("CInt32", "CFloat64") else "complex64"
+                )
+                if dt != required_buffer:
+                    raise TypeError(f"{complex_sample} needs dtype {required_buffer}, not {dt}")
             if nodata is not None and not in_dtype_range(nodata, dt):
                 raise ValueError(
                     f"Given nodata value, {nodata}, is beyond the valid range of its data type, "
