@@ -2541,7 +2541,7 @@ def suite_vector_ranges(ctx):
         suite.error = tail(err or out)
         return suite
     for result in results:
-        status = IDENTICAL if result["status"] == "identical" else DIFFERS
+        status = {"identical": IDENTICAL, "within tolerance": TOLERANCE}.get(result["status"], DIFFERS)
         suite.cases.append(Case("STAC ranges", result["name"], status, result["detail"]))
     if not results or (code and not any(case.status == DIFFERS for case in suite.cases)):
         suite.error = tail(err or out) or "no vector range comparisons"

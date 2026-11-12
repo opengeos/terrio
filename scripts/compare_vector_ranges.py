@@ -27,7 +27,7 @@ def compare(path, item):
         item: STAC item containing the asset.
 
     Returns:
-        str: Comparison count and maximum coordinate error.
+        tuple: Comparison detail and maximum coordinate error in degrees.
 
     Raises:
         AssertionError: A layer, value, coordinate or CRS differs.
@@ -71,7 +71,10 @@ def compare(path, item):
                         f"coordinate error {error} exceeds 1e-9 degrees"
                     )
             cases += 1
-    return f"{cases} GDAL layer/range comparisons; values/order/CRS exact; maximum coordinate error {largest:g} degrees"
+    return (
+        f"{cases} GDAL layer/range comparisons; values/order/CRS exact; maximum coordinate error {largest:g} degrees",
+        largest,
+    )
 
 
 def main():
@@ -126,8 +129,8 @@ def main():
                 )
             )
             try:
-                detail = compare(asset, item)
-                status = "identical"
+                detail, maximum_error = compare(asset, item)
+                status = "identical" if maximum_error == 0.0 else "within tolerance"
             except Exception as error:
                 status, detail = "differs", str(error)
             results.append({"name": extension, "status": status, "detail": detail})
