@@ -40,6 +40,10 @@ struct Counting;
 /// The largest allocation asked for since the last reset, on any thread.
 static LARGEST: AtomicUsize = AtomicUsize::new(0);
 
+/// Injection used only by the isolated index-reservation failure regression.
+#[cfg(unix)]
+static REFUSE_FROM: AtomicUsize = AtomicUsize::new(usize::MAX);
+
 /// `std::alloc::System`'s smallest alignment on Unix: the C allocator's own aligns to it.
 #[cfg(unix)]
 const MIN_ALIGN: usize = 16;
@@ -50,6 +54,9 @@ const MIN_ALIGN: usize = 16;
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         LARGEST.fetch_max(layout.size(), Ordering::Relaxed);
+        if layout.size() >= REFUSE_FROM.load(Ordering::Relaxed) {
+            return std::ptr::null_mut();
+        }
         if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
             // SAFETY: a plain C allocation.
             return unsafe { libc::malloc(layout.size()) }.cast();
@@ -59,6 +66,9 @@ unsafe impl GlobalAlloc for Counting {
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         LARGEST.fetch_max(layout.size(), Ordering::Relaxed);
+        if layout.size() >= REFUSE_FROM.load(Ordering::Relaxed) {
+            return std::ptr::null_mut();
+        }
         if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
             // SAFETY: a plain C allocation.
             return unsafe { libc::calloc(layout.size(), 1) }.cast();
@@ -73,6 +83,9 @@ unsafe impl GlobalAlloc for Counting {
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         LARGEST.fetch_max(new_size, Ordering::Relaxed);
+        if new_size >= REFUSE_FROM.load(Ordering::Relaxed) {
+            return std::ptr::null_mut();
+        }
         if layout.align() <= MIN_ALIGN && layout.align() <= new_size {
             // SAFETY: `ptr` came from this allocator, whose blocks are the C allocator's.
             return unsafe { libc::realloc(ptr.cast(), new_size) }.cast();
@@ -1781,6 +1794,39 @@ fn vrt_and_source_resampling_check_their_working_arrays() {
         assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))), "{method:?}: {result:?}");
         assert!(largest < 1 << 20, "{method:?}: {largest} bytes requested before area scratch refusal");
     }
+    drop(area);
+    let mut narrow = header(20_000_000, 1, 1);
+    narrow.raster.data = RasterData::U8(vec![7; 20_000_000]);
+    let options = TranslateOptions {
+        out_size: Some((Size::Pixels(1), Size::Pixels(1))),
+        resampling: Some(terrio::ops::Resampling::Bilinear),
+        ..Default::default()
+    };
+    let (result, largest) = largest_during(|| terrio::ops::translate::translate(&narrow, &options).map(|_| ()));
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))), "narrow convolution: {result:?}");
+    assert!(largest < 1 << 20, "{largest} bytes requested before convolution scratch refusal");
+    drop(narrow);
+    // A late Average band retains the pan and not-yet-processed adjusted sources.
+    use terrio::ops::pansharpen::{PansharpenOptions, SpectralBand};
+    let mut pan = header(512, 512, 1);
+    pan.raster.data_type = DataType::F64;
+    pan.raster.data = RasterData::F64(vec![14.; 512 * 512]);
+    pan.set_geo_transform([0., 1., 0., 512., 0., -1.]);
+    let mut spectral = header(384, 384, 61);
+    spectral.raster.data_type = DataType::F64;
+    spectral.raster.data = RasterData::F64(vec![7.; 384 * 384 * 61]);
+    spectral.set_geo_transform([0., 4. / 3., 0., 512., 0., -4. / 3.]);
+    let sources: Vec<_> = (1..=61).map(|band| SpectralBand { dataset: &spectral, band }).collect();
+    let options = PansharpenOptions {
+        output_bands: vec![1],
+        output_type: Some(DataType::U8),
+        resampling: terrio::ops::Resampling::Average,
+        ..Default::default()
+    };
+    let result = terrio::ops::pansharpen::pansharpen(&pan, &sources, &options);
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))), "late pansharpen band: {:?}", result.as_ref().err());
+    let small = terrio::ops::pansharpen::pansharpen(&pan, &sources[..2], &options).unwrap();
+    assert!(small.raster.data.to_f64_vec().iter().all(|&value| value == 14.));
 }
 
 /// Reference: GDAL 3.13.3. UInt16 alpha is converted to bytes before resizing the source window.
@@ -1937,6 +1983,21 @@ fn large_row_calls_keep_encoded_work_bounded() {
     assert!(matches!(cog.write_rows(&data, rows, None), Err(terrio::Error::ResourceLimit(_))));
     drop(cog);
     drop(data);
+    // Two copies fit, but the caller, owned input and overview-build copy coexist.
+    let build_rows = 12288;
+    let build_data = RasterData::U8(vec![7; columns * build_rows]);
+    let build_header = header(columns, build_rows, 1);
+    let mut build_writer = terrio::GeoTiffWriter::create(
+        directory.path().join("build-copy.tif").to_str().unwrap(),
+        &build_header,
+        &RasterWriteOptions { driver: Some(RasterDriver::Cog), tile_size: Some(256), ..Default::default() },
+    )
+    .unwrap();
+    let (result, largest) = largest_during(|| build_writer.write_rows(&build_data, build_rows, None));
+    assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))), "{result:?}");
+    assert!(largest < 1 << 20, "{largest} bytes requested before rejecting overview-build copies");
+    drop(build_writer);
+    drop(build_data);
     let mut reader = terrio::open_raster_lazy(path.to_str().unwrap()).unwrap();
     for y in (0..rows).step_by(256) {
         let part = reader.read_window(terrio::Window::new(0, y, columns, 256), &Default::default()).unwrap();
@@ -1951,4 +2012,38 @@ fn large_row_calls_keep_encoded_work_bounded() {
     );
     assert!(matches!(result, Err(terrio::Error::ResourceLimit(_))));
     assert!(!path.exists());
+}
+
+/// A failed chunk-index reservation preserves an existing destination (GDAL 3.13.3 reference).
+#[test]
+#[cfg(unix)]
+fn failed_tiff_index_reservation_preserves_existing_destination() {
+    const CHILD: &str = "TERRIO_TEST_TIFF_INDEX_FAILURE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "failed_tiff_index_reservation_preserves_existing_destination"])
+            .env(CHILD, "1")
+            .env_remove("TERRIO_MAX_DECLARED_BYTES")
+            .env_remove("TERRIO_MAX_BANDS")
+            .output()
+            .unwrap();
+        assert!(child.status.success(), "{}\n{}", String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
+        return;
+    }
+    let _serial = serial();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("existing.tif");
+    std::fs::write(&path, b"existing contents").unwrap();
+    let raster = header(1, 16 * 1024 * 1024, 1);
+    let options = RasterWriteOptions { tile_size: Some(16), ..Default::default() };
+    REFUSE_FROM.store(8 << 20, Ordering::Relaxed);
+    let (result, largest) = largest_during(|| terrio::GeoTiffWriter::create(path.to_str().unwrap(), &raster, &options));
+    REFUSE_FROM.store(usize::MAX, Ordering::Relaxed);
+    assert!(
+        matches!(result, Err(terrio::Error::Io(ref error)) if error.kind() == std::io::ErrorKind::OutOfMemory),
+        "{:?}",
+        result.as_ref().err()
+    );
+    assert_eq!(largest, 8 << 20, "the injected reservation must be attempted");
+    assert_eq!(std::fs::read(path).unwrap(), b"existing contents");
 }

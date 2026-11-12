@@ -1982,19 +1982,38 @@ impl GeoTiffWriter {
         match &mut self.inner {
             RowWriter::Tiff(t) => t.write_rows(data, rows, mask),
             RowWriter::Cog(c) => {
-                // The borrowed input remains live while the COG writer takes its owned copy.
+                let writer = c.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+                // The caller, owned slab and (when built) overview source buffer coexist.
+                let copies = if writer.builds.iter().any(|build| build.src == 0) { 3 } else { 2 };
                 let bytes = data
                     .len()
                     .checked_mul(data.data_type().size_bytes())
                     .and_then(|n| n.checked_add(mask.map_or(0, <[u8]>::len)))
-                    .and_then(|n| n.checked_mul(2));
-                crate::dataset::fallible::check_usable(bytes, || "a COG input slab and its copy are too large to allocate".into())
-                    .map_err(Error::ResourceLimit)?;
-                c.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).write_rows_masked(
-                    data.clone(),
-                    rows,
-                    mask.map(<[u8]>::to_vec),
-                )
+                    .and_then(|n| n.checked_mul(copies));
+                let retained = writer.builds.iter().try_fold(0usize, |total, build| {
+                    build
+                        .buf
+                        .len()
+                        .checked_mul(writer.data_type.size_bytes())
+                        .and_then(|n| n.checked_add(build.mask.capacity()))
+                        .and_then(|n| n.checked_add(total))
+                });
+                let retained = retained.and_then(|retained| {
+                    writer.levels.iter().try_fold(retained, |total, level| {
+                        level
+                            .pending
+                            .len()
+                            .checked_mul(writer.data_type.size_bytes())
+                            .and_then(|n| n.checked_add(level.mask.as_ref().map_or(0, |mask| mask.pending.capacity())))
+                            .and_then(|n| n.checked_add(total))
+                    })
+                });
+                let bytes = bytes.and_then(|n| retained.and_then(|held| held.checked_mul(2)).and_then(|held| n.checked_add(held)));
+                crate::dataset::fallible::check_usable(bytes, || {
+                    "a COG input slab and overview working copies are too large to allocate".into()
+                })
+                .map_err(Error::ResourceLimit)?;
+                writer.write_rows_masked(data.clone(), rows, mask.map(<[u8]>::to_vec))
             }
         }
     }
@@ -2103,6 +2122,8 @@ impl TiffRows {
             .and_then(|n| n.checked_add(1 << 20));
         crate::dataset::fallible::check_usable(index_bytes, || "a GeoTIFF chunk index and directory are too large to allocate".into())
             .map_err(Error::ResourceLimit)?;
+        let offsets = crate::dataset::fallible::filled(n, 0u64, "GeoTIFF chunk offsets")?;
+        let counts = crate::dataset::fallible::filled(n, 0u64, "GeoTIFF chunk sizes")?;
         let mut file = std::io::BufWriter::with_capacity(1 << 20, create_replacing(path)?);
         let head: Vec<u8> = if big {
             [b"II".as_slice(), &43u16.to_le_bytes(), &8u16.to_le_bytes(), &0u16.to_le_bytes(), &0u64.to_le_bytes()].concat()
@@ -2124,8 +2145,8 @@ impl TiffRows {
             block_rows,
             chunk_w,
             across,
-            offsets: crate::dataset::fallible::filled(n, 0u64, "GeoTIFF chunk offsets")?,
-            counts: crate::dataset::fallible::filled(n, 0u64, "GeoTIFF chunk sizes")?,
+            offsets,
+            counts,
             pending: RasterData::new_filled(r.data_type, 0, 0.0),
             pending_mask: Vec::new(),
             pending_rows: 0,

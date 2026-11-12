@@ -1305,11 +1305,24 @@ pub(crate) fn gdal_average_with_origin(
     Ok(res)
 }
 
-/// Peak area-method scratch, including concurrent rows and vector growth.
+/// Peak area/convolution scratch, including concurrent rows and vector growth.
 /// Reference: GDAL 3.13.3 area kernels; storage follows this implementation's value/weight pairs.
-fn area_scratch_bytes(s: &SourceRead, ratio: (f64, f64), out: (usize, usize)) -> Option<usize> {
-    if !s.resampling.is_area_based() || out.0 == 0 || out.1 == 0 {
+fn resampling_scratch_bytes(s: &SourceRead, ratio: (f64, f64), out: (usize, usize)) -> Option<usize> {
+    if out.0 == 0 || out.1 == 0 {
         return Some(0);
+    }
+    if !s.resampling.is_area_based() {
+        let radius = s.resampling.radius().max(1) as f64;
+        let taps = |ratio: f64, limit: usize| ((2.0 * radius * ratio.max(1.0)).ceil() as usize).saturating_add(2).min(limit);
+        let columns = taps(ratio.0, s.width);
+        let rows = taps(ratio.1, s.height);
+        // Horizontal taps are kept for every output column; each concurrent row holds
+        // vertical weights and a row of Option<f64> intermediate values.
+        let horizontal =
+            columns.checked_mul(std::mem::size_of::<f64>())?.checked_add(std::mem::size_of::<(usize, Vec<f64>)>())?.checked_mul(out.0)?;
+        let per_row = rows.checked_mul(std::mem::size_of::<f64>() + std::mem::size_of::<Option<f64>>())?;
+        let workers = out.1.min(crate::par::threads());
+        return per_row.checked_mul(workers)?.checked_add(horizontal).filter(|&n| n <= isize::MAX as usize);
     }
     let columns = (ratio.0.ceil() as usize).saturating_add(1).min(s.width);
     let rows = (ratio.1.ceil() as usize).saturating_add(1).min(s.height);
@@ -1349,9 +1362,9 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
     let (ow, oh) = out;
     let (rx, ry) = (fw / ow as f64, fh / oh as f64);
     let is_valid = |i: usize| s.valid.is_none_or(|m| m[i]);
-    let scratch = area_scratch_bytes(s, (rx, ry), out)
+    let scratch = resampling_scratch_bytes(s, (rx, ry), out)
         .and_then(|scratch| retained.checked_add(scratch))
-        .ok_or_else(|| Error::ResourceLimit("area resampling scratch is too large to allocate".into()))?;
+        .ok_or_else(|| Error::ResourceLimit("resampling scratch is too large to allocate".into()))?;
     let mut res = resampling_values(s, ow, oh, scratch)?;
     if ow == 0 {
         return Ok(res);
