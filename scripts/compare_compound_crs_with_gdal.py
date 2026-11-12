@@ -16,11 +16,28 @@ from terrio.rio.crs import CRS
 
 
 def require(condition, detail):
+    """Require a conformance condition to hold.
+
+    Args:
+        condition: Whether the comparison succeeded.
+        detail: Diagnostic to report on failure.
+
+    Raises:
+        AssertionError: If the condition is false.
+    """
     if not condition:
         raise AssertionError(detail)
 
 
 def components(value):
+    """Extract the authority, code and axis count of each CRS component.
+
+    Args:
+        value: Compound CRS represented as PROJJSON.
+
+    Returns:
+        Component descriptors in their declared order.
+    """
     require(value["type"] == "CompoundCRS", "expected a compound CRS")
     return [
         (
@@ -33,6 +50,14 @@ def components(value):
 
 
 def compare(executable):
+    """Compare CLI and Python compound CRS behavior with GDAL.
+
+    Args:
+        executable: Path to the Terrio CLI to validate.
+
+    Returns:
+        Conformance results for component metadata and GML coordinates.
+    """
     results = []
     osr.UseExceptions()
     ogr.UseExceptions()
@@ -112,6 +137,7 @@ def compare(executable):
 
 
 def main():
+    """Run the comparisons and print their text or JSON results."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "data", nargs="?", help="unused; accepted by the conformance harness"

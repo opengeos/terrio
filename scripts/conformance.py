@@ -1886,7 +1886,14 @@ def suite_iau(ctx):
 
 
 def suite_compound_crs(ctx):
-    """Compound EPSG URNs retain both components through shared parsing and GML."""
+    """Compare compound EPSG URN components and GML coordinates with GDAL.
+
+    Args:
+        ctx: Conformance run context.
+
+    Returns:
+        Suite: Component and coordinate comparison results.
+    """
     suite = Suite("compound-crs", "Compound CRS references", "GDAL/OGR",
                   "Three projected/geographic plus vertical EPSG pairs: component authorities/codes, "
                   "2+1 axes and GML normalized XYZ match exactly through Python path/bytes and CLI CRS export. "
@@ -1895,6 +1902,9 @@ def suite_compound_crs(ctx):
     if missing_modules("terrio", "osgeo"):
         suite.skipped = "needs terrio and GDAL Python bindings"
         return suite
+    from osgeo import gdal
+
+    suite.reference = f"GDAL {gdal.__version__}/OGR"
     code, out, err = run([sys.executable, str(SCRIPTS / "compare_compound_crs_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
     try:
         results = json.loads(out)

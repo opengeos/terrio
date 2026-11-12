@@ -15,6 +15,16 @@ CASES = [
 
 
 def document(name, position, city=False):
+    """Build a point document with an explicit compound CRS.
+
+    Args:
+        name: CRS authority reference.
+        position: Source X and Y ordinates.
+        city: Whether to wrap the point in CityGML instead of GML.
+
+    Returns:
+        Encoded XML document containing one point at height 35.
+    """
     point = (
         f'<g:Point srsName="{name}" srsDimension="3"><g:pos>'
         f"{position[0]} {position[1]} 35</g:pos></g:Point>"
@@ -32,6 +42,14 @@ def document(name, position, city=False):
 
 @pytest.mark.parametrize("horizontal,vertical,position,xy", CASES)
 def test_compound_crs_and_layer_argument_keep_components(horizontal, vertical, position, xy):
+    """Check compound references passed through CRS and layer APIs.
+
+    Args:
+        horizontal: Horizontal EPSG code.
+        vertical: Vertical EPSG code.
+        position: Source ordinates for this shared parameter set.
+        xy: Expected GIS-order ordinates.
+    """
     name = f"urn:ogc:def:crs,crs:EPSG::{horizontal},crs:EPSG::{vertical}"
     expected = CRS.from_user_input(f"EPSG:{horizontal}+{vertical}")
     actual = CRS.from_user_input(name)
@@ -58,6 +76,16 @@ def test_compound_crs_and_layer_argument_keep_components(horizontal, vertical, p
 @pytest.mark.parametrize("horizontal,vertical,position,xy", CASES)
 @pytest.mark.parametrize("city", [False, True])
 def test_gml_path_and_bytes_keep_compound_axes(tmp_path, horizontal, vertical, position, xy, city):
+    """Check compound axes and heights in file and byte readers.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+        horizontal: Horizontal EPSG code.
+        vertical: Vertical EPSG code.
+        position: Source ordinates in the declared axis order.
+        xy: Expected GIS-order ordinates.
+        city: Whether to use CityGML.
+    """
     name = f"urn:ogc:def:crs,crs:EPSG::{horizontal},crs:EPSG::{vertical}"
     data = document(name, position, city)
     path = tmp_path / "point.gml"
@@ -86,12 +114,22 @@ def test_gml_path_and_bytes_keep_compound_axes(tmp_path, horizontal, vertical, p
     ],
 )
 def test_partial_and_unrelated_references_are_refused(text):
+    """Check that unsupported authority references fail explicitly.
+
+    Args:
+        text: Invalid or unsupported CRS reference.
+    """
     with pytest.raises(ValueError):
         CRS.from_user_input(text)
 
 
 @pytest.mark.parametrize("city", [False, True])
 def test_unsupported_component_is_not_silently_dropped(city):
+    """Check that readers reject an unsupported compound component.
+
+    Args:
+        city: Whether to use CityGML.
+    """
     name = "urn:ogc:def:crs,crs:IGNF::LAMB93,crs:EPSG::5720"
     with pytest.raises(ValueError):
         terrio.open_bytes(document(name, (1, 2), city), filename="point.gml")
@@ -99,6 +137,14 @@ def test_unsupported_component_is_not_silently_dropped(city):
 
 @pytest.mark.parametrize("horizontal,vertical,position,xy", CASES)
 def test_compound_components_match_gdal(horizontal, vertical, position, xy):
+    """Compare component identities and axes with GDAL.
+
+    Args:
+        horizontal: Horizontal EPSG code.
+        vertical: Vertical EPSG code.
+        position: Source ordinates for this shared parameter set.
+        xy: GIS-order ordinates for this shared parameter set.
+    """
     osr = pytest.importorskip("osgeo.osr")
     osr.UseExceptions()
     name = f"urn:ogc:def:crs,crs:EPSG::{horizontal},crs:EPSG::{vertical}"
