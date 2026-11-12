@@ -2636,7 +2636,9 @@ class DatasetWriter(DatasetReader):
         try:
             shape = (self._count, self.height, self.width)
             storage_dtype = self._buffer_dtype
-            read_options = {"out_dtype": "complex128"} if self._complex_sample == "CInt32" else {}
+            read_options = (
+                {"out_dtype": "complex128"} if self._complex_sample in ("CInt16", "CInt32") else {}
+            )
             if self._streams(shape, storage_dtype):
                 # Copied into a file-backed array, block row by block row.
                 self._data = self._allocate(shape, storage_dtype, 0)
