@@ -994,27 +994,13 @@ pub fn export_schema_path(path: &str, layers: &[String]) -> Result<OgrSchema> {
 /// [`export_schema_path`] for a dataset held in memory, named `name` (its file name, which the
 /// driver is judged by). `layers` keeps the named layers, as the bindings do; `None` keeps all.
 pub fn export_schema_bytes(bytes: Vec<u8>, name: &str, layers: Option<&[String]>) -> Result<OgrSchema> {
-    let declared_bytes = bytes_declared_dims(&bytes);
-    let mut ds = crate::memory::open_vector_bytes(bytes, name, &Default::default())?;
+    let (mut ds, mut declared) = crate::dataset::with_declared_dims(|| crate::memory::open_vector_bytes(bytes, name, &Default::default()))?;
     if let Some(names) = layers {
         ds.layers.retain(|l| names.contains(&l.name));
+        // A pair is declared only for a FlatGeobuf's one layer: it goes when that layer does.
+        declared.truncate(ds.layers.len());
     }
-    let declared = if ds.driver == crate::formats::VectorDriver::FlatGeobuf { vec![declared_bytes] } else { Vec::new() };
     Ok(export_schema_with_dims(&ds.layers, Some(ds.driver), &declared))
-}
-
-/// The declared Z and M of FlatGeobuf bytes, from their header; `None` for other bytes.
-#[cfg(feature = "flatgeobuf")]
-fn bytes_declared_dims(bytes: &[u8]) -> Option<(bool, bool)> {
-    if !crate::drivers::vector::flatgeobuf::has_magic(bytes) {
-        return None;
-    }
-    crate::drivers::vector::flatgeobuf::declared_dims_bytes(bytes).ok()
-}
-
-#[cfg(not(feature = "flatgeobuf"))]
-fn bytes_declared_dims(_bytes: &[u8]) -> Option<(bool, bool)> {
-    None
 }
 
 /// The OGR type GDAL's GeoPackage driver gives a declared column type.

@@ -642,9 +642,15 @@ pub(crate) type DeclaredDims = Vec<Option<(bool, bool)>>;
 /// FlatGeobuf whose header terrio's reader did not parse (a `gdal:` path): the dimensions of those
 /// layers are found from their features.
 pub(crate) fn open_vector_declared(path: &str, options: &VectorOpenOptions) -> Result<(VectorDataset, DeclaredDims)> {
+    with_declared_dims(|| open_vector(path, options))
+}
+
+/// Runs `open`, an open of one vector dataset (a path, or bytes in memory), and returns its dataset
+/// with the Z and M its layers' headers declare, as [`open_vector_declared`] does.
+pub(crate) fn with_declared_dims(open: impl FnOnce() -> Result<VectorDataset>) -> Result<(VectorDataset, DeclaredDims)> {
     #[cfg(feature = "flatgeobuf")]
     {
-        let (ds, headers) = crate::drivers::vector::flatgeobuf::with_declared_dims(|| open_vector(path, options));
+        let (ds, headers) = crate::drivers::vector::flatgeobuf::with_declared_dims(open);
         let ds = ds?;
         // A FlatGeobuf has one layer, read from the one header parsed.
         let declared = match headers[..] {
@@ -654,7 +660,7 @@ pub(crate) fn open_vector_declared(path: &str, options: &VectorOpenOptions) -> R
         Ok((ds, declared))
     }
     #[cfg(not(feature = "flatgeobuf"))]
-    Ok((open_vector(path, options)?, Vec::new()))
+    Ok((open()?, Vec::new()))
 }
 
 /// A vector response or feature-service query: opaque remote GeoJSON/GML names, and URLs with

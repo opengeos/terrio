@@ -27,12 +27,6 @@ pub fn read(path: &str) -> Result<Layer> {
     parse(&std::fs::read(path)?)
 }
 
-/// The Z and M flags a FlatGeobuf header declares, read from the header alone.
-pub(crate) fn declared_dims_bytes(buf: &[u8]) -> Result<(bool, bool)> {
-    let (_, header) = parse_header(buf)?;
-    Ok((header.has_z, header.has_m))
-}
-
 thread_local! {
     /// The `(has_z, has_m)` of the headers parsed on this thread inside [`with_declared_dims`];
     /// `None` outside it.
@@ -67,12 +61,6 @@ fn declare(has_z: bool, has_m: bool) {
             dims.push((has_z, has_m));
         }
     });
-}
-
-/// Whether `buf` starts with the FlatGeobuf magic bytes. The version byte is not compared: GDAL
-/// writes 1 where [`MAGIC`] has 0, and [`header_len`] reads such files too.
-pub(crate) fn has_magic(buf: &[u8]) -> bool {
-    header_len(buf).is_ok()
 }
 
 fn bad(what: &str) -> Error {
@@ -1356,7 +1344,6 @@ mod tests {
         // GDAL writes the magic's version byte as 1 (terrio's MAGIC has 0): the bytes route reads its header too.
         let mut bytes = empty_dimension_fixture(true, false);
         bytes[7] = 1;
-        assert!(has_magic(&bytes));
         assert_eq!(exported_geometry_type(&bytes), "PointZ");
     }
 
@@ -1366,7 +1353,6 @@ mod tests {
             let bytes = empty_dimension_fixture(has_z, has_m);
             let (info, _) = read_header(&mut std::io::Cursor::new(&bytes), bytes.len() as u64).unwrap();
             assert_eq!((info.has_z, info.has_m), (has_z, has_m));
-            assert_eq!(declared_dims_bytes(&bytes).unwrap(), (has_z, has_m));
         }
     }
 
