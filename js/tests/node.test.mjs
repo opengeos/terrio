@@ -1227,6 +1227,146 @@ test("remote reads send at most 12 range requests at once", async () => {
   }
 });
 
+/// A FlatGeobuf of 30,000 small squares in `dir`: a strip across them is scattered over the file
+/// (Hilbert order), so a read of it takes many range requests.
+function writeGrid(dir, writeFileSync) {
+  const grid = { type: "FeatureCollection", features: [] };
+  for (let i = 0; i < 200; i++) {
+    for (let j = 0; j < 150; j++) {
+      const [x, y] = [-180 + i * 1.8, -90 + j * 1.2];
+      grid.features.push({ type: "Feature", properties: { id: i * 150 + j }, geometry: { type: "Polygon", coordinates: [[[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1], [x, y]]] } });
+    }
+  }
+  writeFileSync(join(dir, "grid.fgb"), terrio.fromGeoJSON(grid, "grid").toBytes("grid.fgb"));
+  return join(dir, "grid.fgb");
+}
+
+test("remote reads start a request as soon as one ends, not when a batch does", { timeout: 30000 }, async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "terrio-remote-"));
+  writeGrid(dir, writeFileSync);
+  const server = await serve(dir);
+  try {
+    // The 12th request in flight at once is held (3 s at most) until another one starts: with
+    // batches of 12, none would start before it ends. (The round of the features read has more
+    // than 12 ranges.)
+    let [inFlight, holding, heldDone, startedWhileHeld, release] = [0, false, false, false, null];
+    const held = new Promise((r) => (release = r));
+    const counting = async (url, init) => {
+      inFlight++;
+      try {
+        if (holding && !heldDone) {
+          startedWhileHeld = true;
+          release();
+        } else if (inFlight === 12 && !holding) {
+          holding = true;
+          await Promise.race([held, new Promise((r) => setTimeout(r, 3000))]);
+          heldDone = true;
+        }
+        return await fetch(url, init);
+      } finally {
+        inFlight--;
+      }
+    };
+    const ds = await terrio.openUrl(server.url + "grid.fgb", { blockSize: 512, fetch: counting });
+    const features = (await ds.read({ bbox: [-180, 0, 180, 0.5] })).toGeoJSON().features;
+    assert.equal(features.length, 200);
+    assert.ok(holding, "no round had 12 requests in flight");
+    assert.ok(startedWhileHeld, "no request started while one of the 12 was held");
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test("a server that ignores Range sends the file once, not once per request in flight", { timeout: 30000 }, async () => {
+  const { mkdtempSync, writeFileSync, readFileSync: read, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "terrio-remote-"));
+  const bytes = read(writeGrid(dir, writeFileSync));
+  const server = await serve(dir);
+  try {
+    // Ranges are answered until 10 requests are in flight at once (the round of the features
+    // read); from then on, the whole file
+    // (200): the responses after the first come once its body is read, and are cancelled unread.
+    let [inFlight, ignoring, first, pulled, cancelled, firstRead] = [0, false, true, 0, 0, null];
+    const firstDone = new Promise((r) => (firstRead = r));
+    const whole = async (url, init) => {
+      inFlight++;
+      try {
+        ignoring ||= inFlight >= 10;
+        return ignoring ? await wholeFile() : await fetch(url, init);
+      } finally {
+        inFlight--;
+      }
+    };
+    const wholeFile = async () => {
+      const mine = first;
+      first = false;
+      if (!mine) await firstDone;
+      let sent = false;
+      const body = new ReadableStream({
+        pull(c) {
+          if (sent) {
+            c.close();
+            if (mine) setTimeout(firstRead, 0);
+            return;
+          }
+          sent = true;
+          pulled++;
+          c.enqueue(bytes);
+        },
+        cancel() {
+          cancelled++;
+        },
+      }, { highWaterMark: 0 }); // pulled when read, not when made
+      return new Response(body, { status: 200, headers: { "Content-Length": String(bytes.length) } });
+    };
+    const ds = await terrio.openUrl(server.url + "grid.fgb", { blockSize: 512, fetch: whole });
+    const features = (await ds.read({ bbox: [-180, 0, 180, 0.5] })).toGeoJSON().features;
+    assert.equal(features.length, 200);
+    assert.ok(ignoring, "no round had 10 requests in flight");
+    assert.equal(pulled, 1, `${pulled} whole files read`);
+    assert.ok(cancelled >= 1, `${cancelled} bodies cancelled`);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test("a failed range request cancels the bodies being read", { timeout: 20000 }, async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "terrio-remote-"));
+  writeGrid(dir, writeFileSync);
+  const server = await serve(dir);
+  try {
+    // Once 10 requests are in flight at once (the round of the features read): bodies that never
+    // end unless cancelled, and a 500 for the request after the first of them. The read fails at once instead of waiting for them.
+    let [inFlight, broken, n, cancelled] = [0, false, 0, 0];
+    const failing = async (url, init) => {
+      inFlight++;
+      try {
+        broken ||= inFlight >= 10;
+        if (!broken) return await fetch(url, init);
+        if (++n === 2) return new Response("", { status: 500 });
+        const body = new ReadableStream({ start(c) { c.enqueue(new Uint8Array(8)); }, cancel() { cancelled++; } });
+        return new Response(body, { status: 206 });
+      } finally {
+        inFlight--;
+      }
+    };
+    const ds = await terrio.openUrl(server.url + "grid.fgb", { blockSize: 512, fetch: failing });
+    await assert.rejects(ds.read({ bbox: [-180, 0, 180, 0.5] }), /HTTP status 500/);
+    assert.ok(broken, "no round had 10 requests in flight");
+    assert.ok(cancelled >= 1, `${cancelled} bodies cancelled`);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
 test("remote files read with range requests", async () => {
   const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
@@ -1507,7 +1647,7 @@ test("remote real files read with range requests, as GDAL reads them", { skip: n
   }
 });
 
-test("remote Zarr stores are read by window", { skip: needs("zarr") }, async () => {
+test("remote Zarr stores are read by window", { skip: needs("zarr"), timeout: 60000 }, async () => {
   const { mkdtempSync, mkdirSync, writeFileSync, rmSync, cpSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const dir = mkdtempSync(join(tmpdir(), "terrio-zarr-"));

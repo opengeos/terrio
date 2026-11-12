@@ -183,33 +183,68 @@ impl Fetcher {
     }
 
     /// Fetches byte ranges `(offset, length)` into the file, [`MAX_PARALLEL`] requests at a time
-    /// ([`in_window`]).
+    /// ([`in_window`]). Once a server that ignores `Range` answers with the whole file, or a
+    /// request fails, the other bodies are cancelled, not read: those being read (their readers
+    /// held here), and those whose responses come after; a body cut short is not kept.
     async fn fetch_into(&self, file: &SparseFile, ranges: &[(u64, u64)]) -> Result<(), JsError> {
-        // Set when a server that ignores `Range` sent the whole file: the other ranges are held.
+        // Set when a server that ignores `Range` sends the whole file: the other ranges are in it.
         let whole = Cell::new(false);
-        let whole = &whole;
+        let failed = Cell::new(false);
+        let readers = RefCell::new(Vec::new());
+        let (whole, failed, readers) = (&whole, &failed, &readers);
+        let cancel_readers = || {
+            for reader in readers.borrow_mut().drain(..) {
+                if let Ok(value) = call(&reader, "cancel", &[]) {
+                    settle(value);
+                }
+            }
+        };
         in_window(ranges, |&(offset, len)| async move {
-            if whole.get() {
+            if whole.get() || failed.get() {
                 return Ok(());
             }
-            let f = self.response(self.request(Some((offset, offset + len - 1)), false)?).await?;
-            match f.status {
-                206 if f.data.len() as u64 == len => file.insert(offset, &f.data),
-                200 if f.data.len() as u64 == file.len() => {
-                    file.insert(0, &f.data);
+            let result: Result<(), JsError> = async {
+                let last = offset + len - 1;
+                let response = JsFuture::from(self.request(Some((offset, last)), false)?).await.map_err(js_error)?;
+                if whole.get() || failed.get() {
+                    cancel_body(&response);
+                    return Ok(());
+                }
+                let status = get(&response, "status").as_f64().unwrap_or(0.0) as u16;
+                if !(200..300).contains(&status) {
+                    cancel_body(&response);
+                    self.requests.set(self.requests.get() + 1);
+                    return Err(JsError::new(&format!("{}: HTTP status {status}", self.url)));
+                }
+                if status == 200 {
+                    // The whole file: the bodies of the other ranges are not needed.
                     whole.set(true);
+                    cancel_readers();
                 }
-                status => {
-                    return Err(JsError::new(&format!(
-                        "{}: bytes {offset}-{}: unexpected response (status {status}, {} bytes): the server must \
-                         answer Range requests, without a Content-Encoding",
-                        self.url,
-                        offset + len - 1,
-                        f.data.len()
-                    )));
+                let data = self.read_body(&response, readers).await?;
+                if failed.get() || (status == 206 && whole.get()) {
+                    // Cut short by a failure, or by the whole file elsewhere: not kept.
+                    return Ok(());
                 }
+                match status {
+                    206 if data.len() as u64 == len => file.insert(offset, &data),
+                    200 if data.len() as u64 == file.len() => file.insert(0, &data),
+                    _ => {
+                        return Err(JsError::new(&format!(
+                            "{}: bytes {offset}-{last}: unexpected response (status {status}, {} bytes): the server must \
+                             answer Range requests, without a Content-Encoding",
+                            self.url,
+                            data.len()
+                        )));
+                    }
+                }
+                Ok(())
             }
-            Ok(())
+            .await;
+            if result.is_err() && !failed.replace(true) {
+                cancel_readers();
+            }
+            result
         })
         .await
     }
