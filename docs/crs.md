@@ -16,8 +16,10 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   `EPSG:4979+5720`; string references require two horizontal axes before adding a height.
   An unversioned URN component needs the empty version separator (`crs:EPSG::2154`);
   the formerly accepted CityGML form `crs:EPSG:2154` is refused.
-  The native GML reader rejects a document declaring an unsupported compound CRS; it does
-  not open with only one component or with silently discarded CRS metadata. The optional
+  The native GML reader rejects an unsupported compound CRS when it is selected
+  for a layer, rather than keeping one component or silently discarding that metadata.
+  A geometry's `srsName` takes precedence over the collection envelope's reference;
+  an unused unsupported envelope CRS can therefore be ignored. The optional
   GDAL fallback can read additional authorities and follows GDAL's driver settings.
   WFS service metadata retains its existing permissive handling of unrecognized CRSs;
   the strict unsupported-compound refusal here applies to native GML/CityGML reads.
@@ -188,6 +190,9 @@ Canonical EPSG references use one parser in both standalone configurations.
 The legacy unversioned `urn:x-ogc:def:crs:EPSG:4326` form is now accepted by both
 the native parser and the fallback;
 versioned X-OGC forms remain unsupported. Use the modern versioned OGC URN below.
+An unversioned modern OGC URN requires the empty version separator, as in
+`urn:ogc:def:crs:EPSG::4326`; the fallback now refuses the single-colon form
+`urn:ogc:def:crs:EPSG:4326` that its former free-form parser accepted.
 Versioned URNs/URLs resolve the code separately from the authority version
 (`urn:ogc:def:crs:EPSG:6.6:4326` resolves EPSG:4326). The fallback retains its
 legacy numeric suffix handling only after a recognized authority prefix fails

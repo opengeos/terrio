@@ -2280,6 +2280,7 @@ mod tests {
             "EPSG:2154+5720junk",
             "EPSG:4326.0:3857",
             "EPSG:1/3857",
+            "urn:ogc:def:crs:EPSG:4326",
             "urn:ogc:def:crs:EPSG::1/3857",
             "https://www.opengis.net/def/crs/EPSG//1/3857",
             "urn:ogc:def:crs:EPSG:4326:3857junk",

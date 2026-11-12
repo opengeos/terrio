@@ -223,6 +223,7 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
             _ => srs_name.and_then(|srs| parse_srs_name(srs).ok()),
         };
         let swap = srs_name.is_some_and(authority_axis_order) && srs.as_ref().is_some_and(SpatialRef::has_north_east_axis_order);
+        let dimension = if srs.as_ref().is_some_and(|srs| srs.compound_parts().is_some()) { 3 } else { 2 };
         if let Some(srs) = &srs {
             srs.apply_to_layer(&mut layer);
         }
@@ -253,7 +254,7 @@ fn parse_impl(root: &Element, xsd: Option<&Element>, compiled: Option<&Applicati
             }
             let geometry = raw
                 .geometry
-                .and_then(|geometry_node| geometry(geometry_node, 2))
+                .and_then(|geometry_node| geometry(geometry_node, dimension))
                 .map(|geometry| if swap { swap_xy(geometry) } else { geometry });
             layer.push(Feature { fid: fid as u64, geometry, attributes });
         }
@@ -726,6 +727,27 @@ mod tests {
             let layer = &layers[0];
             assert_eq!(layer.crs_wkt(), SpatialRef::compound(horizontal, vertical).unwrap().to_wkt().as_deref());
             assert_eq!(layer.features[0].geometry, Some(Geometry::Point(Coord { x: xy.0, y: xy.1, z: Some(35.0), m: None })));
+        }
+    }
+
+    /// Compound CRS axes supply the implicit dimension; explicit GML dimensions still win.
+    #[test]
+    fn compound_geometry_dimensions_preserve_height_without_an_explicit_dimension() {
+        let srs = "urn:ogc:def:crs,crs:EPSG::4269,crs:EPSG::5713";
+        for (geometry, expected) in [
+            ("<Point><pos>52 4 35</pos></Point>", Geometry::Point(Coord { x: 4., y: 52., z: Some(35.), m: None })),
+            (
+                "<LineString><posList>52 4 35 53 5 36</posList></LineString>",
+                Geometry::LineString(vec![Coord { x: 4., y: 52., z: Some(35.), m: None }, Coord { x: 5., y: 53., z: Some(36.), m: None }]),
+            ),
+            ("<Point srsDimension=\"2\"><pos>52 4</pos></Point>", Geometry::point(4., 52.)),
+            ("<Point srsDimension=\"3\"><pos>52 4 35</pos></Point>", Geometry::Point(Coord { x: 4., y: 52., z: Some(35.), m: None })),
+        ] {
+            let text = format!(
+                "<FeatureCollection><boundedBy><Envelope srsName=\"{srs}\"/></boundedBy><featureMember><p><geom>{geometry}</geom></p></featureMember></FeatureCollection>"
+            );
+            let layers = parse(&xml::parse(&text).unwrap(), None).unwrap();
+            assert_eq!(layers[0].features[0].geometry, Some(expected));
         }
     }
 
