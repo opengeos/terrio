@@ -2362,8 +2362,9 @@ impl ZarrArray {
 
     /// [`ZarrArray::open_objects`], the CRS reduced to the EPSG code the store names (`proj:code`,
     /// `proj:epsg`, a PROJJSON identifier, the URL or identifier of GDAL's `_CRS`): no WKT is read
-    /// or made, so builds that call only this leave terrio's CRS engine out. CF grid mappings and
-    /// GDAL's `pam.aux.xml` sidecar are not read; [`ZarrArray::attributes`] has the array's own.
+    /// or made, so builds that call only this leave terrio's CRS engine out. A CF grid mapping is
+    /// read only for its `GeoTransform`, when the array has none; GDAL's `pam.aux.xml` sidecar is
+    /// not read. [`ZarrArray::attributes`] has the array's own.
     pub fn open_objects_epsg_only(objects: std::sync::Arc<crate::sparse::SparseObjects>, name: &str, key: &str) -> Result<Self> {
         Self::open::<false>(objects, name, key)
     }

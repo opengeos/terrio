@@ -178,6 +178,16 @@ impl ZarrArray {
                 let a = inner.array.borrow();
                 (a.header().raster.cols, a.header().raster.rows, a.header().raster.bands)
             };
+            if !options.is_undefined() && !options.is_null() {
+                if !options.is_object() {
+                    return Err(JsError::new("read: options must be an object").into());
+                }
+                for key in js_sys::Object::keys(&options.clone().into()).iter().filter_map(|k| k.as_string()) {
+                    if !["window", "bands"].contains(&key.as_str()) {
+                        return Err(JsError::new(&format!("read: unknown option `{key}`")).into());
+                    }
+                }
+            }
             // Arrays of non-negative integers; anything else is an error, not coerced.
             let numbers = |key: &str| -> Result<Option<Vec<usize>>, JsError> {
                 let v = get(&options, key);
@@ -196,7 +206,8 @@ impl ZarrArray {
                 Some(_) => return Err(JsError::new("read: `window` must be [colOff, rowOff, width, height]").into()),
                 None => terrio::Window::new(0, 0, cols, rows),
             };
-            let wanted = numbers("bands")?.unwrap_or_else(|| (1..=count).collect());
+            // An empty list reads every band, as no list does.
+            let wanted = numbers("bands")?.filter(|b| !b.is_empty()).unwrap_or_else(|| (1..=count).collect());
             let data = inner.remote.run(|| false, || inner.array.borrow_mut().read(window, &wanted)).await?.map_err(err)?;
             Ok(bands(data, wanted.len()).into())
         })

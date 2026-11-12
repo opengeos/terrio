@@ -84,6 +84,7 @@ test("terrio-js/zarr opens an array and reads windows of bands", async () => {
     const all = await a.read({});
     assert.equal(all.length, 2);
     assert.equal(all[1][63 * 64 + 63], value(1, 63, 63));
+    assert.equal((await a.read({ bands: [] })).length, 2);
     // Chunks read once are kept: the same window again sends no request.
     const before = server.stats.requests;
     await a.read({ window: [28, 10, 8, 30], bands: [2, 1] });
@@ -97,6 +98,8 @@ test("terrio-js/zarr opens an array and reads windows of bands", async () => {
     await assert.rejects(a.read({ window: [-1, 0, 8, 8] }), /non-negative integers/);
     await assert.rejects(a.read({ window: [0, 0, 8.5, 8] }), /non-negative integers/);
     await assert.rejects(a.read({ bands: 1 }), /non-negative integers/);
+    await assert.rejects(a.read({ windwo: [0, 0, 8, 8] }), /unknown option `windwo`/);
+    await assert.rejects(a.read("x"), /must be an object/);
     await assert.rejects(a.read({ window: [60, 60, 8, 8] }));
   } finally {
     server.close();
