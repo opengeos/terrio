@@ -7504,9 +7504,9 @@ mod tests {
                     .unwrap()
                     .with_grid_invariance(false);
             let (_, sy, _, sh, _, _, raw_h) = rw.context().source_window(0, 0, size.0, size.1).unwrap();
-            assert_eq!(sy, 0, "{label}");
+            assert_eq!(sy, 0, "chunk-dependent, {label}: the first row of the grid's source window");
             if label == "Mercator" {
-                assert!(raw_h <= sh as f64, "{label}: the window's bounds are {raw_h} rows tall, it reads {sh}");
+                assert!(raw_h <= sh as f64, "chunk-dependent, {label}: the window's bounds are {raw_h} rows tall, it reads {sh}");
             }
         }
     }
