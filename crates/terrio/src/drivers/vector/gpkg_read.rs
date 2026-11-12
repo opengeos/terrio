@@ -10,8 +10,9 @@
 //! then those it lists as `attributes`. Fields have the declared column types, as GDAL maps them
 //! (`MEDIUMINT`, `INTEGER`, `BOOLEAN`, `REAL`, `TEXT(n)`, `DATE`, `DATETIME`, `BLOB`); the
 //! `INTEGER PRIMARY KEY` column gives the feature ids. CRSs come from `gpkg_spatial_ref_sys`:
-//! EPSG codes when the organization is EPSG, otherwise the stored definition. The whole file is
-//! held in memory, so a GeoPackage reads from bytes as from a file.
+//! EPSG codes when the organization is EPSG, otherwise the stored definition. The database is
+//! backed by a consistent mapped file when possible, or by an owned byte input. Feature
+//! ranges bound record decoding; spatially filtered ranges count matching features.
 
 use super::wkb::from_wkb;
 use crate::drivers::sqlite::{self, Db, Value};
@@ -112,10 +113,9 @@ pub(crate) fn list_layers(path: &str) -> Result<Vec<String>> {
 /// A rectangle `(min_x, min_y, max_x, max_y)`.
 pub(crate) type Rect = (f64, f64, f64, f64);
 
-/// Reads the layers of a GeoPackage file (`wanted` names them; all when empty), keeping only the
-/// features whose bounding box intersects `bbox` when it is given.
-pub(crate) fn read(path: &str, wanted: &[String], bbox: Option<Rect>) -> Result<Vec<Layer>> {
-    read_db_named(&crate::drivers::sqlite_edit::open_consistent(std::path::Path::new(path))?, wanted, bbox, Some(path))
+/// Read the selected layers of a GeoPackage file, applying spatial filtering before paging.
+pub(crate) fn read(path: &str, options: &crate::VectorOpenOptions) -> Result<Vec<Layer>> {
+    read_db_named(&crate::drivers::sqlite_edit::open_consistent(std::path::Path::new(path))?, options, Some(path))
 }
 
 /// Reads the layers of a GeoPackage held in memory (`wanted` names them; all when empty).
@@ -127,15 +127,15 @@ pub(crate) fn parse(bytes: Vec<u8>, wanted: &[String]) -> Result<Vec<Layer>> {
 /// only the features whose bounding box intersects it, found through the layer's R-tree index
 /// when it has one, as GDAL's spatial filters do.
 pub(crate) fn read_db(db: &Db, wanted: &[String], bbox: Option<Rect>) -> Result<Vec<Layer>> {
-    read_db_named(db, wanted, bbox, None)
+    read_db_named(db, &crate::VectorOpenOptions { layers: wanted.to_vec(), spatial_filter: bbox, ..Default::default() }, None)
 }
 
 /// Reads selected tables, also accepting the single-table file-stem alias.
-pub(crate) fn read_db_named(db: &Db, wanted: &[String], bbox: Option<Rect>, path: Option<&str>) -> Result<Vec<Layer>> {
+pub(crate) fn read_db_named(db: &Db, options: &crate::VectorOpenOptions, path: Option<&str>) -> Result<Vec<Layer>> {
     let (layers, _) = contents(db)?;
     let names: Vec<&str> = layers.iter().map(|c| c.name.as_str()).collect();
-    let selected = crate::dataset::layer_selection(wanted, &names, path, true)?;
-    layers.iter().zip(selected).filter_map(|(c, keep)| keep.then_some(c)).map(|c| read_layer(db, c, bbox)).collect()
+    let selected = crate::dataset::layer_selection(&options.layers, &names, path, true)?;
+    layers.iter().zip(selected).filter_map(|(c, keep)| keep.then_some(c)).map(|c| read_layer(db, c, options)).collect()
 }
 
 /// The terrio field type of a declared column type.
@@ -465,14 +465,42 @@ impl LayerDef {
     }
 }
 
-fn read_layer(db: &Db, c: &Content, bbox: Option<Rect>) -> Result<Layer> {
+fn read_layer(db: &Db, c: &Content, options: &crate::VectorOpenOptions) -> Result<Layer> {
     let def = layer_def(db, c)?;
+    let bbox = options.spatial_filter;
     // The rows: with a filter on a spatial table, those its R-tree finds (by lookups of their
     // feature ids, the rowid alias), otherwise all of them.
     let candidates = match (&def.geom_name, bbox, def.fid_col) {
+        _ if options.max_features == Some(0) => None,
         (Some(g), Some(rect), Some(_)) => rtree_candidates(db, &format!("rtree_{}_{g}", c.name), rect)?,
         _ => None,
     };
+    if options.has_range() {
+        let mut layer = def.layer.clone();
+        let filtered = bbox.is_some() && def.geom_col.is_some();
+        let skip = if filtered { 0 } else { options.skip_features };
+        let limit = if filtered && options.max_features != Some(0) { None } else { options.max_features };
+        let mut matching_skip = if filtered { options.skip_features } else { 0 };
+        db.visit_table_rows(&c.name, candidates.as_deref(), skip, limit, &mut |ordinal, row| {
+            if let (Some(rect), Some(column)) = (bbox, def.geom_col) {
+                let geometry = row.blob(column)?.and_then(decode_geometry);
+                if !geometry.as_ref().is_some_and(|g| bbox_intersects(g, rect)) {
+                    return Ok(true);
+                }
+                if matching_skip > 0 {
+                    matching_skip -= 1;
+                    return Ok(true);
+                }
+            }
+            if let Some(feature) = def.feature(&row.values()?, ordinal as i64, None) {
+                layer.push(feature);
+            }
+            Ok(options.max_features.is_none_or(|m| layer.len() < m))
+        })?;
+        // Match keep_range: do not retain an extent describing the unpaged source.
+        layer.extent = None;
+        return Ok(layer);
+    }
     let table = match &candidates {
         Some(ids) => db.table_rows(&c.name, ids)?,
         None => db.table(&c.name)?,
@@ -685,6 +713,184 @@ mod tests {
     use super::*;
     use wbvector::Ring;
 
+    /// GDAL 3.13.3 feature order, schema and CRS remain unchanged by native paging.
+    #[test]
+    fn feature_pages_keep_layer_metadata_and_filtered_order() {
+        let mut primary = Layer::new("Primary").with_epsg(32633);
+        primary.add_field(FieldDef::new("number", FieldType::Integer));
+        primary.add_field(FieldDef::new("name", FieldType::Text));
+        for i in 0..1000 {
+            primary.push(Feature {
+                fid: i,
+                geometry: (i % 11 != 0).then(|| Geometry::point(i as f64, 0.0)),
+                attributes: vec![FieldValue::Integer(i as i64), FieldValue::Text(format!("row {i} {}", "x".repeat(120)))],
+            });
+        }
+        let mut secondary = primary.clone();
+        secondary.name = "secondary".into();
+        let bytes = super::super::geopackage::to_bytes(&[primary, secondary]).unwrap();
+        let db = Db::new(bytes.clone()).unwrap();
+        assert!(rtree_candidates(&db, "rtree_Primary_geom", (100., -1., 200., 1.)).unwrap().is_some());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("pages.gpkg");
+        std::fs::write(&path, &bytes).unwrap();
+        let all = crate::open_vector(path.to_str().unwrap(), &Default::default()).unwrap();
+        for layers in [Vec::new(), vec!["PRIMARY".into()], vec!["secondary".into()]] {
+            for (skip, maximum, bbox) in [
+                (0, Some(0), None),
+                (3, Some(4), None),
+                (998, None, None),
+                (usize::MAX, Some(3), None),
+                (3, Some(4), Some((100., -1., 200., 1.))),
+            ] {
+                let options = crate::VectorOpenOptions {
+                    layers: layers.clone(),
+                    skip_features: skip,
+                    max_features: maximum,
+                    spatial_filter: bbox,
+                    ..Default::default()
+                };
+                let mut expected = all.layers.clone();
+                expected.retain(|l| layers.is_empty() || layers.iter().any(|n| n.eq_ignore_ascii_case(&l.name)));
+                for layer in &mut expected {
+                    if let Some(rect) = bbox {
+                        layer.features.retain(|f| f.geometry.as_ref().is_some_and(|g| bbox_intersects(g, rect)));
+                    }
+                    options.keep_range(layer);
+                }
+                let direct = match crate::drivers::gpkg::open_bytes(bytes.clone(), "pages.gpkg", &options).unwrap() {
+                    crate::Dataset::Vector(v) => v,
+                    _ => panic!("expected vector dataset"),
+                };
+                for actual in [
+                    crate::open_vector(path.to_str().unwrap(), &options).unwrap(),
+                    crate::memory::open_vector_bytes(bytes.clone(), "pages.gpkg", &options).unwrap(),
+                    direct,
+                ] {
+                    assert_eq!(actual.layers.len(), expected.len());
+                    for (a, e) in actual.layers.iter().zip(&expected) {
+                        assert_eq!(a.name, e.name);
+                        assert_eq!(a.geom_type, e.geom_type);
+                        assert_eq!(a.crs_epsg(), e.crs_epsg());
+                        assert_eq!(a.crs_wkt(), e.crs_wkt());
+                        assert_eq!(format!("{:?}", a.schema.fields()), format!("{:?}", e.schema.fields()));
+                        assert_eq!(a.features.len(), e.features.len());
+                        for (a, e) in a.features.iter().zip(&e.features) {
+                            assert_eq!(a.fid, e.fid);
+                            assert_eq!(a.geometry, e.geometry);
+                            assert_eq!(a.attributes, e.attributes);
+                        }
+                        assert!(a.extent.is_none());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Without an R-tree, count only matching geometries before skipping features.
+    #[test]
+    fn spatial_pages_decode_only_selected_attributes_with_or_without_an_index() {
+        use super::super::sqlite as writer;
+        let table = |name: &str, sql: &str, rows| writer::Table { name: name.into(), sql: sql.into(), rows, autoindexes: vec![] };
+        let contents = table(
+            "gpkg_contents",
+            "CREATE TABLE gpkg_contents(table_name TEXT,data_type TEXT,description TEXT)",
+            vec![(
+                1,
+                vec![writer::Value::Text("points".into()), writer::Value::Text("features".into()), writer::Value::Text(String::new())],
+            )],
+        );
+        let geometry = table(
+            "gpkg_geometry_columns",
+            "CREATE TABLE gpkg_geometry_columns(table_name TEXT,column_name TEXT,geometry_type_name TEXT)",
+            vec![(1, vec![writer::Value::Text("points".into()), writer::Value::Text("geom".into()), writer::Value::Text("POINT".into())])],
+        );
+        let rows = (0..16)
+            .map(|i| {
+                (
+                    i * 3 + 10,
+                    vec![
+                        writer::Value::Null,
+                        if [5, 8].contains(&i) {
+                            writer::Value::Null
+                        } else {
+                            writer::Value::Blob(super::super::geopackage::gpkg_geometry(&Geometry::point(i as f64, 0.), 4326))
+                        },
+                        writer::Value::Text(format!("p{i}")),
+                    ],
+                )
+            })
+            .collect();
+        let points = table("points", "CREATE TABLE points(fid INTEGER PRIMARY KEY,geom POINT,name TEXT)", rows);
+        let mut tables = vec![contents, geometry, points];
+        for indexed in [false, true] {
+            if indexed {
+                // Deliberately loose boxes include null and nonmatching candidate geometries.
+                let entries = (0..16).map(|i| (i * 3 + 10, [-100., 100., -100., 100.])).collect();
+                let (nodes, _, _) = super::super::geopackage::build_rtree(entries);
+                tables.push(table(
+                    "rtree_points_geom_node",
+                    "CREATE TABLE rtree_points_geom_node(nodeno INTEGER PRIMARY KEY,data BLOB)",
+                    nodes,
+                ));
+            }
+            let db = Db::new(writer::write_database(&tables, &[], 0, 0).unwrap()).unwrap();
+            let options = crate::VectorOpenOptions {
+                skip_features: 2,
+                max_features: Some(3),
+                spatial_filter: Some((3.5, -1., 10.5, 1.)),
+                ..Default::default()
+            };
+            let before = db.decoded_record_count();
+            read_db_named(&db, &crate::VectorOpenOptions { max_features: Some(0), ..options.clone() }, None).unwrap();
+            // A nonzero spatial request also probes the R-tree schema before visiting records.
+            let candidates = rtree_candidates(&db, "rtree_points_geom", options.spatial_filter.unwrap()).unwrap();
+            assert_eq!(candidates.is_some(), indexed);
+            let metadata = db.decoded_record_count() - before;
+            let before = db.decoded_record_count();
+            let read = read_db_named(&db, &options, None).unwrap();
+            assert_eq!(db.decoded_record_count() - before - metadata, 3, "skipped spatial matches decoded their attributes");
+            assert_eq!(
+                read[0].features.iter().map(|f| f.attributes.clone()).collect::<Vec<_>>(),
+                [vec![FieldValue::Text("p7".into())], vec![FieldValue::Text("p9".into())], vec![FieldValue::Text("p10".into())]]
+            );
+            assert_eq!(read[0].features.iter().map(|f| f.fid).collect::<Vec<_>>(), [31, 37, 40]);
+        }
+    }
+
+    /// Decode counts at the native SQLite boundary on an optional real GeoPackage.
+    #[test]
+    #[ignore = "requires TERRIO_GPKG_PAGING_DATA pointing to a real GeoPackage"]
+    fn real_feature_pages_decode_only_requested_rows() {
+        let path = std::env::var("TERRIO_GPKG_PAGING_DATA").expect("set TERRIO_GPKG_PAGING_DATA to a real GeoPackage");
+        let db = crate::drivers::sqlite_edit::open_consistent(std::path::Path::new(&path)).unwrap();
+        let name = contents(&db).unwrap().0.remove(0).name;
+        let base = crate::VectorOpenOptions { layers: vec![name.clone()], ..Default::default() };
+        let measure = |options: &crate::VectorOpenOptions| {
+            let before = db.decoded_record_count();
+            let layers = read_db_named(&db, options, Some(&path)).unwrap();
+            (layers, db.decoded_record_count() - before)
+        };
+        // The zero-feature request performs the same metadata reads without decoding rows.
+        let (empty, metadata) = measure(&crate::VectorOpenOptions { max_features: Some(0), ..base.clone() });
+        assert_eq!(empty[0].len(), 0);
+        let (all, full_decodes) = measure(&base);
+        assert!(all[0].len() > 10);
+        let skip = all[0].len() / 2;
+        let (result, page_decodes) = measure(&crate::VectorOpenOptions { skip_features: skip, max_features: Some(3), ..base });
+        let full = full_decodes.checked_sub(metadata).unwrap();
+        let page = page_decodes.checked_sub(metadata).unwrap();
+        assert_eq!(full, all[0].len());
+        assert_eq!(page, 3);
+        assert_eq!(result[0].len(), page);
+        for (actual, expected) in result[0].features.iter().zip(&all[0].features[skip..skip + 3]) {
+            assert_eq!(actual.fid, expected.fid);
+            assert_eq!(actual.geometry, expected.geometry);
+            assert_eq!(actual.attributes, expected.attributes);
+        }
+        eprintln!("native table {name}: full decoded rows={full}, page decoded rows={page}, skipped={skip}, metadata decodes={metadata}");
+    }
+
     #[test]
     fn malformed_feature_records_fail_native_eager_reads_even_with_gdal_enabled() {
         mod fixtures {
@@ -879,7 +1085,7 @@ mod tests {
         let path = directory.path().join("empty.gpkg");
         std::fs::write(&path, super::super::geopackage::to_bytes(&[layer]).unwrap()).unwrap();
         let path = path.to_str().unwrap();
-        let layers = read(path, &[], None).unwrap();
+        let layers = read(path, &Default::default()).unwrap();
         assert!(layers[0].geom_type.is_none(), "mixed polygon types declare GEOMETRY");
         assert!(matches!(&layers[0].features[0].geometry,Some(Geometry::Polygon{exterior,..}) if exterior.0.is_empty()));
         assert!(matches!(&layers[0].features[1].geometry,Some(Geometry::MultiPolygon(parts)) if parts.is_empty()));
@@ -943,7 +1149,7 @@ mod tests {
         let path = dir.path().join("t.gpkg");
         std::fs::write(&path, super::super::geopackage::to_bytes(&[l]).unwrap()).unwrap();
         let path = path.to_str().unwrap();
-        let read = crate::dataset::finish_vector(read(path, &[], None).unwrap(), path, crate::formats::VectorDriver::GPKG);
+        let read = crate::dataset::finish_vector(read(path, &Default::default()).unwrap(), path, crate::formats::VectorDriver::GPKG);
         let (summaries, rasters) = summarize(path).unwrap().unwrap();
         assert!(rasters.is_empty());
         assert_eq!(summaries.len(), read.layers.len());
@@ -1051,6 +1257,17 @@ mod tests {
             assert_eq!(text(&indexed.first().unwrap()), [(1, name(1))]);
             assert_eq!(text(&indexed.query(Some((5.0, 5.0, 15.0, 15.0))).unwrap()), [(2, name(2))]);
             assert_eq!(text(&indexed.query(None).unwrap()), [(1, name(1)), (2, name(2)), (3, name(3))]);
+            let db = Db::new(bytes.to_vec()).unwrap();
+            for bbox in [None, Some((5., 5., 15., 15.))] {
+                let options = crate::VectorOpenOptions {
+                    skip_features: usize::from(bbox.is_none()),
+                    max_features: Some(1),
+                    spatial_filter: bbox,
+                    ..Default::default()
+                };
+                let page = read_db_named(&db, &options, None).unwrap();
+                assert_eq!(text(&page[0]), [(2, name(2))], "paged {encoding}");
+            }
         }
     }
 }

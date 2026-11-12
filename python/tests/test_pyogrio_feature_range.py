@@ -50,3 +50,39 @@ def test_a_feature_range_counts_the_features_a_bbox_keeps(points, driver):
         points[driver], bbox=(0.5, -1, 3.5, 1), skip_features=1, max_features=1
     )
     assert frame["name"].tolist() == ["p2"]
+
+
+@pytest.mark.parametrize("damaged", [0, 1, 2])
+@pytest.mark.parametrize("memory", [False, True])
+def test_gpkg_page_decodes_only_selected_records(tmp_path, damaged, memory):
+    """A page ignores malformed skipped records but still refuses a selected malformed record."""
+    import sqlite3
+
+    path = tmp_path / "ranged.gpkg"
+    names = ["poison-left-012345", "selected", "poison-right-987654"]
+    with sqlite3.connect(path) as db:
+        db.executescript(
+            "CREATE TABLE gpkg_contents(table_name TEXT,data_type TEXT,description TEXT);"
+            "INSERT INTO gpkg_contents VALUES('features','attributes','');"
+            "CREATE TABLE features(fid INTEGER PRIMARY KEY,name TEXT);"
+        )
+        db.executemany("INSERT INTO features VALUES(?,?)", zip([11, 23, 47], names, strict=True))
+    raw = bytearray(path.read_bytes())
+    text = names[damaged].encode()
+    record = bytes([3, 0, 13 + 2 * len(text)]) + text
+    offset = raw.find(record)
+    assert offset >= 0
+    raw[offset + 2] += 2  # The unselected text now declares one byte beyond its record.
+    path.write_bytes(raw)
+    source = path.read_bytes() if memory else path
+    if damaged == 1:
+        from terrio.pyogrio.errors import DataSourceError
+
+        with pytest.raises(DataSourceError, match="truncated record"):
+            tpg.read_dataframe(source, skip_features=1, max_features=1, read_geometry=False)
+    else:
+        page = tpg.read_dataframe(
+            source, skip_features=1, max_features=1, read_geometry=False, fid_as_index=True
+        )
+        assert page["name"].tolist() == ["selected"]
+        assert page.index.tolist() == [23]

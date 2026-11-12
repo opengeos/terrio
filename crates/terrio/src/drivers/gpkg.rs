@@ -211,9 +211,7 @@ pub(crate) fn open_bytes(bytes: Vec<u8>, name: &str, options: &crate::VectorOpen
         nodata::apply_pam(name, &mut ds);
         return Ok(crate::Dataset::Raster(ds));
     }
-    let wanted: Vec<String> = options.layers.clone();
-    let mut read = gpkg_read::read_db_named(&db, &wanted, options.spatial_filter, Some(name))?;
-    read.iter_mut().for_each(|l| options.keep_range(l));
+    let read = gpkg_read::read_db_named(&db, options, Some(name))?;
     Ok(crate::Dataset::Vector(crate::dataset::finish_vector(read, name, crate::formats::VectorDriver::GPKG)))
 }
 

@@ -2772,6 +2772,68 @@ The GDAL/OGR Python bindings (`osgeo`) are required; Terrio Python bindings and
 downloaded data are not. The positional data-directory argument is required by the
 conformance runner, but this suite generates its fixtures in a temporary directory.
 
+### GeoPackage feature pages
+
+The `gpkg-paging` conformance suite compares the real `countries.gpkg` with GDAL
+through Python path/byte inputs and a CLI conversion limit. FIDs and order,
+attributes, geometry WKB, fields and CRS are exact for full, head, middle, tail,
+empty and spatially filtered pages. CLI output-writer FID policy is outside this
+comparison. Local validation uses GDAL 3.13.3.
+
+Native tests cover layer selection, original row ordinals, primary keys with gaps,
+UTF-16 text, overflow records, zero limits, and spatial matching with/without an
+R-tree. A malformed record outside a requested Python page is not decoded; a
+selected malformed record remains an error. A real-data test counts row decodes
+at the SQLite traversal boundary rather than inferring them from returned features.
+That external-data test is explicitly ignored unless requested; the synthetic
+SQLite page test asserts decoder-call counts in every ordinary CI run. The spatial
+page regression also asserts that only returned rows materialize their attributes,
+both without an index and with deliberately loose R-tree boxes that include null
+and nonmatching geometries. Borrowed geometry projection checks blob offsets
+without decoding neighboring fields, including UTF-16 databases:
+
+```sh
+cargo test -p terrio --lib drivers::sqlite::tests
+cargo test -p terrio --lib drivers::vector::gpkg_read::tests
+TERRIO_GPKG_PAGING_DATA=../terrio-data/countries.gpkg \
+  cargo test -p terrio --lib real_feature_pages_decode_only_requested_rows -- --ignored --nocapture
+pytest python/tests/test_pyogrio_feature_range.py
+python scripts/conformance.py ../terrio-data --only gpkg-paging --strict
+```
+
+The measured 176-feature countries table decodes three rows for an unfiltered three-feature
+page after skipping 88, versus 176 for a full traversal. Metadata reads are outside
+that feature-row count. Skipping visits leaf headers to count records without
+decoding their payloads or reading their overflow chains. Spatial filters instead
+read candidate geometry blobs and count matching geometries before materializing
+the selected records' attributes. Candidate payloads can still read overflow pages;
+this is not a geometry-only I/O guarantee. Byte and HTTP inputs
+still obtain the SQLite snapshot; paging bounds decoding rather than input transfer.
+
+The native ranged visitor decodes serially; unpaged full reads use the parallel
+decoder. To measure the index-free trade-off, `vector_read_profile` was built
+against both base commit `649d64cd` and the paging implementation. A GDAL 3.13.3
+fixture contained 200,000 EPSG:3857 points at `(i, 0)`, with name/category text and
+a floating value, and `SPATIAL_INDEX=NO`. Five alternating fresh-process runs
+followed one warm-up per binary, with `RAYON_NUM_THREADS=4` and warm file caches.
+Each requested one skipped match and three returned features; FIDs agreed exactly.
+
+| Bounding-box matches | Before median (ms) | After median (ms) | Before peak RSS (MiB) | After peak RSS (MiB) |
+|---|---:|---:|---:|---:|
+| Early, x=0.5..1000 | 94.44 | 4.16 | 149.39 | 25.52 |
+| Near the end, x=199990.5..200000 | 95.53 | 16.26 | 148.38 | 38.43 |
+
+The late filter scans almost the whole layer before finding its result. These
+point-workload measurements show the cost of that path alongside early stopping;
+they are not throughput guarantees for other geometry or attribute workloads.
+The example reports elapsed milliseconds, returned FIDs and Linux peak RSS:
+
+```sh
+cargo build --release -p terrio --example vector_read_profile
+RAYON_NUM_THREADS=4 target/release/examples/vector_read_profile FILE.gpkg 1 3 0.5 -1 1000 1
+RAYON_NUM_THREADS=4 target/release/examples/vector_read_profile FILE.gpkg 1 3 199990.5 -1 200000 1
+```
+
 ### GeoPackage text encodings
 
 `cargo test -p terrio --test merged sqlite_encodings::` reads the small SQLite-generated
