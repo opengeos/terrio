@@ -1701,7 +1701,7 @@ fn proj_crs<const ENGINE: bool>(a: &Value) -> Option<CrsInfo> {
     let s = if let Some(code) = a["proj:code"].as_str() {
         SpatialRef::parse(code).ok()?
     } else if let Some(code) = a["proj:epsg"].as_u64() {
-        SpatialRef::from_epsg(code as u32).ok()?
+        SpatialRef::from_epsg(u32::try_from(code).ok()?).ok()?
     } else if let Some(w) = a["proj:wkt2"].as_str() {
         SpatialRef::from_wkt(w)
     } else if a["proj:projjson"].is_object() {
@@ -2324,7 +2324,7 @@ fn crs_attribute<const ENGINE: bool>(v: &Value) -> Option<CrsInfo> {
     if v["projjson"]["id"]["authority"].as_str() == Some("EPSG")
         && let Some(code) = v["projjson"]["id"]["code"].as_u64()
     {
-        return Some(info(code as u32));
+        return Some(info(u32::try_from(code).ok()?));
     }
     if !ENGINE {
         return None;
@@ -2339,6 +2339,22 @@ fn epsg_only(code: u32) -> CrsInfo {
 
 /// The EPSG code of an authority code such as `EPSG:32631`.
 fn epsg_code(s: &str) -> Option<u32> {
+    if let Some((scheme, path)) = s.split_once("://") {
+        if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+            return None;
+        }
+        let mut parts = path.split('/');
+        if !parts.next()?.eq_ignore_ascii_case("www.opengis.net")
+            || parts.next()? != "def"
+            || parts.next()? != "crs"
+            || !parts.next()?.eq_ignore_ascii_case("EPSG")
+        {
+            return None;
+        }
+        let _version = parts.next()?;
+        let code = parts.next()?.parse().ok()?;
+        return parts.next().is_none().then_some(code);
+    }
     let (authority, code) = s.rsplit_once(':')?;
     let authority = match authority.rsplit_once(':') {
         Some((prefix, _version)) => {
@@ -3012,11 +3028,31 @@ mod tests {
         assert_eq!(epsg_code("epsg:4326"), Some(4326));
         assert_eq!(epsg_code("urn:ogc:def:crs:EPSG::3857"), Some(3857));
         assert_eq!(epsg_code("urn:ogc:def:crs:EPSG:6.6:4326"), Some(4326));
+        assert_eq!(epsg_code("https://www.opengis.net/def/crs/EPSG/0/32630"), Some(32630));
+        assert_eq!(epsg_code("http://www.opengis.net/def/crs/EPSG/0/4326"), Some(4326));
+        assert_eq!(epsg_code("https://example.org/def/crs/EPSG/0/4326"), None);
+        assert_eq!(epsg_code("https://www.opengis.net/def/crs/OGC/0/4326"), None);
         assert_eq!(epsg_code("urn:ogc:def:crs:OGC:1.3:84"), None);
         assert_eq!(epsg_code("OGC:CRS84"), None);
         assert_eq!(epsg_code("EPSG:x"), None);
         assert_eq!(proj_crs::<false>(&json!({"proj:epsg": 32630})).and_then(|c| c.epsg), Some(32630));
         assert_eq!(proj_crs::<false>(&json!({"proj:wkt2": "PROJCRS[...]"})), None);
+        for attributes in [
+            json!({"proj:code": "https://www.opengis.net/def/crs/EPSG/0/32630"}),
+            json!({"proj:epsg": 32630}),
+            json!({"proj:projjson": {"id": {"authority": "EPSG", "code": 32630}}}),
+        ] {
+            assert_eq!(proj_crs::<false>(&attributes).and_then(|c| c.epsg), Some(32630));
+            assert_eq!(proj_crs::<true>(&attributes).and_then(|c| c.epsg), Some(32630));
+        }
+        for attributes in [
+            json!({"url": "https://www.opengis.net/def/crs/EPSG/0/32630"}),
+            json!({"projjson": {"id": {"authority": "EPSG", "code": 32630}}}),
+        ] {
+            assert_eq!(crs_attribute::<false>(&attributes).and_then(|c| c.epsg), Some(32630));
+            assert_eq!(crs_attribute::<true>(&attributes).and_then(|c| c.epsg), Some(32630));
+        }
+        assert_eq!(crs_attribute::<false>(&json!({"projjson": {"id": {"authority": "EPSG", "code": 4294967296_u64}}})), None);
     }
 
     #[test]
