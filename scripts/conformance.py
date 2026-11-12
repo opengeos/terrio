@@ -1104,7 +1104,8 @@ def suite_jp2_colors(ctx):
         "GDAL JP2OpenJPEG reader",
         "Real Landsat components written with undefined, BGR, RGBA and ARGB roles. "
         "Python paths/bytes, CLI and optional Node/WASM must retain exact pixel values, "
-        "types, masks and channel roles, without inventing georeferencing. These are "
+        "types, masks and channel roles, without inventing georeferencing. Two Gray "
+        "components also retain their stored Y association through rio copies. These are "
         "reader comparisons, not compressed-byte identity with GDAL's encoder.", 2, extra=extra,
     )
 

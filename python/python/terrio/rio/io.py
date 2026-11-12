@@ -1035,6 +1035,8 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
             )
         self.structure.colorinterp = [ColorInterp(v) for v in value]
         self._colorinterp_set = True
+        # Explicit roles select fresh channel associations; copy restores stored ones afterward.
+        self._jp2_associations = []
         self._dirty = True
 
     def colormap(self, bidx: int) -> dict[int, tuple[int, int, int, int]]:
@@ -3015,9 +3017,7 @@ class DatasetWriter(DatasetReader):
         defaults = self._new_structure_defaults()
         # JP2 needs the whole role vector: once any role is written, omitted entries mean
         # Undefined rather than the band-count default, so every role is sent explicitly.
-        inherited_associations = (
-            getattr(self, "_jp2_associations", []) if not self._colorinterp_set else []
-        )
+        inherited_associations = getattr(self, "_jp2_associations", [])
         explicit_jp2_roles = (
             self._colorinterp_set or bool(inherited_associations)
         ) and _terrio.canonical_driver_name(driver) == "JP2"

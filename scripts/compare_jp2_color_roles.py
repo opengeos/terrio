@@ -5,6 +5,7 @@
 
 import argparse
 import json
+import struct
 import subprocess
 import tempfile
 from pathlib import Path
@@ -15,6 +16,7 @@ from osgeo import gdal
 import terrio
 import terrio.rio as rio
 from terrio.rio.enums import ColorInterp
+from terrio.rio.shutil import copy
 
 
 def compare(path, values, roles):
@@ -109,6 +111,40 @@ source.free();
                 except Exception as error:
                     record["error"] = f"{type(error).__name__}: {error}"
                 records.append(record)
+        # GDAL 3.13.3 reports both components as Gray; only cdef identifies luminance.
+        gray = pixels[:2]
+        roles = ("Gray", "Gray")
+        for y_band in (0, 1):
+            source = root / f"gray-y{y_band}.jp2"
+            with rio.open(source, "w", driver="JP2", width=width, height=height,
+                          count=2, dtype=str(gray.dtype)) as dst:
+                dst.colorinterp = (ColorInterp.gray, ColorInterp.gray)
+                dst.write(gray)
+            raw = bytearray(source.read_bytes())
+            offset = raw.index(b"cdef") + 6
+            definitions = [(b, 0, 1) if b == y_band else (b, 65535, 65535) for b in range(2)]
+            for b, definition in enumerate(definitions):
+                struct.pack_into(">HHH", raw, offset + 6 * b, *definition)
+            source.write_bytes(raw)
+            for driver in ("JP2", "JP2OpenJPEG"):
+                for opened in (False, True):
+                    record = dict(name=f"JP2 gray Y{y_band} rio-copy {driver} opened={opened}",
+                                  reference_gdal=gdal.VersionInfo("RELEASE_NAME"))
+                    output = root / f"gray-y{y_band}-{driver}-{opened}.jp2"
+                    try:
+                        if opened:
+                            with rio.open(source) as src:
+                                copy(src, output, driver=driver)
+                        else:
+                            copy(source, output, driver=driver)
+                        record.update(compare(output, gray, roles))
+                        copied = output.read_bytes()
+                        start = copied.index(b"cdef") + 6
+                        assert [struct.unpack_from(">HHH", copied, start + 6 * b)
+                                for b in range(2)] == definitions, "stored Y association changed"
+                    except Exception as error:
+                        record["error"] = f"{type(error).__name__}: {error}"
+                    records.append(record)
     def passed(record):
         return ("error" not in record and
                 all(record.get(key, False) for key in ("same_size", "same_type", "same_metadata", "same_georeferencing")) and

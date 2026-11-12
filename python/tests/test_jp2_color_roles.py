@@ -290,7 +290,9 @@ def test_signed_alpha_roles_are_rejected(tmp_path, dtype):
         _write(tmp_path, ("Gray", "Alpha"), dtype, False)
 
 
-@pytest.mark.parametrize("surface", ["update", "path", "memory"])
+@pytest.mark.parametrize(
+    "surface", ["update", "path", "memory", "rio-copy", "rio-copy-alias", "update-roles"]
+)
 @pytest.mark.parametrize("y_band", [0, 1])
 def test_gray_update_preserves_original_y_association(tmp_path, gdal, y_band, surface):
     values, path, raw = _write(tmp_path, ("Gray", "Gray"), "uint8", False)
@@ -309,12 +311,20 @@ def test_gray_update_preserves_original_y_association(tmp_path, gdal, y_band, su
     reference = gdal.Open(str(path))
     expected = reference.ReadAsArray()
     reference = None
-    if surface == "update":
+    if surface in ("update", "update-roles"):
         values[:, 3, 7] += 1
         expected[:, 3, 7] += 1
         with rio.open(path, "r+") as dst:
             assert dst.colorinterp == (ColorInterp.gray, ColorInterp.gray)
+            if surface == "update-roles":
+                dst.colorinterp = (ColorInterp.gray, ColorInterp.gray)
             dst.write(values)
+    elif surface.startswith("rio-copy"):
+        from terrio.rio.shutil import copy
+
+        source = path
+        path = tmp_path / "copied.jp2"
+        copy(source, path, driver="JP2OpenJPEG" if surface.endswith("alias") else "JP2")
     else:
         raster = terrio.open_raster(str(path), lazy=True)
         assert raster.band_metadata[y_band]["color_association"] == 1
@@ -325,8 +335,9 @@ def test_gray_update_preserves_original_y_association(tmp_path, gdal, y_band, su
             path.write_bytes(raster.to_bytes(path.name))
     header = next(payload for kind, payload in _boxes(path.read_bytes()) if kind == b"jp2h")
     definitions = next(payload for kind, payload in _boxes(header) if kind == b"cdef")
+    expected_y = 0 if surface == "update-roles" else y_band
     assert [struct.unpack_from(">HHH", definitions, 2 + 6 * band) for band in range(2)] == [
-        (band, 0, 1) if band == y_band else (band, 65535, 65535) for band in range(2)
+        (band, 0, 1) if band == expected_y else (band, 65535, 65535) for band in range(2)
     ]
     with rio.open(path) as result:
         assert result.colorinterp == (ColorInterp.gray, ColorInterp.gray)
