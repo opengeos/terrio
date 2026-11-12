@@ -1323,6 +1323,42 @@ node --test --test-name-pattern='vector geometry' js/tests/node.test.mjs
 python scripts/conformance.py ../terrio-data --only vector-geom
 ```
 
+## Packed unsigned TIFF output
+
+`python scripts/conformance.py ../data --only packed-tiff --strict` checks GTiff
+and COG writes and their Python/CLI copies against GDAL's TIFF decoder. The
+reference is locally validated with GDAL 3.13.3. Twelve synthetic cases cover
+1, 4, 7, 12, 24 and 31 bits, partial bytes, tile edges and generated COG overviews.
+An available `esa_worldcover_colormap.tif` adds a real 7-bit palette COG crop,
+checking exact base samples, masks, nodata, affine, CRS and the first 128 palette
+entries. Native and GDAL readers also compare every stored overview's samples.
+These are exact decoding/metadata checks, not compressed-byte or file-size claims.
+
+Native tests check MSB order, padding at every row boundary, clipping at 31 bits,
+and round trips at all widths 1–32 through stripes/tiles and pixel/band interleaving.
+Python regressions check bit-width preservation, bilevel palette copies, explicit
+width overrides and refusals. Node verifies the stored TIFF tags and values through
+explicit exports and copies that inherit the source width.
+
+## Packed-TIFF copy and overview metadata
+
+Packed-TIFF copy regressions also check predictor aliases, compression enums and
+NumPy dtype objects, nodata outside the stored bit domain, and shared readers with
+wider overviews. Internal/external overview tests retain each image's photometric
+tags and color table; the structure reader requests the base tags once and the
+external tags once when needed (no pixel reads by that metadata helper). Bilevel
+clipping is silent in GDAL 3.13.3, while wider streamed COG clipping warns on the
+calling thread. The packed conformance comparison requires synthetic COG overviews
+and verifies each overview's stored NBITS as well as its independently decoded values.
+
+Selected-overview COG copies are checked with internal and external three-level
+UInt16 pyramids storing 9/9/12 bits. GDAL 3.13.3 independently checks the selected
+pixels, the later level, the output width, rescaled affine/CRS and masks. A shared
+Rust width-inheritance policy is exercised through native writes and the Python
+copy adapter, including GTiff/COG default compression and ineffective uncompressed
+predictors. Type promotion across incompatible native overview containers is not
+part of these controls; native TIFF discovery filters those levels.
+
 ## Lazy GeoTIFF metadata and external overviews
 
 The `lazy-geotiff` conformance suite runs the Rust regressions for sample bit
@@ -1548,6 +1584,7 @@ regressions count requests and connections for plain HTTP stats and remote zip m
 copies of `/vsimem/` archives and moves (none). `compare_vsi_with_gdal.py` reports the same 25
 identical rows before and after.
 
+
 ```sh
 python scripts/compare_vsi_with_gdal.py ../terrio-data --terrio target/release/terrio
 # Add --remote to compare public cloud stores and HTTP sources.
@@ -1557,6 +1594,7 @@ cargo test -p terrio-cli --test vsi     # S3 (local server): paging, uploads, ET
 pytest python/tests/test_vsi.py
 node --test --test-name-pattern='vsi' js/tests/node.test.mjs
 ```
+
 
 ## Raster query I/O (#289)
 
@@ -1602,6 +1640,8 @@ The full release dry run is manual: select **Release dry run → Run workflow** 
 GitHub Actions before tagging a release. It builds the complete cross-platform
 wheel, CLI, installer and npm matrix without publishing. Pull requests retain the
 normal CI checks, including Python, WASM, API documentation and package validation.
+
+
 
 ## Pixel-operation buffer checks
 
@@ -1659,6 +1699,7 @@ A local HTTP range-server measurement of lazy `info` opened the 610,612-byte
 `cog.tif` and the OPERA palette GeoTIFF with one GET and 65,536 response-body bytes
 each after color-table retention. The table does not require pixel decoding; these
 are observations for those two fixtures, not a bound for every palette TIFF.
+
 
 ## Footprint index creation (#289)
 
@@ -1857,6 +1898,7 @@ pytest python/tests/test_inspection.py
 node --test --test-name-pattern='identify inspects' js/tests/node.test.mjs
 ```
 
+
 ## Dataset file management (#289)
 
 The `dataset-files` suite uses GDAL 3.13.3 and real Landsat/Natural Earth derivatives.
@@ -2018,6 +2060,7 @@ budget, native advisory append locks, absent-output races in native/memory stora
 colon-containing path components and stale native reopens (including equal-length,
 restored-mtime replacements). Native first opens retain their original handle; identity
 checks add metadata checks without extra archive opens.
+
 
 ## GeoPackage specification validation
 
@@ -2308,6 +2351,7 @@ Single local optimized CLI runs on 1,000 and 2,000 unit spokes meeting at one
 vertex took 0.279 and 1.358 seconds, including I/O. Both outputs retained all
 spokes and total length; these measurements do not establish a latency bound.
 
+
 ### Coverage-cleaning runtime observation
 
 Three warm local command runs with GDAL 3.13.3-derived inputs measured median
@@ -2468,6 +2512,7 @@ WFS identification without `--deep` also stays header-only: the regression serve
 a capabilities document over 1 MiB and records one request consuming 16,384 bytes.
 An explicit deep fallback may read the complete capabilities metadata when its
 root cannot be recognized from that prefix.
+
 
 ### Cumulative viewshed
 
@@ -2782,23 +2827,6 @@ with roughly 17 KiB of coordinate/validity scratch rather than allocating an ent
 output-width row before memory-limit splitting. The polar regression starts off a
 global batch boundary and spans several batches; RPC batch membership stays global.
 
-## Packed unsigned TIFF output
-
-`python scripts/conformance.py ../data --only packed-tiff --strict` checks GTiff
-and COG writes and their Python/CLI copies against GDAL's TIFF decoder. The
-reference is locally validated with GDAL 3.13.3. Twelve synthetic cases cover
-1, 4, 7, 12, 24 and 31 bits, partial bytes, tile edges and generated COG overviews.
-An available `esa_worldcover_colormap.tif` adds a real 7-bit palette COG crop,
-checking exact base samples, masks, nodata, affine, CRS and the first 128 palette
-entries. Native and GDAL readers also compare every stored overview's samples.
-These are exact decoding/metadata checks, not compressed-byte or file-size claims.
-
-Native tests check MSB order, padding at every row boundary, clipping at 31 bits,
-and round trips at all widths 1–32 through stripes/tiles and pixel/band interleaving.
-Python regressions check bit-width preservation, bilevel palette copies, explicit
-width overrides and refusals. Node verifies the stored TIFF tags and values through
-explicit exports and copies that inherit the source width.
-
 ## Shapefile projection decoding warnings
 
 `python/tests/test_pyogrio_prj.py` checks invalid Latin-1 and UTF-16 sidecars through
@@ -2863,26 +2891,6 @@ reduced squares from 4,870 to 1,220 compressed bytes and about 0.93 to 0.45 ms C
 a WorldCover tile stayed at 27,597 bytes and took about 2.62 versus 3.47 ms.
 A half-zero/half-noise UInt16 control grew 72 bytes out of about 265 KiB. These
 measurements describe the size/CPU tradeoff and are not universal speed claims.
-
-## Packed-TIFF copy and overview metadata
-
-Packed-TIFF copy regressions also check predictor aliases, compression enums and
-NumPy dtype objects, nodata outside the stored bit domain, and shared readers with
-wider overviews. Internal/external overview tests retain each image's photometric
-tags and color table; the structure reader requests the base tags once and the
-external tags once when needed (no pixel reads by that metadata helper). Bilevel
-clipping is silent in GDAL 3.13.3, while wider streamed COG clipping warns on the
-calling thread. The packed conformance comparison requires synthetic COG overviews
-and verifies each overview's stored NBITS as well as its independently decoded values.
-
-Selected-overview COG copies are checked with internal and external three-level
-UInt16 pyramids storing 9/9/12 bits. GDAL 3.13.3 independently checks the selected
-pixels, the later level, the output width, rescaled affine/CRS and masks. A shared
-Rust width-inheritance policy is exercised through native writes and the Python
-copy adapter, including GTiff/COG default compression and ineffective uncompressed
-predictors. Type promotion across incompatible native overview containers is not
-part of these controls; native TIFF discovery filters those levels.
-
 ## GeoPackage raster allocation checks
 
 Run `cargo test -p terrio --lib drivers::gpkg::tests` and

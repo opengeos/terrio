@@ -38,6 +38,8 @@ def verify(path, values, bits, transform, crs, nodata=None, palette=None, requir
     expected_mask = np.full(values.shape, 255, dtype="uint8") if nodata is None else np.where(values == nodata, 0, 255).astype("uint8")
     np.testing.assert_array_equal(band.GetMaskBand().ReadAsArray(), expected_mask)
     if palette is not None:
+        if len(palette) < 1 << bits:
+            raise ValueError("source palette has fewer than 2**NBITS entries")
         actual = band.GetRasterColorTable()
         if actual is None or actual.GetCount() != 1 << bits:
             raise ValueError("palette does not have 2**NBITS entries")
