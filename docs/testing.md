@@ -788,7 +788,7 @@ nodata and validity are checked; interpolated Float32 elevations allow 0.002 m.
 
 ```sh
 python scripts/conformance.py ../terrio-data --only warp-policy --strict
-cargo test -p terrio --test merged crs_policy::
+cargo test -p terrio --test crs_policy
 cargo test -p terrio-cli --test mcp coordinate_operation_warnings_and_controls_reach_mcp
 ```
 
@@ -1403,7 +1403,7 @@ reads the `.ovr` it refreshes, and no other sidecar (in `raster_manage`:
 `external_overviews_refreshed_under_empty_dir_read_no_other_sidecar`).
 
 ```sh
-cargo test -p terrio --test merged -- external_overviews:: geotiff_nodata::
+cargo test -p terrio --test external_overviews --test geotiff_nodata
 python scripts/conformance.py ../terrio-data --only lazy-geotiff --strict
 ```
 

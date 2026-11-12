@@ -90,9 +90,9 @@ for the end.
 
 terrio's integration tests (`crates/terrio/tests/*.rs`) are modules of one test binary, `merged`
 (`tests/merged/main.rs`): run one file's tests with `--test merged <file>::`. A file that sets driver
-allow-lists, environment variables or configuration, installs a global allocator, measures the
-process's memory, runs its own test binary again, or is run with other features or targets is a
-binary of its own instead (a
+allow-lists, environment variables, configuration or CRS settings (grid paths, network), reads
+process-wide counters, installs a global allocator, measures the process's memory, runs its own test
+binary again, or is run by name (CI, docs, scripts) is a binary of its own instead (a
 `[[test]]` of `crates/terrio/Cargo.toml`, run with `--test <file>`). Add a new file to one of the
 two; a test checks that each file is built once.
 

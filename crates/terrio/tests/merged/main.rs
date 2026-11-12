@@ -1,8 +1,9 @@
 //! The integration tests that neither change nor measure process-wide state, built as modules of
 //! one test binary: one compile and link of terrio's test dependencies instead of one per file.
-//! A file that sets driver allow-lists, environment variables or configuration, installs a global
-//! allocator, measures the process's memory, runs its own test binary again, or is run with other
-//! features or targets is a test target of its own instead (`[[test]]` in Cargo.toml). Run one
+//! A file that sets driver allow-lists, environment variables, configuration or CRS settings (grid
+//! paths, network), reads process-wide counters, installs a global allocator, measures the process's
+//! memory, runs its own test binary again, or is run by name (CI, docs, scripts) is a test target of
+//! its own instead (`[[test]]` in Cargo.toml). Run one
 //! file's tests with `cargo test -p terrio --test merged <file>::`.
 
 // Each file declares the shared helpers (`tests/common/`) it uses as its own modules, as when it was
@@ -13,40 +14,24 @@
 mod cad;
 #[path = "../catalog.rs"]
 mod catalog;
-#[path = "../cdn_default_off.rs"]
-mod cdn_default_off;
 #[path = "../citygml.rs"]
 mod citygml;
 #[path = "../cityjson.rs"]
 mod cityjson;
 #[path = "../crs_compat.rs"]
 mod crs_compat;
-#[path = "../crs_grids_remote.rs"]
-mod crs_grids_remote;
-#[path = "../crs_point_motion.rs"]
-mod crs_point_motion;
-#[path = "../crs_policy.rs"]
-mod crs_policy;
-#[path = "../crs_vertical.rs"]
-mod crs_vertical;
 #[path = "../deep_wkt_sinks.rs"]
 mod deep_wkt_sinks;
 #[path = "../dem_calc_real_data.rs"]
 mod dem_calc_real_data;
 #[path = "../epsg_raster_wkt.rs"]
 mod epsg_raster_wkt;
-#[path = "../esri.rs"]
-mod esri;
 #[path = "../esrijson.rs"]
 mod esrijson;
 #[path = "../esrijson_service.rs"]
 mod esrijson_service;
 #[path = "../esripbf_service.rs"]
 mod esripbf_service;
-#[path = "../external_overviews.rs"]
-mod external_overviews;
-#[path = "../file_list.rs"]
-mod file_list;
 #[path = "../flatgeobuf_hostile.rs"]
 mod flatgeobuf_hostile;
 #[path = "../gdal_redirect_policy.rs"]
@@ -61,16 +46,10 @@ mod geopackage;
 mod geoparquet_arrow;
 #[path = "../georeferencing.rs"]
 mod georeferencing;
-#[path = "../geostationary.rs"]
-mod geostationary;
-#[path = "../geotiff_band_metadata.rs"]
-mod geotiff_band_metadata;
 #[path = "../geotiff_complex.rs"]
 mod geotiff_complex;
 #[path = "../geotiff_compound_crs.rs"]
 mod geotiff_compound_crs;
-#[path = "../geotiff_nodata.rs"]
-mod geotiff_nodata;
 #[path = "../geotiff_unit_names.rs"]
 mod geotiff_unit_names;
 #[path = "../gpkg_layers_writer.rs"]
@@ -81,8 +60,6 @@ mod grib;
 mod hdf5_compound;
 #[path = "../hdf_products.rs"]
 mod hdf_products;
-#[path = "../hecras_corpus.rs"]
-mod hecras_corpus;
 #[path = "../hecras_driver.rs"]
 mod hecras_driver;
 #[path = "../hecras_results.rs"]
@@ -95,12 +72,6 @@ mod identify_features;
 mod jts_behavior;
 #[path = "../layer_selection.rs"]
 mod layer_selection;
-#[path = "../lazy_reads.rs"]
-mod lazy_reads;
-#[path = "../lazy_rpc.rs"]
-mod lazy_rpc;
-#[path = "../lazy_sample_bits.rs"]
-mod lazy_sample_bits;
 #[path = "../lazy_tiff_errors.rs"]
 mod lazy_tiff_errors;
 #[path = "../multidim.rs"]
@@ -117,8 +88,6 @@ mod parquet_zstd;
 mod pointcloud;
 #[path = "../pointcloud_features.rs"]
 mod pointcloud_features;
-#[path = "../pointcloud_heights.rs"]
-mod pointcloud_heights;
 #[path = "../pointcloud_more.rs"]
 mod pointcloud_more;
 #[path = "../pointcloud_write_filters.rs"]
@@ -165,8 +134,6 @@ mod stac_geozarr;
 mod stacta;
 #[path = "../tiff_limits.rs"]
 mod tiff_limits;
-#[path = "../tiles.rs"]
-mod tiles;
 #[path = "../topology.rs"]
 mod topology;
 #[path = "../unreferenced_writes.rs"]
