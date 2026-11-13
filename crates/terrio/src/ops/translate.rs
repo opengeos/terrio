@@ -104,6 +104,16 @@ fn terminal_open_error(error: &Error, name: &str) -> bool {
         || matches!(error, Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound && !crate::vfs::is_gdal_name(name))
 }
 
+/// A missing plain local path reads as `info` reports it, not as the bare OS error.
+fn missing_local_file(error: Error, path: &str) -> Error {
+    match error {
+        Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound && !crate::vfs::is_gdal_name(path) => {
+            Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("'{path}' does not exist")))
+        }
+        other => other,
+    }
+}
+
 /// Refuses a stored-level selector before allocating a whole raster.
 fn require_whole_read(overview: OverviewSelection, name: &str, cause: Option<&Error>) -> Result<()> {
     if matches!(overview, OverviewSelection::Level(_) | OverviewSelection::AutoOffset(1..)) {
@@ -122,7 +132,7 @@ fn open_path(path: &str, overview: OverviewSelection) -> Result<OpenedRaster> {
     } else {
         match crate::open_raster_lazy(path) {
             Ok(src) => return Ok(OpenedRaster::Lazy(src)),
-            Err(error) if terminal_open_error(&error, path) => return Err(error),
+            Err(error) if terminal_open_error(&error, path) => return Err(missing_local_file(error, path)),
             Err(error) => Some(error),
         }
     };
@@ -1197,6 +1207,16 @@ mod tests {
             let result = translate_path(path, &TranslateOptions::default(), OverviewSelection::Level(0));
             assert!(matches!(result, Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound), "{path}");
         }
+    }
+
+    #[test]
+    fn missing_local_input_reads_does_not_exist() {
+        let missing = tempfile::tempdir().unwrap().path().join("missing.tif");
+        let Err(error) = translate_path(missing.to_str().unwrap(), &TranslateOptions::default(), OverviewSelection::Auto) else {
+            panic!("a missing input translated");
+        };
+        assert!(matches!(&error, Error::Io(e) if e.kind() == std::io::ErrorKind::NotFound), "{error}");
+        assert!(error.to_string().ends_with("does not exist"), "{error}");
     }
 
     #[test]

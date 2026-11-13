@@ -1295,6 +1295,10 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     }
     match raster {
         Ok(r) => Ok(Dataset::Raster(r)),
+        // The raster reader's message names the path already when no format matched: append the hint only.
+        Err(raster_err) if !wbvector_fallback_allowed() && raster_err.to_string().contains("format not recognized") => {
+            Err(Error::Unsupported(format!("{raster_err}; TERRIO_WBVECTOR_FALLBACK=YES lets wbvector detect it")))
+        }
         Err(raster_err) if !wbvector_fallback_allowed() => Err(Error::Unsupported(format!(
             "'{path}': format not recognized ({raster_err}; TERRIO_WBVECTOR_FALLBACK=YES lets wbvector detect it)"
         ))),
@@ -2311,6 +2315,21 @@ pub(crate) mod fallible {
 
 #[cfg(test)]
 mod tests {
+    /// A file no driver reads names its path once, with the fallback hint after the reason.
+    #[test]
+    fn unrecognized_format_names_its_path_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, "not geospatial\n").unwrap();
+        let Err(error) = super::open_local(path.to_str().unwrap(), &crate::VectorOpenOptions::default()) else {
+            panic!("a text file opened as a dataset");
+        };
+        let message = error.to_string();
+        assert_eq!(message.matches("format not recognized").count(), 1, "{message}");
+        assert_eq!(message.matches("notes.txt").count(), 1, "{message}");
+        assert!(message.contains("TERRIO_WBVECTOR_FALLBACK=YES"), "{message}");
+    }
+
     /// GDAL 3.13.3's NBITS item remains visible beside other IMAGE_STRUCTURE items.
     #[test]
     fn inherited_width_is_found_after_other_image_structure_domains() {
