@@ -602,7 +602,7 @@ fn parse_any_order(bytes: Vec<u8>) -> Result<Vec<Layer>> {
 /// Parses OSM XML into GDAL's five layers. Tags keep the file's order.
 pub fn parse_xml(bytes: &[u8]) -> Result<Vec<Layer>> {
     use quick_xml::events::Event;
-    let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("OSM XML: {e}"));
+    let err = |e: &dyn std::fmt::Display| super::document_error("OSM XML", e);
     let text = super::xml::decode(bytes);
     let mut reader = quick_xml::Reader::from_str(&text);
     let mut b = Builder::new();
@@ -612,6 +612,7 @@ pub fn parse_xml(bytes: &[u8]) -> Result<Vec<Layer>> {
     let mut refs: Vec<i64> = Vec::new();
     let mut members: Vec<(Member, String)> = Vec::new();
     let mut tags: Vec<(String, String)> = Vec::new();
+    let mut root_seen = false;
     let attr = |e: &quick_xml::events::BytesStart, name: &str| -> Option<String> {
         let a = e.attributes().flatten().find(|a| {
             let k: &str = a.key.as_ref();
@@ -629,6 +630,12 @@ pub fn parse_xml(bytes: &[u8]) -> Result<Vec<Layer>> {
         if let Some(e) = start {
             let qname = e.name();
             let name: &str = qname.as_ref();
+            if !root_seen {
+                if name.rsplit(':').next() != Some("osm") {
+                    return Err(super::document_error("OSM XML", format!("expected <osm> root element, found <{name}>")));
+                }
+                root_seen = true;
+            }
             match name {
                 "node" | "way" | "relation" => {
                     kind = Some(match name {
@@ -671,6 +678,9 @@ pub fn parse_xml(bytes: &[u8]) -> Result<Vec<Layer>> {
             Event::Eof => break,
             _ => {}
         }
+    }
+    if !root_seen {
+        return Err(super::document_error("OSM XML", "missing <osm> root element"));
     }
     Ok(b.finish())
 }
@@ -817,6 +827,9 @@ fn blob_spans(r: &mut dyn PbfInput) -> Result<(Vec<std::ops::Range<u64>>, bool)>
     use std::io::{Read, SeekFrom};
     let bad = pbf::bad;
     let len = r.seek(SeekFrom::End(0))?;
+    if len == 0 {
+        return Err(super::document_error("OSM PBF", "empty input has no blob header"));
+    }
     r.seek(SeekFrom::Start(0))?;
     let mut r = std::io::BufReader::with_capacity(1 << 16, r);
     let mut spans = Vec::new();
@@ -1505,6 +1518,17 @@ pub(crate) fn read_sorted_pbf(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn osm_document_identity_is_required_but_empty_documents_remain_valid() {
+        for data in [b"".as_slice(), b"<html/>", b"<gpx/>", b"<kml/>"] {
+            assert!(parse_xml(data).is_err_and(|error| super::super::is_document_error(&error)));
+        }
+        assert_eq!(parse_xml(b"<osm version=\"0.6\"/>").unwrap().len(), 5);
+        assert!(blob_spans(&mut std::io::Cursor::new(Vec::<u8>::new())).is_err_and(|error| super::super::is_document_error(&error)));
+        let header = fileblock("OSMHeader", &Msg::default().bytes(1, &[]).0);
+        assert!(blob_spans(&mut std::io::Cursor::new(header)).unwrap().0.is_empty());
+    }
 
     #[test]
     fn rejects_overflowing_and_truncated_protobuf() {

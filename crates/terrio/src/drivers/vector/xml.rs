@@ -7,6 +7,15 @@ use crate::{Error, Result};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
+/// Parses an XML document and requires the format's root element, allowing namespace prefixes.
+pub(crate) fn parse_document(text: &str, expected: &str, format: &str) -> Result<Element> {
+    let root = parse(text).map_err(|error| if error.is_resource_refusal() { error } else { super::document_error(format, error) })?;
+    if root.name != expected {
+        return Err(super::document_error(format, format!("expected <{expected}> root element, found <{}>", root.name)));
+    }
+    Ok(root)
+}
+
 /// An XML element.
 #[derive(Debug, Clone, Default)]
 pub struct Element {

@@ -246,6 +246,7 @@ pub(crate) struct SchemaScan {
 /// as json-c (GDAL's parser) and `serde_json::Value` keep it.
 #[derive(Default)]
 struct Probe {
+    record_type: Value,
     id: Value,
     properties: Value,
     stac_version: bool,
@@ -332,6 +333,7 @@ impl<'de> serde::Deserialize<'de> for Probe {
                 let mut p = Probe::default();
                 while let Some(key) = map.next_key::<Key>()? {
                     match key {
+                        Key::Type => p.record_type = map.next_value()?,
                         Key::Id => p.id = map.next_value()?,
                         Key::Properties => p.properties = map.next_value()?,
                         Key::StacVersion => {
@@ -698,13 +700,30 @@ impl SchemaScan {
     /// Adds a feature given by its JSON text, decoding only its id and properties unless it is
     /// a STAC item.
     pub(crate) fn observe_raw(&mut self, raw: &[u8]) -> Result<()> {
-        let err = |e: serde_json::Error| Error::InvalidData(format!("GeoJSON: {e}"));
+        self.observe_raw_kind(raw, false)
+    }
+
+    /// Adds a sequence record, refusing collections and non-GeoJSON objects before decoding.
+    pub(crate) fn observe_seq_raw(&mut self, raw: &[u8]) -> Result<()> {
+        self.observe_raw_kind(raw, true)
+    }
+
+    fn observe_raw_kind(&mut self, raw: &[u8], sequence: bool) -> Result<()> {
+        let err = |e: serde_json::Error| {
+            if sequence { super::document_error("GeoJSONSeq", e) } else { Error::InvalidData(format!("GeoJSON: {e}")) }
+        };
         if self.stac.is_none() || self.stac == Some(true) {
             let v: Value = serde_json::from_slice(raw).map_err(err)?;
+            if sequence {
+                validate_seq_type(&v["type"])?;
+            }
             self.observe(&v);
             return Ok(());
         }
         let p: Probe = serde_json::from_slice(raw).map_err(err)?;
+        if sequence {
+            validate_seq_type(&p.record_type)?;
+        }
         let _ = p.stac_version;
         self.string_ids |= p.id.is_string();
         if let Some(t) = p.geometry {
@@ -1196,7 +1215,7 @@ pub fn parse_seq(bytes: &[u8], name: &str) -> Result<Layer> {
     let mut scan = SchemaScan::default();
     let lines: Vec<&[u8]> = bytes.split(|&b| b == b'\n').map(seq_record).filter(|l| !l.is_empty()).collect();
     for l in &lines {
-        scan.observe_raw(l)?;
+        scan.observe_seq_raw(l)?;
     }
     let mut layer = scan.layer(name, None);
     let decoder = FeatureDecoder::new(&layer, &scan);
@@ -1204,6 +1223,18 @@ pub fn parse_seq(bytes: &[u8], name: &str) -> Result<Layer> {
     layer.features = decoder.features_raw(0, &raw)?;
     declare(scan.geom);
     Ok(layer)
+}
+
+/// Requires a feature or geometry record, rather than decoding other objects as empty features.
+fn validate_seq_type(kind: &Value) -> Result<()> {
+    if matches!(
+        kind.as_str(),
+        Some("Feature" | "Point" | "MultiPoint" | "LineString" | "MultiLineString" | "Polygon" | "MultiPolygon" | "GeometryCollection")
+    ) {
+        Ok(())
+    } else {
+        Err(super::document_error("GeoJSONSeq", "expected a Feature or geometry record"))
+    }
 }
 
 /// A line of a text sequence without its record separators and surrounding white space.

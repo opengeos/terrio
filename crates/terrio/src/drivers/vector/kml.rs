@@ -170,7 +170,7 @@ fn kmz_styled<R: std::io::Read + std::io::Seek>(reader: R, default_name: &str) -
     let names: Vec<String> = zip.archive().file_names().filter_map(|n| n.ok().map(|n| n.into_owned())).collect();
     let (main_index, main) = main_document(zip.archive())?;
     let mut documents_budget = max_kmz_document_bytes();
-    let root = xml::parse(&read_document_at(&mut zip, main_index, &mut documents_budget)?)?;
+    let root = xml::parse_document(&read_document_at(&mut zip, main_index, &mut documents_budget)?, "kml", "KML")?;
     // The documents that are layers, each with its layer name.
     let mut links = Vec::new();
     root.find_all("NetworkLink", &mut links);
@@ -187,7 +187,11 @@ fn kmz_styled<R: std::io::Read + std::io::Seek>(reader: R, default_name: &str) -
             continue;
         }
         let name = link.child_text("name").map_or_else(|| stem(href), str::to_string);
-        documents.push((href.to_string(), xml::parse(&read_document(&mut zip, href, &mut documents_budget)?)?, name));
+        documents.push((
+            href.to_string(),
+            xml::parse_document(&read_document(&mut zip, href, &mut documents_budget)?, "kml", "KML")?,
+            name,
+        ));
     }
     // The documents styles live in, as far as links from one to the next go. Each is read once here
     // (a layer document a styleUrl names was also read above, and counts again toward
@@ -252,7 +256,7 @@ pub fn parse(text: &str, default_name: &str) -> Result<Vec<Layer>> {
 
 /// Parses KML text, with its style table.
 pub fn parse_styled(text: &str, default_name: &str) -> Result<Styled> {
-    let root = xml::parse(text)?;
+    let root = xml::parse_document(text, "kml", "KML")?;
     let mut table = Vec::new();
     let mut known = HashMap::new();
     let mut layers = layers_of(&root, "", &kml_style::MemberIndex::new(), default_name, false, &mut table, &mut known);

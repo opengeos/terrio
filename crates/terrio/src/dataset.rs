@@ -1074,6 +1074,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
         e if e.is_resource_refusal() => false,
         // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
         Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => vfs::is_gdal_name(path),
+        error if crate::drivers::vector::is_document_error(error) => false,
         _ => true,
     };
     if !retry {
@@ -1089,6 +1090,16 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
 #[cfg(all(test, feature = "gdal"))]
 mod fallback_tests {
     use super::*;
+
+    #[test]
+    fn wrong_document_refusals_are_not_retried() {
+        let error = crate::drivers::vector::kml::parse_styled("<html/>", "input").unwrap_err();
+        for path in ["input.kml", "https://example.test/input.kml?signature=secret"] {
+            let named = naming_dataset(Error::InvalidData(error.to_string()), path, "input.kml");
+            let result: Result<()> = gdal_fallback(path, Err(named), |_| panic!("wrong-document refusal retried through GDAL"));
+            assert!(result.is_err_and(|error| crate::drivers::vector::is_document_error(&error)));
+        }
+    }
 
     #[test]
     fn missing_windows_files_are_not_retried() {

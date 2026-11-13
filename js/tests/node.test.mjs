@@ -340,6 +340,44 @@ test("GML projected authority axes keep GIS XY through byte reads and writes", (
   }
 });
 
+test("vector document kinds are checked before creating empty layers", () => {
+  const encode = (text) => new TextEncoder().encode(text);
+  for (const name of ["wrong.kml", "wrong.gpx"]) {
+    for (const text of ["<html/>", "<svg/>", ""]) {
+      assert.throws(() => terrio.open(encode(text), name), /invalid document/);
+    }
+  }
+  for (const text of ['{"type":"FeatureCollection","features":[]}', '{"hello":"world"}', "null"]) {
+    assert.throws(() => terrio.open(encode(text), "wrong.geojsonl"), /GeoJSONSeq.*invalid document/);
+  }
+  for (const [name, text, count] of [
+    ["empty.gpx", '<gpx version="1.1"/>', 5],
+    ["empty.geojsonl", "", 1],
+  ]) {
+    const ds = terrio.open(encode(text), name);
+    assert.equal(ds.layerNames().length, count);
+    ds.free();
+  }
+  // The JS wrapper still requires a selected layer when a valid KML has no layers.
+  assert.throws(() => terrio.open(encode("<kml><Document/></kml>"), "empty.kml"), /no layer named/);
+  const record = '{"type":"Feature","properties":{"n":1},"geometry":null}';
+  const ds = terrio.open(encode(`${record}\n{"type":"Point","coordinates":[10,46]}\n`), "valid.geojsonl");
+  assert.equal(ds.toGeoJSON().features.length, 2);
+  ds.free();
+  assert.throws(() => terrio.open(encode(`${record}\n{"hello":"world"}\n`), "later.geojsonl"), /GeoJSONSeq/);
+});
+
+test("OSM document kinds distinguish empty data from missing headers", { skip: needs("osm") }, () => {
+  for (const name of ["wrong.osm", "wrong.osm.pbf"]) {
+    for (const text of ["<html/>", "<gpx/>", ""]) {
+      assert.throws(() => terrio.open(new TextEncoder().encode(text), name));
+    }
+  }
+  const ds = terrio.open(new TextEncoder().encode('<osm version="0.6"/>'), "empty.osm");
+  assert.equal(ds.layerNames().length, 5);
+  ds.free();
+});
+
 test("vector from GeoJSON, to other formats and back", () => {
   const ds = terrio.fromGeoJSON(SQUARES, "squares");
   assert.equal(ds.kind, "vector");
