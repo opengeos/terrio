@@ -3841,9 +3841,9 @@ def suite_coverage_clean(ctx):
 
 
 def suite_wfs(ctx):
-    """Local GML axis-order controls and public WFS feature reads versus GDAL."""
+    """Local GML authority exports, axis controls and public WFS reads versus GDAL."""
     suite = Suite("wfs", "WFS services and extensionless responses", "GDAL WFS/GML/GeoJSON",
-                  "Local GML northing-first/easting-first/geographic controls with URN/URL/legacy names, exports and reprojection. "
+                  "Local GML EPSG/ESRI/IAU authority exports and northing-first/easting-first/geographic controls with URN/URL/legacy names and reprojection. "
                   "Public WFS 1.0/1.1/2.0 catalogs; selected complete layers and opaque GetFeature URLs. "
                   "Exact field names, attributes, source IDs and CRS; field types checked, with direct GML integer inference differences reported. "
                   "Every linear geometry vertex within 1e-8 CRS units. Unavailable reference services are not compared. Generated numeric FIDs are ignored.")

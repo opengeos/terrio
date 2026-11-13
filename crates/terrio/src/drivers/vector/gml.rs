@@ -993,11 +993,11 @@ mod tests {
     #[test]
     fn gml_refuses_an_esri_code_that_conflicts_with_stored_parameters() {
         let canonical = SpatialRef::parse_literal("ESRI:102003").unwrap().to_wkt().unwrap();
-        // The registry WKT can omit its ID; this regression exercises an explicit claim.
-        let canonical = format!(r#"{},AUTHORITY["ESRI","102003"]]"#, canonical.strip_suffix(']').unwrap());
-        let changed = canonical.replace("-96", "-95");
+        let changed = canonical.replace(r#"PARAMETER["longitude_of_center",-96]"#, r#"PARAMETER["longitude_of_center",-95]"#);
         assert_ne!(changed, canonical);
         let mut layer = Layer::new("places");
+        // GML attaches srsName to an envelope or geometry, so the success control needs one.
+        layer.push(Feature { fid: 0, geometry: Some(Geometry::point(12., 34.)), attributes: vec![] });
         layer.set_crs_wkt(Some(changed));
         assert!(matches!(to_string(&layer, ""), Err(Error::Unsupported(message)) if message.contains("cannot name")));
         layer.set_crs_wkt(Some(canonical));

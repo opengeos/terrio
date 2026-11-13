@@ -176,7 +176,9 @@ def test_declared_esri_parameters_are_checked_before_naming(tmp_path, altered):
     """
     definition = points("ESRI:102003").crs_wkt
     if altered:
-        changed = definition.replace("-96", "-95")
+        changed = definition.replace(
+            'PARAMETER["central_meridian",-96]', 'PARAMETER["central_meridian",-95]'
+        )
         assert changed != definition
         definition = changed
     layer = points(definition)
