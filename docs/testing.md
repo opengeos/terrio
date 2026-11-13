@@ -1527,6 +1527,14 @@ GDAL reads WKT with) read terrio's strict WKT 1 of every custom definition of th
 points must transform as from the original within 1 mm or 1e-8 degrees
 (`scripts/compare_wkt1_strict_with_proj.py`, needs pyproj).
 
+GeoTIFF GeoKeys (`SpatialRef::from_geokeys`, `SpatialRef::to_geokeys`) are compared with GDAL
+3.12.1 (rasterio 1.5.0) on 373 CRSs (every 20th EPSG projected and geographic 2D code, rule
+codes, PROJ strings of every method GeoTIFF names in other units and datums, ESRI codes and
+compound CRSs): GDAL's GeoKeys must read as the CRS GDAL reads from them, and terrio's must hold
+GDAL's model type, codes, method, linear unit and projection parameters and read back as the CRS
+(`cargo test -p terrio-crs --test geokeys_gdal`; regenerate with `scripts/gen_geokeys_gdal.py`,
+rasterio 1.5.0, pyproj 3.8.0, numpy and tifffile).
+
 PROJJSON export (`SpatialRef::to_projjson`) has unit tests of each kind of CRS and refusal
 (`cargo test -p terrio-crs --test projjson_export`); `--only projjson-export` compares it with
 live PROJ's PROJJSON of 52 CRSs by meaning and has GDAL read those and every IAU_2015 CRS, whose

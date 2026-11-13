@@ -1391,8 +1391,9 @@ crates/terrio-crs/data/crs_catalog.tsv.zst are derived from the same dataset (EP
 through PROJ 9.8.1's database and GDAL (scripts/gen_crs_catalog.py), under the same terms.
 The EPSG rows of the test data crates/terrio-crs/tests/data/proj_string_export.tsv and
 wkt1_strict_export.tsv (PROJ 9.8.1's PROJ strings and WKT 1 of EPSG CRSs, by
-scripts/gen_proj_string_export.py and scripts/gen_wkt1_strict_export.py) are derived from the
-same dataset, under the same terms.
+scripts/gen_proj_string_export.py and scripts/gen_wkt1_strict_export.py) and geokeys_gdal.tsv
+(GDAL 3.12.1's GeoKeys and WKT 1 of EPSG CRSs, by scripts/gen_geokeys_gdal.py) are derived from
+the same dataset, under the same terms.
 
 -------------------------------------------------------------------------------
 Esri projection engine data
@@ -1405,7 +1406,7 @@ The ESRI names, areas of use and projection method names in
 crates/terrio-crs/data/crs_catalog.tsv.zst are derived from the same documentation (ArcGIS Pro
 3.6), through PROJ 9.8.1's database, as are the ESRI rows of the test data
 crates/terrio-crs/tests/data/proj_string_export.tsv and wkt1_strict_export.tsv (PROJ 9.8.1's
-PROJ strings and WKT 1 of ESRI CRSs).
+PROJ strings and WKT 1 of ESRI CRSs) and geokeys_gdal.tsv (GDAL 3.12.1's GeoKeys of ESRI CRSs).
 
   Copyright © 2010-2025 Esri
 

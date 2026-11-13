@@ -5,11 +5,28 @@
 //     libgeotiff/geo_normalize.c
 // No code is translated from these sources.
 
-//! User-defined coordinate reference systems in GeoTIFF GeoKeys: the projection method and its
-//! parameters, as GDAL writes them for CRSs without an EPSG code, and ESRI PE citations.
+//! Coordinate reference systems in GeoTIFF GeoKeys (GeoTIFF 1.1, OGC 19-008r4), as GDAL reads and
+//! writes them: EPSG codes, user-defined geographic and projected CRSs (the projection method
+//! and its parameters, for CRSs without an EPSG code), vertical CRSs and ESRI PE citations.
+//!
+//! [`read`] (and [`SpatialRef::from_geokeys`]) reads the CRS of a GeoKey directory,
+//! [`SpatialRef::to_geokeys`] gives the GeoKeys of a CRS and [`GeoKeyValues::encode`] the three
+//! TIFF tags that hold them.
+//!
+//! ```
+//! use terrio_crs::SpatialRef;
+//!
+//! let keys = SpatialRef::from_epsg(32633)?.to_geokeys()?;
+//! let tags = keys.encode();
+//! let read = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, &tags.ascii)?;
+//! assert_eq!(read.epsg, Some(32633));
+//! # Ok::<(), terrio_crs::Error>(())
+//! ```
+
+use crate::{Error, Result, SpatialRef};
 
 /// GeoKey directory access: `(location, count, value_or_offset)` by key id.
-pub(crate) struct GeoKeys<'a> {
+struct GeoKeys<'a> {
     /// The GeoKeyDirectoryTag values.
     pub keys: &'a [u16],
     /// The GeoDoubleParamsTag values.
@@ -53,6 +70,19 @@ impl GeoKeys<'_> {
         self.ascii.get(start..end).map(|s| s.trim_end_matches(['|', '\0']))
     }
 
+    /// An ASCII key's text, its bytes sliced: offsets count bytes, and the text may hold
+    /// multi-byte characters (invalid bytes are decoded to U+FFFD).
+    fn ascii_lossy(&self, id: u16) -> Option<String> {
+        let (loc, n, off) = self.key(id)?;
+        if loc != GEO_ASCII_PARAMS {
+            return None;
+        }
+        let b = self.ascii.as_bytes();
+        let start = (off as usize).min(b.len());
+        let end = (start + n as usize).min(b.len());
+        Some(String::from_utf8_lossy(&b[start..end]).trim_end_matches('|').to_string())
+    }
+
     fn first(&self, ids: &[u16]) -> Option<f64> {
         ids.iter().find_map(|id| self.double(*id))
     }
@@ -61,12 +91,178 @@ impl GeoKeys<'_> {
 /// The CRS of an ESRI PE string in a citation key (`ESRI PE String = <WKT>`), which describes a
 /// user-defined CRS more completely than the GeoKeys. Its EPSG code is the root node's: codes on
 /// inner nodes (a unit's, a datum's) are not the CRS's.
-pub(crate) fn esri_pe_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
+fn esri_pe_crs(k: &GeoKeys) -> Option<SpatialRef> {
     let wkt = [3073, 1026, 2049].iter().find_map(|id| k.text(*id).and_then(|c| c.strip_prefix("ESRI PE String = ")))?.trim();
     // Read as any WKT: the code identified, and its PROJ4 extension (GDAL writes the sweep axis
     // of a geostationary CRS there) taken as the CRS.
-    let s = crate::crs::SpatialRef::from_wkt(wkt);
-    Some(wbraster::CrsInfo { epsg: s.epsg, wkt: Some(wkt.to_string()), proj4: s.proj4 })
+    let s = SpatialRef::from_wkt(wkt);
+    Some(SpatialRef { epsg: s.epsg, wkt: Some(wkt.to_string()), proj4: s.proj4, esri: s.esri })
+}
+
+/// The CRS GeoKeys give, as GDAL reads them, and a projection method terrio cannot read.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct GeoKeysCrs {
+    /// The CRS: its EPSG code (and the registry's WKT), the WKT of a user-defined CRS or of an
+    /// ESRI PE citation, or the PROJ string of a user-defined projected CRS. `None` when the
+    /// GeoKeys give no CRS terrio reads.
+    pub crs: Option<SpatialRef>,
+    /// The ProjCoordTransGeoKey of a user-defined projected CRS whose method terrio does not read
+    /// (or whose parameters are incomplete), which left [`crs`](Self::crs) `None`.
+    pub unsupported_method: Option<u16>,
+}
+
+/// Reads the CRS of a GeoKey directory (GeoKeyDirectoryTag, 34735) with its double
+/// (GeoDoubleParamsTag, 34736) and ASCII (GeoAsciiParamsTag, 34737) parameters, as stored in a
+/// GeoTIFF or a LAS `LASF_Projection` record, as GDAL reads them (`GTIFGetOGISDefnAsOSR`):
+/// - EPSG codes of a projected or geographic CRS (ProjectedCSTypeGeoKey,
+///   GeographicTypeGeoKey); a user-defined projected CRS that is a registered one in the
+///   GeoKeys' linear unit (a UTM zone by its ProjectionGeoKey, or named by its citation) gets its
+///   code;
+/// - user-defined geographic and projected CRSs, for the coordinate transformation codes 1, 3,
+///   7-28 and Swiss oblique Mercator (9815), in any linear unit and on an EPSG datum, an
+///   EPSG ellipsoid or the GeoKeys' own;
+/// - ESRI PE citations (`ESRI PE String = <WKT>`), as GDAL writes a CRS GeoKeys cannot hold;
+/// - a vertical CRS (VerticalCSTypeGeoKey) on an EPSG horizontal CRS, as the compound CRS (the
+///   registry's compound CRS of the two codes when there is one).
+pub fn read(directory: &[u16], doubles: &[f64], ascii: &str) -> GeoKeysCrs {
+    let k = GeoKeys { keys: directory, doubles, ascii };
+    let mut epsg = match (k.short(1024), k.short(3072), k.short(2048)) {
+        (_, Some(code), _) if code != 0 && code != USER_DEFINED => Some(code as u32),
+        (Some(2), _, Some(code)) if code != 0 && code != USER_DEFINED => Some(code as u32),
+        (Some(1), _, _) => {
+            // A registered CRS only in the GeoKeys' linear unit: GDAL builds the CRS from the
+            // keys (a ProjectionGeoKey's conversion in metres, in ProjLinearUnitsGeoKey's unit),
+            // and gives it a registered CRS's code only when the two are equivalent
+            // (gt_wkt_srs.cpp `GTIFGetOGISDefnAsOSR`): UTM zone 33N in US survey feet is no
+            // EPSG:32633.
+            let size = linear_unit_size(&k);
+            // A user-defined datum whose citation names WGS 84 is WGS 84's, as GDAL identifies it.
+            let cites_wgs84 = k.ascii_lossy(2049).is_some_and(|c| {
+                c.split('|')
+                    .any(|p| p.strip_prefix("Datum = ").is_some_and(|d| matches!(d.trim(), "World Geodetic System 1984" | "WGS_1984")))
+            });
+            let datum = if cites_wgs84 && k.short(2050) == Some(USER_DEFINED) { Some(6326) } else { k.short(2050) };
+            let citation = k.ascii_lossy(1026).or_else(|| k.ascii_lossy(3073));
+            user_defined_projected(k.short(3074), k.short(2048), datum, citation)
+                .filter(|code| SpatialRef::from_epsg(*code).is_ok_and(|s| (s.metres_per_unit() / size - 1.0).abs() < 1e-9))
+        }
+        _ => None,
+    };
+    let (mut crs, mut proj4, mut unsupported_method) = (None, None, None);
+    if epsg.is_none() {
+        // Geographic and projected user-defined CRSs, and ESRI PE citations.
+        if let Some(c) = projected_on_epsg_geographic(&k) {
+            return GeoKeysCrs { crs: Some(c), unsupported_method: None };
+        }
+        if k.short(1024) == Some(1) && esri_pe_crs(&k).is_none() {
+            proj4 = user_defined_proj4(&k);
+            unsupported_method = unmapped_method(&k);
+            // Where GDAL reads it otherwise than the WKT of its PROJ string: an ESRI CRS named by
+            // the citation, a linear unit PROJ strings do not name, an inverse flattening
+            // computed from the axes.
+            if let Some(c) = proj4.as_deref().and_then(|p| user_defined_projected_crs(&k, p)) {
+                return GeoKeysCrs { crs: Some(c), unsupported_method };
+            }
+        }
+        if proj4.is_none() {
+            crs = user_defined_crs(&k);
+            epsg = crs.as_ref().and_then(|c| c.epsg);
+        }
+    }
+    // A vertical CRS (VerticalCSTypeGeoKey) on an EPSG horizontal CRS: the compound CRS, as GDAL
+    // reads it (EPSG:4326 with EGM96 heights is `EPSG:4326+5773`). GeoTIFF stores no code for the
+    // compound: GDAL 3.12.1 takes the registry's compound CRS of the two codes when there is one
+    // (`GTIFGetOGISDefnAsOSR`), EPSG:9707 for those.
+    if let Some(h) = epsg
+        && let Some(v) = k.short(4096).filter(|c| *c != 0 && *c != USER_DEFINED)
+        && let Ok(c) = SpatialRef::compound(h, u32::from(v))
+    {
+        let registered = crate::compound_code(h, u32::from(v), c.name().as_deref()).and_then(|code| SpatialRef::from_epsg(code).ok());
+        let c = registered.unwrap_or(c);
+        return GeoKeysCrs { crs: Some(SpatialRef { wkt: c.to_wkt(), esri: None, ..c }), unsupported_method };
+    }
+    // The CRS an identifier is a summary of: the retained definition, else the code's, else the
+    // PROJ string's.
+    let crs = crs.or_else(|| {
+        epsg.map(|code| SpatialRef { epsg: Some(code), wkt: SpatialRef::from_epsg(code).ok().and_then(|s| s.wkt), ..Default::default() })
+    });
+    let crs = crs.or_else(|| proj4.as_deref().and_then(|p| SpatialRef::from_proj4(p).ok()));
+    GeoKeysCrs { crs, unsupported_method }
+}
+
+/// The EPSG code of a user-defined projected CRS, from its projection code (UTM zones) or its
+/// citation (such as `WGS 84 / UTM zone 10N`). The datum is the geographic CRS's, else the
+/// GeogGeodeticDatumGeoKey's `datum`: a UTM zone on another datum than WGS 84, NAD83 or NAD27
+/// (NAD83(HARN), ETRS89...) is no WGS 84 UTM zone, and is left to the citation's name.
+fn user_defined_projected(projection: Option<u16>, geographic: Option<u16>, datum: Option<u16>, citation: Option<String>) -> Option<u32> {
+    let citation = citation.unwrap_or_default();
+    let defined = |c: &u16| *c != 0 && *c != USER_DEFINED;
+    // A datum of the GeoKeys' own (a user-defined GeogGeodeticDatumGeoKey on a user-defined
+    // geographic CRS, as GDAL writes a datum it has no code for) is none of the registry's: GDAL
+    // names it after its ellipsoid (UTM zone 33N on GRS 1980 is not WGS 84's).
+    let own_datum = !geographic.is_some_and(|c| defined(&c)) && datum == Some(USER_DEFINED);
+    // A geographic CRS terrio does not know leaves the datum to the datum key, else the citation.
+    let datum = geographic.filter(defined).and_then(|c| crate::geographic_datum(c as u32)).or(datum.filter(defined).map(u32::from));
+    // Datum: WGS 84 unless the datum is NAD83 or NAD27, or the citation says so when the GeoKeys
+    // name no datum.
+    let (nad83, nad27, other) = match datum {
+        Some(6269) => (true, false, false),
+        Some(6267) => (false, true, false),
+        Some(6326) => (false, false, false),
+        Some(_) => (false, false, true),
+        None => (citation.contains("NAD83"), citation.contains("NAD27"), own_datum),
+    };
+    let utm = match projection {
+        Some(p @ 16001..=16060) => Some(((p - 16000) as u32, true)),
+        Some(p @ 16101..=16160) => Some(((p - 16100) as u32, false)),
+        _ => parse_utm_citation(&citation),
+    };
+    if let Some((zone, north)) = utm.filter(|_| !other) {
+        return match (nad83, nad27, north) {
+            (true, _, true) if (1..=23).contains(&zone) => Some(26900 + zone),
+            (_, true, true) if (1..=22).contains(&zone) => Some(26700 + zone),
+            (false, false, true) => Some(32600 + zone),
+            (false, false, false) => Some(32700 + zone),
+            _ => None,
+        };
+    }
+    let name = citation.split('|').next().unwrap_or_default().trim();
+    if name.is_empty() { None } else { code_of_name(name) }
+}
+
+/// Parses `UTM zone 10N` (or `UTM Zone 10, Northern Hemisphere`) from a citation.
+fn parse_utm_citation(c: &str) -> Option<(u32, bool)> {
+    let lower = c.to_ascii_lowercase();
+    let rest = &lower[lower.find("utm zone")? + "utm zone".len()..];
+    let rest = rest.trim_start();
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let zone: u32 = digits.parse().ok()?;
+    let after = &rest[digits.len()..];
+    let north = !(after.starts_with('s') || after.contains("south"));
+    Some((zone, north))
+}
+
+/// The EPSG code a citation names: an EPSG reference in it (`EPSG:32633`, `EPSG::32633`), else,
+/// when terrio is built with wbprojection, the code of wbprojection's CRS of that name.
+#[cfg(feature = "wbprojection-fallback")]
+fn code_of_name(name: &str) -> Option<u32> {
+    wbprojection::epsg_from_srs_reference(name).or_else(|| {
+        wbprojection::epsg::known_epsg_codes()
+            .into_iter()
+            .find(|code| wbprojection::epsg::epsg_info(*code).is_some_and(|i| i.name.eq_ignore_ascii_case(name)))
+    })
+}
+
+#[cfg(not(feature = "wbprojection-fallback"))]
+fn code_of_name(name: &str) -> Option<u32> {
+    if let Ok(code) = name.parse() {
+        return Some(code);
+    }
+    let upper = name.to_ascii_uppercase();
+    let rest = upper[upper.find("EPSG")? + 4..].trim_start_matches([':', ',', '"', '\'', '[', '(', ' ', '/']);
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok().filter(|c| *c != 0)
 }
 
 /// A user-defined projected CRS of GeoKeys as GDAL reads it, where that is not the WKT of its
@@ -80,18 +276,18 @@ pub(crate) fn esri_pe_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
 ///   names it.
 /// - The inverse flattening GDAL computes from the axes (see [`computed_inverse_flattening`]),
 ///   on a geographic CRS without code.
-pub(crate) fn user_defined_projected_crs(k: &GeoKeys, proj4: &str) -> Option<wbraster::CrsInfo> {
-    let wkt = crate::crs::SpatialRef::from_proj4(proj4).ok()?.to_wkt()?;
+fn user_defined_projected_crs(k: &GeoKeys, proj4: &str) -> Option<SpatialRef> {
+    let wkt = SpatialRef::from_proj4(proj4).ok()?.to_wkt()?;
     let name = [3073, 1026].iter().find_map(|id| k.text(*id)).map(str::trim).filter(|n| !n.is_empty() && !n.contains(" = "));
     if let Some(name) = name
         && let Some(named) = renamed(&wkt, name)
-        && let Some(code) = crate::crs::SpatialRef::from_wkt(&named).with_esri().esri
-        && let Some(esri) = crate::crs::SpatialRef::from_esri(code).ok().and_then(|s| s.to_wkt())
+        && let Some(code) = SpatialRef::from_wkt(&named).with_esri().esri
+        && let Some(esri) = SpatialRef::from_esri(code).ok().and_then(|s| s.to_wkt())
     {
         // With its code, as GDAL's `SetFromUserInput("ESRI:<code>")` gives it.
         let declared = esri.ends_with(&format!("AUTHORITY[\"ESRI\",\"{code}\"]]"));
         let esri = if declared { esri } else { format!("{},AUTHORITY[\"ESRI\",\"{code}\"]]", &esri[..esri.len() - 1]) };
-        return Some(wbraster::CrsInfo { epsg: None, wkt: Some(esri), proj4: None });
+        return Some(SpatialRef { epsg: None, wkt: Some(esri), proj4: None, esri: None });
     }
     let mut out = wkt.clone();
     if let Some(unit) = linear_unit_wkt(k) {
@@ -108,7 +304,7 @@ pub(crate) fn user_defined_projected_crs(k: &GeoKeys, proj4: &str) -> Option<wbr
         let end = second + body[second..].find([',', ']'])?;
         out = format!("{}{}{}", &out[..i + second], wkt_number(rf), &out[i + end..]);
     }
-    (out != wkt).then_some(wbraster::CrsInfo { epsg: None, wkt: Some(out), proj4: None })
+    (out != wkt).then_some(SpatialRef { epsg: None, wkt: Some(out), proj4: None, esri: None })
 }
 
 /// Whether the `GEOGCS` of a projected CRS's WKT 1 has a code: an `AUTHORITY` as its own (last)
@@ -156,7 +352,7 @@ fn computed_inverse_flattening(k: &GeoKeys) -> Option<f64> {
 
 /// The PROJ definition of a user-defined projected CRS: the projection method and its parameters,
 /// the datum and the linear unit. `None` for a method terrio does not map.
-pub(crate) fn user_defined_proj4(k: &GeoKeys) -> Option<String> {
+fn user_defined_proj4(k: &GeoKeys) -> Option<String> {
     // GeoKeys that name no datum or ellipsoid are taken as WGS 84.
     let geog = geographic_proj(k).unwrap_or_else(|| "+datum=WGS84".to_string());
     let (units, to_meter) = units(k);
@@ -165,14 +361,14 @@ pub(crate) fn user_defined_proj4(k: &GeoKeys) -> Option<String> {
 
 /// The projection method of projected GeoKeys that [`user_defined_proj4`] does not map, for a
 /// warning: `None` when there is none or it is mapped.
-pub(crate) fn unmapped_method(k: &GeoKeys) -> Option<u16> {
+fn unmapped_method(k: &GeoKeys) -> Option<u16> {
     let method = k.short(3075).filter(|m| *m != 0 && *m != USER_DEFINED)?;
     (k.short(1024) == Some(1) && projection(k, 1.0).is_none()).then_some(method)
 }
 
 /// The CRS of GeoKeys that use no EPSG code for the whole CRS: an ESRI PE citation's WKT, or a
 /// PROJ definition built from the projection method, its parameters and the datum.
-pub(crate) fn user_defined_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
+fn user_defined_crs(k: &GeoKeys) -> Option<SpatialRef> {
     if let Some(crs) = esri_pe_crs(k) {
         return Some(crs);
     }
@@ -181,7 +377,7 @@ pub(crate) fn user_defined_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
             // In an angular unit other than the degree, which PROJ strings cannot hold: the WKT
             // GDAL reads, without code (GDAL identifies none: its unit is not the registry's).
             if let Some((_, unit)) = angular_unit(k) {
-                let wkt = crate::crs::SpatialRef::from_proj4(&format!("+proj=longlat {}", geographic_proj(k)?)).ok()?.to_wkt()?;
+                let wkt = SpatialRef::from_proj4(&format!("+proj=longlat {}", geographic_proj(k)?)).ok()?.to_wkt()?;
                 let cited = |key: &str| k.text(2049).and_then(|c| c.split('|').find_map(|p| p.trim().strip_prefix(key)));
                 let mut wkt = renamed(&without_code(&with_unit(&wkt, &unit)?), cited("GCS Name = ").unwrap_or("unknown"))?;
                 // The datum and ellipsoid named by the citation, as GDAL names them
@@ -194,11 +390,11 @@ pub(crate) fn user_defined_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
                 }
                 let wkt =
                     wkt.replace(",AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]", ",AXIS[\"Latitude\",NORTH],AXIS[\"Longitude\",EAST]");
-                return Some(wbraster::CrsInfo { epsg: None, wkt: Some(wkt), proj4: None });
+                return Some(SpatialRef { epsg: None, wkt: Some(wkt), proj4: None, esri: None });
             }
             // On an EPSG datum PROJ strings do not name (NAD83(HARN)): its EPSG geographic CRS.
-            if let Some((code, wkt)) = epsg_geographic(k).and_then(|c| Some((c, crate::crs::epsg_wkt(c)?))) {
-                return Some(wbraster::CrsInfo { epsg: Some(code), wkt: Some(wkt.to_string()), proj4: None });
+            if let Some((code, wkt)) = epsg_geographic(k).and_then(|c| Some((c, crate::epsg_wkt(c)?))) {
+                return Some(SpatialRef { epsg: Some(code), wkt: Some(wkt.to_string()), proj4: None, esri: None });
             }
             format!("+proj=longlat {}", geographic_proj(k)?)
         }
@@ -208,34 +404,43 @@ pub(crate) fn user_defined_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
     if let Some(crs) = projected_on_epsg_geographic(k) {
         return Some(crs);
     }
-    let crs = wbraster::CrsInfo::from_proj4(proj.trim());
+    // wbprojection's identification of the PROJ string, with the WKT of its code (wbraster's
+    // `CrsInfo::from_proj4`), when built with it.
+    #[cfg(feature = "wbprojection-fallback")]
+    let (guess, guess_wkt) = {
+        let code = wbprojection::from_proj_string(proj.trim()).ok().and_then(|c| wbprojection::identify_epsg_from_crs(&c));
+        (code, code.and_then(|c| wbprojection::to_ogc_wkt(c).ok()))
+    };
+    #[cfg(not(feature = "wbprojection-fallback"))]
+    let (guess, guess_wkt): (Option<u32>, Option<String>) = (None, None);
     // The WKT GDAL writes for the PROJ string, which describes it whole.
-    let own = crate::crs::SpatialRef::from_proj4(proj.trim()).ok().and_then(|s| s.wkt);
+    let own = SpatialRef::from_proj4(proj.trim()).ok().and_then(|s| s.wkt);
     // wbprojection's code, when terrio reads the PROJ string, only if terrio identifies the CRS
     // as it: wbprojection's identification ignores the prime meridian and datum shift
     // (`+proj=longlat +ellps=bessel +pm=paris` is not EPSG:4162). When terrio cannot read it,
     // wbprojection's code and WKT stay the fallback.
     let epsg = match own.as_deref() {
-        Some(w) => crs.epsg.filter(|code| crate::crs::identify_epsg(w) == Some(*code)),
-        None => crs.epsg,
+        Some(w) => guess.filter(|code| crate::identify_epsg(w) == Some(*code)),
+        None => guess,
     };
-    let wkt = own.or(crs.wkt);
+    let wkt = own.or(guess_wkt);
+    #[cfg(feature = "wbprojection-fallback")]
     let wkt = wkt.or_else(|| wbprojection::from_proj_string(&proj).ok().map(|c| wbprojection::crs_to_wkt(&c)));
-    Some(wbraster::CrsInfo { epsg, wkt, ..crs })
+    Some(SpatialRef { epsg, wkt, proj4: Some(proj.trim().to_string()), esri: None })
 }
 
 /// A user-defined projected CRS on an EPSG geographic CRS a PROJ string does not name exactly
 /// (OSGB36, ED50, NAD83(HARN), ETRS89...): its WKT, whose `GEOGCS` identifies the datum and its
 /// transformations, as GDAL reads the GeoKeys. `None` for other GeoKeys.
-pub(crate) fn projected_on_epsg_geographic(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
+fn projected_on_epsg_geographic(k: &GeoKeys) -> Option<SpatialRef> {
     if k.short(1024) != Some(1) || esri_pe_crs(k).is_some() {
         return None;
     }
     let code = epsg_geographic(k)?;
-    let wkt = crate::crs::from_proj_on(&user_defined_proj4(k)?, code)?;
+    let wkt = crate::from_proj_on(&user_defined_proj4(k)?, code)?;
     // A linear unit PROJ strings do not name, named as GDAL names it.
     let wkt = linear_unit_wkt(k).and_then(|u| with_unit(&wkt, &u)).unwrap_or(wkt);
-    Some(wbraster::CrsInfo { epsg: None, wkt: Some(wkt), proj4: None })
+    Some(SpatialRef { epsg: None, wkt: Some(wkt), proj4: None, esri: None })
 }
 
 /// A WKT 1 CRS without the code of its root (its last node).
@@ -267,7 +472,7 @@ fn epsg_geographic(k: &GeoKeys) -> Option<u32> {
             if !greenwich || k.doubles(2062).is_some() {
                 return None;
             }
-            crate::crs::geographic_on_datum(datum as u32, &ellipsoid_proj(k)?)?
+            crate::geographic_on_datum(datum as u32, &ellipsoid_proj(k)?)?
         }
         Some(code) => code as u32,
     };
@@ -311,7 +516,7 @@ fn geographic_proj(k: &GeoKeys) -> Option<String> {
 /// ellipsoid code's, else their semi-major axis and inverse flattening (or semi-minor axis).
 fn ellipsoid_proj(k: &GeoKeys) -> Option<String> {
     // The ellipsoid of another EPSG geographic CRS, when its datum cannot be named.
-    if let Some(e) = k.short(2048).filter(|c| *c != USER_DEFINED).and_then(|c| crate::crs::epsg_ellipsoid(c as u32)) {
+    if let Some(e) = k.short(2048).filter(|c| *c != USER_DEFINED).and_then(|c| crate::epsg_ellipsoid(c as u32)) {
         return Some(e);
     }
     let ellipsoid = match k.short(2056) {
@@ -512,7 +717,7 @@ fn units(k: &GeoKeys) -> (String, f64) {
 }
 
 /// The size in metres of the GeoKeys' linear unit (a metre when they give none).
-pub(crate) fn linear_unit_size(k: &GeoKeys) -> f64 {
+fn linear_unit_size(k: &GeoKeys) -> f64 {
     units(k).1
 }
 
@@ -599,24 +804,27 @@ fn angular_unit(k: &GeoKeys) -> Option<(f64, String)> {
 
 /// GeoKeys for a CRS without an EPSG code, as GDAL writes them: from its PROJ string when it has
 /// one, else from the projection engine's model of it. `None` when GeoKeys cannot describe it.
-pub(crate) fn user_keys(crs: &crate::crs::SpatialRef, name: &str) -> Option<GeoKeyValues> {
+pub fn user_defined_keys(crs: &SpatialRef, name: &str) -> Option<GeoKeyValues> {
     if let Some(p) = &crs.proj4 {
         return keys_for_proj(p, name, None);
     }
     // A WKT: its PROJ string as terrio reads it, on the EPSG geographic CRS it is identified on.
-    if let Some(p) = crs.wkt.as_deref().and_then(crate::crs::wkt_proj) {
+    if let Some(p) = crs.wkt.as_deref().and_then(crate::wkt_proj) {
         let geog = crs.geographic_code();
         return keys_for_proj(&p, name, geog);
     }
-    crs.to_wbp().ok().and_then(|c| keys_for_crs(&c, name))
+    // Else wbprojection's model of it, when built with it.
+    #[cfg(feature = "wbprojection-fallback")]
+    return crs.to_wbp().ok().and_then(|c| keys_for_crs(&c, name));
+    #[cfg(not(feature = "wbprojection-fallback"))]
+    None
 }
 
 /// GeoKeys for a PROJ string, as GDAL writes them, from its WKT 1 description, on an EPSG
-/// geographic CRS when given one. `None` when the method or the linear unit has no GeoTIFF
-/// equivalent or the WKT 1 needs the PROJ string to describe it.
-pub(crate) fn keys_for_proj(proj4: &str, name: &str, geog: Option<u32>) -> Option<GeoKeyValues> {
-    let d = crate::crs::describe(proj4)?;
-    d.unit_code?;
+/// geographic CRS when given one. `None` when the method has no GeoTIFF equivalent or the WKT 1
+/// needs the PROJ string to describe it.
+fn keys_for_proj(proj4: &str, name: &str, geog: Option<u32>) -> Option<GeoKeyValues> {
+    let d = crate::describe(proj4)?;
     let mut v = GeoKeyValues::default();
     // The geographic CRS it was identified on, unless the PROJ string shifts its datum itself.
     let geog = d.geog.or(geog.filter(|_| d.towgs84.is_none() && d.pm == 0.0));
@@ -674,13 +882,15 @@ pub(crate) fn keys_for_proj(proj4: &str, name: &str, geog: Option<u32>) -> Optio
         "Oblique_Stereographic" => (16, natural),
         "Equirectangular" => (17, vec![(3078, sp(1)), (3089, lat), (3088, lon), (3082, fe), (3083, fn_)]),
         "Cassini_Soldner" => (18, vec![(3081, lat), (3080, lon), (3082, fe), (3083, fn_)]),
-        "Gnomonic" => (19, vec![(3081, lat), (3080, lon), (3082, fe), (3083, fn_)]),
+        // At their centre, as GDAL writes them.
+        "Gnomonic" => (19, vec![(3089, lat), (3088, lon), (3082, fe), (3083, fn_)]),
         "Miller_Cylindrical" => (20, vec![(3088, get("longitude_of_center")), (3082, fe), (3083, fn_)]),
-        "Orthographic" => (21, vec![(3081, lat), (3080, lon), (3082, fe), (3083, fn_)]),
+        "Orthographic" => (21, vec![(3089, lat), (3088, lon), (3082, fe), (3083, fn_)]),
         "Polyconic" => (22, vec![(3081, lat), (3080, lon), (3082, fe), (3083, fn_)]),
         "Robinson" => (23, vec![(3088, clon), (3082, fe), (3083, fn_)]),
         "Sinusoidal" => (24, vec![(3088, clon), (3082, fe), (3083, fn_)]),
         "VanDerGrinten" => (25, vec![(3088, lon), (3082, fe), (3083, fn_)]),
+        "New_Zealand_Map_Grid" => (26, vec![(3081, lat), (3080, lon), (3082, fe), (3083, fn_)]),
         "Cylindrical_Equal_Area" => (28, vec![(3078, sp(1)), (3088, lon), (3082, fe), (3083, fn_)]),
         // Hotine oblique Mercator, variant A and B (with Swiss oblique Mercator, as azimuths of
         // 90°).
@@ -693,7 +903,15 @@ pub(crate) fn keys_for_proj(proj4: &str, name: &str, geog: Option<u32>) -> Optio
     v.shorts.push((3072, USER_DEFINED));
     v.shorts.push((3074, USER_DEFINED));
     v.shorts.push((3075, code));
-    v.shorts.push((3076, u16::try_from(d.unit_code?).ok()?));
+    // A unit of no EPSG code PROJ strings name: user-defined, by its size
+    // (ProjLinearUnitSizeGeoKey), as GDAL writes it.
+    match d.unit_code {
+        Some(code) => v.shorts.push((3076, u16::try_from(code).ok()?)),
+        None => {
+            v.shorts.push((3076, USER_DEFINED));
+            v.doubles.push((3077, d.to_meter));
+        }
+    }
     // ProjLinearUnitsInterpCorrectGeoKey: the false eastings and northings are in that unit.
     if d.to_meter != 1.0 {
         v.shorts.push((3059, 1));
@@ -705,7 +923,8 @@ pub(crate) fn keys_for_proj(proj4: &str, name: &str, geog: Option<u32>) -> Optio
 /// GeoKeys for a CRS of the projection engine's model, as GDAL writes them: `(short keys,
 /// double keys, ascii keys)` by key id. `None` when the projection method has no GeoTIFF
 /// equivalent.
-pub(crate) fn keys_for_crs(crs: &wbprojection::Crs, name: &str) -> Option<GeoKeyValues> {
+#[cfg(feature = "wbprojection-fallback")]
+fn keys_for_crs(crs: &wbprojection::Crs, name: &str) -> Option<GeoKeyValues> {
     use wbprojection::ProjectionKind as K;
     let p = crs.projection.params();
     let mut v = GeoKeyValues::default();
@@ -777,9 +996,10 @@ pub(crate) fn keys_for_crs(crs: &wbprojection::Crs, name: &str) -> Option<GeoKey
     Some(v)
 }
 
-/// GeoKey values by key id.
-#[derive(Debug, Default)]
-pub(crate) struct GeoKeyValues {
+/// GeoKey values by key id, as [`SpatialRef::to_geokeys`] gives them: [`encode`](Self::encode)
+/// writes them in the three TIFF tags.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GeoKeyValues {
     /// SHORT keys.
     pub shorts: Vec<(u16, u16)>,
     /// DOUBLE keys, in the order of GeoDoubleParamsTag; consecutive values of one key (the seven
@@ -790,6 +1010,28 @@ pub(crate) struct GeoKeyValues {
 }
 
 impl GeoKeyValues {
+    /// The GeoKeyDirectoryTag, GeoDoubleParamsTag and GeoAsciiParamsTag holding the keys, as
+    /// GDAL writes them: the keys sorted by id, each ASCII key ended by `|`, and GeoTIFF 1.1
+    /// (minor revision 1) when they hold a vertical CRS (VerticalCSTypeGeoKey), which GDAL strips
+    /// from 1.0 files.
+    pub fn encode(&self) -> GeoKeyTags {
+        let mut shorts = self.shorts.clone();
+        shorts.sort_by_key(|k| k.0);
+        let mut keys: Vec<[u16; 4]> = shorts.iter().map(|(id, val)| [*id, 0, 1, *val]).collect();
+        keys.extend(self.double_keys());
+        let mut ascii = String::new();
+        for (id, text) in &self.ascii {
+            let text = format!("{text}|");
+            keys.push([*id, GEO_ASCII_PARAMS, text.len() as u16, ascii.len() as u16]);
+            ascii.push_str(&text);
+        }
+        keys.sort_by_key(|k| k[0]);
+        let minor = u16::from(keys.iter().any(|k| k[0] == 4096));
+        let mut directory = vec![1u16, 1, minor, keys.len() as u16];
+        directory.extend(keys.iter().flatten());
+        GeoKeyTags { directory, doubles: self.doubles.iter().map(|d| d.1).collect(), ascii }
+    }
+
     /// The directory entries of the DOUBLE keys: `[id, GeoDoubleParamsTag, count, offset]`.
     pub fn double_keys(&self) -> Vec<[u16; 4]> {
         let mut out: Vec<[u16; 4]> = Vec::new();
@@ -801,6 +1043,107 @@ impl GeoKeyValues {
         }
         out
     }
+}
+
+/// The three TIFF tags of GeoKeys (see [`GeoKeyValues::encode`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct GeoKeyTags {
+    /// GeoKeyDirectoryTag (34735): the header, then `[id, location, count, value or offset]`.
+    pub directory: Vec<u16>,
+    /// GeoDoubleParamsTag (34736), empty when no key is a double.
+    pub doubles: Vec<f64>,
+    /// GeoAsciiParamsTag (34737), empty when no key is text.
+    pub ascii: String,
+}
+
+impl SpatialRef {
+    /// The CRS of a GeoKey directory and its double and ASCII parameters, as GDAL reads them:
+    /// see [`read`](crate::geokeys::read), whose CRS this is. Fails when the GeoKeys give no CRS
+    /// terrio reads, naming an unsupported projection method.
+    pub fn from_geokeys(directory: &[u16], doubles: &[f64], ascii: &str) -> Result<SpatialRef> {
+        let read = read(directory, doubles, ascii);
+        read.crs.ok_or_else(|| match read.unsupported_method {
+            Some(m) => Error::Crs(format!(
+                "GeoTIFF projection method {m} (ProjCoordTransGeoKey) is not supported, or its parameters are incomplete"
+            )),
+            None => Error::Crs("the GeoKeys give no CRS".into()),
+        })
+    }
+
+    /// The GeoKeys of the CRS, as GDAL 3.12.1 writes them (`GTIFSetFromOGISDefnEx`), without the
+    /// raster type (GTRasterTypeGeoKey), which is the raster's:
+    /// - a registered geographic or projected CRS by its EPSG code;
+    /// - a compound CRS of EPSG CRSs by its horizontal and vertical codes, and its name;
+    /// - a CRS without an EPSG code by its projection method and parameters (see
+    ///   [`user_defined_keys`]);
+    /// - else (an engineering CRS, a method GeoTIFF has no code for, a CRS whose code is not a
+    ///   horizontal one), GDAL's fallback: its WKT in an ESRI PE citation (`ESRI PE String =`),
+    ///   with a user-defined model type.
+    ///
+    /// Fails for an unknown CRS, and for a CRS that needs the fallback and has no WKT.
+    pub fn to_geokeys(&self) -> Result<GeoKeyValues> {
+        if self.is_unknown() {
+            return Err(Error::Crs("an unknown CRS has no GeoKeys".into()));
+        }
+        let mut v = GeoKeyValues::default();
+        let engineering = self.wkt.as_deref().is_some_and(engineering_cs);
+        let registered = self.epsg.filter(|_| !engineering).and_then(horizontal_geokey);
+        // A compound CRS of EPSG CRSs: its horizontal CRS's keys, its vertical CRS's and its name,
+        // in GeoTIFF 1.1 as GDAL 3.12.1 writes them (`GTIFSetFromOGISDefnEx`); a compound code in
+        // a horizontal key reads as another CRS.
+        let compound = (!engineering).then(|| self.compound_parts()).flatten().and_then(|(h, v)| {
+            let (h, geographic) = horizontal_geokey(h)?;
+            Some((h, u16::try_from(v).ok()?, geographic))
+        });
+        match (compound, registered) {
+            (Some((h, vertical, geographic)), _) => {
+                v.shorts.push((1024, if geographic { 2 } else { 1 }));
+                v.shorts.push((if geographic { 2048 } else { 3072 }, h));
+                v.shorts.push((4096, vertical));
+                v.ascii.push((1026, self.name().unwrap_or_else(|| "unnamed".into())));
+            }
+            (None, Some((code, geographic))) => {
+                v.shorts.push((1024, if geographic { 2 } else { 1 }));
+                v.shorts.push((if geographic { 2048 } else { 3072 }, code));
+            }
+            (None, None) => {
+                let name = self.name().unwrap_or_else(|| "unnamed".into());
+                // Keep engineering and unrepresentable coded definitions as WKT. In particular,
+                // an engineering identifier must never be written as a projected EPSG code.
+                let user = if engineering || self.epsg.is_some() { None } else { user_defined_keys(self, &name) };
+                match user {
+                    Some(keys) => v = keys,
+                    None => {
+                        // GDAL's fallback for methods GeoTIFF cannot describe: the WKT in an ESRI PE
+                        // citation, with a user-defined model type.
+                        let wkt = self.to_wkt().ok_or_else(|| Error::Crs("the CRS has no WKT definition".into()))?;
+                        v.shorts.push((1024, USER_DEFINED));
+                        // GeoTIFF 1.1 requirement 8.10 requires a general citation for this model.
+                        v.ascii.push((1026, name));
+                        v.ascii.push((3073, format!("ESRI PE String = {wkt}")));
+                    }
+                }
+            }
+        }
+        Ok(v)
+    }
+}
+
+/// Whether the retained WKT describes an engineering grid, independently of its root ID.
+fn engineering_cs(wkt: &str) -> bool {
+    let root = wkt.split(['[', '(']).next().unwrap_or_default().trim().to_ascii_uppercase();
+    matches!(root.as_str(), "LOCAL_CS" | "ENGCRS" | "ENGINEERINGCRS")
+}
+
+/// A registered horizontal code usable by GeoTIFF 1.1 (requirements 12.4 and 13.4), and
+/// whether it is geographic. Engineering, vertical, geocentric and unknown codes need WKT.
+fn horizontal_geokey(code: u32) -> Option<(u16, bool)> {
+    let short = u16::try_from(code).ok().filter(|code| (1024..USER_DEFINED).contains(code))?;
+    let wkt = crate::epsg_wkt(code)?;
+    let geographic = SpatialRef::from_epsg(code).is_ok_and(|s| s.is_geographic());
+    // The table holds GDAL's canonical WKT; projected roots use PROJCS or PROJCRS.
+    (geographic || wkt.starts_with("PROJ")).then_some((short, geographic))
 }
 
 #[cfg(test)]
@@ -835,5 +1178,40 @@ mod tests {
         let p = crs.proj4.unwrap();
         assert!(p.starts_with("+proj=lcc +lat_1=33 +lat_2=45 +lat_0=39 +lon_0=-96 +x_0=0 +y_0=0 +datum=WGS84"), "{p}");
         assert!(crs.wkt.is_some());
+    }
+
+    #[test]
+    fn identifies_user_defined_utm() {
+        assert_eq!(user_defined_projected(Some(16010), None, None, Some("WGS 84 / UTM zone 10N".into())), Some(32610));
+        assert_eq!(user_defined_projected(None, Some(4269), None, Some("NAD83 / UTM zone 15N".into())), Some(26915));
+        assert_eq!(user_defined_projected(Some(16133), None, None, None), Some(32733));
+        assert_eq!(user_defined_projected(Some(16015), Some(32767), Some(6269), None), Some(26915));
+        // The geographic CRS's datum wins over the citation, as its code does for GDAL.
+        assert_eq!(user_defined_projected(Some(16015), Some(4326), None, Some("NAD83 / UTM zone 15N".into())), Some(32615));
+        assert_eq!(user_defined_projected(Some(16015), Some(4269), Some(6326), None), Some(26915));
+        // A UTM zone on NAD83(HARN), by its geographic CRS or its datum, is no WGS 84 (or NAD83)
+        // UTM zone (#209).
+        assert_eq!(user_defined_projected(Some(16033), Some(32767), Some(6152), None), None);
+        // ECOSTRESS: user-defined keys whose geographic citation names WGS 84's datum; GDAL reads EPSG:32610.
+        let keys = [
+            1, 1, 0, 8, 1024, 0, 1, 1, 1026, 34737, 22, 0, 2048, 0, 1, 32767, 2049, 34737, 92, 22, 2050, 0, 1, 32767, 3072, 0, 1, 32767,
+            3074, 0, 1, 16010, 3076, 0, 1, 9001,
+        ];
+        let ascii = "WGS 84 / UTM zone 10N|GCS Name = WGS 84|Datum = World Geodetic System 1984|Ellipsoid = WGS 84|Primem = Greenwich||";
+        assert_eq!(read(&keys, &[], ascii).crs.and_then(|c| c.epsg), Some(32610));
+        // The same keys with another datum named keep it: not WGS 84's zone.
+        let ascii = ascii.replace("World Geodetic System 1984", "Some Local Datum        ");
+        assert_eq!(read(&keys, &[], &ascii).crs.and_then(|c| c.epsg), None);
+        assert_eq!(user_defined_projected(Some(16010), Some(4152), None, Some("NAD83 / UTM zone 10N".into())), None);
+    }
+
+    #[test]
+    fn compact_geo_keys_only_name_registered_horizontal_crss() {
+        assert_eq!(horizontal_geokey(32615), Some((32615, false)));
+        assert_eq!(horizontal_geokey(4326), Some((4326, true)));
+        assert_eq!(horizontal_geokey(4979), Some((4979, true)));
+        for code in [5800, 4978, 5773, 9707, 32767, 999999] {
+            assert_eq!(horizontal_geokey(code), None, "{code}");
+        }
     }
 }

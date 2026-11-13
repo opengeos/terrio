@@ -196,7 +196,7 @@ fn geokey_vlrs(crs: &SpatialRef) -> Option<Vec<Vlr>> {
         }
         None => (crs.clone(), None),
     };
-    let mut v = crate::drivers::geokeys::GeoKeyValues::default();
+    let mut v = crate::crs::geokeys::GeoKeyValues::default();
     let geographic = horizontal.is_geographic();
     v.shorts.push((1025, 1));
     match horizontal.epsg.and_then(|c| u16::try_from(c).ok()) {
@@ -206,7 +206,7 @@ fn geokey_vlrs(crs: &SpatialRef) -> Option<Vec<Vlr>> {
         }
         None => {
             let name = horizontal.name().unwrap_or_else(|| "unnamed".into());
-            let user = crate::drivers::geokeys::user_keys(&horizontal, &name)?;
+            let user = horizontal.user_defined_geokeys(&name)?;
             v.shorts.extend(user.shorts);
             v.doubles.extend(user.doubles);
             v.ascii.extend(user.ascii);
