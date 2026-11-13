@@ -891,6 +891,32 @@ impl PyRaster {
         self.inner.block_size()
     }
 
+    /// A TIFF block's file offset and byte count without decoding pixels.
+    ///
+    /// Args:
+    ///     band: Band numbered from 1.
+    ///     x: Block column numbered from 0.
+    ///     y: Block row numbered from 0.
+    ///     overview: Overview numbered from 0, or None for the base image.
+    ///
+    /// Returns:
+    ///     tuple[int, int] | None: Offset and size, or None if absent.
+    #[pyo3(signature = (band, x, y, overview=None))]
+    fn _tiff_block_range(
+        &mut self,
+        py: Python<'_>,
+        band: usize,
+        x: usize,
+        y: usize,
+        overview: Option<usize>,
+    ) -> PyResult<Option<(u64, u64)>> {
+        if band == 0 || band > self.count() {
+            return Ok(None);
+        }
+        let band = if self.is_complex() { (band - 1) * 2 + 1 } else { band };
+        py.detach(|| self.inner.tiff_block_range(band, x, y, overview)).py()
+    }
+
     /// Reads the per-dataset mask: 255 for valid pixels, 0 for invalid ones.
     ///
     /// Args:

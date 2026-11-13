@@ -45,6 +45,22 @@ forces the full longitude range. Sampling counts above 65,536 per edge are
 refused. The conformance runner clears inherited pytest options and requires
 all 48 comparison results in its JUnit report before declaring agreement.
 
+## TIFF block metadata
+
+`python scripts/conformance.py DATA --only tiff-block-tags --strict` requires
+all 13 comparisons in `python/tests/test_rio_block_tags.py`. TIFF-domain
+`BLOCK_OFFSET_x_y` and `BLOCK_SIZE_x_y` items match the file's chunk arrays and
+GDAL exactly for tiles, strips, classic TIFF, BigTIFF, planar/interleaved bands,
+complex samples, MemoryFile, overviews and real Landsat data. External overview
+offsets refer to the `.ovr` file. Block items are queried individually and are
+not enumerated in `tags()`.
+
+The loopback HTTP COG test measures transferred bytes and requests. Opening
+the dataset and querying all base blocks transfers less than one quarter of
+the file; repeated queries send no additional requests. The implementation
+reuses the lazy reader's chunk tables and does not decode pixels for metadata.
+Local validation uses GDAL 3.12.1 through rasterio.
+
 ## Vector source ranges
 
 `cargo test -p terrio --test vector_stream_ranges` checks eager/streamed ranges,
