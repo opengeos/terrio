@@ -234,13 +234,7 @@ fn wkt1_axes(wkt: &str) -> Option<Vec<String>> {
     if !["GEOGCS", "PROJCS"].iter().any(|k| root.key.eq_ignore_ascii_case(k)) {
         return None;
     }
-    let axes: Vec<String> = root
-        .children("AXIS")
-        .filter_map(|a| match a.args.get(1) {
-            Some(super::wkt1::Arg::Ident(d)) => Some(d.to_ascii_lowercase()),
-            _ => None,
-        })
-        .collect();
+    let axes = directions(&root)?;
     Some(if axes.is_empty() { vec!["east".into(), "north".into()] } else { axes })
 }
 
@@ -323,24 +317,15 @@ fn is_geocentric(root: &super::wkt1::Node) -> bool {
 /// The directions of the axes of a WKT 2 CRS's horizontal CRS (a bound CRS's source CRS),
 /// lowercase. `None` for a compound or other CRS.
 fn horizontal_axes(root: &super::wkt1::Node) -> Option<Vec<String>> {
-    let crs = match root.key.to_ascii_uppercase().as_str() {
-        "BOUNDCRS" => root.child("SOURCECRS")?.args.iter().find_map(|a| match a {
-            super::wkt1::Arg::Node(n) => Some(n),
-            _ => None,
-        })?,
-        _ => root,
-    };
+    if root.key.eq_ignore_ascii_case("COMPOUNDCRS") {
+        return None;
+    }
+    let crs = wkt2_horizontal(root)?;
     let horizontal = ["GEOGCRS", "GEOGRAPHICCRS", "GEODCRS", "GEODETICCRS", "PROJCRS", "PROJECTEDCRS"];
     if !horizontal.iter().any(|k| crs.key.eq_ignore_ascii_case(k)) {
         return None;
     }
-    let axes: Option<Vec<String>> = crs
-        .children("AXIS")
-        .map(|a| match a.args.get(1) {
-            Some(super::wkt1::Arg::Ident(d)) => Some(d.to_ascii_lowercase()),
-            _ => None,
-        })
-        .collect();
+    let axes = directions(crs);
     // A polar CRS's axes along meridians (south along 90°E and 180°E at the north pole, north
     // along 90°E and 0°E at the south pole), the easting and northing of its projection.
     let along = |a: &super::wkt1::Node, lon: f64| a.child("MERIDIAN").and_then(|m| m.num(0)) == Some(lon);

@@ -699,7 +699,8 @@ impl SpatialRef {
     ///   order or parameter its nodes do not describe, GDAL's `custom_proj4` method.
     ///
     /// A WKT 1 with an extension is kept when an EPSG or ESRI `AUTHORITY` of its root identifies
-    /// the CRS, as GDAL's Web Mercator (EPSG:3857). A stored WKT 1 is returned as it is. A stored
+    /// the CRS, as GDAL's Web Mercator (EPSG:3857). A stored WKT 1 is returned as it is when it
+    /// needs no extension (or its root code is the CRS's own), else `None`. A stored
     /// WKT 2 that terrio identifies as a code, without a datum shift of its own, is the code's
     /// WKT 1; with the code's two horizontal axes swapped (ETRS89 in longitude and latitude), the
     /// code's WKT 1 with its axes swapped and without the codes that give their order. Another

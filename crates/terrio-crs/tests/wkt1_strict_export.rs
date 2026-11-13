@@ -105,7 +105,12 @@ const LAXER: &[&str] = &["+proj=ups +ellps=WGS84 +units=m"];
 /// The EPSG code at the root of a WKT 1.
 fn root_code(wkt: &str) -> Option<u32> {
     let tail = &wkt[wkt.rfind(",AUTHORITY[\"EPSG\",\"")?..];
-    (tail.matches(']').count() == 2).then(|| tail.trim_start_matches(",AUTHORITY[\"EPSG\",\"").split('"').next()?.parse().ok())?
+    // The root's own: the last node, closed by the root's bracket.
+    if tail.matches(']').count() != 2 {
+        return None;
+    }
+    let code = tail.trim_start_matches(",AUTHORITY[\"EPSG\",\"").split('"').next()?;
+    code.parse().ok()
 }
 
 /// The directions of a WKT 1's AXIS nodes, in order.
@@ -268,6 +273,35 @@ fn the_default_wkt_keeps_the_extension() {
     assert_eq!(grid.to_wkt1_strict(), None);
     let web = SpatialRef::from_epsg(3857).unwrap();
     assert_eq!(web.to_wkt1_strict(), web.to_wkt());
+}
+
+#[test]
+fn a_stored_wkt1_needing_its_extension_has_none() {
+    // A WKT 1 given with a PROJ4 extension and no code of its own: `None`; under its own code
+    // (GDAL's Web Mercator), as it is.
+    let custom = SpatialRef::from_proj4("+proj=longlat +ellps=clrk66 +nadgrids=conus +no_defs").unwrap().to_wkt().unwrap();
+    assert!(custom.contains("EXTENSION[\"PROJ4\""));
+    assert_eq!(SpatialRef::from_wkt(&custom).to_wkt1_strict(), None);
+    let web = SpatialRef::from_epsg(3857).unwrap().to_wkt().unwrap();
+    assert_eq!(SpatialRef::from_wkt(&web).to_wkt1_strict().as_deref(), Some(web.as_str()));
+}
+
+#[test]
+fn to_wkt_describes_without_the_extension() {
+    // What `to_wkt` now writes without the extension, as PROJ 9.8.1's WKT1_GDAL does: a
+    // geocentric CRS, `+R_C` on a sphere, an ellipsoid of `+a` and `+es` or `+e`.
+    for (proj, node) in [
+        ("+proj=geocent +ellps=GRS80 +units=m", "GEOCCS[\"unknown\",DATUM[\"Unknown based on GRS 1980 ellipsoid\""),
+        ("+proj=merc +R_C +lon_0=0 +x_0=0 +y_0=0 +R=3396190 +units=m", "SPHEROID[\"unknown\",3396190,0]"),
+        ("+proj=longlat +a=6378000 +es=0.006", "SPHEROID[\"unknown\",6378000,332.832581074854]"),
+        ("+proj=longlat +a=6378137 +e=0.08", "SPHEROID[\"unknown\",6378137,311.999197429715]"),
+    ] {
+        let w = SpatialRef::from_proj4(proj).unwrap().to_wkt().unwrap();
+        assert!(w.contains(node) && !w.contains("EXTENSION"), "{proj}: {w}");
+    }
+    // Beside `+b`, whose order of precedence differs from PROJ's, `+es` keeps the extension.
+    let w = SpatialRef::from_proj4("+proj=longlat +a=6378137 +b=6356752.314245179 +es=0.006").unwrap().to_wkt().unwrap();
+    assert!(w.contains("EXTENSION[\"PROJ4\""), "{w}");
 }
 
 #[test]

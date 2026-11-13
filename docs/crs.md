@@ -752,7 +752,7 @@ Known differences, all of WKTs and PROJ strings without a code:
 `SpatialRef::to_wkt` writes GDAL's WKT 1, which keeps what WKT 1 cannot describe in an
 `EXTENSION["PROJ4", ...]`. Formats whose readers ignore that extension (a shapefile `.prj`)
 need `SpatialRef::to_wkt1_strict`, as PROJ 9.8.1 exports `WKT1_GDAL`: `terrio crs CRS
---wkt1-strict`, Python `terrio._terrio.crs_to_wkt1_strict(crs)`, JavaScript
+--wkt1-strict`, Python `rio.CRS.to_wkt1_strict()` and `terrio._terrio.crs_to_wkt1_strict(crs)`, JavaScript
 `crsToWkt1Strict(crs)`. It is the WKT 1 of `to_wkt`, or `None`:
 
 - where PROJ writes no WKT 1: geographic 3D CRSs (EPSG:4979), Equal Earth (EPSG:8857), the
@@ -766,7 +766,8 @@ need `SpatialRef::to_wkt1_strict`, as PROJ 9.8.1 exports `WKT1_GDAL`: `terrio cr
   name for.
 
 Web Mercator (EPSG:3857) keeps GDAL's extension, as PROJ does: its `AUTHORITY` identifies it.
-A WKT 1 given is returned as it is. A WKT 2 that terrio identifies as a code, without a datum
+A WKT 1 given is returned as it is when it needs no extension (or its root code is the CRS's
+own), else `None`. A WKT 2 that terrio identifies as a code, without a datum
 shift of its own, is written as the code's WKT 1; with the code's two horizontal axes swapped
 (ETRS89 in longitude and latitude, CRS84), as the code's WKT 1 with its axes swapped and without
 the codes that give their order. Another WKT 2 is written as the WKT 1 of its PROJ string, when

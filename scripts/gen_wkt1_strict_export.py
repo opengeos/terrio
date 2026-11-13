@@ -206,6 +206,8 @@ def main():
     iau = [f"IAU_2015:{i.code}" for i in query_crs_info(auth_name="IAU_2015")][::20]
     for r in REFERENCES + STRICT_REFERENCES + iau:
         lines.append(f"ref\t{r}\t{wkt1(CRS(r))}")
+    # One row per line, three tab-separated fields: no input or WKT may hold a tab or newline.
+    assert all(line.count("\t") == 2 and "\n" not in line for line in lines[2:]), "tab or newline in a row"
     OUT.write_text("\n".join(lines) + "\n")
     print(f"{len(lines) - 2} rows written to {OUT}")
 
