@@ -14,6 +14,18 @@ use std::path::{Path, PathBuf};
 use wbraster::raster::RasterData;
 use wbraster::{CrsInfo, DataType, Raster, RasterConfig};
 
+/// A complete finite JPEG quality in 1..=100, truncating fractional values for the encoder.
+/// Unlike GDAL 3.12.1's standalone JPEG parser, numeric prefixes are not accepted.
+pub(crate) fn jpeg_quality(value: &str) -> Result<u8> {
+    value
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|q| q.is_finite() && (1.0..=100.0).contains(q))
+        .map(|q| q as u8)
+        .ok_or_else(|| Error::InvalidArgument(format!("QUALITY={value} is not a legal value in the range 1-100.")))
+}
+
 /// How the bands of a raw raster are interleaved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Interleave {
