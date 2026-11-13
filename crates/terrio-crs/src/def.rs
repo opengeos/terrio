@@ -355,6 +355,23 @@ impl Def {
         }
 
         let mut ell = datum::ellipsoid(&p).or_else(|| datum_name.and_then(datum_ellps).and_then(Ell::named)).unwrap_or_else(Ell::wgs84);
+        // A shape without `+a` (or `+R`) changes the shape of the named ellipsoid or the datum's,
+        // as PROJ's `pj_ell_set` applies it: `+f=0 +datum=WGS84` is the sphere of WGS 84's
+        // semi-major axis (ESRI's orthographic CRSs).
+        if !p.has("a") && !p.has("R") {
+            // In PROJ's order of precedence: `+rf`, `+f`, `+es`, `+e`, then `+b`.
+            if let Some(rf) = p.f64("rf") {
+                ell = Ell::from_a_rf(ell.a, rf);
+            } else if let Some(f) = p.f64("f") {
+                ell = Ell::from_a_rf(ell.a, if f == 0.0 { 0.0 } else { 1.0 / f });
+            } else if let Some(es) = p.f64("es") {
+                ell = Ell::from_a_es(ell.a, es);
+            } else if let Some(e) = p.f64("e") {
+                ell = Ell::from_a_es(ell.a, e * e);
+            } else if let Some(b) = p.f64("b") {
+                ell = Ell::from_a_b(ell.a, b);
+            }
+        }
         // `+R_A`: a sphere of the ellipsoid's area.
         if p.has("R_A") && ell.es != 0.0 {
             let e = ell.e;

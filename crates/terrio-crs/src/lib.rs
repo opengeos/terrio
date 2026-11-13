@@ -79,6 +79,7 @@ mod grid;
 mod iau;
 mod math;
 mod params;
+mod proj_write;
 mod projections;
 mod projjson;
 mod projjson_gdal;
@@ -627,6 +628,43 @@ impl SpatialRef {
         self.authority().map(|(a, code)| format!("{a}:{code}"))
     }
 
+    /// The PROJ string of the CRS as PROJ 9.8.1 writes it (`proj_as_proj_string` with
+    /// `PJ_PROJ_4`, pyproj's `CRS.to_proj4()`, `projinfo -o PROJ`), or `None` for a CRS PROJ has
+    /// none for (an engineering CRS, Polar Stereographic variant C, an EPSG code terrio reads only
+    /// through the wbprojection fallback).
+    ///
+    /// Like PROJ's, the string leaves out what a PROJ string cannot hold, so it is no substitute
+    /// for the code or WKT to keep a CRS:
+    /// - the datum transformation of a registry CRS (`+datum=` names only WGS 84, NAD83 and NAD27;
+    ///   `+towgs84` comes only from a definition that gives it, a WKT's `TOWGS84` or `BOUNDCRS`,
+    ///   which PROJ writes with the ellipsoid in place of the datum, even for a registry CRS);
+    /// - the angular unit of a geographic CRS (EPSG:4807 is in grads, its string in degrees);
+    /// - the axis order, but for south-orientated Transverse Mercator and Krovak (`+axis=wsu`,
+    ///   `+axis=swu`).
+    ///
+    /// A compound CRS (`EPSG:4326+5773`) is its horizontal CRS's string with the vertical unit
+    /// (and a WKT's geoid model, `+geoidgrids`). A CRS given by a PROJ string or a WKT without
+    /// a code comes back as PROJ writes it: `+datum=` for WGS84, NAD83 and NAD27 when nothing
+    /// changes them (`+ellps` beside `+datum` is ignored), else the datum's ellipsoid; the
+    /// ellipsoid by name, else a sphere as `+R`, else as given (`+rf` or `+b`); `+towgs84` with
+    /// seven values, or `+nadgrids` in its place; units by PROJ's names; UTM zones as
+    /// `+proj=utm`; GDAL's Web Mercator string as PROJ's. Its parameters stay in their order,
+    /// which PROJ rewrites in its own, adding the defaults. A WKT's PROJ4 extension is written as
+    /// it is, as PROJ writes it. A planetocentric CRS on an ellipsoid (`+geoc`) has none. A WKT's
+    /// grid shift (`PROJ4_GRIDS` in its datum, a `BOUNDCRS` with a grid) is not read, so not
+    /// written.
+    ///
+    /// ```
+    /// use terrio_crs::SpatialRef;
+    ///
+    /// let utm = SpatialRef::from_epsg(32632)?;
+    /// assert_eq!(utm.to_proj4().as_deref(), Some("+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs +type=crs"));
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn to_proj4(&self) -> Option<String> {
+        proj_write::write(self)
+    }
+
     /// The WKT definition, built from the EPSG (or ESRI) code or PROJ string when no WKT is
     /// stored.
     pub fn to_wkt(&self) -> Option<String> {
@@ -829,7 +867,7 @@ impl SpatialRef {
 }
 
 /// The WKT 1 of a PROJ string, as GDAL writes it (see [`wkt1_write`]).
-fn proj_to_wkt(p: &str) -> Option<String> {
+pub(crate) fn proj_to_wkt(p: &str) -> Option<String> {
     wkt1_write::from_proj(p)
 }
 
@@ -857,7 +895,7 @@ pub fn wkt_proj(wkt: &str) -> Option<String> {
 }
 
 /// The PROJ string of a WKT 1's root `EXTENSION["PROJ4", ...]`.
-fn proj4_extension(wkt: &str) -> Option<String> {
+pub(crate) fn proj4_extension(wkt: &str) -> Option<String> {
     let root = wkt1::parse(wkt)?;
     let ext = root.children("EXTENSION").find(|n| n.name().is_some_and(|k| k.eq_ignore_ascii_case("PROJ4")))?;
     match ext.args.get(1)? {

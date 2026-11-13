@@ -1234,6 +1234,14 @@ pub fn crs_to_projjson(crs: &str) -> Result<String, JsError> {
     SpatialRef::parse(crs).and_then(|s| s.to_projjson()).map_err(js_err)
 }
 
+/// The PROJ string of a CRS as PROJ 9.8.1 writes it (`projinfo -o PROJ`), `undefined` for a CRS
+/// PROJ has none for (an engineering CRS). Like PROJ's, it leaves out the datum transformation of
+/// an EPSG CRS: keep the code or WKT to keep the CRS.
+#[wasm_bindgen(js_name = crsToProj4)]
+pub fn crs_to_proj4(crs: &str) -> Result<Option<String>, JsError> {
+    SpatialRef::parse(crs).map(|s| s.to_proj4()).map_err(js_err)
+}
+
 /// The formats terrio reads and writes: `[{ name, long_name, kind, extensions, read, write }]`.
 /// In WebAssembly, only the formats with in-memory codecs can be used (see the README).
 #[wasm_bindgen]

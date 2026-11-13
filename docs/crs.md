@@ -685,6 +685,49 @@ sources are not supported.
 Geocentric and 3D CRSs remain available through EPSG, PROJ and WKT definitions.
 This prevents silent loss of datum, axis, unit or operation information.
 
+### Writing PROJ strings
+
+`SpatialRef::to_proj4` writes the PROJ string PROJ 9.8.1 writes (`projinfo -o PROJ`, pyproj's
+`CRS.to_proj4()`): `terrio crs CRS --proj4`, Python `crs_to_proj4(crs)`, JavaScript
+`crsToProj4(crs)`. It is `None` for a CRS PROJ has none for (an engineering CRS, Polar
+Stereographic variant C, an EPSG code read only through the wbprojection fallback). Like PROJ's,
+the string leaves out what a PROJ string cannot hold, so keep the code or WKT to keep a CRS:
+
+- the datum transformation of an EPSG or ESRI CRS: `+datum=` names only WGS 84, NAD83 and NAD27,
+  and `+towgs84` comes only from a definition that gives it (a WKT's `TOWGS84` or `BOUNDCRS`,
+  written with the ellipsoid in place of the datum, as PROJ does, also for a WKT of a code);
+- the angular unit of a geographic CRS (EPSG:4807, in grads, is written in degrees);
+- the axis order, but for south-orientated Transverse Mercator and Krovak.
+
+A compound CRS (`EPSG:4326+5773`, a registry code, a WKT's `COMPD_CS`) is its horizontal CRS's
+string with the vertical unit (`+vunits=m`), and a WKT's geoid model (`+geoidgrids`). A CRS
+given by a PROJ string or a WKT without a code comes back as PROJ writes it:
+
+- `+datum=` for WGS84, NAD83 and NAD27 when no shift, ellipsoid parameter or prime meridian
+  changes them (`+ellps` beside `+datum` is ignored), else (and for PROJ's other datums) the
+  datum's ellipsoid;
+- the ellipsoid by name when PROJ has the name, else a sphere as `+R`, else as given (`+rf` or
+  `+b`); on a named ellipsoid or datum, a flattening given as `+f`, `+es` or `+e` is dropped,
+  as PROJ drops it;
+- `+towgs84` with seven values, or `+nadgrids` in its place; prime meridians and units by
+  PROJ's names; the unit of a projected CRS written;
+- UTM zones as `+proj=utm`; GDAL's Web Mercator string as PROJ's.
+
+Its parameters stay in their order, which PROJ rewrites in its own, adding the defaults (and
+dropping some, such as polar stereographic's `+k=1`). A WKT's PROJ4 extension (GDAL's
+`EXTENSION["PROJ4", ...]`) is written as it is, as PROJ writes it. A planetocentric CRS on an
+ellipsoid (`+geoc`) has none, as in PROJ.
+
+For every EPSG and ESRI code terrio reads (8,329 in the default build) and every IAU_2015 CRS
+(2,201), the string is PROJ 9.8.1's character for character; `tests/proj_string_export.rs`
+checks every 20th of these codes, the codes behind each rule, custom definitions and compound
+references (`scripts/gen_proj_string_export.py`). Reading a string back gives the CRS's conversion: `+f`,
+`+rf` and `+b` without `+a` change the shape of `+ellps`' or `+datum`'s ellipsoid, as PROJ's
+`pj_ell_set` does (ESRI:102035's `+proj=ortho +f=0 +datum=WGS84` is a sphere). Known
+differences: an ESRI WKT of Miller's projection, which PROJ reads on the authalic sphere
+(`+R_A`), is read and written without it; a WKT's grid shift (GDAL's `PROJ4_GRIDS` in a datum,
+a `BOUNDCRS` with a grid) is not read, so its string has no `+nadgrids`.
+
 ### Writing PROJJSON
 
 `SpatialRef::to_projjson` writes PROJJSON v0.7 for geographic 2D and 3D, geocentric, projected,

@@ -295,7 +295,7 @@ terrio formats [--json]
 ## crs
 
 ```sh
-terrio crs CRS [--wkt] [--projjson]
+terrio crs CRS [--wkt] [--projjson | --proj4]
 terrio crs SRC --to DST [--s_coord_epoch YEAR] [--t_coord_epoch YEAR] X Y [X Y ...]
 echo "X Y [Z [T]]" | terrio crs SRC --to DST [--s_coord_epoch YEAR] [--t_coord_epoch YEAR]
 ```
@@ -306,6 +306,8 @@ year) use it for time-dependent transformations, and a point that cannot be tran
 [Coordinate Systems](crs.md#datum-shift-grids)). `--projjson` prints only the CRS as PROJJSON, so that
 `terrio crs CRS --projjson > crs.json` writes a PROJJSON file (see
 [Writing PROJJSON](crs.md#writing-projjson)); it cannot be combined with `--to` or `--wkt`.
+`--proj4` prints only the PROJ string, as `projinfo -o PROJ` writes it, which leaves out the
+datum transformation of an EPSG CRS (see [Writing PROJ strings](crs.md#writing-proj-strings)).
 
 ## list-crs
 
