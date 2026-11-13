@@ -46,7 +46,7 @@ OUT = (
 )
 
 # Projected CRSs of each method, geographic CRSs on other datums, ellipsoids and meridians, units,
-# compound and vertical CRSs.
+# compound, vertical and geographic 3D CRSs.
 RULES = [
     "EPSG:4326",
     "EPSG:4269",
@@ -70,6 +70,9 @@ RULES = [
     "EPSG:2246",
     "EPSG:6350",
     "EPSG:6931",
+    "EPSG:4979",
+    "EPSG:4937",
+    "EPSG:7912",
     "EPSG:4326+5773",
     "EPSG:32633+5773",
     "EPSG:2056+5728",
@@ -179,9 +182,10 @@ def gdal_keys(definition, directory):
 
 
 def main():
-    assert rasterio.__gdal_version__ == "3.12.1", (
-        f"GDAL {rasterio.__gdal_version__}, not 3.12.1"
-    )
+    if rasterio.__gdal_version__ != "3.12.1":
+        raise SystemExit(
+            f"GDAL {rasterio.__gdal_version__}, not 3.12.1 (rasterio 1.5.0)"
+        )
     warnings.simplefilter("ignore")
     rows = []
     with tempfile.TemporaryDirectory() as tmp:

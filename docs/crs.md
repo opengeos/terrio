@@ -872,7 +872,8 @@ They read and write:
 
 - registered geographic and projected CRSs by their EPSG codes, and a compound CRS of EPSG CRSs by
   its horizontal and vertical codes (GeoTIFF 1.1), read as the registry's compound CRS of the two
-  when there is one;
+  when there is one; a geographic 3D CRS by its geographic 2D CRS's code with its own as the
+  vertical CRS, as GDAL writes and reads it (EPSG:4979 as 4326 and 4979);
 - user-defined geographic and projected CRSs: the projection methods GeoTIFF names
   (ProjCoordTransGeoKey 1, 3, 7 to 28, and 9815 for Hotine oblique Mercator variant B and Swiss
   oblique Mercator), a UTM zone by its ProjectionGeoKey, linear units by EPSG code or by size
@@ -888,12 +889,12 @@ wbprojection, need the `wbprojection-fallback` feature (which `terrio` enables);
 citation is read only for an EPSG reference (`EPSG:32633`).
 
 `tests/geokeys_gdal.rs` compares both directions with GDAL 3.12.1 (rasterio 1.5.0), frozen by
-`scripts/gen_geokeys_gdal.py`: the GeoKeys GDAL writes for 373 CRSs (every 20th EPSG projected and
+`scripts/gen_geokeys_gdal.py`: the GeoKeys GDAL writes for 376 CRSs (every 20th EPSG projected and
 geographic 2D code, the codes of each rule, PROJ strings of every method GeoTIFF names in other
-units and on other datums, ESRI codes, compound CRSs) are read as the CRS GDAL reads from them
-(by its EPSG code when GDAL's has one, else at two points), all 373. terrio's GeoKeys of the 371
-of them it reads from its tables hold GDAL's model type, EPSG codes, projection method, linear
-unit and projection parameters, and read back as the CRS. Known differences:
+units and on other datums, ESRI codes, compound and geographic 3D CRSs) are read as the CRS GDAL
+reads from them (by its EPSG code when GDAL's has one, else at two points), all 376. terrio's
+GeoKeys of the 374 of them it reads from its tables hold GDAL's model type, EPSG codes, projection
+method, linear unit and projection parameters, and read back as the CRS. Known differences:
 
 - GDAL also writes keys the codes imply (citations, the angular unit, the ellipsoid's axes), and
   a UTM zone by its ProjectionGeoKey where terrio writes its method and parameters; both read the

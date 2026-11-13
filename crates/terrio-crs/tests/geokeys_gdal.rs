@@ -54,8 +54,13 @@ const READ_OTHERWISE: &[&str] = &[];
 ///   terrio's WKT 1 of the PROJ string needs its PROJ4 extension.
 const WRITTEN_OTHERWISE: &[&str] = &["ESRI:54030", "+proj=mill +lat_0=0 +lon_0=0 +x_0=0 +y_0=0 +R_A +datum=WGS84"];
 
-/// The EPSG code at the root of a WKT 1.
+/// The EPSG code at the root of GDAL's WKT: a WKT 1 `AUTHORITY`, or the `ID` of a WKT 2 (which
+/// GDAL writes for a CRS WKT 1 cannot hold, a geographic 3D one).
 fn root_code(wkt: &str) -> Option<u32> {
+    if let Some(i) = wkt.rfind(",ID[\"EPSG\",") {
+        let tail = &wkt[i + ",ID[\"EPSG\",".len()..];
+        return tail.strip_suffix("]]").and_then(|c| c.parse().ok());
+    }
     let tail = &wkt[wkt.rfind(",AUTHORITY[\"EPSG\",\"")?..];
     if tail.matches(']').count() != 2 {
         return None;
@@ -75,7 +80,15 @@ fn false_origin(s: &SpatialRef) -> (f64, f64) {
 fn equivalent(a: &SpatialRef, b: &SpatialRef) -> bool {
     // The same PROJ string (as PROJ writes it): a method terrio does not transform with (Van
     // der Grinten without the wbprojection fallback) is compared by it.
-    if a.same_as(b) || a.to_proj4().is_some_and(|p| Some(p) == b.to_proj4()) {
+    if a.same_as(b) {
+        return true;
+    }
+    // The points compare horizontal coordinates: a compound CRS must keep its vertical CRS, and a
+    // geographic 3D CRS its height.
+    if a.compound_parts() != b.compound_parts() || a.has_height() != b.has_height() {
+        return false;
+    }
+    if a.to_proj4().is_some_and(|p| Some(p) == b.to_proj4()) {
         return true;
     }
     let Ok(t) = Transformer::new(a, b) else { return false };
@@ -197,7 +210,10 @@ fn write_check(row: &Row) -> Option<String> {
         Ok(k) => k,
         Err(e) => return Some(format!("no GeoKeys: {e}")),
     };
-    let tags = keys.encode();
+    let tags = match keys.encode() {
+        Ok(t) => t,
+        Err(e) => return Some(format!("GeoKeys not encoded: {e}")),
+    };
     let ours = defining(&tags.directory, &tags.doubles);
     let gdal = defining(&row.directory, &row.doubles);
     let same_parameters = ours.1.len() == gdal.1.len()

@@ -186,6 +186,14 @@ impl SpatialRef {
     /// The CRS of a GeoTIFF GeoKey directory and its double and ASCII parameters, as GDAL reads
     /// them (see the standalone engine's `geokeys::read`). Fails when they give no CRS terrio
     /// reads.
+    ///
+    /// ```no_run
+    /// use terrio::crs::SpatialRef;
+    ///
+    /// let crs = SpatialRef::from_geokeys(&[1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 32633], &[], "")?;
+    /// assert_eq!(crs.epsg, Some(32633));
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
     pub fn from_geokeys(directory: &[u16], doubles: &[f64], ascii: &str) -> Result<Self> {
         initialize();
         terrio_crs::SpatialRef::from_geokeys(directory, doubles, ascii).map(Into::into).map_err(Into::into)
@@ -193,6 +201,15 @@ impl SpatialRef {
 
     /// The GeoTIFF GeoKeys of the CRS, as GDAL writes them (see the standalone engine's
     /// `SpatialRef::to_geokeys`), without the raster type. Fails for an unknown CRS.
+    ///
+    /// ```no_run
+    /// use terrio::crs::SpatialRef;
+    ///
+    /// let tags = SpatialRef::from_epsg(32633)?.to_geokeys()?.encode()?;
+    /// // GeoKeyDirectoryTag, GeoDoubleParamsTag and GeoAsciiParamsTag.
+    /// println!("{:?} {:?} {:?}", tags.directory, tags.doubles, tags.ascii);
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
     pub fn to_geokeys(&self) -> Result<geokeys::GeoKeyValues> {
         initialize();
         self.as_core().to_geokeys().map_err(Into::into)
@@ -203,6 +220,12 @@ impl SpatialRef {
     pub(crate) fn user_defined_geokeys(&self, name: &str) -> Option<geokeys::GeoKeyValues> {
         initialize();
         geokeys::user_defined_keys(&self.as_core(), name)
+    }
+
+    /// The CRS of GeoKeys and the projection method left unread (see `geokeys::read`).
+    pub(crate) fn read_geokeys(directory: &[u16], doubles: &[f64], ascii: &str) -> geokeys::GeoKeysCrs {
+        initialize();
+        geokeys::read(directory, doubles, ascii)
     }
 
     /// The CRS as PROJJSON v0.7 (see the standalone engine's `SpatialRef::to_projjson`).
@@ -445,14 +468,9 @@ impl TransformOptions {
 }
 
 pub use terrio_crs::CoordinateOperation;
-/// GeoTIFF GeoKeys: see [`SpatialRef::from_geokeys`] and [`SpatialRef::to_geokeys`].
+/// GeoTIFF GeoKeys, the standalone engine's module (its `read`, `GeoKeyValues` and `GeoKeyTags`):
+/// see [`SpatialRef::from_geokeys`] and [`SpatialRef::to_geokeys`].
 pub use terrio_crs::geokeys;
-
-/// The CRS of GeoKeys and the projection method left unread (see `geokeys::read`).
-pub(crate) fn read_geokeys(directory: &[u16], doubles: &[f64], ascii: &str) -> geokeys::GeoKeysCrs {
-    initialize();
-    geokeys::read(directory, doubles, ascii)
-}
 pub use terrio_crs::{AUTHORITIES, CrsEntry, CrsKind, CrsQuery, EPSG_VERSION, check_authorities};
 
 /// Recognized boolean PROJ parameters, normalized by the shared CRS parser.

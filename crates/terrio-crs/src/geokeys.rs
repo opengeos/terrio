@@ -17,7 +17,7 @@
 //! use terrio_crs::SpatialRef;
 //!
 //! let keys = SpatialRef::from_epsg(32633)?.to_geokeys()?;
-//! let tags = keys.encode();
+//! let tags = keys.encode()?;
 //! let read = SpatialRef::from_geokeys(&tags.directory, &tags.doubles, &tags.ascii)?;
 //! assert_eq!(read.epsg, Some(32633));
 //! # Ok::<(), terrio_crs::Error>(())
@@ -124,7 +124,16 @@ pub struct GeoKeysCrs {
 ///   EPSG ellipsoid or the GeoKeys' own;
 /// - ESRI PE citations (`ESRI PE String = <WKT>`), as GDAL writes a CRS GeoKeys cannot hold;
 /// - a vertical CRS (VerticalCSTypeGeoKey) on an EPSG horizontal CRS, as the compound CRS (the
-///   registry's compound CRS of the two codes when there is one).
+///   registry's compound CRS of the two codes when there is one), and a geographic 3D CRS as its
+///   geographic 2D CRS with its own code as the vertical CRS (EPSG:4979 as 4326 and 4979).
+///
+/// ```no_run
+/// // GeoKeys of a UTM zone, as a GeoTIFF's three tags hold them.
+/// let directory = [1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, 32633];
+/// let read = terrio_crs::geokeys::read(&directory, &[], "");
+/// assert_eq!(read.crs.and_then(|c| c.epsg), Some(32633));
+/// assert_eq!(read.unsupported_method, None);
+/// ```
 pub fn read(directory: &[u16], doubles: &[f64], ascii: &str) -> GeoKeysCrs {
     let k = GeoKeys { keys: directory, doubles, ascii };
     let mut epsg = match (k.short(1024), k.short(3072), k.short(2048)) {
@@ -174,6 +183,14 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &str) -> GeoKeysCrs {
     // reads it (EPSG:4326 with EGM96 heights is `EPSG:4326+5773`). GeoTIFF stores no code for the
     // compound: GDAL 3.12.1 takes the registry's compound CRS of the two codes when there is one
     // (`GTIFGetOGISDefnAsOSR`), EPSG:9707 for those.
+    // A geographic 3D CRS: its geographic 2D CRS's code with its own as the vertical CRS, as GDAL
+    // 3.12.1 writes and reads EPSG:4979 (`2048=4326`, `4096=4979`).
+    if let Some(h) = epsg
+        && let Some(v) = k.short(4096).map(u32::from).filter(|v| geographic_2d_of(*v) == Some(h))
+        && let Ok(c) = SpatialRef::from_epsg(v)
+    {
+        return GeoKeysCrs { crs: Some(c), unsupported_method };
+    }
     if let Some(h) = epsg
         && let Some(v) = k.short(4096).filter(|c| *c != 0 && *c != USER_DEFINED)
         && let Ok(c) = SpatialRef::compound(h, u32::from(v))
@@ -189,6 +206,18 @@ pub fn read(directory: &[u16], doubles: &[f64], ascii: &str) -> GeoKeysCrs {
     });
     let crs = crs.or_else(|| proj4.as_deref().and_then(|p| SpatialRef::from_proj4(p).ok()));
     GeoKeysCrs { crs, unsupported_method }
+}
+
+/// The geographic 2D CRS of an EPSG geographic 3D CRS: the one on its datum of the same name (else
+/// the first), as GDAL pairs them in GeoKeys (EPSG:4979 and 4326, 4937 and 4258).
+fn geographic_2d_of(code: u32) -> Option<u32> {
+    use crate::epsg::GeodeticKind::{Geographic2D, Geographic3D};
+    let r = crate::epsg::registry();
+    let g = r.geodetic.get(&code).filter(|g| g.kind == Geographic3D)?;
+    let mut twins: Vec<u32> =
+        r.by_datum.get(&g.datum)?.iter().copied().filter(|c| r.geodetic.get(c).is_some_and(|t| t.kind == Geographic2D)).collect();
+    twins.sort_unstable();
+    twins.iter().copied().find(|c| r.geodetic.get(c).is_some_and(|t| t.name == g.name)).or(twins.first().copied())
 }
 
 /// The EPSG code of a user-defined projected CRS, from its projection code (UTM zones) or its
@@ -228,7 +257,14 @@ fn user_defined_projected(projection: Option<u16>, geographic: Option<u16>, datu
         };
     }
     let name = citation.split('|').next().unwrap_or_default().trim();
-    if name.is_empty() { None } else { code_of_name(name) }
+    // The CRS a citation names, on the GeoKeys' datum when they give one (a citation of
+    // `EPSG:32610` on NAD83(HARN) is no WGS 84 UTM zone).
+    let on_datum = |code: &u32| {
+        datum.is_none_or(|d| {
+            SpatialRef::from_epsg(*code).ok().and_then(|s| s.geographic_code()).and_then(crate::geographic_datum) == Some(d)
+        })
+    };
+    if name.is_empty() { None } else { code_of_name(name).filter(on_datum) }
 }
 
 /// Parses `UTM zone 10N` (or `UTM Zone 10, Northern Hemisphere`) from a citation.
@@ -259,8 +295,13 @@ fn code_of_name(name: &str) -> Option<u32> {
     if let Ok(code) = name.parse() {
         return Some(code);
     }
+    // An explicit reference (`EPSG:32633`, `EPSG::32633`), not a code within a WKT (an ESRI PE
+    // string's datum or unit).
+    if name.contains('[') {
+        return None;
+    }
     let upper = name.to_ascii_uppercase();
-    let rest = upper[upper.find("EPSG")? + 4..].trim_start_matches([':', ',', '"', '\'', '[', '(', ' ', '/']);
+    let rest = upper[upper.find("EPSG:")? + 5..].trim_start_matches(':');
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok().filter(|c| *c != 0)
 }
@@ -1013,8 +1054,21 @@ impl GeoKeyValues {
     /// The GeoKeyDirectoryTag, GeoDoubleParamsTag and GeoAsciiParamsTag holding the keys, as
     /// GDAL writes them: the keys sorted by id, each ASCII key ended by `|`, and GeoTIFF 1.1
     /// (minor revision 1) when they hold a vertical CRS (VerticalCSTypeGeoKey), which GDAL strips
-    /// from 1.0 files.
-    pub fn encode(&self) -> GeoKeyTags {
+    /// from 1.0 files. Fails when a count or offset does not fit the directory's 16 bits (an ASCII
+    /// key past 65,535 bytes, such as a very long ESRI PE citation).
+    ///
+    /// ```no_run
+    /// let keys = terrio_crs::SpatialRef::from_epsg(4326)?.to_geokeys()?;
+    /// let tags = keys.encode()?;
+    /// // Version 1.1.0 and two keys: GTModelTypeGeoKey 2 and GeographicTypeGeoKey 4326.
+    /// assert_eq!(&tags.directory[..4], &[1, 1, 0, 2]);
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn encode(&self) -> Result<GeoKeyTags> {
+        let too_long = |what: &str| Error::Crs(format!("GeoKeys: {what} does not fit a GeoKey directory's 16 bits"));
+        if self.doubles.len() > usize::from(u16::MAX) {
+            return Err(too_long("GeoDoubleParamsTag"));
+        }
         let mut shorts = self.shorts.clone();
         shorts.sort_by_key(|k| k.0);
         let mut keys: Vec<[u16; 4]> = shorts.iter().map(|(id, val)| [*id, 0, 1, *val]).collect();
@@ -1022,14 +1076,17 @@ impl GeoKeyValues {
         let mut ascii = String::new();
         for (id, text) in &self.ascii {
             let text = format!("{text}|");
-            keys.push([*id, GEO_ASCII_PARAMS, text.len() as u16, ascii.len() as u16]);
+            let count = u16::try_from(text.len()).map_err(|_| too_long("an ASCII key"))?;
+            let offset = u16::try_from(ascii.len()).map_err(|_| too_long("GeoAsciiParamsTag"))?;
+            keys.push([*id, GEO_ASCII_PARAMS, count, offset]);
             ascii.push_str(&text);
         }
         keys.sort_by_key(|k| k[0]);
         let minor = u16::from(keys.iter().any(|k| k[0] == 4096));
-        let mut directory = vec![1u16, 1, minor, keys.len() as u16];
+        let count = u16::try_from(keys.len()).map_err(|_| too_long("the number of keys"))?;
+        let mut directory = vec![1u16, 1, minor, count];
         directory.extend(keys.iter().flatten());
-        GeoKeyTags { directory, doubles: self.doubles.iter().map(|d| d.1).collect(), ascii }
+        Ok(GeoKeyTags { directory, doubles: self.doubles.iter().map(|d| d.1).collect(), ascii })
     }
 
     /// The directory entries of the DOUBLE keys: `[id, GeoDoubleParamsTag, count, offset]`.
@@ -1059,8 +1116,17 @@ pub struct GeoKeyTags {
 
 impl SpatialRef {
     /// The CRS of a GeoKey directory and its double and ASCII parameters, as GDAL reads them:
-    /// see [`read`](crate::geokeys::read), whose CRS this is. Fails when the GeoKeys give no CRS
-    /// terrio reads, naming an unsupported projection method.
+    /// see [`read`], whose CRS this is. Fails when the GeoKeys give no CRS terrio reads, naming an
+    /// unsupported projection method.
+    ///
+    /// ```no_run
+    /// use terrio_crs::SpatialRef;
+    ///
+    /// // A geographic CRS by its code (GTModelTypeGeoKey 2, GeographicTypeGeoKey 4326).
+    /// let crs = SpatialRef::from_geokeys(&[1, 1, 0, 2, 1024, 0, 1, 2, 2048, 0, 1, 4326], &[], "")?;
+    /// assert_eq!(crs.epsg, Some(4326));
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
     pub fn from_geokeys(directory: &[u16], doubles: &[f64], ascii: &str) -> Result<SpatialRef> {
         let read = read(directory, doubles, ascii);
         read.crs.ok_or_else(|| match read.unsupported_method {
@@ -1073,7 +1139,8 @@ impl SpatialRef {
 
     /// The GeoKeys of the CRS, as GDAL 3.12.1 writes them (`GTIFSetFromOGISDefnEx`), without the
     /// raster type (GTRasterTypeGeoKey), which is the raster's:
-    /// - a registered geographic or projected CRS by its EPSG code;
+    /// - a registered geographic or projected CRS by its EPSG code, a geographic 3D CRS by its
+    ///   geographic 2D CRS's and its own as the vertical CRS;
     /// - a compound CRS of EPSG CRSs by its horizontal and vertical codes, and its name;
     /// - a CRS without an EPSG code by its projection method and parameters (see
     ///   [`user_defined_keys`]);
@@ -1081,7 +1148,18 @@ impl SpatialRef {
     ///   horizontal one), GDAL's fallback: its WKT in an ESRI PE citation (`ESRI PE String =`),
     ///   with a user-defined model type.
     ///
-    /// Fails for an unknown CRS, and for a CRS that needs the fallback and has no WKT.
+    /// A geographic 3D CRS is written as its geographic 2D CRS with its own code as the vertical
+    /// CRS, as GDAL writes it (EPSG:4979 as `2048=4326`, `4096=4979`). Fails for an unknown CRS,
+    /// and for a CRS that needs the fallback and has no WKT.
+    ///
+    /// ```no_run
+    /// use terrio_crs::SpatialRef;
+    ///
+    /// let keys = SpatialRef::from_proj4("+proj=lcc +lat_1=33 +lat_2=45 +lat_0=39 +lon_0=-96 +datum=WGS84")?.to_geokeys()?;
+    /// // A user-defined projected CRS (ProjectedCSTypeGeoKey 32767), Lambert conformal conic 2SP.
+    /// assert!(keys.shorts.contains(&(3072, 32767)) && keys.shorts.contains(&(3075, 8)));
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
     pub fn to_geokeys(&self) -> Result<GeoKeyValues> {
         if self.is_unknown() {
             return Err(Error::Crs("an unknown CRS has no GeoKeys".into()));
@@ -1105,7 +1183,13 @@ impl SpatialRef {
             }
             (None, Some((code, geographic))) => {
                 v.shorts.push((1024, if geographic { 2 } else { 1 }));
-                v.shorts.push((if geographic { 2048 } else { 3072 }, code));
+                match geographic.then(|| geographic_2d_of(u32::from(code))).flatten().and_then(|h| u16::try_from(h).ok()) {
+                    Some(h) => {
+                        v.shorts.push((2048, h));
+                        v.shorts.push((4096, code));
+                    }
+                    None => v.shorts.push((if geographic { 2048 } else { 3072 }, code)),
+                }
             }
             (None, None) => {
                 let name = self.name().unwrap_or_else(|| "unnamed".into());

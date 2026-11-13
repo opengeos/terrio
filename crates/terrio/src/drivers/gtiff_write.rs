@@ -1741,12 +1741,12 @@ fn geo_tags(r: &Raster, opts: &TiffOptions, image_structure: &[(String, String)]
     }
     if !crs.is_unknown() {
         // As GDAL 3.12.1 writes them (`GTIFSetFromOGISDefnEx`): see `SpatialRef::to_geokeys`.
-        let keys = crs.to_geokeys().map_err(|_| Error::Crs("the raster's CRS has no WKT definition".into()))?;
+        let keys = crs.to_geokeys()?;
         v.shorts.extend(keys.shorts);
         v.doubles.extend(keys.doubles);
         v.ascii.extend(keys.ascii);
     }
-    let crate::crs::geokeys::GeoKeyTags { directory: dir, doubles, ascii, .. } = v.encode();
+    let crate::crs::geokeys::GeoKeyTags { directory: dir, doubles, ascii, .. } = v.encode()?;
     // Without a CRS, no GeoKeys: GDAL reads a lone raster-type key as a local CRS.
     if !crs.is_unknown() {
         tags.push((34735, Value::Shorts(dir)));

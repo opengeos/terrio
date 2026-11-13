@@ -30,9 +30,6 @@ pub(crate) struct GeoTags {
     pub geo_transform: Option<[f64; 6]>,
     /// The EPSG code of the CRS, from the GeoKeys.
     pub epsg: Option<u32>,
-    /// A PROJ string for user-defined projected CRSs without an EPSG code, built from the GeoKeys'
-    /// projection parameters.
-    pub proj4: Option<String>,
     /// The full CRS from user-defined GeoKeys, a PE citation or a sidecar. It can retain
     /// an EPSG identifier that does not resolve to the same full definition in the registry.
     pub crs: Option<wbraster::CrsInfo>,
@@ -666,7 +663,7 @@ pub(crate) fn crs_from_geokeys(keys: &[u16], doubles: Option<&[f64]>, ascii: Opt
 fn apply_geokeys(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii: Option<&str>) {
     let raster_type = keys.get(4..).and_then(|k| k.chunks(4).find(|k| k.len() == 4 && k[0] == 1025 && k[1] == 0)).map(|k| k[3]);
     out.pixel_is_point = raster_type == Some(2);
-    let read = crate::crs::read_geokeys(keys, doubles.unwrap_or_default(), ascii.unwrap_or_default());
+    let read = crate::crs::SpatialRef::read_geokeys(keys, doubles.unwrap_or_default(), ascii.unwrap_or_default());
     out.unreadable_method = read.unsupported_method;
     if let Some(crs) = read.crs {
         out.epsg = crs.epsg;
@@ -692,7 +689,6 @@ impl GeoTags {
         }
         if let Some(crs) = pam.crs {
             self.epsg = crs.epsg;
-            self.proj4 = None;
             self.crs = Some(crs);
             self.unreadable_method = None;
         }
@@ -717,11 +713,7 @@ impl GeoTags {
         if let Some(crs) = &self.crs {
             return crs.clone();
         }
-        match (self.epsg, &self.proj4) {
-            (Some(code), _) => crate::crs::epsg_crs_info(code),
-            (None, Some(p)) => crate::crs::SpatialRef::from_proj4(p).map(|s| s.to_crs_info()).unwrap_or_default(),
-            (None, None) => Default::default(),
-        }
+        self.epsg.map(crate::crs::epsg_crs_info).unwrap_or_default()
     }
 }
 
