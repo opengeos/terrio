@@ -226,3 +226,69 @@ def test_webp_refuses_what_gdal_refuses(shape, dtype, options, message):
         _encode(GdalMemoryFile, "WEBP", data, **options)
     with pytest.raises(RasterioIOError, match=re.escape(message)):
         _encode(MemoryFile, "WEBP", data, **options)
+
+
+@pytest.mark.parametrize("quality", ["abc", "", "high", "50abc", " ", "75.5%", "--1"])
+@pytest.mark.parametrize("surface", ["memory", "path", "native"])
+@pytest.mark.parametrize("lossless", [True, False])
+def test_webp_refuses_malformed_quality(tmp_path, quality, surface, lossless):
+    """Reject malformed numbers instead of silently selecting quality zero.
+
+    Args:
+        tmp_path: Directory for path-based output.
+        quality: A creation option that cannot be parsed as a complete number.
+        surface: The memory, path or native raster writing API.
+        lossless: Whether lossless encoding is explicitly selected.
+    """
+    data = np.zeros((3, 4, 4), dtype="uint8")
+    message = re.escape(f"QUALITY={quality} is not a legal value.")
+    if surface == "native":
+        raster = terrio.Raster.from_array(data, (0, 1, 0, 4, 0, -1))
+        with pytest.raises(terrio.InvalidArgumentError, match=message):
+            raster.write(
+                str(tmp_path / "tile.webp"),
+                driver="WEBP",
+                options={"QUALITY": quality, "LOSSLESS": "YES" if lossless else "NO"},
+            )
+    elif surface == "memory":
+        with pytest.raises(RasterioIOError, match=message):
+            _encode(MemoryFile, "WEBP", data, quality=quality, lossless=lossless)
+    else:
+        with pytest.raises(RasterioIOError, match=message):
+            with terrio.rio.open(
+                tmp_path / "tile.webp",
+                "w",
+                driver="WEBP",
+                width=4,
+                height=4,
+                count=3,
+                dtype="uint8",
+                quality=quality,
+                lossless=lossless,
+            ) as target:
+                target.write(data)
+
+
+@pytest.mark.parametrize(
+    ("quality", "canonical"),
+    [
+        ("0", "0"),
+        ("100", "100"),
+        ("75.5", "75.5"),
+        (" 75.5 ", "75.5"),
+        ("7.5e1", "75"),
+        ("nan", "75"),
+    ],
+)
+def test_webp_numeric_quality_keeps_its_encoding(quality, canonical):
+    """Retain numeric quality values and the historical NaN default.
+
+    Args:
+        quality: A complete numeric string, including whitespace or NaN.
+        canonical: The equivalent numeric encoding quality.
+    """
+    rgb, _, _ = _arrays()
+    actual = _encode(MemoryFile, "WEBP", rgb, quality=quality)
+    expected = _encode(MemoryFile, "WEBP", rgb, quality=canonical)
+    assert b"VP8 " in actual
+    assert actual == expected

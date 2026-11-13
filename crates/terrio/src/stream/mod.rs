@@ -1032,7 +1032,7 @@ impl FeatureWriter {
                 enc: geojson::SeqEncoder::new(&schema, &options.geojson)?,
             }),
             (true, VectorDriver::CSV, Some(p)) => {
-                let enc = csv::CsvEncoder::new(&schema, p, &options.csv)?;
+                let enc = csv::CsvEncoder::new(&schema, p, &csv::file_options(path, &options.csv))?;
                 let mut out = BufWriter::with_capacity(1 << 20, File::create(path)?);
                 out.write_all(enc.header().as_bytes())?;
                 Box::new(CsvSink { out, enc })

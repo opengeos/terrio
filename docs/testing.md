@@ -95,6 +95,22 @@ unzoned values and nulls. The native unit test
 GDAL-authored in-memory fields with unknown, local and explicit UTC flags.
 These tests use GDAL itself as the typed-field reference; validation uses GDAL 3.13.3.
 
+## CSV and TSV writing
+
+`cargo test -p terrio --test merged csv_writing::` checks whole-file, byte and
+streamed writes of point and polygon layers, with `.csv`, `.tsv` and uppercase
+`.TSV` filenames. TSV defaults to tabs; explicit comma, semicolon, tab or pipe
+options override the filename. Round trips check geometry and attribute values,
+including quoted tabs, commas, quotes and newlines. CSV's inferred WKT column and
+its existing CRS limitations are unchanged.
+
+`python/tests/test_tsv_writing.py` checks Layer, VectorDataset, byte, convert and
+CLI exports against CSV controls. The Node test `TSV byte output uses tabs and preserves polygon commas`
+exercises the filesystem-free WebAssembly writer and reader with polygon WKT.
+TSV is also an output of the registered `streams` conformance suite. On the real
+country boundaries, whole and streamed TSV files are byte-identical and GDAL
+3.12.1 reads all 176 features.
+
 ## Python warning attribution
 
 `python/tests/test_native_warning_locations.py` checks warnings recorded in Rust
@@ -111,6 +127,10 @@ ISO forms. Standard ISO strings with a uniform offset pass directly to pandas af
 value syntax scan. Other pandas 2 inputs inspect every distinct value so invalid strings retain
 their original diagnostic; pandas 3 uses its parser directly. Reduced `YYYY`/`YYYY-MM` values
 are parsed in a timezone-free batch, retaining valid results when one value is invalid.
+Mixed UTC conversion on pandas 2 parses naive and aware strings in separate batches,
+so a naive row cannot inherit an earlier row's offset. The regressions cover GeoJSON
+reads in both row orders, signed and fractional-hour offsets, missing and repeated
+values, duplicate indices, string storage types and millisecond output precision.
 Python datetime output normalizes timestamp fractions to six digits before stdlib parsing
 and attributes any precision warning to the caller. Other pandas-only ISO forms can still
 require one pandas fallback per distinct value on older Python versions.
@@ -307,7 +327,7 @@ Transverse Mercator, engineering and WKT2-only temporal definitions retain equiv
 CRS and values across those exports and pyogrio. Custom dynamic definitions also
 retain their frame reference epoch instead of losing it through WKT1 conversion.
 Unknown FlatGeobuf authority codes paired with usable projected or engineering WKT
-export without warnings through all four Python surfaces while retaining the
+export without warnings through all five Python surfaces while retaining the
 layer's declared code. Rewriting a layer whose prose definition was ignored does
 not carry that text into another format. The JavaScript regression checks the
 native FlatGeobuf byte-read path, including retained incomplete and engineering
@@ -317,6 +337,11 @@ fixtures. GDAL's CRS lookup/export can itself fail on incomplete Shapefile WKT o
 an invalid FlatGeobuf CRS object; Terrio deliberately keeps dataframe export usable
 with a warning and no consumer CRS. The registered Arrow suite also matches all
 12 available comparisons on `countries.gpkg`, including CRS and native encodings.
+The stream coverage includes `terrio.open_stream`, both directly into GeoPandas
+and through `pyarrow.RecordBatchReader.from_stream`. Invalid WKT and unknown
+authority codes without stored WKT warn once at export and use the same schema
+on every batch, including empty streams. Without optional pyproj validation,
+native metadata is retained. GeoParquet's native stream schema is unchanged.
 
 ## The conformance suite
 
@@ -354,6 +379,11 @@ pytest and rasterio are required. Default/explicit lossless samples are exact;
 requested lossy output changes with quality, keeps alpha exactly, and is decoded
 independently with GDAL (validated locally with GDAL 3.13.3). Path and memory
 outputs agree. Lossy byte streams, size and PSNR are not claimed to match libwebp.
+Malformed `QUALITY` values, including empty strings and trailing text, must raise
+an argument error through native, rio path and memory writes, even when lossless
+output is selected. This is intentionally stricter than GDAL's numeric-prefix
+parser. Complete numbers from 0 to 100, decimals and surrounding whitespace are
+accepted; NaN retains the historical quality 75 default.
 The shared lossy encoder is also checked through WebAssembly GeoTIFF tiles in
 `js/tests/node.test.mjs`. General `toBytes` and `open` do not support WebP in that
 build; `rasterTiles` can emit standalone WebP bytes through its callback.

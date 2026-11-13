@@ -20,6 +20,8 @@ mod citygml;
 mod cityjson;
 #[path = "../crs_compat.rs"]
 mod crs_compat;
+#[path = "../csv_writing.rs"]
+mod csv_writing;
 #[path = "../deep_wkt_sinks.rs"]
 mod deep_wkt_sinks;
 #[path = "../dem_calc_real_data.rs"]
