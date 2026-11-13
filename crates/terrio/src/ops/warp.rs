@@ -8112,11 +8112,11 @@ mod tests {
 
     /// Worlds in projected CRSs warped into NSIDC's north grid, whose interior holds the North
     /// Pole: in Mercator (EPSG:3857, to 85.05° N and S), which takes the pole beyond its edge,
-    /// and in Eckert IV (ESRI:54012), which takes it to a line, its first row. In both samplings (`SAMPLINGS`), every pixel the source covers is written
-    /// (for Eckert IV, north of 50° N: by the 180° meridian, where it splits the world, 52 pixels
-    /// at the grid's left edge, at 43° N, are not, whatever the poles); in the chunk-dependent
-    /// one, the source window of the grid starts at the source's first row and, for Mercator, is
-    /// no taller than the rows it reads.
+    /// and in Eckert IV (ESRI:54012), which takes it to a line, its first row. In both samplings
+    /// (`SAMPLINGS`), every pixel the source covers is written (for Eckert IV, north of 50° N: by
+    /// the 180° meridian, where it splits the world, 52 pixels at the grid's left edge, at 43° N,
+    /// are not, whatever the poles); in the chunk-dependent one, the source window of the grid
+    /// starts at the source's first row and, for Mercator, is no taller than the rows it reads.
     #[test]
     fn a_projected_source_warped_into_a_polar_grid_is_written_up_to_its_edge() {
         const EDGE: f64 = 20_037_508.342_789_244;

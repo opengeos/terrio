@@ -32,8 +32,8 @@ assert_eq!(found[0].authority_code(), "EPSG:3577");
 
 The default configuration works offline and uses the native projection engine.
 In the checked-in 117-method PROJ conformance inventory it supports 45 methods,
-including Eckert IV and Natural Earth; `wbprojection-fallback` adds 44 methods, including
-Hammer, Aitoff and the other Eckerts.
+including Eckert IV and Natural Earth; `wbprojection-fallback` adds 44 methods,
+including Hammer, Aitoff and the other Eckerts.
 The inventory is a test corpus, not an exhaustive list of EPSG CRSs. The remaining
 28 methods are explicitly refused. Known Krovak inverse differences off Bessel's
 ellipsoid are recorded in the conformance tests.

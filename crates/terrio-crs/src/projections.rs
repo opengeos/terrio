@@ -3475,6 +3475,7 @@ impl Proj for Natearth {
                 break;
             }
         }
+        // PROJ refuses a northing it can't converge on; after the clamp, finite ones converge.
         if !converged {
             return None;
         }
