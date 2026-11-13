@@ -120,7 +120,7 @@ fn slice_between_identical_crs_is_left_as_it_is() {
     let mut xy = vec![(500_000.0, 5_000_000.0), (f64::MAX, -1.0)];
     t.transform_slice(&mut xy).unwrap();
     assert_eq!(xy, vec![(500_000.0, 5_000_000.0), (f64::MAX, -1.0)]);
-    assert_eq!(t.transform_slice_or_nan(&mut xy), 0);
+    assert_eq!(t.transform_slice_or_nan(&mut xy).unwrap(), 0);
 }
 
 #[test]
@@ -131,7 +131,17 @@ fn slice_between_identical_geocentric_crs_still_transforms() {
     let mut xy = vec![(f64::NAN, 0.0)];
     assert!(t.transform(f64::NAN, 0.0).is_err());
     assert!(t.transform_slice(&mut xy).is_err());
-    assert_eq!(t.transform_slice_or_nan(&mut xy), 1);
+    assert_eq!(t.transform_slice_or_nan(&mut xy).unwrap(), 1);
+}
+
+#[test]
+fn slice_or_nan_returns_refusals_under_the_strict_options() {
+    // With ONLY_BEST=YES, WGS 84 to the British National Grid needs the OSTN15 grid, which the
+    // tests run without: a refusal, not a point outside the domain, so the error is returned.
+    let opts = TransformOptions { only_best: true, ..Default::default() };
+    let t = Transformer::with_options(&epsg(4326), &epsg(27700), &opts).unwrap();
+    let mut xy = vec![(-1.5, 52.5)];
+    assert!(matches!(t.transform_slice_or_nan(&mut xy), Err(terrio_crs::Error::MissingGrid(_))));
 }
 
 /// WGS 84 to an orthographic view centred on (0, 0): the far side of the Earth (170°E on the
@@ -153,7 +163,7 @@ fn slice_stops_at_the_first_failure() {
 fn slice_or_nan_marks_failures_and_goes_on() {
     let t = orthographic();
     let mut xy = vec![(10.0, 10.0), (170.0, 0.0), (20.0, 20.0)];
-    assert_eq!(t.transform_slice_or_nan(&mut xy), 1);
+    assert_eq!(t.transform_slice_or_nan(&mut xy).unwrap(), 1);
     assert_eq!(xy[0], t.transform(10.0, 10.0).unwrap());
     assert!(xy[1].0.is_nan() && xy[1].1.is_nan());
     assert_eq!(xy[2], t.transform(20.0, 20.0).unwrap());
@@ -219,7 +229,7 @@ fn slice_and_inverse_match_proj_for_a_datum_shift() {
 fn slice_or_nan_fails_where_proj_fails() {
     // PROJ returns inf for 170°E: the far side of the orthographic view.
     let mut xy = vec![(10.0, 10.0), (170.0, 0.0), (20.0, 20.0)];
-    assert_eq!(orthographic().transform_slice_or_nan(&mut xy), 1);
+    assert_eq!(orthographic().transform_slice_or_nan(&mut xy).unwrap(), 1);
     assert_close(&[xy[0], xy[2]], &[(1090835.7691960428, 1100248.5477353616), (2050696.8193774875, 2167696.7878287574)], METRES);
     assert!(xy[1].0.is_nan() && xy[1].1.is_nan());
 }

@@ -26,23 +26,28 @@ fn main() {
         // Warm up the caches the first points fill.
         let _ = t.transform(points[0].0, points[0].1);
 
-        let start = Instant::now();
-        let mut one = points.clone();
-        for p in one.iter_mut() {
-            *p = t.transform(p.0, p.1).unwrap_or((f64::NAN, f64::NAN));
-        }
-        let per_point = start.elapsed();
+        // The best of five runs of each, the copies made outside the timed part.
+        let (mut per_point, mut batch) = (f64::INFINITY, f64::INFINITY);
+        let (mut one, mut slice, mut failed) = (Vec::new(), Vec::new(), 0);
+        for _ in 0..5 {
+            one = points.clone();
+            let start = Instant::now();
+            for p in one.iter_mut() {
+                *p = t.transform(p.0, p.1).unwrap_or((f64::NAN, f64::NAN));
+            }
+            per_point = per_point.min(start.elapsed().as_secs_f64());
 
-        let start = Instant::now();
-        let mut slice = points.clone();
-        let failed = t.transform_slice_or_nan(&mut slice);
-        let batch = start.elapsed();
+            slice = points.clone();
+            let start = Instant::now();
+            failed = t.transform_slice_or_nan(&mut slice).unwrap();
+            batch = batch.min(start.elapsed().as_secs_f64());
+        }
 
         let same = one.iter().zip(&slice).all(|(a, b)| a.0.to_bits() == b.0.to_bits() && a.1.to_bits() == b.1.to_bits());
         println!(
             "{name:24} point by point {:7.3} µs/pt   slice {:7.3} µs/pt   failed {failed}   identical {same}",
-            per_point.as_secs_f64() * 1e6 / N as f64,
-            batch.as_secs_f64() * 1e6 / N as f64,
+            per_point * 1e6 / N as f64,
+            batch * 1e6 / N as f64,
         );
     }
 }

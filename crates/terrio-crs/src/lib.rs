@@ -1674,6 +1674,16 @@ impl Transformer {
     /// chooses it, so the results are those of `transform`, bit for bit. Where `transform` returns
     /// every point as it is (identical CRSs, neither geocentric, without a point motion between
     /// coordinate epochs), the points are left as they are without visiting them.
+    ///
+    /// ```no_run
+    /// use terrio_crs::{SpatialRef, Transformer};
+    ///
+    /// let utm = SpatialRef::from_epsg(32632)?;
+    /// let t = Transformer::new(&SpatialRef::from_epsg(4326)?, &utm)?;
+    /// let mut points = vec![(9.0, 47.0), (7.5, 45.9)];
+    /// t.transform_slice(&mut points)?;
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
     pub fn transform_slice(&self, xy: &mut [(f64, f64)]) -> Result<()> {
         if self.is_identity_2d() {
             return Ok(());
@@ -1685,22 +1695,44 @@ impl Transformer {
     }
 
     /// Transforms points in place, each as [`transform`](Self::transform) does, setting the
-    /// points that fail to `(NaN, NaN)`, as PROJ's `proj_trans_generic` marks them with
-    /// `HUGE_VAL`. Returns the number of points that failed. For renderers, which draw what
-    /// transforms and skip the rest, such as a grid of pixels reaching beyond a projection's
-    /// domain.
-    pub fn transform_slice_or_nan(&self, xy: &mut [(f64, f64)]) -> usize {
+    /// points that cannot be transformed (outside a projection's domain, outside a velocity grid)
+    /// to `(NaN, NaN)`, and returns how many there were. For renderers, which draw what transforms
+    /// and skip the rest, such as a grid of pixels reaching beyond a projection's domain. PROJ's
+    /// `proj_trans_generic` marks such points `HUGE_VAL` (infinity); NaN is terrio's choice, so
+    /// that a marked point is never taken for a coordinate.
+    ///
+    /// Only those failures ([`Error::Crs`]) are marked. A refusal under the strict options
+    /// ([`Error::MissingGrid`] with [`TransformOptions::only_best`], [`Error::NoOperation`] with
+    /// [`TransformOptions::allow_ballpark`] off) or an I/O error is returned at once instead, as
+    /// [`transform_slice`](Self::transform_slice) returns it, so that it is not mistaken for points
+    /// outside the domain.
+    ///
+    /// ```no_run
+    /// use terrio_crs::{SpatialRef, Transformer};
+    ///
+    /// let ortho = SpatialRef::from_proj4("+proj=ortho +lat_0=0 +lon_0=0 +datum=WGS84")?;
+    /// let t = Transformer::new(&SpatialRef::from_epsg(4326)?, &ortho)?;
+    /// let mut points = vec![(10.0, 10.0), (170.0, 0.0)];
+    /// assert_eq!(t.transform_slice_or_nan(&mut points)?, 1); // 170°E is on the far side
+    /// assert!(points[1].0.is_nan());
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
+    pub fn transform_slice_or_nan(&self, xy: &mut [(f64, f64)]) -> Result<usize> {
         if self.is_identity_2d() {
-            return 0;
+            return Ok(0);
         }
         let mut failed = 0;
         for p in xy.iter_mut() {
-            *p = self.transform(p.0, p.1).unwrap_or_else(|_| {
-                failed += 1;
-                (f64::NAN, f64::NAN)
-            });
+            *p = match self.transform(p.0, p.1) {
+                Ok(q) => q,
+                Err(Error::Crs(_)) => {
+                    failed += 1;
+                    (f64::NAN, f64::NAN)
+                }
+                Err(e) => return Err(e),
+            };
         }
-        failed
+        Ok(failed)
     }
 
     /// Whether [`transform`](Self::transform) returns every point as it is.
@@ -1715,11 +1747,21 @@ impl Transformer {
     /// operations for the other direction as GDAL does when asked for that pair. Between two
     /// dynamic CRSs with both coordinate epochs given, each direction runs at its own source
     /// epoch, as GDAL's do, so a time-dependent transformation is not evaluated at the same time
-    /// both ways and a round trip does not come back to the point. GDAL's
-    /// `OGRProjCT::GetInverse()` instead inverts this transformer's
-    /// pipeline, which rounds degrees as
-    /// [`with_reverse_degree_division`](Self::with_reverse_degree_division) does; the inverse
-    /// keeps that rounding when this transformer has it.
+    /// both ways and a round trip does not come back to the point. GDAL 3.13.3's
+    /// `OGRProjCT::GetInverse()` instead inverts this transformer's pipeline, which rounds
+    /// degrees as [`with_reverse_degree_division`](Self::with_reverse_degree_division) does; the
+    /// inverse keeps that rounding when this transformer has it.
+    ///
+    /// ```no_run
+    /// use terrio_crs::{SpatialRef, Transformer};
+    ///
+    /// let lv95 = SpatialRef::from_epsg(2056)?;
+    /// let to_wgs84 = Transformer::new(&lv95, &SpatialRef::from_epsg(4326)?)?;
+    /// let back = to_wgs84.inverse()?;
+    /// let (lon, lat) = to_wgs84.transform(2_600_000.0, 1_200_000.0)?;
+    /// let (e, n) = back.transform(lon, lat)?;
+    /// # Ok::<(), terrio_crs::Error>(())
+    /// ```
     pub fn inverse(&self) -> Result<Transformer> {
         let opts = TransformOptions {
             source_coordinate_epoch: self.policy.target_coordinate_epoch,

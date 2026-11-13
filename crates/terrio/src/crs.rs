@@ -441,10 +441,11 @@ impl Transformer {
     pub fn transform_slice(&self, xy: &mut [(f64, f64)]) -> Result<()> {
         self.0.transform_slice(xy).map_err(Into::into)
     }
-    /// Transform points in place, setting those that fail to `(NaN, NaN)`; returns how many
-    /// failed (see [`terrio_crs::Transformer::transform_slice_or_nan`]).
-    pub fn transform_slice_or_nan(&self, xy: &mut [(f64, f64)]) -> usize {
-        self.0.transform_slice_or_nan(xy)
+    /// Transform points in place, setting those that cannot be transformed to `(NaN, NaN)`;
+    /// returns how many there were, or the error of a refusal under the strict options (see
+    /// [`terrio_crs::Transformer::transform_slice_or_nan`]).
+    pub fn transform_slice_or_nan(&self, xy: &mut [(f64, f64)]) -> Result<usize> {
+        self.0.transform_slice_or_nan(xy).map_err(Into::into)
     }
     /// The transformer of the other direction, with the same options, the coordinate epochs
     /// swapped and Terrio's warning sink (see [`terrio_crs::Transformer::inverse`]).
