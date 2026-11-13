@@ -52,12 +52,18 @@ pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Dataset> {
 /// Identification is only a hint: the ordinary reader still validates the data and driver policy.
 /// The pyogrio compatibility caller targets Pyogrio 0.13.0 / GDAL 3.12.2.
 pub fn suggest_vector_extension(bytes: &[u8]) -> Option<&'static str> {
+    suggest_vector_extension_checked(bytes).ok().flatten()
+}
+
+/// Like [`suggest_vector_extension`], preserving archive resource-limit errors for callers
+/// that must distinguish a refusal from unsigned content. No archive member is decompressed.
+pub fn suggest_vector_extension_checked(bytes: &[u8]) -> Result<Option<&'static str>> {
     if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
         let archive = match crate::vfs::LimitedZip::open(std::io::Cursor::new(bytes)) {
             Ok(archive) => archive,
-            Err(error) if error.is_resource_refusal() => return None,
+            Err(error) if error.is_resource_refusal() => return Err(error),
             // Keep the generic ZIP hint so the ordinary reader supplies the diagnostic.
-            Err(_) => return Some("zip"),
+            Err(_) => return Ok(Some("zip")),
         };
         let (mut content_types, mut workbook, mut kml) = (false, false, false);
         for name in archive.archive().file_names().flatten() {
@@ -65,14 +71,19 @@ pub fn suggest_vector_extension(bytes: &[u8]) -> Option<&'static str> {
             workbook |= name == "xl/workbook.xml";
             kml |= name.eq_ignore_ascii_case("doc.kml");
         }
-        return Some(if content_types && workbook {
+        return Ok(Some(if content_types && workbook {
             "xlsx"
         } else if kml {
             "kmz"
         } else {
             "zip"
-        });
+        }));
     }
+    Ok(vector_extension_hint(bytes))
+}
+
+/// Non-archive byte hints shared by the checked and compatibility probes.
+fn vector_extension_hint(bytes: &[u8]) -> Option<&'static str> {
     let text = std::str::from_utf8(bytes).ok().map(|text| text.trim_start_matches('\u{feff}').trim_start());
     if let Some(text) = text {
         let mut lines = text.lines().map(str::trim);
@@ -85,7 +96,7 @@ pub fn suggest_vector_extension(bytes: &[u8]) -> Option<&'static str> {
             }
             break;
         }
-        if crate::inspection::root_json_type(text).as_deref() == Some("Feature") {
+        if text.starts_with('{') && crate::inspection::root_json_type(text).as_deref() == Some("Feature") {
             let mut values = serde_json::Deserializer::from_str(text).into_iter::<serde::de::IgnoredAny>();
             if values.next().is_some_and(|value| value.is_ok()) {
                 let remaining = text[values.byte_offset()..].trim_start_matches([' ', '\t']);
@@ -1127,8 +1138,10 @@ mod tests {
         let bytes = archive.finish().unwrap().into_inner();
         crate::config::push_scope(std::collections::HashMap::from([("TERRIO_ZIP_MAX_ENTRIES".into(), Some("0".into()))]));
         let extension = suggest_vector_extension(&bytes);
+        let checked = suggest_vector_extension_checked(&bytes);
         crate::config::pop_scope();
         assert_eq!(extension, None);
+        assert!(checked.is_err_and(|error| error.is_resource_refusal()));
     }
 
     #[test]

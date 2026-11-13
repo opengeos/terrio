@@ -134,9 +134,12 @@ def _spill_name(data: bytes, filename: str | None = None) -> str:
         str: A filename derived from the core's shared vector identifiers.
 
     Raises:
-        DataSourceError: Content cannot be identified without a filename.
+        DataSourceError: Content needs a filename or exceeds archive resource limits.
     """
-    extension = _terrio.vector_byte_extension(data)
+    try:
+        extension = _terrio.vector_byte_extension(data)
+    except _terrio_errors.TerrioError as error:
+        raise DataSourceError(str(error)) from error
     if extension is not None:
         return str(Path(filename).with_suffix(f".{extension}")) if filename else f"data.{extension}"
     if filename and Path(filename).suffix:
@@ -162,7 +165,8 @@ class _Source:
         if hasattr(path_or_buffer, "read") and not isinstance(path_or_buffer, (str, bytes)):
             source_name = getattr(path_or_buffer, "name", None)
             if isinstance(source_name, (str, os.PathLike)):
-                filename = Path(source_name).name
+                # Uploaded basenames are literal names, not the archive/member path syntax.
+                filename = Path(source_name).name.replace("!", "_")
             data = path_or_buffer.read()
             if hasattr(path_or_buffer, "seekable") and path_or_buffer.seekable():
                 path_or_buffer.seek(0)

@@ -205,6 +205,29 @@ def test_dxf_with_leading_comments_matches_path(tmp_path, sources):
     assert tpg.read_info(data)["features"] == tpg.read_info(path)["features"] == 4
 
 
+def test_archive_limit_diagnostic_is_preserved(sources, monkeypatch):
+    """Resource refusal keeps its diagnostic instead of becoming an unknown-format error.
+
+    Args:
+        sources: Dataset paths.
+        monkeypatch: Scoped environment overrides.
+    """
+    monkeypatch.setenv("TERRIO_ZIP_MAX_ENTRIES", "0")
+    with pytest.raises(DataSourceError, match="TERRIO_ZIP_MAX_ENTRIES"):
+        tpg.list_layers(sources["kmz"].read_bytes())
+
+
+def test_named_upload_basename_is_not_archive_path_syntax(sources):
+    """A literal exclamation mark in an upload name does not select a ZIP member.
+
+    Args:
+        sources: Dataset paths.
+    """
+    stream = io.BytesIO(sources["kml"].read_bytes())
+    stream.name = "a.zip!b.kml"
+    assert tpg.read_info(stream, layer=0)["features"] == 4
+
+
 def test_multilayer_kmz_buffers_preserve_layers(tmp_path, sources):
     """KMZ containers keep both linked layers rather than opening doc.kml alone.
 
@@ -231,12 +254,13 @@ def test_multilayer_kmz_buffers_preserve_layers(tmp_path, sources):
     data = path.read_bytes()
     expected = tpg.list_layers(path).tolist()
     # KML can advertise both document containers and their feature folders.
-    assert len(expected) >= 2
+    assert [row[0] for row in expected] == ["points", "points (2)", "other", "other (2)"]
     assert tpg.list_layers(data).tolist() == expected
     for index in range(len(expected)):
         assert_geodataframe_equal(
             tpg.read_dataframe(data, layer=index), tpg.read_dataframe(path, layer=index)
         )
+    assert [tpg.read_info(data, layer=index)["features"] for index in range(4)] == [0, 4, 0, 4]
 
 
 def test_empty_archive_buffer_has_a_clear_refusal():
