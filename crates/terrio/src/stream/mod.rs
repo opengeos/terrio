@@ -1489,7 +1489,8 @@ struct ShpSink {
 impl ShpSink {
     fn create(path: &str, layer: &Layer, profile: &LayerProfile) -> Result<Self> {
         let enc = shapefile::ShpEncoder::new(layer, profile)?;
-        let base = std::path::Path::new(path);
+        let geometry_path = shapefile::output_path(path);
+        let base = geometry_path.as_path();
         let open = |ext: &str| -> Result<BufWriter<File>> {
             let component = if ext == "shp" { base.to_path_buf() } else { base.with_extension(ext) };
             Ok(BufWriter::with_capacity(1 << 20, File::create(component)?))

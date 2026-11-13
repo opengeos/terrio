@@ -1271,7 +1271,10 @@ It checks matching SHP/SHX/DBF/PRJ/CPG components, uppercase sidecars and geomet
 extensions, UTF-8 attributes, CRS and geometry. Neighboring datasets use different
 attributes and CRS, and every neighbor component must remain byte-for-byte
 unchanged. Dots in directory names and multiple dots in stems are included.
-These are dataset-identity and file-preservation checks, not numerical GDAL parity.
+Explicit-driver controls cover extensionless and mismatched names, including
+companion extensions: the geometry file is normalized to `.shp` and remains
+distinct from SHX/DBF/PRJ/CPG outputs. These are dataset-identity and file-preservation
+checks, not numerical GDAL parity.
 
 ## Shapefile archives (#278)
 

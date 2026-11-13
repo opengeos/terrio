@@ -151,3 +151,65 @@ def test_reads_use_the_dotted_datasets_own_sidecars(tmp_path, uppercase, neighbo
         info = tpg.read_info(str(target))
         assert list(info["fields"]) == ["id", "label"]
         assert info["crs"] == "EPSG:4326"
+
+
+@pytest.mark.parametrize(
+    "requested,expected",
+    [
+        ("output", "output.shp"),
+        ("roads.v2.geojson", "roads.v2.shp"),
+        ("roads.v2.DBf", "roads.v2.shp"),
+        ("roads.v2.shx", "roads.v2.shp"),
+        ("roads.v2.CPG", "roads.v2.shp"),
+        ("roads.v2.prj", "roads.v2.shp"),
+    ],
+)
+@pytest.mark.parametrize("writer", ["layer", "convert", "cli"])
+def test_explicit_driver_derives_a_distinct_geometry_component(
+    tmp_path, requested, expected, writer
+):
+    """Explicit Shapefile output keeps geometry separate from every companion component.
+
+    Args:
+        tmp_path: Temporary directory.
+        requested: Output name with no or a different extension.
+        expected: Normalized geometry component name.
+        writer: Public writer.
+    """
+    neighbor = tmp_path / "roads.shp"
+    install_components(neighbor, 1, crs="EPSG:3857")
+    before = {
+        extension: neighbor.with_suffix("." + extension).read_bytes() for extension in COMPONENTS
+    }
+    target, geometry = tmp_path / requested, tmp_path / expected
+    layer = points(2)
+    if writer == "layer":
+        layer.write(str(target), driver="ESRI Shapefile")
+    else:
+        source = tmp_path / "input.geojson"
+        layer.write(str(source))
+        if writer == "convert":
+            terrio.convert(str(source), str(target), format="ESRI Shapefile")
+        else:
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "terrio",
+                    "convert",
+                    str(source),
+                    str(target),
+                    "--format",
+                    "ESRI Shapefile",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+    assert geometry.read_bytes()[:4] == (9994).to_bytes(4, "big")
+    for extension in COMPONENTS:
+        assert geometry.with_suffix("." + extension).exists()
+        assert neighbor.with_suffix("." + extension).read_bytes() == before[extension]
+    assert_point(terrio.open_vector(str(geometry))[0], 2, geometry.stem)
+    assert_point(terrio.open_stream(str(geometry), batch_size=1).read_all(), 2, geometry.stem)

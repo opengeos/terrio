@@ -30,6 +30,17 @@ use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Geomet
 
 const NULL_SHAPE: i32 = 0;
 
+/// The geometry output path. An explicit driver supplies `.shp` for other extensions;
+/// an existing `.shp` extension retains its case. Derive sidecars from this full path.
+pub(crate) fn output_path(path: &str) -> PathBuf {
+    let path = Path::new(path);
+    if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("shp")) {
+        path.to_path_buf()
+    } else {
+        path.with_extension("shp")
+    }
+}
+
 /// Finds a sidecar file (`dbf`, `prj`, `cpg`) next to the `.shp`, in either letter case.
 pub(crate) fn sidecar(path: &Path, ext: &str) -> Option<PathBuf> {
     [ext.to_string(), ext.to_ascii_uppercase()].into_iter().map(|e| path.with_extension(e)).find(|p| p.exists())
@@ -998,9 +1009,10 @@ fn read_dbf_records(d: &[u8], l: &DbfLayout, make_record: impl Fn(&[u8]) -> Vec<
 /// Writes a layer as a shapefile. `path` names the `.shp` file; the other files are written next
 /// to it.
 pub fn write(layer: &Layer, path: &str) -> Result<()> {
-    let base = Path::new(path);
+    let geometry_path = output_path(path);
+    let base = geometry_path.as_path();
     let (shp, shx) = encode_shapes(layer)?;
-    std::fs::write(path, shp)?;
+    std::fs::write(&geometry_path, shp)?;
     std::fs::write(base.with_extension("shx"), shx)?;
     std::fs::write(base.with_extension("dbf"), encode_dbf(layer)?)?;
     std::fs::write(base.with_extension("cpg"), "UTF-8")?;
