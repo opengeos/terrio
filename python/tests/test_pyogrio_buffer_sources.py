@@ -174,6 +174,37 @@ def test_named_csv_stream_retains_its_extension(tmp_path):
         assert tpg.read_info(stream)["features"] == 1
 
 
+@pytest.mark.parametrize("extension", ["geojson", "kmz", "xlsx"])
+def test_generic_named_uploads_use_content_hints(tmp_path, sources, extension):
+    """A generic upload suffix does not hide a signed format.
+
+    Args:
+        tmp_path: Temporary directory.
+        sources: Dataset paths.
+        extension: Underlying format.
+    """
+    path = tmp_path / "upload.bin"
+    path.write_bytes(sources[extension].read_bytes())
+    with path.open("rb") as stream:
+        actual = tpg.read_info(stream, layer=0)
+    expected = tpg.read_info(sources[extension], layer=0)
+    assert actual["driver"] == expected["driver"]
+    assert actual["features"] == expected["features"] == 4
+
+
+def test_dxf_with_leading_comments_matches_path(tmp_path, sources):
+    """DXF's optional leading group-999 comments do not hide its section header.
+
+    Args:
+        tmp_path: Temporary directory.
+        sources: Dataset paths.
+    """
+    path = tmp_path / "comments.dxf"
+    data = b"999\r\nexported by a surveyor\r\n" + sources["dxf"].read_bytes()
+    path.write_bytes(data)
+    assert tpg.read_info(data)["features"] == tpg.read_info(path)["features"] == 4
+
+
 def test_multilayer_kmz_buffers_preserve_layers(tmp_path, sources):
     """KMZ containers keep both linked layers rather than opening doc.kml alone.
 

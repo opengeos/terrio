@@ -123,11 +123,12 @@ def _local_path(path: str) -> _Located:
     return path, None
 
 
-def _spill_name(data: bytes) -> str:
+def _spill_name(data: bytes, filename: str | None = None) -> str:
     """A file name telling terrio the format of bytes, from their content.
 
     Args:
         data: Uploaded bytes, identified without opening a file or decoding a dataset.
+        filename: Optional file-object basename, used for unsigned formats and layer names.
 
     Returns:
         str: A filename derived from the core's shared vector identifiers.
@@ -137,7 +138,9 @@ def _spill_name(data: bytes) -> str:
     """
     extension = _terrio.vector_byte_extension(data)
     if extension is not None:
-        return f"data.{extension}"
+        return str(Path(filename).with_suffix(f".{extension}")) if filename else f"data.{extension}"
+    if filename and Path(filename).suffix:
+        return filename
     raise DataSourceError(_NOT_RECOGNIZED.format("/vsimem/pyogrio"))
 
 
@@ -168,7 +171,7 @@ class _Source:
             path_or_buffer = data
         if isinstance(path_or_buffer, (bytes, bytearray, memoryview)):
             data = bytes(path_or_buffer)
-            name = filename if filename and Path(filename).suffix else _spill_name(data)
+            name = _spill_name(data, filename)
             self._tmp = tempfile.TemporaryDirectory(prefix="terrio-pyogrio-")
             spilled = os.path.join(self._tmp.name, name)
             with open(spilled, "wb") as f:
