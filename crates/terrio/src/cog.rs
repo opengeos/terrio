@@ -1191,7 +1191,8 @@ impl LazyRaster {
     }
 
     /// A TIFF tile or strip's `(file offset, byte count)` from its cached chunk tables.
-    /// Bands are numbered from 1; block coordinates and overview indices from 0.
+    /// Bands are numbered from 1 over components, two per complex band, as in
+    /// `band_count()`. Block coordinates and overview indices are numbered from 0.
     /// Returns `None` for other formats or an absent band, block or overview.
     /// External overview offsets refer to the overview file. No pixels are decoded.
     /// Reference: GDAL 3.12.1's TIFF `BLOCK_OFFSET_x_y` / `BLOCK_SIZE_x_y` items.

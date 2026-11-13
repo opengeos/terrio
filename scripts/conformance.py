@@ -67,6 +67,7 @@ Suites:
     crs-list          ``terrio list-crs`` vs GDAL's GetCRSInfoListFromDatabase, field by field, for
                       the EPSG, ESRI and IAU_2015 CRSs (compare_crs_list_with_gdal.py)
     transform-bounds  polar and regional bounding boxes vs GDAL via rasterio
+    geojson-crs       named GeoJSON CRS and real projected boundaries read by GDAL
     transform-batches  mixed-validity Python batches and Natural Earth points vs GDAL
 
 Usage:
@@ -636,10 +637,11 @@ def suite_vector_byte_packaging(ctx):
         ctx: Conformance run context.
 
     Returns:
-        Suite: Three document/archive comparisons.
+        Suite: Document/archive and MIF header comparisons.
     """
     suite = Suite("vector-byte-packaging", "Vector byte packaging", "GDAL/OGR",
-                  "16 Natural Earth populated places; feature count, scalar attributes, archive members and CRS exact; coordinates within 1e-6 degrees for MapInfo's grid.")
+                  "16 Natural Earth populated places; feature count, scalar attributes, archive members and CRS exact; coordinates within 1e-6 degrees for MapInfo's grid. "
+                  "Explicit MIF driver identification refuses wrong-format bytes and retains valid empty schemas.")
     missing = missing_modules("terrio", "osgeo")
     if missing:
         suite.skipped = "needs the Python modules " + ", ".join(missing)
@@ -657,7 +659,10 @@ def suite_vector_byte_packaging(ctx):
         status = {"identical": IDENTICAL, "within tolerance": TOLERANCE,
                   "not compared": NOT_COMPARED}.get(result["status"], DIFFERS)
         suite.cases.append(Case("Vector bytes", result["name"], status, result["detail"]))
-    if code and not any(case.status == DIFFERS for case in suite.cases):
+    expected = ["places.gml", "places.mif.zip", "places.tab.zip", "MIF header recognition"]
+    if sorted(result["name"] for result in results) != sorted(expected):
+        suite.error = "incomplete vector byte packaging comparisons"
+    elif code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out) or f"exit {code}"
     return suite
 
@@ -2036,16 +2041,18 @@ def suite_compound_crs(ctx):
 
 def suite_wkt_keywords(ctx):
     """Engineering and vertical WKT roots through native bindings and CLI."""
-    suite = Suite("wkt-keywords", "Engineering and vertical WKT keywords", "GDAL 3.13.3",
+    suite = Suite("wkt-keywords", "Engineering and vertical WKT keywords", "GDAL/OGR",
                   "Engineering/vertical definitions: exact root authority and CRS kind, "
-                  "CLI WKT retention and unchanged real USGS elevation pixels, nodata and affine. "
-                  "This checks metadata parsing, not engineering-to-Earth transformations.")
+                  "CLI and GTiff/COG WKT retention and unchanged real USGS elevation pixels, type, nodata and affine. "
+                  "GDAL reads equivalent output CRSs; engineering-to-Earth warps are refused.")
     if missing_modules("terrio", "osgeo", "numpy"):
         suite.skipped = "needs current Python bindings, GDAL and NumPy"
         return suite
     if not (Path(ctx.data) / "usgs_dem.tif").exists():
         suite.skipped = "usgs_dem.tif is missing (scripts/fetch_test_data.sh)"
         return suite
+    from osgeo import gdal
+    suite.reference = f"GDAL {gdal.VersionInfo('RELEASE_NAME')}"
     code, out, err = run([sys.executable, str(SCRIPTS / "compare_wkt_keywords_with_gdal.py"),
                           ctx.data, "--terrio", ctx.terrio, "--json"])
     try:
@@ -2057,7 +2064,8 @@ def suite_wkt_keywords(ctx):
         status = IDENTICAL if result["status"] == "identical" else DIFFERS
         suite.cases.append(Case("WKT keywords", result["name"], status, result["detail"]))
     fixture = SCRIPTS.parent / "crates/terrio-crs/tests/data/wkt_keywords_reference.json"
-    expected_names = [case["name"] for case in json.loads(fixture.read_text())["cases"]]
+    cases = json.loads(fixture.read_text())["cases"]
+    expected_names = [case["name"] for case in cases] + [case["name"] + "-root-id" for case in cases if case["local"]]
     if sorted(result["name"] for result in results) != sorted(expected_names) or (code and not any(c.status == DIFFERS for c in suite.cases)):
         suite.error = tail(err or out) or "incomplete WKT keyword comparisons"
     return suite
@@ -2316,8 +2324,37 @@ def suite_tiff_block_tags(ctx):
         return suite
     import rasterio
     suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
-    complete, detail = _pytest_module_conformance(ctx, "test_rio_block_tags.py", expected_count=13)
+    complete, detail = _pytest_module_conformance(ctx, "test_rio_block_tags.py", expected_count=14)
     suite.cases.append(Case("TIFF", "stored block addresses", IDENTICAL if complete else DIFFERS, detail))
+    return suite
+
+
+def suite_geojson_crs(ctx):
+    """Compare GeoJSON CRS names and projected boundary coordinates with GDAL.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Eight real-data comparisons, or a prerequisite skip.
+    """
+    suite = Suite("geojson-crs", "GeoJSON CRS names", "GDAL/OGR",
+                  "Real US boundaries projected by GDAL to EPSG:32615 and ESRI:102003, "
+                  "written through Layer, bytes, convert and pyogrio. CRS authority/code, "
+                  "feature count and scalar attributes exact; coordinates within 1e-7 metres. "
+                  "Unnamed-CRS refusal is Terrio policy, not a GDAL equivalence claim.")
+    missing = missing_modules("terrio", "pytest", "osgeo", "shapely", "numpy", "geopandas")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    if not (Path(ctx.data) / "countries.gpkg").exists():
+        suite.error = "needs countries.gpkg from scripts/fetch_test_data.sh"
+        return suite
+    from osgeo import gdal
+    suite.reference = f"GDAL {gdal.VersionInfo('RELEASE_NAME')}"
+    complete, detail = _pytest_module_conformance(
+        ctx, "test_geojson_write_crs.py", selection="matches_gdal", expected_count=8)
+    suite.cases.append(Case("GeoJSON", "projected US boundaries", TOLERANCE if complete else DIFFERS, detail))
     return suite
 
 
@@ -4031,13 +4068,14 @@ SUITES = OrderedDict(
         ("grib", suite_grib),
         ("pointclouds", suite_pointclouds),
         ("lazy-geotiff", suite_lazy_geotiff),
-        ("tiff-block-tags", suite_tiff_block_tags),
         ("reduced-first-masks", suite_reduced_first_masks),
         ("hecras", suite_hecras),
         ("crs", suite_crs),
         ("crs-parameters", suite_crs_parameters),
         ("transform-batches", suite_transform_batches),
         ("transform-bounds", suite_transform_bounds),
+        ("tiff-block-tags", suite_tiff_block_tags),
+        ("geojson-crs", suite_geojson_crs),
         ("geocentric", suite_geocentric),
         ("perspective", suite_perspective),
         ("omerc-two-point", suite_omerc_two_point),

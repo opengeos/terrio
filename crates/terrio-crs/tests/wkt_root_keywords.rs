@@ -3,6 +3,21 @@
 use terrio_crs::SpatialRef;
 
 #[test]
+fn engineering_authority_does_not_enable_an_earth_transform() {
+    let earth = SpatialRef::from_epsg(4326).unwrap();
+    for root in ["LOCAL_CS", "ENGCRS", "ENGINEERINGCRS"] {
+        let text = format!("{root}[\"site grid\",UNIT[\"metre\",1],AUTHORITY[\"EPSG\",\"32615\"]]");
+        let local = SpatialRef::parse_literal(&text).unwrap();
+        assert!(terrio_crs::Transformer::new(&local, &earth).is_err(), "{root}");
+        assert!(terrio_crs::Transformer::new(&earth, &local).is_err(), "{root}");
+        let mut explicit = local.clone();
+        explicit.epsg = None;
+        explicit.proj4 = Some("+proj=longlat +datum=WGS84".into());
+        assert!(terrio_crs::Transformer::new(&explicit, &earth).is_ok(), "explicit PROJ override of {root}");
+    }
+}
+
+#[test]
 fn engineering_definitions_keep_their_wkt_without_an_epsg_guess() {
     let definitions = [
         "LOCAL_CS[\"site grid\",LOCAL_DATUM[\"site\",32767],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]]",

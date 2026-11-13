@@ -1131,7 +1131,11 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
             ovr: Overview index from 0 for TIFF block items, or None for this image.
 
         Returns:
-            str | None: The value.
+            str | None: The value, or None for an absent block or overview.
+
+        Raises:
+            terrio.TerrioError: If loading TIFF chunk tables fails due to corrupt
+                metadata or an I/O error. The first block query may perform I/O.
         """
         if dm == "TIFF" and ns.startswith(("BLOCK_OFFSET_", "BLOCK_SIZE_")):
             self._check_open()

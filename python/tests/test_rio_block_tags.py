@@ -247,3 +247,40 @@ def test_real_tiff_block_items_match_gdal(data_dir):
                     expected = reference.get_tag_item(key, "TIFF", bidx=band)
                     assert expected is not None
                     assert actual.get_tag_item(key, "TIFF", bidx=band) == expected
+
+
+def test_corrupt_chunk_table_raises(tmp_path):
+    """A truncated TIFF offset array raises rather than appearing absent.
+
+    Args:
+        tmp_path: Temporary directory.
+    """
+    path = tmp_path / "corrupt.tif"
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=64,
+        height=64,
+        count=1,
+        dtype="uint8",
+        tiled=True,
+        blockxsize=16,
+        blockysize=16,
+        transform=rasterio.transform.from_origin(10, 46, 1, 1),
+    ) as dst:
+        dst.write(np.ones((1, 64, 64), dtype="uint8"))
+    raw = bytearray(path.read_bytes())
+    order = "<" if raw[:2] == b"II" else ">"
+    offset = struct.unpack_from(order + "I", raw, 4)[0]
+    count = struct.unpack_from(order + "H", raw, offset)[0]
+    for index in range(count):
+        entry = offset + 2 + 12 * index
+        if struct.unpack_from(order + "H", raw, entry)[0] == 324:
+            struct.pack_into(order + "I", raw, entry + 8, len(raw) + 4096)
+            break
+    else:
+        pytest.fail("fixture has no tile offsets")
+    path.write_bytes(raw)
+    with pytest.raises(rio.errors.RasterioIOError, match="failed to fill whole buffer"):
+        rio.open(path)

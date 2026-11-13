@@ -15,7 +15,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from osgeo import ogr, osr
+from osgeo import gdal, ogr, osr
 
 import terrio
 
@@ -129,6 +129,66 @@ def check(data, directory, suffix):
     }
 
 
+def check_mif_headers(directory):
+    """Compare explicit MIF identification and valid empty schemas with GDAL.
+
+    Args:
+        directory: Temporary directory for standalone MIF files.
+
+    Returns:
+        dict: Exact rejection and empty-layer comparison status.
+    """
+    if ogr.GetDriverByName("MapInfo File") is None:
+        return {"name": "MIF header recognition", "status": "not compared",
+                "detail": "GDAL MapInfo driver is unavailable"}
+    cases = [
+        (b"", None),
+        (b"hello\n", None),
+        (b'{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},'
+         b'"geometry":{"type":"Point","coordinates":[10,46]}}]}', None),
+        (b"Version 300\nColumns 0\nData\n", {}),
+        (b"Version 300\nColumns 1\nN Integer\nData\n", {"N": "Integer"}),
+    ]
+    path = directory / "header.mif"
+    for payload, fields in cases:
+        path.write_bytes(payload)
+        # Explicit driver selection prevents GDAL from opening GeoJSON by content.
+        gdal.PushErrorHandler("CPLQuietErrorHandler")
+        try:
+            try:
+                reference = gdal.OpenEx(str(path), gdal.OF_VECTOR, allowed_drivers=["MapInfo File"])
+            except RuntimeError:
+                reference = None
+        finally:
+            gdal.PopErrorHandler()
+        if fields is None:
+            require(reference is None, "GDAL MapInfo driver accepted non-MIF content")
+        else:
+            require(reference is not None, "GDAL refused a valid empty MIF")
+            layer = reference.GetLayer(0)
+            require(layer.GetFeatureCount() == 0, "GDAL empty MIF has features")
+            schema = layer.GetLayerDefn()
+            actual = {schema.GetFieldDefn(i).GetName(): schema.GetFieldDefn(i).GetTypeName()
+                      for i in range(schema.GetFieldCount())}
+            require(actual == fields, "GDAL empty MIF schema differs")
+        for read in (lambda: terrio.open_bytes(payload, "header.mif"),
+                     lambda: terrio.open_vector(str(path))):
+            if fields is None:
+                try:
+                    read()
+                except terrio.InvalidDataError as error:
+                    require("MIF:" in str(error), "error does not identify MIF")
+                else:
+                    require(False, "Terrio accepted non-MIF content")
+            else:
+                result = read()
+                require(len(result) == 1 and len(result[0]) == 0, "empty MIF layer differs")
+                require(result[0].fields == fields, "Terrio empty MIF schema differs")
+        reference = None
+    return {"name": "MIF header recognition", "status": "identical",
+            "detail": "3 wrong-format payloads refused; 2 valid empty schemas exact; explicit GDAL MapInfo driver"}
+
+
 def main():
     """Run document and archive comparisons.
 
@@ -169,6 +229,10 @@ def main():
                         "detail": repr(error),
                     }
                 )
+        try:
+            results.append(check_mif_headers(Path(temporary)))
+        except Exception as error:
+            results.append({"name": "MIF header recognition", "status": "differs", "detail": repr(error)})
     print(
         json.dumps(results, indent=2)
         if args.json

@@ -154,6 +154,11 @@ once-per-location suppression. The shared warning bridge skips Terrio's Python
 frames using APIs available on Python 3.10 and later, without changing warning filters.
 Attribution stops at the first frame outside the Terrio package, including a
 third-party intermediary when one calls Terrio on the application's behalf.
+Subprocess regressions also invoke the native binding and warning helper directly
+from `atexit` and `_thread` callbacks, where no Python caller frame exists. These
+calls must emit their warnings at the interpreter fallback location (`sys:1` or
+`<sys>:0`, depending on CPython) without raising a frame lookup error. Thread
+regressions also wait for callback completion without adding a Python wrapper frame.
 
 `python/tests/test_pyogrio_datetime_filters.py` checks pandas 2 and 3 datetime parsing without
 Terrio changing warning filters, including invalid input after mixed offsets and pandas-only
@@ -196,6 +201,16 @@ refuses ZIP input mislabeled as a standalone GML/MIF/TAB document. The Rust
 memory tests also exercise the filesystem-free readers directly, and Node
 checks GML documents, archive refusals and unsupported MapInfo byte writing.
 
+`python/tests/test_mif_header.py` checks 51 combinations of wrong-format or
+incomplete MIF content and legitimate empty layers through standalone bytes,
+paths and ZIP members. MIF requires Version, Columns and Data declarations;
+case-insensitive keywords, CRLF and UTF-8 BOMs remain supported. Zero-column
+and declared-column headers followed by no objects retain their empty schema.
+Node exercises the same header checks in the filesystem-free MIF reader.
+Header recognition is a native policy in GDAL-enabled builds too: missing or
+incomplete required declarations are terminal, while geometry errors can still
+use the optional backend. This does not claim GDAL rejects every incomplete header.
+
 `scripts/compare_vector_byte_packaging.py DATA --json`, registered as the
 `vector-byte-packaging` conformance suite, compares GML documents and explicit
 MIF/TAB ZIP archives with GDAL/OGR on 16 real Natural Earth populated places.
@@ -203,7 +218,12 @@ Counts, original scalar attributes, archive members and EPSG:4326 agree exactly;
 GML also exposes its generated `gml_id` field, which the Python regression checks.
 Coordinates allow 1e-6 degrees for MapInfo's storage grid. The script reports
 the measured maximum and distinguishes exact coordinates from agreement within
-that tolerance. The reference is GDAL 3.13.3 for local validation.
+that tolerance. The original comparisons were validated with GDAL 3.13.3;
+the current suite, including the MIF header cases, was validated with GDAL 3.12.1.
+The suite also compares three wrong-format payloads and two valid empty MIF
+schemas with GDAL's explicitly selected MapInfo driver (locally GDAL 3.12.1).
+Driver selection prevents a mislabeled GeoJSON file from being opened by GDAL's
+separate GeoJSON driver.
 
 Run `python scripts/conformance.py DATA --only vector-byte-packaging --strict`
 to execute this suite and fail on differences or suite errors. Check its report
@@ -376,6 +396,25 @@ and through `pyarrow.RecordBatchReader.from_stream`. Invalid WKT and unknown
 authority codes without stored WKT warn once at export and use the same schema
 on every batch, including empty streams. Without optional pyproj validation,
 native metadata is retained. GeoParquet's native stream schema is unchanged.
+
+### GeoJSON write CRS policy
+
+`python/tests/test_geojson_write_crs.py` checks Layer, bytes, streamed convert,
+CLI and pyogrio exports for EPSG, ESRI, custom WKT/PROJ and engineering CRSs.
+Registered authorities are named without changing coordinates; unnamed retained
+definitions are refused before the default writer creates or truncates a file.
+This refusal is Terrio policy, not GDAL write equivalence. Rust also checks ESRI
+aliases, IAU_2015 names and preservation of existing whole/streamed output files;
+Node checks the filesystem-free byte writer and reader. Explicit RFC 7946 output
+is compared with pyproj coordinates within 1e-6 degrees and refuses the local grid.
+
+`python scripts/conformance.py DATA --only geojson-crs --strict` requires eight
+real-data comparisons on US boundaries from `countries.gpkg`, projected by GDAL
+to EPSG:32615 and ESRI:102003. GDAL reads all four export surfaces: CRS authority
+and code, counts and scalar attributes are exact; coordinates allow 1e-7 metres.
+Local GDAL 3.12.1 validation measures zero coordinate difference in all eight
+cases. Missing input data is a suite error, and the runner requires all eight
+JUnit cases to pass before declaring agreement.
 
 ## The conformance suite
 
@@ -1095,7 +1134,24 @@ pixels with unchanged nodata and affine:
 python scripts/conformance.py ../data --only wkt-keywords --strict
 ```
 
-Engineering-to-Earth transforms are outside this metadata-parsing comparison.
+The registered comparison also writes each definition to GeoTIFF and COG, and
+adds three engineering definitions with root EPSG:5800 identifiers. Across 14
+definitions and both formats, native reads retain the exact input WKT and GDAL
+reads equivalent CRS identities/kinds; USGS pixels, sample type, nodata and affine
+are exact. Engineering-to-Earth transforms are unsupported and their refusal is
+checked after each engineering round trip. Local validation uses GDAL 3.12.1;
+the original eleven metadata references were authored by GDAL 3.13.3.
+
+`python/tests/test_gtiff_engineering_crs.py` checks engineering roots, unit IDs,
+root IDs and compact EPSG controls across whole, byte, lazy-streamed and rio
+writes, with pyproj available and unavailable. GeoKeys must include user-defined
+model type 32767 and a general citation, without a projected or geographic CRS
+code for engineering definitions. The original writer failed all 48 initial
+GeoKey cases; the expanded matrix has 138 cases. Node covers engineering WKT
+through GeoTIFF/COG byte writing and reading in WebAssembly.
+Engineering roots are refused before the legacy projection fallback, including
+in unoptimized WebAssembly warps, where the fallback's large frame could exhaust
+the stack. Node also checks that the dataset remains readable after this refusal.
 
 ## Standalone CRS feature coverage
 

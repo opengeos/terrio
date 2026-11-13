@@ -18,6 +18,23 @@ pub struct PyLayer {
 /// A dataset's shared styles: each id with its OGR style string.
 pub(crate) type StyleTable = std::sync::Arc<Vec<(String, String)>>;
 
+/// The shared GeoJSON writer's naming policy for a dataframe's CRS.
+///
+/// Args:
+///     crs: The dataframe's WKT definition.
+///
+/// Returns:
+///     str | None: Its GeoJSON CRS name, omitted for WGS 84 or an unknown CRS.
+///
+/// Raises:
+///     UnsupportedError: The retained definition cannot be named in GeoJSON.
+#[pyfunction(name = "_geojson_crs_name")]
+pub(crate) fn geojson_crs_name(crs: &str) -> PyResult<Option<String>> {
+    let mut layer = Layer::new("crs");
+    SpatialRef::parse_literal(crs).py()?.apply_to_layer(&mut layer);
+    terrio::GeoJsonOptions::default().crs_name(&layer).py()
+}
+
 impl From<Layer> for PyLayer {
     fn from(inner: Layer) -> Self {
         Self { inner, style_table: StyleTable::default() }
