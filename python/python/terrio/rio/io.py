@@ -26,6 +26,7 @@ import ctypes
 import logging
 import math
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -40,7 +41,7 @@ import numpy as np
 from affine import Affine
 
 from terrio import _terrio
-from terrio.errors import ResourceLimitError
+from terrio.errors import ResourceLimitError, TerrioError
 from terrio.rio import _tiff
 from terrio.rio._resample import gdal_cast, is_nodata, raster_io
 from terrio.rio.coords import BoundingBox
@@ -395,6 +396,20 @@ class _OverviewRaster:
 
     def _ovr(self, overview: int | None) -> int:
         return self._level if overview is None else self._level + 1 + overview
+
+    def _tiff_block_range(self, band: int, x: int, y: int, overview: int | None = None):
+        """Read a block range from this overview's backing TIFF.
+
+        Args:
+            band: Band numbered from 1.
+            x: Block column numbered from 0.
+            y: Block row numbered from 0.
+            overview: Relative overview index, or None for this image.
+
+        Returns:
+            tuple[int, int] | None: Offset and byte count in the backing file.
+        """
+        return self._base._tiff_block_range(band, x, y, self._ovr(overview))
 
     def read(self, bands: Any, window: Any = None, overview: int | None = None, **kw: Any) -> Any:
         """Reads pixels of this level, or of one of its overviews.
@@ -1113,11 +1128,31 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
             ns: The item's name.
             dm: The domain.
             bidx: The band, or 0 for the dataset.
-            ovr: Unused.
+            ovr: Overview index from 0 for TIFF block items, or None for this image.
 
         Returns:
-            str | None: The value.
+            str | None: The value, or None for an absent block or overview.
+                Stored zero offsets and byte counts are returned as "0".
+
+        Raises:
+            terrio.TerrioError: If loading TIFF chunk tables fails due to corrupt
+                metadata or an I/O error. The first block query may perform I/O.
         """
+        if dm == "TIFF" and ns.startswith(("BLOCK_OFFSET_", "BLOCK_SIZE_")):
+            self._check_open()
+            if bidx > self._count:
+                raise IndexError("band index out of range")
+            match = re.fullmatch(r"BLOCK_(OFFSET|SIZE)_([0-9]+)_([0-9]+)", ns)
+            raster = getattr(self, "_raster", None)
+            if match is None or bidx <= 0 or raster is None or (ovr is not None and ovr < 0):
+                return None
+            try:
+                block = raster._tiff_block_range(bidx, int(match[2]), int(match[3]), ovr)
+            except TerrioError:
+                raise
+            except (OverflowError, ValueError):
+                return None
+            return None if block is None else str(block[0 if match[1] == "OFFSET" else 1])
         return self.tags(bidx, dm).get(ns)
 
     @property

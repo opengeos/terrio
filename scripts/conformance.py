@@ -2332,6 +2332,31 @@ def suite_projjson_export(ctx):
     return suite
 
 
+def suite_tiff_block_tags(ctx):
+    """Compare TIFF block addresses with file tables and GDAL.
+
+    Args:
+        ctx: Conformance execution context.
+
+    Returns:
+        Suite: Exact block offsets and sizes, with measured remote-read bounds.
+    """
+    suite = Suite("tiff-block-tags", "TIFF block metadata", "GDAL via rasterio",
+                  "Classic TIFF and BigTIFF tiles/strips, planar/interleaved bands, "
+                  "complex samples, internal/external overviews and real Landsat storage: "
+                  "offsets and sizes match exactly. HTTP COG queries transfer less than "
+                  "one quarter of the file and repeated queries send no requests.")
+    missing = missing_modules("terrio", "pytest", "numpy", "rasterio", "osgeo")
+    if missing:
+        suite.skipped = "needs " + ", ".join(missing)
+        return suite
+    import rasterio
+    suite.reference = f"GDAL {rasterio.__gdal_version__} via rasterio {rasterio.__version__}"
+    complete, detail = _pytest_module_conformance(ctx, "test_rio_block_tags.py", expected_count=15)
+    suite.cases.append(Case("TIFF", "stored block addresses", IDENTICAL if complete else DIFFERS, detail))
+    return suite
+
+
 def suite_geojson_crs(ctx):
     """Compare GeoJSON CRS names and projected boundary coordinates with GDAL.
 
@@ -4078,6 +4103,7 @@ SUITES = OrderedDict(
         ("crs-parameters", suite_crs_parameters),
         ("transform-batches", suite_transform_batches),
         ("transform-bounds", suite_transform_bounds),
+        ("tiff-block-tags", suite_tiff_block_tags),
         ("geojson-crs", suite_geojson_crs),
         ("geocentric", suite_geocentric),
         ("perspective", suite_perspective),

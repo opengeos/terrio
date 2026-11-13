@@ -291,6 +291,10 @@ pub(crate) trait WindowSource: Send + Sync {
     fn block_size(&self) -> Option<(usize, usize)> {
         None
     }
+    /// A TIFF block's file offset and byte count, without reading its pixels.
+    fn tiff_block_range(&mut self, _band: usize, _x: usize, _y: usize, _overview: Option<usize>) -> Result<Option<(u64, u64)>> {
+        Ok(None)
+    }
     /// Whether the source exposes a dataset-level validity mask.
     fn has_mask(&self) -> bool {
         false
@@ -390,6 +394,9 @@ impl SharedRaster {
     }
 }
 impl WindowSource for SharedRaster {
+    fn tiff_block_range(&mut self, band: usize, x: usize, y: usize, overview: Option<usize>) -> Result<Option<(u64, u64)>> {
+        self.lock()?.tiff_block_range(band, x, y, overview)
+    }
     fn geotransform_present(&self) -> Option<bool> {
         Some(self.referenced)
     }
@@ -1180,6 +1187,27 @@ impl LazyRaster {
             Inner::Tiff(t) => Some(t.levels[0].block),
             Inner::Memory(_) => None,
             Inner::Source(_, s) => s.block_size(),
+        }
+    }
+
+    /// A TIFF tile or strip's `(file offset, byte count)` from its cached chunk tables.
+    /// Bands are numbered from 1 over components, two per complex band, as in
+    /// `band_count()`. Block coordinates and overview indices are numbered from 0.
+    /// Returns `None` for other formats or an absent band, block or overview.
+    /// External overview offsets refer to the overview file. No pixels are decoded.
+    /// Reference: GDAL 3.12.1's TIFF `BLOCK_OFFSET_x_y` / `BLOCK_SIZE_x_y` items.
+    pub fn tiff_block_range(&mut self, band: usize, x: usize, y: usize, overview: Option<usize>) -> Result<Option<(u64, u64)>> {
+        let _scope = self.enter_asset_read()?;
+        if band == 0 || band > self.band_count() {
+            return Ok(None);
+        }
+        match &mut self.inner {
+            Inner::Tiff(t) => match overview.map_or(Some(0), |i| i.checked_add(1)) {
+                Some(level) => t.block_range(band, x, y, level),
+                None => Ok(None),
+            },
+            Inner::Source(_, source) => source.tiff_block_range(band, x, y, overview),
+            Inner::Memory(_) => Ok(None),
         }
     }
 
@@ -2583,6 +2611,49 @@ impl TiffRaster {
             (Some(i), Some(ovr)) => ovr.tags_at_level(i),
             _ => &self.tags,
         }
+    }
+
+    fn block_range(&mut self, band: usize, x: usize, y: usize, level: usize) -> Result<Option<(u64, u64)>> {
+        let Some(image) = self.levels.get(level) else { return Ok(None) };
+        let (width, height) = image.block;
+        if width == 0 || height == 0 || x >= image.width.div_ceil(width) || y >= image.height.div_ceil(height) {
+            return Ok(None);
+        }
+        if let Some(external) = image.external {
+            return match self.ovr.as_mut() {
+                Some(ovr) => ovr.block_range(band, x, y, external),
+                None => Ok(None),
+            };
+        }
+        let across = image.width.div_ceil(width);
+        let rows = image.height.div_ceil(height);
+        let ifd = image.ifd;
+        let error = self.limits.error();
+        if self.current_ifd != ifd {
+            self.decoder.seek_to_image(ifd).map_err(error)?;
+            self.current_ifd = ifd;
+        }
+        let storage = match self.levels[level].storage {
+            Some(storage) => storage,
+            None => {
+                let storage = Storage {
+                    planar: self.decoder.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).map_err(error)? == Some(2),
+                    compression: self.decoder.find_tag_unsigned::<u16>(Tag::Compression).map_err(error)?.unwrap_or(1),
+                };
+                self.levels[level].storage = Some(storage);
+                storage
+            }
+        };
+        let plane = if storage.planar { (band - 1) / if self.complex { 2 } else { 1 } } else { 0 };
+        let Some(index) =
+            plane.checked_mul(rows).and_then(|v| v.checked_add(y)).and_then(|v| v.checked_mul(across)).and_then(|v| v.checked_add(x))
+        else {
+            return Ok(None);
+        };
+        if self.levels[level].tables.is_none() {
+            self.levels[level].tables = Some(Arc::new(ChunkTables::read(&mut self.decoder).map_err(error)?));
+        }
+        Ok(self.levels[level].tables.as_ref().and_then(|tables| tables.get(index)))
     }
 
     /// Reads a window of some bands (numbered from 1) of a level, band-major: CMYK read as GDAL

@@ -348,6 +348,9 @@ class Raster:
     def has_mask(self) -> bool: ...
     @property
     def block_size(self) -> tuple[int, int] | None: ...
+    def _tiff_block_range(
+        self, band: int, x: int, y: int, overview: int | None = None
+    ) -> tuple[int, int] | None: ...
     def read(
         self,
         band: int | Sequence[int] | None = None,
