@@ -491,7 +491,7 @@ fn open_geojson(path: &str, stem: &str, batch: usize) -> Result<(Layer, Box<dyn 
         return Ok((l, Box::new(MemorySource { features: features.into_iter(), batch })));
     }
     let name = c.members.get("name").and_then(|n| n.as_str()).unwrap_or(stem).to_string();
-    let crs = c.members.get("crs").and_then(|c| c["properties"]["name"].as_str()).and_then(|n| crate::crs::SpatialRef::parse(n).ok());
+    let crs = geojson::read_crs_member(c.members.get("crs"), "GeoJSON")?;
     let layer = scan.geojson_layer(&name, crs);
     let decoder = geojson::FeatureDecoder::new(&layer, &scan);
     let collection = json::Collection::new(File::open(path)?)?;

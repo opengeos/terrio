@@ -104,7 +104,7 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
         let pair = |k: &str| -> Option<[f64; 2]> { Some([t.get(k)?.get(0)?.as_f64()?, t.get(k)?.get(1)?.as_f64()?]) };
         Some((pair("scale")?, pair("translate")?))
     });
-    let crs = doc["crs"]["properties"]["name"].as_str().and_then(|n| SpatialRef::parse(n).ok());
+    let crs = super::geojson::read_crs_member(doc.get("crs"), "TopoJSON")?;
     let mut topo = Topology { arcs: Vec::new(), transform };
     // Quantized arcs are delta-encoded.
     for arc in doc["arcs"].as_array().into_iter().flatten() {
@@ -239,6 +239,7 @@ pub fn write_layers(layers: &[Layer], path: &str) -> Result<()> {
 
 /// Encodes layers as a TopoJSON topology.
 pub fn to_string(layers: &[Layer]) -> Result<String> {
+    let crs_name = crs_name(layers)?;
     let mut arcs: Vec<Value> = Vec::new();
     let mut add = |cs: &[Coord], close: bool| -> Value {
         let mut pts: Vec<Value> = cs.iter().map(position).collect();
@@ -272,21 +273,30 @@ pub fn to_string(layers: &[Layer]) -> Result<String> {
         objects.insert(layer.name.clone(), json!({"type": "GeometryCollection", "geometries": geometries}));
     }
     let mut doc = json!({"type": "Topology", "objects": objects, "arcs": arcs});
-    if let Some(name) = crs_name(layers) {
+    if let Some(name) = crs_name {
         doc["crs"] = json!({"type": "name", "properties": {"name": name}});
     }
     Ok(doc.to_string())
 }
 
-/// The name of the layers' CRS for a `crs` member: their EPSG code (when every layer with a CRS
-/// has the same one), as GDAL's GeoJSON writer names it, but EPSG:4326 too.
-fn crs_name(layers: &[Layer]) -> Option<String> {
-    let mut codes = layers.iter().filter(|l| !SpatialRef::from_layer(l).is_unknown()).map(super::naming_epsg);
-    let first = codes.next()??;
-    if !codes.all(|c| c == Some(first)) {
-        return None;
+/// Names one shared CRS using the GeoJSON authority rules, including WGS 84 explicitly.
+fn crs_name(layers: &[Layer]) -> Result<Option<String>> {
+    let mut names = layers.iter().map(|layer| {
+        if SpatialRef::from_layer(layer).is_unknown() {
+            return Ok(None);
+        }
+        super::geojson::GeoJsonOptions::default()
+            .crs_name(layer)
+            .map(|name| Some(name.unwrap_or_else(|| "urn:ogc:def:crs:OGC:1.3:CRS84".into())))
+            .map_err(|_| Error::Unsupported("TopoJSON cannot name this layer's CRS: use a format that stores CRS definitions".into()))
+    });
+    let first = names.next().transpose()?.flatten();
+    for name in names {
+        if name? != first {
+            return Err(Error::Unsupported("TopoJSON layers must share the same CRS".into()));
+        }
     }
-    Some(if first == 4326 { "urn:ogc:def:crs:OGC:1.3:CRS84".to_string() } else { format!("urn:ogc:def:crs:EPSG::{first}") })
+    Ok(first)
 }
 
 /// A position: x and y only, as TopoJSON readers (GDAL's among them) expect.
@@ -377,5 +387,17 @@ mod tests {
         let text = to_string(std::slice::from_ref(&l)).unwrap();
         assert!(!text.contains("\"crs\""), "{text}");
         assert_eq!(parse(text.as_bytes()).unwrap()[0].crs_epsg(), None);
+    }
+
+    #[test]
+    fn layers_with_different_crs_cannot_share_one_topology() {
+        let mut first = Layer::new("first");
+        first.set_crs_epsg(Some(32615));
+        let mut second = Layer::new("second");
+        second.set_crs_epsg(Some(32616));
+        assert!(to_string(&[first.clone(), second.clone()]).is_err());
+        second.set_crs_epsg(None);
+        assert!(to_string(&[first, second.clone()]).is_err());
+        assert!(to_string(&[Layer::new("unknown"), second]).is_ok());
     }
 }

@@ -5347,6 +5347,34 @@ test("GeoJSON byte exports name ESRI CRSs and refuse unnamed CRS loss", () => {
     } finally { source.free(); }
   }
 });
+test("TopoJSON CRS names and JSON reader defaults preserve coordinate meaning", () => {
+  for (const definition of ["EPSG:32615", "ESRI:102003", "IAU_2015:49900"]) {
+    const source = terrio.fromGeoJSON(SQUARES, "squares", definition);
+    try {
+      const bytes = source.toBytes("squares.topojson");
+      const [authority, code] = definition.split(":");
+      assert.equal(JSON.parse(new TextDecoder().decode(bytes)).crs.properties.name, `urn:ogc:def:crs:${authority}::${code}`);
+      const back = terrio.open(bytes, "squares.topojson");
+      try {
+        assert.equal(back.crs, definition);
+        assert.deepEqual(back.toGeoJSON().features.map(f => f.geometry), source.toGeoJSON().features.map(f => f.geometry));
+      } finally { back.free(); }
+    } finally { source.free(); }
+  }
+  const source = terrio.fromGeoJSON(SQUARES, "squares", 'LOCAL_CS["site grid",UNIT["metre",1]]');
+  try { assert.throws(() => source.toBytes("squares.topojson"), /TopoJSON cannot name/); }
+  finally { source.free(); }
+  const topology = {type: "Topology", arcs: [], objects: {points: {type: "Point", coordinates: [5000, 5000]}}};
+  const encode = document => new TextEncoder().encode(JSON.stringify(document));
+  const unknown = terrio.open(encode(topology), "points.topojson");
+  try { assert.equal(unknown.crs, undefined); }
+  finally { unknown.free(); }
+  for (const [extension, document] of [["topojson", topology], ["geojson", SQUARES]]) {
+    for (const name of ["urn:ogc:def:crs:EPSG::5800", "urn:ogc:def:crs:FOO::1", "not a crs"]) {
+      assert.throws(() => terrio.open(encode({...document, crs: {type: "name", properties: {name}}}), `points.${extension}`), /cannot resolve crs member/);
+    }
+  }
+});
 test("curved coarse footprints retain their centers", () => {
   const values = Float64Array.from({length: 360 * 180}, (_, i) => i % 360 + 0.5 - 180);
   const source = terrio.rasterFromArray(values, 360, 180, [-180, 1, 0, 90, 0, -1], "EPSG:4326");

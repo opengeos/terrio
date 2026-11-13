@@ -1067,6 +1067,7 @@ pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(
     }
     let retry = match &e {
         Error::InvalidArgument(_) | Error::Http(_) => false,
+        error if crate::drivers::vector::geojson::is_crs_refusal(error) => false,
         Error::InvalidData(message) if message.ends_with(crate::drivers::vector::kml::AMBIGUOUS_KMZ) => false,
         Error::InvalidData(message) if message.ends_with(vfs::AMBIGUOUS_ZIP) => false,
         Error::InvalidData(message) if message.starts_with(crate::drivers::vector::mapinfo::INVALID_HEADER) => false,
@@ -1258,7 +1259,7 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
             // that is allowed.
             let to_fallback = matches!(found, Some("GeoJSON" | "GML"))
                 && wbvector_fallback_allowed()
-                && result.as_ref().is_err_and(|e| !e.is_resource_refusal());
+                && result.as_ref().is_err_and(|e| !e.is_resource_refusal() && !crate::drivers::vector::geojson::is_crs_refusal(e));
             match result {
                 Err(e) if to_fallback => reader_error = Some(e),
                 result => return result.map(Dataset::Vector),
@@ -1538,8 +1539,7 @@ pub(crate) fn fix_layer(mut layer: Layer, path: &str, driver: VectorDriver) -> L
     {
         layer.set_crs_epsg(Some(code));
     }
-    let wgs84_by_definition =
-        matches!(driver, VectorDriver::GeoJSON | VectorDriver::TopoJSON | VectorDriver::KML | VectorDriver::KMZ | VectorDriver::GPX);
+    let wgs84_by_definition = matches!(driver, VectorDriver::KML | VectorDriver::KMZ | VectorDriver::GPX);
     if wgs84_by_definition && layer.crs_epsg().is_none() && layer.crs_wkt().is_none() {
         layer.set_crs_epsg(Some(4326));
     }
