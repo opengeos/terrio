@@ -1102,10 +1102,14 @@ CLI writes (`--lco SEPARATOR=COMMA|SEMICOLON|TAB|PIPE`).
 
 When attribute names also form a recognized coordinate pair, such as `lon`/`lat`
 or `easting`/`northing`, the writer uses a distinct `__terrio_wkt` geometry column
-(with a suffix if needed). Readers recognize it before inferring coordinates, so
+(with a suffix if needed). Without an explicit `GEOM_POSSIBLE_NAMES`, readers
+recognize it before inferring coordinates, even when X/Y/Z name options are set, so
 the geometry and coordinate-named attributes both survive a round trip. An explicit
-`GEOM_POSSIBLE_NAMES` selection also takes precedence over automatic X/Y inference.
+`GEOM_POSSIBLE_NAMES` selection takes precedence when the selected column holds WKT;
+non-WKT selections retain X/Y fallback.
 Ordinary external CSV files without that selection retain their default X/Y precedence.
+The reserved marker is a Terrio convention. Other CSV readers may require explicit
+geometry-column options to distinguish it from coordinate-like attributes.
 
 - **XLSX** workbooks are read and written without GDAL, in WebAssembly too, as GDAL's XLSX driver
   does: a layer per worksheet, feature ids that are row numbers, and the open options `HEADERS`

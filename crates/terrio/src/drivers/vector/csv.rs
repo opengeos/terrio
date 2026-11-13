@@ -420,15 +420,13 @@ impl CsvScan {
             && options.y_possible_names.is_empty()
             && options.z_possible_names.is_empty()
             && options.geom_possible_names.is_empty();
-        if default_names {
-            if header.first().is_some_and(|h| geometry_marker(h, "__terrio_wkt")) {
-                self.wkt = vec![WktCandidate { column: 0, is_wkt: None, any: false, lonlat: true }];
-                return;
-            }
-            if let Some(has_z) = marked_coordinates(header) {
-                (self.x_col, self.y_col, self.z_col) = (Some(0), Some(1), has_z.then_some(2));
-                return;
-            }
+        if options.geom_possible_names.is_empty() && header.first().is_some_and(|h| geometry_marker(h, "__terrio_wkt")) {
+            self.wkt = vec![WktCandidate { column: 0, is_wkt: None, any: false, lonlat: true }];
+            return;
+        }
+        if default_names && let Some(has_z) = marked_coordinates(header) {
+            (self.x_col, self.y_col, self.z_col) = (Some(0), Some(1), has_z.then_some(2));
+            return;
         }
         let wkt_candidates = || {
             header
@@ -439,11 +437,7 @@ impl CsvScan {
                 .collect::<Vec<_>>()
         };
         if !options.geom_possible_names.is_empty() {
-            let selected = wkt_candidates();
-            if !selected.is_empty() {
-                self.wkt = selected;
-                return;
-            }
+            self.wkt = wkt_candidates();
         }
         let find = |patterns: &[String], defaults: &[&str]| header.iter().position(|h| matches_name(h, patterns, defaults));
         let mut x_col = find(&options.x_possible_names, X_NAMES);
@@ -469,12 +463,11 @@ impl CsvScan {
             t.add(&String::from_utf8_lossy(f));
         }
         let get = |i: usize| cell(r, i, true);
-        if let (Some(xc), Some(yc)) = (self.x_col, self.y_col) {
-            if let Some(g) = xy_point(get, xc, yc, self.z_col) {
-                self.any_xy = true;
-                self.lonlat_xy &= in_lonlat(&g).unwrap_or(true);
-            }
-            return;
+        if let (Some(xc), Some(yc)) = (self.x_col, self.y_col)
+            && let Some(g) = xy_point(get, xc, yc, self.z_col)
+        {
+            self.any_xy = true;
+            self.lonlat_xy &= in_lonlat(&g).unwrap_or(true);
         }
         for c in &mut self.wkt {
             let Some(v) = r.get(c.column).map(|f| String::from_utf8_lossy(f)) else { continue };
@@ -494,11 +487,14 @@ impl CsvScan {
     }
 
     /// The layer the rows make (without features), and their decoder.
-    fn finish(self, header: Vec<String>, name: &str, options: &CsvOptions, utf8: bool) -> RowDecoder {
+    fn finish(mut self, header: Vec<String>, name: &str, options: &CsvOptions, utf8: bool) -> RowDecoder {
         let header = unique_column_names(header);
         // A WKT column must hold geometries: a "geometry" column of other values is an attribute.
         let wkt = self.wkt.iter().find(|c| c.is_wkt == Some(true));
         let wkt_col = wkt.map(|c| c.column);
+        if wkt_col.is_some() {
+            (self.x_col, self.y_col, self.z_col) = (None, None, None);
+        }
         let geom_cols: Vec<usize> = [self.x_col, self.y_col, self.z_col, wkt_col].into_iter().flatten().collect();
         let mut layer = Layer::new(name);
         let mut fields = Vec::new();
@@ -870,12 +866,32 @@ mod tests {
     fn writes_wkt_and_xy() {
         let l = parse("lon,lat,name\n1.5,2,a b\n3,4,\"c,d\"\n", "pts", &CsvOptions::default()).unwrap();
         let wkt = to_string(&l, &CsvOptions::default()).unwrap();
-        assert_eq!(wkt, "WKT,lon,lat,name\nPOINT (1.5 2),1.5,2,a b\nPOINT (3 4),3,4,\"c,d\"\n");
+        assert_eq!(wkt, "__terrio_wkt,lon,lat,name\nPOINT (1.5 2),1.5,2,a b\nPOINT (3 4),3,4,\"c,d\"\n");
         let xy = to_string(&l, &CsvOptions { geometry: CsvGeometry::AsXy, ..Default::default() }).unwrap();
         assert_eq!(xy, "X,Y,lon,lat,name\n1.5,2,1.5,2,a b\n3,4,3,4,\"c,d\"\n");
         let opts = CsvOptions { keep_geom_columns: false, ..Default::default() };
         let l = parse("WKT,name\nPOINT (1.5 2),a b\n", "pts", &opts).unwrap();
         assert_eq!(to_string(&l, &opts).unwrap(), "WKT,name\nPOINT (1.5 2),a b\n");
+    }
+
+    #[test]
+    fn explicit_wkt_preference_keeps_xy_fallback_and_marker_overrides() {
+        let selected = CsvOptions { geom_possible_names: vec!["shape".into()], ..Default::default() };
+        for value in ["A", "42", ""] {
+            let layer = parse(&format!("shape,lon,lat\n{value},12,34\n"), "fallback", &selected).unwrap();
+            assert_eq!(layer.features[0].geometry, Some(Geometry::point(12., 34.)));
+        }
+        let text = "shape,lon,lat\n\"LINESTRING (1 2,3 4)\",12,34\n";
+        let line = super::super::wkt::parse("LINESTRING (1 2,3 4)");
+        assert_eq!(parse(text, "selected", &selected).unwrap().features[0].geometry, line);
+        for options in [
+            CsvOptions { x_possible_names: vec!["lon".into()], ..Default::default() },
+            CsvOptions { y_possible_names: vec!["lat".into()], ..Default::default() },
+            CsvOptions { z_possible_names: vec!["height".into()], ..Default::default() },
+        ] {
+            let marked = text.replacen("shape", "__terrio_wkt", 1);
+            assert_eq!(parse(&marked, "marker", &options).unwrap().features[0].geometry, line);
+        }
     }
 
     #[test]
