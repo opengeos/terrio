@@ -100,16 +100,17 @@ fn vector_extension_hint(bytes: &[u8]) -> Option<&'static str> {
         }
     }
     let text = std::str::from_utf8(bytes).ok().map(|text| text.trim_start_matches('\u{feff}').trim_start());
-    if let Some(text) = text {
-        if text.starts_with('{') && crate::inspection::root_json_type(text).as_deref() == Some("Feature") {
-            let mut values = serde_json::Deserializer::from_str(text).into_iter::<serde::de::IgnoredAny>();
-            if values.next().is_some_and(|value| value.is_ok()) {
-                let remaining = text[values.byte_offset()..].trim_start_matches([' ', '\t']);
-                if remaining.starts_with(['\r', '\n'])
-                    && crate::inspection::root_json_type(remaining.trim_start()).as_deref() == Some("Feature")
-                {
-                    return Some("geojsonl");
-                }
+    if let Some(text) = text
+        && text.starts_with('{')
+        && crate::inspection::root_json_type(text).as_deref() == Some("Feature")
+    {
+        let mut values = serde_json::Deserializer::from_str(text).into_iter::<serde::de::IgnoredAny>();
+        if values.next().is_some_and(|value| value.is_ok()) {
+            let remaining = text[values.byte_offset()..].trim_start_matches([' ', '\t']);
+            if remaining.starts_with(['\r', '\n'])
+                && crate::inspection::root_json_type(remaining.trim_start()).as_deref() == Some("Feature")
+            {
+                return Some("geojsonl");
             }
         }
     }
