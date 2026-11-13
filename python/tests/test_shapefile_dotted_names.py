@@ -11,6 +11,42 @@ import terrio.pyogrio as tpg
 COMPONENTS = ("shp", "shx", "dbf", "prj", "cpg")
 
 
+@pytest.mark.parametrize("extension", ["geojson", "shx", "DBf", "CPG", "prj"])
+@pytest.mark.parametrize("writer", ["convert", "cli"])
+def test_normalized_output_alias_reads_source_before_writing(tmp_path, extension, writer):
+    """Converting to an alias of the input retains its records and geometry.
+
+    Args:
+        tmp_path: Temporary directory.
+        extension: Requested output extension, normalized by the explicit driver.
+        writer: Public conversion surface.
+    """
+    source = tmp_path / "roads.v2.shp"
+    install_components(source, 5)
+    target = source.with_suffix("." + extension)
+    if writer == "convert":
+        terrio.convert(str(source), str(target), format="ESRI Shapefile")
+    else:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "terrio",
+                "convert",
+                str(source),
+                str(target),
+                "--format",
+                "ESRI Shapefile",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    assert_point(terrio.open_vector(str(source))[0], 5, source.stem)
+    assert_point(terrio.open_stream(str(source), batch_size=1).read_all(), 5, source.stem)
+
+
 def points(value, crs="EPSG:4326"):
     """Create a point with distinct attributes and coordinates.
 

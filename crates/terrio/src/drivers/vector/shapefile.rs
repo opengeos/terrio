@@ -30,7 +30,7 @@ use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Geomet
 
 const NULL_SHAPE: i32 = 0;
 
-/// The geometry output path. An explicit driver supplies `.shp` for other extensions;
+/// The geometry output path, replacing a missing or different extension with `.shp`;
 /// an existing `.shp` extension retains its case. Derive sidecars from this full path.
 pub(crate) fn output_path(path: &str) -> PathBuf {
     let path = Path::new(path);
@@ -1006,8 +1006,8 @@ fn read_dbf_records(d: &[u8], l: &DbfLayout, make_record: impl Fn(&[u8]) -> Vec<
     Ok(records)
 }
 
-/// Writes a layer as a shapefile. `path` names the `.shp` file; the other files are written next
-/// to it.
+/// Writes a layer as a shapefile. A missing or different extension in `path` becomes `.shp`;
+/// the companion files are written next to that geometry file.
 pub fn write(layer: &Layer, path: &str) -> Result<()> {
     let geometry_path = output_path(path);
     let base = geometry_path.as_path();

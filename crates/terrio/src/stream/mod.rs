@@ -1932,7 +1932,7 @@ pub fn can_convert_stream(src: &str, dst: &str, options: &ConvertOptions) -> boo
         && out.is_some_and(can_write_stream)
         && (input.is_some_and(can_read_stream) || pbf())
         && crate::vfs::Location::parse(src).is_local()
-        && !same_dataset(src, dst)
+        && !same_dataset(src, dst, output_driver(dst, options))
 }
 
 /// Whether `src` is an OpenStreetMap PBF file sorted by type then id.
@@ -1948,7 +1948,9 @@ fn osm_sorted(src: &str) -> bool {
 
 /// Whether writing `dst` would overwrite `src` (the same file, or the same shapefile through
 /// another of its files): such conversions read the input whole before writing.
-fn same_dataset(src: &str, dst: &str) -> bool {
+fn same_dataset(src: &str, dst: &str, output: VectorDriver) -> bool {
+    let path = if output == VectorDriver::Shapefile { shapefile::output_path(dst) } else { dst.into() };
+    let dst = path.to_string_lossy();
     let key = |p: &str| {
         let p = std::path::Path::new(p);
         let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
@@ -1957,12 +1959,12 @@ fn same_dataset(src: &str, dst: &str) -> bool {
         Some((std::fs::canonicalize(dir).ok()?, name?.to_os_string(), shp))
     };
     // The same file under another name (a symbolic link, say).
-    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(src), std::fs::canonicalize(dst))
+    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(src), std::fs::canonicalize(dst.as_ref()))
         && a == b
     {
         return true;
     }
-    match (key(src), key(dst)) {
+    match (key(src), key(&dst)) {
         (Some((a, x, s)), Some((b, y, t))) => a == b && x == y && s == t,
         _ => false,
     }
@@ -2112,10 +2114,10 @@ fn one_layer_only(driver: VectorDriver) -> Error {
 /// output is created leaves what was there).
 fn remove_on_error(dst: &str, driver: VectorDriver, written: Result<()>) -> Result<()> {
     if written.is_err() {
-        let path = std::path::Path::new(dst);
-        let _ = std::fs::remove_file(path);
+        let path = if driver == VectorDriver::Shapefile { shapefile::output_path(dst) } else { dst.into() };
+        let _ = std::fs::remove_file(&path);
         if driver == VectorDriver::Shapefile {
-            for ext in ["shp", "shx", "dbf", "prj", "cpg"] {
+            for ext in ["shx", "dbf", "prj", "cpg"] {
                 let _ = std::fs::remove_file(path.with_extension(ext));
             }
         }
@@ -2139,7 +2141,7 @@ fn convert_osm(src: &str, dst: &str, options: &ConvertOptions) -> Option<Result<
             || VectorDriver::for_extension(src) != Some(VectorDriver::OSM)
             || !local
             || !can_write_stream(output_driver(dst, options))
-            || same_dataset(src, dst)
+            || same_dataset(src, dst, output_driver(dst, options))
         {
             return None;
         }
