@@ -4,7 +4,7 @@ use wbvector::{Coord, FieldDef, FieldType, FieldValue, Geometry};
 
 #[test]
 fn failed_shapefile_conversion_removes_only_normalized_components() {
-    for name in ["roads.v2.geojson", "roads.v2.SHP"] {
+    for name in ["roads.v2.geojson", "roads.v2.SHP", "roads.v2"] {
         let directory = tempfile::tempdir().unwrap();
         let requested = directory.path().join(name);
         let geometry = shapefile::output_path(requested.to_str().unwrap());

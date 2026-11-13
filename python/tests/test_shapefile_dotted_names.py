@@ -11,7 +11,7 @@ import terrio.pyogrio as tpg
 COMPONENTS = ("shp", "shx", "dbf", "prj", "cpg")
 
 
-@pytest.mark.parametrize("extension", ["geojson", "shx", "DBf", "CPG", "prj"])
+@pytest.mark.parametrize("extension", ["", "geojson", "shx", "DBf", "CPG", "prj"])
 @pytest.mark.parametrize("writer", ["convert", "cli"])
 def test_normalized_output_alias_reads_source_before_writing(tmp_path, extension, writer):
     """Converting to an alias of the input retains its records and geometry.
@@ -23,7 +23,7 @@ def test_normalized_output_alias_reads_source_before_writing(tmp_path, extension
     """
     source = tmp_path / "roads.v2.shp"
     install_components(source, 5)
-    target = source.with_suffix("." + extension)
+    target = source.with_suffix("." + extension if extension else "")
     if writer == "convert":
         terrio.convert(str(source), str(target), format="ESRI Shapefile")
     else:
@@ -177,6 +177,7 @@ def test_reads_use_the_dotted_datasets_own_sidecars(tmp_path, uppercase, neighbo
     elif reader == "stream":
         assert_point(terrio.open_stream(str(target), batch_size=1).read_all(), 5, target.stem)
     elif reader == "range":
+        pytest.importorskip("geopandas")
         frame = tpg.read_dataframe(str(target), skip_features=0, max_features=1)
         assert frame["id"].tolist() == [5]
         assert frame["label"].tolist() == ["café"]
@@ -193,6 +194,7 @@ def test_reads_use_the_dotted_datasets_own_sidecars(tmp_path, uppercase, neighbo
     "requested,expected",
     [
         ("output", "output.shp"),
+        ("roads.v2", "roads.v2.shp"),
         ("roads.v2.geojson", "roads.v2.shp"),
         ("roads.v2.DBf", "roads.v2.shp"),
         ("roads.v2.shx", "roads.v2.shp"),

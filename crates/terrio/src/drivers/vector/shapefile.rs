@@ -30,14 +30,22 @@ use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Geomet
 
 const NULL_SHAPE: i32 = 0;
 
-/// The geometry output path, replacing a missing or different extension with `.shp`;
-/// an existing `.shp` extension retains its case. Derive sidecars from this full path.
+/// The geometry output path: replace a recognized vector or companion extension with `.shp`,
+/// or append `.shp` to other names. An existing `.shp` retains its case.
+/// Derive sidecars from this full path so unknown dotted suffixes remain part of the basename.
 pub(crate) fn output_path(path: &str) -> PathBuf {
     let path = Path::new(path);
-    if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("shp")) {
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+    if extension.eq_ignore_ascii_case("shp") {
         path.to_path_buf()
-    } else {
+    } else if crate::formats::VectorDriver::for_extension(&path.to_string_lossy()).is_some()
+        || ["shx", "dbf", "prj", "cpg"].iter().any(|e| extension.eq_ignore_ascii_case(e))
+    {
         path.with_extension("shp")
+    } else {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(".shp");
+        name.into()
     }
 }
 
@@ -1006,8 +1014,8 @@ fn read_dbf_records(d: &[u8], l: &DbfLayout, make_record: impl Fn(&[u8]) -> Vec<
     Ok(records)
 }
 
-/// Writes a layer as a shapefile. A missing or different extension in `path` becomes `.shp`;
-/// the companion files are written next to that geometry file.
+/// Writes a layer as a shapefile. Recognized vector or companion extensions become `.shp`;
+/// other names get `.shp` appended. Companion files are written next to that geometry file.
 pub fn write(layer: &Layer, path: &str) -> Result<()> {
     let geometry_path = output_path(path);
     let base = geometry_path.as_path();
