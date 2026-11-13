@@ -222,9 +222,9 @@ def test_complex_band_block_items_use_the_stored_plane(tmp_path):
     with rio.open(path) as actual, rasterio.open(path) as reference:
         for band in [1, 2]:
             for key in ["BLOCK_OFFSET_0_0", "BLOCK_SIZE_2_2"]:
-                assert actual.get_tag_item(key, "TIFF", bidx=band) == reference.get_tag_item(
-                    key, "TIFF", bidx=band
-                )
+                expected = reference.get_tag_item(key, "TIFF", bidx=band)
+                assert expected is not None
+                assert actual.get_tag_item(key, "TIFF", bidx=band) == expected
 
 
 def test_real_tiff_block_items_match_gdal(data_dir):
@@ -244,6 +244,6 @@ def test_real_tiff_block_items_match_gdal(data_dir):
             for x, y in [(0, 0), (across - 1, rows - 1)]:
                 for name in ["OFFSET", "SIZE"]:
                     key = f"BLOCK_{name}_{x}_{y}"
-                    assert actual.get_tag_item(key, "TIFF", bidx=band) == reference.get_tag_item(
-                        key, "TIFF", bidx=band
-                    )
+                    expected = reference.get_tag_item(key, "TIFF", bidx=band)
+                    assert expected is not None
+                    assert actual.get_tag_item(key, "TIFF", bidx=band) == expected

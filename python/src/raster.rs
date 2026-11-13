@@ -914,7 +914,7 @@ impl PyRaster {
             return Ok(None);
         }
         let band = if self.is_complex() { (band - 1) * 2 + 1 } else { band };
-        py.detach(|| self.inner.tiff_block_range(band, x, y, overview)).py()
+        py.detach_result(|| self.inner.tiff_block_range(band, x, y, overview)).py()
     }
 
     /// Reads the per-dataset mask: 255 for valid pixels, 0 for invalid ones.
