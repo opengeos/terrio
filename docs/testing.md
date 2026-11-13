@@ -25,6 +25,24 @@ read-in-child test remains disabled on macOS because of an intermittent SIGTRAP
 whose cause is unconfirmed (#696). Lock hand-off coverage does not establish that
 system networking libraries are safe to call after a multithreaded fork.
 
+## Mixed-validity coordinate batches
+
+`python/tests/test_rio_transform_batch.py` verifies that rio coordinate and
+geometry transforms use one native batch when a point fails. Good points remain
+exactly equal to the all-valid Terrio batch; failed ordinates remain positive
+infinity. Native `transform_points` retains its strict default, with optional
+`errcheck=False` for this behavior in 2D and 3D. Invalid CRS definitions and
+array lengths still raise in the native API. The rio helper retains its existing
+all-infinity result for batch setup failures without retrying every point.
+
+`python scripts/conformance.py DATA --only transform-batches --strict` requires
+all 22 tests, including two 1,000-point Natural Earth populated-place batches
+transformed to EPSG:3857 and EPSG:3395. Successful coordinates after inserting a
+NaN agree with GDAL via rasterio within 1e-7 metres. Failed-point output follows
+Terrio's existing policy; rasterio raises on these mixed-invalid batches. The
+reference for local validation is GDAL 3.12.1. Timing is measured separately;
+the regression uses a deterministic native-call count instead of a timing limit.
+
 ## Transformed polar bounds
 
 `cargo test -p terrio-crs --lib transform_bounds` checks pole inclusion, explicit
@@ -95,6 +113,22 @@ unzoned values and nulls. The native unit test
 GDAL-authored in-memory fields with unknown, local and explicit UTC flags.
 These tests use GDAL itself as the typed-field reference; validation uses GDAL 3.13.3.
 
+## CSV and TSV writing
+
+`cargo test -p terrio --test merged csv_writing::` checks whole-file, byte and
+streamed writes of point and polygon layers, with `.csv`, `.tsv` and uppercase
+`.TSV` filenames. TSV defaults to tabs; explicit comma, semicolon, tab or pipe
+options override the filename. Round trips check geometry and attribute values,
+including quoted tabs, commas, quotes and newlines. CSV's inferred WKT column and
+its existing CRS limitations are unchanged.
+
+`python/tests/test_tsv_writing.py` checks Layer, VectorDataset, byte, convert and
+CLI exports against CSV controls. The Node test `TSV byte output uses tabs and preserves polygon commas`
+exercises the filesystem-free WebAssembly writer and reader with polygon WKT.
+TSV is also an output of the registered `streams` conformance suite. On the real
+country boundaries, whole and streamed TSV files are byte-identical and GDAL
+3.12.1 reads all 176 features.
+
 ## Python warning attribution
 
 `python/tests/test_native_warning_locations.py` checks warnings recorded in Rust
@@ -104,6 +138,11 @@ once-per-location suppression. The shared warning bridge skips Terrio's Python
 frames using APIs available on Python 3.10 and later, without changing warning filters.
 Attribution stops at the first frame outside the Terrio package, including a
 third-party intermediary when one calls Terrio on the application's behalf.
+Subprocess regressions also invoke the native binding and warning helper directly
+from `atexit` and `_thread` callbacks, where no Python caller frame exists. These
+calls must emit their warnings at the interpreter fallback location (`sys:1` or
+`<sys>:0`, depending on CPython) without raising a frame lookup error. Thread
+regressions also wait for callback completion without adding a Python wrapper frame.
 
 `python/tests/test_pyogrio_datetime_filters.py` checks pandas 2 and 3 datetime parsing without
 Terrio changing warning filters, including invalid input after mixed offsets and pandas-only
@@ -111,6 +150,10 @@ ISO forms. Standard ISO strings with a uniform offset pass directly to pandas af
 value syntax scan. Other pandas 2 inputs inspect every distinct value so invalid strings retain
 their original diagnostic; pandas 3 uses its parser directly. Reduced `YYYY`/`YYYY-MM` values
 are parsed in a timezone-free batch, retaining valid results when one value is invalid.
+Mixed UTC conversion on pandas 2 parses naive and aware strings in separate batches,
+so a naive row cannot inherit an earlier row's offset. The regressions cover GeoJSON
+reads in both row orders, signed and fractional-hour offsets, missing and repeated
+values, duplicate indices, string storage types and millisecond output precision.
 Python datetime output normalizes timestamp fractions to six digits before stdlib parsing
 and attributes any precision warning to the caller. Other pandas-only ISO forms can still
 require one pandas fallback per distinct value on older Python versions.
@@ -142,6 +185,16 @@ refuses ZIP input mislabeled as a standalone GML/MIF/TAB document. The Rust
 memory tests also exercise the filesystem-free readers directly, and Node
 checks GML documents, archive refusals and unsupported MapInfo byte writing.
 
+`python/tests/test_mif_header.py` checks 51 combinations of wrong-format or
+incomplete MIF content and legitimate empty layers through standalone bytes,
+paths and ZIP members. MIF requires Version, Columns and Data declarations;
+case-insensitive keywords, CRLF and UTF-8 BOMs remain supported. Zero-column
+and declared-column headers followed by no objects retain their empty schema.
+Node exercises the same header checks in the filesystem-free MIF reader.
+Header recognition is a native policy in GDAL-enabled builds too: missing or
+incomplete required declarations are terminal, while geometry errors can still
+use the optional backend. This does not claim GDAL rejects every incomplete header.
+
 `scripts/compare_vector_byte_packaging.py DATA --json`, registered as the
 `vector-byte-packaging` conformance suite, compares GML documents and explicit
 MIF/TAB ZIP archives with GDAL/OGR on 16 real Natural Earth populated places.
@@ -149,7 +202,12 @@ Counts, original scalar attributes, archive members and EPSG:4326 agree exactly;
 GML also exposes its generated `gml_id` field, which the Python regression checks.
 Coordinates allow 1e-6 degrees for MapInfo's storage grid. The script reports
 the measured maximum and distinguishes exact coordinates from agreement within
-that tolerance. The reference is GDAL 3.13.3 for local validation.
+that tolerance. The original comparisons were validated with GDAL 3.13.3;
+the current suite, including the MIF header cases, was validated with GDAL 3.12.1.
+The suite also compares three wrong-format payloads and two valid empty MIF
+schemas with GDAL's explicitly selected MapInfo driver (locally GDAL 3.12.1).
+Driver selection prevents a mislabeled GeoJSON file from being opened by GDAL's
+separate GeoJSON driver.
 
 Run `python scripts/conformance.py DATA --only vector-byte-packaging --strict`
 to execute this suite and fail on differences or suite errors. Check its report
@@ -307,7 +365,7 @@ Transverse Mercator, engineering and WKT2-only temporal definitions retain equiv
 CRS and values across those exports and pyogrio. Custom dynamic definitions also
 retain their frame reference epoch instead of losing it through WKT1 conversion.
 Unknown FlatGeobuf authority codes paired with usable projected or engineering WKT
-export without warnings through all four Python surfaces while retaining the
+export without warnings through all five Python surfaces while retaining the
 layer's declared code. Rewriting a layer whose prose definition was ignored does
 not carry that text into another format. The JavaScript regression checks the
 native FlatGeobuf byte-read path, including retained incomplete and engineering
@@ -317,6 +375,11 @@ fixtures. GDAL's CRS lookup/export can itself fail on incomplete Shapefile WKT o
 an invalid FlatGeobuf CRS object; Terrio deliberately keeps dataframe export usable
 with a warning and no consumer CRS. The registered Arrow suite also matches all
 12 available comparisons on `countries.gpkg`, including CRS and native encodings.
+The stream coverage includes `terrio.open_stream`, both directly into GeoPandas
+and through `pyarrow.RecordBatchReader.from_stream`. Invalid WKT and unknown
+authority codes without stored WKT warn once at export and use the same schema
+on every batch, including empty streams. Without optional pyproj validation,
+native metadata is retained. GeoParquet's native stream schema is unchanged.
 
 ## The conformance suite
 
@@ -354,6 +417,11 @@ pytest and rasterio are required. Default/explicit lossless samples are exact;
 requested lossy output changes with quality, keeps alpha exactly, and is decoded
 independently with GDAL (validated locally with GDAL 3.13.3). Path and memory
 outputs agree. Lossy byte streams, size and PSNR are not claimed to match libwebp.
+Malformed `QUALITY` values, including empty strings and trailing text, must raise
+an argument error through native, rio path and memory writes, even when lossless
+output is selected. This is intentionally stricter than GDAL's numeric-prefix
+parser. Complete numbers from 0 to 100, decimals and surrounding whitespace are
+accepted; NaN retains the historical quality 75 default.
 The shared lossy encoder is also checked through WebAssembly GeoTIFF tiles in
 `js/tests/node.test.mjs`. General `toBytes` and `open` do not support WebP in that
 build; `rasterTiles` can emit standalone WebP bytes through its callback.
@@ -1031,7 +1099,24 @@ pixels with unchanged nodata and affine:
 python scripts/conformance.py ../data --only wkt-keywords --strict
 ```
 
-Engineering-to-Earth transforms are outside this metadata-parsing comparison.
+The registered comparison also writes each definition to GeoTIFF and COG, and
+adds three engineering definitions with root EPSG:5800 identifiers. Across 14
+definitions and both formats, native reads retain the exact input WKT and GDAL
+reads equivalent CRS identities/kinds; USGS pixels, sample type, nodata and affine
+are exact. Engineering-to-Earth transforms are unsupported and their refusal is
+checked after each engineering round trip. Local validation uses GDAL 3.12.1;
+the original eleven metadata references were authored by GDAL 3.13.3.
+
+`python/tests/test_gtiff_engineering_crs.py` checks engineering roots, unit IDs,
+root IDs and compact EPSG controls across whole, byte, lazy-streamed and rio
+writes, with pyproj available and unavailable. GeoKeys must include user-defined
+model type 32767 and a general citation, without a projected or geographic CRS
+code for engineering definitions. The original writer failed all 48 initial
+GeoKey cases; the expanded matrix has 138 cases. Node covers engineering WKT
+through GeoTIFF/COG byte writing and reading in WebAssembly.
+Engineering roots are refused before the legacy projection fallback, including
+in unoptimized WebAssembly warps, where the fallback's large frame could exhaust
+the stack. Node also checks that the dataset remains readable after this refusal.
 
 ## Standalone CRS feature coverage
 

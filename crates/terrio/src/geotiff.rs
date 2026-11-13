@@ -33,7 +33,8 @@ pub(crate) struct GeoTags {
     /// A PROJ string for user-defined projected CRSs without an EPSG code, built from the GeoKeys'
     /// projection parameters.
     pub proj4: Option<String>,
-    /// A CRS without an EPSG code, from user-defined GeoKeys.
+    /// The full CRS from user-defined GeoKeys, a PE citation or a sidecar. It can retain
+    /// an EPSG identifier that does not resolve to the same full definition in the registry.
     pub crs: Option<wbraster::CrsInfo>,
     /// Dataset metadata items from the `GDAL_METADATA` tag.
     pub metadata: Vec<(String, String)>,
@@ -779,10 +780,15 @@ impl GeoTags {
 
     /// The CRS, from the EPSG code or the user-defined parameters.
     pub(crate) fn crs_info(&self) -> wbraster::CrsInfo {
+        // An identifier is a summary, not a replacement for a retained definition. This
+        // matters for engineering IDs absent from the EPSG table and for custom WKT.
+        if let Some(crs) = &self.crs {
+            return crs.clone();
+        }
         match (self.epsg, &self.proj4) {
             (Some(code), _) => crate::crs::epsg_crs_info(code),
             (None, Some(p)) => crate::crs::SpatialRef::from_proj4(p).map(|s| s.to_crs_info()).unwrap_or_default(),
-            (None, None) => self.crs.clone().unwrap_or_default(),
+            (None, None) => Default::default(),
         }
     }
 }

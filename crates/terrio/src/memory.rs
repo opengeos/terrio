@@ -389,6 +389,7 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
     {
         let mut options = options.clone();
         options.xlsx = options.xlsx.for_name(name);
+        options.csv = crate::drivers::vector::csv::file_options(name, &options.csv);
         codec::write_vector(layers, driver, &options)
     }
 }
@@ -961,6 +962,18 @@ mod tests {
             assert_eq!(back.layers[0].features.len(), 2);
             let Dataset::Vector(back) = codec::open(bytes, &name, &Default::default()).unwrap() else { panic!() };
             assert_eq!(back.layers[0].features.len(), 2);
+        }
+    }
+
+    /// Wrong-format MIF content remains refused with the optional GDAL backend enabled
+    /// (reference: GDAL 3.12.1 with its MapInfo driver explicitly selected).
+    #[test]
+    fn mif_header_refusal_is_not_retried_as_another_format() {
+        for bytes in [b"hello\n".to_vec(), br#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[10,46]}}]}"#.to_vec()] {
+            let result = open_vector_bytes(bytes.clone(), "points.mif", &Default::default());
+            assert!(matches!(result, Err(Error::InvalidData(message)) if message.starts_with("MIF:")));
+            let result = codec::open(bytes, "points.mif", &Default::default());
+            assert!(matches!(result, Err(Error::InvalidData(message)) if message.starts_with("MIF:")));
         }
     }
 

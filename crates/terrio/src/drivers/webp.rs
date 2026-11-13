@@ -12,6 +12,8 @@
 //! encoder. QUALITY ranges from 0 to 100 (default 75); alpha is stored exactly in an ALPH chunk.
 //! Its rate/distortion tradeoff differs from GDAL's libwebp: equal quality settings do not
 //! imply equal bytes, size or PSNR.
+//! QUALITY must be a complete number, allowing surrounding whitespace; malformed text is
+//! refused rather than interpreted as zero. NaN retains the historical default of 75.
 //! `LOSSLESS` accepts YES/NO, TRUE/FALSE, ON/OFF and 1/0 (case-insensitive); other values
 //! are argument errors, like GeoTIFF's WEBP_LOSSLESS. This is stricter than GDAL's boolean parser.
 //! Only validation is shared with GeoTIFF: standalone WebP defaults to lossless, while
@@ -74,8 +76,9 @@ pub(crate) fn encode(r: &Raster, options: &[(String, String)]) -> Result<Vec<u8>
     }
     let mut quality = 75.0;
     if let Some(q) = option(options, "QUALITY") {
-        // `CPLAtof`; NaN passes GDAL's check too.
-        quality = crate::ops::dem::atof(q);
+        // Unlike CPLAtof, refuse malformed text instead of silently choosing zero.
+        // NaN passes GDAL's check too and keeps its historical default below.
+        quality = q.trim().parse::<f64>().map_err(|_| Error::InvalidArgument(format!("QUALITY={q} is not a legal value.")))?;
         #[allow(clippy::manual_range_contains, reason = "`!(0.0..=100.0).contains` would refuse a NaN QUALITY, which GDAL accepts")]
         if quality < 0.0 || quality > 100.0 {
             return Err(Error::InvalidArgument(format!("QUALITY={q} is not a legal value.")));
@@ -276,6 +279,19 @@ mod tests {
         assert!(encode_lossy(Vec::new(), 0, 1, 75.0).is_err());
         assert!(encode_lossy(Vec::new(), 1, 0, 75.0).is_err());
         assert!(encode_lossy(Vec::new(), 1, 1, 75.0).is_err());
+    }
+
+    /// Malformed quality is an argument error, even for lossless output. Unlike GDAL
+    /// 3.12.1's CPLAtof, the writer must not silently interpret arbitrary text as zero.
+    #[test]
+    fn malformed_quality_is_refused_before_encoding() {
+        let r = raster(2, 2, 3, vec![0; 12]);
+        for q in ["abc", "", "high", "50abc", " ", "75.5%", "--1"] {
+            for lossless in ["YES", "NO"] {
+                let err = encode(&r, &co(&[("QUALITY", q), ("LOSSLESS", lossless)])).unwrap_err().to_string();
+                assert!(err.contains(&format!("QUALITY={q} is not a legal value.")), "{err}");
+            }
+        }
     }
 
     #[test]

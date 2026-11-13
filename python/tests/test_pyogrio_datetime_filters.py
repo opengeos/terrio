@@ -2,6 +2,7 @@
 
 import datetime
 import functools
+import json
 import sys
 import warnings
 from types import SimpleNamespace
@@ -181,6 +182,33 @@ CASES = [
         ["2024-01-01T12:00:00+00:00", None, "2024-01-02T11:00:00+00:00"],
         True,
     ),
+    (
+        ["2024-01-02T12:00:00+01:00", "2024-01-01T12:00:00"],
+        ["2024-01-02T12:00:00+01:00", "2024-01-01T12:00:00"],
+        ["2024-01-02T11:00:00+00:00", "2024-01-01T12:00:00+00:00"],
+        True,
+    ),
+    (
+        [
+            "2024-01-02T12:00:00-05:00",
+            "2024-01-01T12:00:00",
+            "2024-01-03T12:00:00+01:00",
+            "2024-01-04T12:00:00",
+        ],
+        [
+            "2024-01-02T12:00:00-05:00",
+            "2024-01-01T12:00:00",
+            "2024-01-03T12:00:00+01:00",
+            "2024-01-04T12:00:00",
+        ],
+        [
+            "2024-01-02T17:00:00+00:00",
+            "2024-01-01T12:00:00+00:00",
+            "2024-01-03T11:00:00+00:00",
+            "2024-01-04T12:00:00+00:00",
+        ],
+        True,
+    ),
 ]
 
 
@@ -208,6 +236,93 @@ def test_datetime_values_without_terrio_filter_changes(values, preserved, utc, m
         utc if as_utc else preserved
     )
     assert result.dtype.kind == ("O" if mixed and not as_utc else "M")
+
+
+@pytest.mark.parametrize("offset", ["+01:00", "-05:00", "+05:30", "Z"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_read_dataframe_naive_values_are_utc_in_any_order(tmp_path, offset, reverse):
+    """Read stored naive timestamps as UTC independently of preceding offset values.
+
+    Args:
+        tmp_path: Directory for the GeoJSON datetime fixture.
+        offset: The timezone suffix of an adjacent aware timestamp.
+        reverse: Whether to reverse the feature order before reading.
+    """
+    pytest.importorskip("geopandas")
+    values = [
+        f"2024-01-01T12:00:00{offset}",
+        None,
+        "2024-02-01T12:00:00",
+        "2024-03-01T12:00:00-05:00",
+        "2024-04-01T12:00:00",
+        "2024-02-01T12:00:00",
+    ]
+    if reverse:
+        values.reverse()
+    path = tmp_path / "events.geojson"
+    path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"when": value},
+                        "geometry": {"type": "Point", "coordinates": [i, 0]},
+                    }
+                    for i, value in enumerate(values)
+                ],
+            }
+        )
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = tpg.read_dataframe(path)
+    expected = [
+        None if value is None else datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        for value in values
+    ]
+    expected = [
+        None
+        if value is None
+        else value.replace(tzinfo=value.tzinfo or datetime.timezone.utc)
+        .astimezone(datetime.timezone.utc)
+        .isoformat()
+        for value in expected
+    ]
+    assert [None if pd.isna(value) else value.isoformat() for value in result["when"]] == expected
+    assert str(result["when"].dtype) == "datetime64[ms, UTC]"
+    assert list(result.geometry.x) == list(range(len(values)))
+
+
+@pytest.mark.parametrize("dtype", ["object", "string"])
+def test_mixed_naive_conversion_retains_index_name_and_precision(dtype):
+    """Keep duplicate row labels and precision while treating reduced ISO dates as UTC.
+
+    Args:
+        dtype: The input series' string storage type.
+    """
+    values = pd.Series(
+        ["2024-01-01T12:00:00.123456789+01:00", "2024-02-01T12:00:00.9999999", None, "2024-03"],
+        index=[4, 4, 1, 4],
+        name="when",
+        dtype=dtype,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = tpg._parse_datetime(values, False, True)
+    expected = pd.Series(
+        [
+            pd.Timestamp("2024-01-01T11:00:00.123Z"),
+            pd.Timestamp("2024-02-01T12:00:00.999Z"),
+            pd.NaT,
+            pd.Timestamp("2024-03-01T00:00:00Z"),
+        ],
+        index=values.index,
+        name=values.name,
+        dtype="datetime64[ms, UTC]",
+    )
+    pd.testing.assert_series_equal(result, expected)
 
 
 def test_invalid_mixed_datetime_retains_its_diagnostic_without_filter_changes():

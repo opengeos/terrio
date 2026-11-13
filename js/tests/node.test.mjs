@@ -4854,6 +4854,24 @@ test("MapInfo MIF archives read in WebAssembly", () => {
   dataset.free();
 });
 
+test("MIF requires a header and retains valid empty layers", () => {
+  const encode = (text) => new TextEncoder().encode(text);
+  for (const text of ["", "hello\n", JSON.stringify({type: "FeatureCollection", features: [{type: "Feature", properties: {}, geometry: {type: "Point", coordinates: [10, 46]}}]}),
+    "Data\n", "Version 300\nData\n", "Columns 0\nData\n", "Version 300\nColumns 0\n"]) {
+    for (const open of [terrio.open, terrio.openVector]) {
+      assert.throws(() => open(encode(text), "x.mif", {}), /MIF:/);
+    }
+  }
+  for (const text of ['Version 300\nColumns 1\nN Integer\nData\n',
+    '\ufeffvErSiOn 300\r\ncOlUmNs 1\r\nN Integer\r\ndAtA\r\n']) {
+    const dataset = terrio.open(encode(text), "x.mif");
+    try {
+      assert.deepEqual(dataset.toGeoJSON().features, []);
+      assert.equal(dataset.info().layers[0].fields[0].name, "N");
+    } finally { dataset.free(); }
+  }
+});
+
 test("ZIP layer selection uses the member name rather than the archive name", () => {
   const source = terrio.fromGeoJSON({type: "FeatureCollection", features: [{
     type: "Feature", properties: {}, geometry: {type: "Point", coordinates: [1, 2]},
@@ -5260,6 +5278,48 @@ test("FlatGeobuf stored CRS validation discards prose and retains definition for
         }
         assert.deepEqual(result.toGeoJSON().features[0].geometry.coordinates, [10,46]);
       } finally { result.free(); }
+    }
+  } finally { source.free(); }
+});
+test("engineering GeoTIFF and COG bytes retain local CRS definitions", () => {
+  const local = 'LOCAL_CS["site grid",LOCAL_DATUM["site",32767],UNIT["metre",1],AXIS["Easting",EAST],AXIS["Northing",NORTH]]';
+  const engineering = 'ENGINEERINGCRS["Astra Minas Grid",ENGINEERINGDATUM["Astra Minas"],CS[Cartesian,2],AXIS["northing (X)",north,ORDER[1]],AXIS["westing (Y)",west,ORDER[2]],LENGTHUNIT["metre",1],ID["EPSG",5800]]';
+  const values = new Float32Array([1, 2, 3, 4]);
+  const transform = [1000, 10, 0, 2000, 0, -10];
+  for (const definition of [local, engineering]) {
+    const source = terrio.rasterFromArray(values, 2, 2, transform, definition);
+    try {
+      for (const format of ["GTiff", "COG"]) {
+        const back = terrio.open(source.toBytes("site.tif", {format}), "site.tif");
+        try {
+          assert.equal(back.info().crs?.wkt, definition);
+          assert.deepEqual([...back.transform], transform);
+          assert.deepEqual([...back.readBand(1)], [...values]);
+          assert.throws(() => back.toBytes("warped.tif", {tSrs: "EPSG:4326"}), /coordinate reference system/);
+          assert.deepEqual([...back.readBand(1)], [...values]);
+        } finally { back.free(); }
+      }
+    } finally { source.free(); }
+  }
+});
+test("TSV byte output uses tabs and preserves polygon commas", () => {
+  const source = terrio.fromGeoJSON(SQUARES, "squares", "EPSG:4326");
+  try {
+    for (const extension of ["csv", "tsv", "TSV"]) {
+      const filename = `squares.${extension}`;
+      const bytes = source.toBytes(filename);
+      const separator = extension === "csv" ? "," : "\t";
+      assert.ok(new TextDecoder().decode(bytes).startsWith(`WKT${separator}name${separator}value\n`));
+      const back = terrio.open(bytes, filename);
+      try {
+        const features = back.toGeoJSON().features;
+        assert.equal(features.length, SQUARES.features.length);
+        features.forEach((feature, i) => {
+          assert.deepEqual(feature.geometry, SQUARES.features[i].geometry);
+          assert.equal(feature.properties.name, SQUARES.features[i].properties.name);
+          assert.equal(feature.properties.value, SQUARES.features[i].properties.value);
+        });
+      } finally { back.free(); }
     }
   } finally { source.free(); }
 });

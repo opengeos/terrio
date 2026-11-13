@@ -138,7 +138,7 @@ pub fn read(path: &str, options: &CsvOptions) -> Result<Layer> {
 }
 
 /// The CSV options for a file: a `.tsv` file is tab-separated unless a separator is given.
-fn file_options(path: &str, options: &CsvOptions) -> CsvOptions {
+pub(crate) fn file_options(path: &str, options: &CsvOptions) -> CsvOptions {
     let tsv = crate::formats::extension(path).as_deref() == Some("tsv");
     CsvOptions { separator: options.separator.or(tsv.then_some(b'\t')), ..options.clone() }
 }
@@ -611,7 +611,7 @@ fn value(v: &str, t: FieldType) -> FieldValue {
 
 /// Writes a layer as CSV.
 pub fn write(layer: &Layer, path: &str, options: &CsvOptions) -> Result<()> {
-    std::fs::write(path, to_string(layer, options)?)?;
+    std::fs::write(path, to_string(layer, &file_options(path, options))?)?;
     Ok(())
 }
 
