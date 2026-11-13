@@ -1080,6 +1080,11 @@ files are written with a `crs` member naming their CRS, which GDAL reads (it ass
 otherwise), and a CSV file's CRS is read from a `.prj` file next to it, as GDAL's CSV driver
 reads it.
 
+CSV/TSV writers keep the coordinates and write geometries as WKT by default.
+A `.tsv` filename selects tab separators, including byte exports; `.csv` defaults
+to commas. An explicit CSV `SEPARATOR` option overrides the filename on Rust and
+CLI writes (`--lco SEPARATOR=COMMA|SEMICOLON|TAB|PIPE`).
+
 - **XLSX** workbooks are read and written without GDAL, in WebAssembly too, as GDAL's XLSX driver
   does: a layer per worksheet, feature ids that are row numbers, and the open options `HEADERS`
   (`AUTO`, `FORCE`, `DISABLE`) and `FIELD_TYPES` (`AUTO`, `STRING`). Formulas are not evaluated: a

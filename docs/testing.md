@@ -95,6 +95,22 @@ unzoned values and nulls. The native unit test
 GDAL-authored in-memory fields with unknown, local and explicit UTC flags.
 These tests use GDAL itself as the typed-field reference; validation uses GDAL 3.13.3.
 
+## CSV and TSV writing
+
+`cargo test -p terrio --test merged csv_writing::` checks whole-file, byte and
+streamed writes of point and polygon layers, with `.csv`, `.tsv` and uppercase
+`.TSV` filenames. TSV defaults to tabs; explicit comma, semicolon, tab or pipe
+options override the filename. Round trips check geometry and attribute values,
+including quoted tabs, commas, quotes and newlines. CSV's inferred WKT column and
+its existing CRS limitations are unchanged.
+
+`python/tests/test_tsv_writing.py` checks Layer, VectorDataset, byte, convert and
+CLI exports against CSV controls. The Node test `TSV byte output uses tabs`
+exercises the filesystem-free WebAssembly writer and reader with polygon WKT.
+TSV is also an output of the registered `streams` conformance suite. On the real
+country boundaries, whole and streamed TSV files are byte-identical and GDAL
+3.12.1 reads all 176 features.
+
 ## Python warning attribution
 
 `python/tests/test_native_warning_locations.py` checks warnings recorded in Rust
