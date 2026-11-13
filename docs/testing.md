@@ -106,7 +106,9 @@ Attribution stops at the first frame outside the Terrio package, including a
 third-party intermediary when one calls Terrio on the application's behalf.
 Subprocess regressions also invoke the native binding and warning helper directly
 from `atexit` and `_thread` callbacks, where no Python caller frame exists. These
-calls must emit their warnings at `sys:1` without raising a frame lookup error.
+calls must emit their warnings at the interpreter fallback location (`sys:1` or
+`<sys>:0`, depending on CPython) without raising a frame lookup error. Thread
+regressions also wait for callback completion without adding a Python wrapper frame.
 
 `python/tests/test_pyogrio_datetime_filters.py` checks pandas 2 and 3 datetime parsing without
 Terrio changing warning filters, including invalid input after mixed offsets and pandas-only

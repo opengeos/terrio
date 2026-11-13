@@ -26,6 +26,7 @@ import _thread
 import atexit
 import sys
 import threading
+import time
 import warnings
 
 import terrio
@@ -54,8 +55,14 @@ else:
 
     warnings.showwarning = showwarning
     sys.unraisablehook = unraisablehook
+    threads_before = _thread._count()
     _thread.start_new_thread(callback, args)
-    assert done.wait(10), "warning callback did not finish"
+    assert done.wait(10), "warning callback did not reach its warning or error hook"
+    # Wait for completion without a Python wrapper that would hide the no-caller bug.
+    deadline = time.monotonic() + 5
+    while _thread._count() > threads_before:
+        assert time.monotonic() < deadline, "warning callback thread did not finish"
+        time.sleep(0.001)
 '''
     result = subprocess.run(
         [sys.executable, "-c", script, malformed_crs_shapefile, callback, context],
