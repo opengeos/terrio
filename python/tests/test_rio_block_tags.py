@@ -1,4 +1,4 @@
-"""TIFF block metadata agrees with stored tables and GDAL 3.12.2 without pixel reads."""
+"""TIFF block metadata agrees with stored tables and GDAL 3.12.1 without pixel reads."""
 
 import struct
 
@@ -90,7 +90,7 @@ def test_block_items_match_stored_tables(tmp_path, tiled, interleave, bigtiff):
                             key, "TIFF", bidx=band
                         ) == reference.get_tag_item(key, "TIFF", bidx=band)
             assert not any(key.startswith("BLOCK_") for key in actual.tags(band, "TIFF"))
-        for x, y in [(across, 0), (0, rows), (-1, 0), (2**100, 0)]:
+        for x, y in [(across, 0), (0, rows), (-1, 0), (2**100, 0), ("9" * 5000, 0)]:
             assert actual.get_tag_item(f"BLOCK_OFFSET_{x}_{y}", "TIFF", bidx=1) is None
         assert actual.get_tag_item("BLOCK_OFFSET_0_0", "TIFF") is None
         with pytest.raises(IndexError):

@@ -1194,7 +1194,7 @@ impl LazyRaster {
     /// Bands are numbered from 1; block coordinates and overview indices from 0.
     /// Returns `None` for other formats or an absent band, block or overview.
     /// External overview offsets refer to the overview file. No pixels are decoded.
-    /// Reference: GDAL 3.12.2's TIFF `BLOCK_OFFSET_x_y` / `BLOCK_SIZE_x_y` items.
+    /// Reference: GDAL 3.12.1's TIFF `BLOCK_OFFSET_x_y` / `BLOCK_SIZE_x_y` items.
     pub fn tiff_block_range(&mut self, band: usize, x: usize, y: usize, overview: Option<usize>) -> Result<Option<(u64, u64)>> {
         let _scope = self.enter_asset_read()?;
         if band == 0 || band > self.band_count() {

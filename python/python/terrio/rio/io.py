@@ -1143,7 +1143,7 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
                 return None
             try:
                 block = raster._tiff_block_range(bidx, int(match[2]), int(match[3]), ovr)
-            except OverflowError:
+            except (OverflowError, ValueError):
                 return None
             return None if block is None else str(block[0 if match[1] == "OFFSET" else 1])
         return self.tags(bidx, dm).get(ns)
