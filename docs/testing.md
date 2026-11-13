@@ -25,6 +25,24 @@ read-in-child test remains disabled on macOS because of an intermittent SIGTRAP
 whose cause is unconfirmed (#696). Lock hand-off coverage does not establish that
 system networking libraries are safe to call after a multithreaded fork.
 
+## Mixed-validity coordinate batches
+
+`python/tests/test_rio_transform_batch.py` verifies that rio coordinate and
+geometry transforms use one native batch when a point fails. Good points remain
+exactly equal to the all-valid Terrio batch; failed ordinates remain positive
+infinity. Native `transform_points` retains its strict default, with optional
+`errcheck=False` for this behavior in 2D and 3D. Invalid CRS definitions and
+array lengths still raise in the native API. The rio helper retains its existing
+all-infinity result for batch setup failures without retrying every point.
+
+`python scripts/conformance.py DATA --only transform-batches --strict` requires
+all 21 tests, including two 1,000-point Natural Earth populated-place batches
+transformed to EPSG:3857 and EPSG:3395. Successful coordinates after inserting a
+NaN agree with GDAL via rasterio within 1e-7 metres. Failed-point output follows
+Terrio's existing policy; rasterio raises on these mixed-invalid batches. The
+reference for local validation is GDAL 3.12.1. Timing is measured separately;
+the regression uses a deterministic native-call count instead of a timing limit.
+
 ## Transformed polar bounds
 
 `cargo test -p terrio-crs --lib transform_bounds` checks pole inclusion, explicit

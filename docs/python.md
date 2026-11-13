@@ -405,6 +405,12 @@ data = open("dem.tif", "rb").read()
 raster = terrio.open_bytes(data, "dem.tif")  # from bytes; to bytes with raster.to_bytes("x.tif")
 ```
 
+`transform_points` raises on failed points by default. Pass `errcheck=False` to
+set every output ordinate of a failed point to positive infinity and continue
+with the same transformer. Invalid CRS definitions, operation setup and unequal
+array lengths still raise. The rio coordinate and geometry helpers use this
+batch mode to keep valid points when a batch contains missing or invalid values.
+
 Raster operations with `dst` and the standard output keywords accept `options={...}`, just
 like `Raster.write(options=...)` and CLI `--co`. This includes streamed terrain/warp outputs,
 mask-writing operations, palette operations and `create_raster`. The options apply to the

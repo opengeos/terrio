@@ -1027,6 +1027,9 @@ fn transform_bounds(
 ///         (GDAL's ``-t_coord_epoch``).
 ///     promote_to_3d: Take the heights of 2D CRSs as ellipsoidal heights, so that datum
 ///         transformations change them, as GDAL does after ``PromoteTo3D``.
+///     errcheck: Raise on a failed point (default True). If False, set every output
+///         ordinate of that point to positive infinity and continue with the same
+///         transformer. Invalid CRS definitions and array lengths still raise.
 ///
 /// Returns:
 ///     tuple[numpy.ndarray, ...]: The transformed x and y coordinates, and heights when ``zs`` is
@@ -1035,7 +1038,7 @@ fn transform_bounds(
 /// Raises:
 ///     CRSError: If a CRS cannot be parsed or a point cannot be transformed.
 #[pyfunction]
-#[pyo3(signature = (xs, ys, src_crs, dst_crs, zs=None, *, s_coord_epoch=None, t_coord_epoch=None, allow_ballpark=None, only_best=false, promote_to_3d=false))]
+#[pyo3(signature = (xs, ys, src_crs, dst_crs, zs=None, *, s_coord_epoch=None, t_coord_epoch=None, allow_ballpark=None, only_best=false, promote_to_3d=false, errcheck=true))]
 #[allow(clippy::too_many_arguments)]
 fn transform_points<'py>(
     py: Python<'py>,
@@ -1049,6 +1052,7 @@ fn transform_points<'py>(
     allow_ballpark: Option<bool>,
     only_best: bool,
     promote_to_3d: bool,
+    errcheck: bool,
 ) -> PyResult<Bound<'py, PyTuple>> {
     let np = py.import("numpy")?;
     let coords = |v: &Bound<'py, PyAny>| -> PyResult<Vec<f64>> {
@@ -1080,18 +1084,19 @@ fn transform_points<'py>(
         let mut oy = Vec::with_capacity(ys.len());
         let mut oz = Vec::with_capacity(zs.as_ref().map_or(0, Vec::len));
         for (i, (x, y)) in xs.iter().zip(&ys).enumerate() {
-            match &zs {
-                Some(z) => {
-                    let (a, b, c) = t.transform_3d(*x, *y, z[i])?;
-                    ox.push(a);
-                    oy.push(b);
-                    oz.push(c);
-                }
-                None => {
-                    let (a, b) = t.transform(*x, *y)?;
-                    ox.push(a);
-                    oy.push(b);
-                }
+            let result = match &zs {
+                Some(z) => t.transform_3d(*x, *y, z[i]),
+                None => t.transform(*x, *y).map(|(a, b)| (a, b, 0.0)),
+            };
+            let (a, b, c) = match result {
+                Ok(point) => point,
+                Err(error) if errcheck => return Err(error),
+                Err(_) => (f64::INFINITY, f64::INFINITY, f64::INFINITY),
+            };
+            ox.push(a);
+            oy.push(b);
+            if zs.is_some() {
+                oz.push(c);
             }
         }
         Ok((ox, oy, oz))

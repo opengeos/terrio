@@ -110,17 +110,11 @@ def _transform_arrays(
         tuple: The transformed coordinates.
     """
     try:
-        return _terrio.transform_points(xs, ys, src, dst)
+        return _terrio.transform_points(xs, ys, src, dst, errcheck=False)
     except Exception:
-        ox = np.full(len(xs), np.inf)
-        oy = np.full(len(ys), np.inf)
-        for i, (x, y) in enumerate(zip(xs, ys, strict=False)):
-            try:
-                a, b = _terrio.transform_points([x], [y], src, dst)
-                ox[i], oy[i] = a[0], b[0]
-            except Exception:
-                pass
-        return ox, oy
+        # A batch setup failure affects every point. Preserve the existing infinite
+        # result without rebuilding the same failed operation once per coordinate.
+        return np.full(len(xs), np.inf), np.full(len(ys), np.inf)
 
 
 def transform(src_crs: Any, dst_crs: Any, xs: Any, ys: Any, zs: Any = None) -> Any:
