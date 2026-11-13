@@ -1232,7 +1232,10 @@ geometry-column options to distinguish it from coordinate-like attributes.
   `ID_TYPE` (`GeoJsonOptions::id_type`: `String` or `Integer`) asks.
 - **GeoJSONSeq** files hold a GeoJSON feature per line (RFC 8142, optionally with record
   separators), written in WGS 84 with counter-clockwise exterior rings, as GDAL's GeoJSONSeq
-  driver writes them.
+  driver writes them. The reader accepts Feature and bare geometry records. It refuses
+  FeatureCollection records and other JSON values rather than converting them to empty
+  features. This is a subset of RFC 8142's permitted GeoJSON text types. An empty sequence
+  remains valid and contains zero features.
 - **GeoParquet** is written as GeoParquet 1.1: the CRS as PROJJSON (none for EPSG:4326, which
   the specification makes the default), a `geometry_bbox` covering column, and row groups of
   65536 rows with statistics. Reading with a bounding box (`terrio convert --spat` on a Parquet
@@ -1298,6 +1301,16 @@ geometry-column options to distinguish it from coordinate-like attributes.
   are passed through; the native Rust/JavaScript Arrow metadata remains portable
   and retains definitions that Terrio cannot parse.
 - **OSM XML** (`.osm`) gives the same five layers as PBF, with tags in the file's order.
+- **Document recognition**: KML, GPX and OSM XML require a `kml`, `gpx` or `osm` root
+  element, respectively. Namespace prefixes are allowed. HTML error pages and other
+  document kinds are refused with `InvalidData` rather than read as empty layers. KMZ
+  main and linked layer documents require KML roots too. Zero bytes are not KML, GPX, OSM XML
+  or PBF document. PBF requires an `OSMHeader` block; a header-only file is valid
+  empty data. XML and GeoJSON-sequence syntax errors are terminal native document
+  refusals and are not retried through the optional GDAL backend. Valid empty KML,
+  GPX and OSM documents retain their existing layer counts. XML bytes may use UTF-8 or
+  BOM-marked UTF-16. Input that exceeds an OSM PBF framing budget returns `ResourceLimit`,
+  including non-PBF content whose leading bytes describe an excessive header length.
 - **KML layer names** use the same ASCII case-insensitive collision rule as KMZ.
   Within one document, `Roads` followed by `roads` becomes `Roads` and `roads (2)`,
   preserving feature order and the original spelling before the suffix.

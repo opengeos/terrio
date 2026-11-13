@@ -1,6 +1,20 @@
 //! The vector drivers terrio supplies itself, where the format libraries are wrong or missing, and
 //! fixes applied to what the format libraries read.
 
+const INVALID_DOCUMENT: &str = "invalid document:";
+
+/// A recognized filename whose content is not a document of that format.
+pub(crate) fn document_error(format: &str, detail: impl std::fmt::Display) -> crate::Error {
+    crate::Error::InvalidData(format!("{format}: {INVALID_DOCUMENT} {detail}"))
+}
+
+/// These format refusals must not be retried as empty datasets by optional readers.
+#[cfg(any(test, feature = "gdal"))]
+pub(crate) fn is_document_error(error: &crate::Error) -> bool {
+    matches!(error, crate::Error::InvalidData(message) if ["KML", "GPX", "OSM", "OSM XML", "OSM PBF", "GeoJSONSeq"]
+        .iter().any(|format| message.contains(&format!("{format}: {INVALID_DOCUMENT} "))))
+}
+
 #[cfg(feature = "cad")]
 pub(crate) mod cad;
 mod city;

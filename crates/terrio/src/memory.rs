@@ -951,6 +951,25 @@ pub(crate) mod codec {
 
 #[cfg(test)]
 mod tests {
+    /// Documents of another kind are refused by file-backed and in-memory codecs alike.
+    #[test]
+    fn wrong_vector_documents_are_not_empty_datasets() {
+        for (name, bytes) in [
+            ("wrong.kml", b"<gpx/>".as_slice()),
+            ("wrong.gpx", b"<kml/>".as_slice()),
+            ("wrong.geojsonl", br#"{"type":"FeatureCollection","features":[]}"#.as_slice()),
+            ("wrong.geojsonl", br#"{"hello":"world"}"#.as_slice()),
+        ] {
+            for result in [
+                open_vector_bytes(bytes.to_vec(), name, &Default::default()).map(|_| ()),
+                codec::open(bytes.to_vec(), name, &Default::default()).map(|_| ()),
+            ] {
+                let error = result.unwrap_err();
+                assert!(crate::drivers::vector::is_document_error(&error), "{name}: {error}");
+            }
+        }
+    }
+
     /// Reference: GDAL 3.13.3. The WASM codec and native writer use the requested output grid.
     #[test]
     #[cfg(feature = "jp2")]

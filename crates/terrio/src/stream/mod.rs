@@ -444,14 +444,16 @@ impl FeatureSource for GeoJsonSource {
 }
 
 /// Infers the fields of a batch of features in parallel, then merges them in order.
-fn observe_batch(scan: &mut geojson::SchemaScan, raw: &mut Vec<Vec<u8>>) -> Result<()> {
+fn observe_batch(scan: &mut geojson::SchemaScan, raw: &mut Vec<Vec<u8>>, sequence: bool) -> Result<()> {
+    let observe: fn(&mut geojson::SchemaScan, &[u8]) -> Result<()> =
+        if sequence { geojson::SchemaScan::observe_seq_raw } else { geojson::SchemaScan::observe_raw };
     if raw.is_empty() {
         return Ok(());
     }
     // The first feature decides whether the features are STAC items.
     let mut start = 0;
     if !scan.started() {
-        scan.observe_raw(&raw[0])?;
+        observe(scan, &raw[0])?;
         start = 1;
     }
     let base = scan.empty_like();
@@ -460,7 +462,7 @@ fn observe_batch(scan: &mut geojson::SchemaScan, raw: &mut Vec<Vec<u8>>) -> Resu
         let (a, b) = (start + n * t / crate::par::threads().max(1), start + n * (t + 1) / crate::par::threads().max(1));
         let mut s = base.clone();
         for r in &raw[a..b] {
-            s.observe_raw(r)?;
+            observe(&mut s, r)?;
         }
         Ok(s)
     });
@@ -479,10 +481,10 @@ fn open_geojson(path: &str, stem: &str, batch: usize) -> Result<(Layer, Box<dyn 
     while c.next_feature(&mut buf)? {
         raw.push(std::mem::take(&mut buf));
         if raw.len() >= 16384 {
-            observe_batch(&mut scan, &mut raw)?;
+            observe_batch(&mut scan, &mut raw, false)?;
         }
     }
-    observe_batch(&mut scan, &mut raw)?;
+    observe_batch(&mut scan, &mut raw, false)?;
     if !c.has_features || c.members.get("type").and_then(|t| t.as_str()) != Some("FeatureCollection") {
         // A single feature or geometry: small enough to read whole.
         let layer = geojson::read(path)?;
@@ -547,10 +549,10 @@ fn open_geojson_seq(path: &str, stem: &str, batch: usize) -> Result<(Layer, Box<
     while let Some(rec) = next_seq_record(&mut r, &mut line)? {
         raw.push(rec);
         if raw.len() >= 16384 {
-            observe_batch(&mut scan, &mut raw)?;
+            observe_batch(&mut scan, &mut raw, true)?;
         }
     }
-    observe_batch(&mut scan, &mut raw)?;
+    observe_batch(&mut scan, &mut raw, true)?;
     let layer = scan.layer(stem, None);
     let decoder = geojson::FeatureDecoder::new(&layer, &scan);
     let r = BufReader::with_capacity(1 << 20, File::open(path)?);
