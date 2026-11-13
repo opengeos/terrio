@@ -828,12 +828,13 @@ fn blob_spans(r: &mut dyn PbfInput) -> Result<(Vec<std::ops::Range<u64>>, bool)>
     let bad = pbf::bad;
     let len = r.seek(SeekFrom::End(0))?;
     if len == 0 {
-        return Err(super::document_error("OSM PBF", "empty input has no blob header"));
+        return Err(super::document_error("OSM", "empty input has no XML root or PBF header"));
     }
     r.seek(SeekFrom::Start(0))?;
     let mut r = std::io::BufReader::with_capacity(1 << 16, r);
     let mut spans = Vec::new();
     let mut sorted = false;
+    let mut saw_header = false;
     let mut o = 0u64;
     while o < len {
         let mut prefix = [0u8; 4];
@@ -867,10 +868,14 @@ fn blob_spans(r: &mut dyn PbfInput) -> Result<(Vec<std::ops::Range<u64>>, bool)>
                 let mut blob = vec![0u8; size as usize];
                 r.read_exact(&mut blob).map_err(|_| bad())?;
                 sorted = pbf::header_sorted(&blob)?;
+                saw_header = true;
             }
             _ => r.seek_relative(size as i64)?,
         }
         o = end;
+    }
+    if !saw_header {
+        return Err(super::document_error("OSM PBF", "missing OSMHeader block"));
     }
     Ok((spans, sorted))
 }
@@ -1528,6 +1533,10 @@ mod tests {
         assert!(blob_spans(&mut std::io::Cursor::new(Vec::<u8>::new())).is_err_and(|error| super::super::is_document_error(&error)));
         let header = fileblock("OSMHeader", &Msg::default().bytes(1, &[]).0);
         assert!(blob_spans(&mut std::io::Cursor::new(header)).unwrap().0.is_empty());
+        for kind in ["OSMData", "Other"] {
+            let file = fileblock(kind, &Msg::default().bytes(1, &[]).0);
+            assert!(blob_spans(&mut std::io::Cursor::new(file)).is_err_and(|error| super::super::is_document_error(&error)));
+        }
     }
 
     #[test]

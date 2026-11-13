@@ -11,7 +11,7 @@ pub(crate) fn document_error(format: &str, detail: impl std::fmt::Display) -> cr
 /// These format refusals must not be retried as empty datasets by optional readers.
 #[cfg(any(test, feature = "gdal"))]
 pub(crate) fn is_document_error(error: &crate::Error) -> bool {
-    matches!(error, crate::Error::InvalidData(message) if ["KML", "GPX", "OSM XML", "OSM PBF", "GeoJSONSeq"]
+    matches!(error, crate::Error::InvalidData(message) if ["KML", "GPX", "OSM", "OSM XML", "OSM PBF", "GeoJSONSeq"]
         .iter().any(|format| message.contains(&format!("{format}: {INVALID_DOCUMENT} "))))
 }
 

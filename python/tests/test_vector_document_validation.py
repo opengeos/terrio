@@ -214,8 +214,23 @@ def test_zero_byte_osm_is_not_an_empty_dataset(tmp_path, extension):
         tmp_path: Temporary dataset directory.
         extension: OSM XML or PBF filename.
     """
-    with pytest.raises(terrio.InvalidDataError, match="OSM PBF.*empty input"):
+    with pytest.raises(terrio.InvalidDataError, match="OSM.*empty input"):
         read_document(tmp_path / f"empty.{extension}", b"", "bytes")
+
+
+@pytest.mark.parametrize("surface", ["path", "bytes", "generic"])
+def test_pbf_data_without_header_is_refused(tmp_path, surface):
+    """Refuse framed OSM data when the required document header is absent.
+
+    Args:
+        tmp_path: Temporary dataset directory.
+        surface: Public open entry point.
+    """
+    blob = b"\x0a\x00"
+    header = b"\x0a\x07OSMData\x18" + bytes([len(blob)])
+    data = struct.pack(">I", len(header)) + header + blob
+    with pytest.raises(terrio.InvalidDataError, match="OSM PBF.*missing OSMHeader"):
+        read_document(tmp_path / "headerless.osm.pbf", data, surface)
 
 
 def test_empty_pbf_header_keeps_five_layers(tmp_path):
