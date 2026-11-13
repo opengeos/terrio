@@ -52,6 +52,68 @@ pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Dataset> {
 /// Identification is only a hint: the ordinary reader still validates the data and driver policy.
 /// The pyogrio compatibility caller targets Pyogrio 0.13.0 / GDAL 3.12.2.
 pub fn suggest_vector_extension(bytes: &[u8]) -> Option<&'static str> {
+    suggest_vector_extension_checked(bytes).ok().flatten()
+}
+
+/// Like [`suggest_vector_extension`], preserving archive resource-limit errors for callers
+/// that must distinguish a refusal from unsigned content. No archive member is decompressed.
+pub fn suggest_vector_extension_checked(bytes: &[u8]) -> Result<Option<&'static str>> {
+    if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
+        let archive = match crate::vfs::LimitedZip::open(std::io::Cursor::new(bytes)) {
+            Ok(archive) => archive,
+            Err(error) if error.is_resource_refusal() => return Err(error),
+            // Keep the generic ZIP hint so the ordinary reader supplies the diagnostic.
+            Err(_) => return Ok(Some("zip")),
+        };
+        let (mut content_types, mut workbook, mut kml) = (false, false, false);
+        for name in archive.archive().file_names().flatten() {
+            content_types |= name == "[Content_Types].xml";
+            workbook |= name == "xl/workbook.xml";
+            kml |= name.eq_ignore_ascii_case("doc.kml");
+        }
+        return Ok(Some(if content_types && workbook {
+            "xlsx"
+        } else if kml {
+            "kmz"
+        } else {
+            "zip"
+        }));
+    }
+    Ok(vector_extension_hint(bytes))
+}
+
+/// Non-archive byte hints shared by the checked and compatibility probes.
+fn vector_extension_hint(bytes: &[u8]) -> Option<&'static str> {
+    // DXF group codes and SECTION are ASCII, but comments and entity strings may use
+    // a legacy codepage. Inspect only the leading pairs without decoding the body.
+    let prefix = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes).trim_ascii_start();
+    if prefix.starts_with(b"0") || prefix.starts_with(b"999") {
+        let mut lines = prefix.split(|byte| *byte == b'\n').map(<[u8]>::trim_ascii);
+        while let (Some(code), Some(value)) = (lines.next(), lines.next()) {
+            if code == b"999" {
+                continue;
+            }
+            if code == b"0" && value.eq_ignore_ascii_case(b"SECTION") {
+                return Some("dxf");
+            }
+            break;
+        }
+    }
+    let text = std::str::from_utf8(bytes).ok().map(|text| text.trim_start_matches('\u{feff}').trim_start());
+    if let Some(text) = text
+        && text.starts_with('{')
+        && crate::inspection::root_json_type(text).as_deref() == Some("Feature")
+    {
+        let mut values = serde_json::Deserializer::from_str(text).into_iter::<serde::de::IgnoredAny>();
+        if values.next().is_some_and(|value| value.is_ok()) {
+            let remaining = text[values.byte_offset()..].trim_start_matches([' ', '\t']);
+            if remaining.starts_with(['\r', '\n'])
+                && crate::inspection::root_json_type(remaining.trim_start()).as_deref() == Some("Feature")
+            {
+                return Some("geojsonl");
+            }
+        }
+    }
     let driver = crate::inspection::identify_bytes_unjudged(bytes, "")
         .and_then(|identified| crate::formats::VectorDriver::from_name(&identified.driver))
         .or_else(|| {
@@ -1038,6 +1100,18 @@ mod tests {
             (br#"{"type":"FeatureCollection","features":[]}"#.as_slice(), Some("geojson")),
             (br#"{"type":"FeatureCollection","features":[],"Topology":"survey"}"#.as_slice(), Some("geojson")),
             (b"<kml/>".as_slice(), Some("kml")),
+            (b"  0\r\nSECTION\r\n  2\r\nENTITIES\r\n".as_slice(), Some("dxf")),
+            (b"0\nsection\n2\nENTITIES\n".as_slice(), Some("dxf")),
+            (b"999\nexporter comment\n999\nsecond comment\n0\nSECTION\n2\nENTITIES\n".as_slice(), Some("dxf")),
+            (b"999\ncaf\xe9\n0\nSECTION\n2\nENTITIES\n".as_slice(), Some("dxf")),
+            (b"0\nSECTION\n2\nENTITIES\n0\nTEXT\n1\ncaf\xe9\n".as_slice(), Some("dxf")),
+            (b"PK\x03\x04broken".as_slice(), Some("zip")),
+            (b"0,SECTION\n1,survey\n".as_slice(), None),
+            (
+                b"{\"type\":\"Feature\",\"properties\":{},\"geometry\":null}\n{\"type\":\"Feature\",\"properties\":{},\"geometry\":null}\n"
+                    .as_slice(),
+                Some("geojsonl"),
+            ),
             (b"<gpx/>".as_slice(), Some("gpx")),
             (br#"<osm version="0.6"/>"#.as_slice(), Some("osm")),
             (br#"<osm version="0.6"><tag k="name" v="gml survey"/></osm>"#.as_slice(), Some("osm")),
@@ -1054,6 +1128,68 @@ mod tests {
         ] {
             assert_eq!(suggest_vector_extension(bytes), extension, "{bytes:?}");
         }
+    }
+
+    #[test]
+    fn vector_archive_hints_distinguish_workbooks_and_kmz() {
+        use std::io::Write;
+        for (names, expected) in [
+            (vec!["doc.kml", "layers/points.kml"], "kmz"),
+            (vec!["[Content_Types].xml", "xl/workbook.xml"], "xlsx"),
+            (vec!["points.shp", "points.dbf"], "zip"),
+            (vec!["README.txt"], "zip"),
+            (vec![], "zip"),
+        ] {
+            let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            for name in names {
+                archive.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+                archive.write_all(b"not decoded during identification").unwrap();
+            }
+            let bytes = archive.finish().unwrap().into_inner();
+            assert_eq!(suggest_vector_extension(&bytes), Some(expected));
+        }
+    }
+
+    #[test]
+    fn vector_archive_probe_checks_entry_limits_before_listing() {
+        // A tiny synthetic ZIP is enough to verify the configured directory-entry cap.
+        let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        archive.start_file("doc.kml", zip::write::SimpleFileOptions::default()).unwrap();
+        let bytes = archive.finish().unwrap().into_inner();
+        crate::config::push_scope(std::collections::HashMap::from([("TERRIO_ZIP_MAX_ENTRIES".into(), Some("0".into()))]));
+        let extension = suggest_vector_extension(&bytes);
+        let checked = suggest_vector_extension_checked(&bytes);
+        crate::config::pop_scope();
+        assert_eq!(extension, None);
+        assert!(checked.is_err_and(|error| error.is_resource_refusal()));
+    }
+
+    #[test]
+    fn vector_archive_probe_keeps_zip_hint_for_unreadable_names() {
+        let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        archive.start_file("bad.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        let mut bytes = archive.finish().unwrap().into_inner();
+        for index in 0..bytes.len() - 8 {
+            if bytes[index..].starts_with(b"bad.txt") {
+                bytes[index] = 0xff;
+            }
+        }
+        // A legacy single-byte name must retain the generic hint, irrespective of whether
+        // the configured ZIP decoder can represent it.
+        assert_eq!(suggest_vector_extension(&bytes), Some("zip"));
+        for index in 0..bytes.len() - 10 {
+            let flags = if bytes[index..].starts_with(b"PK\x03\x04") {
+                index + 6
+            } else if bytes[index..].starts_with(b"PK\x01\x02") {
+                index + 8
+            } else {
+                continue;
+            };
+            let value = u16::from_le_bytes([bytes[flags], bytes[flags + 1]]) | 0x800;
+            bytes[flags..flags + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        // Deliberately invalid UTF-8 names are left for the ordinary reader to diagnose.
+        assert_eq!(suggest_vector_extension(&bytes), Some("zip"));
     }
 
     #[test]

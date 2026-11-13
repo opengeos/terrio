@@ -158,9 +158,12 @@ fn identify_drivers(py: Python<'_>, path: &str) -> PyResult<(Vec<String>, Option
 ///
 /// Returns:
 ///     str | None: The suggested extension, or None when a filename is needed.
+///
+/// Raises:
+///     ResourceLimitError: The archive exceeds its configured resource limits.
 #[pyfunction]
-fn vector_byte_extension(data: &[u8]) -> Option<&'static str> {
-    terrio::memory::suggest_vector_extension(data)
+fn vector_byte_extension(data: &[u8]) -> PyResult<Option<&'static str>> {
+    terrio::memory::suggest_vector_extension_checked(data).py()
 }
 
 /// The HTTP traffic of this process since the last reset, with GDAL's network-statistics counters
